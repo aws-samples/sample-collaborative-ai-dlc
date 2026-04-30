@@ -1,0 +1,231 @@
+# Auth (Cognito)
+output "user_pool_id" {
+  description = "Cognito User Pool ID"
+  value       = module.auth.user_pool_id
+}
+
+output "user_pool_client_id" {
+  description = "Cognito User Pool Client ID"
+  value       = module.auth.user_pool_client_id
+}
+
+# Frontend
+output "cloudfront_distribution_id" {
+  description = "CloudFront distribution ID"
+  value       = module.frontend.cloudfront_distribution_id
+}
+
+output "cloudfront_domain_name" {
+  description = "CloudFront domain name"
+  value       = module.frontend.cloudfront_domain_name
+}
+
+output "s3_bucket_name" {
+  description = "Frontend S3 bucket name"
+  value       = module.frontend.s3_bucket_name
+}
+
+# VPC Endpoints
+output "s3_endpoint_id" {
+  description = "S3 VPC endpoint ID"
+  value       = module.vpc_endpoints.s3_endpoint_id
+}
+
+output "dynamodb_endpoint_id" {
+  description = "DynamoDB VPC endpoint ID"
+  value       = module.vpc_endpoints.dynamodb_endpoint_id
+}
+
+# S3 Buckets
+output "artifacts_bucket_name" {
+  description = "Name of the artifacts S3 bucket"
+  value       = module.s3.artifacts_bucket_name
+}
+
+output "artifacts_bucket_arn" {
+  description = "ARN of the artifacts S3 bucket"
+  value       = module.s3.artifacts_bucket_arn
+}
+
+output "code_snapshots_bucket_name" {
+  description = "Name of the code snapshots S3 bucket"
+  value       = module.s3.code_snapshots_bucket_name
+}
+
+output "code_snapshots_bucket_arn" {
+  description = "ARN of the code snapshots S3 bucket"
+  value       = module.s3.code_snapshots_bucket_arn
+}
+
+# DynamoDB Tables
+output "sessions_table_name" {
+  description = "Name of the sessions table"
+  value       = module.dynamodb.sessions_table_name
+}
+
+output "sessions_table_arn" {
+  description = "ARN of the sessions table"
+  value       = module.dynamodb.sessions_table_arn
+}
+
+output "notifications_table_name" {
+  description = "Name of the notifications table"
+  value       = module.dynamodb.notifications_table_name
+}
+
+output "notifications_table_arn" {
+  description = "ARN of the notifications table"
+  value       = module.dynamodb.notifications_table_arn
+}
+
+output "agent_questions_table_name" {
+  description = "Name of the agent questions table"
+  value       = module.dynamodb.agent_questions_table_name
+}
+
+output "agent_questions_table_arn" {
+  description = "ARN of the agent questions table"
+  value       = module.dynamodb.agent_questions_table_arn
+}
+
+output "yjs_documents_table_name" {
+  description = "Name of the YJS documents table"
+  value       = module.dynamodb.yjs_documents_table_name
+}
+
+output "yjs_documents_table_arn" {
+  description = "ARN of the YJS documents table"
+  value       = module.dynamodb.yjs_documents_table_arn
+}
+
+# Neptune
+output "neptune_cluster_id" {
+  description = "Neptune cluster identifier"
+  value       = module.neptune.cluster_id
+}
+
+output "neptune_cluster_endpoint" {
+  description = "Neptune cluster endpoint"
+  value       = module.neptune.cluster_endpoint
+}
+
+output "neptune_cluster_reader_endpoint" {
+  description = "Neptune cluster reader endpoint"
+  value       = module.neptune.cluster_reader_endpoint
+}
+
+output "neptune_cluster_port" {
+  description = "Neptune cluster port"
+  value       = module.neptune.cluster_port
+}
+
+output "neptune_security_group_id" {
+  description = "Neptune security group ID"
+  value       = module.neptune.security_group_id
+}
+
+# API Gateway
+output "api_gateway_url" {
+  description = "API Gateway URL"
+  value       = module.api.api_gateway_url
+}
+
+output "api_gateway_id" {
+  description = "API Gateway ID"
+  value       = module.api.api_gateway_id
+}
+
+# Real-time (WebSocket)
+output "websocket_api_endpoint" {
+  description = "WebSocket API endpoint URL"
+  value       = module.realtime.websocket_api_endpoint
+}
+
+output "websocket_api_id" {
+  description = "WebSocket API ID"
+  value       = module.realtime.websocket_api_id
+}
+
+# Yjs Server
+output "yjs_server_url" {
+  description = "Yjs WebSocket server URL"
+  value       = module.yjs_server.yjs_server_url
+}
+
+output "yjs_ecr_repository_url" {
+  description = "ECR repository URL for Yjs server"
+  value       = module.yjs_server.ecr_repository_url
+}
+
+output "ecs_cluster_name" {
+  description = "ECS cluster name"
+  value       = module.yjs_server.ecs_cluster_id
+}
+
+output "yjs_ecs_service_name" {
+  description = "ECS service name for Yjs server"
+  value       = module.yjs_server.ecs_service_name
+}
+
+# Agents
+output "agents_ecr_repository_url" {
+  description = "ECR repository URL for agent images"
+  value       = module.agents.ecr_repository_url
+}
+
+output "agents_cluster_arn" {
+  description = "ECS cluster ARN for agents"
+  value       = module.compute.cluster_arn
+}
+
+output "agent_task_definition_arn" {
+  description = "Agent task definition ARN"
+  value       = module.agents.agent_task_definition_arn
+}
+
+output "agent_security_group_id" {
+  description = "Agent security group ID"
+  value       = module.agents.agent_security_group_id
+}
+
+output "agent_image_uri" {
+  description = "Full image URI with tag for the deployed agent image"
+  value       = module.agents.agent_image_uri
+}
+
+output "agent_image_tag" {
+  description = "Image tag (hash) for the deployed agent image"
+  value       = module.agents.agent_image_tag
+}
+
+output "yjs_image_uri" {
+  description = "Full image URI with tag for the deployed yjs-server image"
+  value       = module.yjs_server.yjs_image_uri
+}
+
+output "yjs_image_tag" {
+  description = "Image tag (hash) for the deployed yjs-server image"
+  value       = module.yjs_server.yjs_image_tag
+}
+
+output "private_subnet_ids" {
+  description = "Private subnet IDs"
+  value       = module.networking.private_subnet_ids
+}
+
+output "aws_region" {
+  description = "AWS region"
+  value       = var.aws_region
+}
+
+# Step Functions
+output "agent_workflow_state_machine_arn" {
+  description = "Step Functions state machine ARN for agent workflow"
+  value       = module.orchestration.state_machine_arn
+}
+
+# EventBridge
+output "agent_event_bus_name" {
+  description = "EventBridge event bus name for agent events"
+  value       = module.events.event_bus_name
+}

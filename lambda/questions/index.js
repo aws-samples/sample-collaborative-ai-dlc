@@ -1,0 +1,171 @@
+const gremlin = require('gremlin');
+const { v4: uuidv4 } = require('uuid');
+const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
+const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
+const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
+const { DynamoDBDocumentClient, UpdateCommand } = require('@aws-sdk/lib-dynamodb');
+const { buildResponse } = require('./shared/response');
+
+const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+
+const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
+const traversal = gremlin.process.AnonymousTraversalSource.traversal;
+const { cardinality } = gremlin.process;
+
+const getConnection = async () => {
+  const host = process.env.NEPTUNE_ENDPOINT;
+  const credentials = await fromNodeProviderChain()();
+  credentials.region = process.env.AWS_REGION || 'us-east-1';
+  const connInfo = getUrlAndHeaders(host, '8182', credentials, '/gremlin', 'wss');
+  return new DriverRemoteConnection(connInfo.url, { headers: connInfo.headers });
+};
+
+const mapQuestion = (v) => {
+  const questionsRaw = v.get('questions')?.[0] || '[]';
+  const structuredAnswerRaw = v.get('structured_answer')?.[0] || '';
+  const draftAnswerRaw = v.get('draft_answer')?.[0] || '';
+
+  let questions;
+  try { questions = JSON.parse(questionsRaw); } catch { questions = []; }
+  
+  let structuredAnswer;
+  try { structuredAnswer = structuredAnswerRaw ? JSON.parse(structuredAnswerRaw) : undefined; } catch { structuredAnswer = undefined; }
+
+  let draftAnswer;
+  try { draftAnswer = draftAnswerRaw ? JSON.parse(draftAnswerRaw) : undefined; } catch { draftAnswer = undefined; }
+
+  return {
+    id: v.get('id')?.[0] || '',
+    agent: v.get('agent')?.[0] || '',
+    questions,
+    structuredAnswer,
+    draftAnswer,
+    sprintId: v.get('sprint_id')?.[0] || '',
+    createdAt: v.get('created_at')?.[0] || '',
+  };
+};
+
+exports.handler = async (event) => {
+  const res = buildResponse(event);
+  if (event.httpMethod === 'OPTIONS') return res(200, {});
+
+  let conn;
+  try {
+    conn = await getConnection();
+    const g = traversal().withRemote(conn);
+    const { httpMethod, pathParameters, body } = event;
+    const { sprintId, questionId } = pathParameters || {};
+
+    switch (httpMethod) {
+      case 'GET': {
+        if (questionId) {
+          const r = await g.V().has('Question', 'id', questionId).valueMap().next();
+          if (!r.value) return res(404, { error: 'Question not found' });
+          return res(200, mapQuestion(r.value));
+        }
+        const list = await g.V().has('Sprint', 'id', sprintId)
+          .out('CONTAINS').hasLabel('Question').valueMap().toList();
+        return res(200, list.map(mapQuestion));
+      }
+
+      case 'POST': {
+        const data = JSON.parse(body);
+        const id = uuidv4();
+        const createdAt = new Date().toISOString();
+        const questionsJson = JSON.stringify(data.questions);
+
+        await g.V().has('Sprint', 'id', sprintId).as('s')
+          .addV('Question')
+          .property('id', id)
+          .property('agent', data.agent || '')
+          .property('questions', questionsJson)
+          .property('structured_answer', '')
+          .property('draft_answer', '')
+          .property('sprint_id', sprintId)
+          .property('created_at', createdAt)
+          .as('q')
+          .addE('CONTAINS').from_('s').to('q')
+          .next();
+
+        return res(201, { id, agent: data.agent || '', questions: data.questions, sprintId, createdAt });
+      }
+
+      case 'PUT': {
+        const data = JSON.parse(body);
+
+        // Submit structured answer
+        if (data.structuredAnswer !== undefined) {
+          const answerJson = JSON.stringify(data.structuredAnswer);
+          await g.V().has('Question', 'id', questionId)
+            .property(cardinality.single, 'structured_answer', answerJson).next();
+
+          // Sync answer to DynamoDB so the agent's ask_question poll sees it
+          if (process.env.AGENT_QUESTIONS_TABLE) {
+            await ddb.send(new UpdateCommand({
+              TableName: process.env.AGENT_QUESTIONS_TABLE,
+              Key: { questionId },
+              UpdateExpression: 'SET #s = :s, structuredAnswer = :a, answeredAt = :t',
+              ExpressionAttributeNames: { '#s': 'status' },
+              ExpressionAttributeValues: { ':s': 'answered', ':a': answerJson, ':t': Date.now() },
+            })).catch(e => console.error('DynamoDB sync failed:', e.message));
+          }
+        }
+
+        // Save draft answer — persists collaborative draft WITHOUT triggering
+        // the agent's question-answered flow (status stays 'pending').
+        if (data.draftAnswer !== undefined && data.structuredAnswer === undefined) {
+          const draftJson = JSON.stringify(data.draftAnswer);
+          await g.V().has('Question', 'id', questionId)
+            .property(cardinality.single, 'draft_answer', draftJson).next();
+
+          // Sync draft to DynamoDB (does NOT change status)
+          if (process.env.AGENT_QUESTIONS_TABLE) {
+            await ddb.send(new UpdateCommand({
+              TableName: process.env.AGENT_QUESTIONS_TABLE,
+              Key: { questionId },
+              UpdateExpression: 'SET draftAnswer = :d',
+              ExpressionAttributeValues: { ':d': draftJson },
+            })).catch(e => console.error('DynamoDB draft sync failed:', e.message));
+          }
+        }
+
+        // Add INFLUENCES edges when answer is recorded
+        if (data.influencesRequirementIds) {
+          for (const rId of data.influencesRequirementIds) {
+            await g.V().has('Question', 'id', questionId).as('q')
+              .V().has('Requirement', 'id', rId).as('r')
+              .addE('INFLUENCES').from_('q').to('r')
+              .next();
+          }
+        }
+        if (data.influencesUserStoryIds) {
+          for (const usId of data.influencesUserStoryIds) {
+            await g.V().has('Question', 'id', questionId).as('q')
+              .V().has('UserStory', 'id', usId).as('us')
+              .addE('INFLUENCES').from_('q').to('us')
+              .next();
+          }
+        }
+        if (data.influencesTaskIds) {
+          for (const tId of data.influencesTaskIds) {
+            await g.V().has('Question', 'id', questionId).as('q')
+              .V().has('Task', 'id', tId).as('t')
+              .addE('INFLUENCES').from_('q').to('t')
+              .next();
+          }
+        }
+
+        const updated = await g.V().has('Question', 'id', questionId).valueMap().next();
+        return res(200, mapQuestion(updated.value));
+      }
+
+      default:
+        return res(405, { error: 'Method not allowed' });
+    }
+  } catch (err) {
+    console.error('Error:', err);
+    return res(500, { error: 'Internal server error' });
+  } finally {
+    if (conn) try { await conn.close(); } catch (e) {}
+  }
+};

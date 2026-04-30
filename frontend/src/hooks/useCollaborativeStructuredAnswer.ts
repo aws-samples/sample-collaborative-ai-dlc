@@ -1,0 +1,212 @@
+import { useEffect, useState, useCallback } from 'react';
+import * as Y from 'yjs';
+import { simpleDiffStringWithCursor } from 'lib0/diff';
+import { useYjsDocument } from './useYjsDocument';
+import { useAutoSave } from './useAutoSave';
+import { generateColor } from '../utils/colors';
+import type { StructuredAnswer, QuestionAnswer } from '../services/questions';
+
+/**
+ * Collaborative hook for structured question answering.
+ *
+ * Yjs document structure:
+ *   Y.Map "selections"  – key: sub-question index (string), value: Y.Array<number> (selected option indices)
+ *   Y.Map "freeTexts"   – key: sub-question index (string), value: Y.Text (CRDT co-editing)
+ *   Y.Map "meta"        – "contributors": Y.Array<string>
+ *
+ * Selections use Y.Array replaced atomically (last-writer-wins per sub-question).
+ * Free text fields use Y.Text for character-level CRDT merging.
+ */
+export function useCollaborativeStructuredAnswer(
+  sprintId: string,
+  questionId: string,
+  questionCount: number,
+  userName: string,
+  onAutoSave?: (draft: StructuredAnswer) => Promise<void>,
+) {
+  const docId = `sq-${sprintId}-${questionId}`;
+  const { doc, synced, remoteUsers, setCursor } = useYjsDocument(docId, userName, generateColor(userName));
+
+  const [selections, setSelections] = useState<Map<number, number[]>>(new Map());
+  const [freeTexts, setFreeTexts] = useState<Map<number, string>>(new Map());
+  const [contributors, setContributors] = useState<string[]>([]);
+
+  // Observe Yjs state and sync to React state
+  useEffect(() => {
+    if (!doc) return;
+
+    const selectionsMap = doc.getMap('selections');
+    const freeTextsMap = doc.getMap('freeTexts');
+    const metaMap = doc.getMap('meta');
+
+    const updateState = () => {
+      // Read selections
+      const newSelections = new Map<number, number[]>();
+      selectionsMap.forEach((value, key) => {
+        const arr = value as Y.Array<number>;
+        newSelections.set(Number(key), arr.toArray());
+      });
+      setSelections(newSelections);
+
+      // Read free texts
+      const newFreeTexts = new Map<number, string>();
+      freeTextsMap.forEach((value, key) => {
+        const text = value as Y.Text;
+        newFreeTexts.set(Number(key), text.toString());
+      });
+      setFreeTexts(newFreeTexts);
+
+      // Read contributors
+      const contribArr = metaMap.get('contributors') as Y.Array<string> | undefined;
+      setContributors(contribArr ? contribArr.toArray() : []);
+    };
+
+    selectionsMap.observeDeep(updateState);
+    freeTextsMap.observeDeep(updateState);
+    metaMap.observeDeep(updateState);
+    updateState();
+
+    return () => {
+      selectionsMap.unobserveDeep(updateState);
+      freeTextsMap.unobserveDeep(updateState);
+      metaMap.unobserveDeep(updateState);
+    };
+  }, [doc]);
+
+  // Track contributor
+  const addContributor = useCallback(() => {
+    if (!doc) return;
+    const metaMap = doc.getMap('meta');
+    doc.transact(() => {
+      let contribArr = metaMap.get('contributors') as Y.Array<string> | undefined;
+      if (!contribArr) {
+        contribArr = new Y.Array<string>();
+        metaMap.set('contributors', contribArr);
+      }
+      if (!contribArr.toArray().includes(userName)) {
+        contribArr.push([userName]);
+      }
+    });
+  }, [doc, userName]);
+
+  /**
+   * Set selected option indices for a sub-question.
+   * Replaces the entire Y.Array atomically (last-writer-wins).
+   */
+  const setSelection = useCallback((questionIndex: number, optionIndices: number[]) => {
+    if (!doc) return;
+    const selectionsMap = doc.getMap('selections');
+    doc.transact(() => {
+      const key = String(questionIndex);
+      // Replace entire array
+      const arr = new Y.Array<number>();
+      arr.insert(0, optionIndices);
+      selectionsMap.set(key, arr);
+    });
+    addContributor();
+  }, [doc, addContributor]);
+
+  /**
+   * Diff-based free text setter for a sub-question.
+   * Uses Y.Text for proper CRDT co-editing.
+   */
+  const setFreeText = useCallback((questionIndex: number, text: string, cursorPos?: number) => {
+    if (!doc) return;
+    const freeTextsMap = doc.getMap('freeTexts');
+    const key = String(questionIndex);
+
+    doc.transact(() => {
+      let textDoc = freeTextsMap.get(key) as Y.Text | undefined;
+      if (!textDoc) {
+        textDoc = new Y.Text();
+        freeTextsMap.set(key, textDoc);
+      }
+      const currentValue = textDoc.toString();
+      if (currentValue === text) return;
+
+      const cursor = cursorPos ?? text.length;
+      const diff = simpleDiffStringWithCursor(currentValue, text, cursor);
+      if (diff.remove > 0) textDoc.delete(diff.index, diff.remove);
+      if (diff.insert) textDoc.insert(diff.index, diff.insert);
+    });
+    addContributor();
+  }, [doc, addContributor]);
+
+  /**
+   * Initialize from a persisted draft (e.g., from Neptune/DynamoDB).
+   * Only sets values if the Yjs fields are currently empty.
+   */
+  const initFromDraft = useCallback((draft: StructuredAnswer) => {
+    if (!doc) return;
+    const selectionsMap = doc.getMap('selections');
+    const freeTextsMap = doc.getMap('freeTexts');
+
+    doc.transact(() => {
+      draft.answers.forEach((a, i) => {
+        const key = String(i);
+        // Init selections if not already set
+        if (!selectionsMap.has(key) && a.selectedOptions.length > 0) {
+          const arr = new Y.Array<number>();
+          arr.insert(0, a.selectedOptions);
+          selectionsMap.set(key, arr);
+        }
+        // Init free text if not already set
+        if (!freeTextsMap.has(key) && a.freeText) {
+          const textDoc = new Y.Text();
+          textDoc.insert(0, a.freeText);
+          freeTextsMap.set(key, textDoc);
+        }
+      });
+    });
+  }, [doc]);
+
+  /**
+   * Snapshot current Yjs state as a StructuredAnswer for submission.
+   */
+  const toStructuredAnswer = useCallback((): StructuredAnswer => {
+    const answers: QuestionAnswer[] = [];
+    for (let i = 0; i < questionCount; i++) {
+      answers.push({
+        selectedOptions: selections.get(i) || [],
+        freeText: freeTexts.get(i) || undefined,
+      });
+    }
+    return { answers };
+  }, [questionCount, selections, freeTexts]);
+
+  // ── Auto-save draft to backend ──
+  const selectionsKey = JSON.stringify(Array.from(selections.entries()));
+  const freeTextsKey = JSON.stringify(Array.from(freeTexts.entries()));
+
+  const getAutoSaveData = useCallback(() => {
+    if (!doc || !synced) return null;
+    const answer = toStructuredAnswer();
+    // Only save if there's any data
+    const hasData = answer.answers.some(a => a.selectedOptions.length > 0 || (a.freeText && a.freeText.length > 0));
+    if (!hasData) return null;
+    return answer;
+  }, [doc, synced, toStructuredAnswer]);
+
+  const autoSaveHandler = useCallback(async (data: StructuredAnswer) => {
+    if (onAutoSave) {
+      await onAutoSave(data);
+    }
+  }, [onAutoSave]);
+
+  useAutoSave(getAutoSaveData, autoSaveHandler, [selectionsKey, freeTextsKey], {
+    enabled: synced && !!onAutoSave,
+  });
+
+  return {
+    selections,
+    freeTexts,
+    setSelection,
+    setFreeText,
+    synced,
+    remoteUsers,
+    setCursor,
+    contributors,
+    initFromDraft,
+    toStructuredAnswer,
+  };
+}

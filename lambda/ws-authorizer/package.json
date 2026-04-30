@@ -1,0 +1,8 @@
+{
+  "name": "ws-authorizer",
+  "version": "1.0.0",
+  "main": "index.js",
+  "dependencies": {
+    "aws-jwt-verify": "^4.0.0"
+  }
+}

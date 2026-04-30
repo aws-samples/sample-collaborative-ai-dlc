@@ -1,0 +1,16 @@
+{
+  "name": "agents-lambda",
+  "version": "1.0.0",
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.0.0",
+    "@aws-sdk/client-ecr": "^3.985.0",
+    "@aws-sdk/client-ecs": "^3.0.0",
+    "@aws-sdk/client-ssm": "^3.0.0",
+    "@aws-sdk/credential-providers": "^3.0.0",
+    "@aws-sdk/lib-dynamodb": "^3.0.0",
+    "@smithy/config-resolver": "^4.4.0",
+    "@smithy/node-config-provider": "^3.0.0",
+    "gremlin": "^3.7.0",
+    "gremlin-aws-sigv4": "^3.6.0"
+  }
+}

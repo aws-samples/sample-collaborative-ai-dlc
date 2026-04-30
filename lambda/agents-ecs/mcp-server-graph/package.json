@@ -1,0 +1,17 @@
+{
+  "name": "graph-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP server for reading, traversing, and updating the project artifact graph, plus agent Q&A",
+  "main": "index.js",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@aws-sdk/client-dynamodb": "^3.0.0",
+    "@aws-sdk/lib-dynamodb": "^3.0.0",
+    "@aws-sdk/client-lambda": "^3.0.0",
+    "@aws-sdk/client-apigatewaymanagementapi": "^3.0.0",
+    "@aws-sdk/credential-providers": "^3.0.0",
+    "gremlin": "^3.7.0",
+    "gremlin-aws-sigv4": "^3.6.0",
+    "zod": "^3.23.0"
+  }
+}

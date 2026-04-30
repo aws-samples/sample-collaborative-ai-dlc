@@ -1,0 +1,16 @@
+{
+  "name": "acp-client",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.0.0",
+    "@aws-sdk/lib-dynamodb": "^3.0.0",
+    "@aws-sdk/client-lambda": "^3.0.0",
+    "@aws-sdk/client-apigatewaymanagementapi": "^3.0.0",
+    "@aws-sdk/client-secrets-manager": "^3.0.0",
+    "@aws-sdk/client-ssm": "^3.0.0",
+    "@aws-sdk/credential-providers": "^3.0.0",
+    "gremlin": "^3.7.0",
+    "gremlin-aws-sigv4": "^3.6.0"
+  }
+}
