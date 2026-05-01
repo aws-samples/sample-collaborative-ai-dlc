@@ -3,10 +3,10 @@ const { DynamoDBDocumentClient, QueryCommand } = require('@aws-sdk/lib-dynamodb'
 const { ApiGatewayManagementApiClient, PostToConnectionCommand } = require('@aws-sdk/client-apigatewaymanagementapi');
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const wsClient = new ApiGatewayManagementApiClient({ endpoint: process.env.WEBSOCKET_ENDPOINT });
 
 exports.handler = async (event) => {
   const { detail, 'detail-type': detailType } = event;
-  const wsClient = new ApiGatewayManagementApiClient({ endpoint: process.env.WEBSOCKET_ENDPOINT });
 
   const message = JSON.stringify({ action: detailType, ...detail });
 
@@ -25,11 +25,11 @@ exports.handler = async (event) => {
       ExpressionAttributeValues: { ':docId': docId }
     }));
 
-    await Promise.all((connections.Items || []).map(item =>
+    await Promise.allSettled((connections.Items ?? []).map(item =>
       wsClient.send(new PostToConnectionCommand({
         ConnectionId: item.connectionId,
         Data: message
-      })).catch(() => {})
+      }))
     ));
   }
 

@@ -68,6 +68,14 @@ module "notify_lambda" {
   source_path = [
     {
       path = "${path.module}/../../../lambda/notify"
+      commands = [
+        "npm ci --omit=dev --ignore-scripts",
+        ":zip",
+      ]
+      patterns = [
+        "!test/.*",
+        "!vitest\\.config\\.js",
+      ]
     }
   ]
 
