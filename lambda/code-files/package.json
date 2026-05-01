@@ -3,7 +3,6 @@
   "version": "1.0.0",
   "dependencies": {
     "gremlin": "^3.7.0",
-    "uuid": "^9.0.0",
     "gremlin-aws-sigv4": "^3.6.0",
     "@aws-sdk/credential-providers": "^3.0.0"
   }

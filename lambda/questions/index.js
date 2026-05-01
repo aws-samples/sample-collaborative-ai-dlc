@@ -1,5 +1,5 @@
 const gremlin = require('gremlin');
-const { v4: uuidv4 } = require('uuid');
+const { randomUUID } = require('crypto');
 const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
 const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
@@ -70,7 +70,7 @@ exports.handler = async (event) => {
 
       case 'POST': {
         const data = JSON.parse(body);
-        const id = uuidv4();
+        const id = randomUUID();
         const createdAt = new Date().toISOString();
         const questionsJson = JSON.stringify(data.questions);
 

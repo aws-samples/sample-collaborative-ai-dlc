@@ -696,7 +696,6 @@ exports.handler = async (event) => {
             // Only track top-level phase agents (not sub-agents like construction task workers).
             const isTopLevelAgent = !input.taskId;
             if (isTopLevelAgent) {
-              const { v4: uuidv4 } = require('uuid');
               const normalizedPhase = (job.agentType || 'inception').toLowerCase().replace('construction-orchestrator', 'construction').replace(/^review.*/, 'review');
               const phaseLabel = normalizedPhase.toUpperCase();
 

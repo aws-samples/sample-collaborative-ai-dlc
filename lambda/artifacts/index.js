@@ -1,6 +1,6 @@
 const gremlin = require('gremlin');
 const { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
-const { v4: uuidv4 } = require('uuid');
+const { randomUUID } = require('crypto');
 const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
 const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
 const { buildResponse } = require('./shared/response');
@@ -66,7 +66,7 @@ exports.handler = async (event) => {
 
       case 'POST': {
         const data = JSON.parse(body);
-        const id = uuidv4();
+        const id = randomUUID();
         const s3Key = `${projectId}/${id}`;
         
         if (data.content) {
