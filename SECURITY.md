@@ -1,6 +1,6 @@
 <!-- markdownlint-disable MD041 -->
 ## Reporting a Vulnerability
 
-If you discover a potential security issue in this project, we ask that you notify AWS/Amazon Security via our [vulnerability reporting page](http://aws.amazon.com/security/vulnerability-reporting/) or directly via email to <aws-security@amazon.com>.
+If you discover a potential security issue in this project, we ask that you notify AWS/Amazon Security directly via our [vulnerability reporting page](http://aws.amazon.com/security/vulnerability-reporting/) or email to <aws-security@amazon.com>.
 
-Please do **not** create a GitHub issue, pull request, or other public announcements.
+Please do **not** create a public GitHub issue, pull request, or any other public disclosure.

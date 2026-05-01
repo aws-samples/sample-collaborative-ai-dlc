@@ -85,27 +85,6 @@ The application is available at the CloudFront domain:
 cd terraform && terraform output cloudfront_domain_name
 ```
 
-## Architecture
-
-```
-┌──────────────┐     ┌──────────────┐     ┌──────────────────┐
-│   Frontend   │────▶│ API Gateway  │────▶│  Lambda Functions │
-│ (React/S3/CF)│     │  + WebSocket │     │  (20+ entities)   │
-└──────────────┘     └──────────────┘     └────────┬─────────┘
-                                                    │
-                           ┌────────────────────────┼────────────────┐
-                           │                        │                │
-                    ┌──────▼──────┐         ┌──────▼──────┐  ┌─────▼──────┐
-                    │   Neptune   │         │  DynamoDB   │  │    SSM     │
-                    │ (Graph DB)  │         │ (State/Jobs)│  │ (Secrets)  │
-                    └─────────────┘         └─────────────┘  └────────────┘
-                                                    │
-                                            ┌───────▼───────┐
-                                            │  ECS Workers  │
-                                            │  (AI Agents)  │
-                                            └───────────────┘
-```
-
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to participate.
