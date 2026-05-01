@@ -1,0 +1,49 @@
+name: Documentation
+description: Report missing, incorrect, or unclear documentation
+title: "[Docs]: "
+labels: ["documentation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Help us improve the documentation by reporting gaps or inaccuracies.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What is missing, incorrect, or unclear?
+    validations:
+      required: true
+
+  - type: textarea
+    id: location
+    attributes:
+      label: Location
+      description: Which doc or section is affected? Include a link if possible.
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggestion
+      description: What should the fix or improvement look like?
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which area of the project does this relate to?
+      options:
+        - Getting started
+        - Architecture
+        - Phases / Lifecycle
+        - Agents
+        - Infrastructure
+        - API
+        - Other
+    validations:
+      required: true

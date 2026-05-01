@@ -1,0 +1,46 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for taking the time to report a bug. Please fill out the information below so we can investigate.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened and what did you expect instead?
+      placeholder: "When I do X, Y happens. I expected Z."
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Numbered list to reproduce the issue.
+      placeholder: |
+        1. Go to '...'
+        2. Click on '...'
+        3. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Any relevant output, error messages, or screenshots.
+    validations:
+      required: false
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Anything relevant about your setup (OS, browser, AWS region, Node version, etc).
+    validations:
+      required: false

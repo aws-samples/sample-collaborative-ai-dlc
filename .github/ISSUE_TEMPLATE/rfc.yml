@@ -1,0 +1,57 @@
+name: RFC (Design Proposal)
+description: Propose a significant design change
+title: "[RFC]: "
+labels: ["rfc"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        RFCs are for proposing significant changes that need discussion before implementation.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One paragraph explaining the proposal.
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: Why is this change needed?
+    validations:
+      required: true
+
+  - type: textarea
+    id: detailed_design
+    attributes:
+      label: Detailed design
+      description: How would it work?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What else was evaluated and why it was discarded?
+    validations:
+      required: true
+
+  - type: textarea
+    id: breaking_changes
+    attributes:
+      label: Breaking changes
+      description: Does this break anything for current users?
+    validations:
+      required: true
+
+  - type: textarea
+    id: open_questions
+    attributes:
+      label: Open questions
+      description: Things that still need discussion.
+    validations:
+      required: false
