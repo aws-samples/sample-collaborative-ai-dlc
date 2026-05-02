@@ -1,0 +1,10 @@
+[project]
+name = "collaborative-ai-dlc-docs"
+version = "1.0.0"
+description = "Documentation for Collaborative AI-DLC"
+requires-python = ">=3.12"
+
+[dependency-groups]
+docs = [
+    "zensical",
+]
