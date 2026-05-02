@@ -10,6 +10,7 @@ nav = [
         "getting-started/index.md",
         "getting-started/prerequisites.md",
         "getting-started/installation.md",
+        "getting-started/deploying-to-aws.md",
         "getting-started/first-spec.md",
     ] },
     { "Concepts" = [
