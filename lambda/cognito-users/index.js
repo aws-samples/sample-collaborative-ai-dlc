@@ -35,7 +35,6 @@ exports.handler = async (event) => {
         UserPoolId: userPoolId,
         Limit: 60,
         PaginationToken: paginationToken,
-        AttributesToGet: ['sub', 'email', 'custom:display_name'],
       });
 
       const result = await client.send(cmd);
