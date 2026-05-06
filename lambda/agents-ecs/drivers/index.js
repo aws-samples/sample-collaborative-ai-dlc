@@ -20,14 +20,19 @@
 
 const { execFileSync } = require('child_process');
 
-const SUPPORTED_DRIVERS = ['kiro', 'claude', 'opencode'];
+const kiro = require('./kiro');
+const claude = require('./claude');
+const opencode = require('./opencode');
+
+const DRIVERS = { kiro, claude, opencode };
+const SUPPORTED_DRIVERS = Object.keys(DRIVERS);
 
 function getDriver(cliName) {
   const name = (cliName || '').toLowerCase().trim();
-  if (!SUPPORTED_DRIVERS.includes(name)) {
+  const driver = DRIVERS[name];
+  if (!driver) {
     throw new Error(`[drivers] Unknown CLI driver "${name}"`);
   }
-  const driver = require(`./${name}`); // nosemgrep: lazy-load-module
   // Default getMode() to 'acp' for drivers that don't declare it
   if (!driver.getMode) driver.getMode = () => 'acp';
   return driver;
@@ -39,9 +44,8 @@ function getDriver(cliName) {
  */
 function discoverInstalledDrivers() {
   const installed = [];
-  for (const name of SUPPORTED_DRIVERS) {
+  for (const [name, driver] of Object.entries(DRIVERS)) {
     try {
-      const driver = require(`./${name}`); // nosemgrep: lazy-load-module
       if (!driver.getMode) driver.getMode = () => 'acp';
 
       if (typeof driver.isInstalled === 'function') {

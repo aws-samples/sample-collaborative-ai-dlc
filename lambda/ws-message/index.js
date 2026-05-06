@@ -1,4 +1,4 @@
-const { DynamoDBClient, QueryCommand } = require('@aws-sdk/client-dynamodb');
+const { DynamoDBClient, QueryCommand, ScanCommand } = require('@aws-sdk/client-dynamodb');
 const { ApiGatewayManagementApiClient, PostToConnectionCommand } = require('@aws-sdk/client-apigatewaymanagementapi');
 
 const dynamodb = new DynamoDBClient();
@@ -43,7 +43,6 @@ const broadcastToUser = async (userId, message) => {
 };
 
 const broadcastToAll = async (message, excludeConnectionId) => {
-  const { ScanCommand } = require('@aws-sdk/client-dynamodb');
   const connections = await dynamodb.send(new ScanCommand({ TableName: process.env.CONNECTIONS_TABLE }));
   await broadcast(connections.Items || [], message, excludeConnectionId);
 };
