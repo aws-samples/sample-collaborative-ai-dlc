@@ -7,7 +7,7 @@
     "@aws-sdk/client-ecs": "^3.0.0",
     "@aws-sdk/client-ssm": "^3.1040.0",
     "@aws-sdk/credential-providers": "^3.0.0",
-    "@aws-sdk/lib-dynamodb": "^3.0.0",
+    "@aws-sdk/lib-dynamodb": "^3.1043.0",
     "@smithy/config-resolver": "^4.4.0",
     "@smithy/node-config-provider": "^3.0.0",
     "gremlin": "^3.7.0",
