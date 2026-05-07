@@ -1,4 +1,4 @@
-const { CognitoJwtVerifier } = require('aws-jwt-verify');
+import { CognitoJwtVerifier } from 'aws-jwt-verify';
 
 let verifier;
 const getVerifier = () => {
@@ -12,7 +12,7 @@ const getVerifier = () => {
   return verifier;
 };
 
-exports.handler = async (event) => {
+export const handler = async (event) => {
   const token = event.queryStringParameters?.token;
   const methodArn = event.methodArn;
 

@@ -113,8 +113,15 @@ module "authorizer_lambda" {
 
   source_path = [
     {
-      path             = "${path.module}/../../../lambda/ws-authorizer"
-      npm_requirements = true
+      path = "${path.module}/../../../lambda/ws-authorizer"
+      commands = [
+        "npm ci --omit=dev --ignore-scripts",
+        ":zip",
+      ]
+      patterns = [
+        "!test/.*",
+        "!vitest\\.config\\.js",
+      ]
     }
   ]
 
