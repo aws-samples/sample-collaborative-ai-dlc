@@ -229,3 +229,9 @@ output "agent_event_bus_name" {
   description = "EventBridge event bus name for agent events"
   value       = module.events.event_bus_name
 }
+
+# GitHub OAuth
+output "github_oauth_secret_name" {
+  description = "Name of the Secrets Manager secret holding the GitHub OAuth client_id/client_secret"
+  value       = module.git.github_oauth_secret_name
+}
