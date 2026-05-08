@@ -11,7 +11,7 @@ interface Props {
 }
 
 export function CreateProjectModal({ onClose, onCreated }: Props) {
-  const { status, loading: statusLoading, refresh } = useGitHubStatus();
+  const { status, loading: statusLoading, error: statusError, refresh } = useGitHubStatus();
   const [step, setStep] = useState(1);
   const [selectedRepo, setSelectedRepo] = useState<GitHubRepo | null>(null);
   const [formData, setFormData] = useState<CreateProjectInput>({
@@ -80,6 +80,11 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
         {step === 1 && (
           <div>
             <h3 className="font-medium mb-3 text-gray-900 dark:text-white">Connect GitHub</h3>
+            {statusError && (
+              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4 text-sm">
+                {statusError}
+              </div>
+            )}
             {statusLoading ? (
               <p className="text-sm text-gray-500 dark:text-gray-400">Checking connection...</p>
             ) : (

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { githubService } from '../services/github';
+import { ApiError } from '../services/api';
 
 interface Props {
   connected: boolean;
@@ -8,14 +9,18 @@ interface Props {
 
 export function GitHubConnectButton({ connected, onDisconnect }: Props) {
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleConnect = async () => {
     setLoading(true);
+    setError(null);
     try {
       const { url } = await githubService.getAuthUrl();
       window.location.href = url;
-    } catch {
+    } catch (err) {
       setLoading(false);
+      const serverMsg = err instanceof ApiError && typeof err.body?.error === 'string' ? err.body.error : null;
+      setError(serverMsg ?? 'Could not start GitHub connection. Please try again.');
     }
   };
 
@@ -45,12 +50,19 @@ export function GitHubConnectButton({ connected, onDisconnect }: Props) {
   }
 
   return (
-    <button
-      onClick={handleConnect}
-      disabled={loading}
-      className="px-4 py-2 bg-gray-900 text-white rounded hover:bg-gray-800 disabled:opacity-50"
-    >
-      {loading ? 'Connecting...' : 'Connect GitHub'}
-    </button>
+    <div className="flex flex-col gap-2">
+      <button
+        onClick={handleConnect}
+        disabled={loading}
+        className="px-4 py-2 bg-gray-900 text-white rounded hover:bg-gray-800 disabled:opacity-50 self-start"
+      >
+        {loading ? 'Connecting...' : 'Connect GitHub'}
+      </button>
+      {error && (
+        <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded text-sm">
+          {error}
+        </div>
+      )}
+    </div>
   );
 }
