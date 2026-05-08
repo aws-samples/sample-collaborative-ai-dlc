@@ -1,5 +1,4 @@
 import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
-import { createRequire } from 'node:module';
 import { mockClient } from 'aws-sdk-client-mock';
 import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import {
@@ -7,18 +6,15 @@ import {
   PostToConnectionCommand,
 } from '@aws-sdk/client-apigatewaymanagementapi';
 
-const require = createRequire(import.meta.url);
-
 const ddbMock = mockClient(DynamoDBDocumentClient);
 const apiMock = mockClient(ApiGatewayManagementApiClient);
 
 const TABLE = 'test-connections';
 const ENDPOINT = 'https://fake.execute-api.us-east-1.amazonaws.com/test';
 
-const loadHandler = () => {
+const loadHandler = async () => {
   vi.resetModules();
-  delete require.cache[require.resolve('../notify')];
-  return require('../notify').handler;
+  return (await import('../notify.js')).handler;
 };
 
 const sentPayloads = () =>
@@ -44,7 +40,7 @@ describe('notify handler', () => {
     });
     apiMock.on(PostToConnectionCommand).resolves({});
 
-    const handler = loadHandler();
+    const handler = await loadHandler();
     const res = await handler({
       'detail-type': 'agent.started',
       detail: { projectId: 'proj-1', agentId: 'a1' },
@@ -79,7 +75,7 @@ describe('notify handler', () => {
       .resolves({ Items: [{ connectionId: 'sprint-conn' }] });
     apiMock.on(PostToConnectionCommand).resolves({});
 
-    const handler = loadHandler();
+    const handler = await loadHandler();
     const res = await handler({
       'detail-type': 'sprint.phaseChanged',
       detail: { projectId: 'proj-1', sprintId: 's-1', phase: 'review' },
@@ -98,7 +94,7 @@ describe('notify handler', () => {
   it('issues a single query when only projectId is present', async () => {
     ddbMock.on(QueryCommand).resolves({ Items: [] });
 
-    const handler = loadHandler();
+    const handler = await loadHandler();
     await handler({
       'detail-type': 'artifact.created',
       detail: { projectId: 'proj-1' },
@@ -108,7 +104,7 @@ describe('notify handler', () => {
   });
 
   it('does nothing when neither projectId nor sprintId is present', async () => {
-    const handler = loadHandler();
+    const handler = await loadHandler();
     const res = await handler({
       'detail-type': 'agent.error',
       detail: { message: 'unscoped event' },
@@ -122,7 +118,7 @@ describe('notify handler', () => {
   it('makes no post calls when the connections query returns no items', async () => {
     ddbMock.on(QueryCommand).resolves({ Items: [] });
 
-    const handler = loadHandler();
+    const handler = await loadHandler();
     const res = await handler({
       'detail-type': 'artifact.created',
       detail: { projectId: 'proj-1' },
@@ -146,7 +142,7 @@ describe('notify handler', () => {
       .on(PostToConnectionCommand, { ConnectionId: 'c2' })
       .rejects(new Error('GoneException'));
 
-    const handler = loadHandler();
+    const handler = await loadHandler();
     const res = await handler({
       'detail-type': 'agent.completed',
       detail: { projectId: 'proj-1' },
@@ -162,7 +158,7 @@ describe('notify handler', () => {
     });
     apiMock.on(PostToConnectionCommand).resolves({});
 
-    const handler = loadHandler();
+    const handler = await loadHandler();
     await handler({
       'detail-type': 'agent.question',
       detail: { projectId: 'proj-1', questionId: 'q1', text: 'why?' },

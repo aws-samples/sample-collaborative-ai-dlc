@@ -6,12 +6,10 @@
   "main": "index.js",
   "scripts": {
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "build": "esbuild index.js --bundle --platform=node --target=node24 --format=esm --external:@aws-sdk/* --outfile=.build/index.mjs"
   },
   "dependencies": {
     "aws-jwt-verify": "^4.0.0"
-  },
-  "devDependencies": {
-    "vitest": "^4.1.5"
   }
 }

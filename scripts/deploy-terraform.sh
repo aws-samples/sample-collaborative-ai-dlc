@@ -12,6 +12,9 @@ fi
 
 echo "Deploying environment: $ENVIRONMENT"
 
+echo "Installing root npm dependencies..."
+(cd "$SCRIPT_DIR/.." && npm ci)
+
 cd "$TF_DIR"
 
 echo "Initializing Terraform..."

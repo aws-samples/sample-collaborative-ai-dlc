@@ -69,12 +69,8 @@ module "notify_lambda" {
     {
       path = "${path.module}/../../../lambda/notify"
       commands = [
-        "npm ci --omit=dev --ignore-scripts",
-        ":zip",
-      ]
-      patterns = [
-        "!test/.*",
-        "!vitest\\.config\\.js",
+        "cd ../.. && npm run build -w notify",
+        ":zip lambda/notify/.build",
       ]
     }
   ]
