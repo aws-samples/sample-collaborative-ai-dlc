@@ -59,14 +59,17 @@ After deployment, agent workers authenticate with Kiro CLI via device flow. Chec
 
 ### 4. Configure GitHub OAuth
 
-[Create a GitHub OAuth App](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app) and store the credentials in the Secrets Manager secret `collaborative-ai-dlc-dev-github-oauth` with `client_id` and `client_secret` fields:
+[Create a GitHub **OAuth App**](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app) (not a GitHub App — the flow here expects OAuth App semantics). When prompted, use:
 
-Replace `your_github_client_id` and `your_github_client_secret` with the actual values from your GitHub OAuth App.
+- **Homepage URL**: `https://$(terraform -chdir=terraform output -raw cloudfront_domain_name)`
+- **Authorization callback URL**: `https://$(terraform -chdir=terraform output -raw cloudfront_domain_name)/github/callback`
+
+Then store the OAuth App's credentials in the Secrets Manager secret that terraform created (replace `your_github_client_id` and `your_github_client_secret` with the actual values):
 
 ```bash
-aws secretsmanager update-secret \
-  --secret-id collaborative-ai-dlc-dev-github-oauth \
-  --secret-string '{"client_id":"your_github_client_id","client_secret":"your_github_client_secret"}'  
+aws secretsmanager put-secret-value \
+  --secret-id $(terraform -chdir=terraform output -raw github_oauth_secret_name) \
+  --secret-string '{"client_id":"your_github_client_id","client_secret":"your_github_client_secret"}'
 ```
 
 ### 5. Create Users
