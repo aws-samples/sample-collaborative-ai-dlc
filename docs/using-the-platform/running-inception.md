@@ -1,10 +1,15 @@
 # Running Inception
 
-The Inception phase turns a project description into structured requirements, user stories, and tasks.
+The Inception phase turns a project description into structured requirements, user stories, and tasks. It is the first phase of the [AI-DLC methodology](https://github.com/awslabs/aidlc-workflows) lifecycle.
 
 ## Starting Inception
 
-Navigate to your sprint and write a project description. Choose **Launch Agent** to start the Inception Agent.
+Navigate to your sprint and write a project description:
+
+- For a **greenfield project** (new, from scratch): describe the system, its goals, constraints, and scope
+- For a **brownfield project** (existing codebase): describe the feature, issue, or change you want to make
+
+Choose **Launch Agent** to start the Inception Agent.
 
 Before the agent runs, the system performs a readiness check on your description.
 

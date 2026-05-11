@@ -39,11 +39,13 @@ The agent can ask clarifying questions during construction, just like in Incepti
 
 ## Agent status
 
-The Construction Agent polls for status updates frequently (every 10 seconds while running). You can see:
+Agent progress is streamed in real time via WebSocket. You can see:
 
-- Whether the agent is actively working or waiting
+- Live text output and tool calls as the agent works
 - Which tasks have been completed
 - Which files have been modified
+
+Polling runs in the background as a fallback to catch missed events and keep state in sync.
 
 ## Moving to Review
 

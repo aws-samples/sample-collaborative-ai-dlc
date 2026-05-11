@@ -44,9 +44,9 @@ Edit `terraform/environments/dev/terraform.tfvars` to set your configuration.
 ./scripts/deploy-terraform.sh dev
 ```
 
-The deployment takes 15-30 minutes. Neptune cluster creation takes the longest.
+The deployment takes 15-30 minutes. Neptune DB cluster creation takes the longest.
 
-After deployment, agent workers authenticate with Kiro CLI using device flow. Check the agent pool DynamoDB table or ECS task logs for the authentication URL and device code.
+After deployment, configure agent authentication in the platform UI by entering either a Kiro CLI API key or Bedrock credentials (for Claude Code / OpenCode setups). Check the agent pool DynamoDB table or ECS task logs to confirm agents are authenticated and ready.
 
 ### Configure GitHub OAuth
 

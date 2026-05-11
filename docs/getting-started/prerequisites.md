@@ -15,7 +15,7 @@ You need the following tools to run AIDLC Collaborative locally.
 Run the following commands to verify your local development environment.
 
 ```bash
-node --version   # Expected output: v24.x or later
+node --version   # Expected output: v22.x or later
 npm --version    # Expected output: 10.x or later
 git --version    # Expected output: 2.x
 ```
@@ -57,21 +57,23 @@ The following tools are optional. Install them to enable additional features.
 |------|---------|
 | **AWS credentials** | Required for large language model (LLM) features through [Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html) |
 | **GitHub personal access token** | Enables pushing tasks as GitHub issues and syncing issue status |
-| **Kiro CLI** | Required for agent execution in the Construction phase |
+
+## Agent authentication
+
+Agents authenticate using API keys configured through the platform UI. Two options are supported:
+
+### Kiro CLI API Key
+
+In the platform settings, enter your Kiro CLI API key. This is used by agent containers to authenticate with the Kiro CLI during Construction.
+
+### Bedrock API Key (for Claude Code and OpenCode setups)
+
+For agents using Claude Code or OpenCode with Amazon Bedrock, enter your Bedrock credentials (Access Key ID, Secret Access Key, Region) in the platform settings.
+
+You can also use [AWS IAM Identity Center](https://docs.aws.amazon.com/singlesignon/latest/userguide/what-is.html), IAM roles, or any method supported by the [AWS SDK credential provider chain](https://docs.aws.amazon.com/sdkref/latest/guide/standardized-credentials.html).
 
 ## AWS credentials for LLM features
 
 AIDLC Collaborative uses [Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html) to access Claude models. You need valid AWS credentials with Amazon Bedrock access in your environment.
-
-To configure credentials, set the following environment variables.
-
-```bash
-export AWS_ACCESS_KEY_ID=your-key
-export AWS_SECRET_ACCESS_KEY=your-secret
-export AWS_REGION=us-east-1
-export CLAUDE_CODE_USE_BEDROCK=1
-```
-
-You can also use [AWS IAM Identity Center](https://docs.aws.amazon.com/singlesignon/latest/userguide/what-is.html), IAM roles, or any method supported by the [AWS SDK credential provider chain](https://docs.aws.amazon.com/sdkref/latest/guide/standardized-credentials.html).
 
 If you do not have AWS credentials, the platform still starts. You can browse the UI, create organizations and projects, and manage specs. The LLM chat and agent features fail with a connection error.

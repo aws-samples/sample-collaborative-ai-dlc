@@ -1,15 +1,19 @@
 # Inception
 
-The Inception phase is where you define what to build. An AI agent helps break down a project description into structured requirements, user stories, and tasks.
+The Inception phase is where you define what to build. An AI agent helps break down a project description into structured requirements, user stories, and tasks. The goal is to remove ambiguity throughout the entire phase so that when you move to design and code, there is as little ambiguity as possible.
 
 ## How it works
 
-1. You create a sprint and write a project description in free-form text
+1. You create a sprint and write a description in free-form text:
+    - For a **greenfield project** (from scratch): describe the new system, its goals, constraints, and scope
+    - For a **brownfield project** (existing codebase): describe the feature, issue, or change you want to make
 2. You launch the Inception Agent
-3. The agent analyzes the description and may ask clarifying questions
+3. The agent analyzes the description and asks clarifying questions to remove ambiguity
 4. You answer the questions (structured multiple-choice or free text)
 5. The agent generates requirements, user stories, and tasks
 6. You review and refine the generated artifacts
+
+The [AI-DLC methodology](https://github.com/awslabs/aidlc-workflows) drives this process. Given what you want to do, the agent systematically identifies gaps, asks the right questions, and produces artifacts that are specific enough for autonomous construction.
 
 ## The Inception Agent
 
@@ -45,7 +49,11 @@ A user story describes a feature from the user's perspective. Each story include
 A task is a concrete unit of implementation work. Tasks are what the Construction Agent picks up and codes. Each task includes:
 
 - A title and description
+- Acceptance criteria
+- Dependencies on other tasks
 - Links back to the requirements and stories it fulfills
+
+The number of tasks scales automatically with the scope of the sprint. A small feature might produce 3-5 tasks; a full project might produce 30+.
 
 ## Collaborative editing
 

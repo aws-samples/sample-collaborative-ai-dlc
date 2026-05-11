@@ -1,6 +1,6 @@
-# Your first spec
+# Your first sprint
 
-This guide walks you through creating a spec from scratch and using the LLM assistant to refine it.
+This guide walks you through creating your first sprint and running the Inception phase.
 
 Before starting, make sure you have completed the [Setup](setup.md) steps and can access your deployed application.
 
@@ -18,52 +18,53 @@ Organizations are the top-level container. Each organization has its own project
 
 Inside your organization, choose **New Project**. Enter a name and slug. Choose **Create**.
 
-Projects group related specs together. Each project can have its own git repositories, members, and methodology.
+Projects group related sprints together. Each project can have its own git repositories, members, and methodology.
 
-## Create a spec
+## Create a sprint
 
-Inside your project, choose **New Spec**. Enter a title (for example, "User Authentication") and choose **Create**.
+Inside your project, choose **New Sprint**. Enter a name (for example, "User Authentication") and choose **Create**.
 
-This opens the spec editor with three panels:
+This opens the Inception page where you describe what you want to build.
 
-- **Left panel**: file explorer showing all documents in this spec
-- **Center panel**: the Markdown editor (collaborative, real-time)
-- **Right panel**: chat, comments, or other tools
+## Write your project description
 
-## Write your spec
+In the description area, write what you want to build in free-form text. This is the input for the Inception Agent.
 
-Start writing in the editor. The default document is a Markdown file where you describe what you want to build.
+A good description typically includes:
 
-A good spec typically includes:
+- **What** the feature or system does
+- **Who** it is for (users, roles)
+- **Constraints** or technical decisions
+- **Scope** — what is in and what is out
 
-- **Overview** of what the feature does
-- **Requirements** listed clearly
-- **Technical constraints** or decisions
-- **Acceptance criteria** for each requirement
+For example:
 
-## Use the LLM assistant
+> Build a user authentication system with email/password login and OAuth with Google. Users should be able to reset their password via email. The system should use JWT tokens and support role-based access control with admin and member roles.
 
-Open the chat panel on the right side. Type a message like:
+## Launch the Inception Agent
 
-> Help me flesh out the requirements for this authentication feature. I want email/password login and OAuth with Google.
+Choose **Launch Agent** to start the Inception phase. The agent:
 
-The assistant reads your spec content and responds with suggestions. It can:
+1. Analyzes your description
+2. Asks clarifying questions when things are ambiguous
+3. Generates requirements, user stories, and tasks
 
-- Ask clarifying questions
-- Suggest missing requirements
-- Propose technical approaches
-- Update the spec document directly using tools
+Answer the agent's questions as they appear — they help remove ambiguity and produce better artifacts.
 
-When the assistant updates the document, the changes appear in the editor in real time.
+## Review the generated artifacts
 
-## Attach a methodology (optional)
+Once Inception completes, you see structured artifacts:
 
-If your organization has methodology templates, you can select one from the dropdown above the chat panel. The methodology guides the LLM to ask the right questions and structure the spec according to your team's standards.
+- **Requirements** with acceptance criteria
+- **User stories** with story points
+- **Tasks** ready for construction
+
+All artifacts are editable in real time. Refine them collaboratively with your team before moving to Construction.
 
 ## What's next
 
-Once your spec is complete, you can:
+Once your artifacts are ready, you can:
 
-- [Run Inception](../using-the-platform/running-inception.md) to generate requirements, user stories, and tasks
-- [Invite collaborators](../using-the-platform/real-time-collaboration.md) to edit together
+- [Launch Construction](../using-the-platform/running-agents.md) to start building
+- [Invite collaborators](../using-the-platform/real-time-collaboration.md) to refine artifacts together
 - [Connect a GitHub repo](../using-the-platform/git-integration.md) to push tasks as issues
