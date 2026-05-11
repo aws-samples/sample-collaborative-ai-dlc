@@ -43,3 +43,6 @@ ideas.txt
 mise.toml
 
 lambda/dist
+
+# Documentation build output
+site/

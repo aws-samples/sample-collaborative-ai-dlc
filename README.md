@@ -88,6 +88,23 @@ The application is available at the CloudFront domain:
 cd terraform && terraform output cloudfront_domain_name
 ```
 
+## Documentation
+
+Documentation is built with [Zensical](https://zensical.org/) and deployed to GitHub Pages.
+
+To serve locally:
+
+```bash
+uv sync --group docs
+uv run zensical serve
+```
+
+To build:
+
+```bash
+uv run zensical build
+```
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to participate.

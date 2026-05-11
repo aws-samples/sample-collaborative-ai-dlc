@@ -1,0 +1,62 @@
+site_name = "AIDLC Collaborative Documentation"
+site_description = "AIDLC Collaborative Workflow"
+site_url = "https://aidlc.dev/"
+repo_url = "https://github.com/aws-samples/sample-collaborative-ai-dlc"
+repo_name = "aws-samples/sample-collaborative-ai-dlc"
+
+nav = [
+    { "Home" = "index.md" },
+    { "Getting Started" = [
+        "getting-started/methodology.md",
+        "getting-started/prerequisites.md",
+        "getting-started/setup.md",
+        "getting-started/first-spec.md",
+    ] },
+    { "How it works" = [
+        "concepts/index.md",
+        "concepts/inception.md",
+        "concepts/construction.md",
+        "concepts/review.md",
+    ] },
+    { "Using the Platform" = [
+        "using-the-platform/organizations-and-projects.md",
+        "using-the-platform/writing-specs.md",
+        "using-the-platform/real-time-collaboration.md",
+        "using-the-platform/running-inception.md",
+        "using-the-platform/running-agents.md",
+        "using-the-platform/reviewing-work.md",
+        "using-the-platform/git-integration.md",
+        "using-the-platform/export.md",
+    ] },
+    { "Roadmap" = "roadmap/index.md" },
+]
+
+[theme]
+name = "material"
+features = ["navigation.sidebar", "navigation.sections", "navigation.expand", "navigation.top", "search.suggest", "content.code.copy"]
+
+[[theme.palette]]
+scheme = "default"
+primary = "indigo"
+accent = "cyan"
+[theme.palette.toggle]
+icon = "material/brightness-7"
+name = "Switch to dark mode"
+
+[[theme.palette]]
+scheme = "slate"
+primary = "indigo"
+accent = "cyan"
+[theme.palette.toggle]
+icon = "material/brightness-4"
+name = "Switch to light mode"
+
+[markdown_extensions]
+admonition = {}
+
+[markdown_extensions."pymdownx.details"]
+
+[markdown_extensions."pymdownx.superfences"]
+custom_fences = [
+    { name = "mermaid", class = "mermaid", format = "pymdownx.superfences.fence_code_format" },
+]
