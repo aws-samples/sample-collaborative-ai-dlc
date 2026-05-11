@@ -64,7 +64,7 @@
     "globals": "^16.5.0",
     "postcss": "^8.5.13",
     "tailwindcss": "^4.1.18",
-    "typescript": "~5.9.3",
+    "typescript": "~6.0.3",
     "typescript-eslint": "^8.59.2",
     "vite": "^8.0.8"
   }
