@@ -26,7 +26,6 @@ nav = [
         "using-the-platform/running-agents.md",
         "using-the-platform/reviewing-work.md",
         "using-the-platform/git-integration.md",
-        "using-the-platform/export.md",
     ] },
     { "Roadmap" = "roadmap/index.md" },
 ]
