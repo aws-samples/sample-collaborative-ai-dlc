@@ -1,10 +1,10 @@
-const { DynamoDBClient, QueryCommand, ScanCommand } = require('@aws-sdk/client-dynamodb');
-const { ApiGatewayManagementApiClient, PostToConnectionCommand } = require('@aws-sdk/client-apigatewaymanagementapi');
+import { DynamoDBClient, QueryCommand, ScanCommand } from '@aws-sdk/client-dynamodb';
+import { ApiGatewayManagementApiClient, PostToConnectionCommand } from '@aws-sdk/client-apigatewaymanagementapi';
 
 const dynamodb = new DynamoDBClient();
 const getApiClient = () => new ApiGatewayManagementApiClient({ endpoint: process.env.WEBSOCKET_ENDPOINT });
 
-exports.handler = async (event) => {
+export const handler = async (event) => {
   const connectionId = event.requestContext.connectionId;
   const body = JSON.parse(event.body || '{}');
   const { action, documentId } = body;
@@ -38,12 +38,14 @@ const broadcastToUser = async (userId, message) => {
     IndexName: 'UserIdIndex',
     KeyConditionExpression: 'userId = :uid',
     ExpressionAttributeValues: { ':uid': { S: userId } }
-  }));
+  })).catch((e) => { console.error('Query error:', e); return { Items: [] }; });
   await broadcast(connections.Items || [], message);
 };
 
 const broadcastToAll = async (message, excludeConnectionId) => {
-  const connections = await dynamodb.send(new ScanCommand({ TableName: process.env.CONNECTIONS_TABLE }));
+  const connections = await dynamodb.send(new ScanCommand({
+    TableName: process.env.CONNECTIONS_TABLE,
+  })).catch((e) => { console.error('Scan error:', e); return { Items: [] }; });
   await broadcast(connections.Items || [], message, excludeConnectionId);
 };
 

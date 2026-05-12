@@ -1,0 +1,12 @@
+{
+  "name": "ws-message",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "esbuild index.js --bundle --platform=node --target=node24 --format=esm --external:@aws-sdk/* --outfile=.build/index.mjs"
+  }
+}

@@ -3,7 +3,8 @@
   "private": true,
   "workspaces": [
     "lambda/notify",
-    "lambda/ws-authorizer"
+    "lambda/ws-authorizer",
+    "lambda/ws-message"
   ],
   "scripts": {
     "test": "npm test --workspaces --if-present"

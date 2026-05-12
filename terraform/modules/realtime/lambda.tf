@@ -90,6 +90,10 @@ module "message_lambda" {
   source_path = [
     {
       path = "${path.module}/../../../lambda/ws-message"
+      commands = [
+        "cd ../.. && npm run build -w ws-message",
+        ":zip lambda/ws-message/.build",
+      ]
     }
   ]
 
