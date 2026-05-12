@@ -2,78 +2,32 @@
 
 AIDLC Collaborative integrates with GitHub for repository management, issue creation, and status syncing.
 
-## Connecting GitHub
+## Configure GitHub OAuth
 
-There are two ways to connect:
+[Create a GitHub **OAuth App**](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app) (not a GitHub App — the flow here expects OAuth App semantics). When prompted, use:
 
-### Personal access token (PAT)
+- **Homepage URL**: `https://$(terraform -chdir=terraform output -raw cloudfront_domain_name)`
+- **Authorization callback URL**: `https://$(terraform -chdir=terraform output -raw cloudfront_domain_name)/github/callback`
 
-Set `GITHUB_TOKEN` in your `.env.local` file:
-
-```bash
-GITHUB_TOKEN=ghp_your_token_here
-```
-
-This is the simplest option for local development.
-
-### OAuth flow
-
-Configure GitHub OAuth credentials in `.env.local`:
+Then store the OAuth App's credentials in the Secrets Manager secret that terraform created (replace `your_github_client_id` and `your_github_client_secret` with the actual values):
 
 ```bash
-GITHUB_OAUTH_CLIENT_ID=your_client_id
-GITHUB_OAUTH_CLIENT_SECRET=your_client_secret
+aws secretsmanager put-secret-value \
+  --secret-id $(terraform -chdir=terraform output -raw github_oauth_secret_name) \
+  --secret-string '{"client_id":"your_github_client_id","client_secret":"your_github_client_secret"}'
 ```
 
-Then connect through the Settings page in the UI. The OAuth flow gives per-project token management.
+## Selecting a git repo
 
-## Adding repositories to a project
-
-1. Navigate to your project page
-2. Open the Git section
-3. Add a repository by entering its GitHub URL (for example, `https://github.com/owner/repo`)
+1. Click "Create new Project" in the project overview screen
+2. The platform will check if you're connected to GitHub
+3. Select the repository that should back this new project
 
 The repository is cloned into the workspace and becomes available to the LLM assistant and agents.
 
-## Local repositories
-
-You can also link local git repositories on the server machine:
-
-1. Choose **Browse** to open a folder picker
-2. Select a folder that contains a `.git` directory
-3. The local repo is linked by path (no cloning needed)
-
 Local repos are useful during development when you want agents to work on the same codebase you are working on.
 
-## Spec-scoped repos
+## Reviews
 
-You can assign specific repos to a spec. This tells the system:
-
-- Which repos the LLM assistant should focus on
-- Which repos the Construction Agent should target
-- Where agents should create worktrees
-
-For each spec-repo association, you configure:
-
-- **Base branch** (for example, `main`)
-- **Feature branch pattern** (for example, `feature/{specSlug}/{taskSlug}`)
-
-## Pushing tasks as GitHub Issues
-
-After running Inception:
-
-1. Choose **Create Issues** in the sprint view
-2. Select the target repository
-3. Tasks are created as GitHub Issues
-
-Each issue includes:
-
-- The task title and description
-- Acceptance criteria as a checklist
-- Test requirements
-- Dependencies listed as issue references
-- A complexity label (for example, `complexity:M`)
-
-## Syncing issue status
-
-After issues are created, you can sync their status from GitHub. This updates the task status in AIDLC Collaborative based on whether the GitHub issue is open, closed, or has a linked pull request.
+The platform will create a pull request once it is finished with the construction phase. You can start a review. The
+platform will store review results as a comment on the pull request.

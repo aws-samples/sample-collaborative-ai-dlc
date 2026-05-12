@@ -8,12 +8,6 @@ Before starting, make sure you have completed the [Setup](setup.md) steps and ca
 
 Open your deployed application URL (the CloudFront domain from your deployment). Sign in with your Cognito credentials.
 
-## Create an organization
-
-On the home page, choose **New Organization**. Enter a name (for example, "My Team") and a URL slug (for example, "my-team"). Choose **Create**.
-
-Organizations are the top-level container. Each organization has its own projects, members, and settings.
-
 ## Create a project
 
 Inside your organization, choose **New Project**. Enter a name and slug. Choose **Create**.
