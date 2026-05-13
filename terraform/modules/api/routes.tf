@@ -1244,6 +1244,77 @@ resource "aws_lambda_permission" "github" {
   source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
 }
 
+# -----------------------------------------------------------------------------
+# /github/repos/{owner}/{repo}/issues — backed by github-issues lambda
+# -----------------------------------------------------------------------------
+resource "aws_api_gateway_resource" "github_repos_issues" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.github_repos_owner_repo.id
+  path_part   = "issues"
+}
+
+resource "aws_api_gateway_resource" "github_repos_issues_number" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.github_repos_issues.id
+  path_part   = "{issueNumber}"
+}
+
+# GET /github/repos/{owner}/{repo}/issues
+resource "aws_api_gateway_method" "github_repos_issues_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.github_repos_issues.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "github_repos_issues_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.github_repos_issues.id
+  http_method             = aws_api_gateway_method.github_repos_issues_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.github_issues_lambda_invoke_arn
+}
+
+# GET /github/repos/{owner}/{repo}/issues/{issueNumber}
+resource "aws_api_gateway_method" "github_repos_issues_number_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.github_repos_issues_number.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "github_repos_issues_number_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.github_repos_issues_number.id
+  http_method             = aws_api_gateway_method.github_repos_issues_number_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.github_issues_lambda_invoke_arn
+}
+
+module "cors_github_repos_issues" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.github_repos_issues.id
+}
+
+module "cors_github_repos_issues_number" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.github_repos_issues_number.id
+}
+
+resource "aws_lambda_permission" "github_issues" {
+  statement_id  = "AllowAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = var.github_issues_lambda_name
+  principal     = "apigateway.${local.dns_suffix}"
+  source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
+}
+
 # =============================================================================
 # Cognito Users (GET /users - list all Cognito users)
 # =============================================================================

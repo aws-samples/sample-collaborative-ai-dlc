@@ -4,6 +4,7 @@
   "workspaces": [
     "lambda/get-agent-output",
     "lambda/github",
+    "lambda/github-issues",
     "lambda/notify",
     "lambda/ws-authorizer",
     "lambda/ws-connection",

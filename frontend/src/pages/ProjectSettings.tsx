@@ -58,6 +58,7 @@ export default function ProjectSettings() {
   // Edit state
   const [editName, setEditName] = useState('');
   const [editGitRepo, setEditGitRepo] = useState('');
+  const [editIssueIntegration, setEditIssueIntegration] = useState(false);
   const [saving, setSaving] = useState(false);
 
   // Agent CLI state
@@ -99,6 +100,7 @@ export default function ProjectSettings() {
       setProject(proj);
       setEditName(proj.name);
       setEditGitRepo(proj.gitRepo);
+      setEditIssueIntegration(proj.issueIntegrationEnabled ?? false);
       setEditAgentCli(proj.agentCli ?? 'kiro');
       setMembers(Array.isArray(mems) ? mems : []);
     } catch (err) {
@@ -190,9 +192,16 @@ export default function ProjectSettings() {
     clearMessages();
     setSaving(true);
     try {
-      const updates: Record<string, string> = {};
+      const updates: {
+        name?: string;
+        gitRepo?: string;
+        issueIntegrationEnabled?: boolean;
+      } = {};
       if (editName !== project.name) updates.name = editName;
       if (editGitRepo !== project.gitRepo) updates.gitRepo = editGitRepo;
+      if (editIssueIntegration !== (project.issueIntegrationEnabled ?? false)) {
+        updates.issueIntegrationEnabled = editIssueIntegration;
+      }
       if (Object.keys(updates).length === 0) {
         setSaving(false);
         return;
@@ -380,6 +389,27 @@ export default function ProjectSettings() {
                       </p>
                     )}
                   </div>
+                  {project?.gitProvider === 'github' && (
+                    <div>
+                      <label className="flex items-start gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={editIssueIntegration}
+                          onChange={(e) => setEditIssueIntegration(e.target.checked)}
+                          disabled={!canEditProject || saving}
+                          className="mt-0.5"
+                        />
+                        <span>
+                          <span className="block text-sm font-medium text-gray-700">
+                            Enable GitHub issue integration
+                          </span>
+                          <span className="block text-xs text-gray-500">
+                            Browse issues on the project page and start sprints from them.
+                          </span>
+                        </span>
+                      </label>
+                    </div>
+                  )}
                 </div>
                 {canEditProject && (
                   <div className="mt-4 flex justify-end">

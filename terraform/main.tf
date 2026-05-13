@@ -18,7 +18,7 @@ provider "aws" {
 
   default_tags {
     tags = {
-    Environment = var.environment
+      Environment = var.environment
       Project     = var.project_name
     }
   }
@@ -149,7 +149,7 @@ module "lambda" {
   source = "./modules/api/lambda"
 
   project_name                = var.project_name
-  environment = var.environment
+  environment                 = var.environment
   vpc_id                      = module.networking.vpc_id
   private_subnet_ids          = module.networking.private_subnet_ids
   neptune_endpoint            = module.neptune.cluster_endpoint
@@ -189,7 +189,7 @@ module "api" {
   source = "./modules/api"
 
   project_name                      = var.project_name
-  environment = var.environment
+  environment                       = var.environment
   cognito_user_pool_arn             = module.auth.user_pool_arn
   projects_lambda_invoke_arn        = module.lambda.projects_lambda_invoke_arn
   projects_lambda_name              = module.lambda.projects_lambda_name
@@ -217,6 +217,8 @@ module "api" {
   timeline_events_lambda_name       = module.lambda.timeline_events_lambda_name
   github_lambda_invoke_arn          = module.lambda.github_lambda_invoke_arn
   github_lambda_name                = module.lambda.github_lambda_name
+  github_issues_lambda_invoke_arn   = module.lambda.github_issues_lambda_invoke_arn
+  github_issues_lambda_name         = module.lambda.github_issues_lambda_name
   cognito_users_lambda_invoke_arn   = module.lambda.cognito_users_lambda_invoke_arn
   cognito_users_lambda_name         = module.lambda.cognito_users_lambda_name
   state_machine_arn                 = module.orchestration.state_machine_arn
@@ -244,7 +246,7 @@ module "realtime" {
   source = "./modules/realtime"
 
   project_name           = var.project_name
-  environment = var.environment
+  environment            = var.environment
   cognito_user_pool_id   = module.auth.user_pool_id
   cognito_client_id      = module.auth.user_pool_client_id
   connections_table_name = module.dynamodb.connections_table_name
@@ -260,7 +262,7 @@ module "yjs_server" {
   source = "./modules/realtime/yjs-server"
 
   project_name         = var.project_name
-  environment = var.environment
+  environment          = var.environment
   aws_region           = var.aws_region
   vpc_id               = module.networking.vpc_id
   private_subnet_ids   = module.networking.private_subnet_ids
@@ -286,7 +288,7 @@ module "agent_questions" {
   source = "./modules/agent-questions"
 
   project_name               = var.project_name
-  environment = var.environment
+  environment                = var.environment
   agent_questions_table_name = module.dynamodb.agent_questions_table_name
   agent_questions_table_arn  = module.dynamodb.agent_questions_table_arn
   connections_table_name     = module.dynamodb.connections_table_name
@@ -305,7 +307,7 @@ module "agents" {
   source = "./modules/compute/agents"
 
   project_name                = var.project_name
-  environment = var.environment
+  environment                 = var.environment
   aws_region                  = var.aws_region
   vpc_id                      = module.networking.vpc_id
   private_subnet_ids          = module.networking.private_subnet_ids
@@ -350,24 +352,24 @@ module "agents" {
 module "orchestration" {
   source = "./modules/orchestration"
 
-  project_name               = var.project_name
-  environment = var.environment
-  aws_region                 = var.aws_region
-  ecs_cluster_arn            = module.compute.cluster_arn
-  private_subnet_ids         = module.networking.private_subnet_ids
-  agent_security_group_id    = module.agents.agent_security_group_id
-  agent_execution_role_arn   = module.agents.agent_execution_role_arn
-  agent_task_role_arn        = module.agents.agent_task_role_arn
-  agent_task_definition_arn         = module.agents.agent_task_definition_arn
-  agent_task_definition_family_arn  = module.agents.agent_task_definition_family_arn
-  agent_questions_table_name = module.dynamodb.agent_questions_table_name
-  agent_questions_table_arn  = module.dynamodb.agent_questions_table_arn
-  agent_outputs_table_name   = module.dynamodb.agent_outputs_table_name
-  agent_outputs_table_arn    = module.dynamodb.agent_outputs_table_arn
-  connections_table_name     = module.dynamodb.connections_table_name
-  connections_table_arn      = module.dynamodb.connections_table_arn
-  websocket_api_endpoint     = module.realtime.websocket_api_endpoint
-  websocket_execution_arn    = module.realtime.websocket_execution_arn
+  project_name                     = var.project_name
+  environment                      = var.environment
+  aws_region                       = var.aws_region
+  ecs_cluster_arn                  = module.compute.cluster_arn
+  private_subnet_ids               = module.networking.private_subnet_ids
+  agent_security_group_id          = module.agents.agent_security_group_id
+  agent_execution_role_arn         = module.agents.agent_execution_role_arn
+  agent_task_role_arn              = module.agents.agent_task_role_arn
+  agent_task_definition_arn        = module.agents.agent_task_definition_arn
+  agent_task_definition_family_arn = module.agents.agent_task_definition_family_arn
+  agent_questions_table_name       = module.dynamodb.agent_questions_table_name
+  agent_questions_table_arn        = module.dynamodb.agent_questions_table_arn
+  agent_outputs_table_name         = module.dynamodb.agent_outputs_table_name
+  agent_outputs_table_arn          = module.dynamodb.agent_outputs_table_arn
+  connections_table_name           = module.dynamodb.connections_table_name
+  connections_table_arn            = module.dynamodb.connections_table_arn
+  websocket_api_endpoint           = module.realtime.websocket_api_endpoint
+  websocket_execution_arn          = module.realtime.websocket_execution_arn
 
   tags = {
     Environment = var.environment
@@ -380,7 +382,7 @@ module "events" {
   source = "./modules/events"
 
   project_name            = var.project_name
-  environment = var.environment
+  environment             = var.environment
   connections_table_name  = module.dynamodb.connections_table_name
   connections_table_arn   = module.dynamodb.connections_table_arn
   websocket_api_endpoint  = module.realtime.websocket_api_endpoint
