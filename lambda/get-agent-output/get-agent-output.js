@@ -1,8 +1,8 @@
-const { DynamoDBClient, GetItemCommand, QueryCommand } = require('@aws-sdk/client-dynamodb');
+import { DynamoDBClient, GetItemCommand } from '@aws-sdk/client-dynamodb';
 
 const ddb = new DynamoDBClient();
 
-exports.handler = async (event) => {
+export const handler = async (event) => {
   const { executionId, agentType, sprintId } = event;
 
   // If executionId + agentType provided, fetch specific output

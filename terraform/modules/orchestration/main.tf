@@ -121,6 +121,10 @@ module "get_agent_output_lambda" {
   source_path = [
     {
       path = "${path.module}/../../../lambda/get-agent-output"
+      commands = [
+        "cd ../.. && npm run build -w get-agent-output",
+        ":zip lambda/get-agent-output/.build",
+      ]
     }
   ]
 
