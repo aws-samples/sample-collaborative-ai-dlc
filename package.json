@@ -2,6 +2,7 @@
   "name": "sample-collaborative-ai-dlc",
   "private": true,
   "workspaces": [
+    "lambda/get-agent-output",
     "lambda/notify",
     "lambda/ws-authorizer",
     "lambda/ws-message"

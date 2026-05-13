@@ -1,0 +1,12 @@
+{
+  "name": "get-agent-output",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "get-agent-output.js",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "esbuild get-agent-output.js --bundle --platform=node --target=node24 --format=esm --external:@aws-sdk/* --outfile=.build/get-agent-output.mjs"
+  }
+}
