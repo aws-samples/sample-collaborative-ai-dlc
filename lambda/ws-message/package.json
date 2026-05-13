@@ -5,8 +5,8 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "test": "vitest run --project=ws-message",
+    "test:watch": "vitest --project=ws-message",
     "build": "esbuild index.js --bundle --platform=node --target=node24 --format=esm --external:@aws-sdk/* --outfile=.build/index.mjs"
   }
 }
