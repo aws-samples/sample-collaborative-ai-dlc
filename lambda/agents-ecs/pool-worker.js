@@ -1064,8 +1064,27 @@ async function main() {
 
   console.log(`[pool-worker] Worker ${env.workerId} ready. Available CLIs: [${_availableClis.join(', ')}]`);
 
-  // Register as idle — advertises availableClis to the job dispatcher.
-  await setIdle();
+  // If the dispatcher pre-assigned a job to this worker (cold-start path where
+  // findIdleWorkers returned 0), the DDB row already has status='assigned' and
+  // a baked-in job. Honour that instead of overwriting it with setIdle, which
+  // would erase the job and leave the dispatcher with no worker for it.
+  const existing = await ddb.send(new GetCommand({
+    TableName: env.poolTable,
+    Key: { workerId: env.workerId },
+  }));
+  if (existing.Item?.status === 'assigned' && existing.Item.job) {
+    console.log(`[pool-worker] Found pre-assigned job on startup: ${existing.Item.job.executionId} — advertising clis without clearing job`);
+    // Advertise availableClis/version but preserve assigned status + job.
+    await ddb.send(new UpdateCommand({
+      TableName: env.poolTable,
+      Key: { workerId: env.workerId },
+      UpdateExpression: 'SET lastHeartbeat = :t, version = :v, availableClis = :clis, cliAuthErrors = :errs',
+      ExpressionAttributeValues: { ':t': Date.now(), ':v': env.version, ':clis': _availableClis, ':errs': _cliAuthErrors },
+    }));
+  } else {
+    // Register as idle — advertises availableClis to the job dispatcher.
+    await setIdle();
+  }
 
   // Heartbeat loop
   const heartbeat = setInterval(async () => {
