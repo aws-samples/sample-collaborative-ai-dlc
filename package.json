@@ -12,7 +12,7 @@
     "lint": "oxlint"
   },
   "devDependencies": {
-    "@aws-sdk/client-apigatewaymanagementapi": "^3.1040.0",
+    "@aws-sdk/client-apigatewaymanagementapi": "^3.1049.0",
     "@aws-sdk/client-dynamodb": "^3.1040.0",
     "@aws-sdk/lib-dynamodb": "^3.1040.0",
     "aws-sdk-client-mock": "^4.1.0",
