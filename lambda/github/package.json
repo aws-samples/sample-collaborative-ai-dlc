@@ -4,6 +4,6 @@
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.0.0",
     "@aws-sdk/client-secrets-manager": "^3.0.0",
-    "@aws-sdk/lib-dynamodb": "^3.1040.0"
+    "@aws-sdk/lib-dynamodb": "^3.1050.0"
   }
 }
