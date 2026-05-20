@@ -8,7 +8,8 @@ export type SprintEventType =
   | 'sprint.phaseChanged'
   | 'agent.question'
   | 'agent.artifacts'
-  | 'agent.completed';
+  | 'agent.completed'
+  | 'question.answered';
 
 interface SprintEvent {
   action: SprintEventType;
@@ -39,6 +40,7 @@ export function useSprintEvents(sprintId: string, onEvent: (event: SprintEvent) 
       'agent.question',
       'agent.artifacts',
       'agent.completed',
+      'question.answered',
     ];
 
     const unsubs = events.map((eventType) =>

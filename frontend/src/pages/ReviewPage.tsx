@@ -248,9 +248,7 @@ export default function ReviewPage() {
     try {
       await questionsService.update(sprintId, questionId, { structuredAnswer: answer });
       realtimeService.send('broadcastToDocument', {
-        documentId: `sprint:${sprintId}`,
-        action: 'question.answered',
-        data: { questionId, answer },
+        data: { action: 'question.answered', sprintId, questionId },
       });
       await reload();
     } catch (err) {
