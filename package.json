@@ -22,7 +22,7 @@
     "aws-sdk-client-mock-vitest": "^7.0.1",
     "esbuild": "^0.28.0",
     "oxfmt": "^0.51.0",
-    "oxlint": "^1.64.0",
+    "oxlint": "^1.66.0",
     "vitest": "^4.1.6"
   }
 }
