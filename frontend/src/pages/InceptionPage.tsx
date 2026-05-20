@@ -347,9 +347,7 @@ export default function InceptionPage() {
     try {
       await questionsService.update(sprintId, questionId, { structuredAnswer: answer });
       realtimeService.send('broadcastToDocument', {
-        documentId: `sprint:${sprintId}`,
-        action: 'question.answered',
-        data: { questionId, answer },
+        data: { action: 'question.answered', sprintId, questionId },
       });
       timelineEventsService
         .create(sprintId, {
