@@ -9,12 +9,11 @@ import {
   AlertCircle,
   CircleDot,
   CheckCircle2,
-  Github,
   Loader2,
   Play,
   Search,
 } from 'lucide-react';
-import { githubIssuesService, type GitHubIssue } from '@/services/githubIssues';
+import { githubIssuesService, type GitHubIssue, type GitHubIssueComment } from '@/services/githubIssues';
 import { sprintsService, type Sprint } from '@/services/sprints';
 import { ApiError } from '@/services/api';
 import type { Project } from '@/services/projects';
@@ -27,10 +26,34 @@ interface Props {
 
 const PER_PAGE = 30;
 
+// Simple Icons GitHub mark — https://simpleicons.org/?q=github (CC0)
+const GitHubIcon = ({ className }: { className?: string }) => (
+  <svg
+    role="img"
+    viewBox="0 0 24 24"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-label="GitHub"
+    className={className}
+    fill="currentColor"
+  >
+    <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12" />
+  </svg>
+);
+
 const parseRepo = (gitRepo: string): { owner: string; repo: string } | null => {
   const parts = gitRepo.split('/').filter(Boolean);
   if (parts.length < 2) return null;
   return { owner: parts[0], repo: parts[1] };
+};
+
+const buildSprintDescription = (issue: GitHubIssue, comments: GitHubIssueComment[]) => {
+  const head = `# ${issue.title}\n\n${issue.body ?? ''}`.trimEnd();
+  if (comments.length === 0) return head;
+  const formatted = comments.map(c => {
+    const when = new Date(c.createdAt).toISOString().split('T')[0];
+    return `### @${c.user.login} — ${when}\n\n${c.body.trim()}`;
+  }).join('\n\n');
+  return `${head}\n\n---\n\n## Discussion (${comments.length} comment${comments.length === 1 ? '' : 's'})\n\n${formatted}`;
 };
 
 const formatError = (err: unknown): string => {
@@ -58,6 +81,7 @@ export function IssueListPanel({ project, sprints, onSprintCreated }: Props) {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [startingNumber, setStartingNumber] = useState<number | null>(null);
 
   const repoInfo = useMemo(() => parseRepo(project.gitRepo), [project.gitRepo]);
@@ -139,17 +163,24 @@ export function IssueListPanel({ project, sprints, onSprintCreated }: Props) {
   }, [sprints]);
 
   const handleStartSprint = async (issue: GitHubIssue) => {
-    if (!project.id) return;
+    if (!project.id || !repoInfo) return;
     const existing = sprintByIssue.get(String(issue.number));
     if (existing) {
       navigate(`/project/${project.id}/sprint/${existing.id}`);
       return;
     }
     setStartingNumber(issue.number);
+    setWarning(null);
     try {
+      let comments: GitHubIssueComment[] = [];
+      try {
+        comments = await githubIssuesService.listComments(repoInfo.owner, repoInfo.repo, issue.number);
+      } catch (err) {
+        setWarning(`Couldn't load issue comments — sprint created from issue body only. (${formatError(err)})`);
+      }
       const sprint = await sprintsService.create(project.id, {
         name: issue.title,
-        description: `# ${issue.title}\n\n${issue.body ?? ''}`,
+        description: buildSprintDescription(issue, comments),
         issueNumber: issue.number,
         issueUrl: issue.htmlUrl,
       });
@@ -186,7 +217,7 @@ export function IssueListPanel({ project, sprints, onSprintCreated }: Props) {
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-2">
-            <Github className="h-4 w-4 text-muted-foreground" />
+            <GitHubIcon className="h-4 w-4 text-muted-foreground" />
             <CardTitle className="text-sm">Start a sprint from a GitHub issue</CardTitle>
             <span className="text-xs text-muted-foreground">{repoInfo.owner}/{repoInfo.repo}</span>
           </div>
@@ -225,6 +256,15 @@ export function IssueListPanel({ project, sprints, onSprintCreated }: Props) {
         )}
       </CardHeader>
       <CardContent className="pt-0">
+        {warning && (
+          <div className="flex items-start gap-2 text-xs text-muted-foreground bg-muted/40 border rounded-md p-2 mb-2">
+            <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+            <p className="flex-1">{warning}</p>
+            <button type="button" className="text-xs hover:underline" onClick={() => setWarning(null)}>
+              Dismiss
+            </button>
+          </div>
+        )}
         {error ? (
           <div className="flex items-start gap-2 text-sm text-destructive bg-destructive/5 border border-destructive/20 rounded-md p-3">
             <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />

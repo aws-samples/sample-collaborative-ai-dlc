@@ -272,4 +272,78 @@ describe('github-issues handler', () => {
     const res = await handler(baseEvent({ path: '/github/something/else' }));
     expect(res.statusCode).toBe(404);
   });
+
+  describe('comments endpoint', () => {
+    const commentFixture = (overrides = {}) => ({
+      id: 1001,
+      user: { login: 'octocat', avatar_url: 'https://example.com/a.png' },
+      body: 'I think we should also handle X.',
+      created_at: '2026-05-03T00:00:00Z',
+      updated_at: '2026-05-03T00:00:00Z',
+      ...overrides,
+    });
+
+    const commentsEvent = (overrides = {}) =>
+      baseEvent({ path: '/github/repos/acme/widgets/issues/42/comments', ...overrides });
+
+    it('returns mapped comments and uses per_page=100', async () => {
+      fetchMock.mockResolvedValueOnce(okResponse([
+        commentFixture({ id: 1 }),
+        commentFixture({ id: 2, body: 'Another point.' }),
+      ]));
+
+      const handler = await loadHandler();
+      const res = await handler(commentsEvent());
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body).toHaveLength(2);
+      expect(body[0]).toMatchObject({
+        id: 1,
+        user: { login: 'octocat' },
+        body: 'I think we should also handle X.',
+      });
+      expect(fetchMock.mock.calls[0][0]).toBe(
+        'https://api.github.com/repos/acme/widgets/issues/42/comments?per_page=100',
+      );
+    });
+
+    it('returns [] when GitHub responds 404', async () => {
+      fetchMock.mockResolvedValueOnce(errResponse(404, { message: 'Not Found' }));
+      const handler = await loadHandler();
+      const res = await handler(commentsEvent());
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual([]);
+    });
+
+    it('maps rate-limited response to 429', async () => {
+      fetchMock.mockResolvedValueOnce(errResponse(403, { message: 'rate limited' }, {
+        'x-ratelimit-remaining': '0',
+        'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 30),
+      }));
+      const handler = await loadHandler();
+      const res = await handler(commentsEvent());
+      expect(res.statusCode).toBe(429);
+      expect(JSON.parse(res.body).retryAfter).toBeGreaterThan(0);
+    });
+
+    it('uses ETag and serves cached body on 304', async () => {
+      fetchMock.mockResolvedValueOnce(okResponse([commentFixture()], { etag: 'W/"c1"' }));
+      fetchMock.mockResolvedValueOnce({
+        ok: false,
+        status: 304,
+        json: async () => ({}),
+        headers: makeHeaders({}),
+      });
+
+      const handler = await loadHandler();
+      const first = await handler(commentsEvent());
+      const second = await handler(commentsEvent());
+
+      expect(first.statusCode).toBe(200);
+      expect(second.statusCode).toBe(200);
+      expect(JSON.parse(second.body)).toHaveLength(1);
+      expect(fetchMock.mock.calls[1][1].headers['If-None-Match']).toBe('W/"c1"');
+    });
+  });
 });

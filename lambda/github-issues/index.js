@@ -95,6 +95,15 @@ const githubFetch = async (url, token, etag) => {
 
 const ISSUES_LIST_PATH = /\/github\/repos\/([^/]+)\/([^/]+)\/issues$/;
 const ISSUE_DETAIL_PATH = /\/github\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)$/;
+const ISSUE_COMMENTS_PATH = /\/github\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)\/comments$/;
+
+const mapComment = (c) => ({
+  id: c.id,
+  user: { login: c.user?.login || '', avatarUrl: c.user?.avatar_url || '' },
+  body: c.body ?? '',
+  createdAt: c.created_at,
+  updatedAt: c.updated_at,
+});
 
 const parsePerPage = (raw) => {
   const n = Number.parseInt(raw, 10);
@@ -129,10 +138,11 @@ export const handler = async (event) => {
   if (!userId) return response(401, { error: 'Unauthorized' });
 
   const path = event.path || '';
-  const detailMatch = path.match(ISSUE_DETAIL_PATH);
-  const listMatch = !detailMatch && path.match(ISSUES_LIST_PATH);
+  const commentsMatch = path.match(ISSUE_COMMENTS_PATH);
+  const detailMatch = !commentsMatch && path.match(ISSUE_DETAIL_PATH);
+  const listMatch = !commentsMatch && !detailMatch && path.match(ISSUES_LIST_PATH);
 
-  if (!detailMatch && !listMatch) return response(404, { error: 'Not found' });
+  if (!commentsMatch && !detailMatch && !listMatch) return response(404, { error: 'Not found' });
 
   let token;
   try {
@@ -148,6 +158,25 @@ export const handler = async (event) => {
   }
 
   try {
+    if (commentsMatch) {
+      const [, owner, repo, number] = commentsMatch;
+      const url = `https://api.github.com/repos/${owner}/${repo}/issues/${number}/comments?per_page=100`;
+      const cacheKey = `comments:${userId}:${owner}/${repo}#${number}`;
+      const cached = cacheGet(cacheKey);
+      const r = await githubFetch(url, token, cached?.etag);
+      if (r.status === 304 && cached) return response(200, cached.body);
+      if (r.status === 404) return response(200, []);
+      if (isRateLimited(r)) return response(429, rateLimitBody(r));
+      const data = await r.json();
+      if (!r.ok) {
+        return response(r.status, { error: data.message || 'Failed to fetch comments' });
+      }
+      const comments = Array.isArray(data) ? data.map(mapComment) : [];
+      const newEtag = r.headers.get('etag');
+      if (newEtag) cacheSet(cacheKey, { etag: newEtag, body: comments });
+      return response(200, comments);
+    }
+
     if (detailMatch) {
       const [, owner, repo, number] = detailMatch;
       const cacheKey = `detail:${userId}:${owner}/${repo}#${number}`;

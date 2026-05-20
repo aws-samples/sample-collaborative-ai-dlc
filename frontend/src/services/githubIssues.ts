@@ -26,6 +26,14 @@ export interface GitHubIssuesPage {
   totalCount: number | null;
 }
 
+export interface GitHubIssueComment {
+  id: number;
+  user: { login: string; avatarUrl: string };
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 const CACHE_TTL_MS = 60_000;
 
 interface CacheEntry {
@@ -89,4 +97,7 @@ export const githubIssuesService = {
 
   get: (owner: string, repo: string, number: number) =>
     api.get<GitHubIssue>(`/github/repos/${owner}/${repo}/issues/${number}`),
+
+  listComments: (owner: string, repo: string, number: number) =>
+    api.get<GitHubIssueComment[]>(`/github/repos/${owner}/${repo}/issues/${number}/comments`),
 };
