@@ -138,15 +138,6 @@ export default function Project() {
           ) : null}
         </div>
 
-        {/* GitHub issues panel */}
-        {project && project.gitProvider === 'github' && project.issueIntegrationEnabled && (
-          <IssueListPanel
-            project={project}
-            sprints={sprints}
-            onSprintCreated={(sprint) => setSprints(prev => [...prev, sprint])}
-          />
-        )}
-
         {/* Sprints header */}
         <div className="flex items-center justify-between mb-4">
           <div>
@@ -246,6 +237,15 @@ export default function Project() {
               </Card>
             ))}
           </div>
+        )}
+
+        {/* GitHub issues panel — below sprints so sprints stay discoverable */}
+        {project && project.gitProvider === 'github' && project.issueIntegrationEnabled && (
+          <IssueListPanel
+            project={project}
+            sprints={sprints}
+            onSprintCreated={(sprint) => setSprints(prev => [...prev, sprint])}
+          />
         )}
       </div>
 

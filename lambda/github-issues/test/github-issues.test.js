@@ -37,8 +37,23 @@ const issueFixture = (overrides = {}) => ({
   ...overrides,
 });
 
-const okResponse = (body) => ({ ok: true, status: 200, json: async () => body });
-const errResponse = (status, body) => ({ ok: false, status, json: async () => body });
+const makeHeaders = (init = {}) => {
+  const map = new Map(Object.entries(init).map(([k, v]) => [k.toLowerCase(), String(v)]));
+  return { get: (k) => (map.has(k.toLowerCase()) ? map.get(k.toLowerCase()) : null) };
+};
+
+const okResponse = (body, headers = {}) => ({
+  ok: true,
+  status: 200,
+  json: async () => body,
+  headers: makeHeaders(headers),
+});
+const errResponse = (status, body, headers = {}) => ({
+  ok: false,
+  status,
+  json: async () => body,
+  headers: makeHeaders(headers),
+});
 
 describe('github-issues handler', () => {
   let fetchMock;
@@ -62,7 +77,7 @@ describe('github-issues handler', () => {
     vi.unstubAllGlobals();
   });
 
-  it('lists open issues by default', async () => {
+  it('lists open issues by default with paged response shape', async () => {
     fetchMock.mockResolvedValueOnce(okResponse([issueFixture()]));
 
     const handler = await loadHandler();
@@ -70,11 +85,40 @@ describe('github-issues handler', () => {
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body).toHaveLength(1);
-    expect(body[0]).toMatchObject({ number: 42, title: 'Add login flow', state: 'open' });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(body).toMatchObject({
+      page: 1,
+      perPage: 30,
+      hasNext: false,
+      hasPrev: false,
+      totalCount: null,
+    });
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0]).toMatchObject({ number: 42, title: 'Add login flow', state: 'open' });
     const [url] = fetchMock.mock.calls[0];
-    expect(url).toBe('https://api.github.com/repos/acme/widgets/issues?per_page=100&state=open');
+    expect(url).toBe('https://api.github.com/repos/acme/widgets/issues?per_page=30&page=1&state=open');
+  });
+
+  it('forwards page and perPage and clamps perPage to 100', async () => {
+    fetchMock.mockResolvedValueOnce(okResponse([]));
+    const handler = await loadHandler();
+    await handler(baseEvent({ queryStringParameters: { page: '3', perPage: '500' } }));
+
+    const url = fetchMock.mock.calls[0][0];
+    expect(url).toContain('per_page=100');
+    expect(url).toContain('page=3');
+  });
+
+  it('parses Link header for hasNext/hasPrev', async () => {
+    fetchMock.mockResolvedValueOnce(okResponse([issueFixture()], {
+      link: '<https://api.github.com/repos/a/b/issues?page=3>; rel="next", <https://api.github.com/repos/a/b/issues?page=1>; rel="prev"',
+    }));
+    const handler = await loadHandler();
+    const res = await handler(baseEvent({ queryStringParameters: { page: '2' } }));
+
+    const body = JSON.parse(res.body);
+    expect(body.hasNext).toBe(true);
+    expect(body.hasPrev).toBe(true);
+    expect(body.page).toBe(2);
   });
 
   it('filters out pull requests from the issues list', async () => {
@@ -87,8 +131,8 @@ describe('github-issues handler', () => {
     const res = await handler(baseEvent());
 
     const body = JSON.parse(res.body);
-    expect(body).toHaveLength(1);
-    expect(body[0].number).toBe(1);
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0].number).toBe(1);
   });
 
   it('honours the state query parameter', async () => {
@@ -99,8 +143,10 @@ describe('github-issues handler', () => {
     expect(fetchMock.mock.calls[0][0]).toContain('state=closed');
   });
 
-  it('routes to /search/issues when q is present', async () => {
-    fetchMock.mockResolvedValueOnce(okResponse({ items: [issueFixture({ number: 9 })] }));
+  it('routes to /search/issues with is:issue and returns totalCount', async () => {
+    fetchMock.mockResolvedValueOnce(okResponse(
+      { items: [issueFixture({ number: 9 })], total_count: 1234 },
+    ));
     const handler = await loadHandler();
     const res = await handler(baseEvent({
       queryStringParameters: { q: 'login flow', state: 'open' },
@@ -111,8 +157,11 @@ describe('github-issues handler', () => {
     expect(url).toContain('https://api.github.com/search/issues?q=');
     expect(url).toContain('repo:acme/widgets');
     expect(url).toContain('state:open');
+    expect(url).toContain('is:issue');
     expect(url).toContain(encodeURIComponent('login flow'));
-    expect(JSON.parse(res.body)).toHaveLength(1);
+    const body = JSON.parse(res.body);
+    expect(body.items).toHaveLength(1);
+    expect(body.totalCount).toBe(1234);
   });
 
   it('sends Authorization: Bearer <token> header', async () => {
@@ -123,6 +172,42 @@ describe('github-issues handler', () => {
     const [, opts] = fetchMock.mock.calls[0];
     expect(opts.headers.Authorization).toBe(`Bearer ${TOKEN}`);
     expect(opts.headers.Accept).toBe('application/vnd.github+json');
+  });
+
+  it('caches by ETag and serves cached body on 304', async () => {
+    fetchMock.mockResolvedValueOnce(okResponse([issueFixture()], { etag: 'W/"abc123"' }));
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 304,
+      json: async () => ({}),
+      headers: makeHeaders({}),
+    });
+
+    const handler = await loadHandler();
+    const first = await handler(baseEvent());
+    const second = await handler(baseEvent());
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(JSON.parse(second.body).items).toHaveLength(1);
+    expect(fetchMock.mock.calls[1][1].headers['If-None-Match']).toBe('W/"abc123"');
+  });
+
+  it('maps 403 with x-ratelimit-remaining: 0 to 429 with retryAfter', async () => {
+    const futureReset = Math.floor(Date.now() / 1000) + 90;
+    fetchMock.mockResolvedValueOnce(errResponse(403, { message: 'rate limited' }, {
+      'x-ratelimit-remaining': '0',
+      'x-ratelimit-reset': String(futureReset),
+    }));
+
+    const handler = await loadHandler();
+    const res = await handler(baseEvent());
+
+    expect(res.statusCode).toBe(429);
+    const body = JSON.parse(res.body);
+    expect(body.error).toContain('rate limit');
+    expect(body.retryAfter).toBeGreaterThan(0);
+    expect(body.retryAfter).toBeLessThanOrEqual(90);
   });
 
   it('returns 401 when no userId claim is present', async () => {
@@ -149,12 +234,14 @@ describe('github-issues handler', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('returns empty array when GitHub responds 404 to the listing', async () => {
+  it('returns empty paged result when GitHub responds 404 to the listing', async () => {
     fetchMock.mockResolvedValueOnce(errResponse(404, { message: 'Not Found' }));
     const handler = await loadHandler();
     const res = await handler(baseEvent());
     expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body)).toEqual([]);
+    const body = JSON.parse(res.body);
+    expect(body.items).toEqual([]);
+    expect(body.hasNext).toBe(false);
   });
 
   it('returns mapped issue from the detail endpoint', async () => {
