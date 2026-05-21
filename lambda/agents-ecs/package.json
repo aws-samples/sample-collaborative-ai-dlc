@@ -7,7 +7,7 @@
     "@aws-sdk/client-dynamodb": "^3.0.0",
     "@aws-sdk/client-lambda": "^3.0.0",
     "@aws-sdk/client-secrets-manager": "^3.0.0",
-    "@aws-sdk/client-ssm": "^3.1040.0",
+    "@aws-sdk/client-ssm": "^3.1051.0",
     "@aws-sdk/credential-providers": "^3.0.0",
     "@aws-sdk/lib-dynamodb": "^3.1040.0",
     "gremlin": "^3.7.0",
