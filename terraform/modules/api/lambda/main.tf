@@ -70,8 +70,15 @@ resource "aws_iam_role_policy" "neptune_reader" {
   name = "neptune-access"
   role = aws_iam_role.neptune_reader.id
   policy = jsonencode({
-    Version   = "2012-10-17"
-    Statement = [local.neptune_statement]
+    Version = "2012-10-17"
+    Statement = [
+      local.neptune_statement,
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem"]
+        Resource = [var.git_connections_table_arn]
+      }
+    ]
   })
 }
 
@@ -317,6 +324,7 @@ module "projects_lambda" {
     NEPTUNE_ENDPOINT     = var.neptune_endpoint
     ENVIRONMENT          = var.environment
     CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    GIT_CONNECTIONS_TABLE = var.git_connections_table_name
   }
 }
 
