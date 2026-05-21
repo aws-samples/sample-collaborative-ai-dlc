@@ -211,7 +211,7 @@ export function IssueListPanel({ project, sprints, onSprintCreated }: Props) {
 
   if (!repoInfo) {
     return (
-      <Card className="border-dashed mt-6">
+      <Card className="border-dashed">
         <CardContent className="p-4 text-sm text-muted-foreground">
           Issue integration is enabled, but the project's git repository is not in{' '}
           <code className="font-mono">owner/repo</code> format.
@@ -230,7 +230,7 @@ export function IssueListPanel({ project, sprints, onSprintCreated }: Props) {
   })();
 
   return (
-    <Card className="mt-6">
+    <Card>
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-2">
