@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { useProjectCache, useProjectSprintsCache } from '@/hooks/useProjectsCache';
@@ -6,8 +6,18 @@ import { useSprintEvents } from '@/hooks/useSprintEvents';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { IssueListPanel } from '@/components/IssueListPanel';
 import {
   FolderGit2,
@@ -18,9 +28,10 @@ import {
   MessageCircleQuestion,
   ChevronRight,
   Clock,
+  Plus,
   Settings,
 } from 'lucide-react';
-import type { Sprint } from '@/services/sprints';
+import { sprintsService, type Sprint } from '@/services/sprints';
 
 const STATUS_ICON: Record<string, typeof Loader2> = {
   running: Loader2,
@@ -53,6 +64,11 @@ export default function Project() {
   const { project, loading: projectLoading } = useProjectCache(projectId ?? null);
   const { sprints, refresh: refreshSprints } = useProjectSprintsCache(projectId ?? null);
 
+  const [showCreate, setShowCreate] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+
   const latestSprint = sprints[0] ?? null;
   const agentStatus = latestSprint?.currentAgentStatus;
   const isAgentActive = agentStatus === 'running' || agentStatus === 'waiting';
@@ -67,6 +83,23 @@ export default function Project() {
   const handleSprintCreated = useCallback(() => {
     refreshSprints();
   }, [refreshSprints]);
+
+  const handleCreate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!projectId || !newName.trim()) return;
+    setCreating(true);
+    setCreateError(null);
+    try {
+      await sprintsService.create(projectId, { name: newName.trim(), description: '' });
+      refreshSprints();
+      setShowCreate(false);
+      setNewName('');
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : 'Failed to create iteration');
+    } finally {
+      setCreating(false);
+    }
+  };
 
   const activeSprints = sprints.filter(
     (s) => s.currentAgentStatus === 'running' || s.currentAgentStatus === 'waiting',
@@ -178,16 +211,31 @@ export default function Project() {
       </div>
 
       <div className="grid md:grid-cols-2 gap-6">
-        <IssueListPanel
-          project={project}
-          sprints={sprints}
-          onSprintCreated={handleSprintCreated}
-        />
-
         <div className="space-y-4">
           <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            Iterations
+            Issues
           </h3>
+          <IssueListPanel
+            project={project}
+            sprints={sprints}
+            onSprintCreated={handleSprintCreated}
+          />
+        </div>
+
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              Iterations
+            </h3>
+            <Button
+              size="sm"
+              className="gap-1.5 h-7"
+              onClick={() => setShowCreate(true)}
+            >
+              <Plus className="h-3 w-3" />
+              Start
+            </Button>
+          </div>
 
           {activeSprints.length > 0 && (
             <div className="space-y-2">
@@ -233,6 +281,56 @@ export default function Project() {
           )}
         </div>
       </div>
+
+      <Dialog
+        open={showCreate}
+        onOpenChange={(open) => {
+          setShowCreate(open);
+          if (!open) {
+            setNewName('');
+            setCreateError(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <form onSubmit={handleCreate}>
+            <DialogHeader>
+              <DialogTitle>Start a new iteration</DialogTitle>
+              <DialogDescription>
+                Give this iteration a short, descriptive name. You can refine the goal in the
+                inception phase.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-3 py-4">
+              <Label htmlFor="iteration-name">Name</Label>
+              <Input
+                id="iteration-name"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder="e.g. Add user profile page"
+                autoFocus
+                disabled={creating}
+              />
+              {createError && (
+                <p className="text-xs text-destructive">{createError}</p>
+              )}
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setShowCreate(false)}
+                disabled={creating}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={creating || !newName.trim()}>
+                {creating ? 'Starting...' : 'Start iteration'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
