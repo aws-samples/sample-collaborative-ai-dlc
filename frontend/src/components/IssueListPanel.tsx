@@ -5,15 +5,13 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
+import { AlertCircle, CircleDot, CheckCircle2, Loader2, Play, Search } from 'lucide-react';
 import {
-  AlertCircle,
-  CircleDot,
-  CheckCircle2,
-  Loader2,
-  Play,
-  Search,
-} from 'lucide-react';
-import { githubIssuesService, type GitHubIssue, type GitHubIssueComment } from '@/services/githubIssues';
+  githubIssuesService,
+  type GitHubIssue,
+  type GitHubIssueComment,
+  type IssuePageResult,
+} from '@/services/githubIssues';
 import { sprintsService, type Sprint } from '@/services/sprints';
 import { ApiError } from '@/services/api';
 import type { Project } from '@/services/projects';
@@ -49,10 +47,12 @@ const parseRepo = (gitRepo: string): { owner: string; repo: string } | null => {
 const buildSprintDescription = (issue: GitHubIssue, comments: GitHubIssueComment[]) => {
   const head = `# ${issue.title}\n\n${issue.body ?? ''}`.trimEnd();
   if (comments.length === 0) return head;
-  const formatted = comments.map(c => {
-    const when = new Date(c.createdAt).toISOString().split('T')[0];
-    return `### @${c.user.login} — ${when}\n\n${c.body.trim()}`;
-  }).join('\n\n');
+  const formatted = comments
+    .map((c) => {
+      const when = new Date(c.createdAt).toISOString().split('T')[0];
+      return `### @${c.user.login} — ${when}\n\n${c.body.trim()}`;
+    })
+    .join('\n\n');
   return `${head}\n\n---\n\n## Discussion (${comments.length} comment${comments.length === 1 ? '' : 's'})\n\n${formatted}`;
 };
 
@@ -75,7 +75,6 @@ export function IssueListPanel({ project, sprints, onSprintCreated }: Props) {
   const [searchInput, setSearchInput] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [issues, setIssues] = useState<GitHubIssue[]>([]);
-  const [page, setPage] = useState(1);
   const [hasNext, setHasNext] = useState(false);
   const [totalCount, setTotalCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
@@ -86,59 +85,67 @@ export function IssueListPanel({ project, sprints, onSprintCreated }: Props) {
 
   const repoInfo = useMemo(() => parseRepo(project.gitRepo), [project.gitRepo]);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
-  const requestIdRef = useRef(0);
+  const iteratorRef = useRef<AsyncGenerator<IssuePageResult> | null>(null);
 
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (debounceTimer.current) clearTimeout(debounceTimer.current);
     debounceTimer.current = setTimeout(() => setDebouncedQuery(searchInput.trim()), 300);
-    return () => { if (debounceTimer.current) clearTimeout(debounceTimer.current); };
+    return () => {
+      if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    };
   }, [searchInput]);
 
-  const fetchPage = useCallback(async (targetPage: number, append: boolean) => {
-    if (!repoInfo) return;
-    const myRequestId = ++requestIdRef.current;
-    if (append) setLoadingMore(true); else setLoading(true);
+  const pullNextPage = useCallback(async (iter: AsyncGenerator<IssuePageResult>, append: boolean) => {
+    if (append) setLoadingMore(true);
+    else setLoading(true);
     if (!append) setError(null);
     try {
-      const result = await githubIssuesService.list(
-        repoInfo.owner,
-        repoInfo.repo,
-        state,
-        debouncedQuery || undefined,
-        targetPage,
-        PER_PAGE,
-      );
-      if (myRequestId !== requestIdRef.current) return;
-      setIssues(prev => append ? [...prev, ...result.items] : result.items);
-      setPage(result.page);
-      setHasNext(result.hasNext);
-      setTotalCount(result.totalCount);
+      const { value, done } = await iter.next();
+      if (done || !value) {
+        setHasNext(false);
+        return;
+      }
+      setIssues((prev) => (append ? [...prev, ...value.items] : value.items));
+      setHasNext(!value.done);
+      setTotalCount(value.totalCount);
     } catch (err) {
-      if (myRequestId !== requestIdRef.current) return;
       setError(formatError(err));
       if (!append) setIssues([]);
+      setHasNext(false);
     } finally {
-      if (myRequestId === requestIdRef.current) {
-        setLoading(false);
-        setLoadingMore(false);
-      }
+      setLoading(false);
+      setLoadingMore(false);
     }
-  }, [repoInfo, state, debouncedQuery]);
+  }, []);
 
   // Reset and reload whenever filters change
   useEffect(() => {
+    if (!repoInfo) return;
+    const abortController = new AbortController();
+    const iter = githubIssuesService.listPages(
+      repoInfo.owner,
+      repoInfo.repo,
+      state,
+      debouncedQuery || undefined,
+      PER_PAGE,
+      abortController.signal,
+    );
+    iteratorRef.current = iter;
     setIssues([]);
-    setPage(1);
     setHasNext(false);
     setTotalCount(null);
-    fetchPage(1, false);
-  }, [fetchPage]);
+    pullNextPage(iter, false);
+    return () => {
+      abortController.abort();
+      iteratorRef.current = null;
+    };
+  }, [repoInfo, state, debouncedQuery, pullNextPage]);
 
   const loadMore = useCallback(() => {
-    if (loading || loadingMore || !hasNext) return;
-    fetchPage(page + 1, true);
-  }, [loading, loadingMore, hasNext, page, fetchPage]);
+    if (loading || loadingMore || !hasNext || !iteratorRef.current) return;
+    pullNextPage(iteratorRef.current, true);
+  }, [loading, loadingMore, hasNext, pullNextPage]);
 
   // IntersectionObserver-driven auto-load
   useEffect(() => {
@@ -174,9 +181,15 @@ export function IssueListPanel({ project, sprints, onSprintCreated }: Props) {
     try {
       let comments: GitHubIssueComment[] = [];
       try {
-        comments = await githubIssuesService.listComments(repoInfo.owner, repoInfo.repo, issue.number);
+        comments = await githubIssuesService.listComments(
+          repoInfo.owner,
+          repoInfo.repo,
+          issue.number,
+        );
       } catch (err) {
-        setWarning(`Couldn't load issue comments — sprint created from issue body only. (${formatError(err)})`);
+        setWarning(
+          `Couldn't load issue comments — sprint created from issue body only. (${formatError(err)})`,
+        );
       }
       const sprint = await sprintsService.create(project.id, {
         name: issue.title,
@@ -197,7 +210,8 @@ export function IssueListPanel({ project, sprints, onSprintCreated }: Props) {
     return (
       <Card className="border-dashed mt-6">
         <CardContent className="p-4 text-sm text-muted-foreground">
-          Issue integration is enabled, but the project's git repository is not in <code className="font-mono">owner/repo</code> format.
+          Issue integration is enabled, but the project's git repository is not in{' '}
+          <code className="font-mono">owner/repo</code> format.
         </CardContent>
       </Card>
     );
@@ -219,7 +233,9 @@ export function IssueListPanel({ project, sprints, onSprintCreated }: Props) {
           <div className="flex items-center gap-2">
             <GitHubIcon className="h-4 w-4 text-muted-foreground" />
             <CardTitle className="text-sm">Start a sprint from a GitHub issue</CardTitle>
-            <span className="text-xs text-muted-foreground">{repoInfo.owner}/{repoInfo.repo}</span>
+            <span className="text-xs text-muted-foreground">
+              {repoInfo.owner}/{repoInfo.repo}
+            </span>
           </div>
           <div className="flex items-center gap-2">
             <div className="flex items-center border rounded-md text-xs">
@@ -251,16 +267,18 @@ export function IssueListPanel({ project, sprints, onSprintCreated }: Props) {
             </div>
           </div>
         </div>
-        {countLine && (
-          <p className="text-[11px] text-muted-foreground mt-2">{countLine}</p>
-        )}
+        {countLine && <p className="text-[11px] text-muted-foreground mt-2">{countLine}</p>}
       </CardHeader>
       <CardContent className="pt-0">
         {warning && (
           <div className="flex items-start gap-2 text-xs text-muted-foreground bg-muted/40 border rounded-md p-2 mb-2">
             <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
             <p className="flex-1">{warning}</p>
-            <button type="button" className="text-xs hover:underline" onClick={() => setWarning(null)}>
+            <button
+              type="button"
+              className="text-xs hover:underline"
+              onClick={() => setWarning(null)}
+            >
               Dismiss
             </button>
           </div>
@@ -284,7 +302,7 @@ export function IssueListPanel({ project, sprints, onSprintCreated }: Props) {
           </div>
         ) : loading ? (
           <div className="space-y-2">
-            {[1, 2, 3].map(i => (
+            {[1, 2, 3].map((i) => (
               <div key={i} className="border rounded-md p-3">
                 <Skeleton className="h-4 w-2/3 mb-2" />
                 <Skeleton className="h-3 w-1/3" />
@@ -293,13 +311,25 @@ export function IssueListPanel({ project, sprints, onSprintCreated }: Props) {
           </div>
         ) : issues.length === 0 ? (
           <p className="text-xs text-muted-foreground py-4 text-center">
-            {debouncedQuery
-              ? <>No {state} issues match "{debouncedQuery}". <button type="button" className="underline hover:no-underline" onClick={() => setSearchInput('')}>Clear search</button>.</>
-              : `No ${state} issues.`}
+            {debouncedQuery ? (
+              <>
+                No {state} issues match "{debouncedQuery}".{' '}
+                <button
+                  type="button"
+                  className="underline hover:no-underline"
+                  onClick={() => setSearchInput('')}
+                >
+                  Clear search
+                </button>
+                .
+              </>
+            ) : (
+              `No ${state} issues.`
+            )}
           </p>
         ) : (
           <div className="space-y-2">
-            {issues.map(issue => {
+            {issues.map((issue) => {
               const existingSprint = sprintByIssue.get(String(issue.number));
               const isStarting = startingNumber === issue.number;
               return (
@@ -317,7 +347,7 @@ export function IssueListPanel({ project, sprints, onSprintCreated }: Props) {
                       >
                         #{issue.number} {issue.title}
                       </a>
-                      {issue.labels.slice(0, 3).map(l => (
+                      {issue.labels.slice(0, 3).map((l) => (
                         <Badge
                           key={l.name}
                           variant="outline"
@@ -329,7 +359,8 @@ export function IssueListPanel({ project, sprints, onSprintCreated }: Props) {
                       ))}
                     </div>
                     <p className="text-[11px] text-muted-foreground mt-0.5">
-                      Opened by {issue.user.login} · {new Date(issue.createdAt).toLocaleDateString()}
+                      Opened by {issue.user.login} ·{' '}
+                      {new Date(issue.createdAt).toLocaleDateString()}
                     </p>
                   </div>
                   <Button

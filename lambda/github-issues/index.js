@@ -35,10 +35,12 @@ const resolveGitToken = async (item) => {
   if (!GIT_TOKEN_PARAM_PATTERN.test(item.parameterName)) {
     throw new Error('Invalid SSM parameter name format');
   }
-  const param = await ssm.send(new GetParameterCommand({
-    Name: item.parameterName,
-    WithDecryption: true,
-  }));
+  const param = await ssm.send(
+    new GetParameterCommand({
+      Name: item.parameterName,
+      WithDecryption: true,
+    }),
+  );
   return JSON.parse(param.Parameter.Value).accessToken;
 };
 
@@ -93,20 +95,17 @@ const parsePerPage = (raw) => {
   return Math.min(n, MAX_PER_PAGE);
 };
 
-const parsePage = (raw) => {
+const parsePageNumber = (raw) => {
   const n = Number.parseInt(raw, 10);
   if (!Number.isFinite(n) || n < 1) return 1;
   return n;
 };
 
-const isRateLimited = (r) =>
-  r.status === 403 && r.headers.get('x-ratelimit-remaining') === '0';
+const isRateLimited = (r) => r.status === 403 && r.headers.get('x-ratelimit-remaining') === '0';
 
 const rateLimitBody = (r) => {
   const reset = Number.parseInt(r.headers.get('x-ratelimit-reset') || '0', 10);
-  const retryAfter = reset > 0
-    ? Math.max(0, reset - Math.floor(Date.now() / 1000))
-    : 60;
+  const retryAfter = reset > 0 ? Math.max(0, reset - Math.floor(Date.now() / 1000)) : 60;
   return { error: 'GitHub rate limit exceeded', retryAfter };
 };
 
@@ -128,10 +127,12 @@ export const handler = async (event) => {
 
   let token;
   try {
-    const { Item } = await ddb.send(new GetCommand({
-      TableName: process.env.GIT_CONNECTIONS_TABLE,
-      Key: { userId },
-    }));
+    const { Item } = await ddb.send(
+      new GetCommand({
+        TableName: process.env.GIT_CONNECTIONS_TABLE,
+        Key: { userId },
+      }),
+    );
     if (!Item) return response(400, { error: 'GitHub not connected' });
     token = await resolveGitToken(Item);
   } catch (err) {
@@ -185,7 +186,7 @@ export const handler = async (event) => {
     const qs = event.queryStringParameters || {};
     const state = ['open', 'closed', 'all'].includes(qs.state) ? qs.state : 'open';
     const q = (qs.q || '').trim();
-    const page = parsePage(qs.page);
+    const page = parsePageNumber(qs.page);
     const perPage = parsePerPage(qs.perPage);
 
     let url;
@@ -204,7 +205,14 @@ export const handler = async (event) => {
 
     if (r.status === 304 && cached) return response(200, cached.body);
     if (r.status === 404) {
-      return response(200, { items: [], page, perPage, hasNext: false, hasPrev: false, totalCount: null });
+      return response(200, {
+        items: [],
+        page,
+        perPage,
+        hasNext: false,
+        hasPrev: false,
+        totalCount: null,
+      });
     }
     if (isRateLimited(r)) return response(429, rateLimitBody(r));
 
@@ -213,8 +221,13 @@ export const handler = async (event) => {
       return response(r.status, { error: data.message || 'Failed to fetch issues' });
     }
 
-    const rawItems = isSearch ? (Array.isArray(data.items) ? data.items : []) : (Array.isArray(data) ? data : []);
-    const items = rawItems.filter(i => !i.pull_request).map(mapIssue);
+    let rawItems;
+    if (isSearch) {
+      rawItems = Array.isArray(data.items) ? data.items : [];
+    } else {
+      rawItems = Array.isArray(data) ? data : [];
+    }
+    const items = rawItems.filter((i) => !i.pull_request).map(mapIssue);
 
     const link = parseLinkHeader(r.headers.get('link'));
     const hasNext = Boolean(link.next);

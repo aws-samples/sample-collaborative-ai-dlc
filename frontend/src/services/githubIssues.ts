@@ -66,6 +66,12 @@ const cacheSet = (key: string, page: GitHubIssuesPage) => {
   cache.set(key, { expiresAt: Date.now() + CACHE_TTL_MS, page });
 };
 
+export interface IssuePageResult {
+  items: GitHubIssue[];
+  totalCount: number | null;
+  done: boolean;
+}
+
 export const githubIssuesService = {
   async list(
     owner: string,
@@ -86,6 +92,25 @@ export const githubIssuesService = {
     );
     cacheSet(key, result);
     return result;
+  },
+
+  async *listPages(
+    owner: string,
+    repo: string,
+    state: 'open' | 'closed' = 'open',
+    q?: string,
+    perPage = 30,
+    signal?: AbortSignal,
+  ): AsyncGenerator<IssuePageResult> {
+    let page = 1;
+    let hasNext = true;
+    while (hasNext) {
+      if (signal?.aborted) return;
+      const result = await this.list(owner, repo, state, q, page, perPage);
+      hasNext = result.hasNext;
+      page++;
+      yield { items: result.items, totalCount: result.totalCount, done: !hasNext };
+    }
   },
 
   invalidate(owner: string, repo: string) {
