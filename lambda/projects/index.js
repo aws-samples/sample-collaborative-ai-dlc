@@ -220,7 +220,13 @@ exports.handler = async (event) => {
         }
         if (data.issueIntegrationEnabled !== undefined) {
           vertex = g.V().has('Project', 'id', projectId);
-          await vertex.property(cardinality.single, 'issue_integration_enabled', data.issueIntegrationEnabled ? 'true' : 'false').next();
+          await vertex
+            .property(
+              cardinality.single,
+              'issue_integration_enabled',
+              data.issueIntegrationEnabled ? 'true' : 'false',
+            )
+            .next();
         }
         return response(200, { id: projectId, ...data });
       }

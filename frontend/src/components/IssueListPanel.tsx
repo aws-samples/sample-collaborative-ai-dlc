@@ -96,28 +96,31 @@ export function IssueListPanel({ project, sprints, onSprintCreated }: Props) {
     };
   }, [searchInput]);
 
-  const pullNextPage = useCallback(async (iter: AsyncGenerator<IssuePageResult>, append: boolean) => {
-    if (append) setLoadingMore(true);
-    else setLoading(true);
-    if (!append) setError(null);
-    try {
-      const { value, done } = await iter.next();
-      if (done || !value) {
+  const pullNextPage = useCallback(
+    async (iter: AsyncGenerator<IssuePageResult>, append: boolean) => {
+      if (append) setLoadingMore(true);
+      else setLoading(true);
+      if (!append) setError(null);
+      try {
+        const { value, done } = await iter.next();
+        if (done || !value) {
+          setHasNext(false);
+          return;
+        }
+        setIssues((prev) => (append ? [...prev, ...value.items] : value.items));
+        setHasNext(!value.done);
+        setTotalCount(value.totalCount);
+      } catch (err) {
+        setError(formatError(err));
+        if (!append) setIssues([]);
         setHasNext(false);
-        return;
+      } finally {
+        setLoading(false);
+        setLoadingMore(false);
       }
-      setIssues((prev) => (append ? [...prev, ...value.items] : value.items));
-      setHasNext(!value.done);
-      setTotalCount(value.totalCount);
-    } catch (err) {
-      setError(formatError(err));
-      if (!append) setIssues([]);
-      setHasNext(false);
-    } finally {
-      setLoading(false);
-      setLoadingMore(false);
-    }
-  }, []);
+    },
+    [],
+  );
 
   // Reset and reload whenever filters change
   useEffect(() => {

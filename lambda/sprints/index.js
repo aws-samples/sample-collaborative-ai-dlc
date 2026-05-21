@@ -40,12 +40,12 @@ const mapSprint = (v) => {
     currentAgentStatus: status && status !== '' ? status : null,
     agentStartedAt: v.get('agent_started_at')?.[0] || null,
     agentCompletedAt: v.get('agent_completed_at')?.[0] || null,
-    prUrl: (prUrl && prUrl !== '') ? prUrl : null,
-    prNumber: (prNumber && prNumber !== '') ? prNumber : null,
-    branch: (branch && branch !== '') ? branch : null,
-    baseBranch: (baseBranch && baseBranch !== '') ? baseBranch : null,
-    issueNumber: (issueNumber && issueNumber !== '') ? issueNumber : null,
-    issueUrl: (issueUrl && issueUrl !== '') ? issueUrl : null,
+    prUrl: prUrl && prUrl !== '' ? prUrl : null,
+    prNumber: prNumber && prNumber !== '' ? prNumber : null,
+    branch: branch && branch !== '' ? branch : null,
+    baseBranch: baseBranch && baseBranch !== '' ? baseBranch : null,
+    issueNumber: issueNumber && issueNumber !== '' ? issueNumber : null,
+    issueUrl: issueUrl && issueUrl !== '' ? issueUrl : null,
   };
 };
 
@@ -83,8 +83,10 @@ exports.handler = async (event) => {
         const phase = data.phase || 'INCEPTION';
         if (!VALID_PHASES.includes(phase)) return res(400, { error: 'Invalid phase' });
 
-        const issueNumber = data.issueNumber !== undefined && data.issueNumber !== null
-          ? String(data.issueNumber) : '';
+        const issueNumber =
+          data.issueNumber !== undefined && data.issueNumber !== null
+            ? String(data.issueNumber)
+            : '';
         const issueUrl = data.issueUrl || '';
 
         await g

@@ -50,9 +50,7 @@ const mapIssue = (i) => ({
   body: i.body ?? null,
   state: i.state,
   htmlUrl: i.html_url,
-  labels: Array.isArray(i.labels)
-    ? i.labels.map((l) => ({ name: l.name, color: l.color }))
-    : [],
+  labels: Array.isArray(i.labels) ? i.labels.map((l) => ({ name: l.name, color: l.color })) : [],
   user: { login: i.user?.login || '', avatarUrl: i.user?.avatar_url || '' },
   createdAt: i.created_at,
   updatedAt: i.updated_at,

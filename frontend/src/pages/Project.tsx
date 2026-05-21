@@ -244,7 +244,7 @@ export default function Project() {
           <IssueListPanel
             project={project}
             sprints={sprints}
-            onSprintCreated={(sprint) => setSprints(prev => [...prev, sprint])}
+            onSprintCreated={(sprint) => setSprints((prev) => [...prev, sprint])}
           />
         )}
       </div>

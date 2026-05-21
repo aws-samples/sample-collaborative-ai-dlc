@@ -131,9 +131,12 @@ export default function ProjectSettings() {
   }, [projectId]);
 
   useEffect(() => {
-    agentsService.getCapabilities()
-      .then(c => setAvailableCliNames(c.available))
-      .catch(() => { /* non-fatal — keep default ['kiro'] */ });
+    agentsService
+      .getCapabilities()
+      .then((c) => setAvailableCliNames(c.available))
+      .catch(() => {
+        /* non-fatal — keep default ['kiro'] */
+      });
   }, []);
 
   useEffect(() => {
@@ -142,10 +145,7 @@ export default function ProjectSettings() {
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
-      if (
-        userDropdownRef.current &&
-        !userDropdownRef.current.contains(e.target as Node)
-      ) {
+      if (userDropdownRef.current && !userDropdownRef.current.contains(e.target as Node)) {
         setShowUserDropdown(false);
       }
     };
@@ -164,9 +164,7 @@ export default function ProjectSettings() {
       const users = await projectsService.listCognitoUsers();
       const memberIds = new Set(members.map((m) => m.userId));
       setCognitoUsers(
-        users.filter(
-          (u) => u.enabled && u.status === 'CONFIRMED' && !memberIds.has(u.userId)
-        )
+        users.filter((u) => u.enabled && u.status === 'CONFIRMED' && !memberIds.has(u.userId)),
       );
     } catch (err) {
       console.error('Failed to load users:', err);
@@ -203,10 +201,7 @@ export default function ProjectSettings() {
   const filteredUsers = cognitoUsers.filter((u) => {
     if (!userSearch) return true;
     const q = userSearch.toLowerCase();
-    return (
-      u.email.toLowerCase().includes(q) ||
-      u.displayName.toLowerCase().includes(q)
-    );
+    return u.email.toLowerCase().includes(q) || u.displayName.toLowerCase().includes(q);
   });
 
   const handleSaveProject = async (e: React.FormEvent) => {
@@ -444,14 +439,19 @@ export default function ProjectSettings() {
               <CardHeader className="pb-3">
                 <CardTitle className="text-base">Agent</CardTitle>
                 <p className="text-sm text-muted-foreground">
-                  Choose which AI agent CLI runs agents for this project. Only CLIs installed in
-                  the current deployment are available.
+                  Choose which AI agent CLI runs agents for this project. Only CLIs installed in the
+                  current deployment are available.
                 </p>
               </CardHeader>
               <CardContent>
                 <form onSubmit={handleSaveAgentCli}>
                   <div className="space-y-2">
-                    {(Object.entries(AGENT_CLI_CONFIG) as [AgentCli, { label: string; description: string }][]).map(([key, cfg]) => {
+                    {(
+                      Object.entries(AGENT_CLI_CONFIG) as [
+                        AgentCli,
+                        { label: string; description: string },
+                      ][]
+                    ).map(([key, cfg]) => {
                       const isAvailable = availableCliNames.includes(key);
                       const isSelected = editAgentCli === key;
                       const isCurrent = project?.agentCli === key;
@@ -481,7 +481,9 @@ export default function ProjectSettings() {
                             <div className="flex items-center gap-2 flex-wrap">
                               <span className="text-sm font-medium">{cfg.label}</span>
                               {!isAvailable && !isCurrent && (
-                                <Badge variant="outline" className="text-[10px] h-4">not available</Badge>
+                                <Badge variant="outline" className="text-[10px] h-4">
+                                  not available
+                                </Badge>
                               )}
                               {!isAvailable && isCurrent && (
                                 <Badge
@@ -492,12 +494,17 @@ export default function ProjectSettings() {
                                 </Badge>
                               )}
                               {isAvailable && isSelected && (
-                                <Badge variant="outline" className="text-[10px] h-4 bg-primary/10 text-primary border-primary/20">
+                                <Badge
+                                  variant="outline"
+                                  className="text-[10px] h-4 bg-primary/10 text-primary border-primary/20"
+                                >
                                   active
                                 </Badge>
                               )}
                             </div>
-                            <p className="text-xs text-muted-foreground mt-0.5">{cfg.description}</p>
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                              {cfg.description}
+                            </p>
                           </div>
                         </label>
                       );
@@ -537,7 +544,10 @@ export default function ProjectSettings() {
                 <div className="flex flex-wrap gap-3 pt-1 text-xs text-muted-foreground">
                   {Object.entries(ROLE_DESCRIPTIONS).map(([role, desc]) => (
                     <div key={role} className="flex items-center gap-1">
-                      <Badge variant="outline" className={cn('text-[10px] h-4', ROLE_BADGE[role as ProjectRole])}>
+                      <Badge
+                        variant="outline"
+                        className={cn('text-[10px] h-4', ROLE_BADGE[role as ProjectRole])}
+                      >
                         {ROLE_LABELS[role as ProjectRole]}
                       </Badge>
                       <span>— {desc}</span>
@@ -548,7 +558,10 @@ export default function ProjectSettings() {
               <CardContent>
                 <div className="divide-y divide-border">
                   {members.map((member) => (
-                    <div key={member.userId} className="py-3 flex items-center justify-between gap-3">
+                    <div
+                      key={member.userId}
+                      className="py-3 flex items-center justify-between gap-3"
+                    >
                       <div className="flex items-center gap-3 min-w-0">
                         <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center text-sm font-medium text-muted-foreground shrink-0">
                           {(member.email || member.userId).charAt(0).toUpperCase()}
@@ -581,14 +594,13 @@ export default function ProjectSettings() {
                               ROLE_BADGE[member.role],
                             )}
                           >
-                            {(userRole === 'owner'
-                              ? ['owner', 'admin', 'member']
-                              : ['member']
-                            ).map((r) => (
-                              <option key={r} value={r}>
-                                {ROLE_LABELS[r as ProjectRole]}
-                              </option>
-                            ))}
+                            {(userRole === 'owner' ? ['owner', 'admin', 'member'] : ['member']).map(
+                              (r) => (
+                                <option key={r} value={r}>
+                                  {ROLE_LABELS[r as ProjectRole]}
+                                </option>
+                              ),
+                            )}
                             {userRole !== 'owner' && member.role !== 'member' && (
                               <option value={member.role} disabled>
                                 {ROLE_LABELS[member.role]}
@@ -596,7 +608,10 @@ export default function ProjectSettings() {
                             )}
                           </select>
                         ) : (
-                          <Badge variant="outline" className={cn('text-[10px]', ROLE_BADGE[member.role])}>
+                          <Badge
+                            variant="outline"
+                            className={cn('text-[10px]', ROLE_BADGE[member.role])}
+                          >
                             {ROLE_LABELS[member.role]}
                           </Badge>
                         )}
@@ -780,7 +795,8 @@ export default function ProjectSettings() {
           <AlertDialogHeader>
             <AlertDialogTitle>Remove Member</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to remove this member from the project? They will lose access immediately.
+              Are you sure you want to remove this member from the project? They will lose access
+              immediately.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

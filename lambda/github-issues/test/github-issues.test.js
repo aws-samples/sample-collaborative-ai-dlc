@@ -95,7 +95,9 @@ describe('github-issues handler', () => {
     expect(body.items).toHaveLength(1);
     expect(body.items[0]).toMatchObject({ number: 42, title: 'Add login flow', state: 'open' });
     const [url] = fetchMock.mock.calls[0];
-    expect(url).toBe('https://api.github.com/repos/acme/widgets/issues?per_page=30&page=1&state=open');
+    expect(url).toBe(
+      'https://api.github.com/repos/acme/widgets/issues?per_page=30&page=1&state=open',
+    );
   });
 
   it('forwards page and perPage and clamps perPage to 100', async () => {
@@ -109,9 +111,11 @@ describe('github-issues handler', () => {
   });
 
   it('parses Link header for hasNext/hasPrev', async () => {
-    fetchMock.mockResolvedValueOnce(okResponse([issueFixture()], {
-      link: '<https://api.github.com/repos/a/b/issues?page=3>; rel="next", <https://api.github.com/repos/a/b/issues?page=1>; rel="prev"',
-    }));
+    fetchMock.mockResolvedValueOnce(
+      okResponse([issueFixture()], {
+        link: '<https://api.github.com/repos/a/b/issues?page=3>; rel="next", <https://api.github.com/repos/a/b/issues?page=1>; rel="prev"',
+      }),
+    );
     const handler = await loadHandler();
     const res = await handler(baseEvent({ queryStringParameters: { page: '2' } }));
 
@@ -122,10 +126,12 @@ describe('github-issues handler', () => {
   });
 
   it('filters out pull requests from the issues list', async () => {
-    fetchMock.mockResolvedValueOnce(okResponse([
-      issueFixture({ number: 1, title: 'Real issue' }),
-      issueFixture({ number: 2, title: 'A PR', pull_request: { url: 'x' } }),
-    ]));
+    fetchMock.mockResolvedValueOnce(
+      okResponse([
+        issueFixture({ number: 1, title: 'Real issue' }),
+        issueFixture({ number: 2, title: 'A PR', pull_request: { url: 'x' } }),
+      ]),
+    );
 
     const handler = await loadHandler();
     const res = await handler(baseEvent());
@@ -144,13 +150,15 @@ describe('github-issues handler', () => {
   });
 
   it('routes to /search/issues with is:issue and returns totalCount', async () => {
-    fetchMock.mockResolvedValueOnce(okResponse(
-      { items: [issueFixture({ number: 9 })], total_count: 1234 },
-    ));
+    fetchMock.mockResolvedValueOnce(
+      okResponse({ items: [issueFixture({ number: 9 })], total_count: 1234 }),
+    );
     const handler = await loadHandler();
-    const res = await handler(baseEvent({
-      queryStringParameters: { q: 'login flow', state: 'open' },
-    }));
+    const res = await handler(
+      baseEvent({
+        queryStringParameters: { q: 'login flow', state: 'open' },
+      }),
+    );
 
     expect(res.statusCode).toBe(200);
     const url = fetchMock.mock.calls[0][0];
@@ -195,10 +203,16 @@ describe('github-issues handler', () => {
 
   it('maps 403 with x-ratelimit-remaining: 0 to 429 with retryAfter', async () => {
     const futureReset = Math.floor(Date.now() / 1000) + 90;
-    fetchMock.mockResolvedValueOnce(errResponse(403, { message: 'rate limited' }, {
-      'x-ratelimit-remaining': '0',
-      'x-ratelimit-reset': String(futureReset),
-    }));
+    fetchMock.mockResolvedValueOnce(
+      errResponse(
+        403,
+        { message: 'rate limited' },
+        {
+          'x-ratelimit-remaining': '0',
+          'x-ratelimit-reset': String(futureReset),
+        },
+      ),
+    );
 
     const handler = await loadHandler();
     const res = await handler(baseEvent());
@@ -227,7 +241,9 @@ describe('github-issues handler', () => {
   });
 
   it('returns 400 when the SSM parameter name is malformed', async () => {
-    ddbMock.on(GetCommand).resolves({ Item: { userId: 'user-1', parameterName: '../../etc/passwd' } });
+    ddbMock
+      .on(GetCommand)
+      .resolves({ Item: { userId: 'user-1', parameterName: '../../etc/passwd' } });
     const handler = await loadHandler();
     const res = await handler(baseEvent());
     expect(res.statusCode).toBe(400);
@@ -250,7 +266,10 @@ describe('github-issues handler', () => {
     const res = await handler(baseEvent({ path: '/github/repos/acme/widgets/issues/42' }));
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body).toMatchObject({ number: 42, htmlUrl: 'https://github.com/acme/widgets/issues/42' });
+    expect(body).toMatchObject({
+      number: 42,
+      htmlUrl: 'https://github.com/acme/widgets/issues/42',
+    });
   });
 
   it('returns 404 when the detail endpoint is requested for a PR', async () => {
@@ -287,10 +306,9 @@ describe('github-issues handler', () => {
       baseEvent({ path: '/github/repos/acme/widgets/issues/42/comments', ...overrides });
 
     it('returns mapped comments and uses per_page=100', async () => {
-      fetchMock.mockResolvedValueOnce(okResponse([
-        commentFixture({ id: 1 }),
-        commentFixture({ id: 2, body: 'Another point.' }),
-      ]));
+      fetchMock.mockResolvedValueOnce(
+        okResponse([commentFixture({ id: 1 }), commentFixture({ id: 2, body: 'Another point.' })]),
+      );
 
       const handler = await loadHandler();
       const res = await handler(commentsEvent());
@@ -317,10 +335,16 @@ describe('github-issues handler', () => {
     });
 
     it('maps rate-limited response to 429', async () => {
-      fetchMock.mockResolvedValueOnce(errResponse(403, { message: 'rate limited' }, {
-        'x-ratelimit-remaining': '0',
-        'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 30),
-      }));
+      fetchMock.mockResolvedValueOnce(
+        errResponse(
+          403,
+          { message: 'rate limited' },
+          {
+            'x-ratelimit-remaining': '0',
+            'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 30),
+          },
+        ),
+      );
       const handler = await loadHandler();
       const res = await handler(commentsEvent());
       expect(res.statusCode).toBe(429);

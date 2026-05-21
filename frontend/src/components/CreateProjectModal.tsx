@@ -178,7 +178,9 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
                   <input
                     type="checkbox"
                     checked={formData.issueIntegrationEnabled ?? false}
-                    onChange={(e) => setFormData({ ...formData, issueIntegrationEnabled: e.target.checked })}
+                    onChange={(e) =>
+                      setFormData({ ...formData, issueIntegrationEnabled: e.target.checked })
+                    }
                     className="mt-0.5"
                     disabled={submitting}
                   />
