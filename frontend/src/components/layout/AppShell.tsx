@@ -74,7 +74,6 @@ export function AppShell() {
             <aside className="hidden lg:flex overflow-hidden">
               <ActivityPanel
                 sprintId={latestActiveSprintId ?? undefined}
-                projectId={projectId}
                 onClose={() => setActivityPanelOpen(false)}
               />
             </aside>
