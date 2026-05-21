@@ -211,10 +211,12 @@ export default function Project() {
       </div>
 
       <div className="grid md:grid-cols-2 gap-6">
-        <div className="space-y-4">
-          <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            Issues
-          </h3>
+        <div className="space-y-2">
+          <div className="flex items-center justify-between h-7">
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              Issues
+            </h3>
+          </div>
           <IssueListPanel
             project={project}
             sprints={sprints}
@@ -222,8 +224,8 @@ export default function Project() {
           />
         </div>
 
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
+        <div className="space-y-2">
+          <div className="flex items-center justify-between h-7">
             <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
               Iterations
             </h3>
