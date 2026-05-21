@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useSyncExternalStore } from 'react';
+import { useEffect, useCallback, useSyncExternalStore } from 'react';
 import { projectsService, type Project } from '@/services/projects';
 import { sprintsService, type Sprint } from '@/services/sprints';
 
