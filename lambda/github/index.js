@@ -1,15 +1,15 @@
-const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
-const {
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import {
   DynamoDBDocumentClient,
   GetCommand,
   PutCommand,
   DeleteCommand,
-} = require('@aws-sdk/lib-dynamodb');
-const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
-const { SSMClient, PutParameterCommand, DeleteParameterCommand } = require('@aws-sdk/client-ssm');
-const crypto = require('crypto');
-const { buildResponse } = require('./shared/response');
-const { resolveGitToken } = require('./shared/git-token');
+} from '@aws-sdk/lib-dynamodb';
+import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
+import { SSMClient, PutParameterCommand, DeleteParameterCommand } from '@aws-sdk/client-ssm';
+import crypto from 'crypto';
+import { buildResponse } from '../shared/response.js';
+import { resolveGitToken } from '../shared/git-token.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const secrets = new SecretsManagerClient({});
@@ -86,7 +86,7 @@ const getUserId = (event) => {
   return event.requestContext?.authorizer?.claims?.sub;
 };
 
-exports.handler = async (event) => {
+export const handler = async (event) => {
   const response = buildResponse(event, { methods: 'GET,POST,DELETE,OPTIONS' });
   const {
     gitToken: _gitToken,

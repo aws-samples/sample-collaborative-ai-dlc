@@ -26,7 +26,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Plus, GitBranch, Trash2, Zap, Calendar } from 'lucide-react';
+import { Plus, GitBranch, Trash2, Zap, Calendar, Settings } from 'lucide-react';
+import { IssueListPanel } from '@/components/IssueListPanel';
 const PHASE_VARIANT: Record<string, 'inception' | 'construction' | 'review'> = {
   INCEPTION: 'inception',
   CONSTRUCTION: 'construction',
@@ -110,19 +111,30 @@ export default function Project() {
               <Skeleton className="h-4 w-64" />
             </>
           ) : project ? (
-            <>
-              <h1 className="text-2xl font-bold tracking-tight">{project.name}</h1>
-              <div className="flex items-center gap-3 mt-2 text-sm text-muted-foreground">
-                <span className="flex items-center gap-1">
-                  <GitBranch className="h-3.5 w-3.5" />
-                  {project.gitRepo}
-                </span>
-                <span className="flex items-center gap-1">
-                  <Calendar className="h-3.5 w-3.5" />
-                  Created {new Date(project.createdAt).toLocaleDateString()}
-                </span>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h1 className="text-2xl font-bold tracking-tight">{project.name}</h1>
+                <div className="flex items-center gap-3 mt-2 text-sm text-muted-foreground">
+                  <span className="flex items-center gap-1">
+                    <GitBranch className="h-3.5 w-3.5" />
+                    {project.gitRepo}
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <Calendar className="h-3.5 w-3.5" />
+                    Created {new Date(project.createdAt).toLocaleDateString()}
+                  </span>
+                </div>
               </div>
-            </>
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5 shrink-0"
+                onClick={() => navigate(`/project/${projectId}/settings`)}
+              >
+                <Settings className="h-3.5 w-3.5" />
+                Settings
+              </Button>
+            </div>
           ) : null}
         </div>
 
@@ -225,6 +237,15 @@ export default function Project() {
               </Card>
             ))}
           </div>
+        )}
+
+        {/* GitHub issues panel — below sprints so sprints stay discoverable */}
+        {project && project.gitProvider === 'github' && project.issueIntegrationEnabled && (
+          <IssueListPanel
+            project={project}
+            sprints={sprints}
+            onSprintCreated={(sprint) => setSprints((prev) => [...prev, sprint])}
+          />
         )}
       </div>
 

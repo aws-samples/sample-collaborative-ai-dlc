@@ -248,8 +248,8 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
         }
       },
       {
-        Effect = "Allow"
-        Action = ["ecs:DescribeTasks", "ecs:StopTask"]
+        Effect   = "Allow"
+        Action   = ["ecs:DescribeTasks", "ecs:StopTask"]
         Resource = "arn:${local.partition}:ecs:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:task/*/*"
         Condition = {
           ArnEquals = {
@@ -692,6 +692,36 @@ module "github_lambda" {
     GITHUB_REDIRECT_URI      = var.github_redirect_uri
     ENVIRONMENT              = var.environment
     CORS_ALLOWED_ORIGINS     = var.cors_allowed_origins
+  }
+}
+
+# GitHub Issues Lambda — fetches GitHub issues for a repo (read-only).
+# Reuses the github_connector role: same DDB GIT_CONNECTIONS_TABLE read +
+# SSM git-token decrypt scope, no extra IAM needed.
+module "github_issues_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-github-issues-${var.environment}"
+  handler       = "index.handler"
+  runtime       = "nodejs24.x"
+  timeout       = 30
+
+  source_path = [
+    {
+      path             = "${path.module}/../../../../lambda/github-issues"
+      npm_requirements = true
+    }
+  ]
+
+  create_role = false
+  lambda_role = aws_iam_role.github_connector.arn
+
+  environment_variables = {
+    GIT_CONNECTIONS_TABLE = var.git_connections_table_name
+    GIT_TOKEN_SSM_PREFIX  = "${var.project_name}/${var.environment}/git-token"
+    ENVIRONMENT           = var.environment
+    CORS_ALLOWED_ORIGINS  = var.cors_allowed_origins
   }
 }
 
