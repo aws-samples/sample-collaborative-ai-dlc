@@ -6,10 +6,5 @@
     "test": "vitest run --project=github-issues",
     "test:watch": "vitest --project=github-issues",
     "build": "esbuild index.js --bundle --platform=node --target=node24 --format=esm --external:@aws-sdk/* --outfile=.build/index.mjs"
-  },
-  "dependencies": {
-    "@aws-sdk/client-dynamodb": "^3.1040.0",
-    "@aws-sdk/client-ssm": "^3.1040.0",
-    "@aws-sdk/lib-dynamodb": "^3.1040.0"
   }
 }
