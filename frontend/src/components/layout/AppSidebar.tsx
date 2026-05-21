@@ -1,7 +1,6 @@
 import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import {
   Activity,
-  ClipboardList,
   LayoutDashboard,
   Loader2,
   MessageCircleQuestion,
@@ -31,7 +30,6 @@ export function AppSidebar() {
 
   const isOnDashboard = location.pathname === '/dashboard';
   const isOnObservability = location.pathname === '/observability';
-  const isOnBacklog = location.pathname === '/backlog';
   const isOnAdmin = location.pathname === '/admin';
   const activeProjectId = params.projectId ?? null;
 
@@ -71,19 +69,6 @@ export function AppSidebar() {
               <span className="text-[11px] font-medium text-agent-running">{runningCount}</span>
             </span>
           )}
-        </button>
-
-        <button
-          onClick={() => navigate('/backlog')}
-          className={cn(
-            'flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors rounded-md text-left w-full',
-            isOnBacklog
-              ? 'bg-sidebar-accent text-sidebar-foreground'
-              : 'text-sidebar-foreground/80 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
-          )}
-        >
-          <ClipboardList className="h-4 w-4 shrink-0" />
-          <span className="flex-1 truncate">Backlog</span>
         </button>
       </nav>
 
