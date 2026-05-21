@@ -143,6 +143,21 @@ output "github_lambda_name" {
   value       = module.github_lambda.lambda_function_name
 }
 
+output "github_issues_lambda_arn" {
+  description = "ARN of the github-issues Lambda function"
+  value       = module.github_issues_lambda.lambda_function_arn
+}
+
+output "github_issues_lambda_invoke_arn" {
+  description = "Invoke ARN of the github-issues Lambda function"
+  value       = module.github_issues_lambda.lambda_function_invoke_arn
+}
+
+output "github_issues_lambda_name" {
+  description = "Name of the github-issues Lambda function"
+  value       = module.github_issues_lambda.lambda_function_name
+}
+
 output "timeline_events_lambda_arn" {
   value = module.timeline_events_lambda.lambda_function_arn
 }

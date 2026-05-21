@@ -25,6 +25,8 @@ const mapSprint = (v) => {
   const prNumber = v.get('pr_number')?.[0];
   const branch = v.get('branch')?.[0];
   const baseBranch = v.get('base_branch')?.[0];
+  const issueNumber = v.get('issue_number')?.[0];
+  const issueUrl = v.get('issue_url')?.[0];
 
   return {
     id: v.get('id')?.[0] || '',
@@ -42,6 +44,8 @@ const mapSprint = (v) => {
     prNumber: prNumber && prNumber !== '' ? prNumber : null,
     branch: branch && branch !== '' ? branch : null,
     baseBranch: baseBranch && baseBranch !== '' ? baseBranch : null,
+    issueNumber: issueNumber && issueNumber !== '' ? issueNumber : null,
+    issueUrl: issueUrl && issueUrl !== '' ? issueUrl : null,
   };
 };
 
@@ -79,6 +83,12 @@ exports.handler = async (event) => {
         const phase = data.phase || 'INCEPTION';
         if (!VALID_PHASES.includes(phase)) return res(400, { error: 'Invalid phase' });
 
+        const issueNumber =
+          data.issueNumber !== undefined && data.issueNumber !== null
+            ? String(data.issueNumber)
+            : '';
+        const issueUrl = data.issueUrl || '';
+
         await g
           .V()
           .has('Project', 'id', projectId)
@@ -93,6 +103,8 @@ exports.handler = async (event) => {
           .property('current_execution_arn', '')
           .property('current_execution_id', '')
           .property('current_agent_status', '')
+          .property('issue_number', issueNumber)
+          .property('issue_url', issueUrl)
           .as('s')
           .addE('HAS_SPRINT')
           .from_('p')
@@ -108,6 +120,8 @@ exports.handler = async (event) => {
           currentExecutionArn: null,
           currentExecutionId: null,
           currentAgentStatus: null,
+          issueNumber: issueNumber || null,
+          issueUrl: issueUrl || null,
         });
       }
 

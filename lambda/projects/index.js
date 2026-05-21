@@ -500,6 +500,7 @@ exports.handler = async (event) => {
             gitProvider: getVal(v, 'git_provider') || 'github',
             gitRepo: derivePrimaryRepo(repos, legacyGitRepo),
             agentCli: getVal(v, 'agent_cli') || 'kiro',
+            issueIntegrationEnabled: getVal(v, 'issue_integration_enabled') === 'true',
             createdAt: getVal(v, 'created_at') || new Date().toISOString(),
             userRole,
             repos,
@@ -538,6 +539,7 @@ exports.handler = async (event) => {
               gitProvider: getVal(v, 'git_provider') || 'github',
               gitRepo: derivePrimaryRepo(repos, legacyGitRepo),
               agentCli: getVal(v, 'agent_cli') || 'kiro',
+              issueIntegrationEnabled: getVal(v, 'issue_integration_enabled') === 'true',
               createdAt: getVal(v, 'created_at') || new Date().toISOString(),
               userRole: getVal(e, 'role') || 'member',
               repos,
@@ -570,7 +572,9 @@ exports.handler = async (event) => {
             ? (inputRepos.find((r) => r.role === 'primary') || inputRepos[0]).url
             : '';
 
-        // Create the project vertex
+        const issueIntegrationEnabled = data.issueIntegrationEnabled === true;
+
+        // Create the project vertex with creator tracking
         await g
           .addV('Project')
           .property('id', id)
@@ -578,6 +582,7 @@ exports.handler = async (event) => {
           .property('git_provider', data.gitProvider || 'github')
           .property('git_repo', primaryUrl)
           .property('agent_cli', data.agentCli || 'kiro')
+          .property('issue_integration_enabled', issueIntegrationEnabled ? 'true' : 'false')
           .property('created_by', userId)
           .property('created_at', createdAt)
           .next();
@@ -631,6 +636,7 @@ exports.handler = async (event) => {
           gitProvider: data.gitProvider || 'github',
           gitRepo: primaryUrl,
           agentCli: data.agentCli || 'kiro',
+          issueIntegrationEnabled,
           createdAt,
           repos: reposOut,
         });
@@ -693,6 +699,16 @@ exports.handler = async (event) => {
             .V()
             .has('Project', 'id', projectId)
             .property(cardinality.single, 'agent_cli', data.agentCli)
+            .next();
+        }
+        if (data.issueIntegrationEnabled !== undefined) {
+          vertex = g.V().has('Project', 'id', projectId);
+          await vertex
+            .property(
+              cardinality.single,
+              'issue_integration_enabled',
+              data.issueIntegrationEnabled ? 'true' : 'false',
+            )
             .next();
         }
         return response(200, { id: projectId, ...data });
