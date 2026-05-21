@@ -131,6 +131,18 @@ variable "github_lambda_name" {
   default     = ""
 }
 
+variable "github_issues_lambda_invoke_arn" {
+  description = "Invoke ARN of the github-issues Lambda"
+  type        = string
+  default     = ""
+}
+
+variable "github_issues_lambda_name" {
+  description = "Name of the github-issues Lambda function"
+  type        = string
+  default     = ""
+}
+
 variable "cognito_users_lambda_invoke_arn" {
   description = "Invoke ARN of the cognito-users Lambda"
   type        = string

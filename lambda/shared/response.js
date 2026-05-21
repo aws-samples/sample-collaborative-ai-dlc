@@ -16,7 +16,7 @@ const allowedOrigin = (headers) => {
  */
 const buildResponse =
   (event, { methods = 'GET,POST,PUT,DELETE,OPTIONS' } = {}) =>
-  (statusCode, body) => ({
+  (statusCode, body, extraHeaders = {}) => ({
     statusCode,
     headers: {
       'Content-Type': 'application/json',
@@ -24,6 +24,7 @@ const buildResponse =
       'Access-Control-Allow-Headers':
         'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token',
       'Access-Control-Allow-Methods': methods,
+      ...extraHeaders,
     },
     body: JSON.stringify(body),
   });
