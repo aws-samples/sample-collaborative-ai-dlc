@@ -5,19 +5,33 @@ import { AppHeader } from '@/components/layout/AppHeader';
 import { ActivityPanel } from '@/components/layout/ActivityPanel';
 import { StatusBar } from '@/components/layout/StatusBar';
 import { CommandPalette } from '@/components/layout/CommandPalette';
-import { useState, useCallback } from 'react';
+import { useProjectSprintsCache } from '@/hooks/useProjectsCache';
+import { useState, useCallback, useMemo, useEffect } from 'react';
 
 export function AppShell() {
-  const { sprintId } = useParams<{ sprintId: string }>();
+  const { sprintId, projectId } = useParams<{ sprintId: string; projectId: string }>();
   const inSprint = !!sprintId;
+  const onProjectPage = !!projectId && !inSprint;
 
-  const [activityPanelOpen, setActivityPanelOpen] = useState(true);
+  const { sprints: projectSprints } = useProjectSprintsCache(onProjectPage ? projectId : null);
+  const latestActiveSprintId = useMemo(() => {
+    if (inSprint) return sprintId;
+    const active = projectSprints.find(
+      (s) => s.currentAgentStatus === 'running' || s.currentAgentStatus === 'waiting',
+    );
+    return active?.id ?? projectSprints[0]?.id ?? null;
+  }, [inSprint, sprintId, projectSprints]);
+
+  const [activityPanelOpen, setActivityPanelOpen] = useState(inSprint);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
 
-  // Only show panels when inside a sprint
-  const showSidebar = inSprint && !sidebarCollapsed;
-  const showActivity = inSprint && activityPanelOpen;
+  useEffect(() => {
+    setActivityPanelOpen(inSprint);
+  }, [inSprint]);
+
+  const showSidebar = !sidebarCollapsed;
+  const showActivity = (inSprint || onProjectPage) && activityPanelOpen;
 
   const toggleSidebar = useCallback(() => setSidebarCollapsed((prev) => !prev), []);
   const toggleActivity = useCallback(() => setActivityPanelOpen((prev) => !prev), []);
@@ -25,7 +39,6 @@ export function AppShell() {
   return (
     <TooltipProvider delayDuration={200}>
       <div className="flex h-screen flex-col bg-background">
-        {/* Header */}
         <AppHeader
           onToggleSidebar={toggleSidebar}
           onToggleActivity={toggleActivity}
@@ -35,12 +48,11 @@ export function AppShell() {
           inSprint={inSprint}
         />
 
-        {/* Main content area */}
         <div
           className="flex-1 overflow-hidden grid"
           style={{
             gridTemplateColumns: [
-              showSidebar ? 'minmax(240px, 280px)' : '',
+              showSidebar ? '240px' : '',
               '1fr',
               showActivity ? 'minmax(280px, 360px)' : '',
             ]
@@ -48,30 +60,28 @@ export function AppShell() {
               .join(' '),
           }}
         >
-          {/* Sidebar - only in sprint views */}
           {showSidebar && (
             <aside className="hidden md:flex border-r overflow-hidden">
               <AppSidebar />
             </aside>
           )}
 
-          {/* Main content */}
           <main className="h-full overflow-y-auto min-w-0">
             <Outlet />
           </main>
 
-          {/* Activity panel - only in sprint views */}
           {showActivity && (
             <aside className="hidden lg:flex overflow-hidden">
-              <ActivityPanel sprintId={sprintId} onClose={() => setActivityPanelOpen(false)} />
+              <ActivityPanel
+                sprintId={latestActiveSprintId ?? undefined}
+                projectId={projectId}
+                onClose={() => setActivityPanelOpen(false)}
+              />
             </aside>
           )}
         </div>
 
-        {/* Status bar */}
         <StatusBar />
-
-        {/* Command palette */}
         <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} />
       </div>
     </TooltipProvider>
