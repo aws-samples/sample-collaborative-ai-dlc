@@ -18,7 +18,7 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
     name: '',
     gitProvider: 'github',
     gitRepo: '',
-    issueIntegrationEnabled: true,
+    issueIntegrationEnabled: false,
   });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
