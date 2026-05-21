@@ -1,6 +1,7 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
+import { buildResponse } from '../shared/response.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
@@ -28,25 +29,6 @@ const cacheSet = (key, value) => {
     etagCache.delete(oldest);
   }
 };
-
-const allowedOrigin = (headers) => {
-  const origins = (process.env.CORS_ALLOWED_ORIGINS || '*').split(',');
-  const reqOrigin = headers?.origin || headers?.Origin;
-  return origins.includes(reqOrigin) ? reqOrigin : origins[0];
-};
-
-const buildResponse = (event, { methods = 'GET,OPTIONS' } = {}) =>
-  (statusCode, body, extraHeaders = {}) => ({
-    statusCode,
-    headers: {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': allowedOrigin(event?.headers),
-      'Access-Control-Allow-Headers': 'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token',
-      'Access-Control-Allow-Methods': methods,
-      ...extraHeaders,
-    },
-    body: JSON.stringify(body),
-  });
 
 const resolveGitToken = async (item) => {
   if (!item?.parameterName) throw new Error('No SSM parameter name set');
@@ -129,7 +111,7 @@ const rateLimitBody = (r) => {
 };
 
 export const handler = async (event) => {
-  const response = buildResponse(event);
+  const response = buildResponse(event, { methods: 'GET,OPTIONS' });
 
   if (event.httpMethod === 'OPTIONS') return response(200, {});
   if (event.httpMethod !== 'GET') return response(405, { error: 'Method not allowed' });
