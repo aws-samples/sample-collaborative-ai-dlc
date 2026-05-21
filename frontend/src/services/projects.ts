@@ -9,6 +9,7 @@ export interface Project {
   gitProvider: 'github' | 'gitlab';
   gitRepo: string;
   agentCli: AgentCli;
+  issueIntegrationEnabled?: boolean;
   createdAt: string;
   userRole?: ProjectRole;
 }
@@ -18,6 +19,7 @@ export interface CreateProjectInput {
   gitProvider: 'github' | 'gitlab';
   gitRepo: string;
   agentCli?: AgentCli;
+  issueIntegrationEnabled?: boolean;
 }
 
 export interface UpdateProjectInput {
@@ -25,6 +27,7 @@ export interface UpdateProjectInput {
   gitRepo?: string;
   gitProvider?: 'github' | 'gitlab';
   agentCli?: AgentCli;
+  issueIntegrationEnabled?: boolean;
 }
 
 export interface Member {

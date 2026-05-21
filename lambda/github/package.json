@@ -1,9 +1,15 @@
 {
   "name": "github-lambda",
   "version": "1.0.0",
-  "dependencies": {
-    "@aws-sdk/client-dynamodb": "^3.0.0",
-    "@aws-sdk/client-secrets-manager": "^3.0.0",
-    "@aws-sdk/lib-dynamodb": "^3.1040.0"
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "vitest run --project=github",
+    "test:watch": "vitest --project=github",
+    "build": "esbuild index.js --bundle --platform=node --target=node24 --format=esm --external:@aws-sdk/* --outfile=.build/index.mjs",
+    "lint": "oxlint .",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check ."
   }
 }

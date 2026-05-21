@@ -18,6 +18,7 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
     name: '',
     gitProvider: 'github',
     gitRepo: '',
+    issueIntegrationEnabled: false,
   });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -171,6 +172,27 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
                 disabled
               />
             </div>
+            {formData.gitProvider === 'github' && (
+              <div className="mb-4">
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={formData.issueIntegrationEnabled ?? false}
+                    onChange={(e) =>
+                      setFormData({ ...formData, issueIntegrationEnabled: e.target.checked })
+                    }
+                    className="mt-0.5"
+                    disabled={submitting}
+                  />
+                  <span className="text-sm text-gray-700 dark:text-gray-300">
+                    <span className="font-medium">Enable GitHub issue integration</span>
+                    <span className="block text-xs text-gray-500 dark:text-gray-400">
+                      Browse issues on the project page and start sprints from them.
+                    </span>
+                  </span>
+                </label>
+              </div>
+            )}
             <div className="flex justify-end gap-2 mt-6">
               <button
                 type="button"
