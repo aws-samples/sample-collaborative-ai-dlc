@@ -717,8 +717,11 @@ module "github_issues_lambda" {
 
   source_path = [
     {
-      path             = "${path.module}/../../../../lambda/github-issues"
-      npm_requirements = true
+      path = "${path.module}/../../../../lambda/github-issues"
+      commands = [
+        "cd ../.. && npm run build -w github-issues",
+        ":zip lambda/github-issues/.build",
+      ]
     }
   ]
 
