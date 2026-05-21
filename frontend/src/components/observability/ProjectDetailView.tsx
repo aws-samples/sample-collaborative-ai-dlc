@@ -1,11 +1,9 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Separator } from '@/components/ui/separator';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import {
   FolderGit2, GitBranch, ExternalLink, Bot, Loader2, CheckCircle2,
@@ -16,10 +14,8 @@ import { AgentStreamPanel } from '@/components/AgentStreamPanel';
 import { useAgentStatus } from '@/hooks/useAgentStatus';
 import { useSprintEvents } from '@/hooks/useSprintEvents';
 import { agentsService } from '@/services/agents';
-import { sprintsService, type Sprint } from '@/services/sprints';
-import { realtimeService } from '@/services/realtime';
-import type { ProjectAgentInfo, LastToolMap, PendingQuestionsMap, VelocityMetrics } from '@/hooks/useObservability';
-import type { Project } from '@/services/projects';
+import { type Sprint } from '@/services/sprints';
+import type { ProjectAgentInfo, VelocityMetrics } from '@/hooks/useObservability';
 
 interface ProjectDetailViewProps {
   info: ProjectAgentInfo;
@@ -57,7 +53,7 @@ function formatRelativeTime(dateStr: string | null): string {
 }
 
 export function ProjectDetailView({
-  info, allSprints, lastTool, pendingQuestions, velocity, onNavigate, onBack,
+  info, allSprints, pendingQuestions, velocity, onNavigate, onBack,
 }: ProjectDetailViewProps) {
   const { project, sprint, progress, taskStatuses } = info;
   const agentStatus = sprint?.currentAgentStatus;

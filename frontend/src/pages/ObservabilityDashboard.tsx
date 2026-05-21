@@ -1,7 +1,6 @@
 import { useNavigate } from 'react-router-dom';
 import { useObservabilityContext } from './ObservabilityLayout';
 import {
-  DashboardMetrics,
   AgentStatusCards,
   ActivityFeed,
   StuckAlert,
@@ -15,10 +14,10 @@ import { RefreshCw, Zap } from 'lucide-react';
 export default function ObservabilityDashboard() {
   const navigate = useNavigate();
   const {
-    filtered, projects,
+    filtered,
     activityFeed, lastToolMap, pendingQuestions,
     stuckDetections, velocityMap, refresh,
-    selectedProjectId, setSelectedProjectId,
+    setSelectedProjectId,
   } = useObservabilityContext();
 
   const activeCount = filtered.filter(p =>

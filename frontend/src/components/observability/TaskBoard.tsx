@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { cn } from '@/lib/utils';
-import { Loader2, CheckCircle2, XCircle, Circle, ListChecks } from 'lucide-react';
+import { Loader2, CheckCircle2, XCircle, Circle } from 'lucide-react';
 import type { ProjectAgentInfo } from '@/hooks/useObservability';
 import type { TaskAgentStatus } from '@/services/agents';
 
