@@ -63,6 +63,10 @@ const derivePrimaryRepo = (repos, legacyGitRepo) => {
   return primary.url;
 };
 
+// Validates owner/repo format. GitHub allows alphanumeric, hyphens,
+// underscores, and dots; max 39 chars for owner and 100 for repo.
+const REPO_URL_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}\/[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$/;
+
 // Auto-detect role from repo URL patterns (lightweight heuristic).
 const guessRole = (url) => {
   const lower = (url || '').toLowerCase();
@@ -368,6 +372,9 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
 
     const data = JSON.parse(event.body || '{}');
     if (!data.url) return response(400, { error: 'url is required' });
+    if (!REPO_URL_PATTERN.test(data.url)) {
+      return response(400, { error: 'url must be in owner/repo format' });
+    }
 
     // Check for duplicates
     const duplicate = await g
