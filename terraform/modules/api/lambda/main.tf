@@ -70,8 +70,15 @@ resource "aws_iam_role_policy" "neptune_reader" {
   name = "neptune-access"
   role = aws_iam_role.neptune_reader.id
   policy = jsonencode({
-    Version   = "2012-10-17"
-    Statement = [local.neptune_statement]
+    Version = "2012-10-17"
+    Statement = [
+      local.neptune_statement,
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem"]
+        Resource = [var.git_connections_table_arn]
+      }
+    ]
   })
 }
 
@@ -317,6 +324,7 @@ module "projects_lambda" {
     NEPTUNE_ENDPOINT     = var.neptune_endpoint
     ENVIRONMENT          = var.environment
     CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    GIT_CONNECTIONS_TABLE = var.git_connections_table_name
   }
 }
 
@@ -668,17 +676,16 @@ module "github_lambda" {
 
   function_name = "${var.project_name}-github-${var.environment}"
   handler       = "index.handler"
-  runtime       = "nodejs18.x"
+  runtime       = "nodejs24.x"
   timeout       = 30
 
   source_path = [
     {
-      path             = "${path.module}/../../../../lambda/github"
-      npm_requirements = true
-    },
-    {
-      path          = "${path.module}/../../../../lambda/shared"
-      prefix_in_zip = "shared"
+      path = "${path.module}/../../../../lambda/github"
+      commands = [
+        "cd ../.. && npm run build -w github-lambda",
+        ":zip lambda/github/.build",
+      ]
     }
   ]
 

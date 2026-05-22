@@ -52,6 +52,15 @@ resource "aws_api_gateway_resource" "member" {
 }
 
 # -----------------------------------------------------------------------------
+# /projects/{projectId}/repos Resource
+# -----------------------------------------------------------------------------
+resource "aws_api_gateway_resource" "project_repos" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.project.id
+  path_part   = "repos"
+}
+
+# -----------------------------------------------------------------------------
 # /projects/{projectId}/sprints Resource
 # -----------------------------------------------------------------------------
 resource "aws_api_gateway_resource" "sprints" {
@@ -360,6 +369,78 @@ resource "aws_api_gateway_integration" "member_delete" {
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
   uri                     = var.users_lambda_invoke_arn
+}
+
+# =============================================================================
+# Repos Methods (GET list, POST add, DELETE remove)
+# =============================================================================
+resource "aws_api_gateway_method" "project_repos_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.project_repos.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+
+  request_parameters = {
+    "method.request.path.projectId" = true
+  }
+}
+
+resource "aws_api_gateway_method" "project_repos_post" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.project_repos.id
+  http_method   = "POST"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+
+  request_parameters = {
+    "method.request.path.projectId" = true
+  }
+}
+
+resource "aws_api_gateway_method" "project_repos_delete" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.project_repos.id
+  http_method   = "DELETE"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+
+  request_parameters = {
+    "method.request.path.projectId" = true
+  }
+}
+
+resource "aws_api_gateway_integration" "project_repos_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.project_repos.id
+  http_method             = aws_api_gateway_method.project_repos_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.projects_lambda_invoke_arn
+}
+
+resource "aws_api_gateway_integration" "project_repos_post" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.project_repos.id
+  http_method             = aws_api_gateway_method.project_repos_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.projects_lambda_invoke_arn
+}
+
+resource "aws_api_gateway_integration" "project_repos_delete" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.project_repos.id
+  http_method             = aws_api_gateway_method.project_repos_delete.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.projects_lambda_invoke_arn
+}
+
+module "cors_project_repos" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.project_repos.id
 }
 
 # =============================================================================

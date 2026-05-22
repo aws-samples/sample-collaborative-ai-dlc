@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { useAuth } from '../contexts/AuthContext';
 import {
   projectsService,
   type Project,
@@ -7,34 +8,11 @@ import {
   type ProjectRole,
   type CognitoUser,
   type AgentCli,
+  type ProjectRepo,
 } from '../services/projects';
 import { agentsService } from '../services/agents';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Switch } from '@/components/ui/switch';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
-import { ArrowLeft, Trash2, X, AlertCircle, CheckCircle2 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { GitHubRepoSelect } from '../components/GitHubRepoSelect';
+import type { GitHubRepo } from '../services/github';
 
 const ROLE_LABELS: Record<ProjectRole, string> = {
   owner: 'Owner',
@@ -48,16 +26,16 @@ const ROLE_DESCRIPTIONS: Record<ProjectRole, string> = {
   member: 'Collaborate on sprints and trigger agents',
 };
 
-const ROLE_BADGE: Record<ProjectRole, string> = {
-  owner: 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20',
-  admin: 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20',
-  member: 'bg-muted text-muted-foreground border-transparent',
+const ROLE_COLORS: Record<ProjectRole, string> = {
+  owner: 'bg-amber-100 text-amber-800',
+  admin: 'bg-blue-100 text-blue-800',
+  member: 'bg-gray-100 text-gray-700',
 };
 
 const AGENT_CLI_CONFIG: Record<AgentCli, { label: string; description: string }> = {
   kiro: {
     label: 'Kiro',
-    description: 'AWS Kiro CLI — API key authentication',
+    description: 'AWS Kiro CLI — device-flow SSO authentication',
   },
   claude: {
     label: 'Claude Code',
@@ -69,9 +47,21 @@ const AGENT_CLI_CONFIG: Record<AgentCli, { label: string; description: string }>
   },
 };
 
+const REPO_ROLE_COLORS: Record<string, string> = {
+  primary: 'bg-purple-100 text-purple-800',
+  frontend: 'bg-cyan-100 text-cyan-800',
+  backend: 'bg-green-100 text-green-800',
+  api: 'bg-emerald-100 text-emerald-800',
+  infra: 'bg-orange-100 text-orange-800',
+  shared: 'bg-yellow-100 text-yellow-800',
+  docs: 'bg-gray-100 text-gray-600',
+  unknown: 'bg-gray-100 text-gray-500',
+};
+
 export default function ProjectSettings() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
+  useAuth();
 
   const [project, setProject] = useState<Project | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
@@ -79,15 +69,23 @@ export default function ProjectSettings() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
+  // Edit state
   const [editName, setEditName] = useState('');
   const [editGitRepo, setEditGitRepo] = useState('');
-  const [editIssueIntegration, setEditIssueIntegration] = useState(false);
   const [saving, setSaving] = useState(false);
 
+  // Agent CLI state
   const [editAgentCli, setEditAgentCli] = useState<AgentCli>('kiro');
   const [savingAgentCli, setSavingAgentCli] = useState(false);
   const [availableCliNames, setAvailableCliNames] = useState<AgentCli[]>(['kiro']);
 
+  const [repos, setRepos] = useState<ProjectRepo[]>([]);
+  const [showAddRepo, setShowAddRepo] = useState(false);
+  const [selectedNewRepos, setSelectedNewRepos] = useState<string[]>([]);
+  const [addingRepo, setAddingRepo] = useState(false);
+  const [removingRepo, setRemovingRepo] = useState<string | null>(null);
+
+  // Add member state
   const [showAddMember, setShowAddMember] = useState(false);
   const [newMemberUserId, setNewMemberUserId] = useState('');
   const [newMemberEmail, setNewMemberEmail] = useState('');
@@ -100,6 +98,7 @@ export default function ProjectSettings() {
   const [showUserDropdown, setShowUserDropdown] = useState(false);
   const userDropdownRef = useRef<HTMLDivElement>(null);
 
+  // Role change confirmation
   const [confirmRoleChange, setConfirmRoleChange] = useState<{
     userId: string;
     newRole: ProjectRole;
@@ -120,8 +119,8 @@ export default function ProjectSettings() {
       setProject(proj);
       setEditName(proj.name);
       setEditGitRepo(proj.gitRepo);
-      setEditIssueIntegration(proj.issueIntegrationEnabled ?? false);
       setEditAgentCli(proj.agentCli ?? 'kiro');
+      setRepos(proj.repos ?? []);
       setMembers(Array.isArray(mems) ? mems : []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load project');
@@ -130,13 +129,11 @@ export default function ProjectSettings() {
     }
   }, [projectId]);
 
+  // Load available CLI capabilities separately (non-blocking)
   useEffect(() => {
-    agentsService
-      .getCapabilities()
-      .then((c) => setAvailableCliNames(c.available))
-      .catch(() => {
-        /* non-fatal — keep default ['kiro'] */
-      });
+    agentsService.getCapabilities()
+      .then(c => setAvailableCliNames(c.available))
+      .catch(() => { /* non-fatal — keep default ['kiro'] */ });
   }, []);
 
   useEffect(() => {
@@ -145,7 +142,10 @@ export default function ProjectSettings() {
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
-      if (userDropdownRef.current && !userDropdownRef.current.contains(e.target as Node)) {
+      if (
+        userDropdownRef.current &&
+        !userDropdownRef.current.contains(e.target as Node)
+      ) {
         setShowUserDropdown(false);
       }
     };
@@ -162,9 +162,12 @@ export default function ProjectSettings() {
     setLoadingUsers(true);
     try {
       const users = await projectsService.listCognitoUsers();
+      // Filter out users who are already members
       const memberIds = new Set(members.map((m) => m.userId));
       setCognitoUsers(
-        users.filter((u) => u.enabled && u.status === 'CONFIRMED' && !memberIds.has(u.userId)),
+        users.filter(
+          (u) => u.enabled && u.status === 'CONFIRMED' && !memberIds.has(u.userId)
+        )
       );
     } catch (err) {
       console.error('Failed to load users:', err);
@@ -201,7 +204,10 @@ export default function ProjectSettings() {
   const filteredUsers = cognitoUsers.filter((u) => {
     if (!userSearch) return true;
     const q = userSearch.toLowerCase();
-    return u.email.toLowerCase().includes(q) || u.displayName.toLowerCase().includes(q);
+    return (
+      u.email.toLowerCase().includes(q) ||
+      u.displayName.toLowerCase().includes(q)
+    );
   });
 
   const handleSaveProject = async (e: React.FormEvent) => {
@@ -210,16 +216,9 @@ export default function ProjectSettings() {
     clearMessages();
     setSaving(true);
     try {
-      const updates: {
-        name?: string;
-        gitRepo?: string;
-        issueIntegrationEnabled?: boolean;
-      } = {};
+      const updates: Record<string, string> = {};
       if (editName !== project.name) updates.name = editName;
       if (editGitRepo !== project.gitRepo) updates.gitRepo = editGitRepo;
-      if (editIssueIntegration !== (project.issueIntegrationEnabled ?? false)) {
-        updates.issueIntegrationEnabled = editIssueIntegration;
-      }
       if (Object.keys(updates).length === 0) {
         setSaving(false);
         return;
@@ -248,6 +247,48 @@ export default function ProjectSettings() {
       setError(err instanceof Error ? err.message : 'Failed to update agent CLI');
     } finally {
       setSavingAgentCli(false);
+    }
+  };
+
+  const handleAddRepos = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!projectId || selectedNewRepos.length === 0) return;
+    clearMessages();
+    setAddingRepo(true);
+    try {
+      const results = await Promise.allSettled(
+        selectedNewRepos.map(url => projectsService.addRepo(projectId, { url }))
+      );
+      const succeeded = results.filter(r => r.status === 'fulfilled').length;
+      const failed = results.filter(r => r.status === 'rejected').length;
+      setSelectedNewRepos([]);
+      setShowAddRepo(false);
+      if (failed > 0) {
+        setSuccess(`${succeeded} added, ${failed} failed`);
+      } else {
+        setSuccess(`${succeeded} repositor${succeeded === 1 ? 'y' : 'ies'} added`);
+      }
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to add repositories');
+    } finally {
+      setAddingRepo(false);
+    }
+  };
+
+  const handleRemoveRepo = async (repoUrl: string) => {
+    if (!projectId) return;
+    clearMessages();
+    setRemovingRepo(repoUrl);
+    try {
+      await projectsService.removeRepo(projectId, repoUrl);
+      setRepos(prev => prev.filter(r => r.url !== repoUrl));
+      setSuccess('Repository removed');
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to remove repository');
+    } finally {
+      setRemovingRepo(null);
     }
   };
 
@@ -303,513 +344,588 @@ export default function ProjectSettings() {
     }
   };
 
+  // Determine which roles the current user can assign
   const getAssignableRoles = (): ProjectRole[] => {
     if (userRole === 'owner') return ['owner', 'admin', 'member'];
     if (userRole === 'admin') return ['member'];
     return [];
   };
 
-  if (!projectId) return <div className="p-6">Project not found</div>;
+  if (!projectId) return <div>Project not found</div>;
 
   return (
-    <div className="h-full">
-      <div className="max-w-4xl mx-auto p-6">
-        {/* Header */}
-        <div className="mb-6 flex items-center gap-3">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="gap-1.5 -ml-2"
-            onClick={() => navigate(`/project/${projectId}`)}
-          >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            Back to Project
-          </Button>
-          <div className="h-5 w-px bg-border" />
-          <h1 className="text-xl font-semibold tracking-tight">Project Settings</h1>
-          {userRole && (
-            <Badge variant="outline" className={cn('text-[10px] ml-auto', ROLE_BADGE[userRole])}>
-              {ROLE_LABELS[userRole]}
-            </Badge>
-          )}
-        </div>
+    <div className="max-w-4xl mx-auto p-6 space-y-6">
+      <div className="flex items-center gap-3">
+        <button
+          onClick={() => navigate(`/project/${projectId}`)}
+          className="text-muted-foreground hover:text-foreground flex items-center gap-1 text-sm"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+          </svg>
+          Back
+        </button>
+        <div className="h-5 w-px bg-border" />
+        <h1 className="text-lg font-bold tracking-tight">Project Settings</h1>
+        {userRole && (
+          <span className={`px-2 py-0.5 text-xs rounded font-medium ${ROLE_COLORS[userRole]}`}>
+            {ROLE_LABELS[userRole]}
+          </span>
+        )}
+      </div>
 
+      <div>
         {/* Messages */}
         {error && (
-          <div className="bg-destructive/5 border border-destructive/20 text-destructive px-4 py-3 rounded-md mb-4 flex items-start justify-between gap-3 text-sm">
-            <div className="flex items-start gap-2">
-              <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
-              <span>{error}</span>
-            </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-6 w-6 -mr-1 -mt-0.5 text-destructive hover:text-destructive"
+          <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4 flex justify-between items-center">
+            {error}
+            <button
               onClick={() => setError(null)}
+              className="text-red-500 hover:text-red-700"
             >
-              <X className="h-3.5 w-3.5" />
-            </Button>
+              x
+            </button>
           </div>
         )}
         {success && (
-          <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 dark:text-emerald-400 px-4 py-3 rounded-md mb-4 flex items-start justify-between gap-3 text-sm">
-            <div className="flex items-start gap-2">
-              <CheckCircle2 className="h-4 w-4 mt-0.5 shrink-0" />
-              <span>{success}</span>
-            </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-6 w-6 -mr-1 -mt-0.5"
+          <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded mb-4 flex justify-between items-center">
+            {success}
+            <button
               onClick={() => setSuccess(null)}
+              className="text-green-500 hover:text-green-700"
             >
-              <X className="h-3.5 w-3.5" />
-            </Button>
+              x
+            </button>
           </div>
         )}
 
         {loading ? (
-          <div className="text-center py-12 text-muted-foreground text-sm">Loading...</div>
+          <div className="text-center py-12 text-gray-500">Loading...</div>
         ) : (
           <>
-            {/* General */}
-            <Card className="mb-6">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">General</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <form onSubmit={handleSaveProject} className="space-y-4">
-                  <div className="space-y-1.5">
-                    <Label htmlFor="proj-name">Project Name</Label>
-                    <Input
-                      id="proj-name"
+            {/* Project Settings */}
+            <div className="bg-white rounded-lg shadow px-5 py-4 mb-4">
+              <h2 className="text-sm font-semibold mb-3">General</h2>
+              <form onSubmit={handleSaveProject}>
+                <div className="grid md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">
+                      Project Name
+                    </label>
+                    <input
+                      type="text"
                       value={editName}
                       onChange={(e) => setEditName(e.target.value)}
+                      className="w-full border rounded px-2.5 py-1.5 text-sm disabled:bg-gray-50 disabled:text-gray-500"
                       disabled={!canEditProject || saving}
                       required
                     />
                   </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="proj-repo">GitHub Repository</Label>
-                    <Input
-                      id="proj-repo"
-                      value={editGitRepo}
-                      onChange={(e) => setEditGitRepo(e.target.value)}
-                      placeholder="owner/repo"
-                      className="font-mono text-sm"
-                      disabled={!canEditProject || saving}
-                    />
-                    {!canEditProject && (
-                      <p className="text-xs text-muted-foreground">
-                        Only owners and admins can change the repository
-                      </p>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">
+                      Main Repository
+                    </label>
+                    {canEditProject ? (
+                      <GitHubRepoSelect
+                        value={editGitRepo}
+                        onChange={(repo: GitHubRepo | null) => {
+                          setEditGitRepo(repo ? repo.fullName : '');
+                        }}
+                      />
+                    ) : (
+                      <p className="text-sm font-mono text-gray-900 py-1.5">{editGitRepo || 'Not configured'}</p>
                     )}
                   </div>
-                  {project?.gitProvider === 'github' && (
-                    <div className="flex items-start justify-between gap-4 pt-1">
-                      <div className="space-y-0.5">
-                        <Label htmlFor="proj-issues" className="text-sm">
-                          Enable GitHub issue integration
-                        </Label>
-                        <p className="text-xs text-muted-foreground">
-                          Browse issues on the project page and start sprints from them.
-                        </p>
-                      </div>
-                      <Switch
-                        id="proj-issues"
-                        checked={editIssueIntegration}
-                        onCheckedChange={setEditIssueIntegration}
-                        disabled={!canEditProject || saving}
-                      />
-                    </div>
-                  )}
-                  {canEditProject && (
-                    <div className="flex justify-end pt-2">
-                      <Button type="submit" size="sm" disabled={saving}>
-                        {saving ? 'Saving...' : 'Save Changes'}
-                      </Button>
-                    </div>
-                  )}
-                </form>
-              </CardContent>
-            </Card>
-
-            {/* Agent CLI */}
-            <Card className="mb-6">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">Agent</CardTitle>
-                <p className="text-sm text-muted-foreground">
-                  Choose which AI agent CLI runs agents for this project. Only CLIs installed in the
-                  current deployment are available.
-                </p>
-              </CardHeader>
-              <CardContent>
-                <form onSubmit={handleSaveAgentCli}>
-                  <div className="space-y-2">
-                    {(
-                      Object.entries(AGENT_CLI_CONFIG) as [
-                        AgentCli,
-                        { label: string; description: string },
-                      ][]
-                    ).map(([key, cfg]) => {
-                      const isAvailable = availableCliNames.includes(key);
-                      const isSelected = editAgentCli === key;
-                      const isCurrent = project?.agentCli === key;
-                      const isSelectable = isAvailable || isCurrent;
-                      return (
-                        <label
-                          key={key}
-                          className={cn(
-                            'flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
-                            isSelected
-                              ? 'border-primary bg-primary/5'
-                              : isSelectable
-                                ? 'border-border hover:bg-accent/40'
-                                : 'border-border bg-muted/40 opacity-60 cursor-not-allowed',
-                          )}
-                        >
-                          <input
-                            type="radio"
-                            name="agentCli"
-                            value={key}
-                            checked={isSelected}
-                            disabled={!canEditProject || savingAgentCli || !isSelectable}
-                            onChange={() => setEditAgentCli(key)}
-                            className="mt-0.5 accent-primary"
-                          />
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className="text-sm font-medium">{cfg.label}</span>
-                              {!isAvailable && !isCurrent && (
-                                <Badge variant="outline" className="text-[10px] h-4">
-                                  not available
-                                </Badge>
-                              )}
-                              {!isAvailable && isCurrent && (
-                                <Badge
-                                  variant="outline"
-                                  className="text-[10px] h-4 bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20"
-                                >
-                                  no workers
-                                </Badge>
-                              )}
-                              {isAvailable && isSelected && (
-                                <Badge
-                                  variant="outline"
-                                  className="text-[10px] h-4 bg-primary/10 text-primary border-primary/20"
-                                >
-                                  active
-                                </Badge>
-                              )}
-                            </div>
-                            <p className="text-xs text-muted-foreground mt-0.5">
-                              {cfg.description}
-                            </p>
-                          </div>
-                        </label>
-                      );
-                    })}
-                  </div>
-                  {!canEditProject && (
-                    <p className="text-xs text-muted-foreground mt-2">
-                      Only owners and admins can change the agent CLI
-                    </p>
-                  )}
-                  {canEditProject && (
-                    <div className="flex justify-end pt-3">
-                      <Button
-                        type="submit"
-                        size="sm"
-                        disabled={savingAgentCli || editAgentCli === project?.agentCli}
-                      >
-                        {savingAgentCli ? 'Saving...' : 'Save Changes'}
-                      </Button>
-                    </div>
-                  )}
-                </form>
-              </CardContent>
-            </Card>
-
-            {/* Members */}
-            <Card>
-              <CardHeader className="pb-3">
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-base">Members ({members.length})</CardTitle>
-                  {canManageMembers && (
-                    <Button size="sm" onClick={openAddMemberModal}>
-                      + Add Member
-                    </Button>
-                  )}
                 </div>
-                <div className="flex flex-wrap gap-3 pt-1 text-xs text-muted-foreground">
-                  {Object.entries(ROLE_DESCRIPTIONS).map(([role, desc]) => (
-                    <div key={role} className="flex items-center gap-1">
-                      <Badge
-                        variant="outline"
-                        className={cn('text-[10px] h-4', ROLE_BADGE[role as ProjectRole])}
-                      >
-                        {ROLE_LABELS[role as ProjectRole]}
-                      </Badge>
-                      <span>— {desc}</span>
+                {canEditProject && (
+                  <div className="mt-3 flex justify-end">
+                    <button
+                      type="submit"
+                      disabled={saving}
+                      className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50"
+                    >
+                      {saving ? 'Saving...' : 'Save'}
+                    </button>
+                  </div>
+                )}
+              </form>
+            </div>
+
+            <div className="bg-white rounded-lg shadow px-5 py-4 mb-4">
+              <div className="flex justify-between items-center mb-3">
+                <h2 className="text-sm font-semibold">Repositories ({repos.length})</h2>
+                {canEditProject && (
+                  <button
+                    onClick={() => setShowAddRepo(true)}
+                    className="px-2.5 py-1 bg-indigo-600 text-white text-xs rounded hover:bg-indigo-700"
+                  >
+                    + Add
+                  </button>
+                )}
+              </div>
+              {repos.length === 0 ? (
+                <p className="text-xs text-gray-500 py-3 text-center">
+                  No repositories linked yet.
+                </p>
+              ) : (
+                <div className="divide-y">
+                  {repos.map((repo) => (
+                    <div key={repo.url} className="py-2 flex items-center gap-2">
+                      <div className="flex-1 min-w-0 flex items-center gap-2">
+                        <span className="text-sm font-mono text-gray-900 truncate">{repo.url}</span>
+                        <span className={`shrink-0 px-1.5 py-0.5 text-[10px] font-medium rounded ${REPO_ROLE_COLORS[repo.role] || REPO_ROLE_COLORS.unknown}`}>
+                          {repo.role}
+                        </span>
+                        {repo.detectedStack && (
+                          <span className="shrink-0 text-[10px] text-gray-400">{repo.detectedStack}</span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {canEditProject && (
+                          <button
+                            onClick={() => handleRemoveRepo(repo.url)}
+                            disabled={removingRepo === repo.url}
+                            className="text-gray-300 hover:text-red-500 p-0.5 disabled:opacity-50"
+                            title="Remove repository"
+                          >
+                            {removingRepo === repo.url ? (
+                              <span className="text-[10px]">...</span>
+                            ) : (
+                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                              </svg>
+                            )}
+                          </button>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>
-              </CardHeader>
-              <CardContent>
-                <div className="divide-y divide-border">
-                  {members.map((member) => (
-                    <div
-                      key={member.userId}
-                      className="py-3 flex items-center justify-between gap-3"
+              )}
+            </div>
+
+            {/* Agent CLI */}
+            <div className="bg-white rounded-lg shadow px-5 py-4 mb-4">
+              <h2 className="text-sm font-semibold mb-1">Agent</h2>
+              <p className="text-xs text-gray-500 mb-3">
+                Choose which AI agent CLI runs agents for this project.
+              </p>
+              <form onSubmit={handleSaveAgentCli}>
+                <div className="space-y-2">
+                  {(Object.entries(AGENT_CLI_CONFIG) as [AgentCli, { label: string; description: string }][]).map(([key, cfg]) => {
+                    const isAvailable = availableCliNames.includes(key);
+                    const isSelected = editAgentCli === key;
+                    const isCurrent = project?.agentCli === key;
+                    const isSelectable = isAvailable || isCurrent;
+                    return (
+                      <label
+                        key={key}
+                        className={`flex items-center gap-2.5 px-3 py-2 rounded-lg border cursor-pointer transition-colors ${
+                          isSelected
+                            ? 'border-indigo-500 bg-indigo-50'
+                            : isSelectable
+                            ? 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                            : 'border-gray-100 bg-gray-50 opacity-50 cursor-not-allowed'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="agentCli"
+                          value={key}
+                          checked={isSelected}
+                          disabled={!canEditProject || savingAgentCli || !isSelectable}
+                          onChange={() => setEditAgentCli(key)}
+                        />
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          <span className="text-sm font-medium text-gray-900">{cfg.label}</span>
+                          <span className="text-xs text-gray-400 truncate">{cfg.description}</span>
+                        </div>
+                        {!isAvailable && !isCurrent && (
+                          <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded shrink-0">unavailable</span>
+                        )}
+                        {!isAvailable && isCurrent && (
+                          <span className="text-[10px] text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded shrink-0">no workers</span>
+                        )}
+                        {isAvailable && isSelected && (
+                          <span className="text-[10px] text-indigo-600 bg-indigo-100 px-1.5 py-0.5 rounded shrink-0">active</span>
+                        )}
+                      </label>
+                    );
+                  })}
+                </div>
+                {canEditProject && (
+                  <div className="mt-3 flex justify-end">
+                    <button
+                      type="submit"
+                      disabled={savingAgentCli || editAgentCli === project?.agentCli}
+                      className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50"
                     >
-                      <div className="flex items-center gap-3 min-w-0">
-                        <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center text-sm font-medium text-muted-foreground shrink-0">
-                          {(member.email || member.userId).charAt(0).toUpperCase()}
-                        </div>
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium truncate">
-                            {member.email || member.userId}
-                          </p>
-                          <p className="text-xs text-muted-foreground/80 font-mono truncate">
-                            {member.userId.substring(0, 12)}...
-                          </p>
-                        </div>
+                      {savingAgentCli ? 'Saving...' : 'Save'}
+                    </button>
+                  </div>
+                )}
+              </form>
+            </div>
+
+            {/* Members */}
+            <div className="bg-white rounded-lg shadow px-5 py-4">
+              <div className="flex justify-between items-center mb-3">
+                <h2 className="text-sm font-semibold">
+                  Members ({members.length})
+                </h2>
+                {canManageMembers && (
+                  <button
+                    onClick={openAddMemberModal}
+                    className="px-2.5 py-1 bg-indigo-600 text-white text-xs rounded hover:bg-indigo-700"
+                  >
+                    + Add
+                  </button>
+                )}
+              </div>
+
+              <div className="divide-y">
+                {members.map((member) => (
+                  <div
+                    key={member.userId}
+                    className="py-2 flex items-center justify-between"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div className="w-6 h-6 bg-gray-200 rounded-full flex items-center justify-center text-[10px] font-medium text-gray-600 shrink-0">
+                        {(member.email || member.userId)
+                          .charAt(0)
+                          .toUpperCase()}
                       </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        {canManageMembers ? (
-                          <select
-                            value={member.role}
-                            onChange={(e) => {
-                              const newRole = e.target.value as ProjectRole;
-                              if (newRole !== member.role) {
-                                setConfirmRoleChange({ userId: member.userId, newRole });
-                              }
-                            }}
-                            disabled={
-                              userRole === 'admin' &&
-                              (member.role === 'owner' || member.role === 'admin')
+                      <span className="text-sm text-gray-900 truncate">
+                        {member.email || member.userId}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {canManageMembers ? (
+                        <select
+                          value={member.role}
+                          onChange={(e) => {
+                            const newRole = e.target.value as ProjectRole;
+                            if (newRole !== member.role) {
+                              setConfirmRoleChange({
+                                userId: member.userId,
+                                newRole,
+                              });
                             }
-                            className={cn(
-                              'text-xs h-7 rounded-md border border-input bg-background px-2 disabled:opacity-60',
-                              ROLE_BADGE[member.role],
-                            )}
-                          >
-                            {(userRole === 'owner' ? ['owner', 'admin', 'member'] : ['member']).map(
-                              (r) => (
-                                <option key={r} value={r}>
-                                  {ROLE_LABELS[r as ProjectRole]}
-                                </option>
-                              ),
-                            )}
-                            {userRole !== 'owner' && member.role !== 'member' && (
+                          }}
+                          disabled={
+                            (userRole === 'admin' &&
+                              (member.role === 'owner' ||
+                                member.role === 'admin')) ||
+                            false
+                          }
+                          className={`text-xs border rounded px-1.5 py-0.5 ${ROLE_COLORS[member.role]} disabled:opacity-60`}
+                        >
+                          {(userRole === 'owner'
+                            ? ['owner', 'admin', 'member']
+                            : ['member']
+                          ).map((r) => (
+                            <option key={r} value={r}>
+                              {ROLE_LABELS[r as ProjectRole]}
+                            </option>
+                          ))}
+                          {userRole !== 'owner' &&
+                            member.role !== 'member' && (
                               <option value={member.role} disabled>
                                 {ROLE_LABELS[member.role]}
                               </option>
                             )}
-                          </select>
-                        ) : (
-                          <Badge
-                            variant="outline"
-                            className={cn('text-[10px]', ROLE_BADGE[member.role])}
+                        </select>
+                      ) : (
+                        <span
+                          className={`px-1.5 py-0.5 text-[10px] rounded font-medium ${ROLE_COLORS[member.role]}`}
+                        >
+                          {ROLE_LABELS[member.role]}
+                        </span>
+                      )}
+                      {canManageMembers &&
+                        !(
+                          userRole === 'admin' &&
+                          (member.role === 'owner' || member.role === 'admin')
+                        ) && (
+                          <button
+                            onClick={() => setConfirmRemove(member.userId)}
+                            className="text-gray-300 hover:text-red-500 p-0.5"
+                            title="Remove member"
                           >
-                            {ROLE_LABELS[member.role]}
-                          </Badge>
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                          </button>
                         )}
-                        {canManageMembers &&
-                          !(
-                            userRole === 'admin' &&
-                            (member.role === 'owner' || member.role === 'admin')
-                          ) && (
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                              onClick={() => setConfirmRemove(member.userId)}
-                              title="Remove member"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
-                          )}
-                      </div>
                     </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
+                  </div>
+                ))}
+              </div>
+            </div>
           </>
         )}
       </div>
 
-      {/* Add Member Dialog */}
-      <Dialog open={showAddMember} onOpenChange={setShowAddMember}>
-        <DialogContent className="sm:max-w-md">
-          <form onSubmit={handleAddMember}>
-            <DialogHeader>
-              <DialogTitle>Add Member</DialogTitle>
-              <DialogDescription>
-                Pick a confirmed Cognito user and assign them a role on this project.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-4 py-4">
-              <div className="space-y-1.5">
-                <Label>User</Label>
-                {selectedUser ? (
-                  <div className="flex items-center justify-between border rounded-md px-3 py-2 bg-muted/40">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <div className="w-6 h-6 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-medium shrink-0">
-                        {(selectedUser.displayName || selectedUser.email).charAt(0).toUpperCase()}
-                      </div>
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium truncate">{selectedUser.email}</p>
-                        {selectedUser.displayName && (
-                          <p className="text-xs text-muted-foreground truncate">
-                            {selectedUser.displayName}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="h-6 w-6 ml-2 text-muted-foreground"
-                      onClick={clearSelectedUser}
-                      disabled={addingMember}
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                ) : (
-                  <div className="relative" ref={userDropdownRef}>
-                    <Input
-                      value={userSearch}
-                      onChange={(e) => {
-                        setUserSearch(e.target.value);
-                        setShowUserDropdown(true);
-                      }}
-                      onFocus={() => setShowUserDropdown(true)}
-                      placeholder={loadingUsers ? 'Loading users...' : 'Search by email or name...'}
-                      disabled={addingMember || loadingUsers}
-                    />
-                    {showUserDropdown && !loadingUsers && (
-                      <div className="absolute z-10 mt-1 w-full bg-popover text-popover-foreground border rounded-md shadow-md max-h-48 overflow-y-auto">
-                        {filteredUsers.length === 0 ? (
-                          <div className="px-3 py-2 text-sm text-muted-foreground">
-                            {cognitoUsers.length === 0 ? 'No users available' : 'No matching users'}
-                          </div>
-                        ) : (
-                          filteredUsers.map((u) => (
-                            <button
-                              key={u.userId}
-                              type="button"
-                              onClick={() => selectUser(u)}
-                              className="w-full text-left px-3 py-2 hover:bg-accent flex items-center gap-2 border-b last:border-b-0 border-border"
-                            >
-                              <div className="w-6 h-6 rounded-full bg-muted text-muted-foreground flex items-center justify-center text-xs font-medium shrink-0">
-                                {(u.displayName || u.email).charAt(0).toUpperCase()}
-                              </div>
-                              <div className="min-w-0">
-                                <p className="text-sm truncate">{u.email}</p>
-                                {u.displayName && (
-                                  <p className="text-xs text-muted-foreground truncate">
-                                    {u.displayName}
-                                  </p>
-                                )}
-                              </div>
-                            </button>
-                          ))
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
+      {showAddRepo && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-lg w-full mx-4">
+            <h2 className="text-lg font-semibold mb-4">Add Repositories</h2>
+            <form onSubmit={handleAddRepos}>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Repositories
+                </label>
+                <GitHubRepoSelect
+                  multiple
+                  value={selectedNewRepos}
+                  onChange={(repos) => {
+                    setSelectedNewRepos(repos.map(r => r.fullName));
+                  }}
+                  exclude={repos.map(r => r.url)}
+                />
+                <p className="text-xs text-gray-400 mt-1">
+                  Role and tech stack are detected automatically.
+                </p>
               </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="add-member-role">Role</Label>
-                <select
-                  id="add-member-role"
-                  value={newMemberRole}
-                  onChange={(e) => setNewMemberRole(e.target.value as ProjectRole)}
-                  className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm"
+              <div className="flex justify-end gap-2 mt-6">
+                <button
+                  type="button"
+                  onClick={() => { setShowAddRepo(false); setSelectedNewRepos([]); }}
+                  className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded"
+                  disabled={addingRepo}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50"
+                  disabled={addingRepo || selectedNewRepos.length === 0}
+                >
+                  {addingRepo ? 'Adding...' : `Add ${selectedNewRepos.length || ''} Repositor${selectedNewRepos.length === 1 ? 'y' : 'ies'}`}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Add Member Modal */}
+      {showAddMember && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+            <h2 className="text-lg font-semibold mb-4">Add Member</h2>
+            <form onSubmit={handleAddMember}>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    User
+                  </label>
+                  {selectedUser ? (
+                    <div className="flex items-center justify-between border rounded px-3 py-2 bg-gray-50">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="w-6 h-6 bg-indigo-100 rounded-full flex items-center justify-center text-xs font-medium text-indigo-700 shrink-0">
+                          {(
+                            selectedUser.displayName ||
+                            selectedUser.email
+                          )
+                            .charAt(0)
+                            .toUpperCase()}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-gray-900 truncate">
+                            {selectedUser.email}
+                          </p>
+                          {selectedUser.displayName && (
+                            <p className="text-xs text-gray-500 truncate">
+                              {selectedUser.displayName}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={clearSelectedUser}
+                        className="text-gray-400 hover:text-gray-600 ml-2 shrink-0"
+                        disabled={addingMember}
+                      >
+                        <svg
+                          className="w-4 h-4"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M6 18L18 6M6 6l12 12"
+                          />
+                        </svg>
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="relative" ref={userDropdownRef}>
+                      <input
+                        type="text"
+                        value={userSearch}
+                        onChange={(e) => {
+                          setUserSearch(e.target.value);
+                          setShowUserDropdown(true);
+                        }}
+                        onFocus={() => setShowUserDropdown(true)}
+                        className="w-full border rounded px-3 py-2 text-sm"
+                        placeholder={
+                          loadingUsers
+                            ? 'Loading users...'
+                            : 'Search by email or name...'
+                        }
+                        disabled={addingMember || loadingUsers}
+                      />
+                      {showUserDropdown && !loadingUsers && (
+                        <div className="absolute z-10 mt-1 w-full bg-white border rounded-md shadow-lg max-h-48 overflow-y-auto">
+                          {filteredUsers.length === 0 ? (
+                            <div className="px-3 py-2 text-sm text-gray-500">
+                              {cognitoUsers.length === 0
+                                ? 'No users available'
+                                : 'No matching users'}
+                            </div>
+                          ) : (
+                            filteredUsers.map((u) => (
+                              <button
+                                key={u.userId}
+                                type="button"
+                                onClick={() => selectUser(u)}
+                                className="w-full text-left px-3 py-2 hover:bg-gray-50 flex items-center gap-2 border-b last:border-b-0"
+                              >
+                                <div className="w-6 h-6 bg-gray-100 rounded-full flex items-center justify-center text-xs font-medium text-gray-600 shrink-0">
+                                  {(u.displayName || u.email)
+                                    .charAt(0)
+                                    .toUpperCase()}
+                                </div>
+                                <div className="min-w-0">
+                                  <p className="text-sm text-gray-900 truncate">
+                                    {u.email}
+                                  </p>
+                                  {u.displayName && (
+                                    <p className="text-xs text-gray-500 truncate">
+                                      {u.displayName}
+                                    </p>
+                                  )}
+                                </div>
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Role
+                  </label>
+                  <select
+                    value={newMemberRole}
+                    onChange={(e) =>
+                      setNewMemberRole(e.target.value as ProjectRole)
+                    }
+                    className="w-full border rounded px-3 py-2"
+                    disabled={addingMember}
+                  >
+                    {getAssignableRoles().map((r) => (
+                      <option key={r} value={r}>
+                        {ROLE_LABELS[r]} - {ROLE_DESCRIPTIONS[r]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 mt-6">
+                <button
+                  type="button"
+                  onClick={() => setShowAddMember(false)}
+                  className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded"
                   disabled={addingMember}
                 >
-                  {getAssignableRoles().map((r) => (
-                    <option key={r} value={r}>
-                      {ROLE_LABELS[r]} - {ROLE_DESCRIPTIONS[r]}
-                    </option>
-                  ))}
-                </select>
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50"
+                  disabled={addingMember || !selectedUser}
+                >
+                  {addingMember ? 'Adding...' : 'Add Member'}
+                </button>
               </div>
-            </div>
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setShowAddMember(false)}
-                disabled={addingMember}
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Confirm Role Change Modal */}
+      {confirmRoleChange && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-sm w-full mx-4">
+            <h3 className="text-lg font-semibold mb-2">Change Role</h3>
+            <p className="text-gray-600 mb-4">
+              Change this member's role to{' '}
+              <span className="font-semibold">
+                {ROLE_LABELS[confirmRoleChange.newRole]}
+              </span>
+              ?
+            </p>
+            <p className="text-sm text-gray-500 mb-4">
+              {ROLE_DESCRIPTIONS[confirmRoleChange.newRole]}
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setConfirmRoleChange(null)}
+                className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded"
               >
                 Cancel
-              </Button>
-              <Button type="submit" disabled={addingMember || !selectedUser}>
-                {addingMember ? 'Adding...' : 'Add Member'}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+              </button>
+              <button
+                onClick={() =>
+                  handleRoleChange(
+                    confirmRoleChange.userId,
+                    confirmRoleChange.newRole
+                  )
+                }
+                className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700"
+              >
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
-      {/* Confirm Role Change */}
-      <AlertDialog open={!!confirmRoleChange} onOpenChange={() => setConfirmRoleChange(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Change Role</AlertDialogTitle>
-            <AlertDialogDescription>
-              {confirmRoleChange && (
-                <>
-                  Change this member's role to{' '}
-                  <span className="font-semibold text-foreground">
-                    {ROLE_LABELS[confirmRoleChange.newRole]}
-                  </span>
-                  ? {ROLE_DESCRIPTIONS[confirmRoleChange.newRole]}
-                </>
-              )}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() =>
-                confirmRoleChange &&
-                handleRoleChange(confirmRoleChange.userId, confirmRoleChange.newRole)
-              }
-            >
-              Confirm
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      {/* Confirm Remove */}
-      <AlertDialog open={!!confirmRemove} onOpenChange={() => setConfirmRemove(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Remove Member</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to remove this member from the project? They will lose access
-              immediately.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => confirmRemove && handleRemoveMember(confirmRemove)}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              Remove
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {/* Confirm Remove Modal */}
+      {confirmRemove && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-sm w-full mx-4">
+            <h3 className="text-lg font-semibold mb-2">Remove Member</h3>
+            <p className="text-gray-600 mb-6">
+              Are you sure you want to remove this member from the project? They
+              will lose access immediately.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setConfirmRemove(null)}
+                className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handleRemoveMember(confirmRemove)}
+                className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
+              >
+                Remove
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
