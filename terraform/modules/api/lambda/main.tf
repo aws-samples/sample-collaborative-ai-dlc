@@ -668,17 +668,16 @@ module "github_lambda" {
 
   function_name = "${var.project_name}-github-${var.environment}"
   handler       = "index.handler"
-  runtime       = "nodejs18.x"
+  runtime       = "nodejs24.x"
   timeout       = 30
 
   source_path = [
     {
-      path             = "${path.module}/../../../../lambda/github"
-      npm_requirements = true
-    },
-    {
-      path          = "${path.module}/../../../../lambda/shared"
-      prefix_in_zip = "shared"
+      path = "${path.module}/../../../../lambda/github"
+      commands = [
+        "cd ../.. && npm run build -w github-lambda",
+        ":zip lambda/github/.build",
+      ]
     }
   ]
 
