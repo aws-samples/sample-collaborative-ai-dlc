@@ -35,7 +35,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { ArrowLeft, Trash2, X, AlertCircle, CheckCircle2, Plus } from 'lucide-react';
+import { ArrowLeft, Trash2, X, AlertCircle, CheckCircle2, Upload, Download } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const ROLE_LABELS: Record<ProjectRole, string> = {
@@ -115,7 +115,10 @@ export default function ProjectSettings() {
 
   // Steering docs state
   const [steeringDocs, setSteeringDocs] = useState<SteeringDoc[]>([]);
-  const [savingDocs, setSavingDocs] = useState(false);
+  const [uploadingFile, setUploadingFile] = useState(false);
+  const [confirmReplace, setConfirmReplace] = useState<File | null>(null);
+  const [confirmDeleteDoc, setConfirmDeleteDoc] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const userRole = project?.userRole;
   const canManageMembers = userRole === 'owner' || userRole === 'admin';
@@ -139,26 +142,9 @@ export default function ProjectSettings() {
       Promise.all([
         projectsService.getMcpServers(projectId).catch(() => ({ mcpServers: '[]' })),
         projectsService.getSteeringDocs(projectId).catch(() => ({ steeringDocs: [] })),
-      ]).then(async ([mcpResp, docsResp]) => {
+      ]).then(([mcpResp, docsResp]) => {
         setMcpServers(mcpResp.mcpServers ?? '[]');
-        const docs = docsResp.steeringDocs ?? [];
-        // Eagerly fetch content from each doc's presigned downloadUrl so the
-        // editor shows the saved content. Without this, an unchanged Save
-        // would upload empty strings and overwrite the S3 objects.
-        const docsWithContent = await Promise.all(
-          docs.map(async (doc) => {
-            if (!doc.downloadUrl) return { ...doc, content: '' };
-            try {
-              const resp = await fetch(doc.downloadUrl);
-              if (!resp.ok) return { ...doc, content: '' };
-              const content = await resp.text();
-              return { ...doc, content };
-            } catch {
-              return { ...doc, content: '' };
-            }
-          }),
-        );
-        setSteeringDocs(docsWithContent);
+        setSteeringDocs(docsResp.steeringDocs ?? []);
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load project');
@@ -361,64 +347,94 @@ export default function ProjectSettings() {
     }
   };
 
-  const handleAddSteeringDoc = () => {
-    if (steeringDocs.length >= 20) return;
-    setSteeringDocs([...steeringDocs, { filename: '', s3Key: '', content: '' }]);
-  };
+  const MAX_STEERING_DOCS = 20;
+  const MAX_STEERING_FILE_SIZE = 100 * 1024; // 100 KB
 
-  const handleUpdateSteeringDoc = (idx: number, field: keyof SteeringDoc, value: string) => {
-    const updated = steeringDocs.map((d, i) => (i === idx ? { ...d, [field]: value } : d));
-    setSteeringDocs(updated);
-  };
-
-  const handleRemoveSteeringDoc = (idx: number) => {
-    setSteeringDocs(steeringDocs.filter((_, i) => i !== idx));
-  };
-
-  const handleSaveSteeringDocs = async () => {
+  const performSteeringUpload = async (file: File, replace: boolean) => {
     if (!projectId) return;
     clearMessages();
-    // Validate: all docs need a .md filename
-    for (const doc of steeringDocs) {
-      if (!doc.filename.endsWith('.md')) {
-        setError('All steering document filenames must end with .md');
-        return;
-      }
-    }
-    setSavingDocs(true);
+    setUploadingFile(true);
     try {
+      // Build the new metadata list. If replacing, keep the same entry slot
+      // (same filename = same s3Key in backend). If new, append.
+      const existingIdx = steeringDocs.findIndex((d) => d.filename === file.name);
+      const nextDocs =
+        replace && existingIdx >= 0
+          ? steeringDocs
+          : [...steeringDocs, { filename: file.name, s3Key: '' }];
+
       const resp = await projectsService.updateSteeringDocs(
         projectId,
-        steeringDocs.map((d) => ({ filename: d.filename })),
+        nextDocs.map((d) => ({ filename: d.filename })),
       );
-      // Upload content to S3 via presigned URLs for docs that have content
-      if (resp.uploadUrls && resp.uploadUrls.length > 0) {
-        await Promise.all(
-          resp.uploadUrls.map(async (uu) => {
-            const doc = steeringDocs.find((d) => d.filename === uu.filename);
-            if (!doc?.content) return;
-            await fetch(uu.uploadUrl, {
-              method: 'PUT',
-              headers: { 'Content-Type': 'text/markdown' },
-              body: doc.content,
-            });
-          }),
-        );
+      const target = resp.uploadUrls?.find((u) => u.filename === file.name);
+      if (!target) {
+        throw new Error('Server did not return an upload URL for this file');
       }
-      // Refresh metadata from the server (s3Keys, fresh downloadUrls) but
-      // preserve the user's just-typed content so the editor doesn't blank
-      // out after Save.
-      const refreshed = await projectsService.getSteeringDocs(projectId);
-      const refreshedDocs = (refreshed.steeringDocs ?? []).map((rd) => {
-        const local = steeringDocs.find((d) => d.filename === rd.filename);
-        return { ...rd, content: local?.content ?? '' };
+      const putResp = await fetch(target.uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'text/markdown' },
+        body: file,
       });
-      setSteeringDocs(refreshedDocs);
-      setSuccess('Steering rules saved');
+      if (!putResp.ok) {
+        throw new Error(`Upload failed (HTTP ${putResp.status})`);
+      }
+      const refreshed = await projectsService.getSteeringDocs(projectId);
+      setSteeringDocs(refreshed.steeringDocs ?? []);
+      setSuccess(replace ? `Replaced ${file.name}` : `Uploaded ${file.name}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save steering rules');
+      setError(err instanceof Error ? err.message : 'Failed to upload file');
     } finally {
-      setSavingDocs(false);
+      setUploadingFile(false);
+    }
+  };
+
+  const handleSteeringFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    // Reset the input so picking the same file again triggers onChange
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    if (!file) return;
+    clearMessages();
+
+    if (!file.name.toLowerCase().endsWith('.md')) {
+      setError(`"${file.name}" is not a Markdown file (.md required)`);
+      return;
+    }
+    if (file.size > MAX_STEERING_FILE_SIZE) {
+      setError(
+        `"${file.name}" is ${(file.size / 1024).toFixed(1)} KB. Maximum allowed is 100 KB.`,
+      );
+      return;
+    }
+    if (steeringDocs.some((d) => d.filename === file.name)) {
+      setConfirmReplace(file);
+      return;
+    }
+    if (steeringDocs.length >= MAX_STEERING_DOCS) {
+      setError(`Maximum ${MAX_STEERING_DOCS} steering documents per project`);
+      return;
+    }
+    performSteeringUpload(file, false);
+  };
+
+  const handleDeleteSteeringDoc = async (filename: string) => {
+    if (!projectId) return;
+    clearMessages();
+    setUploadingFile(true);
+    try {
+      const nextDocs = steeringDocs.filter((d) => d.filename !== filename);
+      await projectsService.updateSteeringDocs(
+        projectId,
+        nextDocs.map((d) => ({ filename: d.filename })),
+      );
+      const refreshed = await projectsService.getSteeringDocs(projectId);
+      setSteeringDocs(refreshed.steeringDocs ?? []);
+      setSuccess(`Deleted ${filename}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete file');
+    } finally {
+      setUploadingFile(false);
+      setConfirmDeleteDoc(null);
     }
   };
 
@@ -694,60 +710,90 @@ export default function ProjectSettings() {
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between">
                   <CardTitle className="text-base">Steering Rules</CardTitle>
-                  {canEditProject && steeringDocs.length < 20 && (
-                    <Button size="sm" variant="outline" onClick={handleAddSteeringDoc}>
-                      <Plus className="h-3.5 w-3.5 mr-1" />
-                      Add Document
-                    </Button>
+                  {canEditProject && (
+                    <>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept=".md,text/markdown"
+                        className="hidden"
+                        onChange={handleSteeringFileSelected}
+                      />
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={
+                          uploadingFile || steeringDocs.length >= MAX_STEERING_DOCS
+                        }
+                        title={
+                          steeringDocs.length >= MAX_STEERING_DOCS
+                            ? `Maximum ${MAX_STEERING_DOCS} documents`
+                            : undefined
+                        }
+                      >
+                        <Upload className="h-3.5 w-3.5 mr-1" />
+                        {uploadingFile ? 'Uploading...' : 'Upload File'}
+                      </Button>
+                    </>
                   )}
                 </div>
               </CardHeader>
-              <CardContent className="space-y-4">
+              <CardContent className="space-y-3">
                 <p className="text-xs text-muted-foreground">
                   Markdown documents loaded into the agent context for every phase in this project
-                  (coding standards, API reference, framework guidelines, etc.). Maximum 20
-                  documents.
+                  (coding standards, API reference, framework guidelines, etc.). Maximum{' '}
+                  {MAX_STEERING_DOCS} documents, 100 KB each. Only <code>.md</code> files.
                 </p>
-                {steeringDocs.length === 0 && (
+                {steeringDocs.length === 0 ? (
                   <p className="text-sm text-muted-foreground text-center py-4">
-                    No steering rules configured.
+                    No steering rules uploaded.
                   </p>
-                )}
-                {steeringDocs.map((doc, idx) => (
-                  <div key={idx} className="border rounded-md p-3 space-y-2">
-                    <div className="flex items-center gap-2">
-                      <Input
-                        value={doc.filename}
-                        onChange={(e) => handleUpdateSteeringDoc(idx, 'filename', e.target.value)}
-                        placeholder="filename.md"
-                        className="font-mono text-xs h-7 flex-1"
-                        disabled={!canEditProject}
-                      />
-                      {canEditProject && (
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="h-7 w-7 text-muted-foreground hover:text-destructive shrink-0"
-                          onClick={() => handleRemoveSteeringDoc(idx)}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
-                      )}
-                    </div>
-                    <Textarea
-                      value={doc.content ?? ''}
-                      onChange={(e) => handleUpdateSteeringDoc(idx, 'content', e.target.value)}
-                      placeholder="Enter Markdown content..."
-                      className="font-mono text-xs min-h-[80px] resize-y"
-                      disabled={!canEditProject}
-                    />
-                  </div>
-                ))}
-                {canEditProject && steeringDocs.length > 0 && (
-                  <div className="flex justify-end">
-                    <Button size="sm" onClick={handleSaveSteeringDocs} disabled={savingDocs}>
-                      {savingDocs ? 'Saving...' : 'Save Steering Rules'}
-                    </Button>
+                ) : (
+                  <div className="divide-y divide-border border rounded-md">
+                    {steeringDocs.map((doc) => (
+                      <div
+                        key={doc.filename}
+                        className="px-3 py-2 flex items-center justify-between gap-2"
+                      >
+                        <span className="font-mono text-xs truncate">{doc.filename}</span>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <Button
+                            asChild={!!doc.downloadUrl}
+                            size="icon"
+                            variant="ghost"
+                            className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                            disabled={!doc.downloadUrl}
+                            title="Download"
+                          >
+                            {doc.downloadUrl ? (
+                              <a
+                                href={doc.downloadUrl}
+                                download={doc.filename}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                              >
+                                <Download className="h-3.5 w-3.5" />
+                              </a>
+                            ) : (
+                              <Download className="h-3.5 w-3.5" />
+                            )}
+                          </Button>
+                          {canEditProject && (
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                              onClick={() => setConfirmDeleteDoc(doc.filename)}
+                              disabled={uploadingFile}
+                              title="Delete"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 )}
               </CardContent>
@@ -1029,6 +1075,79 @@ export default function ProjectSettings() {
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               Remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Confirm Replace Steering Doc */}
+      <AlertDialog
+        open={!!confirmReplace}
+        onOpenChange={(open) => {
+          if (!open) setConfirmReplace(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Replace File?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirmReplace && (
+                <>
+                  A file named{' '}
+                  <span className="font-mono font-semibold text-foreground">
+                    {confirmReplace.name}
+                  </span>{' '}
+                  already exists. Replace it with the new upload?
+                </>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (confirmReplace) {
+                  const file = confirmReplace;
+                  setConfirmReplace(null);
+                  performSteeringUpload(file, true);
+                }
+              }}
+            >
+              Replace
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Confirm Delete Steering Doc */}
+      <AlertDialog
+        open={!!confirmDeleteDoc}
+        onOpenChange={(open) => {
+          if (!open) setConfirmDeleteDoc(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Steering File</AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirmDeleteDoc && (
+                <>
+                  Delete{' '}
+                  <span className="font-mono font-semibold text-foreground">
+                    {confirmDeleteDoc}
+                  </span>
+                  ? This cannot be undone.
+                </>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => confirmDeleteDoc && handleDeleteSteeringDoc(confirmDeleteDoc)}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

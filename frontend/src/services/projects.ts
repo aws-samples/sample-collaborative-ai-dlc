@@ -55,8 +55,6 @@ export interface SteeringDoc {
   s3Key: string;
   downloadUrl?: string;
   uploadUrl?: string;
-  /** Client-side only: in-memory content before upload */
-  content?: string;
 }
 
 export const projectsService = {
