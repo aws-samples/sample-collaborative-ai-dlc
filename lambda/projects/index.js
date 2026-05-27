@@ -1,5 +1,6 @@
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
+import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
@@ -407,30 +408,32 @@ async function handleProjectSteeringDocs(g, response, httpMethod, projectId, use
 
     // Compute S3 keys and generate presigned upload URLs for new/changed docs
     const uploadUrls = [];
-    const savedDocs = await Promise.all(
-      incomingDocs.map(async (doc) => {
-        const filename = doc.filename || '';
-        if (!filename.endsWith('.md')) {
-          return { filename, s3Key: doc.s3Key || '' };
-        }
-        const s3Key = `steering/${projectId}/project--${filename}`;
-        try {
-          const uploadUrl = await getSignedUrl(
-            s3,
-            new PutObjectCommand({
-              Bucket: artifactsBucket,
-              Key: s3Key,
-              ContentType: 'text/markdown',
-            }),
-            { expiresIn: 3600 },
-          );
-          uploadUrls.push({ filename, s3Key, uploadUrl });
-        } catch (err) {
-          console.error(`[projects] Failed to generate presigned URL for ${s3Key}:`, err.message);
-        }
-        return { filename, s3Key };
-      }),
-    );
+    const savedDocs = [];
+    for (const doc of incomingDocs) {
+      const filename = doc.filename || '';
+      const safeBase = path.basename(filename);
+      if (!safeBase || safeBase !== filename || !safeBase.toLowerCase().endsWith('.md')) {
+        return response(400, {
+          error: `Invalid filename "${filename}". Must end in .md and contain no path separators.`,
+        });
+      }
+      const s3Key = `steering/${projectId}/project--${safeBase}`;
+      try {
+        const uploadUrl = await getSignedUrl(
+          s3,
+          new PutObjectCommand({
+            Bucket: artifactsBucket,
+            Key: s3Key,
+            ContentType: 'text/markdown',
+          }),
+          { expiresIn: 3600 },
+        );
+        uploadUrls.push({ filename: safeBase, s3Key, uploadUrl });
+      } catch (err) {
+        console.error(`[projects] Failed to generate presigned URL for ${s3Key}:`, err.message);
+      }
+      savedDocs.push({ filename: safeBase, s3Key });
+    }
 
     // Persist metadata to Neptune
     const metadataJson = JSON.stringify(savedDocs);

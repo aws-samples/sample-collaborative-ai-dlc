@@ -166,6 +166,24 @@ function _neptuneVal(valueMap, key) {
   return raw ?? '';
 }
 
+// Sanitize a steering-doc filename and resolve its absolute destination
+// inside `rulesDir`. Strips path separators with path.basename(), enforces a
+// `.md` extension, and verifies the resolved path stays under `rulesDir`
+// (defence in depth against future path.basename quirks). Returns null if
+// the filename is unsafe or empty.
+function _safeRulesDest(rulesDir, filename, prefix) {
+  if (!filename || typeof filename !== 'string') return null;
+  const base = path.basename(filename);
+  if (!base || base === '.' || base === '..') return null;
+  if (!base.toLowerCase().endsWith('.md')) return null;
+  const destName = `${prefix}${base}`;
+  const dest = path.resolve(rulesDir, destName);
+  const root = path.resolve(rulesDir);
+  if (dest !== path.join(root, destName)) return null;
+  if (!dest.startsWith(root + path.sep)) return null;
+  return dest;
+}
+
 // Write project-level and task-level steering rule files into the driver's
 // rules directory. Reads steering_docs metadata from Neptune, then fetches
 // each document from S3 (using the ECS task IAM role) and writes it as
@@ -178,7 +196,6 @@ async function writeScopedRules(rulesDir, projectId, taskId) {
 
   try {
     const creds = await fromNodeProviderChain()();
-    creds.region = env.region;
     const info = getUrlAndHeaders(neptuneEndpoint, '8182', creds, '/gremlin', 'wss');
     const conn = new gremlin.driver.DriverRemoteConnection(info.url, { headers: info.headers });
     const g = gremlin.process.AnonymousTraversalSource.traversal().withRemote(conn);
@@ -228,6 +245,12 @@ async function writeScopedRules(rulesDir, projectId, taskId) {
     // Fetch and write project-level docs
     for (const doc of projectDocs) {
       if (!doc.s3Key) continue;
+      const filename = doc.filename || path.basename(doc.s3Key);
+      const dest = _safeRulesDest(rulesDir, filename, 'project--');
+      if (!dest) {
+        console.warn(`[pool-worker] Skipping project steering doc with unsafe filename: ${filename}`);
+        continue;
+      }
       try {
         const result = await s3.send(
           new GetObjectCommand({ Bucket: artifactsBucket, Key: doc.s3Key }),
@@ -235,9 +258,8 @@ async function writeScopedRules(rulesDir, projectId, taskId) {
         const chunks = [];
         for await (const chunk of result.Body) chunks.push(chunk);
         const content = Buffer.concat(chunks).toString('utf8');
-        const destName = `project--${doc.filename || path.basename(doc.s3Key)}`;
-        fs.writeFileSync(path.join(rulesDir, destName), content, 'utf8');
-        console.log(`[pool-worker] Wrote project steering rule: ${destName}`);
+        fs.writeFileSync(dest, content, 'utf8');
+        console.log(`[pool-worker] Wrote project steering rule: ${path.basename(dest)}`);
       } catch (err) {
         console.error(
           `[pool-worker] Failed to fetch project steering doc ${doc.s3Key}:`,
@@ -249,6 +271,12 @@ async function writeScopedRules(rulesDir, projectId, taskId) {
     // Fetch and write task-level docs
     for (const doc of taskDocs) {
       if (!doc.s3Key) continue;
+      const filename = doc.filename || path.basename(doc.s3Key);
+      const dest = _safeRulesDest(rulesDir, filename, 'task--');
+      if (!dest) {
+        console.warn(`[pool-worker] Skipping task steering doc with unsafe filename: ${filename}`);
+        continue;
+      }
       try {
         const result = await s3.send(
           new GetObjectCommand({ Bucket: artifactsBucket, Key: doc.s3Key }),
@@ -256,9 +284,8 @@ async function writeScopedRules(rulesDir, projectId, taskId) {
         const chunks = [];
         for await (const chunk of result.Body) chunks.push(chunk);
         const content = Buffer.concat(chunks).toString('utf8');
-        const destName = `task--${doc.filename || path.basename(doc.s3Key)}`;
-        fs.writeFileSync(path.join(rulesDir, destName), content, 'utf8');
-        console.log(`[pool-worker] Wrote task steering rule: ${destName}`);
+        fs.writeFileSync(dest, content, 'utf8');
+        console.log(`[pool-worker] Wrote task steering rule: ${path.basename(dest)}`);
       } catch (err) {
         console.error(`[pool-worker] Failed to fetch task steering doc ${doc.s3Key}:`, err.message);
       }

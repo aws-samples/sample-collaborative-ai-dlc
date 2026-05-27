@@ -139,9 +139,26 @@ export default function ProjectSettings() {
       Promise.all([
         projectsService.getMcpServers(projectId).catch(() => ({ mcpServers: '[]' })),
         projectsService.getSteeringDocs(projectId).catch(() => ({ steeringDocs: [] })),
-      ]).then(([mcpResp, docsResp]) => {
+      ]).then(async ([mcpResp, docsResp]) => {
         setMcpServers(mcpResp.mcpServers ?? '[]');
-        setSteeringDocs(docsResp.steeringDocs ?? []);
+        const docs = docsResp.steeringDocs ?? [];
+        // Eagerly fetch content from each doc's presigned downloadUrl so the
+        // editor shows the saved content. Without this, an unchanged Save
+        // would upload empty strings and overwrite the S3 objects.
+        const docsWithContent = await Promise.all(
+          docs.map(async (doc) => {
+            if (!doc.downloadUrl) return { ...doc, content: '' };
+            try {
+              const resp = await fetch(doc.downloadUrl);
+              if (!resp.ok) return { ...doc, content: '' };
+              const content = await resp.text();
+              return { ...doc, content };
+            } catch {
+              return { ...doc, content: '' };
+            }
+          }),
+        );
+        setSteeringDocs(docsWithContent);
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load project');
@@ -388,9 +405,15 @@ export default function ProjectSettings() {
           }),
         );
       }
-      // Refresh from server to get updated s3Keys and download URLs
+      // Refresh metadata from the server (s3Keys, fresh downloadUrls) but
+      // preserve the user's just-typed content so the editor doesn't blank
+      // out after Save.
       const refreshed = await projectsService.getSteeringDocs(projectId);
-      setSteeringDocs(refreshed.steeringDocs ?? []);
+      const refreshedDocs = (refreshed.steeringDocs ?? []).map((rd) => {
+        const local = steeringDocs.find((d) => d.filename === rd.filename);
+        return { ...rd, content: local?.content ?? '' };
+      });
+      setSteeringDocs(refreshedDocs);
       setSuccess('Steering rules saved');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save steering rules');
@@ -634,8 +657,8 @@ export default function ProjectSettings() {
               <CardContent className="space-y-3">
                 <p className="text-xs text-muted-foreground">
                   JSON array of MCP server definitions injected into every agent session for this
-                  project. These are merged with global MCP servers (global wins only when there is
-                  no name conflict — project-level takes precedence).
+                  project. These are merged with global MCP servers; when names collide,
+                  project-level entries take precedence over global ones.
                 </p>
                 <Textarea
                   value={mcpServers}

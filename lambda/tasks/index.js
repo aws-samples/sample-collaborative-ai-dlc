@@ -1,4 +1,5 @@
 const gremlin = require('gremlin');
+const path = require('node:path');
 const { randomUUID } = require('crypto');
 const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
 const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
@@ -315,37 +316,41 @@ async function handleTaskConfig(g, res, httpMethod, sprintId, taskId, body) {
       if (sprintResult.value) {
         projectId = getTaskVal(sprintResult.value, 'id');
       }
-    } catch {
-      // Non-fatal: fall back to sprintId as path segment
-      projectId = sprintId || 'unknown';
+    } catch (err) {
+      console.error('[tasks] Failed to resolve projectId for task', taskId, err.message);
+    }
+    if (!projectId) {
+      return res(404, { error: 'Could not resolve project for task; cannot save steering docs' });
     }
 
     // Compute S3 keys and generate presigned upload URLs
     const uploadUrls = [];
-    const savedDocs = await Promise.all(
-      incomingDocs.map(async (doc) => {
-        const filename = doc.filename || '';
-        if (!filename.endsWith('.md')) {
-          return { filename, s3Key: doc.s3Key || '' };
-        }
-        const s3Key = `steering/${projectId}/${taskId}/task--${filename}`;
-        try {
-          const uploadUrl = await getSignedUrl(
-            s3,
-            new PutObjectCommand({
-              Bucket: artifactsBucket,
-              Key: s3Key,
-              ContentType: 'text/markdown',
-            }),
-            { expiresIn: 3600 },
-          );
-          uploadUrls.push({ filename, s3Key, uploadUrl });
-        } catch (err) {
-          console.error(`[tasks] Failed to generate presigned URL for ${s3Key}:`, err.message);
-        }
-        return { filename, s3Key };
-      }),
-    );
+    const savedDocs = [];
+    for (const doc of incomingDocs) {
+      const filename = doc.filename || '';
+      const safeBase = path.basename(filename);
+      if (!safeBase || safeBase !== filename || !safeBase.toLowerCase().endsWith('.md')) {
+        return res(400, {
+          error: `Invalid filename "${filename}". Must end in .md and contain no path separators.`,
+        });
+      }
+      const s3Key = `steering/${projectId}/${taskId}/task--${safeBase}`;
+      try {
+        const uploadUrl = await getSignedUrl(
+          s3,
+          new PutObjectCommand({
+            Bucket: artifactsBucket,
+            Key: s3Key,
+            ContentType: 'text/markdown',
+          }),
+          { expiresIn: 3600 },
+        );
+        uploadUrls.push({ filename: safeBase, s3Key, uploadUrl });
+      } catch (err) {
+        console.error(`[tasks] Failed to generate presigned URL for ${s3Key}:`, err.message);
+      }
+      savedDocs.push({ filename: safeBase, s3Key });
+    }
 
     // Persist steering_docs metadata to Neptune
     const metadataJson = JSON.stringify(savedDocs);
