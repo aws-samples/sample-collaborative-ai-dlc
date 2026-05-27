@@ -6,14 +6,37 @@ import {
   DeleteCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
-import { SSMClient, PutParameterCommand, DeleteParameterCommand } from '@aws-sdk/client-ssm';
+import {
+  SSMClient,
+  PutParameterCommand,
+  DeleteParameterCommand,
+  GetParameterCommand,
+} from '@aws-sdk/client-ssm';
 import crypto from 'crypto';
 import { buildResponse } from '../shared/response.js';
-import { resolveGitToken } from '../shared/git-token.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const secrets = new SecretsManagerClient({});
 const ssm = new SSMClient({});
+
+const GIT_TOKEN_PARAM_PATTERN = /^\/[\w-]+\/[\w-]+\/[\w-]+\/[\w-]+$/;
+
+// Inlined from shared/git-token.js — esbuild cannot bundle the CJS module
+// because it does `require('@aws-sdk/client-ssm')` which becomes a dynamic
+// require not supported in the ESM runtime. Mirrors the pattern adopted by
+// lambda/github-issues (see PR #180).
+const resolveGitToken = async (ssmClient, item) => {
+  if (item?.parameterName) {
+    if (!GIT_TOKEN_PARAM_PATTERN.test(item.parameterName)) {
+      throw new Error('Invalid SSM parameter name format');
+    }
+    const param = await ssmClient.send(
+      new GetParameterCommand({ Name: item.parameterName, WithDecryption: true }),
+    );
+    return JSON.parse(param.Parameter.Value).accessToken;
+  }
+  throw new Error('No SSM parameter name set');
+};
 
 class OAuthNotConfiguredError extends Error {
   constructor() {
