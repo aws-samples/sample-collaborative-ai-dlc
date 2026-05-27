@@ -298,12 +298,11 @@ module "projects_lambda" {
 
   source_path = [
     {
-      path             = "${path.module}/../../../../lambda/projects"
-      npm_requirements = true
-    },
-    {
-      path          = "${path.module}/../../../../lambda/shared"
-      prefix_in_zip = "shared"
+      path = "${path.module}/../../../../lambda/projects"
+      commands = [
+        "cd ../.. && npm run build -w projects",
+        ":zip lambda/projects/.build",
+      ]
     }
   ]
 

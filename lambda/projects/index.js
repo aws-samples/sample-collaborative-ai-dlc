@@ -1,8 +1,9 @@
-const gremlin = require('gremlin');
-const { randomUUID } = require('crypto');
-const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
-const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
-const { buildResponse } = require('./shared/response');
+import gremlin from 'gremlin';
+import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
+import { randomUUID } from 'node:crypto';
+import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
+import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
+import { buildResponse } from '../shared/response.js';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -19,18 +20,16 @@ const getVal = (obj, key) => {
 
 const getConnection = async () => {
   const host = process.env.NEPTUNE_ENDPOINT;
-  const port = '8182';
-  const region = process.env.AWS_REGION || 'us-east-1';
+  const port = process.env.GREMLIN_PORT ?? '8182';
+  const protocol = process.env.GREMLIN_PROTOCOL ?? 'wss';
 
   const credentials = await fromNodeProviderChain()();
-  credentials.region = region;
-
-  const connInfo = getUrlAndHeaders(host, port, credentials, '/gremlin', 'wss');
-
-  return new DriverRemoteConnection(connInfo.url, { headers: connInfo.headers });
+  credentials.region = process.env.AWS_REGION ?? 'us-east-1';
+  const { url, headers } = getUrlAndHeaders(host, port, credentials, '/gremlin', protocol);
+  return new DriverRemoteConnection(url, { headers });
 };
 
-exports.handler = async (event) => {
+export const handler = async (event) => {
   const response = buildResponse(event);
   console.log(
     'Request:',
@@ -49,7 +48,16 @@ exports.handler = async (event) => {
   let conn;
   try {
     conn = await getConnection();
-    const g = traversal().withRemote(conn);
+    let g = traversal().withRemote(conn);
+    if (process.env.GREMLIN_PARTITION) {
+      g = g.withStrategies(
+        new PartitionStrategy({
+          partitionKey: '_partition',
+          writePartition: process.env.GREMLIN_PARTITION,
+          readPartitions: [process.env.GREMLIN_PARTITION],
+        }),
+      );
+    }
 
     const { httpMethod, pathParameters, body } = event;
     const projectId = pathParameters?.projectId;
