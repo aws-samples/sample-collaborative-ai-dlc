@@ -7,6 +7,7 @@ import {
   type ProjectRole,
   type CognitoUser,
   type AgentCli,
+  type SteeringDoc,
 } from '../services/projects';
 import { agentsService } from '../services/agents';
 import { Button } from '@/components/ui/button';
@@ -15,6 +16,7 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
+import { Textarea } from '@/components/ui/textarea';
 import {
   Dialog,
   DialogContent,
@@ -33,7 +35,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { ArrowLeft, Trash2, X, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { ArrowLeft, Trash2, X, AlertCircle, CheckCircle2, Plus } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const ROLE_LABELS: Record<ProjectRole, string> = {
@@ -106,6 +108,15 @@ export default function ProjectSettings() {
   } | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
 
+  // MCP servers state
+  const [mcpServers, setMcpServers] = useState('[]');
+  const [mcpError, setMcpError] = useState('');
+  const [savingMcp, setSavingMcp] = useState(false);
+
+  // Steering docs state
+  const [steeringDocs, setSteeringDocs] = useState<SteeringDoc[]>([]);
+  const [savingDocs, setSavingDocs] = useState(false);
+
   const userRole = project?.userRole;
   const canManageMembers = userRole === 'owner' || userRole === 'admin';
   const canEditProject = userRole === 'owner' || userRole === 'admin';
@@ -123,6 +134,15 @@ export default function ProjectSettings() {
       setEditIssueIntegration(proj.issueIntegrationEnabled ?? false);
       setEditAgentCli(proj.agentCli ?? 'kiro');
       setMembers(Array.isArray(mems) ? mems : []);
+
+      // Load MCP servers and steering docs in parallel (non-blocking)
+      Promise.all([
+        projectsService.getMcpServers(projectId).catch(() => ({ mcpServers: '[]' })),
+        projectsService.getSteeringDocs(projectId).catch(() => ({ steeringDocs: [] })),
+      ]).then(([mcpResp, docsResp]) => {
+        setMcpServers(mcpResp.mcpServers ?? '[]');
+        setSteeringDocs(docsResp.steeringDocs ?? []);
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load project');
     } finally {
@@ -300,6 +320,82 @@ export default function ProjectSettings() {
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to remove member');
+    }
+  };
+
+  const handleSaveMcpServers = async () => {
+    if (!projectId) return;
+    clearMessages();
+    setMcpError('');
+    try {
+      JSON.parse(mcpServers);
+    } catch {
+      setMcpError('Must be a valid JSON array');
+      return;
+    }
+    setSavingMcp(true);
+    try {
+      await projectsService.updateMcpServers(projectId, mcpServers);
+      setSuccess('MCP servers saved');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save MCP servers');
+    } finally {
+      setSavingMcp(false);
+    }
+  };
+
+  const handleAddSteeringDoc = () => {
+    if (steeringDocs.length >= 20) return;
+    setSteeringDocs([...steeringDocs, { filename: '', s3Key: '', content: '' }]);
+  };
+
+  const handleUpdateSteeringDoc = (idx: number, field: keyof SteeringDoc, value: string) => {
+    const updated = steeringDocs.map((d, i) => (i === idx ? { ...d, [field]: value } : d));
+    setSteeringDocs(updated);
+  };
+
+  const handleRemoveSteeringDoc = (idx: number) => {
+    setSteeringDocs(steeringDocs.filter((_, i) => i !== idx));
+  };
+
+  const handleSaveSteeringDocs = async () => {
+    if (!projectId) return;
+    clearMessages();
+    // Validate: all docs need a .md filename
+    for (const doc of steeringDocs) {
+      if (!doc.filename.endsWith('.md')) {
+        setError('All steering document filenames must end with .md');
+        return;
+      }
+    }
+    setSavingDocs(true);
+    try {
+      const resp = await projectsService.updateSteeringDocs(
+        projectId,
+        steeringDocs.map((d) => ({ filename: d.filename })),
+      );
+      // Upload content to S3 via presigned URLs for docs that have content
+      if (resp.uploadUrls && resp.uploadUrls.length > 0) {
+        await Promise.all(
+          resp.uploadUrls.map(async (uu) => {
+            const doc = steeringDocs.find((d) => d.filename === uu.filename);
+            if (!doc?.content) return;
+            await fetch(uu.uploadUrl, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'text/markdown' },
+              body: doc.content,
+            });
+          }),
+        );
+      }
+      // Refresh from server to get updated s3Keys and download URLs
+      const refreshed = await projectsService.getSteeringDocs(projectId);
+      setSteeringDocs(refreshed.steeringDocs ?? []);
+      setSuccess('Steering rules saved');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save steering rules');
+    } finally {
+      setSavingDocs(false);
     }
   };
 
@@ -527,6 +623,110 @@ export default function ProjectSettings() {
                     </div>
                   )}
                 </form>
+              </CardContent>
+            </Card>
+
+            {/* MCP Servers */}
+            <Card className="mb-6">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">MCP Servers</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <p className="text-xs text-muted-foreground">
+                  JSON array of MCP server definitions injected into every agent session for this
+                  project. These are merged with global MCP servers (global wins only when there is
+                  no name conflict — project-level takes precedence).
+                </p>
+                <Textarea
+                  value={mcpServers}
+                  onChange={(e) => {
+                    setMcpServers(e.target.value);
+                    setMcpError('');
+                  }}
+                  className={cn(
+                    'font-mono text-xs min-h-[120px] resize-y',
+                    mcpError && 'border-destructive focus-visible:ring-destructive',
+                  )}
+                  spellCheck={false}
+                  disabled={!canEditProject}
+                  placeholder='[{"name":"my-tool","command":"npx","args":["-y","my-mcp-server"]}]'
+                />
+                {mcpError && (
+                  <p className="text-[11px] text-destructive flex items-center gap-1">
+                    <AlertCircle className="h-3 w-3 shrink-0" /> {mcpError}
+                  </p>
+                )}
+                {canEditProject && (
+                  <div className="flex justify-end">
+                    <Button size="sm" onClick={handleSaveMcpServers} disabled={savingMcp}>
+                      {savingMcp ? 'Saving...' : 'Save MCP Servers'}
+                    </Button>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Steering Rules */}
+            <Card className="mb-6">
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-base">Steering Rules</CardTitle>
+                  {canEditProject && steeringDocs.length < 20 && (
+                    <Button size="sm" variant="outline" onClick={handleAddSteeringDoc}>
+                      <Plus className="h-3.5 w-3.5 mr-1" />
+                      Add Document
+                    </Button>
+                  )}
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <p className="text-xs text-muted-foreground">
+                  Markdown documents loaded into the agent context for every phase in this project
+                  (coding standards, API reference, framework guidelines, etc.). Maximum 20
+                  documents.
+                </p>
+                {steeringDocs.length === 0 && (
+                  <p className="text-sm text-muted-foreground text-center py-4">
+                    No steering rules configured.
+                  </p>
+                )}
+                {steeringDocs.map((doc, idx) => (
+                  <div key={idx} className="border rounded-md p-3 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <Input
+                        value={doc.filename}
+                        onChange={(e) => handleUpdateSteeringDoc(idx, 'filename', e.target.value)}
+                        placeholder="filename.md"
+                        className="font-mono text-xs h-7 flex-1"
+                        disabled={!canEditProject}
+                      />
+                      {canEditProject && (
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-7 w-7 text-muted-foreground hover:text-destructive shrink-0"
+                          onClick={() => handleRemoveSteeringDoc(idx)}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
+                    </div>
+                    <Textarea
+                      value={doc.content ?? ''}
+                      onChange={(e) => handleUpdateSteeringDoc(idx, 'content', e.target.value)}
+                      placeholder="Enter Markdown content..."
+                      className="font-mono text-xs min-h-[80px] resize-y"
+                      disabled={!canEditProject}
+                    />
+                  </div>
+                ))}
+                {canEditProject && steeringDocs.length > 0 && (
+                  <div className="flex justify-end">
+                    <Button size="sm" onClick={handleSaveSteeringDocs} disabled={savingDocs}>
+                      {savingDocs ? 'Saving...' : 'Save Steering Rules'}
+                    </Button>
+                  </div>
+                )}
               </CardContent>
             </Card>
 

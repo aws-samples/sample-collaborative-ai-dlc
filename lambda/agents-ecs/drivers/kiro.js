@@ -10,6 +10,7 @@
 'use strict';
 
 const { execSync, execFileSync } = require('child_process');
+const path = require('path');
 const { SSMClient, GetParameterCommand } = require('@aws-sdk/client-ssm');
 
 // ---------------------------------------------------------------------------
@@ -132,12 +133,35 @@ function getEnvForAcpProcess(_baseEnv) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Returns the path of the always-loaded entry-point file for this driver.
+ * Kiro IDE 0.5+ reads AGENTS.md from the workspace root natively.
+ *
+ * @param {string} workspaceDir - absolute path to the workspace root
+ * @returns {string}
+ */
+function getEntryPointPath(workspaceDir) {
+  return path.join(workspaceDir, 'AGENTS.md');
+}
+
+/**
+ * Returns the directory where modular rule files go for this driver.
+ * Kiro IDE reads .kiro/steering/*.md natively.
+ *
+ * @param {string} workspaceDir - absolute path to the workspace root
+ * @returns {string}
+ */
+function getRulesDir(workspaceDir) {
+  return path.join(workspaceDir, '.kiro', 'steering');
+}
+
+/**
  * Returns additional workspace paths to copy steering content to,
- * beyond the base .kiro/steering/ directory (which pool-worker handles).
+ * beyond the native per-driver locations (which pool-worker handles via
+ * getEntryPointPath / getRulesDir).
  *
  * For Kiro, .kiro/steering/ is the native location — no extra copies needed.
  *
- * @param {string} workspaceDir - absolute path to the workspace root
+ * @param {string} _workspaceDir - absolute path to the workspace root
  * @returns {Array<{type: 'dir'|'file', dest: string}>}
  */
 function getAdditionalSteeringPaths(_workspaceDir) {
@@ -155,5 +179,7 @@ module.exports = {
   configureSettings,
   getAcpCommand,
   getEnvForAcpProcess,
+  getEntryPointPath,
+  getRulesDir,
   getAdditionalSteeringPaths,
 };

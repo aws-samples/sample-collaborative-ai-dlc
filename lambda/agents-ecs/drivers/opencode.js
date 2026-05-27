@@ -185,6 +185,7 @@ function writeProjectConfig(workspaceDir, env) {
       },
     },
     model,
+    instructions: ['.opencode/rules/*.md'],
   };
 
   try {
@@ -203,16 +204,36 @@ function writeProjectConfig(workspaceDir, env) {
 // ---------------------------------------------------------------------------
 
 /**
- * OpenCode reads project instructions from .opencode/instructions.md.
+ * Returns the path of the always-loaded entry-point file for this driver.
+ * OpenCode reads AGENTS.md from the workspace root natively.
+ *
+ * @param {string} workspaceDir - absolute path to the workspace root
+ * @returns {string}
  */
-function getAdditionalSteeringPaths(workspaceDir) {
-  return [
-    {
-      type: 'concat-dir',
-      src: path.join(workspaceDir, '.kiro', 'steering'),
-      dest: path.join(workspaceDir, '.opencode', 'instructions.md'),
-    },
-  ];
+function getEntryPointPath(workspaceDir) {
+  return path.join(workspaceDir, 'AGENTS.md');
+}
+
+/**
+ * Returns the directory where modular rule files go for this driver.
+ * OpenCode loads these via the `instructions` glob in opencode.json.
+ *
+ * @param {string} workspaceDir - absolute path to the workspace root
+ * @returns {string}
+ */
+function getRulesDir(workspaceDir) {
+  return path.join(workspaceDir, '.opencode', 'rules');
+}
+
+/**
+ * OpenCode reads project instructions from AGENTS.md and .opencode/rules/*.md
+ * (via the instructions glob in opencode.json written by writeProjectConfig).
+ * The entry-point and rules directory are now written directly by pool-worker
+ * via getEntryPointPath() / getRulesDir(). The concat-dir mechanism is
+ * retired — returns [] going forward.
+ */
+function getAdditionalSteeringPaths(_workspaceDir) {
+  return [];
 }
 
 // ---------------------------------------------------------------------------
@@ -227,5 +248,7 @@ module.exports = {
   getAcpCommand,
   getEnvForAcpProcess,
   writeProjectConfig,
+  getEntryPointPath,
+  getRulesDir,
   getAdditionalSteeringPaths,
 };

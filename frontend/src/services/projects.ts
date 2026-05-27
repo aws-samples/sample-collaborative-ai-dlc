@@ -50,6 +50,15 @@ export interface CognitoUser {
   status: string;
 }
 
+export interface SteeringDoc {
+  filename: string;
+  s3Key: string;
+  downloadUrl?: string;
+  uploadUrl?: string;
+  /** Client-side only: in-memory content before upload */
+  content?: string;
+}
+
 export const projectsService = {
   list: () => api.get<Project[]>('/projects'),
   get: (id: string) => api.get<Project>(`/projects/${id}`),
@@ -68,4 +77,19 @@ export const projectsService = {
 
   // Cognito users
   listCognitoUsers: () => api.get<CognitoUser[]>('/users'),
+
+  // Project-level MCP servers (raw JSON string)
+  getMcpServers: (projectId: string) =>
+    api.get<{ mcpServers: string }>(`/projects/${projectId}/mcp-servers`),
+  updateMcpServers: (projectId: string, mcpServers: string) =>
+    api.put<{ saved: boolean }>(`/projects/${projectId}/mcp-servers`, { mcpServers }),
+
+  // Project-level steering docs
+  getSteeringDocs: (projectId: string) =>
+    api.get<{ steeringDocs: SteeringDoc[] }>(`/projects/${projectId}/steering-docs`),
+  updateSteeringDocs: (projectId: string, steeringDocs: Array<{ filename: string }>) =>
+    api.put<{
+      saved: boolean;
+      uploadUrls: Array<{ filename: string; s3Key: string; uploadUrl: string }>;
+    }>(`/projects/${projectId}/steering-docs`, { steeringDocs }),
 };

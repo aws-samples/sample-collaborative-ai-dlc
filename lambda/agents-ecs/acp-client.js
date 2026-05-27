@@ -22,33 +22,108 @@ const driver = getDriver(AGENT_CLI);
 const ACP_VERBOSE = process.env.ACP_VERBOSE === 'true';
 
 // ---------------------------------------------------------------------------
-// Extra MCP servers — loaded once from SSM at startup
+// MCP servers — merged from global (SSM), project (Neptune), task (Neptune)
 // ---------------------------------------------------------------------------
-let extraMcpServers = null; // cached after first load
+// Cached after first load to avoid redundant lookups within the same session.
+let mergedMcpServers = null;
 
-async function loadExtraMcpServers() {
-  if (extraMcpServers !== null) return extraMcpServers;
+/**
+ * Load and merge MCP server definitions from all three scopes:
+ *   Global  — SSM Parameter Store (environment-wide, managed via Admin UI)
+ *   Project — Neptune Project node `mcp_servers` property
+ *   Task    — Neptune Task node `mcp_servers` property (only when taskId is set)
+ *
+ * Deduplication by `name`: task > project > global (more specific scope wins).
+ * Non-conflicting servers (different names) are all included.
+ */
+async function loadMergedMcpServers(projectId, taskId) {
+  if (mergedMcpServers !== null) return mergedMcpServers;
 
+  // 1. Load global servers from SSM
+  let globalServers = [];
   const ssmPath = process.env.MCP_SERVERS_SSM_PATH;
-  if (!ssmPath) {
-    extraMcpServers = [];
-    return extraMcpServers;
+  if (ssmPath) {
+    try {
+      const ssm = new SSMClient({ region: process.env.AWS_REGION || 'us-east-1' });
+      const result = await ssm.send(
+        new GetParameterCommand({ Name: ssmPath, WithDecryption: false }),
+      );
+      const raw = result.Parameter?.Value || '[]';
+      globalServers = JSON.parse(raw);
+      console.log(`[acp] Loaded ${globalServers.length} global MCP server(s) from SSM`);
+    } catch (err) {
+      console.error('[acp] Failed to load global MCP servers from SSM:', err.message);
+    }
   }
 
-  try {
-    const ssm = new SSMClient({ region: process.env.AWS_REGION || 'us-east-1' });
-    const result = await ssm.send(
-      new GetParameterCommand({ Name: ssmPath, WithDecryption: false }),
-    );
-    const raw = result.Parameter?.Value || '[]';
-    extraMcpServers = JSON.parse(raw);
-    console.log(`[acp] Loaded ${extraMcpServers.length} extra MCP server(s) from SSM`);
-  } catch (err) {
-    console.error('[acp] Failed to load extra MCP servers from SSM:', err.message);
-    extraMcpServers = [];
+  // 2. Load project and task servers from Neptune
+  let projectServers = [];
+  let taskServers = [];
+  const neptuneEndpoint = process.env.NEPTUNE_ENDPOINT;
+  if (neptuneEndpoint && projectId && projectId !== 'unknown') {
+    try {
+      const credentials = await fromNodeProviderChain()();
+      credentials.region = env.region;
+      const connInfo = getUrlAndHeaders(neptuneEndpoint, '8182', credentials, '/gremlin', 'wss');
+      const conn = new DriverRemoteConnection(connInfo.url, { headers: connInfo.headers });
+      const g = traversal().withRemote(conn);
+      try {
+        // Single Gremlin query: fetch project and (optionally) task mcp_servers
+        const projectResult = await g
+          .V()
+          .has('Project', 'id', projectId)
+          .valueMap('mcp_servers')
+          .next();
+        if (projectResult.value) {
+          const raw =
+            projectResult.value instanceof Map
+              ? (projectResult.value.get('mcp_servers') || [])[0]
+              : (projectResult.value['mcp_servers'] || [])[0];
+          if (raw) {
+            try {
+              projectServers = JSON.parse(raw);
+              console.log(
+                `[acp] Loaded ${projectServers.length} project MCP server(s) from Neptune`,
+              );
+            } catch {
+              console.error('[acp] Could not parse project mcp_servers:', raw);
+            }
+          }
+        }
+
+        if (taskId) {
+          const taskResult = await g.V().has('Task', 'id', taskId).valueMap('mcp_servers').next();
+          if (taskResult.value) {
+            const raw =
+              taskResult.value instanceof Map
+                ? (taskResult.value.get('mcp_servers') || [])[0]
+                : (taskResult.value['mcp_servers'] || [])[0];
+            if (raw) {
+              try {
+                taskServers = JSON.parse(raw);
+                console.log(`[acp] Loaded ${taskServers.length} task MCP server(s) from Neptune`);
+              } catch {
+                console.error('[acp] Could not parse task mcp_servers:', raw);
+              }
+            }
+          }
+        }
+      } finally {
+        await conn.close();
+      }
+    } catch (err) {
+      console.error('[acp] Failed to load scoped MCP servers from Neptune:', err.message);
+    }
   }
 
-  return extraMcpServers;
+  // 3. Merge: task > project > global (dedup by name; non-conflicting are additive)
+  const serverMap = new Map();
+  for (const s of globalServers) if (s.name) serverMap.set(s.name, s);
+  for (const s of projectServers) if (s.name) serverMap.set(s.name, s);
+  for (const s of taskServers) if (s.name) serverMap.set(s.name, s);
+  mergedMcpServers = [...serverMap.values()];
+  console.log(`[acp] Merged MCP servers: ${mergedMcpServers.length} total`);
+  return mergedMcpServers;
 }
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -484,8 +559,9 @@ async function main() {
 // ACP mode — JSON-RPC 2.0 over stdio (kiro, opencode, claude-agent-acp)
 // ---------------------------------------------------------------------------
 async function runAcpMode() {
-  // Load extra MCP servers from Secrets Manager (non-blocking, cached)
-  const extras = await loadExtraMcpServers();
+  // Load merged MCP servers from SSM (global), Neptune project, and Neptune task.
+  // Result is cached within this process for the session lifetime.
+  const extras = await loadMergedMcpServers(env.projectId, env.agentTaskId);
 
   // Authenticate the driver in THIS process so module-level state (e.g.
   // _cachedBearerToken) is populated. pool-worker.js already authenticated

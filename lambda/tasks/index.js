@@ -3,6 +3,8 @@ const { randomUUID } = require('crypto');
 const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
 const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
 const { buildResponse } = require('./shared/response');
+const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -35,6 +37,16 @@ exports.handler = async (event) => {
     const g = traversal().withRemote(conn);
     const { httpMethod, pathParameters, body } = event;
     const { sprintId, taskId } = pathParameters || {};
+
+    // ---------------------------------------------------------------------------
+    // Sub-resource routing: /sprints/{sprintId}/tasks/{taskId}/config
+    // Detected by examining event.path since the /config resource has its own
+    // API Gateway resource that maps to this Lambda.
+    // ---------------------------------------------------------------------------
+    const requestPath = event.path || '';
+    if (taskId && requestPath.endsWith('/config')) {
+      return await handleTaskConfig(g, res, httpMethod, sprintId, taskId, body);
+    }
 
     switch (httpMethod) {
       case 'GET': {
@@ -211,3 +223,140 @@ exports.handler = async (event) => {
       } catch {}
   }
 };
+
+// ---------------------------------------------------------------------------
+// Task-level config: GET/PUT /sprints/{sprintId}/tasks/{taskId}/config
+// Manages task-level mcp_servers and steering_docs properties.
+// ---------------------------------------------------------------------------
+
+// Helper to extract Neptune valueMap property (handles Map and plain object)
+const getTaskVal = (v, key) => {
+  if (!v) return '';
+  const raw = v instanceof Map ? v.get(key) : v[key];
+  if (Array.isArray(raw)) return raw[0] ?? '';
+  return raw ?? '';
+};
+
+async function handleTaskConfig(g, res, httpMethod, sprintId, taskId, body) {
+  const artifactsBucket = process.env.ARTIFACTS_BUCKET;
+  const region = process.env.AWS_REGION || 'us-east-1';
+  const s3 = new S3Client({ region });
+
+  if (httpMethod === 'GET') {
+    const r = await g.V().has('Task', 'id', taskId).valueMap().next();
+    if (!r.value) return res(404, { error: 'Task not found' });
+
+    const mcpServers = getTaskVal(r.value, 'mcp_servers') || '[]';
+    let docs = [];
+    try {
+      docs = JSON.parse(getTaskVal(r.value, 'steering_docs') || '[]');
+    } catch {
+      docs = [];
+    }
+
+    // Generate presigned download URLs using the s3Keys already stored in metadata
+    const docsWithUrls = await Promise.all(
+      docs.map(async (doc) => {
+        if (!doc.s3Key || !artifactsBucket) return doc;
+        try {
+          const downloadUrl = await getSignedUrl(
+            s3,
+            new GetObjectCommand({ Bucket: artifactsBucket, Key: doc.s3Key }),
+            { expiresIn: 3600 },
+          );
+          return { ...doc, downloadUrl };
+        } catch {
+          return doc;
+        }
+      }),
+    );
+
+    return res(200, { mcpServers, steeringDocs: docsWithUrls });
+  }
+
+  if (httpMethod === 'PUT') {
+    const data = JSON.parse(body || '{}');
+
+    if (!artifactsBucket) {
+      return res(500, { error: 'ARTIFACTS_BUCKET env var not configured' });
+    }
+
+    const incomingDocs = data.steeringDocs || [];
+    if (incomingDocs.length > 20) {
+      return res(400, { error: 'Maximum 20 steering documents per task' });
+    }
+
+    // Persist mcp_servers if provided
+    if (data.mcpServers !== undefined) {
+      try {
+        JSON.parse(data.mcpServers);
+      } catch {
+        return res(400, { error: 'mcpServers must be a valid JSON string' });
+      }
+      await g
+        .V()
+        .has('Task', 'id', taskId)
+        .property(cardinality.single, 'mcp_servers', data.mcpServers)
+        .next();
+    }
+
+    // Resolve project ID for S3 key construction
+    let projectId = '';
+    try {
+      const sprintResult = await g
+        .V()
+        .has('Task', 'id', taskId)
+        .in_('CONTAINS')
+        .hasLabel('Sprint')
+        .in_('CONTAINS')
+        .hasLabel('Project')
+        .valueMap('id')
+        .next();
+      if (sprintResult.value) {
+        projectId = getTaskVal(sprintResult.value, 'id');
+      }
+    } catch {
+      // Non-fatal: fall back to sprintId as path segment
+      projectId = sprintId || 'unknown';
+    }
+
+    // Compute S3 keys and generate presigned upload URLs
+    const uploadUrls = [];
+    const savedDocs = await Promise.all(
+      incomingDocs.map(async (doc) => {
+        const filename = doc.filename || '';
+        if (!filename.endsWith('.md')) {
+          return { filename, s3Key: doc.s3Key || '' };
+        }
+        const s3Key = `steering/${projectId}/${taskId}/task--${filename}`;
+        try {
+          const uploadUrl = await getSignedUrl(
+            s3,
+            new PutObjectCommand({
+              Bucket: artifactsBucket,
+              Key: s3Key,
+              ContentType: 'text/markdown',
+            }),
+            { expiresIn: 3600 },
+          );
+          uploadUrls.push({ filename, s3Key, uploadUrl });
+        } catch (err) {
+          console.error(`[tasks] Failed to generate presigned URL for ${s3Key}:`, err.message);
+        }
+        return { filename, s3Key };
+      }),
+    );
+
+    // Persist steering_docs metadata to Neptune
+    const metadataJson = JSON.stringify(savedDocs);
+    await g
+      .V()
+      .has('Task', 'id', taskId)
+      .property(cardinality.single, 'steering_docs', metadataJson)
+      .next();
+
+    return res(200, { saved: true, uploadUrls });
+  }
+
+  return res(405, { error: 'Method not allowed' });
+}

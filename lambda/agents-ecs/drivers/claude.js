@@ -235,17 +235,36 @@ function getEnvForAcpProcess(baseEnv) {
 // ---------------------------------------------------------------------------
 
 /**
- * claude-agent-acp reads project instructions from .claude/CLAUDE.md.
- * We concatenate all steering files from .kiro/steering/ into that single file.
+ * Returns the path of the always-loaded entry-point file for this driver.
+ * Claude Code reads AGENTS.md via the one-line CLAUDE.md shim that pool-worker
+ * writes (containing `@AGENTS.md`).
+ *
+ * @param {string} workspaceDir - absolute path to the workspace root
+ * @returns {string}
  */
-function getAdditionalSteeringPaths(workspaceDir) {
-  return [
-    {
-      type: 'concat-dir',
-      src: path.join(workspaceDir, '.kiro', 'steering'),
-      dest: path.join(workspaceDir, '.claude', 'CLAUDE.md'),
-    },
-  ];
+function getEntryPointPath(workspaceDir) {
+  return path.join(workspaceDir, 'AGENTS.md');
+}
+
+/**
+ * Returns the directory where modular rule files go for this driver.
+ * Claude Code auto-loads .claude/rules/*.md natively.
+ *
+ * @param {string} workspaceDir - absolute path to the workspace root
+ * @returns {string}
+ */
+function getRulesDir(workspaceDir) {
+  return path.join(workspaceDir, '.claude', 'rules');
+}
+
+/**
+ * claude-agent-acp reads project instructions from AGENTS.md (via CLAUDE.md shim)
+ * and .claude/rules/*.md. The entry-point and rules directory are now written
+ * directly by pool-worker via getEntryPointPath() / getRulesDir().
+ * The concat-dir mechanism is retired — returns [] going forward.
+ */
+function getAdditionalSteeringPaths(_workspaceDir) {
+  return [];
 }
 
 // ---------------------------------------------------------------------------
@@ -260,5 +279,7 @@ module.exports = {
   getMode,
   getAcpCommand,
   getEnvForAcpProcess,
+  getEntryPointPath,
+  getRulesDir,
   getAdditionalSteeringPaths,
 };
