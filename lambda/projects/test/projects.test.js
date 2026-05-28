@@ -397,3 +397,158 @@ describe('method routing', () => {
     expect(JSON.parse(res.body)).toEqual({ error: 'Method not allowed' });
   });
 });
+
+// Migration to the tracker provider abstraction (#194 Phase 1). Owner/admin
+// only. Idempotent: a re-run on an already-migrated project applies nothing.
+// The bulk admin lambda lives at lambda/migrate-tracker-fields.
+describe('POST /projects/:id/migrate-tracker', () => {
+  // Helper to seed a sprint vertex on the legacy shape (no tracker_*).
+  const seedLegacySprint = async (projectId) => {
+    const id = randomUUID();
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .as('p')
+      .addV('Sprint')
+      .property('id', id)
+      .property('name', 'legacy')
+      .property('description', '')
+      .property('phase', 'INCEPTION')
+      .property('sprint_id', id)
+      .property('created_at', NOW.toISOString())
+      .property('issue_number', '17')
+      .property('issue_url', 'https://github.com/acme/widgets/issues/17')
+      .as('s')
+      .addE('HAS_SPRINT')
+      .from_('p')
+      .to('s')
+      .next();
+    return id;
+  };
+
+  const migrate = (id, sub) =>
+    handler({
+      httpMethod: 'POST',
+      path: `/projects/${id}/migrate-tracker`,
+      pathParameters: { projectId: id },
+      body: JSON.stringify({}),
+      ...claims(sub),
+    });
+
+  it('creates a synthetic HAS_TRACKER edge and backfills sprints', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, {
+      name: 'Mig',
+      gitRepo: 'acme/widgets',
+      issueIntegrationEnabled: true,
+    });
+    const sprintId = await seedLegacySprint(id);
+
+    const res = await migrate(id, sub);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({
+      dryRun: false,
+      projects: { candidates: 1, applied: 1 },
+      sprints: { candidates: 1, applied: 1 },
+    });
+
+    // Project now has a tracker binding.
+    const fetched = await handler({
+      httpMethod: 'GET',
+      pathParameters: { projectId: id },
+      ...claims(sub),
+    });
+    expect(JSON.parse(fetched.body).trackers).toEqual([
+      expect.objectContaining({
+        provider: 'github-issues',
+        instance: 'public',
+        externalProjectKey: 'acme/widgets',
+        displayName: 'acme/widgets',
+      }),
+    ]);
+
+    // Sprint vertex now has tracker_provider set (verified via Gremlin).
+    const sprint = await g.V().has('Sprint', 'id', sprintId).valueMap().next();
+    const get = (k) => sprint.value.get(k)?.[0];
+    expect(get('tracker_provider')).toBe('github-issues');
+    expect(get('tracker_instance')).toBe('public');
+    expect(get('tracker_external_project_key')).toBe('acme/widgets');
+    expect(get('tracker_resource_id')).toBe('17');
+  });
+
+  it('is idempotent: re-running applies nothing', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, {
+      name: 'Mig',
+      gitRepo: 'acme/widgets',
+      issueIntegrationEnabled: true,
+    });
+    await seedLegacySprint(id);
+    await migrate(id, sub);
+
+    const res = await migrate(id, sub);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({
+      dryRun: false,
+      projects: { candidates: 0, applied: 0 },
+      sprints: { candidates: 0, applied: 0 },
+    });
+  });
+
+  it('returns 403 to plain members', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const memberSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub, {
+      name: 'Mig',
+      issueIntegrationEnabled: true,
+    });
+    await addMember(id, memberSub, 'member');
+
+    const res = await migrate(id, memberSub);
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({
+      error: 'Only project owners and admins can migrate trackers',
+    });
+  });
+
+  it('returns 403 when the caller is not a member', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const otherSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub, { name: 'Mig' });
+    const res = await migrate(id, otherSub);
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({ error: 'Access denied' });
+  });
+
+  it('supports dryRun', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, {
+      name: 'Mig',
+      gitRepo: 'acme/widgets',
+      issueIntegrationEnabled: true,
+    });
+    await seedLegacySprint(id);
+
+    const res = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${id}/migrate-tracker`,
+      pathParameters: { projectId: id },
+      body: JSON.stringify({ dryRun: true }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({
+      dryRun: true,
+      projects: { candidates: 1, applied: 0 },
+      sprints: { candidates: 1, applied: 0 },
+    });
+
+    // Confirm dry-run did not write.
+    const fetched = await handler({
+      httpMethod: 'GET',
+      pathParameters: { projectId: id },
+      ...claims(sub),
+    });
+    expect(JSON.parse(fetched.body).trackers).toEqual([]);
+  });
+});

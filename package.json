@@ -5,8 +5,10 @@
     "lambda/get-agent-output",
     "lambda/github",
     "lambda/github-issues",
+    "lambda/migrate-tracker-fields",
     "lambda/notify",
     "lambda/projects",
+    "lambda/sprints",
     "lambda/ws-authorizer",
     "lambda/ws-connection",
     "lambda/ws-message"

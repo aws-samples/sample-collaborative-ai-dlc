@@ -88,6 +88,16 @@ export default function ProjectSettings() {
   const [savingAgentCli, setSavingAgentCli] = useState(false);
   const [availableCliNames, setAvailableCliNames] = useState<AgentCli[]>(['kiro']);
 
+  // Tracker-abstraction migration (#194 Phase 1). The card shows when the
+  // project still uses the legacy issue_integration boolean and has no
+  // HAS_TRACKER edge yet — i.e. it predates the abstraction or was created
+  // by an OSS install that hasn't migrated.
+  const [migrating, setMigrating] = useState(false);
+  const [migrationResult, setMigrationResult] = useState<{
+    sprintsApplied: number;
+    projectsApplied: number;
+  } | null>(null);
+
   const [showAddMember, setShowAddMember] = useState(false);
   const [newMemberUserId, setNewMemberUserId] = useState('');
   const [newMemberEmail, setNewMemberEmail] = useState('');
@@ -203,6 +213,27 @@ export default function ProjectSettings() {
     const q = userSearch.toLowerCase();
     return u.email.toLowerCase().includes(q) || u.displayName.toLowerCase().includes(q);
   });
+
+  const handleMigrateTracker = async () => {
+    if (!projectId) return;
+    clearMessages();
+    setMigrating(true);
+    try {
+      const result = await projectsService.migrateTracker(projectId);
+      setMigrationResult({
+        sprintsApplied: result.sprints.applied,
+        projectsApplied: result.projects.applied,
+      });
+      // Reload so the project's `trackers` array reflects the new binding,
+      // which dismisses the card on next render.
+      await loadData();
+      setSuccess('Migrated to the new tracker data model.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to migrate');
+    } finally {
+      setMigrating(false);
+    }
+  };
 
   const handleSaveProject = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -372,6 +403,51 @@ export default function ProjectSettings() {
           <div className="text-center py-12 text-muted-foreground text-sm">Loading...</div>
         ) : (
           <>
+            {/* Tracker-abstraction migration banner — appears only when this
+                project still uses the legacy issue_integration boolean and
+                has no HAS_TRACKER edge yet. Disappears once migrated.
+                See parent issue #194 (Jira / tracker provider abstraction). */}
+            {project &&
+              project.issueIntegrationEnabled === true &&
+              (project.trackers?.length ?? 0) === 0 && (
+                <Card className="mb-6 border-amber-500/40 bg-amber-500/5">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <AlertCircle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+                      Migrate to the new tracker data model
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <p className="text-sm text-muted-foreground">
+                      This project uses the legacy issue-tracker data model. Migrating updates
+                      this project and its sprints to the new model so you'll be able to add
+                      Jira and other tracker providers (per <code>#194</code>) when they ship.
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Your existing GitHub-issue links stay intact. No data is deleted; this is
+                      a one-time backfill that takes a few seconds.
+                    </p>
+                    {migrationResult && (
+                      <p className="text-xs text-emerald-700 dark:text-emerald-400">
+                        Migrated: {migrationResult.projectsApplied} project binding(s),{' '}
+                        {migrationResult.sprintsApplied} sprint(s).
+                      </p>
+                    )}
+                    {canEditProject ? (
+                      <div className="flex justify-end">
+                        <Button size="sm" onClick={handleMigrateTracker} disabled={migrating}>
+                          {migrating ? 'Migrating…' : 'Migrate now'}
+                        </Button>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        Only owners and admins can run the migration.
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+
             {/* General */}
             <Card className="mb-6">
               <CardHeader className="pb-3">

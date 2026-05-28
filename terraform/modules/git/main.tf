@@ -24,3 +24,32 @@ resource "aws_dynamodb_table" "git_connections" {
 
   tags = var.tags
 }
+
+# DynamoDB table for tracker connections (Jira Cloud, GitHub Issues, …).
+# Sibling to git_connections; introduced as the foundation for the tracker
+# provider abstraction (parent issue #194). Composite key lets one user
+# connect multiple provider instances (e.g. one Jira Cloud site + GitHub
+# Issues at the same time).
+resource "aws_dynamodb_table" "tracker_connections" {
+  name         = "${var.project_name}-${var.environment}-tracker-connections"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "userId"
+  range_key    = "providerInstance"
+
+  attribute {
+    name = "userId"
+    type = "S"
+  }
+
+  attribute {
+    name = "providerInstance"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "expiresAt"
+    enabled        = true
+  }
+
+  tags = var.tags
+}

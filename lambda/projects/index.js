@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { buildResponse } from '../shared/response.js';
+import { runTrackerMigration } from '../shared/tracker-migration.js';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -16,6 +17,27 @@ const getVal = (obj, key) => {
   const raw = obj instanceof Map ? obj.get(key) : obj[key];
   if (Array.isArray(raw)) return raw[0] ?? '';
   return raw ?? '';
+};
+
+const mapTrackerBinding = (v) => ({
+  id: getVal(v, 'id'),
+  provider: getVal(v, 'provider'),
+  instance: getVal(v, 'instance') || null,
+  externalProjectKey: getVal(v, 'external_project_key') || null,
+  displayName: getVal(v, 'display_name') || null,
+  createdAt: getVal(v, 'created_at') || null,
+  createdBy: getVal(v, 'created_by') || null,
+});
+
+const fetchProjectTrackers = async (g, projectId) => {
+  const list = await g
+    .V()
+    .has('Project', 'id', projectId)
+    .out('HAS_TRACKER')
+    .hasLabel('TrackerBinding')
+    .valueMap()
+    .toList();
+  return list.map(mapTrackerBinding);
 };
 
 const getConnection = async () => {
@@ -59,10 +81,37 @@ export const handler = async (event) => {
       );
     }
 
-    const { httpMethod, pathParameters, body } = event;
+    const { httpMethod, pathParameters, body, path } = event;
     const projectId = pathParameters?.projectId;
     const userId = event.requestContext?.authorizer?.claims?.sub;
     const userEmail = event.requestContext?.authorizer?.claims?.email || '';
+    const isMigrateTracker = httpMethod === 'POST' && path?.endsWith('/migrate-tracker');
+
+    // POST /projects/{projectId}/migrate-tracker — owner/admin only.
+    // Backfills the tracker_* fields on this project's sprints + creates a
+    // synthetic HAS_TRACKER edge if the project still uses the legacy
+    // issue_integration_enabled boolean. Idempotent. See parent issue #194.
+    if (isMigrateTracker) {
+      if (!userId) return response(401, { error: 'Unauthorized' });
+      const callerEdges = await g
+        .V()
+        .has('Project', 'id', projectId)
+        .outE('HAS_MEMBER')
+        .as('e')
+        .inV()
+        .has('User', 'id', userId)
+        .select('e')
+        .by(__.valueMap())
+        .toList();
+      if (callerEdges.length === 0) return response(403, { error: 'Access denied' });
+      const callerRole = getVal(callerEdges[0], 'role') || 'member';
+      if (callerRole !== 'owner' && callerRole !== 'admin') {
+        return response(403, { error: 'Only project owners and admins can migrate trackers' });
+      }
+      const dryRun = body ? Boolean(JSON.parse(body)?.dryRun) : false;
+      const result = await runTrackerMigration(g, { projectId, dryRun });
+      return response(200, result);
+    }
 
     switch (httpMethod) {
       case 'GET':
@@ -88,6 +137,7 @@ export const handler = async (event) => {
           if (!result.value) return response(404, { error: 'Project not found' });
 
           const v = result.value;
+          const trackers = await fetchProjectTrackers(g, projectId);
           const project = {
             id: getVal(v, 'id') || projectId,
             name: getVal(v, 'name'),
@@ -97,6 +147,7 @@ export const handler = async (event) => {
             issueIntegrationEnabled: getVal(v, 'issue_integration_enabled') === 'true',
             createdAt: getVal(v, 'created_at') || new Date().toISOString(),
             userRole,
+            trackers,
           };
           return response(200, project);
         }
@@ -116,21 +167,26 @@ export const handler = async (event) => {
           .by(__.valueMap())
           .by(__.valueMap())
           .toList();
-        const projects = results.map((item) => {
-          // item is a Map with keys 'e' (edge) and 'p' (project vertex)
-          const e = item instanceof Map ? item.get('e') : item.e;
-          const v = item instanceof Map ? item.get('p') : item.p;
-          return {
-            id: getVal(v, 'id'),
-            name: getVal(v, 'name'),
-            gitProvider: getVal(v, 'git_provider') || 'github',
-            gitRepo: getVal(v, 'git_repo'),
-            agentCli: getVal(v, 'agent_cli') || 'kiro',
-            issueIntegrationEnabled: getVal(v, 'issue_integration_enabled') === 'true',
-            createdAt: getVal(v, 'created_at') || new Date().toISOString(),
-            userRole: getVal(e, 'role') || 'member',
-          };
-        });
+        const projects = await Promise.all(
+          results.map(async (item) => {
+            // item is a Map with keys 'e' (edge) and 'p' (project vertex)
+            const e = item instanceof Map ? item.get('e') : item.e;
+            const v = item instanceof Map ? item.get('p') : item.p;
+            const projectVid = getVal(v, 'id');
+            const trackers = await fetchProjectTrackers(g, projectVid);
+            return {
+              id: projectVid,
+              name: getVal(v, 'name'),
+              gitProvider: getVal(v, 'git_provider') || 'github',
+              gitRepo: getVal(v, 'git_repo'),
+              agentCli: getVal(v, 'agent_cli') || 'kiro',
+              issueIntegrationEnabled: getVal(v, 'issue_integration_enabled') === 'true',
+              createdAt: getVal(v, 'created_at') || new Date().toISOString(),
+              userRole: getVal(e, 'role') || 'member',
+              trackers,
+            };
+          }),
+        );
         return response(200, projects);
 
       case 'POST': {

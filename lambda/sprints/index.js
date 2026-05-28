@@ -1,21 +1,44 @@
-const gremlin = require('gremlin');
-const { randomUUID } = require('crypto');
-const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
-const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
-const { buildResponse } = require('./shared/response');
+import gremlin from 'gremlin';
+import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
+import { randomUUID } from 'node:crypto';
+import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
+import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
+import { buildResponse } from '../shared/response.js';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 
 const getConnection = async () => {
   const host = process.env.NEPTUNE_ENDPOINT;
+  const port = process.env.GREMLIN_PORT ?? '8182';
+  const protocol = process.env.GREMLIN_PROTOCOL ?? 'wss';
+
   const credentials = await fromNodeProviderChain()();
-  credentials.region = process.env.AWS_REGION || 'us-east-1';
-  const connInfo = getUrlAndHeaders(host, '8182', credentials, '/gremlin', 'wss');
-  return new DriverRemoteConnection(connInfo.url, { headers: connInfo.headers });
+  credentials.region = process.env.AWS_REGION ?? 'us-east-1';
+  const { url, headers } = getUrlAndHeaders(host, port, credentials, '/gremlin', protocol);
+  return new DriverRemoteConnection(url, { headers });
 };
 
 const VALID_PHASES = ['INCEPTION', 'CONSTRUCTION', 'REVIEW'];
+
+const nonEmpty = (s) => (s && s !== '' ? s : null);
+
+// Map the polymorphic tracker_* properties on a Sprint vertex into the
+// normalized `tracker` DTO. Returns null when the sprint has no linked
+// tracker resource (legacy sprints without a backfill, or sprints created
+// without an issue link).
+const mapTracker = (v) => {
+  const provider = nonEmpty(v.get('tracker_provider')?.[0]);
+  if (!provider) return null;
+  return {
+    provider,
+    instance: nonEmpty(v.get('tracker_instance')?.[0]),
+    externalProjectKey: nonEmpty(v.get('tracker_external_project_key')?.[0]),
+    resourceType: nonEmpty(v.get('tracker_resource_type')?.[0]),
+    resourceId: nonEmpty(v.get('tracker_resource_id')?.[0]),
+    resourceUrl: nonEmpty(v.get('tracker_resource_url')?.[0]),
+  };
+};
 
 const mapSprint = (v) => {
   const arn = v.get('current_execution_arn')?.[0];
@@ -25,8 +48,23 @@ const mapSprint = (v) => {
   const prNumber = v.get('pr_number')?.[0];
   const branch = v.get('branch')?.[0];
   const baseBranch = v.get('base_branch')?.[0];
-  const issueNumber = v.get('issue_number')?.[0];
-  const issueUrl = v.get('issue_url')?.[0];
+
+  const tracker = mapTracker(v);
+
+  // Surface issueNumber/issueUrl for backward compatibility with the original
+  // GitHub-issue integration (#171). New writes always populate the polymorphic
+  // tracker_* fields, so prefer those. Pre-migration sprints fall back to the
+  // legacy issue_number/issue_url properties — these are kept on disk
+  // permanently so unmigrated data keeps rendering.
+  let issueNumber;
+  let issueUrl;
+  if (tracker?.provider === 'github-issues' && tracker.resourceType === 'issue') {
+    issueNumber = tracker.resourceId;
+    issueUrl = tracker.resourceUrl;
+  } else {
+    issueNumber = nonEmpty(v.get('issue_number')?.[0]);
+    issueUrl = nonEmpty(v.get('issue_url')?.[0]);
+  }
 
   return {
     id: v.get('id')?.[0] || '',
@@ -44,19 +82,29 @@ const mapSprint = (v) => {
     prNumber: prNumber && prNumber !== '' ? prNumber : null,
     branch: branch && branch !== '' ? branch : null,
     baseBranch: baseBranch && baseBranch !== '' ? baseBranch : null,
-    issueNumber: issueNumber && issueNumber !== '' ? issueNumber : null,
-    issueUrl: issueUrl && issueUrl !== '' ? issueUrl : null,
+    issueNumber,
+    issueUrl,
+    tracker,
   };
 };
 
-exports.handler = async (event) => {
+export const handler = async (event) => {
   const res = buildResponse(event);
   if (event.httpMethod === 'OPTIONS') return res(200, {});
 
   let conn;
   try {
     conn = await getConnection();
-    const g = traversal().withRemote(conn);
+    let g = traversal().withRemote(conn);
+    if (process.env.GREMLIN_PARTITION) {
+      g = g.withStrategies(
+        new PartitionStrategy({
+          partitionKey: '_partition',
+          writePartition: process.env.GREMLIN_PARTITION,
+          readPartitions: [process.env.GREMLIN_PARTITION],
+        }),
+      );
+    }
     const { httpMethod, pathParameters, body } = event;
     const { projectId, sprintId } = pathParameters || {};
 
@@ -89,7 +137,45 @@ exports.handler = async (event) => {
             : '';
         const issueUrl = data.issueUrl || '';
 
-        await g
+        // Two ways the caller can pin a tracker resource to the sprint:
+        //   1. data.tracker = {provider, instance, externalProjectKey, resourceType, resourceId, resourceUrl}
+        //   2. data.issueNumber/issueUrl — interpreted as a github-issues tracker
+        //      against the parent project's git_repo (legacy frontend path
+        //      from #171, retained so the existing IssueListPanel keeps working
+        //      without immediate frontend changes).
+        let trackerProperties = null;
+        if (data.tracker?.provider) {
+          trackerProperties = {
+            provider: data.tracker.provider,
+            instance: data.tracker.instance || '',
+            externalProjectKey: data.tracker.externalProjectKey || '',
+            resourceType: data.tracker.resourceType || 'issue',
+            resourceId:
+              data.tracker.resourceId !== undefined && data.tracker.resourceId !== null
+                ? String(data.tracker.resourceId)
+                : '',
+            resourceUrl: data.tracker.resourceUrl || '',
+          };
+        } else if (issueNumber || issueUrl) {
+          // Look up the parent project's git_repo so we can populate
+          // externalProjectKey for the synthetic GitHub-issues tracker.
+          const projectVal = await g
+            .V()
+            .has('Project', 'id', projectId)
+            .values('git_repo')
+            .next();
+          const externalProjectKey = projectVal.value || '';
+          trackerProperties = {
+            provider: 'github-issues',
+            instance: 'public',
+            externalProjectKey,
+            resourceType: 'issue',
+            resourceId: issueNumber,
+            resourceUrl: issueUrl,
+          };
+        }
+
+        let createTrav = g
           .V()
           .has('Project', 'id', projectId)
           .as('p')
@@ -104,12 +190,19 @@ exports.handler = async (event) => {
           .property('current_execution_id', '')
           .property('current_agent_status', '')
           .property('issue_number', issueNumber)
-          .property('issue_url', issueUrl)
-          .as('s')
-          .addE('HAS_SPRINT')
-          .from_('p')
-          .to('s')
-          .next();
+          .property('issue_url', issueUrl);
+
+        if (trackerProperties) {
+          createTrav = createTrav
+            .property('tracker_provider', trackerProperties.provider)
+            .property('tracker_instance', trackerProperties.instance)
+            .property('tracker_external_project_key', trackerProperties.externalProjectKey)
+            .property('tracker_resource_type', trackerProperties.resourceType)
+            .property('tracker_resource_id', trackerProperties.resourceId)
+            .property('tracker_resource_url', trackerProperties.resourceUrl);
+        }
+
+        await createTrav.as('s').addE('HAS_SPRINT').from_('p').to('s').next();
 
         return res(201, {
           id,
@@ -122,6 +215,16 @@ exports.handler = async (event) => {
           currentAgentStatus: null,
           issueNumber: issueNumber || null,
           issueUrl: issueUrl || null,
+          tracker: trackerProperties
+            ? {
+                provider: trackerProperties.provider,
+                instance: trackerProperties.instance || null,
+                externalProjectKey: trackerProperties.externalProjectKey || null,
+                resourceType: trackerProperties.resourceType,
+                resourceId: trackerProperties.resourceId || null,
+                resourceUrl: trackerProperties.resourceUrl || null,
+              }
+            : null,
         });
       }
 
