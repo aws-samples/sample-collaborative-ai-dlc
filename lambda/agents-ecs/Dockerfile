@@ -37,6 +37,17 @@ RUN npm install -g @zed-industries/claude-agent-acp
 # OpenCode CLI (OpenCode — AWS Bedrock authentication)
 RUN npm install -g opencode-ai
 
+# uv + managed Python 3.12 (Astral) — required for Python-based MCP servers
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && mv /root/.local/bin/uv /root/.local/bin/uvx /usr/local/bin/ \
+    && rm -rf /root/.local \
+    && mkdir -p "$UV_PYTHON_INSTALL_DIR" \
+    && uv python install 3.12 \
+    && ln -sf "$(uv python find 3.12)" /usr/local/bin/python \
+    && ln -sf "$(uv python find 3.12)" /usr/local/bin/python3 \
+    && chmod -R a+rX "$UV_PYTHON_INSTALL_DIR"
+
 # Embed AI-DLC workflow rules
 COPY aidlc-rules /opt/aidlc-rules
 
@@ -60,7 +71,8 @@ RUN chmod +x /entrypoint.sh
 
 USER node
 ENV HOME=/home/node \
-    PATH=/opt/kiro/bin:/usr/local/bin:/usr/bin:/bin
+    PATH=/opt/kiro/bin:/usr/local/bin:/usr/bin:/bin \
+    UV_PYTHON_INSTALL_DIR=/opt/uv-python
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD pgrep -f "node /opt/acp-client/pool-worker.js" > /dev/null || exit 1
