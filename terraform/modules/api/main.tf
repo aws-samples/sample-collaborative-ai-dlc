@@ -118,6 +118,7 @@ resource "aws_api_gateway_deployment" "main" {
     redeployment = sha1(jsonencode([
       aws_api_gateway_resource.projects.id,
       aws_api_gateway_resource.project.id,
+      aws_api_gateway_resource.migrate_tracker.id,
       aws_api_gateway_resource.members.id,
       aws_api_gateway_resource.member.id,
       aws_api_gateway_resource.sprints.id,

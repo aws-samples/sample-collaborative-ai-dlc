@@ -72,6 +72,18 @@ variable "git_connections_table_arn" {
   default     = ""
 }
 
+variable "tracker_connections_table_name" {
+  description = "DynamoDB table name for tracker connections (Jira / GitHub Issues / …)"
+  type        = string
+  default     = ""
+}
+
+variable "tracker_connections_table_arn" {
+  description = "DynamoDB table ARN for tracker connections"
+  type        = string
+  default     = ""
+}
+
 variable "github_redirect_uri" {
   description = "OAuth redirect URI for GitHub callback"
   type        = string

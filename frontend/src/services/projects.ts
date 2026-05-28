@@ -3,6 +3,19 @@ import { api } from './api';
 export type ProjectRole = 'owner' | 'admin' | 'member';
 export type AgentCli = 'kiro' | 'claude' | 'opencode';
 
+// One project ↔ tracker (Jira / GitHub Issues / …) binding. Phase 1 of #194
+// only writes synthetic GitHub-issues bindings via the migration; Phase 3
+// adds Jira and the connect/select UI.
+export interface TrackerBinding {
+  id: string;
+  provider: string;
+  instance: string | null;
+  externalProjectKey: string | null;
+  displayName: string | null;
+  createdAt: string | null;
+  createdBy: string | null;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -12,6 +25,13 @@ export interface Project {
   issueIntegrationEnabled?: boolean;
   createdAt: string;
   userRole?: ProjectRole;
+  trackers?: TrackerBinding[];
+}
+
+export interface TrackerMigrationResult {
+  dryRun: boolean;
+  projects: { candidates: number; applied: number };
+  sprints: { candidates: number; applied: number };
 }
 
 export interface CreateProjectInput {
@@ -68,4 +88,8 @@ export const projectsService = {
 
   // Cognito users
   listCognitoUsers: () => api.get<CognitoUser[]>('/users'),
+
+  // Tracker abstraction migration (#194 Phase 1). Owner/admin only. Idempotent.
+  migrateTracker: (projectId: string, dryRun = false) =>
+    api.post<TrackerMigrationResult>(`/projects/${projectId}/migrate-tracker`, { dryRun }),
 };

@@ -131,9 +131,12 @@ resource "aws_iam_role_policy" "github_connector" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect   = "Allow"
-        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"]
-        Resource = [var.git_connections_table_arn]
+        Effect = "Allow"
+        Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Query"]
+        Resource = compact([
+          var.git_connections_table_arn,
+          var.tracker_connections_table_arn,
+        ])
       },
       {
         Effect   = "Allow"
@@ -365,12 +368,11 @@ module "sprints_lambda" {
 
   source_path = [
     {
-      path             = "${path.module}/../../../../lambda/sprints"
-      npm_requirements = true
-    },
-    {
-      path          = "${path.module}/../../../../lambda/shared"
-      prefix_in_zip = "shared"
+      path = "${path.module}/../../../../lambda/sprints"
+      commands = [
+        "cd ../.. && npm run build -w sprints",
+        ":zip lambda/sprints/.build",
+      ]
     }
   ]
 
@@ -719,10 +721,11 @@ module "github_issues_lambda" {
   lambda_role = aws_iam_role.github_connector.arn
 
   environment_variables = {
-    GIT_CONNECTIONS_TABLE = var.git_connections_table_name
-    GIT_TOKEN_SSM_PREFIX  = "${var.project_name}/${var.environment}/git-token"
-    ENVIRONMENT           = var.environment
-    CORS_ALLOWED_ORIGINS  = var.cors_allowed_origins
+    GIT_CONNECTIONS_TABLE     = var.git_connections_table_name
+    TRACKER_CONNECTIONS_TABLE = var.tracker_connections_table_name
+    GIT_TOKEN_SSM_PREFIX      = "${var.project_name}/${var.environment}/git-token"
+    ENVIRONMENT               = var.environment
+    CORS_ALLOWED_ORIGINS      = var.cors_allowed_origins
   }
 }
 
@@ -819,5 +822,41 @@ module "purge_neptune_lambda" {
     NEPTUNE_ENDPOINT     = var.neptune_endpoint
     ENVIRONMENT          = var.environment
     CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+  }
+}
+
+# Tracker-fields migration Lambda (admin one-shot, invoked directly via CLI).
+# Backfills the polymorphic tracker_* properties on Sprint vertices and the
+# synthetic HAS_TRACKER edges on legacy issue-integration Projects (issue
+# #194 / phase #195). Idempotent; supports {dryRun:true} payload. Stays
+# deployed permanently — OSS forks are on their own upgrade timelines.
+module "migrate_tracker_fields_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-migrate-tracker-fields-${var.environment}"
+  handler       = "index.handler"
+  runtime       = "nodejs24.x"
+  timeout       = 300
+
+  source_path = [
+    {
+      path = "${path.module}/../../../../lambda/migrate-tracker-fields"
+      commands = [
+        "cd ../.. && npm run build -w migrate-tracker-fields",
+        ":zip lambda/migrate-tracker-fields/.build",
+      ]
+    }
+  ]
+
+  create_role = false
+  lambda_role = aws_iam_role.neptune_reader.arn
+
+  vpc_subnet_ids         = var.private_subnet_ids
+  vpc_security_group_ids = [aws_security_group.lambda.id]
+
+  environment_variables = {
+    NEPTUNE_ENDPOINT = var.neptune_endpoint
+    ENVIRONMENT      = var.environment
   }
 }
