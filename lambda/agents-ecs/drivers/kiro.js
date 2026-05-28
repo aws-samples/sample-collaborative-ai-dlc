@@ -133,17 +133,6 @@ function getEnvForAcpProcess(_baseEnv) {
 // ---------------------------------------------------------------------------
 
 /**
- * Returns the path of the always-loaded entry-point file for this driver.
- * Kiro IDE 0.5+ reads AGENTS.md from the workspace root natively.
- *
- * @param {string} workspaceDir - absolute path to the workspace root
- * @returns {string}
- */
-function getEntryPointPath(workspaceDir) {
-  return path.join(workspaceDir, 'AGENTS.md');
-}
-
-/**
  * Returns the directory where modular rule files go for this driver.
  * Kiro IDE reads .kiro/steering/*.md natively.
  *
@@ -165,6 +154,5 @@ module.exports = {
   configureSettings,
   getAcpCommand,
   getEnvForAcpProcess,
-  getEntryPointPath,
   getRulesDir,
 };

@@ -145,14 +145,6 @@ function configureSettings(_env) {
 // ---------------------------------------------------------------------------
 
 /**
- * Execution mode for acp-client.js: 'acp' — JSON-RPC 2.0 over stdio.
- * claude-agent-acp speaks the same ACP protocol as kiro-cli and opencode.
- */
-function getMode() {
-  return 'acp';
-}
-
-/**
  * Returns the command to spawn in ACP mode.
  */
 function getAcpCommand() {
@@ -235,18 +227,6 @@ function getEnvForAcpProcess(baseEnv) {
 // ---------------------------------------------------------------------------
 
 /**
- * Returns the path of the always-loaded entry-point file for this driver.
- * Claude Code reads AGENTS.md via the one-line CLAUDE.md shim that pool-worker
- * writes (containing `@AGENTS.md`).
- *
- * @param {string} workspaceDir - absolute path to the workspace root
- * @returns {string}
- */
-function getEntryPointPath(workspaceDir) {
-  return path.join(workspaceDir, 'AGENTS.md');
-}
-
-/**
  * Returns the directory where modular rule files go for this driver.
  * Claude Code auto-loads .claude/rules/*.md natively.
  *
@@ -266,9 +246,7 @@ module.exports = {
   CLI_DISPLAY,
   authenticate,
   configureSettings,
-  getMode,
   getAcpCommand,
   getEnvForAcpProcess,
-  getEntryPointPath,
   getRulesDir,
 };

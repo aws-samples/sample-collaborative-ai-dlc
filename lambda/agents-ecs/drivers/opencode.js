@@ -204,17 +204,6 @@ function writeProjectConfig(workspaceDir, env) {
 // ---------------------------------------------------------------------------
 
 /**
- * Returns the path of the always-loaded entry-point file for this driver.
- * OpenCode reads AGENTS.md from the workspace root natively.
- *
- * @param {string} workspaceDir - absolute path to the workspace root
- * @returns {string}
- */
-function getEntryPointPath(workspaceDir) {
-  return path.join(workspaceDir, 'AGENTS.md');
-}
-
-/**
  * Returns the directory where modular rule files go for this driver.
  * OpenCode loads these via the `instructions` glob in opencode.json.
  *
@@ -237,6 +226,5 @@ module.exports = {
   getAcpCommand,
   getEnvForAcpProcess,
   writeProjectConfig,
-  getEntryPointPath,
   getRulesDir,
 };
