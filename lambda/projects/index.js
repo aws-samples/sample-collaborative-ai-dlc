@@ -19,15 +19,46 @@ const getVal = (obj, key) => {
   return raw ?? '';
 };
 
-const mapTrackerBinding = (v) => ({
-  id: getVal(v, 'id'),
-  provider: getVal(v, 'provider'),
-  instance: getVal(v, 'instance') || null,
-  externalProjectKey: getVal(v, 'external_project_key') || null,
-  displayName: getVal(v, 'display_name') || null,
-  createdAt: getVal(v, 'created_at') || null,
-  createdBy: getVal(v, 'created_by') || null,
-});
+// Anonymous Gremlin step that projects a TrackerBinding vertex into the
+// camelCase shape the API exposes. Used as a `.by()` argument so the list-
+// projects traversal can fold trackers per project in one round-trip
+// (avoiding the N+1 fetch this used to do in JS).
+const trackerBindingProjectionStep = () =>
+  __.project(
+    'id',
+    'provider',
+    'instance',
+    'externalProjectKey',
+    'displayName',
+    'createdAt',
+    'createdBy',
+  )
+    .by('id')
+    .by('provider')
+    .by(__.coalesce(__.values('instance'), __.constant(null)))
+    .by(__.coalesce(__.values('external_project_key'), __.constant(null)))
+    .by(__.coalesce(__.values('display_name'), __.constant(null)))
+    .by(__.coalesce(__.values('created_at'), __.constant(null)))
+    .by(__.coalesce(__.values('created_by'), __.constant(null)));
+
+// Anonymous step yielding a single fold()-collected list of binding maps
+// scoped to the current Project vertex. Returns [] when the project has
+// no HAS_TRACKER edges.
+const projectTrackersFoldStep = () =>
+  __.out('HAS_TRACKER').hasLabel('TrackerBinding').flatMap(trackerBindingProjectionStep()).fold();
+
+const mapBindingMap = (m) => {
+  const get = (k) => (m instanceof Map ? m.get(k) : m[k]);
+  return {
+    id: get('id'),
+    provider: get('provider'),
+    instance: get('instance'),
+    externalProjectKey: get('externalProjectKey'),
+    displayName: get('displayName'),
+    createdAt: get('createdAt'),
+    createdBy: get('createdBy'),
+  };
+};
 
 const fetchProjectTrackers = async (g, projectId) => {
   const list = await g
@@ -35,9 +66,9 @@ const fetchProjectTrackers = async (g, projectId) => {
     .has('Project', 'id', projectId)
     .out('HAS_TRACKER')
     .hasLabel('TrackerBinding')
-    .valueMap()
+    .flatMap(trackerBindingProjectionStep())
     .toList();
-  return list.map(mapTrackerBinding);
+  return list.map(mapBindingMap);
 };
 
 const getConnection = async () => {
@@ -93,7 +124,7 @@ export const handler = async (event) => {
     // issue_integration_enabled boolean. Idempotent. See parent issue #194.
     if (isMigrateTracker) {
       if (!userId) return response(401, { error: 'Unauthorized' });
-      const callerEdges = await g
+      const role = await g
         .V()
         .has('Project', 'id', projectId)
         .outE('HAS_MEMBER')
@@ -101,11 +132,10 @@ export const handler = async (event) => {
         .inV()
         .has('User', 'id', userId)
         .select('e')
-        .by(__.valueMap())
-        .toList();
-      if (callerEdges.length === 0) return response(403, { error: 'Access denied' });
-      const callerRole = getVal(callerEdges[0], 'role') || 'member';
-      if (callerRole !== 'owner' && callerRole !== 'admin') {
+        .values('role')
+        .next();
+      if (role.done) return response(403, { error: 'Access denied' });
+      if (role.value !== 'owner' && role.value !== 'admin') {
         return response(403, { error: 'Only project owners and admins can migrate trackers' });
       }
       const dryRun = body ? Boolean(JSON.parse(body)?.dryRun) : false;
@@ -152,7 +182,9 @@ export const handler = async (event) => {
           return response(200, project);
         }
 
-        // List projects - only return projects where the current user is a member
+        // List projects - only return projects where the current user is a member.
+        // Trackers fold into the same traversal so we don't fan out into N+1
+        // per-project fetches.
         if (!userId) return response(401, { error: 'Unauthorized' });
 
         const results = await g
@@ -165,28 +197,27 @@ export const handler = async (event) => {
           .as('p')
           .select('e', 'p')
           .by(__.valueMap())
-          .by(__.valueMap())
+          .by(__.project('vertex', 'trackers').by(__.valueMap()).by(projectTrackersFoldStep()))
           .toList();
-        const projects = await Promise.all(
-          results.map(async (item) => {
-            // item is a Map with keys 'e' (edge) and 'p' (project vertex)
-            const e = item instanceof Map ? item.get('e') : item.e;
-            const v = item instanceof Map ? item.get('p') : item.p;
-            const projectVid = getVal(v, 'id');
-            const trackers = await fetchProjectTrackers(g, projectVid);
-            return {
-              id: projectVid,
-              name: getVal(v, 'name'),
-              gitProvider: getVal(v, 'git_provider') || 'github',
-              gitRepo: getVal(v, 'git_repo'),
-              agentCli: getVal(v, 'agent_cli') || 'kiro',
-              issueIntegrationEnabled: getVal(v, 'issue_integration_enabled') === 'true',
-              createdAt: getVal(v, 'created_at') || new Date().toISOString(),
-              userRole: getVal(e, 'role') || 'member',
-              trackers,
-            };
-          }),
-        );
+        const projects = results.map((item) => {
+          // item is a Map with keys 'e' (edge) and 'p' ({vertex, trackers}).
+          const e = item instanceof Map ? item.get('e') : item.e;
+          const pBundle = item instanceof Map ? item.get('p') : item.p;
+          const v = pBundle instanceof Map ? pBundle.get('vertex') : pBundle.vertex;
+          const trackerMaps =
+            (pBundle instanceof Map ? pBundle.get('trackers') : pBundle.trackers) ?? [];
+          return {
+            id: getVal(v, 'id'),
+            name: getVal(v, 'name'),
+            gitProvider: getVal(v, 'git_provider') || 'github',
+            gitRepo: getVal(v, 'git_repo'),
+            agentCli: getVal(v, 'agent_cli') || 'kiro',
+            issueIntegrationEnabled: getVal(v, 'issue_integration_enabled') === 'true',
+            createdAt: getVal(v, 'created_at') || new Date().toISOString(),
+            userRole: getVal(e, 'role') || 'member',
+            trackers: trackerMaps.map(mapBindingMap),
+          };
+        });
         return response(200, projects);
 
       case 'POST': {

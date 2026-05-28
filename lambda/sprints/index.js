@@ -159,11 +159,7 @@ export const handler = async (event) => {
         } else if (issueNumber || issueUrl) {
           // Look up the parent project's git_repo so we can populate
           // externalProjectKey for the synthetic GitHub-issues tracker.
-          const projectVal = await g
-            .V()
-            .has('Project', 'id', projectId)
-            .values('git_repo')
-            .next();
+          const projectVal = await g.V().has('Project', 'id', projectId).values('git_repo').next();
           const externalProjectKey = projectVal.value || '';
           trackerProperties = {
             provider: 'github-issues',

@@ -66,7 +66,13 @@ const addSyntheticTrackerBinding = async (g, projectId, gitRepo) => {
 // Backfill the polymorphic tracker_* properties on a single Sprint vertex
 // from its legacy issue_number/issue_url. Caller passes the Sprint's id and
 // the parent project's git_repo (used as externalProjectKey).
-const backfillSprintTrackerFields = async (g, sprintId, issueNumber, issueUrl, externalProjectKey) => {
+const backfillSprintTrackerFields = async (
+  g,
+  sprintId,
+  issueNumber,
+  issueUrl,
+  externalProjectKey,
+) => {
   await g
     .V()
     .has('Sprint', 'id', sprintId)
@@ -85,7 +91,11 @@ const backfillSprintTrackerFields = async (g, sprintId, issueNumber, issueUrl, e
 const findProjectsNeedingMigration = async (g, projectId) => {
   let q = g.V().hasLabel('Project');
   if (projectId) q = q.has('id', projectId);
-  return q.has('issue_integration_enabled', 'true').where(__.not(__.outE('HAS_TRACKER'))).valueMap().toList();
+  return q
+    .has('issue_integration_enabled', 'true')
+    .where(__.not(__.outE('HAS_TRACKER')))
+    .valueMap()
+    .toList();
 };
 
 // Returns {sprint, project} pairs for Sprint vertices that still need
@@ -111,8 +121,12 @@ const findSprintsNeedingMigration = async (g, projectId) => {
 //
 // Returns { dryRun, projects: {candidates, applied}, sprints: {candidates, applied} }.
 const runTrackerMigration = async (g, { projectId, dryRun = false } = {}) => {
-  const projectRows = await findProjectsNeedingMigration(g, projectId);
-  const sprintRows = await findSprintsNeedingMigration(g, projectId);
+  // Independent reads — fire concurrently. Both walk disjoint slices of the
+  // graph (Project vs Sprint vertices), so there's no ordering requirement.
+  const [projectRows, sprintRows] = await Promise.all([
+    findProjectsNeedingMigration(g, projectId),
+    findSprintsNeedingMigration(g, projectId),
+  ]);
 
   const result = {
     dryRun,
