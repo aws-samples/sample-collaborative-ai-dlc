@@ -153,6 +153,52 @@ resource "aws_iam_role_policy" "github_connector" {
 }
 
 # -----------------------------------------------------------------------------
+# Role 3b: trackers (1 Lambda — trackers)
+# Provider-agnostic tracker integration. Needs Neptune (project + binding
+# lookups), DDB read/delete on git-connections + tracker-connections, and
+# SSM read/delete on git-token params (for github-issues token resolution
+# and disconnect). Phase 3 will add Secrets Manager scope for Jira OAuth.
+# -----------------------------------------------------------------------------
+resource "aws_iam_role" "trackers" {
+  name               = "${var.project_name}-trackers-${var.environment}"
+  assume_role_policy = local.lambda_assume_role_policy
+}
+
+resource "aws_iam_role_policy_attachment" "trackers_basic" {
+  role       = aws_iam_role.trackers.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "trackers_vpc" {
+  role       = aws_iam_role.trackers.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+resource "aws_iam_role_policy" "trackers" {
+  name = "tracker-providers"
+  role = aws_iam_role.trackers.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      local.neptune_statement,
+      {
+        Effect = "Allow"
+        Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:Scan"]
+        Resource = compact([
+          var.git_connections_table_arn,
+          var.tracker_connections_table_arn,
+        ])
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter", "ssm:DeleteParameter"]
+        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
+      }
+    ]
+  })
+}
+
+# -----------------------------------------------------------------------------
 # Role 4: cognito-reader (1 Lambda — cognito-users)
 # Only ListUsers on the project's user pool.
 # -----------------------------------------------------------------------------
@@ -695,32 +741,38 @@ module "github_lambda" {
   }
 }
 
-# GitHub Issues Lambda — fetches GitHub issues for a repo (read-only).
-# Reuses the github_connector role: same DDB GIT_CONNECTIONS_TABLE read +
-# SSM git-token decrypt scope, no extra IAM needed.
-module "github_issues_lambda" {
+# Trackers Lambda — provider-agnostic tracker integration (issue #196).
+# Hosts the github-issues provider in Phase 2; Jira and others slot in later.
+# Needs Neptune (project + binding lookups), DDB on git-connections + tracker-
+# connections, and SSM decrypt on git-token params. The dedicated trackers
+# IAM role bundles all of these.
+module "trackers_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
 
-  function_name = "${var.project_name}-github-issues-${var.environment}"
+  function_name = "${var.project_name}-trackers-${var.environment}"
   handler       = "index.handler"
   runtime       = "nodejs24.x"
   timeout       = 30
 
   source_path = [
     {
-      path = "${path.module}/../../../../lambda/github-issues"
+      path = "${path.module}/../../../../lambda/trackers"
       commands = [
-        "cd ../.. && npm run build -w github-issues",
-        ":zip lambda/github-issues/.build",
+        "cd ../.. && npm run build -w trackers",
+        ":zip lambda/trackers/.build",
       ]
     }
   ]
 
   create_role = false
-  lambda_role = aws_iam_role.github_connector.arn
+  lambda_role = aws_iam_role.trackers.arn
+
+  vpc_subnet_ids         = var.private_subnet_ids
+  vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    NEPTUNE_ENDPOINT          = var.neptune_endpoint
     GIT_CONNECTIONS_TABLE     = var.git_connections_table_name
     TRACKER_CONNECTIONS_TABLE = var.tracker_connections_table_name
     GIT_TOKEN_SSM_PREFIX      = "${var.project_name}/${var.environment}/git-token"

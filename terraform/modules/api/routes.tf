@@ -1285,103 +1285,368 @@ resource "aws_lambda_permission" "github" {
   source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
 }
 
-# -----------------------------------------------------------------------------
-# /github/repos/{owner}/{repo}/issues — backed by github-issues lambda
-# -----------------------------------------------------------------------------
-resource "aws_api_gateway_resource" "github_repos_issues" {
+# =============================================================================
+# /trackers — provider-agnostic tracker provider routes (issue #196)
+#
+# Backs the post-Phase-2 frontend. Replaces /github/repos/{o}/{r}/issues* —
+# old route paths are no longer registered; clients call the binding-keyed
+# routes under /projects/{projectId}/trackers/{bindingId}/issues instead.
+# =============================================================================
+
+# /trackers
+resource "aws_api_gateway_resource" "trackers_root" {
   rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.github_repos_owner_repo.id
+  parent_id   = aws_api_gateway_resource.api.id
+  path_part   = "trackers"
+}
+
+# /trackers/auth/{provider}
+resource "aws_api_gateway_resource" "trackers_auth" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.trackers_root.id
+  path_part   = "auth"
+}
+
+resource "aws_api_gateway_resource" "trackers_auth_provider" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.trackers_auth.id
+  path_part   = "{provider}"
+}
+
+# /trackers/callback/{provider}
+resource "aws_api_gateway_resource" "trackers_callback" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.trackers_root.id
+  path_part   = "callback"
+}
+
+resource "aws_api_gateway_resource" "trackers_callback_provider" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.trackers_callback.id
+  path_part   = "{provider}"
+}
+
+# /trackers/{provider}/{instance}
+resource "aws_api_gateway_resource" "trackers_provider" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.trackers_root.id
+  path_part   = "{provider}"
+}
+
+resource "aws_api_gateway_resource" "trackers_provider_instance" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.trackers_provider.id
+  path_part   = "{instance}"
+}
+
+# /projects/{projectId}/trackers
+resource "aws_api_gateway_resource" "project_trackers" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.project.id
+  path_part   = "trackers"
+}
+
+resource "aws_api_gateway_resource" "project_tracker_binding" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.project_trackers.id
+  path_part   = "{bindingId}"
+}
+
+resource "aws_api_gateway_resource" "project_tracker_binding_issues" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.project_tracker_binding.id
   path_part   = "issues"
 }
 
-resource "aws_api_gateway_resource" "github_repos_issues_number" {
+resource "aws_api_gateway_resource" "project_tracker_binding_issue" {
   rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.github_repos_issues.id
-  path_part   = "{issueNumber}"
+  parent_id   = aws_api_gateway_resource.project_tracker_binding_issues.id
+  path_part   = "{resourceId}"
 }
 
-# GET /github/repos/{owner}/{repo}/issues
-resource "aws_api_gateway_method" "github_repos_issues_get" {
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.github_repos_issues.id
-  http_method   = "GET"
-  authorization = "COGNITO_USER_POOLS"
-  authorizer_id = aws_api_gateway_authorizer.cognito.id
-}
-
-resource "aws_api_gateway_integration" "github_repos_issues_get" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.github_repos_issues.id
-  http_method             = aws_api_gateway_method.github_repos_issues_get.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.github_issues_lambda_invoke_arn
-}
-
-# GET /github/repos/{owner}/{repo}/issues/{issueNumber}
-resource "aws_api_gateway_method" "github_repos_issues_number_get" {
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.github_repos_issues_number.id
-  http_method   = "GET"
-  authorization = "COGNITO_USER_POOLS"
-  authorizer_id = aws_api_gateway_authorizer.cognito.id
-}
-
-resource "aws_api_gateway_integration" "github_repos_issues_number_get" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.github_repos_issues_number.id
-  http_method             = aws_api_gateway_method.github_repos_issues_number_get.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.github_issues_lambda_invoke_arn
-}
-
-module "cors_github_repos_issues" {
-  source      = "./cors"
+resource "aws_api_gateway_resource" "project_tracker_binding_issue_comments" {
   rest_api_id = aws_api_gateway_rest_api.main.id
-  resource_id = aws_api_gateway_resource.github_repos_issues.id
-}
-
-module "cors_github_repos_issues_number" {
-  source      = "./cors"
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  resource_id = aws_api_gateway_resource.github_repos_issues_number.id
-}
-
-# /github/repos/{owner}/{repo}/issues/{issueNumber}/comments
-resource "aws_api_gateway_resource" "github_repos_issues_number_comments" {
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.github_repos_issues_number.id
+  parent_id   = aws_api_gateway_resource.project_tracker_binding_issue.id
   path_part   = "comments"
 }
 
-resource "aws_api_gateway_method" "github_repos_issues_number_comments_get" {
+# Helper local for the tracker integration uri — every method below points here.
+locals {
+  trackers_integration_uri = var.trackers_lambda_invoke_arn
+}
+
+# GET /trackers
+resource "aws_api_gateway_method" "trackers_root_get" {
   rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.github_repos_issues_number_comments.id
+  resource_id   = aws_api_gateway_resource.trackers_root.id
   http_method   = "GET"
   authorization = "COGNITO_USER_POOLS"
   authorizer_id = aws_api_gateway_authorizer.cognito.id
 }
 
-resource "aws_api_gateway_integration" "github_repos_issues_number_comments_get" {
+resource "aws_api_gateway_integration" "trackers_root_get" {
   rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.github_repos_issues_number_comments.id
-  http_method             = aws_api_gateway_method.github_repos_issues_number_comments_get.http_method
+  resource_id             = aws_api_gateway_resource.trackers_root.id
+  http_method             = aws_api_gateway_method.trackers_root_get.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = var.github_issues_lambda_invoke_arn
+  uri                     = local.trackers_integration_uri
 }
 
-module "cors_github_repos_issues_number_comments" {
+module "cors_trackers_root" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
-  resource_id = aws_api_gateway_resource.github_repos_issues_number_comments.id
+  resource_id = aws_api_gateway_resource.trackers_root.id
 }
 
-resource "aws_lambda_permission" "github_issues" {
+# GET /trackers/auth/{provider}
+resource "aws_api_gateway_method" "trackers_auth_provider_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.trackers_auth_provider.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+  request_parameters = {
+    "method.request.path.provider" = true
+  }
+}
+
+resource "aws_api_gateway_integration" "trackers_auth_provider_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.trackers_auth_provider.id
+  http_method             = aws_api_gateway_method.trackers_auth_provider_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = local.trackers_integration_uri
+}
+
+module "cors_trackers_auth_provider" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.trackers_auth_provider.id
+}
+
+# GET /trackers/callback/{provider}
+resource "aws_api_gateway_method" "trackers_callback_provider_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.trackers_callback_provider.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+  request_parameters = {
+    "method.request.path.provider" = true
+  }
+}
+
+resource "aws_api_gateway_integration" "trackers_callback_provider_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.trackers_callback_provider.id
+  http_method             = aws_api_gateway_method.trackers_callback_provider_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = local.trackers_integration_uri
+}
+
+module "cors_trackers_callback_provider" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.trackers_callback_provider.id
+}
+
+# DELETE /trackers/{provider}/{instance}
+resource "aws_api_gateway_method" "trackers_provider_instance_delete" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.trackers_provider_instance.id
+  http_method   = "DELETE"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+  request_parameters = {
+    "method.request.path.provider" = true
+    "method.request.path.instance" = true
+  }
+}
+
+resource "aws_api_gateway_integration" "trackers_provider_instance_delete" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.trackers_provider_instance.id
+  http_method             = aws_api_gateway_method.trackers_provider_instance_delete.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = local.trackers_integration_uri
+}
+
+module "cors_trackers_provider_instance" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.trackers_provider_instance.id
+}
+
+# GET /projects/{projectId}/trackers
+resource "aws_api_gateway_method" "project_trackers_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.project_trackers.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+  request_parameters = {
+    "method.request.path.projectId" = true
+  }
+}
+
+resource "aws_api_gateway_integration" "project_trackers_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.project_trackers.id
+  http_method             = aws_api_gateway_method.project_trackers_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = local.trackers_integration_uri
+}
+
+# POST /projects/{projectId}/trackers
+resource "aws_api_gateway_method" "project_trackers_post" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.project_trackers.id
+  http_method   = "POST"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+  request_parameters = {
+    "method.request.path.projectId" = true
+  }
+}
+
+resource "aws_api_gateway_integration" "project_trackers_post" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.project_trackers.id
+  http_method             = aws_api_gateway_method.project_trackers_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = local.trackers_integration_uri
+}
+
+module "cors_project_trackers" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.project_trackers.id
+}
+
+# DELETE /projects/{projectId}/trackers/{bindingId}
+resource "aws_api_gateway_method" "project_tracker_binding_delete" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.project_tracker_binding.id
+  http_method   = "DELETE"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+  request_parameters = {
+    "method.request.path.projectId" = true
+    "method.request.path.bindingId" = true
+  }
+}
+
+resource "aws_api_gateway_integration" "project_tracker_binding_delete" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.project_tracker_binding.id
+  http_method             = aws_api_gateway_method.project_tracker_binding_delete.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = local.trackers_integration_uri
+}
+
+module "cors_project_tracker_binding" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.project_tracker_binding.id
+}
+
+# GET /projects/{projectId}/trackers/{bindingId}/issues
+resource "aws_api_gateway_method" "project_tracker_binding_issues_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.project_tracker_binding_issues.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+  request_parameters = {
+    "method.request.path.projectId" = true
+    "method.request.path.bindingId" = true
+  }
+}
+
+resource "aws_api_gateway_integration" "project_tracker_binding_issues_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.project_tracker_binding_issues.id
+  http_method             = aws_api_gateway_method.project_tracker_binding_issues_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = local.trackers_integration_uri
+}
+
+module "cors_project_tracker_binding_issues" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.project_tracker_binding_issues.id
+}
+
+# GET /projects/{projectId}/trackers/{bindingId}/issues/{resourceId}
+resource "aws_api_gateway_method" "project_tracker_binding_issue_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.project_tracker_binding_issue.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+  request_parameters = {
+    "method.request.path.projectId"  = true
+    "method.request.path.bindingId"  = true
+    "method.request.path.resourceId" = true
+  }
+}
+
+resource "aws_api_gateway_integration" "project_tracker_binding_issue_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.project_tracker_binding_issue.id
+  http_method             = aws_api_gateway_method.project_tracker_binding_issue_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = local.trackers_integration_uri
+}
+
+module "cors_project_tracker_binding_issue" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.project_tracker_binding_issue.id
+}
+
+# GET /projects/{projectId}/trackers/{bindingId}/issues/{resourceId}/comments
+resource "aws_api_gateway_method" "project_tracker_binding_issue_comments_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.project_tracker_binding_issue_comments.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+  request_parameters = {
+    "method.request.path.projectId"  = true
+    "method.request.path.bindingId"  = true
+    "method.request.path.resourceId" = true
+  }
+}
+
+resource "aws_api_gateway_integration" "project_tracker_binding_issue_comments_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.project_tracker_binding_issue_comments.id
+  http_method             = aws_api_gateway_method.project_tracker_binding_issue_comments_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = local.trackers_integration_uri
+}
+
+module "cors_project_tracker_binding_issue_comments" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.project_tracker_binding_issue_comments.id
+}
+
+resource "aws_lambda_permission" "trackers" {
   statement_id  = "AllowAPIGatewayInvoke"
   action        = "lambda:InvokeFunction"
-  function_name = var.github_issues_lambda_name
+  function_name = var.trackers_lambda_name
   principal     = "apigateway.${local.dns_suffix}"
   source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
 }

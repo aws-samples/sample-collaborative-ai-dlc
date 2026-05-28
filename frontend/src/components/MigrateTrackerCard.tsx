@@ -22,8 +22,7 @@ export function MigrateTrackerCard({
   migrationResult,
   onMigrate,
 }: Props) {
-  const needsMigration =
-    project.issueIntegrationEnabled === true && (project.trackers?.length ?? 0) === 0;
+  const needsMigration = project.issueIntegrationEnabled === true && project.trackers.length === 0;
   if (!needsMigration) return null;
 
   return (

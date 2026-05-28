@@ -27,7 +27,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { Plus, GitBranch, Trash2, Zap, Calendar, Settings } from 'lucide-react';
-import { IssueListPanel } from '@/components/IssueListPanel';
+import { TrackerIssueListPanel } from '@/components/TrackerIssueListPanel';
 const PHASE_VARIANT: Record<string, 'inception' | 'construction' | 'review'> = {
   INCEPTION: 'inception',
   CONSTRUCTION: 'construction',
@@ -239,14 +239,18 @@ export default function Project() {
           </div>
         )}
 
-        {/* GitHub issues panel — below sprints so sprints stay discoverable */}
-        {project && project.gitProvider === 'github' && project.issueIntegrationEnabled && (
-          <IssueListPanel
-            project={project}
-            sprints={sprints}
-            onSprintCreated={(sprint) => setSprints((prev) => [...prev, sprint])}
-          />
-        )}
+        {/* Tracker issue panels — one per binding (#196). Phase 2 only renders
+            github-issues; Phase 3 adds Jira via the same surface. */}
+        {project &&
+          project.trackers.map((binding) => (
+            <TrackerIssueListPanel
+              key={binding.id}
+              project={project}
+              binding={binding}
+              sprints={sprints}
+              onSprintCreated={(sprint) => setSprints((prev) => [...prev, sprint])}
+            />
+          ))}
       </div>
 
       {/* Create Sprint Dialog */}
