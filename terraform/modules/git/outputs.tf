@@ -13,3 +13,11 @@ output "git_connections_table_name" {
 output "git_connections_table_arn" {
   value = aws_dynamodb_table.git_connections.arn
 }
+
+output "tracker_connections_table_name" {
+  value = aws_dynamodb_table.tracker_connections.name
+}
+
+output "tracker_connections_table_arn" {
+  value = aws_dynamodb_table.tracker_connections.arn
+}

@@ -172,6 +172,11 @@ output "purge_neptune_lambda_name" {
   value = module.purge_neptune_lambda.lambda_function_name
 }
 
+output "migrate_tracker_fields_lambda_name" {
+  description = "Name of the one-shot tracker-fields migration Lambda. Invoke via `aws lambda invoke` after deploy; see lambda/migrate-tracker-fields/index.js for the payload contract."
+  value       = module.migrate_tracker_fields_lambda.lambda_function_name
+}
+
 output "cognito_users_lambda_arn" {
   description = "ARN of the cognito-users Lambda function"
   value       = module.cognito_users_lambda.lambda_function_arn

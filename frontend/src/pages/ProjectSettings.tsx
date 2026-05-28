@@ -35,6 +35,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import { ArrowLeft, Trash2, X, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { MigrateTrackerCard } from '@/components/MigrateTrackerCard';
 
 const ROLE_LABELS: Record<ProjectRole, string> = {
   owner: 'Owner',
@@ -87,6 +88,16 @@ export default function ProjectSettings() {
   const [editAgentCli, setEditAgentCli] = useState<AgentCli>('kiro');
   const [savingAgentCli, setSavingAgentCli] = useState(false);
   const [availableCliNames, setAvailableCliNames] = useState<AgentCli[]>(['kiro']);
+
+  // Tracker-abstraction migration (#194 Phase 1). The card shows when the
+  // project still uses the legacy issue_integration boolean and has no
+  // HAS_TRACKER edge yet — i.e. it predates the abstraction or was created
+  // by an OSS install that hasn't migrated.
+  const [migrating, setMigrating] = useState(false);
+  const [migrationResult, setMigrationResult] = useState<{
+    sprintsApplied: number;
+    projectsApplied: number;
+  } | null>(null);
 
   const [showAddMember, setShowAddMember] = useState(false);
   const [newMemberUserId, setNewMemberUserId] = useState('');
@@ -203,6 +214,27 @@ export default function ProjectSettings() {
     const q = userSearch.toLowerCase();
     return u.email.toLowerCase().includes(q) || u.displayName.toLowerCase().includes(q);
   });
+
+  const handleMigrateTracker = async () => {
+    if (!projectId) return;
+    clearMessages();
+    setMigrating(true);
+    try {
+      const result = await projectsService.migrateTracker(projectId);
+      setMigrationResult({
+        sprintsApplied: result.sprints.applied,
+        projectsApplied: result.projects.applied,
+      });
+      // Reload so the project's `trackers` array reflects the new binding,
+      // which dismisses the card on next render.
+      await loadData();
+      setSuccess('Migrated to the new tracker data model.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to migrate');
+    } finally {
+      setMigrating(false);
+    }
+  };
 
   const handleSaveProject = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -372,6 +404,16 @@ export default function ProjectSettings() {
           <div className="text-center py-12 text-muted-foreground text-sm">Loading...</div>
         ) : (
           <>
+            {project && (
+              <MigrateTrackerCard
+                project={project}
+                canEditProject={canEditProject}
+                migrating={migrating}
+                migrationResult={migrationResult}
+                onMigrate={handleMigrateTracker}
+              />
+            )}
+
             {/* General */}
             <Card className="mb-6">
               <CardHeader className="pb-3">

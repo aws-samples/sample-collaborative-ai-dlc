@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { buildResponse } from '../shared/response.js';
+import { runTrackerMigration } from '../shared/tracker-migration.js';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -16,6 +17,58 @@ const getVal = (obj, key) => {
   const raw = obj instanceof Map ? obj.get(key) : obj[key];
   if (Array.isArray(raw)) return raw[0] ?? '';
   return raw ?? '';
+};
+
+// Anonymous Gremlin step that projects a TrackerBinding vertex into the
+// camelCase shape the API exposes. Used as a `.by()` argument so the list-
+// projects traversal can fold trackers per project in one round-trip
+// (avoiding the N+1 fetch this used to do in JS).
+const trackerBindingProjectionStep = () =>
+  __.project(
+    'id',
+    'provider',
+    'instance',
+    'externalProjectKey',
+    'displayName',
+    'createdAt',
+    'createdBy',
+  )
+    .by('id')
+    .by('provider')
+    .by(__.coalesce(__.values('instance'), __.constant(null)))
+    .by(__.coalesce(__.values('external_project_key'), __.constant(null)))
+    .by(__.coalesce(__.values('display_name'), __.constant(null)))
+    .by(__.coalesce(__.values('created_at'), __.constant(null)))
+    .by(__.coalesce(__.values('created_by'), __.constant(null)));
+
+// Anonymous step yielding a single fold()-collected list of binding maps
+// scoped to the current Project vertex. Returns [] when the project has
+// no HAS_TRACKER edges.
+const projectTrackersFoldStep = () =>
+  __.out('HAS_TRACKER').hasLabel('TrackerBinding').flatMap(trackerBindingProjectionStep()).fold();
+
+const mapBindingMap = (m) => {
+  const get = (k) => (m instanceof Map ? m.get(k) : m[k]);
+  return {
+    id: get('id'),
+    provider: get('provider'),
+    instance: get('instance'),
+    externalProjectKey: get('externalProjectKey'),
+    displayName: get('displayName'),
+    createdAt: get('createdAt'),
+    createdBy: get('createdBy'),
+  };
+};
+
+const fetchProjectTrackers = async (g, projectId) => {
+  const list = await g
+    .V()
+    .has('Project', 'id', projectId)
+    .out('HAS_TRACKER')
+    .hasLabel('TrackerBinding')
+    .flatMap(trackerBindingProjectionStep())
+    .toList();
+  return list.map(mapBindingMap);
 };
 
 const getConnection = async () => {
@@ -59,10 +112,36 @@ export const handler = async (event) => {
       );
     }
 
-    const { httpMethod, pathParameters, body } = event;
+    const { httpMethod, pathParameters, body, path } = event;
     const projectId = pathParameters?.projectId;
     const userId = event.requestContext?.authorizer?.claims?.sub;
     const userEmail = event.requestContext?.authorizer?.claims?.email || '';
+    const isMigrateTracker = httpMethod === 'POST' && path?.endsWith('/migrate-tracker');
+
+    // POST /projects/{projectId}/migrate-tracker — owner/admin only.
+    // Backfills the tracker_* fields on this project's sprints + creates a
+    // synthetic HAS_TRACKER edge if the project still uses the legacy
+    // issue_integration_enabled boolean. Idempotent. See parent issue #194.
+    if (isMigrateTracker) {
+      if (!userId) return response(401, { error: 'Unauthorized' });
+      const role = await g
+        .V()
+        .has('Project', 'id', projectId)
+        .outE('HAS_MEMBER')
+        .as('e')
+        .inV()
+        .has('User', 'id', userId)
+        .select('e')
+        .values('role')
+        .next();
+      if (role.done) return response(403, { error: 'Access denied' });
+      if (role.value !== 'owner' && role.value !== 'admin') {
+        return response(403, { error: 'Only project owners and admins can migrate trackers' });
+      }
+      const dryRun = body ? Boolean(JSON.parse(body)?.dryRun) : false;
+      const result = await runTrackerMigration(g, { projectId, dryRun });
+      return response(200, result);
+    }
 
     switch (httpMethod) {
       case 'GET':
@@ -88,6 +167,7 @@ export const handler = async (event) => {
           if (!result.value) return response(404, { error: 'Project not found' });
 
           const v = result.value;
+          const trackers = await fetchProjectTrackers(g, projectId);
           const project = {
             id: getVal(v, 'id') || projectId,
             name: getVal(v, 'name'),
@@ -97,11 +177,14 @@ export const handler = async (event) => {
             issueIntegrationEnabled: getVal(v, 'issue_integration_enabled') === 'true',
             createdAt: getVal(v, 'created_at') || new Date().toISOString(),
             userRole,
+            trackers,
           };
           return response(200, project);
         }
 
-        // List projects - only return projects where the current user is a member
+        // List projects - only return projects where the current user is a member.
+        // Trackers fold into the same traversal so we don't fan out into N+1
+        // per-project fetches.
         if (!userId) return response(401, { error: 'Unauthorized' });
 
         const results = await g
@@ -114,12 +197,15 @@ export const handler = async (event) => {
           .as('p')
           .select('e', 'p')
           .by(__.valueMap())
-          .by(__.valueMap())
+          .by(__.project('vertex', 'trackers').by(__.valueMap()).by(projectTrackersFoldStep()))
           .toList();
         const projects = results.map((item) => {
-          // item is a Map with keys 'e' (edge) and 'p' (project vertex)
+          // item is a Map with keys 'e' (edge) and 'p' ({vertex, trackers}).
           const e = item instanceof Map ? item.get('e') : item.e;
-          const v = item instanceof Map ? item.get('p') : item.p;
+          const pBundle = item instanceof Map ? item.get('p') : item.p;
+          const v = pBundle instanceof Map ? pBundle.get('vertex') : pBundle.vertex;
+          const trackerMaps =
+            (pBundle instanceof Map ? pBundle.get('trackers') : pBundle.trackers) ?? [];
           return {
             id: getVal(v, 'id'),
             name: getVal(v, 'name'),
@@ -129,6 +215,7 @@ export const handler = async (event) => {
             issueIntegrationEnabled: getVal(v, 'issue_integration_enabled') === 'true',
             createdAt: getVal(v, 'created_at') || new Date().toISOString(),
             userRole: getVal(e, 'role') || 'member',
+            trackers: trackerMaps.map(mapBindingMap),
           };
         });
         return response(200, projects);
