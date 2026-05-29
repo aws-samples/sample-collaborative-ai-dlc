@@ -799,13 +799,16 @@ module "purge_neptune_lambda" {
 
   function_name = "${var.project_name}-purge-neptune-${var.environment}"
   handler       = "index.handler"
-  runtime       = "nodejs18.x"
+  runtime       = "nodejs24.x"
   timeout       = 60
 
   source_path = [
     {
-      path             = "${path.module}/../../../../lambda/purge-neptune"
-      npm_requirements = true
+      path = "${path.module}/../../../../lambda/purge-neptune"
+      commands = [
+        "cd ../.. && npm run build -w purge-neptune",
+        ":zip lambda/purge-neptune/.build",
+      ]
     }
   ]
 
