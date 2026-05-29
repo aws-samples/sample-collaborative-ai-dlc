@@ -1,7 +1,0 @@
-{
-  "name": "phases-lambda",
-  "version": "1.0.0",
-  "dependencies": {
-    "gremlin": "^3.7.0"
-  }
-}
