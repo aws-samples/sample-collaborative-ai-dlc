@@ -4,6 +4,7 @@ const { randomUUID } = require('crypto');
 const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
 const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
 const { buildResponse } = require('./shared/response');
+const { validateMcpServersJson } = require('./shared/mcp-validator');
 const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
@@ -258,11 +259,12 @@ async function handleTaskMcpServers(g, res, httpMethod, taskId, body) {
   if (httpMethod === 'PUT') {
     const data = JSON.parse(body || '{}');
     const mcpServersJson = data.mcpServers || '[]';
-    // Validate JSON
-    try {
-      JSON.parse(mcpServersJson);
-    } catch {
-      return res(400, { error: 'mcpServers must be a valid JSON string' });
+    const validation = validateMcpServersJson(mcpServersJson);
+    if (!validation.valid) {
+      return res(400, {
+        error: 'Invalid MCP servers configuration',
+        issues: validation.issues,
+      });
     }
     await g
       .V()
@@ -326,7 +328,8 @@ async function handleTaskSteeringDocs(g, res, httpMethod, taskId, body) {
       return res(400, { error: 'Maximum 20 steering documents per task' });
     }
 
-    // Resolve project ID for S3 key construction
+    // Resolve project ID for S3 key construction.
+    // Edge model: Project --HAS_SPRINT--> Sprint --CONTAINS--> Task
     let projectId = '';
     try {
       const sprintResult = await g
@@ -334,7 +337,7 @@ async function handleTaskSteeringDocs(g, res, httpMethod, taskId, body) {
         .has('Task', 'id', taskId)
         .in_('CONTAINS')
         .hasLabel('Sprint')
-        .in_('CONTAINS')
+        .in_('HAS_SPRINT')
         .hasLabel('Project')
         .valueMap('id')
         .next();

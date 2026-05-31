@@ -50,7 +50,6 @@ async function loadMergedMcpServers(projectId, taskId) {
       );
       const raw = result.Parameter?.Value || '[]';
       globalServers = JSON.parse(raw);
-      console.log(`[acp] Loaded ${globalServers.length} global MCP server(s) from SSM`);
     } catch (err) {
       console.error('[acp] Failed to load global MCP servers from SSM:', err.message);
     }
@@ -82,9 +81,6 @@ async function loadMergedMcpServers(projectId, taskId) {
           if (raw) {
             try {
               projectServers = JSON.parse(raw);
-              console.log(
-                `[acp] Loaded ${projectServers.length} project MCP server(s) from Neptune`,
-              );
             } catch {
               console.error('[acp] Could not parse project mcp_servers:', raw);
             }
@@ -101,7 +97,6 @@ async function loadMergedMcpServers(projectId, taskId) {
             if (raw) {
               try {
                 taskServers = JSON.parse(raw);
-                console.log(`[acp] Loaded ${taskServers.length} task MCP server(s) from Neptune`);
               } catch {
                 console.error('[acp] Could not parse task mcp_servers:', raw);
               }
@@ -561,7 +556,13 @@ async function main() {
 async function runAcpMode() {
   // Load merged MCP servers from SSM (global), Neptune project, and Neptune task.
   // Result is cached within this process for the session lifetime.
-  const extras = await loadMergedMcpServers(env.projectId, env.agentTaskId);
+  // Default `env` to [] when missing — kiro-cli's ACP deserializer rejects
+  // stdio MCP entries without an `env` field and silently exits with code 0
+  // (no stderr, no JSON-RPC error), so we normalize here.
+  const extras = (await loadMergedMcpServers(env.projectId, env.agentTaskId)).map((s) => ({
+    ...s,
+    env: Array.isArray(s.env) ? s.env : [],
+  }));
 
   // Authenticate the driver in THIS process so module-level state (e.g.
   // _cachedBearerToken) is populated. pool-worker.js already authenticated
@@ -610,7 +611,10 @@ async function runAcpMode() {
   agentProc.stderr.on('data', (chunk) => {
     const text = chunk.toString();
     stderrChunks.push(text);
-    process.stderr.write(`[agent-stderr] ${text}`);
+    // Log line-by-line so each line appears as its own CloudWatch log event.
+    for (const line of text.split('\n')) {
+      if (line.length > 0) console.error(`[agent-stderr] ${line}`);
+    }
   });
 
   const rl = readline.createInterface({ input: agentProc.stdout });
@@ -624,6 +628,11 @@ async function runAcpMode() {
 
   agentProc.on('exit', async (code) => {
     console.log(`[acp] ${acpBin} exited with code ${code}`);
+    // If the agent exited without producing stderr, surface that explicitly so
+    // the failure mode is obvious in the logs.
+    if (stderrChunks.length === 0) {
+      console.error(`[acp] ${acpBin} exited (code=${code}) with no stderr output`);
+    }
     // Only save status here if the prompt flow hasn't already handled it.
     // The statusSaved guard inside saveStatus() prevents double-writes.
     if (!statusSaved) {
@@ -641,6 +650,10 @@ async function runAcpMode() {
     clientInfo: { name: 'ai-dlc-agent', version: '1.0.0' },
   });
   console.log('[acp] Initialized:', initResult.agentInfo?.name, initResult.agentInfo?.version);
+  console.log(
+    '[acp] Agent capabilities:',
+    JSON.stringify(initResult.agentCapabilities || {}),
+  );
 
   // 2. Create session — graph MCP server is always included; extra MCP servers
   //    are loaded from Secrets Manager and appended.
@@ -696,6 +709,23 @@ async function runAcpMode() {
     ...extras,
   ];
   console.log(`[acp] Starting session with ${mcpServers.length} MCP server(s)`);
+  // Redacted dump of the payload we're about to send. Header/env values are
+  // replaced with their length so secrets don't end up in CloudWatch.
+  console.log(
+    '[acp] session/new payload (redacted):',
+    JSON.stringify({
+      cwd: '/workspace',
+      mcpServers: mcpServers.map((s) => ({
+        ...s,
+        env: Array.isArray(s.env)
+          ? s.env.map((e) => ({ name: e.name, value: `<${(e.value || '').length} chars>` }))
+          : s.env,
+        headers: Array.isArray(s.headers)
+          ? s.headers.map((h) => ({ name: h.name, value: `<${(h.value || '').length} chars>` }))
+          : s.headers,
+      })),
+    }),
+  );
 
   const session = await request('session/new', {
     cwd: '/workspace',

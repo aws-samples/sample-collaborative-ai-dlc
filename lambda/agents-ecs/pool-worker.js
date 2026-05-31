@@ -217,6 +217,7 @@ async function writeScopedRules(rulesDir, projectId, taskId) {
 
   try {
     const creds = await fromNodeProviderChain()();
+    creds.region = env.region;
     const info = getUrlAndHeaders(neptuneEndpoint, '8182', creds, '/gremlin', 'wss');
     const conn = new gremlin.driver.DriverRemoteConnection(info.url, { headers: info.headers });
     const g = gremlin.process.AnonymousTraversalSource.traversal().withRemote(conn);

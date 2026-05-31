@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { buildResponse } from '../shared/response.js';
+import { validateMcpServersJson } from '../shared/mcp-validator.js';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
@@ -324,11 +325,12 @@ async function handleProjectMcpServers(g, response, httpMethod, projectId, userI
   if (httpMethod === 'PUT') {
     const data = JSON.parse(body || '{}');
     const mcpServersJson = data.mcpServers || '[]';
-    // Validate JSON
-    try {
-      JSON.parse(mcpServersJson);
-    } catch {
-      return response(400, { error: 'mcpServers must be a valid JSON string' });
+    const validation = validateMcpServersJson(mcpServersJson);
+    if (!validation.valid) {
+      return response(400, {
+        error: 'Invalid MCP servers configuration',
+        issues: validation.issues,
+      });
     }
     await g
       .V()

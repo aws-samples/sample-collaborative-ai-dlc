@@ -9,8 +9,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
 import { Skeleton } from '@/components/ui/skeleton';
+import { McpServersSection } from '@/components/settings/McpServersSection';
 import { cn } from '@/lib/utils';
 import {
   RefreshCw,
@@ -104,7 +104,6 @@ export default function Admin() {
   const [bearerToken, setBearerToken] = useState('');
   const [kiroApiKey, setKiroApiKey] = useState('');
   const [mcpServers, setMcpServers] = useState('[]');
-  const [mcpError, setMcpError] = useState('');
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsSaveResult, setSettingsSaveResult] = useState<'saved' | 'error' | null>(null);
 
@@ -136,20 +135,10 @@ export default function Admin() {
   }, []);
 
   const saveSettings = async () => {
-    // Validate MCP JSON before sending
-    try {
-      JSON.parse(mcpServers);
-      setMcpError('');
-    } catch {
-      setMcpError('Invalid JSON — fix the syntax before saving');
-      return;
-    }
     setSettingsSaving(true);
     setSettingsSaveResult(null);
     try {
-      const update: { bedrockBearerToken?: string; kiroApiKey?: string; mcpServers?: string } = {
-        mcpServers,
-      };
+      const update: { bedrockBearerToken?: string; kiroApiKey?: string } = {};
       // Only send secret fields if the user typed something
       if (bearerToken !== '') update.bedrockBearerToken = bearerToken;
       if (kiroApiKey !== '') update.kiroApiKey = kiroApiKey;
@@ -158,7 +147,6 @@ export default function Admin() {
       // Reload to get fresh flags; clear the secret inputs
       const fresh = await agentsService.getSettings();
       setSettings(fresh);
-      setMcpServers(fresh.mcpServers);
       setBearerToken('');
       setKiroApiKey('');
     } catch (e) {
@@ -168,6 +156,14 @@ export default function Admin() {
       setSettingsSaving(false);
       setTimeout(() => setSettingsSaveResult(null), 4000);
     }
+  };
+
+  const saveMcpServers = async (value: string) => {
+    await agentsService.updateSettings({ mcpServers: value });
+    // Refresh local state from server so we display the canonical stored value
+    const fresh = await agentsService.getSettings();
+    setSettings(fresh);
+    setMcpServers(fresh.mcpServers);
   };
 
   const act = async (label: string, fn: () => Promise<unknown>) => {
@@ -457,41 +453,21 @@ export default function Admin() {
                 </div>
 
                 {/* Extra MCP Servers */}
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-foreground">Extra MCP Servers</label>
-                  <Textarea
-                    value={mcpServers}
-                    onChange={(e) => {
-                      setMcpServers(e.target.value);
-                      setMcpError('');
-                    }}
-                    className={cn(
-                      'font-mono text-xs min-h-[140px] resize-y',
-                      mcpError && 'border-destructive focus-visible:ring-destructive',
-                    )}
-                    spellCheck={false}
-                  />
-                  {mcpError ? (
-                    <p className="text-[11px] text-destructive flex items-center gap-1">
-                      <XCircle className="h-3 w-3 shrink-0" /> {mcpError}
-                    </p>
-                  ) : (
-                    <p className="text-[11px] text-muted-foreground">
-                      JSON array of MCP server definitions injected into every agent session.
-                      Example:{' '}
-                      <code className="bg-muted px-1 rounded text-[10px]">
-                        {'[{"name":"my-tool","command":"npx","args":["-y","my-mcp-server"]}]'}
-                      </code>
-                    </p>
-                  )}
-                </div>
+                <McpServersSection
+                  value={mcpServers}
+                  onChange={setMcpServers}
+                  onSave={saveMcpServers}
+                  canEdit={true}
+                  description="JSON array of MCP server definitions injected into every agent session."
+                  title="Extra MCP Servers"
+                />
 
                 {/* Save */}
                 <div className="flex items-center gap-3 pt-1">
                   <Button
                     size="sm"
                     onClick={saveSettings}
-                    disabled={settingsSaving}
+                    disabled={settingsSaving || (bearerToken === '' && kiroApiKey === '')}
                     className="gap-1.5"
                   >
                     {settingsSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}

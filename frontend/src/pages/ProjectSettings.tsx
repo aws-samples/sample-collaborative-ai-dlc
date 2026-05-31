@@ -16,7 +16,8 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
-import { Textarea } from '@/components/ui/textarea';
+import { McpServersSection } from '../components/settings/McpServersSection';
+import { SteeringDocsSection } from '../components/settings/SteeringDocsSection';
 import {
   Dialog,
   DialogContent,
@@ -35,7 +36,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { ArrowLeft, Trash2, X, AlertCircle, CheckCircle2, Upload, Download } from 'lucide-react';
+import { ArrowLeft, Trash2, X, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const ROLE_LABELS: Record<ProjectRole, string> = {
@@ -108,17 +109,11 @@ export default function ProjectSettings() {
   } | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
 
-  // MCP servers state
+  // MCP servers state (raw JSON string; persistence handled by McpServersSection)
   const [mcpServers, setMcpServers] = useState('[]');
-  const [mcpError, setMcpError] = useState('');
-  const [savingMcp, setSavingMcp] = useState(false);
 
-  // Steering docs state
+  // Steering docs state (persistence/upload handled by SteeringDocsSection)
   const [steeringDocs, setSteeringDocs] = useState<SteeringDoc[]>([]);
-  const [uploadingFile, setUploadingFile] = useState(false);
-  const [confirmReplace, setConfirmReplace] = useState<File | null>(null);
-  const [confirmDeleteDoc, setConfirmDeleteDoc] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const userRole = project?.userRole;
   const canManageMembers = userRole === 'owner' || userRole === 'admin';
@@ -326,116 +321,22 @@ export default function ProjectSettings() {
     }
   };
 
-  const handleSaveMcpServers = async () => {
+  const handleSaveMcpServers = async (value: string) => {
     if (!projectId) return;
     clearMessages();
-    setMcpError('');
-    try {
-      JSON.parse(mcpServers);
-    } catch {
-      setMcpError('Must be a valid JSON array');
-      return;
-    }
-    setSavingMcp(true);
-    try {
-      await projectsService.updateMcpServers(projectId, mcpServers);
-      setSuccess('MCP servers saved');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save MCP servers');
-    } finally {
-      setSavingMcp(false);
-    }
+    await projectsService.updateMcpServers(projectId, value);
+    setSuccess('MCP servers saved');
   };
 
-  const MAX_STEERING_DOCS = 20;
-  const MAX_STEERING_FILE_SIZE = 100 * 1024; // 100 KB
+  const handleSaveSteeringMetadata = async (docs: Array<{ filename: string }>) => {
+    if (!projectId) throw new Error('Missing projectId');
+    return projectsService.updateSteeringDocs(projectId, docs);
+  };
 
-  const performSteeringUpload = async (file: File, replace: boolean) => {
+  const refreshSteeringDocs = async () => {
     if (!projectId) return;
-    clearMessages();
-    setUploadingFile(true);
-    try {
-      // Build the new metadata list. If replacing, keep the same entry slot
-      // (same filename = same s3Key in backend). If new, append.
-      const existingIdx = steeringDocs.findIndex((d) => d.filename === file.name);
-      const nextDocs =
-        replace && existingIdx >= 0
-          ? steeringDocs
-          : [...steeringDocs, { filename: file.name, s3Key: '' }];
-
-      const resp = await projectsService.updateSteeringDocs(
-        projectId,
-        nextDocs.map((d) => ({ filename: d.filename })),
-      );
-      const target = resp.uploadUrls?.find((u) => u.filename === file.name);
-      if (!target) {
-        throw new Error('Server did not return an upload URL for this file');
-      }
-      const putResp = await fetch(target.uploadUrl, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'text/markdown' },
-        body: file,
-      });
-      if (!putResp.ok) {
-        throw new Error(`Upload failed (HTTP ${putResp.status})`);
-      }
-      const refreshed = await projectsService.getSteeringDocs(projectId);
-      setSteeringDocs(refreshed.steeringDocs ?? []);
-      setSuccess(replace ? `Replaced ${file.name}` : `Uploaded ${file.name}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to upload file');
-    } finally {
-      setUploadingFile(false);
-    }
-  };
-
-  const handleSteeringFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    // Reset the input so picking the same file again triggers onChange
-    if (fileInputRef.current) fileInputRef.current.value = '';
-    if (!file) return;
-    clearMessages();
-
-    if (!file.name.toLowerCase().endsWith('.md')) {
-      setError(`"${file.name}" is not a Markdown file (.md required)`);
-      return;
-    }
-    if (file.size > MAX_STEERING_FILE_SIZE) {
-      setError(
-        `"${file.name}" is ${(file.size / 1024).toFixed(1)} KB. Maximum allowed is 100 KB.`,
-      );
-      return;
-    }
-    if (steeringDocs.some((d) => d.filename === file.name)) {
-      setConfirmReplace(file);
-      return;
-    }
-    if (steeringDocs.length >= MAX_STEERING_DOCS) {
-      setError(`Maximum ${MAX_STEERING_DOCS} steering documents per project`);
-      return;
-    }
-    performSteeringUpload(file, false);
-  };
-
-  const handleDeleteSteeringDoc = async (filename: string) => {
-    if (!projectId) return;
-    clearMessages();
-    setUploadingFile(true);
-    try {
-      const nextDocs = steeringDocs.filter((d) => d.filename !== filename);
-      await projectsService.updateSteeringDocs(
-        projectId,
-        nextDocs.map((d) => ({ filename: d.filename })),
-      );
-      const refreshed = await projectsService.getSteeringDocs(projectId);
-      setSteeringDocs(refreshed.steeringDocs ?? []);
-      setSuccess(`Deleted ${filename}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete file');
-    } finally {
-      setUploadingFile(false);
-      setConfirmDeleteDoc(null);
-    }
+    const refreshed = await projectsService.getSteeringDocs(projectId);
+    setSteeringDocs(refreshed.steeringDocs ?? []);
   };
 
   const getAssignableRoles = (): ProjectRole[] => {
@@ -666,138 +567,29 @@ export default function ProjectSettings() {
             </Card>
 
             {/* MCP Servers */}
-            <Card className="mb-6">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">MCP Servers</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <p className="text-xs text-muted-foreground">
-                  JSON array of MCP server definitions injected into every agent session for this
-                  project. These are merged with global MCP servers; when names collide,
-                  project-level entries take precedence over global ones.
-                </p>
-                <Textarea
-                  value={mcpServers}
-                  onChange={(e) => {
-                    setMcpServers(e.target.value);
-                    setMcpError('');
-                  }}
-                  className={cn(
-                    'font-mono text-xs min-h-[120px] resize-y',
-                    mcpError && 'border-destructive focus-visible:ring-destructive',
-                  )}
-                  spellCheck={false}
-                  disabled={!canEditProject}
-                  placeholder='[{"name":"my-tool","command":"npx","args":["-y","my-mcp-server"]}]'
-                />
-                {mcpError && (
-                  <p className="text-[11px] text-destructive flex items-center gap-1">
-                    <AlertCircle className="h-3 w-3 shrink-0" /> {mcpError}
-                  </p>
-                )}
-                {canEditProject && (
-                  <div className="flex justify-end">
-                    <Button size="sm" onClick={handleSaveMcpServers} disabled={savingMcp}>
-                      {savingMcp ? 'Saving...' : 'Save MCP Servers'}
-                    </Button>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+            <div className="mb-6">
+              <McpServersSection
+                value={mcpServers}
+                onChange={setMcpServers}
+                onSave={handleSaveMcpServers}
+                canEdit={canEditProject}
+                description="JSON array of MCP server definitions injected into every agent session for this project. These are merged with global MCP servers; when names collide, project-level entries take precedence over global ones."
+              />
+            </div>
 
             {/* Steering Rules */}
-            <Card className="mb-6">
-              <CardHeader className="pb-3">
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-base">Steering Rules</CardTitle>
-                  {canEditProject && (
-                    <>
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        accept=".md,text/markdown"
-                        className="hidden"
-                        onChange={handleSteeringFileSelected}
-                      />
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => fileInputRef.current?.click()}
-                        disabled={
-                          uploadingFile || steeringDocs.length >= MAX_STEERING_DOCS
-                        }
-                        title={
-                          steeringDocs.length >= MAX_STEERING_DOCS
-                            ? `Maximum ${MAX_STEERING_DOCS} documents`
-                            : undefined
-                        }
-                      >
-                        <Upload className="h-3.5 w-3.5 mr-1" />
-                        {uploadingFile ? 'Uploading...' : 'Upload File'}
-                      </Button>
-                    </>
-                  )}
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <p className="text-xs text-muted-foreground">
-                  Markdown documents loaded into the agent context for every phase in this project
-                  (coding standards, API reference, framework guidelines, etc.). Maximum{' '}
-                  {MAX_STEERING_DOCS} documents, 100 KB each. Only <code>.md</code> files.
-                </p>
-                {steeringDocs.length === 0 ? (
-                  <p className="text-sm text-muted-foreground text-center py-4">
-                    No steering rules uploaded.
-                  </p>
-                ) : (
-                  <div className="divide-y divide-border border rounded-md">
-                    {steeringDocs.map((doc) => (
-                      <div
-                        key={doc.filename}
-                        className="px-3 py-2 flex items-center justify-between gap-2"
-                      >
-                        <span className="font-mono text-xs truncate">{doc.filename}</span>
-                        <div className="flex items-center gap-1 shrink-0">
-                          <Button
-                            asChild={!!doc.downloadUrl}
-                            size="icon"
-                            variant="ghost"
-                            className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                            disabled={!doc.downloadUrl}
-                            title="Download"
-                          >
-                            {doc.downloadUrl ? (
-                              <a
-                                href={doc.downloadUrl}
-                                download={doc.filename}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                              >
-                                <Download className="h-3.5 w-3.5" />
-                              </a>
-                            ) : (
-                              <Download className="h-3.5 w-3.5" />
-                            )}
-                          </Button>
-                          {canEditProject && (
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                              onClick={() => setConfirmDeleteDoc(doc.filename)}
-                              disabled={uploadingFile}
-                              title="Delete"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+            <div className="mb-6">
+              <SteeringDocsSection
+                docs={steeringDocs}
+                onSaveMetadata={handleSaveSteeringMetadata}
+                onRefresh={refreshSteeringDocs}
+                canEdit={canEditProject}
+                description="Markdown documents loaded into the agent context for every phase in this project (coding standards, API reference, framework guidelines, etc.)."
+                onSuccess={setSuccess}
+                onError={setError}
+                onClearMessages={clearMessages}
+              />
+            </div>
 
             {/* Members */}
             <Card>
@@ -1075,79 +867,6 @@ export default function ProjectSettings() {
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               Remove
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      {/* Confirm Replace Steering Doc */}
-      <AlertDialog
-        open={!!confirmReplace}
-        onOpenChange={(open) => {
-          if (!open) setConfirmReplace(null);
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Replace File?</AlertDialogTitle>
-            <AlertDialogDescription>
-              {confirmReplace && (
-                <>
-                  A file named{' '}
-                  <span className="font-mono font-semibold text-foreground">
-                    {confirmReplace.name}
-                  </span>{' '}
-                  already exists. Replace it with the new upload?
-                </>
-              )}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                if (confirmReplace) {
-                  const file = confirmReplace;
-                  setConfirmReplace(null);
-                  performSteeringUpload(file, true);
-                }
-              }}
-            >
-              Replace
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      {/* Confirm Delete Steering Doc */}
-      <AlertDialog
-        open={!!confirmDeleteDoc}
-        onOpenChange={(open) => {
-          if (!open) setConfirmDeleteDoc(null);
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Steering File</AlertDialogTitle>
-            <AlertDialogDescription>
-              {confirmDeleteDoc && (
-                <>
-                  Delete{' '}
-                  <span className="font-mono font-semibold text-foreground">
-                    {confirmDeleteDoc}
-                  </span>
-                  ? This cannot be undone.
-                </>
-              )}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => confirmDeleteDoc && handleDeleteSteeringDoc(confirmDeleteDoc)}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              Delete
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

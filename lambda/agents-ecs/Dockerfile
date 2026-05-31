@@ -1,8 +1,5 @@
 FROM public.ecr.aws/docker/library/node:24.15.0-slim@sha256:03eae3ef7e88a9de535496fb488d67e02b9d96a063a8967bae657744ecd513f2
 
-ARG IMAGE_TAG=latest
-ENV IMAGE_TAG=${IMAGE_TAG}
-
 RUN apt-get update -o Acquire::AllowInsecureRepositories=true -o Acquire::AllowDowngradeToInsecureRepositories=true \
     && apt-get install -y --no-install-recommends --allow-unauthenticated ca-certificates gnupg \
     && apt-get update \
@@ -56,8 +53,12 @@ COPY mcp-server-graph/package.json mcp-server-graph/index.js /opt/mcp-server-gra
 RUN cd /opt/mcp-server-graph && npm install --production
 
 # Install ACP client (includes drivers)
-COPY acp-package.json /opt/acp-client/package.json
+COPY package.json /opt/acp-client/package.json
 RUN cd /opt/acp-client && npm install --production
+
+ARG IMAGE_TAG=latest
+ENV IMAGE_TAG=${IMAGE_TAG}
+
 COPY acp-client.js pool-worker.js /opt/acp-client/
 COPY drivers/ /opt/acp-client/drivers/
 
