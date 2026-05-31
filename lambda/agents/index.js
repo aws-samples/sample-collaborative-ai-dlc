@@ -21,6 +21,7 @@ const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
 const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
 const { buildResponse } = require('./shared/response');
 const { resolveGitToken } = require('./shared/git-token');
+const { validateMcpServersJson } = require('./shared/mcp-validator');
 
 const ecs = new ECSClient({});
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -445,11 +446,12 @@ exports.handler = async (event) => {
       }
 
       if (typeof input.mcpServers === 'string') {
-        // Validate JSON before storing
-        try {
-          JSON.parse(input.mcpServers);
-        } catch {
-          return response(400, { error: 'mcpServers must be a valid JSON string' });
+        const validation = validateMcpServersJson(input.mcpServers);
+        if (!validation.valid) {
+          return response(400, {
+            error: 'Invalid MCP servers configuration',
+            issues: validation.issues,
+          });
         }
         try {
           await ssm.send(

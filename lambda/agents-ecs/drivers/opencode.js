@@ -185,6 +185,7 @@ function writeProjectConfig(workspaceDir, env) {
       },
     },
     model,
+    instructions: ['.opencode/rules/*.md'],
   };
 
   try {
@@ -203,16 +204,14 @@ function writeProjectConfig(workspaceDir, env) {
 // ---------------------------------------------------------------------------
 
 /**
- * OpenCode reads project instructions from .opencode/instructions.md.
+ * Returns the directory where modular rule files go for this driver.
+ * OpenCode loads these via the `instructions` glob in opencode.json.
+ *
+ * @param {string} workspaceDir - absolute path to the workspace root
+ * @returns {string}
  */
-function getAdditionalSteeringPaths(workspaceDir) {
-  return [
-    {
-      type: 'concat-dir',
-      src: path.join(workspaceDir, '.kiro', 'steering'),
-      dest: path.join(workspaceDir, '.opencode', 'instructions.md'),
-    },
-  ];
+function getRulesDir(workspaceDir) {
+  return path.join(workspaceDir, '.opencode', 'rules');
 }
 
 // ---------------------------------------------------------------------------
@@ -227,5 +226,5 @@ module.exports = {
   getAcpCommand,
   getEnvForAcpProcess,
   writeProjectConfig,
-  getAdditionalSteeringPaths,
+  getRulesDir,
 };

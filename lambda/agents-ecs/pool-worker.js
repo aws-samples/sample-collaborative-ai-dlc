@@ -35,6 +35,7 @@ const {
   DeleteCommand,
 } = require('@aws-sdk/lib-dynamodb');
 const { LambdaClient, InvokeCommand } = require('@aws-sdk/client-lambda');
+const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
 const gremlin = require('gremlin');
 const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
 const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
@@ -156,14 +157,177 @@ async function updateAgentRunStatus(job, status) {
 
 const RULES_DIR = '/opt/aidlc-rules';
 
-// Copy embedded steering files into workspace for the given phase.
-// After writing to the canonical .kiro/steering/ location, the active driver's
-// getAdditionalSteeringPaths() is called to propagate the same content to any
-// CLI-specific locations (e.g. .claude/CLAUDE.md, .opencode/instructions.md).
-function fetchSteeringFiles(phase, agentCli) {
+// Fetch Neptune property value(s) from a vertex valueMap result.
+// Neptune returns each property as an array; this helper unwraps the first element.
+function _neptuneVal(valueMap, key) {
+  if (!valueMap) return '';
+  const raw = valueMap instanceof Map ? valueMap.get(key) : valueMap[key];
+  if (Array.isArray(raw)) return raw[0] ?? '';
+  return raw ?? '';
+}
+
+// Render a rule file from the on-disk source layout into the runtime layout.
+//
+// The on-disk source files live under aws-aidlc-rules/ and aws-aidlc-rule-details/
+// and reference each other using their logical source paths:
+//   - `.kiro/steering/` for the rules directory
+//   - `common/X.md`, `inception/X.md`, `construction/X.md`, `operations/X.md`
+//   - `../common/X.md` (relative-link form, used in markdown links)
+//
+// At runtime the rules directory is per-driver and the files are flattened
+// into a single dir, so the filenames become `common-X.md`, `inception-X.md`,
+// etc. This helper rewrites references in the source content to match the
+// runtime layout, then writes the result to `destPath`.
+function renderRuleFile(srcPath, destPath, rulesDirRel) {
+  const content = fs
+    .readFileSync(srcPath, 'utf8')
+    .replace(/\.kiro\/steering\//g, `${rulesDirRel}/`)
+    .replace(/\.\.\/(common|inception|construction|operations)\//g, '$1-')
+    .replace(/\b(common|inception|construction|operations)\/([\w-]+\.md)/g, '$1-$2');
+  fs.writeFileSync(destPath, content, 'utf8');
+}
+
+// Sanitize a steering-doc filename and resolve its absolute destination
+// inside `rulesDir`. Strips path separators with path.basename(), enforces a
+// `.md` extension, and verifies the resolved path stays under `rulesDir`
+// (defence in depth against future path.basename quirks). Returns null if
+// the filename is unsafe or empty.
+function _safeRulesDest(rulesDir, filename, prefix) {
+  if (!filename || typeof filename !== 'string') return null;
+  const base = path.basename(filename);
+  if (!base || base === '.' || base === '..') return null;
+  if (!base.toLowerCase().endsWith('.md')) return null;
+  const destName = `${prefix}${base}`;
+  const dest = path.resolve(rulesDir, destName);
+  const root = path.resolve(rulesDir);
+  if (dest !== path.join(root, destName)) return null;
+  if (!dest.startsWith(root + path.sep)) return null;
+  return dest;
+}
+
+// Write project-level and task-level steering rule files into the driver's
+// rules directory. Reads steering_docs metadata from Neptune, then fetches
+// each document from S3 (using the ECS task IAM role) and writes it as
+// `project--{filename}` or `task--{filename}` alongside the platform rules.
+async function writeScopedRules(rulesDir, projectId, taskId) {
+  const neptuneEndpoint = process.env.NEPTUNE_ENDPOINT;
+  const artifactsBucket = process.env.ARTIFACTS_BUCKET;
+
+  if (!neptuneEndpoint || !artifactsBucket || !projectId) return;
+
+  try {
+    const creds = await fromNodeProviderChain()();
+    creds.region = env.region;
+    const info = getUrlAndHeaders(neptuneEndpoint, '8182', creds, '/gremlin', 'wss');
+    const conn = new gremlin.driver.DriverRemoteConnection(info.url, { headers: info.headers });
+    const g = gremlin.process.AnonymousTraversalSource.traversal().withRemote(conn);
+
+    let projectDocs = [];
+    let taskDocs = [];
+
+    try {
+      // Load project-level steering docs metadata from Neptune
+      const projectResult = await g
+        .V()
+        .has('Project', 'id', projectId)
+        .valueMap('steering_docs')
+        .next();
+      if (projectResult.value) {
+        const raw = _neptuneVal(projectResult.value, 'steering_docs');
+        if (raw) {
+          try {
+            projectDocs = JSON.parse(raw);
+          } catch {
+            console.error('[pool-worker] Could not parse project steering_docs:', raw);
+          }
+        }
+      }
+
+      // Load task-level steering docs metadata from Neptune (if taskId provided)
+      if (taskId) {
+        const taskResult = await g.V().has('Task', 'id', taskId).valueMap('steering_docs').next();
+        if (taskResult.value) {
+          const raw = _neptuneVal(taskResult.value, 'steering_docs');
+          if (raw) {
+            try {
+              taskDocs = JSON.parse(raw);
+            } catch {
+              console.error('[pool-worker] Could not parse task steering_docs:', raw);
+            }
+          }
+        }
+      }
+    } finally {
+      await conn.close();
+    }
+
+    const s3 = new S3Client({ region: env.region });
+    execSync(`mkdir -p "${rulesDir}"`, { stdio: 'ignore' });
+
+    // Fetch and write project-level docs
+    for (const doc of projectDocs) {
+      if (!doc.s3Key) continue;
+      const filename = doc.filename || path.basename(doc.s3Key);
+      const dest = _safeRulesDest(rulesDir, filename, 'project--');
+      if (!dest) {
+        console.warn(
+          `[pool-worker] Skipping project steering doc with unsafe filename: ${filename}`,
+        );
+        continue;
+      }
+      try {
+        const result = await s3.send(
+          new GetObjectCommand({ Bucket: artifactsBucket, Key: doc.s3Key }),
+        );
+        const chunks = [];
+        for await (const chunk of result.Body) chunks.push(chunk);
+        const content = Buffer.concat(chunks).toString('utf8');
+        fs.writeFileSync(dest, content, 'utf8');
+        console.log(`[pool-worker] Wrote project steering rule: ${path.basename(dest)}`);
+      } catch (err) {
+        console.error(
+          `[pool-worker] Failed to fetch project steering doc ${doc.s3Key}:`,
+          err.message,
+        );
+      }
+    }
+
+    // Fetch and write task-level docs
+    for (const doc of taskDocs) {
+      if (!doc.s3Key) continue;
+      const filename = doc.filename || path.basename(doc.s3Key);
+      const dest = _safeRulesDest(rulesDir, filename, 'task--');
+      if (!dest) {
+        console.warn(`[pool-worker] Skipping task steering doc with unsafe filename: ${filename}`);
+        continue;
+      }
+      try {
+        const result = await s3.send(
+          new GetObjectCommand({ Bucket: artifactsBucket, Key: doc.s3Key }),
+        );
+        const chunks = [];
+        for await (const chunk of result.Body) chunks.push(chunk);
+        const content = Buffer.concat(chunks).toString('utf8');
+        fs.writeFileSync(dest, content, 'utf8');
+        console.log(`[pool-worker] Wrote task steering rule: ${path.basename(dest)}`);
+      } catch (err) {
+        console.error(`[pool-worker] Failed to fetch task steering doc ${doc.s3Key}:`, err.message);
+      }
+    }
+  } catch (err) {
+    console.error('[pool-worker] writeScopedRules failed:', err.message);
+  }
+}
+
+// Copy embedded steering files into workspace for the given phase using each
+// driver's native modular layout:
+//   - core-workflow.md  → driver.getEntryPointPath() (always <ws>/AGENTS.md)
+//   - Claude only: write <ws>/CLAUDE.md = "@AGENTS.md" shim for native @-import
+//   - common-*.md, <phase>-*.md → driver.getRulesDir()
+// After platform rules, project- and task-level scoped rules are written by
+// writeScopedRules() into the same rules directory.
+async function fetchSteeringFiles(phase, agentCli, projectId, taskId) {
   const workspaceDir = '/workspace';
-  const dest = `${workspaceDir}/.kiro/steering`;
-  execSync(`mkdir -p ${dest}`, { stdio: 'ignore' });
 
   // Construction orchestrator should NOT load steering files — it only dispatches sub-agents
   // Bugfix agents are general-purpose and don't follow the AI-DLC workflow
@@ -172,75 +336,75 @@ function fetchSteeringFiles(phase, agentCli) {
   // Review agents use operations steering rules
   const effectivePhase = phase.startsWith('review') ? 'review' : phase;
 
-  // Core workflow
+  const activeDriver = getDriver(agentCli);
+
+  // Resolve per-driver paths
+  const entryPointPath = activeDriver.getEntryPointPath(workspaceDir);
+  const rulesDir = activeDriver.getRulesDir(workspaceDir);
+
+  execSync(`mkdir -p "${path.dirname(entryPointPath)}"`, { stdio: 'ignore' });
+  execSync(`mkdir -p "${rulesDir}"`, { stdio: 'ignore' });
+
+  // Render core-workflow.md into the entry-point file (always AGENTS.md).
+  // The on-disk source uses logical paths (`.kiro/steering/`, `common/X.md`,
+  // `inception/X.md`, etc.) that reflect the source layout. At runtime the
+  // rules directory is per-driver and flattened (`<rulesDir>/common-X.md`,
+  // `<rulesDir>/inception-X.md`, ...), so we substitute as we copy.
   try {
-    fs.copyFileSync(`${RULES_DIR}/aws-aidlc-rules/core-workflow.md`, `${dest}/core-workflow.md`);
+    renderRuleFile(
+      `${RULES_DIR}/aws-aidlc-rules/core-workflow.md`,
+      entryPointPath,
+      path.relative(workspaceDir, rulesDir),
+    );
+    console.log(`[pool-worker] Rendered core-workflow.md to ${entryPointPath}`);
   } catch {
     console.error('[pool-worker] Missing core-workflow.md');
   }
 
-  // Common rules
+  // For Claude: write a one-line CLAUDE.md shim at the workspace root so
+  // Claude Code's native @-import picks up AGENTS.md at session start.
+  if (agentCli === 'claude') {
+    const claudeShimPath = path.join(workspaceDir, 'CLAUDE.md');
+    try {
+      fs.writeFileSync(claudeShimPath, '@AGENTS.md\n', 'utf8');
+      console.log(`[pool-worker] Wrote CLAUDE.md shim at ${claudeShimPath}`);
+    } catch (err) {
+      console.error('[pool-worker] Failed to write CLAUDE.md shim:', err.message);
+    }
+  }
+
+  const rulesDirRel = path.relative(workspaceDir, rulesDir);
+
+  // Copy common rules into the rules directory (with logical-path rendering)
   const commonDir = `${RULES_DIR}/aws-aidlc-rule-details/common`;
   try {
     for (const f of fs.readdirSync(commonDir).filter((f) => f.endsWith('.md'))) {
-      fs.copyFileSync(path.join(commonDir, f), `${dest}/common-${f}`);
+      renderRuleFile(path.join(commonDir, f), path.join(rulesDir, `common-${f}`), rulesDirRel);
     }
   } catch {
     console.error('[pool-worker] Could not copy common rules');
   }
 
-  // Phase-specific rules
+  // Copy phase-specific rules into the rules directory (with logical-path rendering)
   const phaseDir = effectivePhase === 'review' ? 'operations' : effectivePhase;
   const phasePath = `${RULES_DIR}/aws-aidlc-rule-details/${phaseDir}`;
   try {
     for (const f of fs.readdirSync(phasePath).filter((f) => f.endsWith('.md'))) {
-      fs.copyFileSync(path.join(phasePath, f), `${dest}/${phaseDir}-${f}`);
+      renderRuleFile(path.join(phasePath, f), path.join(rulesDir, `${phaseDir}-${f}`), rulesDirRel);
     }
   } catch {
     console.error(`[pool-worker] Could not copy phase rules for ${phaseDir}`);
   }
 
   // ---------------------------------------------------------------------------
-  // Driver-specific steering paths
-  // Propagate the .kiro/steering/ content to any CLI-specific locations
-  // (e.g. .claude/CLAUDE.md, .opencode/instructions.md).
+  // Write project-level and task-level scoped rules into the rules directory.
+  // Best-effort — failures are logged but do not abort the workspace setup.
   // ---------------------------------------------------------------------------
-  const additionalPaths = getDriver(agentCli).getAdditionalSteeringPaths(workspaceDir);
-  for (const entry of additionalPaths) {
-    try {
-      if (entry.type === 'concat-dir') {
-        // Concatenate all .md files from src dir into a single dest file
-        execSync(`mkdir -p "${path.dirname(entry.dest)}"`, { stdio: 'ignore' });
-        const files = fs
-          .readdirSync(entry.src)
-          .filter((f) => f.endsWith('.md'))
-          .sort();
-        const combined = files
-          .map((f) => fs.readFileSync(path.join(entry.src, f), 'utf8'))
-          .join('\n\n---\n\n');
-        fs.writeFileSync(entry.dest, combined, 'utf8');
-        console.log(`[pool-worker] Wrote ${files.length} steering files to ${entry.dest}`);
-      } else if (entry.type === 'copy-file') {
-        execSync(`mkdir -p "${path.dirname(entry.dest)}"`, { stdio: 'ignore' });
-        fs.copyFileSync(entry.src, entry.dest);
-      } else if (entry.type === 'dir') {
-        execSync(`mkdir -p "${entry.dest}"`, { stdio: 'ignore' });
-        const files = fs.readdirSync(entry.src).filter((f) => f.endsWith('.md'));
-        for (const f of files) {
-          fs.copyFileSync(path.join(entry.src, f), path.join(entry.dest, f));
-        }
-      }
-    } catch (err) {
-      console.error(
-        `[pool-worker] Failed to write additional steering path "${entry.dest}":`,
-        err.message,
-      );
-    }
-  }
+  await writeScopedRules(rulesDir, projectId, taskId);
 }
 
 // Setup workspace for a job (git clone, steering files)
-function setupWorkspace(job) {
+async function setupWorkspace(job) {
   execSync('rm -rf /workspace/* /workspace/.* 2>/dev/null || true', { stdio: 'ignore' });
   execSync('mkdir -p /workspace', { stdio: 'ignore' });
 
@@ -358,7 +522,7 @@ function setupWorkspace(job) {
   }
 
   const phase = (job.agentType || 'inception').toLowerCase();
-  fetchSteeringFiles(phase, job.agentCli);
+  await fetchSteeringFiles(phase, job.agentCli, job.projectId, job.taskId);
 
   // Write project-level config to override any repo-level settings (e.g.
   // a .opencode/opencode.json that points at the wrong provider/model).
@@ -369,11 +533,16 @@ function setupWorkspace(job) {
   }
 }
 
-// Build phase-specific prompt
-function buildPrompt(job) {
+// Build phase-specific prompt.
+// `rulesDir` is the workspace-relative directory where modular rule files
+// (common-*.md, <phase>-*.md, project-*.md, task-*.md) live for the active
+// driver — e.g. ".kiro/steering" for Kiro, ".claude/rules" for Claude,
+// ".opencode/rules" for OpenCode. The agent's CLI auto-loads them; we cite
+// the directory in prompts so the agent knows where to find named rule files.
+function buildPrompt(job, rulesDir) {
   const phase = (job.agentType || 'inception').toLowerCase();
-  if (phase === 'inception') return buildInceptionPrompt(job);
-  if (phase === 'construction') return buildConstructionPrompt(job);
+  if (phase === 'inception') return buildInceptionPrompt(job, rulesDir);
+  if (phase === 'construction') return buildConstructionPrompt(job, rulesDir);
   if (phase === 'construction-orchestrator') return buildConstructionOrchestratorPrompt(job);
   if (phase === 'review-blind') return buildBlindReviewPrompt(job);
   if (phase === 'review-full') return buildFullReviewPrompt(job);
@@ -381,13 +550,13 @@ function buildPrompt(job) {
   if (phase === 'bugfix') return buildBugfixPrompt(job);
   // Default prompt for other phases
   return (
-    `You are an AI-DLC agent running the "${phase}" phase. Read the steering files in .kiro/steering/ for your workflow rules.\n\n` +
+    `You are an AI-DLC agent running the "${phase}" phase. Your master workflow is preloaded as AGENTS.md; detailed rule files for this phase are in \`${rulesDir}/\`.\n\n` +
     (job.description ? `PROJECT DESCRIPTION:\n${job.description}\n\n` : '') +
     `Begin the ${phase} phase. Use the graph MCP tools to read and write all artifacts to Neptune. Do NOT create or modify markdown files as output.`
   );
 }
 
-function buildInceptionPrompt(job) {
+function buildInceptionPrompt(job, rulesDir) {
   const isRerun = (job.runNumber || 1) > 1;
 
   if (isRerun) {
@@ -411,8 +580,9 @@ The team has previously completed an inception phase for this sprint. They have 
 
 ## STEERING FILES
 
-Read the steering files in .kiro/steering/ for detailed workflow rules:
-- \`core-workflow.md\` — Master workflow with phase/stage structure
+Your master AI-DLC workflow is preloaded as your AGENTS.md system prompt — refer to it for the phase/stage structure.
+
+Detailed rule files for this phase live in \`${rulesDir}/\`:
 - \`common-question-format-guide.md\` — How to use \`ask_question\` (CRITICAL)
 - \`inception-*.md\` — Detailed steps for each inception stage
 
@@ -435,7 +605,7 @@ ${job.changeRequest || '(No specific change instructions provided — review the
 
   return `You are the Inception Agent for the AI-DLC platform.
 
-YOUR GOAL: Follow the AI-DLC workflow defined in the steering files (.kiro/steering/) to analyze the project, ask clarifying questions, and produce Requirements, User Stories, and Tasks — all stored in the Neptune graph database.
+YOUR GOAL: Follow the AI-DLC workflow (preloaded as your AGENTS.md system prompt, with detailed rule files in \`${rulesDir}/\`) to analyze the project, ask clarifying questions, and produce Requirements, User Stories, and Tasks — all stored in the Neptune graph database.
 
 ## CRITICAL RULES (these override everything else)
 
@@ -447,8 +617,9 @@ YOUR GOAL: Follow the AI-DLC workflow defined in the steering files (.kiro/steer
 
 ## STEERING FILES
 
-Read the steering files in .kiro/steering/ for detailed workflow rules:
-- \`core-workflow.md\` — Master workflow with phase/stage structure
+Your master AI-DLC workflow is preloaded as your AGENTS.md system prompt — refer to it for the phase/stage structure.
+
+Detailed rule files for this phase live in \`${rulesDir}/\`:
 - \`common-question-format-guide.md\` — How to use \`ask_question\` (CRITICAL)
 - \`common-process-overview.md\` — Workflow overview
 - \`inception-*.md\` — Detailed steps for each inception stage
@@ -457,7 +628,7 @@ Read the steering files in .kiro/steering/ for detailed workflow rules:
 
 1. Call \`get_sprint_graph\` to see what already exists.
 2. Read the project description below.
-3. Follow the inception workflow from core-workflow.md:
+3. Follow the inception workflow defined in your AGENTS.md:
    - Workspace Detection → Reverse Engineering (if brownfield) → Requirements Analysis → User Stories → Workflow Planning → Application Design → **Units Generation (MANDATORY)**
 4. At each stage, use \`ask_question\` for clarification and approval gates.
 5. Store all artifacts via \`add_node\` — ALWAYS pass the \`edges\` parameter when creating UserStories and Tasks to link them to their parent.
@@ -477,7 +648,7 @@ ${job.description || '(No description provided — ask the team what they want t
 `;
 }
 
-function buildConstructionPrompt(job) {
+function buildConstructionPrompt(job, rulesDir) {
   const taskId = job.taskId;
   const taskSection = taskId
     ? `## YOUR TASK\n\nTask ID: ${taskId}\nBranch: ${job.branch || 'main'}\n\nCall \`get_node\` with label "Task" and id="${taskId}" to read the task details, then implement it.`
@@ -496,8 +667,7 @@ YOUR GOAL: Implement tasks by writing code to the git workspace, updating Neptun
    - Complete: Set status to "done"
    - Failed: Set status to "failed"
 
-3. **FOLLOW AI-DLC CONSTRUCTION WORKFLOW.** Read the steering files in .kiro/steering/ for detailed rules:
-   - \`core-workflow.md\` — Master workflow
+3. **FOLLOW AI-DLC CONSTRUCTION WORKFLOW.** Your master workflow is preloaded as your AGENTS.md system prompt. Detailed rule files for this phase live in \`${rulesDir}/\`:
    - \`construction-*.md\` — Construction phase stages
 
 4. **USE \`ask_question\` FOR CLARIFICATION.** If you need input from the team, use the \`ask_question\` tool.
@@ -508,7 +678,7 @@ ${taskSection}
 
 ## WORKFLOW
 
-1. Read the steering files in .kiro/steering/ to understand the construction workflow
+1. Read your AGENTS.md and the construction rule files in \`${rulesDir}/\` to understand the construction workflow
 2. Call \`get_sprint_graph\` to understand the project context and discover tasks
 3. For each task (status "todo"):
    a. Update task status to "in_progress"
@@ -551,7 +721,7 @@ git log --oneline -3
 \`\`\`
 Only stop after confirming your work appears in git log. If it does not, something is wrong — do not exit.
 
-Begin by reading the steering files, then start implementing tasks.
+Begin by reading your AGENTS.md and the rule files in \`${rulesDir}/\`, then start implementing tasks.
 `;
 }
 
@@ -1085,7 +1255,10 @@ function pushBranchWithRetry(job, branch, maxRetries = 3) {
 function runAcpSession(job) {
   return new Promise((resolve) => {
     const phase = (job.agentType || 'inception').toLowerCase();
-    const prompt = buildPrompt(job);
+    // Workspace-relative rules dir for the active driver, used in the prompt
+    // (e.g. ".kiro/steering" / ".claude/rules" / ".opencode/rules").
+    const rulesDir = path.relative('/workspace', getDriver(job.agentCli).getRulesDir('/workspace'));
+    const prompt = buildPrompt(job, rulesDir);
 
     const childEnv = {
       ...process.env,
@@ -1241,7 +1414,7 @@ async function main() {
           `[pool-worker] Got job: ${job.executionId} for project ${job.projectId} (cli=${jobCli})`,
         );
 
-        setupWorkspace(job);
+        await setupWorkspace(job);
         const { exitCode, pushSucceeded } = await runAcpSession(job);
 
         const status = exitCode === 0 ? 'completed' : 'failed';

@@ -46,8 +46,8 @@ locals {
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# Role 1: neptune-reader (12 Lambdas, pure Neptune CRUD)
-# Lambdas: projects, users, sprints, requirements, user-stories, tasks,
+# Role 1: neptune-reader (10 Lambdas, pure Neptune CRUD)
+# Lambdas: users, sprints, requirements, user-stories,
 #          code-files, reviews, sprint-graph, general-info, timeline-events,
 #          purge-neptune
 # -----------------------------------------------------------------------------
@@ -271,6 +271,42 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
   })
 }
 
+# -----------------------------------------------------------------------------
+# Role 6: neptune-artifacts (2 Lambdas — projects, tasks)
+# Neptune CRUD + S3 GetObject/PutObject on the artifacts bucket
+# (used to sign presigned URLs for steering-rule docs).
+# -----------------------------------------------------------------------------
+resource "aws_iam_role" "neptune_artifacts" {
+  name               = "${var.project_name}-neptune-artifacts-${var.environment}"
+  assume_role_policy = local.lambda_assume_role_policy
+}
+
+resource "aws_iam_role_policy_attachment" "neptune_artifacts_basic" {
+  role       = aws_iam_role.neptune_artifacts.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "neptune_artifacts_vpc" {
+  role       = aws_iam_role.neptune_artifacts.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+resource "aws_iam_role_policy" "neptune_artifacts" {
+  name = "neptune-and-artifacts-bucket"
+  role = aws_iam_role.neptune_artifacts.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      local.neptune_statement,
+      {
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:PutObject"]
+        Resource = ["${var.artifacts_bucket_arn}/steering/*"]
+      }
+    ]
+  })
+}
+
 # Security group for Lambda
 resource "aws_security_group" "lambda" {
   name        = "${var.project_name}-lambda-sg-${var.environment}"
@@ -307,7 +343,7 @@ module "projects_lambda" {
   ]
 
   create_role = false
-  lambda_role = aws_iam_role.neptune_reader.arn
+  lambda_role = aws_iam_role.neptune_artifacts.arn
 
   vpc_subnet_ids         = var.private_subnet_ids
   vpc_security_group_ids = [aws_security_group.lambda.id]
@@ -316,6 +352,7 @@ module "projects_lambda" {
     NEPTUNE_ENDPOINT     = var.neptune_endpoint
     ENVIRONMENT          = var.environment
     CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    ARTIFACTS_BUCKET     = var.artifacts_bucket_name
   }
 }
 
@@ -477,7 +514,7 @@ module "tasks_lambda" {
   ]
 
   create_role = false
-  lambda_role = aws_iam_role.neptune_reader.arn
+  lambda_role = aws_iam_role.neptune_artifacts.arn
 
   vpc_subnet_ids         = var.private_subnet_ids
   vpc_security_group_ids = [aws_security_group.lambda.id]
@@ -486,6 +523,7 @@ module "tasks_lambda" {
     NEPTUNE_ENDPOINT     = var.neptune_endpoint
     ENVIRONMENT          = var.environment
     CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    ARTIFACTS_BUCKET     = var.artifacts_bucket_name
   }
 }
 

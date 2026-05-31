@@ -1,9 +1,13 @@
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
+import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { buildResponse } from '../shared/response.js';
+import { validateMcpServersJson } from '../shared/mcp-validator.js';
+import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -63,6 +67,20 @@ export const handler = async (event) => {
     const projectId = pathParameters?.projectId;
     const userId = event.requestContext?.authorizer?.claims?.sub;
     const userEmail = event.requestContext?.authorizer?.claims?.email || '';
+
+    // ---------------------------------------------------------------------------
+    // Sub-resource routing: /projects/{projectId}/mcp-servers
+    //                       /projects/{projectId}/steering-docs
+    // Detected by examining event.path since each sub-resource has its own
+    // API Gateway resource that maps to this Lambda.
+    // ---------------------------------------------------------------------------
+    const requestPath = event.path || '';
+    if (projectId && requestPath.endsWith('/mcp-servers')) {
+      return await handleProjectMcpServers(g, response, httpMethod, projectId, userId, body);
+    }
+    if (projectId && requestPath.endsWith('/steering-docs')) {
+      return await handleProjectSteeringDocs(g, response, httpMethod, projectId, userId, body);
+    }
 
     switch (httpMethod) {
       case 'GET':
@@ -276,3 +294,158 @@ export const handler = async (event) => {
     }
   }
 };
+
+// ---------------------------------------------------------------------------
+// Project-level MCP servers: GET/PUT /projects/{projectId}/mcp-servers
+// ---------------------------------------------------------------------------
+
+async function handleProjectMcpServers(g, response, httpMethod, projectId, userId, body) {
+  if (!userId) return response(401, { error: 'Unauthorized' });
+
+  // Verify user is a project member
+  const memberEdges = await g
+    .V()
+    .has('Project', 'id', projectId)
+    .outE('HAS_MEMBER')
+    .as('e')
+    .inV()
+    .has('User', 'id', userId)
+    .select('e')
+    .by(__.valueMap())
+    .toList();
+  if (memberEdges.length === 0) return response(403, { error: 'Access denied' });
+
+  if (httpMethod === 'GET') {
+    const result = await g.V().has('Project', 'id', projectId).valueMap('mcp_servers').next();
+    const raw = result.value ? getVal(result.value, 'mcp_servers') : '[]';
+    return response(200, { mcpServers: raw || '[]' });
+  }
+
+  if (httpMethod === 'PUT') {
+    const data = JSON.parse(body || '{}');
+    const mcpServersJson = data.mcpServers || '[]';
+    const validation = validateMcpServersJson(mcpServersJson);
+    if (!validation.valid) {
+      return response(400, {
+        error: 'Invalid MCP servers configuration',
+        issues: validation.issues,
+      });
+    }
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .property(cardinality.single, 'mcp_servers', mcpServersJson)
+      .next();
+    return response(200, { saved: true });
+  }
+
+  return response(405, { error: 'Method not allowed' });
+}
+
+// ---------------------------------------------------------------------------
+// Project-level steering docs: GET/PUT /projects/{projectId}/steering-docs
+// ---------------------------------------------------------------------------
+
+async function handleProjectSteeringDocs(g, response, httpMethod, projectId, userId, body) {
+  if (!userId) return response(401, { error: 'Unauthorized' });
+
+  // Verify user is a project member
+  const memberEdges = await g
+    .V()
+    .has('Project', 'id', projectId)
+    .outE('HAS_MEMBER')
+    .as('e')
+    .inV()
+    .has('User', 'id', userId)
+    .select('e')
+    .by(__.valueMap())
+    .toList();
+  if (memberEdges.length === 0) return response(403, { error: 'Access denied' });
+
+  const artifactsBucket = process.env.ARTIFACTS_BUCKET;
+  const region = process.env.AWS_REGION || 'us-east-1';
+  const s3 = new S3Client({ region });
+
+  if (httpMethod === 'GET') {
+    const result = await g.V().has('Project', 'id', projectId).valueMap('steering_docs').next();
+    const raw = result.value ? getVal(result.value, 'steering_docs') : '[]';
+    let docs = [];
+    try {
+      docs = JSON.parse(raw || '[]');
+    } catch {
+      docs = [];
+    }
+
+    // Generate presigned download URLs for each doc
+    const docsWithUrls = await Promise.all(
+      docs.map(async (doc) => {
+        if (!doc.s3Key || !artifactsBucket) return doc;
+        try {
+          const downloadUrl = await getSignedUrl(
+            s3,
+            new GetObjectCommand({ Bucket: artifactsBucket, Key: doc.s3Key }),
+            { expiresIn: 3600 },
+          );
+          return { ...doc, downloadUrl };
+        } catch {
+          return doc;
+        }
+      }),
+    );
+
+    return response(200, { steeringDocs: docsWithUrls });
+  }
+
+  if (httpMethod === 'PUT') {
+    const data = JSON.parse(body || '{}');
+    const incomingDocs = data.steeringDocs || [];
+
+    if (!artifactsBucket) {
+      return response(500, { error: 'ARTIFACTS_BUCKET env var not configured' });
+    }
+    if (incomingDocs.length > 20) {
+      return response(400, { error: 'Maximum 20 steering documents per project' });
+    }
+
+    // Compute S3 keys and generate presigned upload URLs for new/changed docs
+    const uploadUrls = [];
+    const savedDocs = [];
+    for (const doc of incomingDocs) {
+      const filename = doc.filename || '';
+      const safeBase = path.basename(filename);
+      if (!safeBase || safeBase !== filename || !safeBase.toLowerCase().endsWith('.md')) {
+        return response(400, {
+          error: `Invalid filename "${filename}". Must end in .md and contain no path separators.`,
+        });
+      }
+      const s3Key = `steering/${projectId}/project--${safeBase}`;
+      try {
+        const uploadUrl = await getSignedUrl(
+          s3,
+          new PutObjectCommand({
+            Bucket: artifactsBucket,
+            Key: s3Key,
+            ContentType: 'text/markdown',
+          }),
+          { expiresIn: 3600 },
+        );
+        uploadUrls.push({ filename: safeBase, s3Key, uploadUrl });
+      } catch (err) {
+        console.error(`[projects] Failed to generate presigned URL for ${s3Key}:`, err.message);
+      }
+      savedDocs.push({ filename: safeBase, s3Key });
+    }
+
+    // Persist metadata to Neptune
+    const metadataJson = JSON.stringify(savedDocs);
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .property(cardinality.single, 'steering_docs', metadataJson)
+      .next();
+
+    return response(200, { saved: true, uploadUrls });
+  }
+
+  return response(405, { error: 'Method not allowed' });
+}

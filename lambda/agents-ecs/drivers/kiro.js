@@ -10,6 +10,7 @@
 'use strict';
 
 const { execSync, execFileSync } = require('child_process');
+const path = require('path');
 const { SSMClient, GetParameterCommand } = require('@aws-sdk/client-ssm');
 
 // ---------------------------------------------------------------------------
@@ -132,16 +133,14 @@ function getEnvForAcpProcess(_baseEnv) {
 // ---------------------------------------------------------------------------
 
 /**
- * Returns additional workspace paths to copy steering content to,
- * beyond the base .kiro/steering/ directory (which pool-worker handles).
- *
- * For Kiro, .kiro/steering/ is the native location — no extra copies needed.
+ * Returns the directory where modular rule files go for this driver.
+ * Kiro IDE reads .kiro/steering/*.md natively.
  *
  * @param {string} workspaceDir - absolute path to the workspace root
- * @returns {Array<{type: 'dir'|'file', dest: string}>}
+ * @returns {string}
  */
-function getAdditionalSteeringPaths(_workspaceDir) {
-  return [];
+function getRulesDir(workspaceDir) {
+  return path.join(workspaceDir, '.kiro', 'steering');
 }
 
 // ---------------------------------------------------------------------------
@@ -155,5 +154,5 @@ module.exports = {
   configureSettings,
   getAcpCommand,
   getEnvForAcpProcess,
-  getAdditionalSteeringPaths,
+  getRulesDir,
 };

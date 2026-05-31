@@ -322,7 +322,7 @@ resource "aws_ecs_task_definition" "agent" {
       { name = "POOL_TABLE", value = var.agent_pool_table_name },
       { name = "POOL_VERSION", value = local.agents_image_tag },
       { name = "NEPTUNE_ENDPOINT", value = var.neptune_endpoint },
-      { name = "S3_BUCKET", value = var.artifacts_bucket_name },
+      { name = "ARTIFACTS_BUCKET", value = var.artifacts_bucket_name },
       { name = "CODE_SNAPSHOTS_BUCKET", value = var.code_snapshots_bucket_name },
       { name = "SUBMIT_QUESTION_LAMBDA", value = var.submit_question_lambda_name },
       { name = "AGENT_OUTPUTS_TABLE", value = var.agent_outputs_table_name },
