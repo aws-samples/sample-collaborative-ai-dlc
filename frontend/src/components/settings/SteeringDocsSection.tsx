@@ -74,10 +74,7 @@ export function SteeringDocsSection({
       // new filenames are appended.
       const fileNames = new Set(files.map((f) => f.name));
       const kept = docs.filter((d) => !fileNames.has(d.filename));
-      const nextDocs = [
-        ...kept,
-        ...files.map((f) => ({ filename: f.name, s3Key: '' })),
-      ];
+      const nextDocs = [...kept, ...files.map((f) => ({ filename: f.name, s3Key: '' }))];
 
       const resp = await onSaveMetadata(nextDocs.map((d) => ({ filename: d.filename })));
       const urlByName = new Map(resp.uploadUrls?.map((u) => [u.filename, u.uploadUrl]) ?? []);
@@ -155,9 +152,7 @@ export function SteeringDocsSection({
     const newCount = valid.length - conflicts.length;
     const projectedTotal = docs.length + newCount;
     if (projectedTotal > MAX_STEERING_DOCS) {
-      fail(
-        `Maximum ${MAX_STEERING_DOCS} steering documents (would result in ${projectedTotal})`,
-      );
+      fail(`Maximum ${MAX_STEERING_DOCS} steering documents (would result in ${projectedTotal})`);
       return;
     }
 
@@ -220,8 +215,8 @@ export function SteeringDocsSection({
         </CardHeader>
         <CardContent className="space-y-3">
           <p className="text-xs text-muted-foreground">
-            {description} Maximum {MAX_STEERING_DOCS} documents, 100 KB each. Only{' '}
-            <code>.md</code> files.
+            {description} Maximum {MAX_STEERING_DOCS} documents, 100 KB each. Only <code>.md</code>{' '}
+            files.
           </p>
           {docs.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-4">

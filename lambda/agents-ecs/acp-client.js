@@ -650,10 +650,7 @@ async function runAcpMode() {
     clientInfo: { name: 'ai-dlc-agent', version: '1.0.0' },
   });
   console.log('[acp] Initialized:', initResult.agentInfo?.name, initResult.agentInfo?.version);
-  console.log(
-    '[acp] Agent capabilities:',
-    JSON.stringify(initResult.agentCapabilities || {}),
-  );
+  console.log('[acp] Agent capabilities:', JSON.stringify(initResult.agentCapabilities || {}));
 
   // 2. Create session — graph MCP server is always included; extra MCP servers
   //    are loaded from Secrets Manager and appended.

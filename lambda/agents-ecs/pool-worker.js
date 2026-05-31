@@ -270,7 +270,9 @@ async function writeScopedRules(rulesDir, projectId, taskId) {
       const filename = doc.filename || path.basename(doc.s3Key);
       const dest = _safeRulesDest(rulesDir, filename, 'project--');
       if (!dest) {
-        console.warn(`[pool-worker] Skipping project steering doc with unsafe filename: ${filename}`);
+        console.warn(
+          `[pool-worker] Skipping project steering doc with unsafe filename: ${filename}`,
+        );
         continue;
       }
       try {
@@ -1255,10 +1257,7 @@ function runAcpSession(job) {
     const phase = (job.agentType || 'inception').toLowerCase();
     // Workspace-relative rules dir for the active driver, used in the prompt
     // (e.g. ".kiro/steering" / ".claude/rules" / ".opencode/rules").
-    const rulesDir = path.relative(
-      '/workspace',
-      getDriver(job.agentCli).getRulesDir('/workspace'),
-    );
+    const rulesDir = path.relative('/workspace', getDriver(job.agentCli).getRulesDir('/workspace'));
     const prompt = buildPrompt(job, rulesDir);
 
     const childEnv = {

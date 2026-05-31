@@ -35,9 +35,10 @@ describe('validateMcpServers', () => {
 
   describe('stdio servers', () => {
     it('accepts a minimal stdio server', () => {
-      expect(
-        validateMcpServers([{ name: 'fs', command: '/usr/bin/mcp-fs', args: [] }]),
-      ).toEqual({ valid: true, issues: [] });
+      expect(validateMcpServers([{ name: 'fs', command: '/usr/bin/mcp-fs', args: [] }])).toEqual({
+        valid: true,
+        issues: [],
+      });
     });
 
     it('accepts explicit type=stdio', () => {
@@ -173,9 +174,7 @@ describe('validateMcpServers', () => {
     });
 
     it('rejects malformed url', () => {
-      const r = validateMcpServers([
-        { type: 'http', name: 'api', url: 'not a url', headers: [] },
-      ]);
+      const r = validateMcpServers([{ type: 'http', name: 'api', url: 'not a url', headers: [] }]);
       expect(r.valid).toBe(false);
       expect(r.issues).toContainEqual({
         path: '[0].url',
@@ -310,9 +309,7 @@ describe('validateMcpServersJson', () => {
   it('returns a single root issue on invalid JSON', () => {
     const r = validateMcpServersJson('{not json');
     expect(r.valid).toBe(false);
-    expect(r.issues).toEqual([
-      { path: '', message: expect.stringContaining('Invalid JSON') },
-    ]);
+    expect(r.issues).toEqual([{ path: '', message: expect.stringContaining('Invalid JSON') }]);
   });
 
   it('forwards schema issues from the parsed payload', () => {

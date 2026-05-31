@@ -9,7 +9,6 @@ import { validateMcpServersJson } from '../shared/mcp-validator.js';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
-
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const __ = gremlin.process.statics;

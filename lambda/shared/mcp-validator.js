@@ -27,7 +27,10 @@ function validateNameValuePair(item, path, issues, kind) {
   }
   for (const key of Object.keys(item)) {
     if (!NAME_VALUE_KEYS.has(key)) {
-      issues.push({ path: `${path}.${key}`, message: `Unknown key "${key}". Allowed: name, value.` });
+      issues.push({
+        path: `${path}.${key}`,
+        message: `Unknown key "${key}". Allowed: name, value.`,
+      });
     }
   }
   if (typeof item.name !== 'string' || item.name.length === 0) {
@@ -54,7 +57,10 @@ function validateStdio(server, path, issues) {
     }
   }
   if (typeof server.command !== 'string' || server.command.length === 0) {
-    issues.push({ path: `${path}.command`, message: 'Required non-empty string (path to the MCP server executable).' });
+    issues.push({
+      path: `${path}.command`,
+      message: 'Required non-empty string (path to the MCP server executable).',
+    });
   }
   if (!Array.isArray(server.args)) {
     issues.push({
@@ -64,7 +70,10 @@ function validateStdio(server, path, issues) {
   } else {
     server.args.forEach((arg, i) => {
       if (typeof arg !== 'string') {
-        issues.push({ path: `${path}.args[${i}]`, message: `Expected string; got ${describe(arg)}.` });
+        issues.push({
+          path: `${path}.args[${i}]`,
+          message: `Expected string; got ${describe(arg)}.`,
+        });
       }
     });
   }
@@ -146,7 +155,10 @@ function validateServer(server, path, issues) {
 function validateMcpServers(value) {
   const issues = [];
   if (!Array.isArray(value)) {
-    issues.push({ path: '', message: `Expected a JSON array of MCP servers; got ${describe(value)}.` });
+    issues.push({
+      path: '',
+      message: `Expected a JSON array of MCP servers; got ${describe(value)}.`,
+    });
     return { valid: false, issues };
   }
   const seenNames = new Set();
