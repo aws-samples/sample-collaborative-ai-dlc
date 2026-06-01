@@ -29,6 +29,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Plus, GitBranch, Trash2, Zap, Calendar, Settings } from 'lucide-react';
 import { TrackerIssueListPanel } from '@/components/TrackerIssueListPanel';
+import { MigrateTrackerCard } from '@/components/MigrateTrackerCard';
 const PHASE_VARIANT: Record<string, 'inception' | 'construction' | 'review'> = {
   INCEPTION: 'inception',
   CONSTRUCTION: 'construction',
@@ -46,6 +47,11 @@ export default function Project() {
   const [creating, setCreating] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [activeTrackerTab, setActiveTrackerTab] = useState<string | null>(null);
+  const [migrating, setMigrating] = useState(false);
+  const [migrationResult, setMigrationResult] = useState<{
+    sprintsApplied: number;
+    projectsApplied: number;
+  } | null>(null);
 
   const loadData = useCallback(async () => {
     if (!projectId) return;
@@ -90,6 +96,25 @@ export default function Project() {
       console.error('Failed to delete sprint:', error);
     } finally {
       setConfirmDelete(null);
+    }
+  };
+
+  const handleMigrateTracker = async () => {
+    if (!projectId) return;
+    setMigrating(true);
+    try {
+      const result = await projectsService.migrateTracker(projectId);
+      setMigrationResult({
+        sprintsApplied: result.sprints.applied,
+        projectsApplied: result.projects.applied,
+      });
+      // Reload so project.trackers reflects the new binding and the
+      // MigrateTrackerCard self-dismisses on next render.
+      await loadData();
+    } catch (error) {
+      console.error('Failed to migrate tracker:', error);
+    } finally {
+      setMigrating(false);
     }
   };
 
@@ -238,6 +263,23 @@ export default function Project() {
                 </CardContent>
               </Card>
             ))}
+          </div>
+        )}
+
+        {/* Tracker-abstraction migration banner — only renders for legacy
+            projects that still use issueIntegrationEnabled and have no
+            HAS_TRACKER edge yet. Lives here so users discover the
+            migration on the project page where their issue list used to
+            be (the same banner also appears in Project Settings). */}
+        {project && (
+          <div className="mt-6">
+            <MigrateTrackerCard
+              project={project}
+              canEditProject={project.userRole === 'owner' || project.userRole === 'admin'}
+              migrating={migrating}
+              migrationResult={migrationResult}
+              onMigrate={handleMigrateTracker}
+            />
           </div>
         )}
 
