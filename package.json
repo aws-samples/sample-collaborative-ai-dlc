@@ -19,7 +19,7 @@
     "format:check": "oxfmt --check"
   },
   "devDependencies": {
-    "@aws-sdk/client-apigatewaymanagementapi": "^3.1054.0",
+    "@aws-sdk/client-apigatewaymanagementapi": "^3.1057.0",
     "@aws-sdk/client-dynamodb": "^3.1054.0",
     "@aws-sdk/client-secrets-manager": "^3.1054.0",
     "@aws-sdk/client-ssm": "^3.1054.0",
