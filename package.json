@@ -8,6 +8,7 @@
     "lambda/notify",
     "lambda/projects",
     "lambda/purge-neptune",
+    "lambda/sprint-graph",
     "lambda/ws-authorizer",
     "lambda/ws-connection",
     "lambda/ws-message"
