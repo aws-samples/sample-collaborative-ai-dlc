@@ -4,6 +4,8 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { buildResponse } from '../shared/response.js';
 import { runTrackerMigration } from '../shared/tracker-migration.js';
 import {
@@ -15,6 +17,8 @@ import {
 import { validateMcpServersJson } from '../shared/mcp-validator.js';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+
+const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -62,6 +66,430 @@ const getConnection = async () => {
   const { url, headers } = getUrlAndHeaders(host, port, credentials, '/gremlin', protocol);
   return new DriverRemoteConnection(url, { headers });
 };
+
+// ---------------------------------------------------------------------------
+// Repo helpers
+// ---------------------------------------------------------------------------
+
+// Fetch all Repository vertices linked to a project via HAS_REPO edges.
+const fetchRepos = async (g, projectId) => {
+  const repoResults = await g
+    .V()
+    .has('Project', 'id', projectId)
+    .out('HAS_REPO')
+    .hasLabel('Repository')
+    .valueMap()
+    .toList();
+  return repoResults.map((r) => ({
+    url: getVal(r, 'url'),
+    provider: getVal(r, 'provider') || 'github',
+    role: getVal(r, 'role') || 'unknown',
+    detectedStack: getVal(r, 'detected_stack') || '',
+    addedAt: getVal(r, 'added_at') || '',
+  }));
+};
+
+// Backward-compat: derive the legacy `gitRepo` field from the repos list.
+const derivePrimaryRepo = (repos, legacyGitRepo) => {
+  if (repos.length === 0) return legacyGitRepo || '';
+  const primary = repos.find((r) => r.role === 'primary') || repos[0];
+  return primary.url;
+};
+
+// Validates owner/repo format. GitHub allows alphanumeric, hyphens,
+// underscores, and dots; max 39 chars for owner and 100 for repo.
+// Used for the multi-repo `repos[]` API — these are real clone targets.
+const REPO_URL_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}\/[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$/;
+
+// The legacy `gitRepo` field is historically a freeform string (bare names,
+// SSH URLs). We can't tighten it to owner/repo without breaking that contract,
+// but it still gets interpolated into `git clone "https://.../${url}.git"` in
+// the pool-worker. This whitelist rejects exactly the characters that can break
+// out of that double-quoted shell string ("  `  $  \  whitespace), closing the
+// injection vector while preserving freeform values.
+const SHELL_SAFE_REPO_PATTERN = /^[A-Za-z0-9._@:/-]+$/;
+
+// Auto-detect role from repo URL patterns (lightweight heuristic).
+const guessRole = (url) => {
+  const lower = (url || '').toLowerCase();
+  if (/front|ui|web|app|client|dashboard/.test(lower)) return 'frontend';
+  if (/back|api|server|service|lambda/.test(lower)) return 'backend';
+  if (/infra|terraform|cdk|deploy|devops|platform/.test(lower)) return 'infra';
+  if (/shared|common|lib|util|pkg/.test(lower)) return 'shared';
+  if (/doc|wiki|guide/.test(lower)) return 'docs';
+  return 'unknown';
+};
+
+// Ensure a HAS_REPO edge + Repository vertex exists for a legacy git_repo value.
+// Called lazily on read — idempotent.
+const ensureLegacyRepoMigrated = async (g, projectId, legacyGitRepo) => {
+  if (!legacyGitRepo) return;
+  // Defense-in-depth: this is the final gate before a value becomes a cloneable
+  // Repository vertex (and flows into the pool-worker's git clone execSync).
+  // Legacy git_repo is freeform, so we only enforce shell-safety here (not strict
+  // owner/repo). Skip (don't throw) on a dangerous value — this runs on read paths
+  // and must not break GETs of old projects.
+  if (!SHELL_SAFE_REPO_PATTERN.test(legacyGitRepo)) {
+    console.error(
+      `[projects] Skipping migration of unsafe git_repo value for ${projectId}: ${JSON.stringify(legacyGitRepo)}`,
+    );
+    return;
+  }
+  const exists = await g
+    .V()
+    .has('Project', 'id', projectId)
+    .out('HAS_REPO')
+    .has('Repository', 'url', legacyGitRepo)
+    .hasNext();
+  if (exists) return;
+
+  const repoId = `repo-${randomUUID()}`;
+  await g
+    .addV('Repository')
+    .property('id', repoId)
+    .property('url', legacyGitRepo)
+    .property('provider', 'github')
+    .property('role', 'primary')
+    .property('detected_stack', '')
+    .property('added_at', new Date().toISOString())
+    .next();
+  await g
+    .V()
+    .has('Project', 'id', projectId)
+    .addE('HAS_REPO')
+    .to(__.V().has('Repository', 'id', repoId))
+    .next();
+};
+
+// ---------------------------------------------------------------------------
+// Quick detection — lightweight tech stack detection via GitHub API
+// ---------------------------------------------------------------------------
+
+const CONFIG_SIGNATURES = {
+  'package.json': { lang: 'JavaScript', parse: detectNodeStack },
+  'tsconfig.json': { lang: 'TypeScript', parse: null },
+  'go.mod': { lang: 'Go', parse: detectGoStack },
+  'Cargo.toml': { lang: 'Rust', parse: null },
+  'pyproject.toml': { lang: 'Python', parse: detectPythonStack },
+  'requirements.txt': { lang: 'Python', parse: null },
+  'pom.xml': { lang: 'Java', parse: null },
+  'build.gradle': { lang: 'Java', parse: null },
+  'build.gradle.kts': { lang: 'Kotlin', parse: null },
+  Gemfile: { lang: 'Ruby', parse: null },
+  'mix.exs': { lang: 'Elixir', parse: null },
+  'composer.json': { lang: 'PHP', parse: null },
+  Dockerfile: { lang: null, parse: null },
+  'docker-compose.yml': { lang: null, parse: null },
+  terraform: { lang: null, parse: null, type: 'dir', framework: 'Terraform' },
+  'cdk.json': { lang: null, parse: null, framework: 'AWS CDK' },
+  'serverless.yml': { lang: null, parse: null, framework: 'Serverless Framework' },
+  'sam.json': { lang: null, parse: null, framework: 'AWS SAM' },
+  'template.yaml': { lang: null, parse: null, framework: 'AWS SAM' },
+};
+
+function detectNodeStack(content) {
+  try {
+    const pkg = JSON.parse(content);
+    const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+    const frameworks = [];
+    if (allDeps['next']) frameworks.push('Next.js');
+    if (allDeps['react']) frameworks.push('React');
+    if (allDeps['vue']) frameworks.push('Vue');
+    if (allDeps['svelte']) frameworks.push('Svelte');
+    if (allDeps['@angular/core']) frameworks.push('Angular');
+    if (allDeps['express']) frameworks.push('Express');
+    if (allDeps['fastify']) frameworks.push('Fastify');
+    if (allDeps['hono']) frameworks.push('Hono');
+    if (allDeps['nestjs'] || allDeps['@nestjs/core']) frameworks.push('NestJS');
+    if (allDeps['aws-cdk-lib']) frameworks.push('AWS CDK');
+    const hasTS = !!allDeps['typescript'];
+    return { frameworks, hasTS };
+  } catch {
+    return { frameworks: [], hasTS: false };
+  }
+}
+
+function detectGoStack(content) {
+  const frameworks = [];
+  if (/github\.com\/gin-gonic\/gin/.test(content)) frameworks.push('Gin');
+  if (/github\.com\/gofiber\/fiber/.test(content)) frameworks.push('Fiber');
+  if (/github\.com\/labstack\/echo/.test(content)) frameworks.push('Echo');
+  if (/github\.com\/gorilla\/mux/.test(content)) frameworks.push('Gorilla');
+  return { frameworks };
+}
+
+function detectPythonStack(content) {
+  const frameworks = [];
+  if (/fastapi/i.test(content)) frameworks.push('FastAPI');
+  if (/django/i.test(content)) frameworks.push('Django');
+  if (/flask/i.test(content)) frameworks.push('Flask');
+  if (/streamlit/i.test(content)) frameworks.push('Streamlit');
+  if (/aws-cdk/i.test(content)) frameworks.push('AWS CDK');
+  return { frameworks };
+}
+
+function detectRoleFromContents(fileNames, dirNames, frameworks) {
+  const fwSet = new Set(frameworks.map((f) => f.toLowerCase()));
+  if (
+    fwSet.has('next.js') ||
+    fwSet.has('react') ||
+    fwSet.has('vue') ||
+    fwSet.has('svelte') ||
+    fwSet.has('angular')
+  )
+    return 'frontend';
+  if (
+    fwSet.has('terraform') ||
+    fwSet.has('aws cdk') ||
+    fwSet.has('aws sam') ||
+    fwSet.has('serverless framework')
+  )
+    return 'infra';
+  if (
+    fwSet.has('express') ||
+    fwSet.has('fastify') ||
+    fwSet.has('nestjs') ||
+    fwSet.has('fastapi') ||
+    fwSet.has('django') ||
+    fwSet.has('flask') ||
+    fwSet.has('gin')
+  )
+    return 'backend';
+  if (dirNames.has('src') && fileNames.has('index.html')) return 'frontend';
+  if (fileNames.has('Dockerfile') && (fileNames.has('go.mod') || fileNames.has('pom.xml')))
+    return 'backend';
+  return null;
+}
+
+const getUserGitToken = async (userId) => {
+  if (!userId || !process.env.GIT_CONNECTIONS_TABLE) return null;
+  try {
+    const { Item } = await ddb.send(
+      new GetCommand({
+        TableName: process.env.GIT_CONNECTIONS_TABLE,
+        Key: { userId },
+      }),
+    );
+    return Item?.accessToken || null;
+  } catch {
+    return null;
+  }
+};
+
+const ghFetch = async (url, token) => {
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+  });
+  if (!res.ok) return null;
+  return res.json();
+};
+
+async function detectRepoStack(repoUrl, token) {
+  const [owner, repo] = (repoUrl || '').split('/');
+  if (!owner || !repo || !token) {
+    return { languages: [], frameworks: [], role: guessRole(repoUrl), summary: '' };
+  }
+
+  const contents = await ghFetch(`https://api.github.com/repos/${owner}/${repo}/contents`, token);
+  if (!Array.isArray(contents)) {
+    return { languages: [], frameworks: [], role: guessRole(repoUrl), summary: '' };
+  }
+
+  const fileNames = new Set(contents.map((f) => f.name));
+  const dirNames = new Set(contents.filter((f) => f.type === 'dir').map((f) => f.name));
+  const languages = new Set();
+  const frameworks = new Set();
+
+  for (const [name, sig] of Object.entries(CONFIG_SIGNATURES)) {
+    const found = sig.type === 'dir' ? dirNames.has(name) : fileNames.has(name);
+    if (!found) continue;
+    if (sig.lang) languages.add(sig.lang);
+    if (sig.framework) frameworks.add(sig.framework);
+
+    if (sig.parse && !sig.type) {
+      const fileContent = await ghFetch(
+        `https://api.github.com/repos/${owner}/${repo}/contents/${name}`,
+        token,
+      );
+      if (fileContent?.content) {
+        try {
+          const decoded = Buffer.from(fileContent.content, 'base64').toString('utf8');
+          const result = sig.parse(decoded);
+          if (result.frameworks) result.frameworks.forEach((f) => frameworks.add(f));
+          if (result.hasTS) languages.add('TypeScript');
+        } catch {
+          /* parse failure is non-fatal */
+        }
+      }
+    }
+  }
+
+  const langArr = [...languages];
+  const fwArr = [...frameworks];
+  const role = detectRoleFromContents(fileNames, dirNames, fwArr) || guessRole(repoUrl);
+  const parts = [...fwArr];
+  if (langArr.length > 0 && fwArr.length === 0) parts.push(...langArr);
+  else if (langArr.includes('TypeScript')) parts.push('TypeScript');
+  const summary = parts.join(' + ') || langArr.join(' + ') || '';
+
+  return { languages: langArr, frameworks: fwArr, role, summary };
+}
+
+// ---------------------------------------------------------------------------
+// Route: /projects/{projectId}/repos
+// ---------------------------------------------------------------------------
+
+const handleReposRoute = async (g, response, event, projectId, userId) => {
+  const { httpMethod } = event;
+
+  // Membership check — all repo routes require project membership
+  const isMember = await g
+    .V()
+    .has('Project', 'id', projectId)
+    .outE('HAS_MEMBER')
+    .inV()
+    .has('User', 'id', userId)
+    .hasNext();
+  if (!isMember) return response(403, { error: 'Access denied' });
+
+  if (httpMethod === 'DELETE') {
+    const roleEdge = await g
+      .V()
+      .has('Project', 'id', projectId)
+      .outE('HAS_MEMBER')
+      .as('e')
+      .inV()
+      .has('User', 'id', userId)
+      .select('e')
+      .by(__.valueMap())
+      .next();
+    const role = getVal(roleEdge.value, 'role') || 'member';
+    if (role !== 'owner' && role !== 'admin') {
+      return response(403, { error: 'Only project owners and admins can remove repositories' });
+    }
+
+    const repoUrl = event.queryStringParameters?.url;
+    if (!repoUrl) return response(400, { error: 'url query parameter is required' });
+    const decoded = decodeURIComponent(repoUrl);
+
+    const repoExists = await g
+      .V()
+      .has('Project', 'id', projectId)
+      .out('HAS_REPO')
+      .has('Repository', 'url', decoded)
+      .hasNext();
+    if (!repoExists) return response(404, { error: 'Repository not found on this project' });
+
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .out('HAS_REPO')
+      .has('Repository', 'url', decoded)
+      .drop()
+      .next();
+
+    return response(200, { removed: decoded });
+  }
+
+  // GET /projects/{projectId}/repos
+  if (httpMethod === 'GET') {
+    const legacyGitRepo = getVal(
+      (await g.V().has('Project', 'id', projectId).valueMap('git_repo').next()).value,
+      'git_repo',
+    );
+    await ensureLegacyRepoMigrated(g, projectId, legacyGitRepo);
+    const repos = await fetchRepos(g, projectId);
+    return response(200, repos);
+  }
+
+  // POST /projects/{projectId}/repos
+  if (httpMethod === 'POST') {
+    const roleEdge = await g
+      .V()
+      .has('Project', 'id', projectId)
+      .outE('HAS_MEMBER')
+      .as('e')
+      .inV()
+      .has('User', 'id', userId)
+      .select('e')
+      .by(__.valueMap())
+      .next();
+    const role = getVal(roleEdge.value, 'role') || 'member';
+    if (role !== 'owner' && role !== 'admin') {
+      return response(403, { error: 'Only project owners and admins can add repositories' });
+    }
+
+    const data = JSON.parse(event.body || '{}');
+    if (!data.url) return response(400, { error: 'url is required' });
+    if (!REPO_URL_PATTERN.test(data.url)) {
+      return response(400, { error: 'url must be in owner/repo format' });
+    }
+
+    // Check for duplicates
+    const duplicate = await g
+      .V()
+      .has('Project', 'id', projectId)
+      .out('HAS_REPO')
+      .has('Repository', 'url', data.url)
+      .hasNext();
+    if (duplicate) return response(409, { error: 'Repository already added to this project' });
+
+    // Run quick detection (non-blocking — failures are non-fatal)
+    const token = await getUserGitToken(userId);
+    let detection = { languages: [], frameworks: [], role: guessRole(data.url), summary: '' };
+    if (token) {
+      try {
+        detection = await detectRepoStack(data.url, token);
+      } catch (e) {
+        console.error('Quick detection failed:', e.message);
+      }
+    }
+
+    const newRepoId = `repo-${randomUUID()}`;
+    const addedAt = new Date().toISOString();
+    const repoRole = data.role || detection.role || 'unknown';
+    const provider = data.provider || 'github';
+    const detectedStack = data.detectedStack || detection.summary || '';
+
+    await g
+      .addV('Repository')
+      .property('id', newRepoId)
+      .property('url', data.url)
+      .property('provider', provider)
+      .property('role', repoRole)
+      .property('detected_stack', detectedStack)
+      .property('added_at', addedAt)
+      .next();
+
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .addE('HAS_REPO')
+      .to(__.V().has('Repository', 'id', newRepoId))
+      .next();
+
+    // Update legacy git_repo field to primary
+    const allRepos = await fetchRepos(g, projectId);
+    const primaryUrl = derivePrimaryRepo(allRepos, '');
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .property(cardinality.single, 'git_repo', primaryUrl)
+      .next();
+
+    return response(201, { url: data.url, provider, role: repoRole, detectedStack, addedAt });
+  }
+
+  return response(405, { error: 'Method not allowed' });
+};
+
+// ---------------------------------------------------------------------------
+// Main handler
+// ---------------------------------------------------------------------------
 
 export const handler = async (event) => {
   const response = buildResponse(event);
@@ -172,6 +600,13 @@ export const handler = async (event) => {
       return await handleProjectSteeringDocs(g, response, httpMethod, projectId, userId, body);
     }
 
+    // Route: /projects/{projectId}/repos
+    const path = event.path || '';
+    if (projectId && /\/repos(\/|$)/.test(path)) {
+      if (!userId) return response(401, { error: 'Unauthorized' });
+      return await handleReposRoute(g, response, event, projectId, userId);
+    }
+
     switch (httpMethod) {
       case 'GET':
         if (projectId) {
@@ -200,16 +635,22 @@ export const handler = async (event) => {
           const v = pBundle instanceof Map ? pBundle.get('vertex') : pBundle.vertex;
           const trackerMaps =
             (pBundle instanceof Map ? pBundle.get('trackers') : pBundle.trackers) ?? [];
+          const legacyGitRepo = getVal(v, 'git_repo');
+
+          // Lazy migration: ensure legacy git_repo has a corresponding Repository vertex
+          await ensureLegacyRepoMigrated(g, projectId, legacyGitRepo);
+          const repos = await fetchRepos(g, projectId);
           const project = {
             id: getVal(v, 'id') || projectId,
             name: getVal(v, 'name'),
             gitProvider: getVal(v, 'git_provider') || 'github',
-            gitRepo: getVal(v, 'git_repo'),
+            gitRepo: derivePrimaryRepo(repos, legacyGitRepo),
             agentCli: getVal(v, 'agent_cli') || 'kiro',
             issueIntegrationEnabled: getVal(v, 'issue_integration_enabled') === 'true',
             createdAt: getVal(v, 'created_at') || new Date().toISOString(),
             userRole: role || 'member',
             trackers: trackerMaps.map(mapBinding),
+            repos,
           };
           return response(200, withLegacyTracker(project));
         }
@@ -231,25 +672,34 @@ export const handler = async (event) => {
           .by(__.values('role'))
           .by(__.project('vertex', 'trackers').by(__.valueMap()).by(projectTrackersFoldStep()))
           .toList();
-        const projects = results.map((item) => {
-          // item is a Map with keys 'e' (role string) and 'p' ({vertex, trackers}).
-          const role = item instanceof Map ? item.get('e') : item.e;
-          const pBundle = item instanceof Map ? item.get('p') : item.p;
-          const v = pBundle instanceof Map ? pBundle.get('vertex') : pBundle.vertex;
-          const trackerMaps =
-            (pBundle instanceof Map ? pBundle.get('trackers') : pBundle.trackers) ?? [];
-          return withLegacyTracker({
-            id: getVal(v, 'id'),
-            name: getVal(v, 'name'),
-            gitProvider: getVal(v, 'git_provider') || 'github',
-            gitRepo: getVal(v, 'git_repo'),
-            agentCli: getVal(v, 'agent_cli') || 'kiro',
-            issueIntegrationEnabled: getVal(v, 'issue_integration_enabled') === 'true',
-            createdAt: getVal(v, 'created_at') || new Date().toISOString(),
-            userRole: role || 'member',
-            trackers: trackerMaps.map(mapBinding),
-          });
-        });
+        const projects = await Promise.all(
+          results.map(async (item) => {
+            // item is a Map with keys 'e' (role string) and 'p' ({vertex, trackers}).
+            const role = item instanceof Map ? item.get('e') : item.e;
+            const pBundle = item instanceof Map ? item.get('p') : item.p;
+            const v = pBundle instanceof Map ? pBundle.get('vertex') : pBundle.vertex;
+            const trackerMaps =
+              (pBundle instanceof Map ? pBundle.get('trackers') : pBundle.trackers) ?? [];
+            const pid = getVal(v, 'id');
+            const legacyGitRepo = getVal(v, 'git_repo');
+
+            await ensureLegacyRepoMigrated(g, pid, legacyGitRepo);
+            const repos = await fetchRepos(g, pid);
+
+            return withLegacyTracker({
+              id: pid,
+              name: getVal(v, 'name'),
+              gitProvider: getVal(v, 'git_provider') || 'github',
+              gitRepo: derivePrimaryRepo(repos, legacyGitRepo),
+              agentCli: getVal(v, 'agent_cli') || 'kiro',
+              issueIntegrationEnabled: getVal(v, 'issue_integration_enabled') === 'true',
+              createdAt: getVal(v, 'created_at') || new Date().toISOString(),
+              userRole: role || 'member',
+              trackers: trackerMaps.map(mapBinding),
+              repos,
+            });
+          }),
+        );
         return response(200, projects);
 
       case 'POST': {
@@ -259,6 +709,38 @@ export const handler = async (event) => {
         const id = randomUUID();
         const createdAt = new Date().toISOString();
 
+        // Support both legacy `gitRepo` (string) and new `repos` (array) input.
+        // SECURITY: repo urls are interpolated into a shell `git clone` in the
+        // pool-worker. The multi-repo `repos[]` entries are real clone targets,
+        // so they must be strict owner/repo. The legacy `gitRepo` string stays
+        // freeform but must be shell-safe (no injection chars).
+        const inputRepos = data.repos || [];
+        const legacyGitRepo = data.gitRepo || '';
+
+        for (const repo of inputRepos) {
+          if (!repo.url || !REPO_URL_PATTERN.test(repo.url)) {
+            return response(400, {
+              error: `Invalid repository url "${repo.url}". Expected "owner/repo" format.`,
+            });
+          }
+        }
+        if (legacyGitRepo && !SHELL_SAFE_REPO_PATTERN.test(legacyGitRepo)) {
+          return response(400, { error: `Invalid gitRepo "${legacyGitRepo}".` });
+        }
+
+        if (inputRepos.length === 0 && legacyGitRepo) {
+          inputRepos.push({
+            url: legacyGitRepo,
+            provider: data.gitProvider || 'github',
+            role: 'primary',
+          });
+        }
+
+        const primaryUrl =
+          inputRepos.length > 0
+            ? (inputRepos.find((r) => r.role === 'primary') || inputRepos[0]).url
+            : '';
+
         const issueIntegrationEnabled = data.issueIntegrationEnabled === true;
 
         // Create the project vertex with creator tracking
@@ -267,12 +749,40 @@ export const handler = async (event) => {
           .property('id', id)
           .property('name', data.name)
           .property('git_provider', data.gitProvider || 'github')
-          .property('git_repo', data.gitRepo || '')
+          .property('git_repo', primaryUrl)
           .property('agent_cli', data.agentCli || 'kiro')
           .property('issue_integration_enabled', issueIntegrationEnabled ? 'true' : 'false')
           .property('created_by', userId)
           .property('created_at', createdAt)
           .next();
+
+        // Create Repository vertices and HAS_REPO edges
+        const reposOut = [];
+        for (const repo of inputRepos) {
+          const repoId = `repo-${randomUUID()}`;
+          const addedAt = new Date().toISOString();
+          const repoRole = repo.role || guessRole(repo.url);
+          const provider = repo.provider || data.gitProvider || 'github';
+
+          await g
+            .addV('Repository')
+            .property('id', repoId)
+            .property('url', repo.url)
+            .property('provider', provider)
+            .property('role', repoRole)
+            .property('detected_stack', repo.detectedStack || '')
+            .property('added_at', addedAt)
+            .next();
+
+          await g
+            .V()
+            .has('Project', 'id', id)
+            .addE('HAS_REPO')
+            .to(__.V().has('Repository', 'id', repoId))
+            .next();
+
+          reposOut.push({ url: repo.url, provider, role: repoRole, detectedStack: repo.detectedStack || '', addedAt });
+        }
 
         // Ensure the User vertex exists
         const userExists = await g.V().has('User', 'id', userId).hasNext();
@@ -293,10 +803,11 @@ export const handler = async (event) => {
           id,
           name: data.name,
           gitProvider: data.gitProvider || 'github',
-          gitRepo: data.gitRepo || '',
+          gitRepo: primaryUrl,
           agentCli: data.agentCli || 'kiro',
           issueIntegrationEnabled,
           createdAt,
+          repos: reposOut,
         });
       }
 
@@ -311,18 +822,34 @@ export const handler = async (event) => {
         }
 
         const data = JSON.parse(body);
-        let vertex;
         if (data.name) {
-          vertex = g.V().has('Project', 'id', projectId);
-          await vertex.property(cardinality.single, 'name', data.name).next();
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .property(cardinality.single, 'name', data.name)
+            .next();
         }
         if (data.gitRepo !== undefined) {
-          vertex = g.V().has('Project', 'id', projectId);
-          await vertex.property(cardinality.single, 'git_repo', data.gitRepo).next();
+          // SECURITY: same execSync sink as POST. The legacy gitRepo is freeform
+          // but must be shell-safe so it can't break out of the git clone command.
+          if (data.gitRepo && !SHELL_SAFE_REPO_PATTERN.test(data.gitRepo)) {
+            return response(400, { error: `Invalid gitRepo "${data.gitRepo}".` });
+          }
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .property(cardinality.single, 'git_repo', data.gitRepo)
+            .next();
+          if (data.gitRepo) {
+            await ensureLegacyRepoMigrated(g, projectId, data.gitRepo);
+          }
         }
         if (data.gitProvider) {
-          vertex = g.V().has('Project', 'id', projectId);
-          await vertex.property(cardinality.single, 'git_provider', data.gitProvider).next();
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .property(cardinality.single, 'git_provider', data.gitProvider)
+            .next();
         }
         if (data.agentCli) {
           const validClis = ['kiro', 'claude', 'opencode'];
@@ -331,11 +858,14 @@ export const handler = async (event) => {
               error: `Invalid agentCli value. Must be one of: ${validClis.join(', ')}`,
             });
           }
-          vertex = g.V().has('Project', 'id', projectId);
-          await vertex.property(cardinality.single, 'agent_cli', data.agentCli).next();
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .property(cardinality.single, 'agent_cli', data.agentCli)
+            .next();
         }
         if (data.issueIntegrationEnabled !== undefined) {
-          vertex = g.V().has('Project', 'id', projectId);
+          const vertex = g.V().has('Project', 'id', projectId);
           await vertex
             .property(
               cardinality.single,
@@ -360,6 +890,16 @@ export const handler = async (event) => {
           .has('User', 'id', userId)
           .hasNext();
         if (!canDelete) return response(403, { error: 'Only project owners can delete projects' });
+
+        // Drop associated Repository vertices first
+        await g
+          .V()
+          .has('Project', 'id', projectId)
+          .out('HAS_REPO')
+          .hasLabel('Repository')
+          .drop()
+          .next()
+          .catch(() => {}); // No repos is fine
 
         await g.V().has('Project', 'id', projectId).drop().next();
         return response(204, {});

@@ -3,11 +3,40 @@ const { getTaskBranchName } = require('./branch-cleanup');
 function buildConstructionOrchestratorPrompt(job) {
   const event = job.event || { event: 'start' };
   const isRerun = (job.runNumber || 1) > 1 && job.changeRequest;
+  const isMultiRepo = job.gitRepos && job.gitRepos.length > 1;
   const changeRequestBlock = isRerun
     ? `\n## RE-RUN INSTRUCTIONS (from the team)\n\n${job.changeRequest}\n\nThis is a re-run of the construction phase. All previous tasks are already done. Your job is to CREATE NEW TASKS for the work described above, then dispatch sub-agents to implement them.\n`
     : job.changeRequest
       ? `\n## ADDITIONAL CONTEXT FROM TEAM\n\n${job.changeRequest}\n\nConsider this context when dispatching sub-agents.\n`
       : '';
+  const multiRepoBlock = isMultiRepo
+    ? `
+## MULTI-REPO WORKSPACE
+
+This project has multiple repositories. Each is cloned into its own subdirectory:
+
+${job.gitRepos.map((r) => `- /workspace/${r.url}/ (${r.role || 'unknown'})`).join('\n')}
+
+**CRITICAL: /workspace is NOT a git repo.** All git commands MUST be run inside a repo subdirectory.
+
+For merge operations, you must merge in EACH repo that has changes:
+\`\`\`
+# For each repo directory (use the FULL owner/repo path shown above):
+cd /workspace/<owner>/<repo>
+git fetch origin
+git merge origin/${job.branch}--task-<taskId> --no-edit
+cd /workspace
+\`\`\`
+
+For pushing the sprint branch (when all tasks done):
+\`\`\`
+# Push each repo independently:
+cd /workspace/<owner>/<repo> && git push origin HEAD:refs/heads/${job.branch}
+\`\`\`
+
+If a task branch doesn't exist on a particular repo's remote, that repo had no changes for that task — skip it silently.
+`
+    : '';
   return `You are the Construction Orchestrator for the AI-DLC platform.
 
 ## IDENTITY
@@ -20,7 +49,7 @@ YOU ARE SHORT-LIVED. Read the graph, take action, exit. Do NOT wait or poll for 
 ## EVENT
 
 ${JSON.stringify(event)}
-${changeRequestBlock}
+${changeRequestBlock}${multiRepoBlock}
 ## GIT CONTRACT — HOW PUSH/MERGE WORKS (READ CAREFULLY)
 
 The construction phase uses a strict push/merge chain. Understanding this prevents lost work:

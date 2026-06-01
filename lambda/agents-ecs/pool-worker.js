@@ -410,117 +410,20 @@ async function setupWorkspace(job) {
   execSync('rm -rf /workspace/* /workspace/.* 2>/dev/null || true', { stdio: 'ignore' });
   execSync('mkdir -p /workspace', { stdio: 'ignore' });
 
-  if (job.gitRepo) {
-    try {
-      const auth = job.gitToken ? `x-access-token:${job.gitToken}@` : '';
+  // Determine workspace layout: multi-repo (N>1) vs single-repo (N≤1, backward compat)
+  const repos = job.gitRepos && job.gitRepos.length > 1 ? job.gitRepos : null;
+  const isMultiRepo = !!repos;
 
-      // Try to clone - may fail if repo is empty
-      try {
-        execSync(`git clone "https://${auth}github.com/${job.gitRepo}.git" /workspace`, {
-          stdio: 'inherit',
-        });
-      } catch {
-        // If clone fails (empty repo), initialize new repo
-        console.log('[pool-worker] Clone failed (likely empty repo), initializing...');
-        execSync(`git init /workspace`, { stdio: 'inherit' });
-        execSync(
-          `cd /workspace && git remote add origin "https://${auth}github.com/${job.gitRepo}.git"`,
-          { stdio: 'inherit' },
-        );
-      }
-
-      // Configure git
-      execSync(`cd /workspace && git config user.email "ai-dlc@example.com"`, { stdio: 'inherit' });
-      execSync(`cd /workspace && git config user.name "AI-DLC Agent"`, { stdio: 'inherit' });
-
-      // For construction (sub-agents + orchestrator) and review phases, checkout/create the working branch
-      const needsBranch = [
-        'construction',
-        'construction-orchestrator',
-        'review-blind',
-        'review-full',
-        'review-modify',
-        'bugfix',
-      ].includes(job.agentType);
-      if (needsBranch && job.branch) {
-        try {
-          // Check if we have any commits
-          const hasCommits =
-            execSync(`cd /workspace && git rev-parse HEAD 2>/dev/null || echo "no"`, {
-              encoding: 'utf8',
-            }).trim() !== 'no';
-
-          if (!hasCommits) {
-            // Empty repo - create initial commit on the repo's default branch (typically main)
-            const defaultBranch = 'main';
-            execSync(`cd /workspace && git checkout -b ${defaultBranch}`, { stdio: 'inherit' });
-            execSync(`cd /workspace && echo "# ${job.gitRepo}" > README.md`, { stdio: 'inherit' });
-            execSync(`cd /workspace && git add README.md`, { stdio: 'inherit' });
-            execSync(`cd /workspace && git commit -m "Initial commit"`, { stdio: 'inherit' });
-            try {
-              execSync(`cd /workspace && git push -u origin ${defaultBranch}`, {
-                stdio: 'inherit',
-              });
-            } catch (pushErr) {
-              console.error(
-                `[pool-worker] Failed to push initial commit to ${defaultBranch}: ${pushErr.message}`,
-              );
-            }
-          }
-
-          // Determine which base to branch from.
-          // For construction sub-agents, baseBranch is the sprint branch.
-          // We need to verify it exists on the remote; if not, fall back to main.
-          const desiredBase = job.baseBranch || 'main';
-          const baseExistsOnRemote = execSync(
-            `cd /workspace && git ls-remote --heads origin ${desiredBase}`,
-            { encoding: 'utf8' },
-          ).trim();
-          const effectiveBase = baseExistsOnRemote ? desiredBase : 'main';
-          if (!baseExistsOnRemote && desiredBase !== 'main') {
-            console.log(
-              `[pool-worker] Base branch "${desiredBase}" not found on remote, falling back to "main"`,
-            );
-          }
-
-          // Now create/checkout working branch
-          const branchExists = execSync(
-            `cd /workspace && git ls-remote --heads origin ${job.branch}`,
-            { encoding: 'utf8' },
-          ).trim();
-
-          if (branchExists) {
-            // Branch exists on remote — fetch and check it out
-            execSync(`cd /workspace && git fetch origin ${job.branch}`, { stdio: 'inherit' });
-            execSync(`cd /workspace && git checkout ${job.branch}`, { stdio: 'inherit' });
-          } else {
-            // Branch does not exist on remote — create it from the effective base
-            console.log(
-              `[pool-worker] Creating new branch ${job.branch} from origin/${effectiveBase}`,
-            );
-            execSync(`cd /workspace && git fetch origin ${effectiveBase}`, { stdio: 'inherit' });
-            execSync(`cd /workspace && git checkout -b ${job.branch} origin/${effectiveBase}`, {
-              stdio: 'inherit',
-            });
-          }
-
-          // Verify we're on the right branch
-          const currentBranch = execSync('cd /workspace && git branch --show-current', {
-            encoding: 'utf8',
-          }).trim();
-          console.log(`[pool-worker] Workspace ready on branch: ${currentBranch}`);
-          if (currentBranch !== job.branch) {
-            console.error(
-              `[pool-worker] WARNING: Expected branch ${job.branch} but on ${currentBranch}`,
-            );
-          }
-        } catch (err) {
-          console.error(`[pool-worker] Git branch setup failed for ${job.branch}: ${err.message}`);
-        }
-      }
-    } catch (gitErr) {
-      console.error('[pool-worker] Git setup failed:', gitErr.message);
+  if (isMultiRepo) {
+    // Multi-repo: clone each into /workspace/{owner}/{repo}/
+    for (const repo of repos) {
+      const repoName = repo.url; // "owner/repo" → nested dir /workspace/owner/repo
+      const repoDir = `/workspace/${repoName}`;
+      cloneAndSetupBranch(job, repo.url, repoDir);
     }
+  } else if (job.gitRepo) {
+    // Single-repo: clone into /workspace/ (backward compatible)
+    cloneAndSetupBranch(job, job.gitRepo, '/workspace');
   }
 
   const phase = (job.agentType || 'inception').toLowerCase();
@@ -532,6 +435,149 @@ async function setupWorkspace(job) {
   const activeDriver = getDriver(job.agentCli);
   if (typeof activeDriver.writeProjectConfig === 'function') {
     activeDriver.writeProjectConfig('/workspace', process.env);
+  }
+
+  // Multi-repo: symlink steering/config dirs into each repo so CLIs that search
+  // relative to the git root (not cwd) still find them when the agent cd's in.
+  if (isMultiRepo) {
+    const steeringDirs = ['.kiro', '.claude', '.opencode'].filter((d) =>
+      fs.existsSync(`/workspace/${d}`),
+    );
+    for (const repo of repos) {
+      const repoDir = `/workspace/${repo.url}`;
+      for (const dir of steeringDirs) {
+        const target = `${repoDir}/${dir}`;
+        if (!fs.existsSync(target)) {
+          try {
+            fs.symlinkSync(`/workspace/${dir}`, target, 'dir');
+          } catch {
+            // Fallback: copy if symlink fails (some filesystems)
+            execSync(`cp -r "/workspace/${dir}" "${target}"`, { stdio: 'ignore' });
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Clone a single repository into targetDir and set up the working branch.
+ * Extracted from the original setupWorkspace to enable multi-repo reuse.
+ */
+function cloneAndSetupBranch(job, repoUrl, targetDir) {
+  try {
+    const auth = job.gitToken ? `x-access-token:${job.gitToken}@` : '';
+
+    // Try to clone - may fail if repo is empty
+    try {
+      execSync(`git clone "https://${auth}github.com/${repoUrl}.git" "${targetDir}"`, {
+        stdio: 'inherit',
+      });
+    } catch {
+      // If clone fails (empty repo), initialize new repo
+      console.log(`[pool-worker] Clone failed for ${repoUrl} (likely empty repo), initializing...`);
+      execSync(`mkdir -p "${targetDir}" && git init "${targetDir}"`, { stdio: 'inherit' });
+      execSync(
+        `cd "${targetDir}" && git remote add origin "https://${auth}github.com/${repoUrl}.git"`,
+        { stdio: 'inherit' },
+      );
+    }
+
+    // Configure git
+    execSync(`cd "${targetDir}" && git config user.email "ai-dlc@example.com"`, {
+      stdio: 'inherit',
+    });
+    execSync(`cd "${targetDir}" && git config user.name "AI-DLC Agent"`, { stdio: 'inherit' });
+
+    // For construction (sub-agents + orchestrator) and review phases, checkout/create the working branch
+    const needsBranch = [
+      'construction',
+      'construction-orchestrator',
+      'review-blind',
+      'review-full',
+      'review-modify',
+      'bugfix',
+    ].includes(job.agentType);
+    if (needsBranch && job.branch) {
+      try {
+        // Check if we have any commits
+        const hasCommits =
+          execSync(`cd "${targetDir}" && git rev-parse HEAD 2>/dev/null || echo "no"`, {
+            encoding: 'utf8',
+          }).trim() !== 'no';
+
+        if (!hasCommits) {
+          // Empty repo - create initial commit on the repo's default branch (typically main)
+          const defaultBranch = 'main';
+          execSync(`cd "${targetDir}" && git checkout -b ${defaultBranch}`, { stdio: 'inherit' });
+          execSync(`cd "${targetDir}" && echo "# ${repoUrl}" > README.md`, { stdio: 'inherit' });
+          execSync(`cd "${targetDir}" && git add README.md`, { stdio: 'inherit' });
+          execSync(`cd "${targetDir}" && git commit -m "Initial commit"`, { stdio: 'inherit' });
+          try {
+            execSync(`cd "${targetDir}" && git push -u origin ${defaultBranch}`, {
+              stdio: 'inherit',
+            });
+          } catch (pushErr) {
+            console.error(
+              `[pool-worker] Failed to push initial commit to ${defaultBranch}: ${pushErr.message}`,
+            );
+          }
+        }
+
+        // Determine which base to branch from.
+        // For construction sub-agents, baseBranch is the sprint branch.
+        // We need to verify it exists on the remote; if not, fall back to main.
+        const desiredBase = job.baseBranch || 'main';
+        const baseExistsOnRemote = execSync(
+          `cd "${targetDir}" && git ls-remote --heads origin ${desiredBase}`,
+          { encoding: 'utf8' },
+        ).trim();
+        const effectiveBase = baseExistsOnRemote ? desiredBase : 'main';
+        if (!baseExistsOnRemote && desiredBase !== 'main') {
+          console.log(
+            `[pool-worker] Base branch "${desiredBase}" not found on remote for ${repoUrl}, falling back to "main"`,
+          );
+        }
+
+        // Now create/checkout working branch
+        const branchExists = execSync(
+          `cd "${targetDir}" && git ls-remote --heads origin ${job.branch}`,
+          { encoding: 'utf8' },
+        ).trim();
+
+        if (branchExists) {
+          // Branch exists on remote — fetch and check it out
+          execSync(`cd "${targetDir}" && git fetch origin ${job.branch}`, { stdio: 'inherit' });
+          execSync(`cd "${targetDir}" && git checkout ${job.branch}`, { stdio: 'inherit' });
+        } else {
+          // Branch does not exist on remote — create it from the effective base
+          console.log(
+            `[pool-worker] Creating new branch ${job.branch} from origin/${effectiveBase} in ${repoUrl}`,
+          );
+          execSync(`cd "${targetDir}" && git fetch origin ${effectiveBase}`, { stdio: 'inherit' });
+          execSync(`cd "${targetDir}" && git checkout -b ${job.branch} origin/${effectiveBase}`, {
+            stdio: 'inherit',
+          });
+        }
+
+        // Verify we're on the right branch
+        const currentBranch = execSync(`cd "${targetDir}" && git branch --show-current`, {
+          encoding: 'utf8',
+        }).trim();
+        console.log(`[pool-worker] ${repoUrl} ready on branch: ${currentBranch}`);
+        if (currentBranch !== job.branch) {
+          console.error(
+            `[pool-worker] WARNING: Expected branch ${job.branch} but on ${currentBranch} in ${repoUrl}`,
+          );
+        }
+      } catch (err) {
+        console.error(
+          `[pool-worker] Git branch setup failed for ${job.branch} in ${repoUrl}: ${err.message}`,
+        );
+      }
+    }
+  } catch (gitErr) {
+    console.error(`[pool-worker] Git setup failed for ${repoUrl}:`, gitErr.message);
   }
 }
 
@@ -652,9 +698,14 @@ ${job.description || '(No description provided — ask the team what they want t
 
 function buildConstructionPrompt(job, rulesDir) {
   const taskId = job.taskId;
+  const isMultiRepo = job.gitRepos && job.gitRepos.length > 1;
   const taskSection = taskId
     ? `## YOUR TASK\n\nTask ID: ${taskId}\nBranch: ${job.branch || 'main'}\n\nCall \`get_node\` with label "Task" and id="${taskId}" to read the task details, then implement it.`
     : `## YOUR TASKS\n\nBranch: ${job.branch || 'main'}\n\nNo specific task ID was assigned. You must discover tasks yourself:\n1. Call \`get_sprint_graph\` to see all nodes.\n2. Find all Task nodes with status "todo".\n3. Implement them one by one in a logical order (respect dependencies).`;
+
+  const workspaceSection = isMultiRepo
+    ? `## WORKSPACE LAYOUT (MULTI-REPO)\n\nThis project uses multiple repositories. Each is cloned into its own subdirectory:\n\n${job.gitRepos.map((r) => `- /workspace/${r.url}/ (${r.role || 'unknown'})`).join('\n')}\n\n**CRITICAL RULES for multi-repo**:\n1. ALWAYS \`cd\` into the correct repo directory before running git or file operations.\n2. Each repo has its own git history and branch — do NOT confuse them.\n3. When creating CodeFile nodes, ALWAYS set the \`repository\` property to the "owner/repo" value.\n4. Commit changes in each repo independently: \`cd /workspace/<owner>/<repo> && git add -A && git commit ...\`\n5. The system pushes ALL repos after you exit — you just need to commit in each.\n`
+    : '';
 
   return `You are the Construction Agent for the AI-DLC platform.
 
@@ -678,6 +729,7 @@ YOUR GOAL: Implement tasks by writing code to the git workspace, updating Neptun
 
 ${taskSection}
 
+${workspaceSection}
 ## WORKFLOW
 
 1. Read your AGENTS.md and the construction rule files in \`${rulesDir}/\` to understand the construction workflow
@@ -1021,13 +1073,27 @@ Begin by examining the codebase and implementing the requested fixes.
 
 // Push a branch to remote with retry and verification.
 // Returns true if push succeeded and was verified on remote, false otherwise.
-function pushBranchWithRetry(job, branch, maxRetries = 3) {
+/**
+ * Resolve the repo URL (owner/repo) for a given workspace directory.
+ * In single-repo mode, returns job.gitRepo.
+ * In multi-repo mode, derives owner/repo from the path relative to /workspace.
+ */
+function getRepoUrlForDir(job, workDir) {
+  if (!job.gitRepos || job.gitRepos.length <= 1) return job.gitRepo || '';
+  const relative = path.relative('/workspace', workDir); // "owner/repo"
+  const match = job.gitRepos.find((r) => r.url === relative);
+  return match ? match.url : job.gitRepo || '';
+}
+
+function pushBranchWithRetry(job, branch, maxRetries = 3, workDir = '/workspace') {
+  // Returns: true (pushed OK) | false (real push failure after retries) | 'empty' (no commits — expected no-op)
   // Re-inject token into remote URL for push authentication.
   const auth = job.gitToken ? `x-access-token:${job.gitToken}@` : '';
-  if (auth) {
+  const repoUrl = getRepoUrlForDir(job, workDir);
+  if (auth && repoUrl) {
     try {
       execSync(
-        `cd /workspace && git remote set-url origin "https://${auth}github.com/${job.gitRepo}.git"`,
+        `cd "${workDir}" && git remote set-url origin "https://${auth}github.com/${repoUrl}.git"`,
         { stdio: 'inherit' },
       );
     } catch (urlErr) {
@@ -1038,26 +1104,30 @@ function pushBranchWithRetry(job, branch, maxRetries = 3) {
 
   // Check if the branch has any commits at all
   try {
-    execSync('cd /workspace && git log -1 --format=%H', {
+    execSync(`cd "${workDir}" && git log -1 --format=%H`, {
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
     });
   } catch {
     console.log(
-      `[pool-worker] Branch ${branch} has no commits — nothing to push. This is normal for orchestrator first-run.`,
+      `[pool-worker] Branch ${branch} has no commits in ${workDir} — nothing to push. This is normal for orchestrator first-run or an untouched repo in multi-repo mode.`,
     );
-    return false;
+    // Distinct from a push FAILURE: an empty repo is an expected no-op, not an error.
+    // Callers must not treat 'empty' as a failed push (see multi-repo aggregation).
+    return 'empty';
   }
 
   // Auto-commit any leftover uncommitted changes the agent forgot
   try {
-    const status = execSync('cd /workspace && git status --porcelain', { encoding: 'utf8' }).trim();
+    const status = execSync(`cd "${workDir}" && git status --porcelain`, {
+      encoding: 'utf8',
+    }).trim();
     if (status) {
       console.log(
-        `[pool-worker] WARNING: Agent left uncommitted changes. Auto-committing to prevent data loss:\n${status}`,
+        `[pool-worker] WARNING: Agent left uncommitted changes in ${workDir}. Auto-committing to prevent data loss:\n${status}`,
       );
       execSync(
-        'cd /workspace && git add -A && git commit -m "auto-commit: uncommitted changes from agent"',
+        `cd "${workDir}" && git add -A && git commit -m "auto-commit: uncommitted changes from agent"`,
         { stdio: 'inherit' },
       );
     }
@@ -1065,16 +1135,16 @@ function pushBranchWithRetry(job, branch, maxRetries = 3) {
     console.error(`[pool-worker] Auto-commit failed: ${commitErr.message}`);
   }
 
-  const log = execSync('cd /workspace && git log --oneline -3', { encoding: 'utf8' }).trim();
+  const log = execSync(`cd "${workDir}" && git log --oneline -3`, { encoding: 'utf8' }).trim();
   console.log(`[pool-worker] Recent commits on ${branch}:\n${log}`);
 
-  const localHead = execSync('cd /workspace && git rev-parse HEAD', { encoding: 'utf8' }).trim();
+  const localHead = execSync(`cd "${workDir}" && git rev-parse HEAD`, { encoding: 'utf8' }).trim();
   console.log(`[pool-worker] Local HEAD for ${branch}: ${localHead}`);
 
   // Log actual current branch for debugging — if this differs from the expected branch,
   // the agent or setupWorkspace failed to check out the correct branch.
   const currentBranch = execSync(
-    'cd /workspace && git branch --show-current 2>/dev/null || echo "detached"',
+    `cd "${workDir}" && git branch --show-current 2>/dev/null || echo "detached"`,
     { encoding: 'utf8' },
   ).trim();
   console.log(`[pool-worker] Current local branch: ${currentBranch} (expected: ${branch})`);
@@ -1083,12 +1153,14 @@ function pushBranchWithRetry(job, branch, maxRetries = 3) {
     try {
       // Push HEAD to the remote branch name explicitly. This works even if the local branch
       // name doesn't match (e.g. agent is on 'main' but we need to push to the task branch).
-      execSync(`cd /workspace && git push origin HEAD:refs/heads/${branch}`, { stdio: 'inherit' });
+      execSync(`cd "${workDir}" && git push origin HEAD:refs/heads/${branch}`, {
+        stdio: 'inherit',
+      });
       console.log(`[pool-worker] Push succeeded for ${branch} (attempt ${attempt})`);
 
       // Verify the push landed by checking remote HEAD matches local HEAD
       try {
-        const remoteHead = execSync(`cd /workspace && git ls-remote origin ${branch}`, {
+        const remoteHead = execSync(`cd "${workDir}" && git ls-remote origin ${branch}`, {
           encoding: 'utf8',
         })
           .trim()
@@ -1150,6 +1222,8 @@ function runAcpSession(job) {
       BRANCH: job.branch || '',
       GIT_TOKEN: job.gitToken || '',
       GIT_REPO: job.gitRepo || '',
+      GIT_REPOS: JSON.stringify(job.gitRepos || []),
+      WORKSPACE_LAYOUT: job.gitRepos && job.gitRepos.length > 1 ? 'multi' : 'single',
       RUN_NUMBER: String(job.runNumber || 1),
     };
 
@@ -1161,6 +1235,7 @@ function runAcpSession(job) {
 
     child.on('exit', (code) => {
       let pushSucceeded = false;
+      let pushResults = []; // per-repo results for multi-repo mode
 
       // For construction and review-modify phases, push changes to remote.
       // CRITICAL: Wrapped in try/catch so no git error can crash the pool-worker process.
@@ -1171,11 +1246,42 @@ function runAcpSession(job) {
           phase === 'review-modify' ||
           phase === 'bugfix') &&
         code === 0 &&
-        job.gitRepo &&
+        (job.gitRepo || (job.gitRepos && job.gitRepos.length > 0)) &&
         job.branch
       ) {
         try {
-          pushSucceeded = pushBranchWithRetry(job, job.branch);
+          const isMultiRepo = job.gitRepos && job.gitRepos.length > 1;
+          if (isMultiRepo) {
+            // Multi-repo: push each repo from its subdirectory.
+            // A repo with no commits for this task is normal (the agent only touched
+            // some repos) — it must NOT mark the whole push as failed, otherwise the
+            // orchestrator would skip merging the repos that DID change.
+            let anyPushed = false;
+            let anyRealFailure = false;
+            for (const repo of job.gitRepos) {
+              const repoDir = `/workspace/${repo.url}`;
+              if (!fs.existsSync(repoDir)) {
+                pushResults.push({ repository: repo.url, pushed: false, reason: 'dir_not_found' });
+                anyRealFailure = true;
+                continue;
+              }
+              const res = pushBranchWithRetry(job, job.branch, 3, repoDir);
+              if (res === 'empty') {
+                pushResults.push({ repository: repo.url, pushed: false, reason: 'no_commits' });
+              } else if (res === true) {
+                pushResults.push({ repository: repo.url, pushed: true });
+                anyPushed = true;
+              } else {
+                pushResults.push({ repository: repo.url, pushed: false, reason: 'push_failed' });
+                anyRealFailure = true;
+              }
+            }
+            // Success = at least one repo's changes landed AND no repo that had changes
+            // failed to push. Untouched ('no_commits') repos are neutral.
+            pushSucceeded = anyPushed && !anyRealFailure;
+          } else {
+            pushSucceeded = pushBranchWithRetry(job, job.branch) === true;
+          }
         } catch (pushErr) {
           console.error(
             `[pool-worker] FATAL-PREVENTED: pushBranchWithRetry threw unexpectedly: ${pushErr.message}`,
@@ -1196,11 +1302,11 @@ function runAcpSession(job) {
         }
       }
 
-      resolve({ exitCode: code || 0, pushSucceeded });
+      resolve({ exitCode: code || 0, pushSucceeded, pushResults });
     });
     child.on('error', (err) => {
       console.error('ACP child error:', err);
-      resolve({ exitCode: 1, pushSucceeded: false });
+      resolve({ exitCode: 1, pushSucceeded: false, pushResults: [] });
     });
   });
 }
@@ -1304,7 +1410,7 @@ async function main() {
         );
 
         await setupWorkspace(job);
-        const { exitCode, pushSucceeded } = await runAcpSession(job);
+        const { exitCode, pushSucceeded, pushResults } = await runAcpSession(job);
 
         const status = exitCode === 0 ? 'completed' : 'failed';
         await saveStatus(job.executionId, job.agentType || 'inception', job.projectId, status);
@@ -1348,6 +1454,7 @@ async function main() {
                         taskId: job.taskId,
                         status: triggerStatus,
                         pushSucceeded,
+                        pushResults: pushResults.length > 0 ? pushResults : undefined,
                       },
                     }),
                     requestContext: { authorizer: { claims: { sub: 'system' } } },

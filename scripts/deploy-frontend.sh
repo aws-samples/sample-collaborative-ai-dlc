@@ -6,9 +6,12 @@ ENVIRONMENT=${1:-dev}
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TF_DIR="$SCRIPT_DIR/../terraform"
 
-if [[ "$ENVIRONMENT" != "dev" && "$ENVIRONMENT" != "prod" ]]; then
-    echo "Usage: $0 [dev|prod]"
-    echo "Environment must be 'dev' or 'prod'"
+# Discover available environments from terraform/environments/*.tfvars
+AVAILABLE_ENVS=$(ls "$TF_DIR/environments/"*.tfvars 2>/dev/null | xargs -n1 basename | sed 's/\.tfvars$//' | grep -v '\.example$' | tr '\n' ' ')
+
+if ! echo " $AVAILABLE_ENVS " | grep -q " $ENVIRONMENT "; then
+    echo "Usage: $0 <environment>"
+    echo "Available environments: $AVAILABLE_ENVS"
     exit 1
 fi
 

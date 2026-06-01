@@ -616,12 +616,31 @@ exports.handler = async (event) => {
         description = input.description || '',
         sprintPhase = '',
         projectAgentCli = 'kiro';
+      let gitRepos = [];
       let isMember = false;
       await withNeptune(async (g) => {
         const result = await g.V().has('Project', 'id', projectId).valueMap().next();
         if (result.value?.get) {
           gitRepo = result.value.get('git_repo')?.[0] || '';
           projectAgentCli = result.value.get('agent_cli')?.[0] || 'kiro';
+        }
+        // Fetch all Repository vertices linked to the project (multi-repo support)
+        const repoVertices = await g
+          .V()
+          .has('Project', 'id', projectId)
+          .out('HAS_REPO')
+          .hasLabel('Repository')
+          .valueMap()
+          .toList();
+        if (repoVertices.length > 0) {
+          gitRepos = repoVertices.map((r) => ({
+            url: (r.get('url') || [''])[0],
+            role: (r.get('role') || ['unknown'])[0],
+            detectedStack: (r.get('detected_stack') || [''])[0],
+          }));
+          // Ensure gitRepo (primary) is derived from repos list for backward compat
+          const primary = gitRepos.find((r) => r.role === 'primary') || gitRepos[0];
+          if (primary && !gitRepo) gitRepo = primary.url;
         }
         if (input.sprintId) {
           const sr = await g.V().has('Sprint', 'id', input.sprintId).valueMap().next();
@@ -711,6 +730,7 @@ exports.handler = async (event) => {
         agentType: input.phase || sprintPhase || 'inception',
         description,
         gitRepo,
+        gitRepos,
         userId: userId || '',
         sprintId: input.sprintId || '',
         taskId: input.taskId || '',
