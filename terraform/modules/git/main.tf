@@ -6,6 +6,16 @@ resource "aws_secretsmanager_secret" "github_oauth" {
   tags = var.tags
 }
 
+# Secrets Manager for Jira Cloud OAuth 2.0 (3LO) App credentials. Sibling to
+# github_oauth — kept as a separate secret (not nested under a "tracker-oauth"
+# umbrella) so existing operators don't need to migrate their GitHub setup.
+resource "aws_secretsmanager_secret" "jira_oauth" {
+  name_prefix = "${var.project_name}-${var.environment}-jira-oauth-"
+  description = "Jira Cloud OAuth App credentials (client_id, client_secret)"
+
+  tags = var.tags
+}
+
 # DynamoDB table for user GitHub connections (access tokens)
 resource "aws_dynamodb_table" "git_connections" {
   name         = "${var.project_name}-${var.environment}-git-connections"

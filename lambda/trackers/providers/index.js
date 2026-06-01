@@ -1,9 +1,15 @@
-import { provider as githubIssuesProvider, ProviderError } from './github-issues.js';
+import { provider as githubIssuesProvider } from './github-issues.js';
+import { provider as jiraCloudProvider } from './jira-cloud.js';
+import { ProviderError } from './errors.js';
 
 const REGISTRY = {
   'github-issues': {
     instances: ['public'],
     provider: githubIssuesProvider,
+  },
+  'jira-cloud': {
+    instances: ['cloud'],
+    provider: jiraCloudProvider,
   },
 };
 

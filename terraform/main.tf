@@ -172,6 +172,9 @@ module "lambda" {
   tracker_connections_table_name = module.git.tracker_connections_table_name
   tracker_connections_table_arn  = module.git.tracker_connections_table_arn
   github_redirect_uri            = "https://${module.frontend.cloudfront_domain_name}/github/callback"
+  jira_oauth_secret_name         = module.git.jira_oauth_secret_name
+  jira_oauth_secret_arn          = module.git.jira_oauth_secret_arn
+  jira_redirect_uri              = "https://${module.frontend.cloudfront_domain_name}/trackers/callback/jira-cloud"
   state_machine_arn              = "arn:${local.partition}:states:${var.aws_region}:${data.aws_caller_identity.current.account_id}:stateMachine:${var.project_name}-agent-workflow-${var.environment}"
   agent_questions_table_name     = module.dynamodb.agent_questions_table_name
   agent_questions_table_arn      = module.dynamodb.agent_questions_table_arn

@@ -16,7 +16,7 @@ import { sprintsService, type Sprint } from '@/services/sprints';
 import { ApiError } from '@/services/api';
 import type { Project, TrackerBinding } from '@/services/projects';
 import { buildSprintDescription } from '@/lib/buildSprintDescription';
-import { getProviderPresentation } from './TrackerProviderPresentation';
+import { getTrackerProvider } from '@/lib/trackerProviders';
 
 interface Props {
   project: Project;
@@ -27,18 +27,43 @@ interface Props {
 
 const PER_PAGE = 30;
 
-const formatError = (err: unknown): string => {
+interface FormattedError {
+  message: string;
+  reconnect: boolean;
+  notConnected: boolean;
+}
+
+const formatErrorDetail = (err: unknown): FormattedError => {
   if (err instanceof ApiError) {
+    const reconnect = err.body?.reconnect === true;
+    const errorBody = typeof err.body?.error === 'string' ? err.body.error : undefined;
     if (err.status === 429) {
       const retryAfter = typeof err.body?.retryAfter === 'number' ? err.body.retryAfter : null;
-      return retryAfter
-        ? `Rate limit reached. Try again in ${retryAfter}s.`
-        : 'Rate limit reached. Try again soon.';
+      return {
+        message: retryAfter
+          ? `Rate limit reached. Try again in ${retryAfter}s.`
+          : 'Rate limit reached. Try again soon.',
+        reconnect: false,
+        notConnected: false,
+      };
     }
-    if (typeof err.body?.error === 'string') return err.body.error;
+    if (errorBody) {
+      return {
+        message: errorBody,
+        reconnect,
+        notConnected: errorBody.toLowerCase().includes('not connected'),
+      };
+    }
   }
-  return err instanceof Error ? err.message : 'Failed to load issues';
+  const message = err instanceof Error ? err.message : 'Failed to load issues';
+  return {
+    message,
+    reconnect: false,
+    notConnected: message.toLowerCase().includes('not connected'),
+  };
 };
+
+const formatError = (err: unknown): string => formatErrorDetail(err).message;
 
 export function TrackerIssueListPanel({ project, binding, sprints, onSprintCreated }: Props) {
   const navigate = useNavigate();
@@ -51,16 +76,22 @@ export function TrackerIssueListPanel({ project, binding, sprints, onSprintCreat
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [errorDetail, setErrorDetail] = useState<FormattedError | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [startingResourceId, setStartingResourceId] = useState<string | null>(null);
 
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const iteratorRef = useRef<AsyncGenerator<IssuePageResult> | null>(null);
 
-  const presentation = useMemo(
-    () => getProviderPresentation(binding.provider, 'h-4 w-4 text-muted-foreground'),
-    [binding.provider],
-  );
+  const chrome = useMemo(() => {
+    const meta = getTrackerProvider(binding.provider);
+    const Icon = meta.icon;
+    return {
+      icon: <Icon className="h-4 w-4 text-muted-foreground" />,
+      panelTitle: meta.panelTitle,
+      resourceLabel: meta.resourceLabel,
+    };
+  }, [binding.provider]);
 
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
@@ -75,7 +106,10 @@ export function TrackerIssueListPanel({ project, binding, sprints, onSprintCreat
     async (iter: AsyncGenerator<IssuePageResult>, append: boolean) => {
       if (append) setLoadingMore(true);
       else setLoading(true);
-      if (!append) setError(null);
+      if (!append) {
+        setError(null);
+        setErrorDetail(null);
+      }
       try {
         const { value, done } = await iter.next();
         if (done || !value) {
@@ -86,7 +120,9 @@ export function TrackerIssueListPanel({ project, binding, sprints, onSprintCreat
         setHasNext(!value.done);
         setTotalCount(value.totalCount);
       } catch (err) {
-        setError(formatError(err));
+        const detail = formatErrorDetail(err);
+        setError(detail.message);
+        setErrorDetail(detail);
         if (!append) setIssues([]);
         setHasNext(false);
       } finally {
@@ -210,8 +246,8 @@ export function TrackerIssueListPanel({ project, binding, sprints, onSprintCreat
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-2">
-            {presentation.icon}
-            <CardTitle className="text-sm">{presentation.panelTitle}</CardTitle>
+            {chrome.icon}
+            <CardTitle className="text-sm">{chrome.panelTitle}</CardTitle>
             {binding.displayName && (
               <span className="text-xs text-muted-foreground">{binding.displayName}</span>
             )}
@@ -266,15 +302,21 @@ export function TrackerIssueListPanel({ project, binding, sprints, onSprintCreat
           <div className="flex items-start gap-2 text-sm text-destructive bg-destructive/5 border border-destructive/20 rounded-md p-3">
             <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
             <div className="flex-1">
-              <p>{error}</p>
-              {error.toLowerCase().includes('not connected') && (
+              <p>
+                {errorDetail?.reconnect
+                  ? `${chrome.resourceLabel} authentication expired — reconnect to continue.`
+                  : error}
+              </p>
+              {(errorDetail?.notConnected || errorDetail?.reconnect) && (
                 <Button
                   variant="link"
                   size="sm"
                   className="h-auto p-0 text-xs"
                   onClick={() => navigate(`/project/${project.id}/settings`)}
                 >
-                  Connect in project settings
+                  {errorDetail?.reconnect
+                    ? 'Reconnect in project settings'
+                    : 'Connect in project settings'}
                 </Button>
               )}
             </div>
@@ -319,13 +361,31 @@ export function TrackerIssueListPanel({ project, binding, sprints, onSprintCreat
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
+                      {issue.entityType && (
+                        <Badge
+                          variant="secondary"
+                          className="text-[9px] h-4 px-1.5 gap-1 shrink-0"
+                          title={`${issue.entityType} (from ${chrome.resourceLabel.replace(/ issue$/, '')})`}
+                        >
+                          {issue.entityIconUrl && (
+                            <img
+                              src={issue.entityIconUrl}
+                              alt=""
+                              className="h-3 w-3"
+                              loading="lazy"
+                            />
+                          )}
+                          {issue.entityType}
+                        </Badge>
+                      )}
                       <a
                         href={issue.resourceUrl}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-sm font-medium hover:underline truncate"
                       >
-                        #{issue.resourceId} {issue.title}
+                        {/^\d+$/.test(issue.resourceId) ? `#${issue.resourceId}` : issue.resourceId}{' '}
+                        {issue.title}
                       </a>
                       {issue.labels.slice(0, 3).map((l) => (
                         <Badge

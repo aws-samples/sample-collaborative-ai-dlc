@@ -235,3 +235,9 @@ output "github_oauth_secret_name" {
   description = "Name of the Secrets Manager secret holding the GitHub OAuth client_id/client_secret"
   value       = module.git.github_oauth_secret_name
 }
+
+# Jira Cloud OAuth
+output "jira_oauth_secret_name" {
+  description = "Name of the Secrets Manager secret holding the Jira Cloud OAuth client_id/client_secret"
+  value       = module.git.jira_oauth_secret_name
+}

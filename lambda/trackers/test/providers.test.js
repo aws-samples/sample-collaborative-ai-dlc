@@ -58,11 +58,11 @@ describe('getProvider (factory)', () => {
   it('throws ProviderError(400) for an unknown provider id', () => {
     expect.assertions(3);
     try {
-      getProvider('jira-cloud', 'cloud');
+      getProvider('unknown-provider', 'cloud');
     } catch (err) {
       expect(err).toBeInstanceOf(ProviderError);
       expect(err.status).toBe(400);
-      expect(err.message).toMatch(/jira-cloud/);
+      expect(err.message).toMatch(/unknown-provider/);
     }
   });
 

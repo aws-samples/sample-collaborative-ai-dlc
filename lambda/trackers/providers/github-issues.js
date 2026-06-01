@@ -1,5 +1,6 @@
 import { GetCommand } from '@aws-sdk/lib-dynamodb';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
+import { ProviderError } from './errors.js';
 
 const GIT_TOKEN_PARAM_PATTERN = /^\/[\w-]+\/[\w-]+\/[\w-]+\/[\w-]+$/;
 
@@ -86,20 +87,14 @@ const splitOwnerRepo = (externalProjectKey) => {
   return { owner: parts[0], repo: parts[1] };
 };
 
-// Normalized → caller. Raised with a status code so the route layer can
-// translate without knowing GitHub specifics.
-export class ProviderError extends Error {
-  constructor(status, message, extra = {}) {
-    super(message);
-    this.status = status;
-    this.extra = extra;
-  }
-}
-
 const mapIssueToTrackerIssue = (i) => ({
   resourceId: String(i.number),
   resourceUrl: i.html_url,
   resourceType: 'issue',
+  // GitHub issues are flat — no per-issue type. Left null so the
+  // normalized shape matches Jira's; the UI hides the chip when null.
+  entityType: null,
+  entityIconUrl: null,
   title: i.title,
   body: i.body ?? null,
   state: i.state === 'closed' ? 'closed' : 'open',

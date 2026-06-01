@@ -1326,6 +1326,68 @@ resource "aws_api_gateway_resource" "trackers_callback_provider" {
   path_part   = "{provider}"
 }
 
+# /trackers/external-projects/{provider}/{instance} — picker for listing
+# resources the user can bind (Jira projects today; future providers'
+# equivalents). Phase 3 / #197.
+resource "aws_api_gateway_resource" "trackers_external_projects" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.trackers_root.id
+  path_part   = "external-projects"
+}
+
+resource "aws_api_gateway_resource" "trackers_external_projects_provider" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.trackers_external_projects.id
+  path_part   = "{provider}"
+}
+
+resource "aws_api_gateway_resource" "trackers_external_projects_provider_instance" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.trackers_external_projects_provider.id
+  path_part   = "{instance}"
+}
+
+# /trackers/connections/{provider}/{instance} — finalize an OAuth flow that
+# returned a pendingChoice (Jira multi-site picker). POST only.
+resource "aws_api_gateway_resource" "trackers_connections" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.trackers_root.id
+  path_part   = "connections"
+}
+
+resource "aws_api_gateway_resource" "trackers_connections_provider" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.trackers_connections.id
+  path_part   = "{provider}"
+}
+
+resource "aws_api_gateway_resource" "trackers_connections_provider_instance" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.trackers_connections_provider.id
+  path_part   = "{instance}"
+}
+
+# /trackers/providers — operator OAuth-config status + admin secret
+# writer. Sibling to the `{provider}` path parameter below; API Gateway
+# matches the literal `providers` first when both are present.
+resource "aws_api_gateway_resource" "trackers_providers" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.trackers_root.id
+  path_part   = "providers"
+}
+
+resource "aws_api_gateway_resource" "trackers_providers_provider" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.trackers_providers.id
+  path_part   = "{provider}"
+}
+
+resource "aws_api_gateway_resource" "trackers_providers_provider_oauth_config" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.trackers_providers_provider.id
+  path_part   = "oauth-config"
+}
+
 # /trackers/{provider}/{instance}
 resource "aws_api_gateway_resource" "trackers_provider" {
   rest_api_id = aws_api_gateway_rest_api.main.id
@@ -1426,13 +1488,15 @@ module "cors_trackers_auth_provider" {
   resource_id = aws_api_gateway_resource.trackers_auth_provider.id
 }
 
-# GET /trackers/callback/{provider}
+# GET /trackers/callback/{provider} — no auth (the OAuth provider redirects
+# the user's browser here without a Cognito JWT). The handler validates the
+# HMAC-signed `state` parameter to bind the callback to the user who started
+# the flow.
 resource "aws_api_gateway_method" "trackers_callback_provider_get" {
   rest_api_id   = aws_api_gateway_rest_api.main.id
   resource_id   = aws_api_gateway_resource.trackers_callback_provider.id
   http_method   = "GET"
-  authorization = "COGNITO_USER_POOLS"
-  authorizer_id = aws_api_gateway_authorizer.cognito.id
+  authorization = "NONE"
   request_parameters = {
     "method.request.path.provider" = true
   }
@@ -1451,6 +1515,113 @@ module "cors_trackers_callback_provider" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.trackers_callback_provider.id
+}
+
+# GET /trackers/external-projects/{provider}/{instance}
+resource "aws_api_gateway_method" "trackers_external_projects_provider_instance_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.trackers_external_projects_provider_instance.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+  request_parameters = {
+    "method.request.path.provider" = true
+    "method.request.path.instance" = true
+  }
+}
+
+resource "aws_api_gateway_integration" "trackers_external_projects_provider_instance_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.trackers_external_projects_provider_instance.id
+  http_method             = aws_api_gateway_method.trackers_external_projects_provider_instance_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = local.trackers_integration_uri
+}
+
+module "cors_trackers_external_projects_provider_instance" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.trackers_external_projects_provider_instance.id
+}
+
+# POST /trackers/connections/{provider}/{instance}
+resource "aws_api_gateway_method" "trackers_connections_provider_instance_post" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.trackers_connections_provider_instance.id
+  http_method   = "POST"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+  request_parameters = {
+    "method.request.path.provider" = true
+    "method.request.path.instance" = true
+  }
+}
+
+resource "aws_api_gateway_integration" "trackers_connections_provider_instance_post" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.trackers_connections_provider_instance.id
+  http_method             = aws_api_gateway_method.trackers_connections_provider_instance_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = local.trackers_integration_uri
+}
+
+module "cors_trackers_connections_provider_instance" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.trackers_connections_provider_instance.id
+}
+
+# GET /trackers/providers — operator OAuth-config status
+resource "aws_api_gateway_method" "trackers_providers_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.trackers_providers.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "trackers_providers_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.trackers_providers.id
+  http_method             = aws_api_gateway_method.trackers_providers_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = local.trackers_integration_uri
+}
+
+module "cors_trackers_providers" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.trackers_providers.id
+}
+
+# PUT /trackers/providers/{provider}/oauth-config — admin secret writer
+resource "aws_api_gateway_method" "trackers_providers_provider_oauth_config_put" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.trackers_providers_provider_oauth_config.id
+  http_method   = "PUT"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+  request_parameters = {
+    "method.request.path.provider" = true
+  }
+}
+
+resource "aws_api_gateway_integration" "trackers_providers_provider_oauth_config_put" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.trackers_providers_provider_oauth_config.id
+  http_method             = aws_api_gateway_method.trackers_providers_provider_oauth_config_put.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = local.trackers_integration_uri
+}
+
+module "cors_trackers_providers_provider_oauth_config" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.trackers_providers_provider_oauth_config.id
 }
 
 # DELETE /trackers/{provider}/{instance}
