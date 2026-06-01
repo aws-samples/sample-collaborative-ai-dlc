@@ -37,14 +37,17 @@ This is a one-time setup. The bootstrap script creates the S3 bucket (with a ran
 ```bash
 export AWS_PROFILE=<your-profile-name>
 export REGION=<your-region>
-./scripts/bootstrap.sh <your-profile-name>
+export ENVIRONMENT=dev    # or: prod
+./scripts/bootstrap.sh $ENVIRONMENT
 ```
+
+> Keep these three variables exported in your shell for the remaining steps.
 
 ### 2. Configure Terraform Variables
 
 ```bash
-cp terraform/environments/dev.tfvars.example terraform/environments/<your-profile-name>.tfvars
-# Edit dev.tfvars with your desired region, etc.
+cp terraform/environments/dev.tfvars.example terraform/environments/$ENVIRONMENT.tfvars
+# Edit only if you need to override defaults; region comes from $REGION.
 ```
 
 ### 3. Deploy Infrastructure
@@ -52,7 +55,7 @@ cp terraform/environments/dev.tfvars.example terraform/environments/<your-profil
 This builds all Lambda packages and provisions the full AWS stack (VPC, Neptune, DynamoDB, Cognito, API Gateway, ECS, S3, CloudFront, etc.):
 
 ```bash
-./scripts/deploy-terraform.sh <your-profile-name>
+./scripts/deploy-terraform.sh $ENVIRONMENT
 ```
 
 After deployment, agent workers authenticate with Kiro CLI via device flow. Check the agent pool DynamoDB table or ECS logs for the auth URL and device code.
@@ -79,7 +82,7 @@ Create users in the Cognito User Pool. The User Pool ID is available via `terraf
 ### 6. Deploy Frontend
 
 ```bash
-./scripts/deploy-frontend.sh <your-profile-name>
+./scripts/deploy-frontend.sh $ENVIRONMENT
 ```
 
 The application is available at the CloudFront domain:
