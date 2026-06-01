@@ -63,6 +63,9 @@ export const handler = async (event) => {
     const userId = event.requestContext?.authorizer?.claims?.sub;
     const userEmail = event.requestContext?.authorizer?.claims?.email || '';
     const isMigrateTracker = httpMethod === 'POST' && path?.endsWith('/migrate-tracker');
+    const isAdminMigrationStatus =
+      httpMethod === 'GET' && path?.endsWith('/admin/tracker-migration/status');
+    const isAdminMigrationRun = httpMethod === 'POST' && path?.endsWith('/admin/tracker-migration');
 
     // POST /projects/{projectId}/migrate-tracker — owner/admin only.
     // Backfills the tracker_* fields on this project's sprints + creates a
@@ -84,6 +87,39 @@ export const handler = async (event) => {
         }
       }
       const result = await runTrackerMigration(g, { projectId, dryRun });
+      return response(200, result);
+    }
+
+    // GET /admin/tracker-migration/status — operator-facing whole-graph
+    // count of projects + sprints still on the legacy tracker shape. Drives
+    // the Admin page's "Tracker Migration" card. Implemented as a dry-run
+    // of the same shared core that the per-project endpoint and the bulk
+    // CLI lambda use, so the three paths cannot drift. See parent issue
+    // #194 phase #198. Authenticated-only — matches the existing posture
+    // for admin-config endpoints in this repo (see `/agents/settings` and
+    // `/trackers/providers/{p}/oauth-config`); tightening admin gating is
+    // a separate, repo-wide hardening pass.
+    if (isAdminMigrationStatus) {
+      if (!userId) return response(401, { error: 'Unauthorized' });
+      const result = await runTrackerMigration(g, { dryRun: true });
+      return response(200, result);
+    }
+
+    // POST /admin/tracker-migration — operator-facing bulk migration
+    // trigger. Same effect as `aws lambda invoke ... migrate-tracker-fields`,
+    // exposed through the API so operators don't need shell access. Body
+    // `{ dryRun?: boolean }`. Idempotent.
+    if (isAdminMigrationRun) {
+      if (!userId) return response(401, { error: 'Unauthorized' });
+      let dryRun = false;
+      if (body) {
+        try {
+          dryRun = Boolean(JSON.parse(body)?.dryRun);
+        } catch {
+          return response(400, { error: 'Invalid JSON body' });
+        }
+      }
+      const result = await runTrackerMigration(g, { dryRun });
       return response(200, result);
     }
 

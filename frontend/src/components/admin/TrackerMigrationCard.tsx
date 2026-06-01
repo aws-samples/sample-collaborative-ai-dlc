@@ -1,0 +1,128 @@
+import { useCallback, useEffect, useState } from 'react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Skeleton } from '@/components/ui/skeleton';
+import { AlertCircle, CheckCircle2, Database, Loader2, XCircle } from 'lucide-react';
+import {
+  projectsService,
+  type TrackerMigrationResult,
+  type TrackerMigrationStatus,
+} from '@/services/projects';
+
+// Operator-facing card for the tracker provider abstraction migration
+// (#194 phase #198). Surfaces "X projects on the legacy data model" and
+// promotes the bulk migration from the CLI-only `migrate-tracker-fields`
+// Lambda into the Admin UI. The Lambda stays deployed permanently for
+// users who prefer the shell path; both routes share the same shared core
+// so they cannot drift.
+export function TrackerMigrationCard() {
+  const [status, setStatus] = useState<TrackerMigrationStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [running, setRunning] = useState(false);
+  const [lastRun, setLastRun] = useState<TrackerMigrationResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const next = await projectsService.getTrackerMigrationStatus();
+      setStatus(next);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load migration status');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const onMigrate = async () => {
+    setRunning(true);
+    setError(null);
+    try {
+      const result = await projectsService.runTrackerMigration();
+      setLastRun(result);
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Migration failed');
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const projectCandidates = status?.projects.candidates ?? 0;
+  const sprintCandidates = status?.sprints.candidates ?? 0;
+  const allMigrated = !loading && projectCandidates === 0 && sprintCandidates === 0;
+
+  return (
+    <Card>
+      <CardHeader className="pb-3 pt-5 px-5">
+        <CardTitle className="text-sm font-semibold flex items-center gap-2">
+          <Database className="h-4 w-4 text-muted-foreground" />
+          Tracker Migration
+        </CardTitle>
+        <p className="text-xs text-muted-foreground">
+          Backfills the new tracker provider abstraction (issue <code>#194</code>) for projects
+          still on the legacy <code>issue_integration_enabled</code> shape. Idempotent. Legacy data
+          and tooling stay deployed permanently — running this only converts what hasn't been
+          converted yet.
+        </p>
+      </CardHeader>
+      <CardContent className="px-5 pb-5 space-y-4">
+        {loading ? (
+          <div className="space-y-2">
+            <Skeleton className="h-4 w-2/3" />
+            <Skeleton className="h-9 w-32" />
+          </div>
+        ) : allMigrated ? (
+          <p className="text-xs text-agent-success flex items-center gap-1.5">
+            <CheckCircle2 className="h-3.5 w-3.5" />
+            All projects on the new tracker model — nothing to migrate.
+          </p>
+        ) : (
+          <>
+            <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2">
+              <p className="text-xs flex items-center gap-1.5 font-medium text-amber-700 dark:text-amber-400">
+                <AlertCircle className="h-3.5 w-3.5" />
+                Legacy tracker data detected
+              </p>
+              <ul className="mt-1.5 text-xs text-muted-foreground space-y-0.5 list-disc list-inside">
+                <li>
+                  <span className="font-mono tabular-nums text-foreground">
+                    {projectCandidates}
+                  </span>{' '}
+                  project{projectCandidates === 1 ? '' : 's'} on the legacy tracker model
+                </li>
+                <li>
+                  <span className="font-mono tabular-nums text-foreground">{sprintCandidates}</span>{' '}
+                  sprint{sprintCandidates === 1 ? '' : 's'} with un-backfilled tracker links
+                </li>
+              </ul>
+            </div>
+            <div className="flex items-center gap-3">
+              <Button size="sm" onClick={onMigrate} disabled={running} className="gap-1.5">
+                {running && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                {running ? 'Migrating…' : 'Migrate all'}
+              </Button>
+              {lastRun && !running && (
+                <span className="text-xs text-agent-success flex items-center gap-1">
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  Migrated {lastRun.projects.applied} project binding
+                  {lastRun.projects.applied === 1 ? '' : 's'}, {lastRun.sprints.applied} sprint
+                  {lastRun.sprints.applied === 1 ? '' : 's'}
+                </span>
+              )}
+            </div>
+          </>
+        )}
+        {error && (
+          <p className="text-xs text-destructive flex items-center gap-1">
+            <XCircle className="h-3.5 w-3.5 shrink-0" /> {error}
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}

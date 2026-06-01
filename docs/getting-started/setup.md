@@ -170,6 +170,23 @@ This starts the Vite development server on `http://localhost:5173`.
 | Backend (Lambda, agents, infra) | `./scripts/deploy-terraform.sh dev` |
 | Frontend only                   | `./scripts/deploy-frontend.sh dev`  |
 
+### One-time tracker-data migration (only relevant for installs with pre-#194 data)
+
+If you're upgrading an install that ran before issue #194 (tracker provider abstraction) landed, existing projects keep working without intervention — but to bind Jira (or any future tracker) to them, their sprint and project records need a one-time backfill onto the new polymorphic shape.
+
+Operators have two equivalent paths, both idempotent:
+
+- **Admin UI**: open **Admin → Tracker Migration** in the deployed app. The card displays a live count of legacy projects + sprints; click **Migrate all** when ready.
+- **CLI**: invoke the `migrate-tracker-fields` Lambda directly. Supports a dry-run for previewing.
+
+  ```bash
+  aws lambda invoke \
+    --function-name "$(terraform output -raw migrate_tracker_fields_lambda_name)" \
+    --payload '{"dryRun":true}' --cli-binary-format raw-in-base64-out /tmp/out.json
+  ```
+
+Both paths share the same shared core, so the result is identical. Migration is **never** automatic — operators run it on demand. See [Git and Tracker Integration → Migrating from legacy issue integration](../using-the-platform/git-integration.md#migrating-from-legacy-issue-integration) for full context, including why nothing is removed and the migration tooling stays deployed permanently.
+
 ## Destroy infrastructure
 
 To remove all deployed resources:

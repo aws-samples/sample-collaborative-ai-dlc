@@ -48,6 +48,31 @@ resource "aws_api_gateway_resource" "migrate_tracker" {
 }
 
 # -----------------------------------------------------------------------------
+# /admin Resource (issue #194 phase #198)
+# Operator-facing routes. The migration counterpart of the per-project
+# /projects/{id}/migrate-tracker route lives under /admin/tracker-migration
+# so a bulk run is invokable from the Admin UI without shell access. Same
+# Cognito posture as the surrounding admin-config endpoints.
+# -----------------------------------------------------------------------------
+resource "aws_api_gateway_resource" "admin" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.api.id
+  path_part   = "admin"
+}
+
+resource "aws_api_gateway_resource" "admin_tracker_migration" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.admin.id
+  path_part   = "tracker-migration"
+}
+
+resource "aws_api_gateway_resource" "admin_tracker_migration_status" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.admin_tracker_migration.id
+  path_part   = "status"
+}
+
+# -----------------------------------------------------------------------------
 # /projects/{projectId}/members Resource
 # -----------------------------------------------------------------------------
 resource "aws_api_gateway_resource" "members" {
@@ -300,6 +325,46 @@ resource "aws_api_gateway_integration" "migrate_tracker_post" {
   rest_api_id             = aws_api_gateway_rest_api.main.id
   resource_id             = aws_api_gateway_resource.migrate_tracker.id
   http_method             = aws_api_gateway_method.migrate_tracker_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.projects_lambda_invoke_arn
+}
+
+# =============================================================================
+# Admin Tracker-Migration Methods (issue #194 phase #198)
+# Bulk counterpart of /projects/{id}/migrate-tracker. Both bound to the
+# projects lambda — the shared core in lambda/shared/tracker-migration.js
+# already supports both per-project and whole-graph scopes.
+# =============================================================================
+resource "aws_api_gateway_method" "admin_tracker_migration_status_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.admin_tracker_migration_status.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "admin_tracker_migration_status_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.admin_tracker_migration_status.id
+  http_method             = aws_api_gateway_method.admin_tracker_migration_status_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.projects_lambda_invoke_arn
+}
+
+resource "aws_api_gateway_method" "admin_tracker_migration_post" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.admin_tracker_migration.id
+  http_method   = "POST"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "admin_tracker_migration_post" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.admin_tracker_migration.id
+  http_method             = aws_api_gateway_method.admin_tracker_migration_post.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
   uri                     = var.projects_lambda_invoke_arn
@@ -774,6 +839,18 @@ module "cors_migrate_tracker" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.migrate_tracker.id
+}
+
+module "cors_admin_tracker_migration" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.admin_tracker_migration.id
+}
+
+module "cors_admin_tracker_migration_status" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.admin_tracker_migration_status.id
 }
 
 module "cors_members" {

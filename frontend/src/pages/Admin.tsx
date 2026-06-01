@@ -7,6 +7,7 @@ import {
 } from '@/services/agents';
 import { trackersService, type TrackerProviderStatus } from '@/services/trackers';
 import { OAuthProviderCard } from '@/components/admin/OAuthProviderCard';
+import { TrackerMigrationCard } from '@/components/admin/TrackerMigrationCard';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -574,6 +575,12 @@ export default function Admin() {
             )}
           </CardContent>
         </Card>
+
+        {/* Tracker abstraction migration (#194 phase #198). UI counterpart
+            of the migrate-tracker-fields Lambda. Legacy data + tooling stay
+            deployed permanently — this card just makes the migration
+            actionable from the UI for installs without shell access. */}
+        <TrackerMigrationCard />
       </div>
     </div>
   );
