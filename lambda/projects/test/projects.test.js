@@ -101,6 +101,7 @@ describe('POST /projects', () => {
       gitProvider: 'github',
       agentCli: 'kiro',
       issueIntegrationEnabled: false,
+      repos: [],
       createdAt: NOW.toISOString(),
     });
   });
@@ -131,6 +132,15 @@ describe('POST /projects', () => {
       gitProvider: 'github',
       agentCli: 'kiro',
       issueIntegrationEnabled: false,
+      repos: [
+        {
+          url: 'git@x:y.git',
+          provider: 'github',
+          role: 'primary',
+          detectedStack: '',
+          addedAt: NOW.toISOString(),
+        },
+      ],
       createdAt: NOW.toISOString(),
     });
 

@@ -47,6 +47,13 @@ const env = {
   region: process.env.AWS_REGION || 'us-east-1',
   gitToken: process.env.GIT_TOKEN || '',
   gitRepo: process.env.GIT_REPO || '',
+  gitRepos: (() => {
+    try {
+      return JSON.parse(process.env.GIT_REPOS || '[]');
+    } catch {
+      return [];
+    }
+  })(),
 };
 
 // --- Neptune helpers (persistent connection with auto-reconnect) ---
@@ -147,6 +154,7 @@ const VALID_LABELS = [
   'Question',
   'GeneralInfo',
   'PullRequest',
+  'PRGroup',
   'AgentRun',
 ];
 const VALID_EDGES = [
@@ -154,6 +162,8 @@ const VALID_EDGES = [
   'CONTAINS',
   'HAS_REVIEW',
   'HAS_PR',
+  'HAS_PR_GROUP',
+  'GROUPS',
   'BREAKS_INTO',
   'IMPLEMENTED_BY',
   'REVIEWS',
@@ -179,18 +189,21 @@ const DATA_MODEL = `# Graph Data Model
 - Requirement: id, title, description, acceptance_criteria, sprint_id
 - UserStory: id, title, description, story_points, sprint_id
 - Task: id, title, description, status, sprint_id
-- CodeFile: id, file_path, commit_ref, summary, sprint_id
+- CodeFile: id, file_path, repository (owner/repo), commit_ref, summary, sprint_id
 - Review: id, status (PENDING|PASSED|FAILED|PARTIAL), comments, blind_review, blind_status (PENDING|PASSED|FAILED|PARTIAL), blind_risk_score, blind_risk_reasoning, full_review, full_status (PENDING|PASSED|FAILED|PARTIAL), full_risk_score, full_risk_reasoning, sprint_id, stale (true|false), stale_at
 - Question: id, agent, questions (JSON array of structured questions), structured_answer (JSON), sprint_id, created_at
 - GeneralInfo: id, type, title, content, sprint_id, created_at
-- PullRequest: id, pr_url, pr_number, branch, base_branch, sprint_id, created_at, stale (true|false), stale_at, pr_state (open|closed|merged)
+- PullRequest: id, pr_url, pr_number, branch, base_branch, repository (owner/repo), sprint_id, created_at, stale (true|false), stale_at, pr_state (open|closed|merged)
+- PRGroup: id, title, sprint_id, created_at — groups related PRs across multiple repos into a single logical unit
 - AgentRun: id, phase (INCEPTION|CONSTRUCTION|REVIEW), agent_type, run_number, prompt, execution_id, status (running|completed|failed), started_at, completed_at, sprint_id
 
 ## Edge Types
 - Project --HAS_SPRINT--> Sprint (1..*)
 - Sprint --CONTAINS--> Requirement|UserStory|Task|CodeFile|Question|GeneralInfo (0..*)
 - Sprint --HAS_REVIEW--> Review (1..* — one per run; stale=true means superseded)
-- Sprint --HAS_PR--> PullRequest (0..* — one active per run; stale=true means superseded/merged)
+- Sprint --HAS_PR--> PullRequest (0..* — one active per repo per run; stale=true means superseded/merged)
+- Sprint --HAS_PR_GROUP--> PRGroup (0..* — one per construction run in multi-repo projects)
+- PRGroup --GROUPS--> PullRequest (1..* — links a group to its individual per-repo PRs)
 - Sprint --HAS_AGENT_RUN--> AgentRun (0..*)
 - Requirement --BREAKS_INTO--> UserStory (1..*), Task (0..*)
 - UserStory --BREAKS_INTO--> Task (1..*)
@@ -253,6 +266,8 @@ Valid labels: ${VALID_LABELS.join(', ')}.`,
           q = g.V().has('Sprint', 'id', env.sprintId).out('HAS_REVIEW');
         } else if (label === 'PullRequest') {
           q = g.V().has('Sprint', 'id', env.sprintId).out('HAS_PR');
+        } else if (label === 'PRGroup') {
+          q = g.V().has('Sprint', 'id', env.sprintId).out('HAS_PR_GROUP');
         } else {
           q = g.V().has('Sprint', 'id', env.sprintId).out('CONTAINS').hasLabel(label);
         }
@@ -312,7 +327,7 @@ dependency chain of the sprint at a glance.`,
         const vertices = await g
           .V()
           .has('Sprint', 'id', env.sprintId)
-          .union(__.out('CONTAINS'), __.out('HAS_REVIEW'), __.out('HAS_PR'))
+          .union(__.out('CONTAINS'), __.out('HAS_REVIEW'), __.out('HAS_PR'), __.out('HAS_PR_GROUP'))
           .project('id', 'label', 'props')
           .by('id')
           .by(T_label)
@@ -325,7 +340,7 @@ dependency chain of the sprint at a glance.`,
         const edges = await g
           .V()
           .has('Sprint', 'id', env.sprintId)
-          .union(__.out('CONTAINS'), __.out('HAS_REVIEW'), __.out('HAS_PR'))
+          .union(__.out('CONTAINS'), __.out('HAS_REVIEW'), __.out('HAS_PR'), __.out('HAS_PR_GROUP'))
           .bothE()
           .where(__.otherV().has('id', P.within(...nodeIds)))
           .project('source', 'target', 'label')
@@ -341,7 +356,9 @@ dependency chain of the sprint at a glance.`,
           ...propsToObj(v.get('props')),
         }));
         const edgeList = edges
-          .filter((e) => !['CONTAINS', 'HAS_REVIEW', 'HAS_PR'].includes(e.get('label')))
+          .filter(
+            (e) => !['CONTAINS', 'HAS_REVIEW', 'HAS_PR', 'HAS_PR_GROUP'].includes(e.get('label')),
+          )
           .map((e) => ({
             source: e.get('source'),
             target: e.get('target'),
@@ -529,7 +546,13 @@ To ask questions, use the \`ask_question\` tool instead — do NOT create Questi
         await q.next();
 
         const sprintEdgeLabel =
-          label === 'Review' ? 'HAS_REVIEW' : label === 'PullRequest' ? 'HAS_PR' : 'CONTAINS';
+          label === 'Review'
+            ? 'HAS_REVIEW'
+            : label === 'PullRequest'
+              ? 'HAS_PR'
+              : label === 'PRGroup'
+                ? 'HAS_PR_GROUP'
+                : 'CONTAINS';
         await g
           .V()
           .has('Sprint', 'id', env.sprintId)
@@ -1084,7 +1107,8 @@ Respects the 50% pool cap — will not use more than half of available idle work
 server.tool(
   'trigger_pr_creation',
   `Trigger PR creation after all construction tasks are complete. Invokes the create-pr Lambda.
-Only call this when all tasks have status "done" and branches have been merged.`,
+Only call this when all tasks have status "done" and branches have been merged.
+In multi-repo projects, creates one PR per repository and groups them in a PRGroup vertex.`,
   {
     branch: z.string().describe('The sprint branch to create a PR from'),
     baseBranch: z.string().default('main').describe('The target branch for the PR'),
@@ -1095,8 +1119,250 @@ Only call this when all tasks have status "done" and branches have been merged.`
     if (!createPrLambda) return err('CREATE_PR_LAMBDA_NAME not configured');
     if (!env.gitToken)
       return err('GIT_TOKEN not available — cannot create PR without authentication');
-    if (!env.gitRepo)
+    if (!env.gitRepo && env.gitRepos.length === 0)
       return err('GIT_REPO not available — cannot create PR without repository info');
+
+    // --- Multi-repo path: create one PR per repo, group them ---
+    if (env.gitRepos.length > 1) {
+      try {
+        // Check for existing open PRGroup for this sprint to prevent duplicates on re-runs
+        const existingGroup = await withGraph(async (g) => {
+          const groups = await g
+            .V()
+            .has('Sprint', 'id', env.sprintId)
+            .out('HAS_PR_GROUP')
+            .hasLabel('PRGroup')
+            .not(__.has('stale', 'true'))
+            .order()
+            .by('created_at', Order.desc)
+            .valueMap(true)
+            .toList();
+          if (groups.length === 0) return null;
+          // groups[0] is the most recent non-stale group (toList() order is NOT
+          // guaranteed by the graph engine, so we order() explicitly above).
+          const latestGroup = propsToObj(groups[0]);
+          const linkedPrs = await g
+            .V()
+            .has('PRGroup', 'id', latestGroup.id)
+            .out('GROUPS')
+            .hasLabel('PullRequest')
+            .not(__.has('stale', 'true'))
+            .valueMap(true)
+            .toList();
+          return { group: latestGroup, prs: linkedPrs.map(propsToObj) };
+        }).catch(() => null);
+
+        // If a PRGroup exists with open PRs, verify they're still open on GitHub
+        if (existingGroup && existingGroup.prs.length > 0) {
+          let allOpen = true;
+          for (const pr of existingGroup.prs) {
+            try {
+              const repoUrl = pr.repository || env.gitRepo;
+              const [owner, repo] = repoUrl.split('/');
+              const ghRes = await fetch(
+                `https://api.github.com/repos/${owner}/${repo}/pulls/${pr.pr_number}`,
+                {
+                  headers: {
+                    Authorization: `token ${env.gitToken}`,
+                    Accept: 'application/vnd.github.v3+json',
+                  },
+                },
+              );
+              if (ghRes.ok) {
+                const ghPr = await ghRes.json();
+                if (ghPr.state !== 'open') {
+                  allOpen = false;
+                  // Mark as stale
+                  await withGraph(async (g) => {
+                    await g
+                      .V()
+                      .has('PullRequest', 'id', pr.id)
+                      .property(cardinality.single, 'stale', 'true')
+                      .property(cardinality.single, 'stale_at', new Date().toISOString())
+                      .property(
+                        cardinality.single,
+                        'pr_state',
+                        ghPr.merged_at ? 'merged' : 'closed',
+                      )
+                      .next();
+                  }).catch(() => {});
+                }
+              }
+            } catch {
+              // Can't verify — assume open
+            }
+          }
+          if (allOpen) {
+            console.error(
+              `[trigger_pr_creation] Multi-repo: existing PRGroup ${existingGroup.group.id} still has all open PRs — reusing`,
+            );
+            return ok({
+              multiRepo: true,
+              existing: true,
+              pullRequests: existingGroup.prs.map((p) => ({
+                prUrl: p.pr_url,
+                prNumber: p.pr_number,
+                repository: p.repository,
+              })),
+            });
+          }
+          // Some PRs are stale — supersede the old PRGroup so we don't leave
+          // multiple live PRGroups for one sprint (which would double-link the
+          // still-open PRs and violate "one PRGroup per logical change").
+          await withGraph(async (g) => {
+            await g
+              .V()
+              .has('PRGroup', 'id', existingGroup.group.id)
+              .property(cardinality.single, 'stale', 'true')
+              .property(cardinality.single, 'stale_at', new Date().toISOString())
+              .next();
+          }).catch(() => {});
+        }
+
+        const prResults = [];
+        for (const repo of env.gitRepos) {
+          const result = await lambda.send(
+            new InvokeCommand({
+              FunctionName: createPrLambda,
+              Payload: Buffer.from(
+                JSON.stringify({
+                  projectId: env.projectId,
+                  branch,
+                  baseBranch,
+                  title: title || `Construction: ${env.sprintId} (${repo.url.split('/')[1]})`,
+                  gitToken: env.gitToken,
+                  gitRepo: repo.url,
+                  executionId: process.env.EXECUTION_ID || '',
+                }),
+              ),
+            }),
+          );
+          const resp = JSON.parse(Buffer.from(result.Payload).toString());
+          if (resp.prUrl && resp.prNumber) {
+            prResults.push({ ...resp, repository: repo.url });
+          } else {
+            console.error(`[trigger_pr_creation] No PR created for ${repo.url}:`, resp);
+          }
+        }
+
+        if (prResults.length === 0) return err('No PRs were created across any repository');
+
+        // Persist each PR to Neptune and create a PRGroup
+        await withGraph(async (g) => {
+          const groupId = `prg-${env.sprintId}-${Date.now()}`;
+          const prIds = [];
+
+          for (const pr of prResults) {
+            // Include the FULL owner/repo in the id. GitHub PR numbers are per-repository,
+            // so prNumber alone collides across repos (e.g. acme/api#1 and globex/api#1), and
+            // repo-name-only (split('/')[1]) collides across orgs. owner/repo is the unique key
+            // and matches the convention used everywhere else (clone dirs, `repository` prop).
+            // The id is opaque (never parsed or used as a path), so the slash is safe.
+            const prId = `pr-${env.sprintId}-${pr.repository}-${pr.prNumber}`;
+            prIds.push(prId);
+
+            await g
+              .V()
+              .has('PullRequest', 'id', prId)
+              .fold()
+              .coalesce(
+                __.unfold(),
+                __.addV('PullRequest')
+                  .property(cardinality.single, 'id', prId)
+                  .property(cardinality.single, 'sprint_id', env.sprintId)
+                  .property(cardinality.single, 'created_at', new Date().toISOString()),
+              )
+              .property(cardinality.single, 'pr_url', pr.prUrl)
+              .property(cardinality.single, 'pr_number', String(pr.prNumber))
+              .property(cardinality.single, 'branch', branch)
+              .property(cardinality.single, 'base_branch', baseBranch || 'main')
+              .property(cardinality.single, 'repository', pr.repository)
+              .next();
+
+            // Link Sprint --HAS_PR--> PullRequest
+            const edgeExists = await g
+              .V()
+              .has('Sprint', 'id', env.sprintId)
+              .outE('HAS_PR')
+              .inV()
+              .has('PullRequest', 'id', prId)
+              .hasNext();
+            if (!edgeExists) {
+              await g
+                .V()
+                .has('Sprint', 'id', env.sprintId)
+                .addE('HAS_PR')
+                .to(__.V().has('PullRequest', 'id', prId))
+                .next();
+            }
+          }
+
+          // Create PRGroup vertex
+          await g
+            .addV('PRGroup')
+            .property(cardinality.single, 'id', groupId)
+            .property(cardinality.single, 'title', title || `Construction: ${env.sprintId}`)
+            .property(cardinality.single, 'sprint_id', env.sprintId)
+            .property(cardinality.single, 'created_at', new Date().toISOString())
+            .next();
+
+          // Link Sprint --HAS_PR_GROUP--> PRGroup
+          await g
+            .V()
+            .has('Sprint', 'id', env.sprintId)
+            .addE('HAS_PR_GROUP')
+            .to(__.V().has('PRGroup', 'id', groupId))
+            .next();
+
+          // Link PRGroup --GROUPS--> each PullRequest
+          for (const prId of prIds) {
+            await g
+              .V()
+              .has('PRGroup', 'id', groupId)
+              .addE('GROUPS')
+              .to(__.V().has('PullRequest', 'id', prId))
+              .next();
+          }
+
+          // Store first PR on Sprint vertex for backward compat (UI quick-access)
+          await g
+            .V()
+            .has('Sprint', 'id', env.sprintId)
+            .property(cardinality.single, 'pr_url', prResults[0].prUrl)
+            .property(cardinality.single, 'pr_number', String(prResults[0].prNumber))
+            .next();
+
+          console.error(
+            `[trigger_pr_creation] Multi-repo: created ${prIds.length} PRs in group ${groupId}`,
+          );
+        });
+
+        // Broadcast PR creation event
+        broadcastEvent('pr.created', {
+          prUrl: prResults[0].prUrl,
+          prNumber: prResults[0].prNumber,
+          branch,
+          prGroup: prResults.map((p) => ({
+            prUrl: p.prUrl,
+            prNumber: p.prNumber,
+            repository: p.repository,
+          })),
+        }).catch(() => {});
+
+        return ok({
+          multiRepo: true,
+          pullRequests: prResults.map((p) => ({
+            prUrl: p.prUrl,
+            prNumber: p.prNumber,
+            repository: p.repository,
+          })),
+        });
+      } catch (e) {
+        return err(`Failed to trigger multi-repo PR creation: ${e.message}`);
+      }
+    }
+
+    // --- Single-repo path (original behavior) ---
     try {
       // Check Neptune first — if an open PR node already exists for this sprint+branch, return it immediately
       // This prevents duplicate PR creation on construction re-runs
@@ -1280,33 +1546,61 @@ Only call this when all tasks have status "done" and branches have been merged.`
 
 server.tool(
   'post_pr_comment',
-  `Post a comment to the GitHub Pull Request associated with the current sprint.
+  `Post a comment to a GitHub Pull Request associated with the current sprint.
 Use this after completing a review to post the review summary (including risk score) to the PR.
-Requires a PR to exist on the sprint (pr_url and pr_number must be set).`,
+In multi-repo projects, specify the repository parameter to target a specific repo's PR.
+If repository is omitted, posts to the primary PR (stored on the Sprint vertex).`,
   {
     body: z.string().describe('The markdown comment body to post to the PR'),
+    repository: z
+      .string()
+      .optional()
+      .describe('Optional: target repo in "owner/repo" format. If omitted, uses primary PR.'),
   },
-  async ({ body: commentBody }) => {
+  async ({ body: commentBody, repository }) => {
     if (!env.gitToken) return err('GIT_TOKEN not available — cannot post PR comment');
-    if (!env.gitRepo) return err('GIT_REPO not available — cannot post PR comment');
     try {
-      // Look up PR number from Neptune
-      const sprintData = await withGraph(async (g) => {
-        const result = await g.V().has('Sprint', 'id', env.sprintId).valueMap().next();
-        const v = result.value;
-        if (!v?.get) return null;
-        return {
-          prNumber: v.get('pr_number')?.[0] || null,
-          prUrl: v.get('pr_url')?.[0] || null,
-        };
-      });
+      let targetRepo = repository || env.gitRepo;
+      let prNumber = null;
 
-      if (!sprintData?.prNumber)
-        return err('No PR found for this sprint — create a PR before posting a comment');
+      if (repository) {
+        // Multi-repo: look up the PR number from the PullRequest node for this specific repo
+        const prData = await withGraph(async (g) => {
+          const prNodes = await g
+            .V()
+            .has('Sprint', 'id', env.sprintId)
+            .out('HAS_PR')
+            .has('PullRequest', 'repository', repository)
+            .not(__.has('stale', 'true'))
+            .valueMap(true)
+            .toList();
+          if (prNodes.length > 0) {
+            const node = prNodes[0];
+            const get = (k) => (node?.get ? node.get(k)?.[0] : null);
+            return { prNumber: get('pr_number'), prUrl: get('pr_url') };
+          }
+          return null;
+        });
+        if (!prData?.prNumber)
+          return err(`No open PR found for repository "${repository}" in this sprint`);
+        prNumber = prData.prNumber;
+      } else {
+        // Single-repo: look up from Sprint vertex (backward compat)
+        if (!env.gitRepo) return err('GIT_REPO not available — cannot post PR comment');
+        const sprintData = await withGraph(async (g) => {
+          const result = await g.V().has('Sprint', 'id', env.sprintId).valueMap().next();
+          const v = result.value;
+          if (!v?.get) return null;
+          return { prNumber: v.get('pr_number')?.[0] || null };
+        });
+        if (!sprintData?.prNumber)
+          return err('No PR found for this sprint — create a PR before posting a comment');
+        prNumber = sprintData.prNumber;
+      }
 
-      const [owner, repo] = env.gitRepo.split('/');
+      const [owner, repo] = targetRepo.split('/');
       const response = await fetch(
-        `https://api.github.com/repos/${owner}/${repo}/issues/${sprintData.prNumber}/comments`,
+        `https://api.github.com/repos/${owner}/${repo}/issues/${prNumber}/comments`,
         {
           method: 'POST',
           headers: {
@@ -1325,9 +1619,9 @@ Requires a PR to exist on the sprint (pr_url and pr_number must be set).`,
 
       const comment = await response.json();
       console.error(
-        `[post_pr_comment] Posted comment to PR #${sprintData.prNumber}: ${comment.html_url}`,
+        `[post_pr_comment] Posted comment to PR #${prNumber} on ${targetRepo}: ${comment.html_url}`,
       );
-      return ok({ commentUrl: comment.html_url, prNumber: sprintData.prNumber });
+      return ok({ commentUrl: comment.html_url, prNumber, repository: targetRepo });
     } catch (e) {
       return err(`Failed to post PR comment: ${e.message}`);
     }
@@ -1548,7 +1842,7 @@ The sprint must belong to the current project.`,
         const vertices = await g
           .V()
           .has('Sprint', 'id', sprintId)
-          .union(__.out('CONTAINS'), __.out('HAS_REVIEW'), __.out('HAS_PR'))
+          .union(__.out('CONTAINS'), __.out('HAS_REVIEW'), __.out('HAS_PR'), __.out('HAS_PR_GROUP'))
           .project('id', 'label', 'props')
           .by('id')
           .by(T_label)
@@ -1561,7 +1855,7 @@ The sprint must belong to the current project.`,
         const edges = await g
           .V()
           .has('Sprint', 'id', sprintId)
-          .union(__.out('CONTAINS'), __.out('HAS_REVIEW'), __.out('HAS_PR'))
+          .union(__.out('CONTAINS'), __.out('HAS_REVIEW'), __.out('HAS_PR'), __.out('HAS_PR_GROUP'))
           .bothE()
           .where(__.otherV().has('id', P.within(...nodeIds)))
           .project('source', 'target', 'label')
@@ -1577,7 +1871,9 @@ The sprint must belong to the current project.`,
           ...propsToObj(v.get('props')),
         }));
         const edgeList = edges
-          .filter((e) => !['CONTAINS', 'HAS_REVIEW', 'HAS_PR'].includes(e.get('label')))
+          .filter(
+            (e) => !['CONTAINS', 'HAS_REVIEW', 'HAS_PR', 'HAS_PR_GROUP'].includes(e.get('label')),
+          )
           .map((e) => ({
             source: e.get('source'),
             target: e.get('target'),
