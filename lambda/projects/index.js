@@ -23,7 +23,7 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const __ = gremlin.process.statics;
-const { cardinality } = gremlin.process;
+const { cardinality, P } = gremlin.process;
 
 // Synthetic-binding id for legacy projects (issue_integration_enabled='true'
 // but no HAS_TRACKER edge). Lets the frontend render the GitHub-issues panel
@@ -73,19 +73,26 @@ const getConnection = async () => {
 
 // Fetch all Repository vertices linked to a project via HAS_REPO edges.
 const fetchRepos = async (g, projectId) => {
-  const repoResults = await g
+  // Project + coalesce so defaults are applied in-query (no getVal/valueMap
+  // array-unwrapping). The driver still returns Map per row, so we marshal once.
+  const rows = await g
     .V()
     .has('Project', 'id', projectId)
     .out('HAS_REPO')
     .hasLabel('Repository')
-    .valueMap()
+    .project('url', 'provider', 'role', 'detectedStack', 'addedAt')
+    .by('url')
+    .by(__.coalesce(__.values('provider'), __.constant('github')))
+    .by(__.coalesce(__.values('role'), __.constant('unknown')))
+    .by(__.coalesce(__.values('detected_stack'), __.constant('')))
+    .by(__.coalesce(__.values('added_at'), __.constant('')))
     .toList();
-  return repoResults.map((r) => ({
-    url: getVal(r, 'url'),
-    provider: getVal(r, 'provider') || 'github',
-    role: getVal(r, 'role') || 'unknown',
-    detectedStack: getVal(r, 'detected_stack') || '',
-    addedAt: getVal(r, 'added_at') || '',
+  return rows.map((r) => ({
+    url: r.get('url'),
+    provider: r.get('provider'),
+    role: r.get('role'),
+    detectedStack: r.get('detectedStack'),
+    addedAt: r.get('addedAt'),
   }));
 };
 
@@ -152,12 +159,11 @@ const ensureLegacyRepoMigrated = async (g, projectId, legacyGitRepo) => {
     .property('role', 'primary')
     .property('detected_stack', '')
     .property('added_at', new Date().toISOString())
-    .next();
-  await g
+    .as('r')
     .V()
     .has('Project', 'id', projectId)
     .addE('HAS_REPO')
-    .to(__.V().has('Repository', 'id', repoId))
+    .to('r')
     .next();
 };
 
@@ -357,18 +363,15 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
   if (!isMember) return response(403, { error: 'Access denied' });
 
   if (httpMethod === 'DELETE') {
-    const roleEdge = await g
+    const allowed = await g
       .V()
       .has('Project', 'id', projectId)
       .outE('HAS_MEMBER')
-      .as('e')
+      .has('role', P.within('owner', 'admin'))
       .inV()
       .has('User', 'id', userId)
-      .select('e')
-      .by(__.valueMap())
-      .next();
-    const role = getVal(roleEdge.value, 'role') || 'member';
-    if (role !== 'owner' && role !== 'admin') {
+      .hasNext();
+    if (!allowed) {
       return response(403, { error: 'Only project owners and admins can remove repositories' });
     }
 
@@ -376,21 +379,20 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
     if (!repoUrl) return response(400, { error: 'url query parameter is required' });
     const decoded = decodeURIComponent(repoUrl);
 
-    const repoExists = await g
+    // Single query: aggregate the matched repo (eager barrier) before dropping,
+    // then cap() returns what was collected so we can still distinguish 404.
+    const dropped = await g
       .V()
       .has('Project', 'id', projectId)
       .out('HAS_REPO')
       .has('Repository', 'url', decoded)
-      .hasNext();
-    if (!repoExists) return response(404, { error: 'Repository not found on this project' });
-
-    await g
-      .V()
-      .has('Project', 'id', projectId)
-      .out('HAS_REPO')
-      .has('Repository', 'url', decoded)
+      .aggregate('x')
       .drop()
+      .cap('x')
       .next();
+    if (!dropped.value || dropped.value.length === 0) {
+      return response(404, { error: 'Repository not found on this project' });
+    }
 
     return response(200, { removed: decoded });
   }
@@ -408,18 +410,15 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
 
   // POST /projects/{projectId}/repos
   if (httpMethod === 'POST') {
-    const roleEdge = await g
+    const allowed = await g
       .V()
       .has('Project', 'id', projectId)
       .outE('HAS_MEMBER')
-      .as('e')
+      .has('role', P.within('owner', 'admin'))
       .inV()
       .has('User', 'id', userId)
-      .select('e')
-      .by(__.valueMap())
-      .next();
-    const role = getVal(roleEdge.value, 'role') || 'member';
-    if (role !== 'owner' && role !== 'admin') {
+      .hasNext();
+    if (!allowed) {
       return response(403, { error: 'Only project owners and admins can add repositories' });
     }
 
@@ -463,13 +462,11 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
       .property('role', repoRole)
       .property('detected_stack', detectedStack)
       .property('added_at', addedAt)
-      .next();
-
-    await g
+      .as('r')
       .V()
       .has('Project', 'id', projectId)
       .addE('HAS_REPO')
-      .to(__.V().has('Repository', 'id', newRepoId))
+      .to('r')
       .next();
 
     // Update legacy git_repo field to primary
@@ -672,7 +669,7 @@ export const handler = async (event) => {
           .by(__.values('role'))
           .by(__.project('vertex', 'trackers').by(__.valueMap()).by(projectTrackersFoldStep()))
           .toList();
-        const projects = await Promise.all(
+        const settled = await Promise.allSettled(
           results.map(async (item) => {
             // item is a Map with keys 'e' (role string) and 'p' ({vertex, trackers}).
             const role = item instanceof Map ? item.get('e') : item.e;
@@ -700,6 +697,15 @@ export const handler = async (event) => {
             });
           }),
         );
+        // Don't let one project's enrichment failure 500 the whole list.
+        const failed = settled.filter((r) => r.status === 'rejected');
+        if (failed.length > 0) {
+          console.error(
+            `[projects] ${failed.length} project(s) failed to enrich and were omitted:`,
+            failed.map((f) => f.reason?.message),
+          );
+        }
+        const projects = settled.filter((r) => r.status === 'fulfilled').map((r) => r.value);
         return response(200, projects);
 
       case 'POST': {
@@ -772,16 +778,20 @@ export const handler = async (event) => {
             .property('role', repoRole)
             .property('detected_stack', repo.detectedStack || '')
             .property('added_at', addedAt)
-            .next();
-
-          await g
+            .as('r')
             .V()
             .has('Project', 'id', id)
             .addE('HAS_REPO')
-            .to(__.V().has('Repository', 'id', repoId))
+            .to('r')
             .next();
 
-          reposOut.push({ url: repo.url, provider, role: repoRole, detectedStack: repo.detectedStack || '', addedAt });
+          reposOut.push({
+            url: repo.url,
+            provider,
+            role: repoRole,
+            detectedStack: repo.detectedStack || '',
+            addedAt,
+          });
         }
 
         // Ensure the User vertex exists
