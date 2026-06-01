@@ -5,7 +5,7 @@ AIDLC Collaborative integrates with external systems on two independent axes:
 - **Code host** — currently GitHub. The repository is cloned into the agent workspace and all code changes flow back as a pull request.
 - **Issue trackers** — GitHub Issues and Jira Cloud. A sprint can be started from any tracker issue; the issue's title, body, and comments become the sprint's brief for the agent.
 
-A project can bind to *one* code host and to *zero or more* trackers. Both are configured per project in **Project Settings**.
+A project can bind to _one_ code host and to _zero or more_ trackers. Both are configured per project in **Project Settings**.
 
 ## Operator setup (one time per deployment)
 

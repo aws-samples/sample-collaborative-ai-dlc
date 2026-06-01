@@ -66,7 +66,7 @@ Both providers are optional. Skip a section if you don't need that tracker; the 
 #### GitHub Issues
 
 1. Open [GitHub Developer Settings → OAuth Apps → New OAuth App](https://github.com/settings/developers).
-   (Choose an **OAuth App**, *not* a GitHub App — the flow here expects OAuth App semantics.)
+   (Choose an **OAuth App**, _not_ a GitHub App — the flow here expects OAuth App semantics.)
 2. Use:
    - **Homepage URL**: `https://<your-cloudfront-domain>`
    - **Authorization callback URL**: `https://<your-cloudfront-domain>/github/callback`

@@ -54,7 +54,10 @@ export const exchangeCode = async ({ clientId, clientSecret, redirectUri, code }
   });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) {
-    throw new ProviderError(r.status, data.error_description || data.error || 'Token exchange failed');
+    throw new ProviderError(
+      r.status,
+      data.error_description || data.error || 'Token exchange failed',
+    );
   }
   return {
     accessToken: data.access_token,
@@ -91,7 +94,7 @@ export const listAccessibleResources = async (accessToken) => {
   const r = await fetch('https://api.atlassian.com/oauth/token/accessible-resources', {
     headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
   });
-  const data = await r.json().catch(() => ([]));
+  const data = await r.json().catch(() => []);
   if (!r.ok) {
     throw new ProviderError(r.status, 'Failed to list Atlassian sites');
   }
@@ -113,14 +116,7 @@ export const listAccessibleResources = async (accessToken) => {
 
 // Persist the connection row + SSM token. Used by both the single-resource
 // and the multi-resource finalize paths in the trackers handler.
-export const persistConnection = async ({
-  ddb,
-  ssm,
-  userId,
-  resource,
-  tokens,
-  scope,
-}) => {
+export const persistConnection = async ({ ddb, ssm, userId, resource, tokens, scope }) => {
   const parameterName = `/${requireEnv('JIRA_TOKEN_SSM_PREFIX')}/${userId}`;
   if (!JIRA_TOKEN_PARAM_PATTERN.test(parameterName)) {
     throw new Error('Invalid SSM parameter name format');
