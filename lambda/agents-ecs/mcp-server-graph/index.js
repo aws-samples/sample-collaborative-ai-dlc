@@ -175,12 +175,12 @@ const DATA_MODEL = `# Graph Data Model
 
 ## Node Types
 - Project: id, name, description, created_at
-- Sprint: id, name, description, phase (INCEPTION|CONSTRUCTION|REVIEW), created_at, branch, base_branch
+- Sprint: id, name, description, phase (INCEPTION|CONSTRUCTION|REVIEW|COMPLETED), created_at, branch, base_branch
 - Requirement: id, title, description, acceptance_criteria, sprint_id
 - UserStory: id, title, description, story_points, sprint_id
 - Task: id, title, description, status, sprint_id
 - CodeFile: id, file_path, commit_ref, summary, sprint_id
-- Review: id, status (PENDING|PASSED|FAILED), comments, blind_review, full_review, risk_score, risk_reasoning, sprint_id, stale (true|false), stale_at
+- Review: id, status (PENDING|PASSED|FAILED|PARTIAL), comments, blind_review, blind_status (PENDING|PASSED|FAILED|PARTIAL), blind_risk_score, blind_risk_reasoning, full_review, full_status (PENDING|PASSED|FAILED|PARTIAL), full_risk_score, full_risk_reasoning, sprint_id, stale (true|false), stale_at
 - Question: id, agent, questions (JSON array of structured questions), structured_answer (JSON), sprint_id, created_at
 - GeneralInfo: id, type, title, content, sprint_id, created_at
 - PullRequest: id, pr_url, pr_number, branch, base_branch, sprint_id, created_at, stale (true|false), stale_at, pr_state (open|closed|merged)
@@ -1325,6 +1325,75 @@ Requires a PR to exist on the sprint (pr_url and pr_number must be set).`,
       return ok({ commentUrl: comment.html_url, prNumber: sprintData.prNumber });
     } catch (e) {
       return err(`Failed to post PR comment: ${e.message}`);
+    }
+  },
+);
+
+server.tool(
+  'get_pr_comments',
+  `Read all comments from the GitHub Pull Request associated with the current sprint.
+Returns both inline review comments and general PR comments, sorted chronologically.
+Use this to understand reviewer feedback before making modifications.`,
+  {},
+  async () => {
+    if (!env.gitToken) return err('GIT_TOKEN not available — cannot read PR comments');
+    if (!env.gitRepo) return err('GIT_REPO not available — cannot read PR comments');
+    try {
+      const sprintData = await withGraph(async (g) => {
+        const result = await g.V().has('Sprint', 'id', env.sprintId).valueMap().next();
+        const v = result.value;
+        if (!v?.get) return null;
+        return { prNumber: v.get('pr_number')?.[0] || null };
+      });
+
+      if (!sprintData?.prNumber) return err('No PR found for this sprint');
+
+      const [owner, repo] = env.gitRepo.split('/');
+      const headers = {
+        Authorization: `token ${env.gitToken}`,
+        Accept: 'application/vnd.github.v3+json',
+      };
+
+      const [reviewRes, issueRes] = await Promise.all([
+        fetch(
+          `https://api.github.com/repos/${owner}/${repo}/pulls/${sprintData.prNumber}/comments`,
+          { headers },
+        ),
+        fetch(
+          `https://api.github.com/repos/${owner}/${repo}/issues/${sprintData.prNumber}/comments`,
+          { headers },
+        ),
+      ]);
+
+      if (!reviewRes.ok || !issueRes.ok)
+        return err(`GitHub API error: review=${reviewRes.status} issue=${issueRes.status}`);
+
+      const reviewComments = await reviewRes.json();
+      const issueComments = await issueRes.json();
+
+      const mapComment = (c, type) => ({
+        id: c.id,
+        type,
+        author: c.user?.login || 'unknown',
+        body: c.body,
+        path: c.path || null,
+        line: c.line || c.original_line || null,
+        createdAt: c.created_at,
+      });
+
+      const comments = [
+        ...(Array.isArray(reviewComments)
+          ? reviewComments.map((c) => mapComment(c, 'review'))
+          : []),
+        ...(Array.isArray(issueComments) ? issueComments.map((c) => mapComment(c, 'general')) : []),
+      ].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+
+      console.error(
+        `[get_pr_comments] Fetched ${comments.length} comments from PR #${sprintData.prNumber}`,
+      );
+      return ok({ prNumber: sprintData.prNumber, comments });
+    } catch (e) {
+      return err(`Failed to get PR comments: ${e.message}`);
     }
   },
 );

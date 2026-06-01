@@ -61,7 +61,12 @@ const PHASES = [
   },
 ];
 
-const PHASE_ORDER: Record<string, number> = { INCEPTION: 0, CONSTRUCTION: 1, REVIEW: 2 };
+const PHASE_ORDER: Record<string, number> = {
+  INCEPTION: 0,
+  CONSTRUCTION: 1,
+  REVIEW: 2,
+  COMPLETED: 3,
+};
 
 export function PipelineView({ projectId, sprintId, currentPhase, sprint }: PipelineViewProps) {
   const navigate = useNavigate();

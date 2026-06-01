@@ -2229,12 +2229,12 @@ function NodeDetailContent({ node }: { node: LayoutNode }) {
             </DetailField>
           )}
           {blindReview && (
-            <DetailField label="Blind Review">
+            <DetailField label="Technical Review">
               <DetailText value={blindReview} />
             </DetailField>
           )}
           {fullReview && (
-            <DetailField label="Full Review">
+            <DetailField label="Business Review">
               <DetailText value={fullReview} />
             </DetailField>
           )}
