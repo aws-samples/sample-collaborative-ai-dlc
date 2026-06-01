@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 
-// Provider-specific chrome (icon, label) for a tracker binding. Phase 2 only
-// renders github-issues; Phase 3 adds jira-cloud.
+// Provider-specific presentation (icon, label) for a tracker binding. Phase 2
+// only renders github-issues; Phase 3 adds jira-cloud.
 
 const GitHubIcon = ({ className }: { className?: string }) => (
   <svg
@@ -16,13 +16,16 @@ const GitHubIcon = ({ className }: { className?: string }) => (
   </svg>
 );
 
-interface ChromeDescriptor {
+interface ProviderPresentation {
   icon: ReactNode;
   panelTitle: string;
   resourceLabel: string; // e.g. "GitHub issue", "Jira issue"
 }
 
-export const getProviderChrome = (provider: string, iconClassName?: string): ChromeDescriptor => {
+export const getProviderPresentation = (
+  provider: string,
+  iconClassName?: string,
+): ProviderPresentation => {
   switch (provider) {
     case 'github-issues':
       return {

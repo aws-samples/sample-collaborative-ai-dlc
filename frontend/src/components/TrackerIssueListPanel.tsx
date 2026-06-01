@@ -16,7 +16,7 @@ import { sprintsService, type Sprint } from '@/services/sprints';
 import { ApiError } from '@/services/api';
 import type { Project, TrackerBinding } from '@/services/projects';
 import { buildSprintDescription } from '@/lib/buildSprintDescription';
-import { getProviderChrome } from './TrackerProviderChrome';
+import { getProviderPresentation } from './TrackerProviderPresentation';
 
 interface Props {
   project: Project;
@@ -57,8 +57,8 @@ export function TrackerIssueListPanel({ project, binding, sprints, onSprintCreat
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const iteratorRef = useRef<AsyncGenerator<IssuePageResult> | null>(null);
 
-  const chrome = useMemo(
-    () => getProviderChrome(binding.provider, 'h-4 w-4 text-muted-foreground'),
+  const presentation = useMemo(
+    () => getProviderPresentation(binding.provider, 'h-4 w-4 text-muted-foreground'),
     [binding.provider],
   );
 
@@ -210,8 +210,8 @@ export function TrackerIssueListPanel({ project, binding, sprints, onSprintCreat
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-2">
-            {chrome.icon}
-            <CardTitle className="text-sm">{chrome.panelTitle}</CardTitle>
+            {presentation.icon}
+            <CardTitle className="text-sm">{presentation.panelTitle}</CardTitle>
             {binding.displayName && (
               <span className="text-xs text-muted-foreground">{binding.displayName}</span>
             )}
