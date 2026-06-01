@@ -7,85 +7,60 @@ import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { AlertCircle, CircleDot, CheckCircle2, Loader2, Play, Search } from 'lucide-react';
 import {
-  githubIssuesService,
-  type GitHubIssue,
-  type GitHubIssueComment,
+  trackersService,
+  type TrackerIssue,
+  type TrackerComment,
   type IssuePageResult,
-} from '@/services/githubIssues';
+} from '@/services/trackers';
 import { sprintsService, type Sprint } from '@/services/sprints';
 import { ApiError } from '@/services/api';
-import type { Project } from '@/services/projects';
+import type { Project, TrackerBinding } from '@/services/projects';
+import { buildSprintDescription } from '@/lib/buildSprintDescription';
+import { getProviderPresentation } from './TrackerProviderPresentation';
 
 interface Props {
   project: Project;
+  binding: TrackerBinding;
   sprints: Sprint[];
   onSprintCreated: (sprint: Sprint) => void;
 }
 
 const PER_PAGE = 30;
 
-// Simple Icons GitHub mark — https://simpleicons.org/?q=github (CC0)
-const GitHubIcon = ({ className }: { className?: string }) => (
-  <svg
-    role="img"
-    viewBox="0 0 24 24"
-    xmlns="http://www.w3.org/2000/svg"
-    aria-label="GitHub"
-    className={className}
-    fill="currentColor"
-  >
-    <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12" />
-  </svg>
-);
-
-const parseRepo = (gitRepo: string): { owner: string; repo: string } | null => {
-  const parts = gitRepo.split('/').filter(Boolean);
-  if (parts.length < 2) return null;
-  return { owner: parts[0], repo: parts[1] };
-};
-
-const buildSprintDescription = (issue: GitHubIssue, comments: GitHubIssueComment[]) => {
-  const head = `# ${issue.title}\n\n${issue.body ?? ''}`.trimEnd();
-  if (comments.length === 0) return head;
-  const formatted = comments
-    .map((c) => {
-      const when = new Date(c.createdAt).toISOString().split('T')[0];
-      return `### @${c.user.login} — ${when}\n\n${c.body.trim()}`;
-    })
-    .join('\n\n');
-  return `${head}\n\n---\n\n## Discussion (${comments.length} comment${comments.length === 1 ? '' : 's'})\n\n${formatted}`;
-};
-
 const formatError = (err: unknown): string => {
   if (err instanceof ApiError) {
     if (err.status === 429) {
       const retryAfter = typeof err.body?.retryAfter === 'number' ? err.body.retryAfter : null;
       return retryAfter
-        ? `GitHub rate limit reached. Try again in ${retryAfter}s.`
-        : 'GitHub rate limit reached. Try again soon.';
+        ? `Rate limit reached. Try again in ${retryAfter}s.`
+        : 'Rate limit reached. Try again soon.';
     }
     if (typeof err.body?.error === 'string') return err.body.error;
   }
   return err instanceof Error ? err.message : 'Failed to load issues';
 };
 
-export function IssueListPanel({ project, sprints, onSprintCreated }: Props) {
+export function TrackerIssueListPanel({ project, binding, sprints, onSprintCreated }: Props) {
   const navigate = useNavigate();
   const [state, setState] = useState<'open' | 'closed'>('open');
   const [searchInput, setSearchInput] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
-  const [issues, setIssues] = useState<GitHubIssue[]>([]);
+  const [issues, setIssues] = useState<TrackerIssue[]>([]);
   const [hasNext, setHasNext] = useState(false);
   const [totalCount, setTotalCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
-  const [startingNumber, setStartingNumber] = useState<number | null>(null);
+  const [startingResourceId, setStartingResourceId] = useState<string | null>(null);
 
-  const repoInfo = useMemo(() => parseRepo(project.gitRepo), [project.gitRepo]);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const iteratorRef = useRef<AsyncGenerator<IssuePageResult> | null>(null);
+
+  const presentation = useMemo(
+    () => getProviderPresentation(binding.provider, 'h-4 w-4 text-muted-foreground'),
+    [binding.provider],
+  );
 
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
@@ -122,13 +97,13 @@ export function IssueListPanel({ project, sprints, onSprintCreated }: Props) {
     [],
   );
 
-  // Reset and reload whenever filters change
+  // Reset and reload whenever the binding or filters change.
   useEffect(() => {
-    if (!repoInfo) return;
+    if (!project.id) return;
     const abortController = new AbortController();
-    const iter = githubIssuesService.listPages(
-      repoInfo.owner,
-      repoInfo.repo,
+    const iter = trackersService.listIssuePages(
+      project.id,
+      binding.id,
       state,
       debouncedQuery || undefined,
       PER_PAGE,
@@ -143,14 +118,13 @@ export function IssueListPanel({ project, sprints, onSprintCreated }: Props) {
       abortController.abort();
       iteratorRef.current = null;
     };
-  }, [repoInfo, state, debouncedQuery, pullNextPage]);
+  }, [project.id, binding.id, state, debouncedQuery, pullNextPage]);
 
   const loadMore = useCallback(() => {
     if (loading || loadingMore || !hasNext || !iteratorRef.current) return;
     pullNextPage(iteratorRef.current, true);
   }, [loading, loadingMore, hasNext, pullNextPage]);
 
-  // IntersectionObserver-driven auto-load
   useEffect(() => {
     const node = sentinelRef.current;
     if (!node || !hasNext) return;
@@ -164,31 +138,37 @@ export function IssueListPanel({ project, sprints, onSprintCreated }: Props) {
     return () => observer.disconnect();
   }, [hasNext, loadMore]);
 
-  const sprintByIssue = useMemo(() => {
+  // Dedup map keyed on `${binding.id}#${resourceId}` so two trackers under
+  // the same project don't collide when their resourceIds happen to match
+  // (e.g. PROJ-1 vs OTHER-1).
+  const sprintByResource = useMemo(() => {
     const map = new Map<string, Sprint>();
     for (const s of sprints) {
-      if (s.issueNumber) map.set(s.issueNumber, s);
+      if (s.tracker?.resourceId) {
+        map.set(`${binding.id}#${s.tracker.resourceId}`, s);
+      } else if (s.issueNumber && binding.provider === 'github-issues') {
+        // Legacy / unmigrated sprints — only collide with github-issues
+        // bindings, so the fallback is provider-scoped.
+        map.set(`${binding.id}#${s.issueNumber}`, s);
+      }
     }
     return map;
-  }, [sprints]);
+  }, [sprints, binding.id, binding.provider]);
 
-  const handleStartSprint = async (issue: GitHubIssue) => {
-    if (!project.id || !repoInfo) return;
-    const existing = sprintByIssue.get(String(issue.number));
+  const handleStartSprint = async (issue: TrackerIssue) => {
+    if (!project.id) return;
+    const dedupeKey = `${binding.id}#${issue.resourceId}`;
+    const existing = sprintByResource.get(dedupeKey);
     if (existing) {
       navigate(`/project/${project.id}/sprint/${existing.id}`);
       return;
     }
-    setStartingNumber(issue.number);
+    setStartingResourceId(issue.resourceId);
     setWarning(null);
     try {
-      let comments: GitHubIssueComment[] = [];
+      let comments: TrackerComment[] = [];
       try {
-        comments = await githubIssuesService.listComments(
-          repoInfo.owner,
-          repoInfo.repo,
-          issue.number,
-        );
+        comments = await trackersService.listComments(project.id, binding.id, issue.resourceId);
       } catch (err) {
         setWarning(
           `Couldn't load issue comments — sprint created from issue body only. (${formatError(err)})`,
@@ -197,28 +177,24 @@ export function IssueListPanel({ project, sprints, onSprintCreated }: Props) {
       const sprint = await sprintsService.create(project.id, {
         name: issue.title,
         description: buildSprintDescription(issue, comments),
-        issueNumber: issue.number,
-        issueUrl: issue.htmlUrl,
+        tracker: {
+          bindingId: binding.id,
+          provider: binding.provider,
+          instance: binding.instance ?? undefined,
+          externalProjectKey: binding.externalProjectKey ?? undefined,
+          resourceType: 'issue',
+          resourceId: issue.resourceId,
+          resourceUrl: issue.resourceUrl,
+        },
       });
       onSprintCreated(sprint);
       navigate(`/project/${project.id}/sprint/${sprint.id}`);
     } catch (err) {
       setError(formatError(err));
     } finally {
-      setStartingNumber(null);
+      setStartingResourceId(null);
     }
   };
-
-  if (!repoInfo) {
-    return (
-      <Card className="border-dashed mt-6">
-        <CardContent className="p-4 text-sm text-muted-foreground">
-          Issue integration is enabled, but the project's git repository is not in{' '}
-          <code className="font-mono">owner/repo</code> format.
-        </CardContent>
-      </Card>
-    );
-  }
 
   const countLine = (() => {
     if (loading) return null;
@@ -234,11 +210,11 @@ export function IssueListPanel({ project, sprints, onSprintCreated }: Props) {
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-2">
-            <GitHubIcon className="h-4 w-4 text-muted-foreground" />
-            <CardTitle className="text-sm">Start a sprint from a GitHub issue</CardTitle>
-            <span className="text-xs text-muted-foreground">
-              {repoInfo.owner}/{repoInfo.repo}
-            </span>
+            {presentation.icon}
+            <CardTitle className="text-sm">{presentation.panelTitle}</CardTitle>
+            {binding.displayName && (
+              <span className="text-xs text-muted-foreground">{binding.displayName}</span>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <div className="flex items-center border rounded-md text-xs">
@@ -298,7 +274,7 @@ export function IssueListPanel({ project, sprints, onSprintCreated }: Props) {
                   className="h-auto p-0 text-xs"
                   onClick={() => navigate(`/project/${project.id}/settings`)}
                 >
-                  Connect GitHub in project settings
+                  Connect in project settings
                 </Button>
               )}
             </div>
@@ -333,36 +309,41 @@ export function IssueListPanel({ project, sprints, onSprintCreated }: Props) {
         ) : (
           <div className="space-y-2">
             {issues.map((issue) => {
-              const existingSprint = sprintByIssue.get(String(issue.number));
-              const isStarting = startingNumber === issue.number;
+              const dedupeKey = `${binding.id}#${issue.resourceId}`;
+              const existingSprint = sprintByResource.get(dedupeKey);
+              const isStarting = startingResourceId === issue.resourceId;
               return (
                 <div
-                  key={issue.number}
+                  key={dedupeKey}
                   className="border rounded-md p-3 flex items-start justify-between gap-3 hover:bg-accent/30 transition-colors"
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
                       <a
-                        href={issue.htmlUrl}
+                        href={issue.resourceUrl}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-sm font-medium hover:underline truncate"
                       >
-                        #{issue.number} {issue.title}
+                        #{issue.resourceId} {issue.title}
                       </a>
                       {issue.labels.slice(0, 3).map((l) => (
                         <Badge
                           key={l.name}
                           variant="outline"
                           className="text-[9px] h-4 px-1.5"
-                          style={{ borderColor: `#${l.color}`, color: `#${l.color}` }}
+                          style={
+                            l.color
+                              ? { borderColor: `#${l.color}`, color: `#${l.color}` }
+                              : undefined
+                          }
                         >
                           {l.name}
                         </Badge>
                       ))}
                     </div>
                     <p className="text-[11px] text-muted-foreground mt-0.5">
-                      Opened by {issue.user.login} ·{' '}
+                      Opened by {issue.author.handle} ·{' '}
                       {new Date(issue.createdAt).toLocaleDateString()}
                     </p>
                   </div>

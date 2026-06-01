@@ -140,9 +140,9 @@ export const handler = async (event) => {
         // Two ways the caller can pin a tracker resource to the sprint:
         //   1. data.tracker = {provider, instance, externalProjectKey, resourceType, resourceId, resourceUrl}
         //   2. data.issueNumber/issueUrl — interpreted as a github-issues tracker
-        //      against the parent project's git_repo (legacy frontend path
-        //      from #171, retained so the existing IssueListPanel keeps working
-        //      without immediate frontend changes).
+        //      against the parent project's git_repo. Legacy path from #171,
+        //      kept so older deployed frontends or external API callers keep
+        //      working. The Phase 2 frontend (#196) writes (1).
         let trackerProperties = null;
         if (data.tracker?.provider) {
           trackerProperties = {

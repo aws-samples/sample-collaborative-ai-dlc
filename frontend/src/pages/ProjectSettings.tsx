@@ -7,14 +7,15 @@ import {
   type ProjectRole,
   type CognitoUser,
   type AgentCli,
+  type TrackerBinding,
 } from '../services/projects';
+import { trackersService } from '../services/trackers';
 import { agentsService } from '../services/agents';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Switch } from '@/components/ui/switch';
 import {
   Dialog,
   DialogContent,
@@ -36,6 +37,7 @@ import {
 import { ArrowLeft, Trash2, X, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { MigrateTrackerCard } from '@/components/MigrateTrackerCard';
+import { TrackersCard } from '@/components/TrackersCard';
 
 const ROLE_LABELS: Record<ProjectRole, string> = {
   owner: 'Owner',
@@ -82,8 +84,11 @@ export default function ProjectSettings() {
 
   const [editName, setEditName] = useState('');
   const [editGitRepo, setEditGitRepo] = useState('');
-  const [editIssueIntegration, setEditIssueIntegration] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  // Tracker bindings — the source of truth for which trackers a project is
+  // wired to. Replaces the legacy `issueIntegrationEnabled` boolean (#196).
+  const [togglingTracker, setTogglingTracker] = useState(false);
 
   const [editAgentCli, setEditAgentCli] = useState<AgentCli>('kiro');
   const [savingAgentCli, setSavingAgentCli] = useState(false);
@@ -131,7 +136,6 @@ export default function ProjectSettings() {
       setProject(proj);
       setEditName(proj.name);
       setEditGitRepo(proj.gitRepo);
-      setEditIssueIntegration(proj.issueIntegrationEnabled ?? false);
       setEditAgentCli(proj.agentCli ?? 'kiro');
       setMembers(Array.isArray(mems) ? mems : []);
     } catch (err) {
@@ -215,6 +219,41 @@ export default function ProjectSettings() {
     return u.email.toLowerCase().includes(q) || u.displayName.toLowerCase().includes(q);
   });
 
+  const handleAddGithubTracker = async () => {
+    if (!projectId || !project || !project.gitRepo) return;
+    clearMessages();
+    setTogglingTracker(true);
+    try {
+      await trackersService.addToProject(projectId, {
+        provider: 'github-issues',
+        instance: 'public',
+        externalProjectKey: project.gitRepo,
+        displayName: project.gitRepo,
+      });
+      await loadData();
+      setSuccess('GitHub issue integration enabled.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to enable tracker');
+    } finally {
+      setTogglingTracker(false);
+    }
+  };
+
+  const handleRemoveTracker = async (binding: TrackerBinding) => {
+    if (!projectId) return;
+    clearMessages();
+    setTogglingTracker(true);
+    try {
+      await trackersService.removeFromProject(projectId, binding.id);
+      await loadData();
+      setSuccess('Tracker disconnected from this project.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to remove tracker');
+    } finally {
+      setTogglingTracker(false);
+    }
+  };
+
   const handleMigrateTracker = async () => {
     if (!projectId) return;
     clearMessages();
@@ -245,13 +284,9 @@ export default function ProjectSettings() {
       const updates: {
         name?: string;
         gitRepo?: string;
-        issueIntegrationEnabled?: boolean;
       } = {};
       if (editName !== project.name) updates.name = editName;
       if (editGitRepo !== project.gitRepo) updates.gitRepo = editGitRepo;
-      if (editIssueIntegration !== (project.issueIntegrationEnabled ?? false)) {
-        updates.issueIntegrationEnabled = editIssueIntegration;
-      }
       if (Object.keys(updates).length === 0) {
         setSaving(false);
         return;
@@ -447,24 +482,6 @@ export default function ProjectSettings() {
                       </p>
                     )}
                   </div>
-                  {project?.gitProvider === 'github' && (
-                    <div className="flex items-start justify-between gap-4 pt-1">
-                      <div className="space-y-0.5">
-                        <Label htmlFor="proj-issues" className="text-sm">
-                          Enable GitHub issue integration
-                        </Label>
-                        <p className="text-xs text-muted-foreground">
-                          Browse issues on the project page and start sprints from them.
-                        </p>
-                      </div>
-                      <Switch
-                        id="proj-issues"
-                        checked={editIssueIntegration}
-                        onCheckedChange={setEditIssueIntegration}
-                        disabled={!canEditProject || saving}
-                      />
-                    </div>
-                  )}
                   {canEditProject && (
                     <div className="flex justify-end pt-2">
                       <Button type="submit" size="sm" disabled={saving}>
@@ -475,6 +492,16 @@ export default function ProjectSettings() {
                 </form>
               </CardContent>
             </Card>
+
+            {project && (
+              <TrackersCard
+                project={project}
+                canEditProject={canEditProject}
+                togglingTracker={togglingTracker}
+                onAddGithubTracker={handleAddGithubTracker}
+                onRemoveTracker={handleRemoveTracker}
+              />
+            )}
 
             {/* Agent CLI */}
             <Card className="mb-6">

@@ -219,8 +219,8 @@ module "api" {
   timeline_events_lambda_name       = module.lambda.timeline_events_lambda_name
   github_lambda_invoke_arn          = module.lambda.github_lambda_invoke_arn
   github_lambda_name                = module.lambda.github_lambda_name
-  github_issues_lambda_invoke_arn   = module.lambda.github_issues_lambda_invoke_arn
-  github_issues_lambda_name         = module.lambda.github_issues_lambda_name
+  trackers_lambda_invoke_arn        = module.lambda.trackers_lambda_invoke_arn
+  trackers_lambda_name              = module.lambda.trackers_lambda_name
   cognito_users_lambda_invoke_arn   = module.lambda.cognito_users_lambda_invoke_arn
   cognito_users_lambda_name         = module.lambda.cognito_users_lambda_name
   state_machine_arn                 = module.orchestration.state_machine_arn

@@ -25,7 +25,7 @@ export interface Project {
   issueIntegrationEnabled?: boolean;
   createdAt: string;
   userRole?: ProjectRole;
-  trackers?: TrackerBinding[];
+  trackers: TrackerBinding[];
 }
 
 export interface TrackerMigrationResult {
