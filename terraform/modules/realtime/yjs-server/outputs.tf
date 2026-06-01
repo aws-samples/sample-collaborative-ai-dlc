@@ -31,7 +31,7 @@ output "alb_arn" {
 output "yjs_server_url" {
   description = "WebSocket URL for Yjs server"
   # ALB internal URL; TLS is terminated at CloudFront
-  value       = "ws://${aws_lb.yjs_server.dns_name}" # nosemgrep: detect-insecure-websocket
+  value = "ws://${aws_lb.yjs_server.dns_name}" # nosemgrep: detect-insecure-websocket
 }
 
 output "task_role_arn" {

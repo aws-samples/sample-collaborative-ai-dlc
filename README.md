@@ -105,6 +105,27 @@ To build:
 uv run zensical build
 ```
 
+## Testing & Code Quality
+
+Run the unit tests and generate a coverage report:
+
+```bash
+npm test                 # run all unit tests
+npm run test:coverage    # run tests with a coverage report (HTML in coverage/)
+```
+
+Lint, format, and security checks:
+
+```bash
+npm run lint             # oxlint
+npm run format:check     # oxfmt (use `npm run format` to apply fixes)
+npm run secretlint       # scan the repo for committed secrets
+npm run audit:prod:all   # npm audit on production deps for root + frontend (high+ severity)
+npm run typecheck:frontend  # tsc -b on the frontend package
+```
+
+A pre-commit hook (managed by Husky + lint-staged) runs these checks plus Terraform formatting/linting and the affected unit tests before each commit. It is installed automatically by `npm install`. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to participate.

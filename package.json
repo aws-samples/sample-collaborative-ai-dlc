@@ -15,9 +15,16 @@
   ],
   "scripts": {
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "lint": "oxlint",
     "format": "oxfmt",
-    "format:check": "oxfmt --check"
+    "format:check": "oxfmt --check",
+    "secretlint": "secretlint --secretlintignore .gitignore '**/*'",
+    "audit:prod": "npm audit --omit=dev --audit-level=high",
+    "audit:prod:frontend": "npm --prefix frontend audit --omit=dev --audit-level=high",
+    "audit:prod:all": "npm run audit:prod && npm run audit:prod:frontend",
+    "typecheck:frontend": "npm --prefix frontend run typecheck",
+    "prepare": "husky"
   },
   "devDependencies": {
     "@aws-sdk/client-apigatewaymanagementapi": "^3.1054.0",
@@ -26,15 +33,20 @@
     "@aws-sdk/client-ssm": "^3.1054.0",
     "@aws-sdk/credential-providers": "^3.1054.0",
     "@aws-sdk/lib-dynamodb": "^3.1054.0",
+    "@secretlint/secretlint-rule-preset-recommend": "13.0.2",
     "@smithy/config-resolver": "^4.4.0",
     "@smithy/node-config-provider": "^3.0.0",
+    "@vitest/coverage-v8": "^4.1.7",
     "aws-sdk-client-mock": "^4.1.0",
     "aws-sdk-client-mock-vitest": "^7.0.1",
     "esbuild": "^0.28.0",
     "gremlin": "^3.7.0",
     "gremlin-aws-sigv4": "^3.6.0",
+    "husky": "9.1.7",
+    "lint-staged": "17.0.7",
     "oxfmt": "^0.52.0",
     "oxlint": "^1.67.0",
+    "secretlint": "13.0.2",
     "testcontainers": "^11.0.0",
     "vitest": "^4.1.7"
   }

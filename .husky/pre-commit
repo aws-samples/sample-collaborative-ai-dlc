@@ -1,0 +1,51 @@
+#!/usr/bin/env sh
+# Pre-commit hook. Each optional check is gated so a missing tool, missing
+# config, or missing dependency tree is a silent skip — never a blocked commit.
+# CI is the enforcement layer; this hook is fast feedback for the author.
+set -e
+
+# Always-available checks (npm devDependencies).
+npx lint-staged
+
+# SCA on production deps. Root deps come with `npm install`, so this always
+# runs. Frontend has its own package.json outside workspaces — skip silently
+# if its node_modules don't exist.
+npm audit --omit=dev --audit-level=high
+if [ -d frontend/node_modules ]; then
+  npm --prefix frontend audit --omit=dev --audit-level=high
+fi
+
+# Frontend type-check: only if frontend TS/TSX is staged AND deps are installed.
+staged_frontend_ts=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^frontend/.*\.[cm]?tsx?$' || true)
+if [ -n "$staged_frontend_ts" ] && [ -d frontend/node_modules ]; then
+  npm run typecheck:frontend
+fi
+
+# Terraform: only if .tf is staged AND the binaries are present.
+staged_tf=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^terraform/.*\.tf$' || true)
+if [ -n "$staged_tf" ]; then
+  if command -v terraform >/dev/null 2>&1; then
+    terraform -chdir=terraform fmt -check -recursive
+  fi
+  if command -v tflint >/dev/null 2>&1; then
+    # `tflint --init` is idempotent: ~50ms no-op when plugins are present, a
+    # one-time download otherwise. If init fails (offline, plugin source
+    # unreachable, etc.) we skip the lint run instead of blocking the commit.
+    if tflint --chdir=terraform --init >/dev/null 2>&1; then
+      tflint --chdir=terraform
+    fi
+  fi
+fi
+
+# Optional inner-loop SAST preview. CodeQL in CI is the enforcement layer;
+# semgrep/opengrep here is just a fast local heads-up if installed.
+staged_js=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.[cm]?[jt]sx?$' || true)
+if [ -n "$staged_js" ]; then
+  if command -v opengrep >/dev/null 2>&1; then
+    echo "$staged_js" | xargs opengrep scan --config=p/javascript --config=p/typescript --error --quiet --metrics=off
+  elif command -v semgrep >/dev/null 2>&1; then
+    echo "$staged_js" | xargs semgrep scan --config=p/javascript --config=p/typescript --error --quiet --metrics=off
+  fi
+fi
+
+npx vitest run --changed --passWithNoTests
