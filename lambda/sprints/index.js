@@ -15,7 +15,7 @@ const getConnection = async () => {
   return new DriverRemoteConnection(connInfo.url, { headers: connInfo.headers });
 };
 
-const VALID_PHASES = ['INCEPTION', 'CONSTRUCTION', 'REVIEW'];
+const VALID_PHASES = ['INCEPTION', 'CONSTRUCTION', 'REVIEW', 'COMPLETED'];
 
 const mapSprint = (v) => {
   const arn = v.get('current_execution_arn')?.[0];

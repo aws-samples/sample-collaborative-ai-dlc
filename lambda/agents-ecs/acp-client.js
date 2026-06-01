@@ -667,7 +667,11 @@ async function runAcpMode() {
     await saveStatus('completed');
     // Wait for any pending broadcasts to drain before sending completion
     await broadcastQueue;
-    broadcastEvent('agent.completed', { projectId: env.projectId });
+    broadcastEvent('agent.completed', {
+      projectId: env.projectId,
+      executionId: env.executionId,
+      agentType: env.agentType,
+    });
     await broadcastQueue;
     promptSucceeded = true;
   } catch (err) {
@@ -675,7 +679,11 @@ async function runAcpMode() {
     flushChunksSync();
     await saveStatus('failed');
     await broadcastQueue;
-    broadcastEvent('agent.error', { error: err.message });
+    broadcastEvent('agent.error', {
+      error: err.message,
+      executionId: env.executionId,
+      agentType: env.agentType,
+    });
     await broadcastQueue;
   }
 

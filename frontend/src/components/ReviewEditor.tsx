@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useCollaborativeArtifact } from '../hooks/useCollaborativeArtifact';
 import { CollaborativeTextarea } from './CollaborativeTextarea';
 import type { Review, ReviewStatus } from '../services/reviews';
@@ -7,8 +7,10 @@ interface Props {
   review: Review | null;
   sprintId: string;
   userName: string;
+  readOnly?: boolean;
   onCreate: () => Promise<void>;
   onSave: (updates: { status?: ReviewStatus; comments?: string }) => Promise<void>;
+  onSendToGitHub: () => Promise<void>;
   onFocus?: () => void;
   onBlur?: () => void;
 }
@@ -17,17 +19,33 @@ const STATUS_COLORS: Record<string, string> = {
   PENDING: 'bg-yellow-100 text-yellow-800',
   PASSED: 'bg-green-100 text-green-800',
   FAILED: 'bg-red-100 text-red-800',
+  PARTIAL: 'bg-yellow-100 text-yellow-800',
 };
+
+const VERDICT_BUTTONS: Array<{ status: ReviewStatus; label: string; className: string }> = [
+  { status: 'PASSED', label: 'Pass', className: 'bg-green-600 text-white hover:bg-green-700' },
+  {
+    status: 'PARTIAL',
+    label: 'Partial',
+    className: 'bg-yellow-500 text-white hover:bg-yellow-600',
+  },
+  { status: 'FAILED', label: 'Fail', className: 'bg-red-600 text-white hover:bg-red-700' },
+];
 
 export default function ReviewEditor({
   review,
   sprintId,
   userName,
+  readOnly = false,
   onCreate,
   onSave,
+  onSendToGitHub,
   onFocus,
   onBlur,
 }: Props) {
+  const [sending, setSending] = useState(false);
+  const [sendResult, setSendResult] = useState<'success' | 'error' | null>(null);
+
   const { values, setField, initFields, synced, remoteUsers, setCursor } =
     useCollaborativeArtifact<{ comments: string }>(
       'review',
@@ -35,7 +53,7 @@ export default function ReviewEditor({
       review?.id || 'pending',
       ['comments'],
       userName,
-      true,
+      !readOnly,
       async (v) => {
         await onSave({ comments: v.comments });
       },
@@ -45,13 +63,34 @@ export default function ReviewEditor({
     if (synced && review) initFields({ comments: review.comments });
   }, [synced, review?.id]);
 
+  const handleVerdict = async (status: ReviewStatus) => {
+    if (readOnly) return;
+    await onSave({ status, comments: values.comments });
+  };
+
+  const handleSendToGitHub = async () => {
+    setSending(true);
+    setSendResult(null);
+    try {
+      await onSendToGitHub();
+      setSendResult('success');
+      setTimeout(() => setSendResult(null), 2000);
+    } catch {
+      setSendResult('error');
+      setTimeout(() => setSendResult(null), 3000);
+    } finally {
+      setSending(false);
+    }
+  };
+
   if (!review) {
     return (
       <div className="text-center py-4">
         <p className="text-gray-500 mb-3">No review started yet</p>
         <button
           onClick={onCreate}
-          className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700"
+          disabled={readOnly}
+          className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           Start Review
         </button>
@@ -60,6 +99,7 @@ export default function ReviewEditor({
   }
 
   const remoteCount = remoteUsers.size;
+  const canSendToGitHub = review.status !== 'PENDING' && !readOnly;
 
   return (
     <div>
@@ -88,29 +128,50 @@ export default function ReviewEditor({
         onCursorChange={setCursor}
         remoteUsers={remoteUsers}
         placeholder="Review comments..."
-        className="w-full px-3 py-2 border rounded text-sm"
+        className="w-full px-3 py-2 border rounded text-sm disabled:opacity-50 disabled:cursor-not-allowed"
         rows={4}
         onFocus={onFocus}
         onBlur={onBlur}
+        disabled={readOnly}
       />
       <div className="flex gap-2 mt-3">
+        {VERDICT_BUTTONS.map(({ status, label, className }) => (
+          <button
+            key={status}
+            onClick={() => handleVerdict(status)}
+            disabled={readOnly}
+            className={`px-3 py-1.5 text-sm rounded disabled:opacity-50 disabled:cursor-not-allowed ${
+              review.status === status
+                ? `${className} ring-2 ring-offset-1 ring-current`
+                : 'border text-muted-foreground hover:bg-gray-50'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
         <button
-          onClick={() => onSave({ status: 'PASSED', comments: values.comments })}
-          className="px-3 py-1.5 text-sm bg-green-600 text-white rounded hover:bg-green-700"
+          onClick={handleSendToGitHub}
+          disabled={!canSendToGitHub || sending}
+          className={`px-3 py-1.5 text-sm rounded ml-auto disabled:opacity-50 disabled:cursor-not-allowed ${
+            sendResult === 'success'
+              ? 'bg-green-600 text-white'
+              : sendResult === 'error'
+                ? 'bg-red-600 text-white'
+                : 'bg-indigo-600 text-white hover:bg-indigo-700'
+          }`}
+          title={
+            review.status === 'PASSED'
+              ? 'Post to PR and mark sprint as COMPLETED'
+              : 'Post the review verdict and comments to the GitHub PR'
+          }
         >
-          Pass
-        </button>
-        <button
-          onClick={() => onSave({ status: 'FAILED', comments: values.comments })}
-          className="px-3 py-1.5 text-sm bg-red-600 text-white rounded hover:bg-red-700"
-        >
-          Fail
-        </button>
-        <button
-          onClick={() => onSave({ comments: values.comments })}
-          className="px-3 py-1.5 text-sm border rounded hover:bg-gray-50"
-        >
-          Save Comments
+          {sending
+            ? 'Sending...'
+            : sendResult === 'success'
+              ? 'Sent!'
+              : sendResult === 'error'
+                ? 'Failed'
+                : 'Send to GitHub'}
         </button>
       </div>
     </div>

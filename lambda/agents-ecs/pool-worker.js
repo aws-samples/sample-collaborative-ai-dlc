@@ -617,11 +617,11 @@ When all tasks done → YOU trigger PR creation → System pushes final state
    a. Check if push succeeded: the event includes \`pushSucceeded\` — if false, skip the merge (the task branch
       is not on the remote). The task was already recovered by \`recover_stuck_tasks\` in step 2.
    b. If pushSucceeded is true:
-      - The completed task's branch is \`${job.branch}--task-${event.taskId || ''}\`
-      - First, fetch latest from remote: \`git fetch origin\`
-      - Verify the task branch exists on remote: \`git branch -r | grep "${job.branch}--task-${event.taskId || ''}"\`
-      - If the task branch exists, merge it:
-        \`git merge origin/${job.branch}--task-${event.taskId || ''} --no-edit\`
+       - The completed task's branch is \`${job.branch}--task-${(event.taskId || '').replace(/^task-/, '')}\`
+       - First, fetch latest from remote: \`git fetch origin\`
+       - Verify the task branch exists on remote: \`git branch -r | grep "${job.branch}--task-${(event.taskId || '').replace(/^task-/, '')}"\`
+       - If the task branch exists, merge it:
+         \`git merge origin/${job.branch}--task-${(event.taskId || '').replace(/^task-/, '')} --no-edit\`
       - If merge conflicts occur, resolve them intelligently based on the code context, then commit:
         \`git add -A && git commit -m "Merge task-${event.taskId || ''}: resolve conflicts"\`
       - **Verify the merge**: Run \`git log --oneline -5\` to confirm the merge commit is present.
@@ -690,7 +690,7 @@ If you find yourself about to write code or create a file, STOP. You are the orc
 }
 
 function buildBlindReviewPrompt(job) {
-  return `You are the Blind Review Agent for the AI-DLC platform.
+  return `You are the Technical Review Agent for the AI-DLC platform.
 
 ## YOUR GOAL
 
@@ -698,11 +698,11 @@ Perform a BLIND CODE REVIEW. You have NO access to requirements, user stories, o
 
 ## CRITICAL RULES
 
-1. **DO NOT read the sprint graph for requirements.** You must NOT call \`get_sprint_graph\`, \`list_nodes\`, \`find_nodes\`, or any tool revealing requirements/user stories/tasks. You are reviewing BLIND.
+1. **DO NOT read the sprint graph for requirements.** You must NOT call \`get_sprint_graph\`, \`list_nodes\`, \`find_nodes\`, or any tool revealing requirements/user stories/tasks. You are reviewing the code blind — purely on technical quality.
 
 2. **ANALYZE ONLY THE CODE.** Look at the git diff and code files.
 
-3. **WRITE YOUR REVIEW TO NEPTUNE** using \`update_node\` on the Review node (field: \`blind_review\`). Also set \`risk_score\` (0-10) and \`risk_reasoning\`.
+3. **WRITE YOUR REVIEW TO NEPTUNE** using \`update_node\` on the Review node (field: \`blind_review\`). Also set \`blind_status\` (PASSED|FAILED|PARTIAL), \`blind_risk_score\` (0-10) and \`blind_risk_reasoning\`.
 
 4. **POST A COMPACT SUMMARY TO THE PR** using \`post_pr_comment\` once your review is saved.
 
@@ -715,10 +715,10 @@ Perform a BLIND CODE REVIEW. You have NO access to requirements, user stories, o
    - \`git diff ${job.baseBranch || 'main'}...HEAD --stat\`
    - \`git diff ${job.baseBranch || 'main'}...HEAD\` (full diff)
 
-2. Produce a **compact** blind review using this exact structure:
+2. Produce a **compact** technical review using this exact structure:
 
 \`\`\`
-## Blind Review
+## Technical Review
 
 **Summary**: 1-2 sentences on what was built.
 
@@ -746,14 +746,14 @@ Risk score guidance:
 
 3. Save your review:
    - \`find_nodes\` with label "Review" to get the Review node id
-   - \`update_node\` with label "Review" — set \`blind_review\` to your full review text, \`risk_score\` to the numeric score (as a string), and \`risk_reasoning\` to your risk reasoning sentence
+   - \`update_node\` with label "Review" — set \`blind_review\` to your full review text, \`blind_risk_score\` to the numeric score (as a string), \`blind_risk_reasoning\` to your risk reasoning sentence, and \`blind_status\` to PASSED, FAILED, or PARTIAL
 
 4. Post to PR using \`post_pr_comment\` with a compact markdown comment:
 
 \`\`\`markdown
-## 🤖 AI Blind Review
+## 🤖 AI Technical Review
 
-> Reviewed by the AI-DLC Blind Review Agent (no requirements context)
+> Reviewed by the AI-DLC Technical Review Agent (code-only, no requirements context)
 
 **Summary**: <one sentence>
 
@@ -780,11 +780,11 @@ Begin now.
 }
 
 function buildFullReviewPrompt(job) {
-  return `You are the Full Review Agent for the AI-DLC platform.
+  return `You are the Business Review Agent for the AI-DLC platform.
 
 ## YOUR GOAL
 
-Perform a FULL CODE REVIEW cross-referencing the implementation against requirements, user stories, and tasks. Verify the implementation fulfills the spec.
+Perform a BUSINESS CODE REVIEW cross-referencing the implementation against requirements, user stories, and tasks. Verify the implementation fulfills the spec.
 
 ## CRITICAL RULES
 
@@ -792,7 +792,7 @@ Perform a FULL CODE REVIEW cross-referencing the implementation against requirem
 
 2. **EXAMINE THE CODE.** Look at git diff and code files.
 
-3. **WRITE YOUR REVIEW TO NEPTUNE** using \`update_node\` on the Review node (field: \`full_review\`). Also update \`risk_score\` (0-10) and \`risk_reasoning\` if the full review changes the score.
+3. **WRITE YOUR REVIEW TO NEPTUNE** using \`update_node\` on the Review node (field: \`full_review\`). Also set \`full_status\` (PASSED|FAILED|PARTIAL), \`full_risk_score\` (0-10) and \`full_risk_reasoning\`.
 
 4. **POST A COMPACT SUMMARY TO THE PR** using \`post_pr_comment\`.
 
@@ -810,7 +810,7 @@ Perform a FULL CODE REVIEW cross-referencing the implementation against requirem
 3. Cross-reference and produce a **compact** review using this exact structure:
 
 \`\`\`
-## Full Review
+## Business Review
 
 **Verdict**: PASS | FAIL | PARTIAL
 
@@ -839,15 +839,15 @@ Risk score guidance:
 
 4. Save your review:
    - \`find_nodes\` with label "Review" to get the Review node id
-   - \`update_node\` — set \`full_review\`, \`status\` (PASSED|FAILED|PARTIAL), \`risk_score\`, \`risk_reasoning\`
+   - \`update_node\` — set \`full_review\`, \`full_status\` (PASSED|FAILED|PARTIAL), \`full_risk_score\`, \`full_risk_reasoning\`
    - Create VALIDATES edges from the Review to each verified Requirement/UserStory
 
 5. Post to PR using \`post_pr_comment\`:
 
 \`\`\`markdown
-## 🔍 AI Full Review
+## 🔍 AI Business Review
 
-> Reviewed by the AI-DLC Full Review Agent (with requirements context)
+> Reviewed by the AI-DLC Business Review Agent (with requirements context)
 
 **Verdict**: PASS | FAIL | PARTIAL
 
@@ -882,21 +882,15 @@ function buildReviewModifyPrompt(job) {
 
 ## YOUR GOAL
 
-A reviewer has identified specific changes needed in the code. Your job is to make those changes.
+Read the PR comments (technical review findings, business review findings, and human feedback), categorize them, fix what's clear, and ask about what's ambiguous.
 
 ## CRITICAL RULES
 
-1. **MAKE ONLY THE REQUESTED CHANGES.** Do not refactor unrelated code or add features not requested.
-
-2. **COMMIT YOUR CHANGES.** After making changes, stage and commit with a descriptive message.
-
-3. **DO NOT PUSH.** The system will handle pushing after you exit.
-
-4. **UPDATE NEPTUNE IF NEEDED.** If the change affects task status or code file records, update them.
-
-## MODIFICATION REQUEST
-
-${instruction}
+1. **NEVER GUESS on ambiguous feedback.** Use \`ask_question\` to get clarification.
+2. **MAKE ONLY THE REQUESTED CHANGES.** Do not refactor unrelated code or add features not requested.
+3. **GROUP FIXES into logical commits** — not one giant commit.
+4. **DO NOT PUSH.** The system will handle pushing after you exit.
+${instruction ? `\n## ADDITIONAL CONTEXT FROM USER\n\n${instruction}\n` : ''}
 
 ## GIT CONTEXT
 
@@ -906,12 +900,28 @@ Base Branch: ${job.baseBranch || 'main'}
 ## WORKFLOW
 
 1. Read the sprint graph to understand context: \`get_sprint_graph\`
-2. Understand the current code state by reading relevant files
-3. Make the requested modifications
-4. Stage and commit: \`git add . && git commit -m "Review fix: <short description>"\`
-5. If the change fixes a previously failing review item, note that in your commit message
+2. Read all PR comments: \`get_pr_comments\`
+3. Categorize each comment/finding:
+   - **Clear & actionable** (e.g. "missing null check on line 42") → fix it
+   - **Ambiguous or conflicting** (e.g. "should this be a separate service?") → \`ask_question\` before acting
+   - **Trivial / cosmetic** → fix if easy, skip if not
+4. Make fixes, commit each logical group: \`git add . && git commit -m "Review fix: <description>"\`
+5. Post a summary comment on the PR using \`post_pr_comment\` with this structure:
 
-Begin implementing the requested changes now.
+\`\`\`markdown
+## 🔧 Review Modify Summary
+
+**Fixed:**
+- <what was fixed, referencing the original comment/author>
+
+**Questions Asked:**
+- <what was unclear, what you asked about>
+
+**Skipped:**
+- <what was intentionally skipped and why>
+\`\`\`
+
+Begin by reading the PR comments now.
 `;
 }
 

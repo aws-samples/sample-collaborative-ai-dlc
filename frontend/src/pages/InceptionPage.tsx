@@ -737,7 +737,7 @@ export default function InceptionPage() {
                               </Badge>
                               <span className="text-xs font-medium">{info.title}</span>
                             </div>
-                            <div className="prose prose-sm max-w-none text-xs text-muted-foreground">
+                            <div className="prose prose-sm dark:prose-invert max-w-none text-xs text-muted-foreground">
                               <ReactMarkdown remarkPlugins={[remarkGfm]}>
                                 {info.content}
                               </ReactMarkdown>

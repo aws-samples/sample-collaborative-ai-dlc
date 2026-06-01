@@ -16,6 +16,7 @@ const badgeVariants = cva(
         inception: 'border-transparent bg-phase-inception text-phase-inception-foreground',
         construction: 'border-transparent bg-phase-construction text-phase-construction-foreground',
         review: 'border-transparent bg-phase-review text-phase-review-foreground',
+        warning: 'border-transparent bg-yellow-500 text-white shadow hover:bg-yellow-600',
       },
     },
     defaultVariants: {

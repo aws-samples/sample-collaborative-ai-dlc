@@ -57,6 +57,76 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { StructuredAnswer } from '@/services/questions';
 
+function RiskBadge({ score, reasoning }: { score: string; reasoning: string }) {
+  const n = parseInt(score);
+  const color =
+    n <= 2
+      ? 'text-agent-success'
+      : n <= 4
+        ? 'text-green-400'
+        : n <= 6
+          ? 'text-amber-400'
+          : n <= 8
+            ? 'text-orange-500'
+            : 'text-agent-error';
+  const bg =
+    n <= 2
+      ? 'bg-agent-success/10 border-agent-success/30'
+      : n <= 4
+        ? 'bg-green-400/10 border-green-400/30'
+        : n <= 6
+          ? 'bg-amber-400/10 border-amber-400/30'
+          : n <= 8
+            ? 'bg-orange-500/10 border-orange-500/30'
+            : 'bg-agent-error/10 border-agent-error/30';
+  return (
+    <Badge variant="outline" className={`gap-1 ${color} ${bg}`} title={reasoning}>
+      <ShieldAlert className="h-3 w-3" /> Risk {n}/10
+    </Badge>
+  );
+}
+
+function ReviewStatusBar({
+  status,
+  riskScore,
+  riskReasoning,
+  stale,
+}: {
+  status?: string;
+  riskScore?: string | null;
+  riskReasoning?: string;
+  stale?: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-2 mb-3">
+      {status && status !== 'PENDING' && (
+        <Badge
+          variant={
+            status === 'PASSED'
+              ? 'review'
+              : status === 'FAILED'
+                ? 'destructive'
+                : status === 'PARTIAL'
+                  ? 'warning'
+                  : 'outline'
+          }
+          className="gap-1"
+        >
+          {status === 'PASSED' ? (
+            <CheckCircle2 className="h-3 w-3" />
+          ) : status === 'FAILED' ? (
+            <XCircle className="h-3 w-3" />
+          ) : status === 'PARTIAL' ? (
+            <AlertTriangle className="h-3 w-3" />
+          ) : null}
+          {status}
+        </Badge>
+      )}
+      {riskScore && !stale && <RiskBadge score={riskScore} reasoning={riskReasoning || ''} />}
+    </div>
+  );
+}
+
 export default function ReviewPage() {
   const { user } = useAuth();
   const {
@@ -158,6 +228,7 @@ export default function ReviewPage() {
   const pendingQuestions = questions
     .filter((q) => !q.structuredAnswer)
     .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
   const blindOutput = review?.blindReview || blindAgent.completedOutput || blindAgent.streamingText;
   const fullOutput = review?.fullReview || fullAgent.completedOutput || fullAgent.streamingText;
   const hasReviewResults = !!blindOutput || !!fullOutput;
@@ -216,7 +287,6 @@ export default function ReviewPage() {
   };
 
   const handleModifyCode = () => {
-    if (!modifyInstruction.trim()) return;
     startAgent('review-modify', {
       branch: prBranch,
       baseBranch: prBaseBranch,
@@ -357,7 +427,9 @@ export default function ReviewPage() {
           <div className="flex items-center gap-3 flex-wrap">
             <Button
               onClick={handleKickOffReviews}
-              disabled={isAnyRunning || !!launching || !sprint?.prUrl}
+              disabled={
+                isAnyRunning || !!launching || !sprint?.prUrl || sprint?.phase === 'COMPLETED'
+              }
               className="gap-2"
             >
               {launching ? (
@@ -368,13 +440,13 @@ export default function ReviewPage() {
               {launching ? 'Starting...' : 'Kick-Off Review Agents'}
             </Button>
             <Button
-              variant="outline"
-              size="sm"
-              className="gap-1.5"
               onClick={() => setShowModifyModal(true)}
-              disabled={isAnyRunning || !sprint?.prUrl}
+              disabled={
+                isAnyRunning || !sprint?.prUrl || !hasReviewResults || sprint?.phase === 'COMPLETED'
+              }
+              className="gap-2"
             >
-              <Wrench className="h-3.5 w-3.5" /> Modify Code
+              <Wrench className="h-4 w-4" /> Fix Review Findings
             </Button>
             {sprint?.prUrl && (
               <Button
@@ -388,58 +460,24 @@ export default function ReviewPage() {
             )}
 
             {/* Review status */}
-            {review && (
-              <Badge
-                variant={
-                  review.status === 'PASSED'
+            {review &&
+              (() => {
+                const isCompleted = sprint?.phase === 'COMPLETED';
+                const displayStatus = isCompleted ? 'COMPLETED' : review.status;
+                const variant =
+                  isCompleted || review.status === 'PASSED'
                     ? 'review'
                     : review.status === 'FAILED'
                       ? 'destructive'
-                      : 'outline'
-                }
-                className="gap-1"
-              >
-                {review.status === 'PASSED' ? (
-                  <CheckCircle2 className="h-3 w-3" />
-                ) : review.status === 'FAILED' ? (
-                  <XCircle className="h-3 w-3" />
-                ) : null}
-                {review.status}
-              </Badge>
-            )}
-
-            {/* Risk score badge */}
-            {review?.riskScore &&
-              !review.stale &&
-              (() => {
-                const score = parseInt(review.riskScore);
-                const color =
-                  score <= 2
-                    ? 'text-agent-success'
-                    : score <= 4
-                      ? 'text-green-400'
-                      : score <= 6
-                        ? 'text-amber-400'
-                        : score <= 8
-                          ? 'text-orange-500'
-                          : 'text-agent-error';
-                const bg =
-                  score <= 2
-                    ? 'bg-agent-success/10 border-agent-success/30'
-                    : score <= 4
-                      ? 'bg-green-400/10 border-green-400/30'
-                      : score <= 6
-                        ? 'bg-amber-400/10 border-amber-400/30'
-                        : score <= 8
-                          ? 'bg-orange-500/10 border-orange-500/30'
-                          : 'bg-agent-error/10 border-agent-error/30';
+                      : 'outline';
                 return (
-                  <Badge
-                    variant="outline"
-                    className={`gap-1 ${color} ${bg}`}
-                    title={review.riskReasoning}
-                  >
-                    <ShieldAlert className="h-3 w-3" /> Risk {score}/10
+                  <Badge variant={variant} className="gap-1">
+                    {isCompleted || review.status === 'PASSED' ? (
+                      <CheckCircle2 className="h-3 w-3" />
+                    ) : review.status === 'FAILED' ? (
+                      <XCircle className="h-3 w-3" />
+                    ) : null}
+                    {displayStatus}
                   </Badge>
                 );
               })()}
@@ -497,41 +535,35 @@ export default function ReviewPage() {
               {blindAgent.status && (
                 <AgentStatusBadge
                   status={
-                    blindAgent.status === 'SUCCEEDED'
-                      ? 'completed'
-                      : blindAgent.status === 'RUNNING'
-                        ? 'running'
-                        : blindAgent.status === 'FAILED'
-                          ? 'failed'
-                          : 'idle'
+                    blindAgent.status === 'RUNNING'
+                      ? 'running'
+                      : blindAgent.status === 'FAILED'
+                        ? 'failed'
+                        : 'completed'
                   }
-                  agentType="blind review"
+                  agentType="technical review"
                 />
               )}
               {fullAgent.status && (
                 <AgentStatusBadge
                   status={
-                    fullAgent.status === 'SUCCEEDED'
-                      ? 'completed'
-                      : fullAgent.status === 'RUNNING'
-                        ? 'running'
-                        : fullAgent.status === 'FAILED'
-                          ? 'failed'
-                          : 'idle'
+                    fullAgent.status === 'RUNNING'
+                      ? 'running'
+                      : fullAgent.status === 'FAILED'
+                        ? 'failed'
+                        : 'completed'
                   }
-                  agentType="full review"
+                  agentType="business review"
                 />
               )}
               {modifyAgent.status && (
                 <AgentStatusBadge
                   status={
-                    modifyAgent.status === 'SUCCEEDED'
-                      ? 'completed'
-                      : modifyAgent.status === 'RUNNING'
-                        ? 'running'
-                        : modifyAgent.status === 'FAILED'
-                          ? 'failed'
-                          : 'idle'
+                    modifyAgent.status === 'RUNNING'
+                      ? 'running'
+                      : modifyAgent.status === 'FAILED'
+                        ? 'failed'
+                        : 'completed'
                   }
                   agentType="modify"
                 />
@@ -557,14 +589,14 @@ export default function ReviewPage() {
             <Tabs value={activeTab} onValueChange={setActiveTab}>
               <TabsList>
                 <TabsTrigger value="blind" className="gap-1.5 text-xs">
-                  <EyeOff className="h-3 w-3" /> Blind Review
-                  {blindAgent.status === 'RUNNING' && (
+                  <EyeOff className="h-3 w-3" /> Technical Review
+                  {blindAgent.status === 'RUNNING' && !review?.blindReview && (
                     <span className="h-1.5 w-1.5 rounded-full bg-agent-running animate-pulse" />
                   )}
                 </TabsTrigger>
                 <TabsTrigger value="full" className="gap-1.5 text-xs">
-                  <Eye className="h-3 w-3" /> Full Review
-                  {fullAgent.status === 'RUNNING' && (
+                  <Eye className="h-3 w-3" /> Business Review
+                  {fullAgent.status === 'RUNNING' && !review?.fullReview && (
                     <span className="h-1.5 w-1.5 rounded-full bg-agent-running animate-pulse" />
                   )}
                 </TabsTrigger>
@@ -589,7 +621,13 @@ export default function ReviewPage() {
               <TabsContent value="blind">
                 <Card>
                   <CardContent className="p-4">
-                    {/* Show streaming activity while blind review agent is running */}
+                    <ReviewStatusBar
+                      status={review?.blindStatus}
+                      riskScore={review?.blindRiskScore}
+                      riskReasoning={review?.blindRiskReasoning}
+                      stale={review?.stale}
+                    />
+                    {/* Show streaming activity while technical review agent is running */}
                     {blindAgent.status === 'RUNNING' && (
                       <div className="mb-4 space-y-2">
                         {blindAgent.activeToolCall && (
@@ -613,37 +651,12 @@ export default function ReviewPage() {
                       </div>
                     )}
                     {blindOutput ? (
-                      <>
-                        <div className="prose prose-sm max-w-none dark:prose-invert">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{blindOutput}</ReactMarkdown>
-                        </div>
-                        <Separator className="my-4" />
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setShowBlindReveal(!showBlindReveal)}
-                          className="gap-1.5"
-                        >
-                          {showBlindReveal ? (
-                            <EyeOff className="h-3 w-3" />
-                          ) : (
-                            <Eye className="h-3 w-3" />
-                          )}
-                          {showBlindReveal ? 'Hide' : 'Reveal'} Requirements
-                        </Button>
-                        {showBlindReveal && (
-                          <div className="mt-3 space-y-2">
-                            {requirements.map((r) => (
-                              <div key={r.id} className="text-xs border rounded p-2">
-                                <strong>{r.title}</strong> -- {r.description}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </>
+                      <div className="prose prose-sm max-w-none dark:prose-invert">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{blindOutput}</ReactMarkdown>
+                      </div>
                     ) : (
                       <p className="text-sm text-muted-foreground">
-                        Blind review not yet available. Kick off review agents to start.
+                        Technical review not yet available. Kick off review agents to start.
                       </p>
                     )}
                   </CardContent>
@@ -653,7 +666,13 @@ export default function ReviewPage() {
               <TabsContent value="full">
                 <Card>
                   <CardContent className="p-4">
-                    {/* Show streaming activity while full review agent is running */}
+                    <ReviewStatusBar
+                      status={review?.fullStatus}
+                      riskScore={review?.fullRiskScore}
+                      riskReasoning={review?.fullRiskReasoning}
+                      stale={review?.stale}
+                    />
+                    {/* Show streaming activity while business review agent is running */}
                     {fullAgent.status === 'RUNNING' && (
                       <div className="mb-4 space-y-2">
                         {fullAgent.activeToolCall && (
@@ -695,10 +714,33 @@ export default function ReviewPage() {
                         <div className="prose prose-sm max-w-none dark:prose-invert">
                           <ReactMarkdown remarkPlugins={[remarkGfm]}>{fullOutput}</ReactMarkdown>
                         </div>
+                        <Separator className="my-4" />
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setShowBlindReveal(!showBlindReveal)}
+                          className="gap-1.5"
+                        >
+                          {showBlindReveal ? (
+                            <EyeOff className="h-3 w-3" />
+                          ) : (
+                            <Eye className="h-3 w-3" />
+                          )}
+                          {showBlindReveal ? 'Hide' : 'Show'} All Requirements
+                        </Button>
+                        {showBlindReveal && (
+                          <div className="mt-3 space-y-2">
+                            {requirements.map((r) => (
+                              <div key={r.id} className="text-xs border rounded p-2">
+                                <strong>{r.title}</strong> -- {r.description}
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </>
                     ) : (
                       <p className="text-sm text-muted-foreground">
-                        Full review not yet available.
+                        Business review not yet available.
                       </p>
                     )}
                   </CardContent>
@@ -784,6 +826,7 @@ export default function ReviewPage() {
                 review={review}
                 sprintId={sprintId}
                 userName={user?.displayName || user?.email || ''}
+                readOnly={sprint?.phase === 'COMPLETED'}
                 onCreate={async () => {
                   await reviewsService.create(sprintId);
                   await reloadReview();
@@ -792,36 +835,61 @@ export default function ReviewPage() {
                   await reviewsService.update(sprintId, updates);
                   await reloadReview();
                 }}
+                onSendToGitHub={async () => {
+                  if (!review || !sprint?.prNumber || !project?.gitRepo) return;
+                  const [owner, repo] = project.gitRepo.split('/');
+                  const emoji =
+                    review.status === 'PASSED' ? '✅' : review.status === 'FAILED' ? '❌' : '⚠️';
+                  const body = [
+                    `## ${emoji} Human Review: ${review.status}`,
+                    '',
+                    `> Reviewed by ${user?.displayName || user?.email || 'unknown'}`,
+                    '',
+                    review.comments ? review.comments : '_No comments provided._',
+                  ].join('\n');
+                  await githubService.addPRComment(owner, repo, parseInt(sprint.prNumber), {
+                    body,
+                  });
+                  if (review.status === 'PASSED') {
+                    await sprintsService.update(projectId, sprintId, { phase: 'COMPLETED' });
+                    realtimeService.send('broadcastToDocument', {
+                      documentId: `sprint:${sprintId}`,
+                      action: 'sprint.phaseChanged',
+                      data: { phase: 'COMPLETED', sprintId },
+                    });
+                    await reload();
+                  }
+                }}
               />
             </CardContent>
           </Card>
         </div>
       </div>
 
-      {/* Modify Code Dialog */}
+      {/* Fix Review Findings Dialog */}
       <Dialog open={showModifyModal} onOpenChange={setShowModifyModal}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Modify Code</DialogTitle>
+            <DialogTitle>Fix Review Findings</DialogTitle>
             <DialogDescription>
-              Describe the changes you want the AI agent to make to the code.
+              The agent will read all PR comments (review findings and human feedback), fix clear
+              issues, and ask questions about anything ambiguous.
             </DialogDescription>
           </DialogHeader>
           <Textarea
-            placeholder="e.g., Fix error handling in the auth middleware..."
+            placeholder="e.g. Focus on security issues first, ignore formatting comments"
             value={modifyInstruction}
             onChange={(e) => setModifyInstruction(e.target.value)}
             rows={5}
           />
+          <p className="text-xs text-muted-foreground">
+            Optional — provide additional context or priorities for the agent.
+          </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowModifyModal(false)}>
               Cancel
             </Button>
-            <Button
-              onClick={handleModifyCode}
-              disabled={!modifyInstruction.trim()}
-              className="gap-1.5"
-            >
+            <Button onClick={handleModifyCode} className="gap-1.5">
               <Wrench className="h-3.5 w-3.5" /> Submit
             </Button>
           </DialogFooter>

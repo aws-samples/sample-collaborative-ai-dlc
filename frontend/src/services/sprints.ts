@@ -1,6 +1,6 @@
 import { api } from './api';
 
-export type SprintPhase = 'INCEPTION' | 'CONSTRUCTION' | 'REVIEW';
+export type SprintPhase = 'INCEPTION' | 'CONSTRUCTION' | 'REVIEW' | 'COMPLETED';
 export type AgentStatus = 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled' | null;
 
 export interface Sprint {

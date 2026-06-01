@@ -53,10 +53,16 @@ When review identifies issues, a modification agent can be launched to fix speci
 
 Review agents store their findings on the Review node:
 
-- `blind_review`: Markdown content from blind review agent
-- `full_review`: Markdown content from full review agent
+- `blind_review`: Markdown content from technical review agent
+- `blind_status`: PENDING | PASSED | FAILED | PARTIAL
+- `blind_risk_score`: Numeric risk score (0-10) from technical review
+- `blind_risk_reasoning`: Brief reasoning for the risk score
+- `full_review`: Markdown content from business review agent
+- `full_status`: PENDING | PASSED | FAILED | PARTIAL
+- `full_risk_score`: Numeric risk score (0-10) from business review
+- `full_risk_reasoning`: Brief reasoning for the risk score
 - `comments`: Human reviewer comments
-- `status`: PENDING | PASSED | FAILED
+- `status`: PENDING | PASSED | FAILED | PARTIAL (human review verdict)
 
 Review edges:
 
