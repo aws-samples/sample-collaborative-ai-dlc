@@ -20,14 +20,45 @@ reported the issue. Please try to include as much information as you can. Detail
 
 ## Pre-commit Hooks
 
-This repo uses [pre-commit](https://pre-commit.com) to run formatting, linting, secret scanning, SAST, Terraform checks, and the affected unit tests before each commit. One-time setup after cloning:
+This repo uses [Husky](https://typicode.github.io/husky/) and [lint-staged](https://github.com/lint-staged/lint-staged) for fast inner-loop checks before each commit:
 
 ```bash
-uv tool install pre-commit         # installs the pre-commit framework
-git config core.hooksPath .githooks
+npm install
 ```
 
-The hook in `.githooks/pre-commit` runs the checks (and, where applicable, the org's git-defender hook). Tools `gitleaks`, `semgrep`, and `tflint` must be available on your `PATH`.
+The `prepare` script wires up the git hook automatically. The hook runs:
+
+- `oxfmt --check` and `oxlint` on staged JS/TS files
+- `secretlint` on every staged file
+- `npm audit --omit=dev --audit-level=high` on root (and frontend if its `node_modules` exists)
+- `tsc -b` on the frontend project if any frontend TS/TSX is staged and frontend deps are installed
+- `terraform fmt -check` and `tflint` if any `.tf` is staged and the binaries are on `PATH`
+- `semgrep` or `opengrep` SAST preview if either binary is on `PATH`
+- `vitest run --changed` for affected unit tests
+
+Every optional check (frontend, terraform, SAST) is **silently skipped** when its tool or dependency tree isn't available — the hook never blocks a commit because something isn't installed. CI is the enforcement layer (see [`.github/workflows/`](.github/workflows/)) and includes:
+
+- `oxlint` + `oxfmt --check` (root + frontend)
+- Frontend `tsc -b && vite build`
+- Unit tests on Node 22 + 24
+- [CodeQL default setup](https://docs.github.com/en/code-security/code-scanning/creating-an-advanced-setup-for-code-scanning/configuring-default-setup-for-code-scanning) for JS/TS SAST on every PR
+
+To bypass the hook for a WIP commit, use `git commit --no-verify`.
+
+### Optional local enhancements
+
+If you want deeper local feedback before pushing, install any of the following on your `PATH`:
+
+| Tool                            | What it adds                                                                                                                                                                      |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `terraform`, `tflint`           | Format/lint checks on `.tf` (configured for AWS provider via `terraform/.tflint.hcl`)                                                                                             |
+| `semgrep` or `opengrep`         | Fast SAST preview against `p/javascript` + `p/typescript` rule packs                                                                                                              |
+| `checkov` or `tfsec`            | IaC security scanning — not wired into the hook today (the repo has known pre-existing findings tracked as a follow-up); run `checkov -d terraform` or `tfsec terraform` manually |
+| `npm --prefix frontend install` | Enables frontend audit and type-check steps                                                                                                                                       |
+
+Real SAST runs in CI via GitHub's [CodeQL default setup](https://docs.github.com/en/code-security/code-scanning/creating-an-advanced-setup-for-code-scanning/configuring-default-setup-for-code-scanning) on every PR — that is the enforcement layer. The CodeQL CLI takes 1–4 minutes per run, which is too slow for a pre-commit hook.
+
+If you want a fast inner-loop preview locally, install [`semgrep`](https://semgrep.dev/) or [`opengrep`](https://github.com/opengrep/opengrep) on your `PATH`. The pre-commit hook detects them automatically and runs `p/javascript` + `p/typescript` rule packs against staged JS/TS files. If neither is installed, the SAST step is silently skipped — CodeQL still catches everything in CI.
 
 ## Contributing via Pull Requests
 
