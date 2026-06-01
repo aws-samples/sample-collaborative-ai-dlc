@@ -37,6 +37,7 @@ import {
 import { ArrowLeft, Trash2, X, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { MigrateTrackerCard } from '@/components/MigrateTrackerCard';
+import { TrackersCard } from '@/components/TrackersCard';
 
 const ROLE_LABELS: Record<ProjectRole, string> = {
   owner: 'Owner',
@@ -492,66 +493,15 @@ export default function ProjectSettings() {
               </CardContent>
             </Card>
 
-            {/* Trackers — provider-agnostic issue trackers wired to this
-                project. Phase 2 (#196) only manages github-issues here;
-                Phase 3 adds Jira via the same surface. */}
-            <Card className="mb-6">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">Trackers</CardTitle>
-                <p className="text-sm text-muted-foreground">
-                  Connect issue trackers so sprints can be started from their issues.
-                </p>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                {(project?.trackers ?? []).length === 0 ? (
-                  <p className="text-sm text-muted-foreground">
-                    No trackers connected to this project.
-                  </p>
-                ) : (
-                  <div className="space-y-2">
-                    {project?.trackers.map((b) => (
-                      <div
-                        key={b.id}
-                        className="flex items-center justify-between gap-3 border rounded-md p-3"
-                      >
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium">
-                            {b.provider === 'github-issues' ? 'GitHub Issues' : b.provider}
-                          </p>
-                          <p className="text-xs text-muted-foreground truncate">
-                            {b.displayName || b.externalProjectKey}
-                          </p>
-                        </div>
-                        {canEditProject && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => handleRemoveTracker(b)}
-                            disabled={togglingTracker}
-                          >
-                            Remove
-                          </Button>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {canEditProject &&
-                  project?.gitProvider === 'github' &&
-                  project.gitRepo &&
-                  !(project.trackers ?? []).some(
-                    (b) =>
-                      b.provider === 'github-issues' && b.externalProjectKey === project.gitRepo,
-                  ) && (
-                    <div className="flex justify-end pt-2">
-                      <Button size="sm" onClick={handleAddGithubTracker} disabled={togglingTracker}>
-                        {togglingTracker ? 'Saving…' : `Add GitHub Issues for ${project.gitRepo}`}
-                      </Button>
-                    </div>
-                  )}
-              </CardContent>
-            </Card>
+            {project && (
+              <TrackersCard
+                project={project}
+                canEditProject={canEditProject}
+                togglingTracker={togglingTracker}
+                onAddGithubTracker={handleAddGithubTracker}
+                onRemoveTracker={handleRemoveTracker}
+              />
+            )}
 
             {/* Agent CLI */}
             <Card className="mb-6">
