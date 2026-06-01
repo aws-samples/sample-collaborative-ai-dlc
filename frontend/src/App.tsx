@@ -15,7 +15,7 @@ import AgentPage from './pages/AgentPage';
 import SprintGraph from './pages/SprintGraph';
 import GitHubCallback from './pages/GitHubCallback';
 import Admin from './pages/Admin';
-import ObservabilityPage from './pages/ObservabilityPage';
+import ObservabilityLayout from './pages/ObservabilityLayout';
 
 function App() {
   return (
@@ -37,7 +37,7 @@ function App() {
             >
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/admin" element={<Admin />} />
-              <Route path="/observability" element={<ObservabilityPage />} />
+              <Route path="/observability" element={<ObservabilityLayout />} />
               <Route path="/project/:projectId" element={<Project />} />
               <Route path="/project/:projectId/settings" element={<ProjectSettings />} />
 
