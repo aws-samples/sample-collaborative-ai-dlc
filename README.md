@@ -105,6 +105,24 @@ To build:
 uv run zensical build
 ```
 
+## Testing & Code Quality
+
+Run the unit tests and generate a coverage report:
+
+```bash
+npm test                 # run all unit tests
+npm run test:coverage    # run tests with a coverage report (HTML in coverage/)
+```
+
+Lint and format checks:
+
+```bash
+npm run lint             # oxlint
+npm run format:check     # oxfmt (use `npm run format` to apply fixes)
+```
+
+A pre-commit hook also runs these checks plus secret and Terraform scanning before each commit. See [CONTRIBUTING.md](CONTRIBUTING.md) for the one-time setup.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to participate.

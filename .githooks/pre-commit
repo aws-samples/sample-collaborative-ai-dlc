@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Repo-local pre-commit dispatcher.
+#
+# Git's core.hooksPath is all-or-nothing: when set (here, to Amazon's
+# git-defender at the SYSTEM scope), Git ignores .git/hooks entirely. This repo
+# sets core.hooksPath at the LOCAL scope only to .githooks so we can chain BOTH:
+#   1. git-defender (the org-mandated security hook) — never modified
+#   2. the `pre-commit` framework (this project's quality guardrails)
+#
+# We only READ the system core.hooksPath; we never write any git config.
+# If either hook fails (non-zero exit), the commit is aborted.
+set -euo pipefail
+
+# 1) Run the git-defender pre-commit hook first, if present.
+defender_hooks_path="$(git config --system --get core.hooksPath || true)"
+if [ -n "${defender_hooks_path}" ] && [ -x "${defender_hooks_path}/pre-commit" ]; then
+  "${defender_hooks_path}/pre-commit" "$@"
+fi
+
+# 2) Run the pre-commit framework.
+# `pre-commit` is installed via `uv tool install` into ~/.local/bin, which may
+# not be on PATH for non-interactive git invocations.
+export PATH="${HOME}/.local/bin:${PATH}"
+if command -v pre-commit >/dev/null 2>&1; then
+  pre-commit run
+else
+  echo "warning: pre-commit not found on PATH; skipping quality hooks." >&2
+  echo "         install with: uv tool install pre-commit" >&2
+fi
+
+# 3) Run unit tests affected by the staged changes.
+if command -v npx >/dev/null 2>&1; then
+  npx vitest run --changed --passWithNoTests
+else
+  echo "warning: npx not found on PATH; skipping unit tests." >&2
+fi

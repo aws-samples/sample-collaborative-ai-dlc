@@ -18,6 +18,17 @@ reported the issue. Please try to include as much information as you can. Detail
 - Any modifications you've made relevant to the bug
 - Anything unusual about your environment or deployment
 
+## Pre-commit Hooks
+
+This repo uses [pre-commit](https://pre-commit.com) to run formatting, linting, secret scanning, SAST, Terraform checks, and the affected unit tests before each commit. One-time setup after cloning:
+
+```bash
+uv tool install pre-commit         # installs the pre-commit framework
+git config core.hooksPath .githooks
+```
+
+The hook in `.githooks/pre-commit` runs the checks (and, where applicable, the org's git-defender hook). Tools `gitleaks`, `semgrep`, and `tflint` must be available on your `PATH`.
+
 ## Contributing via Pull Requests
 
 Contributions via pull requests are much appreciated. Before sending us a pull request, please ensure that:
@@ -31,7 +42,7 @@ To send us a pull request, please:
 1. Fork the repository.
 2. Modify the source; please focus on the specific change you are contributing.
 3. Ensure local tests pass (`npm run test`) and the linter is clean (`npm run lint`).
-4. Run the formatter (`npm run format`) so your changes match the repo style. CI runs `npm run format:check` and will fail on unformatted files.
+4. Run the formatter (`npm run format`) so your changes match the repo style. CI runs `npm run format:check` and will fail on unformatted files. The pre-commit hook (see above) runs these automatically if installed.
 5. Commit to your fork using clear commit messages.
 6. Send us a pull request, answering any default questions in the pull request interface.
 7. Pay attention to any automated CI failures reported in the pull request, and stay involved in the conversation.

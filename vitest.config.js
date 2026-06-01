@@ -19,5 +19,13 @@ export default defineConfig({
         setupFiles,
       },
     })),
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'html', 'lcov'],
+      reportsDirectory: './coverage',
+      include: ['lambda/**/*.js'],
+      exclude: ['lambda/**/test/**', 'lambda/**/*.config.js', 'lambda/**/node_modules/**'],
+      all: true,
+    },
   },
 });
