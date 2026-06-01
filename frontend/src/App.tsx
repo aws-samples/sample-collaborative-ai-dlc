@@ -14,7 +14,9 @@ import ReviewPage from './pages/ReviewPage';
 import AgentPage from './pages/AgentPage';
 import SprintGraph from './pages/SprintGraph';
 import GitHubCallback from './pages/GitHubCallback';
+import JiraCallback from './pages/JiraCallback';
 import Admin from './pages/Admin';
+import { TRACKER_PROVIDERS } from './lib/trackerProviders';
 import ObservabilityPage from './pages/ObservabilityPage';
 
 function App() {
@@ -26,6 +28,14 @@ function App() {
             {/* Public routes (no shell) */}
             <Route path="/login" element={<Login />} />
             <Route path="/github/callback" element={<GitHubCallback />} />
+            <Route
+              path={TRACKER_PROVIDERS['jira-cloud'].callbackPath}
+              element={
+                <ProtectedRoute>
+                  <JiraCallback />
+                </ProtectedRoute>
+              }
+            />
 
             {/* Protected routes with AppShell layout */}
             <Route

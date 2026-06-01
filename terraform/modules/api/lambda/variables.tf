@@ -90,6 +90,24 @@ variable "github_redirect_uri" {
   default     = ""
 }
 
+variable "jira_oauth_secret_name" {
+  description = "Secrets Manager secret name for Jira Cloud OAuth credentials"
+  type        = string
+  default     = ""
+}
+
+variable "jira_oauth_secret_arn" {
+  description = "Secrets Manager secret ARN for Jira Cloud OAuth credentials"
+  type        = string
+  default     = ""
+}
+
+variable "jira_redirect_uri" {
+  description = "OAuth redirect URI for Jira Cloud callback"
+  type        = string
+  default     = ""
+}
+
 variable "state_machine_arn" {
   description = "ARN of the Step Functions state machine for agent workflows"
   type        = string

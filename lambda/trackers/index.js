@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHmac, timingSafeEqual } from 'node:crypto';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
@@ -11,32 +11,144 @@ import {
   ScanCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { SSMClient, DeleteParameterCommand } from '@aws-sdk/client-ssm';
+import {
+  SecretsManagerClient,
+  GetSecretValueCommand,
+  PutSecretValueCommand,
+} from '@aws-sdk/client-secrets-manager';
 import { buildResponse } from '../shared/response.js';
+import {
+  trackerBindingProjectionStep,
+  mapBinding,
+  fetchMembershipRole,
+} from '../shared/trackers.js';
 import { getProvider, KNOWN_PROVIDERS, ProviderError } from './providers/index.js';
+import {
+  buildAuthorizeUrl,
+  exchangeCode,
+  listAccessibleResources,
+  persistConnection,
+} from './providers/jira-cloud.js';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
-const __ = gremlin.process.statics;
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
+const secrets = new SecretsManagerClient({});
 
-const getVal = (v, key) => {
-  if (!v) return '';
-  const raw = v instanceof Map ? v.get(key) : v[key];
-  if (Array.isArray(raw)) return raw[0] ?? '';
-  return raw ?? '';
+// HMAC-signed envelope for the OAuth `state` parameter and the multi-site
+// `ticket` payload. Mirrors the pattern used in lambda/github/index.js —
+// see the comment there for why we re-use the OAuth client_secret rather
+// than maintaining a separate HMAC key.
+const STATE_TTL_MS = 10 * 60 * 1000;
+
+const signEnvelope = (payload, secret) => {
+  const data = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const sig = createHmac('sha256', secret).update(data).digest('hex');
+  return `${data}.${sig}`;
 };
 
-const mapBindingFromVertex = (v) => ({
-  id: getVal(v, 'id'),
-  provider: getVal(v, 'provider'),
-  instance: getVal(v, 'instance') || null,
-  externalProjectKey: getVal(v, 'external_project_key') || null,
-  displayName: getVal(v, 'display_name') || null,
-  createdAt: getVal(v, 'created_at') || null,
-  createdBy: getVal(v, 'created_by') || null,
-});
+const verifyEnvelope = (token, secret) => {
+  if (typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length !== 2) return null;
+  const [data, sig] = parts;
+  const expected = createHmac('sha256', secret).update(data).digest('hex');
+  try {
+    if (!timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(expected, 'hex'))) return null;
+  } catch {
+    return null;
+  }
+  let payload;
+  try {
+    payload = JSON.parse(Buffer.from(data, 'base64url').toString());
+  } catch {
+    return null;
+  }
+  if (!payload.ts || Date.now() - payload.ts > STATE_TTL_MS) return null;
+  return payload;
+};
+
+// Per-provider OAuth-app metadata. The secret holds client_id +
+// client_secret pairs; the env var lets terraform vary the secret name
+// per environment. Shape lets us add future providers (Linear, GitLab)
+// without touching the per-route logic below.
+const PROVIDER_OAUTH_CONFIG = {
+  'jira-cloud': {
+    label: 'Jira Cloud',
+    instances: ['cloud'],
+    secretEnvVar: 'JIRA_OAUTH_SECRET_NAME',
+    callbackPath: '/trackers/callback/jira-cloud',
+  },
+  'github-issues': {
+    label: 'GitHub Issues',
+    instances: ['public'],
+    secretEnvVar: 'GITHUB_OAUTH_SECRET_NAME',
+    callbackPath: '/github/callback',
+  },
+};
+
+// Reads + validates an OAuth secret. Returns the parsed credentials on
+// success or `{configured: false, reason}` on any failure mode (missing
+// secret, malformed JSON, missing fields). Used both to actually fetch
+// credentials for an OAuth flow and to compute the boolean exposed by
+// `GET /trackers/providers`.
+const readOAuthSecret = async (envVarName) => {
+  const secretId = process.env[envVarName];
+  if (!secretId) {
+    return { configured: false, reason: 'env-var-missing' };
+  }
+  let result;
+  try {
+    result = await secrets.send(new GetSecretValueCommand({ SecretId: secretId }));
+  } catch (err) {
+    if (err.name === 'ResourceNotFoundException') {
+      return { configured: false, reason: 'secret-not-found' };
+    }
+    throw err;
+  }
+  if (!result.SecretString) {
+    return { configured: false, reason: 'empty' };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(result.SecretString);
+  } catch {
+    return { configured: false, reason: 'invalid-json' };
+  }
+  if (!parsed?.client_id || !parsed?.client_secret) {
+    return { configured: false, reason: 'missing-fields' };
+  }
+  return { configured: true, clientId: parsed.client_id, clientSecret: parsed.client_secret };
+};
+
+const getJiraOAuthCredentials = async () => {
+  const result = await readOAuthSecret('JIRA_OAUTH_SECRET_NAME');
+  if (!result.configured) {
+    throw new ProviderError(503, 'Jira OAuth not configured on this environment');
+  }
+  return { clientId: result.clientId, clientSecret: result.clientSecret };
+};
+
+// Writes a {client_id, client_secret} OAuth pair to the provider's
+// Secrets-Manager slot. Operator-facing — invoked from the Admin panel.
+// Caller validates input shape; this helper just persists.
+const writeOAuthSecret = async (envVarName, clientId, clientSecret) => {
+  const secretId = process.env[envVarName];
+  if (!secretId) {
+    throw new ProviderError(
+      503,
+      'OAuth secret slot is not provisioned in this environment (missing env var)',
+    );
+  }
+  await secrets.send(
+    new PutSecretValueCommand({
+      SecretId: secretId,
+      SecretString: JSON.stringify({ client_id: clientId, client_secret: clientSecret }),
+    }),
+  );
+};
 
 const getConnection = async () => {
   const host = process.env.NEPTUNE_ENDPOINT;
@@ -51,34 +163,20 @@ const getConnection = async () => {
 
 const requireUserId = (event) => event.requestContext?.authorizer?.claims?.sub;
 
-// Membership check used by every /projects/{projectId}/... route.
-// Returns the user's role string, or null if not a member.
-const fetchMembership = async (g, projectId, userId) => {
-  const edges = await g
-    .V()
-    .has('Project', 'id', projectId)
-    .outE('HAS_MEMBER')
-    .as('e')
-    .inV()
-    .has('User', 'id', userId)
-    .select('e')
-    .by(__.valueMap())
-    .toList();
-  if (edges.length === 0) return null;
-  return getVal(edges[0], 'role') || 'member';
-};
-
+// Membership + binding lookups both project server-side via the shared
+// `trackerBindingProjectionStep`, returning camelCase API shape directly so
+// no JS-side reshape is needed.
 const fetchBinding = async (g, projectId, bindingId) => {
-  const list = await g
+  const r = await g
     .V()
     .has('Project', 'id', projectId)
     .out('HAS_TRACKER')
     .hasLabel('TrackerBinding')
     .has('id', bindingId)
-    .valueMap()
-    .toList();
-  if (list.length === 0) return null;
-  return mapBindingFromVertex(list[0]);
+    .flatMap(trackerBindingProjectionStep())
+    .next();
+  if (r.done) return null;
+  return mapBinding(r.value);
 };
 
 const listBindingsForProject = async (g, projectId) => {
@@ -87,9 +185,9 @@ const listBindingsForProject = async (g, projectId) => {
     .has('Project', 'id', projectId)
     .out('HAS_TRACKER')
     .hasLabel('TrackerBinding')
-    .valueMap()
+    .flatMap(trackerBindingProjectionStep())
     .toList();
-  return list.map(mapBindingFromVertex);
+  return list.map(mapBinding);
 };
 
 const handleProviderError = (response, err) => {
@@ -108,51 +206,54 @@ const handleProviderError = (response, err) => {
 // (still the only place GitHub PATs live, by design — see #194 §3a) and
 // tracker-connections (Phase 3 will start writing Jira rows here).
 const listTrackerConnections = async (response, userId) => {
-  const out = [];
-  try {
-    const { Item } = await ddb.send(
-      new GetCommand({
-        TableName: process.env.GIT_CONNECTIONS_TABLE,
-        Key: { userId },
+  // Disjoint reads on different tables — fire concurrently. Each branch
+  // catches its own error so a failure in one doesn't blank out the other.
+  const [gitItem, trackerItems] = await Promise.all([
+    ddb
+      .send(new GetCommand({ TableName: process.env.GIT_CONNECTIONS_TABLE, Key: { userId } }))
+      .then((r) => r.Item ?? null)
+      .catch((err) => {
+        console.error('Failed to read git-connections:', err.message);
+        return null;
       }),
-    );
-    if (Item) {
-      out.push({
-        provider: 'github-issues',
-        instance: 'public',
-        connectedAt: Item.createdAt || null,
-        scope: Item.scope || null,
-      });
-    }
-  } catch (err) {
-    console.error('Failed to read git-connections:', err.message);
-  }
+    process.env.TRACKER_CONNECTIONS_TABLE
+      ? ddb
+          .send(
+            new ScanCommand({
+              TableName: process.env.TRACKER_CONNECTIONS_TABLE,
+              FilterExpression: 'userId = :u',
+              ExpressionAttributeValues: { ':u': userId },
+            }),
+          )
+          .then((r) => r.Items ?? [])
+          .catch((err) => {
+            console.error('Failed to scan tracker-connections:', err.message);
+            return [];
+          })
+      : Promise.resolve([]),
+  ]);
 
+  const out = [];
+  if (gitItem) {
+    out.push({
+      provider: 'github-issues',
+      instance: 'public',
+      connectedAt: gitItem.createdAt || null,
+      scope: gitItem.scope || null,
+    });
+  }
   // tracker-connections is keyed (userId, provider#instance). Empty in Phase 2;
   // populated by Jira in Phase 3. Scan with a userId filter is fine — N is
   // small (one row per provider per user).
-  if (process.env.TRACKER_CONNECTIONS_TABLE) {
-    try {
-      const result = await ddb.send(
-        new ScanCommand({
-          TableName: process.env.TRACKER_CONNECTIONS_TABLE,
-          FilterExpression: 'userId = :u',
-          ExpressionAttributeValues: { ':u': userId },
-        }),
-      );
-      for (const item of result.Items || []) {
-        const [provider, instance] = (item.providerInstance || '').split('#');
-        if (!provider) continue;
-        out.push({
-          provider,
-          instance: instance || null,
-          connectedAt: item.createdAt || null,
-          scope: item.scope || null,
-        });
-      }
-    } catch (err) {
-      console.error('Failed to scan tracker-connections:', err.message);
-    }
+  for (const item of trackerItems) {
+    const [provider, instance] = (item.providerInstance || '').split('#');
+    if (!provider) continue;
+    out.push({
+      provider,
+      instance: instance || null,
+      connectedAt: item.createdAt || null,
+      scope: item.scope || null,
+    });
   }
   return response(200, out);
 };
@@ -181,7 +282,28 @@ const disconnectTracker = async (response, userId, provider, instance) => {
     );
     return response(200, { success: true });
   }
-  // Phase 3: jira-cloud disconnect from tracker-connections + SSM.
+  if (provider === 'jira-cloud' && instance === 'cloud') {
+    const { Item } = await ddb.send(
+      new GetCommand({
+        TableName: process.env.TRACKER_CONNECTIONS_TABLE,
+        Key: { userId, providerInstance: 'jira-cloud#cloud' },
+      }),
+    );
+    if (Item?.parameterName) {
+      try {
+        await ssm.send(new DeleteParameterCommand({ Name: Item.parameterName }));
+      } catch (e) {
+        console.error('Failed to delete jira token parameter:', e.message);
+      }
+    }
+    await ddb.send(
+      new DeleteCommand({
+        TableName: process.env.TRACKER_CONNECTIONS_TABLE,
+        Key: { userId, providerInstance: 'jira-cloud#cloud' },
+      }),
+    );
+    return response(200, { success: true });
+  }
   return response(400, { error: `Disconnect not implemented for ${provider}/${instance}` });
 };
 
@@ -190,24 +312,256 @@ export const handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return response(200, {});
 
   const userId = requireUserId(event);
-  if (!userId) return response(401, { error: 'Unauthorized' });
-
   const { httpMethod, queryStringParameters, body, path = '' } = event;
   const pathParameters = event.pathParameters || {};
 
-  // Auth/callback stubs — real OAuth for github-issues lives at /github/auth.
-  // Phase 3 implements jira-cloud here.
-  if (path.startsWith('/trackers/auth/') || path.startsWith('/trackers/callback/')) {
-    const providerId = pathParameters.provider || path.split('/')[3];
+  // CloudFront prepends the stage prefix (`/api`) to the path the lambda
+  // sees, so anchor-relative checks like `startsWith('/trackers/...')` would
+  // miss in production while still passing locally. Switch to `includes`
+  // for the route-prefix matching below — same pattern Phase 2 relied on
+  // with `endsWith(...)` and `pathParameters`.
+
+  // The OAuth callback is the only public route — it's invoked by the
+  // tracker provider (Atlassian) and cannot carry a Cognito JWT. Every
+  // other route in this handler requires an authenticated user.
+  const isPublicCallback = path.includes('/trackers/callback/');
+  if (!isPublicCallback && !userId) return response(401, { error: 'Unauthorized' });
+
+  // /trackers/auth/{provider} — Cognito-authed; Atlassian for jira-cloud.
+  // /trackers/callback/{provider} — NONE auth; the OAuth provider redirects here.
+  if (path.includes('/trackers/auth/') || path.includes('/trackers/callback/')) {
+    // pathParameters.provider is set by API Gateway's path templating, but
+    // local invocations may pass a bare path string — fall back to splitting.
+    const providerId =
+      pathParameters.provider || path.split('/').filter(Boolean).slice(-1)[0] || '';
     if (providerId === 'github-issues') {
       return response(501, {
         error: 'github-issues auth lives at /github/auth — connect GitHub there',
       });
     }
+    if (providerId === 'jira-cloud') {
+      try {
+        if (path.includes('/trackers/auth/')) {
+          if (!userId) return response(401, { error: 'Unauthorized' });
+          const { clientId, clientSecret } = await getJiraOAuthCredentials();
+          const state = signEnvelope({ userId, ts: Date.now() }, clientSecret);
+          const url = buildAuthorizeUrl({
+            clientId,
+            redirectUri: process.env.JIRA_REDIRECT_URI,
+            state,
+          });
+          return response(200, { url });
+        }
+        // /trackers/callback/jira-cloud — Atlassian redirect, no Cognito JWT.
+        const { code, state } = queryStringParameters || {};
+        if (!code) return response(400, { error: 'Missing code parameter' });
+        if (!state) return response(400, { error: 'Missing state parameter' });
+        const { clientId, clientSecret } = await getJiraOAuthCredentials();
+        const statePayload = verifyEnvelope(decodeURIComponent(state), clientSecret);
+        if (!statePayload?.userId) {
+          return response(400, { error: 'Invalid or expired state' });
+        }
+        const tokens = await exchangeCode({
+          clientId,
+          clientSecret,
+          redirectUri: process.env.JIRA_REDIRECT_URI,
+          code,
+        });
+        const resources = await listAccessibleResources(tokens.accessToken);
+        if (resources.length === 0) {
+          return response(400, { error: 'No Atlassian sites accessible to this account' });
+        }
+        if (resources.length === 1) {
+          await persistConnection({
+            ddb,
+            ssm,
+            userId: statePayload.userId,
+            resource: resources[0],
+            tokens,
+            scope: 'read:jira-work read:jira-user offline_access',
+          });
+          return response(200, { success: true });
+        }
+        // Multi-site: defer the row write until the user picks. The ticket
+        // signs the just-issued tokens so we don't need a DDB scratch row.
+        const ticket = signEnvelope(
+          {
+            userId: statePayload.userId,
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken,
+            expiresIn: tokens.expiresIn,
+            ts: Date.now(),
+          },
+          clientSecret,
+        );
+        return response(200, {
+          pendingChoice: {
+            ticket,
+            resources: resources.map((r) => ({
+              cloudId: r.cloudId,
+              name: r.name,
+              host: r.host,
+              url: r.url,
+            })),
+          },
+        });
+      } catch (err) {
+        if (err instanceof ProviderError) {
+          return response(err.status, { error: err.message, ...err.extra });
+        }
+        console.error('Jira auth/callback error:', err);
+        return response(500, { error: 'Internal server error' });
+      }
+    }
     if (KNOWN_PROVIDERS.includes(providerId)) {
       return response(501, { error: `Auth flow for ${providerId} not yet implemented` });
     }
     return response(404, { error: 'Unknown provider' });
+  }
+
+  // POST /trackers/connections/{provider}/{instance} — finalize an OAuth flow
+  // that returned a pendingChoice. Today only jira-cloud uses this.
+  if (
+    httpMethod === 'POST' &&
+    path.includes('/trackers/connections/') &&
+    pathParameters.provider &&
+    pathParameters.instance
+  ) {
+    if (!userId) return response(401, { error: 'Unauthorized' });
+    if (pathParameters.provider !== 'jira-cloud' || pathParameters.instance !== 'cloud') {
+      return response(404, { error: 'Unknown provider connection' });
+    }
+    try {
+      const data = body ? JSON.parse(body) : {};
+      if (!data.ticket || !data.cloudId) {
+        return response(400, { error: 'ticket and cloudId are required' });
+      }
+      const { clientSecret } = await getJiraOAuthCredentials();
+      const ticketPayload = verifyEnvelope(data.ticket, clientSecret);
+      if (!ticketPayload?.userId || ticketPayload.userId !== userId) {
+        return response(400, { error: 'Invalid or expired ticket' });
+      }
+      const resources = await listAccessibleResources(ticketPayload.accessToken);
+      const chosen = resources.find((r) => r.cloudId === data.cloudId);
+      if (!chosen) {
+        return response(400, { error: 'Chosen cloudId is not accessible to this account' });
+      }
+      await persistConnection({
+        ddb,
+        ssm,
+        userId,
+        resource: chosen,
+        tokens: {
+          accessToken: ticketPayload.accessToken,
+          refreshToken: ticketPayload.refreshToken,
+          expiresIn: ticketPayload.expiresIn,
+        },
+        scope: 'read:jira-work read:jira-user offline_access',
+      });
+      return response(200, { success: true });
+    } catch (err) {
+      if (err instanceof ProviderError) {
+        return response(err.status, { error: err.message, ...err.extra });
+      }
+      console.error('Jira finalize error:', err);
+      return response(500, { error: 'Internal server error' });
+    }
+  }
+
+  // GET /trackers/external-projects/{provider}/{instance} — picker for
+  // listing the user's accessible Jira projects (or future providers'
+  // equivalents) before creating a binding.
+  if (
+    httpMethod === 'GET' &&
+    path.includes('/trackers/external-projects/') &&
+    pathParameters.provider &&
+    pathParameters.instance
+  ) {
+    if (!userId) return response(401, { error: 'Unauthorized' });
+    let providerImpl;
+    try {
+      providerImpl = getProvider(pathParameters.provider, pathParameters.instance);
+    } catch (err) {
+      return handleProviderError(response, err);
+    }
+    try {
+      const items = await providerImpl.listExternalProjects({ ddb, ssm, secrets, userId });
+      return response(200, items);
+    } catch (err) {
+      return handleProviderError(response, err);
+    }
+  }
+
+  // GET /trackers/providers — operator-configuration status for each
+  // tracker provider. Drives the Admin OAuth-config form and the
+  // project-level "Connect ..." button gating. Returns one entry per
+  // provider with a `configured` boolean computed from its Secrets-
+  // Manager slot.
+  if (
+    httpMethod === 'GET' &&
+    path.endsWith('/trackers/providers') &&
+    !pathParameters.provider &&
+    !pathParameters.projectId
+  ) {
+    if (!userId) return response(401, { error: 'Unauthorized' });
+    // Independent Secrets-Manager probes — fire concurrently so the Admin
+    // page doesn't pay N×latency. Treat any unexpected error as
+    // "not configured" so the UI can keep rendering.
+    const out = await Promise.all(
+      Object.entries(PROVIDER_OAUTH_CONFIG).map(async ([id, cfg]) => {
+        let configured = false;
+        try {
+          const r = await readOAuthSecret(cfg.secretEnvVar);
+          configured = r.configured;
+        } catch (err) {
+          console.error(`Failed to probe ${id} OAuth secret:`, err.message);
+        }
+        return { id, label: cfg.label, instances: cfg.instances, configured };
+      }),
+    );
+    return response(200, out);
+  }
+
+  // PUT /trackers/providers/{provider}/oauth-config — admin-facing
+  // writer. Persists {client_id, client_secret} to the provider's
+  // Secrets-Manager slot. Cognito-authed (matches the existing
+  // /agents/settings pattern; backend admin gating is a separate
+  // follow-up across all admin endpoints).
+  if (
+    httpMethod === 'PUT' &&
+    path.includes('/trackers/providers/') &&
+    path.endsWith('/oauth-config') &&
+    pathParameters.provider
+  ) {
+    if (!userId) return response(401, { error: 'Unauthorized' });
+    const cfg = PROVIDER_OAUTH_CONFIG[pathParameters.provider];
+    if (!cfg) {
+      return response(400, { error: `Unknown tracker provider: ${pathParameters.provider}` });
+    }
+    let data;
+    try {
+      data = body ? JSON.parse(body) : {};
+    } catch {
+      return response(400, { error: 'Invalid JSON body' });
+    }
+    const clientId = typeof data.clientId === 'string' ? data.clientId.trim() : '';
+    const clientSecret = typeof data.clientSecret === 'string' ? data.clientSecret.trim() : '';
+    if (!clientId || !clientSecret) {
+      return response(400, { error: 'clientId and clientSecret are both required' });
+    }
+    if (clientId.length > 1024 || clientSecret.length > 1024) {
+      return response(400, { error: 'clientId / clientSecret too long' });
+    }
+    try {
+      await writeOAuthSecret(cfg.secretEnvVar, clientId, clientSecret);
+    } catch (err) {
+      if (err instanceof ProviderError) {
+        return response(err.status, { error: err.message });
+      }
+      console.error('Failed to write OAuth secret:', err);
+      return response(500, { error: 'Failed to write OAuth secret' });
+    }
+    return response(200, { success: true });
   }
 
   // GET /trackers
@@ -247,10 +601,16 @@ export const handler = async (event) => {
       );
     }
 
-    const role = await fetchMembership(g, projectId, userId);
-    if (!role) return response(403, { error: 'Access denied' });
-
     const bindingId = pathParameters.bindingId;
+
+    // Fire role + binding lookup concurrently when a bindingId is present
+    // (disjoint reads on different parts of the graph). Saves a round-trip
+    // on the hot issue-list path.
+    const [role, bindingOrNull] = await Promise.all([
+      fetchMembershipRole(g, projectId, userId),
+      bindingId ? fetchBinding(g, projectId, bindingId) : Promise.resolve(null),
+    ]);
+    if (!role) return response(403, { error: 'Access denied' });
 
     // GET /projects/{id}/trackers
     if (httpMethod === 'GET' && !bindingId) {
@@ -281,8 +641,7 @@ export const handler = async (event) => {
         return handleProviderError(response, err);
       }
 
-      // For github-issues, require an active GitHub connection so the binding
-      // is actually usable. For Jira (Phase 3) this will check tracker-connections.
+      // Require an active connection so the binding is actually usable.
       if (provider === 'github-issues') {
         const { Item } = await ddb.send(
           new GetCommand({
@@ -292,6 +651,16 @@ export const handler = async (event) => {
         );
         if (!Item) {
           return response(400, { error: 'GitHub not connected' });
+        }
+      } else if (provider === 'jira-cloud') {
+        const { Item } = await ddb.send(
+          new GetCommand({
+            TableName: process.env.TRACKER_CONNECTIONS_TABLE,
+            Key: { userId, providerInstance: `${provider}#${instance}` },
+          }),
+        );
+        if (!Item) {
+          return response(400, { error: 'Jira Cloud not connected' });
         }
       }
 
@@ -333,8 +702,7 @@ export const handler = async (event) => {
       if (role !== 'owner' && role !== 'admin') {
         return response(403, { error: 'Only project owners and admins can remove trackers' });
       }
-      const binding = await fetchBinding(g, projectId, bindingId);
-      if (!binding) return response(404, { error: 'Binding not found' });
+      if (!bindingOrNull) return response(404, { error: 'Binding not found' });
       await g
         .V()
         .has('Project', 'id', projectId)
@@ -347,7 +715,7 @@ export const handler = async (event) => {
     }
 
     // /projects/{id}/trackers/{bindingId}/issues...
-    const binding = await fetchBinding(g, projectId, bindingId);
+    const binding = bindingOrNull;
     if (!binding) return response(404, { error: 'Binding not found' });
 
     let provider;
@@ -357,7 +725,7 @@ export const handler = async (event) => {
       return handleProviderError(response, err);
     }
 
-    const ctx = { ddb, ssm, userId };
+    const ctx = { ddb, ssm, secrets, userId };
 
     try {
       const resourceId = pathParameters.resourceId;
@@ -385,6 +753,9 @@ export const handler = async (event) => {
           q: queryStringParameters?.q,
           page: queryStringParameters?.page,
           perPage: queryStringParameters?.perPage,
+          // Cursor for providers (Jira Cloud since CHANGE-2046) that require
+          // it; ignored by GitHub which uses page-number pagination.
+          pageToken: queryStringParameters?.pageToken,
         });
         return response(200, issues);
       }

@@ -5,71 +5,17 @@ import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { buildResponse } from '../shared/response.js';
 import { runTrackerMigration } from '../shared/tracker-migration.js';
+import {
+  getVal,
+  projectTrackersFoldStep,
+  mapBinding,
+  fetchMembershipRole,
+} from '../shared/trackers.js';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const __ = gremlin.process.statics;
 const { cardinality } = gremlin.process;
-
-// Extract a property value from a Neptune valueMap result (handles both Map and plain object)
-const getVal = (obj, key) => {
-  if (!obj) return '';
-  const raw = obj instanceof Map ? obj.get(key) : obj[key];
-  if (Array.isArray(raw)) return raw[0] ?? '';
-  return raw ?? '';
-};
-
-// Anonymous Gremlin step that projects a TrackerBinding vertex into the
-// camelCase shape the API exposes. Used as a `.by()` argument so the list-
-// projects traversal can fold trackers per project in one round-trip
-// (avoiding the N+1 fetch this used to do in JS).
-const trackerBindingProjectionStep = () =>
-  __.project(
-    'id',
-    'provider',
-    'instance',
-    'externalProjectKey',
-    'displayName',
-    'createdAt',
-    'createdBy',
-  )
-    .by('id')
-    .by('provider')
-    .by(__.coalesce(__.values('instance'), __.constant(null)))
-    .by(__.coalesce(__.values('external_project_key'), __.constant(null)))
-    .by(__.coalesce(__.values('display_name'), __.constant(null)))
-    .by(__.coalesce(__.values('created_at'), __.constant(null)))
-    .by(__.coalesce(__.values('created_by'), __.constant(null)));
-
-// Anonymous step yielding a single fold()-collected list of binding maps
-// scoped to the current Project vertex. Returns [] when the project has
-// no HAS_TRACKER edges.
-const projectTrackersFoldStep = () =>
-  __.out('HAS_TRACKER').hasLabel('TrackerBinding').flatMap(trackerBindingProjectionStep()).fold();
-
-const mapBindingMap = (m) => {
-  const get = (k) => (m instanceof Map ? m.get(k) : m[k]);
-  return {
-    id: get('id'),
-    provider: get('provider'),
-    instance: get('instance'),
-    externalProjectKey: get('externalProjectKey'),
-    displayName: get('displayName'),
-    createdAt: get('createdAt'),
-    createdBy: get('createdBy'),
-  };
-};
-
-const fetchProjectTrackers = async (g, projectId) => {
-  const list = await g
-    .V()
-    .has('Project', 'id', projectId)
-    .out('HAS_TRACKER')
-    .hasLabel('TrackerBinding')
-    .flatMap(trackerBindingProjectionStep())
-    .toList();
-  return list.map(mapBindingMap);
-};
 
 const getConnection = async () => {
   const host = process.env.NEPTUNE_ENDPOINT;
@@ -124,21 +70,19 @@ export const handler = async (event) => {
     // issue_integration_enabled boolean. Idempotent. See parent issue #194.
     if (isMigrateTracker) {
       if (!userId) return response(401, { error: 'Unauthorized' });
-      const role = await g
-        .V()
-        .has('Project', 'id', projectId)
-        .outE('HAS_MEMBER')
-        .as('e')
-        .inV()
-        .has('User', 'id', userId)
-        .select('e')
-        .values('role')
-        .next();
-      if (role.done) return response(403, { error: 'Access denied' });
-      if (role.value !== 'owner' && role.value !== 'admin') {
+      const role = await fetchMembershipRole(g, projectId, userId);
+      if (!role) return response(403, { error: 'Access denied' });
+      if (role !== 'owner' && role !== 'admin') {
         return response(403, { error: 'Only project owners and admins can migrate trackers' });
       }
-      const dryRun = body ? Boolean(JSON.parse(body)?.dryRun) : false;
+      let dryRun = false;
+      if (body) {
+        try {
+          dryRun = Boolean(JSON.parse(body)?.dryRun);
+        } catch {
+          return response(400, { error: 'Invalid JSON body' });
+        }
+      }
       const result = await runTrackerMigration(g, { projectId, dryRun });
       return response(200, result);
     }
@@ -146,28 +90,31 @@ export const handler = async (event) => {
     switch (httpMethod) {
       case 'GET':
         if (projectId) {
-          // Single project lookup - verify user is a member and return their role
+          // Single project lookup - verify user is a member and return their
+          // role. Single round-trip: role + project valueMap + trackers all
+          // fold into one traversal (parity with the list endpoint).
           if (!userId) return response(401, { error: 'Unauthorized' });
 
-          const memberEdges = await g
+          const single = await g
             .V()
             .has('Project', 'id', projectId)
+            .as('p')
             .outE('HAS_MEMBER')
             .as('e')
             .inV()
             .has('User', 'id', userId)
-            .select('e')
-            .by(__.valueMap())
-            .toList();
-          if (memberEdges.length === 0) return response(403, { error: 'Access denied' });
+            .select('e', 'p')
+            .by(__.values('role'))
+            .by(__.project('vertex', 'trackers').by(__.valueMap()).by(projectTrackersFoldStep()))
+            .next();
+          if (single.done) return response(403, { error: 'Access denied' });
 
-          const userRole = getVal(memberEdges[0], 'role') || 'member';
-
-          const result = await g.V().has('Project', 'id', projectId).valueMap().next();
-          if (!result.value) return response(404, { error: 'Project not found' });
-
-          const v = result.value;
-          const trackers = await fetchProjectTrackers(g, projectId);
+          const item = single.value;
+          const role = item instanceof Map ? item.get('e') : item.e;
+          const pBundle = item instanceof Map ? item.get('p') : item.p;
+          const v = pBundle instanceof Map ? pBundle.get('vertex') : pBundle.vertex;
+          const trackerMaps =
+            (pBundle instanceof Map ? pBundle.get('trackers') : pBundle.trackers) ?? [];
           const project = {
             id: getVal(v, 'id') || projectId,
             name: getVal(v, 'name'),
@@ -176,8 +123,8 @@ export const handler = async (event) => {
             agentCli: getVal(v, 'agent_cli') || 'kiro',
             issueIntegrationEnabled: getVal(v, 'issue_integration_enabled') === 'true',
             createdAt: getVal(v, 'created_at') || new Date().toISOString(),
-            userRole,
-            trackers,
+            userRole: role || 'member',
+            trackers: trackerMaps.map(mapBinding),
           };
           return response(200, project);
         }
@@ -196,12 +143,12 @@ export const handler = async (event) => {
           .hasLabel('Project')
           .as('p')
           .select('e', 'p')
-          .by(__.valueMap())
+          .by(__.values('role'))
           .by(__.project('vertex', 'trackers').by(__.valueMap()).by(projectTrackersFoldStep()))
           .toList();
         const projects = results.map((item) => {
-          // item is a Map with keys 'e' (edge) and 'p' ({vertex, trackers}).
-          const e = item instanceof Map ? item.get('e') : item.e;
+          // item is a Map with keys 'e' (role string) and 'p' ({vertex, trackers}).
+          const role = item instanceof Map ? item.get('e') : item.e;
           const pBundle = item instanceof Map ? item.get('p') : item.p;
           const v = pBundle instanceof Map ? pBundle.get('vertex') : pBundle.vertex;
           const trackerMaps =
@@ -214,8 +161,8 @@ export const handler = async (event) => {
             agentCli: getVal(v, 'agent_cli') || 'kiro',
             issueIntegrationEnabled: getVal(v, 'issue_integration_enabled') === 'true',
             createdAt: getVal(v, 'created_at') || new Date().toISOString(),
-            userRole: getVal(e, 'role') || 'member',
-            trackers: trackerMaps.map(mapBindingMap),
+            userRole: role || 'member',
+            trackers: trackerMaps.map(mapBinding),
           };
         });
         return response(200, projects);
@@ -272,19 +219,8 @@ export const handler = async (event) => {
         if (!userId) return response(401, { error: 'Unauthorized' });
 
         // Owners and admins can update project settings
-        const updateEdges = await g
-          .V()
-          .has('Project', 'id', projectId)
-          .outE('HAS_MEMBER')
-          .as('e')
-          .inV()
-          .has('User', 'id', userId)
-          .select('e')
-          .by(__.valueMap())
-          .toList();
-        if (updateEdges.length === 0) return response(403, { error: 'Access denied' });
-
-        const updaterRole = getVal(updateEdges[0], 'role') || 'member';
+        const updaterRole = await fetchMembershipRole(g, projectId, userId);
+        if (!updaterRole) return response(403, { error: 'Access denied' });
         if (updaterRole !== 'owner' && updaterRole !== 'admin') {
           return response(403, { error: 'Only project owners and admins can update settings' });
         }

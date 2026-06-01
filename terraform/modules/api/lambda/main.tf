@@ -179,22 +179,50 @@ resource "aws_iam_role_policy" "trackers" {
   role = aws_iam_role.trackers.id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
-      local.neptune_statement,
-      {
-        Effect = "Allow"
-        Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:Scan"]
-        Resource = compact([
-          var.git_connections_table_arn,
-          var.tracker_connections_table_arn,
-        ])
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["ssm:GetParameter", "ssm:DeleteParameter"]
-        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
-      }
-    ]
+    Statement = concat(
+      [
+        local.neptune_statement,
+        {
+          Effect = "Allow"
+          Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:Scan"]
+          Resource = compact([
+            var.git_connections_table_arn,
+            var.tracker_connections_table_arn,
+          ])
+        },
+        {
+          Effect   = "Allow"
+          Action   = ["ssm:GetParameter", "ssm:DeleteParameter"]
+          Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
+        },
+        # Jira Cloud (Phase 3 / #197): the trackers lambda owns the Jira OAuth
+        # flow end to end — it reads the OAuth credentials from Secrets Manager
+        # and persists access + refresh tokens into a dedicated SSM prefix so
+        # the GitHub-token policy stays scoped narrowly.
+        {
+          Effect   = "Allow"
+          Action   = ["ssm:PutParameter", "ssm:GetParameter", "ssm:DeleteParameter"]
+          Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/jira-token/*"
+        },
+      ],
+      # Tracker OAuth secrets — read for OAuth flows, write from the
+      # Admin "Tracker OAuth Apps" panel. Both Jira and GitHub now flow
+      # through the trackers Lambda's admin endpoints.
+      var.jira_oauth_secret_arn != "" ? [
+        {
+          Effect   = "Allow"
+          Action   = ["secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue"]
+          Resource = [var.jira_oauth_secret_arn]
+        }
+      ] : [],
+      var.github_oauth_secret_arn != "" ? [
+        {
+          Effect   = "Allow"
+          Action   = ["secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue"]
+          Resource = [var.github_oauth_secret_arn]
+        }
+      ] : [],
+    )
   })
 }
 
@@ -776,6 +804,10 @@ module "trackers_lambda" {
     GIT_CONNECTIONS_TABLE     = var.git_connections_table_name
     TRACKER_CONNECTIONS_TABLE = var.tracker_connections_table_name
     GIT_TOKEN_SSM_PREFIX      = "${var.project_name}/${var.environment}/git-token"
+    JIRA_OAUTH_SECRET_NAME    = var.jira_oauth_secret_name
+    JIRA_REDIRECT_URI         = var.jira_redirect_uri
+    JIRA_TOKEN_SSM_PREFIX     = "${var.project_name}/${var.environment}/jira-token"
+    GITHUB_OAUTH_SECRET_NAME  = var.github_oauth_secret_name
     ENVIRONMENT               = var.environment
     CORS_ALLOWED_ORIGINS      = var.cors_allowed_origins
   }

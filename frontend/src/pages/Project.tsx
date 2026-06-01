@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { projectsService, type Project as ProjectType } from '@/services/projects';
+import { getTrackerProvider } from '@/lib/trackerProviders';
 import { sprintsService, type Sprint } from '@/services/sprints';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -44,6 +45,7 @@ export default function Project() {
   const [newName, setNewName] = useState('');
   const [creating, setCreating] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [activeTrackerTab, setActiveTrackerTab] = useState<string | null>(null);
 
   const loadData = useCallback(async () => {
     if (!projectId) return;
@@ -239,18 +241,26 @@ export default function Project() {
           </div>
         )}
 
-        {/* Tracker issue panels — one per binding (#196). Phase 2 only renders
-            github-issues; Phase 3 adds Jira via the same surface. */}
-        {project &&
-          project.trackers.map((binding) => (
-            <TrackerIssueListPanel
-              key={binding.id}
-              project={project}
-              binding={binding}
-              sprints={sprints}
-              onSprintCreated={(sprint) => setSprints((prev) => [...prev, sprint])}
-            />
-          ))}
+        {/* Tracker issue panels. With one binding we render the panel inline.
+            With multiple, a tab strip selects which binding's panel to show
+            (per Phase 3 spec — "GitHub aws-samples/X · Jira PROJ"). */}
+        {project && project.trackers.length === 1 && (
+          <TrackerIssueListPanel
+            project={project}
+            binding={project.trackers[0]}
+            sprints={sprints}
+            onSprintCreated={(sprint) => setSprints((prev) => [...prev, sprint])}
+          />
+        )}
+        {project && project.trackers.length > 1 && (
+          <TrackerTabs
+            project={project}
+            sprints={sprints}
+            activeTabId={activeTrackerTab}
+            onTabChange={setActiveTrackerTab}
+            onSprintCreated={(sprint) => setSprints((prev) => [...prev, sprint])}
+          />
+        )}
       </div>
 
       {/* Create Sprint Dialog */}
@@ -313,6 +323,61 @@ export default function Project() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    </div>
+  );
+}
+
+interface TrackerTabsProps {
+  project: ProjectType;
+  sprints: Sprint[];
+  activeTabId: string | null;
+  onTabChange: (id: string) => void;
+  onSprintCreated: (sprint: Sprint) => void;
+}
+
+function TrackerTabs({
+  project,
+  sprints,
+  activeTabId,
+  onTabChange,
+  onSprintCreated,
+}: TrackerTabsProps) {
+  const trackers = project.trackers;
+  const activeBinding = useMemo(() => {
+    return trackers.find((t) => t.id === activeTabId) ?? trackers[0];
+  }, [trackers, activeTabId]);
+
+  return (
+    <div className="mt-6">
+      <div className="flex items-center gap-1 border-b">
+        {trackers.map((binding) => {
+          const isActive = binding.id === activeBinding.id;
+          const tabLabel = getTrackerProvider(binding.provider).tabLabel;
+          const label = binding.displayName || binding.externalProjectKey || tabLabel;
+          return (
+            <button
+              key={binding.id}
+              type="button"
+              onClick={() => onTabChange(binding.id)}
+              className={`px-3 py-2 text-sm border-b-2 -mb-px transition-colors ${
+                isActive
+                  ? 'border-primary text-foreground font-medium'
+                  : 'border-transparent text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              <span className="text-muted-foreground mr-1.5">{tabLabel}</span>
+              {label}
+            </button>
+          );
+        })}
+      </div>
+      <TrackerIssueListPanel
+        key={activeBinding.id}
+        project={project}
+        binding={activeBinding}
+        sprints={sprints}
+        onSprintCreated={onSprintCreated}
+      />
     </div>
   );
 }
