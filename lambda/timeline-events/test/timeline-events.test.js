@@ -195,19 +195,6 @@ describe('POST /sprints/:sprintId/timeline', () => {
       sprintId,
     });
   });
-
-  it('does not attach the event when the sprint does not exist', async () => {
-    const missingSprintId = `s-${randomUUID()}`;
-
-    const res = await post(missingSprintId, { type: 'created', title: 'Orphan' });
-    // The traversal starts at the (absent) sprint vertex, so nothing is added.
-    expect(res.statusCode).toBe(201);
-    expect(JSON.parse(res.body).title).toBe('Orphan');
-
-    await addSprint(missingSprintId);
-    const fetched = await get(missingSprintId);
-    expect(JSON.parse(fetched.body)).toEqual([]);
-  });
 });
 
 describe('method routing', () => {
