@@ -61,4 +61,4 @@ Once your artifacts are ready, you can:
 
 - [Launch Construction](../using-the-platform/running-agents.md) to start building
 - [Invite collaborators](../using-the-platform/real-time-collaboration.md) to refine artifacts together
-- [Connect a GitHub repo](../using-the-platform/git-integration.md) to push tasks as issues
+- [Connect a code host and trackers](../using-the-platform/git-integration.md) to back the project with a repository and start sprints from external issues

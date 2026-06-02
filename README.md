@@ -57,20 +57,53 @@ This builds all Lambda packages and provisions the full AWS stack (VPC, Neptune,
 
 After deployment, agent workers authenticate with Kiro CLI via device flow. Check the agent pool DynamoDB table or ECS logs for the auth URL and device code.
 
-### 4. Configure GitHub OAuth
+### 4. Configure Tracker OAuth Apps
 
-[Create a GitHub **OAuth App**](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app) (not a GitHub App — the flow here expects OAuth App semantics). When prompted, use:
+The platform integrates with external trackers so a sprint can be started from a tracker issue (GitHub Issue, Jira issue). For each tracker you want to enable, register an OAuth app with the provider, then paste the credentials into the **Admin → Tracker OAuth Apps** panel in the deployed app.
 
-- **Homepage URL**: `https://$(terraform -chdir=terraform output -raw cloudfront_domain_name)`
-- **Authorization callback URL**: `https://$(terraform -chdir=terraform output -raw cloudfront_domain_name)/github/callback`
+Both providers are optional. Skip a section if you don't need that tracker; the corresponding **Connect** buttons in the UI will stay disabled.
 
-Then store the OAuth App's credentials in the Secrets Manager secret that terraform created (replace `your_github_client_id` and `your_github_client_secret` with the actual values):
+#### GitHub Issues
+
+1. Open [GitHub Developer Settings → OAuth Apps → New OAuth App](https://github.com/settings/developers).
+   (Choose an **OAuth App**, _not_ a GitHub App — the flow here expects OAuth App semantics.)
+2. Use:
+   - **Homepage URL**: `https://<your-cloudfront-domain>`
+   - **Authorization callback URL**: `https://<your-cloudfront-domain>/github/callback`
+3. Copy the **Client ID** and generate a **Client Secret**.
+4. In the deployed app, sign in and open **Admin → Tracker OAuth Apps → GitHub Issues**. Paste both values and click **Save**.
+
+#### Jira Cloud
+
+1. Open the [Atlassian Developer Console](https://developer.atlassian.com/console/myapps) and create an **OAuth 2.0 integration**.
+2. Under **Permissions**, add the **Jira API** with scopes:
+   - `read:jira-work`
+   - `read:jira-user`
+   - `offline_access` (required so refresh tokens are issued — don’t skip this)
+3. Under **Authorization**, set the callback URL to `https://<your-cloudfront-domain>/trackers/callback/jira-cloud`.
+4. Open the **Settings** tab of your app and copy the **Client ID** and **Client Secret**.
+5. In the deployed app, sign in and open **Admin → Tracker OAuth Apps → Jira Cloud**. Paste both values and click **Save**.
+
+Users then connect their personal accounts from **Project Settings → Trackers** for any project that needs the integration. The Jira Cloud integration is read-only — no comments or status changes are pushed back to Jira.
+
+You can rotate credentials later by entering new values into the same form; clicking **Save** overwrites the previously stored secret.
+
+<details>
+<summary>CLI fallback (for fully-automated deploys)</summary>
+
+The Admin UI is a wrapper around AWS Secrets Manager. If you'd rather populate the secrets in your provisioning pipeline, write the same JSON shape directly:
 
 ```bash
 aws secretsmanager put-secret-value \
   --secret-id $(terraform -chdir=terraform output -raw github_oauth_secret_name) \
-  --secret-string '{"client_id":"your_github_client_id","client_secret":"your_github_client_secret"}'
+  --secret-string '{"client_id":"...","client_secret":"..."}'
+
+aws secretsmanager put-secret-value \
+  --secret-id $(terraform -chdir=terraform output -raw jira_oauth_secret_name) \
+  --secret-string '{"client_id":"...","client_secret":"..."}'
 ```
+
+</details>
 
 ### 5. Create Users
 

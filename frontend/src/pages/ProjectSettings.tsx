@@ -9,7 +9,7 @@ import {
   type AgentCli,
   type TrackerBinding,
 } from '../services/projects';
-import { trackersService } from '../services/trackers';
+import { trackersService, type TrackerConnection } from '../services/trackers';
 import { agentsService } from '../services/agents';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -37,7 +37,10 @@ import {
 import { ArrowLeft, Trash2, X, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { MigrateTrackerCard } from '@/components/MigrateTrackerCard';
-import { TrackersCard } from '@/components/TrackersCard';
+import { JiraConnectButton } from '@/components/JiraConnectButton';
+import { JiraProjectPickerDialog } from '@/components/JiraProjectPickerDialog';
+import { useTrackerProviders } from '@/hooks/useTrackerProviders';
+import { getTrackerProvider, TRACKER_PROVIDERS } from '@/lib/trackerProviders';
 
 const ROLE_LABELS: Record<ProjectRole, string> = {
   owner: 'Owner',
@@ -90,6 +93,15 @@ export default function ProjectSettings() {
   // wired to. Replaces the legacy `issueIntegrationEnabled` boolean (#196).
   const [togglingTracker, setTogglingTracker] = useState(false);
 
+  // Cross-project tracker connections (Jira Cloud, GitHub, …). Drives the
+  // "Connect Jira Cloud" CTA and downstream picker flows. Phase 3 / #197.
+  const [trackerConnections, setTrackerConnections] = useState<TrackerConnection[]>([]);
+  // Operator OAuth-app config — flips the Connect CTA to disabled with a
+  // helper hint when the deployment hasn't populated the secret yet.
+  const { providers: trackerProviders } = useTrackerProviders();
+  const [connectingJira, setConnectingJira] = useState(false);
+  const [showJiraProjectPicker, setShowJiraProjectPicker] = useState(false);
+
   const [editAgentCli, setEditAgentCli] = useState<AgentCli>('kiro');
   const [savingAgentCli, setSavingAgentCli] = useState(false);
   const [availableCliNames, setAvailableCliNames] = useState<AgentCli[]>(['kiro']);
@@ -129,15 +141,17 @@ export default function ProjectSettings() {
   const loadData = useCallback(async () => {
     if (!projectId) return;
     try {
-      const [proj, mems] = await Promise.all([
+      const [proj, mems, conns] = await Promise.all([
         projectsService.get(projectId),
         projectsService.listMembers(projectId),
+        trackersService.listConnections().catch(() => []),
       ]);
       setProject(proj);
       setEditName(proj.name);
       setEditGitRepo(proj.gitRepo);
       setEditAgentCli(proj.agentCli ?? 'kiro');
       setMembers(Array.isArray(mems) ? mems : []);
+      setTrackerConnections(Array.isArray(conns) ? conns : []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load project');
     } finally {
@@ -224,9 +238,10 @@ export default function ProjectSettings() {
     clearMessages();
     setTogglingTracker(true);
     try {
+      const gh = TRACKER_PROVIDERS['github-issues'];
       await trackersService.addToProject(projectId, {
-        provider: 'github-issues',
-        instance: 'public',
+        provider: gh.id,
+        instance: gh.instance,
         externalProjectKey: project.gitRepo,
         displayName: project.gitRepo,
       });
@@ -237,6 +252,33 @@ export default function ProjectSettings() {
     } finally {
       setTogglingTracker(false);
     }
+  };
+
+  const handleConnectJira = async () => {
+    clearMessages();
+    setConnectingJira(true);
+    try {
+      const { url } = await trackersService.getAuthUrl(TRACKER_PROVIDERS['jira-cloud'].id);
+      window.location.href = url;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start Jira Cloud OAuth');
+      setConnectingJira(false);
+    }
+  };
+
+  // Triggered by the picker dialog once the user confirms a Jira project.
+  const handleAddJiraBinding = async (chosen: { key: string; name: string }) => {
+    if (!projectId) return;
+    clearMessages();
+    const jira = TRACKER_PROVIDERS['jira-cloud'];
+    await trackersService.addToProject(projectId, {
+      provider: jira.id,
+      instance: jira.instance,
+      externalProjectKey: chosen.key,
+      displayName: chosen.name || chosen.key,
+    });
+    await loadData();
+    setSuccess('Jira project bound to this collaborative project.');
   };
 
   const handleRemoveTracker = async (binding: TrackerBinding) => {
@@ -493,15 +535,86 @@ export default function ProjectSettings() {
               </CardContent>
             </Card>
 
-            {project && (
-              <TrackersCard
-                project={project}
-                canEditProject={canEditProject}
-                togglingTracker={togglingTracker}
-                onAddGithubTracker={handleAddGithubTracker}
-                onRemoveTracker={handleRemoveTracker}
-              />
-            )}
+            {/* Trackers — provider-agnostic issue trackers wired to this
+                project. Phase 2 (#196) only manages github-issues here;
+                Phase 3 adds Jira via the same surface. */}
+            <Card className="mb-6">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Trackers</CardTitle>
+                <p className="text-sm text-muted-foreground">
+                  Connect issue trackers so sprints can be started from their issues.
+                </p>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {(project?.trackers ?? []).length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    No trackers connected to this project.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {project?.trackers.map((b) => (
+                      <div
+                        key={b.id}
+                        className="flex items-center justify-between gap-3 border rounded-md p-3"
+                      >
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium">
+                            {getTrackerProvider(b.provider).displayName}
+                          </p>
+                          <p className="text-xs text-muted-foreground truncate">
+                            {b.displayName || b.externalProjectKey}
+                          </p>
+                        </div>
+                        {canEditProject && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleRemoveTracker(b)}
+                            disabled={togglingTracker}
+                          >
+                            Remove
+                          </Button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {canEditProject &&
+                  project?.gitProvider === 'github' &&
+                  project.gitRepo &&
+                  !(project.trackers ?? []).some(
+                    (b) =>
+                      b.provider === TRACKER_PROVIDERS['github-issues'].id &&
+                      b.externalProjectKey === project.gitRepo,
+                  ) && (
+                    <div className="flex justify-end pt-2">
+                      <Button size="sm" onClick={handleAddGithubTracker} disabled={togglingTracker}>
+                        {togglingTracker ? 'Saving…' : `Add GitHub Issues for ${project.gitRepo}`}
+                      </Button>
+                    </div>
+                  )}
+
+                {canEditProject && (
+                  <JiraConnectButton
+                    jiraConnected={trackerConnections.some(
+                      (c) => c.provider === TRACKER_PROVIDERS['jira-cloud'].id,
+                    )}
+                    jiraConfigured={
+                      trackerProviders.find((p) => p.id === TRACKER_PROVIDERS['jira-cloud'].id)
+                        ?.configured ?? false
+                    }
+                    togglingTracker={togglingTracker}
+                    connectingJira={connectingJira}
+                    onConnect={handleConnectJira}
+                    onPickProject={() => {
+                      clearMessages();
+                      setShowJiraProjectPicker(true);
+                    }}
+                  />
+                )}
+              </CardContent>
+            </Card>
 
             {/* Agent CLI */}
             <Card className="mb-6">
@@ -708,6 +821,12 @@ export default function ProjectSettings() {
           </>
         )}
       </div>
+
+      <JiraProjectPickerDialog
+        open={showJiraProjectPicker}
+        onOpenChange={setShowJiraProjectPicker}
+        onConfirm={handleAddJiraBinding}
+      />
 
       {/* Add Member Dialog */}
       <Dialog open={showAddMember} onOpenChange={setShowAddMember}>

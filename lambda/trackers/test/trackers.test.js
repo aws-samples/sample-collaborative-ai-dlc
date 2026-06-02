@@ -6,20 +6,40 @@ import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import {
   DynamoDBDocumentClient,
   GetCommand,
+  PutCommand,
   DeleteCommand,
   ScanCommand,
 } from '@aws-sdk/lib-dynamodb';
-import { SSMClient, GetParameterCommand, DeleteParameterCommand } from '@aws-sdk/client-ssm';
+import {
+  SSMClient,
+  GetParameterCommand,
+  PutParameterCommand,
+  DeleteParameterCommand,
+} from '@aws-sdk/client-ssm';
+import {
+  SecretsManagerClient,
+  GetSecretValueCommand,
+  PutSecretValueCommand,
+} from '@aws-sdk/client-secrets-manager';
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 const ssmMock = mockClient(SSMClient);
+const secretsMock = mockClient(SecretsManagerClient);
 
 const NOW = new Date('2026-05-28T00:00:00.000Z');
 const PARTITION = `t-${randomUUID()}`;
 const GIT_TABLE = 'test-git-connections';
 const TRACKER_TABLE = 'test-tracker-connections';
 const PARAM_NAME = '/aidlc/dev/git-token/user-1';
+const JIRA_PARAM_NAME = '/aidlc/dev/jira-token/user-1';
 const TOKEN = 'gho_testtoken';
+const JIRA_OAUTH_SECRET_NAME = 'jira-oauth-secret';
+const GITHUB_OAUTH_SECRET_NAME = 'github-oauth-secret';
+const JIRA_CLIENT_ID = 'jira-cid';
+const JIRA_CLIENT_SECRET = 'jira-cs';
+const JIRA_REDIRECT_URI = 'https://example.com/trackers/callback/jira-cloud';
+const JIRA_CLOUD_ID = 'cloud-uuid-1';
+const JIRA_SITE_HOST = 'acme.atlassian.net';
 
 let handler;
 let resetProviderCache;
@@ -32,6 +52,10 @@ beforeAll(async () => {
   vi.stubEnv('GIT_CONNECTIONS_TABLE', GIT_TABLE);
   vi.stubEnv('TRACKER_CONNECTIONS_TABLE', TRACKER_TABLE);
   vi.stubEnv('CORS_ALLOWED_ORIGINS', 'https://example.com');
+  vi.stubEnv('JIRA_OAUTH_SECRET_NAME', JIRA_OAUTH_SECRET_NAME);
+  vi.stubEnv('GITHUB_OAUTH_SECRET_NAME', GITHUB_OAUTH_SECRET_NAME);
+  vi.stubEnv('JIRA_REDIRECT_URI', JIRA_REDIRECT_URI);
+  vi.stubEnv('JIRA_TOKEN_SSM_PREFIX', 'aidlc/dev/jira-token');
   ({ handler } = await import('../index.js'));
   ({ __resetCache: resetProviderCache } = await import('../providers/github-issues.js'));
 
@@ -60,6 +84,7 @@ beforeEach(() => {
   vi.setSystemTime(NOW);
   ddbMock.reset();
   ssmMock.reset();
+  secretsMock.reset();
   resetProviderCache();
   fetchMock = vi.fn();
   vi.stubGlobal('fetch', fetchMock);
@@ -72,6 +97,9 @@ beforeEach(() => {
     Parameter: { Value: JSON.stringify({ accessToken: TOKEN }) },
   });
   ddbMock.on(ScanCommand, { TableName: TRACKER_TABLE }).resolves({ Items: [] });
+  secretsMock.on(GetSecretValueCommand).resolves({
+    SecretString: JSON.stringify({ client_id: JIRA_CLIENT_ID, client_secret: JIRA_CLIENT_SECRET }),
+  });
 });
 
 afterEach(() => {
@@ -304,8 +332,8 @@ describe('DELETE /trackers/{provider}/{instance}', () => {
   it('returns 400 for unknown provider/instance pair', async () => {
     const res = await handler({
       httpMethod: 'DELETE',
-      path: '/trackers/jira-cloud/cloud',
-      pathParameters: { provider: 'jira-cloud', instance: 'cloud' },
+      path: '/trackers/unknown-provider/cloud',
+      pathParameters: { provider: 'unknown-provider', instance: 'cloud' },
       headers: { origin: 'https://example.com' },
       ...claims(),
     });
@@ -408,7 +436,7 @@ describe('POST /projects/{id}/trackers', () => {
       pathParameters: { projectId },
       headers: { origin: 'https://example.com' },
       body: JSON.stringify({
-        provider: 'jira-cloud',
+        provider: 'unknown-provider',
         instance: 'cloud',
         externalProjectKey: 'PROJ',
       }),
@@ -757,6 +785,590 @@ describe('GET /projects/{id}/trackers/{bid}/issues/{rid}/comments', () => {
     expect(second.statusCode).toBe(200);
     expect(JSON.parse(second.body)).toHaveLength(1);
     expect(fetchMock.mock.calls[1][1].headers['If-None-Match']).toBe('W/"c1"');
+  });
+});
+
+// Helper for the multi-step Jira finalize flow: pulls a fresh ticket from a
+// just-completed multi-resource callback so the test can POST it back. Keeps
+// the inner HMAC details opaque to the assertion code.
+const captureMultiResourceTicket = async () => {
+  fetchMock
+    .mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ access_token: 'jat', refresh_token: 'jrt', expires_in: 3600 }),
+      headers: makeHeaders(),
+    })
+    .mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => [
+        { id: JIRA_CLOUD_ID, name: 'Acme', url: `https://${JIRA_SITE_HOST}` },
+        { id: 'cloud-2', name: 'Other', url: 'https://other.atlassian.net' },
+      ],
+      headers: makeHeaders(),
+    });
+  // Build a valid signed state. Signing must use the same client_secret the
+  // handler reads from Secrets Manager.
+  const { createHmac } = await import('node:crypto');
+  const data = Buffer.from(JSON.stringify({ userId: 'user-1', ts: Date.now() })).toString(
+    'base64url',
+  );
+  const sig = createHmac('sha256', JIRA_CLIENT_SECRET).update(data).digest('hex');
+  const state = `${data}.${sig}`;
+
+  const cb = await handler({
+    httpMethod: 'GET',
+    path: '/trackers/callback/jira-cloud',
+    pathParameters: { provider: 'jira-cloud' },
+    headers: { origin: 'https://example.com' },
+    queryStringParameters: { code: 'auth-code', state },
+    requestContext: { authorizer: { claims: {} } },
+  });
+  expect(cb.statusCode).toBe(200);
+  const cbBody = JSON.parse(cb.body);
+  expect(cbBody.pendingChoice).toBeDefined();
+  return cbBody.pendingChoice;
+};
+
+describe('Jira Cloud — /trackers/auth/jira-cloud', () => {
+  it('returns a signed authorize URL for an authenticated user', async () => {
+    const res = await handler({
+      httpMethod: 'GET',
+      path: '/trackers/auth/jira-cloud',
+      pathParameters: { provider: 'jira-cloud' },
+      headers: { origin: 'https://example.com' },
+      ...claims(),
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.url).toContain('https://auth.atlassian.com/authorize');
+    expect(body.url).toContain(`client_id=${JIRA_CLIENT_ID}`);
+    expect(body.url).toContain('state=');
+  });
+
+  it('returns 401 without a Cognito JWT', async () => {
+    const res = await handler({
+      httpMethod: 'GET',
+      path: '/trackers/auth/jira-cloud',
+      pathParameters: { provider: 'jira-cloud' },
+      headers: { origin: 'https://example.com' },
+      requestContext: { authorizer: { claims: {} } },
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('returns 503 when the Jira OAuth secret is missing client_id/client_secret', async () => {
+    secretsMock.on(GetSecretValueCommand).resolves({ SecretString: '{}' });
+    const res = await handler({
+      httpMethod: 'GET',
+      path: '/trackers/auth/jira-cloud',
+      pathParameters: { provider: 'jira-cloud' },
+      headers: { origin: 'https://example.com' },
+      ...claims(),
+    });
+    expect(res.statusCode).toBe(503);
+  });
+});
+
+describe('Jira Cloud — /trackers/callback/jira-cloud', () => {
+  it('persists immediately when accessible-resources returns one site', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ access_token: 'jat', refresh_token: 'jrt', expires_in: 3600 }),
+        headers: makeHeaders(),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => [{ id: JIRA_CLOUD_ID, name: 'Acme', url: `https://${JIRA_SITE_HOST}` }],
+        headers: makeHeaders(),
+      });
+
+    const { createHmac } = await import('node:crypto');
+    const data = Buffer.from(JSON.stringify({ userId: 'user-1', ts: Date.now() })).toString(
+      'base64url',
+    );
+    const sig = createHmac('sha256', JIRA_CLIENT_SECRET).update(data).digest('hex');
+    const state = `${data}.${sig}`;
+
+    const res = await handler({
+      httpMethod: 'GET',
+      path: '/trackers/callback/jira-cloud',
+      pathParameters: { provider: 'jira-cloud' },
+      headers: { origin: 'https://example.com' },
+      queryStringParameters: { code: 'auth-code', state },
+      requestContext: { authorizer: { claims: {} } },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ success: true });
+    expect(ssmMock).toHaveReceivedCommand(PutParameterCommand);
+    expect(ddbMock).toHaveReceivedCommand(PutCommand);
+  });
+
+  it('returns pendingChoice and writes nothing for >1 site', async () => {
+    const initialPuts = ssmMock.commandCalls(PutParameterCommand).length;
+    const choice = await captureMultiResourceTicket();
+    expect(choice.ticket).toBeTruthy();
+    expect(choice.resources).toHaveLength(2);
+    expect(choice.resources[0]).toMatchObject({ cloudId: JIRA_CLOUD_ID, name: 'Acme' });
+    expect(ssmMock.commandCalls(PutParameterCommand).length).toBe(initialPuts);
+  });
+
+  it('rejects an invalid state', async () => {
+    const res = await handler({
+      httpMethod: 'GET',
+      path: '/trackers/callback/jira-cloud',
+      pathParameters: { provider: 'jira-cloud' },
+      headers: { origin: 'https://example.com' },
+      queryStringParameters: { code: 'auth-code', state: 'bogus.signature' },
+      requestContext: { authorizer: { claims: {} } },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('rejects a state envelope older than STATE_TTL_MS', async () => {
+    // Sign a valid envelope, but with a `ts` 11 minutes in the past (TTL is
+    // 10 min). The signature is correct; verifyEnvelope must still reject.
+    const { createHmac } = await import('node:crypto');
+    const elevenMinutesAgo = Date.now() - 11 * 60 * 1000;
+    const data = Buffer.from(JSON.stringify({ userId: 'user-1', ts: elevenMinutesAgo })).toString(
+      'base64url',
+    );
+    const sig = createHmac('sha256', JIRA_CLIENT_SECRET).update(data).digest('hex');
+    const state = `${data}.${sig}`;
+
+    const res = await handler({
+      httpMethod: 'GET',
+      path: '/trackers/callback/jira-cloud',
+      pathParameters: { provider: 'jira-cloud' },
+      headers: { origin: 'https://example.com' },
+      queryStringParameters: { code: 'auth-code', state },
+      requestContext: { authorizer: { claims: {} } },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toMatch(/Invalid or expired state/);
+    // No token exchange should have been attempted on a stale state.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 when accessible-resources is empty', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ access_token: 'jat', refresh_token: 'jrt', expires_in: 3600 }),
+        headers: makeHeaders(),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => [],
+        headers: makeHeaders(),
+      });
+
+    const { createHmac } = await import('node:crypto');
+    const data = Buffer.from(JSON.stringify({ userId: 'user-1', ts: Date.now() })).toString(
+      'base64url',
+    );
+    const sig = createHmac('sha256', JIRA_CLIENT_SECRET).update(data).digest('hex');
+    const state = `${data}.${sig}`;
+
+    const res = await handler({
+      httpMethod: 'GET',
+      path: '/trackers/callback/jira-cloud',
+      pathParameters: { provider: 'jira-cloud' },
+      headers: { origin: 'https://example.com' },
+      queryStringParameters: { code: 'auth-code', state },
+      requestContext: { authorizer: { claims: {} } },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+});
+
+describe('Jira Cloud — POST /trackers/connections/jira-cloud/cloud', () => {
+  it('finalizes the connection from a valid ticket', async () => {
+    const choice = await captureMultiResourceTicket();
+    // Re-list accessible-resources during finalize to validate the chosen cloudId.
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => [
+        { id: JIRA_CLOUD_ID, name: 'Acme', url: `https://${JIRA_SITE_HOST}` },
+        { id: 'cloud-2', name: 'Other', url: 'https://other.atlassian.net' },
+      ],
+      headers: makeHeaders(),
+    });
+
+    const res = await handler({
+      httpMethod: 'POST',
+      path: '/trackers/connections/jira-cloud/cloud',
+      pathParameters: { provider: 'jira-cloud', instance: 'cloud' },
+      headers: { origin: 'https://example.com' },
+      body: JSON.stringify({ ticket: choice.ticket, cloudId: JIRA_CLOUD_ID }),
+      ...claims(),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ success: true });
+    expect(ssmMock).toHaveReceivedCommand(PutParameterCommand);
+    expect(ddbMock).toHaveReceivedCommand(PutCommand);
+  });
+
+  it('rejects a ticket whose userId does not match the caller', async () => {
+    const choice = await captureMultiResourceTicket();
+    const res = await handler({
+      httpMethod: 'POST',
+      path: '/trackers/connections/jira-cloud/cloud',
+      pathParameters: { provider: 'jira-cloud', instance: 'cloud' },
+      headers: { origin: 'https://example.com' },
+      body: JSON.stringify({ ticket: choice.ticket, cloudId: JIRA_CLOUD_ID }),
+      ...claims('intruder'),
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('returns 400 when the cloudId does not match any accessible resource', async () => {
+    const choice = await captureMultiResourceTicket();
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => [{ id: JIRA_CLOUD_ID, name: 'Acme', url: `https://${JIRA_SITE_HOST}` }],
+      headers: makeHeaders(),
+    });
+    const res = await handler({
+      httpMethod: 'POST',
+      path: '/trackers/connections/jira-cloud/cloud',
+      pathParameters: { provider: 'jira-cloud', instance: 'cloud' },
+      headers: { origin: 'https://example.com' },
+      body: JSON.stringify({ ticket: choice.ticket, cloudId: 'cloud-not-yours' }),
+      ...claims(),
+    });
+    expect(res.statusCode).toBe(400);
+  });
+});
+
+describe('Jira Cloud — DELETE /trackers/jira-cloud/cloud', () => {
+  it('deletes the SSM param and tracker-connections row', async () => {
+    ddbMock
+      .on(GetCommand, {
+        TableName: TRACKER_TABLE,
+        Key: { userId: 'user-1', providerInstance: 'jira-cloud#cloud' },
+      })
+      .resolves({
+        Item: {
+          userId: 'user-1',
+          providerInstance: 'jira-cloud#cloud',
+          parameterName: JIRA_PARAM_NAME,
+        },
+      });
+
+    const res = await handler({
+      httpMethod: 'DELETE',
+      path: '/trackers/jira-cloud/cloud',
+      pathParameters: { provider: 'jira-cloud', instance: 'cloud' },
+      headers: { origin: 'https://example.com' },
+      ...claims(),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ success: true });
+    expect(ssmMock).toHaveReceivedCommand(DeleteParameterCommand);
+    expect(ddbMock).toHaveReceivedCommand(DeleteCommand);
+  });
+});
+
+describe('Jira Cloud — POST /projects/{id}/trackers connection check', () => {
+  it('rejects creating a jira-cloud binding when no connection exists', async () => {
+    const projectId = await seedProjectWithRole('owner');
+    ddbMock
+      .on(GetCommand, {
+        TableName: TRACKER_TABLE,
+        Key: { userId: 'user-1', providerInstance: 'jira-cloud#cloud' },
+      })
+      .resolves({});
+    const res = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/trackers`,
+      pathParameters: { projectId },
+      headers: { origin: 'https://example.com' },
+      body: JSON.stringify({
+        provider: 'jira-cloud',
+        instance: 'cloud',
+        externalProjectKey: 'PROJ',
+      }),
+      ...claims(),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('Jira Cloud not connected');
+  });
+
+  it('creates a jira-cloud binding when a connection exists', async () => {
+    const projectId = await seedProjectWithRole('owner');
+    ddbMock
+      .on(GetCommand, {
+        TableName: TRACKER_TABLE,
+        Key: { userId: 'user-1', providerInstance: 'jira-cloud#cloud' },
+      })
+      .resolves({
+        Item: {
+          userId: 'user-1',
+          providerInstance: 'jira-cloud#cloud',
+          parameterName: JIRA_PARAM_NAME,
+          cloudId: JIRA_CLOUD_ID,
+          baseUrl: `https://api.atlassian.com/ex/jira/${JIRA_CLOUD_ID}`,
+        },
+      });
+    const res = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/trackers`,
+      pathParameters: { projectId },
+      headers: { origin: 'https://example.com' },
+      body: JSON.stringify({
+        provider: 'jira-cloud',
+        instance: 'cloud',
+        externalProjectKey: 'PROJ',
+        displayName: 'Project',
+      }),
+      ...claims(),
+    });
+    expect(res.statusCode).toBe(201);
+    expect(JSON.parse(res.body)).toMatchObject({
+      provider: 'jira-cloud',
+      instance: 'cloud',
+      externalProjectKey: 'PROJ',
+    });
+  });
+});
+
+describe('Jira Cloud — GET /trackers/external-projects/jira-cloud/cloud', () => {
+  it('proxies through the provider and returns the project list', async () => {
+    ddbMock
+      .on(GetCommand, {
+        TableName: TRACKER_TABLE,
+        Key: { userId: 'user-1', providerInstance: 'jira-cloud#cloud' },
+      })
+      .resolves({
+        Item: {
+          userId: 'user-1',
+          providerInstance: 'jira-cloud#cloud',
+          parameterName: JIRA_PARAM_NAME,
+          cloudId: JIRA_CLOUD_ID,
+          baseUrl: `https://api.atlassian.com/ex/jira/${JIRA_CLOUD_ID}`,
+          siteHost: JIRA_SITE_HOST,
+          expiresAt: NOW.getTime() + 3600 * 1000,
+        },
+      });
+    ssmMock.on(GetParameterCommand, { Name: JIRA_PARAM_NAME }).resolves({
+      Parameter: {
+        Value: JSON.stringify({
+          accessToken: 'jat',
+          refreshToken: 'jrt',
+          expiresAt: NOW.getTime() + 3600 * 1000,
+        }),
+      },
+    });
+    fetchMock.mockResolvedValueOnce(okResponse({ values: [{ key: 'PROJ', name: 'Project' }] }));
+
+    const res = await handler({
+      httpMethod: 'GET',
+      path: '/trackers/external-projects/jira-cloud/cloud',
+      pathParameters: { provider: 'jira-cloud', instance: 'cloud' },
+      headers: { origin: 'https://example.com' },
+      ...claims(),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual([{ key: 'PROJ', name: 'Project', displayKey: 'PROJ' }]);
+    expect(fetchMock.mock.calls[0][0]).toContain('/rest/api/3/project/search');
+  });
+
+  it('returns 400 NOT_CONNECTED when no row exists', async () => {
+    ddbMock
+      .on(GetCommand, {
+        TableName: TRACKER_TABLE,
+        Key: { userId: 'user-1', providerInstance: 'jira-cloud#cloud' },
+      })
+      .resolves({});
+    const res = await handler({
+      httpMethod: 'GET',
+      path: '/trackers/external-projects/jira-cloud/cloud',
+      pathParameters: { provider: 'jira-cloud', instance: 'cloud' },
+      headers: { origin: 'https://example.com' },
+      ...claims(),
+    });
+    expect(res.statusCode).toBe(400);
+  });
+});
+
+describe('GET /trackers/providers — operator OAuth-config status', () => {
+  it('reports configured: true for both providers when their secrets are populated', async () => {
+    const res = await handler({
+      httpMethod: 'GET',
+      path: '/trackers/providers',
+      pathParameters: null,
+      headers: { origin: 'https://example.com' },
+      ...claims(),
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    const ids = body.map((p) => p.id);
+    expect(ids).toContain('github-issues');
+    expect(ids).toContain('jira-cloud');
+    for (const p of body) {
+      expect(p.configured).toBe(true);
+    }
+  });
+
+  it('reports configured: false for a provider whose secret is missing', async () => {
+    secretsMock
+      .on(GetSecretValueCommand, { SecretId: JIRA_OAUTH_SECRET_NAME })
+      .rejects({ name: 'ResourceNotFoundException' });
+    secretsMock.on(GetSecretValueCommand, { SecretId: GITHUB_OAUTH_SECRET_NAME }).resolves({
+      SecretString: JSON.stringify({ client_id: 'g', client_secret: 's' }),
+    });
+    const res = await handler({
+      httpMethod: 'GET',
+      path: '/trackers/providers',
+      pathParameters: null,
+      headers: { origin: 'https://example.com' },
+      ...claims(),
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    const jira = body.find((p) => p.id === 'jira-cloud');
+    const github = body.find((p) => p.id === 'github-issues');
+    expect(jira.configured).toBe(false);
+    expect(github.configured).toBe(true);
+  });
+
+  it('reports configured: false for malformed JSON', async () => {
+    secretsMock
+      .on(GetSecretValueCommand, { SecretId: JIRA_OAUTH_SECRET_NAME })
+      .resolves({ SecretString: 'not-json' });
+    const res = await handler({
+      httpMethod: 'GET',
+      path: '/trackers/providers',
+      pathParameters: null,
+      headers: { origin: 'https://example.com' },
+      ...claims(),
+    });
+    const jira = JSON.parse(res.body).find((p) => p.id === 'jira-cloud');
+    expect(jira.configured).toBe(false);
+  });
+
+  it('reports configured: false when client_id / client_secret keys are missing', async () => {
+    secretsMock
+      .on(GetSecretValueCommand, { SecretId: JIRA_OAUTH_SECRET_NAME })
+      .resolves({ SecretString: '{}' });
+    const res = await handler({
+      httpMethod: 'GET',
+      path: '/trackers/providers',
+      pathParameters: null,
+      headers: { origin: 'https://example.com' },
+      ...claims(),
+    });
+    const jira = JSON.parse(res.body).find((p) => p.id === 'jira-cloud');
+    expect(jira.configured).toBe(false);
+  });
+
+  it('returns 401 without a Cognito JWT', async () => {
+    const res = await handler({
+      httpMethod: 'GET',
+      path: '/trackers/providers',
+      pathParameters: null,
+      headers: { origin: 'https://example.com' },
+      requestContext: { authorizer: { claims: {} } },
+    });
+    expect(res.statusCode).toBe(401);
+  });
+});
+
+describe('PUT /trackers/providers/{provider}/oauth-config — admin secret writer', () => {
+  beforeEach(() => {
+    secretsMock.on(PutSecretValueCommand).resolves({});
+  });
+
+  it('writes the Jira OAuth pair to the Jira secret slot', async () => {
+    const res = await handler({
+      httpMethod: 'PUT',
+      path: '/trackers/providers/jira-cloud/oauth-config',
+      pathParameters: { provider: 'jira-cloud' },
+      headers: { origin: 'https://example.com' },
+      body: JSON.stringify({ clientId: 'jc-id', clientSecret: 'jc-secret' }),
+      ...claims(),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ success: true });
+    const calls = secretsMock.commandCalls(PutSecretValueCommand);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args[0].input.SecretId).toBe(JIRA_OAUTH_SECRET_NAME);
+    expect(JSON.parse(calls[0].args[0].input.SecretString)).toEqual({
+      client_id: 'jc-id',
+      client_secret: 'jc-secret',
+    });
+  });
+
+  it('writes the GitHub OAuth pair to the GitHub secret slot', async () => {
+    const res = await handler({
+      httpMethod: 'PUT',
+      path: '/trackers/providers/github-issues/oauth-config',
+      pathParameters: { provider: 'github-issues' },
+      headers: { origin: 'https://example.com' },
+      body: JSON.stringify({ clientId: 'gh-id', clientSecret: 'gh-secret' }),
+      ...claims(),
+    });
+    expect(res.statusCode).toBe(200);
+    const calls = secretsMock.commandCalls(PutSecretValueCommand);
+    expect(calls[0].args[0].input.SecretId).toBe(GITHUB_OAUTH_SECRET_NAME);
+  });
+
+  it('rejects an unknown provider with 400', async () => {
+    const res = await handler({
+      httpMethod: 'PUT',
+      path: '/trackers/providers/unknown-provider/oauth-config',
+      pathParameters: { provider: 'unknown-provider' },
+      headers: { origin: 'https://example.com' },
+      body: JSON.stringify({ clientId: 'a', clientSecret: 'b' }),
+      ...claims(),
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('rejects a missing clientId / clientSecret with 400', async () => {
+    const res = await handler({
+      httpMethod: 'PUT',
+      path: '/trackers/providers/jira-cloud/oauth-config',
+      pathParameters: { provider: 'jira-cloud' },
+      headers: { origin: 'https://example.com' },
+      body: JSON.stringify({ clientId: '', clientSecret: '' }),
+      ...claims(),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(secretsMock.commandCalls(PutSecretValueCommand)).toHaveLength(0);
+  });
+
+  it('rejects credentials that exceed the length cap', async () => {
+    const res = await handler({
+      httpMethod: 'PUT',
+      path: '/trackers/providers/jira-cloud/oauth-config',
+      pathParameters: { provider: 'jira-cloud' },
+      headers: { origin: 'https://example.com' },
+      body: JSON.stringify({ clientId: 'x', clientSecret: 'y'.repeat(2000) }),
+      ...claims(),
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('rejects a request without a Cognito JWT', async () => {
+    const res = await handler({
+      httpMethod: 'PUT',
+      path: '/trackers/providers/jira-cloud/oauth-config',
+      pathParameters: { provider: 'jira-cloud' },
+      headers: { origin: 'https://example.com' },
+      body: JSON.stringify({ clientId: 'a', clientSecret: 'b' }),
+      requestContext: { authorizer: { claims: {} } },
+    });
+    expect(res.statusCode).toBe(401);
   });
 });
 
