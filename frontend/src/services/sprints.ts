@@ -3,6 +3,28 @@ import { api } from './api';
 export type SprintPhase = 'INCEPTION' | 'CONSTRUCTION' | 'REVIEW' | 'COMPLETED';
 export type AgentStatus = 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled' | null;
 
+// Polymorphic link from a Sprint to the tracker resource it was started from.
+// Replaces the old GitHub-only `issueNumber`/`issueUrl` pair on writes; both
+// shapes still surface on reads for legacy / unmigrated data.
+export interface SprintTracker {
+  provider: string;
+  instance: string | null;
+  externalProjectKey: string | null;
+  resourceType: string | null;
+  resourceId: string | null;
+  resourceUrl: string | null;
+}
+
+export interface CreateSprintTrackerInput {
+  bindingId?: string;
+  provider?: string;
+  instance?: string;
+  externalProjectKey?: string;
+  resourceType?: 'issue';
+  resourceId: string;
+  resourceUrl: string;
+}
+
 export interface Sprint {
   id: string;
   name: string;
@@ -22,7 +44,11 @@ export interface Sprint {
   // Branch fields (persisted after first construction kick-off)
   branch: string | null;
   baseBranch: string | null;
-  // Issue link (set when the sprint was started from a GitHub issue)
+  // Tracker link — polymorphic across providers (#194). null when the sprint
+  // wasn't started from a tracker resource.
+  tracker: SprintTracker | null;
+  // Legacy fields kept on read for unmigrated sprints. New writes populate
+  // `tracker`; the backend mirrors github-issues into these on output.
   issueNumber: string | null;
   issueUrl: string | null;
 }
@@ -30,8 +56,7 @@ export interface Sprint {
 export interface CreateSprintInput {
   name: string;
   description?: string;
-  issueNumber?: number;
-  issueUrl?: string;
+  tracker?: CreateSprintTrackerInput;
 }
 
 export const sprintsService = {

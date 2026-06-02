@@ -1,53 +1,62 @@
-const gremlin = require('gremlin');
-const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
-const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
-const { buildResponse } = require('./shared/response');
+import gremlin from 'gremlin';
+import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
+import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
+import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
+import { buildResponse } from '../shared/response.js';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
-const { t: T } = gremlin.process;
+const __ = gremlin.process.statics;
+const { t: T, P } = gremlin.process;
 
 const getConnection = async () => {
   const host = process.env.NEPTUNE_ENDPOINT;
+  const port = process.env.GREMLIN_PORT ?? '8182';
+  const protocol = process.env.GREMLIN_PROTOCOL ?? 'wss';
+
   const credentials = await fromNodeProviderChain()();
-  credentials.region = process.env.AWS_REGION || 'us-east-1';
-  const connInfo = getUrlAndHeaders(host, '8182', credentials, '/gremlin', 'wss');
-  return new DriverRemoteConnection(connInfo.url, { headers: connInfo.headers });
+  credentials.region = process.env.AWS_REGION ?? 'us-east-1';
+  const { url, headers } = getUrlAndHeaders(host, port, credentials, '/gremlin', protocol);
+  return new DriverRemoteConnection(url, { headers });
 };
 
-exports.handler = async (event) => {
+export const handler = async (event) => {
   const res = buildResponse(event, { methods: 'GET,OPTIONS' });
   if (event.httpMethod === 'OPTIONS') return res(200, {});
 
   let conn;
   try {
     conn = await getConnection();
-    const g = traversal().withRemote(conn);
+    let g = traversal().withRemote(conn);
+    if (process.env.GREMLIN_PARTITION) {
+      g = g.withStrategies(
+        new PartitionStrategy({
+          partitionKey: '_partition',
+          writePartition: process.env.GREMLIN_PARTITION,
+          readPartitions: [process.env.GREMLIN_PARTITION],
+        }),
+      );
+    }
     const { sprintId } = event.pathParameters || {};
 
     // Get all vertices contained in this sprint (CONTAINS + HAS_REVIEW + HAS_PR + HAS_AGENT_RUN)
     const vertices = await g
       .V()
       .has('Sprint', 'id', sprintId)
-      .union(
-        gremlin.process.statics.out('CONTAINS'),
-        gremlin.process.statics.out('HAS_REVIEW'),
-        gremlin.process.statics.out('HAS_PR'),
-        gremlin.process.statics.out('HAS_AGENT_RUN'),
-      )
+      .union(__.out('CONTAINS'), __.out('HAS_REVIEW'), __.out('HAS_PR'), __.out('HAS_AGENT_RUN'))
       .project('id', 'type', 'label', 'props')
       .by('id')
       .by(T.label)
       .by(
-        gremlin.process.statics.coalesce(
-          gremlin.process.statics.values('title'),
-          gremlin.process.statics.values('file_path'),
-          gremlin.process.statics.values('agent_type'),
-          gremlin.process.statics.values('status'),
-          gremlin.process.statics.constant('(unnamed)'),
+        __.coalesce(
+          __.values('title'),
+          __.values('file_path'),
+          __.values('agent_type'),
+          __.values('status'),
+          __.constant('(unnamed)'),
         ),
       )
-      .by(gremlin.process.statics.valueMap())
+      .by(__.valueMap())
       .toList();
 
     const nodeIds = new Set(vertices.map((v) => v.get('id')));
@@ -56,17 +65,12 @@ exports.handler = async (event) => {
     const edges = await g
       .V()
       .has('Sprint', 'id', sprintId)
-      .union(
-        gremlin.process.statics.out('CONTAINS'),
-        gremlin.process.statics.out('HAS_REVIEW'),
-        gremlin.process.statics.out('HAS_PR'),
-        gremlin.process.statics.out('HAS_AGENT_RUN'),
-      )
+      .union(__.out('CONTAINS'), __.out('HAS_REVIEW'), __.out('HAS_PR'), __.out('HAS_AGENT_RUN'))
       .bothE()
-      .where(gremlin.process.statics.otherV().has('id', gremlin.process.P.within(...nodeIds)))
+      .where(__.otherV().has('id', P.within(...nodeIds)))
       .project('source', 'target', 'label')
-      .by(gremlin.process.statics.outV().values('id'))
-      .by(gremlin.process.statics.inV().values('id'))
+      .by(__.outV().values('id'))
+      .by(__.inV().values('id'))
       .by(T.label)
       .dedup()
       .toList();
