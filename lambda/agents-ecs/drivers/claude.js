@@ -145,14 +145,6 @@ function configureSettings(_env) {
 // ---------------------------------------------------------------------------
 
 /**
- * Execution mode for acp-client.js: 'acp' — JSON-RPC 2.0 over stdio.
- * claude-agent-acp speaks the same ACP protocol as kiro-cli and opencode.
- */
-function getMode() {
-  return 'acp';
-}
-
-/**
  * Returns the command to spawn in ACP mode.
  */
 function getAcpCommand() {
@@ -235,17 +227,14 @@ function getEnvForAcpProcess(baseEnv) {
 // ---------------------------------------------------------------------------
 
 /**
- * claude-agent-acp reads project instructions from .claude/CLAUDE.md.
- * We concatenate all steering files from .kiro/steering/ into that single file.
+ * Returns the directory where modular rule files go for this driver.
+ * Claude Code auto-loads .claude/rules/*.md natively.
+ *
+ * @param {string} workspaceDir - absolute path to the workspace root
+ * @returns {string}
  */
-function getAdditionalSteeringPaths(workspaceDir) {
-  return [
-    {
-      type: 'concat-dir',
-      src: path.join(workspaceDir, '.kiro', 'steering'),
-      dest: path.join(workspaceDir, '.claude', 'CLAUDE.md'),
-    },
-  ];
+function getRulesDir(workspaceDir) {
+  return path.join(workspaceDir, '.claude', 'rules');
 }
 
 // ---------------------------------------------------------------------------
@@ -257,8 +246,7 @@ module.exports = {
   CLI_DISPLAY,
   authenticate,
   configureSettings,
-  getMode,
   getAcpCommand,
   getEnvForAcpProcess,
-  getAdditionalSteeringPaths,
+  getRulesDir,
 };

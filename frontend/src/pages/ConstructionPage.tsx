@@ -49,7 +49,6 @@ import {
   MessageCircleQuestion,
   GitBranch,
   Eye,
-  RotateCcw,
   Wrench,
   ArrowRight,
   Folder,
@@ -57,6 +56,9 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { StructuredAnswer } from '@/services/questions';
+import { TaskSettingsDialog } from '@/components/settings/TaskSettingsDialog';
+import { TaskActionsMenu } from '@/components/domain/TaskActionsMenu';
+import type { Task } from '@/services/tasks';
 
 export default function ConstructionPage() {
   const { user } = useAuth();
@@ -299,6 +301,7 @@ export default function ConstructionPage() {
   };
 
   const [resettingTaskId, setResettingTaskId] = useState<string | null>(null);
+  const [settingsTask, setSettingsTask] = useState<Task | null>(null);
 
   const handleResetTask = async (taskId: string, taskTitle: string) => {
     if (
@@ -600,23 +603,16 @@ export default function ConstructionPage() {
                                     </p>
                                   )}
                                 </div>
-                                {task.status === 'done' && (
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    className="h-6 w-6 p-0 shrink-0"
-                                    title="Reset to To Do"
-                                    disabled={resettingTaskId === task.id}
-                                    onClick={() => handleResetTask(task.id, task.title)}
-                                  >
-                                    <RotateCcw
-                                      className={cn(
-                                        'h-3 w-3',
-                                        resettingTaskId === task.id && 'animate-spin',
-                                      )}
-                                    />
-                                  </Button>
-                                )}
+                                <TaskActionsMenu
+                                  task={task}
+                                  isResetting={
+                                    task.status === 'done' && resettingTaskId === task.id
+                                  }
+                                  onOpenSettings={setSettingsTask}
+                                  onReset={handleResetTask}
+                                  variant="compact"
+                                  disableReset={task.status !== 'done'}
+                                />
                               </div>
                               {stream?.text && task.status === 'in_progress' && (
                                 <div className="mt-2 space-y-1.5">
@@ -697,18 +693,12 @@ export default function ConstructionPage() {
                           readOnly
                         />
                       </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="shrink-0 gap-1.5 mt-1 text-[11px]"
-                        disabled={resettingTaskId === task.id}
-                        onClick={() => handleResetTask(task.id, task.title)}
-                      >
-                        <RotateCcw
-                          className={cn('h-3 w-3', resettingTaskId === task.id && 'animate-spin')}
-                        />
-                        Reset
-                      </Button>
+                      <TaskActionsMenu
+                        task={task}
+                        isResetting={resettingTaskId === task.id}
+                        onOpenSettings={setSettingsTask}
+                        onReset={handleResetTask}
+                      />
                     </div>
                   ))}
                 </div>
@@ -876,6 +866,20 @@ export default function ConstructionPage() {
             </div>
           );
         })()}
+
+      {/* Task Settings */}
+      {sprintId && settingsTask && (
+        <TaskSettingsDialog
+          open={!!settingsTask}
+          onOpenChange={(open) => {
+            if (!open) setSettingsTask(null);
+          }}
+          sprintId={sprintId}
+          taskId={settingsTask.id}
+          taskTitle={settingsTask.title}
+          canEdit={settingsTask.status === 'todo'}
+        />
+      )}
     </div>
   );
 }
