@@ -3,6 +3,19 @@ import { api } from './api';
 export type ProjectRole = 'owner' | 'admin' | 'member';
 export type AgentCli = 'kiro' | 'claude' | 'opencode';
 
+// One project ↔ tracker (Jira / GitHub Issues / …) binding. Phase 1 of #194
+// only writes synthetic GitHub-issues bindings via the migration; Phase 3
+// adds Jira and the connect/select UI.
+export interface TrackerBinding {
+  id: string;
+  provider: string;
+  instance: string | null;
+  externalProjectKey: string | null;
+  displayName: string | null;
+  createdAt: string | null;
+  createdBy: string | null;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -12,7 +25,19 @@ export interface Project {
   issueIntegrationEnabled?: boolean;
   createdAt: string;
   userRole?: ProjectRole;
+  trackers: TrackerBinding[];
 }
+
+export interface TrackerMigrationResult {
+  dryRun: boolean;
+  projects: { candidates: number; applied: number };
+  sprints: { candidates: number; applied: number };
+}
+
+// Whole-graph dry-run shape returned by /admin/tracker-migration/status.
+// Same wire shape as TrackerMigrationResult — `applied` is always 0 because
+// the status endpoint never mutates.
+export type TrackerMigrationStatus = TrackerMigrationResult;
 
 export interface CreateProjectInput {
   name: string;
@@ -68,4 +93,17 @@ export const projectsService = {
 
   // Cognito users
   listCognitoUsers: () => api.get<CognitoUser[]>('/users'),
+
+  // Tracker abstraction migration (#194 Phase 1). Owner/admin only. Idempotent.
+  migrateTracker: (projectId: string, dryRun = false) =>
+    api.post<TrackerMigrationResult>(`/projects/${projectId}/migrate-tracker`, { dryRun }),
+
+  // Whole-graph admin counterparts of /projects/{id}/migrate-tracker.
+  // Authenticated-only — drives the Admin page's Tracker Migration card and
+  // shares the same shared core as the per-project endpoint and the bulk CLI
+  // lambda. Idempotent. See parent issue #194 phase #198.
+  getTrackerMigrationStatus: () =>
+    api.get<TrackerMigrationStatus>('/admin/tracker-migration/status'),
+  runTrackerMigration: (dryRun = false) =>
+    api.post<TrackerMigrationResult>('/admin/tracker-migration', { dryRun }),
 };

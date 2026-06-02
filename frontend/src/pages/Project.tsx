@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { projectsService, type Project as ProjectType } from '@/services/projects';
+import { getTrackerProvider } from '@/lib/trackerProviders';
 import { sprintsService, type Sprint } from '@/services/sprints';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -27,7 +28,8 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { Plus, GitBranch, Trash2, Zap, Calendar, Settings } from 'lucide-react';
-import { IssueListPanel } from '@/components/IssueListPanel';
+import { TrackerIssueListPanel } from '@/components/TrackerIssueListPanel';
+import { MigrateTrackerCard } from '@/components/MigrateTrackerCard';
 const PHASE_VARIANT: Record<string, 'inception' | 'construction' | 'review'> = {
   INCEPTION: 'inception',
   CONSTRUCTION: 'construction',
@@ -44,6 +46,12 @@ export default function Project() {
   const [newName, setNewName] = useState('');
   const [creating, setCreating] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [activeTrackerTab, setActiveTrackerTab] = useState<string | null>(null);
+  const [migrating, setMigrating] = useState(false);
+  const [migrationResult, setMigrationResult] = useState<{
+    sprintsApplied: number;
+    projectsApplied: number;
+  } | null>(null);
 
   const loadData = useCallback(async () => {
     if (!projectId) return;
@@ -88,6 +96,25 @@ export default function Project() {
       console.error('Failed to delete sprint:', error);
     } finally {
       setConfirmDelete(null);
+    }
+  };
+
+  const handleMigrateTracker = async () => {
+    if (!projectId) return;
+    setMigrating(true);
+    try {
+      const result = await projectsService.migrateTracker(projectId);
+      setMigrationResult({
+        sprintsApplied: result.sprints.applied,
+        projectsApplied: result.projects.applied,
+      });
+      // Reload so project.trackers reflects the new binding and the
+      // MigrateTrackerCard self-dismisses on next render.
+      await loadData();
+    } catch (error) {
+      console.error('Failed to migrate tracker:', error);
+    } finally {
+      setMigrating(false);
     }
   };
 
@@ -239,11 +266,40 @@ export default function Project() {
           </div>
         )}
 
-        {/* GitHub issues panel — below sprints so sprints stay discoverable */}
-        {project && project.gitProvider === 'github' && project.issueIntegrationEnabled && (
-          <IssueListPanel
+        {/* Tracker-abstraction migration banner — only renders for legacy
+            projects that still use issueIntegrationEnabled and have no
+            HAS_TRACKER edge yet. Lives here so users discover the
+            migration on the project page where their issue list used to
+            be (the same banner also appears in Project Settings). */}
+        {project && (
+          <div className="mt-6">
+            <MigrateTrackerCard
+              project={project}
+              canEditProject={project.userRole === 'owner' || project.userRole === 'admin'}
+              migrating={migrating}
+              migrationResult={migrationResult}
+              onMigrate={handleMigrateTracker}
+            />
+          </div>
+        )}
+
+        {/* Tracker issue panels. With one binding we render the panel inline.
+            With multiple, a tab strip selects which binding's panel to show
+            (per Phase 3 spec — "GitHub aws-samples/X · Jira PROJ"). */}
+        {project && project.trackers.length === 1 && (
+          <TrackerIssueListPanel
+            project={project}
+            binding={project.trackers[0]}
+            sprints={sprints}
+            onSprintCreated={(sprint) => setSprints((prev) => [...prev, sprint])}
+          />
+        )}
+        {project && project.trackers.length > 1 && (
+          <TrackerTabs
             project={project}
             sprints={sprints}
+            activeTabId={activeTrackerTab}
+            onTabChange={setActiveTrackerTab}
             onSprintCreated={(sprint) => setSprints((prev) => [...prev, sprint])}
           />
         )}
@@ -309,6 +365,61 @@ export default function Project() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    </div>
+  );
+}
+
+interface TrackerTabsProps {
+  project: ProjectType;
+  sprints: Sprint[];
+  activeTabId: string | null;
+  onTabChange: (id: string) => void;
+  onSprintCreated: (sprint: Sprint) => void;
+}
+
+function TrackerTabs({
+  project,
+  sprints,
+  activeTabId,
+  onTabChange,
+  onSprintCreated,
+}: TrackerTabsProps) {
+  const trackers = project.trackers;
+  const activeBinding = useMemo(() => {
+    return trackers.find((t) => t.id === activeTabId) ?? trackers[0];
+  }, [trackers, activeTabId]);
+
+  return (
+    <div className="mt-6">
+      <div className="flex items-center gap-1 border-b">
+        {trackers.map((binding) => {
+          const isActive = binding.id === activeBinding.id;
+          const tabLabel = getTrackerProvider(binding.provider).tabLabel;
+          const label = binding.displayName || binding.externalProjectKey || tabLabel;
+          return (
+            <button
+              key={binding.id}
+              type="button"
+              onClick={() => onTabChange(binding.id)}
+              className={`px-3 py-2 text-sm border-b-2 -mb-px transition-colors ${
+                isActive
+                  ? 'border-primary text-foreground font-medium'
+                  : 'border-transparent text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              <span className="text-muted-foreground mr-1.5">{tabLabel}</span>
+              {label}
+            </button>
+          );
+        })}
+      </div>
+      <TrackerIssueListPanel
+        key={activeBinding.id}
+        project={project}
+        binding={activeBinding}
+        sprints={sprints}
+        onSprintCreated={onSprintCreated}
+      />
     </div>
   );
 }

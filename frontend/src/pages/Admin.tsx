@@ -5,6 +5,9 @@ import {
   type PoolStatus,
   type AgentSettings,
 } from '@/services/agents';
+import { trackersService, type TrackerProviderStatus } from '@/services/trackers';
+import { OAuthProviderCard } from '@/components/admin/OAuthProviderCard';
+import { TrackerMigrationCard } from '@/components/admin/TrackerMigrationCard';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -26,6 +29,7 @@ import {
   CheckCircle2,
   XCircle,
   Settings,
+  Plug,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -98,6 +102,10 @@ export default function Admin() {
   const [acting, setActing] = useState<string | null>(null);
   const [warmCount, setWarmCount] = useState(5);
 
+  // Tracker OAuth-app config (one entry per supported provider)
+  const [trackerProviders, setTrackerProviders] = useState<TrackerProviderStatus[]>([]);
+  const [trackerProvidersLoading, setTrackerProvidersLoading] = useState(true);
+
   // Agent settings
   const [settings, setSettings] = useState<AgentSettings | null>(null);
   const [settingsLoading, setSettingsLoading] = useState(true);
@@ -134,6 +142,21 @@ export default function Admin() {
       .catch((e) => console.error('Failed to load settings:', e))
       .finally(() => setSettingsLoading(false));
   }, []);
+
+  const loadTrackerProviders = useCallback(async () => {
+    try {
+      const list = await trackersService.listProviders();
+      setTrackerProviders(list);
+    } catch (e) {
+      console.error('Failed to load tracker providers:', e);
+    } finally {
+      setTrackerProvidersLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadTrackerProviders();
+  }, [loadTrackerProviders]);
 
   const saveSettings = async () => {
     // Validate MCP JSON before sending
@@ -512,6 +535,52 @@ export default function Admin() {
             )}
           </CardContent>
         </Card>
+
+        {/* Tracker OAuth Apps — operator-facing OAuth credential editor.
+            Replaces the per-provider `aws secretsmanager put-secret-value`
+            CLI step from earlier docs. Per provider, an `OAuthProviderCard`
+            shows configured status and accepts new client_id / client_secret
+            pairs. Adding a new tracker provider is a backend-side change;
+            this section just iterates whatever the API returns. */}
+        <Card>
+          <CardHeader className="pb-3 pt-5 px-5">
+            <CardTitle className="text-sm font-semibold flex items-center gap-2">
+              <Plug className="h-4 w-4 text-muted-foreground" />
+              Tracker OAuth Apps
+            </CardTitle>
+            <p className="text-xs text-muted-foreground">
+              Connect external tracker providers (Jira Cloud, GitHub Issues) by registering an OAuth
+              app with each provider and pasting its credentials below. Users then connect their
+              personal accounts from Project Settings → Trackers.
+            </p>
+          </CardHeader>
+          <CardContent className="px-5 pb-5 space-y-4">
+            {trackerProvidersLoading ? (
+              <div className="space-y-3">
+                <Skeleton className="h-24 w-full" />
+                <Skeleton className="h-24 w-full" />
+              </div>
+            ) : trackerProviders.length === 0 ? (
+              <p className="text-xs text-muted-foreground">No tracker providers available.</p>
+            ) : (
+              trackerProviders.map((p) => (
+                <OAuthProviderCard
+                  key={p.id}
+                  providerId={p.id}
+                  label={p.label}
+                  configured={p.configured}
+                  onSaved={loadTrackerProviders}
+                />
+              ))
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Tracker abstraction migration (#194 phase #198). UI counterpart
+            of the migrate-tracker-fields Lambda. Legacy data + tooling stay
+            deployed permanently — this card just makes the migration
+            actionable from the UI for installs without shell access. */}
+        <TrackerMigrationCard />
       </div>
     </div>
   );

@@ -4,11 +4,13 @@
   "workspaces": [
     "lambda/get-agent-output",
     "lambda/github",
-    "lambda/github-issues",
+    "lambda/migrate-tracker-fields",
     "lambda/notify",
     "lambda/projects",
     "lambda/purge-neptune",
     "lambda/sprint-graph",
+    "lambda/sprints",
+    "lambda/trackers",
     "lambda/ws-authorizer",
     "lambda/ws-connection",
     "lambda/ws-message"

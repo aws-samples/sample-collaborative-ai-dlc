@@ -48,17 +48,47 @@ The deployment takes 15-30 minutes. Neptune DB cluster creation takes the longes
 
 After deployment, configure agent authentication in the platform UI by entering either a Kiro CLI API key or Bedrock credentials (for Claude Code / OpenCode setups). Check the agent pool DynamoDB table or ECS task logs to confirm agents are authenticated and ready.
 
-### Configure GitHub OAuth
+### Configure tracker OAuth apps
 
-Create a [GitHub OAuth App](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app) and store the credentials:
+The platform integrates with external trackers (GitHub Issues, Jira Cloud) so a sprint can be started from a tracker issue. For each tracker you want to enable, register an OAuth app with the provider and paste the credentials into **Admin → Tracker OAuth Apps** in the deployed app.
 
-```bash
-aws secretsmanager update-secret \
-  --secret-id collaborative-ai-dlc-dev-github-oauth \
-  --secret-string '{"client_id":"your_client_id","client_secret":"your_client_secret"}'
-```
+Both providers are optional. Skip a section if you don't need that tracker — the corresponding **Connect** buttons in the UI will stay disabled with a hint pointing to this admin panel.
 
-Set the **Authorization callback URL** to your CloudFront domain followed by `/api/auth/callback/github`.
+#### GitHub Issues
+
+1. Open [GitHub Developer Settings → OAuth Apps → New OAuth App](https://github.com/settings/developers).
+   Choose an **OAuth App**, _not_ a GitHub App — the flow expects OAuth App semantics.
+2. Set:
+   - **Homepage URL**: `https://<your-cloudfront-domain>`
+   - **Authorization callback URL**: `https://<your-cloudfront-domain>/github/callback`
+3. Copy the **Client ID** and generate a **Client Secret**.
+4. In the deployed app, sign in and open **Admin → Tracker OAuth Apps → GitHub Issues**. Paste both values and click **Save**.
+
+#### Jira Cloud
+
+1. Open the [Atlassian Developer Console](https://developer.atlassian.com/console/myapps) and create an **OAuth 2.0 integration**.
+2. Under **Permissions**, add the **Jira API** with scopes:
+   - `read:jira-work`
+   - `read:jira-user`
+   - `offline_access` (required for refresh tokens — don't skip)
+3. Under **Authorization**, set the callback URL to `https://<your-cloudfront-domain>/trackers/callback/jira-cloud`.
+4. Open the **Settings** tab of the app and copy the **Client ID** and **Client Secret**.
+5. In the deployed app, sign in and open **Admin → Tracker OAuth Apps → Jira Cloud**. Paste both values and click **Save**.
+
+Rotating credentials later is the same flow — paste new values and **Save** overwrites the stored secret.
+
+??? info "CLI fallback for fully-automated deploys"
+The Admin UI is a wrapper around AWS Secrets Manager. To populate the secrets in your provisioning pipeline:
+
+    ```bash
+    aws secretsmanager put-secret-value \
+      --secret-id $(terraform -chdir=terraform output -raw github_oauth_secret_name) \
+      --secret-string '{"client_id":"...","client_secret":"..."}'
+
+    aws secretsmanager put-secret-value \
+      --secret-id $(terraform -chdir=terraform output -raw jira_oauth_secret_name) \
+      --secret-string '{"client_id":"...","client_secret":"..."}'
+    ```
 
 ### Create users
 
@@ -140,6 +170,23 @@ This starts the Vite development server on `http://localhost:5173`.
 | Backend (Lambda, agents, infra) | `./scripts/deploy-terraform.sh dev` |
 | Frontend only                   | `./scripts/deploy-frontend.sh dev`  |
 
+### One-time tracker-data migration (only relevant for installs with pre-#194 data)
+
+If you're upgrading an install that ran before issue #194 (tracker provider abstraction) landed, existing projects keep working without intervention — but to bind Jira (or any future tracker) to them, their sprint and project records need a one-time backfill onto the new polymorphic shape.
+
+Operators have two equivalent paths, both idempotent:
+
+- **Admin UI**: open **Admin → Tracker Migration** in the deployed app. The card displays a live count of legacy projects + sprints; click **Migrate all** when ready.
+- **CLI**: invoke the `migrate-tracker-fields` Lambda directly. Supports a dry-run for previewing.
+
+  ```bash
+  aws lambda invoke \
+    --function-name "$(terraform output -raw migrate_tracker_fields_lambda_name)" \
+    --payload '{"dryRun":true}' --cli-binary-format raw-in-base64-out /tmp/out.json
+  ```
+
+Both paths share the same shared core, so the result is identical. Migration is **never** automatic — operators run it on demand. See [Git and Tracker Integration → Migrating from legacy issue integration](../using-the-platform/git-integration.md#migrating-from-legacy-issue-integration) for full context, including why nothing is removed and the migration tooling stays deployed permanently.
+
 ## Destroy infrastructure
 
 To remove all deployed resources:
@@ -172,6 +219,6 @@ Check CloudWatch Logs for the ECS service. Common issues: missing IAM permission
 
 Verify User Pool ID and App Client ID match Terraform outputs, and that the user exists in the correct group.
 
-**GitHub integration not working**
+**Tracker integration not working (GitHub or Jira)**
 
-Check that the OAuth callback URL matches your CloudFront domain and that Secrets Manager contains valid credentials.
+In the deployed app, open **Admin → Tracker OAuth Apps**. Each provider should show **Configured**; if it shows **Not configured**, finish the OAuth-app setup and paste the credentials. Also confirm the OAuth app's **Authorization callback URL** matches the values listed above for your CloudFront domain — provider apps reject mismatched callbacks at sign-in time.

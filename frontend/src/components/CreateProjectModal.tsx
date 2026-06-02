@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { projectsService, type CreateProjectInput } from '../services/projects';
+import { trackersService } from '../services/trackers';
 import { useGitHubStatus } from '../hooks/useGitHubStatus';
 import { GitHubConnectButton } from './GitHubConnectButton';
 import { GitHubRepoSelect } from './GitHubRepoSelect';
@@ -39,7 +40,29 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
     setSubmitting(true);
     setError(null);
     try {
-      await projectsService.create(formData);
+      const project = await projectsService.create(formData);
+      // The "Enable GitHub issue integration" checkbox now creates a tracker
+      // binding instead of writing the legacy boolean — the backend keeps
+      // the boolean as a derived read, but the binding is the source of
+      // truth in Phase 2+.
+      if (
+        formData.issueIntegrationEnabled &&
+        formData.gitProvider === 'github' &&
+        formData.gitRepo
+      ) {
+        try {
+          await trackersService.addToProject(project.id, {
+            provider: 'github-issues',
+            instance: 'public',
+            externalProjectKey: formData.gitRepo,
+            displayName: formData.gitRepo,
+          });
+        } catch (err) {
+          // Non-fatal: project still got created. Surface the binding error
+          // so the user can re-enable from settings.
+          console.error('Failed to add github-issues tracker:', err);
+        }
+      }
       onCreated();
       onClose();
     } catch (err) {
