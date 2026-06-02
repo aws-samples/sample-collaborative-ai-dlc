@@ -20,6 +20,7 @@ const { getDriver } = require('./drivers');
 const AGENT_CLI = process.env.AGENT_CLI || 'kiro';
 const driver = getDriver(AGENT_CLI);
 const ACP_VERBOSE = process.env.ACP_VERBOSE === 'true';
+const DEFAULT_REQUEST_TIMEOUT_MS = parseInt(process.env.ACP_REQUEST_TIMEOUT_MS || '120000', 10);
 
 // ---------------------------------------------------------------------------
 // MCP servers — merged from global (SSM), project (Neptune), task (Neptune)
@@ -141,11 +142,28 @@ const env = {
   region: process.env.AWS_REGION || 'us-east-1',
 };
 
+function toNeptuneSignerCredentials(credentials, region) {
+  return {
+    accessKeyId: credentials.accessKeyId,
+    accessKey: credentials.accessKeyId,
+    secretAccessKey: credentials.secretAccessKey,
+    secretKey: credentials.secretAccessKey,
+    sessionToken: credentials.sessionToken,
+    region,
+  };
+}
+
 const getConnection = async () => {
   if (!env.neptuneEndpoint) return null;
   const credentials = await fromNodeProviderChain()();
-  credentials.region = env.region;
-  const connInfo = getUrlAndHeaders(env.neptuneEndpoint, '8182', credentials, '/gremlin', 'wss');
+  const signerCredentials = toNeptuneSignerCredentials(credentials, env.region);
+  const connInfo = getUrlAndHeaders(
+    env.neptuneEndpoint,
+    '8182',
+    signerCredentials,
+    '/gremlin',
+    'wss',
+  );
   return new DriverRemoteConnection(connInfo.url, { headers: connInfo.headers });
 };
 
@@ -176,11 +194,36 @@ function send(method, params) {
   return id;
 }
 
-function request(method, params) {
+function request(method, params, options = {}) {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   return new Promise((resolve, reject) => {
     const id = send(method, params);
-    pending.set(id, { resolve, reject });
+    const timer =
+      timeoutMs > 0
+        ? setTimeout(() => {
+            pending.delete(id);
+            reject(new Error(`${method} timed out after ${timeoutMs}ms`));
+          }, timeoutMs)
+        : null;
+    pending.set(id, { method, resolve, reject, timer });
   });
+}
+
+function settlePending(id, settle, value) {
+  const entry = pending.get(id);
+  if (!entry) return false;
+  pending.delete(id);
+  if (entry.timer) clearTimeout(entry.timer);
+  entry[settle](value);
+  return true;
+}
+
+function rejectAllPending(err) {
+  for (const [id, entry] of pending) {
+    pending.delete(id);
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.reject(err);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -308,7 +351,6 @@ async function saveStatus(status) {
     console.log(`[acp] Status already saved, skipping duplicate saveStatus('${status}')`);
     return;
   }
-  statusSaved = true;
   try {
     await ddb.send(
       new PutCommand({
@@ -326,9 +368,16 @@ async function saveStatus(status) {
         },
       }),
     );
+    statusSaved = true;
+    console.log(`[acp] Wrote AgentOutputs status '${status}' for ${env.executionId}`);
+  } catch (err) {
+    console.error('[acp] Failed to write AgentOutputs status:', err.message);
+    return;
+  }
 
-    // Update Sprint vertex with completion status
-    if (env.sprintId) {
+  // Update Sprint vertex with completion status
+  if (env.sprintId) {
+    try {
       await withNeptune(async (g) => {
         const { cardinality } = gremlin.process;
         const agentStatus = status === 'completed' ? 'completed' : 'failed';
@@ -339,12 +388,17 @@ async function saveStatus(status) {
           .property(cardinality.single, 'agent_completed_at', new Date().toISOString())
           .next();
       });
+      console.log(`[acp] Updated Sprint ${env.sprintId} status to '${status}'`);
+    } catch (err) {
+      console.error('[acp] Failed to update Sprint status in Neptune:', err.message);
     }
+  }
 
-    // Clear task_execution_status on the Task vertex so the orchestrator knows this agent is done.
-    // Without this, task_execution_status stays "RUNNING" forever and the orchestrator
-    // thinks an agent is still working on the task.
-    if (env.agentTaskId) {
+  // Clear task_execution_status on the Task vertex so the orchestrator knows this agent is done.
+  // Without this, task_execution_status stays "RUNNING" forever and the orchestrator
+  // thinks an agent is still working on the task.
+  if (env.agentTaskId) {
+    try {
       await withNeptune(async (g) => {
         const { cardinality } = gremlin.process;
         const execStatus = status === 'completed' ? 'COMPLETED' : 'FAILED';
@@ -355,9 +409,9 @@ async function saveStatus(status) {
           .next();
         console.log(`[acp] Updated task ${env.agentTaskId} task_execution_status to ${execStatus}`);
       });
+    } catch (err) {
+      console.error('[acp] Failed to update Task status in Neptune:', err.message);
     }
-  } catch (err) {
-    console.error('Failed to save status:', err.message);
   }
 }
 
@@ -373,12 +427,12 @@ function handleMessage(msg) {
 
   // Response to a request we sent
   if (msg.id !== undefined && pending.has(msg.id)) {
-    const { resolve, reject } = pending.get(msg.id);
-    pending.delete(msg.id);
     if (msg.error) {
       console.error('[acp] Error response details:', JSON.stringify(msg.error));
-      reject(new Error(msg.error.message));
-    } else resolve(msg.result);
+      settlePending(msg.id, 'reject', new Error(msg.error.message));
+    } else {
+      settlePending(msg.id, 'resolve', msg.result);
+    }
     return;
   }
 
@@ -633,6 +687,7 @@ async function runAcpMode() {
     if (stderrChunks.length === 0) {
       console.error(`[acp] ${acpBin} exited (code=${code}) with no stderr output`);
     }
+    rejectAllPending(new Error(`${acpBin} exited before responding`));
     // Only save status here if the prompt flow hasn't already handled it.
     // The statusSaved guard inside saveStatus() prevents double-writes.
     if (!statusSaved) {
@@ -644,11 +699,15 @@ async function runAcpMode() {
 
   // 1. Initialize
   console.log('[acp] Initializing...');
-  const initResult = await request('initialize', {
-    protocolVersion: 1,
-    clientCapabilities: {},
-    clientInfo: { name: 'ai-dlc-agent', version: '1.0.0' },
-  });
+  const initResult = await request(
+    'initialize',
+    {
+      protocolVersion: 1,
+      clientCapabilities: {},
+      clientInfo: { name: 'ai-dlc-agent', version: '1.0.0' },
+    },
+    { timeoutMs: 60000 },
+  );
   console.log('[acp] Initialized:', initResult.agentInfo?.name, initResult.agentInfo?.version);
   console.log('[acp] Agent capabilities:', JSON.stringify(initResult.agentCapabilities || {}));
 
@@ -706,6 +765,12 @@ async function runAcpMode() {
     ...extras,
   ];
   console.log(`[acp] Starting session with ${mcpServers.length} MCP server(s)`);
+  console.log(
+    '[acp] MCP servers:',
+    mcpServers
+      .map((server) => `${server.name || '(unnamed)'}:${server.command || '(no command)'}`)
+      .join(', '),
+  );
   // Redacted dump of the payload we're about to send. Header/env values are
   // replaced with their length so secrets don't end up in CloudWatch.
   console.log(
@@ -720,14 +785,18 @@ async function runAcpMode() {
         headers: Array.isArray(s.headers)
           ? s.headers.map((h) => ({ name: h.name, value: `<${(h.value || '').length} chars>` }))
           : s.headers,
-      })),
-    }),
+        })),
+      }),
   );
 
-  const session = await request('session/new', {
-    cwd: '/workspace',
-    mcpServers,
-  });
+  const session = await request(
+    'session/new',
+    {
+      cwd: '/workspace',
+      mcpServers,
+    },
+    { timeoutMs: parseInt(process.env.ACP_SESSION_NEW_TIMEOUT_MS || '180000', 10) },
+  );
   const sessionId = session.sessionId;
   console.log('[acp] Session created:', sessionId);
 
@@ -741,7 +810,11 @@ async function runAcpMode() {
   const hasBypassMode = availableModes.some((m) => m.id === 'bypassPermissions');
   if (hasBypassMode) {
     try {
-      await request('session/set_mode', { sessionId, modeId: 'bypassPermissions' });
+      await request(
+        'session/set_mode',
+        { sessionId, modeId: 'bypassPermissions' },
+        { timeoutMs: 30000 },
+      );
       console.log('[acp] Session mode set to bypassPermissions');
     } catch (modeErr) {
       // Non-fatal — we still have the session/request_permission handler as fallback
@@ -760,10 +833,14 @@ async function runAcpMode() {
   console.log('[acp] Sending prompt...');
   let promptSucceeded = false;
   try {
-    await request('session/prompt', {
-      sessionId,
-      prompt: [{ type: 'text', text: env.prompt }],
-    });
+    await request(
+      'session/prompt',
+      {
+        sessionId,
+        prompt: [{ type: 'text', text: env.prompt }],
+      },
+      { timeoutMs: 0 },
+    );
     console.log('[acp] Prompt completed');
     // Flush any buffered text chunks before saving/broadcasting completion
     flushChunksSync();

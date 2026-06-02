@@ -76,6 +76,17 @@ const env = {
 const POLL_INTERVAL = 3000;
 const HEARTBEAT_INTERVAL = 30000;
 
+function toNeptuneSignerCredentials(credentials, region) {
+  return {
+    accessKeyId: credentials.accessKeyId,
+    accessKey: credentials.accessKeyId,
+    secretAccessKey: credentials.secretAccessKey,
+    secretKey: credentials.secretAccessKey,
+    sessionToken: credentials.sessionToken,
+    region,
+  };
+}
+
 // Mark this worker as idle, advertising which CLIs it has authenticated.
 async function setIdle() {
   await ddb.send(
@@ -126,7 +137,7 @@ async function saveStatus(executionId, agentType, projectId, status) {
         },
       }),
     )
-    .catch((e) => console.error('Failed to save status:', e.message));
+    .catch((e) => console.error('[pool-worker] Failed to write AgentOutputs status:', e.message));
 }
 
 // Update the AgentRun node in Neptune on job completion/failure.
@@ -137,8 +148,8 @@ async function updateAgentRunStatus(job, status) {
   if (!neptuneEndpoint) return;
   try {
     const creds = await fromNodeProviderChain()();
-    creds.region = env.region;
-    const info = getUrlAndHeaders(neptuneEndpoint, '8182', creds, '/gremlin', 'wss');
+    const signerCreds = toNeptuneSignerCredentials(creds, env.region);
+    const info = getUrlAndHeaders(neptuneEndpoint, '8182', signerCreds, '/gremlin', 'wss');
     const conn = new gremlin.driver.DriverRemoteConnection(info.url, { headers: info.headers });
     const g = gremlin.process.AnonymousTraversalSource.traversal().withRemote(conn);
     const { cardinality } = gremlin.process;
