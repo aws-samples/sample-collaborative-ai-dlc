@@ -17,6 +17,37 @@ const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const __ = gremlin.process.statics;
 const { cardinality } = gremlin.process;
 
+// Synthetic-binding id for legacy projects (issue_integration_enabled='true'
+// but no HAS_TRACKER edge). Lets the frontend render the GitHub-issues panel
+// against the project's gitRepo without requiring the user to migrate first.
+// The trackers lambda special-cases this id on the issue routes.
+export const LEGACY_GITHUB_BINDING_ID = 'legacy-github';
+
+const buildLegacyBinding = (project) => ({
+  id: LEGACY_GITHUB_BINDING_ID,
+  provider: 'github-issues',
+  instance: 'public',
+  externalProjectKey: project.gitRepo,
+  displayName: project.gitRepo,
+  createdAt: project.createdAt,
+  createdBy: null,
+});
+
+// Append a synthetic legacy binding when the project still uses the
+// issueIntegrationEnabled boolean and has no real bindings yet. Mutates +
+// returns the same project object for terse call sites.
+const withLegacyTracker = (project) => {
+  if (
+    project.issueIntegrationEnabled &&
+    project.trackers.length === 0 &&
+    project.gitProvider === 'github' &&
+    project.gitRepo
+  ) {
+    project.trackers.push(buildLegacyBinding(project));
+  }
+  return project;
+};
+
 const getConnection = async () => {
   const host = process.env.NEPTUNE_ENDPOINT;
   const port = process.env.GREMLIN_PORT ?? '8182';
@@ -63,6 +94,9 @@ export const handler = async (event) => {
     const userId = event.requestContext?.authorizer?.claims?.sub;
     const userEmail = event.requestContext?.authorizer?.claims?.email || '';
     const isMigrateTracker = httpMethod === 'POST' && path?.endsWith('/migrate-tracker');
+    const isAdminMigrationStatus =
+      httpMethod === 'GET' && path?.endsWith('/admin/tracker-migration/status');
+    const isAdminMigrationRun = httpMethod === 'POST' && path?.endsWith('/admin/tracker-migration');
 
     // POST /projects/{projectId}/migrate-tracker — owner/admin only.
     // Backfills the tracker_* fields on this project's sprints + creates a
@@ -84,6 +118,39 @@ export const handler = async (event) => {
         }
       }
       const result = await runTrackerMigration(g, { projectId, dryRun });
+      return response(200, result);
+    }
+
+    // GET /admin/tracker-migration/status — operator-facing whole-graph
+    // count of projects + sprints still on the legacy tracker shape. Drives
+    // the Admin page's "Tracker Migration" card. Implemented as a dry-run
+    // of the same shared core that the per-project endpoint and the bulk
+    // CLI lambda use, so the three paths cannot drift. See parent issue
+    // #194 phase #198. Authenticated-only — matches the existing posture
+    // for admin-config endpoints in this repo (see `/agents/settings` and
+    // `/trackers/providers/{p}/oauth-config`); tightening admin gating is
+    // a separate, repo-wide hardening pass.
+    if (isAdminMigrationStatus) {
+      if (!userId) return response(401, { error: 'Unauthorized' });
+      const result = await runTrackerMigration(g, { dryRun: true });
+      return response(200, result);
+    }
+
+    // POST /admin/tracker-migration — operator-facing bulk migration
+    // trigger. Same effect as `aws lambda invoke ... migrate-tracker-fields`,
+    // exposed through the API so operators don't need shell access. Body
+    // `{ dryRun?: boolean }`. Idempotent.
+    if (isAdminMigrationRun) {
+      if (!userId) return response(401, { error: 'Unauthorized' });
+      let dryRun = false;
+      if (body) {
+        try {
+          dryRun = Boolean(JSON.parse(body)?.dryRun);
+        } catch {
+          return response(400, { error: 'Invalid JSON body' });
+        }
+      }
+      const result = await runTrackerMigration(g, { dryRun });
       return response(200, result);
     }
 
@@ -126,7 +193,7 @@ export const handler = async (event) => {
             userRole: role || 'member',
             trackers: trackerMaps.map(mapBinding),
           };
-          return response(200, project);
+          return response(200, withLegacyTracker(project));
         }
 
         // List projects - only return projects where the current user is a member.
@@ -153,7 +220,7 @@ export const handler = async (event) => {
           const v = pBundle instanceof Map ? pBundle.get('vertex') : pBundle.vertex;
           const trackerMaps =
             (pBundle instanceof Map ? pBundle.get('trackers') : pBundle.trackers) ?? [];
-          return {
+          return withLegacyTracker({
             id: getVal(v, 'id'),
             name: getVal(v, 'name'),
             gitProvider: getVal(v, 'git_provider') || 'github',
@@ -163,7 +230,7 @@ export const handler = async (event) => {
             createdAt: getVal(v, 'created_at') || new Date().toISOString(),
             userRole: role || 'member',
             trackers: trackerMaps.map(mapBinding),
-          };
+          });
         });
         return response(200, projects);
 

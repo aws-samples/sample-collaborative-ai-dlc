@@ -34,6 +34,11 @@ export interface TrackerMigrationResult {
   sprints: { candidates: number; applied: number };
 }
 
+// Whole-graph dry-run shape returned by /admin/tracker-migration/status.
+// Same wire shape as TrackerMigrationResult — `applied` is always 0 because
+// the status endpoint never mutates.
+export type TrackerMigrationStatus = TrackerMigrationResult;
+
 export interface CreateProjectInput {
   name: string;
   gitProvider: 'github' | 'gitlab';
@@ -92,4 +97,13 @@ export const projectsService = {
   // Tracker abstraction migration (#194 Phase 1). Owner/admin only. Idempotent.
   migrateTracker: (projectId: string, dryRun = false) =>
     api.post<TrackerMigrationResult>(`/projects/${projectId}/migrate-tracker`, { dryRun }),
+
+  // Whole-graph admin counterparts of /projects/{id}/migrate-tracker.
+  // Authenticated-only — drives the Admin page's Tracker Migration card and
+  // shares the same shared core as the per-project endpoint and the bulk CLI
+  // lambda. Idempotent. See parent issue #194 phase #198.
+  getTrackerMigrationStatus: () =>
+    api.get<TrackerMigrationStatus>('/admin/tracker-migration/status'),
+  runTrackerMigration: (dryRun = false) =>
+    api.post<TrackerMigrationResult>('/admin/tracker-migration', { dryRun }),
 };

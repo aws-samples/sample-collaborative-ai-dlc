@@ -189,6 +189,35 @@ const seedProjectWithRole = async (role, { gitRepo = 'acme/widgets' } = {}) => {
   return projectId;
 };
 
+// Legacy-shaped project: issue_integration_enabled='true', git_provider set,
+// gitRepo populated, NO HAS_TRACKER edge. Used to exercise the synthetic
+// legacy-github binding the trackers lambda surfaces (#194).
+const seedLegacyProject = async ({ gitRepo = 'acme/widgets' } = {}) => {
+  const projectId = randomUUID();
+  const userId = 'user-1';
+  const userExists = await g.V().has('User', 'id', userId).hasNext();
+  if (!userExists) {
+    await g.addV('User').property('id', userId).property('email', `${userId}@x`).next();
+  }
+  await g
+    .addV('Project')
+    .property('id', projectId)
+    .property('name', 'P')
+    .property('git_provider', 'github')
+    .property('git_repo', gitRepo)
+    .property('issue_integration_enabled', 'true')
+    .property('created_at', NOW.toISOString())
+    .next();
+  await g
+    .V()
+    .has('Project', 'id', projectId)
+    .addE('HAS_MEMBER')
+    .property('role', 'owner')
+    .to(gremlin.process.statics.V().has('User', 'id', userId))
+    .next();
+  return projectId;
+};
+
 const baseEvent = (overrides = {}) => ({
   httpMethod: 'GET',
   path: '/trackers',
@@ -476,7 +505,11 @@ describe('DELETE /projects/{id}/trackers/{bindingId}', () => {
       ...claims(),
     });
     expect(res.statusCode).toBe(204);
-    // GET should now show no bindings
+    // The HAS_TRACKER edge is gone. The seed sets
+    // issue_integration_enabled='true', so dropping the real binding flips
+    // the project back to "legacy" and GET surfaces a synthetic
+    // legacy-github entry (issue #194 — keeps the issues panel visible
+    // for unmigrated projects).
     const after = await handler({
       httpMethod: 'GET',
       path: `/projects/${projectId}/trackers`,
@@ -484,7 +517,9 @@ describe('DELETE /projects/{id}/trackers/{bindingId}', () => {
       headers: { origin: 'https://example.com' },
       ...claims(),
     });
-    expect(JSON.parse(after.body)).toEqual([]);
+    expect(JSON.parse(after.body)).toEqual([
+      expect.objectContaining({ id: 'legacy-github', provider: 'github-issues' }),
+    ]);
   });
 });
 
@@ -785,6 +820,97 @@ describe('GET /projects/{id}/trackers/{bid}/issues/{rid}/comments', () => {
     expect(second.statusCode).toBe(200);
     expect(JSON.parse(second.body)).toHaveLength(1);
     expect(fetchMock.mock.calls[1][1].headers['If-None-Match']).toBe('W/"c1"');
+  });
+});
+
+// #194: synthetic legacy-github binding — surfaces a github-issues panel for
+// projects that still use issue_integration_enabled and have no real
+// HAS_TRACKER edge. No graph state is written; the binding is materialized
+// from the project's gitRepo on every read.
+describe('Legacy github-issues binding (#194)', () => {
+  it('GET /projects/{id}/trackers includes the synthetic legacy-github entry', async () => {
+    const projectId = await seedLegacyProject({ gitRepo: 'acme/widgets' });
+    const res = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/trackers`,
+      pathParameters: { projectId },
+      headers: { origin: 'https://example.com' },
+      ...claims(),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual([
+      expect.objectContaining({
+        id: 'legacy-github',
+        provider: 'github-issues',
+        instance: 'public',
+        externalProjectKey: 'acme/widgets',
+        displayName: 'acme/widgets',
+      }),
+    ]);
+  });
+
+  it('GET /projects/{id}/trackers/legacy-github/issues serves the FE panel', async () => {
+    const projectId = await seedLegacyProject({ gitRepo: 'acme/widgets' });
+    fetchMock.mockResolvedValueOnce(okResponse([issueFixture()]));
+
+    const res = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/trackers/legacy-github/issues`,
+      pathParameters: { projectId, bindingId: 'legacy-github' },
+      headers: { origin: 'https://example.com' },
+      ...claims(),
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0]).toMatchObject({ resourceId: '42', title: 'Add login flow' });
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://api.github.com/repos/acme/widgets/issues?per_page=30&page=1&state=open',
+    );
+  });
+
+  it('GET .../legacy-github/issues/{rid}/comments works', async () => {
+    const projectId = await seedLegacyProject({ gitRepo: 'acme/widgets' });
+    fetchMock.mockResolvedValueOnce(okResponse([commentFixture()]));
+
+    const res = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/trackers/legacy-github/issues/42/comments`,
+      pathParameters: { projectId, bindingId: 'legacy-github', resourceId: '42' },
+      headers: { origin: 'https://example.com' },
+      ...claims(),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toHaveLength(1);
+  });
+
+  it('returns 404 when the project never had legacy github-issues enabled', async () => {
+    // Project missing issue_integration_enabled — no synthetic binding to serve.
+    const projectId = await seedProjectWithRole('owner', { gitRepo: 'a/b' });
+    const res = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/trackers/legacy-github/issues`,
+      pathParameters: { projectId, bindingId: 'legacy-github' },
+      headers: { origin: 'https://example.com' },
+      ...claims(),
+    });
+    expect(res.statusCode).toBe(404);
+    expect(JSON.parse(res.body).error).toBe('Binding not found');
+  });
+
+  it('rejects DELETE on the synthetic id with a "migrate first" hint', async () => {
+    const projectId = await seedLegacyProject();
+    const res = await handler({
+      httpMethod: 'DELETE',
+      path: `/projects/${projectId}/trackers/legacy-github`,
+      pathParameters: { projectId, bindingId: 'legacy-github' },
+      headers: { origin: 'https://example.com' },
+      ...claims(),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toContain('Migrate this project');
   });
 });
 

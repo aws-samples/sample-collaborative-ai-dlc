@@ -22,7 +22,12 @@ export function MigrateTrackerCard({
   migrationResult,
   onMigrate,
 }: Props) {
-  const needsMigration = project.issueIntegrationEnabled === true && project.trackers.length === 0;
+  // A project still needs migration when issueIntegrationEnabled is true and
+  // it has no real trackers — the legacy synthetic binding (`id:
+  // 'legacy-github'`) the backend appends doesn't count, since it isn't
+  // backed by a graph edge.
+  const hasRealTracker = project.trackers.some((t) => t.id !== 'legacy-github');
+  const needsMigration = project.issueIntegrationEnabled === true && !hasRealTracker;
   if (!needsMigration) return null;
 
   return (

@@ -55,6 +55,28 @@ The Jira integration is **read-only** — the agent never writes back to Jira. C
 
 If a Jira refresh token is revoked at the provider (for example, a user logs out of Atlassian or the workspace admin revokes the app), the tracker panel surfaces a **Reconnect Jira** banner. The binding is preserved — only the user's authentication needs renewing — so reconnecting restores access without losing the project↔tracker relationship.
 
+## Migrating from legacy issue integration
+
+If your install pre-dates the tracker provider abstraction (issue #194), some projects may still carry the old `issue_integration_enabled` boolean and the GitHub-specific `issue_number` / `issue_url` fields on their sprints. The platform reads both shapes side-by-side, so legacy projects keep rendering exactly as before — but they cannot bind a Jira project (or any future provider) until they're migrated onto the new shape.
+
+Migration is **always optional** and **fully reversible-by-omission**: nothing is deleted. The legacy fields, the dual-shape readers, the migration banner, the per-project endpoint, and the bulk Lambda all stay deployed indefinitely. There is no deprecation cycle.
+
+Three paths exist, all idempotent and equivalent:
+
+- **Per project, in-product**: open the affected project's page or settings. A "Migrate to the new tracker data model" banner appears for owners and admins. Click **Migrate now**. The banner self-dismisses on success.
+- **Bulk, from the Admin page**: open **Admin → Tracker Migration**. The card displays a count of projects + sprints still on the legacy shape; click **Migrate all** to convert everything in one shot. Re-clicking is a no-op.
+- **Bulk, from the CLI**: invoke the `migrate-tracker-fields` Lambda directly for installs that prefer shell access. Supports a `{"dryRun": true}` payload for previewing.
+
+  ```bash
+  aws lambda invoke \
+    --function-name "$(terraform output -raw migrate_tracker_fields_lambda_name)" \
+    --payload '{"dryRun":true}' --cli-binary-format raw-in-base64-out /tmp/out.json
+  ```
+
+All three paths share the same shared core (`lambda/shared/tracker-migration.js`), so they cannot drift. After migrating, [GitHub Issues](#binding-a-tracker-to-a-project) and [Jira Cloud](#binding-a-tracker-to-a-project) bindings can be added on the affected project's settings page like any other.
+
+Why nothing is removed: this is open source. Downstream forks are on their own upgrade timelines, and we cannot tell when (or whether) a fork has finished migrating its own data. Removing the safety nets would risk silently emptying sprint pages on installs that haven't yet caught up, so they stay forever.
+
 ## Reviews
 
 The platform creates a pull request on the bound code host once construction finishes. You can start a review on the platform; the review results are written back as a comment on the pull request.
