@@ -7,6 +7,8 @@
     "lambda/migrate-tracker-fields",
     "lambda/notify",
     "lambda/projects",
+    "lambda/purge-neptune",
+    "lambda/sprint-graph",
     "lambda/sprints",
     "lambda/trackers",
     "lambda/ws-authorizer",
@@ -20,12 +22,12 @@
     "format:check": "oxfmt --check"
   },
   "devDependencies": {
-    "@aws-sdk/client-apigatewaymanagementapi": "^3.1040.0",
-    "@aws-sdk/client-dynamodb": "^3.1040.0",
-    "@aws-sdk/client-secrets-manager": "^3.1040.0",
-    "@aws-sdk/client-ssm": "^3.1040.0",
-    "@aws-sdk/credential-providers": "^3.1040.0",
-    "@aws-sdk/lib-dynamodb": "^3.1040.0",
+    "@aws-sdk/client-apigatewaymanagementapi": "^3.1054.0",
+    "@aws-sdk/client-dynamodb": "^3.1054.0",
+    "@aws-sdk/client-secrets-manager": "^3.1054.0",
+    "@aws-sdk/client-ssm": "^3.1054.0",
+    "@aws-sdk/credential-providers": "^3.1054.0",
+    "@aws-sdk/lib-dynamodb": "^3.1054.0",
     "@smithy/config-resolver": "^4.4.0",
     "@smithy/node-config-provider": "^3.0.0",
     "aws-sdk-client-mock": "^4.1.0",
@@ -33,9 +35,9 @@
     "esbuild": "^0.28.0",
     "gremlin": "^3.7.0",
     "gremlin-aws-sigv4": "^3.6.0",
-    "oxfmt": "^0.51.0",
-    "oxlint": "^1.66.0",
+    "oxfmt": "^0.52.0",
+    "oxlint": "^1.67.0",
     "testcontainers": "^11.0.0",
-    "vitest": "^4.1.6"
+    "vitest": "^4.1.7"
   }
 }
