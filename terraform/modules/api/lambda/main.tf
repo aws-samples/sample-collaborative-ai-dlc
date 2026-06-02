@@ -856,17 +856,16 @@ module "timeline_events_lambda" {
 
   function_name = "${var.project_name}-timeline-events-${var.environment}"
   handler       = "index.handler"
-  runtime       = "nodejs18.x"
+  runtime       = "nodejs24.x"
   timeout       = 30
 
   source_path = [
     {
-      path             = "${path.module}/../../../../lambda/timeline-events"
-      npm_requirements = true
-    },
-    {
-      path          = "${path.module}/../../../../lambda/shared"
-      prefix_in_zip = "shared"
+      path = "${path.module}/../../../../lambda/timeline-events"
+      commands = [
+        "cd ../.. && npm run build -w timeline-events",
+        ":zip lambda/timeline-events/.build",
+      ]
     }
   ]
 

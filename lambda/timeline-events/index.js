@@ -1,20 +1,32 @@
-const gremlin = require('gremlin');
-const { randomUUID } = require('crypto');
-const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
-const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
-const { buildResponse } = require('./shared/response');
+import gremlin from 'gremlin';
+import { randomUUID } from 'node:crypto';
+import { create } from 'neptune-lambda-client';
+import { buildResponse } from '../shared/response.js';
 
-const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
-const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const order = gremlin.process.order;
 
-const getConnection = async () => {
-  const host = process.env.NEPTUNE_ENDPOINT;
-  const credentials = await fromNodeProviderChain()();
-  credentials.region = process.env.AWS_REGION || 'us-east-1';
-  const connInfo = getUrlAndHeaders(host, '8182', credentials, '/gremlin', 'wss');
-  return new DriverRemoteConnection(connInfo.url, { headers: connInfo.headers });
-};
+// Tests point GREMLIN_PROTOCOL at a plain ws:// gremlin-server (no IAM); Neptune
+// in production is wss:// + SigV4. Tying useIam to the protocol keeps the test
+// seam to a single env var that globalSetup already sets.
+const protocol = process.env.GREMLIN_PROTOCOL ?? 'wss';
+
+// Created once per container and reused across warm invocations: the client
+// connects lazily, reconnects on socket drop, and retries transient Neptune
+// errors. Closing per request would defeat all of that.
+const { query, close } = create(process.env.NEPTUNE_ENDPOINT, process.env.GREMLIN_PORT ?? '8182', {
+  useIam: protocol === 'wss',
+  protocol,
+  partition: process.env.GREMLIN_PARTITION
+    ? {
+        partitionKey: '_partition',
+        writePartition: process.env.GREMLIN_PARTITION,
+        readPartitions: [process.env.GREMLIN_PARTITION],
+      }
+    : undefined,
+});
+
+// Exported for test teardown only — production reuses the connection.
+export { close };
 
 const mapEvent = (v) => ({
   id: v.get('id')?.[0] || '',
@@ -27,28 +39,27 @@ const mapEvent = (v) => ({
   sprintId: v.get('sprint_id')?.[0] || '',
 });
 
-exports.handler = async (event) => {
+export const handler = async (event) => {
   const res = buildResponse(event);
   if (event.httpMethod === 'OPTIONS') return res(200, {});
 
-  let conn;
   try {
-    conn = await getConnection();
-    const g = traversal().withRemote(conn);
     const { httpMethod, pathParameters, body } = event;
     const { sprintId } = pathParameters || {};
 
     switch (httpMethod) {
       case 'GET': {
-        const list = await g
-          .V()
-          .has('Sprint', 'id', sprintId)
-          .out('HAS_TIMELINE_EVENT')
-          .hasLabel('TimelineEvent')
-          .order()
-          .by('timestamp', order.desc)
-          .valueMap()
-          .toList();
+        const list = await query((g) =>
+          g
+            .V()
+            .has('Sprint', 'id', sprintId)
+            .out('HAS_TIMELINE_EVENT')
+            .hasLabel('TimelineEvent')
+            .order()
+            .by('timestamp', order.desc)
+            .valueMap()
+            .toList(),
+        );
         return res(200, list.map(mapEvent));
       }
 
@@ -57,24 +68,26 @@ exports.handler = async (event) => {
         const id = randomUUID();
         const timestamp = data.timestamp || new Date().toISOString();
 
-        await g
-          .V()
-          .has('Sprint', 'id', sprintId)
-          .as('s')
-          .addV('TimelineEvent')
-          .property('id', id)
-          .property('type', data.type)
-          .property('title', data.title)
-          .property('detail', data.detail || '')
-          .property('user_id', data.userId || '')
-          .property('user_name', data.userName || '')
-          .property('timestamp', timestamp)
-          .property('sprint_id', sprintId)
-          .as('e')
-          .addE('HAS_TIMELINE_EVENT')
-          .from_('s')
-          .to('e')
-          .next();
+        await query((g) =>
+          g
+            .V()
+            .has('Sprint', 'id', sprintId)
+            .as('s')
+            .addV('TimelineEvent')
+            .property('id', id)
+            .property('type', data.type)
+            .property('title', data.title)
+            .property('detail', data.detail || '')
+            .property('user_id', data.userId || '')
+            .property('user_name', data.userName || '')
+            .property('timestamp', timestamp)
+            .property('sprint_id', sprintId)
+            .as('e')
+            .addE('HAS_TIMELINE_EVENT')
+            .from_('s')
+            .to('e')
+            .next(),
+        );
 
         return res(201, {
           id,
@@ -94,10 +107,5 @@ exports.handler = async (event) => {
   } catch (err) {
     console.error('Error:', err);
     return res(500, { error: 'Internal server error' });
-  } finally {
-    if (conn)
-      try {
-        await conn.close();
-      } catch {}
   }
 };
