@@ -552,31 +552,39 @@ export default function ProjectSettings() {
                   </p>
                 ) : (
                   <div className="space-y-2">
-                    {project?.trackers.map((b) => (
-                      <div
-                        key={b.id}
-                        className="flex items-center justify-between gap-3 border rounded-md p-3"
-                      >
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium">
-                            {getTrackerProvider(b.provider).displayName}
-                          </p>
-                          <p className="text-xs text-muted-foreground truncate">
-                            {b.displayName || b.externalProjectKey}
-                          </p>
+                    {project?.trackers.map((b) => {
+                      const isLegacy = b.id === 'legacy-github';
+                      return (
+                        <div
+                          key={b.id}
+                          className="flex items-center justify-between gap-3 border rounded-md p-3"
+                        >
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium">
+                              {getTrackerProvider(b.provider).displayName}
+                              {isLegacy && (
+                                <span className="ml-2 text-xs font-normal text-muted-foreground">
+                                  (legacy — migrate to manage)
+                                </span>
+                              )}
+                            </p>
+                            <p className="text-xs text-muted-foreground truncate">
+                              {b.displayName || b.externalProjectKey}
+                            </p>
+                          </div>
+                          {canEditProject && !isLegacy && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleRemoveTracker(b)}
+                              disabled={togglingTracker}
+                            >
+                              Remove
+                            </Button>
+                          )}
                         </div>
-                        {canEditProject && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => handleRemoveTracker(b)}
-                            disabled={togglingTracker}
-                          >
-                            Remove
-                          </Button>
-                        )}
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
 

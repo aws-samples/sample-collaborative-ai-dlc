@@ -17,6 +17,37 @@ const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const __ = gremlin.process.statics;
 const { cardinality } = gremlin.process;
 
+// Synthetic-binding id for legacy projects (issue_integration_enabled='true'
+// but no HAS_TRACKER edge). Lets the frontend render the GitHub-issues panel
+// against the project's gitRepo without requiring the user to migrate first.
+// The trackers lambda special-cases this id on the issue routes.
+export const LEGACY_GITHUB_BINDING_ID = 'legacy-github';
+
+const buildLegacyBinding = (project) => ({
+  id: LEGACY_GITHUB_BINDING_ID,
+  provider: 'github-issues',
+  instance: 'public',
+  externalProjectKey: project.gitRepo,
+  displayName: project.gitRepo,
+  createdAt: project.createdAt,
+  createdBy: null,
+});
+
+// Append a synthetic legacy binding when the project still uses the
+// issueIntegrationEnabled boolean and has no real bindings yet. Mutates +
+// returns the same project object for terse call sites.
+const withLegacyTracker = (project) => {
+  if (
+    project.issueIntegrationEnabled &&
+    project.trackers.length === 0 &&
+    project.gitProvider === 'github' &&
+    project.gitRepo
+  ) {
+    project.trackers.push(buildLegacyBinding(project));
+  }
+  return project;
+};
+
 const getConnection = async () => {
   const host = process.env.NEPTUNE_ENDPOINT;
   const port = process.env.GREMLIN_PORT ?? '8182';
@@ -162,7 +193,7 @@ export const handler = async (event) => {
             userRole: role || 'member',
             trackers: trackerMaps.map(mapBinding),
           };
-          return response(200, project);
+          return response(200, withLegacyTracker(project));
         }
 
         // List projects - only return projects where the current user is a member.
@@ -189,7 +220,7 @@ export const handler = async (event) => {
           const v = pBundle instanceof Map ? pBundle.get('vertex') : pBundle.vertex;
           const trackerMaps =
             (pBundle instanceof Map ? pBundle.get('trackers') : pBundle.trackers) ?? [];
-          return {
+          return withLegacyTracker({
             id: getVal(v, 'id'),
             name: getVal(v, 'name'),
             gitProvider: getVal(v, 'git_provider') || 'github',
@@ -199,7 +230,7 @@ export const handler = async (event) => {
             createdAt: getVal(v, 'created_at') || new Date().toISOString(),
             userRole: role || 'member',
             trackers: trackerMaps.map(mapBinding),
-          };
+          });
         });
         return response(200, projects);
 

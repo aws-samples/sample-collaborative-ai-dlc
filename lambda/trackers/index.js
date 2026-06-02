@@ -163,10 +163,58 @@ const getConnection = async () => {
 
 const requireUserId = (event) => event.requestContext?.authorizer?.claims?.sub;
 
+// Synthetic-binding id served for legacy projects (issue_integration_enabled
+// AND no HAS_TRACKER edge). Mirrors the constant exported from
+// lambda/projects so the issue-list panel can be rendered against an
+// unmigrated project without writing any new graph state.
+const LEGACY_GITHUB_BINDING_ID = 'legacy-github';
+
+// Tiny `coalesce(values('k'), constant(null))` helper used by the legacy
+// project lookup. Inlined to keep the projection block readable.
+const coalesceProp = (key) =>
+  gremlin.process.statics.coalesce(
+    gremlin.process.statics.values(key),
+    gremlin.process.statics.constant(null),
+  );
+
+// Reads gitRepo + issue_integration_enabled for a project so we can
+// synthesize a github-issues binding for legacy callers. Returns null when
+// the project doesn't qualify (no gitRepo, or already migrated).
+const fetchLegacyBindingFor = async (g, projectId) => {
+  const r = await g
+    .V()
+    .has('Project', 'id', projectId)
+    .project('gitRepo', 'gitProvider', 'issueIntegrationEnabled', 'createdAt')
+    .by(coalesceProp('git_repo'))
+    .by(coalesceProp('git_provider'))
+    .by(coalesceProp('issue_integration_enabled'))
+    .by(coalesceProp('created_at'))
+    .next();
+  if (r.done) return null;
+  const get = (k) => (r.value instanceof Map ? r.value.get(k) : r.value[k]);
+  const gitRepo = get('gitRepo');
+  const gitProvider = get('gitProvider') || 'github';
+  const enabled = get('issueIntegrationEnabled') === 'true';
+  if (!enabled || !gitRepo || gitProvider !== 'github') return null;
+  return {
+    id: LEGACY_GITHUB_BINDING_ID,
+    provider: 'github-issues',
+    instance: 'public',
+    externalProjectKey: gitRepo,
+    displayName: gitRepo,
+    createdAt: get('createdAt') || null,
+    createdBy: null,
+  };
+};
+
 // Membership + binding lookups both project server-side via the shared
 // `trackerBindingProjectionStep`, returning camelCase API shape directly so
-// no JS-side reshape is needed.
+// no JS-side reshape is needed. Recognizes the legacy-github sentinel id
+// and synthesizes a binding from the project's gitRepo when applicable.
 const fetchBinding = async (g, projectId, bindingId) => {
+  if (bindingId === LEGACY_GITHUB_BINDING_ID) {
+    return fetchLegacyBindingFor(g, projectId);
+  }
   const r = await g
     .V()
     .has('Project', 'id', projectId)
@@ -179,15 +227,22 @@ const fetchBinding = async (g, projectId, bindingId) => {
   return mapBinding(r.value);
 };
 
+// Returns real bindings + the synthetic legacy one when the project still
+// uses issue_integration_enabled. Two disjoint reads run concurrently.
 const listBindingsForProject = async (g, projectId) => {
-  const list = await g
-    .V()
-    .has('Project', 'id', projectId)
-    .out('HAS_TRACKER')
-    .hasLabel('TrackerBinding')
-    .flatMap(trackerBindingProjectionStep())
-    .toList();
-  return list.map(mapBinding);
+  const [list, legacy] = await Promise.all([
+    g
+      .V()
+      .has('Project', 'id', projectId)
+      .out('HAS_TRACKER')
+      .hasLabel('TrackerBinding')
+      .flatMap(trackerBindingProjectionStep())
+      .toList(),
+    fetchLegacyBindingFor(g, projectId),
+  ]);
+  const bindings = list.map(mapBinding);
+  if (legacy && bindings.length === 0) bindings.push(legacy);
+  return bindings;
 };
 
 const handleProviderError = (response, err) => {
@@ -701,6 +756,15 @@ export const handler = async (event) => {
     if (httpMethod === 'DELETE' && bindingId && !path.includes('/issues')) {
       if (role !== 'owner' && role !== 'admin') {
         return response(403, { error: 'Only project owners and admins can remove trackers' });
+      }
+      if (bindingId === LEGACY_GITHUB_BINDING_ID) {
+        // Legacy synthetic binding has no corresponding graph edge to drop.
+        // The user-visible way to remove it is to migrate the project (which
+        // turns it into a real edge) or to set issueIntegrationEnabled=false
+        // on the project itself.
+        return response(400, {
+          error: 'Migrate this project before removing the legacy GitHub-issues binding',
+        });
       }
       if (!bindingOrNull) return response(404, { error: 'Binding not found' });
       await g

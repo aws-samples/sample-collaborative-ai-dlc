@@ -543,7 +543,83 @@ describe('POST /projects/:id/migrate-tracker', () => {
       sprints: { candidates: 1, applied: 0 },
     });
 
-    // Confirm dry-run did not write.
+    // Confirm dry-run did not write a real HAS_TRACKER edge. The legacy
+    // synthetic binding still surfaces (issue #194 — the projects API
+    // appends one when issueIntegrationEnabled=true and there is no real
+    // edge yet, so the issues panel stays visible pre-migration).
+    const fetched = await handler({
+      httpMethod: 'GET',
+      pathParameters: { projectId: id },
+      ...claims(sub),
+    });
+    expect(JSON.parse(fetched.body).trackers).toEqual([
+      expect.objectContaining({ id: 'legacy-github', provider: 'github-issues' }),
+    ]);
+  });
+});
+
+// #194: legacy projects (issueIntegrationEnabled='true' AND no HAS_TRACKER)
+// get a synthetic github-issues binding so the FE issues panel still works
+// without forcing a migration first. Banner-driven migration replaces the
+// synthetic with a real edge.
+describe('GET /projects[/{id}] legacy tracker synthesis', () => {
+  it('appends a synthetic legacy-github binding on the single endpoint', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, {
+      name: 'Legacy',
+      gitRepo: 'acme/widgets',
+      issueIntegrationEnabled: true,
+    });
+    const fetched = await handler({
+      httpMethod: 'GET',
+      pathParameters: { projectId: id },
+      ...claims(sub),
+    });
+    expect(JSON.parse(fetched.body).trackers).toEqual([
+      {
+        id: 'legacy-github',
+        provider: 'github-issues',
+        instance: 'public',
+        externalProjectKey: 'acme/widgets',
+        displayName: 'acme/widgets',
+        createdAt: NOW.toISOString(),
+        createdBy: null,
+      },
+    ]);
+  });
+
+  it('appends a synthetic legacy-github binding on the list endpoint', async () => {
+    const sub = `u-${randomUUID()}`;
+    await createProject(sub, {
+      name: 'Legacy',
+      gitRepo: 'acme/widgets',
+      issueIntegrationEnabled: true,
+    });
+    const res = await handler({ httpMethod: 'GET', ...claims(sub) });
+    const projects = JSON.parse(res.body);
+    const legacy = projects.find((p) => p.name === 'Legacy');
+    expect(legacy.trackers).toEqual([
+      expect.objectContaining({ id: 'legacy-github', externalProjectKey: 'acme/widgets' }),
+    ]);
+  });
+
+  it('does not synthesize when issueIntegrationEnabled is false', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, { name: 'X', gitRepo: 'a/b' });
+    const fetched = await handler({
+      httpMethod: 'GET',
+      pathParameters: { projectId: id },
+      ...claims(sub),
+    });
+    expect(JSON.parse(fetched.body).trackers).toEqual([]);
+  });
+
+  it('does not synthesize when gitRepo is empty', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, {
+      name: 'X',
+      issueIntegrationEnabled: true,
+    });
     const fetched = await handler({
       httpMethod: 'GET',
       pathParameters: { projectId: id },
@@ -614,13 +690,19 @@ describe('admin tracker-migration routes', () => {
         sprints: { candidates: 1, applied: 0 },
       });
 
-      // No mutation — the project still has no tracker binding.
+      // No mutation — the project still has no real tracker binding. The
+      // projects API surfaces a synthetic `legacy-github` entry while
+      // issueIntegrationEnabled is true (see #194), so the assertion
+      // verifies the absence of any other binding rather than equality
+      // against an empty array.
       const fetched = await handler({
         httpMethod: 'GET',
         pathParameters: { projectId: id },
         ...claims(sub),
       });
-      expect(JSON.parse(fetched.body).trackers).toEqual([]);
+      expect(JSON.parse(fetched.body).trackers).toEqual([
+        expect.objectContaining({ id: 'legacy-github' }),
+      ]);
     });
 
     it('returns zeros on a fully migrated graph', async () => {
@@ -712,13 +794,18 @@ describe('admin tracker-migration routes', () => {
         sprints: { candidates: 1, applied: 0 },
       });
 
-      // Confirm dry-run did not write.
+      // Confirm dry-run did not write a real edge. The projects API still
+      // surfaces a synthetic `legacy-github` binding while
+      // issueIntegrationEnabled is true (#194); checking for absence of
+      // anything else is what "no mutation" means now.
       const fetched = await handler({
         httpMethod: 'GET',
         pathParameters: { projectId: id },
         ...claims(sub),
       });
-      expect(JSON.parse(fetched.body).trackers).toEqual([]);
+      expect(JSON.parse(fetched.body).trackers).toEqual([
+        expect.objectContaining({ id: 'legacy-github' }),
+      ]);
     });
 
     it('rejects unauthenticated callers', async () => {
