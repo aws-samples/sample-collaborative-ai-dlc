@@ -163,19 +163,24 @@ module "lambda" {
     module.dynamodb.agent_pool_table_arn,
     module.dynamodb.agent_outputs_table_arn
   ]
-  artifacts_bucket_name      = module.s3.artifacts_bucket_name
-  artifacts_bucket_arn       = module.s3.artifacts_bucket_arn
-  github_oauth_secret_name   = module.git.github_oauth_secret_name
-  github_oauth_secret_arn    = module.git.github_oauth_secret_arn
-  git_connections_table_name = module.git.git_connections_table_name
-  git_connections_table_arn  = module.git.git_connections_table_arn
-  github_redirect_uri        = "https://${module.frontend.cloudfront_domain_name}/github/callback"
-  state_machine_arn          = "arn:${local.partition}:states:${var.aws_region}:${data.aws_caller_identity.current.account_id}:stateMachine:${var.project_name}-agent-workflow-${var.environment}"
-  agent_questions_table_name = module.dynamodb.agent_questions_table_name
-  agent_questions_table_arn  = module.dynamodb.agent_questions_table_arn
-  cognito_user_pool_id       = module.auth.user_pool_id
-  cognito_user_pool_arn      = module.auth.user_pool_arn
-  cors_allowed_origins       = "https://${module.frontend.cloudfront_domain_name},http://localhost:5173"
+  artifacts_bucket_name          = module.s3.artifacts_bucket_name
+  artifacts_bucket_arn           = module.s3.artifacts_bucket_arn
+  github_oauth_secret_name       = module.git.github_oauth_secret_name
+  github_oauth_secret_arn        = module.git.github_oauth_secret_arn
+  git_connections_table_name     = module.git.git_connections_table_name
+  git_connections_table_arn      = module.git.git_connections_table_arn
+  tracker_connections_table_name = module.git.tracker_connections_table_name
+  tracker_connections_table_arn  = module.git.tracker_connections_table_arn
+  github_redirect_uri            = "https://${module.frontend.cloudfront_domain_name}/github/callback"
+  jira_oauth_secret_name         = module.git.jira_oauth_secret_name
+  jira_oauth_secret_arn          = module.git.jira_oauth_secret_arn
+  jira_redirect_uri              = "https://${module.frontend.cloudfront_domain_name}/trackers/callback/jira-cloud"
+  state_machine_arn              = "arn:${local.partition}:states:${var.aws_region}:${data.aws_caller_identity.current.account_id}:stateMachine:${var.project_name}-agent-workflow-${var.environment}"
+  agent_questions_table_name     = module.dynamodb.agent_questions_table_name
+  agent_questions_table_arn      = module.dynamodb.agent_questions_table_arn
+  cognito_user_pool_id           = module.auth.user_pool_id
+  cognito_user_pool_arn          = module.auth.user_pool_arn
+  cors_allowed_origins           = "https://${module.frontend.cloudfront_domain_name},http://localhost:5173"
 
   # IAM scoping inputs for the agents-orchestrator role (ECS RunTask / PassRole).
   ecs_cluster_arn                  = module.compute.cluster_arn
@@ -217,8 +222,8 @@ module "api" {
   timeline_events_lambda_name       = module.lambda.timeline_events_lambda_name
   github_lambda_invoke_arn          = module.lambda.github_lambda_invoke_arn
   github_lambda_name                = module.lambda.github_lambda_name
-  github_issues_lambda_invoke_arn   = module.lambda.github_issues_lambda_invoke_arn
-  github_issues_lambda_name         = module.lambda.github_issues_lambda_name
+  trackers_lambda_invoke_arn        = module.lambda.trackers_lambda_invoke_arn
+  trackers_lambda_name              = module.lambda.trackers_lambda_name
   cognito_users_lambda_invoke_arn   = module.lambda.cognito_users_lambda_invoke_arn
   cognito_users_lambda_name         = module.lambda.cognito_users_lambda_name
   state_machine_arn                 = module.orchestration.state_machine_arn

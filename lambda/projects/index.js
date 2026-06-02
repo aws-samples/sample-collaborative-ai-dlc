@@ -5,6 +5,13 @@ import { randomUUID } from 'node:crypto';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { buildResponse } from '../shared/response.js';
+import { runTrackerMigration } from '../shared/tracker-migration.js';
+import {
+  getVal,
+  projectTrackersFoldStep,
+  mapBinding,
+  fetchMembershipRole,
+} from '../shared/trackers.js';
 import { validateMcpServersJson } from '../shared/mcp-validator.js';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -14,12 +21,35 @@ const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const __ = gremlin.process.statics;
 const { cardinality } = gremlin.process;
 
-// Extract a property value from a Neptune valueMap result (handles both Map and plain object)
-const getVal = (obj, key) => {
-  if (!obj) return '';
-  const raw = obj instanceof Map ? obj.get(key) : obj[key];
-  if (Array.isArray(raw)) return raw[0] ?? '';
-  return raw ?? '';
+// Synthetic-binding id for legacy projects (issue_integration_enabled='true'
+// but no HAS_TRACKER edge). Lets the frontend render the GitHub-issues panel
+// against the project's gitRepo without requiring the user to migrate first.
+// The trackers lambda special-cases this id on the issue routes.
+export const LEGACY_GITHUB_BINDING_ID = 'legacy-github';
+
+const buildLegacyBinding = (project) => ({
+  id: LEGACY_GITHUB_BINDING_ID,
+  provider: 'github-issues',
+  instance: 'public',
+  externalProjectKey: project.gitRepo,
+  displayName: project.gitRepo,
+  createdAt: project.createdAt,
+  createdBy: null,
+});
+
+// Append a synthetic legacy binding when the project still uses the
+// issueIntegrationEnabled boolean and has no real bindings yet. Mutates +
+// returns the same project object for terse call sites.
+const withLegacyTracker = (project) => {
+  if (
+    project.issueIntegrationEnabled &&
+    project.trackers.length === 0 &&
+    project.gitProvider === 'github' &&
+    project.gitRepo
+  ) {
+    project.trackers.push(buildLegacyBinding(project));
+  }
+  return project;
 };
 
 const getConnection = async () => {
@@ -63,10 +93,70 @@ export const handler = async (event) => {
       );
     }
 
-    const { httpMethod, pathParameters, body } = event;
+    const { httpMethod, pathParameters, body, path } = event;
     const projectId = pathParameters?.projectId;
     const userId = event.requestContext?.authorizer?.claims?.sub;
     const userEmail = event.requestContext?.authorizer?.claims?.email || '';
+    const isMigrateTracker = httpMethod === 'POST' && path?.endsWith('/migrate-tracker');
+    const isAdminMigrationStatus =
+      httpMethod === 'GET' && path?.endsWith('/admin/tracker-migration/status');
+    const isAdminMigrationRun = httpMethod === 'POST' && path?.endsWith('/admin/tracker-migration');
+
+    // POST /projects/{projectId}/migrate-tracker — owner/admin only.
+    // Backfills the tracker_* fields on this project's sprints + creates a
+    // synthetic HAS_TRACKER edge if the project still uses the legacy
+    // issue_integration_enabled boolean. Idempotent. See parent issue #194.
+    if (isMigrateTracker) {
+      if (!userId) return response(401, { error: 'Unauthorized' });
+      const role = await fetchMembershipRole(g, projectId, userId);
+      if (!role) return response(403, { error: 'Access denied' });
+      if (role !== 'owner' && role !== 'admin') {
+        return response(403, { error: 'Only project owners and admins can migrate trackers' });
+      }
+      let dryRun = false;
+      if (body) {
+        try {
+          dryRun = Boolean(JSON.parse(body)?.dryRun);
+        } catch {
+          return response(400, { error: 'Invalid JSON body' });
+        }
+      }
+      const result = await runTrackerMigration(g, { projectId, dryRun });
+      return response(200, result);
+    }
+
+    // GET /admin/tracker-migration/status — operator-facing whole-graph
+    // count of projects + sprints still on the legacy tracker shape. Drives
+    // the Admin page's "Tracker Migration" card. Implemented as a dry-run
+    // of the same shared core that the per-project endpoint and the bulk
+    // CLI lambda use, so the three paths cannot drift. See parent issue
+    // #194 phase #198. Authenticated-only — matches the existing posture
+    // for admin-config endpoints in this repo (see `/agents/settings` and
+    // `/trackers/providers/{p}/oauth-config`); tightening admin gating is
+    // a separate, repo-wide hardening pass.
+    if (isAdminMigrationStatus) {
+      if (!userId) return response(401, { error: 'Unauthorized' });
+      const result = await runTrackerMigration(g, { dryRun: true });
+      return response(200, result);
+    }
+
+    // POST /admin/tracker-migration — operator-facing bulk migration
+    // trigger. Same effect as `aws lambda invoke ... migrate-tracker-fields`,
+    // exposed through the API so operators don't need shell access. Body
+    // `{ dryRun?: boolean }`. Idempotent.
+    if (isAdminMigrationRun) {
+      if (!userId) return response(401, { error: 'Unauthorized' });
+      let dryRun = false;
+      if (body) {
+        try {
+          dryRun = Boolean(JSON.parse(body)?.dryRun);
+        } catch {
+          return response(400, { error: 'Invalid JSON body' });
+        }
+      }
+      const result = await runTrackerMigration(g, { dryRun });
+      return response(200, result);
+    }
 
     // ---------------------------------------------------------------------------
     // Sub-resource routing: /projects/{projectId}/mcp-servers
@@ -85,27 +175,31 @@ export const handler = async (event) => {
     switch (httpMethod) {
       case 'GET':
         if (projectId) {
-          // Single project lookup - verify user is a member and return their role
+          // Single project lookup - verify user is a member and return their
+          // role. Single round-trip: role + project valueMap + trackers all
+          // fold into one traversal (parity with the list endpoint).
           if (!userId) return response(401, { error: 'Unauthorized' });
 
-          const memberEdges = await g
+          const single = await g
             .V()
             .has('Project', 'id', projectId)
+            .as('p')
             .outE('HAS_MEMBER')
             .as('e')
             .inV()
             .has('User', 'id', userId)
-            .select('e')
-            .by(__.valueMap())
-            .toList();
-          if (memberEdges.length === 0) return response(403, { error: 'Access denied' });
+            .select('e', 'p')
+            .by(__.values('role'))
+            .by(__.project('vertex', 'trackers').by(__.valueMap()).by(projectTrackersFoldStep()))
+            .next();
+          if (single.done) return response(403, { error: 'Access denied' });
 
-          const userRole = getVal(memberEdges[0], 'role') || 'member';
-
-          const result = await g.V().has('Project', 'id', projectId).valueMap().next();
-          if (!result.value) return response(404, { error: 'Project not found' });
-
-          const v = result.value;
+          const item = single.value;
+          const role = item instanceof Map ? item.get('e') : item.e;
+          const pBundle = item instanceof Map ? item.get('p') : item.p;
+          const v = pBundle instanceof Map ? pBundle.get('vertex') : pBundle.vertex;
+          const trackerMaps =
+            (pBundle instanceof Map ? pBundle.get('trackers') : pBundle.trackers) ?? [];
           const project = {
             id: getVal(v, 'id') || projectId,
             name: getVal(v, 'name'),
@@ -114,12 +208,15 @@ export const handler = async (event) => {
             agentCli: getVal(v, 'agent_cli') || 'kiro',
             issueIntegrationEnabled: getVal(v, 'issue_integration_enabled') === 'true',
             createdAt: getVal(v, 'created_at') || new Date().toISOString(),
-            userRole,
+            userRole: role || 'member',
+            trackers: trackerMaps.map(mapBinding),
           };
-          return response(200, project);
+          return response(200, withLegacyTracker(project));
         }
 
-        // List projects - only return projects where the current user is a member
+        // List projects - only return projects where the current user is a member.
+        // Trackers fold into the same traversal so we don't fan out into N+1
+        // per-project fetches.
         if (!userId) return response(401, { error: 'Unauthorized' });
 
         const results = await g
@@ -131,14 +228,17 @@ export const handler = async (event) => {
           .hasLabel('Project')
           .as('p')
           .select('e', 'p')
-          .by(__.valueMap())
-          .by(__.valueMap())
+          .by(__.values('role'))
+          .by(__.project('vertex', 'trackers').by(__.valueMap()).by(projectTrackersFoldStep()))
           .toList();
         const projects = results.map((item) => {
-          // item is a Map with keys 'e' (edge) and 'p' (project vertex)
-          const e = item instanceof Map ? item.get('e') : item.e;
-          const v = item instanceof Map ? item.get('p') : item.p;
-          return {
+          // item is a Map with keys 'e' (role string) and 'p' ({vertex, trackers}).
+          const role = item instanceof Map ? item.get('e') : item.e;
+          const pBundle = item instanceof Map ? item.get('p') : item.p;
+          const v = pBundle instanceof Map ? pBundle.get('vertex') : pBundle.vertex;
+          const trackerMaps =
+            (pBundle instanceof Map ? pBundle.get('trackers') : pBundle.trackers) ?? [];
+          return withLegacyTracker({
             id: getVal(v, 'id'),
             name: getVal(v, 'name'),
             gitProvider: getVal(v, 'git_provider') || 'github',
@@ -146,8 +246,9 @@ export const handler = async (event) => {
             agentCli: getVal(v, 'agent_cli') || 'kiro',
             issueIntegrationEnabled: getVal(v, 'issue_integration_enabled') === 'true',
             createdAt: getVal(v, 'created_at') || new Date().toISOString(),
-            userRole: getVal(e, 'role') || 'member',
-          };
+            userRole: role || 'member',
+            trackers: trackerMaps.map(mapBinding),
+          });
         });
         return response(200, projects);
 
@@ -203,19 +304,8 @@ export const handler = async (event) => {
         if (!userId) return response(401, { error: 'Unauthorized' });
 
         // Owners and admins can update project settings
-        const updateEdges = await g
-          .V()
-          .has('Project', 'id', projectId)
-          .outE('HAS_MEMBER')
-          .as('e')
-          .inV()
-          .has('User', 'id', userId)
-          .select('e')
-          .by(__.valueMap())
-          .toList();
-        if (updateEdges.length === 0) return response(403, { error: 'Access denied' });
-
-        const updaterRole = getVal(updateEdges[0], 'role') || 'member';
+        const updaterRole = await fetchMembershipRole(g, projectId, userId);
+        if (!updaterRole) return response(403, { error: 'Access denied' });
         if (updaterRole !== 'owner' && updaterRole !== 'admin') {
           return response(403, { error: 'Only project owners and admins can update settings' });
         }

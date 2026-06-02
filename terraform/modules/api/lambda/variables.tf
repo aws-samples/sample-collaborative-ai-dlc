@@ -72,8 +72,38 @@ variable "git_connections_table_arn" {
   default     = ""
 }
 
+variable "tracker_connections_table_name" {
+  description = "DynamoDB table name for tracker connections (Jira / GitHub Issues / …)"
+  type        = string
+  default     = ""
+}
+
+variable "tracker_connections_table_arn" {
+  description = "DynamoDB table ARN for tracker connections"
+  type        = string
+  default     = ""
+}
+
 variable "github_redirect_uri" {
   description = "OAuth redirect URI for GitHub callback"
+  type        = string
+  default     = ""
+}
+
+variable "jira_oauth_secret_name" {
+  description = "Secrets Manager secret name for Jira Cloud OAuth credentials"
+  type        = string
+  default     = ""
+}
+
+variable "jira_oauth_secret_arn" {
+  description = "Secrets Manager secret ARN for Jira Cloud OAuth credentials"
+  type        = string
+  default     = ""
+}
+
+variable "jira_redirect_uri" {
+  description = "OAuth redirect URI for Jira Cloud callback"
   type        = string
   default     = ""
 }

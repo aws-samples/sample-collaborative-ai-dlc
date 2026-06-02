@@ -37,6 +37,9 @@ Thumbs.db
 # Dependencies
 node_modules
 
+# Test coverage output
+coverage/
+
 # Dev screenshots and scratch files
 *.png
 ideas.txt

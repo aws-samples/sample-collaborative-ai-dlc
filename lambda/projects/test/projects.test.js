@@ -397,3 +397,436 @@ describe('method routing', () => {
     expect(JSON.parse(res.body)).toEqual({ error: 'Method not allowed' });
   });
 });
+
+// Migration to the tracker provider abstraction (#194 Phase 1). Owner/admin
+// only. Idempotent: a re-run on an already-migrated project applies nothing.
+// The bulk admin lambda lives at lambda/migrate-tracker-fields.
+describe('POST /projects/:id/migrate-tracker', () => {
+  // Helper to seed a sprint vertex on the legacy shape (no tracker_*).
+  const seedLegacySprint = async (projectId) => {
+    const id = randomUUID();
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .as('p')
+      .addV('Sprint')
+      .property('id', id)
+      .property('name', 'legacy')
+      .property('description', '')
+      .property('phase', 'INCEPTION')
+      .property('sprint_id', id)
+      .property('created_at', NOW.toISOString())
+      .property('issue_number', '17')
+      .property('issue_url', 'https://github.com/acme/widgets/issues/17')
+      .as('s')
+      .addE('HAS_SPRINT')
+      .from_('p')
+      .to('s')
+      .next();
+    return id;
+  };
+
+  const migrate = (id, sub) =>
+    handler({
+      httpMethod: 'POST',
+      path: `/projects/${id}/migrate-tracker`,
+      pathParameters: { projectId: id },
+      body: JSON.stringify({}),
+      ...claims(sub),
+    });
+
+  it('creates a synthetic HAS_TRACKER edge and backfills sprints', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, {
+      name: 'Mig',
+      gitRepo: 'acme/widgets',
+      issueIntegrationEnabled: true,
+    });
+    const sprintId = await seedLegacySprint(id);
+
+    const res = await migrate(id, sub);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({
+      dryRun: false,
+      projects: { candidates: 1, applied: 1 },
+      sprints: { candidates: 1, applied: 1 },
+    });
+
+    // Project now has a tracker binding.
+    const fetched = await handler({
+      httpMethod: 'GET',
+      pathParameters: { projectId: id },
+      ...claims(sub),
+    });
+    expect(JSON.parse(fetched.body).trackers).toEqual([
+      expect.objectContaining({
+        provider: 'github-issues',
+        instance: 'public',
+        externalProjectKey: 'acme/widgets',
+        displayName: 'acme/widgets',
+      }),
+    ]);
+
+    // Sprint vertex now has tracker_provider set (verified via Gremlin).
+    const sprint = await g.V().has('Sprint', 'id', sprintId).valueMap().next();
+    const get = (k) => sprint.value.get(k)?.[0];
+    expect(get('tracker_provider')).toBe('github-issues');
+    expect(get('tracker_instance')).toBe('public');
+    expect(get('tracker_external_project_key')).toBe('acme/widgets');
+    expect(get('tracker_resource_id')).toBe('17');
+  });
+
+  it('is idempotent: re-running applies nothing', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, {
+      name: 'Mig',
+      gitRepo: 'acme/widgets',
+      issueIntegrationEnabled: true,
+    });
+    await seedLegacySprint(id);
+    await migrate(id, sub);
+
+    const res = await migrate(id, sub);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({
+      dryRun: false,
+      projects: { candidates: 0, applied: 0 },
+      sprints: { candidates: 0, applied: 0 },
+    });
+  });
+
+  it('returns 403 to plain members', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const memberSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub, {
+      name: 'Mig',
+      issueIntegrationEnabled: true,
+    });
+    await addMember(id, memberSub, 'member');
+
+    const res = await migrate(id, memberSub);
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({
+      error: 'Only project owners and admins can migrate trackers',
+    });
+  });
+
+  it('returns 403 when the caller is not a member', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const otherSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub, { name: 'Mig' });
+    const res = await migrate(id, otherSub);
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({ error: 'Access denied' });
+  });
+
+  it('supports dryRun', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, {
+      name: 'Mig',
+      gitRepo: 'acme/widgets',
+      issueIntegrationEnabled: true,
+    });
+    await seedLegacySprint(id);
+
+    const res = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${id}/migrate-tracker`,
+      pathParameters: { projectId: id },
+      body: JSON.stringify({ dryRun: true }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({
+      dryRun: true,
+      projects: { candidates: 1, applied: 0 },
+      sprints: { candidates: 1, applied: 0 },
+    });
+
+    // Confirm dry-run did not write a real HAS_TRACKER edge. The legacy
+    // synthetic binding still surfaces (issue #194 — the projects API
+    // appends one when issueIntegrationEnabled=true and there is no real
+    // edge yet, so the issues panel stays visible pre-migration).
+    const fetched = await handler({
+      httpMethod: 'GET',
+      pathParameters: { projectId: id },
+      ...claims(sub),
+    });
+    expect(JSON.parse(fetched.body).trackers).toEqual([
+      expect.objectContaining({ id: 'legacy-github', provider: 'github-issues' }),
+    ]);
+  });
+});
+
+// #194: legacy projects (issueIntegrationEnabled='true' AND no HAS_TRACKER)
+// get a synthetic github-issues binding so the FE issues panel still works
+// without forcing a migration first. Banner-driven migration replaces the
+// synthetic with a real edge.
+describe('GET /projects[/{id}] legacy tracker synthesis', () => {
+  it('appends a synthetic legacy-github binding on the single endpoint', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, {
+      name: 'Legacy',
+      gitRepo: 'acme/widgets',
+      issueIntegrationEnabled: true,
+    });
+    const fetched = await handler({
+      httpMethod: 'GET',
+      pathParameters: { projectId: id },
+      ...claims(sub),
+    });
+    expect(JSON.parse(fetched.body).trackers).toEqual([
+      {
+        id: 'legacy-github',
+        provider: 'github-issues',
+        instance: 'public',
+        externalProjectKey: 'acme/widgets',
+        displayName: 'acme/widgets',
+        createdAt: NOW.toISOString(),
+        createdBy: null,
+      },
+    ]);
+  });
+
+  it('appends a synthetic legacy-github binding on the list endpoint', async () => {
+    const sub = `u-${randomUUID()}`;
+    await createProject(sub, {
+      name: 'Legacy',
+      gitRepo: 'acme/widgets',
+      issueIntegrationEnabled: true,
+    });
+    const res = await handler({ httpMethod: 'GET', ...claims(sub) });
+    const projects = JSON.parse(res.body);
+    const legacy = projects.find((p) => p.name === 'Legacy');
+    expect(legacy.trackers).toEqual([
+      expect.objectContaining({ id: 'legacy-github', externalProjectKey: 'acme/widgets' }),
+    ]);
+  });
+
+  it('does not synthesize when issueIntegrationEnabled is false', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, { name: 'X', gitRepo: 'a/b' });
+    const fetched = await handler({
+      httpMethod: 'GET',
+      pathParameters: { projectId: id },
+      ...claims(sub),
+    });
+    expect(JSON.parse(fetched.body).trackers).toEqual([]);
+  });
+
+  it('does not synthesize when gitRepo is empty', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, {
+      name: 'X',
+      issueIntegrationEnabled: true,
+    });
+    const fetched = await handler({
+      httpMethod: 'GET',
+      pathParameters: { projectId: id },
+      ...claims(sub),
+    });
+    expect(JSON.parse(fetched.body).trackers).toEqual([]);
+  });
+});
+
+// Admin-facing whole-graph counterpart of the per-project migrate-tracker
+// route (#194 phase #198). Authenticated-only; same shared core as the per-
+// project endpoint and the bulk CLI lambda. Whole-graph assertions are only
+// stable on a clean partition, so this block drops data between tests.
+describe('admin tracker-migration routes', () => {
+  beforeEach(async () => {
+    // Each admin test asserts whole-graph counts, so leftovers from earlier
+    // tests in this file (which share the same partition) would skew the
+    // numbers. Confined to this describe so the per-project tests above
+    // keep their own state model.
+    await g.V().drop().next();
+  });
+
+  const seedLegacySprint = async (projectId) => {
+    const id = randomUUID();
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .as('p')
+      .addV('Sprint')
+      .property('id', id)
+      .property('name', 'legacy')
+      .property('description', '')
+      .property('phase', 'INCEPTION')
+      .property('sprint_id', id)
+      .property('created_at', NOW.toISOString())
+      .property('issue_number', '17')
+      .property('issue_url', 'https://github.com/acme/widgets/issues/17')
+      .as('s')
+      .addE('HAS_SPRINT')
+      .from_('p')
+      .to('s')
+      .next();
+    return id;
+  };
+
+  describe('GET /admin/tracker-migration/status', () => {
+    const status = (sub) =>
+      handler({
+        httpMethod: 'GET',
+        path: '/admin/tracker-migration/status',
+        ...claims(sub),
+      });
+
+    it('returns dry-run counts across the whole graph and does not mutate', async () => {
+      const sub = `u-${randomUUID()}`;
+      const { id } = await createProject(sub, {
+        name: 'Mig',
+        gitRepo: 'acme/widgets',
+        issueIntegrationEnabled: true,
+      });
+      await seedLegacySprint(id);
+
+      const res = await status(sub);
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({
+        dryRun: true,
+        projects: { candidates: 1, applied: 0 },
+        sprints: { candidates: 1, applied: 0 },
+      });
+
+      // No mutation — the project still has no real tracker binding. The
+      // projects API surfaces a synthetic `legacy-github` entry while
+      // issueIntegrationEnabled is true (see #194), so the assertion
+      // verifies the absence of any other binding rather than equality
+      // against an empty array.
+      const fetched = await handler({
+        httpMethod: 'GET',
+        pathParameters: { projectId: id },
+        ...claims(sub),
+      });
+      expect(JSON.parse(fetched.body).trackers).toEqual([
+        expect.objectContaining({ id: 'legacy-github' }),
+      ]);
+    });
+
+    it('returns zeros on a fully migrated graph', async () => {
+      const res = await status(`u-${randomUUID()}`);
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({
+        dryRun: true,
+        projects: { candidates: 0, applied: 0 },
+        sprints: { candidates: 0, applied: 0 },
+      });
+    });
+
+    it('rejects unauthenticated callers', async () => {
+      const res = await handler({
+        httpMethod: 'GET',
+        path: '/admin/tracker-migration/status',
+        requestContext: { authorizer: { claims: {} } },
+      });
+      expect(res.statusCode).toBe(401);
+    });
+  });
+
+  describe('POST /admin/tracker-migration', () => {
+    const run = (sub, body = {}) =>
+      handler({
+        httpMethod: 'POST',
+        path: '/admin/tracker-migration',
+        body: JSON.stringify(body),
+        ...claims(sub),
+      });
+
+    it('migrates every legacy project + sprint in one call', async () => {
+      const sub = `u-${randomUUID()}`;
+      const { id: id1 } = await createProject(sub, {
+        name: 'A',
+        gitRepo: 'acme/a',
+        issueIntegrationEnabled: true,
+      });
+      const { id: id2 } = await createProject(sub, {
+        name: 'B',
+        gitRepo: 'acme/b',
+        issueIntegrationEnabled: true,
+      });
+      await seedLegacySprint(id1);
+      await seedLegacySprint(id2);
+
+      const res = await run(sub);
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({
+        dryRun: false,
+        projects: { candidates: 2, applied: 2 },
+        sprints: { candidates: 2, applied: 2 },
+      });
+    });
+
+    it('is idempotent: re-running applies nothing', async () => {
+      const sub = `u-${randomUUID()}`;
+      const { id } = await createProject(sub, {
+        name: 'A',
+        gitRepo: 'acme/a',
+        issueIntegrationEnabled: true,
+      });
+      await seedLegacySprint(id);
+      await run(sub);
+
+      const res = await run(sub);
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({
+        dryRun: false,
+        projects: { candidates: 0, applied: 0 },
+        sprints: { candidates: 0, applied: 0 },
+      });
+    });
+
+    it('supports dryRun', async () => {
+      const sub = `u-${randomUUID()}`;
+      const { id } = await createProject(sub, {
+        name: 'A',
+        gitRepo: 'acme/a',
+        issueIntegrationEnabled: true,
+      });
+      await seedLegacySprint(id);
+
+      const res = await run(sub, { dryRun: true });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({
+        dryRun: true,
+        projects: { candidates: 1, applied: 0 },
+        sprints: { candidates: 1, applied: 0 },
+      });
+
+      // Confirm dry-run did not write a real edge. The projects API still
+      // surfaces a synthetic `legacy-github` binding while
+      // issueIntegrationEnabled is true (#194); checking for absence of
+      // anything else is what "no mutation" means now.
+      const fetched = await handler({
+        httpMethod: 'GET',
+        pathParameters: { projectId: id },
+        ...claims(sub),
+      });
+      expect(JSON.parse(fetched.body).trackers).toEqual([
+        expect.objectContaining({ id: 'legacy-github' }),
+      ]);
+    });
+
+    it('rejects unauthenticated callers', async () => {
+      const res = await handler({
+        httpMethod: 'POST',
+        path: '/admin/tracker-migration',
+        body: JSON.stringify({}),
+        requestContext: { authorizer: { claims: {} } },
+      });
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('rejects malformed JSON', async () => {
+      const sub = `u-${randomUUID()}`;
+      const res = await handler({
+        httpMethod: 'POST',
+        path: '/admin/tracker-migration',
+        body: '{not json',
+        ...claims(sub),
+      });
+      expect(res.statusCode).toBe(400);
+    });
+  });
+});
