@@ -412,6 +412,13 @@ async function handleProjectMcpServers(g, response, httpMethod, projectId, userI
   }
 
   if (httpMethod === 'PUT') {
+    // Only owners and admins can update MCP servers
+    const role = await fetchMembershipRole(g, projectId, userId);
+    if (!role) return response(403, { error: 'Access denied' });
+    if (role !== 'owner' && role !== 'admin') {
+      return response(403, { error: 'Only project owners and admins can update MCP servers' });
+    }
+
     const data = JSON.parse(body || '{}');
     const mcpServersJson = data.mcpServers || '[]';
     const validation = validateMcpServersJson(mcpServersJson);
@@ -487,6 +494,13 @@ async function handleProjectSteeringDocs(g, response, httpMethod, projectId, use
   }
 
   if (httpMethod === 'PUT') {
+    // Only owners and admins can update steering docs
+    const role = await fetchMembershipRole(g, projectId, userId);
+    if (!role) return response(403, { error: 'Access denied' });
+    if (role !== 'owner' && role !== 'admin') {
+      return response(403, { error: 'Only project owners and admins can update steering docs' });
+    }
+
     const data = JSON.parse(body || '{}');
     const incomingDocs = data.steeringDocs || [];
 

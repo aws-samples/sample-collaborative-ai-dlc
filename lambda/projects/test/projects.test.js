@@ -330,6 +330,134 @@ describe('PUT /projects/:id', () => {
   });
 });
 
+describe('PUT /projects/:id/mcp-servers authorization', () => {
+  it('allows owners to update MCP servers', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const res = await handler({
+      httpMethod: 'PUT',
+      pathParameters: { projectId: id },
+      path: `/projects/${id}/mcp-servers`,
+      body: JSON.stringify({ mcpServers: '[]' }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('allows admins to update MCP servers', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const adminSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub);
+    await addMember(id, adminSub, 'admin');
+    const res = await handler({
+      httpMethod: 'PUT',
+      pathParameters: { projectId: id },
+      path: `/projects/${id}/mcp-servers`,
+      body: JSON.stringify({ mcpServers: '[]' }),
+      ...claims(adminSub),
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('returns 403 when a plain member tries to update MCP servers', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const memberSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub);
+    await addMember(id, memberSub, 'member');
+    const res = await handler({
+      httpMethod: 'PUT',
+      pathParameters: { projectId: id },
+      path: `/projects/${id}/mcp-servers`,
+      body: JSON.stringify({ mcpServers: '[]' }),
+      ...claims(memberSub),
+    });
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({
+      error: 'Only project owners and admins can update MCP servers',
+    });
+  });
+
+  it('returns 403 when a non-member tries to update MCP servers', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const otherSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub);
+    const res = await handler({
+      httpMethod: 'PUT',
+      pathParameters: { projectId: id },
+      path: `/projects/${id}/mcp-servers`,
+      body: JSON.stringify({ mcpServers: '[]' }),
+      ...claims(otherSub),
+    });
+    expect(res.statusCode).toBe(403);
+  });
+});
+
+describe('PUT /projects/:id/steering-docs authorization', () => {
+  it('allows owners to update steering docs', async () => {
+    vi.stubEnv('ARTIFACTS_BUCKET', 'test-bucket');
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const res = await handler({
+      httpMethod: 'PUT',
+      pathParameters: { projectId: id },
+      path: `/projects/${id}/steering-docs`,
+      body: JSON.stringify({ steeringDocs: [] }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(200);
+    vi.stubEnv('ARTIFACTS_BUCKET', undefined);
+  });
+
+  it('allows admins to update steering docs', async () => {
+    vi.stubEnv('ARTIFACTS_BUCKET', 'test-bucket');
+    const ownerSub = `u-${randomUUID()}`;
+    const adminSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub);
+    await addMember(id, adminSub, 'admin');
+    const res = await handler({
+      httpMethod: 'PUT',
+      pathParameters: { projectId: id },
+      path: `/projects/${id}/steering-docs`,
+      body: JSON.stringify({ steeringDocs: [] }),
+      ...claims(adminSub),
+    });
+    expect(res.statusCode).toBe(200);
+    vi.stubEnv('ARTIFACTS_BUCKET', undefined);
+  });
+
+  it('returns 403 when a plain member tries to update steering docs', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const memberSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub);
+    await addMember(id, memberSub, 'member');
+    const res = await handler({
+      httpMethod: 'PUT',
+      pathParameters: { projectId: id },
+      path: `/projects/${id}/steering-docs`,
+      body: JSON.stringify({ steeringDocs: [] }),
+      ...claims(memberSub),
+    });
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({
+      error: 'Only project owners and admins can update steering docs',
+    });
+  });
+
+  it('returns 403 when a non-member tries to update steering docs', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const otherSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub);
+    const res = await handler({
+      httpMethod: 'PUT',
+      pathParameters: { projectId: id },
+      path: `/projects/${id}/steering-docs`,
+      body: JSON.stringify({ steeringDocs: [] }),
+      ...claims(otherSub),
+    });
+    expect(res.statusCode).toBe(403);
+  });
+});
+
 describe('DELETE /projects/:id', () => {
   it('returns 204 for the owner and removes the project', async () => {
     const sub = `u-${randomUUID()}`;
