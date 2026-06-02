@@ -10,6 +10,7 @@
     "lambda/purge-neptune",
     "lambda/sprint-graph",
     "lambda/sprints",
+    "lambda/tasks",
     "lambda/trackers",
     "lambda/ws-authorizer",
     "lambda/ws-connection",

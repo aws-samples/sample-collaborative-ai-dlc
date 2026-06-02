@@ -575,17 +575,16 @@ module "tasks_lambda" {
 
   function_name = "${var.project_name}-tasks-${var.environment}"
   handler       = "index.handler"
-  runtime       = "nodejs18.x"
+  runtime       = "nodejs24.x"
   timeout       = 30
 
   source_path = [
     {
-      path             = "${path.module}/../../../../lambda/tasks"
-      npm_requirements = true
-    },
-    {
-      path          = "${path.module}/../../../../lambda/shared"
-      prefix_in_zip = "shared"
+      path = "${path.module}/../../../../lambda/tasks"
+      commands = [
+        "cd ../.. && npm run build -w tasks",
+        ":zip lambda/tasks/.build",
+      ]
     }
   ]
 

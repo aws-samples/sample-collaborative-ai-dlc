@@ -1,12 +1,13 @@
-const gremlin = require('gremlin');
-const path = require('node:path');
-const { randomUUID } = require('crypto');
-const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
-const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
-const { buildResponse } = require('./shared/response');
-const { validateMcpServersJson } = require('./shared/mcp-validator');
-const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
-const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+import gremlin from 'gremlin';
+import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
+import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
+import { buildResponse } from '../shared/response.js';
+import { validateMcpServersJson } from '../shared/mcp-validator.js';
+import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -14,10 +15,13 @@ const { cardinality } = gremlin.process;
 
 const getConnection = async () => {
   const host = process.env.NEPTUNE_ENDPOINT;
+  const port = process.env.GREMLIN_PORT ?? '8182';
+  const protocol = process.env.GREMLIN_PROTOCOL ?? 'wss';
+
   const credentials = await fromNodeProviderChain()();
-  credentials.region = process.env.AWS_REGION || 'us-east-1';
-  const connInfo = getUrlAndHeaders(host, '8182', credentials, '/gremlin', 'wss');
-  return new DriverRemoteConnection(connInfo.url, { headers: connInfo.headers });
+  credentials.region = process.env.AWS_REGION ?? 'us-east-1';
+  const { url, headers } = getUrlAndHeaders(host, port, credentials, '/gremlin', protocol);
+  return new DriverRemoteConnection(url, { headers });
 };
 
 const mapTask = (v) => ({
@@ -54,12 +58,11 @@ async function authorizeTaskAccess(g, res, event, sprintId, taskId) {
     .has('Sprint', 'id', sprintId)
     .in_('HAS_SPRINT')
     .hasLabel('Project')
+    .values('id')
     .next();
   if (!projectVertex.value) return res(404, { error: 'Project not found for sprint' });
 
-  const projectId = projectVertex.value.id
-    ? projectVertex.value.id
-    : (await g.V(projectVertex.value).values('id').next()).value;
+  const projectId = projectVertex.value;
 
   const isMember = await g
     .V()
@@ -82,14 +85,24 @@ async function requireTodoStatus(g, res, taskId) {
   return null;
 }
 
-exports.handler = async (event) => {
+export const handler = async (event) => {
   const res = buildResponse(event);
   if (event.httpMethod === 'OPTIONS') return res(200, {});
 
   let conn;
   try {
     conn = await getConnection();
-    const g = traversal().withRemote(conn);
+    let g = traversal().withRemote(conn);
+    if (process.env.GREMLIN_PARTITION) {
+      g = g.withStrategies(
+        new PartitionStrategy({
+          partitionKey: '_partition',
+          writePartition: process.env.GREMLIN_PARTITION,
+          readPartitions: [process.env.GREMLIN_PARTITION],
+        }),
+      );
+    }
+
     const { httpMethod, pathParameters, body } = event;
     const { sprintId, taskId } = pathParameters || {};
 
