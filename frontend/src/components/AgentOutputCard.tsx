@@ -30,7 +30,7 @@ export function AgentOutputCard({ output }: Props) {
         </svg>
       </button>
       {expanded ? (
-        <div className="px-6 pb-4 max-h-96 overflow-y-auto prose prose-sm max-w-none">
+        <div className="px-6 pb-4 max-h-96 overflow-y-auto prose prose-sm dark:prose-invert max-w-none">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{output}</ReactMarkdown>
         </div>
       ) : (

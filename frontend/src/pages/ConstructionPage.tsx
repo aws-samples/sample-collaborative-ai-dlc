@@ -501,7 +501,7 @@ export default function ConstructionPage() {
                 ) : (
                   <ArrowRight className="h-4 w-4" />
                 )}
-                {approvingPhase ? 'Approving...' : 'Approve & Move to Review'}
+                {approvingPhase ? 'Ending Construction...' : 'End Construction & Move to Review'}
               </Button>
             )}
 

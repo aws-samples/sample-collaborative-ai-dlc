@@ -190,7 +190,7 @@ export default function AgentPage() {
   const phaseRoute =
     sprint?.phase === 'CONSTRUCTION'
       ? '/construction'
-      : sprint?.phase === 'REVIEW'
+      : sprint?.phase === 'REVIEW' || sprint?.phase === 'COMPLETED'
         ? '/review'
         : '';
 

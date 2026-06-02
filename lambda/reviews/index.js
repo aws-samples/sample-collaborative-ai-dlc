@@ -16,16 +16,20 @@ const getConnection = async () => {
   return new DriverRemoteConnection(connInfo.url, { headers: connInfo.headers });
 };
 
-const VALID_STATUSES = ['PENDING', 'PASSED', 'FAILED'];
+const VALID_STATUSES = ['PENDING', 'PASSED', 'FAILED', 'PARTIAL'];
 
 const mapReview = (v) => ({
   id: v.get('id')?.[0] || '',
   status: v.get('status')?.[0] || 'PENDING',
   comments: v.get('comments')?.[0] || '',
-  blindReview: v.get('blind_review')?.[0] || '',
-  fullReview: v.get('full_review')?.[0] || '',
-  riskScore: v.get('risk_score')?.[0] || null,
-  riskReasoning: v.get('risk_reasoning')?.[0] || '',
+  blindReview: v.get('blind_review')?.[0] || null,
+  blindStatus: v.get('blind_status')?.[0] || 'PENDING',
+  blindRiskScore: v.get('blind_risk_score')?.[0] || v.get('risk_score')?.[0] || null,
+  blindRiskReasoning: v.get('blind_risk_reasoning')?.[0] || v.get('risk_reasoning')?.[0] || '',
+  fullReview: v.get('full_review')?.[0] || null,
+  fullStatus: v.get('full_status')?.[0] || 'PENDING',
+  fullRiskScore: v.get('full_risk_score')?.[0] || v.get('risk_score')?.[0] || null,
+  fullRiskReasoning: v.get('full_risk_reasoning')?.[0] || v.get('risk_reasoning')?.[0] || '',
   stale: v.get('stale')?.[0] === 'true',
   staleAt: v.get('stale_at')?.[0] || null,
   sprintId: v.get('sprint_id')?.[0] || '',
@@ -104,10 +108,19 @@ exports.handler = async (event) => {
 
         const reviewId = review.value.id;
 
-        // status, blindReview, fullReview, riskScore, riskReasoning are system-write-only
-        // (set by the review agent via MCP tools). Users may only update comments and edges.
+        // Agent-written fields are system-write-only (set by review agents via MCP tools).
+        // Users may update status (human verdict), comments, and edges.
         const isSystemCaller = event.requestContext?.authorizer?.claims?.sub === 'system';
-        const SYSTEM_FIELDS = ['status', 'blindReview', 'fullReview', 'riskScore', 'riskReasoning'];
+        const SYSTEM_FIELDS = [
+          'blindReview',
+          'fullReview',
+          'blindStatus',
+          'blindRiskScore',
+          'blindRiskReasoning',
+          'fullStatus',
+          'fullRiskScore',
+          'fullRiskReasoning',
+        ];
         const data = isSystemCaller
           ? raw
           : Object.fromEntries(Object.entries(raw).filter(([k]) => !SYSTEM_FIELDS.includes(k)));
@@ -120,14 +133,37 @@ exports.handler = async (event) => {
           await g.V(reviewId).property(cardinality.single, 'comments', data.comments).next();
         if (data.blindReview !== undefined)
           await g.V(reviewId).property(cardinality.single, 'blind_review', data.blindReview).next();
-        if (data.fullReview !== undefined)
-          await g.V(reviewId).property(cardinality.single, 'full_review', data.fullReview).next();
-        if (data.riskScore !== undefined)
-          await g.V(reviewId).property(cardinality.single, 'risk_score', data.riskScore).next();
-        if (data.riskReasoning !== undefined)
+        if (data.blindStatus) {
+          if (!VALID_STATUSES.includes(data.blindStatus))
+            return res(400, { error: 'Invalid blind status' });
+          await g.V(reviewId).property(cardinality.single, 'blind_status', data.blindStatus).next();
+        }
+        if (data.blindRiskScore !== undefined)
           await g
             .V(reviewId)
-            .property(cardinality.single, 'risk_reasoning', data.riskReasoning)
+            .property(cardinality.single, 'blind_risk_score', data.blindRiskScore)
+            .next();
+        if (data.blindRiskReasoning !== undefined)
+          await g
+            .V(reviewId)
+            .property(cardinality.single, 'blind_risk_reasoning', data.blindRiskReasoning)
+            .next();
+        if (data.fullReview !== undefined)
+          await g.V(reviewId).property(cardinality.single, 'full_review', data.fullReview).next();
+        if (data.fullStatus) {
+          if (!VALID_STATUSES.includes(data.fullStatus))
+            return res(400, { error: 'Invalid full status' });
+          await g.V(reviewId).property(cardinality.single, 'full_status', data.fullStatus).next();
+        }
+        if (data.fullRiskScore !== undefined)
+          await g
+            .V(reviewId)
+            .property(cardinality.single, 'full_risk_score', data.fullRiskScore)
+            .next();
+        if (data.fullRiskReasoning !== undefined)
+          await g
+            .V(reviewId)
+            .property(cardinality.single, 'full_risk_reasoning', data.fullRiskReasoning)
             .next();
 
         // Add REVIEWS edges to code files

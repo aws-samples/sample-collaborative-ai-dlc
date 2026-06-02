@@ -19,7 +19,7 @@ const getConnection = async () => {
   return new DriverRemoteConnection(url, { headers });
 };
 
-const VALID_PHASES = ['INCEPTION', 'CONSTRUCTION', 'REVIEW'];
+const VALID_PHASES = ['INCEPTION', 'CONSTRUCTION', 'REVIEW', 'COMPLETED'];
 
 const nonEmpty = (s) => (s && s !== '' ? s : null);
 

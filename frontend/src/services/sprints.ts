@@ -1,6 +1,6 @@
 import { api } from './api';
 
-export type SprintPhase = 'INCEPTION' | 'CONSTRUCTION' | 'REVIEW';
+export type SprintPhase = 'INCEPTION' | 'CONSTRUCTION' | 'REVIEW' | 'COMPLETED';
 export type AgentStatus = 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled' | null;
 
 // Polymorphic link from a Sprint to the tracker resource it was started from.

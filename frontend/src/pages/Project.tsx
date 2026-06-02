@@ -34,6 +34,7 @@ const PHASE_VARIANT: Record<string, 'inception' | 'construction' | 'review'> = {
   INCEPTION: 'inception',
   CONSTRUCTION: 'construction',
   REVIEW: 'review',
+  COMPLETED: 'review',
 };
 
 export default function Project() {
@@ -121,7 +122,7 @@ export default function Project() {
   const getSprintUrl = (sprint: Sprint) => {
     const base = `/project/${projectId}/sprint/${sprint.id}`;
     if (sprint.phase === 'CONSTRUCTION') return `${base}/construction`;
-    if (sprint.phase === 'REVIEW') return `${base}/review`;
+    if (sprint.phase === 'REVIEW' || sprint.phase === 'COMPLETED') return `${base}/review`;
     return base;
   };
 
