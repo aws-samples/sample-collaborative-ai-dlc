@@ -1,276 +1,321 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { projectsService, type Project as ProjectType } from '@/services/projects';
-import { sprintsService, type Sprint } from '@/services/sprints';
+import { cn } from '@/lib/utils';
+import { useProjectCache, useProjectSprintsCache } from '@/hooks/useProjectsCache';
+import { useSprintEvents } from '@/hooks/useSprintEvents';
 import { Card, CardContent } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
-  DialogTitle,
   DialogDescription,
   DialogFooter,
+  DialogHeader,
+  DialogTitle,
 } from '@/components/ui/dialog';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
-import { Plus, GitBranch, Trash2, Zap, Calendar, Settings } from 'lucide-react';
 import { IssueListPanel } from '@/components/IssueListPanel';
-const PHASE_VARIANT: Record<string, 'inception' | 'construction' | 'review'> = {
-  INCEPTION: 'inception',
-  CONSTRUCTION: 'construction',
-  REVIEW: 'review',
+import {
+  FolderGit2,
+  Bot,
+  Loader2,
+  CheckCircle2,
+  XCircle,
+  MessageCircleQuestion,
+  ChevronRight,
+  Clock,
+  Plus,
+  Settings,
+} from 'lucide-react';
+import { sprintsService, type Sprint } from '@/services/sprints';
+
+const STATUS_ICON: Record<string, typeof Loader2> = {
+  running: Loader2,
+  waiting: MessageCircleQuestion,
+  completed: CheckCircle2,
+  failed: XCircle,
 };
+
+const STATUS_LABEL: Record<string, string> = {
+  running: 'Running',
+  waiting: 'Waiting for input',
+  completed: 'Completed',
+  failed: 'Failed',
+};
+
+function formatRelativeTime(dateStr: string | null): string {
+  if (!dateStr) return '';
+  const ms = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(ms / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
 
 export default function Project() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
-  const [project, setProject] = useState<ProjectType | null>(null);
-  const [sprints, setSprints] = useState<Sprint[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { project, loading: projectLoading } = useProjectCache(projectId ?? null);
+  const { sprints, refresh: refreshSprints } = useProjectSprintsCache(projectId ?? null);
+
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState('');
   const [creating, setCreating] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [createError, setCreateError] = useState<string | null>(null);
 
-  const loadData = useCallback(async () => {
-    if (!projectId) return;
-    try {
-      const [proj, sprintList] = await Promise.all([
-        projectsService.get(projectId),
-        sprintsService.list(projectId),
-      ]);
-      setProject(proj);
-      setSprints(sprintList);
-    } catch (error) {
-      console.error('Failed to load project:', error);
-    } finally {
-      setLoading(false);
-    }
-  }, [projectId]);
+  const latestSprint = sprints[0] ?? null;
+  const agentStatus = latestSprint?.currentAgentStatus;
+  const isAgentActive = agentStatus === 'running' || agentStatus === 'waiting';
 
-  useEffect(() => {
-    loadData();
-  }, [loadData]);
+  useSprintEvents(
+    latestSprint?.id ?? '',
+    useCallback(() => {
+      refreshSprints();
+    }, [refreshSprints]),
+  );
+
+  const handleSprintCreated = useCallback(() => {
+    refreshSprints();
+  }, [refreshSprints]);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!projectId || !newName.trim()) return;
     setCreating(true);
+    setCreateError(null);
     try {
-      const sprint = await sprintsService.create(projectId, { name: newName, description: '' });
-      setSprints((prev) => [...prev, sprint]);
+      await sprintsService.create(projectId, { name: newName.trim(), description: '' });
+      refreshSprints();
       setShowCreate(false);
       setNewName('');
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : 'Failed to create iteration');
     } finally {
       setCreating(false);
     }
   };
 
-  const handleDelete = async () => {
-    if (!projectId || !confirmDelete) return;
-    try {
-      await sprintsService.delete(projectId, confirmDelete);
-      setSprints((prev) => prev.filter((s) => s.id !== confirmDelete));
-    } catch (error) {
-      console.error('Failed to delete sprint:', error);
-    } finally {
-      setConfirmDelete(null);
-    }
-  };
-
-  const getSprintUrl = (sprint: Sprint) => {
-    const base = `/project/${projectId}/sprint/${sprint.id}`;
-    if (sprint.phase === 'CONSTRUCTION') return `${base}/construction`;
-    if (sprint.phase === 'REVIEW') return `${base}/review`;
-    return base;
-  };
+  const activeSprints = sprints.filter(
+    (s) => s.currentAgentStatus === 'running' || s.currentAgentStatus === 'waiting',
+  );
+  const pastSprints = sprints.filter(
+    (s) => s.currentAgentStatus !== 'running' && s.currentAgentStatus !== 'waiting',
+  );
 
   if (!projectId) return <div className="p-6">Project not found</div>;
 
+  if (!project && projectLoading) {
+    return (
+      <div className="max-w-5xl mx-auto p-6 space-y-4">
+        <Skeleton className="h-8 w-48" />
+        <Skeleton className="h-4 w-64" />
+        <div className="grid md:grid-cols-2 gap-3">
+          {[1, 2].map((i) => (
+            <Skeleton key={i} className="h-20 rounded-lg" />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (!project) return <div className="p-6">Project not found</div>;
+
   return (
-    <div className="h-full">
-      <div className="max-w-5xl mx-auto p-6">
-        {/* Project header */}
-        <div className="mb-8">
-          {loading ? (
-            <>
-              <Skeleton className="h-8 w-48 mb-2" />
-              <Skeleton className="h-4 w-64" />
-            </>
-          ) : project ? (
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h1 className="text-2xl font-bold tracking-tight">{project.name}</h1>
-                <div className="flex items-center gap-3 mt-2 text-sm text-muted-foreground">
-                  <span className="flex items-center gap-1">
-                    <GitBranch className="h-3.5 w-3.5" />
-                    {project.gitRepo}
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <Calendar className="h-3.5 w-3.5" />
-                    Created {new Date(project.createdAt).toLocaleDateString()}
-                  </span>
-                </div>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                className="gap-1.5 shrink-0"
-                onClick={() => navigate(`/project/${projectId}/settings`)}
-              >
-                <Settings className="h-3.5 w-3.5" />
-                Settings
-              </Button>
+    <div className="max-w-5xl mx-auto p-6 space-y-6">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <FolderGit2 className="h-5 w-5 text-primary" />
+          <h1 className="text-lg font-bold tracking-tight">{project.name}</h1>
+          {latestSprint && (
+            <Badge variant="outline" className="text-[10px]">
+              {latestSprint.phase}
+            </Badge>
+          )}
+          {isAgentActive && (
+            <Badge
+              variant="outline"
+              className="gap-1 text-[10px] bg-agent-running/10 text-agent-running border-agent-running/30"
+            >
+              <span className="h-1.5 w-1.5 rounded-full bg-agent-running animate-pulse" />
+              Live
+            </Badge>
+          )}
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-1.5 h-7"
+          onClick={() => navigate(`/project/${projectId}/settings`)}
+        >
+          <Settings className="h-3 w-3" />
+          Settings
+        </Button>
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-3">
+        <Card>
+          <CardContent className="px-4 py-3">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
+              <Bot className="h-3 w-3" />
+              Agent
             </div>
-          ) : null}
-        </div>
-
-        {/* Sprints header */}
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h2 className="text-lg font-semibold">Sprints</h2>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              {sprints.length} sprint{sprints.length !== 1 ? 's' : ''}
-            </p>
-          </div>
-          <Button onClick={() => setShowCreate(true)} size="sm" className="gap-1.5">
-            <Plus className="h-3.5 w-3.5" />
-            New Sprint
-          </Button>
-        </div>
-
-        {/* Sprint list */}
-        {loading ? (
-          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-            {[1, 2, 3].map((i) => (
-              <Card key={i}>
-                <CardContent className="p-4">
-                  <Skeleton className="h-5 w-2/3 mb-2" />
-                  <Skeleton className="h-4 w-1/3 mb-3" />
-                  <Skeleton className="h-3 w-full" />
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        ) : sprints.length === 0 ? (
-          <Card className="border-dashed">
-            <CardContent className="flex flex-col items-center justify-center py-12">
-              <div className="h-12 w-12 rounded-full bg-muted flex items-center justify-center mb-3">
-                <Zap className="h-6 w-6 text-muted-foreground" />
-              </div>
-              <h3 className="font-semibold mb-1">No sprints yet</h3>
-              <p className="text-sm text-muted-foreground mb-4">
-                Create a sprint to start your development lifecycle
+            <div className="flex items-center gap-2">
+              {agentStatus &&
+                STATUS_ICON[agentStatus] &&
+                (() => {
+                  const Icon = STATUS_ICON[agentStatus];
+                  return (
+                    <Icon
+                      className={cn(
+                        'h-3.5 w-3.5',
+                        agentStatus === 'running' && 'animate-spin text-agent-running',
+                        agentStatus === 'waiting' && 'text-agent-waiting',
+                        agentStatus === 'completed' && 'text-agent-success',
+                        agentStatus === 'failed' && 'text-agent-error',
+                      )}
+                    />
+                  );
+                })()}
+              <p className="text-sm font-medium">
+                {agentStatus ? STATUS_LABEL[agentStatus] : 'Idle'}
               </p>
-              <Button onClick={() => setShowCreate(true)} size="sm" className="gap-1.5">
-                <Plus className="h-3.5 w-3.5" />
-                Create First Sprint
-              </Button>
-            </CardContent>
-          </Card>
-        ) : (
-          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-            {sprints.map((sprint) => (
-              <Card
-                key={sprint.id}
-                className="group cursor-pointer transition-all hover:shadow-md hover:border-foreground/20"
-                onClick={() => navigate(getSprintUrl(sprint))}
-              >
-                <CardContent className="p-4">
-                  <div className="flex items-start justify-between mb-2">
-                    <h3 className="font-semibold text-sm group-hover:text-primary transition-colors">
-                      {sprint.name}
-                    </h3>
-                    <Badge
-                      variant={PHASE_VARIANT[sprint.phase] || 'secondary'}
-                      className="text-[10px] shrink-0"
-                    >
-                      {sprint.phase}
-                    </Badge>
-                  </div>
-                  <p className="text-xs text-muted-foreground line-clamp-2 min-h-[2rem]">
-                    {sprint.description || 'No description'}
-                  </p>
-                  <div className="flex items-center justify-between mt-3 pt-2 border-t">
-                    <span className="text-[11px] text-muted-foreground/60">
-                      {new Date(sprint.createdAt).toLocaleDateString()}
-                    </span>
-                    <div className="flex items-center gap-1">
-                      {sprint.prUrl && (
-                        <Badge variant="outline" className="text-[9px] h-4">
-                          PR
-                        </Badge>
-                      )}
-                      {sprint.currentAgentStatus === 'running' && (
-                        <span className="relative flex h-2 w-2">
-                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-agent-running opacity-75" />
-                          <span className="relative inline-flex rounded-full h-2 w-2 bg-agent-running" />
-                        </span>
-                      )}
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-6 w-6 opacity-0 group-hover:opacity-100"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setConfirmDelete(sprint.id);
-                        }}
-                      >
-                        <Trash2 className="h-3 w-3 text-destructive" />
-                      </Button>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        )}
+            </div>
+            {latestSprint?.currentAgentType && (
+              <p className="text-[11px] text-muted-foreground mt-1 capitalize">
+                {latestSprint.currentAgentType.replace(/[_-]/g, ' ')}
+              </p>
+            )}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="px-4 py-3">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
+              <Clock className="h-3 w-3" />
+              Sprints
+            </div>
+            <p className="text-sm font-medium">
+              {sprints.length} iteration{sprints.length !== 1 ? 's' : ''}
+            </p>
+            <p className="text-[11px] text-muted-foreground mt-1">
+              {activeSprints.length} active · Created{' '}
+              {new Date(project.createdAt).toLocaleDateString()}
+            </p>
+          </CardContent>
+        </Card>
+      </div>
 
-        {/* GitHub issues panel — below sprints so sprints stay discoverable */}
-        {project && project.gitProvider === 'github' && project.issueIntegrationEnabled && (
+      <div className="grid md:grid-cols-2 gap-6">
+        <div className="space-y-2">
+          <div className="flex items-center justify-between h-7">
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              Issues
+            </h3>
+          </div>
           <IssueListPanel
             project={project}
             sprints={sprints}
-            onSprintCreated={(sprint) => setSprints((prev) => [...prev, sprint])}
+            onSprintCreated={handleSprintCreated}
           />
-        )}
+        </div>
+
+        <div className="space-y-2">
+          <div className="flex items-center justify-between h-7">
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              Iterations
+            </h3>
+            <Button
+              size="sm"
+              className="gap-1.5 h-7"
+              onClick={() => setShowCreate(true)}
+            >
+              <Plus className="h-3 w-3" />
+              Start
+            </Button>
+          </div>
+
+          {activeSprints.length > 0 && (
+            <div className="space-y-2">
+              {activeSprints.map((s) => (
+                <SprintRow
+                  key={s.id}
+                  sprint={s}
+                  projectId={projectId}
+                  active
+                  onNavigate={navigate}
+                />
+              ))}
+            </div>
+          )}
+
+          {pastSprints.length > 0 && (
+            <Collapsible defaultOpen={pastSprints.length <= 5}>
+              <CollapsibleTrigger className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors group w-full">
+                <ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]:rotate-90" />
+                <span>Past iterations ({pastSprints.length})</span>
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <div className="space-y-1 mt-2">
+                  {pastSprints.map((s) => (
+                    <SprintRow
+                      key={s.id}
+                      sprint={s}
+                      projectId={projectId}
+                      onNavigate={navigate}
+                    />
+                  ))}
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
+          )}
+
+          {sprints.length === 0 && (
+            <Card className="border-dashed">
+              <CardContent className="px-4 py-6 text-center">
+                <p className="text-sm text-muted-foreground">No iterations yet</p>
+              </CardContent>
+            </Card>
+          )}
+        </div>
       </div>
 
-      {/* Create Sprint Dialog */}
-      <Dialog open={showCreate} onOpenChange={setShowCreate}>
-        <DialogContent className="sm:max-w-md">
+      <Dialog
+        open={showCreate}
+        onOpenChange={(open) => {
+          setShowCreate(open);
+          if (!open) {
+            setNewName('');
+            setCreateError(null);
+          }
+        }}
+      >
+        <DialogContent>
           <form onSubmit={handleCreate}>
             <DialogHeader>
-              <DialogTitle>Create Sprint</DialogTitle>
+              <DialogTitle>Start a new iteration</DialogTitle>
               <DialogDescription>
-                Create a new sprint to start a development iteration. You'll define the inception
-                prompt after creation.
+                Give this iteration a short, descriptive name. You can refine the goal in the
+                inception phase.
               </DialogDescription>
             </DialogHeader>
-            <div className="py-4">
-              <Label htmlFor="sprint-name">Sprint Name</Label>
+            <div className="grid gap-3 py-4">
+              <Label htmlFor="iteration-name">Name</Label>
               <Input
-                id="sprint-name"
+                id="iteration-name"
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
-                placeholder="e.g., Sprint 1 - User Authentication"
-                className="mt-1.5"
-                required
+                placeholder="e.g. Add user profile page"
                 autoFocus
+                disabled={creating}
               />
+              {createError && (
+                <p className="text-xs text-destructive">{createError}</p>
+              )}
             </div>
             <DialogFooter>
               <Button
@@ -282,33 +327,73 @@ export default function Project() {
                 Cancel
               </Button>
               <Button type="submit" disabled={creating || !newName.trim()}>
-                {creating ? 'Creating...' : 'Create Sprint'}
+                {creating ? 'Starting...' : 'Start iteration'}
               </Button>
             </DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
-
-      {/* Delete Confirmation */}
-      <AlertDialog open={!!confirmDelete} onOpenChange={() => setConfirmDelete(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Sprint</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure? This will permanently delete the sprint and all its artifacts.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDelete}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
+  );
+}
+
+function SprintRow({
+  sprint,
+  projectId,
+  active,
+  onNavigate,
+}: {
+  sprint: Sprint;
+  projectId: string;
+  active?: boolean;
+  onNavigate: (path: string) => void;
+}) {
+  const status = sprint.currentAgentStatus;
+  const phaseRoute =
+    sprint.phase === 'CONSTRUCTION'
+      ? '/construction'
+      : sprint.phase === 'REVIEW'
+        ? '/review'
+        : '';
+
+  return (
+    <button
+      onClick={() => onNavigate(`/project/${projectId}/sprint/${sprint.id}${phaseRoute}`)}
+      className={cn(
+        'flex items-center gap-3 rounded-lg border px-3 py-2.5 w-full text-left transition-colors hover:bg-accent/50',
+        active && status === 'running' && 'border-agent-running/25 bg-agent-running/[0.03]',
+        active && status === 'waiting' && 'border-agent-waiting/25 bg-agent-waiting/[0.03]',
+      )}
+    >
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <p className="text-sm font-medium truncate">{sprint.name}</p>
+          <Badge variant="outline" className="text-[9px] h-4 shrink-0">
+            {sprint.phase}
+          </Badge>
+        </div>
+        <p className="text-[11px] text-muted-foreground mt-0.5">
+          {formatRelativeTime(sprint.createdAt)}
+          {sprint.prUrl && ' · PR open'}
+        </p>
+      </div>
+      {status &&
+        STATUS_ICON[status] &&
+        (() => {
+          const Icon = STATUS_ICON[status];
+          return (
+            <Icon
+              className={cn(
+                'h-3.5 w-3.5 shrink-0',
+                status === 'running' && 'animate-spin text-agent-running',
+                status === 'waiting' && 'text-agent-waiting',
+                status === 'completed' && 'text-agent-success',
+                status === 'failed' && 'text-agent-error',
+              )}
+            />
+          );
+        })()}
+      <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/40 shrink-0" />
+    </button>
   );
 }

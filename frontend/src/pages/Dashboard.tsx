@@ -1,6 +1,7 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { projectsService, type Project } from '@/services/projects';
+import { projectsService } from '@/services/projects';
+import { useProjectsCache } from '@/hooks/useProjectsCache';
 import { CreateProjectModal } from '@/components/CreateProjectModal';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -23,28 +24,17 @@ import { cn } from '@/lib/utils';
 export default function Dashboard() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { projects: projectsWithSprints, loading, refresh, invalidate } = useProjectsCache();
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
 
-  const loadProjects = useCallback(async () => {
-    try {
-      const data = await projectsService.list();
-      setProjects(data);
-    } catch (error) {
-      console.error('Failed to load projects:', error);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadProjects();
-  }, [loadProjects]);
+  const projects = useMemo(
+    () => projectsWithSprints.map((p) => p.project),
+    [projectsWithSprints],
+  );
 
   useEffect(() => {
     if (searchParams.get('reopenCreateProject') === '1') {
@@ -58,7 +48,7 @@ export default function Dashboard() {
     setDeleting(confirmDelete);
     try {
       await projectsService.delete(confirmDelete);
-      setProjects(projects.filter((p) => p.id !== confirmDelete));
+      invalidate();
     } catch (error) {
       console.error('Failed to delete project:', error);
     } finally {
@@ -293,7 +283,7 @@ export default function Dashboard() {
 
       {/* Create modal */}
       {showCreateModal && (
-        <CreateProjectModal onClose={() => setShowCreateModal(false)} onCreated={loadProjects} />
+        <CreateProjectModal onClose={() => setShowCreateModal(false)} onCreated={refresh} />
       )}
 
       {/* Delete confirmation */}
