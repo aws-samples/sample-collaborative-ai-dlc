@@ -80,6 +80,10 @@ const fetchRepos = async (g, projectId) => {
     .has('Project', 'id', projectId)
     .out('HAS_REPO')
     .hasLabel('Repository')
+    // Stable ordering by add time so promotion-after-delete and any
+    // "first repo" fallback are deterministic across calls.
+    .order()
+    .by(__.coalesce(__.values('added_at'), __.constant('')))
     .project('url', 'provider', 'role', 'detectedStack', 'addedAt')
     .by('url')
     .by(__.coalesce(__.values('provider'), __.constant('github')))
@@ -103,6 +107,32 @@ const derivePrimaryRepo = (repos, legacyGitRepo) => {
   return primary.url;
 };
 
+// Reconcile repo role labels so exactly one repo carries `primary`. The
+// matching repo is promoted; any stale `primary` is demoted to `secondary`;
+// other roles are left untouched. Callers that already hold the repo list can
+// pass it in to avoid a redundant fetch.
+const syncPrimaryRepo = async (g, projectId, primaryUrl, preloadedRepos) => {
+  const repos = preloadedRepos ?? (await fetchRepos(g, projectId));
+
+  // Guard: if primaryUrl matches no repo, don't blindly demote the existing
+  // primary (that would leave the project with zero primaries).
+  if (!repos.some((repo) => repo.url === primaryUrl)) return;
+
+  for (const repo of repos) {
+    const nextRole =
+      repo.url === primaryUrl ? 'primary' : repo.role === 'primary' ? 'secondary' : repo.role;
+    if (nextRole === repo.role) continue;
+
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .out('HAS_REPO')
+      .has('Repository', 'url', repo.url)
+      .property(cardinality.single, 'role', nextRole)
+      .next();
+  }
+};
+
 // Validates owner/repo format. GitHub allows alphanumeric, hyphens,
 // underscores, and dots; max 39 chars for owner and 100 for repo.
 // Used for the multi-repo `repos[]` API — these are real clone targets.
@@ -115,6 +145,41 @@ const REPO_URL_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}\/[a-zA-Z0-9][a-zA-Z0-9.
 // out of that double-quoted shell string ("  `  $  \  whitespace), closing the
 // injection vector while preserving freeform values.
 const SHELL_SAFE_REPO_PATTERN = /^[A-Za-z0-9._@:/-]+$/;
+
+// Shell-safe AND traversal-safe. Rejects "..", which the raw pattern would
+// otherwise allow (e.g. "../../foo"), keeping the value safe for both the
+// clone URL and the multi-repo "/workspace/${url}" directory interpolation.
+const isShellSafeRepo = (v) =>
+  typeof v === 'string' && v.length > 0 && SHELL_SAFE_REPO_PATTERN.test(v) && !v.includes('..');
+
+// Canonical repository role + provider vocabularies. Keep in sync with
+// `RepoRole` and `ProjectRepo.provider` in frontend/src/services/projects.ts.
+const ALLOWED_REPO_ROLES = new Set([
+  'primary',
+  'secondary',
+  'frontend',
+  'backend',
+  'api',
+  'infra',
+  'shared',
+  'docs',
+  'unknown',
+]);
+const ALLOWED_PROVIDERS = new Set(['github', 'gitlab']);
+
+// Validate a single repo input's role/provider against the canonical
+// vocabularies. Returns an error string when invalid, or null when valid.
+// Shared by POST /projects/:id/repos and POST /projects so the two paths can't
+// drift. `url` validation differs per caller, so it's intentionally excluded.
+const validateRepoRoleAndProvider = ({ role, provider }) => {
+  if (role && !ALLOWED_REPO_ROLES.has(role)) {
+    return `Invalid role "${role}". Allowed: ${[...ALLOWED_REPO_ROLES].join(', ')}`;
+  }
+  if (provider && !ALLOWED_PROVIDERS.has(provider)) {
+    return `Invalid provider "${provider}". Allowed: ${[...ALLOWED_PROVIDERS].join(', ')}`;
+  }
+  return null;
+};
 
 // Auto-detect role from repo URL patterns (lightweight heuristic).
 const guessRole = (url) => {
@@ -136,7 +201,7 @@ const ensureLegacyRepoMigrated = async (g, projectId, legacyGitRepo) => {
   // Legacy git_repo is freeform, so we only enforce shell-safety here (not strict
   // owner/repo). Skip (don't throw) on a dangerous value — this runs on read paths
   // and must not break GETs of old projects.
-  if (!SHELL_SAFE_REPO_PATTERN.test(legacyGitRepo)) {
+  if (!isShellSafeRepo(legacyGitRepo)) {
     console.error(
       `[projects] Skipping migration of unsafe git_repo value for ${projectId}: ${JSON.stringify(legacyGitRepo)}`,
     );
@@ -340,7 +405,7 @@ async function detectRepoStack(repoUrl, token) {
   const parts = [...fwArr];
   if (langArr.length > 0 && fwArr.length === 0) parts.push(...langArr);
   else if (langArr.includes('TypeScript')) parts.push('TypeScript');
-  const summary = parts.join(' + ') || langArr.join(' + ') || '';
+  const summary = parts.join(' + ');
 
   return { languages: langArr, frameworks: fwArr, role, summary };
 }
@@ -379,19 +444,37 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
     if (!repoUrl) return response(400, { error: 'url query parameter is required' });
     const decoded = decodeURIComponent(repoUrl);
 
-    // Single query: aggregate the matched repo (eager barrier) before dropping,
-    // then cap() returns what was collected so we can still distinguish 404.
-    const dropped = await g
+    const existingRepos = await fetchRepos(g, projectId);
+    const targetRepo = existingRepos.find((repo) => repo.url === decoded);
+    if (!targetRepo) {
+      return response(404, { error: 'Repository not found on this project' });
+    }
+
+    await g
       .V()
       .has('Project', 'id', projectId)
-      .out('HAS_REPO')
-      .has('Repository', 'url', decoded)
-      .aggregate('x')
+      .outE('HAS_REPO')
+      .where(__.inV().has('Repository', 'url', decoded))
       .drop()
-      .cap('x')
       .next();
-    if (!dropped.value || dropped.value.length === 0) {
-      return response(404, { error: 'Repository not found on this project' });
+
+    const stillReferenced = await g.V().has('Repository', 'url', decoded).inE('HAS_REPO').hasNext();
+    if (!stillReferenced) {
+      await g.V().has('Repository', 'url', decoded).drop().next();
+    }
+
+    if (targetRepo.role === 'primary') {
+      const remainingRepos = await fetchRepos(g, projectId);
+      const nextPrimaryUrl = remainingRepos[0]?.url || '';
+      if (nextPrimaryUrl) {
+        // Reuse the list we just fetched to avoid a redundant round-trip.
+        await syncPrimaryRepo(g, projectId, nextPrimaryUrl, remainingRepos);
+      }
+      await g
+        .V()
+        .has('Project', 'id', projectId)
+        .property(cardinality.single, 'git_repo', nextPrimaryUrl)
+        .next();
     }
 
     return response(200, { removed: decoded });
@@ -427,6 +510,8 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
     if (!REPO_URL_PATTERN.test(data.url)) {
       return response(400, { error: 'url must be in owner/repo format' });
     }
+    const repoInputError = validateRepoRoleAndProvider(data);
+    if (repoInputError) return response(400, { error: repoInputError });
 
     // Check for duplicates
     const duplicate = await g
@@ -469,9 +554,16 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
       .to('r')
       .next();
 
-    // Update legacy git_repo field to primary
+    // Reconcile role labels and the legacy git_repo field. When the new repo is
+    // primary, demote any previous primary so only one remains.
     const allRepos = await fetchRepos(g, projectId);
-    const primaryUrl = derivePrimaryRepo(allRepos, '');
+    let primaryUrl;
+    if (repoRole === 'primary') {
+      await syncPrimaryRepo(g, projectId, data.url, allRepos);
+      primaryUrl = data.url;
+    } else {
+      primaryUrl = derivePrimaryRepo(allRepos, '');
+    }
     await g
       .V()
       .has('Project', 'id', projectId)
@@ -720,7 +812,11 @@ export const handler = async (event) => {
         // pool-worker. The multi-repo `repos[]` entries are real clone targets,
         // so they must be strict owner/repo. The legacy `gitRepo` string stays
         // freeform but must be shell-safe (no injection chars).
-        const inputRepos = data.repos || [];
+        if (data.repos !== undefined && !Array.isArray(data.repos)) {
+          return response(400, { error: 'repos must be an array' });
+        }
+        // Copy so the legacy-fallback push below never mutates the parsed body.
+        const inputRepos = [...(data.repos || [])];
         const legacyGitRepo = data.gitRepo || '';
 
         for (const repo of inputRepos) {
@@ -729,8 +825,10 @@ export const handler = async (event) => {
               error: `Invalid repository url "${repo.url}". Expected "owner/repo" format.`,
             });
           }
+          const repoInputError = validateRepoRoleAndProvider(repo);
+          if (repoInputError) return response(400, { error: repoInputError });
         }
-        if (legacyGitRepo && !SHELL_SAFE_REPO_PATTERN.test(legacyGitRepo)) {
+        if (legacyGitRepo && !isShellSafeRepo(legacyGitRepo)) {
           return response(400, { error: `Invalid gitRepo "${legacyGitRepo}".` });
         }
 
@@ -742,10 +840,7 @@ export const handler = async (event) => {
           });
         }
 
-        const primaryUrl =
-          inputRepos.length > 0
-            ? (inputRepos.find((r) => r.role === 'primary') || inputRepos[0]).url
-            : '';
+        const primaryUrl = derivePrimaryRepo(inputRepos, '');
 
         const issueIntegrationEnabled = data.issueIntegrationEnabled === true;
 
@@ -762,12 +857,17 @@ export const handler = async (event) => {
           .property('created_at', createdAt)
           .next();
 
-        // Create Repository vertices and HAS_REPO edges
+        // Create Repository vertices and HAS_REPO edges. Normalize so at most
+        // one repo keeps the `primary` role: `primaryUrl` is the canonical
+        // primary (first explicit primary, else first repo); any other repo
+        // that asked for `primary` is demoted to `secondary`.
         const reposOut = [];
         for (const repo of inputRepos) {
           const repoId = `repo-${randomUUID()}`;
           const addedAt = new Date().toISOString();
-          const repoRole = repo.role || guessRole(repo.url);
+          const requestedRole = repo.role || guessRole(repo.url);
+          const repoRole =
+            requestedRole === 'primary' && repo.url !== primaryUrl ? 'secondary' : requestedRole;
           const provider = repo.provider || data.gitProvider || 'github';
 
           await g
@@ -842,7 +942,7 @@ export const handler = async (event) => {
         if (data.gitRepo !== undefined) {
           // SECURITY: same execSync sink as POST. The legacy gitRepo is freeform
           // but must be shell-safe so it can't break out of the git clone command.
-          if (data.gitRepo && !SHELL_SAFE_REPO_PATTERN.test(data.gitRepo)) {
+          if (data.gitRepo && !isShellSafeRepo(data.gitRepo)) {
             return response(400, { error: `Invalid gitRepo "${data.gitRepo}".` });
           }
           await g
@@ -852,6 +952,7 @@ export const handler = async (event) => {
             .next();
           if (data.gitRepo) {
             await ensureLegacyRepoMigrated(g, projectId, data.gitRepo);
+            await syncPrimaryRepo(g, projectId, data.gitRepo);
           }
         }
         if (data.gitProvider) {
@@ -901,15 +1002,16 @@ export const handler = async (event) => {
           .hasNext();
         if (!canDelete) return response(403, { error: 'Only project owners can delete projects' });
 
-        // Drop associated Repository vertices first
+        // Drop associated Repository vertices first. drop() on an empty
+        // traversal is a no-op, so a rejection here is a real error — let it
+        // propagate to the handler-level catch instead of being swallowed.
         await g
           .V()
           .has('Project', 'id', projectId)
           .out('HAS_REPO')
           .hasLabel('Repository')
           .drop()
-          .next()
-          .catch(() => {}); // No repos is fine
+          .next();
 
         await g.V().has('Project', 'id', projectId).drop().next();
         return response(204, {});

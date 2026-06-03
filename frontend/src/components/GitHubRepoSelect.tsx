@@ -24,22 +24,20 @@ export function GitHubRepoSelect(props: Props) {
   const [search, setSearch] = useState('');
 
   useEffect(() => {
-    githubService.listRepos()
+    githubService
+      .listRepos()
       .then(setRepos)
-      .catch(e => setError(e.message))
+      .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   }, []);
 
-  const excludeSet = useMemo(
-    () => new Set(props.exclude ?? []),
-    [props.exclude],
-  );
+  const excludeSet = useMemo(() => new Set(props.exclude ?? []), [props.exclude]);
 
   const filtered = useMemo(() => {
-    const available = repos.filter(r => !excludeSet.has(r.fullName));
+    const available = repos.filter((r) => !excludeSet.has(r.fullName));
     if (!search) return available;
     const q = search.toLowerCase();
-    return available.filter(r => r.fullName.toLowerCase().includes(q));
+    return available.filter((r) => r.fullName.toLowerCase().includes(q));
   }, [repos, excludeSet, search]);
 
   if (loading) return <div className="text-sm text-gray-500">Loading repositories...</div>;
@@ -50,9 +48,13 @@ export function GitHubRepoSelect(props: Props) {
 
     const toggle = (repo: GitHubRepo) => {
       const next = selected.has(repo.fullName)
-        ? props.value.filter(v => v !== repo.fullName)
+        ? props.value.filter((v) => v !== repo.fullName)
         : [...props.value, repo.fullName];
-      props.onChange(next.map(fn => repos.find(r => r.fullName === fn)!).filter(Boolean));
+      props.onChange(
+        next
+          .map((fn) => repos.find((r) => r.fullName === fn))
+          .filter((r): r is GitHubRepo => r !== undefined),
+      );
     };
 
     return (
@@ -60,7 +62,7 @@ export function GitHubRepoSelect(props: Props) {
         <input
           type="text"
           value={search}
-          onChange={e => setSearch(e.target.value)}
+          onChange={(e) => setSearch(e.target.value)}
           placeholder="Search repositories..."
           className="w-full border rounded px-3 py-2 text-sm"
         />
@@ -70,7 +72,7 @@ export function GitHubRepoSelect(props: Props) {
               {repos.length === 0 ? 'No repositories available' : 'No matching repositories'}
             </div>
           ) : (
-            filtered.map(repo => (
+            filtered.map((repo) => (
               <label
                 key={repo.id}
                 className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer"
@@ -81,17 +83,13 @@ export function GitHubRepoSelect(props: Props) {
                   onChange={() => toggle(repo)}
                   className="rounded border-gray-300"
                 />
-                <span className="text-sm truncate flex-1">
-                  {repo.fullName}
-                </span>
+                <span className="text-sm truncate flex-1">{repo.fullName}</span>
                 {repo.private && <span className="text-xs text-gray-400">🔒</span>}
               </label>
             ))
           )}
         </div>
-        {selected.size > 0 && (
-          <p className="text-xs text-gray-500">{selected.size} selected</p>
-        )}
+        {selected.size > 0 && <p className="text-xs text-gray-500">{selected.size} selected</p>}
       </div>
     );
   }
@@ -100,13 +98,13 @@ export function GitHubRepoSelect(props: Props) {
     <select
       value={props.value}
       onChange={(e) => {
-        const repo = repos.find(r => r.fullName === e.target.value) || null;
+        const repo = repos.find((r) => r.fullName === e.target.value) || null;
         props.onChange(repo);
       }}
       className="w-full border rounded px-3 py-2"
     >
       <option value="">Select a repository</option>
-      {filtered.map(repo => (
+      {filtered.map((repo) => (
         <option key={repo.id} value={repo.fullName}>
           {repo.fullName} {repo.private && '🔒'}
         </option>
