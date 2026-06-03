@@ -179,6 +179,7 @@ export default function InceptionPage() {
       agentStatus.status?.status === 'TIMED_OUT'
     ) {
       setHasLaunchedAgent(false);
+      reload();
       timelineEventsService
         .create(sprintId, {
           type: 'agent_failed',
@@ -187,28 +188,7 @@ export default function InceptionPage() {
         })
         .catch(() => {});
     }
-    // Auto-dismiss stale pending questions when agent is no longer running
-    const terminal =
-      agentStatus.status?.status === 'SUCCEEDED' ||
-      agentStatus.status?.status === 'FAILED' ||
-      agentStatus.status?.status === 'ABORTED' ||
-      agentStatus.status?.status === 'TIMED_OUT';
-    if (terminal && pendingQuestions.length > 0) {
-      const dismissed: StructuredAnswer = {
-        answers: [
-          {
-            selectedOptions: [],
-            freeText: '(auto-dismissed — agent finished)',
-          },
-        ],
-      };
-      Promise.all(
-        pendingQuestions.map((q) =>
-          questionsService.update(sprintId, q.id, { structuredAnswer: dismissed }).catch(() => {}),
-        ),
-      ).then(() => reload());
-    }
-  }, [agentStatus.status?.status, reload, sprintId, userName]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [agentStatus.status?.status, reload, sprintId, userName]);
 
   useEffect(() => {
     if (agentStatus.artifactsUpdated > 0) reload();
@@ -229,6 +209,15 @@ export default function InceptionPage() {
     .filter((q) => !q.structuredAnswer)
     .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   const answeredQuestions = questions.filter((q) => q.structuredAnswer);
+  const agentNoLongerRunning =
+    pendingQuestions.length > 0 &&
+    (agentStatus.status?.status === 'SUCCEEDED' ||
+      agentStatus.status?.status === 'FAILED' ||
+      agentStatus.status?.status === 'ABORTED' ||
+      agentStatus.status?.status === 'TIMED_OUT' ||
+      sprint?.currentAgentStatus === 'completed' ||
+      sprint?.currentAgentStatus === 'failed' ||
+      sprint?.currentAgentStatus === 'cancelled');
 
   const handleStartAgent = async () => {
     if (!description.trim()) return;
@@ -391,6 +380,18 @@ export default function InceptionPage() {
           </div>
 
           {/* Pending questions */}
+          {agentNoLongerRunning && (
+            <div className="flex items-start gap-2 rounded-md border border-muted bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <div>
+                <p className="font-medium text-foreground">The agent is no longer running.</p>
+                <p>
+                  These questions were left unanswered by a previous run. Dismiss them or re-run the
+                  Inception agent if more input is needed.
+                </p>
+              </div>
+            </div>
+          )}
           {pendingQuestions.map((pq) => (
             <Card key={pq.id} className="border-agent-waiting bg-agent-waiting/5">
               <CardHeader className="pb-2">
