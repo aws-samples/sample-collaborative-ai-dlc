@@ -59,7 +59,7 @@ RUN cd /opt/acp-client && npm install --production
 ARG IMAGE_TAG=latest
 ENV IMAGE_TAG=${IMAGE_TAG}
 
-COPY acp-client.js pool-worker.js /opt/acp-client/
+COPY acp-client.js pool-worker.js branch-cleanup.js construction-orchestrator-prompt.js /opt/acp-client/
 COPY drivers/ /opt/acp-client/drivers/
 
 RUN mkdir -p /workspace \
