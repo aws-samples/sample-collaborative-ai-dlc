@@ -123,7 +123,7 @@ cd terraform && terraform output cloudfront_domain_name
 
 ## Documentation
 
-Documentation is built with [Zensical](https://zensical.org/) and deployed to GitHub Pages.
+Documentation is built with [Zensical](https://zensical.org/) and deployed to GitHub Pages. The [architecture overview](docs/concepts/architecture.md) is a good starting point for a system-level view of the components.
 
 To serve locally:
 
