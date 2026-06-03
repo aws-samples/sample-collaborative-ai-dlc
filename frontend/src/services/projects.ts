@@ -2,7 +2,16 @@ import { api } from './api';
 
 export type ProjectRole = 'owner' | 'admin' | 'member';
 export type AgentCli = 'kiro' | 'claude' | 'opencode';
-export type RepoRole = 'primary' | 'frontend' | 'backend' | 'api' | 'infra' | 'shared' | 'docs' | 'unknown';
+export type RepoRole =
+  | 'primary'
+  | 'secondary'
+  | 'frontend'
+  | 'backend'
+  | 'api'
+  | 'infra'
+  | 'shared'
+  | 'docs'
+  | 'unknown';
 
 export interface ProjectRepo {
   url: string;
