@@ -31,7 +31,6 @@ const {
   DynamoDBDocumentClient,
   GetCommand,
   UpdateCommand,
-  PutCommand,
   DeleteCommand,
 } = require('@aws-sdk/lib-dynamodb');
 const { LambdaClient, InvokeCommand } = require('@aws-sdk/client-lambda');
@@ -126,14 +125,17 @@ async function saveStatus(executionId, agentType, projectId, status) {
   if (!env.agentOutputsTable) return;
   await ddb
     .send(
-      new PutCommand({
+      new UpdateCommand({
         TableName: env.agentOutputsTable,
-        Item: {
-          executionId,
-          agentType,
-          projectId,
-          status,
-          expiresAt: Math.floor(Date.now() / 1000) + 86400,
+        Key: { executionId },
+        UpdateExpression:
+          'SET agentType = if_not_exists(agentType, :agentType), projectId = if_not_exists(projectId, :projectId), #status = :status, expiresAt = if_not_exists(expiresAt, :expiresAt)',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: {
+          ':agentType': agentType,
+          ':projectId': projectId,
+          ':status': status,
+          ':expiresAt': Math.floor(Date.now() / 1000) + 86400,
         },
       }),
     )

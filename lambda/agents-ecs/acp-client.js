@@ -1,6 +1,7 @@
 // ACP client wrapper - spawns the active agent CLI in ACP mode and communicates
 // via JSON-RPC 2.0 over stdio. The CLI is selected via AGENT_CLI env var (default: kiro).
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
+const fs = require('fs');
 const readline = require('readline');
 const { DynamoDBClient, QueryCommand: DDBQueryCommand } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, PutCommand } = require('@aws-sdk/lib-dynamodb');
@@ -28,6 +29,94 @@ const DEFAULT_REQUEST_TIMEOUT_MS = parseInt(process.env.ACP_REQUEST_TIMEOUT_MS |
 // Cached after first load to avoid redundant lookups within the same session.
 let mergedMcpServers = null;
 
+function mcpServerLabel(server) {
+  return `${server?.name || '(unnamed)'}:${server?.command || server?.url || '(no command)'}`;
+}
+
+function validateMcpServer(server, index) {
+  if (!server || typeof server !== 'object' || Array.isArray(server)) {
+    throw new Error(`MCP server at index ${index} must be an object`);
+  }
+  if (typeof server.name !== 'string' || server.name.length === 0) {
+    throw new Error(`MCP server at index ${index} must include a string name`);
+  }
+  const type = server.type || 'stdio';
+  if (!['stdio', 'http', 'sse'].includes(type)) {
+    throw new Error(`MCP server ${server.name} type must be stdio, http, or sse`);
+  }
+  if (type === 'stdio') {
+    if (!server.command || typeof server.command !== 'string') {
+      throw new Error(`MCP server ${server.name} must include a string command`);
+    }
+    if (server.args === undefined) server.args = [];
+    if (!Array.isArray(server.args)) {
+      throw new Error(`MCP server ${server.name} args must be an array`);
+    }
+    if (server.args.some((arg) => typeof arg !== 'string')) {
+      throw new Error(`MCP server ${server.name} args must contain only strings`);
+    }
+  }
+  if (type === 'http' || type === 'sse') {
+    if (!server.url || typeof server.url !== 'string') {
+      throw new Error(`MCP server ${server.name} must include a string url`);
+    }
+    if (server.headers === undefined) server.headers = [];
+    if (!Array.isArray(server.headers)) {
+      throw new Error(`MCP server ${server.name} headers must be an array`);
+    }
+  }
+  return server;
+}
+
+function commandExists(command) {
+  if (command.includes('/')) {
+    try {
+      fs.accessSync(command, fs.constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return (
+    spawnSync('/bin/sh', ['-c', 'command -v "$1" >/dev/null 2>&1', 'sh', command], {
+      stdio: 'ignore',
+    }).status === 0
+  );
+}
+
+function filterRunnableMcpServers(servers, { requiredNames = new Set() } = {}) {
+  const runnable = [];
+  for (let i = 0; i < servers.length; i += 1) {
+    const server = validateMcpServer(servers[i], i);
+    if ((server.type || 'stdio') !== 'stdio') {
+      runnable.push(server);
+      continue;
+    }
+    if (commandExists(server.command)) {
+      runnable.push(server);
+      continue;
+    }
+
+    const label = mcpServerLabel(server);
+    const message = `MCP server ${label} command not found on PATH: ${server.command}`;
+    if (requiredNames.has(server.name)) {
+      throw new Error(message);
+    }
+    reportAgentWarning(
+      `Skipping optional ${message}. The agent will continue without this tool server.`,
+    );
+  }
+  return runnable;
+}
+
+function parseMcpServersJson(raw, source) {
+  const parsed = JSON.parse(raw || '[]');
+  if (!Array.isArray(parsed)) {
+    throw new Error(`${source} MCP servers setting must be a JSON array`);
+  }
+  return parsed.map(validateMcpServer);
+}
+
 /**
  * Load and merge MCP server definitions from all three scopes:
  *   Global  — SSM Parameter Store (environment-wide, managed via Admin UI)
@@ -50,7 +139,7 @@ async function loadMergedMcpServers(projectId, taskId) {
         new GetParameterCommand({ Name: ssmPath, WithDecryption: false }),
       );
       const raw = result.Parameter?.Value || '[]';
-      globalServers = JSON.parse(raw);
+      globalServers = parseMcpServersJson(raw, 'global');
     } catch (err) {
       console.error('[acp] Failed to load global MCP servers from SSM:', err.message);
     }
@@ -81,7 +170,7 @@ async function loadMergedMcpServers(projectId, taskId) {
               : (projectResult.value['mcp_servers'] || [])[0];
           if (raw) {
             try {
-              projectServers = JSON.parse(raw);
+              projectServers = parseMcpServersJson(raw, 'project');
             } catch {
               console.error('[acp] Could not parse project mcp_servers:', raw);
             }
@@ -97,7 +186,7 @@ async function loadMergedMcpServers(projectId, taskId) {
                 : (taskResult.value['mcp_servers'] || [])[0];
             if (raw) {
               try {
-                taskServers = JSON.parse(raw);
+                taskServers = parseMcpServersJson(raw, 'task');
               } catch {
                 console.error('[acp] Could not parse task mcp_servers:', raw);
               }
@@ -183,6 +272,7 @@ const pending = new Map();
 let agentProc; // the spawned ACP subprocess (was 'kiro')
 // Accumulate the full agent output text so we can persist it on completion
 let fullOutputBuffer = '';
+let lastErrorMessage = '';
 // Track whether we've already persisted a final status to avoid double-saves
 // (the prompt catch block and the kiro exit handler can both fire)
 let statusSaved = false;
@@ -224,6 +314,54 @@ function rejectAllPending(err) {
     if (entry.timer) clearTimeout(entry.timer);
     entry.reject(err);
   }
+}
+
+function friendlyAgentError(err) {
+  const raw = err && err.message ? err.message : String(err || 'Unknown error');
+  if (/command not found on PATH/i.test(raw)) {
+    const match = raw.match(/MCP server ([^:]+:[^ ]+) command not found on PATH: (.+)$/i);
+    if (match) {
+      return `An MCP server could not start because the required command \`${match[2]}\` is not installed in the agent image. The server was ${match[1]}.`;
+    }
+    return 'An MCP server could not start because one of its required commands is not installed in the agent image.';
+  }
+  if (/session\/new timed out/i.test(raw)) {
+    return 'The agent could not finish starting its tool session. One of the configured MCP servers may be hanging during startup.';
+  }
+  if (/initialize timed out/i.test(raw)) {
+    return 'The agent CLI did not finish initialization in time. Please retry, or check the agent credentials and runtime logs.';
+  }
+  if (/spawn .*ENOENT/i.test(raw) || /exited before responding/i.test(raw)) {
+    return 'The agent CLI failed to start inside the worker image. Please check that the selected agent CLI is installed and healthy.';
+  }
+  if (/No KIRO_API_KEY|whoami failed|API key/i.test(raw)) {
+    return 'The agent could not authenticate. Please check the configured agent API key in Admin settings.';
+  }
+  return 'The agent failed before it could complete. Please retry after checking the agent configuration and MCP server settings.';
+}
+
+function appendAgentSystemMessage(kind, message) {
+  const heading = kind === 'error' ? 'Agent failed' : 'Agent startup warning';
+  const text = `\n\n### ${heading}\n\n${message}\n`;
+  fullOutputBuffer += text;
+  bufferChunk(text);
+}
+
+function reportAgentWarning(message) {
+  console.warn(`[acp] ${message}`);
+  appendAgentSystemMessage('warning', message);
+  broadcastEvent('agent.warning', { message });
+}
+
+function reportAgentError(err) {
+  const raw = err && err.message ? err.message : String(err || 'Unknown error');
+  const message = friendlyAgentError(err);
+  lastErrorMessage = message;
+  console.error('[acp] User-visible agent error:', message);
+  console.error('[acp] Raw agent error:', raw);
+  appendAgentSystemMessage('error', message);
+  flushChunksSync();
+  broadcastEvent('agent.error', { error: message, rawError: raw });
 }
 
 // ---------------------------------------------------------------------------
@@ -276,7 +414,13 @@ function broadcastEvent(type, data) {
     try {
       const connectionIds = await getConnections();
       if (connectionIds.length === 0) return;
-      const payload = JSON.stringify({ type, agentTaskId: env.agentTaskId || undefined, ...data });
+      const payload = JSON.stringify({
+        type,
+        executionId: env.executionId,
+        agentType: env.agentType,
+        agentTaskId: env.agentTaskId || undefined,
+        ...data,
+      });
       await Promise.all(
         connectionIds.map((connId) =>
           broadcastWsClient
@@ -361,6 +505,7 @@ async function saveStatus(status) {
           projectId: env.projectId,
           sprintId: env.sprintId || undefined,
           status,
+          errorMessage: lastErrorMessage || undefined,
           // Persist the full accumulated agent output so it can be fetched later
           outputText: fullOutputBuffer || undefined,
           completedAt: new Date().toISOString(),
@@ -754,7 +899,7 @@ async function runAcpMode() {
     }
   }
 
-  const mcpServers = [
+  const configuredMcpServers = [
     {
       name: 'graph',
       command: 'node',
@@ -764,13 +909,11 @@ async function runAcpMode() {
     // Additional MCP servers from Secrets Manager (zero or more)
     ...extras,
   ];
+  const mcpServers = filterRunnableMcpServers(configuredMcpServers, {
+    requiredNames: new Set(['graph']),
+  });
   console.log(`[acp] Starting session with ${mcpServers.length} MCP server(s)`);
-  console.log(
-    '[acp] MCP servers:',
-    mcpServers
-      .map((server) => `${server.name || '(unnamed)'}:${server.command || '(no command)'}`)
-      .join(', '),
-  );
+  console.log('[acp] MCP servers:', mcpServers.map(mcpServerLabel).join(', '));
   // Redacted dump of the payload we're about to send. Header/env values are
   // replaced with their length so secrets don't end up in CloudWatch.
   console.log(
@@ -785,8 +928,8 @@ async function runAcpMode() {
         headers: Array.isArray(s.headers)
           ? s.headers.map((h) => ({ name: h.name, value: `<${(h.value || '').length} chars>` }))
           : s.headers,
-        })),
-      }),
+      })),
+    }),
   );
 
   const session = await request(
@@ -855,15 +998,8 @@ async function runAcpMode() {
     await broadcastQueue;
     promptSucceeded = true;
   } catch (err) {
-    console.error('[acp] Prompt failed:', err.message);
-    flushChunksSync();
+    reportAgentError(err);
     await saveStatus('failed');
-    await broadcastQueue;
-    broadcastEvent('agent.error', {
-      error: err.message,
-      executionId: env.executionId,
-      agentType: env.agentType,
-    });
     await broadcastQueue;
   }
 
@@ -874,6 +1010,8 @@ async function runAcpMode() {
 
 main().catch(async (err) => {
   console.error('[acp] Fatal error:', err);
+  reportAgentError(err);
   await saveStatus('failed');
+  await broadcastQueue;
   process.exit(1);
 });

@@ -1165,7 +1165,12 @@ exports.handler = async (event) => {
         if (outputItem) {
           const s = outputItem.status;
           const mapped = s === 'completed' ? 'SUCCEEDED' : s === 'failed' ? 'FAILED' : 'RUNNING';
-          return response(200, { status: mapped, executionArn: taskId });
+          return response(200, {
+            status: mapped,
+            executionArn: taskId,
+            outputText: outputItem.outputText,
+            errorMessage: outputItem.errorMessage,
+          });
         }
       }
       const taskStatus = await getTaskStatus(taskId);
