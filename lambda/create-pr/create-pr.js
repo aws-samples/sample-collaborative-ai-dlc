@@ -8,7 +8,11 @@ exports.handler = async (event) => {
 
   try {
     // Get project details from Neptune via GitHub Lambda
-    const [owner, repo] = gitRepo.split('/');
+    const parts = gitRepo.split('/');
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+      return { statusCode: 400, body: `Invalid gitRepo "${gitRepo}": expected "owner/repo"` };
+    }
+    const [owner, repo] = parts;
 
     // Create PR using GitHub API
     const prTitle = `AI-DLC: ${branch}`;
@@ -36,38 +40,54 @@ exports.handler = async (event) => {
       // 422 means a PR already exists for this branch — look it up and return it
       if (response.status === 422) {
         console.log(`PR already exists for branch ${branch}, fetching existing PR...`);
-        const listRes = await fetch(
-          `https://api.github.com/repos/${owner}/${repo}/pulls?head=${owner}:${branch}&state=open`,
-          { headers: ghHeaders },
-        );
-        if (listRes.ok) {
-          const prs = await listRes.json();
-          if (prs.length > 0) {
-            console.log('Found existing PR:', prs[0].html_url);
-            return {
-              statusCode: 200,
-              prUrl: prs[0].html_url,
-              prNumber: prs[0].number,
-              existing: true,
-            };
+        // The head filter `${owner}:${branch}` assumes the PR's head branch lives
+        // in the SAME owner as the base repo. That holds for our same-repo flow but
+        // is brittle for fork/org-mismatch setups (head would be `forkOwner:branch`).
+        // So we try the precise head filter first, then fall back to listing PRs and
+        // matching on the branch ref (head.ref) regardless of head owner.
+        const findByBranch = async (state) => {
+          // Precise: owner-qualified head filter.
+          const headRes = await fetch(
+            `https://api.github.com/repos/${owner}/${repo}/pulls?head=${owner}:${branch}&state=${state}`,
+            { headers: ghHeaders },
+          );
+          if (headRes.ok) {
+            const headPrs = await headRes.json();
+            if (headPrs.length > 0) return headPrs[0];
           }
+          // Fallback: list PRs and match on the branch ref (handles fork/org mismatch).
+          const listRes = await fetch(
+            `https://api.github.com/repos/${owner}/${repo}/pulls?state=${state}&per_page=100`,
+            { headers: ghHeaders },
+          );
+          if (listRes.ok) {
+            const prs = await listRes.json();
+            const match = prs.find((p) => p.head?.ref === branch);
+            if (match) return match;
+          }
+          return null;
+        };
+
+        const openPr = await findByBranch('open');
+        if (openPr) {
+          console.log('Found existing PR:', openPr.html_url);
+          return {
+            statusCode: 200,
+            prUrl: openPr.html_url,
+            prNumber: openPr.number,
+            existing: true,
+          };
         }
-        // PR is closed/merged — check closed PRs too
-        const closedRes = await fetch(
-          `https://api.github.com/repos/${owner}/${repo}/pulls?head=${owner}:${branch}&state=all`,
-          { headers: ghHeaders },
-        );
-        if (closedRes.ok) {
-          const allPrs = await closedRes.json();
-          if (allPrs.length > 0) {
-            console.log('Found existing (closed) PR:', allPrs[0].html_url);
-            return {
-              statusCode: 200,
-              prUrl: allPrs[0].html_url,
-              prNumber: allPrs[0].number,
-              existing: true,
-            };
-          }
+        // PR is closed/merged — check all states too
+        const anyPr = await findByBranch('all');
+        if (anyPr) {
+          console.log('Found existing (closed) PR:', anyPr.html_url);
+          return {
+            statusCode: 200,
+            prUrl: anyPr.html_url,
+            prNumber: anyPr.number,
+            existing: true,
+          };
         }
       }
       console.error('GitHub API error:', errorText);

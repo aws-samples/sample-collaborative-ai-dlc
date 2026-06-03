@@ -483,11 +483,14 @@ function cloneAndSetupBranch(job, repoUrl, targetDir) {
       );
     }
 
-    // Configure git
-    execSync(`cd "${targetDir}" && git config user.email "ai-dlc@example.com"`, {
+    // Configure git. Identity is overridable via env (set by the task def);
+    // falls back to a neutral default so commits always have an author.
+    const gitEmail = process.env.GIT_AUTHOR_EMAIL || 'ai-dlc@example.com';
+    const gitName = process.env.GIT_AUTHOR_NAME || 'AI-DLC Agent';
+    execSync(`cd "${targetDir}" && git config user.email "${gitEmail}"`, {
       stdio: 'inherit',
     });
-    execSync(`cd "${targetDir}" && git config user.name "AI-DLC Agent"`, { stdio: 'inherit' });
+    execSync(`cd "${targetDir}" && git config user.name "${gitName}"`, { stdio: 'inherit' });
 
     // For construction (sub-agents + orchestrator) and review phases, checkout/create the working branch
     const needsBranch = [
@@ -902,12 +905,19 @@ Perform a BUSINESS CODE REVIEW cross-referencing the implementation against requ
 \`\`\`
 ## Business Review
 
-**Verdict**: PASS | FAIL | PARTIAL
+**Verdict**: PASSED | FAILED | PARTIAL
 
 **Requirements Coverage**:
-| Requirement | Status | Notes |
-|---|---|---|
-| <req title> | ✅ Met / ⚠️ Partial / ❌ Missing | <brief note> |
+| Requirement | Repository | Status | Notes |
+|---|---|---|---|
+| <req title> | <owner/repo, or "all"> | ✅ Met / ⚠️ Partial / ❌ Missing | <brief note> |
+
+**Per-Repo Status** (multi-repo sprints — one line per repository):
+- <owner/repo>: ✅ PASSED / ⚠️ PARTIAL / ❌ FAILED — <brief note>
+
+NOTE: the machine **Verdict**/\`status\` above is sprint-wide (one aggregate verdict
+per sprint). When repos diverge (e.g. infra PASSED but ui FAILED), reflect that here
+in the per-repo breakdown and set the aggregate Verdict to PARTIAL.
 
 **Key Issues**:
 - 🔴 CRITICAL: …
@@ -939,10 +949,10 @@ Risk score guidance:
 
 > Reviewed by the AI-DLC Business Review Agent (with requirements context)
 
-**Verdict**: PASS | FAIL | PARTIAL
+**Verdict**: PASSED | FAILED | PARTIAL
 
 **Requirements Coverage**:
-<requirements table>
+<requirements table (include the Repository column)>
 
 **Key Issues**:
 <bullet list of critical/warning items only, or "None found">
@@ -1223,7 +1233,6 @@ function runAcpSession(job) {
       GIT_TOKEN: job.gitToken || '',
       GIT_REPO: job.gitRepo || '',
       GIT_REPOS: JSON.stringify(job.gitRepos || []),
-      WORKSPACE_LAYOUT: job.gitRepos && job.gitRepos.length > 1 ? 'multi' : 'single',
       RUN_NUMBER: String(job.runNumber || 1),
     };
 

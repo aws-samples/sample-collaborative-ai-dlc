@@ -56,8 +56,23 @@ const env = {
   })(),
 };
 
-// --- Neptune helpers (persistent connection with auto-reconnect) ---
+// Parse a GitHub repository identifier in "owner/repo" form into its parts.
+// Multiple call sites .split('/') and destructure [owner, repo] before building
+// api.github.com URLs; a malformed value (empty, no slash, extra segments) would
+// otherwise produce an undefined owner/repo and a silently-wrong request. Throw a
+// clear error instead so the failure is attributable.
+function parseOwnerRepo(s) {
+  if (typeof s !== 'string') {
+    throw new Error(`Invalid repository identifier: expected "owner/repo", got ${typeof s}`);
+  }
+  const parts = s.split('/');
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    throw new Error(`Invalid repository identifier "${s}": expected "owner/repo"`);
+  }
+  return { owner: parts[0], repo: parts[1] };
+}
 
+// --- Neptune helpers (persistent connection with auto-reconnect) ---
 let _conn = null;
 let _g = null;
 
@@ -468,6 +483,20 @@ Use this to update status, description, title, or any mutable property.`,
   async ({ label, id, properties }) => {
     try {
       if (properties.id || properties.label) return err('Cannot change id or label');
+
+      // Whitelist guard: a Review's machine verdict drives downstream styling and
+      // gating, so reject any value outside the known set rather than letting an
+      // agent write a free-form status the frontend/validation can't interpret.
+      // Mirrors VALID_STATUSES in the reviews lambda.
+      if (label === 'Review' && properties.status !== undefined) {
+        const VALID_REVIEW_STATUSES = ['PENDING', 'PASSED', 'FAILED', 'PARTIAL'];
+        if (!VALID_REVIEW_STATUSES.includes(properties.status)) {
+          return err(
+            `Invalid Review status "${properties.status}". Must be one of: ${VALID_REVIEW_STATUSES.join(', ')}`,
+          );
+        }
+      }
+
       return await withGraph(async (g) => {
         const exists = await g.V().has(label, 'id', id).hasNext();
         if (!exists) return err(`${label} with id "${id}" not found`);
@@ -1158,7 +1187,7 @@ In multi-repo projects, creates one PR per repository and groups them in a PRGro
           for (const pr of existingGroup.prs) {
             try {
               const repoUrl = pr.repository || env.gitRepo;
-              const [owner, repo] = repoUrl.split('/');
+              const { owner, repo } = parseOwnerRepo(repoUrl);
               const ghRes = await fetch(
                 `https://api.github.com/repos/${owner}/${repo}/pulls/${pr.pr_number}`,
                 {
@@ -1215,6 +1244,16 @@ In multi-repo projects, creates one PR per repository and groups them in a PRGro
               .has('PRGroup', 'id', existingGroup.group.id)
               .property(cardinality.single, 'stale', 'true')
               .property(cardinality.single, 'stale_at', new Date().toISOString())
+              .next();
+            // Clear the denormalized PR copy on the Sprint vertex so it can't keep
+            // pointing at a now-stale/closed PR after the re-run (mirrors the
+            // single-repo stale path below). Fresh values are written when the new
+            // PRGroup's PRs are persisted further down.
+            await g
+              .V()
+              .has('Sprint', 'id', env.sprintId)
+              .property(cardinality.single, 'pr_url', '')
+              .property(cardinality.single, 'pr_number', '')
               .next();
           }).catch(() => {});
         }
@@ -1277,6 +1316,7 @@ In multi-repo projects, creates one PR per repository and groups them in a PRGro
               .property(cardinality.single, 'branch', branch)
               .property(cardinality.single, 'base_branch', baseBranch || 'main')
               .property(cardinality.single, 'repository', pr.repository)
+              .property(cardinality.single, 'pr_state', 'open')
               .next();
 
             // Link Sprint --HAS_PR--> PullRequest
@@ -1389,7 +1429,7 @@ In multi-repo projects, creates one PR per repository and groups them in a PRGro
         // Verify the PR is still open on GitHub — it may have been merged/closed since we stored it
         let prIsOpen = true;
         try {
-          const [owner, repo] = env.gitRepo.split('/');
+          const { owner, repo } = parseOwnerRepo(env.gitRepo);
           const ghRes = await fetch(
             `https://api.github.com/repos/${owner}/${repo}/pulls/${existingPr.prNumber}`,
             {
@@ -1487,6 +1527,7 @@ In multi-repo projects, creates one PR per repository and groups them in a PRGro
               .property(cardinality.single, 'pr_number', String(resp.prNumber))
               .property(cardinality.single, 'branch', branch)
               .property(cardinality.single, 'base_branch', baseBranch || 'main')
+              .property(cardinality.single, 'pr_state', 'open')
               .next();
 
             // Link Sprint --HAS_PR--> PullRequest (only if edge doesn't already exist)
@@ -1593,7 +1634,7 @@ If repository is omitted, posts to the primary PR (stored on the Sprint vertex).
         prNumber = sprintData.prNumber;
       }
 
-      const [owner, repo] = targetRepo.split('/');
+      const { owner, repo } = parseOwnerRepo(targetRepo);
       const response = await fetch(
         `https://api.github.com/repos/${owner}/${repo}/issues/${prNumber}/comments`,
         {
