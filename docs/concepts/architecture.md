@@ -113,7 +113,7 @@ flowchart TB
   SPA["Browser SPA"]
 
   AGCTL -->|write job to worker row| POOL
-  AGCTL -. ECS RunTask<br/>(cold start only) .-> AGENT
+  AGCTL -. ECS RunTask - cold start only .-> AGENT
   AGENT -->|poll own row| POOL
 
   AGENT --> NEP
@@ -157,4 +157,3 @@ The two diagrams above are static. The platform's working flow takes a request f
 3. **Agent run.** When the user moves the sprint into Construction, the agent control plane dispatches one or more agent jobs to the pool. Each agent works in an isolated workspace, mutates the graph through MCP, streams `agent.*` events to EventBridge, and writes code artifacts to the `code-snapshots` S3 bucket and `CodeFile` vertices to Neptune.
 4. **Output.** Agent progress is fanned out to the user's browser through EventBridge → `notify` → the WebSocket API → the SPA. Final structured outputs land in DynamoDB and Neptune, and any code is pushed to a sprint branch using the user's GitHub token from SSM.
 5. **Review.** In the Review phase, review agents are dispatched the same way as construction agents. Their findings are written back to the graph as `Review` vertices linked to the requirements they evaluated. Humans add comments, then either approve the sprint or send it back to Construction with structured feedback. Either decision is a graph mutation that triggers a `sprint.phaseChanged` event and updates every connected client in real time.
-
