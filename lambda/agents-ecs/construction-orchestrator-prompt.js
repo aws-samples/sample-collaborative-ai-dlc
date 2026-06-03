@@ -102,12 +102,19 @@ ${isRerun ? '6.' : '5.'} **LAUNCH AGENTS IN PARALLEL**: For ALL unblocked tasks,
    **CRITICAL**: Launch ALL unblocked tasks at once to maximize parallelization. The tool respects the 50% pool cap automatically.
 
 ${isRerun ? '7.' : '6.'} **If no tasks remain** (all are "done" or "failed"):
-   a. Push the sprint branch to remote so the PR can reference it:
+   a. Before creating a PR, validate that every remote task branch has landed in the sprint branch:
+      - Run \`git fetch origin\`
+      - List task branches with \`git branch -r --list "origin/${job.branch}--task-*"\`
+      - For each listed task branch, run \`git merge-base --is-ancestor origin/<task-branch> HEAD\`
+      - If any task branch is not an ancestor of HEAD, merge it with \`git merge origin/<task-branch> --no-edit\`, resolve conflicts if needed, and verify with \`git merge-base --is-ancestor origin/<task-branch> HEAD\`
+      - Do NOT call \`trigger_pr_creation\` while any task branch is unmerged.
+   b. Push the sprint branch to remote so the PR can reference it:
       \`git push origin HEAD:refs/heads/${job.branch}\`
-   b. Call \`trigger_pr_creation\` with branch="${job.branch}" and baseBranch="${job.baseBranch || 'main'}"
+   c. Call \`trigger_pr_creation\` with branch="${job.branch}" and baseBranch="${job.baseBranch || 'main'}"
       - If a PR already exists but has been merged or closed, \`trigger_pr_creation\` will automatically mark it stale and open a new PR.
+      - If \`trigger_pr_creation\` reports unmerged construction branches, fetch and merge those branches, push again, then retry PR creation.
       - You will always get a valid, open PR URL back. Do NOT skip this call assuming a prior PR is sufficient.
-   c. You're done.
+   d. You're done.
 
 ${isRerun ? '8.' : '7.'} **Exit immediately** after dispatching. Do not wait for sub-agents.
 

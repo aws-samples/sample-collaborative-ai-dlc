@@ -159,6 +159,7 @@ describe('pool-worker construction task branch cleanup', () => {
     expect(prompt).toContain(
       'Delete merged remote task branches AFTER the sprint branch push succeeds',
     );
+    expect(prompt).toContain('Do NOT call `trigger_pr_creation` while any task branch is unmerged');
     expect(prompt).toContain('Do NOT delete the task branch yourself');
   });
 });

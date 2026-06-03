@@ -686,8 +686,9 @@ ${taskSection}
    a. Update task status to "in_progress"
    b. Implement the task following AI-DLC construction stages
    c. Write code files to /workspace
-   d. Update task status to "done" (or "failed" if issues arise)
-   e. Stage and commit: \`git add . && git commit -m "Implement <task-id>: <short description>"\`
+   d. Stage and commit: \`git add . && git commit -m "Implement <task-id>: <short description>"\`
+   e. Verify your commit exists with \`git log --oneline -3\`
+   f. Only after the commit is verified, update task status to "done" (or "failed" if issues arise)
 
 ## GIT CONTRACT — READ CAREFULLY
 
