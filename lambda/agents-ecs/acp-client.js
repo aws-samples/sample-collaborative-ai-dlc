@@ -22,6 +22,7 @@ const AGENT_CLI = process.env.AGENT_CLI || 'kiro';
 const driver = getDriver(AGENT_CLI);
 const ACP_VERBOSE = process.env.ACP_VERBOSE === 'true';
 const DEFAULT_REQUEST_TIMEOUT_MS = parseInt(process.env.ACP_REQUEST_TIMEOUT_MS || '120000', 10);
+const REDACTED = '<redacted>';
 
 // ---------------------------------------------------------------------------
 // MCP servers — merged from global (SSM), project (Neptune), task (Neptune)
@@ -31,6 +32,35 @@ let mergedMcpServers = null;
 
 function mcpServerLabel(server) {
   return `${server?.name || '(unnamed)'}:${server?.command || server?.url || '(no command)'}`;
+}
+
+function redactUrl(value) {
+  if (typeof value !== 'string') return value;
+  try {
+    const url = new URL(value);
+    if (url.username) url.username = REDACTED;
+    if (url.password) url.password = REDACTED;
+    url.search = url.search ? '?<redacted>' : '';
+    return url.toString();
+  } catch {
+    return value;
+  }
+}
+
+function redactMcpServerForLog(server) {
+  return {
+    type: server.type || 'stdio',
+    name: server.name || '(unnamed)',
+    command: server.command || undefined,
+    url: server.url ? redactUrl(server.url) : undefined,
+    args: Array.isArray(server.args) ? `<${server.args.length} arg(s)>` : server.args,
+    env: Array.isArray(server.env)
+      ? server.env.map((e) => ({ name: e.name, value: `<${(e.value || '').length} chars>` }))
+      : server.env,
+    headers: Array.isArray(server.headers)
+      ? server.headers.map((h) => ({ name: h.name, value: `<${(h.value || '').length} chars>` }))
+      : server.headers,
+  };
 }
 
 function validateMcpServer(server, index) {
@@ -152,8 +182,14 @@ async function loadMergedMcpServers(projectId, taskId) {
   if (neptuneEndpoint && projectId && projectId !== 'unknown') {
     try {
       const credentials = await fromNodeProviderChain()();
-      credentials.region = env.region;
-      const connInfo = getUrlAndHeaders(neptuneEndpoint, '8182', credentials, '/gremlin', 'wss');
+      const signerCredentials = toNeptuneSignerCredentials(credentials, env.region);
+      const connInfo = getUrlAndHeaders(
+        neptuneEndpoint,
+        '8182',
+        signerCredentials,
+        '/gremlin',
+        'wss',
+      );
       const conn = new DriverRemoteConnection(connInfo.url, { headers: connInfo.headers });
       const g = traversal().withRemote(conn);
       try {
@@ -273,6 +309,7 @@ let agentProc; // the spawned ACP subprocess (was 'kiro')
 // Accumulate the full agent output text so we can persist it on completion
 let fullOutputBuffer = '';
 let lastErrorMessage = '';
+let promptSucceeded = false;
 // Track whether we've already persisted a final status to avoid double-saves
 // (the prompt catch block and the kiro exit handler can both fire)
 let statusSaved = false;
@@ -361,7 +398,7 @@ function reportAgentError(err) {
   console.error('[acp] Raw agent error:', raw);
   appendAgentSystemMessage('error', message);
   flushChunksSync();
-  broadcastEvent('agent.error', { error: message, rawError: raw });
+  broadcastEvent('agent.error', { error: message });
 }
 
 // ---------------------------------------------------------------------------
@@ -832,11 +869,14 @@ async function runAcpMode() {
     if (stderrChunks.length === 0) {
       console.error(`[acp] ${acpBin} exited (code=${code}) with no stderr output`);
     }
+    const hadPendingRequests = pending.size > 0;
     rejectAllPending(new Error(`${acpBin} exited before responding`));
     // Only save status here if the prompt flow hasn't already handled it.
     // The statusSaved guard inside saveStatus() prevents double-writes.
     if (!statusSaved) {
-      await saveStatus(code === 0 ? 'completed' : 'failed');
+      await saveStatus(
+        code === 0 && promptSucceeded && !hadPendingRequests ? 'completed' : 'failed',
+      );
     }
     // Don't call process.exit() here — let the main() flow handle exit
     // to avoid racing with the prompt catch block.
@@ -920,15 +960,7 @@ async function runAcpMode() {
     '[acp] session/new payload (redacted):',
     JSON.stringify({
       cwd: '/workspace',
-      mcpServers: mcpServers.map((s) => ({
-        ...s,
-        env: Array.isArray(s.env)
-          ? s.env.map((e) => ({ name: e.name, value: `<${(e.value || '').length} chars>` }))
-          : s.env,
-        headers: Array.isArray(s.headers)
-          ? s.headers.map((h) => ({ name: h.name, value: `<${(h.value || '').length} chars>` }))
-          : s.headers,
-      })),
+      mcpServers: mcpServers.map(redactMcpServerForLog),
     }),
   );
 
@@ -974,7 +1006,6 @@ async function runAcpMode() {
 
   // 3. Send prompt
   console.log('[acp] Sending prompt...');
-  let promptSucceeded = false;
   try {
     await request(
       'session/prompt',
