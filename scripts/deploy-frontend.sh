@@ -22,6 +22,18 @@ echo "Deploying frontend for environment: $ENVIRONMENT"
 
 # Get S3 bucket name from Terraform output
 cd "$TF_DIR"
+
+# Safety: the initialized backend MUST match the requested environment before we
+# read the bucket/distribution — otherwise the `s3 sync --delete` below could
+# wipe the wrong environment's bucket.
+INIT_ENV=$(terraform output -raw environment 2>/dev/null || echo "")
+if [[ -n "$INIT_ENV" && "$INIT_ENV" != "$ENVIRONMENT" ]]; then
+    echo "Error: terraform is initialized for '$INIT_ENV' but you requested '$ENVIRONMENT'."
+    echo "Re-init the correct backend first:"
+    echo "  terraform init -backend-config=environments/$ENVIRONMENT.s3.tfbackend -reconfigure"
+    exit 1
+fi
+
 BUCKET_NAME=$(terraform output -raw s3_bucket_name 2>/dev/null || echo "")
 CLOUDFRONT_ID=$(terraform output -raw cloudfront_distribution_id 2>/dev/null || echo "")
 

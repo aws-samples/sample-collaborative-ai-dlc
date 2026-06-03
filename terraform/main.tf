@@ -132,7 +132,11 @@ module "dynamodb" {
 module "neptune" {
   source = "./modules/data/neptune"
 
-  name_prefix        = "${var.project_name}-${var.environment}"
+  # State-compatible override: the staging cluster was created with a "-dev"
+  # prefix. Without this the default "${project}-${environment}" would rename
+  # the cluster identifier and force-replace Neptune (data loss). See
+  # .kiro/plans/staging-migration.md.
+  name_prefix        = var.neptune_name_prefix != "" ? var.neptune_name_prefix : "${var.project_name}-${var.environment}"
   vpc_id             = module.networking.vpc_id
   vpc_cidr           = module.networking.vpc_cidr_block
   private_subnet_ids = module.networking.private_subnet_ids
