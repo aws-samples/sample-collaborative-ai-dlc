@@ -1,10 +1,36 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 const loadBranchCleanup = async () => await import('../branch-cleanup.js');
 const loadConstructionOrchestratorPrompt = async () =>
   await import('../construction-orchestrator-prompt.js');
 
+const dockerfile = readFileSync(new URL('../Dockerfile', import.meta.url), 'utf8');
+const poolWorker = readFileSync(new URL('../pool-worker.js', import.meta.url), 'utf8');
+
+const dockerfileCopiesPath = (requiredPath) => {
+  const relativePath = requiredPath.slice('./'.length);
+  const pathWithExtension = `${relativePath}.js`;
+  return dockerfile
+    .split('\n')
+    .some((line) => line.startsWith('COPY ') && line.includes(`${pathWithExtension} `));
+};
+
 describe('pool-worker construction task branch cleanup', () => {
+  it('packages local pool-worker modules into the ECS image', () => {
+    const localRequires = [...poolWorker.matchAll(/require\('(?<path>\.\/[\w-]+)'\)/g)].map(
+      (match) => match.groups.path,
+    );
+
+    expect(localRequires).toEqual(
+      expect.arrayContaining(['./branch-cleanup', './construction-orchestrator-prompt']),
+    );
+    expect(localRequires.filter((requiredPath) => !dockerfileCopiesPath(requiredPath))).toEqual([
+      './drivers',
+    ]);
+    expect(dockerfile).toContain('COPY drivers/ /opt/acp-client/drivers/');
+  });
+
   it('builds task branch names with the same task id normalization as launch_construction_agent', async () => {
     const { getTaskBranchName } = await loadBranchCleanup();
 
