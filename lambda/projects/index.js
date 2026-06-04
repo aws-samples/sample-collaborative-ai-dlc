@@ -690,8 +690,7 @@ export const handler = async (event) => {
     }
 
     // Route: /projects/{projectId}/repos
-    const path = event.path || '';
-    if (projectId && /\/repos(\/|$)/.test(path)) {
+    if (projectId && /\/repos(\/|$)/.test(requestPath)) {
       if (!userId) return response(401, { error: 'Unauthorized' });
       return await handleReposRoute(g, response, event, projectId, userId);
     }

@@ -50,3 +50,9 @@ lambda/*/.build/
 
 # Documentation build output
 site/
+
+# E2E test run artifacts (generated screenshots, reports, summaries)
+test/e2e/artifacts/
+
+# Terraform plan files (any environment suffix)
+tfplan*
