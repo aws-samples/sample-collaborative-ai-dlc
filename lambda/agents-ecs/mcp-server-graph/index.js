@@ -1198,6 +1198,11 @@ Only call this when all tasks have status "done" and branches have been merged.`
         }),
       );
       const resp = JSON.parse(Buffer.from(result.Payload).toString());
+      if (resp.statusCode >= 400) {
+        return err(
+          resp.error || resp.body || `create-pr Lambda returned status ${resp.statusCode}`,
+        );
+      }
 
       // Persist PR data to Neptune: upsert a PullRequest node and link to Sprint
       if (resp.prUrl && resp.prNumber) {
