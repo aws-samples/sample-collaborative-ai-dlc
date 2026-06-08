@@ -57,4 +57,5 @@ In the **Review** phase, review agents evaluate the code from two angles (blind 
 
 - [Getting Started](getting-started/prerequisites.md) to set up the platform
 - [How it works](concepts/index.md) to understand the lifecycle and principles
+- [Architecture overview](concepts/architecture.md) for a system diagram of the components
 - [Using the Platform](using-the-platform/projects.md) for day-to-day usage guides
