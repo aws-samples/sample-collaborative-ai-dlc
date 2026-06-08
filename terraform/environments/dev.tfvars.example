@@ -1,5 +1,8 @@
 environment = "dev"
-aws_region  = "us-east-1"
+
+# aws_region is sourced from the REGION env var (via TF_VAR_aws_region in
+# deploy-terraform.sh). Uncomment below only to override that.
+# aws_region = "us-east-1"
 
 # Bedrock model pinning (for claude and opencode drivers)
 bedrock_model = "us.anthropic.claude-sonnet-4-6"

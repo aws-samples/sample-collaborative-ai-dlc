@@ -22,6 +22,10 @@ fi
 
 cd "$TF_DIR"
 
+# Match deploy-terraform.sh: derive aws_region from $REGION so destroy targets
+# the same region the stack was deployed to.
+export TF_VAR_aws_region="${REGION:-us-east-1}"
+
 # Ensure we're initialised against the right backend
 terraform init -reconfigure -backend-config="environments/${ENVIRONMENT}.s3.tfbackend"
 
