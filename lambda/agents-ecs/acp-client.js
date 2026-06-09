@@ -13,6 +13,7 @@ const { SSMClient, GetParameterCommand } = require('@aws-sdk/client-ssm');
 const gremlin = require('gremlin');
 const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
 const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
+const { parseMcpServersJson: parseSharedMcpServersJson } = require('../shared/mcp-validator');
 
 // ---------------------------------------------------------------------------
 // Driver — pluggable agent CLI abstraction
@@ -63,41 +64,6 @@ function redactMcpServerForLog(server) {
   };
 }
 
-function validateMcpServer(server, index) {
-  if (!server || typeof server !== 'object' || Array.isArray(server)) {
-    throw new Error(`MCP server at index ${index} must be an object`);
-  }
-  if (typeof server.name !== 'string' || server.name.length === 0) {
-    throw new Error(`MCP server at index ${index} must include a string name`);
-  }
-  const type = server.type || 'stdio';
-  if (!['stdio', 'http', 'sse'].includes(type)) {
-    throw new Error(`MCP server ${server.name} type must be stdio, http, or sse`);
-  }
-  if (type === 'stdio') {
-    if (!server.command || typeof server.command !== 'string') {
-      throw new Error(`MCP server ${server.name} must include a string command`);
-    }
-    if (server.args === undefined) server.args = [];
-    if (!Array.isArray(server.args)) {
-      throw new Error(`MCP server ${server.name} args must be an array`);
-    }
-    if (server.args.some((arg) => typeof arg !== 'string')) {
-      throw new Error(`MCP server ${server.name} args must contain only strings`);
-    }
-  }
-  if (type === 'http' || type === 'sse') {
-    if (!server.url || typeof server.url !== 'string') {
-      throw new Error(`MCP server ${server.name} must include a string url`);
-    }
-    if (server.headers === undefined) server.headers = [];
-    if (!Array.isArray(server.headers)) {
-      throw new Error(`MCP server ${server.name} headers must be an array`);
-    }
-  }
-  return server;
-}
-
 function commandExists(command) {
   if (command.includes('/')) {
     try {
@@ -116,8 +82,7 @@ function commandExists(command) {
 
 function filterRunnableMcpServers(servers, { requiredNames = new Set() } = {}) {
   const runnable = [];
-  for (let i = 0; i < servers.length; i += 1) {
-    const server = validateMcpServer(servers[i], i);
+  for (const server of servers) {
     if ((server.type || 'stdio') !== 'stdio') {
       runnable.push(server);
       continue;
@@ -140,11 +105,13 @@ function filterRunnableMcpServers(servers, { requiredNames = new Set() } = {}) {
 }
 
 function parseMcpServersJson(raw, source) {
-  const parsed = JSON.parse(raw || '[]');
-  if (!Array.isArray(parsed)) {
-    throw new Error(`${source} MCP servers setting must be a JSON array`);
-  }
-  return parsed.map(validateMcpServer);
+  const validation = parseSharedMcpServersJson(raw || '[]');
+  if (validation.valid) return validation.value;
+
+  const details = validation.issues
+    .map((issue) => `${issue.path ? `${issue.path}: ` : ''}${issue.message}`)
+    .join('; ');
+  throw new Error(`${source} MCP servers setting is invalid: ${details}`);
 }
 
 /**
