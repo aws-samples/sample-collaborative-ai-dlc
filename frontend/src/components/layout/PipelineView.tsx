@@ -470,12 +470,15 @@ function QuickAction({
   }
 
   if (sprint.prUrl) {
+    // sprint.prUrl is only the FIRST PR (denormalized copy). In multi-repo sprints
+    // there can be several PRs, so opening this single URL is misleading. Navigate
+    // to the review page instead, where the multi-PR box lists every repo's PR.
     return (
       <Button
         variant="outline"
         size="sm"
         className="w-full h-7 text-xs gap-1.5"
-        onClick={() => window.open(sprint.prUrl!, '_blank')}
+        onClick={() => navigate(`/project/${projectId}/sprint/${sprintId}/review`)}
       >
         <Zap className="h-3 w-3" />
         View Pull Request

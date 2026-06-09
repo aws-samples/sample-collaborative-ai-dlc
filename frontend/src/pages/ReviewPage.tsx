@@ -8,7 +8,7 @@ import { projectsService, type Project } from '@/services/projects';
 import { reviewsService } from '@/services/reviews';
 import { questionsService } from '@/services/questions';
 import { githubService, type PRComment } from '@/services/github';
-import { sprintGraphService } from '@/services/sprintGraph';
+import { sprintGraphService, extractPrs, type PrInfo } from '@/services/sprintGraph';
 import { realtimeService } from '@/services/realtime';
 import { sprintsService } from '@/services/sprints';
 import { agentsService } from '@/services/agents';
@@ -16,6 +16,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -48,6 +49,7 @@ import {
   XCircle,
   Code2,
   GitBranch,
+  GitPullRequest,
   Link,
   AlertTriangle,
   ShieldAlert,
@@ -144,6 +146,8 @@ export default function ReviewPage() {
   } = useSprint();
 
   const [project, setProject] = useState<Project | null>(null);
+  const [prs, setPrs] = useState<PrInfo[]>([]);
+  const [selectedPrId, setSelectedPrId] = useState<string>('');
   const [prComments, setPrComments] = useState<PRComment[]>([]);
   const [prBranch, setPrBranch] = useState('');
   const [prBaseBranch, setPrBaseBranch] = useState('main');
@@ -194,36 +198,89 @@ export default function ReviewPage() {
         .catch(() => {});
   }, [projectId]);
 
+  // Fetch the sprint graph (and its PRs) on sprintId only — a full graph refetch
+  // is expensive and must not be triggered by realtime branch/baseBranch updates.
   useEffect(() => {
-    if (sprintId) {
-      sprintGraphService
-        .get(sprintId)
-        .then((graph) => {
-          const prNode = graph.nodes.find((n) => n.type === 'PullRequest');
-          if (prNode) {
-            setPrBranch((prNode as Record<string, string>).branch || '');
-            setPrBaseBranch((prNode as Record<string, string>).base_branch || 'main');
-          }
-          // Fall back to sprint branch if no PR node yet
-          else if (sprint?.branch) {
-            setPrBranch(sprint.branch);
-            setPrBaseBranch(sprint.baseBranch || 'main');
-          }
-        })
-        .catch(() => {});
-    }
-  }, [sprintId, sprint?.branch, sprint?.baseBranch]);
+    if (!sprintId) return;
+    sprintGraphService
+      .get(sprintId)
+      .then((graph) => {
+        const found = extractPrs(graph);
+        setPrs(found);
+        setSelectedPrId((prev) =>
+          prev && found.some((p) => p.id === prev) ? prev : (found[0]?.id ?? ''),
+        );
+      })
+      .catch((err) => {
+        // Surface PR-loading failures instead of swallowing them — a silent catch
+        // previously hid them (no PRs shown, no error).
+        console.error('Failed to load sprint graph for PRs:', err);
+      });
+  }, [sprintId]);
 
-  // Load PR comments
+  // One-shot fallback: when the sprint has no PR node yet, use its own branch for
+  // the Modify Code flow. Kept in its own effect (guarded by prs.length === 0) so
+  // branch/baseBranch changes don't refetch the whole graph.
   useEffect(() => {
-    if (!sprint?.prNumber || !project?.gitRepo) return;
-    const [owner, repo] = project.gitRepo.split('/');
-    if (owner && repo)
-      githubService
-        .getPRComments(owner, repo, parseInt(sprint.prNumber))
-        .then((res) => setPrComments(res.comments))
-        .catch(() => {});
-  }, [sprint?.prNumber, project?.gitRepo]);
+    if (prs.length === 0 && sprint?.branch) {
+      setPrBranch(sprint.branch);
+      setPrBaseBranch(sprint.baseBranch || 'main');
+    }
+  }, [prs.length, sprint?.branch, sprint?.baseBranch]);
+
+  // Selected PR drives the View/checkout/comments below. Falls back to the
+  // single PR copied onto the sprint vertex for backward compatibility.
+  const selectedPr = prs.find((p) => p.id === selectedPrId) ?? prs[0] ?? null;
+  const activePrUrl = selectedPr?.prUrl || sprint?.prUrl || '';
+  const activePrNumber = selectedPr?.prNumber || sprint?.prNumber || '';
+  const activeRepo = selectedPr?.repository || project?.gitRepo || '';
+  const selectedBranch = selectedPr?.branch || '';
+  const selectedBaseBranch = selectedPr?.baseBranch || 'main';
+  const hasPr = prs.length > 0 || !!sprint?.prUrl;
+
+  const repoShort = (repo: string) => repo.split('/').pop() || repo || '';
+  const prTabLabel = (p: PrInfo) => `${repoShort(p.repository) || 'repo'} #${p.prNumber}`;
+  // open = emerald, merged = violet, closed = red, unknown = zinc
+  const stateDotClass = (state: string) =>
+    state === 'merged'
+      ? 'bg-violet-500'
+      : state === 'closed'
+        ? 'bg-red-500'
+        : state === 'open'
+          ? 'bg-emerald-500'
+          : 'bg-zinc-400';
+  const repoCount = new Set(prs.map((p) => p.repository)).size;
+  const prCount = prs.length || (sprint?.prUrl ? 1 : 0);
+  const viewPrLabel = selectedPr
+    ? `View ${repoShort(selectedPr.repository) ? `${repoShort(selectedPr.repository)} #${selectedPr.prNumber}` : `PR #${selectedPr.prNumber}`}`
+    : 'View PR';
+
+  // Keep the branch used by "Modify Code" aligned with the selected PR's repo.
+  useEffect(() => {
+    if (!selectedBranch) return;
+    setPrBranch(selectedBranch);
+    setPrBaseBranch(selectedBaseBranch);
+  }, [selectedBranch, selectedBaseBranch]);
+
+  // Load PR comments for the selected PR
+  useEffect(() => {
+    if (!activePrNumber || !activeRepo) return;
+    const [owner, repo] = activeRepo.split('/');
+    if (!owner || !repo) return;
+    let cancelled = false;
+    // Clear previous PR's comments so a slow response can't show them under the
+    // newly selected PR, and guard against out-of-order resolution on fast switches.
+    setPrComments([]);
+    githubService
+      .getPRComments(owner, repo, parseInt(activePrNumber))
+      .then((res) => {
+        if (!cancelled) setPrComments(res.comments);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [activePrNumber, activeRepo]);
 
   const pendingQuestions = questions
     .filter((q) => !q.structuredAnswer)
@@ -297,15 +354,15 @@ export default function ReviewPage() {
   };
 
   const handleAddComment = async () => {
-    if (!newComment.trim() || !sprint?.prNumber || !project?.gitRepo) return;
+    if (!newComment.trim() || !activePrNumber || !activeRepo) return;
     setSubmittingComment(true);
     try {
-      const [owner, repo] = project.gitRepo.split('/');
-      await githubService.addPRComment(owner, repo, parseInt(sprint.prNumber), {
+      const [owner, repo] = activeRepo.split('/');
+      await githubService.addPRComment(owner, repo, parseInt(activePrNumber), {
         body: newComment,
       });
       setNewComment('');
-      const comments = await githubService.getPRComments(owner, repo, parseInt(sprint.prNumber));
+      const comments = await githubService.getPRComments(owner, repo, parseInt(activePrNumber));
       setPrComments(comments.comments);
     } catch (err) {
       alert('Failed to add comment: ' + (err instanceof Error ? err.message : 'Unknown error'));
@@ -376,7 +433,11 @@ export default function ReviewPage() {
                   onAutoSave={async (draft) => {
                     questionsService
                       .update(sprintId, pq.id, { draftAnswer: draft })
-                      .catch(() => {});
+                      .catch((err) => {
+                        // Autosave is best-effort: don't block typing if it fails,
+                        // but log so a silently dropped draft is diagnosable.
+                        console.error('Failed to autosave question draft:', err);
+                      });
                   }}
                   onFocus={() => setActivity('question', pq.id)}
                   onBlur={() => setActivity('idle')}
@@ -423,13 +484,67 @@ export default function ReviewPage() {
             </Card>
           )}
 
-          {/* Review controls */}
+          {/* Pull requests — groups everything scoped to a single PR/repo:
+              the repo tabs, the View PR link, and the local checkout command. */}
+          {activePrUrl && (
+            <div className="rounded-lg border bg-muted/30 p-3 space-y-3">
+              <div className="flex items-center gap-2 flex-wrap">
+                <GitPullRequest className="h-4 w-4 text-muted-foreground" />
+                <span className="text-sm font-medium">Pull requests</span>
+                <Badge variant="secondary" className="h-5 px-1.5">
+                  {prCount}
+                </Badge>
+                {repoCount > 1 && (
+                  <span className="text-xs text-muted-foreground">
+                    across {repoCount} repositories
+                  </span>
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5 ml-auto"
+                  title={activeRepo ? `Open ${activeRepo} #${activePrNumber}` : 'Open pull request'}
+                  onClick={() => window.open(activePrUrl, '_blank')}
+                >
+                  <ExternalLink className="h-3.5 w-3.5" /> {viewPrLabel}
+                </Button>
+              </div>
+              {prs.length > 1 && (
+                <ToggleGroup
+                  type="single"
+                  value={selectedPrId}
+                  onValueChange={(v) => v && setSelectedPrId(v)}
+                  className="flex-wrap justify-start"
+                >
+                  {prs.map((p) => (
+                    <ToggleGroupItem
+                      key={p.id}
+                      value={p.id}
+                      className="gap-1.5 text-xs"
+                      title={p.repository}
+                    >
+                      <span className={`h-1.5 w-1.5 rounded-full ${stateDotClass(p.state)}`} />
+                      {prTabLabel(p)}
+                    </ToggleGroupItem>
+                  ))}
+                </ToggleGroup>
+              )}
+              {activePrNumber && (
+                <PrCheckoutCommand
+                  prNumber={activePrNumber}
+                  branch={selectedPr?.branch || sprint?.branch}
+                  baseBranch={selectedPr?.baseBranch || sprint?.baseBranch}
+                  gitRepo={activeRepo || project?.gitRepo}
+                />
+              )}
+            </div>
+          )}
+
+          {/* Sprint-level actions */}
           <div className="flex items-center gap-3 flex-wrap">
             <Button
               onClick={handleKickOffReviews}
-              disabled={
-                isAnyRunning || !!launching || !sprint?.prUrl || sprint?.phase === 'COMPLETED'
-              }
+              disabled={isAnyRunning || !!launching || !hasPr || sprint?.phase === 'COMPLETED'}
               className="gap-2"
             >
               {launching ? (
@@ -442,22 +557,12 @@ export default function ReviewPage() {
             <Button
               onClick={() => setShowModifyModal(true)}
               disabled={
-                isAnyRunning || !sprint?.prUrl || !hasReviewResults || sprint?.phase === 'COMPLETED'
+                isAnyRunning || !hasPr || !hasReviewResults || sprint?.phase === 'COMPLETED'
               }
               className="gap-2"
             >
               <Wrench className="h-4 w-4" /> Fix Review Findings
             </Button>
-            {sprint?.prUrl && (
-              <Button
-                variant="outline"
-                size="sm"
-                className="gap-1.5 ml-auto"
-                onClick={() => window.open(sprint.prUrl!, '_blank')}
-              >
-                <ExternalLink className="h-3.5 w-3.5" /> View PR
-              </Button>
-            )}
 
             {/* Review status */}
             {review &&
@@ -485,18 +590,8 @@ export default function ReviewPage() {
 
           {startError && <AgentStartErrorBanner error={startError} onDismiss={clearStartError} />}
 
-          {/* Local checkout command */}
-          {sprint?.prUrl && sprint?.prNumber && (
-            <PrCheckoutCommand
-              prNumber={sprint.prNumber}
-              branch={sprint.branch}
-              baseBranch={sprint.baseBranch}
-              gitRepo={project?.gitRepo}
-            />
-          )}
-
           {/* Missing PR warning */}
-          {!sprint?.prUrl && (
+          {!hasPr && (
             <Card className="border-amber-500/50 bg-amber-500/5">
               <CardContent className="p-4 space-y-3">
                 <p className="text-sm text-amber-600 dark:text-amber-400">
