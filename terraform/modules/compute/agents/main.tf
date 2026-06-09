@@ -342,6 +342,9 @@ resource "aws_ecs_task_definition" "agent" {
       { name = "BEDROCK_BEARER_TOKEN_SSM_PATH", value = aws_ssm_parameter.bedrock_bearer_token.name },
       { name = "MCP_SERVERS_SSM_PATH", value = aws_ssm_parameter.mcp_servers.name },
       { name = "KIRO_API_KEY_SSM_PATH", value = aws_ssm_parameter.kiro_api_key.name },
+      # Git identity for commits the agents create (overridable per deployment).
+      { name = "GIT_AUTHOR_NAME", value = var.git_author_name },
+      { name = "GIT_AUTHOR_EMAIL", value = var.git_author_email },
     ]
     logConfiguration = {
       logDriver = "awslogs"

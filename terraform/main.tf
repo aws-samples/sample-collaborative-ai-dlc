@@ -347,6 +347,10 @@ module "agents" {
   # Bedrock model pinning for claude and opencode drivers.
   bedrock_model = var.bedrock_model
 
+  # Git identity for agent-created commits (overridable per deployment).
+  git_author_name  = var.git_author_name
+  git_author_email = var.git_author_email
+
   tags = {
     Environment = var.environment
     Project     = var.project_name

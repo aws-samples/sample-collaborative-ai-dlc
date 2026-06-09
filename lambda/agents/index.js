@@ -46,31 +46,10 @@ const STALE_BUSY_MS = 30 * 60 * 1000; // 30 minutes — sub-agents should not ru
 // pool-worker, which interpolates them into shell `git` commands. The projects
 // lambda validates on write, but legacy/pre-existing `git_repo` values were
 // stored without validation, so we MUST re-validate here on the read path.
+// Validators live in shared/ so the agents and projects lambdas can't drift.
 // ---------------------------------------------------------------------------
 
-// Reject anything that could break out of a double-quoted shell string. Mirrors
-// SHELL_SAFE_REPO_PATTERN in the projects lambda; we additionally reject ".."
-// path traversal (the multi-repo path interpolates url into /workspace/${url}).
-const SHELL_SAFE_REPO_PATTERN = /^[A-Za-z0-9._@:/-]+$/;
-// Git refs: letters, digits, ., _, /, - only. No leading dash (arg injection),
-// no ".." and no "@{" (git revision syntax).
-const GIT_REF_PATTERN = /^[A-Za-z0-9._/-]+$/;
-
-const isSafeRepo = (v) =>
-  typeof v === 'string' &&
-  v.length > 0 &&
-  v.length <= 200 &&
-  SHELL_SAFE_REPO_PATTERN.test(v) &&
-  !v.includes('..');
-
-const isSafeRef = (v) =>
-  typeof v === 'string' &&
-  v.length > 0 &&
-  v.length <= 200 &&
-  GIT_REF_PATTERN.test(v) &&
-  !v.startsWith('-') &&
-  !v.includes('..') &&
-  !v.includes('@{');
+const { isSafeRepo, isSafeRef } = require('./shared/repo-validation');
 
 const getConnection = async () => {
   const host = process.env.NEPTUNE_ENDPOINT;

@@ -23,7 +23,7 @@ const getConnection = async () => {
 // FAILED") cannot be expressed in the machine status; the human-readable per-repo
 // breakdown lives in `full_review` (see pool-worker.js buildFullReviewPrompt).
 // Splitting the model into per-repo Review nodes is deferred.
-const VALID_STATUSES = ['PENDING', 'PASSED', 'FAILED', 'PARTIAL'];
+const { VALID_REVIEW_STATUSES: VALID_STATUSES } = require('./shared/review-statuses');
 
 const mapReview = (v) => ({
   id: v.get('id')?.[0] || '',
@@ -77,7 +77,9 @@ exports.handler = async (event) => {
           .toList();
         if (allReviews.length === 0) return res(200, null);
         const activeReview = allReviews.find((v) => v.get('stale')?.[0] !== 'true');
-        return res(200, mapReview(activeReview || allReviews[allReviews.length - 1]));
+        // All stale: return the most recent. With Order.desc on stale_at the newest
+        // is at index 0 (allReviews[length-1] would be the oldest).
+        return res(200, mapReview(activeReview || allReviews[0]));
       }
 
       case 'POST': {

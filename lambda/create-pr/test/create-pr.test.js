@@ -155,3 +155,139 @@ describe('create-pr construction branch cleanup', () => {
     }
   });
 });
+
+describe('create-pr handler — gitRepo validation', () => {
+  it('returns 400 when gitRepo is missing a slash', async () => {
+    const { handler } = await loadCreatePr();
+    const result = await handler({
+      projectId: 'p1',
+      branch: 'ai-dlc/sprint-1',
+      baseBranch: 'main',
+      gitRepo: 'no-slash-here',
+      gitToken: 'token',
+      executionId: 'e1',
+    });
+    expect(result.statusCode).toBe(400);
+    expect(result.body).toMatch(/expected "owner\/repo"/);
+  });
+
+  it('returns 400 when gitRepo has too many segments', async () => {
+    const { handler } = await loadCreatePr();
+    const result = await handler({
+      projectId: 'p1',
+      branch: 'ai-dlc/sprint-1',
+      baseBranch: 'main',
+      gitRepo: 'owner/repo/extra',
+      gitToken: 'token',
+      executionId: 'e1',
+    });
+    expect(result.statusCode).toBe(400);
+    expect(result.body).toMatch(/expected "owner\/repo"/);
+  });
+
+  it('returns 400 when gitRepo is empty', async () => {
+    const { handler } = await loadCreatePr();
+    const result = await handler({
+      projectId: 'p1',
+      branch: 'ai-dlc/sprint-1',
+      baseBranch: 'main',
+      gitRepo: '',
+      gitToken: 'token',
+      executionId: 'e1',
+    });
+    expect(result.statusCode).toBe(400);
+  });
+});
+
+describe('create-pr handler — findByBranch fallback (PR already exists)', () => {
+  const makeExistingPrFetch = ({ preciseFinds = true, matchingPr = null } = {}) =>
+    vi.fn(async (url) => {
+      if (url.includes('/git/matching-refs/')) return { ok: true, json: async () => [] }; // no task branches
+      // First PR creation attempt — 422 (already exists)
+      if (url.endsWith('/pulls') && !url.includes('?'))
+        return { ok: false, status: 422, text: async () => 'Unprocessable' };
+      // Precise head-qualified lookup
+      if (url.includes('?head=') && url.includes(':')) {
+        const prs = preciseFinds
+          ? [
+              {
+                html_url: 'https://github.com/owner/repo/pull/3',
+                number: 3,
+                head: { ref: 'feat/x' },
+              },
+            ]
+          : [];
+        return { ok: true, json: async () => prs };
+      }
+      // Fallback list lookup
+      const prs = matchingPr ? [matchingPr] : [];
+      return { ok: true, json: async () => prs };
+    });
+
+  it('returns the existing open PR when the precise head-qualified lookup finds it', async () => {
+    const { handler } = await loadCreatePr();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = makeExistingPrFetch({ preciseFinds: true });
+    try {
+      const result = await handler({
+        projectId: 'p1',
+        branch: 'feat/x',
+        baseBranch: 'main',
+        gitRepo: 'owner/repo',
+        gitToken: 'token',
+        executionId: 'e1',
+      });
+      expect(result).toMatchObject({ statusCode: 200, prNumber: 3, existing: true });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('falls back to listing PRs when head-qualified lookup returns empty (fork/org mismatch)', async () => {
+    // Simulates a fork where the PR head is forkOwner:feat/x — the precise
+    // owner:branch filter returns nothing, so we fall through to the full list.
+    const { handler } = await loadCreatePr();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = makeExistingPrFetch({
+      preciseFinds: false,
+      matchingPr: {
+        html_url: 'https://github.com/owner/repo/pull/9',
+        number: 9,
+        head: { ref: 'feat/x' },
+      },
+    });
+    try {
+      const result = await handler({
+        projectId: 'p1',
+        branch: 'feat/x',
+        baseBranch: 'main',
+        gitRepo: 'owner/repo',
+        gitToken: 'token',
+        executionId: 'e1',
+      });
+      expect(result).toMatchObject({ statusCode: 200, prNumber: 9, existing: true });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('returns 500 when neither lookup finds the PR', async () => {
+    const { handler } = await loadCreatePr();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = makeExistingPrFetch({ preciseFinds: false, matchingPr: null });
+    try {
+      const result = await handler({
+        projectId: 'p1',
+        branch: 'feat/x',
+        baseBranch: 'main',
+        gitRepo: 'owner/repo',
+        gitToken: 'token',
+        executionId: 'e1',
+      });
+      // Neither open nor any state found — falls through to the throw at line 253
+      expect(result.statusCode).toBe(500);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});

@@ -487,7 +487,8 @@ Use this to update status, description, title, or any mutable property.`,
       // Whitelist guard: a Review's machine verdict drives downstream styling and
       // gating, so reject any value outside the known set rather than letting an
       // agent write a free-form status the frontend/validation can't interpret.
-      // Mirrors VALID_STATUSES in the reviews lambda.
+      // Canonical list: lambda/shared/review-statuses.js (used by reviews lambda).
+      // Inlined here because the ECS container build doesn't include lambda/shared — update both.
       if (label === 'Review' && properties.status !== undefined) {
         const VALID_REVIEW_STATUSES = ['PENDING', 'PASSED', 'FAILED', 'PARTIAL'];
         if (!VALID_REVIEW_STATUSES.includes(properties.status)) {
@@ -1268,7 +1269,8 @@ In multi-repo projects, creates one PR per repository and groups them in a PRGro
                   projectId: env.projectId,
                   branch,
                   baseBranch,
-                  title: title || `Construction: ${env.sprintId} (${repo.url.split('/')[1]})`,
+                  title:
+                    title || `Construction: ${env.sprintId} (${parseOwnerRepo(repo.url).repo})`,
                   gitToken: env.gitToken,
                   gitRepo: repo.url,
                   executionId: process.env.EXECUTION_ID || '',
@@ -1688,7 +1690,7 @@ Use this to understand reviewer feedback before making modifications.`,
 
       if (!sprintData?.prNumber) return err('No PR found for this sprint');
 
-      const [owner, repo] = env.gitRepo.split('/');
+      const { owner, repo } = parseOwnerRepo(env.gitRepo);
       const headers = {
         Authorization: `token ${env.gitToken}`,
         Accept: 'application/vnd.github.v3+json',

@@ -141,16 +141,9 @@ const REPO_URL_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}\/[a-zA-Z0-9][a-zA-Z0-9.
 // The legacy `gitRepo` field is historically a freeform string (bare names,
 // SSH URLs). We can't tighten it to owner/repo without breaking that contract,
 // but it still gets interpolated into `git clone "https://.../${url}.git"` in
-// the pool-worker. This whitelist rejects exactly the characters that can break
-// out of that double-quoted shell string ("  `  $  \  whitespace), closing the
-// injection vector while preserving freeform values.
-const SHELL_SAFE_REPO_PATTERN = /^[A-Za-z0-9._@:/-]+$/;
-
-// Shell-safe AND traversal-safe. Rejects "..", which the raw pattern would
-// otherwise allow (e.g. "../../foo"), keeping the value safe for both the
-// clone URL and the multi-repo "/workspace/${url}" directory interpolation.
-const isShellSafeRepo = (v) =>
-  typeof v === 'string' && v.length > 0 && SHELL_SAFE_REPO_PATTERN.test(v) && !v.includes('..');
+// the pool-worker. The shell/traversal-safe guard lives in shared/ so it can't
+// drift from the agents lambda's read-path copy (esbuild bundles ../shared).
+const { isSafeRepo } = require('../shared/repo-validation');
 
 // Canonical repository role + provider vocabularies. Keep in sync with
 // `RepoRole` and `ProjectRepo.provider` in frontend/src/services/projects.ts.
@@ -201,7 +194,7 @@ const ensureLegacyRepoMigrated = async (g, projectId, legacyGitRepo) => {
   // Legacy git_repo is freeform, so we only enforce shell-safety here (not strict
   // owner/repo). Skip (don't throw) on a dangerous value — this runs on read paths
   // and must not break GETs of old projects.
-  if (!isShellSafeRepo(legacyGitRepo)) {
+  if (!isSafeRepo(legacyGitRepo)) {
     console.error(
       `[projects] Skipping migration of unsafe git_repo value for ${projectId}: ${JSON.stringify(legacyGitRepo)}`,
     );
@@ -827,7 +820,7 @@ export const handler = async (event) => {
           const repoInputError = validateRepoRoleAndProvider(repo);
           if (repoInputError) return response(400, { error: repoInputError });
         }
-        if (legacyGitRepo && !isShellSafeRepo(legacyGitRepo)) {
+        if (legacyGitRepo && !isSafeRepo(legacyGitRepo)) {
           return response(400, { error: `Invalid gitRepo "${legacyGitRepo}".` });
         }
 
@@ -941,7 +934,7 @@ export const handler = async (event) => {
         if (data.gitRepo !== undefined) {
           // SECURITY: same execSync sink as POST. The legacy gitRepo is freeform
           // but must be shell-safe so it can't break out of the git clone command.
-          if (data.gitRepo && !isShellSafeRepo(data.gitRepo)) {
+          if (data.gitRepo && !isSafeRepo(data.gitRepo)) {
             return response(400, { error: `Invalid gitRepo "${data.gitRepo}".` });
           }
           await g

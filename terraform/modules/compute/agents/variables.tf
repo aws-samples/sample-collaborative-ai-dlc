@@ -200,3 +200,15 @@ variable "bedrock_small_fast_model" {
   type        = string
   default     = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 }
+
+variable "git_author_name" {
+  description = "Git author name used by agents for commits they create (pool-worker reads GIT_AUTHOR_NAME)"
+  type        = string
+  default     = "AI-DLC Agent"
+}
+
+variable "git_author_email" {
+  description = "Git author email used by agents for commits they create (pool-worker reads GIT_AUTHOR_EMAIL)"
+  type        = string
+  default     = "ai-dlc@example.com"
+}
