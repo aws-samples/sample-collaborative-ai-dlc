@@ -85,6 +85,13 @@ export function McpServersSection({
       </CardHeader>
       <CardContent className="space-y-3">
         <p className="text-xs text-muted-foreground">{description}</p>
+        {canEdit && (
+          <p className="text-[11px] text-muted-foreground">
+            Stdio MCP servers can use these agent image commands: <code>node</code>,{' '}
+            <code>npx</code>, <code>uv</code>, <code>uvx</code>, <code>python</code>,{' '}
+            <code>python3</code>. Use an absolute path for any other executable.
+          </p>
+        )}
         <Textarea
           value={value}
           onChange={(e) => {
@@ -97,7 +104,7 @@ export function McpServersSection({
           )}
           spellCheck={false}
           disabled={!canEdit}
-          placeholder='[{"name":"my-tool","command":"npx","args":["-y","my-mcp-server"]}]'
+          placeholder='[{"name":"my-tool","command":"npx","args":["-y","my-mcp-server"],"env":[]}]'
         />
         {error && (
           <p className="text-[11px] text-destructive flex items-start gap-1">
