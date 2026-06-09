@@ -15,6 +15,7 @@ const ALLOWED_TYPES = new Set(['stdio', 'http', 'sse']);
 const STDIO_ALLOWED_KEYS = new Set(['type', 'name', 'command', 'args', 'env']);
 const HTTP_ALLOWED_KEYS = new Set(['type', 'name', 'url', 'headers']);
 const NAME_VALUE_KEYS = new Set(['name', 'value']);
+const KNOWN_AGENT_IMAGE_COMMANDS = new Set(['node', 'npx', 'uv', 'uvx', 'python', 'python3']);
 
 // Validate a single {name, value} pair (used for env entries and HTTP headers).
 function validateNameValuePair(item, path, issues, kind) {
@@ -60,6 +61,13 @@ function validateStdio(server, path, issues) {
     issues.push({
       path: `${path}.command`,
       message: 'Required non-empty string (path to the MCP server executable).',
+    });
+  } else if (!server.command.includes('/') && !KNOWN_AGENT_IMAGE_COMMANDS.has(server.command)) {
+    issues.push({
+      path: `${path}.command`,
+      message: `Unknown executable "${server.command}". Use an absolute path or one of: ${[
+        ...KNOWN_AGENT_IMAGE_COMMANDS,
+      ].join(', ')}.`,
     });
   }
   if (!Array.isArray(server.args)) {
@@ -193,7 +201,32 @@ function validateMcpServersJson(jsonString) {
   return validateMcpServers(parsed);
 }
 
+/**
+ * Parse and validate the raw JSON string, returning the parsed server array on
+ * success. Runtime callers use this to avoid duplicating the validator rules.
+ */
+function parseMcpServersJson(jsonString) {
+  let parsed;
+  try {
+    parsed = JSON.parse(jsonString || '[]');
+  } catch (err) {
+    return {
+      valid: false,
+      value: [],
+      issues: [{ path: '', message: `Invalid JSON: ${err.message}.` }],
+    };
+  }
+
+  const validation = validateMcpServers(parsed);
+  return {
+    ...validation,
+    value: validation.valid ? parsed : [],
+  };
+}
+
 module.exports = {
+  KNOWN_AGENT_IMAGE_COMMANDS,
+  parseMcpServersJson,
   validateMcpServers,
   validateMcpServersJson,
 };

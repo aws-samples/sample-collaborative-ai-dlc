@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { validateMcpServers, validateMcpServersJson } from '../mcp-validator.js';
+import {
+  KNOWN_AGENT_IMAGE_COMMANDS,
+  parseMcpServersJson,
+  validateMcpServers,
+  validateMcpServersJson,
+} from '../mcp-validator.js';
 
 describe('validateMcpServers', () => {
   describe('top-level', () => {
@@ -23,8 +28,8 @@ describe('validateMcpServers', () => {
 
     it('reports duplicate server names', () => {
       const r = validateMcpServers([
-        { name: 'dup', command: 'a', args: [] },
-        { name: 'dup', command: 'b', args: [] },
+        { name: 'dup', command: 'node', args: [] },
+        { name: 'dup', command: 'npx', args: [] },
       ]);
       expect(r.valid).toBe(false);
       expect(r.issues).toEqual([
@@ -47,6 +52,26 @@ describe('validateMcpServers', () => {
           { type: 'stdio', name: 'fs', command: '/usr/bin/mcp-fs', args: ['--root', '/'] },
         ]),
       ).toEqual({ valid: true, issues: [] });
+    });
+
+    it('accepts known agent image commands', () => {
+      const servers = [...KNOWN_AGENT_IMAGE_COMMANDS].map((command) => ({
+        name: command,
+        command,
+        args: [],
+      }));
+
+      expect(validateMcpServers(servers)).toEqual({ valid: true, issues: [] });
+    });
+
+    it('rejects unknown bare commands at configuration time', () => {
+      const r = validateMcpServers([{ name: 'typo', command: 'uvxx', args: [] }]);
+
+      expect(r.valid).toBe(false);
+      expect(r.issues).toContainEqual({
+        path: '[0].command',
+        message: expect.stringContaining('Unknown executable "uvxx"'),
+      });
     });
 
     it('accepts env entries as array of {name, value}', () => {
@@ -315,6 +340,26 @@ describe('validateMcpServersJson', () => {
   it('forwards schema issues from the parsed payload', () => {
     const r = validateMcpServersJson(JSON.stringify([{ name: 'x' }]));
     expect(r.valid).toBe(false);
+    expect(r.issues.some((i) => i.path === '[0].command')).toBe(true);
+  });
+});
+
+describe('parseMcpServersJson', () => {
+  it('returns parsed value for valid JSON', () => {
+    const servers = [{ name: 'x', command: 'node', args: ['server.js'] }];
+
+    expect(parseMcpServersJson(JSON.stringify(servers))).toEqual({
+      valid: true,
+      issues: [],
+      value: servers,
+    });
+  });
+
+  it('returns no parsed value when validation fails', () => {
+    const r = parseMcpServersJson(JSON.stringify([{ name: 'x' }]));
+
+    expect(r.valid).toBe(false);
+    expect(r.value).toEqual([]);
     expect(r.issues.some((i) => i.path === '[0].command')).toBe(true);
   });
 });
