@@ -131,7 +131,7 @@ export default function ConstructionPage() {
   // workflow-state contract existed. If construction evidence already exists,
   // normalize the UI-owned phase so the dashboard no longer shows Inception as active.
   useEffect(() => {
-    if (!projectId || !sprintId || !sprint || sprint.phase === 'CONSTRUCTION') return;
+    if (!projectId || !sprintId || !sprint || sprint.phase !== 'INCEPTION') return;
     const hasConstructionEvidence =
       sprint.currentAgentType === 'construction-orchestrator' ||
       sprint.currentAgentType === 'construction' ||
