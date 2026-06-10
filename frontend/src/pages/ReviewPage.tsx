@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useSprint } from '@/contexts/SprintContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { usePresence } from '@/hooks/usePresence';
@@ -35,6 +36,7 @@ import ReviewEditor from '@/components/ReviewEditor';
 import CodeFileViewer from '@/components/CodeFileViewer';
 import { BranchSelector } from '@/components/BranchSelector';
 import { PrCheckoutCommand } from '@/components/PrCheckoutCommand';
+import { getSprintPhasePath } from '@/lib/sprintPhaseNavigation';
 import { AgentStartErrorBanner } from '@/components/AgentStartErrorBanner';
 import {
   Play,
@@ -130,6 +132,7 @@ function ReviewStatusBar({
 }
 
 export default function ReviewPage() {
+  const navigate = useNavigate();
   const { user } = useAuth();
   const {
     sprint,
@@ -957,6 +960,8 @@ export default function ReviewPage() {
                       data: { phase: 'COMPLETED', sprintId },
                     });
                     await reload();
+                    const nextPath = getSprintPhasePath(projectId, sprintId, 'COMPLETED');
+                    if (nextPath) navigate(nextPath);
                   }
                 }}
               />

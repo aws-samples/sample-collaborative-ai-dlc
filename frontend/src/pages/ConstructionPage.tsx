@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useSprint } from '@/contexts/SprintContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { usePresence } from '@/hooks/usePresence';
@@ -59,8 +60,10 @@ import type { StructuredAnswer } from '@/services/questions';
 import { TaskSettingsDialog } from '@/components/settings/TaskSettingsDialog';
 import { TaskActionsMenu } from '@/components/domain/TaskActionsMenu';
 import type { Task } from '@/services/tasks';
+import { getSprintPhasePath } from '@/lib/sprintPhaseNavigation';
 
 export default function ConstructionPage() {
+  const navigate = useNavigate();
   const { user } = useAuth();
   const { sprint, tasks, codeFiles, questions, projectId, sprintId, reload } = useSprint();
 
@@ -338,6 +341,8 @@ export default function ConstructionPage() {
         .create(sprintId, { type: 'phase_changed', title: 'Moved to Review phase', userName })
         .catch(() => {});
       await reload();
+      const nextPath = getSprintPhasePath(projectId, sprintId, 'REVIEW');
+      if (nextPath) navigate(nextPath);
     } catch (err) {
       console.error('Failed to approve phase:', err);
     } finally {
