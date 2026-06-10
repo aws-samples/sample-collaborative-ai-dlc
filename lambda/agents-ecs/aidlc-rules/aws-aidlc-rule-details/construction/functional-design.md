@@ -74,7 +74,8 @@ add_node(label: "Requirement", id: "fd-[unit-name]-business-logic", properties: 
 
 ```
 update_node(label: "Sprint", id: env.sprintId, properties: {
-  current_stage: "functional-design"
+  current_stage: "functional-design",
+  phase_status: "active"
 })
 ```
 

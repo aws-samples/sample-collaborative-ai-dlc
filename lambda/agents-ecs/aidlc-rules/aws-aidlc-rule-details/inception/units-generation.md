@@ -97,13 +97,14 @@ add_edge(
 
 ```
 update_node(label: "Sprint", id: env.sprintId, properties: {
-  current_stage: "units-generation"
+  current_stage: "units-generation",
+  phase_status: "ready_for_transition"
 })
 ```
 
-## Step 7: Request Approval
+## Step 7: Finalize Inception Phase
 
-Call `ask_question` with:
+Present a final status summary in chat. Do **not** call `ask_question` for the phase transition.
 
 ```
 "Units Generation Complete
@@ -112,10 +113,10 @@ Call `ask_question` with:
 - [N] units created with dependencies mapped
 - All user stories assigned to units
 
-Do you APPROVE to proceed to CONSTRUCTION PHASE, or describe what changes are needed?"
+Inception phase is ready for human review. When the team is ready, click Approve & Move to Construction in the Sprint page."
 ```
 
-Wait for explicit approval. If changes requested, update Task nodes and re-request.
+Exit cleanly after the summary. If the team later requests changes, handle that as a new intra-phase refinement request and update the relevant Task nodes.
 
 ---
 

@@ -101,6 +101,16 @@ const getSprint = async (sprintId) => {
   return JSON.parse(res.body);
 };
 
+const updateSprint = async (sprintId, body) => {
+  const res = await handler({
+    httpMethod: 'PUT',
+    pathParameters: { sprintId },
+    body: JSON.stringify(body),
+  });
+  expect(res.statusCode).toBe(200);
+  return JSON.parse(res.body);
+};
+
 describe('POST /sprints', () => {
   it('derives a github-issues tracker from issueNumber/issueUrl (legacy frontend path)', async () => {
     const projectId = await seedProject({ gitRepo: 'octo/repo' });
@@ -151,6 +161,8 @@ describe('POST /sprints', () => {
     const created = await createSprint(projectId, { name: 'plain' });
     expect(created.tracker).toBeNull();
     expect(created.issueNumber).toBeNull();
+    expect(created.currentStage).toBeNull();
+    expect(created.phaseStatus).toBe('active');
   });
 });
 
@@ -182,5 +194,32 @@ describe('GET /sprints/:id (backward compatibility)', () => {
     expect(fetched.tracker).toEqual(created.tracker);
     expect(fetched.issueNumber).toBe('7');
     expect(fetched.issueUrl).toBe('https://github.com/octo/repo/issues/7');
+    expect(fetched.currentStage).toBeNull();
+    expect(fetched.phaseStatus).toBe('active');
+  });
+});
+
+describe('PUT /sprints/:id', () => {
+  it('allows the UI to own phase transitions and visible workflow state', async () => {
+    const projectId = await seedProject({ gitRepo: 'octo/repo' });
+    const created = await createSprint(projectId, { name: 'S' });
+
+    const updated = await updateSprint(created.id, {
+      phase: 'CONSTRUCTION',
+      currentStage: 'code-generation',
+      phaseStatus: 'active',
+      branch: 'feature/sprint-1',
+      baseBranch: 'main',
+      currentAgentStatus: 'failed',
+    });
+
+    expect(updated).toMatchObject({
+      phase: 'CONSTRUCTION',
+      currentStage: 'code-generation',
+      phaseStatus: 'active',
+      branch: 'feature/sprint-1',
+      baseBranch: 'main',
+    });
+    expect(updated.currentAgentStatus).toBeNull();
   });
 });

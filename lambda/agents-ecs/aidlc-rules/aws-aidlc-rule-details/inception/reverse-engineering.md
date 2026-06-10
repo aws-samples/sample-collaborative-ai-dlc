@@ -199,7 +199,8 @@ add_edge(
 
 ```
 update_node(label: "Sprint", id: env.sprintId, properties: {
-  current_stage: "reverse-engineering"
+  current_stage: "reverse-engineering",
+  phase_status: "active"
 })
 ```
 

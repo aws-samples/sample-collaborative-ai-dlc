@@ -14,6 +14,9 @@ From the Sprint node properties, determine:
 
 - **Current Phase**: INCEPTION, CONSTRUCTION, or REVIEW
 - **Current Stage**: The specific stage in progress
+- **Phase Status**: `active`, `ready_for_transition`, or `completed`
+
+If `phase_status` is `ready_for_transition`, do not ask for phase-transition approval. Present the ready state and tell the team to use the Sprint page transition button when they are ready.
 
 From the presence of graph nodes, determine what has been completed:
 
@@ -31,6 +34,7 @@ Present the current status to the team:
 Welcome back! Based on the sprint graph, here's your current status:
 - **Current Phase**: [phase from Sprint node]
 - **Current Stage**: [stage from Sprint node]
+- **Phase Status**: [phase_status from Sprint node]
 - **Artifacts**: [count] Requirements, [count] User Stories, [count] Tasks, [count] Code Files
 - **Carried-Forward Context**: [count] artifacts from previous sprint (if any)
 - **Questions Asked**: [count] (view in Sprint page)

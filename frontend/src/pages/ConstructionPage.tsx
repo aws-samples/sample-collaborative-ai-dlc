@@ -127,6 +127,35 @@ export default function ConstructionPage() {
       .catch(() => {});
   }, [projectId, sprintId, sprint?.phase]);
 
+  // Backfill older sprints that started construction before the Sprint
+  // workflow-state contract existed. If construction evidence already exists,
+  // normalize the UI-owned phase so the dashboard no longer shows Inception as active.
+  useEffect(() => {
+    if (!projectId || !sprintId || !sprint || sprint.phase === 'CONSTRUCTION') return;
+    const hasConstructionEvidence =
+      sprint.currentAgentType === 'construction-orchestrator' ||
+      sprint.currentAgentType === 'construction' ||
+      codeFiles.length > 0 ||
+      Boolean(sprint.branch);
+    if (!hasConstructionEvidence) return;
+
+    sprintsService
+      .update(projectId, sprintId, {
+        phase: 'CONSTRUCTION',
+        currentStage: sprint.currentStage || 'code-generation',
+        phaseStatus: sprint.phaseStatus || 'active',
+      })
+      .then(() => {
+        realtimeService.send('broadcastToDocument', {
+          documentId: `sprint:${sprintId}`,
+          action: 'sprint.phaseChanged',
+          data: { phase: 'CONSTRUCTION', sprintId },
+        });
+        return reload();
+      })
+      .catch(() => {});
+  }, [codeFiles.length, projectId, reload, sprint, sprintId]);
+
   // Reload on agent artifacts
   useEffect(() => {
     if (agentStatus.artifactsUpdated > 0) reload();
@@ -170,8 +199,20 @@ export default function ConstructionPage() {
     setStartingConstruction(true);
     setShowBranchSelector(false);
     try {
-      // Persist branch on sprint so subsequent runs skip the BranchSelector
-      await sprintsService.update(projectId, sprintId, { branch, baseBranch });
+      // Construction kick-off is a UI-owned phase transition. Normalize older
+      // sprints that reached this page before workflow state fields existed.
+      await sprintsService.update(projectId, sprintId, {
+        phase: 'CONSTRUCTION',
+        currentStage: 'code-generation',
+        phaseStatus: 'active',
+        branch,
+        baseBranch,
+      });
+      realtimeService.send('broadcastToDocument', {
+        documentId: `sprint:${sprintId}`,
+        action: 'sprint.phaseChanged',
+        data: { phase: 'CONSTRUCTION', sprintId },
+      });
       const result = await agentsService.startWorkflow(projectId, {
         phase: 'construction-orchestrator',
         sprintId,
@@ -283,7 +324,11 @@ export default function ConstructionPage() {
   const handleApprovePhase = async () => {
     setApprovingPhase(true);
     try {
-      await sprintsService.update(projectId, sprintId, { phase: 'REVIEW' });
+      await sprintsService.update(projectId, sprintId, {
+        phase: 'REVIEW',
+        currentStage: null,
+        phaseStatus: 'active',
+      });
       realtimeService.send('broadcastToDocument', {
         documentId: `sprint:${sprintId}`,
         action: 'sprint.phaseChanged',

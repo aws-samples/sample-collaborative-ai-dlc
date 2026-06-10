@@ -311,7 +311,11 @@ export default function InceptionPage() {
   const handleApprovePhase = async () => {
     setApprovingPhase(true);
     try {
-      await sprintsService.update(projectId, sprintId, { phase: 'CONSTRUCTION' });
+      await sprintsService.update(projectId, sprintId, {
+        phase: 'CONSTRUCTION',
+        currentStage: null,
+        phaseStatus: 'active',
+      });
       realtimeService.send('broadcastToDocument', {
         documentId: `sprint:${sprintId}`,
         action: 'sprint.phaseChanged',

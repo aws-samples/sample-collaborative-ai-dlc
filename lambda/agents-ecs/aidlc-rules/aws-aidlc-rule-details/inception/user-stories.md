@@ -160,7 +160,8 @@ Ensure stories follow INVEST criteria:
 
 ```
 update_node(label: "Sprint", id: env.sprintId, properties: {
-  current_stage: "user-stories"
+  current_stage: "user-stories",
+  phase_status: "active"
 })
 ```
 

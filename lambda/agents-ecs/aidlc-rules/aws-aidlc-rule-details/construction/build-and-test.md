@@ -64,7 +64,8 @@ Update Sprint and Task nodes:
 ```
 update_node(label: "Sprint", id: env.sprintId, properties: {
   current_stage: "build-and-test",
-  phase: "CONSTRUCTION"
+  phase: "CONSTRUCTION",
+  phase_status: "ready_for_transition"
 })
 ```
 
@@ -79,9 +80,9 @@ add_node(label: "Review", id: "review-build-test", properties: {
 
 ---
 
-## Step 5: Request Approval
+## Step 5: Finalize Construction Phase
 
-Call `ask_question` with:
+Present a final status summary in chat. Do **not** call `ask_question` for the phase transition.
 
 ```
 "Build and Test Complete
@@ -99,7 +100,7 @@ Generated instruction files:
 3. integration-test-instructions.md
 4. [additional files as needed]
 
-Ready to proceed to Operations stage (placeholder) or complete the workflow?"
+Construction phase is ready for human review. When the team is ready, create or inspect the PR, then click End Construction & Move to Review in the Sprint page."
 ```
 
-Wait for explicit approval.
+Exit cleanly after the summary. If the team later requests changes, handle that as a new intra-phase refinement request and update the relevant Task or Review nodes.

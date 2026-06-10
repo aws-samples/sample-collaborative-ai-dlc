@@ -157,5 +157,7 @@ flowchart TD
 - Simple changes may skip conditional INCEPTION stages
 - Complex changes get full INCEPTION and CONSTRUCTION treatment
 - **Graph database is the single source of truth** for all artifacts
+- **Sprint node is the single source of truth for workflow state** (`phase`, `current_stage`, `phase_status`)
 - **`ask_question` is the only collaboration mechanism** for human input
+- **Do not use `ask_question` for phase transitions** — phase transitions are UI-owned
 - **Carried-forward artifacts** maintain traceability to their source sprint via CARRIED_FROM edges

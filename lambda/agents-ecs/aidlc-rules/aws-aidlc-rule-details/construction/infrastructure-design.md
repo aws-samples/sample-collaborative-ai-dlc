@@ -47,7 +47,8 @@ add_node(label: "Requirement", id: "infra-design-[unit-name]", properties: {
 
 ```
 update_node(label: "Sprint", id: env.sprintId, properties: {
-  current_stage: "infrastructure-design"
+  current_stage: "infrastructure-design",
+  phase_status: "active"
 })
 ```
 

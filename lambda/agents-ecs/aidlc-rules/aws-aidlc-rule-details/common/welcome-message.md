@@ -88,7 +88,9 @@ AI-DLC is a structured yet flexible software development process that adapts to 
 
 - The agent will **ask you questions** through the platform — you'll see them appear in the Sprint page
 - **Answer in the UI** and the agent will receive your response and continue working
-- At each major checkpoint, the agent will **ask for your approval** before proceeding
+- At each major checkpoint inside a phase, the agent will **ask for your approval** before proceeding
+- Phase transitions are **your UI action**: when a phase is ready, the Sprint page shows the transition button and you choose when to move forward
+- The Sprint page visualizes workflow state from the Sprint node's `phase`, `current_stage`, and `phase_status` properties
 - **All artifacts** (requirements, stories, tasks) are stored in the graph — view them anytime in the Sprint page
 - **All questions and answers** are automatically tracked for a complete audit trail
 
@@ -98,8 +100,9 @@ AI-DLC is a structured yet flexible software development process that adapts to 
 2. **It gathers requirements** and asks clarifying questions via the platform
 3. **It creates an execution plan** showing which stages to run and why
 4. **You review and approve** the plan (or request changes)
-5. **The agent executes the plan** with approval checkpoints at each major stage
-6. **You get working code** with all artifacts tracked in the project graph
+5. **The agent executes the plan** with approval checkpoints inside the active phase
+6. **The agent marks the phase ready** and you move to the next phase from the Sprint page
+7. **You get working code** with all artifacts tracked in the project graph
 
 The AI-DLC process adapts to:
 

@@ -946,7 +946,11 @@ export default function ReviewPage() {
                     body,
                   });
                   if (review.status === 'PASSED') {
-                    await sprintsService.update(projectId, sprintId, { phase: 'COMPLETED' });
+                    await sprintsService.update(projectId, sprintId, {
+                      phase: 'COMPLETED',
+                      currentStage: null,
+                      phaseStatus: 'completed',
+                    });
                     realtimeService.send('broadcastToDocument', {
                       documentId: `sprint:${sprintId}`,
                       action: 'sprint.phaseChanged',

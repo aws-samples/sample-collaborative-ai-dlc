@@ -155,7 +155,8 @@ add_edge(
 
 ```
 update_node(label: "Sprint", id: env.sprintId, properties: {
-  current_stage: "requirements-analysis"
+  current_stage: "requirements-analysis",
+  phase_status: "active"
 })
 ```
 
