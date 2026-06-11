@@ -23,6 +23,7 @@ const NOW = new Date('2026-01-01T00:00:00.000Z');
 const SECRET = 'test-doc-secret';
 const LOCKS_TABLE = 'discussion-locks-test';
 const CONNECTIONS_TABLE = 'connections-test';
+const READ_STATE_TABLE = 'discussion-read-state-test';
 
 // File-level partition: every test in this file shares it.
 const PARTITION = `t-${randomUUID()}`;
@@ -37,6 +38,7 @@ const apiMock = mockClient(ApiGatewayManagementApiClient);
 // in-memory Map, so the concurrency state machine is testable without a
 // DynamoDB container. Connections-table queries are mocked separately.
 const lockStore = new Map();
+const readStateStore = new Map();
 let connectionItems = [];
 
 const condFail = () => {
@@ -47,6 +49,10 @@ const condFail = () => {
 
 const installDdbFake = () => {
   ddbMock.on(PutCommand).callsFake(async (input) => {
+    if (input.TableName === READ_STATE_TABLE) {
+      readStateStore.set(`${input.Item.userId}|${input.Item.discussionId}`, { ...input.Item });
+      return {};
+    }
     if (input.TableName !== LOCKS_TABLE) return {};
     const item = input.Item;
     const existing = lockStore.get(item.lockId);
@@ -86,7 +92,20 @@ const installDdbFake = () => {
     return {};
   });
   ddbMock.on(QueryCommand).callsFake(async (input) => {
-    if (input.TableName === CONNECTIONS_TABLE) return { Items: connectionItems };
+    if (input.TableName === CONNECTIONS_TABLE) {
+      if (input.IndexName === 'UserIdIndex') {
+        const uid = input.ExpressionAttributeValues[':uid'];
+        return { Items: connectionItems.filter((c) => c.userId === uid) };
+      }
+      return { Items: connectionItems };
+    }
+    if (input.TableName === READ_STATE_TABLE) {
+      const uid = input.ExpressionAttributeValues[':uid'];
+      const sid = input.ExpressionAttributeValues[':sid'];
+      return {
+        Items: [...readStateStore.values()].filter((r) => r.userId === uid && r.sprintId === sid),
+      };
+    }
     return { Items: [] };
   });
 };
@@ -125,11 +144,13 @@ beforeEach(async () => {
   ddbMock.reset();
   apiMock.reset();
   lockStore.clear();
+  readStateStore.clear();
   connectionItems = [];
   installDdbFake();
   apiMock.on(PostToConnectionCommand).resolves({});
   vi.stubEnv('REALTIME_DOC_SECRET', SECRET);
   vi.stubEnv('LOCKS_TABLE', LOCKS_TABLE);
+  vi.stubEnv('READ_STATE_TABLE', READ_STATE_TABLE);
   // Pin Date so timestamps/expiries are assertable. Don't fake setTimeout —
   // the guard-poll loops and gremlin's WebSocket driver need real timers.
   vi.useFakeTimers({ toFake: ['Date'] });
@@ -907,6 +928,368 @@ describe('discussion.message fanout', () => {
       id: 'dm-1700000000-fanout01',
       content: 'broadcast me',
       authorId: MEMBER_SUB,
+    });
+  });
+});
+
+// =============================================================================
+// PUT /discussions/{discussionId} — resolve / reopen (plan §5/§7)
+// =============================================================================
+
+describe('PUT .../discussions/{discussionId} — resolve and reopen', () => {
+  let sprintId;
+  const DISC = 'disc-resolve';
+
+  const putDiscussion = (body, opts = {}) =>
+    call('PUT', '/api/sprints/{sprintId}/discussions/{discussionId}', {
+      pathParameters: { sprintId, discussionId: DISC },
+      body,
+      ...opts,
+    });
+
+  beforeEach(async () => {
+    ({ sprintId } = await seedDefaultProject());
+    await seedDiscussion(sprintId, DISC);
+    await seedMessage(DISC, sprintId, {
+      id: 'dm-1-outcome01',
+      content: 'the decision',
+      createdAt: NOW.toISOString(),
+    });
+  });
+
+  it('resolves with summary + outcome pointer + audit fields and emits discussion.updated + TimelineEvent', async () => {
+    vi.stubEnv('CONNECTIONS_TABLE', CONNECTIONS_TABLE);
+    vi.stubEnv('WEBSOCKET_ENDPOINT', 'https://fake.execute-api.eu-west-1.amazonaws.com/ws');
+    connectionItems = [{ connectionId: 'conn-1', tokenExp: nowSec() + 300 }];
+
+    const res = await putDiscussion({
+      status: 'resolved',
+      resolutionSummary: 'We will use PostgreSQL',
+      outcomeMessageId: 'dm-1-outcome01',
+    });
+    expect(res.statusCode).toBe(200);
+    const d = json(res);
+    expect(d).toMatchObject({
+      status: 'resolved',
+      resolutionSummary: 'We will use PostgreSQL',
+      outcomeMessageId: 'dm-1-outcome01',
+      resolvedBy: MEMBER_SUB,
+      resolvedAt: NOW.toISOString(),
+    });
+
+    const events = await g
+      .V()
+      .has('TimelineEvent', 'type', 'discussion_resolved')
+      .values('detail')
+      .toList();
+    expect(events).toEqual(['We will use PostgreSQL']);
+
+    const payload = JSON.parse(apiMock.commandCalls(PostToConnectionCommand)[0].args[0].input.Data);
+    expect(payload).toMatchObject({
+      action: 'discussion.updated',
+      discussionId: DISC,
+      status: 'resolved',
+      resolutionSummary: 'We will use PostgreSQL',
+    });
+  });
+
+  it('any member may resolve (audited); reopen clears the resolution fields', async () => {
+    await putDiscussion({ status: 'resolved', resolutionSummary: 'done' });
+
+    const res = await putDiscussion({ status: 'open' }, { sub: ADMIN_SUB });
+    expect(res.statusCode).toBe(200);
+    const d = json(res);
+    expect(d.status).toBe('open');
+    expect(d.resolvedBy).toBeUndefined();
+    expect(d.resolutionSummary).toBeUndefined();
+  });
+
+  it('rejects an outcomeMessageId from outside the thread and invalid statuses', async () => {
+    expect(
+      (await putDiscussion({ status: 'resolved', outcomeMessageId: 'dm-1-elsewhere' })).statusCode,
+    ).toBe(400);
+    expect((await putDiscussion({ status: 'closed' })).statusCode).toBe(400);
+  });
+
+  it('enforces membership and sprint scoping', async () => {
+    expect((await putDiscussion({ status: 'resolved' }, { sub: OUTSIDER_SUB })).statusCode).toBe(
+      403,
+    );
+    const other = await seedDefaultProject();
+    const res = await call('PUT', '/api/sprints/{sprintId}/discussions/{discussionId}', {
+      pathParameters: { sprintId: other.sprintId, discussionId: DISC },
+      body: { status: 'resolved' },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+});
+
+// =============================================================================
+// POST .../messages/{messageId}/redact — admin/owner moderation (plan §5/§7)
+// =============================================================================
+
+describe('POST .../redact', () => {
+  let sprintId;
+  const DISC = 'disc-redact';
+  const MSG = 'dm-1-redactme1';
+
+  const redact = (opts = {}) =>
+    call('POST', '/api/sprints/{sprintId}/discussions/{discussionId}/messages/{messageId}/redact', {
+      ...opts,
+      pathParameters: { sprintId, discussionId: DISC, messageId: MSG, ...opts.pathParameters },
+    });
+
+  beforeEach(async () => {
+    ({ sprintId } = await seedDefaultProject());
+    await seedDiscussion(sprintId, DISC);
+    await seedMessage(DISC, sprintId, {
+      id: MSG,
+      content: 'the secret password is hunter2',
+      createdAt: '2025-12-01T00:00:00.000Z',
+    });
+  });
+
+  it('admin redact PURGES the content, preserves the audit, bumps updated_at, broadcasts', async () => {
+    vi.stubEnv('CONNECTIONS_TABLE', CONNECTIONS_TABLE);
+    vi.stubEnv('WEBSOCKET_ENDPOINT', 'https://fake.execute-api.eu-west-1.amazonaws.com/ws');
+    connectionItems = [{ connectionId: 'conn-1', tokenExp: nowSec() + 300 }];
+
+    const res = await redact({ sub: ADMIN_SUB });
+    expect(res.statusCode).toBe(200);
+    const m = json(res);
+    expect(m.content).toBe('[redacted by admin-user@example.com]');
+    expect(m.redacted).toBe(true);
+    expect(m.redactedBy).toBe(ADMIN_SUB);
+    expect(m.updatedAt).toBe(NOW.toISOString());
+    expect(m.createdAt).toBe('2025-12-01T00:00:00.000Z');
+
+    // Original content is gone from Neptune.
+    const stored = await g.V().has('DiscussionMessage', 'id', MSG).values('content').toList();
+    expect(stored).toEqual(['[redacted by admin-user@example.com]']);
+
+    const payload = JSON.parse(apiMock.commandCalls(PostToConnectionCommand)[0].args[0].input.Data);
+    expect(payload).toMatchObject({
+      action: 'discussion.message.redacted',
+      discussionId: DISC,
+      messageId: MSG,
+      updatedAt: NOW.toISOString(),
+    });
+
+    const events = await g
+      .V()
+      .has('TimelineEvent', 'type', 'message_redacted')
+      .values('user_id')
+      .toList();
+    expect(events).toEqual([ADMIN_SUB]);
+  });
+
+  it('members cannot redact (403); non-members 403; unknown message 404', async () => {
+    expect((await redact({ sub: MEMBER_SUB })).statusCode).toBe(403);
+    expect((await redact({ sub: OUTSIDER_SUB })).statusCode).toBe(403);
+    expect(
+      (await redact({ sub: ADMIN_SUB, pathParameters: { messageId: 'dm-1-missing01' } }))
+        .statusCode,
+    ).toBe(404);
+  });
+
+  it('the redaction appears in the ?after change delta (updated_at bump)', async () => {
+    await redact({ sub: ADMIN_SUB });
+
+    const res = await listMessages(sprintId, DISC, {
+      after: `2025-12-01T00:00:00.000Z,${MSG}`,
+    });
+    const { messages } = json(res);
+    expect(messages.map((m) => m.id)).toEqual([MSG]);
+    expect(messages[0].redacted).toBe(true);
+  });
+});
+
+// =============================================================================
+// Read cursors + unread counts (plan §7, D4)
+// =============================================================================
+
+describe('read cursors and unread counts', () => {
+  let sprintId;
+  const DISC = 'disc-unread';
+  const t = (n) => `2025-12-0${n}T00:00:00.000Z`;
+
+  const putRead = (body, opts = {}) =>
+    call('PUT', '/api/sprints/{sprintId}/discussions/{discussionId}/read', {
+      pathParameters: { sprintId, discussionId: DISC },
+      body,
+      ...opts,
+    });
+
+  beforeEach(async () => {
+    ({ sprintId } = await seedDefaultProject());
+    await seedDiscussion(sprintId, DISC);
+    await seedMessage(DISC, sprintId, { id: 'dm-1-aaaaaaaa', content: 'm1', createdAt: t(1) });
+    await seedMessage(DISC, sprintId, { id: 'dm-2-aaaaaaaa', content: 'm2a', createdAt: t(2) });
+    await seedMessage(DISC, sprintId, { id: 'dm-2-bbbbbbbb', content: 'm2b', createdAt: t(2) });
+    await seedMessage(DISC, sprintId, { id: 'dm-3-aaaaaaaa', content: 'm3', createdAt: t(3) });
+  });
+
+  it('everything is unread without a cursor', async () => {
+    const list = json(await listDiscussions(sprintId));
+    expect(list.find((d) => d.id === DISC).unreadCount).toBe(4);
+  });
+
+  it('PUT /read upserts the composite cursor; tie-breaks on id at the same timestamp', async () => {
+    // Cursor at (t2, dm-2-aaaaaaaa): dm-2-bbbbbbbb (same ts, higher id) and
+    // dm-3 are unread.
+    const res = await putRead({ lastReadAt: t(2), lastReadMessageId: 'dm-2-aaaaaaaa' });
+    expect(res.statusCode).toBe(200);
+
+    const list = json(await listDiscussions(sprintId));
+    expect(list.find((d) => d.id === DISC).unreadCount).toBe(2);
+
+    // Advance to the newest message → zero unread.
+    await putRead({ lastReadAt: t(3), lastReadMessageId: 'dm-3-aaaaaaaa' });
+    const updated = json(await listDiscussions(sprintId));
+    expect(updated.find((d) => d.id === DISC).unreadCount).toBe(0);
+  });
+
+  it('cursors are per-user', async () => {
+    await putRead({ lastReadAt: t(3), lastReadMessageId: 'dm-3-aaaaaaaa' });
+
+    const admin = json(await listDiscussions(sprintId, { sub: ADMIN_SUB }));
+    expect(admin.find((d) => d.id === DISC).unreadCount).toBe(4);
+  });
+
+  it('posting a message auto-advances the author cursor', async () => {
+    await postMessage(sprintId, DISC, { id: 'dm-4-aaaaaaaa', content: 'm4' });
+
+    const list = json(await listDiscussions(sprintId));
+    // Cursor at the new message → older seeded messages stay unread? No:
+    // the cursor is (createdAt of m4, m4) which is NEWER than everything.
+    expect(list.find((d) => d.id === DISC).unreadCount).toBe(0);
+  });
+
+  it('validates body and enforces membership', async () => {
+    expect((await putRead({ lastReadAt: t(1) })).statusCode).toBe(400);
+    expect(
+      (
+        await putRead(
+          { lastReadAt: t(1), lastReadMessageId: 'dm-1-aaaaaaaa' },
+          { sub: OUTSIDER_SUB },
+        )
+      ).statusCode,
+    ).toBe(403);
+  });
+});
+
+// =============================================================================
+// GET /discussions/search — bounded sprint-scoped search (plan §7)
+// =============================================================================
+
+describe('GET .../discussions/search', () => {
+  let sprintId;
+
+  const search = (query, opts = {}) =>
+    call('GET', '/api/sprints/{sprintId}/discussions/search', {
+      pathParameters: { sprintId },
+      query,
+      ...opts,
+    });
+
+  beforeEach(async () => {
+    ({ sprintId } = await seedDefaultProject());
+    await seedDiscussion(sprintId, 'disc-db', { entityType: 'sprint' });
+    await g
+      .V()
+      .has('Discussion', 'id', 'disc-db')
+      .property(gremlin.process.cardinality.single, 'entity_title', 'Database selection')
+      .next();
+    await seedMessage('disc-db', sprintId, {
+      id: 'dm-1-aaaaaaaa',
+      content: 'I vote for PostgreSQL',
+      authorId: MEMBER_SUB,
+      createdAt: '2025-12-01T00:00:00.000Z',
+    });
+    await seedMessage('disc-db', sprintId, {
+      id: 'dm-2-aaaaaaaa',
+      content: 'MySQL is fine too',
+      authorId: ADMIN_SUB,
+      createdAt: '2025-12-02T00:00:00.000Z',
+    });
+  });
+
+  it('matches message content and returns the thread context', async () => {
+    const res = await search({ q: 'PostgreSQL' });
+    expect(res.statusCode).toBe(200);
+    const { results } = json(res);
+    expect(results).toHaveLength(1);
+    expect(results[0].discussion.id).toBe('disc-db');
+    expect(results[0].message.id).toBe('dm-1-aaaaaaaa');
+  });
+
+  it('matches the denormalized entity title (thread-level hit, no message)', async () => {
+    const { results } = json(await search({ q: 'Database sel' }));
+    expect(results).toHaveLength(1);
+    expect(results[0].discussion.id).toBe('disc-db');
+    expect(results[0].message).toBeUndefined();
+  });
+
+  it('applies author / status / entityType filters', async () => {
+    expect(json(await search({ q: 'MySQL', author: ADMIN_SUB })).results).toHaveLength(1);
+    expect(json(await search({ q: 'MySQL', author: MEMBER_SUB })).results).toHaveLength(0);
+    expect(json(await search({ q: 'PostgreSQL', status: 'resolved' })).results).toHaveLength(0);
+    expect(json(await search({ q: 'PostgreSQL', entityType: 'question' })).results).toHaveLength(0);
+    expect(json(await search({ q: 'PostgreSQL', entityType: 'sprint' })).results).toHaveLength(1);
+  });
+
+  it('enforces bounds: q ≥ 3 chars, limit ≤ 25, valid filter values', async () => {
+    expect((await search({ q: 'ab' })).statusCode).toBe(400);
+    expect((await search({ q: 'PostgreSQL', limit: '999' })).statusCode).toBe(200);
+    expect((await search({ q: 'PostgreSQL', status: 'weird' })).statusCode).toBe(400);
+    expect((await search({ q: 'PostgreSQL', entityType: 'weird' })).statusCode).toBe(400);
+  });
+
+  it('is membership-gated', async () => {
+    expect((await search({ q: 'PostgreSQL' }, { sub: OUTSIDER_SUB })).statusCode).toBe(403);
+  });
+});
+
+// =============================================================================
+// Mention notifications (plan §6/§7, D7)
+// =============================================================================
+
+describe('mention notifications', () => {
+  it('notifies each mentioned user on their live connections, excluding self-mentions and expired tokens', async () => {
+    vi.stubEnv('CONNECTIONS_TABLE', CONNECTIONS_TABLE);
+    vi.stubEnv('WEBSOCKET_ENDPOINT', 'https://fake.execute-api.eu-west-1.amazonaws.com/ws');
+    const { sprintId } = await seedDefaultProject();
+    await seedDiscussion(sprintId, 'disc-mention');
+    connectionItems = [
+      { connectionId: 'conn-admin-live', userId: ADMIN_SUB, tokenExp: nowSec() + 300 },
+      { connectionId: 'conn-admin-expired', userId: ADMIN_SUB, tokenExp: nowSec() - 10 },
+      { connectionId: 'conn-member', userId: MEMBER_SUB, tokenExp: nowSec() + 300 },
+    ];
+
+    const res = await postMessage(sprintId, 'disc-mention', {
+      id: 'dm-1-mention01',
+      content: 'ping @admin and @me',
+      mentions: [ADMIN_SUB, MEMBER_SUB],
+    });
+    expect(res.statusCode).toBe(201);
+
+    const notificationCalls = apiMock
+      .commandCalls(PostToConnectionCommand)
+      .map((c) => ({
+        connectionId: c.args[0].input.ConnectionId,
+        payload: JSON.parse(c.args[0].input.Data),
+      }))
+      .filter((c) => c.payload.type === 'discussion.mention');
+
+    // Only the admin's LIVE connection — not the expired one, and no
+    // self-mention notification for the author.
+    expect(notificationCalls.map((c) => c.connectionId)).toEqual(['conn-admin-live']);
+    expect(notificationCalls[0].payload).toMatchObject({
+      action: 'notification',
+      type: 'discussion.mention',
+      discussionId: 'disc-mention',
+      messageId: 'dm-1-mention01',
+      excerpt: 'ping @admin and @me',
     });
   });
 });

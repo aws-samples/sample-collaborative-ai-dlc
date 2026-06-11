@@ -800,6 +800,27 @@ resource "aws_api_gateway_resource" "discussion_messages" {
   parent_id   = aws_api_gateway_resource.discussion.id
   path_part   = "messages"
 }
+resource "aws_api_gateway_resource" "discussion_message" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.discussion_messages.id
+  path_part   = "{messageId}"
+}
+resource "aws_api_gateway_resource" "discussion_message_redact" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.discussion_message.id
+  path_part   = "redact"
+}
+resource "aws_api_gateway_resource" "discussion_read" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.discussion.id
+  path_part   = "read"
+}
+# Static sibling of {discussionId} — API Gateway resolves static parts first.
+resource "aws_api_gateway_resource" "discussions_search" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.discussions.id
+  path_part   = "search"
+}
 
 # =============================================================================
 # Helper locals for sprint-scoped CRUD pattern
@@ -1121,6 +1142,21 @@ locals {
       method   = "POST"
       params   = { "method.request.path.sprintId" = true }
     }
+    discussions_search_get = {
+      resource = "discussions_search"
+      method   = "GET"
+      params   = { "method.request.path.sprintId" = true }
+    }
+    discussion_put = {
+      resource = "discussion"
+      method   = "PUT"
+      params   = { "method.request.path.sprintId" = true, "method.request.path.discussionId" = true }
+    }
+    discussion_read_put = {
+      resource = "discussion_read"
+      method   = "PUT"
+      params   = { "method.request.path.sprintId" = true, "method.request.path.discussionId" = true }
+    }
     discussion_messages_get = {
       resource = "discussion_messages"
       method   = "GET"
@@ -1131,11 +1167,23 @@ locals {
       method   = "POST"
       params   = { "method.request.path.sprintId" = true, "method.request.path.discussionId" = true }
     }
+    discussion_message_redact_post = {
+      resource = "discussion_message_redact"
+      method   = "POST"
+      params = {
+        "method.request.path.sprintId"     = true,
+        "method.request.path.discussionId" = true,
+        "method.request.path.messageId"    = true,
+      }
+    }
   }
   discussion_resource_ids = {
-    discussions         = aws_api_gateway_resource.discussions.id
-    discussion          = aws_api_gateway_resource.discussion.id
-    discussion_messages = aws_api_gateway_resource.discussion_messages.id
+    discussions               = aws_api_gateway_resource.discussions.id
+    discussions_search        = aws_api_gateway_resource.discussions_search.id
+    discussion                = aws_api_gateway_resource.discussion.id
+    discussion_read           = aws_api_gateway_resource.discussion_read.id
+    discussion_messages       = aws_api_gateway_resource.discussion_messages.id
+    discussion_message_redact = aws_api_gateway_resource.discussion_message_redact.id
   }
 }
 
@@ -1342,6 +1390,24 @@ module "cors_discussion_messages" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.discussion_messages.id
+}
+
+module "cors_discussion_message_redact" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.discussion_message_redact.id
+}
+
+module "cors_discussion_read" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.discussion_read.id
+}
+
+module "cors_discussions_search" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.discussions_search.id
 }
 
 # =============================================================================

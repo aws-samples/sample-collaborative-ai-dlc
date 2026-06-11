@@ -22,11 +22,17 @@ import { signRealtimeToken, isTokenLive } from '../shared/realtime-token.js';
 // lambda/discussions — sprint-scoped discussion threads (discussions plan).
 //
 // PR 1: realtime scope-token issuance (plan §4a).
-// PR 2 (this revision): graph data model + core REST (plan §5/§6/§7) —
-//   GET  /sprints/{sprintId}/discussions                          list + messageCount
+// PR 2: graph data model + core REST (plan §5/§6/§7) —
+//   GET  /sprints/{sprintId}/discussions                          list + messageCount + unreadCount
 //   POST /sprints/{sprintId}/discussions                          atomic get-or-create (creation guard)
 //   GET  /sprints/{sprintId}/discussions/{discussionId}/messages  keyset pagination + change delta
 //   POST /sprints/{sprintId}/discussions/{discussionId}/messages  append via stateful message guard
+// PR 3 (this revision): thread features (plan §7) —
+//   PUT  /sprints/{sprintId}/discussions/{discussionId}           resolve / reopen + summary + outcome
+//   POST .../messages/{messageId}/redact                          admin/owner moderation
+//   PUT  .../discussions/{discussionId}/read                      composite read cursor (D4)
+//   GET  /sprints/{sprintId}/discussions/search                   bounded sprint-scoped search
+//   + per-user mention notifications and author read-cursor auto-advance on append
 //
 // Durability model (D8): REST persists to Neptune (source of truth), then THIS
 // lambda fans out the full payload over the app WebSocket. Yjs is a live-sync
@@ -38,7 +44,7 @@ import { signRealtimeToken, isTokenLive } from '../shared/realtime-token.js';
 // never trusted — every condition that cares about expiry checks
 // `expiresAt < :now` explicitly.
 
-const { cardinality, order } = gremlin.process;
+const { cardinality, order, TextP } = gremlin.process;
 const __ = gremlin.process.statics;
 
 // ─── Constants ───
@@ -71,6 +77,11 @@ const MESSAGE_ID_RE = /^dm-[a-z0-9-]{8,64}$/;
 const MAX_CONTENT_LENGTH = 10_000;
 const DEFAULT_PAGE_SIZE = 100;
 const MAX_PAGE_SIZE = 200;
+const UNREAD_CAP = 99;
+const SEARCH_MIN_QUERY = 3;
+const SEARCH_MAX_LIMIT = 25;
+const REDACTION_PLACEHOLDER = (name) => `[redacted by ${name}]`;
+const MENTION_EXCERPT_LENGTH = 140;
 
 const CREATION_GUARD_SECONDS = 30;
 const MESSAGE_GUARD_PENDING_SECONDS = 120;
@@ -118,6 +129,7 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient();
 
 const locksTable = () => process.env.LOCKS_TABLE;
+const readStateTable = () => process.env.READ_STATE_TABLE;
 
 // ─── Helpers ───
 
@@ -226,6 +238,7 @@ const fetchProjectIdForSprint = async (g, sprintId) => {
 // Returns { res } with an error response, or { projectId, role }.
 const authorizeSprint = async (sprintId, sub, res) => {
   if (!sub) return { res: res(401, { error: 'Unauthorized' }) };
+  if (!sprintId) return { res: res(404, { error: 'Sprint not found' }) };
   const projectId = await query((g) => fetchProjectIdForSprint(g, sprintId));
   if (!projectId) return { res: res(404, { error: 'Sprint not found' }) };
   const role = await query((g) => fetchMembershipRole(g, projectId, sub));
@@ -265,6 +278,85 @@ const broadcastToSprint = async (sprintId, payload) => {
     // change-delta reconciliation backstop (plan §6).
     console.error('WS fanout failed:', err.message);
   }
+};
+
+// Per-user delivery for mention notifications (D7: online, in-app only) —
+// every live connection of the mentioned user, via UserIdIndex.
+const broadcastToUser = async (userId, payload) => {
+  const connectionsTable = process.env.CONNECTIONS_TABLE;
+  const websocketEndpoint = process.env.WEBSOCKET_ENDPOINT;
+  if (!connectionsTable || !websocketEndpoint) return;
+  try {
+    const result = await ddb.send(
+      new QueryCommand({
+        TableName: connectionsTable,
+        IndexName: 'UserIdIndex',
+        KeyConditionExpression: 'userId = :uid',
+        ExpressionAttributeValues: { ':uid': userId },
+      }),
+    );
+    const api = new ApiGatewayManagementApiClient({ endpoint: websocketEndpoint });
+    const data = JSON.stringify(payload);
+    await Promise.all(
+      (result.Items || [])
+        // Never target connections whose scope token has expired (plan §4a).
+        .filter((item) => isTokenLive(item.tokenExp))
+        .map((item) =>
+          api
+            .send(new PostToConnectionCommand({ ConnectionId: item.connectionId, Data: data }))
+            .catch(() => {}),
+        ),
+    );
+  } catch (err) {
+    console.error('Mention notification failed:', err.message);
+  }
+};
+
+// ─── Read cursors (plan §7, D4) ───
+//
+// Composite cursor (lastReadAt, lastReadMessageId) matching the display order.
+// WHEN it advances is a UI concern (visibility-gated) — the backend only
+// stores and counts.
+
+const upsertReadCursor = async (userId, discussionId, sprintId, lastReadAt, lastReadMessageId) => {
+  if (!readStateTable()) return;
+  await ddb.send(
+    new PutCommand({
+      TableName: readStateTable(),
+      Item: { userId, discussionId, sprintId, lastReadAt, lastReadMessageId },
+    }),
+  );
+};
+
+const fetchReadCursors = async (userId, sprintId) => {
+  if (!readStateTable()) return new Map();
+  const result = await ddb.send(
+    new QueryCommand({
+      TableName: readStateTable(),
+      KeyConditionExpression: 'userId = :uid',
+      FilterExpression: 'sprintId = :sid',
+      ExpressionAttributeValues: { ':uid': userId, ':sid': sprintId },
+    }),
+  );
+  return new Map((result.Items || []).map((item) => [item.discussionId, item]));
+};
+
+// unread = count(created_at > lastReadAt) + count(created_at == lastReadAt
+// && id > lastReadMessageId) — one composite comparison (plan §7). No
+// cursor → everything is unread. Capped for badge display.
+const countUnread = (messageKeys, cursor) => {
+  let unread = 0;
+  for (const key of messageKeys) {
+    if (
+      !cursor ||
+      key.createdAt > cursor.lastReadAt ||
+      (key.createdAt === cursor.lastReadAt && key.id > cursor.lastReadMessageId)
+    ) {
+      unread++;
+      if (unread >= UNREAD_CAP) return UNREAD_CAP;
+    }
+  }
+  return unread;
 };
 
 // ─── Realtime token issuance (PR 1, plan §4a) ───
@@ -314,7 +406,8 @@ const issueRealtimeToken = async (event, res) => {
 
 const listDiscussions = async (event, res) => {
   const { sprintId } = event.pathParameters || {};
-  const auth = await authorizeSprint(sprintId, getCaller(event).sub, res);
+  const caller = getCaller(event);
+  const auth = await authorizeSprint(sprintId, caller.sub, res);
   if (auth.res) return auth.res;
 
   const rows = await query((g) =>
@@ -323,15 +416,27 @@ const listDiscussions = async (event, res) => {
       .has('Sprint', 'id', sprintId)
       .out('HAS_DISCUSSION')
       .hasLabel('Discussion')
-      .project('props', 'messageCount')
+      .project('props', 'messageCount', 'messageKeys')
       .by(__.valueMap())
       // message_count is computed, never stored — racy (plan §5).
       .by(__.out('HAS_MESSAGE').count())
+      // (created_at, id) keys for the per-caller unread computation (D4).
+      .by(__.out('HAS_MESSAGE').project('createdAt', 'id').by('created_at').by('id').fold())
       .toList(),
   );
 
+  const cursors = await fetchReadCursors(caller.sub, sprintId);
+
   const discussions = rows
-    .map((r) => mapDiscussion(r.get('props'), r.get('messageCount')))
+    .map((r) => {
+      const d = mapDiscussion(r.get('props'), r.get('messageCount'));
+      const keys = (r.get('messageKeys') || []).map((k) => ({
+        createdAt: k instanceof Map ? k.get('createdAt') : k.createdAt,
+        id: k instanceof Map ? k.get('id') : k.id,
+      }));
+      d.unreadCount = countUnread(keys, cursors.get(d.id));
+      return d;
+    })
     .sort((a, b) => {
       if (a.lastMessageAt !== b.lastMessageAt) return a.lastMessageAt < b.lastMessageAt ? 1 : -1;
       return a.id < b.id ? 1 : -1;
@@ -812,6 +917,34 @@ const postMessage = async (event, res) => {
         message,
       });
 
+      // Per-user mention notifications (D7: online, in-app only; self-mention
+      // makes no sense to notify).
+      const excerpt =
+        content.length > MENTION_EXCERPT_LENGTH
+          ? `${content.slice(0, MENTION_EXCERPT_LENGTH)}…`
+          : content;
+      await Promise.all(
+        mentions
+          .filter((userId) => userId !== caller.sub)
+          .map((userId) =>
+            broadcastToUser(userId, {
+              action: 'notification',
+              type: 'discussion.mention',
+              sprintId,
+              discussionId,
+              messageId,
+              byName: caller.displayName,
+              excerpt,
+            }),
+          ),
+      );
+
+      // Auto-advance the author's read cursor — your own message is read
+      // (plan §7). Best-effort: a failure only leaves a stale badge.
+      await upsertReadCursor(caller.sub, discussionId, sprintId, createdAt, messageId).catch(
+        (err) => console.error('Read-cursor auto-advance failed:', err.message),
+      );
+
       return res(201, message);
     }
 
@@ -881,6 +1014,272 @@ const completeGuard = async (guardKey, ownerToken) => {
   }
 };
 
+// ─── Discussion resolve / reopen (plan §5/§7) ───
+
+const updateDiscussion = async (event, res) => {
+  const { sprintId, discussionId } = event.pathParameters || {};
+  const caller = getCaller(event);
+  const auth = await authorizeSprint(sprintId, caller.sub, res);
+  if (auth.res) return auth.res;
+
+  const discussion = await query((g) => fetchDiscussionInSprint(g, sprintId, discussionId));
+  if (!discussion) return res(404, { error: 'Discussion not found' });
+
+  let body;
+  try {
+    body = JSON.parse(event.body || '{}');
+  } catch {
+    return res(400, { error: 'Invalid JSON body' });
+  }
+
+  const status = body.status;
+  if (status !== 'open' && status !== 'resolved') {
+    return res(400, { error: 'status must be "open" or "resolved"' });
+  }
+  const resolutionSummary =
+    typeof body.resolutionSummary === 'string' ? body.resolutionSummary.slice(0, 2000) : '';
+  const outcomeMessageId = typeof body.outcomeMessageId === 'string' ? body.outcomeMessageId : '';
+
+  if (outcomeMessageId) {
+    const outcome = await query((g) => fetchMessageInDiscussion(g, discussionId, outcomeMessageId));
+    if (!outcome) return res(400, { error: 'outcomeMessageId is not a message of this thread' });
+  }
+
+  const now = new Date().toISOString();
+  // Resolve sets the audit fields; reopen clears them — `resolved_by*` is
+  // shown in the UI (member-level resolve is audited, D11).
+  const resolved = status === 'resolved';
+  await query((g) =>
+    g
+      .V()
+      .has('Discussion', 'id', discussionId)
+      .has('sprint_id', sprintId)
+      .property(cardinality.single, 'status', status)
+      .property(cardinality.single, 'resolved_by', resolved ? caller.sub : '')
+      .property(cardinality.single, 'resolved_by_name', resolved ? caller.displayName : '')
+      .property(cardinality.single, 'resolved_at', resolved ? now : '')
+      .property(cardinality.single, 'resolution_summary', resolved ? resolutionSummary : '')
+      .property(cardinality.single, 'outcome_message_id', resolved ? outcomeMessageId : '')
+      .next(),
+  );
+
+  if (resolved) {
+    await query((g) =>
+      g
+        .V()
+        .has('Sprint', 'id', sprintId)
+        .as('s')
+        .addV('TimelineEvent')
+        .property('id', randomUUID())
+        .property('type', 'discussion_resolved')
+        .property('title', `Discussion resolved on ${getVal(discussion, 'entity_type')}`)
+        .property('detail', resolutionSummary)
+        .property('user_id', caller.sub)
+        .property('user_name', caller.displayName)
+        .property('timestamp', now)
+        .property('sprint_id', sprintId)
+        .property('question_id', '')
+        .as('e')
+        .addE('HAS_TIMELINE_EVENT')
+        .from_('s')
+        .to('e')
+        .next(),
+    );
+  }
+
+  await broadcastToSprint(sprintId, {
+    action: 'discussion.updated',
+    sprintId,
+    discussionId,
+    status,
+    resolutionSummary: resolved ? resolutionSummary : undefined,
+    outcomeMessageId: resolved && outcomeMessageId ? outcomeMessageId : undefined,
+  });
+
+  const updated = await query((g) => fetchDiscussionInSprint(g, sprintId, discussionId));
+  return res(200, mapDiscussion(updated));
+};
+
+// ─── Message redaction (plan §5/§7 — admin/owner only) ───
+
+const redactMessage = async (event, res) => {
+  const { sprintId, discussionId, messageId } = event.pathParameters || {};
+  const caller = getCaller(event);
+  const auth = await authorizeSprint(sprintId, caller.sub, res);
+  if (auth.res) return auth.res;
+  if (auth.role !== 'admin' && auth.role !== 'owner') {
+    return res(403, { error: 'Only project admins or owners can redact messages' });
+  }
+
+  const discussion = await query((g) => fetchDiscussionInSprint(g, sprintId, discussionId));
+  if (!discussion) return res(404, { error: 'Discussion not found' });
+
+  const vertex = await query((g) => fetchMessageInDiscussion(g, discussionId, messageId));
+  if (!vertex) return res(404, { error: 'Message not found' });
+
+  const now = new Date().toISOString();
+  const replacement = REDACTION_PLACEHOLDER(caller.displayName);
+
+  // The original content is REPLACED (purged from Neptune); the audit trail
+  // is preserved. `updated_at` is bumped so the redaction propagates through
+  // the (updatedAt, id) change delta to clients that missed the WS event
+  // (plan §5/§6).
+  await query((g) =>
+    g
+      .V()
+      .has('Discussion', 'id', discussionId)
+      .out('HAS_MESSAGE')
+      .has('DiscussionMessage', 'id', messageId)
+      .property(cardinality.single, 'content', replacement)
+      .property(cardinality.single, 'redacted', 'true')
+      .property(cardinality.single, 'redacted_by', caller.sub)
+      .property(cardinality.single, 'redacted_by_name', caller.displayName)
+      .property(cardinality.single, 'redacted_at', now)
+      .property(cardinality.single, 'updated_at', now)
+      .next(),
+  );
+
+  await query((g) =>
+    g
+      .V()
+      .has('Sprint', 'id', sprintId)
+      .as('s')
+      .addV('TimelineEvent')
+      .property('id', randomUUID())
+      .property('type', 'message_redacted')
+      .property('title', 'Discussion message redacted')
+      .property('detail', '')
+      .property('user_id', caller.sub)
+      .property('user_name', caller.displayName)
+      .property('timestamp', now)
+      .property('sprint_id', sprintId)
+      .property('question_id', '')
+      .as('e')
+      .addE('HAS_TIMELINE_EVENT')
+      .from_('s')
+      .to('e')
+      .next(),
+  );
+
+  await broadcastToSprint(sprintId, {
+    action: 'discussion.message.redacted',
+    sprintId,
+    discussionId,
+    messageId,
+    content: replacement,
+    redactedBy: caller.displayName,
+    updatedAt: now,
+  });
+
+  const updated = await query((g) => fetchMessageInDiscussion(g, discussionId, messageId));
+  return res(200, mapMessage(updated));
+};
+
+// ─── Read cursor upsert (plan §7, D4) ───
+
+const markRead = async (event, res) => {
+  const { sprintId, discussionId } = event.pathParameters || {};
+  const caller = getCaller(event);
+  const auth = await authorizeSprint(sprintId, caller.sub, res);
+  if (auth.res) return auth.res;
+
+  const discussion = await query((g) => fetchDiscussionInSprint(g, sprintId, discussionId));
+  if (!discussion) return res(404, { error: 'Discussion not found' });
+
+  let body;
+  try {
+    body = JSON.parse(event.body || '{}');
+  } catch {
+    return res(400, { error: 'Invalid JSON body' });
+  }
+  const lastReadAt = typeof body.lastReadAt === 'string' ? body.lastReadAt : '';
+  const lastReadMessageId =
+    typeof body.lastReadMessageId === 'string' ? body.lastReadMessageId : '';
+  if (!lastReadAt || !lastReadMessageId) {
+    return res(400, { error: 'lastReadAt and lastReadMessageId are required' });
+  }
+
+  await upsertReadCursor(caller.sub, discussionId, sprintId, lastReadAt, lastReadMessageId);
+  return res(200, { lastReadAt, lastReadMessageId });
+};
+
+// ─── Sprint-scoped search (plan §7 — bounded; OpenSearch is the v2 escape hatch) ───
+
+const searchDiscussions = async (event, res) => {
+  const { sprintId } = event.pathParameters || {};
+  const auth = await authorizeSprint(sprintId, getCaller(event).sub, res);
+  if (auth.res) return auth.res;
+
+  const params = event.queryStringParameters || {};
+  const q = (params.q || '').trim();
+  if (q.length < SEARCH_MIN_QUERY) {
+    return res(400, { error: `q must be at least ${SEARCH_MIN_QUERY} characters` });
+  }
+  let limit = Number(params.limit ?? SEARCH_MAX_LIMIT);
+  if (!Number.isFinite(limit) || limit < 1) limit = SEARCH_MAX_LIMIT;
+  limit = Math.min(limit, SEARCH_MAX_LIMIT);
+  const author = params.author || '';
+  const status = params.status || '';
+  const entityType = params.entityType || '';
+  if (status && status !== 'open' && status !== 'resolved') {
+    return res(400, { error: 'status must be "open" or "resolved"' });
+  }
+  if (entityType && !ENTITY_TYPES.includes(entityType)) {
+    return res(400, { error: 'Invalid entityType filter' });
+  }
+
+  // Message-content matches, each with its parent thread.
+  const messageRows = await query((g) => {
+    let t = g.V().has('Sprint', 'id', sprintId).out('HAS_DISCUSSION').hasLabel('Discussion');
+    if (status) t = t.has('status', status);
+    if (entityType) t = t.has('entity_type', entityType);
+    t = t.as('d').out('HAS_MESSAGE').has('content', TextP.containing(q));
+    if (author) t = t.has('author_id', author);
+    return t
+      .project('message', 'discussion')
+      .by(__.valueMap())
+      .by(__.select('d').valueMap())
+      .limit(limit)
+      .toList();
+  });
+
+  // Thread matches on the denormalized entity title (no author filter — the
+  // title has no author).
+  const threadRows = author
+    ? []
+    : await query((g) => {
+        let t = g
+          .V()
+          .has('Sprint', 'id', sprintId)
+          .out('HAS_DISCUSSION')
+          .hasLabel('Discussion')
+          .has('entity_title', TextP.containing(q));
+        if (status) t = t.has('status', status);
+        if (entityType) t = t.has('entity_type', entityType);
+        return t.valueMap().limit(limit).toList();
+      });
+
+  const results = [
+    ...messageRows.map((r) => ({
+      discussion: mapDiscussion(r.get('discussion')),
+      message: mapMessage(r.get('message')),
+    })),
+    ...threadRows.map((v) => ({ discussion: mapDiscussion(v) })),
+  ];
+
+  // Deduplicate thread-only hits whose thread already appears via a message
+  // hit, newest activity first, bounded.
+  const seenThreadOnly = new Set(results.filter((r) => r.message).map((r) => r.discussion.id));
+  const deduped = results.filter((r) => r.message || !seenThreadOnly.has(r.discussion.id));
+  deduped.sort((a, b) => {
+    const aTs = a.message?.createdAt || a.discussion.lastMessageAt;
+    const bTs = b.message?.createdAt || b.discussion.lastMessageAt;
+    return aTs < bTs ? 1 : -1;
+  });
+
+  return res(200, { results: deduped.slice(0, limit) });
+};
+
 // ─── Router ───
 
 export const handler = async (event) => {
@@ -894,6 +1293,9 @@ export const handler = async (event) => {
     if (method === 'POST' && path.endsWith('/realtime-token')) {
       return await issueRealtimeToken(event, res);
     }
+    if (method === 'GET' && path.endsWith('/discussions/search')) {
+      return await searchDiscussions(event, res);
+    }
     if (path.endsWith('/discussions')) {
       if (method === 'GET') return await listDiscussions(event, res);
       if (method === 'POST') return await getOrCreateDiscussion(event, res);
@@ -901,6 +1303,15 @@ export const handler = async (event) => {
     if (path.endsWith('/messages')) {
       if (method === 'GET') return await listMessages(event, res);
       if (method === 'POST') return await postMessage(event, res);
+    }
+    if (method === 'PUT' && path.endsWith('/read')) {
+      return await markRead(event, res);
+    }
+    if (method === 'POST' && path.endsWith('/redact')) {
+      return await redactMessage(event, res);
+    }
+    if (method === 'PUT' && path.endsWith('/{discussionId}')) {
+      return await updateDiscussion(event, res);
     }
 
     return res(404, { error: 'Not found' });
