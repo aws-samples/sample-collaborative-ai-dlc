@@ -20,6 +20,7 @@ import { extractAgentStartError, type AgentStartError } from '@/lib/agentStartEr
 import { Bot, GitBranch, Loader2, ArrowLeft, MessageCircleQuestion, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { questionsService, type StructuredAnswer } from '@/services/questions';
+import { realtimeService } from '@/services/realtime';
 
 type PageState = 'prompt' | 'running' | 'completed' | 'failed';
 
@@ -137,6 +138,9 @@ export default function AgentPage() {
   const handleAnswerQuestion = async (questionId: string, answer: StructuredAnswer) => {
     try {
       await agentStatus.answerQuestion(questionId, answer);
+      realtimeService.send('broadcastToDocument', {
+        data: { action: 'question.answered', sprintId, questionId },
+      });
       timelineEventsService
         .create(sprintId, {
           type: 'question_answered',
@@ -145,6 +149,9 @@ export default function AgentPage() {
           questionId,
         })
         .catch(() => {});
+      // The answer endpoint also syncs the Neptune Question vertex — reload so
+      // the pending card clears and the Q&A history picks up the responder.
+      await reload();
     } catch (err) {
       console.error('Failed to answer question:', err);
     }

@@ -685,17 +685,16 @@ module "questions_lambda" {
 
   function_name = "${var.project_name}-questions-${var.environment}"
   handler       = "index.handler"
-  runtime       = "nodejs18.x"
+  runtime       = "nodejs24.x"
   timeout       = 30
 
   source_path = [
     {
-      path             = "${path.module}/../../../../lambda/questions"
-      npm_requirements = true
-    },
-    {
-      path          = "${path.module}/../../../../lambda/shared"
-      prefix_in_zip = "shared"
+      path = "${path.module}/../../../../lambda/questions"
+      commands = [
+        "cd ../.. && npm run build -w questions",
+        ":zip lambda/questions/.build",
+      ]
     }
   ]
 

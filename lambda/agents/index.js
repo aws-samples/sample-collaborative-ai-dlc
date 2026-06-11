@@ -1197,6 +1197,23 @@ exports.handler = async (event) => {
           },
         }),
       );
+      // Best-effort sync to the Neptune Question vertex: the sprint pages and
+      // Q&A history render questions from Neptune, so without this the question
+      // would stay "pending" there and the responder would not be traceable.
+      try {
+        await withNeptune(async (g) => {
+          await g
+            .V()
+            .has('Question', 'id', questionId)
+            .property(cardinality.single, 'structured_answer', structuredAnswerJson)
+            .property(cardinality.single, 'answered_by', userId)
+            .property(cardinality.single, 'answered_by_name', userName)
+            .property(cardinality.single, 'answered_at', new Date().toISOString())
+            .next();
+        });
+      } catch (e) {
+        console.error('Neptune question sync failed:', e.message);
+      }
       return response(200, { success: true });
     }
 
