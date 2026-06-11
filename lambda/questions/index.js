@@ -4,6 +4,7 @@ import { create } from 'neptune-lambda-client';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { buildResponse } from '../shared/response.js';
+import { broadcastToSprintChannel } from '../shared/ws-fanout.js';
 
 const { cardinality } = gremlin.process;
 
@@ -183,6 +184,14 @@ export const handler = async (event) => {
               )
               .catch((e) => console.error('DynamoDB sync failed:', e.message));
           }
+
+          // Server-origin reload hint (plan §4b, D10 end state): peers
+          // re-fetch the answered question. Replaces the client broadcast.
+          await broadcastToSprintChannel(sprintId, {
+            action: 'question.answered',
+            sprintId,
+            questionId,
+          });
         }
 
         // Save draft answer — persists collaborative draft WITHOUT triggering

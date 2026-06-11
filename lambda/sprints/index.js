@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { buildResponse } from '../shared/response.js';
+import { broadcastToSprintChannel } from '../shared/ws-fanout.js';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -353,6 +354,17 @@ export const handler = async (event) => {
         }
 
         const updated = await g.V().has('Sprint', 'id', sprintId).valueMap().next();
+
+        // Server-origin reload hint (plan §4b, D10 end state): peers re-fetch
+        // the sprint and navigate from the FETCHED phase — the payload
+        // deliberately carries no phase. Replaces the client broadcast.
+        if (data.phase) {
+          await broadcastToSprintChannel(sprintId, {
+            action: 'sprint.phaseChanged',
+            sprintId,
+          });
+        }
+
         return res(200, mapSprint(updated.value));
       }
 

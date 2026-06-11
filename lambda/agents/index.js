@@ -22,6 +22,7 @@ const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
 const { buildResponse } = require('./shared/response');
 const { resolveGitToken } = require('./shared/git-token');
 const { validateMcpServersJson } = require('./shared/mcp-validator');
+const { broadcastToSprintChannel } = require('./shared/ws-fanout');
 
 const ecs = new ECSClient({});
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -1267,6 +1268,17 @@ exports.handler = async (event) => {
       } catch (e) {
         console.error('Neptune question sync failed:', e.message);
       }
+
+      // Server-origin reload hint (plan §4b, D10 end state): peers re-fetch
+      // the answered question. Replaces the client broadcast.
+      if (question.Item.sprintId) {
+        await broadcastToSprintChannel(question.Item.sprintId, {
+          action: 'question.answered',
+          sprintId: question.Item.sprintId,
+          questionId,
+        });
+      }
+
       return response(200, { success: true });
     }
 

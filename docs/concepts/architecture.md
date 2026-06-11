@@ -83,6 +83,13 @@ The Yjs server is small: on every WebSocket upgrade it pulls the Cognito JWT fro
 
 This is why the Yjs server is on ECS rather than Lambda or API Gateway WebSocket: a CRDT relay needs persistent in-memory state shared across all clients editing the same document, which is incompatible with Lambda's stateless-per-invocation execution model. Internal ALB ingress is restricted to CloudFront's managed prefix list, so the server is not directly reachable from the internet.
 
+**Realtime doc-secret rotation runbook.** The HMAC secret behind the realtime scope tokens lives in SSM Parameter Store at `/{project}/{env}/realtime-doc-secret` and is read by three consumers: the discussions Lambda (issuer), the `ws-connection` Lambda, and the Yjs ECS task. To rotate it:
+
+1. Taint and re-apply the Terraform `random_password.realtime_doc_secret` (or write a new SecureString value directly).
+2. Force new ECS deployments of the Yjs service so the task re-reads the secret (`aws ecs update-service --force-new-deployment`).
+3. Publish a new version of the `ws-connection` and `discussions` Lambdas (any redeploy works — the secret is cached per container and re-fetched on cold start).
+4. Expect up to ten minutes of reconnect churn: tokens signed with the old secret fail verification, clients transparently fetch fresh ones. No data is at risk — the secret only gates realtime channel membership; durable writes are independently authorized in the REST layer.
+
 **Lambda functions.** All business logic lives in Lambda. CRUD handlers map one-to-one onto graph artifacts and write to Neptune over Gremlin with SigV4. The GitHub and tracker handlers manage OAuth flows and read repository data on behalf of users. The agent control plane (`agents`, `submit-question`, `questions`) dispatches work to the agent runtime and brokers human-in-the-loop questions. The WebSocket lifecycle Lambdas (`authorizer`, `connection`, `message`) authorize, register, and route messages on the application WebSocket API.
 
 **Data stores.** Neptune holds the structured graph: requirements, user stories, tasks, code files, reviews, agent runs, discussion threads and their messages, and the relationships between them. DynamoDB holds operational state — WebSocket connections, agent questions and outputs, the agent-worker pool, sessions, notifications, Yjs document metadata, discussion guards/locks and per-user read cursors, and per-user OAuth connections. S3 holds the SPA bundle (frontend bucket), artifact bodies (artifacts bucket), agent code snapshots (code-snapshots bucket), and access logs.

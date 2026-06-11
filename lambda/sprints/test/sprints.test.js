@@ -3,6 +3,12 @@ import { randomUUID } from 'node:crypto';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 
+// The fanout helper is mocked at module level — its internals are covered by
+// its consumers' own suites; here we only assert the sprints lambda EMITS the
+// server-origin phase-change hint (discussions plan §4b, D10).
+vi.mock('../../shared/ws-fanout.js', () => ({ broadcastToSprintChannel: vi.fn() }));
+const { broadcastToSprintChannel } = await import('../../shared/ws-fanout.js');
+
 const NOW = new Date('2026-05-28T00:00:00.000Z');
 const PARTITION = `t-${randomUUID()}`;
 
@@ -34,6 +40,7 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
+  vi.mocked(broadcastToSprintChannel).mockClear();
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(NOW);
 });
@@ -243,5 +250,39 @@ describe('DELETE /sprints/:id — discussion cascade (discussions plan §5)', ()
       .values('id')
       .toList();
     expect(remaining).toEqual([]);
+  });
+});
+
+describe('server-origin sprint.phaseChanged fanout (discussions plan §4b, D10)', () => {
+  it('emits the payload-blind reload hint on a phase update', async () => {
+    const projectId = await seedProject();
+    const sprintId = await seedLegacySprint(projectId);
+
+    const res = await handler({
+      httpMethod: 'PUT',
+      pathParameters: { sprintId },
+      body: JSON.stringify({ phase: 'CONSTRUCTION' }),
+    });
+    expect(res.statusCode).toBe(200);
+
+    // The hint deliberately carries NO phase — handlers re-fetch and act on
+    // server state only (§4b payload-blind invariant).
+    expect(broadcastToSprintChannel).toHaveBeenCalledExactlyOnceWith(sprintId, {
+      action: 'sprint.phaseChanged',
+      sprintId,
+    });
+  });
+
+  it('does NOT emit on non-phase updates', async () => {
+    const projectId = await seedProject();
+    const sprintId = await seedLegacySprint(projectId);
+
+    const res = await handler({
+      httpMethod: 'PUT',
+      pathParameters: { sprintId },
+      body: JSON.stringify({ description: 'updated description' }),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(broadcastToSprintChannel).not.toHaveBeenCalled();
   });
 });

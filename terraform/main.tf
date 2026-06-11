@@ -258,6 +258,9 @@ module "api" {
   cloudfront_origin_secret          = module.frontend.cloudfront_origin_secret
   enable_cloudfront_origin_policy   = false
   api_gateway_account_id            = aws_api_gateway_account.main.id
+  # Server-origin event fanout (discussions plan §4b, D10)
+  connections_table_name       = module.dynamodb.connections_table_name
+  websocket_api_endpoint_https = replace(module.realtime.websocket_api_endpoint, "wss://", "https://")
 }
 
 # Real-time (WebSocket)

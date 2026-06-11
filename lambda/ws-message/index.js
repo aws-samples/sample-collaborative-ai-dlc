@@ -10,22 +10,16 @@ const getApiClient = () =>
   new ApiGatewayManagementApiClient({ endpoint: process.env.WEBSOCKET_ENDPOINT });
 
 // -----------------------------------------------------------------------------
-// Client-origin event allowlist (discussions plan §4b, D10).
+// Client-origin event allowlist (discussions plan §4b, D10 — END STATE).
 //
-// The frontend broadcasts exactly two event types today (grep-verified):
-//   question.answered    InceptionPage / ConstructionPage / ReviewPage / AgentPage
-//   sprint.phaseChanged  InceptionPage / ConstructionPage / ReviewPage
-//
-// Allowlisted client events must be pure reload/navigate HINTS: handlers
-// re-fetch from REST and never render or act on payload content (the
-// AppSidebar sprint.phaseChanged handler navigates from the re-fetched sprint
-// phase, never from the payload). Everything else — discussion.*, agent.*,
-// artifact.*, notification — is server-origin only and is dropped here.
-//
-// PR 6 migrates both events to server-origin emitters and shrinks this list
-// to empty.
+// All realtime events are now SERVER-ORIGIN: `question.answered` is emitted by
+// the questions lambda (PUT) and the agents lambda (answer endpoint), and
+// `sprint.phaseChanged` by the sprints lambda (phase update) — see
+// lambda/shared/ws-fanout.js. The frontend no longer client-broadcasts
+// anything, so the allowlist is EMPTY: every client `broadcastToDocument` is
+// dropped and logged. Connected clients cannot inject events at all.
 // -----------------------------------------------------------------------------
-const CLIENT_EVENT_ALLOWLIST = ['question.answered', 'sprint.phaseChanged'];
+const CLIENT_EVENT_ALLOWLIST = [];
 
 export const handler = async (event) => {
   const connectionId = event.requestContext.connectionId;
@@ -38,6 +32,15 @@ export const handler = async (event) => {
   // callers and allowed cross-document/event spoofing — removed (plan §4b).
   if (action !== 'broadcastToDocument') {
     console.warn(`Dropped non-allowlisted action "${action}" from ${connectionId}`);
+    return { statusCode: 200 };
+  }
+
+  // Allowlist check FIRST (it is empty — nothing client-origin passes), so
+  // dropped messages cost no DynamoDB work.
+  const message = body.data || {};
+  const eventType = message.action || message.type;
+  if (!CLIENT_EVENT_ALLOWLIST.includes(eventType)) {
+    console.warn(`Dropped non-allowlisted client event "${eventType}" from ${connectionId}`);
     return { statusCode: 200 };
   }
 
@@ -73,13 +76,6 @@ export const handler = async (event) => {
     console.warn(
       `documentId mismatch from ${connectionId}: body="${body.documentId}" registered="${registeredDocumentId}"`,
     );
-  }
-
-  const message = body.data || {};
-  const eventType = message.action || message.type;
-  if (!CLIENT_EVENT_ALLOWLIST.includes(eventType)) {
-    console.warn(`Dropped non-allowlisted client event "${eventType}" from ${connectionId}`);
-    return { statusCode: 200 };
   }
 
   await broadcastToDocument(registeredDocumentId, message, connectionId);

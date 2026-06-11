@@ -11,7 +11,6 @@ import { reviewsService } from '@/services/reviews';
 import { questionsService } from '@/services/questions';
 import { githubService, type PRComment } from '@/services/github';
 import { sprintGraphService, extractPrs, type PrInfo } from '@/services/sprintGraph';
-import { realtimeService } from '@/services/realtime';
 import { sprintsService } from '@/services/sprints';
 import { agentsService } from '@/services/agents';
 import { timelineEventsService } from '@/services/timelineEvents';
@@ -381,9 +380,8 @@ export default function ReviewPage() {
   const handleAnswerQuestion = async (questionId: string, answer: StructuredAnswer) => {
     try {
       await questionsService.update(sprintId, questionId, { structuredAnswer: answer });
-      realtimeService.send('broadcastToDocument', {
-        data: { action: 'question.answered', sprintId, questionId },
-      });
+      // question.answered is now emitted SERVER-SIDE by the questions/agents
+      // lambdas (plan §4b, D10 end state) — no client broadcast.
       timelineEventsService
         .create(sprintId, {
           type: 'question_answered',
@@ -975,12 +973,8 @@ export default function ReviewPage() {
                   });
                   if (review.status === 'PASSED') {
                     await sprintsService.update(projectId, sprintId, { phase: 'COMPLETED' });
-                    // Pure reload hint (§4b): peers re-fetch the sprint and
-                    // act on server state — never include the phase in the
-                    // payload.
-                    realtimeService.send('broadcastToDocument', {
-                      data: { action: 'sprint.phaseChanged', sprintId },
-                    });
+                    // sprint.phaseChanged is now emitted SERVER-SIDE by the
+                    // sprints lambda on the phase update (plan §4b, D10).
                     await reload();
                   }
                 }}

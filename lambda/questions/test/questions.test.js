@@ -13,6 +13,12 @@ const PARTITION = `t-${randomUUID()}`;
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 
+// The fanout helper is mocked at module level — its internals (tokenExp
+// filtering, best-effort sends) are covered by its consumers' own suites;
+// here we only assert the questions lambda EMITS the server-origin hint.
+vi.mock('../../shared/ws-fanout.js', () => ({ broadcastToSprintChannel: vi.fn() }));
+const { broadcastToSprintChannel } = await import('../../shared/ws-fanout.js');
+
 let handler;
 let close;
 let conn;
@@ -53,6 +59,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await g.V().drop().next();
   ddbMock.reset();
+  vi.mocked(broadcastToSprintChannel).mockClear();
   ddbMock.on(UpdateCommand).resolves({});
   vi.stubEnv('AGENT_QUESTIONS_TABLE', QUESTIONS_TABLE);
   // Pin Date so answered_at / Date.now() are assertable. Don't fake
@@ -311,5 +318,34 @@ describe('method routing', () => {
     const res = await handler({ httpMethod: 'PATCH', pathParameters: {} });
     expect(res.statusCode).toBe(405);
     expect(JSON.parse(res.body)).toEqual({ error: 'Method not allowed' });
+  });
+});
+
+describe('server-origin question.answered fanout (discussions plan §4b, D10)', () => {
+  it('emits the reload hint to the sprint channel after persisting the answer', async () => {
+    const sprintId = `s-${randomUUID()}`;
+    const questionId = `q-${randomUUID()}`;
+    await addSprint(sprintId);
+    await addQuestion(sprintId, questionId);
+
+    const res = await put(sprintId, questionId, { structuredAnswer: ANSWER }, CLAIMS);
+    expect(res.statusCode).toBe(200);
+
+    expect(broadcastToSprintChannel).toHaveBeenCalledExactlyOnceWith(sprintId, {
+      action: 'question.answered',
+      sprintId,
+      questionId,
+    });
+  });
+
+  it('does NOT emit on draft-answer saves (status stays pending)', async () => {
+    const sprintId = `s-${randomUUID()}`;
+    const questionId = `q-${randomUUID()}`;
+    await addSprint(sprintId);
+    await addQuestion(sprintId, questionId);
+
+    const res = await put(sprintId, questionId, { draftAnswer: ANSWER }, CLAIMS);
+    expect(res.statusCode).toBe(200);
+    expect(broadcastToSprintChannel).not.toHaveBeenCalled();
   });
 });

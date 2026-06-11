@@ -505,6 +505,9 @@ module "sprints_lambda" {
     NEPTUNE_ENDPOINT     = var.neptune_endpoint
     ENVIRONMENT          = var.environment
     CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    # Server-origin sprint.phaseChanged fanout (discussions plan §4b, D10)
+    CONNECTIONS_TABLE  = var.connections_table_name
+    WEBSOCKET_ENDPOINT = var.websocket_api_endpoint_https
   }
 }
 
@@ -708,6 +711,9 @@ module "questions_lambda" {
     ENVIRONMENT           = var.environment
     AGENT_QUESTIONS_TABLE = var.agent_questions_table_name
     CORS_ALLOWED_ORIGINS  = var.cors_allowed_origins
+    # Server-origin question.answered fanout (discussions plan §4b, D10)
+    CONNECTIONS_TABLE  = var.connections_table_name
+    WEBSOCKET_ENDPOINT = var.websocket_api_endpoint_https
   }
 }
 
@@ -1093,4 +1099,37 @@ module "migrate_tracker_fields_lambda" {
     NEPTUNE_ENDPOINT = var.neptune_endpoint
     ENVIRONMENT      = var.environment
   }
+}
+
+# -----------------------------------------------------------------------------
+# Server-origin realtime fanout (discussions plan §4b, D10 end state).
+#
+# question.answered (questions + agents lambdas) and sprint.phaseChanged
+# (sprints lambda) are emitted server-side via lambda/shared/ws-fanout.js —
+# the ws-message client allowlist is now EMPTY. These roles gain only the
+# narrow fan-out permissions (connections-index query + PostToConnection).
+# -----------------------------------------------------------------------------
+resource "aws_iam_role_policy" "realtime_fanout" {
+  for_each = {
+    neptune_reader      = aws_iam_role.neptune_reader.id    # sprints lambda
+    neptune_questions   = aws_iam_role.neptune_questions.id # questions lambda
+    agents_orchestrator = aws_iam_role.agents_orchestrator.id
+  }
+  name = "realtime-fanout"
+  role = each.value
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:Query"]
+        Resource = ["${var.connections_table_arn}/index/*"]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["execute-api:ManageConnections"]
+        Resource = "${var.websocket_execution_arn}/*"
+      }
+    ]
+  })
 }

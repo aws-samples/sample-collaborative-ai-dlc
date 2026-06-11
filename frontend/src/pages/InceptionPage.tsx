@@ -15,7 +15,6 @@ import { tasksService } from '@/services/tasks';
 import { generalInfoService } from '@/services/generalInfo';
 import type { StructuredAnswer } from '@/services/questions';
 import { questionsService } from '@/services/questions';
-import { realtimeService } from '@/services/realtime';
 import { timelineEventsService } from '@/services/timelineEvents';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -318,11 +317,8 @@ export default function InceptionPage() {
     setApprovingPhase(true);
     try {
       await sprintsService.update(projectId, sprintId, { phase: 'CONSTRUCTION' });
-      // Pure reload hint (§4b): peers re-fetch the sprint and act on server
-      // state — never include the phase in the payload.
-      realtimeService.send('broadcastToDocument', {
-        data: { action: 'sprint.phaseChanged', sprintId },
-      });
+      // sprint.phaseChanged is now emitted SERVER-SIDE by the sprints lambda
+      // on the phase update (plan §4b, D10 end state) — no client broadcast.
       timelineEventsService
         .create(sprintId, {
           type: 'phase_changed',
@@ -341,9 +337,8 @@ export default function InceptionPage() {
   const handleAnswerQuestion = async (questionId: string, answer: StructuredAnswer) => {
     try {
       await questionsService.update(sprintId, questionId, { structuredAnswer: answer });
-      realtimeService.send('broadcastToDocument', {
-        data: { action: 'question.answered', sprintId, questionId },
-      });
+      // question.answered is now emitted SERVER-SIDE by the questions/agents
+      // lambdas (plan §4b, D10 end state) — no client broadcast.
       timelineEventsService
         .create(sprintId, {
           type: 'question_answered',
