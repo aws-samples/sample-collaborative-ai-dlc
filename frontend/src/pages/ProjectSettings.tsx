@@ -39,7 +39,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { ArrowLeft, Trash2, X, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { ArrowLeft, Trash2, X, AlertCircle, CheckCircle2, ExternalLink } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { MigrateTrackerCard } from '@/components/MigrateTrackerCard';
 import { JiraConnectButton } from '@/components/JiraConnectButton';
@@ -83,6 +83,19 @@ const AGENT_CLI_CONFIG: Record<AgentCli, { label: string; description: string }>
 const MODEL_CLI_LABELS: Record<RuntimeModelCli, string> = {
   kiro: 'Kiro',
   opencode: 'OpenCode',
+};
+
+const MODEL_CLI_KEYS = Object.keys(MODEL_CLI_LABELS) as RuntimeModelCli[];
+
+const MODEL_ID_HELP: Record<RuntimeModelCli, { label: string; url: string }> = {
+  kiro: {
+    label: 'Kiro model IDs',
+    url: 'https://kiro.dev/docs/',
+  },
+  opencode: {
+    label: 'Bedrock model IDs',
+    url: 'https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html',
+  },
 };
 
 export default function ProjectSettings() {
@@ -817,18 +830,29 @@ export default function ProjectSettings() {
               </CardHeader>
               <CardContent>
                 <form onSubmit={handleSaveCliModels} className="space-y-3">
-                  {(Object.keys(MODEL_CLI_LABELS) as RuntimeModelCli[]).map((cli) => {
+                  {MODEL_CLI_KEYS.map((cli) => {
                     const isSelected = editAgentCli === cli;
                     const isEditable = canEditProject && isSelected && runtimeModelOverride[cli];
                     return (
                       <div key={cli} className="space-y-1.5">
-                        <div className="flex items-center gap-2">
-                          <Label htmlFor={`model-${cli}`}>{MODEL_CLI_LABELS[cli]}</Label>
-                          {isSelected && (
-                            <Badge variant="outline" className="text-[10px] h-4">
-                              selected
-                            </Badge>
-                          )}
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-2">
+                            <Label htmlFor={`model-${cli}`}>{MODEL_CLI_LABELS[cli]}</Label>
+                            {isSelected && (
+                              <Badge variant="outline" className="text-[10px] h-4">
+                                selected
+                              </Badge>
+                            )}
+                          </div>
+                          <a
+                            href={MODEL_ID_HELP[cli].url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                          >
+                            {MODEL_ID_HELP[cli].label}
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
                         </div>
                         <Input
                           id={`model-${cli}`}

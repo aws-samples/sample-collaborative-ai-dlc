@@ -14,11 +14,8 @@ import {
   mapBinding,
   fetchMembershipRole,
 } from '../shared/trackers.js';
-import {
-  normalizeCliModels,
-  parseCliModels,
-  validateMcpServersJson,
-} from '../shared/mcp-validator.js';
+import { validateMcpServersJson } from '../shared/mcp-validator.js';
+import { normalizeCliModels, parseCliModels } from '../shared/cli-models.js';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 

@@ -31,6 +31,7 @@ import {
   XCircle,
   Settings,
   Plug,
+  ExternalLink,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -90,6 +91,27 @@ const MODEL_CLI_LABELS: Record<RuntimeModelCli, string> = {
   opencode: 'OpenCode',
 };
 
+const MODEL_CLI_KEYS = Object.keys(MODEL_CLI_LABELS) as RuntimeModelCli[];
+
+const MODEL_ID_HELP: Record<RuntimeModelCli, { label: string; url: string }> = {
+  kiro: {
+    label: 'Kiro model IDs',
+    url: 'https://kiro.dev/docs/',
+  },
+  opencode: {
+    label: 'Bedrock model IDs',
+    url: 'https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html',
+  },
+};
+
+function canonicalCliModels(models: CliModels = {}) {
+  return MODEL_CLI_KEYS.reduce<CliModels>((acc, cli) => {
+    const value = models[cli]?.trim();
+    if (value) acc[cli] = value;
+    return acc;
+  }, {});
+}
+
 function timeAgo(ts?: number) {
   if (!ts) return '\u2014';
   const s = Math.floor((Date.now() - ts) / 1000);
@@ -121,6 +143,10 @@ export default function Admin() {
   const [cliModels, setCliModels] = useState<CliModels>({});
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsSaveResult, setSettingsSaveResult] = useState<'saved' | 'error' | null>(null);
+  const cliModelsChanged =
+    JSON.stringify(canonicalCliModels(cliModels)) !==
+    JSON.stringify(canonicalCliModels(settings?.cliModels || {}));
+  const hasSettingsChanges = bearerToken !== '' || kiroApiKey !== '' || cliModelsChanged;
 
   const refresh = useCallback(async () => {
     try {
@@ -501,11 +527,22 @@ export default function Admin() {
                     </p>
                   </div>
                   <div className="grid gap-3 sm:grid-cols-2">
-                    {(Object.keys(MODEL_CLI_LABELS) as RuntimeModelCli[]).map((cli) => (
+                    {MODEL_CLI_KEYS.map((cli) => (
                       <div key={cli} className="space-y-1.5">
-                        <label className="text-xs font-medium text-muted-foreground">
-                          {MODEL_CLI_LABELS[cli]}
-                        </label>
+                        <div className="flex items-center justify-between gap-3">
+                          <label className="text-xs font-medium text-muted-foreground">
+                            {MODEL_CLI_LABELS[cli]}
+                          </label>
+                          <a
+                            href={MODEL_ID_HELP[cli].url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+                          >
+                            {MODEL_ID_HELP[cli].label}
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
+                        </div>
                         <Input
                           value={cliModels[cli] || ''}
                           onChange={(e) => updateCliModel(cli, e.target.value)}
@@ -536,7 +573,7 @@ export default function Admin() {
                   <Button
                     size="sm"
                     onClick={saveSettings}
-                    disabled={settingsSaving}
+                    disabled={settingsSaving || !hasSettingsChanges}
                     className="gap-1.5"
                   >
                     {settingsSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}

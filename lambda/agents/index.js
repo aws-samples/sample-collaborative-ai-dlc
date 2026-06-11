@@ -21,11 +21,8 @@ const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
 const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
 const { buildResponse } = require('./shared/response');
 const { resolveGitToken } = require('./shared/git-token');
-const {
-  normalizeCliModels,
-  parseCliModels,
-  validateMcpServersJson,
-} = require('./shared/mcp-validator');
+const { validateMcpServersJson } = require('./shared/mcp-validator');
+const { normalizeCliModels, parseCliModels } = require('./shared/cli-models');
 
 const ecs = new ECSClient({});
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));

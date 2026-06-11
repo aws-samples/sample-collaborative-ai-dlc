@@ -15,8 +15,6 @@ const ALLOWED_TYPES = new Set(['stdio', 'http', 'sse']);
 const STDIO_ALLOWED_KEYS = new Set(['type', 'name', 'command', 'args', 'env']);
 const HTTP_ALLOWED_KEYS = new Set(['type', 'name', 'url', 'headers']);
 const NAME_VALUE_KEYS = new Set(['name', 'value']);
-const ALLOWED_CLI_MODEL_KEYS = new Set(['kiro', 'opencode']);
-const MAX_CLI_MODEL_LENGTH = 200;
 
 // Validate a single {name, value} pair (used for env entries and HTTP headers).
 function validateNameValuePair(item, path, issues, kind) {
@@ -195,69 +193,7 @@ function validateMcpServersJson(jsonString) {
   return validateMcpServers(parsed);
 }
 
-function normalizeCliModels(value) {
-  const issues = [];
-  const normalized = {};
-
-  if (value === undefined || value === null) {
-    return { valid: true, issues, value: normalized };
-  }
-
-  if (typeof value === 'string') {
-    try {
-      value = JSON.parse(value);
-    } catch (err) {
-      return {
-        valid: false,
-        issues: [{ path: '', message: `Invalid JSON: ${err.message}.` }],
-        value: normalized,
-      };
-    }
-  }
-
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    return {
-      valid: false,
-      issues: [{ path: '', message: `Expected an object; got ${describe(value)}.` }],
-      value: normalized,
-    };
-  }
-
-  for (const [key, raw] of Object.entries(value)) {
-    if (!ALLOWED_CLI_MODEL_KEYS.has(key)) {
-      issues.push({
-        path: key,
-        message: `Unknown model key "${key}". Allowed: ${[...ALLOWED_CLI_MODEL_KEYS].join(', ')}.`,
-      });
-      continue;
-    }
-    if (raw === undefined || raw === null) continue;
-    if (typeof raw !== 'string') {
-      issues.push({ path: key, message: `Expected string; got ${describe(raw)}.` });
-      continue;
-    }
-    const trimmed = raw.trim();
-    if (trimmed.length > MAX_CLI_MODEL_LENGTH) {
-      issues.push({
-        path: key,
-        message: `Must be ${MAX_CLI_MODEL_LENGTH} characters or fewer.`,
-      });
-      continue;
-    }
-    if (trimmed) normalized[key] = trimmed;
-  }
-
-  return { valid: issues.length === 0, issues, value: normalized };
-}
-
-function parseCliModels(raw) {
-  const validation = normalizeCliModels(raw || {});
-  return validation.value;
-}
-
 module.exports = {
   validateMcpServers,
   validateMcpServersJson,
-  normalizeCliModels,
-  parseCliModels,
 };
