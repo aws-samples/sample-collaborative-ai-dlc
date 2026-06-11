@@ -1,20 +1,28 @@
+import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Loader2, X } from 'lucide-react';
+import { Loader2, CheckCircle2, RotateCcw, X } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useDiscussion } from '@/hooks/useDiscussion';
+import { discussionsService } from '@/services/discussions';
 import { generateColor } from '@/utils/colors';
+import { firstUnreadIndex } from '@/lib/discussion';
 import { DiscussionThread } from './DiscussionThread';
 import { DiscussionInput } from './DiscussionInput';
+import { ResolveDialog } from './ResolveDialog';
 import { useDiscussions } from './DiscussionProvider';
 
 // DiscussionPanel (plan §9): NON-modal thread view hosted inside the right
 // ActivityPanel — no overlay, the rest of the app stays fully interactive
-// while a discussion is open. Header with anchor badge + title + presence
-// dots + close, scrollable thread with load-older, input footer. Resolve
-// controls, unread divider and the assist menu land in later PRs.
+// while a discussion is open. Header with anchor badge + title + resolve
+// control + presence dots + close, scrollable thread opening at the
+// first-unread divider, input footer with mention combobox.
+//
+// Read marking is VISIBILITY-gated: the cursor advances only when the newest
+// message is actually on screen in a visible tab — opening the thread alone
+// must not clear unread state.
 
 const ENTITY_LABELS: Record<string, string> = {
   sprint: 'Sprint',
@@ -37,6 +45,8 @@ export function DiscussionPanel() {
   };
 
   const discussion = ctx?.activeDiscussion ?? null;
+  const role = ctx?.role ?? null;
+  const canRedact = role === 'admin' || role === 'owner';
 
   const {
     messages,
@@ -50,6 +60,7 @@ export function DiscussionPanel() {
     setTyping,
     typingUsers,
     remoteUsers,
+    applyMessages,
   } = useDiscussion({
     sprintId,
     discussionId: discussion?.id || null,
@@ -57,10 +68,76 @@ export function DiscussionPanel() {
     user: currentUser,
   });
 
+  const [resolveOpen, setResolveOpen] = useState(false);
+  const [statusBusy, setStatusBusy] = useState(false);
+
+  // ── First-unread divider: pinned to the message that WAS first unread when
+  // the thread opened (newer arrivals stay below it) ──
+  const [dividerId, setDividerId] = useState<string | null>(null);
+  const initialUnreadRef = useRef(0);
+  useEffect(() => {
+    setDividerId(null);
+    initialUnreadRef.current = discussion?.unreadCount ?? 0;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [discussion?.id]);
+  useEffect(() => {
+    if (dividerId !== null || messages.length === 0) return;
+    const idx = firstUnreadIndex(messages.length, initialUnreadRef.current);
+    setDividerId(idx === null ? '' : messages[idx].id);
+  }, [messages, dividerId]);
+  const dividerIndex =
+    dividerId && dividerId !== '' ? messages.findIndex((m) => m.id === dividerId) : null;
+
+  // ── Visibility-gated read marking (plan §9, D4) ──
+  const lastMarkedRef = useRef<string>('');
+  const markRead = () => {
+    if (!ctx || !discussion || document.visibilityState !== 'visible') return;
+    const newest = messages[messages.length - 1];
+    if (!newest) return;
+    const cursor = `${newest.createdAt},${newest.id}`;
+    if (cursor === lastMarkedRef.current) return;
+    lastMarkedRef.current = cursor;
+    discussionsService
+      .markRead(sprintId, discussion.id, {
+        lastReadAt: newest.createdAt,
+        lastReadMessageId: newest.id,
+      })
+      .then(() => ctx.reloadDiscussions())
+      .catch(() => {
+        lastMarkedRef.current = '';
+      });
+  };
+
+  const setStatus = async (input: {
+    status: 'open' | 'resolved';
+    resolutionSummary?: string;
+    outcomeMessageId?: string;
+  }) => {
+    if (!ctx || !discussion) return;
+    setStatusBusy(true);
+    try {
+      const updated = await discussionsService.update(sprintId, discussion.id, input);
+      ctx.setActiveDiscussion(updated);
+    } finally {
+      setStatusBusy(false);
+    }
+  };
+
+  const redact = async (messageId: string) => {
+    if (!discussion) return;
+    try {
+      const redacted = await discussionsService.redact(sprintId, discussion.id, messageId);
+      applyMessages([redacted]);
+    } catch (err) {
+      console.error('Redact failed:', err);
+    }
+  };
+
   if (!ctx) return null;
-  const { loading, error, fallbackTitle, close } = ctx;
+  const { loading, error, fallbackTitle, close, members } = ctx;
 
   const title = discussion?.entityTitle || fallbackTitle || 'Discussion';
+  const resolved = discussion?.status === 'resolved';
 
   return (
     <div className="flex h-full w-full flex-col">
@@ -83,6 +160,30 @@ export function DiscussionPanel() {
               />
             ))}
           </div>
+          {discussion &&
+            (resolved ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 text-xs shrink-0"
+                disabled={statusBusy}
+                onClick={() => setStatus({ status: 'open' })}
+              >
+                <RotateCcw className="h-3 w-3 mr-1" />
+                Reopen
+              </Button>
+            ) : (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 text-xs shrink-0 text-agent-success"
+                disabled={statusBusy}
+                onClick={() => setResolveOpen(true)}
+              >
+                <CheckCircle2 className="h-3 w-3 mr-1" />
+                Resolve
+              </Button>
+            ))}
           <Button
             variant="ghost"
             size="icon"
@@ -94,8 +195,8 @@ export function DiscussionPanel() {
           </Button>
         </div>
         <p className="text-xs text-muted-foreground">
-          {discussion?.status === 'resolved'
-            ? `Resolved${discussion.resolvedByName ? ` by ${discussion.resolvedByName}` : ''}`
+          {resolved
+            ? `Resolved${discussion?.resolvedByName ? ` by ${discussion.resolvedByName}` : ''}`
             : 'Team discussion — messages are saved to the sprint graph.'}
         </p>
       </div>
@@ -114,7 +215,7 @@ export function DiscussionPanel() {
 
       {discussion && !loading && !error && (
         <>
-          {discussion.status === 'resolved' && discussion.resolutionSummary && (
+          {resolved && discussion.resolutionSummary && (
             <div className="border-b bg-muted/50 px-3 py-2">
               <p className="text-[10px] font-medium text-muted-foreground uppercase">Resolution</p>
               <p className="text-xs">{discussion.resolutionSummary}</p>
@@ -130,6 +231,10 @@ export function DiscussionPanel() {
               onLoadOlder={loadOlder}
               onRetry={retryMessage}
               typingUsers={typingUsers}
+              dividerIndex={dividerIndex === -1 ? null : dividerIndex}
+              canRedact={canRedact}
+              onRedact={redact}
+              onBottomVisible={markRead}
             />
           </ScrollArea>
           {!synced && (
@@ -137,7 +242,13 @@ export function DiscussionPanel() {
               Connecting live sync…
             </p>
           )}
-          <DiscussionInput onSend={sendMessage} onTyping={setTyping} />
+          <DiscussionInput onSend={sendMessage} onTyping={setTyping} members={members} />
+          <ResolveDialog
+            open={resolveOpen}
+            onOpenChange={setResolveOpen}
+            messages={messages}
+            onResolve={(input) => setStatus({ status: 'resolved', ...input })}
+          />
         </>
       )}
     </div>

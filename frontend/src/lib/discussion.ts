@@ -55,6 +55,17 @@ export const displayCursorOf = (m: DiscussionMessage): string => `${m.createdAt}
 export const makeMessageId = (now: number = Date.now()): string =>
   `dm-${now}-${Math.random().toString(36).slice(2, 10)}`;
 
+/**
+ * First-unread divider placement (plan §9): given the sorted message count
+ * and the caller's unreadCount (computed server-side against the composite
+ * cursor), the divider sits before the (unreadCount)-last message. Returns
+ * the index of the first unread message, or null when nothing is unread.
+ */
+export const firstUnreadIndex = (messageCount: number, unreadCount: number): number | null => {
+  if (unreadCount <= 0 || messageCount === 0) return null;
+  return Math.max(messageCount - unreadCount, 0);
+};
+
 const RELATIVE_STEPS: Array<[number, Intl.RelativeTimeFormatUnit]> = [
   [60, 'second'],
   [60, 'minute'],

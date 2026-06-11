@@ -5,3 +5,6 @@ export { DiscussionThread } from './DiscussionThread';
 export { MessageBubble } from './MessageBubble';
 export { DiscussionInput } from './DiscussionInput';
 export { DiscussButton } from './DiscussButton';
+export { DiscussionsTab } from './DiscussionsTab';
+export { ResolveDialog } from './ResolveDialog';
+export { MentionToasts } from './MentionToasts';

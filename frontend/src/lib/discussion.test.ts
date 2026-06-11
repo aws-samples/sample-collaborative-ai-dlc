@@ -7,6 +7,7 @@ import {
   displayCursorOf,
   makeMessageId,
   groupMessages,
+  firstUnreadIndex,
 } from './discussion';
 
 // NOTE: per the platform's known CI gap, frontend vitest tests do not run in
@@ -124,5 +125,21 @@ describe('groupMessages', () => {
       msg({ id: 'dm-1-b', authorType: 'agent' }),
     ]);
     expect(groups).toHaveLength(2);
+  });
+});
+
+describe('firstUnreadIndex', () => {
+  it('places the divider before the unreadCount-last message', () => {
+    expect(firstUnreadIndex(10, 3)).toBe(7);
+    expect(firstUnreadIndex(3, 3)).toBe(0);
+  });
+
+  it('returns null when nothing is unread or the thread is empty', () => {
+    expect(firstUnreadIndex(10, 0)).toBeNull();
+    expect(firstUnreadIndex(0, 5)).toBeNull();
+  });
+
+  it('clamps when unreadCount exceeds the loaded page (capped server counts)', () => {
+    expect(firstUnreadIndex(5, 99)).toBe(0);
   });
 });

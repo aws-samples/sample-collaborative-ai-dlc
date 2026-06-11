@@ -4,28 +4,37 @@ import { cn } from '@/lib/utils';
 import { generateColor } from '@/utils/colors';
 import { relativeTime } from '@/lib/discussion';
 import type { MessageGroup } from '@/lib/discussion';
-import { Bot } from 'lucide-react';
+import { Bot, MoreHorizontal, ShieldOff } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 
 // MessageBubble (plan §9): one author block (grouped consecutive messages),
 // hash-colored avatar, relative timestamps, markdown via react-markdown +
 // remark-gfm (no raw HTML — default-safe). Agent messages get distinct
 // styling + a "requested by {name} · {command}" caption (assist audit
-// visibility). Redacted: muted italic + audit caption.
+// visibility). Redacted: muted italic + audit caption. The redact action is
+// admin/owner only (role gate in the sheet; the server enforces it anyway).
 
-export function MessageBubble({
-  group,
-  currentUserId,
-}: {
+interface Props {
   group: MessageGroup;
   currentUserId: string;
-}) {
+  canRedact?: boolean;
+  onRedact?: (messageId: string) => void;
+}
+
+export function MessageBubble({ group, currentUserId, canRedact, onRedact }: Props) {
   const isAgent = group.authorType === 'agent';
   const isSelf = group.authorId === currentUserId;
   const color = generateColor(group.authorId || group.authorName);
   const first = group.messages[0];
 
   return (
-    <div className="flex gap-2 px-3 py-1.5">
+    <div className="flex gap-2 px-3 py-1.5 group/bubble">
       <div className="pt-0.5 shrink-0">
         {isAgent ? (
           <div className="h-6 w-6 rounded-full bg-primary/10 flex items-center justify-center">
@@ -66,19 +75,43 @@ export function MessageBubble({
                 )}
               </div>
             ) : (
-              <div
-                key={m.id}
-                className={cn(
-                  'prose prose-sm dark:prose-invert max-w-none text-sm leading-relaxed break-words',
-                  '[&_p]:my-0.5 [&_pre]:my-1 [&_ul]:my-1 [&_ol]:my-1',
-                  // Narrow-panel guards: code blocks scroll instead of
-                  // clipping, wide GFM tables scroll inside the bubble.
-                  'min-w-0 max-w-full [&_pre]:max-w-full [&_pre]:overflow-x-auto',
-                  '[&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto',
-                  isAgent && 'rounded-md bg-primary/5 px-2 py-1',
+              <div key={m.id} className="flex items-start gap-1">
+                <div
+                  className={cn(
+                    'prose prose-sm dark:prose-invert max-w-none text-sm leading-relaxed break-words flex-1 min-w-0',
+                    '[&_p]:my-0.5 [&_pre]:my-1 [&_ul]:my-1 [&_ol]:my-1',
+                    // Narrow-panel guards: code blocks scroll instead of
+                    // clipping, wide GFM tables scroll inside the bubble.
+                    'max-w-full [&_pre]:max-w-full [&_pre]:overflow-x-auto',
+                    '[&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto',
+                    isAgent && 'rounded-md bg-primary/5 px-2 py-1',
+                  )}
+                >
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                </div>
+                {canRedact && onRedact && (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-5 w-5 shrink-0 opacity-0 group-hover/bubble:opacity-100"
+                        aria-label="Message actions"
+                      >
+                        <MoreHorizontal className="h-3 w-3" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem
+                        className="text-xs text-destructive focus:text-destructive"
+                        onClick={() => onRedact(m.id)}
+                      >
+                        <ShieldOff className="h-3 w-3 mr-1.5" />
+                        Redact message
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 )}
-              >
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
               </div>
             ),
           )}

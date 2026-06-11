@@ -3,13 +3,22 @@ import type { ReactNode } from 'react';
 import { useParams } from 'react-router-dom';
 import { discussionsService } from '@/services/discussions';
 import type { Discussion, DiscussionEntityType } from '@/services/discussions';
+import { projectsService } from '@/services/projects';
+import type { Member } from '@/services/projects';
+import { realtimeService } from '@/services/realtime';
+import { useAuth } from '@/contexts/AuthContext';
+import { MentionToasts } from './MentionToasts';
+import type { MentionToast } from './MentionToasts';
 
-// DiscussionProvider (plan §9) — mounted once in AppShell so the entry-point
-// buttons (routed pages) and the ActivityPanel-hosted DiscussionPanel share
-// one state. Owns the single open thread (one at a time) and the lazy
-// get-or-create call: a thread vertex only exists once somebody actually
-// opens the discussion. The thread renders NON-modally inside the right
-// ActivityPanel; `onDiscussionOpen` lets the shell pop that panel open.
+// DiscussionProvider (plan §9) — mounted once in AppShell so both the sprint
+// pages (entry-point buttons) and the ActivityPanel-hosted thread share the
+// same state. The thread renders NON-modally inside the right ActivityPanel;
+// `onDiscussionOpen` lets the shell pop that panel open. Owns:
+//   - the single open thread (one at a time) + lazy get-or-create
+//   - the sprint's discussions list incl. per-caller unreadCounts, refreshed
+//     on discussion.message / discussion.updated fanout
+//   - project members (mention combobox + the caller's role for redaction)
+//   - mention toasts (D7: online, in-app only) with jump-to-thread
 
 export interface OpenDiscussionArgs {
   entityType: DiscussionEntityType;
@@ -21,26 +30,37 @@ export interface OpenDiscussionArgs {
 
 interface DiscussionContextValue {
   openDiscussion: (args: OpenDiscussionArgs) => void;
+  openDiscussionById: (discussionId: string) => void;
   close: () => void;
-  /** The currently open thread (null while loading/closed). */
   activeDiscussion: Discussion | null;
+  /** Replace the active thread after a status change (resolve/reopen). */
+  setActiveDiscussion: (d: Discussion) => void;
   /** True while a thread is open in the activity panel (incl. while loading). */
   isOpen: boolean;
   loading: boolean;
   error: string | null;
   /** Display fallback while the thread loads. */
   fallbackTitle: string;
+  discussions: Discussion[];
+  reloadDiscussions: () => Promise<void>;
+  /** Per-entity unread lookup for badges. */
+  unreadFor: (entityType: DiscussionEntityType, entityId?: string) => number;
+  members: Member[];
+  /** The caller's project role (redact is admin/owner only). */
+  role: Member['role'] | null;
 }
 
 const DiscussionContext = createContext<DiscussionContextValue | null>(null);
 
 /**
  * Null-safe accessor: components like ArtifactCard render their Discuss
- * affordance only when a provider is mounted (i.e. inside a sprint).
+ * affordance only when a provider is mounted.
  */
 export function useDiscussions(): DiscussionContextValue | null {
   return useContext(DiscussionContext);
 }
+
+const TOAST_TTL_MS = 8000;
 
 export function DiscussionProvider({
   children,
@@ -50,13 +70,85 @@ export function DiscussionProvider({
   /** Called whenever a thread opens — the shell uses it to show the activity panel. */
   onDiscussionOpen?: () => void;
 }) {
-  const { sprintId = '' } = useParams<{ sprintId: string }>();
+  const { sprintId = '', projectId = '' } = useParams<{ sprintId: string; projectId: string }>();
+  const { user } = useAuth();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [discussion, setDiscussion] = useState<Discussion | null>(null);
   const [pendingTitle, setPendingTitle] = useState('');
+  const [discussions, setDiscussions] = useState<Discussion[]>([]);
+  const [members, setMembers] = useState<Member[]>([]);
+  const [toasts, setToasts] = useState<MentionToast[]>([]);
 
+  // ── Discussions list (badges + ActivityPanel tab) ──
+  const reloadDiscussions = useCallback(async () => {
+    if (!sprintId) return;
+    try {
+      setDiscussions(await discussionsService.list(sprintId));
+    } catch {
+      /* non-member or transient — badges just stay empty */
+    }
+  }, [sprintId]);
+
+  useEffect(() => {
+    setDiscussions([]);
+    reloadDiscussions();
+  }, [reloadDiscussions]);
+
+  // Refresh on server fanout (D8) — covers other users' messages, resolves
+  // and redactions. Cheap: one list query per event.
+  useEffect(() => {
+    if (!sprintId) return;
+    const unsubs = [
+      realtimeService.on('discussion.message', () => reloadDiscussions()),
+      realtimeService.on('discussion.updated', () => reloadDiscussions()),
+    ];
+    return () => unsubs.forEach((u) => u());
+  }, [sprintId, reloadDiscussions]);
+
+  // ── Project members (mention combobox + caller role) ──
+  useEffect(() => {
+    if (!projectId) {
+      setMembers([]);
+      return;
+    }
+    projectsService
+      .listMembers(projectId)
+      .then(setMembers)
+      .catch(() => setMembers([]));
+  }, [projectId]);
+
+  const role = useMemo(
+    () => members.find((m) => m.userId === user?.username)?.role ?? null,
+    [members, user?.username],
+  );
+
+  // ── Mention toasts (D7) ──
+  useEffect(() => {
+    const unsub = realtimeService.on('notification', (data) => {
+      if (data.type !== 'discussion.mention') return;
+      const id = `${data.messageId}-${Date.now()}`;
+      setToasts((prev) => [
+        ...prev.slice(-2),
+        {
+          id,
+          discussionId: data.discussionId,
+          byName: data.byName || 'Someone',
+          excerpt: data.excerpt || '',
+        },
+      ]);
+      setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), TOAST_TTL_MS);
+    });
+    return unsub;
+  }, []);
+
+  const dismissToast = useCallback(
+    (id: string) => setToasts((prev) => prev.filter((t) => t.id !== id)),
+    [],
+  );
+
+  // ── Thread open/close ──
   const openDiscussion = useCallback(
     (args: OpenDiscussionArgs) => {
       if (!sprintId) return;
@@ -72,21 +164,68 @@ export function DiscussionProvider({
           entityId: args.entityId,
           entityTitle: args.entityTitle,
         })
-        .then(setDiscussion)
+        .then((d) => {
+          setDiscussion(d);
+          reloadDiscussions();
+        })
         .catch((err) => {
           console.error('Failed to open discussion:', err);
           setError(err instanceof Error ? err.message : 'Failed to open discussion');
         })
         .finally(() => setLoading(false));
     },
-    [sprintId, onDiscussionOpen],
+    [sprintId, reloadDiscussions, onDiscussionOpen],
+  );
+
+  const openDiscussionById = useCallback(
+    async (discussionId: string) => {
+      if (!sprintId) return;
+      setOpen(true);
+      setLoading(true);
+      setError(null);
+      setPendingTitle('');
+      onDiscussionOpen?.();
+      try {
+        const known =
+          discussions.find((d) => d.id === discussionId) ||
+          (await discussionsService.list(sprintId)).find((d) => d.id === discussionId);
+        if (!known) throw new Error('Discussion not found');
+        setDiscussion(known);
+      } catch (err) {
+        console.error('Failed to open discussion:', err);
+        setError(err instanceof Error ? err.message : 'Failed to open discussion');
+      } finally {
+        setLoading(false);
+      }
+    },
+    [sprintId, discussions, onDiscussionOpen],
   );
 
   const close = useCallback(() => {
     setOpen(false);
     setDiscussion(null);
     setError(null);
-  }, []);
+    // Pick up the read-cursor advance the thread made while open.
+    reloadDiscussions();
+  }, [reloadDiscussions]);
+
+  const setActiveDiscussion = useCallback(
+    (d: Discussion) => {
+      setDiscussion(d);
+      reloadDiscussions();
+    },
+    [reloadDiscussions],
+  );
+
+  const unreadFor = useCallback(
+    (entityType: DiscussionEntityType, entityId?: string) => {
+      const match = discussions.find(
+        (d) => d.entityType === entityType && (entityId === undefined || d.entityId === entityId),
+      );
+      return match?.unreadCount ?? 0;
+    },
+    [discussions],
+  );
 
   // Leaving the sprint closes the thread.
   useEffect(() => {
@@ -96,15 +235,42 @@ export function DiscussionProvider({
   const value = useMemo(
     () => ({
       openDiscussion,
+      openDiscussionById,
       close,
       activeDiscussion: discussion,
+      setActiveDiscussion,
       isOpen: open,
       loading,
       error,
       fallbackTitle: pendingTitle,
+      discussions,
+      reloadDiscussions,
+      unreadFor,
+      members,
+      role,
     }),
-    [openDiscussion, close, discussion, open, loading, error, pendingTitle],
+    [
+      openDiscussion,
+      openDiscussionById,
+      close,
+      discussion,
+      setActiveDiscussion,
+      open,
+      loading,
+      error,
+      pendingTitle,
+      discussions,
+      reloadDiscussions,
+      unreadFor,
+      members,
+      role,
+    ],
   );
 
-  return <DiscussionContext.Provider value={value}>{children}</DiscussionContext.Provider>;
+  return (
+    <DiscussionContext.Provider value={value}>
+      {children}
+      <MentionToasts toasts={toasts} onOpen={openDiscussionById} onDismiss={dismissToast} />
+    </DiscussionContext.Provider>
+  );
 }

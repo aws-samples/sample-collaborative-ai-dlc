@@ -6,9 +6,9 @@ import { SprintProvider } from '@/contexts/SprintContext';
  * with the SprintProvider context, so sprint data is loaded once and shared
  * across all phase transitions without remounting.
  *
- * DiscussionProvider lives higher up in AppShell: the discussion thread
- * renders non-modally inside the ActivityPanel, which sits outside this
- * layout's Outlet.
+ * DiscussionProvider lives one level up in AppShell: the discussion thread
+ * renders non-modally inside the ActivityPanel (which sits outside this
+ * layout's Outlet) and its Discussions tab shares the same state.
  */
 export function SprintLayout() {
   return (

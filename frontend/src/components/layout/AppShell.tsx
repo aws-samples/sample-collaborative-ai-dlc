@@ -107,8 +107,8 @@ export function AppShell() {
   return (
     <TooltipProvider delayDuration={200}>
       {/* DiscussionProvider sits above BOTH the routed pages and the
-          ActivityPanel so the entry-point buttons and the panel-hosted
-          thread share one state (plan §9). */}
+          ActivityPanel so the Discussions tab, the entry-point buttons, the
+          panel-hosted thread and the mention toasts share one state (plan §9). */}
       <DiscussionProvider onDiscussionOpen={showActivityPanel}>
         <div className="flex h-screen flex-col bg-background">
           {/* Header */}

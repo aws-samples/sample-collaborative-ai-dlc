@@ -7,8 +7,11 @@ import type { PendingMessage } from '@/hooks/useDiscussion';
 import { MessageBubble } from './MessageBubble';
 
 // DiscussionThread (plan §9): grouped message blocks with load-older at the
-// top and component-local pending/failed bubbles at the bottom. Auto-scrolls
-// to the newest message when it is already near the bottom.
+// top, the first-unread divider, and component-local pending/failed bubbles
+// at the bottom. The bottom sentinel doubles as the visible-read trigger —
+// the IntersectionObserver lets the sheet advance the read cursor only when
+// the newest message is ACTUALLY on screen (opening the sheet off-screen
+// must not clear unread state).
 
 interface Props {
   messages: DiscussionMessage[];
@@ -19,6 +22,12 @@ interface Props {
   onLoadOlder: () => void;
   onRetry: (id: string) => void;
   typingUsers: string[];
+  /** Message index the first-unread divider sits before (null = no divider). */
+  dividerIndex?: number | null;
+  canRedact?: boolean;
+  onRedact?: (messageId: string) => void;
+  /** Fires while the bottom of the thread is visible in the viewport. */
+  onBottomVisible?: () => void;
 }
 
 export function DiscussionThread({
@@ -30,28 +39,73 @@ export function DiscussionThread({
   onLoadOlder,
   onRetry,
   typingUsers,
+  dividerIndex = null,
+  canRedact,
+  onRedact,
+  onBottomVisible,
 }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const dividerRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const lastMessageIdRef = useRef<string | null>(null);
+  const didInitialScrollRef = useRef(false);
+  const onBottomVisibleRef = useRef(onBottomVisible);
+  onBottomVisibleRef.current = onBottomVisible;
 
+  // Initial position: the first-unread divider when present, else the bottom.
+  useEffect(() => {
+    if (didInitialScrollRef.current || messages.length === 0) return;
+    didInitialScrollRef.current = true;
+    if (dividerRef.current) {
+      dividerRef.current.scrollIntoView({ block: 'center' });
+    } else {
+      bottomRef.current?.scrollIntoView({ block: 'end' });
+    }
+  }, [messages]);
+
+  // Follow new messages when already near the bottom (or own sends).
   useEffect(() => {
     const last = messages[messages.length - 1]?.id || null;
     const changed = last !== lastMessageIdRef.current;
     lastMessageIdRef.current = last;
+    if (!didInitialScrollRef.current) return;
     if (!changed && pending.length === 0) return;
     const container = containerRef.current?.parentElement;
-    if (!container) {
-      bottomRef.current?.scrollIntoView({ block: 'end' });
-      return;
-    }
+    if (!container) return;
     const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 200;
     if (nearBottom || pending.length > 0) {
       bottomRef.current?.scrollIntoView({ block: 'end' });
     }
   }, [messages, pending]);
 
-  const groups = groupMessages(messages);
+  // Visible-read trigger (plan §9): IntersectionObserver on the bottom
+  // sentinel AND document.visibilityState — both checked by the sheet.
+  useEffect(() => {
+    const el = bottomRef.current;
+    if (!el || !onBottomVisibleRef.current) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) onBottomVisibleRef.current?.();
+      },
+      { threshold: 0.9 },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [messages.length]);
+
+  const read = dividerIndex !== null ? messages.slice(0, dividerIndex) : messages;
+  const unread = dividerIndex !== null ? messages.slice(dividerIndex) : [];
+
+  const renderGroups = (msgs: DiscussionMessage[]) =>
+    groupMessages(msgs).map((group) => (
+      <MessageBubble
+        key={group.messages[0].id}
+        group={group}
+        currentUserId={currentUserId}
+        canRedact={canRedact}
+        onRedact={onRedact}
+      />
+    ));
 
   return (
     <div ref={containerRef} className="py-2">
@@ -70,15 +124,23 @@ export function DiscussionThread({
         </div>
       )}
 
-      {groups.length === 0 && pending.length === 0 && (
+      {messages.length === 0 && pending.length === 0 && (
         <p className="text-center text-xs text-muted-foreground py-8">
           No messages yet — start the discussion.
         </p>
       )}
 
-      {groups.map((group) => (
-        <MessageBubble key={group.messages[0].id} group={group} currentUserId={currentUserId} />
-      ))}
+      {renderGroups(read)}
+
+      {unread.length > 0 && (
+        <div ref={dividerRef} className="flex items-center gap-2 px-3 py-1.5">
+          <div className="h-px flex-1 bg-destructive/40" />
+          <span className="text-[10px] font-medium text-destructive/80 uppercase">New</span>
+          <div className="h-px flex-1 bg-destructive/40" />
+        </div>
+      )}
+
+      {renderGroups(unread)}
 
       {pending.map((p) => (
         <div key={p.id} className="flex gap-2 px-3 py-1.5 opacity-70">
@@ -109,7 +171,7 @@ export function DiscussionThread({
         </p>
       )}
 
-      <div ref={bottomRef} />
+      <div ref={bottomRef} className="h-px" />
     </div>
   );
 }

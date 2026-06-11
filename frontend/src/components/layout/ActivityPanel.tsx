@@ -12,7 +12,9 @@ import { agentsService } from '@/services/agents';
 import { timelineEventsService, type TimelineEvent } from '@/services/timelineEvents';
 import { useAuth } from '@/contexts/AuthContext';
 import { useQuestionLink } from '@/hooks/useQuestionAnchor';
+import { DiscussionsTab } from '@/components/discussion/DiscussionsTab';
 import { DiscussionPanel, useDiscussions } from '@/components/discussion';
+import { MessageSquare } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -71,6 +73,10 @@ export function ActivityPanel({ sprintId, onClose }: ActivityPanelProps) {
   const userName = user?.displayName || user?.email || '';
   const [activeTab, setActiveTab] = useState('agent');
   const discussionsCtx = useDiscussions();
+  const totalUnread = (discussionsCtx?.discussions ?? []).reduce(
+    (sum, d) => sum + (d.unreadCount ?? 0),
+    0,
+  );
 
   // -- Agent state --
   const [streamingText, setStreamingText] = useState('');
@@ -261,6 +267,15 @@ export function ActivityPanel({ sprintId, onClose }: ActivityPanelProps) {
                     </Badge>
                   )}
                 </TabsTrigger>
+                <TabsTrigger value="discussions" className="h-6 px-2.5 text-xs gap-1.5">
+                  <MessageSquare className="h-3 w-3" />
+                  Discuss
+                  {totalUnread > 0 && (
+                    <Badge className="h-4 px-1 text-[9px] ml-0.5">
+                      {totalUnread > 99 ? '99+' : totalUnread}
+                    </Badge>
+                  )}
+                </TabsTrigger>
               </TabsList>
             </Tabs>
             <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onClose}>
@@ -277,6 +292,8 @@ export function ActivityPanel({ sprintId, onClose }: ActivityPanelProps) {
                 agentRunning={agentRunning}
                 agentStatus={agentStatus}
               />
+            ) : activeTab === 'discussions' ? (
+              <DiscussionsTab sprintId={sprintId || ''} />
             ) : (
               <TimelineTab events={timelineEvents} loading={timelineLoading} />
             )}

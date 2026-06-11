@@ -284,5 +284,7 @@ export function useDiscussion({ sprintId, discussionId, open, user }: UseDiscuss
     setTyping,
     typingUsers,
     remoteUsers,
+    /** Direct upsert path for locally-initiated mutations (e.g. redact). */
+    applyMessages: upsertMessages,
   };
 }
