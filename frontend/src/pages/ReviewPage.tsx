@@ -61,6 +61,7 @@ import {
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { StructuredAnswer } from '@/services/questions';
+import { DiscussButton } from '@/components/discussion';
 
 function RiskBadge({ score, reasoning }: { score: string; reasoning: string }) {
   const n = parseInt(score);
@@ -932,7 +933,16 @@ export default function ReviewPage() {
           {/* Human review */}
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm">Your Review</CardTitle>
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-sm">Your Review</CardTitle>
+                {review && (
+                  <DiscussButton
+                    entityType="review"
+                    entityId={review.id}
+                    entityTitle="Sprint Review"
+                  />
+                )}
+              </div>
             </CardHeader>
             <CardContent>
               <ReviewEditor

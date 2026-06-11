@@ -10,8 +10,19 @@ import { Pencil, Trash2, Sparkles, Save, X, Link2 } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { ArtifactGraphPopover } from '@/components/domain/ArtifactGraphPopover';
 import type { ArtifactNeighbor } from '@/hooks/useSprintGraph';
+import { DiscussButton } from '@/components/discussion';
+import type { DiscussionEntityType } from '@/services/discussions';
 
 export type ArtifactType = 'requirement' | 'user-story' | 'task' | 'code-file' | 'general-info';
+
+// ArtifactType → discussion anchor entity type (plan §5). Code files have no
+// discussion anchor in v1.
+const DISCUSSION_ENTITY_TYPES: Partial<Record<ArtifactType, DiscussionEntityType>> = {
+  requirement: 'requirement',
+  'user-story': 'userstory',
+  task: 'task',
+  'general-info': 'generalinfo',
+};
 
 interface ArtifactField {
   key: string;
@@ -53,6 +64,7 @@ const STATUS_STYLES: Record<string, string> = {
 };
 
 export function ArtifactCard({
+  id,
   type,
   title,
   fields,
@@ -69,6 +81,7 @@ export function ArtifactCard({
   const [editing, setEditing] = useState(false);
   const [editValues, setEditValues] = useState<Record<string, string>>({});
   const typeStyle = TYPE_STYLES[type];
+  const discussionEntityType = DISCUSSION_ENTITY_TYPES[type];
 
   const startEdit = () => {
     const values: Record<string, string> = {};
@@ -143,7 +156,7 @@ export function ArtifactCard({
           )}
 
           {/* Action buttons */}
-          {!readOnly && (
+          {(!readOnly || discussionEntityType) && (
             <div
               className={cn(
                 'flex items-center gap-0.5 shrink-0',
@@ -161,7 +174,14 @@ export function ArtifactCard({
                 </>
               ) : (
                 <>
-                  {onAiModify && (
+                  {discussionEntityType && (
+                    <DiscussButton
+                      entityType={discussionEntityType}
+                      entityId={id}
+                      entityTitle={title}
+                    />
+                  )}
+                  {!readOnly && onAiModify && (
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <Button
@@ -176,10 +196,12 @@ export function ArtifactCard({
                       <TooltipContent>AI Modify</TooltipContent>
                     </Tooltip>
                   )}
-                  <Button variant="ghost" size="icon" className="h-6 w-6" onClick={startEdit}>
-                    <Pencil className="h-3 w-3" />
-                  </Button>
-                  {onDelete && (
+                  {!readOnly && (
+                    <Button variant="ghost" size="icon" className="h-6 w-6" onClick={startEdit}>
+                      <Pencil className="h-3 w-3" />
+                    </Button>
+                  )}
+                  {!readOnly && onDelete && (
                     <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onDelete}>
                       <Trash2 className="h-3 w-3 text-destructive" />
                     </Button>

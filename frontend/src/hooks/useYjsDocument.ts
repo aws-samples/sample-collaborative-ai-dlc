@@ -17,6 +17,8 @@ export interface AwarenessUser {
   name: string;
   color: string;
   cursor?: { index: number; length: number };
+  /** Set by discussion inputs (plan §6) — typing indicator. */
+  typing?: boolean;
 }
 
 export function useYjsDocument(documentId: string | null, userName?: string, userColor?: string) {
@@ -210,7 +212,7 @@ export function useYjsDocument(documentId: string | null, userName?: string, use
       const users = new Map<number, AwarenessUser>();
       awarenessProt.getStates().forEach((state, clientId) => {
         if (clientId !== doc.clientID && state.user) {
-          users.set(clientId, { ...state.user, cursor: state.cursor });
+          users.set(clientId, { ...state.user, cursor: state.cursor, typing: state.typing });
         }
       });
       setRemoteUsers(users);
