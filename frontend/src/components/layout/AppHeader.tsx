@@ -25,8 +25,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { useAuth } from '@/contexts/AuthContext';
 import { PresenceAvatars } from '@/components/domain/PresenceAvatars';
 import { useEffect, useState } from 'react';
-import { projectsService, type Project } from '@/services/projects';
+import { type Project } from '@/services/projects';
 import { sprintsService, type Sprint } from '@/services/sprints';
+import { useProjectCache } from '@/hooks/useProjectsCache';
 
 interface AppHeaderProps {
   onToggleSidebar: () => void;
@@ -48,20 +49,8 @@ export function AppHeader({
   const navigate = useNavigate();
   const location = useLocation();
   const params = useParams();
-  const [project, setProject] = useState<Project | null>(null);
+  const { project } = useProjectCache(params.projectId ?? null);
   const [sprint, setSprint] = useState<Sprint | null>(null);
-
-  // Load project if we have a projectId
-  useEffect(() => {
-    if (params.projectId) {
-      projectsService
-        .get(params.projectId)
-        .then(setProject)
-        .catch(() => setProject(null));
-    } else {
-      setProject(null);
-    }
-  }, [params.projectId]);
 
   // Load sprint if we have a sprintId
   useEffect(() => {

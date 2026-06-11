@@ -59,6 +59,8 @@ function App() {
                 <Route path="agent" element={<AgentPage />} />
                 <Route path="graph" element={<SprintGraph />} />
               </Route>
+
+              <Route path="*" element={<Navigate to="/dashboard" replace />} />
             </Route>
 
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
