@@ -590,22 +590,33 @@ function cloneAndSetupBranch(job, repoUrl, targetDir) {
 // driver — e.g. ".kiro/steering" for Kiro, ".claude/rules" for Claude,
 // ".opencode/rules" for OpenCode. The agent's CLI auto-loads them; we cite
 // the directory in prompts so the agent knows where to find named rule files.
+// Appended to every non-discussion phase prompt (plan §5): discussions are
+// durable, queryable collaboration context — not chat history.
+const DISCUSSIONS_NUDGE = `
+
+## TEAM DISCUSSIONS
+
+Check \`get_discussions\` for team context on the entities you work on — open threads show unresolved positions, and resolution summaries represent TEAM DECISIONS you must respect.`;
+
 function buildPrompt(job, rulesDir) {
   const phase = (job.agentType || 'inception').toLowerCase();
-  if (phase === 'inception') return buildInceptionPrompt(job, rulesDir);
-  if (phase === 'construction') return buildConstructionPrompt(job, rulesDir);
-  if (phase === 'construction-orchestrator') return buildConstructionOrchestratorPrompt(job);
-  if (phase === 'review-blind') return buildBlindReviewPrompt(job);
-  if (phase === 'review-full') return buildFullReviewPrompt(job);
-  if (phase === 'review-modify') return buildReviewModifyPrompt(job);
-  if (phase === 'bugfix') return buildBugfixPrompt(job);
   if (phase === 'discussion') return buildDiscussionPrompt(job);
-  // Default prompt for other phases
-  return (
-    `You are an AI-DLC agent running the "${phase}" phase. Your master workflow is preloaded as AGENTS.md; detailed rule files for this phase are in \`${rulesDir}/\`.\n\n` +
-    (job.description ? `PROJECT DESCRIPTION:\n${job.description}\n\n` : '') +
-    `Begin the ${phase} phase. Use the graph MCP tools to read and write all artifacts to Neptune. Do NOT create or modify markdown files as output.`
-  );
+  let prompt;
+  if (phase === 'inception') prompt = buildInceptionPrompt(job, rulesDir);
+  else if (phase === 'construction') prompt = buildConstructionPrompt(job, rulesDir);
+  else if (phase === 'construction-orchestrator') prompt = buildConstructionOrchestratorPrompt(job);
+  else if (phase === 'review-blind') prompt = buildBlindReviewPrompt(job);
+  else if (phase === 'review-full') prompt = buildFullReviewPrompt(job);
+  else if (phase === 'review-modify') prompt = buildReviewModifyPrompt(job);
+  else if (phase === 'bugfix') prompt = buildBugfixPrompt(job);
+  else {
+    // Default prompt for other phases
+    prompt =
+      `You are an AI-DLC agent running the "${phase}" phase. Your master workflow is preloaded as AGENTS.md; detailed rule files for this phase are in \`${rulesDir}/\`.\n\n` +
+      (job.description ? `PROJECT DESCRIPTION:\n${job.description}\n\n` : '') +
+      `Begin the ${phase} phase. Use the graph MCP tools to read and write all artifacts to Neptune. Do NOT create or modify markdown files as output.`;
+  }
+  return prompt + DISCUSSIONS_NUDGE;
 }
 
 // Discussion-assist prompt (plan §8). The agent SELF-SERVES context via MCP —

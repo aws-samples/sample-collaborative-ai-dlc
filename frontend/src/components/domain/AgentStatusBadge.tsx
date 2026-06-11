@@ -62,6 +62,8 @@ export function AgentStatusBadge({
 }: AgentStatusBadgeProps) {
   const config = STATUS_CONFIG[status || 'idle'] || STATUS_CONFIG.idle;
   const Icon = config.icon;
+  // Discussion assists are in-thread helpers, not pipeline phases (plan §8).
+  const typeLabel = agentType === 'discussion' ? 'Discussion assist' : agentType;
 
   if (compact) {
     return (
@@ -95,7 +97,7 @@ export function AgentStatusBadge({
   return (
     <Badge variant="outline" className={cn('gap-1 font-medium', config.className, className)}>
       <Icon className={cn('h-3 w-3', status === 'running' && 'animate-spin')} />
-      {agentType && <span className="capitalize">{agentType.replace(/[_-]/g, ' ')}</span>}
+      {typeLabel && <span className="capitalize">{typeLabel.replace(/[_-]/g, ' ')}</span>}
       <span>{config.label}</span>
     </Badge>
   );

@@ -21,12 +21,25 @@ The chat history is also shared across users. When the LLM assistant responds, a
 
 ## Access levels
 
-Your access level determines what you can do in a collaborative session:
+Realtime access is **membership-scoped**: every WebSocket connection (both the
+Yjs collaboration fabric and the application event channel) requires a
+short-lived, HMAC-signed scope token that is only issued to members of the
+project. The token is bound to your signed-in identity, covers exactly the
+sprint/project you requested, and expires after ten minutes — connections are
+transparently refreshed while you remain a member.
 
-| Role   | Can edit       | Can chat | Can comment |
-| ------ | -------------- | -------- | ----------- |
-| Admin  | Yes            | Yes      | Yes         |
-| Editor | Yes            | Yes      | Yes         |
-| Viewer | No (read-only) | No       | Yes         |
+| Role (project graph) | Can connect & edit | Can post in discussions | Can redact discussion messages |
+| -------------------- | ------------------ | ----------------------- | ------------------------------ |
+| Owner                | Yes                | Yes                     | Yes                            |
+| Admin                | Yes                | Yes                     | Yes                            |
+| Member               | Yes                | Yes                     | No                             |
+| Non-member           | No (403)           | No                      | No                             |
 
-Read-only access is enforced server-side on the Yjs sync protocol. Viewers receive document updates but their edit attempts are rejected.
+Two things to be aware of:
+
+- There is **no role-level read-only mode** on the Yjs sync protocol — every
+  project member can edit collaborative documents. Durable writes are
+  independently authorized in the REST layer.
+- **Active-session window**: when a member is removed from a project, their
+  already-open connections remain authorized for at most the remaining token
+  lifetime (≤ 10 minutes) before the server closes them.

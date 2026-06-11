@@ -169,4 +169,19 @@ export const discussionsService = {
       `/sprints/${sprintId}/discussions/search?${params.toString()}`,
     );
   },
+
+  /**
+   * Invoke an in-thread agent assist (plan §7/§8). Returns the executionId
+   * used to correlate the agent.* stream. 409 {reason:'assist_in_progress'}
+   * and 400 cli_unavailable are NOT retried — the UI surfaces them.
+   */
+  assist: (
+    sprintId: string,
+    discussionId: string,
+    input: { command: AssistCommand; instruction?: string },
+  ) =>
+    api.post<{ assistId: string }>(
+      `/sprints/${sprintId}/discussions/${discussionId}/assist`,
+      input,
+    ),
 };

@@ -9,6 +9,7 @@ import { useDiscussion } from '@/hooks/useDiscussion';
 import { discussionsService } from '@/services/discussions';
 import { generateColor } from '@/utils/colors';
 import { firstUnreadIndex } from '@/lib/discussion';
+import { AgentStartErrorBanner } from '@/components/AgentStartErrorBanner';
 import { DiscussionThread } from './DiscussionThread';
 import { DiscussionInput } from './DiscussionInput';
 import { ResolveDialog } from './ResolveDialog';
@@ -61,6 +62,11 @@ export function DiscussionPanel() {
     typingUsers,
     remoteUsers,
     applyMessages,
+    invokeAssist,
+    assistState,
+    streamingReply,
+    assistError,
+    clearAssistError,
   } = useDiscussion({
     sprintId,
     discussionId: discussion?.id || null,
@@ -235,6 +241,8 @@ export function DiscussionPanel() {
               canRedact={canRedact}
               onRedact={redact}
               onBottomVisible={markRead}
+              assistState={assistState}
+              streamingReply={streamingReply}
             />
           </ScrollArea>
           {!synced && (
@@ -242,7 +250,19 @@ export function DiscussionPanel() {
               Connecting live sync…
             </p>
           )}
-          <DiscussionInput onSend={sendMessage} onTyping={setTyping} members={members} />
+          {assistError && (
+            <div className="px-3 pt-2">
+              <AgentStartErrorBanner error={assistError} onDismiss={clearAssistError} />
+            </div>
+          )}
+          <DiscussionInput
+            onSend={sendMessage}
+            onTyping={setTyping}
+            members={members}
+            onAssist={invokeAssist}
+            canSuggestAnswer={discussion.entityType === 'question'}
+            assistRunning={assistState !== null}
+          />
           <ResolveDialog
             open={resolveOpen}
             onOpenChange={setResolveOpen}

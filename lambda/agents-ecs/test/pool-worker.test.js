@@ -217,3 +217,12 @@ describe('discussion-assist phase (plan §8)', () => {
     }
   });
 });
+
+describe('discussions nudge in phase prompts (plan §5)', () => {
+  it('appends the get_discussions nudge to every non-discussion prompt', () => {
+    expect(poolWorker).toContain('const DISCUSSIONS_NUDGE');
+    expect(poolWorker).toContain('return prompt + DISCUSSIONS_NUDGE;');
+    // The discussion phase itself returns early — no recursive nudge.
+    expect(poolWorker).toContain("if (phase === 'discussion') return buildDiscussionPrompt(job);");
+  });
+});
