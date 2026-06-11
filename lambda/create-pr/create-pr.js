@@ -142,7 +142,7 @@ async function cleanupConstructionTaskBranches({
 }
 
 exports.handler = async (event) => {
-  const { projectId, branch, baseBranch, gitRepo, gitToken, executionId } = event;
+  const { projectId, branch, baseBranch, gitRepo, gitToken, executionId, title } = event;
   console.log('Request:', JSON.stringify({ projectId, branch, baseBranch, gitRepo, executionId }));
 
   if (!gitRepo || !branch || !gitToken) {
@@ -158,7 +158,7 @@ exports.handler = async (event) => {
     const [owner, repo] = parts;
 
     // Create PR using GitHub API
-    const prTitle = `AI-DLC: ${branch}`;
+    const prTitle = title || `AI-DLC: ${branch}`;
     const prBody = `Automated PR created by AI-DLC Construction Agent\n\nExecution ID: ${executionId}\nProject: ${projectId}`;
 
     const ghHeaders = {

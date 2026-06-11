@@ -932,10 +932,16 @@ export const handler = async (event) => {
             .next();
         }
         if (data.gitRepo !== undefined) {
-          // SECURITY: same execSync sink as POST. The legacy gitRepo is freeform
-          // but must be shell-safe so it can't break out of the git clone command.
-          if (data.gitRepo && !isSafeRepo(data.gitRepo)) {
-            return response(400, { error: `Invalid gitRepo "${data.gitRepo}".` });
+          // SECURITY: same execSync sink as POST. This value also feeds
+          // ensureLegacyRepoMigrated/syncPrimaryRepo, which can create a
+          // Repository vertex — so enforce the same strict owner/repo format
+          // as POST /repos. A looser value (full URL, extra path segments)
+          // passes the shell-safe check but later makes parseOwnerRepo throw
+          // inside trigger_pr_creation, bricking PR creation for the project.
+          if (data.gitRepo && !REPO_URL_PATTERN.test(data.gitRepo)) {
+            return response(400, {
+              error: `Invalid gitRepo "${data.gitRepo}": expected "owner/repo".`,
+            });
           }
           await g
             .V()

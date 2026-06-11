@@ -101,7 +101,7 @@ export function GitHubRepoSelect(props: Props) {
         const repo = repos.find((r) => r.fullName === e.target.value) || null;
         props.onChange(repo);
       }}
-      className="w-full border rounded px-3 py-2"
+      className="w-full border dark:border-gray-600 rounded px-3 py-2 dark:bg-gray-700 dark:text-white"
     >
       <option value="">Select a repository</option>
       {filtered.map((repo) => (

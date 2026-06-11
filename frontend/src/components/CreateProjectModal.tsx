@@ -27,17 +27,10 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleReposChange = (repos: GitHubRepo[]) => {
-    const fullNames = repos.map((r) => r.fullName);
-    setSelectedRepos(fullNames);
-
+  const applyPrimaryRepo = (nextPrimary: string) => {
     const prevPrimaryName = repoShortName(primaryRepo);
-    const nextPrimary =
-      fullNames.length === 0 ? '' : fullNames.includes(primaryRepo) ? primaryRepo : fullNames[0];
-
-    setPrimaryRepo(nextPrimary);
-
     const nextPrimaryName = repoShortName(nextPrimary);
+    setPrimaryRepo(nextPrimary);
     setFormData((prev) => ({
       ...prev,
       gitRepo: nextPrimary,
@@ -45,20 +38,21 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
     }));
   };
 
+  const handleReposChange = (repos: GitHubRepo[]) => {
+    const fullNames = repos.map((r) => r.fullName);
+    setSelectedRepos(fullNames);
+    applyPrimaryRepo(
+      fullNames.length === 0 ? '' : fullNames.includes(primaryRepo) ? primaryRepo : fullNames[0],
+    );
+  };
+
   const handleSetPrimary = (repoFullName: string) => {
-    const prevPrimaryName = repoShortName(primaryRepo);
-    setPrimaryRepo(repoFullName);
-    const nextPrimaryName = repoShortName(repoFullName);
-    setFormData((prev) => ({
-      ...prev,
-      gitRepo: repoFullName,
-      name: prev.name === '' || prev.name === prevPrimaryName ? nextPrimaryName : prev.name,
-    }));
+    applyPrimaryRepo(repoFullName);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (selectedRepos.length > 0 && selectedRepos.filter((r) => r === primaryRepo).length !== 1) {
+    if (selectedRepos.length > 0 && !selectedRepos.includes(primaryRepo)) {
       setError('Select exactly one primary repository.');
       return;
     }

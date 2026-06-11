@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useAuth } from '../contexts/AuthContext';
 import {
   projectsService,
   type Project,
@@ -97,7 +96,6 @@ const REPO_ROLE_COLORS: Record<string, string> = {
 export default function ProjectSettings() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
-  useAuth();
 
   const [project, setProject] = useState<Project | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
@@ -145,6 +143,7 @@ export default function ProjectSettings() {
   const [addingRepo, setAddingRepo] = useState(false);
   const [removingRepo, setRemovingRepo] = useState<string | null>(null);
   const [settingPrimary, setSettingPrimary] = useState<string | null>(null);
+  const [confirmRemoveRepo, setConfirmRemoveRepo] = useState<string | null>(null);
 
   // Add member state
   const [showAddMember, setShowAddMember] = useState(false);
@@ -375,10 +374,8 @@ export default function ProjectSettings() {
     try {
       const updates: {
         name?: string;
-        gitRepo?: string;
       } = {};
       if (editName !== project.name) updates.name = editName;
-      if (editGitRepo !== project.gitRepo) updates.gitRepo = editGitRepo;
       if (Object.keys(updates).length === 0) {
         setSaving(false);
         return;
@@ -419,20 +416,30 @@ export default function ProjectSettings() {
       selectedNewRepos.map((url) => projectsService.addRepo(projectId, { url })),
     );
     const succeeded = results.filter((r) => r.status === 'fulfilled').length;
-    const failed = results.filter((r) => r.status === 'rejected').length;
-    setSelectedNewRepos([]);
-    setShowAddRepo(false);
-    if (failed > 0) {
-      setError(`${succeeded} added, ${failed} failed`);
-    } else {
-      setSuccess(`${succeeded} repositor${succeeded === 1 ? 'y' : 'ies'} added`);
-    }
+    const failedRepos = results
+      .map((r, i) => (r.status === 'rejected' ? selectedNewRepos[i] : null))
+      .filter((n): n is string => n !== null);
     await loadData();
     setAddingRepo(false);
+    if (failedRepos.length === 0) {
+      setSelectedNewRepos([]);
+      setShowAddRepo(false);
+      setSuccess(`${succeeded} repositor${succeeded === 1 ? 'y' : 'ies'} added`);
+    } else {
+      // Keep the dialog open with only the failed repos still selected so the
+      // user can retry or deselect them; the error also renders in-dialog.
+      setSelectedNewRepos(failedRepos);
+      setError(
+        succeeded > 0
+          ? `${succeeded} added. Failed to add: ${failedRepos.join(', ')}`
+          : `Failed to add: ${failedRepos.join(', ')}`,
+      );
+    }
   };
 
   const handleRemoveRepo = async (repoUrl: string) => {
     if (!projectId) return;
+    setConfirmRemoveRepo(null);
     clearMessages();
     setRemovingRepo(repoUrl);
     try {
@@ -634,16 +641,14 @@ export default function ProjectSettings() {
                     <Input
                       id="proj-repo"
                       value={editGitRepo}
-                      onChange={(e) => setEditGitRepo(e.target.value)}
                       placeholder="owner/repo"
                       className="font-mono text-sm"
-                      disabled={!canEditProject || saving}
+                      disabled
+                      readOnly
                     />
-                    {!canEditProject && (
-                      <p className="text-xs text-muted-foreground">
-                        Only owners and admins can change the repository
-                      </p>
-                    )}
+                    <p className="text-xs text-muted-foreground">
+                      Primary repository — managed in the Repositories section below
+                    </p>
                   </div>
                   {canEditProject && (
                     <div className="flex justify-end pt-2">
@@ -804,7 +809,7 @@ export default function ProjectSettings() {
                               variant="ghost"
                               size="icon"
                               className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                              onClick={() => handleRemoveRepo(repo.url)}
+                              onClick={() => setConfirmRemoveRepo(repo.url)}
                               disabled={removingRepo === repo.url || settingPrimary === repo.url}
                               title="Remove repository"
                             >
@@ -1079,7 +1084,7 @@ export default function ProjectSettings() {
                 automatically.
               </DialogDescription>
             </DialogHeader>
-            <div className="py-4">
+            <div className="py-4 space-y-3">
               <GitHubRepoSelect
                 multiple
                 value={selectedNewRepos}
@@ -1088,6 +1093,7 @@ export default function ProjectSettings() {
                 }}
                 exclude={repos.map((r) => r.url)}
               />
+              {error && <p className="text-sm text-destructive">{error}</p>}
             </div>
             <DialogFooter>
               <Button
@@ -1276,6 +1282,31 @@ export default function ProjectSettings() {
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => confirmRemove && handleRemoveMember(confirmRemove)}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!confirmRemoveRepo} onOpenChange={() => setConfirmRemoveRepo(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove Repository</AlertDialogTitle>
+            <AlertDialogDescription>
+              Remove <span className="font-mono">{confirmRemoveRepo}</span> from this project?
+              {repos.find((r) => r.url === confirmRemoveRepo)?.role === 'primary' &&
+                repos.length > 1 &&
+                ' This is the primary repository — the oldest remaining repository will be promoted to primary.'}
+              {repos.length === 1 &&
+                ' This is the last repository — the project will have no linked repository and sprints cannot run until one is added.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => confirmRemoveRepo && handleRemoveRepo(confirmRemoveRepo)}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               Remove
