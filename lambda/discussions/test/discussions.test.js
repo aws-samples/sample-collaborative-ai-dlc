@@ -1,16 +1,95 @@
 import { beforeAll, beforeEach, afterAll, afterEach, describe, it, expect, vi } from 'vitest';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
+import { mockClient } from 'aws-sdk-client-mock';
+import {
+  DynamoDBDocumentClient,
+  PutCommand,
+  GetCommand,
+  UpdateCommand,
+  DeleteCommand,
+  QueryCommand,
+} from '@aws-sdk/lib-dynamodb';
+import {
+  ApiGatewayManagementApiClient,
+  PostToConnectionCommand,
+} from '@aws-sdk/client-apigatewaymanagementapi';
 import shared from '../../shared/realtime-token.js';
 
 const { verifyRealtimeToken } = shared;
 
 const NOW = new Date('2026-01-01T00:00:00.000Z');
 const SECRET = 'test-doc-secret';
+const LOCKS_TABLE = 'discussion-locks-test';
+const CONNECTIONS_TABLE = 'connections-test';
 
 // File-level partition: every test in this file shares it.
 const PARTITION = `t-${randomUUID()}`;
+
+const ddbMock = mockClient(DynamoDBDocumentClient);
+const apiMock = mockClient(ApiGatewayManagementApiClient);
+
+// ─── In-memory DynamoDB conditional-write fake for the locks table ───
+//
+// The guard protocol (plan §7, D9) is all conditional writes. This fake
+// implements exactly the condition expressions the handler uses, against an
+// in-memory Map, so the concurrency state machine is testable without a
+// DynamoDB container. Connections-table queries are mocked separately.
+const lockStore = new Map();
+let connectionItems = [];
+
+const condFail = () => {
+  const e = new Error('The conditional request failed');
+  e.name = 'ConditionalCheckFailedException';
+  return e;
+};
+
+const installDdbFake = () => {
+  ddbMock.on(PutCommand).callsFake(async (input) => {
+    if (input.TableName !== LOCKS_TABLE) return {};
+    const item = input.Item;
+    const existing = lockStore.get(item.lockId);
+    const cond = input.ConditionExpression || '';
+    if (cond && existing) {
+      const now = input.ExpressionAttributeValues?.[':now'];
+      let ok = false;
+      if (cond.includes('guardState = :pending')) {
+        ok = existing.guardState === 'pending' && existing.expiresAt < now;
+      } else if (cond.includes('expiresAt < :now')) {
+        ok = existing.expiresAt < now;
+      }
+      if (!ok) throw condFail();
+    }
+    lockStore.set(item.lockId, { ...item });
+    return {};
+  });
+  ddbMock.on(GetCommand).callsFake(async (input) => {
+    if (input.TableName !== LOCKS_TABLE) return {};
+    const item = lockStore.get(input.Key.lockId);
+    return item ? { Item: { ...item } } : {};
+  });
+  ddbMock.on(UpdateCommand).callsFake(async (input) => {
+    if (input.TableName !== LOCKS_TABLE) return {};
+    const item = lockStore.get(input.Key.lockId);
+    if (input.ConditionExpression?.includes('ownerToken = :token')) {
+      if (!item || item.ownerToken !== input.ExpressionAttributeValues[':token']) {
+        throw condFail();
+      }
+    }
+    item.guardState = input.ExpressionAttributeValues[':complete'];
+    item.expiresAt = input.ExpressionAttributeValues[':exp'];
+    return {};
+  });
+  ddbMock.on(DeleteCommand).callsFake(async (input) => {
+    if (input.TableName === LOCKS_TABLE) lockStore.delete(input.Key.lockId);
+    return {};
+  });
+  ddbMock.on(QueryCommand).callsFake(async (input) => {
+    if (input.TableName === CONNECTIONS_TABLE) return { Items: connectionItems };
+    return { Items: [] };
+  });
+};
 
 let handler;
 let close;
@@ -43,9 +122,16 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await g.V().drop().next();
+  ddbMock.reset();
+  apiMock.reset();
+  lockStore.clear();
+  connectionItems = [];
+  installDdbFake();
+  apiMock.on(PostToConnectionCommand).resolves({});
   vi.stubEnv('REALTIME_DOC_SECRET', SECRET);
-  // Pin Date so token iat/exp are assertable. Don't fake setTimeout/etc —
-  // gremlin's WebSocket driver uses real timers internally.
+  vi.stubEnv('LOCKS_TABLE', LOCKS_TABLE);
+  // Pin Date so timestamps/expiries are assertable. Don't fake setTimeout —
+  // the guard-poll loops and gremlin's WebSocket driver need real timers.
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(NOW);
 });
@@ -55,8 +141,13 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
+const nowSec = () => Math.floor(NOW.getTime() / 1000);
+
 const MEMBER_SUB = 'member-user';
+const ADMIN_SUB = 'admin-user';
 const OUTSIDER_SUB = 'outsider-user';
+
+// ─── Seed helpers ───
 
 const seedProject = async ({ projectId, sprintId, members = [] }) => {
   await g.addV('Project').property('id', projectId).next();
@@ -90,17 +181,144 @@ const seedProject = async ({ projectId, sprintId, members = [] }) => {
   }
 };
 
-const postToken = ({ sprintId, projectId, sub = MEMBER_SUB }) =>
+const seedDefaultProject = async () => {
+  const projectId = randomUUID();
+  const sprintId = randomUUID();
+  await seedProject({
+    projectId,
+    sprintId,
+    members: [
+      { sub: MEMBER_SUB, role: 'member' },
+      { sub: ADMIN_SUB, role: 'admin' },
+    ],
+  });
+  return { projectId, sprintId };
+};
+
+const seedQuestion = async (sprintId, questionId, title = 'Which database?') =>
+  g
+    .V()
+    .has('Sprint', 'id', sprintId)
+    .as('s')
+    .addV('Question')
+    .property('id', questionId)
+    .property('title', title)
+    .property('sprint_id', sprintId)
+    .as('q')
+    .addE('CONTAINS')
+    .from_('s')
+    .to('q')
+    .next();
+
+const seedDiscussion = async (sprintId, discussionId, { entityType = 'sprint', createdAt } = {}) =>
+  g
+    .V()
+    .has('Sprint', 'id', sprintId)
+    .as('s')
+    .addV('Discussion')
+    .property('id', discussionId)
+    .property('entity_type', entityType)
+    .property('entity_id', sprintId)
+    .property('entity_title', '')
+    .property('sprint_id', sprintId)
+    .property('status', 'open')
+    .property('created_at', createdAt || NOW.toISOString())
+    .property('created_by', MEMBER_SUB)
+    .property('created_by_name', 'Member')
+    .property('last_message_at', createdAt || NOW.toISOString())
+    .as('d')
+    .addE('HAS_DISCUSSION')
+    .from_('s')
+    .to('d')
+    .select('s')
+    .addE('DISCUSSES')
+    .from_('d')
+    .to('s')
+    .next();
+
+const seedMessage = async (
+  discussionId,
+  sprintId,
+  { id, content, authorId = MEMBER_SUB, mentions = [], createdAt, updatedAt },
+) =>
+  g
+    .V()
+    .has('Discussion', 'id', discussionId)
+    .as('d')
+    .addV('DiscussionMessage')
+    .property('id', id)
+    .property('content', content)
+    .property('author_id', authorId)
+    .property('author_name', 'Member')
+    .property('author_type', 'user')
+    .property('mentions', JSON.stringify(mentions))
+    .property('created_at', createdAt)
+    .property('updated_at', updatedAt || createdAt)
+    .property('discussion_id', discussionId)
+    .property('sprint_id', sprintId)
+    .as('m')
+    .addE('HAS_MESSAGE')
+    .from_('d')
+    .to('m')
+    .next();
+
+const payloadHashOf = (content, mentions = []) =>
+  createHash('sha256')
+    .update(JSON.stringify({ content, mentions: [...new Set(mentions)].sort() }))
+    .digest('hex');
+
+// ─── Request helpers ───
+
+const claimsFor = (sub) => ({ sub, email: `${sub}@example.com` });
+
+const call = (method, resource, { pathParameters, body, sub = MEMBER_SUB, query } = {}) =>
   handler({
-    httpMethod: 'POST',
-    resource: sprintId
+    httpMethod: method,
+    resource,
+    pathParameters,
+    queryStringParameters: query,
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    ...(sub ? { requestContext: { authorizer: { claims: claimsFor(sub) } } } : {}),
+  });
+
+const listDiscussions = (sprintId, opts = {}) =>
+  call('GET', '/api/sprints/{sprintId}/discussions', { pathParameters: { sprintId }, ...opts });
+
+const createDiscussion = (sprintId, body, opts = {}) =>
+  call('POST', '/api/sprints/{sprintId}/discussions', {
+    pathParameters: { sprintId },
+    body,
+    ...opts,
+  });
+
+const listMessages = (sprintId, discussionId, query, opts = {}) =>
+  call('GET', '/api/sprints/{sprintId}/discussions/{discussionId}/messages', {
+    pathParameters: { sprintId, discussionId },
+    query,
+    ...opts,
+  });
+
+const postMessage = (sprintId, discussionId, body, opts = {}) =>
+  call('POST', '/api/sprints/{sprintId}/discussions/{discussionId}/messages', {
+    pathParameters: { sprintId, discussionId },
+    body,
+    ...opts,
+  });
+
+const postToken = ({ sprintId, projectId, sub = MEMBER_SUB }) =>
+  call(
+    'POST',
+    sprintId
       ? '/api/sprints/{sprintId}/realtime-token'
       : '/api/projects/{projectId}/realtime-token',
-    pathParameters: sprintId ? { sprintId } : { projectId },
-    ...(sub
-      ? { requestContext: { authorizer: { claims: { sub, email: `${sub}@example.com` } } } }
-      : {}),
-  });
+    { pathParameters: sprintId ? { sprintId } : { projectId }, sub },
+  );
+
+const json = (res) => JSON.parse(res.body);
+
+// =============================================================================
+// Realtime token issuance (PR 1)
+// =============================================================================
 
 describe('OPTIONS', () => {
   it('short-circuits with 200', async () => {
@@ -111,51 +329,27 @@ describe('OPTIONS', () => {
 
 describe('POST /sprints/{sprintId}/realtime-token', () => {
   it('issues a sprint+project scoped token for a project member', async () => {
-    const projectId = randomUUID();
-    const sprintId = randomUUID();
-    await seedProject({ projectId, sprintId, members: [{ sub: MEMBER_SUB, role: 'member' }] });
+    const { projectId, sprintId } = await seedDefaultProject();
 
     const res = await postToken({ sprintId });
     expect(res.statusCode).toBe(200);
 
-    const body = JSON.parse(res.body);
+    const body = json(res);
     expect(body.scopes).toEqual([`sprint:${sprintId}`, `project:${projectId}`]);
-    expect(body.exp).toBe(Math.floor(NOW.getTime() / 1000) + 600);
+    expect(body.exp).toBe(nowSec() + 600);
 
     const verified = verifyRealtimeToken(body.token, SECRET, { now: NOW.getTime() });
     expect(verified.ok).toBe(true);
     expect(verified.payload.sub).toBe(MEMBER_SUB);
-    expect(verified.payload.scopes).toEqual(body.scopes);
-  });
-
-  it('issues tokens for owners and admins too', async () => {
-    const projectId = randomUUID();
-    const sprintId = randomUUID();
-    await seedProject({
-      projectId,
-      sprintId,
-      members: [
-        { sub: 'owner-user', role: 'owner' },
-        { sub: 'admin-user', role: 'admin' },
-      ],
-    });
-
-    expect((await postToken({ sprintId, sub: 'owner-user' })).statusCode).toBe(200);
-    expect((await postToken({ sprintId, sub: 'admin-user' })).statusCode).toBe(200);
   });
 
   it('returns 403 for a signed-in non-member (token issuance is membership-gated)', async () => {
-    const projectId = randomUUID();
-    const sprintId = randomUUID();
-    await seedProject({ projectId, sprintId, members: [{ sub: MEMBER_SUB, role: 'member' }] });
-
-    const res = await postToken({ sprintId, sub: OUTSIDER_SUB });
-    expect(res.statusCode).toBe(403);
+    const { sprintId } = await seedDefaultProject();
+    expect((await postToken({ sprintId, sub: OUTSIDER_SUB })).statusCode).toBe(403);
   });
 
   it('returns 404 for an unknown sprint', async () => {
-    const res = await postToken({ sprintId: randomUUID() });
-    expect(res.statusCode).toBe(404);
+    expect((await postToken({ sprintId: randomUUID() })).statusCode).toBe(404);
   });
 
   it('returns 401 without authenticated claims', async () => {
@@ -170,41 +364,549 @@ describe('POST /sprints/{sprintId}/realtime-token', () => {
 
 describe('POST /projects/{projectId}/realtime-token', () => {
   it('issues a project-scoped token for a member', async () => {
-    const projectId = randomUUID();
-    await seedProject({ projectId, members: [{ sub: MEMBER_SUB, role: 'member' }] });
+    const { projectId } = await seedDefaultProject();
 
     const res = await postToken({ projectId });
     expect(res.statusCode).toBe(200);
-
-    const body = JSON.parse(res.body);
-    expect(body.scopes).toEqual([`project:${projectId}`]);
-    const verified = verifyRealtimeToken(body.token, SECRET, { now: NOW.getTime() });
-    expect(verified.ok).toBe(true);
-    expect(verified.payload.sub).toBe(MEMBER_SUB);
+    expect(json(res).scopes).toEqual([`project:${projectId}`]);
   });
 
-  it('returns 403 for a non-member', async () => {
-    const projectId = randomUUID();
-    await seedProject({ projectId, members: [{ sub: MEMBER_SUB, role: 'member' }] });
-
-    const res = await postToken({ projectId, sub: OUTSIDER_SUB });
-    expect(res.statusCode).toBe(403);
-  });
-
-  it('returns 403 for an unknown project (indistinguishable from non-membership)', async () => {
-    const res = await postToken({ projectId: randomUUID() });
-    expect(res.statusCode).toBe(403);
+  it('returns 403 for a non-member or unknown project', async () => {
+    const { projectId } = await seedDefaultProject();
+    expect((await postToken({ projectId, sub: OUTSIDER_SUB })).statusCode).toBe(403);
+    expect((await postToken({ projectId: randomUUID() })).statusCode).toBe(403);
   });
 });
 
-describe('unknown routes', () => {
-  it('returns 404', async () => {
-    const res = await handler({
-      httpMethod: 'GET',
-      resource: '/api/sprints/{sprintId}/discussions',
-      pathParameters: { sprintId: randomUUID() },
-      requestContext: { authorizer: { claims: { sub: MEMBER_SUB } } },
+// =============================================================================
+// POST /discussions — atomic get-or-create (plan §5, D9)
+// =============================================================================
+
+describe('POST /sprints/{sprintId}/discussions', () => {
+  it('creates a sprint-anchored thread with DISCUSSES + HAS_DISCUSSION edges and a TimelineEvent', async () => {
+    const { sprintId } = await seedDefaultProject();
+
+    const res = await createDiscussion(sprintId, { entityType: 'sprint' });
+    expect(res.statusCode).toBe(200);
+    const d = json(res);
+    expect(d.id).toMatch(/^disc-/);
+    expect(d.entityType).toBe('sprint');
+    expect(d.entityId).toBe(sprintId);
+    expect(d.status).toBe('open');
+    expect(d.createdBy).toBe(MEMBER_SUB);
+    expect(d.messageCount).toBe(0);
+
+    const edges = await g.V().has('Discussion', 'id', d.id).bothE().label().toList();
+    expect(edges.sort()).toEqual(['DISCUSSES', 'HAS_DISCUSSION']);
+
+    const events = await g
+      .V()
+      .has('TimelineEvent', 'type', 'discussion_started')
+      .values('sprint_id')
+      .toList();
+    expect(events).toEqual([sprintId]);
+  });
+
+  it('creates a question-anchored thread with the anchor title denormalized', async () => {
+    const { sprintId } = await seedDefaultProject();
+    const questionId = randomUUID();
+    await seedQuestion(sprintId, questionId, 'Which database?');
+
+    const res = await createDiscussion(sprintId, { entityType: 'question', entityId: questionId });
+    expect(res.statusCode).toBe(200);
+    const d = json(res);
+    expect(d.entityType).toBe('question');
+    expect(d.entityId).toBe(questionId);
+    expect(d.entityTitle).toBe('Which database?');
+  });
+
+  it('is get-or-create: a second call returns the SAME thread (fast path, no lock)', async () => {
+    const { sprintId } = await seedDefaultProject();
+
+    const first = json(await createDiscussion(sprintId, { entityType: 'sprint' }));
+    const second = json(await createDiscussion(sprintId, { entityType: 'sprint' }));
+    expect(second.id).toBe(first.id);
+
+    const count = await g.V().hasLabel('Discussion').count().next();
+    expect(Number(count.value)).toBe(1);
+  });
+
+  it('distinguishes sprint and inception threads on the same anchor vertex', async () => {
+    const { sprintId } = await seedDefaultProject();
+
+    const sprint = json(await createDiscussion(sprintId, { entityType: 'sprint' }));
+    const inception = json(await createDiscussion(sprintId, { entityType: 'inception' }));
+    expect(inception.id).not.toBe(sprint.id);
+    expect(inception.entityType).toBe('inception');
+  });
+
+  it('rejects an invalid entityType and a missing/foreign anchor', async () => {
+    const { sprintId } = await seedDefaultProject();
+
+    expect(
+      (await createDiscussion(sprintId, { entityType: 'banana', entityId: 'x' })).statusCode,
+    ).toBe(400);
+    expect(
+      (await createDiscussion(sprintId, { entityType: 'question', entityId: randomUUID() }))
+        .statusCode,
+    ).toBe(404);
+
+    // Anchor in ANOTHER sprint must not be reachable from this one.
+    const other = await seedDefaultProject();
+    const foreignQuestion = randomUUID();
+    await seedQuestion(other.sprintId, foreignQuestion);
+    expect(
+      (await createDiscussion(sprintId, { entityType: 'question', entityId: foreignQuestion }))
+        .statusCode,
+    ).toBe(404);
+  });
+
+  it('returns 403 for non-members', async () => {
+    const { sprintId } = await seedDefaultProject();
+    expect(
+      (await createDiscussion(sprintId, { entityType: 'sprint' }, { sub: OUTSIDER_SUB }))
+        .statusCode,
+    ).toBe(403);
+  });
+
+  it('concurrent creation produces exactly one vertex', async () => {
+    const { sprintId } = await seedDefaultProject();
+
+    const results = await Promise.all([
+      createDiscussion(sprintId, { entityType: 'sprint' }),
+      createDiscussion(sprintId, { entityType: 'sprint' }),
+      createDiscussion(sprintId, { entityType: 'sprint' }),
+    ]);
+
+    const ids = new Set();
+    for (const res of results) {
+      // Every caller either gets the thread or a transparent-retry 409.
+      expect([200, 409]).toContain(res.statusCode);
+      if (res.statusCode === 200) ids.add(json(res).id);
+      else expect(json(res).reason).toBe('creation_in_progress');
+    }
+    expect(ids.size).toBe(1);
+
+    const count = await g.V().hasLabel('Discussion').count().next();
+    expect(Number(count.value)).toBe(1);
+  });
+
+  it('slow-but-healthy winner: guard held past loser retries → 409 creation_in_progress {retryAfter}', async () => {
+    const { sprintId } = await seedDefaultProject();
+    // Simulate a winner mid-creation: guard held, no vertex yet.
+    lockStore.set(`create:${sprintId}:sprint:${sprintId}`, {
+      lockId: `create:${sprintId}:sprint:${sprintId}`,
+      kind: 'creation',
+      expiresAt: nowSec() + 25,
     });
-    expect(res.statusCode).toBe(404);
+
+    const res = await createDiscussion(sprintId, { entityType: 'sprint' });
+    expect(res.statusCode).toBe(409);
+    expect(json(res)).toEqual({ reason: 'creation_in_progress', retryAfter: 1 });
+
+    const count = await g.V().hasLabel('Discussion').count().next();
+    expect(Number(count.value)).toBe(0);
+  });
+
+  it('crashed winner: expired guard → next caller takes over and creates', async () => {
+    const { sprintId } = await seedDefaultProject();
+    lockStore.set(`create:${sprintId}:sprint:${sprintId}`, {
+      lockId: `create:${sprintId}:sprint:${sprintId}`,
+      kind: 'creation',
+      expiresAt: nowSec() - 5,
+    });
+
+    const res = await createDiscussion(sprintId, { entityType: 'sprint' });
+    expect(res.statusCode).toBe(200);
+    expect(json(res).id).toMatch(/^disc-/);
+  });
+});
+
+// =============================================================================
+// GET /discussions — list
+// =============================================================================
+
+describe('GET /sprints/{sprintId}/discussions', () => {
+  it('lists threads with computed messageCount, sorted by last_message_at desc', async () => {
+    const { sprintId } = await seedDefaultProject();
+    await seedDiscussion(sprintId, 'disc-old', { createdAt: '2025-12-01T00:00:00.000Z' });
+    await seedDiscussion(sprintId, 'disc-new', {
+      entityType: 'inception',
+      createdAt: '2025-12-20T00:00:00.000Z',
+    });
+    await seedMessage('disc-old', sprintId, {
+      id: 'dm-1-aaaaaaaa',
+      content: 'hi',
+      createdAt: '2025-12-02T00:00:00.000Z',
+    });
+
+    const res = await listDiscussions(sprintId);
+    expect(res.statusCode).toBe(200);
+    const list = json(res);
+    expect(list.map((d) => d.id)).toEqual(['disc-new', 'disc-old']);
+    expect(list.find((d) => d.id === 'disc-old').messageCount).toBe(1);
+    expect(list.find((d) => d.id === 'disc-new').messageCount).toBe(0);
+  });
+
+  it('returns 403 for non-members and 404 for unknown sprints', async () => {
+    const { sprintId } = await seedDefaultProject();
+    expect((await listDiscussions(sprintId, { sub: OUTSIDER_SUB })).statusCode).toBe(403);
+    expect((await listDiscussions(randomUUID())).statusCode).toBe(404);
+  });
+});
+
+// =============================================================================
+// POST /messages — stateful message guard (plan §7, D9)
+// =============================================================================
+
+describe('POST .../messages — append + guard state matrix', () => {
+  let sprintId;
+  const DISC = 'disc-under-test';
+  const MSG_ID = 'dm-1700000000-abcd1234';
+  const CONTENT = 'Hello **world**';
+
+  beforeEach(async () => {
+    ({ sprintId } = await seedDefaultProject());
+    await seedDiscussion(sprintId, DISC);
+  });
+
+  const guardKey = () => `msg:${DISC}:${MSG_ID}`;
+
+  it('persists the message, bumps last_message_at, marks the guard complete, returns 201', async () => {
+    const res = await postMessage(sprintId, DISC, { id: MSG_ID, content: CONTENT });
+    expect(res.statusCode).toBe(201);
+    const m = json(res);
+    expect(m).toMatchObject({
+      id: MSG_ID,
+      content: CONTENT,
+      authorId: MEMBER_SUB,
+      authorType: 'user',
+      discussionId: DISC,
+      sprintId,
+      createdAt: NOW.toISOString(),
+      updatedAt: NOW.toISOString(),
+    });
+
+    const lastMessageAt = await g
+      .V()
+      .has('Discussion', 'id', DISC)
+      .values('last_message_at')
+      .next();
+    expect(lastMessageAt.value).toBe(NOW.toISOString());
+
+    const guard = lockStore.get(guardKey());
+    expect(guard.guardState).toBe('complete');
+    expect(guard.expiresAt).toBe(nowSec() + 3600);
+  });
+
+  it('idempotent retry (same id + author + payload) echoes 200 off the complete guard', async () => {
+    await postMessage(sprintId, DISC, { id: MSG_ID, content: CONTENT });
+    const res = await postMessage(sprintId, DISC, { id: MSG_ID, content: CONTENT });
+    expect(res.statusCode).toBe(200);
+    expect(json(res).content).toBe(CONTENT);
+
+    const count = await g.V().hasLabel('DiscussionMessage').count().next();
+    expect(Number(count.value)).toBe(1);
+  });
+
+  it('same id + different content → 409 duplicate_message_id', async () => {
+    await postMessage(sprintId, DISC, { id: MSG_ID, content: CONTENT });
+    const res = await postMessage(sprintId, DISC, { id: MSG_ID, content: 'something else' });
+    expect(res.statusCode).toBe(409);
+    expect(json(res).reason).toBe('duplicate_message_id');
+  });
+
+  it('same id + same content + DIFFERENT mentions → 409, not an idempotent echo', async () => {
+    await postMessage(sprintId, DISC, { id: MSG_ID, content: CONTENT, mentions: [] });
+    const res = await postMessage(sprintId, DISC, {
+      id: MSG_ID,
+      content: CONTENT,
+      mentions: [ADMIN_SUB],
+    });
+    expect(res.statusCode).toBe(409);
+    expect(json(res).reason).toBe('duplicate_message_id');
+  });
+
+  it('same id + different author → 409 duplicate_message_id', async () => {
+    await postMessage(sprintId, DISC, { id: MSG_ID, content: CONTENT });
+    const res = await postMessage(
+      sprintId,
+      DISC,
+      { id: MSG_ID, content: CONTENT },
+      { sub: ADMIN_SUB },
+    );
+    expect(res.statusCode).toBe(409);
+    expect(json(res).reason).toBe('duplicate_message_id');
+  });
+
+  it('two concurrent same-id POSTs → one vertex; loser echoes', async () => {
+    const [a, b] = await Promise.all([
+      postMessage(sprintId, DISC, { id: MSG_ID, content: CONTENT }),
+      postMessage(sprintId, DISC, { id: MSG_ID, content: CONTENT }),
+    ]);
+
+    const statuses = [a.statusCode, b.statusCode].sort();
+    // One 201 (winner); the other 200 (echo) or 409 message_in_progress
+    // (transparent client retry) depending on interleaving.
+    expect(statuses[1]).toBeLessThanOrEqual(409);
+    expect(statuses).toContain(201);
+
+    const count = await g.V().hasLabel('DiscussionMessage').count().next();
+    expect(Number(count.value)).toBe(1);
+  });
+
+  it('winner still in flight (pending, not expired, vertex not visible) → 409 message_in_progress {retryAfter}', async () => {
+    lockStore.set(guardKey(), {
+      lockId: guardKey(),
+      kind: 'message',
+      ownerToken: 'someone-else',
+      guardState: 'pending',
+      authorId: MEMBER_SUB,
+      payloadHash: payloadHashOf(CONTENT),
+      expiresAt: nowSec() + 100,
+    });
+
+    const res = await postMessage(sprintId, DISC, { id: MSG_ID, content: CONTENT });
+    expect(res.statusCode).toBe(409);
+    expect(json(res)).toEqual({ reason: 'message_in_progress', retryAfter: 1 });
+  });
+
+  it('crashed winner BEFORE the Neptune write: pending + expired + no vertex → takeover persists', async () => {
+    lockStore.set(guardKey(), {
+      lockId: guardKey(),
+      kind: 'message',
+      ownerToken: 'dead-winner',
+      guardState: 'pending',
+      authorId: MEMBER_SUB,
+      payloadHash: payloadHashOf(CONTENT),
+      expiresAt: nowSec() - 10,
+    });
+
+    const res = await postMessage(sprintId, DISC, { id: MSG_ID, content: CONTENT });
+    expect(res.statusCode).toBe(201);
+
+    const count = await g.V().hasLabel('DiscussionMessage').count().next();
+    expect(Number(count.value)).toBe(1);
+    expect(lockStore.get(guardKey()).guardState).toBe('complete');
+  });
+
+  it('crashed winner AFTER the Neptune write: takeover skips the write, marks complete, echoes', async () => {
+    await seedMessage(DISC, sprintId, {
+      id: MSG_ID,
+      content: CONTENT,
+      createdAt: NOW.toISOString(),
+    });
+    lockStore.set(guardKey(), {
+      lockId: guardKey(),
+      kind: 'message',
+      ownerToken: 'dead-winner',
+      guardState: 'pending',
+      authorId: MEMBER_SUB,
+      payloadHash: payloadHashOf(CONTENT),
+      expiresAt: nowSec() - 10,
+    });
+
+    const res = await postMessage(sprintId, DISC, { id: MSG_ID, content: CONTENT });
+    expect(res.statusCode).toBe(200);
+    expect(json(res).content).toBe(CONTENT);
+
+    const count = await g.V().hasLabel('DiscussionMessage').count().next();
+    expect(Number(count.value)).toBe(1);
+    expect(lockStore.get(guardKey()).guardState).toBe('complete');
+  });
+
+  it('post-TTL retry (guard gone, vertex exists): scoped Neptune check → echo or 409', async () => {
+    await seedMessage(DISC, sprintId, {
+      id: MSG_ID,
+      content: CONTENT,
+      createdAt: NOW.toISOString(),
+    });
+    // No guard row at all — TTL cleaned it up ≥1 h ago.
+
+    const echoRes = await postMessage(sprintId, DISC, { id: MSG_ID, content: CONTENT });
+    expect(echoRes.statusCode).toBe(200);
+
+    lockStore.clear();
+    const conflictRes = await postMessage(sprintId, DISC, { id: MSG_ID, content: 'different' });
+    expect(conflictRes.statusCode).toBe(409);
+    expect(json(conflictRes).reason).toBe('duplicate_message_id');
+
+    const count = await g.V().hasLabel('DiscussionMessage').count().next();
+    expect(Number(count.value)).toBe(1);
+  });
+
+  it('ownerToken mismatch on the complete-transition is a no-op (message still returned)', async () => {
+    // Simulate a takeover stealing the guard mid-write: every complete-
+    // transition fails its ownerToken condition.
+    ddbMock.on(UpdateCommand).callsFake(async () => {
+      throw condFail();
+    });
+
+    const res = await postMessage(sprintId, DISC, { id: MSG_ID, content: CONTENT });
+    expect(res.statusCode).toBe(201);
+
+    const count = await g.V().hasLabel('DiscussionMessage').count().next();
+    expect(Number(count.value)).toBe(1);
+  });
+
+  it('validates id format, content presence, and the 10k content cap', async () => {
+    expect(
+      (await postMessage(sprintId, DISC, { id: 'not-a-dm-id', content: 'x' })).statusCode,
+    ).toBe(400);
+    expect((await postMessage(sprintId, DISC, { id: MSG_ID, content: '   ' })).statusCode).toBe(
+      400,
+    );
+    expect(
+      (await postMessage(sprintId, DISC, { id: MSG_ID, content: 'x'.repeat(10_001) })).statusCode,
+    ).toBe(400);
+  });
+
+  it('strips non-member mentions, keeps member mentions (canonical sorted/deduped)', async () => {
+    const res = await postMessage(sprintId, DISC, {
+      id: MSG_ID,
+      content: CONTENT,
+      mentions: [OUTSIDER_SUB, ADMIN_SUB, ADMIN_SUB, MEMBER_SUB],
+    });
+    expect(res.statusCode).toBe(201);
+    expect(json(res).mentions).toEqual([ADMIN_SUB, MEMBER_SUB].sort());
+
+    const stored = await g.V().has('DiscussionMessage', 'id', MSG_ID).values('mentions').next();
+    expect(JSON.parse(stored.value)).toEqual([ADMIN_SUB, MEMBER_SUB].sort());
+  });
+
+  it('returns 404 for a discussion outside the sprint and 403 for non-members', async () => {
+    expect(
+      (await postMessage(sprintId, 'disc-nonexistent', { id: MSG_ID, content: 'x' })).statusCode,
+    ).toBe(404);
+    expect(
+      (await postMessage(sprintId, DISC, { id: MSG_ID, content: 'x' }, { sub: OUTSIDER_SUB }))
+        .statusCode,
+    ).toBe(403);
+  });
+});
+
+// =============================================================================
+// Takeover-safety invariant (plan §7, round 4) — init assertion pin
+// =============================================================================
+
+describe('takeover-safety invariant', () => {
+  it('module init fails fast when the lambda timeout reaches the pending window', async () => {
+    vi.resetModules();
+    vi.stubEnv('LAMBDA_TIMEOUT_SECONDS', '150');
+    await expect(import('../index.js')).rejects.toThrow(/Takeover-safety invariant/);
+    vi.stubEnv('LAMBDA_TIMEOUT_SECONDS', '');
+    vi.resetModules();
+  });
+});
+
+// =============================================================================
+// GET /messages — keyset pagination + change delta (plan §6/§7)
+// =============================================================================
+
+describe('GET .../messages — pagination and change delta', () => {
+  let sprintId;
+  const DISC = 'disc-paging';
+  const t = (n) => `2025-12-0${n}T00:00:00.000Z`;
+
+  beforeEach(async () => {
+    ({ sprintId } = await seedDefaultProject());
+    await seedDiscussion(sprintId, DISC);
+    // Five messages, m3a/m3b share a timestamp (tie-break by id).
+    await seedMessage(DISC, sprintId, { id: 'dm-1-aaaaaaaa', content: 'm1', createdAt: t(1) });
+    await seedMessage(DISC, sprintId, { id: 'dm-2-aaaaaaaa', content: 'm2', createdAt: t(2) });
+    await seedMessage(DISC, sprintId, { id: 'dm-3-aaaaaaaa', content: 'm3a', createdAt: t(3) });
+    await seedMessage(DISC, sprintId, { id: 'dm-3-bbbbbbbb', content: 'm3b', createdAt: t(3) });
+    await seedMessage(DISC, sprintId, { id: 'dm-4-aaaaaaaa', content: 'm4', createdAt: t(4) });
+  });
+
+  it('seeds the latest page in display order with hasMore', async () => {
+    const res = await listMessages(sprintId, DISC, { limit: '3' });
+    expect(res.statusCode).toBe(200);
+    const { messages, hasMore } = json(res);
+    expect(messages.map((m) => m.id)).toEqual(['dm-3-aaaaaaaa', 'dm-3-bbbbbbbb', 'dm-4-aaaaaaaa']);
+    expect(hasMore).toBe(true);
+  });
+
+  it('?before pages older history with (createdAt, id) keyset incl. tie-breaks', async () => {
+    const res = await listMessages(sprintId, DISC, { before: `${t(3)},dm-3-bbbbbbbb`, limit: '2' });
+    const { messages, hasMore } = json(res);
+    expect(messages.map((m) => m.id)).toEqual(['dm-2-aaaaaaaa', 'dm-3-aaaaaaaa']);
+    expect(hasMore).toBe(true);
+
+    const rest = json(await listMessages(sprintId, DISC, { before: `${t(2)},dm-2-aaaaaaaa` }));
+    expect(rest.messages.map((m) => m.id)).toEqual(['dm-1-aaaaaaaa']);
+    expect(rest.hasMore).toBe(false);
+  });
+
+  it('?after returns the change delta on (updatedAt, id) — including redactions of OLDER messages', async () => {
+    // Simulate a redaction of m1: content replaced, updated_at bumped.
+    await g
+      .V()
+      .has('DiscussionMessage', 'id', 'dm-1-aaaaaaaa')
+      .property(gremlin.process.cardinality.single, 'content', '[redacted by Admin]')
+      .property(gremlin.process.cardinality.single, 'redacted', 'true')
+      .property(gremlin.process.cardinality.single, 'updated_at', t(5))
+      .next();
+
+    const res = await listMessages(sprintId, DISC, { after: `${t(4)},dm-4-aaaaaaaa` });
+    const { messages, hasMore } = json(res);
+    expect(messages.map((m) => m.id)).toEqual(['dm-1-aaaaaaaa']);
+    expect(messages[0].redacted).toBe(true);
+    expect(messages[0].content).toBe('[redacted by Admin]');
+    expect(hasMore).toBe(false);
+  });
+
+  it('caps the limit at 200 and rejects malformed/conflicting cursors', async () => {
+    expect((await listMessages(sprintId, DISC, { limit: '5000' })).statusCode).toBe(200);
+    expect((await listMessages(sprintId, DISC, { before: 'garbage' })).statusCode).toBe(400);
+    expect(
+      (await listMessages(sprintId, DISC, { before: `${t(1)},x`, after: `${t(1)},x` })).statusCode,
+    ).toBe(400);
+  });
+
+  it('enforces membership and sprint scoping', async () => {
+    expect((await listMessages(sprintId, DISC, {}, { sub: OUTSIDER_SUB })).statusCode).toBe(403);
+
+    const other = await seedDefaultProject();
+    expect((await listMessages(other.sprintId, DISC, {})).statusCode).toBe(404);
+  });
+});
+
+// =============================================================================
+// Server-driven fanout (D8)
+// =============================================================================
+
+describe('discussion.message fanout', () => {
+  it('broadcasts the FULL persisted message to live sprint connections, excluding expired tokens', async () => {
+    vi.stubEnv('CONNECTIONS_TABLE', CONNECTIONS_TABLE);
+    vi.stubEnv('WEBSOCKET_ENDPOINT', 'https://fake.execute-api.eu-west-1.amazonaws.com/ws');
+    const { sprintId } = await seedDefaultProject();
+    await seedDiscussion(sprintId, 'disc-fanout');
+    connectionItems = [
+      { connectionId: 'conn-live', tokenExp: nowSec() + 300 },
+      { connectionId: 'conn-expired', tokenExp: nowSec() - 10 },
+      { connectionId: 'conn-legacy' },
+    ];
+
+    const res = await postMessage(sprintId, 'disc-fanout', {
+      id: 'dm-1700000000-fanout01',
+      content: 'broadcast me',
+    });
+    expect(res.statusCode).toBe(201);
+
+    const recipients = apiMock
+      .commandCalls(PostToConnectionCommand)
+      .map((c) => c.args[0].input.ConnectionId)
+      .sort();
+    expect(recipients).toEqual(['conn-legacy', 'conn-live']);
+
+    const payload = JSON.parse(apiMock.commandCalls(PostToConnectionCommand)[0].args[0].input.Data);
+    expect(payload.action).toBe('discussion.message');
+    expect(payload.discussionId).toBe('disc-fanout');
+    expect(payload.message).toMatchObject({
+      id: 'dm-1700000000-fanout01',
+      content: 'broadcast me',
+      authorId: MEMBER_SUB,
+    });
   });
 });

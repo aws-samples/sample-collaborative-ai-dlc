@@ -184,6 +184,16 @@ module "lambda" {
   realtime_doc_secret_param_arn  = module.realtime.realtime_doc_secret_param_arn
   realtime_doc_secret_param_name = module.realtime.realtime_doc_secret_param_name
 
+  # Discussions feature (plan §7/§10)
+  discussion_locks_table_name      = module.dynamodb.discussion_locks_table_name
+  discussion_locks_table_arn       = module.dynamodb.discussion_locks_table_arn
+  discussion_read_state_table_name = module.dynamodb.discussion_read_state_table_name
+  discussion_read_state_table_arn  = module.dynamodb.discussion_read_state_table_arn
+  connections_table_name           = module.dynamodb.connections_table_name
+  connections_table_arn            = module.dynamodb.connections_table_arn
+  websocket_api_endpoint_https     = replace(module.realtime.websocket_api_endpoint, "wss://", "https://")
+  websocket_execution_arn          = module.realtime.websocket_execution_arn
+
   # IAM scoping inputs for the agents-orchestrator role (ECS RunTask / PassRole).
   ecs_cluster_arn                  = module.compute.cluster_arn
   agent_task_definition_family_arn = module.agents.agent_task_definition_family_arn

@@ -204,3 +204,53 @@ resource "aws_dynamodb_table" "agent_pool" {
 
   tags = var.tags
 }
+
+# Discussions feature (plan §7, D9): one table, three record kinds —
+# assist locks (`assist:{discussionId}`), creation guards
+# (`create:{sprintId}:{entityType}:{entityId}`), and stateful message guards
+# (`msg:{discussionId}:{messageId}`, pending|complete). All access is via
+# conditional writes with in-condition expiry checks — lazy TTL deletion is
+# never trusted.
+resource "aws_dynamodb_table" "discussion_locks" {
+  name           = "${var.project_name}-discussion-locks-${var.environment}"
+  billing_mode   = local.billing_mode
+  hash_key       = "lockId"
+  read_capacity  = local.read_capacity
+  write_capacity = local.write_capacity
+
+  attribute {
+    name = "lockId"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "expiresAt"
+    enabled        = true
+  }
+
+  tags = var.tags
+}
+
+# Per-user composite read cursors (plan §7, D4): {lastReadAt,
+# lastReadMessageId, sprintId}. High-churn per-user KV — wrong shape for the
+# graph.
+resource "aws_dynamodb_table" "discussion_read_state" {
+  name           = "${var.project_name}-discussion-read-state-${var.environment}"
+  billing_mode   = local.billing_mode
+  hash_key       = "userId"
+  range_key      = "discussionId"
+  read_capacity  = local.read_capacity
+  write_capacity = local.write_capacity
+
+  attribute {
+    name = "userId"
+    type = "S"
+  }
+
+  attribute {
+    name = "discussionId"
+    type = "S"
+  }
+
+  tags = var.tags
+}

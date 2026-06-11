@@ -784,6 +784,23 @@ resource "aws_api_gateway_resource" "project_realtime_token" {
   path_part   = "realtime-token"
 }
 
+# /sprints/{sprintId}/discussions (discussions plan §7)
+resource "aws_api_gateway_resource" "discussions" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.sprint_root.id
+  path_part   = "discussions"
+}
+resource "aws_api_gateway_resource" "discussion" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.discussions.id
+  path_part   = "{discussionId}"
+}
+resource "aws_api_gateway_resource" "discussion_messages" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.discussion.id
+  path_part   = "messages"
+}
+
 # =============================================================================
 # Helper locals for sprint-scoped CRUD pattern
 # =============================================================================
@@ -1088,6 +1105,61 @@ resource "aws_api_gateway_integration" "project_realtime_token_post" {
 }
 
 # =============================================================================
+# Discussions Methods (discussions plan §7)
+#   GET/POST /sprints/{sprintId}/discussions
+#   GET/POST /sprints/{sprintId}/discussions/{discussionId}/messages
+# =============================================================================
+locals {
+  discussion_routes = {
+    discussions_get = {
+      resource = "discussions"
+      method   = "GET"
+      params   = { "method.request.path.sprintId" = true }
+    }
+    discussions_post = {
+      resource = "discussions"
+      method   = "POST"
+      params   = { "method.request.path.sprintId" = true }
+    }
+    discussion_messages_get = {
+      resource = "discussion_messages"
+      method   = "GET"
+      params   = { "method.request.path.sprintId" = true, "method.request.path.discussionId" = true }
+    }
+    discussion_messages_post = {
+      resource = "discussion_messages"
+      method   = "POST"
+      params   = { "method.request.path.sprintId" = true, "method.request.path.discussionId" = true }
+    }
+  }
+  discussion_resource_ids = {
+    discussions         = aws_api_gateway_resource.discussions.id
+    discussion          = aws_api_gateway_resource.discussion.id
+    discussion_messages = aws_api_gateway_resource.discussion_messages.id
+  }
+}
+
+resource "aws_api_gateway_method" "discussion_routes" {
+  for_each           = local.discussion_routes
+  rest_api_id        = aws_api_gateway_rest_api.main.id
+  resource_id        = local.discussion_resource_ids[each.value.resource]
+  http_method        = each.value.method
+  authorization      = "COGNITO_USER_POOLS"
+  authorizer_id      = aws_api_gateway_authorizer.cognito.id
+  request_parameters = each.value.params
+}
+
+resource "aws_api_gateway_integration" "discussion_routes" {
+  for_each                = local.discussion_routes
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = local.discussion_resource_ids[each.value.resource]
+  http_method             = aws_api_gateway_method.discussion_routes[each.key].http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.discussions_lambda_invoke_arn
+}
+
+# =============================================================================
 # CORS OPTIONS Methods for all resources
 # =============================================================================
 module "cors_projects" {
@@ -1252,6 +1324,24 @@ module "cors_project_realtime_token" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.project_realtime_token.id
+}
+
+module "cors_discussions" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.discussions.id
+}
+
+module "cors_discussion" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.discussion.id
+}
+
+module "cors_discussion_messages" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.discussion_messages.id
 }
 
 # =============================================================================

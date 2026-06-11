@@ -891,9 +891,10 @@ module "timeline_events_lambda" {
 # -----------------------------------------------------------------------------
 # Role: discussions (1 Lambda — discussions)
 # Neptune CRUD + read access to the realtime doc-token secret (issues HMAC
-# scope tokens after a membership check — discussions plan §4a). PR 2 adds
-# the discussion-locks/read-state tables, connections fan-out and the agents
-# dispatch invoke.
+# scope tokens after a membership check — discussions plan §4a) + the
+# discussion-locks / read-state tables (creation + message guards, D9) +
+# connections-table fan-out (server-driven discussion.message broadcasts, D8).
+# Phase 6 adds the agents dispatch invoke.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "discussions" {
   name               = "${var.project_name}-discussions-${var.environment}"
@@ -911,7 +912,7 @@ resource "aws_iam_role_policy_attachment" "discussions_vpc" {
 }
 
 resource "aws_iam_role_policy" "discussions" {
-  name = "neptune-and-doc-secret"
+  name = "neptune-doc-secret-locks-fanout"
   role = aws_iam_role.discussions.id
   policy = jsonencode({
     Version = "2012-10-17"
@@ -921,6 +922,24 @@ resource "aws_iam_role_policy" "discussions" {
         Effect   = "Allow"
         Action   = ["ssm:GetParameter"]
         Resource = var.realtime_doc_secret_param_arn
+      },
+      {
+        Effect = "Allow"
+        Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem"]
+        Resource = [
+          var.discussion_locks_table_arn,
+          var.discussion_read_state_table_arn,
+        ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:Query"]
+        Resource = ["${var.discussion_read_state_table_arn}", "${var.connections_table_arn}/index/*"]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["execute-api:ManageConnections"]
+        Resource = "${var.websocket_execution_arn}/*"
       }
     ]
   })
@@ -957,6 +976,13 @@ module "discussions_lambda" {
     ENVIRONMENT           = var.environment
     CORS_ALLOWED_ORIGINS  = var.cors_allowed_origins
     REALTIME_SECRET_PARAM = var.realtime_doc_secret_param_name
+    LOCKS_TABLE           = var.discussion_locks_table_name
+    READ_STATE_TABLE      = var.discussion_read_state_table_name
+    CONNECTIONS_TABLE     = var.connections_table_name
+    WEBSOCKET_ENDPOINT    = var.websocket_api_endpoint_https
+    # Takeover-safety invariant (plan §7): must match `timeout` above; the
+    # lambda asserts message-guard pending window (120 s) > this at init.
+    LAMBDA_TIMEOUT_SECONDS = "30"
   }
 }
 

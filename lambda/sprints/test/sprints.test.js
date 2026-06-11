@@ -184,3 +184,64 @@ describe('GET /sprints/:id (backward compatibility)', () => {
     expect(fetched.issueUrl).toBe('https://github.com/octo/repo/issues/7');
   });
 });
+
+describe('DELETE /sprints/:id — discussion cascade (discussions plan §5)', () => {
+  it('drops the sprint together with its discussions AND their messages', async () => {
+    const projectId = await seedProject();
+    const sprintId = await seedLegacySprint(projectId);
+
+    // Sprint -HAS_DISCUSSION-> Discussion -HAS_MESSAGE-> DiscussionMessage,
+    // plus a CONTAINS artifact to confirm the existing cascade still works.
+    await g
+      .V()
+      .has('Sprint', 'id', sprintId)
+      .as('s')
+      .addV('Discussion')
+      .property('id', 'disc-cascade')
+      .property('sprint_id', sprintId)
+      .as('d')
+      .addE('HAS_DISCUSSION')
+      .from_('s')
+      .to('d')
+      .select('d')
+      .addE('DISCUSSES')
+      .from_('d')
+      .to('s')
+      .select('d')
+      .addV('DiscussionMessage')
+      .property('id', 'dm-cascade-msg00001')
+      .property('discussion_id', 'disc-cascade')
+      .as('m')
+      .addE('HAS_MESSAGE')
+      .from_('d')
+      .to('m')
+      .next();
+    await g
+      .V()
+      .has('Sprint', 'id', sprintId)
+      .as('s')
+      .addV('Task')
+      .property('id', 'task-cascade')
+      .as('t')
+      .addE('CONTAINS')
+      .from_('s')
+      .to('t')
+      .next();
+
+    const res = await handler({ httpMethod: 'DELETE', pathParameters: { sprintId } });
+    expect(res.statusCode).toBe(204);
+
+    // Scope to this test's vertices (by the `id` property — the codebase
+    // never uses native T.id) — the file partition accumulates vertices from
+    // other tests.
+    const remaining = await g
+      .V()
+      .has(
+        'id',
+        gremlin.process.P.within(sprintId, 'disc-cascade', 'dm-cascade-msg00001', 'task-cascade'),
+      )
+      .values('id')
+      .toList();
+    expect(remaining).toEqual([]);
+  });
+});

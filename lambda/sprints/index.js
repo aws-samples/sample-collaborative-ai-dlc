@@ -357,13 +357,21 @@ export const handler = async (event) => {
       }
 
       case 'DELETE': {
-        // Drop sprint and all contained vertices
+        // Drop sprint and all contained vertices (incl. discussion threads
+        // and their messages — plan §5 cascade)
         await g
           .V()
           .has('Sprint', 'id', sprintId)
           .union(
             gremlin.process.statics.out('CONTAINS'),
             gremlin.process.statics.out('HAS_REVIEW'),
+            gremlin.process.statics.out('HAS_DISCUSSION').union(
+              // Messages BEFORE their thread: drop() consumes eagerly, and
+              // out('HAS_MESSAGE') from an already-dropped Discussion
+              // yields nothing.
+              gremlin.process.statics.out('HAS_MESSAGE'),
+              gremlin.process.statics.identity(),
+            ),
             gremlin.process.statics.identity(),
           )
           .drop()
