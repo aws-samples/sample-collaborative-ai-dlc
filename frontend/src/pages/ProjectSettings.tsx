@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { useAuth } from '../contexts/AuthContext';
 import {
   projectsService,
   type Project,
@@ -9,9 +10,12 @@ import {
   type AgentCli,
   type TrackerBinding,
   type SteeringDoc,
+  type ProjectRepo,
 } from '../services/projects';
 import { trackersService, type TrackerConnection } from '../services/trackers';
 import { agentsService } from '../services/agents';
+import { GitHubRepoSelect } from '../components/GitHubRepoSelect';
+import type { GitHubRepo } from '../services/github';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -66,7 +70,7 @@ const ROLE_BADGE: Record<ProjectRole, string> = {
 const AGENT_CLI_CONFIG: Record<AgentCli, { label: string; description: string }> = {
   kiro: {
     label: 'Kiro',
-    description: 'AWS Kiro CLI — API key authentication',
+    description: 'AWS Kiro CLI — device-flow SSO authentication',
   },
   claude: {
     label: 'Claude Code',
@@ -78,9 +82,21 @@ const AGENT_CLI_CONFIG: Record<AgentCli, { label: string; description: string }>
   },
 };
 
+const REPO_ROLE_COLORS: Record<string, string> = {
+  primary: 'bg-purple-100 text-purple-800',
+  frontend: 'bg-cyan-100 text-cyan-800',
+  backend: 'bg-green-100 text-green-800',
+  api: 'bg-emerald-100 text-emerald-800',
+  infra: 'bg-orange-100 text-orange-800',
+  shared: 'bg-yellow-100 text-yellow-800',
+  docs: 'bg-gray-100 text-gray-600',
+  unknown: 'bg-gray-100 text-gray-500',
+};
+
 export default function ProjectSettings() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
+  useAuth();
 
   const [project, setProject] = useState<Project | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
@@ -88,6 +104,7 @@ export default function ProjectSettings() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
+  // Edit state
   const [editName, setEditName] = useState('');
   const [editGitRepo, setEditGitRepo] = useState('');
   const [saving, setSaving] = useState(false);
@@ -105,6 +122,7 @@ export default function ProjectSettings() {
   const [connectingJira, setConnectingJira] = useState(false);
   const [showJiraProjectPicker, setShowJiraProjectPicker] = useState(false);
 
+  // Agent CLI state
   const [editAgentCli, setEditAgentCli] = useState<AgentCli>('kiro');
   const [savingAgentCli, setSavingAgentCli] = useState(false);
   const [availableCliNames, setAvailableCliNames] = useState<AgentCli[]>(['kiro']);
@@ -119,6 +137,15 @@ export default function ProjectSettings() {
     projectsApplied: number;
   } | null>(null);
 
+  // Repositories state
+  const [repos, setRepos] = useState<ProjectRepo[]>([]);
+  const [showAddRepo, setShowAddRepo] = useState(false);
+  const [selectedNewRepos, setSelectedNewRepos] = useState<string[]>([]);
+  const [addingRepo, setAddingRepo] = useState(false);
+  const [removingRepo, setRemovingRepo] = useState<string | null>(null);
+  const [settingPrimary, setSettingPrimary] = useState<string | null>(null);
+
+  // Add member state
   const [showAddMember, setShowAddMember] = useState(false);
   const [newMemberUserId, setNewMemberUserId] = useState('');
   const [newMemberEmail, setNewMemberEmail] = useState('');
@@ -131,6 +158,7 @@ export default function ProjectSettings() {
   const [showUserDropdown, setShowUserDropdown] = useState(false);
   const userDropdownRef = useRef<HTMLDivElement>(null);
 
+  // Role change confirmation
   const [confirmRoleChange, setConfirmRoleChange] = useState<{
     userId: string;
     newRole: ProjectRole;
@@ -159,6 +187,7 @@ export default function ProjectSettings() {
       setEditName(proj.name);
       setEditGitRepo(proj.gitRepo);
       setEditAgentCli(proj.agentCli ?? 'kiro');
+      setRepos(proj.repos ?? []);
       setMembers(Array.isArray(mems) ? mems : []);
       setTrackerConnections(Array.isArray(conns) ? conns : []);
 
@@ -177,13 +206,11 @@ export default function ProjectSettings() {
     }
   }, [projectId]);
 
+  // Load available CLI capabilities separately (non-blocking)
   useEffect(() => {
-    agentsService
-      .getCapabilities()
-      .then((c) => setAvailableCliNames(c.available))
-      .catch(() => {
-        /* non-fatal — keep default ['kiro'] */
-      });
+    agentsService.getCapabilities()
+      .then(c => setAvailableCliNames(c.available))
+      .catch(() => { /* non-fatal — keep default ['kiro'] */ });
   }, []);
 
   useEffect(() => {
@@ -192,7 +219,10 @@ export default function ProjectSettings() {
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
-      if (userDropdownRef.current && !userDropdownRef.current.contains(e.target as Node)) {
+      if (
+        userDropdownRef.current &&
+        !userDropdownRef.current.contains(e.target as Node)
+      ) {
         setShowUserDropdown(false);
       }
     };
@@ -209,9 +239,12 @@ export default function ProjectSettings() {
     setLoadingUsers(true);
     try {
       const users = await projectsService.listCognitoUsers();
+      // Filter out users who are already members
       const memberIds = new Set(members.map((m) => m.userId));
       setCognitoUsers(
-        users.filter((u) => u.enabled && u.status === 'CONFIRMED' && !memberIds.has(u.userId)),
+        users.filter(
+          (u) => u.enabled && u.status === 'CONFIRMED' && !memberIds.has(u.userId)
+        )
       );
     } catch (err) {
       console.error('Failed to load users:', err);
@@ -248,7 +281,10 @@ export default function ProjectSettings() {
   const filteredUsers = cognitoUsers.filter((u) => {
     if (!userSearch) return true;
     const q = userSearch.toLowerCase();
-    return u.email.toLowerCase().includes(q) || u.displayName.toLowerCase().includes(q);
+    return (
+      u.email.toLowerCase().includes(q) ||
+      u.displayName.toLowerCase().includes(q)
+    );
   });
 
   const handleAddGithubTracker = async () => {
@@ -375,6 +411,64 @@ export default function ProjectSettings() {
       setError(err instanceof Error ? err.message : 'Failed to update agent CLI');
     } finally {
       setSavingAgentCli(false);
+    }
+  };
+
+  const handleAddRepos = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!projectId || selectedNewRepos.length === 0) return;
+    clearMessages();
+    setAddingRepo(true);
+    try {
+      const results = await Promise.allSettled(
+        selectedNewRepos.map(url => projectsService.addRepo(projectId, { url }))
+      );
+      const succeeded = results.filter(r => r.status === 'fulfilled').length;
+      const failed = results.filter(r => r.status === 'rejected').length;
+      setSelectedNewRepos([]);
+      setShowAddRepo(false);
+      if (failed > 0) {
+        setSuccess(`${succeeded} added, ${failed} failed`);
+      } else {
+        setSuccess(`${succeeded} repositor${succeeded === 1 ? 'y' : 'ies'} added`);
+      }
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to add repositories');
+    } finally {
+      setAddingRepo(false);
+    }
+  };
+
+  const handleRemoveRepo = async (repoUrl: string) => {
+    if (!projectId) return;
+    clearMessages();
+    setRemovingRepo(repoUrl);
+    try {
+      await projectsService.removeRepo(projectId, repoUrl);
+      setRepos(prev => prev.filter(r => r.url !== repoUrl));
+      setSuccess('Repository removed');
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to remove repository');
+    } finally {
+      setRemovingRepo(null);
+    }
+  };
+
+  const handleSetPrimaryRepo = async (repoUrl: string) => {
+    if (!projectId) return;
+    clearMessages();
+    setSettingPrimary(repoUrl);
+    try {
+      await projectsService.update(projectId, { gitRepo: repoUrl });
+      setEditGitRepo(repoUrl);
+      setSuccess('Primary repository updated');
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to set primary repository');
+    } finally {
+      setSettingPrimary(null);
     }
   };
 
@@ -660,6 +754,83 @@ export default function ProjectSettings() {
               </CardContent>
             </Card>
 
+            {/* Repositories */}
+            <Card className="mb-6">
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-base">Repositories ({repos.length})</CardTitle>
+                  {canEditProject && (
+                    <Button size="sm" onClick={() => setShowAddRepo(true)}>
+                      + Add
+                    </Button>
+                  )}
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  Additional repositories linked to this project. Role and tech stack are detected automatically.
+                </p>
+              </CardHeader>
+              <CardContent>
+                {repos.length === 0 ? (
+                  <p className="text-sm text-muted-foreground text-center py-3">
+                    No repositories linked yet.
+                  </p>
+                ) : (
+                  <div className="divide-y divide-border">
+                    {repos.map((repo) => (
+                      <div key={repo.url} className="py-2.5 flex items-center gap-2">
+                        <div className="flex-1 min-w-0 flex items-center gap-2">
+                          <span className="text-sm font-mono truncate">{repo.url}</span>
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              'text-[10px] h-4 shrink-0',
+                              REPO_ROLE_COLORS[repo.role] || REPO_ROLE_COLORS.unknown,
+                            )}
+                          >
+                            {repo.role}
+                          </Badge>
+                          {repo.detectedStack && (
+                            <span className="shrink-0 text-[10px] text-muted-foreground">
+                              {repo.detectedStack}
+                            </span>
+                          )}
+                        </div>
+                        {canEditProject && (
+                          <div className="flex items-center gap-1 shrink-0">
+                            {repo.role !== 'primary' && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-7 text-[11px] px-2"
+                                onClick={() => handleSetPrimaryRepo(repo.url)}
+                                disabled={settingPrimary === repo.url}
+                              >
+                                {settingPrimary === repo.url ? '...' : 'Set as primary'}
+                              </Button>
+                            )}
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                              onClick={() => handleRemoveRepo(repo.url)}
+                              disabled={removingRepo === repo.url}
+                              title="Remove repository"
+                            >
+                              {removingRepo === repo.url ? (
+                                <span className="text-[10px]">...</span>
+                              ) : (
+                                <Trash2 className="h-3.5 w-3.5" />
+                              )}
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
             {/* Agent CLI */}
             <Card className="mb-6">
               <CardHeader className="pb-3">
@@ -896,6 +1067,45 @@ export default function ProjectSettings() {
         onOpenChange={setShowJiraProjectPicker}
         onConfirm={handleAddJiraBinding}
       />
+
+      {/* Add Repos Dialog */}
+      <Dialog open={showAddRepo} onOpenChange={setShowAddRepo}>
+        <DialogContent className="sm:max-w-lg">
+          <form onSubmit={handleAddRepos}>
+            <DialogHeader>
+              <DialogTitle>Add Repositories</DialogTitle>
+              <DialogDescription>
+                Select repositories to link to this project. Role and tech stack are detected automatically.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="py-4">
+              <GitHubRepoSelect
+                multiple
+                value={selectedNewRepos}
+                onChange={(selected: GitHubRepo[]) => {
+                  setSelectedNewRepos(selected.map(r => r.fullName));
+                }}
+                exclude={repos.map(r => r.url)}
+              />
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => { setShowAddRepo(false); setSelectedNewRepos([]); }}
+                disabled={addingRepo}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={addingRepo || selectedNewRepos.length === 0}>
+                {addingRepo
+                  ? 'Adding...'
+                  : `Add ${selectedNewRepos.length || ''} Repositor${selectedNewRepos.length === 1 ? 'y' : 'ies'}`}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       {/* Add Member Dialog */}
       <Dialog open={showAddMember} onOpenChange={setShowAddMember}>
