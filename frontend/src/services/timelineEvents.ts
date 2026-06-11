@@ -23,6 +23,8 @@ export interface TimelineEvent {
   userName: string;
   timestamp: string;
   sprintId: string;
+  /** Links the event to a question (question_asked / question_answered) */
+  questionId?: string;
 }
 
 export interface CreateTimelineEventInput {
@@ -31,6 +33,7 @@ export interface CreateTimelineEventInput {
   detail?: string;
   userId?: string;
   userName?: string;
+  questionId?: string;
 }
 
 export const timelineEventsService = {

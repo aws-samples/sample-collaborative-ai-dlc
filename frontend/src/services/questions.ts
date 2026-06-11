@@ -28,6 +28,12 @@ export interface Question {
   draftAnswer?: StructuredAnswer;
   sprintId: string;
   createdAt: string;
+  /** Cognito sub of the user who answered (empty for unanswered/legacy questions) */
+  answeredBy?: string;
+  /** Display name of the user who answered */
+  answeredByName?: string;
+  /** ISO timestamp of when the answer was submitted */
+  answeredAt?: string;
 }
 
 export const questionsService = {

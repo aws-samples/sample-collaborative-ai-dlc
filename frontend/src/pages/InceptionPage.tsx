@@ -5,13 +5,15 @@ import { usePresence } from '@/hooks/usePresence';
 import { useCollaborativeInception } from '@/hooks/useCollaborativeInception';
 import { useAgentStatus } from '@/hooks/useAgentStatus';
 import { useSprintEvents } from '@/hooks/useSprintEvents';
+import { useQuestionAnchor } from '@/hooks/useQuestionAnchor';
+import { useAnswerQuestion } from '@/hooks/useAnswerQuestion';
+import { questionAnchorId } from '@/lib/questionAnchor';
 import { sprintsService } from '@/services/sprints';
 import { agentsService } from '@/services/agents';
 import { requirementsService } from '@/services/requirements';
 import { userStoriesService } from '@/services/userStories';
 import { tasksService } from '@/services/tasks';
 import { generalInfoService } from '@/services/generalInfo';
-import type { StructuredAnswer } from '@/services/questions';
 import { questionsService } from '@/services/questions';
 import { realtimeService } from '@/services/realtime';
 import { timelineEventsService } from '@/services/timelineEvents';
@@ -209,6 +211,9 @@ export default function InceptionPage() {
     .filter((q) => !q.structuredAnswer)
     .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   const answeredQuestions = questions.filter((q) => q.structuredAnswer);
+
+  // Scroll to a question referenced by a #question-{id} URL hash (timeline links)
+  useQuestionAnchor(questions.length > 0);
   const agentNoLongerRunning =
     pendingQuestions.length > 0 &&
     (agentStatus.status?.status === 'SUCCEEDED' ||
@@ -332,41 +337,8 @@ export default function InceptionPage() {
     }
   };
 
-  const handleAnswerQuestion = async (questionId: string, answer: StructuredAnswer) => {
-    try {
-      await questionsService.update(sprintId, questionId, { structuredAnswer: answer });
-      realtimeService.send('broadcastToDocument', {
-        data: { action: 'question.answered', sprintId, questionId },
-      });
-      timelineEventsService
-        .create(sprintId, {
-          type: 'question_answered',
-          title: 'Answered agent question',
-          userName,
-        })
-        .catch(() => {});
-      await reload();
-    } catch (err) {
-      console.error('Failed to answer question:', err);
-    }
-  };
-
-  const handleDismissQuestion = async (questionId: string) => {
-    const dismissed: StructuredAnswer = {
-      answers: [
-        {
-          selectedOptions: [],
-          freeText: '(dismissed — agent no longer running)',
-        },
-      ],
-    };
-    try {
-      await questionsService.update(sprintId, questionId, { structuredAnswer: dismissed });
-      await reload();
-    } catch (err) {
-      console.error('Failed to dismiss question:', err);
-    }
-  };
+  const { answerQuestion: handleAnswerQuestion, dismissQuestion: handleDismissQuestion } =
+    useAnswerQuestion({ sprintId, reload });
 
   return (
     <div className="flex flex-col h-full">
@@ -393,7 +365,11 @@ export default function InceptionPage() {
             </div>
           )}
           {pendingQuestions.map((pq) => (
-            <Card key={pq.id} className="border-agent-waiting bg-agent-waiting/5">
+            <Card
+              key={pq.id}
+              id={questionAnchorId(pq.id)}
+              className="border-agent-waiting bg-agent-waiting/5"
+            >
               <CardHeader className="pb-2">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
@@ -768,7 +744,7 @@ export default function InceptionPage() {
               <CardContent>
                 <div className="space-y-3">
                   {answeredQuestions.map((q) => (
-                    <div key={q.id} className="border rounded-lg p-3">
+                    <div key={q.id} id={questionAnchorId(q.id)} className="border rounded-lg p-3">
                       <p className="text-xs font-medium mb-1">Agent: {q.agent}</p>
                       {q.questions.map((sq, i) => (
                         <div key={i} className="mb-2">
@@ -793,6 +769,13 @@ export default function InceptionPage() {
                           )}
                         </div>
                       ))}
+                      {(q.answeredByName || q.answeredAt) && (
+                        <p className="text-[10px] text-muted-foreground border-t pt-2 mt-2">
+                          Answered
+                          {q.answeredByName ? ` by ${q.answeredByName}` : ''}
+                          {q.answeredAt ? ` · ${new Date(q.answeredAt).toLocaleString()}` : ''}
+                        </p>
+                      )}
                     </div>
                   ))}
                 </div>

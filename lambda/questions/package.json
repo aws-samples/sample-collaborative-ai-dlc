@@ -1,11 +1,15 @@
 {
-  "name": "questions-lambda",
+  "name": "questions",
   "version": "1.0.0",
-  "dependencies": {
-    "@aws-sdk/client-dynamodb": "^3.1060.0",
-    "@aws-sdk/credential-providers": "^3.1060.0",
-    "@aws-sdk/lib-dynamodb": "^3.1060.0",
-    "gremlin": "^3.8.1",
-    "gremlin-aws-sigv4": "^3.6.1"
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "vitest run --project=questions",
+    "test:watch": "vitest --project=questions",
+    "build": "esbuild index.js --bundle --platform=node --target=node24 --format=esm --external:@aws-sdk/* --banner:js=\"import{createRequire}from'node:module';const require=createRequire(import.meta.url);\" --outfile=.build/index.mjs",
+    "lint": "oxlint .",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check ."
   }
 }
