@@ -64,9 +64,9 @@ export function GitHubRepoSelect(props: Props) {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search repositories..."
-          className="w-full border rounded px-3 py-2 text-sm"
+          className="w-full border dark:border-gray-600 rounded px-3 py-2 text-sm dark:bg-gray-700 dark:text-white"
         />
-        <div className="max-h-60 overflow-y-auto border rounded divide-y">
+        <div className="max-h-60 overflow-y-auto border dark:border-gray-600 rounded divide-y dark:divide-gray-600">
           {filtered.length === 0 ? (
             <div className="px-3 py-4 text-sm text-gray-500 text-center">
               {repos.length === 0 ? 'No repositories available' : 'No matching repositories'}
@@ -75,7 +75,7 @@ export function GitHubRepoSelect(props: Props) {
             filtered.map((repo) => (
               <label
                 key={repo.id}
-                className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer"
+                className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer"
               >
                 <input
                   type="checkbox"

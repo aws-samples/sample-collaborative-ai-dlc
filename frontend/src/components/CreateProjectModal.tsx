@@ -11,6 +11,8 @@ interface Props {
   onCreated: () => void;
 }
 
+const repoShortName = (fullName: string) => fullName.split('/').pop() || '';
+
 export function CreateProjectModal({ onClose, onCreated }: Props) {
   const { status, loading: statusLoading, error: statusError, refresh } = useGitHubStatus();
   const [step, setStep] = useState(1);
@@ -26,46 +28,48 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   const handleReposChange = (repos: GitHubRepo[]) => {
-    const fullNames = repos.map(r => r.fullName);
+    const fullNames = repos.map((r) => r.fullName);
     setSelectedRepos(fullNames);
 
+    const prevPrimaryName = repoShortName(primaryRepo);
     const nextPrimary =
-      fullNames.length === 0
-        ? ''
-        : fullNames.includes(primaryRepo)
-          ? primaryRepo
-          : fullNames[0];
+      fullNames.length === 0 ? '' : fullNames.includes(primaryRepo) ? primaryRepo : fullNames[0];
 
     setPrimaryRepo(nextPrimary);
 
-    const primaryName = nextPrimary.split('/').pop() || '';
-    setFormData(prev => ({
+    const nextPrimaryName = repoShortName(nextPrimary);
+    setFormData((prev) => ({
       ...prev,
       gitRepo: nextPrimary,
-      name: primaryName,
+      name: prev.name === '' || prev.name === prevPrimaryName ? nextPrimaryName : prev.name,
     }));
   };
 
   const handleSetPrimary = (repoFullName: string) => {
+    const prevPrimaryName = repoShortName(primaryRepo);
     setPrimaryRepo(repoFullName);
-    const primaryName = repoFullName.split('/').pop() || '';
-    setFormData(prev => ({
+    const nextPrimaryName = repoShortName(repoFullName);
+    setFormData((prev) => ({
       ...prev,
       gitRepo: repoFullName,
-      name: primaryName,
+      name: prev.name === '' || prev.name === prevPrimaryName ? nextPrimaryName : prev.name,
     }));
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (selectedRepos.length > 0 && selectedRepos.filter((r) => r === primaryRepo).length !== 1) {
+      setError('Select exactly one primary repository.');
+      return;
+    }
     setSubmitting(true);
     setError(null);
     try {
       const input: CreateProjectInput = {
         ...formData,
-        repos: selectedRepos.map(url => ({
+        repos: selectedRepos.map((url) => ({
           url,
-          role: url === primaryRepo ? 'primary' as const : 'secondary' as const,
+          role: url === primaryRepo ? ('primary' as const) : ('secondary' as const),
         })),
       };
       const project = await projectsService.create(input);
@@ -171,13 +175,10 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
           <div>
             <h3 className="font-medium mb-1 text-gray-900 dark:text-white">Select Repositories</h3>
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-              Choose one or more repositories. The primary repo drives issue integration and project naming.
+              Choose one or more repositories. The primary repo drives issue integration and project
+              naming.
             </p>
-            <GitHubRepoSelect
-              multiple
-              value={selectedRepos}
-              onChange={handleReposChange}
-            />
+            <GitHubRepoSelect multiple value={selectedRepos} onChange={handleReposChange} />
             {selectedRepos.length > 1 && (
               <div className="mt-3 border dark:border-gray-600 rounded divide-y dark:divide-gray-600">
                 <div className="px-3 py-1.5 bg-gray-50 dark:bg-gray-700">
@@ -185,7 +186,7 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
                     Designate primary
                   </span>
                 </div>
-                {selectedRepos.map(repo => (
+                {selectedRepos.map((repo) => (
                   <label
                     key={repo}
                     className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700"
@@ -256,7 +257,8 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
               />
               {selectedRepos.length > 1 && (
                 <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                  +{selectedRepos.length - 1} additional repositor{selectedRepos.length - 1 === 1 ? 'y' : 'ies'}
+                  +{selectedRepos.length - 1} additional repositor
+                  {selectedRepos.length - 1 === 1 ? 'y' : 'ies'}
                 </p>
               )}
             </div>
@@ -276,6 +278,7 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
                     <span className="font-medium">Enable GitHub issue integration</span>
                     <span className="block text-xs text-gray-500 dark:text-gray-400">
                       Browse issues on the project page and start sprints from them.
+                      {selectedRepos.length > 1 ? ' Applies to the primary repository only.' : ''}
                     </span>
                   </span>
                 </label>

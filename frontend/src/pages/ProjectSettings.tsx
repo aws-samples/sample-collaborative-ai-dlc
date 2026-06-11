@@ -83,14 +83,15 @@ const AGENT_CLI_CONFIG: Record<AgentCli, { label: string; description: string }>
 };
 
 const REPO_ROLE_COLORS: Record<string, string> = {
-  primary: 'bg-purple-100 text-purple-800',
-  frontend: 'bg-cyan-100 text-cyan-800',
-  backend: 'bg-green-100 text-green-800',
-  api: 'bg-emerald-100 text-emerald-800',
-  infra: 'bg-orange-100 text-orange-800',
-  shared: 'bg-yellow-100 text-yellow-800',
-  docs: 'bg-gray-100 text-gray-600',
-  unknown: 'bg-gray-100 text-gray-500',
+  primary: 'bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300',
+  secondary: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
+  frontend: 'bg-cyan-100 text-cyan-800 dark:bg-cyan-900/40 dark:text-cyan-300',
+  backend: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
+  api: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300',
+  infra: 'bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300',
+  shared: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300',
+  docs: 'bg-gray-100 text-gray-600 dark:bg-gray-800/60 dark:text-gray-400',
+  unknown: 'bg-gray-100 text-gray-500 dark:bg-gray-800/60 dark:text-gray-400',
 };
 
 export default function ProjectSettings() {
@@ -208,9 +209,12 @@ export default function ProjectSettings() {
 
   // Load available CLI capabilities separately (non-blocking)
   useEffect(() => {
-    agentsService.getCapabilities()
-      .then(c => setAvailableCliNames(c.available))
-      .catch(() => { /* non-fatal — keep default ['kiro'] */ });
+    agentsService
+      .getCapabilities()
+      .then((c) => setAvailableCliNames(c.available))
+      .catch(() => {
+        /* non-fatal — keep default ['kiro'] */
+      });
   }, []);
 
   useEffect(() => {
@@ -219,10 +223,7 @@ export default function ProjectSettings() {
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
-      if (
-        userDropdownRef.current &&
-        !userDropdownRef.current.contains(e.target as Node)
-      ) {
+      if (userDropdownRef.current && !userDropdownRef.current.contains(e.target as Node)) {
         setShowUserDropdown(false);
       }
     };
@@ -242,9 +243,7 @@ export default function ProjectSettings() {
       // Filter out users who are already members
       const memberIds = new Set(members.map((m) => m.userId));
       setCognitoUsers(
-        users.filter(
-          (u) => u.enabled && u.status === 'CONFIRMED' && !memberIds.has(u.userId)
-        )
+        users.filter((u) => u.enabled && u.status === 'CONFIRMED' && !memberIds.has(u.userId)),
       );
     } catch (err) {
       console.error('Failed to load users:', err);
@@ -281,10 +280,7 @@ export default function ProjectSettings() {
   const filteredUsers = cognitoUsers.filter((u) => {
     if (!userSearch) return true;
     const q = userSearch.toLowerCase();
-    return (
-      u.email.toLowerCase().includes(q) ||
-      u.displayName.toLowerCase().includes(q)
-    );
+    return u.email.toLowerCase().includes(q) || u.displayName.toLowerCase().includes(q);
   });
 
   const handleAddGithubTracker = async () => {
@@ -419,25 +415,20 @@ export default function ProjectSettings() {
     if (!projectId || selectedNewRepos.length === 0) return;
     clearMessages();
     setAddingRepo(true);
-    try {
-      const results = await Promise.allSettled(
-        selectedNewRepos.map(url => projectsService.addRepo(projectId, { url }))
-      );
-      const succeeded = results.filter(r => r.status === 'fulfilled').length;
-      const failed = results.filter(r => r.status === 'rejected').length;
-      setSelectedNewRepos([]);
-      setShowAddRepo(false);
-      if (failed > 0) {
-        setSuccess(`${succeeded} added, ${failed} failed`);
-      } else {
-        setSuccess(`${succeeded} repositor${succeeded === 1 ? 'y' : 'ies'} added`);
-      }
-      await loadData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to add repositories');
-    } finally {
-      setAddingRepo(false);
+    const results = await Promise.allSettled(
+      selectedNewRepos.map((url) => projectsService.addRepo(projectId, { url })),
+    );
+    const succeeded = results.filter((r) => r.status === 'fulfilled').length;
+    const failed = results.filter((r) => r.status === 'rejected').length;
+    setSelectedNewRepos([]);
+    setShowAddRepo(false);
+    if (failed > 0) {
+      setError(`${succeeded} added, ${failed} failed`);
+    } else {
+      setSuccess(`${succeeded} repositor${succeeded === 1 ? 'y' : 'ies'} added`);
     }
+    await loadData();
+    setAddingRepo(false);
   };
 
   const handleRemoveRepo = async (repoUrl: string) => {
@@ -446,7 +437,6 @@ export default function ProjectSettings() {
     setRemovingRepo(repoUrl);
     try {
       await projectsService.removeRepo(projectId, repoUrl);
-      setRepos(prev => prev.filter(r => r.url !== repoUrl));
       setSuccess('Repository removed');
       await loadData();
     } catch (err) {
@@ -463,6 +453,7 @@ export default function ProjectSettings() {
     try {
       await projectsService.update(projectId, { gitRepo: repoUrl });
       setEditGitRepo(repoUrl);
+      setProject((prev) => (prev ? { ...prev, gitRepo: repoUrl } : prev));
       setSuccess('Primary repository updated');
       await loadData();
     } catch (err) {
@@ -766,7 +757,8 @@ export default function ProjectSettings() {
                   )}
                 </div>
                 <p className="text-sm text-muted-foreground">
-                  Additional repositories linked to this project. Role and tech stack are detected automatically.
+                  Additional repositories linked to this project. Role and tech stack are detected
+                  automatically.
                 </p>
               </CardHeader>
               <CardContent>
@@ -803,7 +795,7 @@ export default function ProjectSettings() {
                                 size="sm"
                                 className="h-7 text-[11px] px-2"
                                 onClick={() => handleSetPrimaryRepo(repo.url)}
-                                disabled={settingPrimary === repo.url}
+                                disabled={removingRepo === repo.url || settingPrimary === repo.url}
                               >
                                 {settingPrimary === repo.url ? '...' : 'Set as primary'}
                               </Button>
@@ -813,7 +805,7 @@ export default function ProjectSettings() {
                               size="icon"
                               className="h-7 w-7 text-muted-foreground hover:text-destructive"
                               onClick={() => handleRemoveRepo(repo.url)}
-                              disabled={removingRepo === repo.url}
+                              disabled={removingRepo === repo.url || settingPrimary === repo.url}
                               title="Remove repository"
                             >
                               {removingRepo === repo.url ? (
@@ -1069,13 +1061,22 @@ export default function ProjectSettings() {
       />
 
       {/* Add Repos Dialog */}
-      <Dialog open={showAddRepo} onOpenChange={setShowAddRepo}>
+      <Dialog
+        open={showAddRepo}
+        onOpenChange={(open) => {
+          if (!addingRepo) {
+            setShowAddRepo(open);
+            if (!open) setSelectedNewRepos([]);
+          }
+        }}
+      >
         <DialogContent className="sm:max-w-lg">
           <form onSubmit={handleAddRepos}>
             <DialogHeader>
               <DialogTitle>Add Repositories</DialogTitle>
               <DialogDescription>
-                Select repositories to link to this project. Role and tech stack are detected automatically.
+                Select repositories to link to this project. Role and tech stack are detected
+                automatically.
               </DialogDescription>
             </DialogHeader>
             <div className="py-4">
@@ -1083,16 +1084,19 @@ export default function ProjectSettings() {
                 multiple
                 value={selectedNewRepos}
                 onChange={(selected: GitHubRepo[]) => {
-                  setSelectedNewRepos(selected.map(r => r.fullName));
+                  setSelectedNewRepos(selected.map((r) => r.fullName));
                 }}
-                exclude={repos.map(r => r.url)}
+                exclude={repos.map((r) => r.url)}
               />
             </div>
             <DialogFooter>
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => { setShowAddRepo(false); setSelectedNewRepos([]); }}
+                onClick={() => {
+                  setShowAddRepo(false);
+                  setSelectedNewRepos([]);
+                }}
                 disabled={addingRepo}
               >
                 Cancel
@@ -1100,7 +1104,9 @@ export default function ProjectSettings() {
               <Button type="submit" disabled={addingRepo || selectedNewRepos.length === 0}>
                 {addingRepo
                   ? 'Adding...'
-                  : `Add ${selectedNewRepos.length || ''} Repositor${selectedNewRepos.length === 1 ? 'y' : 'ies'}`}
+                  : selectedNewRepos.length > 0
+                    ? `Add ${selectedNewRepos.length} Repositor${selectedNewRepos.length === 1 ? 'y' : 'ies'}`
+                    : 'Add Repositories'}
               </Button>
             </DialogFooter>
           </form>
