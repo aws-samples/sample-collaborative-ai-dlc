@@ -940,6 +940,13 @@ resource "aws_iam_role_policy" "discussions" {
         Effect   = "Allow"
         Action   = ["execute-api:ManageConnections"]
         Resource = "${var.websocket_execution_arn}/*"
+      },
+      {
+        # Assist dispatch (discussions plan §7/§8): synchronous invoke of the
+        # agents lambda with phase:'discussion'.
+        Effect   = "Allow"
+        Action   = ["lambda:InvokeFunction"]
+        Resource = "arn:${local.partition}:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-agents-${var.environment}"
       }
     ]
   })
@@ -980,6 +987,7 @@ module "discussions_lambda" {
     READ_STATE_TABLE      = var.discussion_read_state_table_name
     CONNECTIONS_TABLE     = var.connections_table_name
     WEBSOCKET_ENDPOINT    = var.websocket_api_endpoint_https
+    AGENTS_LAMBDA         = "${var.project_name}-agents-${var.environment}"
     # Takeover-safety invariant (plan §7): must match `timeout` above; the
     # lambda asserts message-guard pending window (120 s) > this at init.
     LAMBDA_TIMEOUT_SECONDS = "30"

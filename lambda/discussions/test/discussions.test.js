@@ -15,6 +15,7 @@ import {
   ApiGatewayManagementApiClient,
   PostToConnectionCommand,
 } from '@aws-sdk/client-apigatewaymanagementapi';
+import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import shared from '../../shared/realtime-token.js';
 
 const { verifyRealtimeToken } = shared;
@@ -30,6 +31,7 @@ const PARTITION = `t-${randomUUID()}`;
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 const apiMock = mockClient(ApiGatewayManagementApiClient);
+const lambdaMock = mockClient(LambdaClient);
 
 // ─── In-memory DynamoDB conditional-write fake for the locks table ───
 //
@@ -82,6 +84,11 @@ const installDdbFake = () => {
       if (!item || item.ownerToken !== input.ExpressionAttributeValues[':token']) {
         throw condFail();
       }
+    }
+    if (input.UpdateExpression.includes('executionId')) {
+      // Assist-lock executionId stamp (plan §7).
+      item.executionId = input.ExpressionAttributeValues[':eid'];
+      return {};
     }
     item.guardState = input.ExpressionAttributeValues[':complete'];
     item.expiresAt = input.ExpressionAttributeValues[':exp'];
@@ -143,6 +150,7 @@ beforeEach(async () => {
   await g.V().drop().next();
   ddbMock.reset();
   apiMock.reset();
+  lambdaMock.reset();
   lockStore.clear();
   readStateStore.clear();
   connectionItems = [];
@@ -1291,5 +1299,126 @@ describe('mention notifications', () => {
       messageId: 'dm-1-mention01',
       excerpt: 'ping @admin and @me',
     });
+  });
+});
+
+// =============================================================================
+// POST .../discussions/{discussionId}/assist — lock + dispatch (plan §7/§8)
+// =============================================================================
+
+describe('POST .../assist', () => {
+  let sprintId;
+  const DISC = 'disc-assist';
+  const EXEC_ID = 'exec-1700000000-abc123';
+
+  const assist = (body, opts = {}) =>
+    call('POST', '/api/sprints/{sprintId}/discussions/{discussionId}/assist', {
+      ...opts,
+      pathParameters: { sprintId, discussionId: opts.discussionId || DISC },
+      body,
+    });
+
+  const mockDispatch = (statusCode, responseBody) =>
+    lambdaMock.on(InvokeCommand).resolves({
+      Payload: Buffer.from(JSON.stringify({ statusCode, body: JSON.stringify(responseBody) })),
+    });
+
+  beforeEach(async () => {
+    ({ sprintId } = await seedDefaultProject());
+    await seedDiscussion(sprintId, DISC);
+    vi.stubEnv('AGENTS_LAMBDA', 'test-agents-lambda');
+    mockDispatch(200, { executionArn: 'arn:task', executionId: EXEC_ID });
+  });
+
+  it('returns 202 {assistId}, dispatches phase=discussion, stamps the lock with the executionId', async () => {
+    const res = await assist({ command: 'summarize' });
+    expect(res.statusCode).toBe(202);
+    expect(json(res)).toEqual({ assistId: EXEC_ID });
+
+    // Dispatch payload carries the discussion job fields with the caller identity.
+    const invoke = lambdaMock.commandCalls(InvokeCommand)[0].args[0].input;
+    expect(invoke.FunctionName).toBe('test-agents-lambda');
+    const event = JSON.parse(Buffer.from(invoke.Payload).toString());
+    const dispatchBody = JSON.parse(event.body);
+    expect(dispatchBody).toMatchObject({
+      phase: 'discussion',
+      sprintId,
+      discussionId: DISC,
+      command: 'summarize',
+      requestedBy: MEMBER_SUB,
+    });
+    expect(event.requestContext.authorizer.claims.sub).toBe(MEMBER_SUB);
+
+    const lock = lockStore.get(`assist:${DISC}`);
+    expect(lock.kind).toBe('assist');
+    expect(lock.executionId).toBe(EXEC_ID);
+    expect(lock.expiresAt).toBe(nowSec() + 900);
+  });
+
+  it('second call while the lock is held → 409 assist_in_progress (no second dispatch)', async () => {
+    await assist({ command: 'summarize' });
+    lambdaMock.resetHistory();
+
+    const res = await assist({ command: 'explain' });
+    expect(res.statusCode).toBe(409);
+    expect(json(res)).toEqual({ reason: 'assist_in_progress', retryAfter: 30 });
+    expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(0);
+  });
+
+  it('an EXPIRED lock is taken over (crashed assist)', async () => {
+    lockStore.set(`assist:${DISC}`, {
+      lockId: `assist:${DISC}`,
+      kind: 'assist',
+      executionId: 'dead-exec',
+      expiresAt: nowSec() - 10,
+    });
+
+    const res = await assist({ command: 'summarize' });
+    expect(res.statusCode).toBe(202);
+    expect(lockStore.get(`assist:${DISC}`).executionId).toBe(EXEC_ID);
+  });
+
+  it('dispatch failure propagates the original error AND releases the lock', async () => {
+    mockDispatch(400, {
+      error: 'cli_unavailable',
+      cli: 'kiro',
+      message: 'kiro-cli failed to authenticate',
+    });
+
+    const res = await assist({ command: 'summarize' });
+    expect(res.statusCode).toBe(400);
+    expect(json(res).error).toBe('cli_unavailable');
+    expect(lockStore.has(`assist:${DISC}`)).toBe(false);
+
+    // The thread is immediately assistable again.
+    mockDispatch(200, { executionId: EXEC_ID });
+    expect((await assist({ command: 'summarize' })).statusCode).toBe(202);
+  });
+
+  it('validates commands: unknown command, custom without instruction', async () => {
+    expect((await assist({ command: 'banana' })).statusCode).toBe(400);
+    expect((await assist({ command: 'custom' })).statusCode).toBe(400);
+    expect(
+      (await assist({ command: 'custom', instruction: 'compare the options' })).statusCode,
+    ).toBe(202);
+  });
+
+  it('suggest-answer requires a question-anchored thread (D5)', async () => {
+    // DISC is sprint-anchored → rejected.
+    expect((await assist({ command: 'suggest-answer' })).statusCode).toBe(400);
+
+    // Question-anchored thread → accepted.
+    const questionId = randomUUID();
+    await seedQuestion(sprintId, questionId);
+    await seedDiscussion(sprintId, 'disc-q-assist', { entityType: 'question' });
+    const res = await assist({ command: 'suggest-answer' }, { discussionId: 'disc-q-assist' });
+    expect(res.statusCode).toBe(202);
+  });
+
+  it('is membership-gated and 404s on unknown threads', async () => {
+    expect((await assist({ command: 'summarize' }, { sub: OUTSIDER_SUB })).statusCode).toBe(403);
+    expect(
+      (await assist({ command: 'summarize' }, { discussionId: 'disc-missing' })).statusCode,
+    ).toBe(404);
   });
 });

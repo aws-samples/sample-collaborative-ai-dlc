@@ -215,7 +215,7 @@ const DATA_MODEL = `# Graph Data Model
 - GeneralInfo: id, type, title, content, sprint_id, created_at
 - PullRequest: id, pr_url, pr_number, branch, base_branch, repository (owner/repo), sprint_id, created_at, stale (true|false), stale_at, pr_state (open|closed|merged)
 - PRGroup: id, title, sprint_id, created_at — groups related PRs across multiple repos into a single logical unit
-- AgentRun: id, phase (INCEPTION|CONSTRUCTION|REVIEW), agent_type, run_number, prompt, execution_id, status (running|completed|failed), started_at, completed_at, sprint_id
+- AgentRun: id, phase (INCEPTION|CONSTRUCTION|REVIEW|DISCUSSION), agent_type, run_number, prompt, execution_id, status (running|completed|failed), started_at, completed_at, sprint_id — DISCUSSION runs are in-thread assists (discussion_id, command, requested_by, requested_by_name), not pipeline phases
 - Discussion: id, title (nullable), entity_type (sprint|inception|question|requirement|userstory|task|review|generalinfo), entity_id, entity_title, sprint_id, status (open|resolved), resolved_by, resolved_by_name, resolved_at, resolution_summary, outcome_message_id, created_at, created_by, created_by_name, last_message_at — team discussion thread anchored to a sprint entity. Resolution summaries represent TEAM DECISIONS.
 - DiscussionMessage: id, content (markdown), author_id, author_name, author_type (user|agent), command, requested_by, requested_by_name, mentions (JSON array of user subs), redacted, created_at, updated_at, discussion_id, sprint_id
 
@@ -303,6 +303,99 @@ Valid labels: ${VALID_LABELS.join(', ')}.`,
         }
         const list = await q.valueMap(true).toList();
         return ok(list.map(propsToObj));
+      });
+    } catch (e) {
+      return err(e.message);
+    }
+  },
+);
+
+server.tool(
+  'post_discussion_message',
+  `Post your final reply into a team discussion thread. ONLY available for discussion-assist runs — call it EXACTLY ONCE with your complete markdown answer as the last step of the assist.
+The message is persisted to the graph and broadcast live to the team.`,
+  {
+    discussionId: z.string().describe('The discussion thread id (from your assist instructions)'),
+    content: z.string().min(1).max(10_000).describe('The final reply, as markdown'),
+  },
+  async ({ discussionId, content }) => {
+    try {
+      const jobDiscussionId = process.env.DISCUSSION_ID || '';
+      if (!jobDiscussionId) {
+        return err('post_discussion_message is only available for discussion-assist runs');
+      }
+      if (discussionId !== jobDiscussionId) {
+        return err(
+          `This assist run may only post to discussion "${jobDiscussionId}" — got "${discussionId}"`,
+        );
+      }
+      const agentCli = process.env.AGENT_CLI || 'agent';
+      const now = new Date().toISOString();
+      const message = {
+        id: `dm-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+        content,
+        authorId: `agent:${agentCli}`,
+        authorName: `${agentCli} assistant`,
+        authorType: 'agent',
+        command: process.env.DISCUSSION_COMMAND || undefined,
+        requestedBy: process.env.DISCUSSION_REQUESTED_BY || undefined,
+        requestedByName: process.env.DISCUSSION_REQUESTED_BY_NAME || undefined,
+        mentions: [],
+        createdAt: now,
+        updatedAt: now,
+        discussionId,
+        sprintId: env.sprintId || '',
+      };
+
+      return await withGraph(async (g) => {
+        const { cardinality } = gremlin.process;
+        const exists = await g.V().has('Discussion', 'id', discussionId).hasNext();
+        if (!exists) return err(`Discussion "${discussionId}" not found`);
+        await g
+          .V()
+          .has('Discussion', 'id', discussionId)
+          .as('d')
+          .addV('DiscussionMessage')
+          .property('id', message.id)
+          .property('content', message.content)
+          .property('author_id', message.authorId)
+          .property('author_name', message.authorName)
+          .property('author_type', 'agent')
+          .property('command', process.env.DISCUSSION_COMMAND || '')
+          .property('requested_by', process.env.DISCUSSION_REQUESTED_BY || '')
+          .property('requested_by_name', process.env.DISCUSSION_REQUESTED_BY_NAME || '')
+          .property('mentions', '[]')
+          .property('created_at', now)
+          .property('updated_at', now)
+          .property('discussion_id', discussionId)
+          .property('sprint_id', env.sprintId || '')
+          .as('m')
+          .addE('HAS_MESSAGE')
+          .from_('d')
+          .to('m')
+          .select('d')
+          .property(cardinality.single, 'last_message_at', now)
+          .next();
+
+        // Marker for acp-client's fallback-post guard (plan §8) — proves the
+        // reply landed through the tool.
+        try {
+          fs.writeFileSync(`/tmp/discussion-posted-${process.env.EXECUTION_ID || ''}`, message.id);
+        } catch {
+          /* best-effort */
+        }
+
+        // Full-payload broadcast to the sprint channel (D8): clients that
+        // missed every stream chunk still render the durable reply.
+        await broadcastToSprintChannel({
+          type: 'discussion.message',
+          executionId: process.env.EXECUTION_ID || undefined,
+          sprintId: env.sprintId || '',
+          discussionId,
+          message,
+        });
+
+        return ok({ posted: true, messageId: message.id });
       });
     } catch (e) {
       return err(e.message);
@@ -844,6 +937,46 @@ async function broadcastEvent(type, data) {
     );
   } catch (e) {
     console.error('Broadcast failed:', e.message);
+  }
+}
+
+// Sprint-channel variant of broadcastEvent — discussion events fan out to
+// `sprint:{sprintId}` connections (where the chat clients listen), not the
+// bare projectId channel. Same per-send token-liveness filter (plan §4a).
+async function broadcastToSprintChannel(payload) {
+  if (!env.sprintId) return;
+  try {
+    const ddbRaw = new DynamoDBClient({});
+    const conns = await ddbRaw.send(
+      new DDBRawQueryCommand({
+        TableName: env.connectionsTable,
+        IndexName: 'DocumentIdIndex',
+        KeyConditionExpression: 'documentId = :docId',
+        ExpressionAttributeValues: { ':docId': { S: `sprint:${env.sprintId}` } },
+      }),
+    );
+    const wsClient = new ApiGatewayManagementApiClient({ endpoint: env.websocketEndpoint });
+    const data = JSON.stringify(payload);
+    const nowMs = Date.now();
+    const liveItems = (conns.Items || []).filter((item) => {
+      const raw = item.tokenExp?.N;
+      const exp = Number(raw);
+      return !raw || !Number.isFinite(exp) || exp * 1000 > nowMs;
+    });
+    await Promise.all(
+      liveItems.map((item) =>
+        wsClient
+          .send(
+            new PostToConnectionCommand({
+              ConnectionId: item.connectionId.S,
+              Data: data,
+            }),
+          )
+          .catch(() => {}),
+      ),
+    );
+  } catch (e) {
+    console.error('Sprint-channel broadcast failed:', e.message);
   }
 }
 

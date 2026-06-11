@@ -353,6 +353,9 @@ module "agents" {
   ecs_cluster_arn             = module.compute.cluster_arn
   agent_pool_table_name       = module.dynamodb.agent_pool_table_name
   agent_pool_table_arn        = module.dynamodb.agent_pool_table_arn
+  # Discussion assist locks (discussions plan §7/§8)
+  discussion_locks_table_name = module.dynamodb.discussion_locks_table_name
+  discussion_locks_table_arn  = module.dynamodb.discussion_locks_table_arn
   agents_lambda_name          = "${var.project_name}-agents-${var.environment}"
   agents_lambda_arn           = "arn:${local.partition}:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-agents-${var.environment}"
   create_pr_lambda_name       = module.orchestration.create_pr_lambda_name

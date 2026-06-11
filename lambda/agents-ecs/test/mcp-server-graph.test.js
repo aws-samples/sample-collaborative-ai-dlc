@@ -51,3 +51,30 @@ describe('mcp-server-graph discussions integration (plan §5)', () => {
     expect(sprintGraphSrc).toMatch(/'HAS_PR_GROUP', 'HAS_DISCUSSION'/);
   });
 });
+
+describe('post_discussion_message tool (plan §8)', () => {
+  it("is registered and scoped to the assist run's discussion", () => {
+    expect(mcpServer).toContain("'post_discussion_message'");
+    const toolSrc = mcpServer.slice(
+      mcpServer.indexOf("'post_discussion_message'"),
+      mcpServer.indexOf('// ─── TRAVERSE ───'),
+    );
+    expect(toolSrc).toContain('process.env.DISCUSSION_ID');
+    expect(toolSrc).toContain('discussionId !== jobDiscussionId');
+    expect(toolSrc).toContain("author_type', 'agent'");
+    expect(toolSrc).toContain("'last_message_at', now");
+  });
+
+  it('writes the fallback-guard marker file and broadcasts to the sprint channel', () => {
+    const toolSrc = mcpServer.slice(
+      mcpServer.indexOf("'post_discussion_message'"),
+      mcpServer.indexOf('// ─── TRAVERSE ───'),
+    );
+    expect(toolSrc).toMatch(/discussion-posted-\$\{process\.env\.EXECUTION_ID/);
+    expect(toolSrc).toContain('broadcastToSprintChannel({');
+  });
+
+  it('documents the DISCUSSION AgentRun phase in DATA_MODEL', () => {
+    expect(mcpServer).toContain('phase (INCEPTION|CONSTRUCTION|REVIEW|DISCUSSION)');
+  });
+});

@@ -815,6 +815,11 @@ resource "aws_api_gateway_resource" "discussion_read" {
   parent_id   = aws_api_gateway_resource.discussion.id
   path_part   = "read"
 }
+resource "aws_api_gateway_resource" "discussion_assist" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.discussion.id
+  path_part   = "assist"
+}
 # Static sibling of {discussionId} — API Gateway resolves static parts first.
 resource "aws_api_gateway_resource" "discussions_search" {
   rest_api_id = aws_api_gateway_rest_api.main.id
@@ -1157,6 +1162,11 @@ locals {
       method   = "PUT"
       params   = { "method.request.path.sprintId" = true, "method.request.path.discussionId" = true }
     }
+    discussion_assist_post = {
+      resource = "discussion_assist"
+      method   = "POST"
+      params   = { "method.request.path.sprintId" = true, "method.request.path.discussionId" = true }
+    }
     discussion_messages_get = {
       resource = "discussion_messages"
       method   = "GET"
@@ -1182,6 +1192,7 @@ locals {
     discussions_search        = aws_api_gateway_resource.discussions_search.id
     discussion                = aws_api_gateway_resource.discussion.id
     discussion_read           = aws_api_gateway_resource.discussion_read.id
+    discussion_assist         = aws_api_gateway_resource.discussion_assist.id
     discussion_messages       = aws_api_gateway_resource.discussion_messages.id
     discussion_message_redact = aws_api_gateway_resource.discussion_message_redact.id
   }
@@ -1402,6 +1413,12 @@ module "cors_discussion_read" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.discussion_read.id
+}
+
+module "cors_discussion_assist" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.discussion_assist.id
 }
 
 module "cors_discussions_search" {

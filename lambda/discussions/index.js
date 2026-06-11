@@ -14,6 +14,7 @@ import {
   ApiGatewayManagementApiClient,
   PostToConnectionCommand,
 } from '@aws-sdk/client-apigatewaymanagementapi';
+import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { buildResponse } from '../shared/response.js';
 import { fetchMembershipRole } from '../shared/trackers.js';
@@ -88,6 +89,8 @@ const MESSAGE_GUARD_PENDING_SECONDS = 120;
 const MESSAGE_GUARD_COMPLETE_SECONDS = 3600;
 const POLL_ATTEMPTS = 3;
 const POLL_INTERVAL_MS = 300;
+const ASSIST_LOCK_SECONDS = 900; // 15 min initial; worker heartbeat renews (plan §7)
+const ASSIST_COMMANDS = ['suggest-answer', 'summarize', 'explain', 'custom'];
 
 // Takeover-safety invariant (plan §7, review round 4): the pending window
 // MUST exceed this lambda's timeout, so an expired `pending` guard PROVES the
@@ -127,6 +130,7 @@ export { close };
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient();
+const lambdaClient = new LambdaClient({});
 
 const locksTable = () => process.env.LOCKS_TABLE;
 const readStateTable = () => process.env.READ_STATE_TABLE;
@@ -1280,6 +1284,135 @@ const searchDiscussions = async (event, res) => {
   return res(200, { results: deduped.slice(0, limit) });
 };
 
+// ─── Agent assist dispatch (plan §7/§8, D1/D6) ───
+//
+// One assist per thread at a time, serialized by the `assist:{discussionId}`
+// lock. The dispatch is a synchronous Lambda-invoke of the agents lambda with
+// phase:'discussion' — preflight errors (cli_unavailable, pool at capacity)
+// propagate to the caller with their original status. No cost cap (D6):
+// the per-thread lock + pool capacity are the limiters; every assist is
+// audited (requested-by caption + AgentRun history).
+
+const invokeAssist = async (event, res) => {
+  const { sprintId, discussionId } = event.pathParameters || {};
+  const caller = getCaller(event);
+  const auth = await authorizeSprint(sprintId, caller.sub, res);
+  if (auth.res) return auth.res;
+
+  const discussion = await query((g) => fetchDiscussionInSprint(g, sprintId, discussionId));
+  if (!discussion) return res(404, { error: 'Discussion not found' });
+
+  let body;
+  try {
+    body = JSON.parse(event.body || '{}');
+  } catch {
+    return res(400, { error: 'Invalid JSON body' });
+  }
+
+  const command = body.command;
+  if (!ASSIST_COMMANDS.includes(command)) {
+    return res(400, { error: `command must be one of ${ASSIST_COMMANDS.join(', ')}` });
+  }
+  const instruction = typeof body.instruction === 'string' ? body.instruction.slice(0, 4000) : '';
+  if (command === 'custom' && !instruction.trim()) {
+    return res(400, { error: 'custom command requires an instruction' });
+  }
+  // suggest-answer only makes sense on question-anchored threads (D5).
+  if (command === 'suggest-answer' && getVal(discussion, 'entity_type') !== 'question') {
+    return res(400, { error: 'suggest-answer requires a question-anchored discussion' });
+  }
+
+  const agentsLambda = process.env.AGENTS_LAMBDA;
+  if (!agentsLambda) return res(500, { error: 'Assist dispatch is not configured' });
+
+  // Acquire the per-thread assist lock (atomic, D9). The worker heartbeats it
+  // while the session runs; expiry covers crashed dispatches.
+  const lockId = `assist:${discussionId}`;
+  try {
+    await ddb.send(
+      new PutCommand({
+        TableName: locksTable(),
+        Item: {
+          lockId,
+          kind: 'assist',
+          requestedBy: caller.sub,
+          executionId: 'dispatching',
+          expiresAt: nowSeconds() + ASSIST_LOCK_SECONDS,
+        },
+        ConditionExpression: 'attribute_not_exists(lockId) OR expiresAt < :now',
+        ExpressionAttributeValues: { ':now': nowSeconds() },
+      }),
+    );
+  } catch (err) {
+    if (isConditionalCheckFailed(err)) {
+      return res(409, { reason: 'assist_in_progress', retryAfter: 30 });
+    }
+    throw err;
+  }
+
+  const releaseLock = () =>
+    ddb.send(new DeleteCommand({ TableName: locksTable(), Key: { lockId } })).catch(() => {});
+
+  try {
+    const invokeResult = await lambdaClient.send(
+      new InvokeCommand({
+        FunctionName: agentsLambda,
+        Payload: Buffer.from(
+          JSON.stringify({
+            httpMethod: 'POST',
+            path: `/projects/${auth.projectId}/agents`,
+            pathParameters: { projectId: auth.projectId },
+            body: JSON.stringify({
+              phase: 'discussion',
+              sprintId,
+              discussionId,
+              command,
+              instruction,
+              requestedBy: caller.sub,
+              requestedByName: caller.displayName,
+            }),
+            requestContext: { authorizer: { claims: { sub: caller.sub } } },
+          }),
+        ),
+      }),
+    );
+
+    const payload = JSON.parse(Buffer.from(invokeResult.Payload || []).toString('utf8') || '{}');
+    const statusCode = payload.statusCode || 500;
+    const dispatchBody = (() => {
+      try {
+        return JSON.parse(payload.body || '{}');
+      } catch {
+        return {};
+      }
+    })();
+
+    if (statusCode !== 200) {
+      // Dispatch failure (cli_unavailable, pool at capacity, …) → release the
+      // lock and propagate the original error/status (plan §7, D2).
+      await releaseLock();
+      return res(statusCode, dispatchBody);
+    }
+
+    const executionId = dispatchBody.executionId;
+    // Stamp the executionId on the lock — the worker's heartbeat/release are
+    // conditioned on it.
+    await ddb.send(
+      new UpdateCommand({
+        TableName: locksTable(),
+        Key: { lockId },
+        UpdateExpression: 'SET executionId = :eid',
+        ExpressionAttributeValues: { ':eid': executionId },
+      }),
+    );
+
+    return res(202, { assistId: executionId });
+  } catch (err) {
+    await releaseLock();
+    throw err;
+  }
+};
+
 // ─── Router ───
 
 export const handler = async (event) => {
@@ -1309,6 +1442,9 @@ export const handler = async (event) => {
     }
     if (method === 'POST' && path.endsWith('/redact')) {
       return await redactMessage(event, res);
+    }
+    if (method === 'POST' && path.endsWith('/assist')) {
+      return await invokeAssist(event, res);
     }
     if (method === 'PUT' && path.endsWith('/{discussionId}')) {
       return await updateDiscussion(event, res);
