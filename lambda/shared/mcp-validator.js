@@ -15,7 +15,7 @@ const ALLOWED_TYPES = new Set(['stdio', 'http', 'sse']);
 const STDIO_ALLOWED_KEYS = new Set(['type', 'name', 'command', 'args', 'env']);
 const HTTP_ALLOWED_KEYS = new Set(['type', 'name', 'url', 'headers']);
 const NAME_VALUE_KEYS = new Set(['name', 'value']);
-const KNOWN_AGENT_IMAGE_COMMANDS = new Set(['node', 'npx', 'uv', 'uvx', 'python', 'python3']);
+const KNOWN_AGENT_IMAGE_MCP_COMMANDS = new Set(['node', 'npx', 'uv', 'uvx', 'python', 'python3']);
 
 // Validate a single {name, value} pair (used for env entries and HTTP headers).
 function validateNameValuePair(item, path, issues, kind) {
@@ -62,11 +62,11 @@ function validateStdio(server, path, issues) {
       path: `${path}.command`,
       message: 'Required non-empty string (path to the MCP server executable).',
     });
-  } else if (!server.command.includes('/') && !KNOWN_AGENT_IMAGE_COMMANDS.has(server.command)) {
+  } else if (!server.command.includes('/') && !KNOWN_AGENT_IMAGE_MCP_COMMANDS.has(server.command)) {
     issues.push({
       path: `${path}.command`,
       message: `Unknown executable "${server.command}". Use an absolute path or one of: ${[
-        ...KNOWN_AGENT_IMAGE_COMMANDS,
+        ...KNOWN_AGENT_IMAGE_MCP_COMMANDS,
       ].join(', ')}.`,
     });
   }
@@ -225,7 +225,7 @@ function parseMcpServersJson(jsonString) {
 }
 
 module.exports = {
-  KNOWN_AGENT_IMAGE_COMMANDS,
+  KNOWN_AGENT_IMAGE_MCP_COMMANDS,
   parseMcpServersJson,
   validateMcpServers,
   validateMcpServersJson,

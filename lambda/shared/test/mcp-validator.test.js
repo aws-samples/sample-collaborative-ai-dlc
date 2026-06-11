@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  KNOWN_AGENT_IMAGE_COMMANDS,
+  KNOWN_AGENT_IMAGE_MCP_COMMANDS,
   parseMcpServersJson,
   validateMcpServers,
   validateMcpServersJson,
@@ -55,7 +55,7 @@ describe('validateMcpServers', () => {
     });
 
     it('accepts known agent image commands', () => {
-      const servers = [...KNOWN_AGENT_IMAGE_COMMANDS].map((command) => ({
+      const servers = [...KNOWN_AGENT_IMAGE_MCP_COMMANDS].map((command) => ({
         name: command,
         command,
         args: [],
