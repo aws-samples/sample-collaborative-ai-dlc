@@ -2,6 +2,7 @@
 
 const ALLOWED_CLI_MODEL_KEYS = new Set(['kiro', 'opencode']);
 const MAX_CLI_MODEL_LENGTH = 200;
+const OPENCODE_MODEL_PREFIX = 'amazon-bedrock/';
 
 function describe(value) {
   if (value === null) return 'null';
@@ -55,6 +56,13 @@ function normalizeCliModels(value) {
       issues.push({
         path: key,
         message: `Must be ${MAX_CLI_MODEL_LENGTH} characters or fewer.`,
+      });
+      continue;
+    }
+    if (key === 'opencode' && trimmed && !trimmed.startsWith(OPENCODE_MODEL_PREFIX)) {
+      issues.push({
+        path: key,
+        message: `OpenCode model must start with "${OPENCODE_MODEL_PREFIX}".`,
       });
       continue;
     }

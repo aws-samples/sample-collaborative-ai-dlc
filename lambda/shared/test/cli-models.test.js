@@ -42,6 +42,17 @@ describe('normalizeCliModels', () => {
     expect(result.valid).toBe(false);
     expect(result.issues).toEqual([{ path: 'kiro', message: 'Must be 200 characters or fewer.' }]);
   });
+
+  it('rejects OpenCode model values without the amazon-bedrock provider prefix', () => {
+    const result = normalizeCliModels({ opencode: 'us.anthropic.claude-sonnet-4-6' });
+    expect(result.valid).toBe(false);
+    expect(result.issues).toEqual([
+      {
+        path: 'opencode',
+        message: 'OpenCode model must start with "amazon-bedrock/".',
+      },
+    ]);
+  });
 });
 
 describe('parseCliModels', () => {

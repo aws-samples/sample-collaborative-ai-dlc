@@ -41,6 +41,13 @@ const POOL_VERSION = process.env.POOL_VERSION || 'unknown';
 const STALE_STARTING_MS = 5 * 60 * 1000; // 5 minutes
 const STALE_IDLE_MS = 3 * 60 * 1000; // 3 minutes
 const STALE_BUSY_MS = 30 * 60 * 1000; // 30 minutes — sub-agents should not run this long
+const RUNTIME_MODEL_OVERRIDE = {
+  kiro: true,
+  // Claude's ACP/SDK path does not currently expose a verified runtime model
+  // override. Leave it on the driver default until that path is validated.
+  claude: false,
+  opencode: true,
+};
 
 // ---------------------------------------------------------------------------
 // Repo / branch validation — authoritative gate before values reach the
@@ -561,7 +568,7 @@ exports.handler = async (event) => {
       }
       return response(200, {
         available: [...cliSet],
-        runtimeModelOverride: { kiro: true, claude: false, opencode: true },
+        runtimeModelOverride: RUNTIME_MODEL_OVERRIDE,
       });
     }
 
