@@ -95,6 +95,13 @@ variable "timeline_events_lambda_name" {
   type = string
 }
 
+variable "discussions_lambda_invoke_arn" {
+  type = string
+}
+variable "discussions_lambda_name" {
+  type = string
+}
+
 variable "state_machine_arn" {
   description = "ARN of the agent workflow state machine"
   type        = string

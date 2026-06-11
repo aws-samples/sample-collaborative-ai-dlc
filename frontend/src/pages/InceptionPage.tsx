@@ -317,10 +317,10 @@ export default function InceptionPage() {
     setApprovingPhase(true);
     try {
       await sprintsService.update(projectId, sprintId, { phase: 'CONSTRUCTION' });
+      // Pure reload hint (§4b): peers re-fetch the sprint and act on server
+      // state — never include the phase in the payload.
       realtimeService.send('broadcastToDocument', {
-        documentId: `sprint:${sprintId}`,
-        action: 'sprint.phaseChanged',
-        data: { phase: 'CONSTRUCTION', sprintId },
+        data: { action: 'sprint.phaseChanged', sprintId },
       });
       timelineEventsService
         .create(sprintId, {

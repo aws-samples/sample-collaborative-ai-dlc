@@ -2,6 +2,7 @@
   "name": "sample-collaborative-ai-dlc",
   "private": true,
   "workspaces": [
+    "lambda/discussions",
     "lambda/get-agent-output",
     "lambda/github",
     "lambda/migrate-tracker-fields",

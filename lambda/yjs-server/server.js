@@ -6,9 +6,33 @@ import * as decoding from 'lib0/decoding';
 import * as syncProtocol from 'y-protocols/sync';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
+import { verifyRealtimeAccess, requiredScopeForYjsDoc } from './realtime-token.js';
 
 const PORT = Number(process.env.PORT) || 1234;
 const DOC_TTL_MS = 60_000; // Keep docs alive 60 s after last client leaves
+
+// -----------------------------------------------------------------------------
+// Realtime scope-token enforcement (discussions plan §4a)
+//
+// In addition to the Cognito JWT, every upgrade must present a short-lived
+// HMAC-signed scope token (`?docToken=`) issued by `lambda/discussions` after
+// a project-membership check. Four mandatory checks: valid signature, not
+// expired, requested doc covered by the token's scopes, and principal binding
+// (`docToken.sub === JWT sub`). Unknown doc-name formats are rejected
+// (deny-by-default).
+//
+// DOC_TOKEN_ENFORCE is an operational kill switch only: set to "false" to
+// log-and-allow during an incident. Default is enforcing.
+// -----------------------------------------------------------------------------
+const DOC_TOKEN_ENFORCE = process.env.DOC_TOKEN_ENFORCE !== 'false';
+const REALTIME_DOC_SECRET = process.env.REALTIME_DOC_SECRET || '';
+
+if (DOC_TOKEN_ENFORCE && !REALTIME_DOC_SECRET) {
+  console.error(
+    'FATAL: REALTIME_DOC_SECRET must be set when DOC_TOKEN_ENFORCE is on (the default).',
+  );
+  process.exit(1);
+}
 
 // -----------------------------------------------------------------------------
 // Cognito JWT verifier
@@ -188,8 +212,9 @@ server.on('upgrade', async (req, socket, head) => {
     return;
   }
 
+  let jwtPayload;
   try {
-    await verifier.verify(token);
+    jwtPayload = await verifier.verify(token);
   } catch (err) {
     // Never log the token itself, only the verification error message.
     console.warn('WS upgrade rejected: invalid token:', err.message);
@@ -201,9 +226,32 @@ server.on('upgrade', async (req, socket, head) => {
   // refresh doesn't create a "new" document identity.
   const docName = parsedUrl.pathname.slice(1) || 'default';
 
-  // Stash the docName on the request so the 'connection' handler can use it
-  // without re-parsing (and without seeing the raw token via req.url).
+  // Scope-token check (plan §4a): signature, expiry, scope coverage for this
+  // doc name, and principal binding to the JWT-authenticated user. Deny by
+  // default for unknown doc-name formats.
+  const docToken = parsedUrl.searchParams.get('docToken');
+  const access = verifyRealtimeAccess({
+    token: docToken,
+    secret: REALTIME_DOC_SECRET,
+    requiredScope: requiredScopeForYjsDoc(docName),
+    sub: jwtPayload.sub,
+  });
+  if (!access.ok) {
+    if (DOC_TOKEN_ENFORCE) {
+      console.warn(`WS upgrade rejected: doc token ${access.reason} for doc "${docName}"`);
+      rejectUpgrade(socket, 403, 'Forbidden');
+      return;
+    }
+    console.warn(
+      `WS upgrade allowed despite doc token ${access.reason} for doc "${docName}" (DOC_TOKEN_ENFORCE=false)`,
+    );
+  }
+
+  // Stash the docName + token expiry on the request so the 'connection'
+  // handler can use them without re-parsing (and without seeing the raw
+  // token via req.url).
   req.yjsDocName = docName;
+  req.yjsTokenExp = access.ok ? access.payload.exp : null;
 
   wss.handleUpgrade(req, socket, head, (ws) => {
     wss.emit('connection', ws, req);
@@ -214,6 +262,27 @@ wss.on('connection', (conn, req) => {
   const docName = req.yjsDocName || 'default';
   const docData = getDoc(docName);
   docData.conns.set(conn, new Set());
+
+  // Post-connect token lifecycle (plan §4a): an established socket must not
+  // outlive its scope token. Close at expiry with 4401 — the client's
+  // reconnect logic fetches a fresh token, so membership is re-validated at
+  // most every token TTL (10 min).
+  let tokenExpiryTimer = null;
+  if (req.yjsTokenExp) {
+    const msUntilExpiry = req.yjsTokenExp * 1000 - Date.now();
+    tokenExpiryTimer = setTimeout(
+      () => {
+        tokenExpiryTimer = null;
+        console.log(`Closing connection on doc "${docName}": scope token expired`);
+        try {
+          conn.close(4401, 'token expired');
+        } catch {
+          /* already closed */
+        }
+      },
+      Math.max(msUntilExpiry, 0),
+    );
+  }
 
   // Send sync step 1 (state vector request)
   const syncEncoder = encoding.createEncoder();
@@ -248,6 +317,10 @@ wss.on('connection', (conn, req) => {
   });
 
   conn.on('close', () => {
+    if (tokenExpiryTimer) {
+      clearTimeout(tokenExpiryTimer);
+      tokenExpiryTimer = null;
+    }
     // Remove awareness states that belong to THIS connection (not the server)
     const clientIds = docData.conns.get(conn) || new Set();
     if (clientIds.size > 0) {

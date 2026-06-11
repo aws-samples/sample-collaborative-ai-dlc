@@ -192,10 +192,25 @@ const broadcastWsClient = env.websocketEndpoint
   ? new ApiGatewayManagementApiClient({ endpoint: env.websocketEndpoint })
   : null;
 
-// Cache connections to avoid querying DynamoDB on every broadcast
+// Cache connections to avoid querying DynamoDB on every broadcast.
+// IMPORTANT (plan §4a, review round 4): the cache stores
+// `{connectionId, tokenExp}` pairs — NOT bare IDs — and the
+// `tokenExp > now` liveness filter is applied PER SEND in broadcastEvent,
+// never at cache-fill time. Otherwise a cached list would keep an expired
+// connection targetable for up to the cache TTL.
 let cachedConnections = null;
 let connectionsCacheTime = 0;
 const CONNECTIONS_CACHE_TTL = 10000; // 10 seconds
+
+// Inline copy of shared/realtime-token.js#isTokenLive — the agents-ecs
+// Docker build context cannot reach lambda/shared. Rows without tokenExp
+// are pre-enforcement legacy rows (TTL ≤1h) — allow.
+function isTokenLive(tokenExp, nowMs = Date.now()) {
+  if (tokenExp === undefined || tokenExp === null || tokenExp === '') return true;
+  const exp = Number(tokenExp);
+  if (!Number.isFinite(exp)) return true;
+  return exp * 1000 > nowMs;
+}
 
 async function getConnections() {
   const now = Date.now();
@@ -213,7 +228,10 @@ async function getConnections() {
         ExpressionAttributeValues: { ':docId': { S: documentId } },
       }),
     );
-    cachedConnections = (result.Items || []).map((item) => item.connectionId.S);
+    cachedConnections = (result.Items || []).map((item) => ({
+      connectionId: item.connectionId.S,
+      tokenExp: item.tokenExp?.N,
+    }));
     connectionsCacheTime = now;
     return cachedConnections;
   } catch (err) {
@@ -231,11 +249,14 @@ function broadcastEvent(type, data) {
   // Chain onto the queue so broadcasts are serialized
   broadcastQueue = broadcastQueue.then(async () => {
     try {
-      const connectionIds = await getConnections();
-      if (connectionIds.length === 0) return;
+      const connections = await getConnections();
+      // Liveness filter applied per send — a connection whose token expires
+      // mid-cache-window must receive nothing (plan §4a).
+      const liveIds = connections.filter((c) => isTokenLive(c.tokenExp)).map((c) => c.connectionId);
+      if (liveIds.length === 0) return;
       const payload = JSON.stringify({ type, agentTaskId: env.agentTaskId || undefined, ...data });
       await Promise.all(
-        connectionIds.map((connId) =>
+        liveIds.map((connId) =>
           broadcastWsClient
             .send(
               new PostToConnectionCommand({

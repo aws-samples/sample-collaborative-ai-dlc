@@ -47,6 +47,12 @@ resource "aws_iam_role_policy" "lambda" {
         Effect   = "Allow"
         Action   = ["execute-api:ManageConnections"]
         Resource = "${aws_apigatewayv2_api.websocket.execution_arn}/*"
+      },
+      {
+        # ws-connection verifies realtime scope tokens at $connect (plan §4a).
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter"]
+        Resource = aws_ssm_parameter.realtime_doc_secret.arn
       }
     ]
   })
@@ -77,8 +83,10 @@ module "connection_lambda" {
   lambda_role = aws_iam_role.lambda.arn
 
   environment_variables = {
-    CONNECTIONS_TABLE  = var.connections_table_name
-    WEBSOCKET_ENDPOINT = "https://${aws_apigatewayv2_api.websocket.id}.execute-api.${data.aws_region.current.id}.${local.realtime_dns_suffix}/${var.websocket_stage_name}"
+    CONNECTIONS_TABLE     = var.connections_table_name
+    WEBSOCKET_ENDPOINT    = "https://${aws_apigatewayv2_api.websocket.id}.execute-api.${data.aws_region.current.id}.${local.realtime_dns_suffix}/${var.websocket_stage_name}"
+    REALTIME_SECRET_PARAM = aws_ssm_parameter.realtime_doc_secret.name
+    DOC_TOKEN_ENFORCE     = var.doc_token_enforce ? "true" : "false"
   }
 }
 

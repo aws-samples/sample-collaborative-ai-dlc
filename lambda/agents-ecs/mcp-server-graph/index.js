@@ -714,8 +714,18 @@ async function broadcastEvent(type, data) {
     );
     const wsClient = new ApiGatewayManagementApiClient({ endpoint: env.websocketEndpoint });
     const payload = JSON.stringify({ type, ...data });
+    // Never target connections whose scope token has expired (plan §4a).
+    // Inline copy of shared/realtime-token.js#isTokenLive — the agents-ecs
+    // Docker build context cannot reach lambda/shared. Rows without tokenExp
+    // are pre-enforcement legacy rows (TTL ≤1h) — allow.
+    const nowMs = Date.now();
+    const liveItems = (conns.Items || []).filter((item) => {
+      const raw = item.tokenExp?.N;
+      const exp = Number(raw);
+      return !raw || !Number.isFinite(exp) || exp * 1000 > nowMs;
+    });
     await Promise.all(
-      (conns.Items || []).map((item) =>
+      liveItems.map((item) =>
         wsClient
           .send(
             new PostToConnectionCommand({
