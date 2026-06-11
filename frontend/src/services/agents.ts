@@ -1,6 +1,6 @@
 import { api } from './api';
 import type { StructuredQuestion, StructuredAnswer } from './questions';
-import type { AgentCli } from './projects';
+import type { AgentCli, CliModels } from './projects';
 
 export interface AgentExecution {
   executionArn: string;
@@ -65,6 +65,7 @@ export interface PoolStatus {
 
 export interface AgentCapabilities {
   available: AgentCli[];
+  runtimeModelOverride?: Record<AgentCli, boolean>;
 }
 
 export interface AgentSettings {
@@ -74,6 +75,8 @@ export interface AgentSettings {
   kiroApiKeySet: boolean;
   /** Raw JSON string of the MCP servers array */
   mcpServers: string;
+  /** Default runtime model overrides by supported CLI */
+  cliModels?: CliModels;
 }
 
 export interface AgentSettingsUpdate {
@@ -83,6 +86,8 @@ export interface AgentSettingsUpdate {
   kiroApiKey?: string;
   /** Updated MCP servers as a JSON string */
   mcpServers?: string;
+  /** Default runtime model overrides by supported CLI */
+  cliModels?: CliModels;
 }
 
 export interface TaskAgentStatus {

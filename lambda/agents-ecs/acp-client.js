@@ -572,6 +572,9 @@ async function runAcpMode() {
   // Bedrock bearer token) that were loaded from SSM during authenticate().
   try {
     await driver.authenticate(process.env);
+    if (typeof driver.configureSettings === 'function') {
+      driver.configureSettings(process.env);
+    }
   } catch (authErr) {
     // Non-fatal: if the driver was selected for this job, pool-worker already
     // verified authentication. A failure here is unexpected but shouldn't
@@ -584,6 +587,9 @@ async function runAcpMode() {
   const [acpBin, ...acpArgs] = driver.getAcpCommand();
   const driverEnv = driver.getEnvForAcpProcess(process.env);
 
+  console.log(
+    `[acp] Starting driver=${AGENT_CLI} model=${process.env.AGENT_MODEL || 'driver-default'}`,
+  );
   console.log(`[acp] Spawning ${acpBin} ${acpArgs.join(' ')} (driver=${AGENT_CLI})...`);
   agentProc = spawn(acpBin, acpArgs, {
     stdio: ['pipe', 'pipe', 'pipe'],

@@ -14,7 +14,11 @@ import {
   mapBinding,
   fetchMembershipRole,
 } from '../shared/trackers.js';
-import { validateMcpServersJson } from '../shared/mcp-validator.js';
+import {
+  normalizeCliModels,
+  parseCliModels,
+  validateMcpServersJson,
+} from '../shared/mcp-validator.js';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
@@ -734,6 +738,7 @@ export const handler = async (event) => {
             gitProvider: getVal(v, 'git_provider') || 'github',
             gitRepo: derivePrimaryRepo(repos, legacyGitRepo),
             agentCli: getVal(v, 'agent_cli') || 'kiro',
+            cliModels: parseCliModels(getVal(v, 'cli_models')),
             issueIntegrationEnabled: getVal(v, 'issue_integration_enabled') === 'true',
             createdAt: getVal(v, 'created_at') || new Date().toISOString(),
             userRole: role || 'member',
@@ -780,6 +785,7 @@ export const handler = async (event) => {
               gitProvider: getVal(v, 'git_provider') || 'github',
               gitRepo: derivePrimaryRepo(repos, legacyGitRepo),
               agentCli: getVal(v, 'agent_cli') || 'kiro',
+              cliModels: parseCliModels(getVal(v, 'cli_models')),
               issueIntegrationEnabled: getVal(v, 'issue_integration_enabled') === 'true',
               createdAt: getVal(v, 'created_at') || new Date().toISOString(),
               userRole: role || 'member',
@@ -842,6 +848,14 @@ export const handler = async (event) => {
         const primaryUrl = derivePrimaryRepo(inputRepos, '');
 
         const issueIntegrationEnabled = data.issueIntegrationEnabled === true;
+        const cliModelsValidation = normalizeCliModels(data.cliModels);
+        if (!cliModelsValidation.valid) {
+          return response(400, {
+            error: 'Invalid cliModels configuration',
+            issues: cliModelsValidation.issues,
+          });
+        }
+        const cliModels = cliModelsValidation.value;
 
         // Create the project vertex with creator tracking
         await g
@@ -851,6 +865,7 @@ export const handler = async (event) => {
           .property('git_provider', data.gitProvider || 'github')
           .property('git_repo', primaryUrl)
           .property('agent_cli', data.agentCli || 'kiro')
+          .property('cli_models', JSON.stringify(cliModels))
           .property('issue_integration_enabled', issueIntegrationEnabled ? 'true' : 'false')
           .property('created_by', userId)
           .property('created_at', createdAt)
@@ -914,6 +929,7 @@ export const handler = async (event) => {
           gitProvider: data.gitProvider || 'github',
           gitRepo: primaryUrl,
           agentCli: data.agentCli || 'kiro',
+          cliModels,
           issueIntegrationEnabled,
           createdAt,
           repos: reposOut,
@@ -974,6 +990,22 @@ export const handler = async (event) => {
             .property(cardinality.single, 'agent_cli', data.agentCli)
             .next();
         }
+        let normalizedCliModels;
+        if (data.cliModels !== undefined) {
+          const validation = normalizeCliModels(data.cliModels);
+          if (!validation.valid) {
+            return response(400, {
+              error: 'Invalid cliModels configuration',
+              issues: validation.issues,
+            });
+          }
+          normalizedCliModels = validation.value;
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .property(cardinality.single, 'cli_models', JSON.stringify(normalizedCliModels))
+            .next();
+        }
         if (data.issueIntegrationEnabled !== undefined) {
           const vertex = g.V().has('Project', 'id', projectId);
           await vertex
@@ -984,7 +1016,11 @@ export const handler = async (event) => {
             )
             .next();
         }
-        return response(200, { id: projectId, ...data });
+        return response(200, {
+          id: projectId,
+          ...data,
+          ...(normalizedCliModels !== undefined ? { cliModels: normalizedCliModels } : {}),
+        });
       }
 
       case 'DELETE':
