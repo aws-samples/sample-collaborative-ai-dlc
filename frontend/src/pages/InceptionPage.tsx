@@ -6,6 +6,7 @@ import { useCollaborativeInception } from '@/hooks/useCollaborativeInception';
 import { useAgentStatus } from '@/hooks/useAgentStatus';
 import { useSprintEvents } from '@/hooks/useSprintEvents';
 import { useQuestionAnchor } from '@/hooks/useQuestionAnchor';
+import { useAnswerQuestion } from '@/hooks/useAnswerQuestion';
 import { questionAnchorId } from '@/lib/questionAnchor';
 import { sprintsService } from '@/services/sprints';
 import { agentsService } from '@/services/agents';
@@ -13,7 +14,6 @@ import { requirementsService } from '@/services/requirements';
 import { userStoriesService } from '@/services/userStories';
 import { tasksService } from '@/services/tasks';
 import { generalInfoService } from '@/services/generalInfo';
-import type { StructuredAnswer } from '@/services/questions';
 import { questionsService } from '@/services/questions';
 import { realtimeService } from '@/services/realtime';
 import { timelineEventsService } from '@/services/timelineEvents';
@@ -337,42 +337,8 @@ export default function InceptionPage() {
     }
   };
 
-  const handleAnswerQuestion = async (questionId: string, answer: StructuredAnswer) => {
-    try {
-      await questionsService.update(sprintId, questionId, { structuredAnswer: answer });
-      realtimeService.send('broadcastToDocument', {
-        data: { action: 'question.answered', sprintId, questionId },
-      });
-      timelineEventsService
-        .create(sprintId, {
-          type: 'question_answered',
-          title: 'Answered agent question',
-          userName,
-          questionId,
-        })
-        .catch(() => {});
-      await reload();
-    } catch (err) {
-      console.error('Failed to answer question:', err);
-    }
-  };
-
-  const handleDismissQuestion = async (questionId: string) => {
-    const dismissed: StructuredAnswer = {
-      answers: [
-        {
-          selectedOptions: [],
-          freeText: '(dismissed — agent no longer running)',
-        },
-      ],
-    };
-    try {
-      await questionsService.update(sprintId, questionId, { structuredAnswer: dismissed });
-      await reload();
-    } catch (err) {
-      console.error('Failed to dismiss question:', err);
-    }
-  };
+  const { answerQuestion: handleAnswerQuestion, dismissQuestion: handleDismissQuestion } =
+    useAnswerQuestion({ sprintId, reload });
 
   return (
     <div className="flex flex-col h-full">

@@ -6,6 +6,7 @@ import { useAgentStatus } from '@/hooks/useAgentStatus';
 import { useConstructionStatus } from '@/hooks/useConstructionStatus';
 import { useSprintEvents } from '@/hooks/useSprintEvents';
 import { useQuestionAnchor } from '@/hooks/useQuestionAnchor';
+import { useAnswerQuestion } from '@/hooks/useAnswerQuestion';
 import { questionAnchorId } from '@/lib/questionAnchor';
 import { sprintsService } from '@/services/sprints';
 import { projectsService, type Project } from '@/services/projects';
@@ -57,7 +58,6 @@ import {
   X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { StructuredAnswer } from '@/services/questions';
 import { TaskSettingsDialog } from '@/components/settings/TaskSettingsDialog';
 import { TaskActionsMenu } from '@/components/domain/TaskActionsMenu';
 import type { Task } from '@/services/tasks';
@@ -256,37 +256,8 @@ export default function ConstructionPage() {
     }
   };
 
-  const handleAnswerQuestion = async (questionId: string, answer: StructuredAnswer) => {
-    try {
-      await questionsService.update(sprintId, questionId, { structuredAnswer: answer });
-      realtimeService.send('broadcastToDocument', {
-        data: { action: 'question.answered', sprintId, questionId },
-      });
-      timelineEventsService
-        .create(sprintId, {
-          type: 'question_answered',
-          title: 'Answered agent question',
-          userName,
-          questionId,
-        })
-        .catch(() => {});
-      await reload();
-    } catch (err) {
-      console.error('Failed to answer:', err);
-    }
-  };
-
-  const handleDismissQuestion = async (questionId: string) => {
-    const dismissed: StructuredAnswer = {
-      answers: [{ selectedOptions: [], freeText: '(dismissed — agent no longer running)' }],
-    };
-    try {
-      await questionsService.update(sprintId, questionId, { structuredAnswer: dismissed });
-      await reload();
-    } catch (err) {
-      console.error('Failed to dismiss question:', err);
-    }
-  };
+  const { answerQuestion: handleAnswerQuestion, dismissQuestion: handleDismissQuestion } =
+    useAnswerQuestion({ sprintId, reload });
 
   const [approvingPhase, setApprovingPhase] = useState(false);
 

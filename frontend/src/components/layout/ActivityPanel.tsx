@@ -174,16 +174,13 @@ export function ActivityPanel({ sprintId, onClose }: ActivityPanelProps) {
           ]);
         } else {
           setToolCalls((prev) => {
-            const idx = [...prev]
-              .reverse()
-              .findIndex(
-                (t) => t.name === toolName && (t.status === 'pending' || t.status === 'running'),
-              );
+            const idx = prev.findLastIndex(
+              (t) => t.name === toolName && (t.status === 'pending' || t.status === 'running'),
+            );
             if (idx === -1) return prev;
-            const realIdx = prev.length - 1 - idx;
             const updated = [...prev];
-            updated[realIdx] = {
-              ...updated[realIdx],
+            updated[idx] = {
+              ...updated[idx],
               status: data.status === 'error' || data.status === 'failed' ? 'failed' : 'completed',
               completedAt: Date.now(),
             };
@@ -354,9 +351,7 @@ export function AgentStreamView({
     }
   }, [streamingText, toolCalls.length]);
 
-  const activeTool = [...toolCalls]
-    .reverse()
-    .find((tc) => tc.status === 'pending' || tc.status === 'running');
+  const activeTool = toolCalls.findLast((tc) => tc.status === 'pending' || tc.status === 'running');
   const completedTools = toolCalls.filter(
     (tc) => tc.status === 'completed' || tc.status === 'failed',
   );

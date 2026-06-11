@@ -14,9 +14,21 @@ export function useQuestionAnchor(ready: boolean) {
     if (!ready) return;
     const match = location.hash.match(/^#question-(.+)$/);
     if (!match) return;
-    // Defer until after the current render commits the anchors
-    const t = window.setTimeout(() => scrollToQuestion(match[1]), 150);
-    return () => window.clearTimeout(t);
+    // `ready` flips when the questions are in state, but the anchors only
+    // exist once React commits the render. Poll until the anchor appears,
+    // giving up after a bounded number of attempts (e.g. the question was
+    // deleted or the id is stale).
+    const RETRY_INTERVAL_MS = 100;
+    const MAX_ATTEMPTS = 20; // ~2s
+    let attempts = 0;
+    let timer: number | undefined;
+    const tryScroll = () => {
+      if (scrollToQuestion(match[1])) return;
+      attempts += 1;
+      if (attempts < MAX_ATTEMPTS) timer = window.setTimeout(tryScroll, RETRY_INTERVAL_MS);
+    };
+    timer = window.setTimeout(tryScroll, RETRY_INTERVAL_MS);
+    return () => window.clearTimeout(timer);
   }, [location.hash, ready]);
 }
 

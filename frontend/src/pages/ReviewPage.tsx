@@ -5,6 +5,7 @@ import { usePresence } from '@/hooks/usePresence';
 import { useReviewAgents } from '@/hooks/useReviewAgents';
 import { useSprintEvents } from '@/hooks/useSprintEvents';
 import { useQuestionAnchor } from '@/hooks/useQuestionAnchor';
+import { useAnswerQuestion } from '@/hooks/useAnswerQuestion';
 import { questionAnchorId } from '@/lib/questionAnchor';
 import { projectsService, type Project } from '@/services/projects';
 import { reviewsService } from '@/services/reviews';
@@ -14,7 +15,6 @@ import { sprintGraphService, extractPrs, type PrInfo } from '@/services/sprintGr
 import { realtimeService } from '@/services/realtime';
 import { sprintsService } from '@/services/sprints';
 import { agentsService } from '@/services/agents';
-import { timelineEventsService } from '@/services/timelineEvents';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -60,7 +60,6 @@ import {
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { StructuredAnswer } from '@/services/questions';
 
 function RiskBadge({ score, reasoning }: { score: string; reasoning: string }) {
   const n = parseInt(score);
@@ -377,37 +376,8 @@ export default function ReviewPage() {
     }
   };
 
-  const handleAnswerQuestion = async (questionId: string, answer: StructuredAnswer) => {
-    try {
-      await questionsService.update(sprintId, questionId, { structuredAnswer: answer });
-      realtimeService.send('broadcastToDocument', {
-        data: { action: 'question.answered', sprintId, questionId },
-      });
-      timelineEventsService
-        .create(sprintId, {
-          type: 'question_answered',
-          title: 'Answered agent question',
-          userName: user?.displayName || user?.email || '',
-          questionId,
-        })
-        .catch(() => {});
-      await reload();
-    } catch (err) {
-      console.error('Failed to answer:', err);
-    }
-  };
-
-  const handleDismissQuestion = async (questionId: string) => {
-    const dismissed: StructuredAnswer = {
-      answers: [{ selectedOptions: [], freeText: '(dismissed — agent no longer running)' }],
-    };
-    try {
-      await questionsService.update(sprintId, questionId, { structuredAnswer: dismissed });
-      await reload();
-    } catch (err) {
-      console.error('Failed to dismiss question:', err);
-    }
-  };
+  const { answerQuestion: handleAnswerQuestion, dismissQuestion: handleDismissQuestion } =
+    useAnswerQuestion({ sprintId, reload });
 
   return (
     <div className="flex flex-col h-full">
