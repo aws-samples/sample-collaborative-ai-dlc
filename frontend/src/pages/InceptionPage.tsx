@@ -5,6 +5,8 @@ import { usePresence } from '@/hooks/usePresence';
 import { useCollaborativeInception } from '@/hooks/useCollaborativeInception';
 import { useAgentStatus } from '@/hooks/useAgentStatus';
 import { useSprintEvents } from '@/hooks/useSprintEvents';
+import { useQuestionAnchor } from '@/hooks/useQuestionAnchor';
+import { questionAnchorId } from '@/lib/questionAnchor';
 import { sprintsService } from '@/services/sprints';
 import { agentsService } from '@/services/agents';
 import { requirementsService } from '@/services/requirements';
@@ -209,6 +211,9 @@ export default function InceptionPage() {
     .filter((q) => !q.structuredAnswer)
     .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   const answeredQuestions = questions.filter((q) => q.structuredAnswer);
+
+  // Scroll to a question referenced by a #question-{id} URL hash (timeline links)
+  useQuestionAnchor(questions.length > 0);
   const agentNoLongerRunning =
     pendingQuestions.length > 0 &&
     (agentStatus.status?.status === 'SUCCEEDED' ||
@@ -343,6 +348,7 @@ export default function InceptionPage() {
           type: 'question_answered',
           title: 'Answered agent question',
           userName,
+          questionId,
         })
         .catch(() => {});
       await reload();
@@ -393,7 +399,11 @@ export default function InceptionPage() {
             </div>
           )}
           {pendingQuestions.map((pq) => (
-            <Card key={pq.id} className="border-agent-waiting bg-agent-waiting/5">
+            <Card
+              key={pq.id}
+              id={questionAnchorId(pq.id)}
+              className="border-agent-waiting bg-agent-waiting/5"
+            >
               <CardHeader className="pb-2">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
@@ -768,7 +778,7 @@ export default function InceptionPage() {
               <CardContent>
                 <div className="space-y-3">
                   {answeredQuestions.map((q) => (
-                    <div key={q.id} className="border rounded-lg p-3">
+                    <div key={q.id} id={questionAnchorId(q.id)} className="border rounded-lg p-3">
                       <p className="text-xs font-medium mb-1">Agent: {q.agent}</p>
                       {q.questions.map((sq, i) => (
                         <div key={i} className="mb-2">
@@ -793,6 +803,13 @@ export default function InceptionPage() {
                           )}
                         </div>
                       ))}
+                      {(q.answeredByName || q.answeredAt) && (
+                        <p className="text-[10px] text-muted-foreground border-t pt-2 mt-2">
+                          Answered
+                          {q.answeredByName ? ` by ${q.answeredByName}` : ''}
+                          {q.answeredAt ? ` · ${new Date(q.answeredAt).toLocaleString()}` : ''}
+                        </p>
+                      )}
                     </div>
                   ))}
                 </div>

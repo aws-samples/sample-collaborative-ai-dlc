@@ -4,6 +4,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import { usePresence } from '@/hooks/usePresence';
 import { useReviewAgents } from '@/hooks/useReviewAgents';
 import { useSprintEvents } from '@/hooks/useSprintEvents';
+import { useQuestionAnchor } from '@/hooks/useQuestionAnchor';
+import { questionAnchorId } from '@/lib/questionAnchor';
 import { projectsService, type Project } from '@/services/projects';
 import { reviewsService } from '@/services/reviews';
 import { questionsService } from '@/services/questions';
@@ -12,6 +14,7 @@ import { sprintGraphService, extractPrs, type PrInfo } from '@/services/sprintGr
 import { realtimeService } from '@/services/realtime';
 import { sprintsService } from '@/services/sprints';
 import { agentsService } from '@/services/agents';
+import { timelineEventsService } from '@/services/timelineEvents';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -286,6 +289,9 @@ export default function ReviewPage() {
     .filter((q) => !q.structuredAnswer)
     .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
+  // Scroll to a question referenced by a #question-{id} URL hash (timeline links)
+  useQuestionAnchor(questions.length > 0);
+
   const blindOutput = review?.blindReview || blindAgent.completedOutput || blindAgent.streamingText;
   const fullOutput = review?.fullReview || fullAgent.completedOutput || fullAgent.streamingText;
   const hasReviewResults = !!blindOutput || !!fullOutput;
@@ -377,6 +383,14 @@ export default function ReviewPage() {
       realtimeService.send('broadcastToDocument', {
         data: { action: 'question.answered', sprintId, questionId },
       });
+      timelineEventsService
+        .create(sprintId, {
+          type: 'question_answered',
+          title: 'Answered agent question',
+          userName: user?.displayName || user?.email || '',
+          questionId,
+        })
+        .catch(() => {});
       await reload();
     } catch (err) {
       console.error('Failed to answer:', err);
@@ -406,7 +420,11 @@ export default function ReviewPage() {
 
           {/* Pending questions */}
           {pendingQuestions.map((pq) => (
-            <Card key={pq.id} className="border-agent-waiting bg-agent-waiting/5">
+            <Card
+              key={pq.id}
+              id={questionAnchorId(pq.id)}
+              className="border-agent-waiting bg-agent-waiting/5"
+            >
               <CardHeader className="pb-2">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">

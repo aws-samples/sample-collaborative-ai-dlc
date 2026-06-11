@@ -5,6 +5,8 @@ import { usePresence } from '@/hooks/usePresence';
 import { useAgentStatus } from '@/hooks/useAgentStatus';
 import { useConstructionStatus } from '@/hooks/useConstructionStatus';
 import { useSprintEvents } from '@/hooks/useSprintEvents';
+import { useQuestionAnchor } from '@/hooks/useQuestionAnchor';
+import { questionAnchorId } from '@/lib/questionAnchor';
 import { sprintsService } from '@/services/sprints';
 import { projectsService, type Project } from '@/services/projects';
 import { agentsService } from '@/services/agents';
@@ -158,6 +160,9 @@ export default function ConstructionPage() {
     .filter((q) => !q.structuredAnswer)
     .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
+  // Scroll to a question referenced by a #question-{id} URL hash (timeline links)
+  useQuestionAnchor(questions.length > 0);
+
   // Branch is stored on the sprint after first kick-off — skip BranchSelector on re-runs
   const storedBranch = sprint?.branch || null;
   const storedBaseBranch = sprint?.baseBranch || 'main';
@@ -258,7 +263,12 @@ export default function ConstructionPage() {
         data: { action: 'question.answered', sprintId, questionId },
       });
       timelineEventsService
-        .create(sprintId, { type: 'question_answered', title: 'Answered agent question', userName })
+        .create(sprintId, {
+          type: 'question_answered',
+          title: 'Answered agent question',
+          userName,
+          questionId,
+        })
         .catch(() => {});
       await reload();
     } catch (err) {
@@ -356,7 +366,11 @@ export default function ConstructionPage() {
 
           {/* Pending questions */}
           {pendingQuestions.map((pq) => (
-            <Card key={pq.id} className="border-agent-waiting bg-agent-waiting/5">
+            <Card
+              key={pq.id}
+              id={questionAnchorId(pq.id)}
+              className="border-agent-waiting bg-agent-waiting/5"
+            >
               <CardHeader className="pb-2">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">

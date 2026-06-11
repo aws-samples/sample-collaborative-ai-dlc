@@ -11,6 +11,7 @@ import { realtimeService } from '@/services/realtime';
 import { agentsService } from '@/services/agents';
 import { timelineEventsService, type TimelineEvent } from '@/services/timelineEvents';
 import { useAuth } from '@/contexts/AuthContext';
+import { useQuestionLink } from '@/hooks/useQuestionAnchor';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -534,6 +535,8 @@ function TimelineEmptyState() {
 export function TimelineEventItem({ event }: { event: TimelineEvent }) {
   const timeAgo = getTimeAgo(event.timestamp);
   const { color } = getEventStyle(event.type);
+  const openQuestion = useQuestionLink();
+  const linkable = !!event.questionId;
 
   return (
     <div className="flex gap-3 py-2">
@@ -542,7 +545,18 @@ export function TimelineEventItem({ event }: { event: TimelineEvent }) {
         <div className="w-px flex-1 bg-border mt-1" />
       </div>
       <div className="flex-1 min-w-0 pb-2">
-        <p className="text-xs font-medium leading-tight">{event.title}</p>
+        {linkable ? (
+          <button
+            type="button"
+            onClick={() => openQuestion(event.questionId!)}
+            title="Go to question"
+            className="text-xs font-medium leading-tight text-left hover:underline cursor-pointer"
+          >
+            {event.title}
+          </button>
+        ) : (
+          <p className="text-xs font-medium leading-tight">{event.title}</p>
+        )}
         <div className="flex items-center gap-2 mt-0.5">
           {event.userName && (
             <span className="text-[10px] text-muted-foreground">{event.userName}</span>

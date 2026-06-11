@@ -1172,7 +1172,9 @@ exports.handler = async (event) => {
     // POST /agents/{taskId}/questions/{questionId}/answer
     if (httpMethod === 'POST' && questionId) {
       const { structuredAnswer } = JSON.parse(body);
-      const userId = event.requestContext.authorizer.claims.sub;
+      const claims = event.requestContext.authorizer.claims;
+      const userId = claims.sub;
+      const userName = claims['custom:display_name'] || claims.email || '';
       const question = await ddb.send(
         new GetCommand({ TableName: process.env.QUESTIONS_TABLE, Key: { questionId } }),
       );
@@ -1183,12 +1185,14 @@ exports.handler = async (event) => {
         new UpdateCommand({
           TableName: process.env.QUESTIONS_TABLE,
           Key: { questionId },
-          UpdateExpression: 'SET #s = :s, structuredAnswer = :a, answeredBy = :u, answeredAt = :t',
+          UpdateExpression:
+            'SET #s = :s, structuredAnswer = :a, answeredBy = :u, answeredByName = :n, answeredAt = :t',
           ExpressionAttributeNames: { '#s': 'status' },
           ExpressionAttributeValues: {
             ':s': 'answered',
             ':a': structuredAnswerJson,
             ':u': userId,
+            ':n': userName,
             ':t': Date.now(),
           },
         }),

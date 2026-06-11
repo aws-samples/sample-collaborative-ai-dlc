@@ -16,7 +16,12 @@ export interface AgentQuestion {
   questions: StructuredQuestion[];
   status: 'pending' | 'answered';
   structuredAnswer?: StructuredAnswer;
+  /** Cognito sub of the user who answered */
   answeredBy?: string;
+  /** Display name of the user who answered */
+  answeredByName?: string;
+  /** Epoch ms of when the answer was submitted */
+  answeredAt?: number;
   createdAt: number;
 }
 

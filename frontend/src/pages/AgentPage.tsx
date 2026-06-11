@@ -3,6 +3,8 @@ import { useSprint } from '@/contexts/SprintContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { useAgentStatus } from '@/hooks/useAgentStatus';
 import { useSprintEvents } from '@/hooks/useSprintEvents';
+import { useQuestionAnchor } from '@/hooks/useQuestionAnchor';
+import { questionAnchorId } from '@/lib/questionAnchor';
 import { projectsService, type Project } from '@/services/projects';
 import { agentsService } from '@/services/agents';
 import { timelineEventsService } from '@/services/timelineEvents';
@@ -89,6 +91,9 @@ export default function AgentPage() {
     .filter((q) => !q.structuredAnswer)
     .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
+  // Scroll to a question referenced by a #question-{id} URL hash (timeline links)
+  useQuestionAnchor(questions.length > 0);
+
   const handleSelectBranch = (branch: string, baseBranch: string) => {
     setShowBranchSelector(false);
     handleStartAgent(branch, baseBranch);
@@ -137,6 +142,7 @@ export default function AgentPage() {
           type: 'question_answered',
           title: 'Answered agent question',
           userName,
+          questionId,
         })
         .catch(() => {});
     } catch (err) {
@@ -332,7 +338,7 @@ export default function AgentPage() {
             {/* Pending Questions */}
             {pendingQuestions.length > 0 &&
               pendingQuestions.map((pq) => (
-                <Card key={pq.id} className="border-yellow-500/50">
+                <Card key={pq.id} id={questionAnchorId(pq.id)} className="border-yellow-500/50">
                   <CardHeader>
                     <div className="flex items-center justify-between">
                       <CardTitle className="flex items-center gap-2 text-yellow-600">

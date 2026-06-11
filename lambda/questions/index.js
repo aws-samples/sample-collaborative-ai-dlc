@@ -20,6 +20,17 @@ const getConnection = async () => {
   return new DriverRemoteConnection(connInfo.url, { headers: connInfo.headers });
 };
 
+// Responder identity comes from the Cognito User Pools authorizer so it is
+// authoritative — clients cannot spoof who answered a question.
+const getClaims = (event) => event?.requestContext?.authorizer?.claims || {};
+
+const getResponder = (event) => {
+  const claims = getClaims(event);
+  const sub = claims.sub || '';
+  const displayName = claims['custom:display_name'] || claims.email || '';
+  return { sub, displayName };
+};
+
 const mapQuestion = (v) => {
   const questionsRaw = v.get('questions')?.[0] || '[]';
   const structuredAnswerRaw = v.get('structured_answer')?.[0] || '';
@@ -54,6 +65,9 @@ const mapQuestion = (v) => {
     draftAnswer,
     sprintId: v.get('sprint_id')?.[0] || '',
     createdAt: v.get('created_at')?.[0] || '',
+    answeredBy: v.get('answered_by')?.[0] || '',
+    answeredByName: v.get('answered_by_name')?.[0] || '',
+    answeredAt: v.get('answered_at')?.[0] || '',
   };
 };
 
@@ -124,10 +138,15 @@ exports.handler = async (event) => {
         // Submit structured answer
         if (data.structuredAnswer !== undefined) {
           const answerJson = JSON.stringify(data.structuredAnswer);
+          const responder = getResponder(event);
+          const answeredAt = new Date().toISOString();
           await g
             .V()
             .has('Question', 'id', questionId)
             .property(cardinality.single, 'structured_answer', answerJson)
+            .property(cardinality.single, 'answered_by', responder.sub)
+            .property(cardinality.single, 'answered_by_name', responder.displayName)
+            .property(cardinality.single, 'answered_at', answeredAt)
             .next();
 
           // Sync answer to DynamoDB so the agent's ask_question poll sees it
@@ -137,12 +156,15 @@ exports.handler = async (event) => {
                 new UpdateCommand({
                   TableName: process.env.AGENT_QUESTIONS_TABLE,
                   Key: { questionId },
-                  UpdateExpression: 'SET #s = :s, structuredAnswer = :a, answeredAt = :t',
+                  UpdateExpression:
+                    'SET #s = :s, structuredAnswer = :a, answeredAt = :t, answeredBy = :u, answeredByName = :n',
                   ExpressionAttributeNames: { '#s': 'status' },
                   ExpressionAttributeValues: {
                     ':s': 'answered',
                     ':a': answerJson,
                     ':t': Date.now(),
+                    ':u': responder.sub,
+                    ':n': responder.displayName,
                   },
                 }),
               )
