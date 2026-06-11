@@ -5,7 +5,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-COPY server.js realtime-token.js ./
+COPY server.js realtime-token.js doc-name.js ./
 
 USER node
 

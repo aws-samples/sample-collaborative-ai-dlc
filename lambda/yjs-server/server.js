@@ -7,6 +7,7 @@ import * as syncProtocol from 'y-protocols/sync';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
 import { verifyRealtimeAccess, requiredScopeForYjsDoc } from './realtime-token.js';
+import { docNameFromPath } from './doc-name.js';
 
 const PORT = Number(process.env.PORT) || 1234;
 const DOC_TTL_MS = 60_000; // Keep docs alive 60 s after last client leaves
@@ -223,8 +224,9 @@ server.on('upgrade', async (req, socket, head) => {
   }
 
   // Strip the query string before computing docName so that a token
-  // refresh doesn't create a "new" document identity.
-  const docName = parsedUrl.pathname.slice(1) || 'default';
+  // refresh doesn't create a "new" document identity, and drop the
+  // CloudFront `/yjs/*` routing prefix (see doc-name.js).
+  const docName = docNameFromPath(parsedUrl.pathname);
 
   // Scope-token check (plan §4a): signature, expiry, scope coverage for this
   // doc name, and principal binding to the JWT-authenticated user. Deny by
