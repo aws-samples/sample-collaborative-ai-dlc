@@ -71,6 +71,10 @@ export function MessageBubble({
                 className={cn(
                   'prose prose-sm dark:prose-invert max-w-none text-sm leading-relaxed break-words',
                   '[&_p]:my-0.5 [&_pre]:my-1 [&_ul]:my-1 [&_ol]:my-1',
+                  // Narrow-panel guards: code blocks scroll instead of
+                  // clipping, wide GFM tables scroll inside the bubble.
+                  'min-w-0 max-w-full [&_pre]:max-w-full [&_pre]:overflow-x-auto',
+                  '[&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto',
                   isAgent && 'rounded-md bg-primary/5 px-2 py-1',
                 )}
               >
