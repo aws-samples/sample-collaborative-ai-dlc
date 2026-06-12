@@ -121,8 +121,8 @@ resource "aws_iam_role_policy_attachment" "ecs_execution" {
   policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# The realtime doc-token secret is injected as an ECS secret from SSM
-# (plan §4a), which the execution role resolves at task start.
+# The realtime doc-token secret is injected as an ECS secret from SSM,
+# which the execution role resolves at task start.
 resource "aws_iam_role_policy" "ecs_execution_doc_secret" {
   name = "${var.project_name}-yjs-doc-secret-${var.environment}"
   role = aws_iam_role.ecs_execution.id
@@ -203,7 +203,7 @@ resource "aws_ecs_task_definition" "yjs_server" {
     ]
     secrets = [
       {
-        # Realtime doc-token secret (plan §4a) — verifies HMAC scope tokens
+        # Realtime doc-token secret — verifies HMAC scope tokens
         # on every WebSocket upgrade.
         name      = "REALTIME_DOC_SECRET"
         valueFrom = var.realtime_doc_secret_param_arn

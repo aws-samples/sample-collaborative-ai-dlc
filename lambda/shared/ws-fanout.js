@@ -1,7 +1,7 @@
 'use strict';
 
-// Server-origin WebSocket fan-out to a sprint channel (discussions plan §4b,
-// D10 end state). Used by the questions, sprints, and agents lambdas to emit
+// Server-origin WebSocket fan-out to a sprint channel. Used by the
+// questions, sprints, and agents lambdas to emit
 // `question.answered` / `sprint.phaseChanged` server-side — replacing the
 // client-origin broadcasts that ws-message used to allowlist.
 //
@@ -44,7 +44,7 @@ const broadcastToSprintChannel = async (sprintId, payload) => {
     const data = JSON.stringify(payload);
     await Promise.all(
       (result.Items || [])
-        // Never target connections whose scope token has expired (plan §4a).
+        // Never target connections whose scope token has expired.
         .filter((item) => isTokenLive(item.tokenExp))
         .map((item) =>
           api

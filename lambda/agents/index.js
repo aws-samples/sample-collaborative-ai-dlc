@@ -260,7 +260,7 @@ async function cleanupStaleWorkers() {
           `Cleaning up stale ${status} worker ${w.workerId} (last heartbeat ${now - w.lastHeartbeat}ms ago)`,
         );
         // When cleaning up a stale busy worker with a sprint job, mark Sprint and AgentRun as failed.
-        // Discussion assists never own the Sprint status (plan §8) — only their AgentRun is failed.
+        // Discussion assists never own the Sprint status — only their AgentRun is failed.
         if (status === 'busy' && w.job?.sprintId) {
           const isDiscussionJob = (w.job.agentType || '').toLowerCase() === 'discussion';
           try {
@@ -628,7 +628,7 @@ exports.handler = async (event) => {
       const input = JSON.parse(body || '{}');
       const executionId = `exec-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-      // Discussion assists (plan §8, D1): pool-worker phase with NO workspace —
+      // Discussion assists run as a pool-worker phase with NO workspace —
       // no git clone/branch/push, no repo validation, no git token, and most
       // importantly NO Sprint current_* writes (assists must never hijack the
       // sprint status shown on phase pages). The AgentRun vertex is the
@@ -798,7 +798,7 @@ exports.handler = async (event) => {
         runNumber: 1,
         changeRequest: input.changeRequest || '',
         agentCli: projectAgentCli,
-        // Discussion-assist job fields (plan §8) — empty for other phases.
+        // Discussion-assist job fields — empty for other phases.
         discussionId: input.discussionId || '',
         command: input.command || '',
         instruction: input.instruction || '',
@@ -904,7 +904,7 @@ exports.handler = async (event) => {
             // Discussion assist: AgentRun only, keyed run-{executionId} —
             // per-sprint {n} counters race across concurrent assists in
             // different threads (locks are per discussion, not per sprint).
-            // NEVER touch Sprint current_* properties (plan §8).
+            // NEVER touch Sprint current_* properties.
             await g
               .addV('AgentRun')
               .property('id', `run-${executionId}`)
@@ -1269,8 +1269,8 @@ exports.handler = async (event) => {
         console.error('Neptune question sync failed:', e.message);
       }
 
-      // Server-origin reload hint (plan §4b, D10 end state): peers re-fetch
-      // the answered question. Replaces the client broadcast.
+      // Server-origin reload hint: peers re-fetch the answered question.
+      // Replaces the client broadcast.
       if (question.Item.sprintId) {
         await broadcastToSprintChannel(question.Item.sprintId, {
           action: 'question.answered',

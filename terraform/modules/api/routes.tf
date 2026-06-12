@@ -770,21 +770,21 @@ resource "aws_api_gateway_resource" "timeline_events" {
   path_part   = "timeline-events"
 }
 
-# /sprints/{sprintId}/realtime-token (discussions plan §4a)
+# /sprints/{sprintId}/realtime-token
 resource "aws_api_gateway_resource" "sprint_realtime_token" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.sprint_root.id
   path_part   = "realtime-token"
 }
 
-# /projects/{projectId}/realtime-token (discussions plan §4a)
+# /projects/{projectId}/realtime-token
 resource "aws_api_gateway_resource" "project_realtime_token" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.project.id
   path_part   = "realtime-token"
 }
 
-# /sprints/{sprintId}/discussions (discussions plan §7)
+# /sprints/{sprintId}/discussions
 resource "aws_api_gateway_resource" "discussions" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.sprint_root.id
@@ -1094,7 +1094,7 @@ resource "aws_api_gateway_integration" "timeline_events_post" {
 }
 
 # =============================================================================
-# Realtime-token Methods (POST sprint + project variants — discussions §4a)
+# Realtime-token Methods (POST sprint + project variants)
 # =============================================================================
 resource "aws_api_gateway_method" "sprint_realtime_token_post" {
   rest_api_id        = aws_api_gateway_rest_api.main.id
@@ -1131,7 +1131,7 @@ resource "aws_api_gateway_integration" "project_realtime_token_post" {
 }
 
 # =============================================================================
-# Discussions Methods (discussions plan §7)
+# Discussions Methods
 #   GET/POST /sprints/{sprintId}/discussions
 #   GET/POST /sprints/{sprintId}/discussions/{discussionId}/messages
 # =============================================================================

@@ -1,6 +1,6 @@
 'use strict';
 
-// Shared HMAC-signed realtime scope tokens (discussions plan §4).
+// Shared HMAC-signed realtime scope tokens.
 //
 // Both realtime fabrics historically verified only "valid Cognito JWT", which
 // let any signed-in user join any Yjs doc or app-WS scope. These short-lived
@@ -15,7 +15,7 @@
 //                verifier MUST compare it to the JWT-authenticated user).
 //   - `scopes` — e.g. ["sprint:<sprintId>", "project:<projectId>"].
 //   - `exp`    — epoch SECONDS; default TTL 10 minutes. Established sockets
-//                are closed / filtered out at expiry (see plan §4a).
+//                are closed / filtered out at expiry.
 //
 // IMPORTANT: `lambda/yjs-server/realtime-token.js` is a standalone ESM copy of
 // this module (the Yjs Docker build context cannot reach lambda/shared). The
@@ -106,7 +106,7 @@ const verifyRealtimeToken = (token, secret, { now = Date.now() } = {}) => {
 };
 
 /**
- * Full connect-path check (plan §4a): signature, expiry, scope coverage,
+ * Full connect-path check: signature, expiry, scope coverage,
  * principal binding (`payload.sub === authenticated sub`).
  *
  * @param {{ token: string, secret: string, requiredScope: string|null, sub: string, now?: number }} opts
@@ -180,7 +180,7 @@ const requiredScopeForChannel = (documentId) => {
 };
 
 /**
- * Send-time liveness filter for connection rows (plan §4a): rows whose token
+ * Send-time liveness filter for connection rows: rows whose token
  * has expired must never be fan-out targets. Rows WITHOUT a `tokenExp` are
  * allowed — they can only be pre-enforcement legacy rows (the connections
  * table TTL clears them within an hour of the cutover deploy) because

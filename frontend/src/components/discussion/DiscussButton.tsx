@@ -5,7 +5,7 @@ import { cn } from '@/lib/utils';
 import { useDiscussions } from './DiscussionProvider';
 import type { OpenDiscussionArgs } from './DiscussionProvider';
 
-// DiscussButton (plan §9): the entry-point affordance with a discussion-aware
+// DiscussButton: the entry-point affordance with a discussion-aware
 // badge — count pill when unreadCount > 0, subtle dot when a thread exists
 // with messages but nothing unread. Renders nothing when no
 // DiscussionProvider is mounted (outside a sprint).

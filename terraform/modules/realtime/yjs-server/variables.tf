@@ -40,7 +40,7 @@ variable "realtime_doc_secret_param_arn" {
 }
 
 variable "doc_token_enforce" {
-  description = "Enforce realtime scope tokens on the Yjs upgrade path (operational kill switch — plan §4, D3)"
+  description = "Enforce realtime scope tokens on the Yjs upgrade path (operational kill switch)"
   type        = bool
   default     = true
 }

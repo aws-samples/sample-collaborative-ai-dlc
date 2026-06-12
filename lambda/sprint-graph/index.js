@@ -42,7 +42,7 @@ export const handler = async (event) => {
     // Get all vertices contained in this sprint (CONTAINS + HAS_REVIEW + HAS_PR
     // + HAS_AGENT_RUN + HAS_DISCUSSION). Discussion threads are shown (linked
     // to their anchors by DISCUSSES); DiscussionMessage vertices are excluded —
-    // clutter (plan §5).
+    // clutter.
     const vertices = await g
       .V()
       .has('Sprint', 'id', sprintId)

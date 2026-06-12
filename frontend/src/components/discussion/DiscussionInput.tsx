@@ -7,7 +7,7 @@ import type { Member } from '@/services/projects';
 import type { AssistCommand } from '@/services/discussions';
 import { generateColor } from '@/utils/colors';
 
-// DiscussionInput (plan §9): auto-growing textarea, Enter = send,
+// DiscussionInput: auto-growing textarea, Enter = send,
 // Shift+Enter = newline, typing awareness, the @-mention combobox over
 // project members, and the assist (Sparkles) menu with canned commands +
 // free-form instruction. Mentions are validated server-side anyway
@@ -18,7 +18,7 @@ interface Props {
   onTyping: (typing: boolean) => void;
   members: Member[];
   onAssist?: (command: AssistCommand, instruction?: string) => void;
-  /** suggest-answer is only offered on question-anchored threads (D5). */
+  /** suggest-answer is advice-only and only offered on question-anchored threads. */
   canSuggestAnswer?: boolean;
   assistRunning?: boolean;
   disabled?: boolean;
@@ -232,7 +232,7 @@ export function DiscussionInput({
             autoGrow();
           }}
           onKeyDown={(e) => {
-            // `/` in an empty input opens the assist menu (plan §9).
+            // `/` in an empty input opens the assist menu.
             if (e.key === '/' && value === '' && onAssist) {
               e.preventDefault();
               setAssistOpen(true);

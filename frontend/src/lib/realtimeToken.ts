@@ -1,6 +1,6 @@
 import { api } from '../services/api';
 
-// Realtime scope tokens (discussions plan §4a).
+// Realtime scope tokens.
 //
 // Both realtime fabrics (the Yjs ECS server and the app WebSocket) require a
 // short-lived HMAC-signed scope token at connect time, issued by

@@ -294,7 +294,7 @@ Valid labels: ${VALID_LABELS.join(', ')}.`,
         } else if (label === 'PRGroup') {
           q = g.V().has('Sprint', 'id', env.sprintId).out('HAS_PR_GROUP');
         } else if (label === 'Discussion') {
-          // Discussions hang off HAS_DISCUSSION, not CONTAINS (plan §5).
+          // Discussions hang off HAS_DISCUSSION, not CONTAINS.
           q = g.V().has('Sprint', 'id', env.sprintId).out('HAS_DISCUSSION');
         } else if (label === 'DiscussionMessage') {
           q = g.V().has('Sprint', 'id', env.sprintId).out('HAS_DISCUSSION').out('HAS_MESSAGE');
@@ -377,7 +377,7 @@ The message is persisted to the graph and broadcast live to the team.`,
           .property(cardinality.single, 'last_message_at', now)
           .next();
 
-        // Marker for acp-client's fallback-post guard (plan §8) — proves the
+        // Marker for acp-client's fallback-post guard — proves the
         // reply landed through the tool.
         try {
           fs.writeFileSync(`/tmp/discussion-posted-${process.env.EXECUTION_ID || ''}`, message.id);
@@ -385,7 +385,7 @@ The message is persisted to the graph and broadcast live to the team.`,
           /* best-effort */
         }
 
-        // Full-payload broadcast to the sprint channel (D8): clients that
+        // Full-payload broadcast to the sprint channel: clients that
         // missed every stream chunk still render the durable reply.
         await broadcastToSprintChannel({
           type: 'discussion.message',
@@ -913,7 +913,7 @@ async function broadcastEvent(type, data) {
     );
     const wsClient = new ApiGatewayManagementApiClient({ endpoint: env.websocketEndpoint });
     const payload = JSON.stringify({ type, ...data });
-    // Never target connections whose scope token has expired (plan §4a).
+    // Never target connections whose scope token has expired.
     // Inline copy of shared/realtime-token.js#isTokenLive — the agents-ecs
     // Docker build context cannot reach lambda/shared. Rows without tokenExp
     // are pre-enforcement legacy rows (TTL ≤1h) — allow.
@@ -942,7 +942,7 @@ async function broadcastEvent(type, data) {
 
 // Sprint-channel variant of broadcastEvent — discussion events fan out to
 // `sprint:{sprintId}` connections (where the chat clients listen), not the
-// bare projectId channel. Same per-send token-liveness filter (plan §4a).
+// bare projectId channel. Same per-send token-liveness filter.
 async function broadcastToSprintChannel(payload) {
   if (!env.sprintId) return;
   try {

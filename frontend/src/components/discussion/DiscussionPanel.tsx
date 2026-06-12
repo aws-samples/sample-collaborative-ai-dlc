@@ -15,7 +15,7 @@ import { DiscussionInput } from './DiscussionInput';
 import { ResolveDialog } from './ResolveDialog';
 import { useDiscussions } from './DiscussionProvider';
 
-// DiscussionPanel (plan §9): NON-modal thread view hosted inside the right
+// DiscussionPanel: NON-modal thread view hosted inside the right
 // ActivityPanel's Discuss tab — no overlay, the rest of the app stays fully
 // interactive while a discussion is open. Header with back-to-list arrow +
 // anchor badge + title + presence dots + resolve control, scrollable thread
@@ -94,7 +94,8 @@ export function DiscussionPanel() {
   const dividerIndex =
     dividerId && dividerId !== '' ? messages.findIndex((m) => m.id === dividerId) : null;
 
-  // ── Visibility-gated read marking (plan §9, D4) ──
+  // ── Visibility-gated read marking (per-thread composite cursor:
+  // lastReadAt + lastReadMessageId) ──
   const lastMarkedRef = useRef<string>('');
   const markRead = () => {
     if (!ctx || !discussion || document.visibilityState !== 'visible') return;

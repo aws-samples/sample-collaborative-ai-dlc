@@ -6,7 +6,7 @@
  * its own instance so a tool event with seq=5 doesn't cause a chunk with
  * seq=4 to be dropped.
  *
- * Extracted from useAgentStatus (plan §6) so the discussion assist stream
+ * Extracted from useAgentStatus so the discussion assist stream
  * shares the exact same dedupe semantics.
  */
 export class SeqDeduplicator {

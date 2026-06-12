@@ -6,7 +6,7 @@ const acpClient = readFileSync(new URL('../acp-client.js', import.meta.url), 'ut
 // acp-client.js runs main() at import time (it is the container entrypoint),
 // so these invariants are pinned at source level, matching the conventions of
 // this workspace's tests (see pool-worker.test.js).
-describe('acp-client connection-cache token expiry (plan §4a, review round 4)', () => {
+describe('acp-client connection-cache token expiry', () => {
   it('caches {connectionId, tokenExp} pairs instead of bare connection IDs', () => {
     // The cache fill must project tokenExp alongside connectionId.
     expect(acpClient).toMatch(
@@ -37,7 +37,7 @@ describe('acp-client connection-cache token expiry (plan §4a, review round 4)',
   });
 });
 
-describe('acp-client discussion-assist integration (plan §6/§8)', () => {
+describe('acp-client discussion-assist integration', () => {
   it('includes executionId in EVERY broadcast payload (stream correlation)', () => {
     expect(acpClient).toMatch(
       /const payload = JSON\.stringify\(\{\s*type,\s*agentTaskId: env\.agentTaskId \|\| undefined,\s*executionId: env\.executionId,/,

@@ -8,7 +8,7 @@ import type { DiscussionMessage } from '@/services/discussions';
 import type { PendingMessage } from '@/hooks/useDiscussion';
 import { MessageBubble } from './MessageBubble';
 
-// DiscussionThread (plan §9): grouped message blocks with load-older at the
+// DiscussionThread: grouped message blocks with load-older at the
 // top, the first-unread divider, and component-local pending/failed bubbles
 // at the bottom. The bottom sentinel doubles as the visible-read trigger —
 // the IntersectionObserver lets the sheet advance the read cursor only when
@@ -30,7 +30,7 @@ interface Props {
   onRedact?: (messageId: string) => void;
   /** Fires while the bottom of the thread is visible in the viewport. */
   onBottomVisible?: () => void;
-  /** Assist lifecycle (plan §9): 'starting' placeholder → streaming bubble. */
+  /** Assist lifecycle: 'starting' placeholder → streaming bubble. */
   assistState?: 'starting' | 'streaming' | null;
   streamingReply?: string;
 }
@@ -85,7 +85,7 @@ export function DiscussionThread({
     }
   }, [messages, pending, assistState, streamingReply]);
 
-  // Visible-read trigger (plan §9): IntersectionObserver on the bottom
+  // Visible-read trigger: IntersectionObserver on the bottom
   // sentinel AND document.visibilityState — both checked by the sheet.
   useEffect(() => {
     const el = bottomRef.current;
@@ -178,8 +178,9 @@ export function DiscussionThread({
         </p>
       )}
 
-      {/* Assist lifecycle bubble (plan §9): explicit starting state (pool
-          pickup is 15–60 s, D1) → streaming markdown with a pulse cursor.
+      {/* Assist lifecycle bubble: explicit starting state — the assist runs
+          as a pool-worker phase, so pickup takes 15–60 s — then streaming
+          markdown with a pulse cursor.
           The durable reply replaces this as a normal agent message. */}
       {assistState === 'starting' && (
         <div className="flex gap-2 px-3 py-1.5">

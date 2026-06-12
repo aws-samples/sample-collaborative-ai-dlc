@@ -14,7 +14,7 @@ import { Loader2 } from 'lucide-react';
 import type { DiscussionMessage } from '@/services/discussions';
 import { cn } from '@/lib/utils';
 
-// ResolveDialog (plan §9): optional resolution summary (the durable "what
+// ResolveDialog: optional resolution summary (the durable "what
 // did we decide", lands in the timeline) + optional "mark a message as the
 // outcome" picker over the most recent messages.
 

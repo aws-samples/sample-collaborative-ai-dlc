@@ -33,7 +33,7 @@ export const handler = async (event) => {
 
     await Promise.allSettled(
       (connections.Items ?? [])
-        // Never target connections whose scope token has expired (plan §4a).
+        // Never target connections whose scope token has expired.
         .filter((item) => isTokenLive(item.tokenExp))
         .map((item) =>
           wsClient.send(

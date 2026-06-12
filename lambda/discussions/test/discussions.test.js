@@ -35,7 +35,7 @@ const lambdaMock = mockClient(LambdaClient);
 
 // ─── In-memory DynamoDB conditional-write fake for the locks table ───
 //
-// The guard protocol (plan §7, D9) is all conditional writes. This fake
+// The guard protocol is all conditional writes. This fake
 // implements exactly the condition expressions the handler uses, against an
 // in-memory Map, so the concurrency state machine is testable without a
 // DynamoDB container. Connections-table queries are mocked separately.
@@ -86,7 +86,7 @@ const installDdbFake = () => {
       }
     }
     if (input.UpdateExpression.includes('executionId')) {
-      // Assist-lock executionId stamp (plan §7).
+      // Assist-lock executionId stamp.
       item.executionId = input.ExpressionAttributeValues[':eid'];
       return {};
     }
@@ -346,7 +346,7 @@ const postToken = ({ sprintId, projectId, sub = MEMBER_SUB }) =>
 const json = (res) => JSON.parse(res.body);
 
 // =============================================================================
-// Realtime token issuance (PR 1)
+// Realtime token issuance
 // =============================================================================
 
 describe('OPTIONS', () => {
@@ -408,7 +408,7 @@ describe('POST /projects/{projectId}/realtime-token', () => {
 });
 
 // =============================================================================
-// POST /discussions — atomic get-or-create (plan §5, D9)
+// POST /discussions — atomic get-or-create (DynamoDB creation guard)
 // =============================================================================
 
 describe('POST /sprints/{sprintId}/discussions', () => {
@@ -585,7 +585,7 @@ describe('GET /sprints/{sprintId}/discussions', () => {
 });
 
 // =============================================================================
-// POST /messages — stateful message guard (plan §7, D9)
+// POST /messages — stateful message guard (conditional writes)
 // =============================================================================
 
 describe('POST .../messages — append + guard state matrix', () => {
@@ -815,7 +815,7 @@ describe('POST .../messages — append + guard state matrix', () => {
 });
 
 // =============================================================================
-// Takeover-safety invariant (plan §7, round 4) — init assertion pin
+// Takeover-safety invariant — init assertion pin
 // =============================================================================
 
 describe('takeover-safety invariant', () => {
@@ -829,7 +829,7 @@ describe('takeover-safety invariant', () => {
 });
 
 // =============================================================================
-// GET /messages — keyset pagination + change delta (plan §6/§7)
+// GET /messages — keyset pagination + change delta
 // =============================================================================
 
 describe('GET .../messages — pagination and change delta', () => {
@@ -902,7 +902,7 @@ describe('GET .../messages — pagination and change delta', () => {
 });
 
 // =============================================================================
-// Server-driven fanout (D8)
+// Server-driven fanout
 // =============================================================================
 
 describe('discussion.message fanout', () => {
@@ -941,7 +941,7 @@ describe('discussion.message fanout', () => {
 });
 
 // =============================================================================
-// PUT /discussions/{discussionId} — resolve / reopen (plan §5/§7)
+// PUT /discussions/{discussionId} — resolve / reopen
 // =============================================================================
 
 describe('PUT .../discussions/{discussionId} — resolve and reopen', () => {
@@ -1033,7 +1033,7 @@ describe('PUT .../discussions/{discussionId} — resolve and reopen', () => {
 });
 
 // =============================================================================
-// POST .../messages/{messageId}/redact — admin/owner moderation (plan §5/§7)
+// POST .../messages/{messageId}/redact — admin/owner moderation
 // =============================================================================
 
 describe('POST .../redact', () => {
@@ -1113,7 +1113,7 @@ describe('POST .../redact', () => {
 });
 
 // =============================================================================
-// Read cursors + unread counts (plan §7, D4)
+// Read cursors + unread counts (composite cursor)
 // =============================================================================
 
 describe('read cursors and unread counts', () => {
@@ -1187,7 +1187,7 @@ describe('read cursors and unread counts', () => {
 });
 
 // =============================================================================
-// GET /discussions/search — bounded sprint-scoped search (plan §7)
+// GET /discussions/search — bounded sprint-scoped search
 // =============================================================================
 
 describe('GET .../discussions/search', () => {
@@ -1259,7 +1259,7 @@ describe('GET .../discussions/search', () => {
 });
 
 // =============================================================================
-// Mention notifications (plan §6/§7, D7)
+// Mention notifications (online, in-app only)
 // =============================================================================
 
 describe('mention notifications', () => {
@@ -1303,7 +1303,7 @@ describe('mention notifications', () => {
 });
 
 // =============================================================================
-// POST .../discussions/{discussionId}/assist — lock + dispatch (plan §7/§8)
+// POST .../discussions/{discussionId}/assist — lock + dispatch
 // =============================================================================
 
 describe('POST .../assist', () => {
@@ -1403,7 +1403,7 @@ describe('POST .../assist', () => {
     ).toBe(202);
   });
 
-  it('suggest-answer requires a question-anchored thread (D5)', async () => {
+  it('suggest-answer requires a question-anchored thread', async () => {
     // DISC is sprint-anchored → rejected.
     expect((await assist({ command: 'suggest-answer' })).statusCode).toBe(400);
 

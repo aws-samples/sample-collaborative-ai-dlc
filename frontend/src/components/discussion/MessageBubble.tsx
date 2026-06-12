@@ -13,7 +13,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 
-// MessageBubble (plan §9): one author block (grouped consecutive messages),
+// MessageBubble: one author block (grouped consecutive messages),
 // hash-colored avatar, relative timestamps, markdown via react-markdown +
 // remark-gfm (no raw HTML — default-safe). Agent messages get distinct
 // styling + a "requested by {name} · {command}" caption (assist audit

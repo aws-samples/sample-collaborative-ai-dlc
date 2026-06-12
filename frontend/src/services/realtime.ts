@@ -50,7 +50,7 @@ class RealtimeService {
     const session = await authService.getSession();
     if (!session?.idToken) throw new Error('Not authenticated');
 
-    // Realtime scope token (plan §4a): ws-connection verifies signature,
+    // Realtime scope token: ws-connection verifies signature,
     // expiry, scope coverage for this documentId, and sub binding at $connect.
     const target = scopeTargetForChannel(documentId);
     if (!target) throw new Error(`Unknown realtime documentId format: ${documentId}`);
@@ -110,7 +110,7 @@ class RealtimeService {
     }
     // `action` and `documentId` are spread LAST so payload fields can never
     // clobber the route action, and the target is always the connected
-    // document (the server binds to the registered document anyway, §4b).
+    // document (the server binds to the registered document anyway).
     const message = JSON.stringify({ ...data, action, documentId: this.documentId });
     console.log('Sending WebSocket message:', message);
     this.ws.send(message);

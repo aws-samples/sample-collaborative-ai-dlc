@@ -1,7 +1,7 @@
 import { Button } from '@/components/ui/button';
 import { AtSign, X } from 'lucide-react';
 
-// MentionToasts (plan §9, D7): lightweight in-app notification stack for
+// MentionToasts: lightweight in-app notification stack for
 // discussion.mention events — online users only; offline/email delivery is a
 // named v2 item. No toast library exists in the codebase, so this is a small
 // self-contained fixed-position stack.

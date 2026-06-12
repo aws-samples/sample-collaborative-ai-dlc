@@ -137,8 +137,8 @@ export default function AgentPage() {
   const handleAnswerQuestion = async (questionId: string, answer: StructuredAnswer) => {
     try {
       await agentStatus.answerQuestion(questionId, answer);
-      // question.answered is now emitted SERVER-SIDE by the questions/agents
-      // lambdas (plan §4b, D10 end state) — no client broadcast.
+      // question.answered is a server-origin event emitted by the
+      // questions/agents lambdas — clients never broadcast it.
       timelineEventsService
         .create(sprintId, {
           type: 'question_answered',

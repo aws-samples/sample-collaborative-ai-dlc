@@ -17,7 +17,7 @@ export interface AwarenessUser {
   name: string;
   color: string;
   cursor?: { index: number; length: number };
-  /** Set by discussion inputs (plan §6) — typing indicator. */
+  /** Set by discussion inputs — typing indicator. */
   typing?: boolean;
 }
 
@@ -58,7 +58,7 @@ export function useYjsDocument(documentId: string | null, userName?: string, use
         return;
       }
 
-      // Realtime scope token (plan §4a): the Yjs server verifies signature,
+      // Realtime scope token: the Yjs server verifies signature,
       // expiry, scope coverage for this doc name, and sub binding at upgrade.
       const target = scopeTargetForYjsDoc(documentId);
       if (!target) {
@@ -160,7 +160,7 @@ export function useYjsDocument(documentId: string | null, userName?: string, use
           tokenRefreshRef.current = null;
         }
 
-        // 4401 = scope token expired (server-side close at token exp, §4a) or
+        // 4401 = scope token expired (server-side close at token exp) or
         // an authorization rejection — make sure the reconnect fetches a
         // fresh token instead of replaying the cached one.
         if (event.code === 4401) invalidateRealtimeToken(target);

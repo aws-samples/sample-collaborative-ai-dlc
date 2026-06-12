@@ -10,9 +10,9 @@ const getApiClient = () =>
   new ApiGatewayManagementApiClient({ endpoint: process.env.WEBSOCKET_ENDPOINT });
 
 // -----------------------------------------------------------------------------
-// Client-origin event allowlist (discussions plan §4b, D10 — END STATE).
+// Client-origin event allowlist.
 //
-// All realtime events are now SERVER-ORIGIN: `question.answered` is emitted by
+// All realtime events are SERVER-ORIGIN: `question.answered` is emitted by
 // the questions lambda (PUT) and the agents lambda (answer endpoint), and
 // `sprint.phaseChanged` by the sprints lambda (phase update) — see
 // lambda/shared/ws-fanout.js. The frontend no longer client-broadcasts
@@ -29,7 +29,7 @@ export const handler = async (event) => {
 
   // Only broadcastToDocument remains client-reachable. The legacy `broadcast`
   // (table scan) and client-origin `notification` paths had no frontend
-  // callers and allowed cross-document/event spoofing — removed (plan §4b).
+  // callers and allowed cross-document/event spoofing — removed.
   if (action !== 'broadcastToDocument') {
     console.warn(`Dropped non-allowlisted action "${action}" from ${connectionId}`);
     return { statusCode: 200 };
@@ -64,7 +64,7 @@ export const handler = async (event) => {
     return { statusCode: 200 };
   }
 
-  // Reject sends from connections whose scope token has lapsed (plan §4a).
+  // Reject sends from connections whose scope token has lapsed.
   if (!isTokenLive(senderRow.tokenExp?.N)) {
     console.warn(`Dropped message from connection ${connectionId} with expired token`);
     return { statusCode: 200 };
@@ -106,7 +106,7 @@ const broadcast = async (items, message, excludeConnectionId) => {
     items.map(async (item) => {
       const connId = item.connectionId.S;
       if (connId === excludeConnectionId) return;
-      // Never target connections whose scope token has expired (plan §4a).
+      // Never target connections whose scope token has expired.
       if (!isTokenLive(item.tokenExp?.N)) return;
       try {
         await api.send(new PostToConnectionCommand({ ConnectionId: connId, Data: payload }));

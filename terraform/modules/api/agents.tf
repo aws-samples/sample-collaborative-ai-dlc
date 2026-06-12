@@ -41,7 +41,8 @@ module "agents_lambda" {
     GIT_CONNECTIONS_TABLE     = var.git_connections_table_name
     AGENT_SETTINGS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
     CORS_ALLOWED_ORIGINS      = var.cors_allowed_origins
-    # Server-origin question.answered fanout (discussions plan §4b, D10)
+    # Server-origin question.answered fanout: the agents lambda pushes the
+    # event to sprint-channel WS connections.
     CONNECTIONS_TABLE  = var.connections_table_name
     WEBSOCKET_ENDPOINT = var.websocket_api_endpoint_https
   }

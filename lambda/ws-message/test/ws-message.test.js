@@ -30,7 +30,7 @@ const makeEvent = (body, connectionId = SENDER) => ({
 });
 
 // -----------------------------------------------------------------------------
-// END STATE (discussions plan §4b, D10): the client-event allowlist is EMPTY.
+// The client-event allowlist is EMPTY: all realtime events are server-origin.
 // question.answered and sprint.phaseChanged are emitted server-side
 // (lambda/shared/ws-fanout.js from the questions/agents/sprints lambdas), and
 // connected clients cannot inject ANY event through broadcastToDocument.

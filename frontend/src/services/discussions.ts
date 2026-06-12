@@ -1,6 +1,6 @@
 import { api, ApiError } from './api';
 
-// Discussions service (plan §7/§9) — typed client for lambda/discussions.
+// Discussions service — typed client for lambda/discussions.
 //
 // Concurrency contract: the backend serializes thread creation and message
 // append through DynamoDB guards and answers `409 {reason, retryAfter}` while
@@ -73,7 +73,7 @@ export type AssistCommand = 'suggest-answer' | 'summarize' | 'explain' | 'custom
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Retry the SAME request while the backend reports a competing writer
-// (creation_in_progress / message_in_progress — plan §5/§7).
+// (creation_in_progress / message_in_progress).
 const RETRYABLE_REASONS = ['creation_in_progress', 'message_in_progress'];
 const MAX_TRANSPARENT_RETRIES = 4;
 
@@ -171,7 +171,7 @@ export const discussionsService = {
   },
 
   /**
-   * Invoke an in-thread agent assist (plan §7/§8). Returns the executionId
+   * Invoke an in-thread agent assist. Returns the executionId
    * used to correlate the agent.* stream. 409 {reason:'assist_in_progress'}
    * and 400 cli_unavailable are NOT retried — the UI surfaces them.
    */

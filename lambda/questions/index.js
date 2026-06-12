@@ -185,8 +185,8 @@ export const handler = async (event) => {
               .catch((e) => console.error('DynamoDB sync failed:', e.message));
           }
 
-          // Server-origin reload hint (plan §4b, D10 end state): peers
-          // re-fetch the answered question. Replaces the client broadcast.
+          // Server-origin reload hint: peers re-fetch the answered
+          // question. Replaces the client broadcast.
           await broadcastToSprintChannel(sprintId, {
             action: 'question.answered',
             sprintId,

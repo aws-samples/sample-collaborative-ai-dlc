@@ -20,26 +20,24 @@ import { buildResponse } from '../shared/response.js';
 import { fetchMembershipRole } from '../shared/trackers.js';
 import { signRealtimeToken, isTokenLive } from '../shared/realtime-token.js';
 
-// lambda/discussions — sprint-scoped discussion threads (discussions plan).
+// lambda/discussions — sprint-scoped discussion threads.
 //
-// PR 1: realtime scope-token issuance (plan §4a).
-// PR 2: graph data model + core REST (plan §5/§6/§7) —
+// Handles realtime scope-token issuance and the discussion REST API:
 //   GET  /sprints/{sprintId}/discussions                          list + messageCount + unreadCount
 //   POST /sprints/{sprintId}/discussions                          atomic get-or-create (creation guard)
 //   GET  /sprints/{sprintId}/discussions/{discussionId}/messages  keyset pagination + change delta
 //   POST /sprints/{sprintId}/discussions/{discussionId}/messages  append via stateful message guard
-// PR 3 (this revision): thread features (plan §7) —
 //   PUT  /sprints/{sprintId}/discussions/{discussionId}           resolve / reopen + summary + outcome
 //   POST .../messages/{messageId}/redact                          admin/owner moderation
-//   PUT  .../discussions/{discussionId}/read                      composite read cursor (D4)
+//   PUT  .../discussions/{discussionId}/read                      composite read cursor
 //   GET  /sprints/{sprintId}/discussions/search                   bounded sprint-scoped search
 //   + per-user mention notifications and author read-cursor auto-advance on append
 //
-// Durability model (D8): REST persists to Neptune (source of truth), then THIS
-// lambda fans out the full payload over the app WebSocket. Yjs is a live-sync
-// optimization handled entirely client-side.
+// Durability model (server-first): REST persists to Neptune (source of truth),
+// then THIS lambda fans out the full payload over the app WebSocket. Yjs is a
+// live-sync optimization handled entirely client-side.
 //
-// Concurrency model (D9): Neptune does not unique-constrain the `id` property,
+// Concurrency model: Neptune does not unique-constrain the `id` property,
 // so thread creation and message append are serialized through DynamoDB
 // conditional writes in the `discussion-locks` table. Lazy DynamoDB TTL is
 // never trusted — every condition that cares about expiry checks
@@ -62,7 +60,7 @@ const ENTITY_TYPES = [
 ];
 
 // entityType → anchor vertex label. `sprint` and `inception` both anchor at
-// the Sprint vertex (distinguished by the entity_type property, plan §5).
+// the Sprint vertex (distinguished by the entity_type property).
 const ANCHOR_LABELS = {
   sprint: 'Sprint',
   inception: 'Sprint',
@@ -89,10 +87,10 @@ const MESSAGE_GUARD_PENDING_SECONDS = 120;
 const MESSAGE_GUARD_COMPLETE_SECONDS = 3600;
 const POLL_ATTEMPTS = 3;
 const POLL_INTERVAL_MS = 300;
-const ASSIST_LOCK_SECONDS = 900; // 15 min initial; worker heartbeat renews (plan §7)
+const ASSIST_LOCK_SECONDS = 900; // 15 min initial; worker heartbeat renews
 const ASSIST_COMMANDS = ['suggest-answer', 'summarize', 'explain', 'custom'];
 
-// Takeover-safety invariant (plan §7, review round 4): the pending window
+// Takeover-safety invariant: the pending window
 // MUST exceed this lambda's timeout, so an expired `pending` guard PROVES the
 // original winner is no longer executing — a takeover can never race a
 // slow-but-alive winner into a duplicate Neptune write. Terraform sets
@@ -102,7 +100,7 @@ const LAMBDA_TIMEOUT_SECONDS = Number(process.env.LAMBDA_TIMEOUT_SECONDS ?? 30);
 if (!(MESSAGE_GUARD_PENDING_SECONDS > LAMBDA_TIMEOUT_SECONDS)) {
   throw new Error(
     `Takeover-safety invariant violated: message-guard pending window (${MESSAGE_GUARD_PENDING_SECONDS}s) ` +
-      `must exceed the lambda timeout (${LAMBDA_TIMEOUT_SECONDS}s) — see discussions plan §7`,
+      `must exceed the lambda timeout (${LAMBDA_TIMEOUT_SECONDS}s)`,
   );
 }
 
@@ -207,7 +205,7 @@ const mapMessage = (v) => ({
   sprintId: getVal(v, 'sprint_id'),
 });
 
-// One total order everywhere (plan §6): display order (createdAt, id),
+// One total order everywhere: display order (createdAt, id),
 // change order (updatedAt, id). Both server-assigned ISO strings.
 const compareBy = (tsKey) => (a, b) => {
   if (a[tsKey] !== b[tsKey]) return a[tsKey] < b[tsKey] ? -1 : 1;
@@ -217,7 +215,7 @@ const compareBy = (tsKey) => (a, b) => {
 
 // Canonical idempotency hash over the NORMALIZED full append payload —
 // not content alone, because mentions affect persisted data and
-// notifications (plan §7, review round 4).
+// notifications.
 const canonicalMentions = (mentions) => [...new Set(mentions)].sort();
 const payloadHashOf = (content, mentions) =>
   createHash('sha256')
@@ -238,7 +236,7 @@ const fetchProjectIdForSprint = async (g, sprintId) => {
   return r.done ? null : r.value;
 };
 
-// Every route resolves the caller's role once (plan §7 role matrix).
+// Every route resolves the caller's role once.
 // Returns { res } with an error response, or { projectId, role }.
 const authorizeSprint = async (sprintId, sub, res) => {
   if (!sub) return { res: res(401, { error: 'Unauthorized' }) };
@@ -250,7 +248,7 @@ const authorizeSprint = async (sprintId, sub, res) => {
   return { projectId, role };
 };
 
-// ─── WebSocket fanout (server-driven, D8) ───
+// ─── WebSocket fanout (server-driven) ───
 
 const broadcastToSprint = async (sprintId, payload) => {
   const connectionsTable = process.env.CONNECTIONS_TABLE;
@@ -269,7 +267,7 @@ const broadcastToSprint = async (sprintId, payload) => {
     const data = JSON.stringify(payload);
     await Promise.all(
       (result.Items || [])
-        // Never target connections whose scope token has expired (plan §4a).
+        // Never target connections whose scope token has expired.
         .filter((item) => isTokenLive(item.tokenExp))
         .map((item) =>
           api
@@ -279,12 +277,12 @@ const broadcastToSprint = async (sprintId, payload) => {
     );
   } catch (err) {
     // Fanout is best-effort — persistence already succeeded; clients have the
-    // change-delta reconciliation backstop (plan §6).
+    // change-delta reconciliation backstop.
     console.error('WS fanout failed:', err.message);
   }
 };
 
-// Per-user delivery for mention notifications (D7: online, in-app only) —
+// Per-user delivery for mention notifications (online, in-app only) —
 // every live connection of the mentioned user, via UserIdIndex.
 const broadcastToUser = async (userId, payload) => {
   const connectionsTable = process.env.CONNECTIONS_TABLE;
@@ -303,7 +301,7 @@ const broadcastToUser = async (userId, payload) => {
     const data = JSON.stringify(payload);
     await Promise.all(
       (result.Items || [])
-        // Never target connections whose scope token has expired (plan §4a).
+        // Never target connections whose scope token has expired.
         .filter((item) => isTokenLive(item.tokenExp))
         .map((item) =>
           api
@@ -316,7 +314,7 @@ const broadcastToUser = async (userId, payload) => {
   }
 };
 
-// ─── Read cursors (plan §7, D4) ───
+// ─── Read cursors ───
 //
 // Composite cursor (lastReadAt, lastReadMessageId) matching the display order.
 // WHEN it advances is a UI concern (visibility-gated) — the backend only
@@ -346,7 +344,7 @@ const fetchReadCursors = async (userId, sprintId) => {
 };
 
 // unread = count(created_at > lastReadAt) + count(created_at == lastReadAt
-// && id > lastReadMessageId) — one composite comparison (plan §7). No
+// && id > lastReadMessageId) — one composite comparison. No
 // cursor → everything is unread. Capped for badge display.
 const countUnread = (messageKeys, cursor) => {
   let unread = 0;
@@ -363,7 +361,7 @@ const countUnread = (messageKeys, cursor) => {
   return unread;
 };
 
-// ─── Realtime token issuance (PR 1, plan §4a) ───
+// ─── Realtime token issuance ───
 
 // Doc-secret resolution: REALTIME_DOC_SECRET env wins (test seam / local),
 // otherwise fetch the SSM SecureString named by REALTIME_SECRET_PARAM once
@@ -422,9 +420,9 @@ const listDiscussions = async (event, res) => {
       .hasLabel('Discussion')
       .project('props', 'messageCount', 'messageKeys')
       .by(__.valueMap())
-      // message_count is computed, never stored — racy (plan §5).
+      // message_count is computed, never stored — racy.
       .by(__.out('HAS_MESSAGE').count())
-      // (created_at, id) keys for the per-caller unread computation (D4).
+      // (created_at, id) keys for the per-caller unread computation.
       .by(__.out('HAS_MESSAGE').project('createdAt', 'id').by('created_at').by('id').fold())
       .toList(),
   );
@@ -448,7 +446,7 @@ const listDiscussions = async (event, res) => {
   return res(200, discussions);
 };
 
-// ─── Discussions: atomic get-or-create (plan §5, D9) ───
+// ─── Discussions: atomic get-or-create (DynamoDB creation guard) ───
 
 // Anchor lookup: the ordered limit(1) makes even a residual duplicate behave
 // deterministically (defense-in-depth).
@@ -522,7 +520,7 @@ const createDiscussionVertex = async (
     .to('a')
     .next();
 
-  // `discussion_started` TimelineEvent on first creation (plan §7).
+  // `discussion_started` TimelineEvent on first creation.
   await g
     .V()
     .has('Sprint', 'id', sprintId)
@@ -567,7 +565,7 @@ const getOrCreateDiscussion = async (event, res) => {
 
   const anchorLabel = ANCHOR_LABELS[entityType];
 
-  // Fast path: thread already exists — no lock (plan §5 step 1).
+  // Fast path: thread already exists — no lock.
   const existing = await query((g) => findDiscussionByAnchor(g, anchorLabel, entityId, entityType));
   if (existing) return res(200, existing);
 
@@ -600,7 +598,7 @@ const getOrCreateDiscussion = async (event, res) => {
 
     if (acquired) {
       // Winner: re-check the anchor (guard against a just-finished creator),
-      // create vertex + edges, delete the guard (plan §5 step 2).
+      // create vertex + edges, delete the guard.
       const recheck = await query((g) =>
         findDiscussionByAnchor(g, anchorLabel, entityId, entityType),
       );
@@ -640,7 +638,7 @@ const getOrCreateDiscussion = async (event, res) => {
       return res(200, created);
     }
 
-    // Loser: short retry loop on the anchor lookup (plan §5 step 2).
+    // Loser: short retry loop on the anchor lookup.
     for (let poll = 0; poll < POLL_ATTEMPTS; poll++) {
       await sleep(POLL_INTERVAL_MS);
       const found = await query((g) =>
@@ -662,7 +660,7 @@ const getOrCreateDiscussion = async (event, res) => {
   return res(409, { reason: 'creation_in_progress', retryAfter: 1 });
 };
 
-// ─── Messages: list (keyset pagination + change delta, plan §6/§7) ───
+// ─── Messages: list (keyset pagination + change delta) ───
 
 const fetchDiscussionInSprint = async (g, sprintId, discussionId) => {
   const r = await g
@@ -718,7 +716,7 @@ const listMessages = async (event, res) => {
   let hasMore;
   if (after) {
     // Change delta: keyed on (updatedAt, id) ascending so missed REDACTIONS
-    // of older messages arrive too, not just new messages (plan §6).
+    // of older messages arrive too, not just new messages.
     const sorted = all.sort(compareBy('updatedAt'));
     const newer = sorted.filter(
       (m) => m.updatedAt > after.ts || (m.updatedAt === after.ts && m.id > after.id),
@@ -744,7 +742,7 @@ const listMessages = async (event, res) => {
   return res(200, { messages, hasMore });
 };
 
-// ─── Messages: atomic append via stateful message guard (plan §7, D9) ───
+// ─── Messages: atomic append via stateful message guard (conditional writes) ───
 
 const fetchMessageInDiscussion = async (g, discussionId, messageId) => {
   const r = await g
@@ -819,8 +817,8 @@ const postMessage = async (event, res) => {
     return res(400, { error: `Message content exceeds ${MAX_CONTENT_LENGTH} characters` });
   }
 
-  // Mentions: server-validated against project members — non-members stripped
-  // (plan §5/§7). Canonical (sorted, deduped) for storage and hashing.
+  // Mentions: server-validated against project members — non-members
+  // stripped. Canonical (sorted, deduped) for storage and hashing.
   let mentions = Array.isArray(body.mentions)
     ? body.mentions.filter((m) => typeof m === 'string' && m)
     : [];
@@ -904,7 +902,7 @@ const postMessage = async (event, res) => {
         mentions,
         redacted: false,
         createdAt,
-        updatedAt: createdAt, // = created_at on create; bumped on redact (plan §5)
+        updatedAt: createdAt, // = created_at on create; bumped on redact
         discussionId,
         sprintId,
       };
@@ -913,7 +911,7 @@ const postMessage = async (event, res) => {
       await completeGuard(guardKey, ownerToken);
 
       // Server-driven fanout with the FULL persisted message — sender
-      // included; delivery never depends on the sender's tab surviving (D8).
+      // included; delivery never depends on the sender's tab surviving.
       await broadcastToSprint(sprintId, {
         action: 'discussion.message',
         sprintId,
@@ -921,7 +919,7 @@ const postMessage = async (event, res) => {
         message,
       });
 
-      // Per-user mention notifications (D7: online, in-app only; self-mention
+      // Per-user mention notifications (online, in-app only; self-mention
       // makes no sense to notify).
       const excerpt =
         content.length > MENTION_EXCERPT_LENGTH
@@ -943,8 +941,8 @@ const postMessage = async (event, res) => {
           ),
       );
 
-      // Auto-advance the author's read cursor — your own message is read
-      // (plan §7). Best-effort: a failure only leaves a stale badge.
+      // Auto-advance the author's read cursor — your own message is read.
+      // Best-effort: a failure only leaves a stale badge.
       await upsertReadCursor(caller.sub, discussionId, sprintId, createdAt, messageId).catch(
         (err) => console.error('Read-cursor auto-advance failed:', err.message),
       );
@@ -952,7 +950,7 @@ const postMessage = async (event, res) => {
       return res(201, message);
     }
 
-    // Condition failure → inspect the guard and branch (plan §7).
+    // Condition failure → inspect the guard and branch.
     const guard = await ddb.send(
       new GetCommand({ TableName: locksTable(), Key: { lockId: guardKey } }),
     );
@@ -1018,7 +1016,7 @@ const completeGuard = async (guardKey, ownerToken) => {
   }
 };
 
-// ─── Discussion resolve / reopen (plan §5/§7) ───
+// ─── Discussion resolve / reopen ───
 
 const updateDiscussion = async (event, res) => {
   const { sprintId, discussionId } = event.pathParameters || {};
@@ -1051,7 +1049,7 @@ const updateDiscussion = async (event, res) => {
 
   const now = new Date().toISOString();
   // Resolve sets the audit fields; reopen clears them — `resolved_by*` is
-  // shown in the UI (member-level resolve is audited, D11).
+  // shown in the UI (member-level resolve is audited).
   const resolved = status === 'resolved';
   await query((g) =>
     g
@@ -1104,7 +1102,7 @@ const updateDiscussion = async (event, res) => {
   return res(200, mapDiscussion(updated));
 };
 
-// ─── Message redaction (plan §5/§7 — admin/owner only) ───
+// ─── Message redaction (admin/owner only) ───
 
 const redactMessage = async (event, res) => {
   const { sprintId, discussionId, messageId } = event.pathParameters || {};
@@ -1126,8 +1124,7 @@ const redactMessage = async (event, res) => {
 
   // The original content is REPLACED (purged from Neptune); the audit trail
   // is preserved. `updated_at` is bumped so the redaction propagates through
-  // the (updatedAt, id) change delta to clients that missed the WS event
-  // (plan §5/§6).
+  // the (updatedAt, id) change delta to clients that missed the WS event.
   await query((g) =>
     g
       .V()
@@ -1179,7 +1176,7 @@ const redactMessage = async (event, res) => {
   return res(200, mapMessage(updated));
 };
 
-// ─── Read cursor upsert (plan §7, D4) ───
+// ─── Read cursor upsert ───
 
 const markRead = async (event, res) => {
   const { sprintId, discussionId } = event.pathParameters || {};
@@ -1207,7 +1204,7 @@ const markRead = async (event, res) => {
   return res(200, { lastReadAt, lastReadMessageId });
 };
 
-// ─── Sprint-scoped search (plan §7 — bounded; OpenSearch is the v2 escape hatch) ───
+// ─── Sprint-scoped search (bounded; OpenSearch is the v2 escape hatch) ───
 
 const searchDiscussions = async (event, res) => {
   const { sprintId } = event.pathParameters || {};
@@ -1284,12 +1281,13 @@ const searchDiscussions = async (event, res) => {
   return res(200, { results: deduped.slice(0, limit) });
 };
 
-// ─── Agent assist dispatch (plan §7/§8, D1/D6) ───
+// ─── Agent assist dispatch ───
 //
+// Assists run as a pool-worker 'discussion' phase, not a dedicated lambda.
 // One assist per thread at a time, serialized by the `assist:{discussionId}`
 // lock. The dispatch is a synchronous Lambda-invoke of the agents lambda with
 // phase:'discussion' — preflight errors (cli_unavailable, pool at capacity)
-// propagate to the caller with their original status. No cost cap (D6):
+// propagate to the caller with their original status. No cost cap:
 // the per-thread lock + pool capacity are the limiters; every assist is
 // audited (requested-by caption + AgentRun history).
 
@@ -1317,7 +1315,8 @@ const invokeAssist = async (event, res) => {
   if (command === 'custom' && !instruction.trim()) {
     return res(400, { error: 'custom command requires an instruction' });
   }
-  // suggest-answer only makes sense on question-anchored threads (D5).
+  // suggest-answer is advice-only and requires a question-anchored thread;
+  // it never modifies the question itself.
   if (command === 'suggest-answer' && getVal(discussion, 'entity_type') !== 'question') {
     return res(400, { error: 'suggest-answer requires a question-anchored discussion' });
   }
@@ -1325,8 +1324,8 @@ const invokeAssist = async (event, res) => {
   const agentsLambda = process.env.AGENTS_LAMBDA;
   if (!agentsLambda) return res(500, { error: 'Assist dispatch is not configured' });
 
-  // Acquire the per-thread assist lock (atomic, D9). The worker heartbeats it
-  // while the session runs; expiry covers crashed dispatches.
+  // Acquire the per-thread assist lock (atomic conditional write). The worker
+  // heartbeats it while the session runs; expiry covers crashed dispatches.
   const lockId = `assist:${discussionId}`;
   try {
     await ddb.send(
@@ -1389,7 +1388,7 @@ const invokeAssist = async (event, res) => {
 
     if (statusCode !== 200) {
       // Dispatch failure (cli_unavailable, pool at capacity, …) → release the
-      // lock and propagate the original error/status (plan §7, D2).
+      // lock and propagate the original error/status.
       await releaseLock();
       return res(statusCode, dispatchBody);
     }

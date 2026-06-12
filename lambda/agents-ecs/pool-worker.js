@@ -590,7 +590,7 @@ function cloneAndSetupBranch(job, repoUrl, targetDir) {
 // driver — e.g. ".kiro/steering" for Kiro, ".claude/rules" for Claude,
 // ".opencode/rules" for OpenCode. The agent's CLI auto-loads them; we cite
 // the directory in prompts so the agent knows where to find named rule files.
-// Appended to every non-discussion phase prompt (plan §5): discussions are
+// Appended to every non-discussion phase prompt: discussions are
 // durable, queryable collaboration context — not chat history.
 const DISCUSSIONS_NUDGE = `
 
@@ -619,7 +619,7 @@ function buildPrompt(job, rulesDir) {
   return prompt + DISCUSSIONS_NUDGE;
 }
 
-// Discussion-assist prompt (plan §8). The agent SELF-SERVES context via MCP —
+// Discussion-assist prompt. The agent SELF-SERVES context via MCP —
 // no Lambda-side prompt assembly. It must finish by calling
 // `post_discussion_message` exactly once (acp-client posts the output buffer
 // as a fallback if it forgets).
@@ -1278,7 +1278,7 @@ function pushBranchWithRetry(job, branch, maxRetries = 3, workDir = '/workspace'
 
 // Run the ACP client for a single job
 // ---------------------------------------------------------------------------
-// Assist-lock heartbeat (discussions plan §7/§8)
+// Assist-lock heartbeat
 //
 // The discussions lambda acquires `assist:{discussionId}` (15 min) before
 // dispatch; the worker renews it every 60 s while the session runs —
@@ -1359,7 +1359,7 @@ function runAcpSession(job) {
       GIT_REPO: job.gitRepo || '',
       GIT_REPOS: JSON.stringify(job.gitRepos || []),
       RUN_NUMBER: String(job.runNumber || 1),
-      // Discussion-assist context (plan §8) — empty for other phases.
+      // Discussion-assist context — empty for other phases.
       DISCUSSION_ID: job.discussionId || '',
       DISCUSSION_COMMAND: job.command || '',
       DISCUSSION_REQUESTED_BY: job.requestedBy || '',
@@ -1550,7 +1550,7 @@ async function main() {
 
         await setupWorkspace(job);
         // Discussion assists hold a per-thread lock — heartbeat it while the
-        // session runs, release on completion/error (plan §7/§8).
+        // session runs, release on completion/error.
         const assistLock = startAssistLockHeartbeat(job);
         let exitCode, pushSucceeded, pushResults;
         try {

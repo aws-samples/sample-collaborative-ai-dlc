@@ -184,7 +184,7 @@ module "lambda" {
   realtime_doc_secret_param_arn  = module.realtime.realtime_doc_secret_param_arn
   realtime_doc_secret_param_name = module.realtime.realtime_doc_secret_param_name
 
-  # Discussions feature (plan §7/§10)
+  # Discussions feature
   discussion_locks_table_name      = module.dynamodb.discussion_locks_table_name
   discussion_locks_table_arn       = module.dynamodb.discussion_locks_table_arn
   discussion_read_state_table_name = module.dynamodb.discussion_read_state_table_name
@@ -258,7 +258,8 @@ module "api" {
   cloudfront_origin_secret          = module.frontend.cloudfront_origin_secret
   enable_cloudfront_origin_policy   = false
   api_gateway_account_id            = aws_api_gateway_account.main.id
-  # Server-origin event fanout (discussions plan §4b, D10)
+  # Server-origin event fanout: all realtime events originate server-side
+  # (the client-event allowlist is empty).
   connections_table_name       = module.dynamodb.connections_table_name
   websocket_api_endpoint_https = replace(module.realtime.websocket_api_endpoint, "wss://", "https://")
 }
@@ -356,7 +357,7 @@ module "agents" {
   ecs_cluster_arn             = module.compute.cluster_arn
   agent_pool_table_name       = module.dynamodb.agent_pool_table_name
   agent_pool_table_arn        = module.dynamodb.agent_pool_table_arn
-  # Discussion assist locks (discussions plan §7/§8)
+  # Discussion assist locks
   discussion_locks_table_name = module.dynamodb.discussion_locks_table_name
   discussion_locks_table_arn  = module.dynamodb.discussion_locks_table_arn
   agents_lambda_name          = "${var.project_name}-agents-${var.environment}"

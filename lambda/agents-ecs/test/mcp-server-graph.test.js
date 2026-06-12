@@ -6,7 +6,7 @@ const mcpServer = readFileSync(new URL('../mcp-server-graph/index.js', import.me
 // mcp-server-graph/index.js starts an MCP server at import time (it is the
 // container-side tool process), so these invariants are pinned at source
 // level, matching the conventions of this workspace's tests.
-describe('mcp-server-graph discussions integration (plan §5)', () => {
+describe('mcp-server-graph discussions integration', () => {
   it('registers Discussion/DiscussionMessage labels and the discussion edges', () => {
     expect(mcpServer).toContain("'Discussion',");
     expect(mcpServer).toContain("'DiscussionMessage',");
@@ -52,7 +52,7 @@ describe('mcp-server-graph discussions integration (plan §5)', () => {
   });
 });
 
-describe('post_discussion_message tool (plan §8)', () => {
+describe('post_discussion_message tool', () => {
   it("is registered and scoped to the assist run's discussion", () => {
     expect(mcpServer).toContain("'post_discussion_message'");
     const toolSrc = mcpServer.slice(

@@ -164,7 +164,7 @@ describe('pool-worker construction task branch cleanup', () => {
   });
 });
 
-describe('discussion-assist phase (plan §8)', () => {
+describe('discussion-assist phase', () => {
   it('builds the discussion prompt with the post_discussion_message contract', () => {
     expect(poolWorker).toContain("if (phase === 'discussion') return buildDiscussionPrompt(job);");
     const promptSrc = poolWorker.slice(
@@ -173,7 +173,7 @@ describe('discussion-assist phase (plan §8)', () => {
     );
     expect(promptSrc).toContain('post_discussion_message');
     expect(promptSrc).toContain('EXACTLY ONCE');
-    // suggest-answer is ADVICE ONLY (D5) — never modifies the question.
+    // suggest-answer is ADVICE ONLY — never modifies the question.
     expect(promptSrc).toContain('ADVICE ONLY');
     for (const cmd of ["'suggest-answer'", 'summarize:', 'explain:', 'custom:']) {
       expect(promptSrc).toContain(cmd);
@@ -218,7 +218,7 @@ describe('discussion-assist phase (plan §8)', () => {
   });
 });
 
-describe('discussions nudge in phase prompts (plan §5)', () => {
+describe('discussions nudge in phase prompts', () => {
   it('appends the get_discussions nudge to every non-discussion prompt', () => {
     expect(poolWorker).toContain('const DISCUSSIONS_NUDGE');
     expect(poolWorker).toContain('return prompt + DISCUSSIONS_NUDGE;');

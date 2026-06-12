@@ -1,12 +1,12 @@
 # =============================================================================
-# Realtime doc-token secret (discussions plan §4a)
+# Realtime doc-token secret
 #
 # Shared HMAC secret for the short-lived realtime scope tokens. Consumed by:
 #   - lambda/discussions  (issuer — via module.lambda, REALTIME_SECRET_PARAM)
 #   - lambda/ws-connection (verifier at app-WS $connect)
 #   - the Yjs ECS task     (verifier at Yjs upgrade — injected as ECS secret)
 #
-# Rotation runbook (PR 6): update the SSM value, recycle the Yjs ECS task,
+# Rotation runbook: update the SSM value, recycle the Yjs ECS task,
 # and force a cold start of the ws-connection + discussions lambdas.
 # =============================================================================
 

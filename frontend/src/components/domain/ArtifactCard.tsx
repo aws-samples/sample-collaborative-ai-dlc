@@ -15,7 +15,7 @@ import type { DiscussionEntityType } from '@/services/discussions';
 
 export type ArtifactType = 'requirement' | 'user-story' | 'task' | 'code-file' | 'general-info';
 
-// ArtifactType → discussion anchor entity type (plan §5). Code files have no
+// ArtifactType → discussion anchor entity type. Code files have no
 // discussion anchor in v1.
 const DISCUSSION_ENTITY_TYPES: Partial<Record<ArtifactType, DiscussionEntityType>> = {
   requirement: 'requirement',

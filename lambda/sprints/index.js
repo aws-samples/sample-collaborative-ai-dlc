@@ -355,9 +355,9 @@ export const handler = async (event) => {
 
         const updated = await g.V().has('Sprint', 'id', sprintId).valueMap().next();
 
-        // Server-origin reload hint (plan §4b, D10 end state): peers re-fetch
-        // the sprint and navigate from the FETCHED phase — the payload
-        // deliberately carries no phase. Replaces the client broadcast.
+        // Server-origin reload hint: peers re-fetch the sprint and navigate
+        // from the FETCHED phase — the payload deliberately carries no
+        // phase. Replaces the client broadcast.
         if (data.phase) {
           await broadcastToSprintChannel(sprintId, {
             action: 'sprint.phaseChanged',
@@ -370,7 +370,7 @@ export const handler = async (event) => {
 
       case 'DELETE': {
         // Drop sprint and all contained vertices (incl. discussion threads
-        // and their messages — plan §5 cascade)
+        // and their messages — cascade delete)
         await g
           .V()
           .has('Sprint', 'id', sprintId)

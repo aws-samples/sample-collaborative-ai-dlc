@@ -321,7 +321,7 @@ describe('method routing', () => {
   });
 });
 
-describe('server-origin question.answered fanout (discussions plan §4b, D10)', () => {
+describe('server-origin question.answered fanout', () => {
   it('emits the reload hint to the sprint channel after persisting the answer', async () => {
     const sprintId = `s-${randomUUID()}`;
     const questionId = `q-${randomUUID()}`;

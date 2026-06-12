@@ -140,7 +140,7 @@ const env = {
   websocketEndpoint: process.env.WEBSOCKET_ENDPOINT,
   neptuneEndpoint: process.env.NEPTUNE_ENDPOINT,
   region: process.env.AWS_REGION || 'us-east-1',
-  // Discussion-assist job fields (plan §8) — empty for other phases.
+  // Discussion-assist job fields — empty for other phases.
   discussionId: process.env.DISCUSSION_ID || '',
   discussionCommand: process.env.DISCUSSION_COMMAND || '',
   discussionRequestedBy: process.env.DISCUSSION_REQUESTED_BY || '',
@@ -199,7 +199,7 @@ const broadcastWsClient = env.websocketEndpoint
   : null;
 
 // Cache connections to avoid querying DynamoDB on every broadcast.
-// IMPORTANT (plan §4a, review round 4): the cache stores
+// IMPORTANT: the cache stores
 // `{connectionId, tokenExp}` pairs — NOT bare IDs — and the
 // `tokenExp > now` liveness filter is applied PER SEND in broadcastEvent,
 // never at cache-fill time. Otherwise a cached list would keep an expired
@@ -257,11 +257,11 @@ function broadcastEvent(type, data) {
     try {
       const connections = await getConnections();
       // Liveness filter applied per send — a connection whose token expires
-      // mid-cache-window must receive nothing (plan §4a).
+      // mid-cache-window must receive nothing.
       const liveIds = connections.filter((c) => isTokenLive(c.tokenExp)).map((c) => c.connectionId);
       if (liveIds.length === 0) return;
       // executionId rides on EVERY event so clients can correlate streams —
-      // agentTaskId is empty for discussion jobs (plan §6, review round 2).
+      // agentTaskId is empty for discussion jobs.
       const payload = JSON.stringify({
         type,
         agentTaskId: env.agentTaskId || undefined,
@@ -337,7 +337,7 @@ function flushChunksSync() {
 }
 
 // ---------------------------------------------------------------------------
-// Discussion-assist fallback post (plan §8)
+// Discussion-assist fallback post
 //
 // The discussion prompt instructs the agent to finish by calling the
 // `post_discussion_message` MCP tool exactly once; the MCP server drops a
@@ -435,8 +435,8 @@ async function saveStatus(status) {
     );
 
     // Update Sprint vertex with completion status — NEVER for discussion
-    // assists, which must not hijack the sprint status shown on phase pages
-    // (plan §8). Their AgentRun is updated by the pool-worker.
+    // assists, which must not hijack the sprint status shown on phase pages.
+    // Their AgentRun is updated by the pool-worker.
     if (env.sprintId && env.agentType !== 'discussion') {
       await withNeptune(async (g) => {
         const { cardinality } = gremlin.process;
@@ -784,7 +784,7 @@ async function runAcpMode() {
     { name: 'AWS_REGION', value: env.region || 'us-east-1' },
     { name: 'GIT_TOKEN', value: process.env.GIT_TOKEN || '' },
     { name: 'GIT_REPO', value: process.env.GIT_REPO || '' },
-    // Discussion-assist context (plan §8) — lets post_discussion_message stamp
+    // Discussion-assist context — lets post_discussion_message stamp
     // author/command/requested-by audit fields. Empty for other phases.
     { name: 'AGENT_CLI', value: AGENT_CLI },
     { name: 'DISCUSSION_ID', value: env.discussionId },
@@ -883,7 +883,7 @@ async function runAcpMode() {
     console.log('[acp] Prompt completed');
     // Flush any buffered text chunks before saving/broadcasting completion
     flushChunksSync();
-    // Discussion assists: guarantee the reply landed in the thread (plan §8).
+    // Discussion assists: guarantee the reply landed in the thread.
     await fallbackPostDiscussionReply();
     await saveStatus('completed');
     // Wait for any pending broadcasts to drain before sending completion

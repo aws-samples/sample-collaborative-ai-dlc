@@ -16,9 +16,9 @@ import type { AgentStartError } from '../lib/agentStartError';
 import { ApiError } from '../services/api';
 import { generateColor } from '../utils/colors';
 
-// Core discussion hook (plan §6/§9).
+// Core discussion hook.
 //
-// Channel roles (D8):
+// Channel roles (messages flow server-first):
 //   - REST     → durability (Neptune is the source of truth)
 //   - app-WS   → server-driven delivery (discussion.message / .redacted / .updated)
 //   - Yjs      → live-sync optimization + typing/presence awareness ONLY
@@ -59,9 +59,9 @@ export function useDiscussion({ sprintId, discussionId, open, user }: UseDiscuss
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [seeded, setSeeded] = useState(false);
 
-  // ── Assist lifecycle (plan §8/§9, D1): 202 → 'starting' (pool pickup can
-  // take 15–60 s) → first matching agent.chunk → 'streaming' → finalized by
-  // the durable discussion.message broadcast ──
+  // ── Assist lifecycle: 202 → 'starting' (the assist runs as a pool-worker
+  // phase, so pickup can take 15–60 s) → first matching agent.chunk →
+  // 'streaming' → finalized by the durable discussion.message broadcast ──
   const [assistId, setAssistId] = useState<string | null>(null);
   const [assistState, setAssistState] = useState<'starting' | 'streaming' | null>(null);
   const [streamingReply, setStreamingReply] = useState('');
@@ -112,7 +112,7 @@ export function useDiscussion({ sprintId, discussionId, open, user }: UseDiscuss
 
   // ── Seeding: the latest page on sync (Yjs docs evaporate 60 s after the
   // last client leaves — Neptune reseeds, key-based merge makes concurrent
-  // seeding harmless, plan §6) ──
+  // seeding harmless) ──
   useEffect(() => {
     if (!docId || !discussionId || !synced || seeded) return;
     let cancelled = false;
@@ -150,7 +150,7 @@ export function useDiscussion({ sprintId, discussionId, open, user }: UseDiscuss
     }
   }, [discussionId, loadingOlder, messagesMap, sprintId, upsertMessages]);
 
-  // ── Change-delta reconciliation backstop (plan §6): on focus/visibility
+  // ── Change-delta reconciliation backstop: on focus/visibility
   // regain, fetch everything with (updatedAt, id) past what we saw — new
   // messages AND redactions of older ones ──
   const reconcile = useCallback(async () => {
@@ -181,7 +181,7 @@ export function useDiscussion({ sprintId, discussionId, open, user }: UseDiscuss
     };
   }, [docId, reconcile]);
 
-  // ── Server-driven fanout (D8): full payloads pushed by the backend ──
+  // ── Server-driven fanout: full payloads pushed by the backend ──
   useEffect(() => {
     if (!docId || !discussionId) return;
     const unsubs = [
@@ -207,7 +207,7 @@ export function useDiscussion({ sprintId, discussionId, open, user }: UseDiscuss
     return () => unsubs.forEach((unsub) => unsub());
   }, [docId, discussionId, messagesMap, upsertMessages]);
 
-  // ── Assist stream correlation (plan §6/§8): agent.* events filtered by
+  // ── Assist stream correlation: agent.* events filtered by
   // executionId === assistId; the durable reply arrives as a normal
   // discussion.message and clears the streaming bubble ──
   const clearAssist = useCallback(() => {
@@ -238,7 +238,7 @@ export function useDiscussion({ sprintId, discussionId, open, user }: UseDiscuss
         if (data.executionId !== assistId) return;
         // The durable reply normally lands as a discussion.message right
         // after completion. Grace period, then reconcile + clear so a missed
-        // broadcast still resolves via REST (plan §6 backstop).
+        // broadcast still resolves via REST.
         setTimeout(() => {
           reconcile().finally(() => clearAssist());
         }, 3000);
@@ -283,7 +283,7 @@ export function useDiscussion({ sprintId, discussionId, open, user }: UseDiscuss
     [discussionId, assistId, sprintId],
   );
 
-  // ── Send (plan §6 sequence) ──
+  // ── Send ──
   const sendMessage = useCallback(
     async (content: string, mentions: string[] = []) => {
       if (!discussionId) return;
@@ -376,7 +376,7 @@ export function useDiscussion({ sprintId, discussionId, open, user }: UseDiscuss
     remoteUsers,
     /** Direct upsert path for locally-initiated mutations (e.g. redact). */
     applyMessages: upsertMessages,
-    // Assist lifecycle (plan §9)
+    // Assist lifecycle
     invokeAssist,
     assistState,
     streamingReply,

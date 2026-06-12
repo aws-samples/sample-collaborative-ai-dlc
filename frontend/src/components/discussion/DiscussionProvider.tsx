@@ -10,7 +10,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { MentionToasts } from './MentionToasts';
 import type { MentionToast } from './MentionToasts';
 
-// DiscussionProvider (plan §9) — mounted once in AppShell so both the sprint
+// DiscussionProvider — mounted once in AppShell so both the sprint
 // pages (entry-point buttons) and the ActivityPanel-hosted thread share the
 // same state. The thread renders NON-modally inside the right ActivityPanel;
 // `onDiscussionOpen` lets the shell pop that panel open. Owns:
@@ -18,7 +18,7 @@ import type { MentionToast } from './MentionToasts';
 //   - the sprint's discussions list incl. per-caller unreadCounts, refreshed
 //     on discussion.message / discussion.updated fanout
 //   - project members (mention combobox + the caller's role for redaction)
-//   - mention toasts (D7: online, in-app only) with jump-to-thread
+//   - mention toasts (online users, in-app only) with jump-to-thread
 
 export interface OpenDiscussionArgs {
   entityType: DiscussionEntityType;
@@ -98,7 +98,7 @@ export function DiscussionProvider({
     reloadDiscussions();
   }, [reloadDiscussions]);
 
-  // Refresh on server fanout (D8) — covers other users' messages, resolves
+  // Refresh on server fanout — covers other users' messages, resolves
   // and redactions. Cheap: one list query per event.
   useEffect(() => {
     if (!sprintId) return;
@@ -126,7 +126,7 @@ export function DiscussionProvider({
     [members, user?.username],
   );
 
-  // ── Mention toasts (D7) ──
+  // ── Mention toasts ──
   useEffect(() => {
     const unsub = realtimeService.on('notification', (data) => {
       if (data.type !== 'discussion.mention') return;

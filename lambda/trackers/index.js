@@ -258,7 +258,7 @@ const handleProviderError = (response, err) => {
 };
 
 // GET /trackers — unified listing across the legacy git-connections table
-// (still the only place GitHub PATs live, by design — see #194 §3a) and
+// (still the only place GitHub PATs live, by design) and
 // tracker-connections (Phase 3 will start writing Jira rows here).
 const listTrackerConnections = async (response, userId) => {
   // Disjoint reads on different tables — fire concurrently. Each branch

@@ -205,7 +205,7 @@ resource "aws_dynamodb_table" "agent_pool" {
   tags = var.tags
 }
 
-# Discussions feature (plan §7, D9): one table, three record kinds —
+# Discussions feature: one table, three record kinds —
 # assist locks (`assist:{discussionId}`), creation guards
 # (`create:{sprintId}:{entityType}:{entityId}`), and stateful message guards
 # (`msg:{discussionId}:{messageId}`, pending|complete). All access is via
@@ -231,7 +231,7 @@ resource "aws_dynamodb_table" "discussion_locks" {
   tags = var.tags
 }
 
-# Per-user composite read cursors (plan §7, D4): {lastReadAt,
+# Per-user composite read cursors: {lastReadAt,
 # lastReadMessageId, sprintId}. High-churn per-user KV — wrong shape for the
 # graph.
 resource "aws_dynamodb_table" "discussion_read_state" {

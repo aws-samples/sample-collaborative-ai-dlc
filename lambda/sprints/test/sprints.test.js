@@ -5,7 +5,7 @@ import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 
 // The fanout helper is mocked at module level — its internals are covered by
 // its consumers' own suites; here we only assert the sprints lambda EMITS the
-// server-origin phase-change hint (discussions plan §4b, D10).
+// server-origin phase-change hint.
 vi.mock('../../shared/ws-fanout.js', () => ({ broadcastToSprintChannel: vi.fn() }));
 const { broadcastToSprintChannel } = await import('../../shared/ws-fanout.js');
 
@@ -192,7 +192,7 @@ describe('GET /sprints/:id (backward compatibility)', () => {
   });
 });
 
-describe('DELETE /sprints/:id — discussion cascade (discussions plan §5)', () => {
+describe('DELETE /sprints/:id — discussion cascade', () => {
   it('drops the sprint together with its discussions AND their messages', async () => {
     const projectId = await seedProject();
     const sprintId = await seedLegacySprint(projectId);
@@ -253,7 +253,7 @@ describe('DELETE /sprints/:id — discussion cascade (discussions plan §5)', ()
   });
 });
 
-describe('server-origin sprint.phaseChanged fanout (discussions plan §4b, D10)', () => {
+describe('server-origin sprint.phaseChanged fanout', () => {
   it('emits the payload-blind reload hint on a phase update', async () => {
     const projectId = await seedProject();
     const sprintId = await seedLegacySprint(projectId);
@@ -266,7 +266,7 @@ describe('server-origin sprint.phaseChanged fanout (discussions plan §4b, D10)'
     expect(res.statusCode).toBe(200);
 
     // The hint deliberately carries NO phase — handlers re-fetch and act on
-    // server state only (§4b payload-blind invariant).
+    // server state only (payload-blind invariant).
     expect(broadcastToSprintChannel).toHaveBeenCalledExactlyOnceWith(sprintId, {
       action: 'sprint.phaseChanged',
       sprintId,

@@ -216,7 +216,7 @@ resource "aws_iam_role_policy" "agent_task" {
         Resource = compact([var.agent_pool_table_arn])
       },
       {
-        # Assist-lock heartbeat + release (discussions plan §7/§8): the pool
+        # Assist-lock heartbeat + release: the pool
         # worker renews `assist:{discussionId}` while a discussion session
         # runs and deletes it on completion.
         Effect   = "Allow"

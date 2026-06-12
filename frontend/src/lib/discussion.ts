@@ -1,6 +1,6 @@
 import type { DiscussionMessage } from '../services/discussions';
 
-// Pure discussion logic (plan §6/§11) — kept free of React/Yjs so it is unit
+// Pure discussion logic — kept free of React/Yjs so it is unit
 // testable. One total order everywhere: display order (createdAt, id), change
 // order (updatedAt, id). Both server-assigned ISO strings; ties break on id.
 
@@ -20,7 +20,7 @@ export const sortMessages = (messages: DiscussionMessage[]): DiscussionMessage[]
   [...messages].sort(compareByCreated);
 
 /**
- * Merge precedence (plan §6): entries with a newer `updatedAt` overwrite —
+ * Merge precedence: entries with a newer `updatedAt` overwrite —
  * this is how redactions of already-synced messages win over the stale copy.
  * Returns the message that should be kept.
  */
@@ -34,7 +34,7 @@ export const newerOf = (
 
 /**
  * The change cursor for `?after=` delta reconciliation: the maximum
- * (updatedAt, id) over everything seen (plan §6). Returns the wire format
+ * (updatedAt, id) over everything seen. Returns the wire format
  * `{updatedAt},{id}` or null when nothing has been seen.
  */
 export const changeCursorOf = (messages: DiscussionMessage[]): string | null => {
@@ -49,14 +49,14 @@ export const changeCursorOf = (messages: DiscussionMessage[]): string | null => 
 export const displayCursorOf = (m: DiscussionMessage): string => `${m.createdAt},${m.id}`;
 
 /**
- * Client-generated message id (plan §5): `dm-{ts}-{rand}` — idempotent retry
+ * Client-generated message id: `dm-{ts}-{rand}` — idempotent retry
  * key AND the Yjs map key. Server-validated against /^dm-[a-z0-9-]{8,64}$/.
  */
 export const makeMessageId = (now: number = Date.now()): string =>
   `dm-${now}-${Math.random().toString(36).slice(2, 10)}`;
 
 /**
- * First-unread divider placement (plan §9): given the sorted message count
+ * First-unread divider placement: given the sorted message count
  * and the caller's unreadCount (computed server-side against the composite
  * cursor), the divider sits before the (unreadCount)-last message. Returns
  * the index of the first unread message, or null when nothing is unread.

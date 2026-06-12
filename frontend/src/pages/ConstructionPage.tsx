@@ -259,8 +259,8 @@ export default function ConstructionPage() {
   const handleAnswerQuestion = async (questionId: string, answer: StructuredAnswer) => {
     try {
       await questionsService.update(sprintId, questionId, { structuredAnswer: answer });
-      // question.answered is now emitted SERVER-SIDE by the questions/agents
-      // lambdas (plan §4b, D10 end state) — no client broadcast.
+      // question.answered is a server-origin event emitted by the
+      // questions/agents lambdas — clients never broadcast it.
       timelineEventsService
         .create(sprintId, {
           type: 'question_answered',
@@ -293,8 +293,8 @@ export default function ConstructionPage() {
     setApprovingPhase(true);
     try {
       await sprintsService.update(projectId, sprintId, { phase: 'REVIEW' });
-      // sprint.phaseChanged is now emitted SERVER-SIDE by the sprints lambda
-      // on the phase update (plan §4b, D10 end state) — no client broadcast.
+      // sprint.phaseChanged is a server-origin event emitted by the sprints
+      // lambda on the phase update — clients never broadcast it.
       timelineEventsService
         .create(sprintId, { type: 'phase_changed', title: 'Moved to Review phase', userName })
         .catch(() => {});

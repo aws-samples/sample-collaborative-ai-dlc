@@ -62,7 +62,7 @@ export function AgentStatusBadge({
 }: AgentStatusBadgeProps) {
   const config = STATUS_CONFIG[status || 'idle'] || STATUS_CONFIG.idle;
   const Icon = config.icon;
-  // Discussion assists are in-thread helpers, not pipeline phases (plan §8).
+  // Discussion assists are in-thread helpers, not pipeline phases.
   const typeLabel = agentType === 'discussion' ? 'Discussion assist' : agentType;
 
   if (compact) {
