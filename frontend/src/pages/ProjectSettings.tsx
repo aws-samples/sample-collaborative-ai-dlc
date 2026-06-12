@@ -7,6 +7,8 @@ import {
   type ProjectRole,
   type CognitoUser,
   type AgentCli,
+  type CliModels,
+  type RuntimeModelCli,
   type TrackerBinding,
   type SteeringDoc,
 } from '../services/projects';
@@ -37,7 +39,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { ArrowLeft, Trash2, X, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { ArrowLeft, Trash2, X, AlertCircle, CheckCircle2, ExternalLink } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { MigrateTrackerCard } from '@/components/MigrateTrackerCard';
 import { JiraConnectButton } from '@/components/JiraConnectButton';
@@ -78,6 +80,24 @@ const AGENT_CLI_CONFIG: Record<AgentCli, { label: string; description: string }>
   },
 };
 
+const MODEL_CLI_LABELS: Record<RuntimeModelCli, string> = {
+  kiro: 'Kiro',
+  opencode: 'OpenCode',
+};
+
+const MODEL_CLI_KEYS = Object.keys(MODEL_CLI_LABELS) as RuntimeModelCli[];
+
+const MODEL_ID_HELP: Record<RuntimeModelCli, { label: string; url: string }> = {
+  kiro: {
+    label: 'Kiro model IDs',
+    url: 'https://kiro.dev/docs/',
+  },
+  opencode: {
+    label: 'Bedrock model IDs',
+    url: 'https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html',
+  },
+};
+
 export default function ProjectSettings() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
@@ -108,6 +128,14 @@ export default function ProjectSettings() {
   const [editAgentCli, setEditAgentCli] = useState<AgentCli>('kiro');
   const [savingAgentCli, setSavingAgentCli] = useState(false);
   const [availableCliNames, setAvailableCliNames] = useState<AgentCli[]>(['kiro']);
+  const [runtimeModelOverride, setRuntimeModelOverride] = useState<Record<AgentCli, boolean>>({
+    kiro: true,
+    claude: false,
+    opencode: true,
+  });
+  const [editCliModels, setEditCliModels] = useState<CliModels>({});
+  const [globalCliModels, setGlobalCliModels] = useState<CliModels>({});
+  const [savingCliModels, setSavingCliModels] = useState(false);
 
   // Tracker-abstraction migration (#194 Phase 1). The card shows when the
   // project still uses the legacy issue_integration boolean and has no
@@ -159,6 +187,7 @@ export default function ProjectSettings() {
       setEditName(proj.name);
       setEditGitRepo(proj.gitRepo);
       setEditAgentCli(proj.agentCli ?? 'kiro');
+      setEditCliModels(proj.cliModels || {});
       setMembers(Array.isArray(mems) ? mems : []);
       setTrackerConnections(Array.isArray(conns) ? conns : []);
 
@@ -180,9 +209,21 @@ export default function ProjectSettings() {
   useEffect(() => {
     agentsService
       .getCapabilities()
-      .then((c) => setAvailableCliNames(c.available))
+      .then((c) => {
+        setAvailableCliNames(c.available);
+        if (c.runtimeModelOverride) setRuntimeModelOverride(c.runtimeModelOverride);
+      })
       .catch(() => {
         /* non-fatal — keep default ['kiro'] */
+      });
+  }, []);
+
+  useEffect(() => {
+    agentsService
+      .getSettings()
+      .then((settings) => setGlobalCliModels(settings.cliModels || {}))
+      .catch(() => {
+        /* non-fatal — placeholders fall back to generic defaults */
       });
   }, []);
 
@@ -375,6 +416,28 @@ export default function ProjectSettings() {
       setError(err instanceof Error ? err.message : 'Failed to update agent CLI');
     } finally {
       setSavingAgentCli(false);
+    }
+  };
+
+  const updateCliModel = (cli: RuntimeModelCli, value: string) => {
+    setEditCliModels((current) => ({ ...current, [cli]: value }));
+  };
+
+  const handleSaveCliModels = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!projectId || !project) return;
+    clearMessages();
+    setSavingCliModels(true);
+    try {
+      const saved = await projectsService.update(projectId, { cliModels: editCliModels });
+      const nextModels = saved.cliModels || editCliModels;
+      setEditCliModels(nextModels);
+      setProject({ ...project, cliModels: nextModels });
+      setSuccess('Model override updated');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update model override');
+    } finally {
+      setSavingCliModels(false);
     }
   };
 
@@ -749,6 +812,84 @@ export default function ProjectSettings() {
                         disabled={savingAgentCli || editAgentCli === project?.agentCli}
                       >
                         {savingAgentCli ? 'Saving...' : 'Save Changes'}
+                      </Button>
+                    </div>
+                  )}
+                </form>
+              </CardContent>
+            </Card>
+
+            {/* Model Override */}
+            <Card className="mb-6">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Model Override</CardTitle>
+                <p className="text-sm text-muted-foreground">
+                  Optional project-specific model for the selected agent CLI. Empty uses the Admin
+                  default.
+                </p>
+              </CardHeader>
+              <CardContent>
+                <form onSubmit={handleSaveCliModels} className="space-y-3">
+                  {MODEL_CLI_KEYS.map((cli) => {
+                    const isSelected = editAgentCli === cli;
+                    const isEditable = canEditProject && isSelected && runtimeModelOverride[cli];
+                    return (
+                      <div key={cli} className="space-y-1.5">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-2">
+                            <Label htmlFor={`model-${cli}`}>{MODEL_CLI_LABELS[cli]}</Label>
+                            {isSelected && (
+                              <Badge variant="outline" className="text-[10px] h-4">
+                                selected
+                              </Badge>
+                            )}
+                          </div>
+                          <a
+                            href={MODEL_ID_HELP[cli].url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                          >
+                            {MODEL_ID_HELP[cli].label}
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
+                        </div>
+                        <Input
+                          id={`model-${cli}`}
+                          value={editCliModels[cli] || ''}
+                          onChange={(e) => updateCliModel(cli, e.target.value)}
+                          placeholder={
+                            globalCliModels[cli]
+                              ? `Default: ${globalCliModels[cli]}`
+                              : cli === 'opencode'
+                                ? 'Default: amazon-bedrock/us.anthropic.claude-sonnet-4-6'
+                                : 'Default model'
+                          }
+                          className="font-mono text-sm"
+                          disabled={!isEditable || savingCliModels}
+                        />
+                      </div>
+                    );
+                  })}
+                  {editAgentCli === 'claude' && (
+                    <p className="text-xs text-muted-foreground">
+                      Claude runtime model override is not supported in this release; Claude agents
+                      still run with the driver default.
+                    </p>
+                  )}
+                  {!canEditProject && (
+                    <p className="text-xs text-muted-foreground">
+                      Only owners and admins can change model overrides
+                    </p>
+                  )}
+                  {canEditProject && (
+                    <div className="flex justify-end pt-2">
+                      <Button
+                        type="submit"
+                        size="sm"
+                        disabled={savingCliModels || editAgentCli === 'claude'}
+                      >
+                        {savingCliModels ? 'Saving...' : 'Save Model'}
                       </Button>
                     </div>
                   )}

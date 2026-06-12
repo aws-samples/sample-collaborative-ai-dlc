@@ -5,6 +5,7 @@ import {
   type PoolStatus,
   type AgentSettings,
 } from '@/services/agents';
+import type { CliModels, RuntimeModelCli } from '@/services/projects';
 import { trackersService, type TrackerProviderStatus } from '@/services/trackers';
 import { OAuthProviderCard } from '@/components/admin/OAuthProviderCard';
 import { TrackerMigrationCard } from '@/components/admin/TrackerMigrationCard';
@@ -30,6 +31,7 @@ import {
   XCircle,
   Settings,
   Plug,
+  ExternalLink,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -84,6 +86,32 @@ const CLI_BADGE_CONFIG: Record<string, { label: string; className: string }> = {
   opencode: { label: 'opencode', className: 'bg-teal-100 text-teal-700 border-teal-200' },
 };
 
+const MODEL_CLI_LABELS: Record<RuntimeModelCli, string> = {
+  kiro: 'Kiro',
+  opencode: 'OpenCode',
+};
+
+const MODEL_CLI_KEYS = Object.keys(MODEL_CLI_LABELS) as RuntimeModelCli[];
+
+const MODEL_ID_HELP: Record<RuntimeModelCli, { label: string; url: string }> = {
+  kiro: {
+    label: 'Kiro model IDs',
+    url: 'https://kiro.dev/docs/',
+  },
+  opencode: {
+    label: 'Bedrock model IDs',
+    url: 'https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html',
+  },
+};
+
+function canonicalCliModels(models: CliModels = {}) {
+  return MODEL_CLI_KEYS.reduce<CliModels>((acc, cli) => {
+    const value = models[cli]?.trim();
+    if (value) acc[cli] = value;
+    return acc;
+  }, {});
+}
+
 function timeAgo(ts?: number) {
   if (!ts) return '\u2014';
   const s = Math.floor((Date.now() - ts) / 1000);
@@ -112,8 +140,13 @@ export default function Admin() {
   const [bearerToken, setBearerToken] = useState('');
   const [kiroApiKey, setKiroApiKey] = useState('');
   const [mcpServers, setMcpServers] = useState('[]');
+  const [cliModels, setCliModels] = useState<CliModels>({});
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsSaveResult, setSettingsSaveResult] = useState<'saved' | 'error' | null>(null);
+  const cliModelsChanged =
+    JSON.stringify(canonicalCliModels(cliModels)) !==
+    JSON.stringify(canonicalCliModels(settings?.cliModels || {}));
+  const hasSettingsChanges = bearerToken !== '' || kiroApiKey !== '' || cliModelsChanged;
 
   const refresh = useCallback(async () => {
     try {
@@ -137,6 +170,7 @@ export default function Admin() {
       .then((s) => {
         setSettings(s);
         setMcpServers(s.mcpServers);
+        setCliModels(s.cliModels || {});
       })
       .catch((e) => console.error('Failed to load settings:', e))
       .finally(() => setSettingsLoading(false));
@@ -161,7 +195,9 @@ export default function Admin() {
     setSettingsSaving(true);
     setSettingsSaveResult(null);
     try {
-      const update: { bedrockBearerToken?: string; kiroApiKey?: string } = {};
+      const update: { bedrockBearerToken?: string; kiroApiKey?: string; cliModels: CliModels } = {
+        cliModels,
+      };
       // Only send secret fields if the user typed something
       if (bearerToken !== '') update.bedrockBearerToken = bearerToken;
       if (kiroApiKey !== '') update.kiroApiKey = kiroApiKey;
@@ -170,6 +206,7 @@ export default function Admin() {
       // Reload to get fresh flags; clear the secret inputs
       const fresh = await agentsService.getSettings();
       setSettings(fresh);
+      setCliModels(fresh.cliModels || {});
       setBearerToken('');
       setKiroApiKey('');
     } catch (e) {
@@ -187,6 +224,11 @@ export default function Admin() {
     const fresh = await agentsService.getSettings();
     setSettings(fresh);
     setMcpServers(fresh.mcpServers);
+    setCliModels(fresh.cliModels || {});
+  };
+
+  const updateCliModel = (cli: RuntimeModelCli, value: string) => {
+    setCliModels((current) => ({ ...current, [cli]: value }));
   };
 
   const act = async (label: string, fn: () => Promise<unknown>) => {
@@ -475,6 +517,47 @@ export default function Admin() {
                   </p>
                 </div>
 
+                {/* Default Models */}
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-xs font-medium text-foreground">Default Models</label>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">
+                      Used when a project does not set its own model override. Changes apply to new
+                      agent runs.
+                    </p>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {MODEL_CLI_KEYS.map((cli) => (
+                      <div key={cli} className="space-y-1.5">
+                        <div className="flex items-center justify-between gap-3">
+                          <label className="text-xs font-medium text-muted-foreground">
+                            {MODEL_CLI_LABELS[cli]}
+                          </label>
+                          <a
+                            href={MODEL_ID_HELP[cli].url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+                          >
+                            {MODEL_ID_HELP[cli].label}
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
+                        </div>
+                        <Input
+                          value={cliModels[cli] || ''}
+                          onChange={(e) => updateCliModel(cli, e.target.value)}
+                          placeholder={
+                            cli === 'opencode'
+                              ? 'amazon-bedrock/us.anthropic.claude-sonnet-4-6'
+                              : 'Model ID'
+                          }
+                          className="font-mono text-sm h-9"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
                 {/* Extra MCP Servers */}
                 <McpServersSection
                   value={mcpServers}
@@ -490,7 +573,7 @@ export default function Admin() {
                   <Button
                     size="sm"
                     onClick={saveSettings}
-                    disabled={settingsSaving || (bearerToken === '' && kiroApiKey === '')}
+                    disabled={settingsSaving || !hasSettingsChanges}
                     className="gap-1.5"
                   >
                     {settingsSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
