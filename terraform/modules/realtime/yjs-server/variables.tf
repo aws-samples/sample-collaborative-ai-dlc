@@ -33,3 +33,14 @@ variable "cognito_client_id" {
   type        = string
 }
 
+
+variable "realtime_doc_secret_param_arn" {
+  description = "SSM parameter ARN of the realtime doc-token secret (injected as ECS secret)"
+  type        = string
+}
+
+variable "doc_token_enforce" {
+  description = "Enforce realtime scope tokens on the Yjs upgrade path (operational kill switch — plan §4, D3)"
+  type        = bool
+  default     = true
+}

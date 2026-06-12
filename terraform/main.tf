@@ -181,6 +181,8 @@ module "lambda" {
   cognito_user_pool_id           = module.auth.user_pool_id
   cognito_user_pool_arn          = module.auth.user_pool_arn
   cors_allowed_origins           = "https://${module.frontend.cloudfront_domain_name},http://localhost:5173"
+  realtime_doc_secret_param_arn  = module.realtime.realtime_doc_secret_param_arn
+  realtime_doc_secret_param_name = module.realtime.realtime_doc_secret_param_name
 
   # IAM scoping inputs for the agents-orchestrator role (ECS RunTask / PassRole).
   ecs_cluster_arn                  = module.compute.cluster_arn
@@ -220,6 +222,8 @@ module "api" {
   sprint_graph_lambda_name          = module.lambda.sprint_graph_lambda_name
   timeline_events_lambda_invoke_arn = module.lambda.timeline_events_lambda_invoke_arn
   timeline_events_lambda_name       = module.lambda.timeline_events_lambda_name
+  discussions_lambda_invoke_arn     = module.lambda.discussions_lambda_invoke_arn
+  discussions_lambda_name           = module.lambda.discussions_lambda_name
   github_lambda_invoke_arn          = module.lambda.github_lambda_invoke_arn
   github_lambda_name                = module.lambda.github_lambda_name
   trackers_lambda_invoke_arn        = module.lambda.trackers_lambda_invoke_arn
@@ -266,13 +270,14 @@ module "realtime" {
 module "yjs_server" {
   source = "./modules/realtime/yjs-server"
 
-  project_name         = var.project_name
-  environment          = var.environment
-  aws_region           = var.aws_region
-  vpc_id               = module.networking.vpc_id
-  private_subnet_ids   = module.networking.private_subnet_ids
-  cognito_user_pool_id = module.auth.user_pool_id
-  cognito_client_id    = module.auth.user_pool_client_id
+  project_name                  = var.project_name
+  environment                   = var.environment
+  aws_region                    = var.aws_region
+  vpc_id                        = module.networking.vpc_id
+  private_subnet_ids            = module.networking.private_subnet_ids
+  cognito_user_pool_id          = module.auth.user_pool_id
+  cognito_client_id             = module.auth.user_pool_client_id
+  realtime_doc_secret_param_arn = module.realtime.realtime_doc_secret_param_arn
 }
 
 # ECS Cluster for Agents

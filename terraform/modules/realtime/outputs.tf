@@ -22,3 +22,13 @@ output "message_lambda_arn" {
   description = "ARN of the message Lambda"
   value       = module.message_lambda.lambda_function_arn
 }
+
+output "realtime_doc_secret_param_name" {
+  description = "SSM parameter name of the realtime doc-token secret"
+  value       = aws_ssm_parameter.realtime_doc_secret.name
+}
+
+output "realtime_doc_secret_param_arn" {
+  description = "SSM parameter ARN of the realtime doc-token secret"
+  value       = aws_ssm_parameter.realtime_doc_secret.arn
+}

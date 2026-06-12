@@ -770,6 +770,20 @@ resource "aws_api_gateway_resource" "timeline_events" {
   path_part   = "timeline-events"
 }
 
+# /sprints/{sprintId}/realtime-token (discussions plan §4a)
+resource "aws_api_gateway_resource" "sprint_realtime_token" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.sprint_root.id
+  path_part   = "realtime-token"
+}
+
+# /projects/{projectId}/realtime-token (discussions plan §4a)
+resource "aws_api_gateway_resource" "project_realtime_token" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.project.id
+  path_part   = "realtime-token"
+}
+
 # =============================================================================
 # Helper locals for sprint-scoped CRUD pattern
 # =============================================================================
@@ -1037,6 +1051,43 @@ resource "aws_api_gateway_integration" "timeline_events_post" {
 }
 
 # =============================================================================
+# Realtime-token Methods (POST sprint + project variants — discussions §4a)
+# =============================================================================
+resource "aws_api_gateway_method" "sprint_realtime_token_post" {
+  rest_api_id        = aws_api_gateway_rest_api.main.id
+  resource_id        = aws_api_gateway_resource.sprint_realtime_token.id
+  http_method        = "POST"
+  authorization      = "COGNITO_USER_POOLS"
+  authorizer_id      = aws_api_gateway_authorizer.cognito.id
+  request_parameters = { "method.request.path.sprintId" = true }
+}
+resource "aws_api_gateway_method" "project_realtime_token_post" {
+  rest_api_id        = aws_api_gateway_rest_api.main.id
+  resource_id        = aws_api_gateway_resource.project_realtime_token.id
+  http_method        = "POST"
+  authorization      = "COGNITO_USER_POOLS"
+  authorizer_id      = aws_api_gateway_authorizer.cognito.id
+  request_parameters = { "method.request.path.projectId" = true }
+}
+
+resource "aws_api_gateway_integration" "sprint_realtime_token_post" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.sprint_realtime_token.id
+  http_method             = aws_api_gateway_method.sprint_realtime_token_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.discussions_lambda_invoke_arn
+}
+resource "aws_api_gateway_integration" "project_realtime_token_post" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.project_realtime_token.id
+  http_method             = aws_api_gateway_method.project_realtime_token_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.discussions_lambda_invoke_arn
+}
+
+# =============================================================================
 # CORS OPTIONS Methods for all resources
 # =============================================================================
 module "cors_projects" {
@@ -1191,6 +1242,18 @@ module "cors_timeline_events" {
   resource_id = aws_api_gateway_resource.timeline_events.id
 }
 
+module "cors_sprint_realtime_token" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.sprint_realtime_token.id
+}
+
+module "cors_project_realtime_token" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.project_realtime_token.id
+}
+
 # =============================================================================
 # Lambda Permissions
 # =============================================================================
@@ -1247,6 +1310,14 @@ resource "aws_lambda_permission" "timeline_events" {
   statement_id  = "AllowAPIGatewayInvoke"
   action        = "lambda:InvokeFunction"
   function_name = var.timeline_events_lambda_name
+  principal     = "apigateway.${local.dns_suffix}"
+  source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
+}
+
+resource "aws_lambda_permission" "discussions" {
+  statement_id  = "AllowAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = var.discussions_lambda_name
   principal     = "apigateway.${local.dns_suffix}"
   source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
 }

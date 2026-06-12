@@ -965,10 +965,11 @@ export default function ReviewPage() {
                   });
                   if (review.status === 'PASSED') {
                     await sprintsService.update(projectId, sprintId, { phase: 'COMPLETED' });
+                    // Pure reload hint (§4b): peers re-fetch the sprint and
+                    // act on server state — never include the phase in the
+                    // payload.
                     realtimeService.send('broadcastToDocument', {
-                      documentId: `sprint:${sprintId}`,
-                      action: 'sprint.phaseChanged',
-                      data: { phase: 'COMPLETED', sprintId },
+                      data: { action: 'sprint.phaseChanged', sprintId },
                     });
                     await reload();
                   }

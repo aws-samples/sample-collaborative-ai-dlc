@@ -294,10 +294,10 @@ export default function ConstructionPage() {
     setApprovingPhase(true);
     try {
       await sprintsService.update(projectId, sprintId, { phase: 'REVIEW' });
+      // Pure reload hint (§4b): peers re-fetch the sprint and act on server
+      // state — never include the phase in the payload.
       realtimeService.send('broadcastToDocument', {
-        documentId: `sprint:${sprintId}`,
-        action: 'sprint.phaseChanged',
-        data: { phase: 'REVIEW', sprintId },
+        data: { action: 'sprint.phaseChanged', sprintId },
       });
       timelineEventsService
         .create(sprintId, { type: 'phase_changed', title: 'Moved to Review phase', userName })

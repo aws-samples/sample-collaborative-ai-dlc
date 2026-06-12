@@ -191,3 +191,12 @@ output "cognito_users_lambda_name" {
   description = "Name of the cognito-users Lambda function"
   value       = module.cognito_users_lambda.lambda_function_name
 }
+output "discussions_lambda_invoke_arn" {
+  description = "Invoke ARN of the discussions Lambda"
+  value       = module.discussions_lambda.lambda_function_invoke_arn
+}
+
+output "discussions_lambda_name" {
+  description = "Name of the discussions Lambda"
+  value       = module.discussions_lambda.lambda_function_name
+}

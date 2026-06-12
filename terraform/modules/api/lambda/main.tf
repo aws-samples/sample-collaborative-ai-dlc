@@ -606,7 +606,6 @@ module "tasks_lambda" {
     NEPTUNE_ENDPOINT     = var.neptune_endpoint
     ENVIRONMENT          = var.environment
     CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
-    ARTIFACTS_BUCKET     = var.artifacts_bucket_name
   }
 }
 
@@ -886,6 +885,78 @@ module "timeline_events_lambda" {
     NEPTUNE_ENDPOINT     = var.neptune_endpoint
     ENVIRONMENT          = var.environment
     CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Role: discussions (1 Lambda — discussions)
+# Neptune CRUD + read access to the realtime doc-token secret (issues HMAC
+# scope tokens after a membership check — discussions plan §4a). PR 2 adds
+# the discussion-locks/read-state tables, connections fan-out and the agents
+# dispatch invoke.
+# -----------------------------------------------------------------------------
+resource "aws_iam_role" "discussions" {
+  name               = "${var.project_name}-discussions-${var.environment}"
+  assume_role_policy = local.lambda_assume_role_policy
+}
+
+resource "aws_iam_role_policy_attachment" "discussions_basic" {
+  role       = aws_iam_role.discussions.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "discussions_vpc" {
+  role       = aws_iam_role.discussions.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+resource "aws_iam_role_policy" "discussions" {
+  name = "neptune-and-doc-secret"
+  role = aws_iam_role.discussions.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      local.neptune_statement,
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter"]
+        Resource = var.realtime_doc_secret_param_arn
+      }
+    ]
+  })
+}
+
+# Discussions Lambda
+module "discussions_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-discussions-${var.environment}"
+  handler       = "index.handler"
+  runtime       = "nodejs24.x"
+  timeout       = 30
+
+  source_path = [
+    {
+      path = "${path.module}/../../../../lambda/discussions"
+      commands = [
+        "cd ../.. && npm run build -w discussions",
+        ":zip lambda/discussions/.build",
+      ]
+    }
+  ]
+
+  create_role = false
+  lambda_role = aws_iam_role.discussions.arn
+
+  vpc_subnet_ids         = var.private_subnet_ids
+  vpc_security_group_ids = [aws_security_group.lambda.id]
+
+  environment_variables = {
+    NEPTUNE_ENDPOINT      = var.neptune_endpoint
+    ENVIRONMENT           = var.environment
+    CORS_ALLOWED_ORIGINS  = var.cors_allowed_origins
+    REALTIME_SECRET_PARAM = var.realtime_doc_secret_param_name
   }
 }
 

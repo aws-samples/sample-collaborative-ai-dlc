@@ -174,3 +174,12 @@ variable "agent_execution_role_arn" {
   type        = string
   default     = ""
 }
+variable "realtime_doc_secret_param_arn" {
+  description = "SSM parameter ARN of the realtime doc-token secret (discussions lambda reads it to sign scope tokens)"
+  type        = string
+}
+
+variable "realtime_doc_secret_param_name" {
+  description = "SSM parameter name of the realtime doc-token secret"
+  type        = string
+}
