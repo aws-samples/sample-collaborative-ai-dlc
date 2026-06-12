@@ -3,7 +3,7 @@ import { useParams } from 'react-router-dom';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Loader2, CheckCircle2, RotateCcw, X } from 'lucide-react';
+import { Loader2, CheckCircle2, RotateCcw, ArrowLeft } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useDiscussion } from '@/hooks/useDiscussion';
 import { discussionsService } from '@/services/discussions';
@@ -15,10 +15,10 @@ import { ResolveDialog } from './ResolveDialog';
 import { useDiscussions } from './DiscussionProvider';
 
 // DiscussionPanel (plan §9): NON-modal thread view hosted inside the right
-// ActivityPanel — no overlay, the rest of the app stays fully interactive
-// while a discussion is open. Header with anchor badge + title + resolve
-// control + presence dots + close, scrollable thread opening at the
-// first-unread divider, input footer with mention combobox.
+// ActivityPanel's Discuss tab — no overlay, the rest of the app stays fully
+// interactive while a discussion is open. Header with back-to-list arrow +
+// anchor badge + title + presence dots + resolve control, scrollable thread
+// opening at the first-unread divider, input footer with mention combobox.
 //
 // Read marking is VISIBILITY-gated: the cursor advances only when the newest
 // message is actually on screen in a visible tab — opening the thread alone
@@ -140,9 +140,18 @@ export function DiscussionPanel() {
   const resolved = discussion?.status === 'resolved';
 
   return (
-    <div className="flex h-full w-full flex-col">
+    <div className="flex min-h-0 flex-1 w-full flex-col">
       <div className="border-b px-3 py-2 space-y-1">
         <div className="flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 shrink-0"
+            onClick={close}
+            aria-label="Back to discussions"
+          >
+            <ArrowLeft className="h-3 w-3" />
+          </Button>
           {discussion && (
             <Badge variant="outline" className="text-[10px] shrink-0">
               {ENTITY_LABELS[discussion.entityType] || discussion.entityType}
@@ -184,15 +193,6 @@ export function DiscussionPanel() {
                 Resolve
               </Button>
             ))}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6 shrink-0"
-            onClick={close}
-            aria-label="Close discussion"
-          >
-            <X className="h-3 w-3" />
-          </Button>
         </div>
         <p className="text-xs text-muted-foreground">
           {resolved

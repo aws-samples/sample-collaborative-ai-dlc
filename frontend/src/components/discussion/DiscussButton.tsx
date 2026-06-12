@@ -5,8 +5,9 @@ import { cn } from '@/lib/utils';
 import { useDiscussions } from './DiscussionProvider';
 import type { OpenDiscussionArgs } from './DiscussionProvider';
 
-// DiscussButton (plan §9): the entry-point affordance with an unread-aware
-// badge (dot + count when unreadCount > 0). Renders nothing when no
+// DiscussButton (plan §9): the entry-point affordance with a discussion-aware
+// badge — count pill when unreadCount > 0, subtle dot when a thread exists
+// with messages but nothing unread. Renders nothing when no
 // DiscussionProvider is mounted (outside a sprint).
 
 interface Props extends OpenDiscussionArgs {
@@ -17,7 +18,12 @@ export function DiscussButton({ entityType, entityId, entityTitle, className }: 
   const discussions = useDiscussions();
   if (!discussions) return null;
 
-  const unread = discussions.unreadFor(entityType, entityId);
+  const thread = discussions.discussionFor(entityType, entityId);
+  const unread = thread?.unreadCount ?? 0;
+  const ongoing = (thread?.messageCount ?? 0) > 0;
+
+  const label =
+    unread > 0 ? `Discuss (${unread} unread)` : ongoing ? 'Discuss (ongoing)' : 'Discuss';
 
   return (
     <Tooltip>
@@ -30,17 +36,21 @@ export function DiscussButton({ entityType, entityId, entityTitle, className }: 
             e.stopPropagation();
             discussions.openDiscussion({ entityType, entityId, entityTitle });
           }}
-          aria-label={unread > 0 ? `Discuss (${unread} unread)` : 'Discuss'}
+          aria-label={label}
         >
-          <MessageSquare className={cn('h-3 w-3', unread > 0 && 'text-primary')} />
-          {unread > 0 && (
+          <MessageSquare className={cn('h-3 w-3', (unread > 0 || ongoing) && 'text-primary')} />
+          {unread > 0 ? (
             <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-0.5 rounded-full bg-primary text-primary-foreground text-[8px] font-semibold flex items-center justify-center">
               {unread > 99 ? '99+' : unread}
             </span>
-          )}
+          ) : ongoing ? (
+            <span className="absolute top-0 right-0 h-1.5 w-1.5 rounded-full bg-primary/60" />
+          ) : null}
         </Button>
       </TooltipTrigger>
-      <TooltipContent>{unread > 0 ? `Discuss — ${unread} unread` : 'Discuss'}</TooltipContent>
+      <TooltipContent>
+        {unread > 0 ? `Discuss — ${unread} unread` : ongoing ? 'Discuss — ongoing' : 'Discuss'}
+      </TooltipContent>
     </Tooltip>
   );
 }

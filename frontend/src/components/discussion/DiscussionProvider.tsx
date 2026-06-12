@@ -45,6 +45,8 @@ interface DiscussionContextValue {
   reloadDiscussions: () => Promise<void>;
   /** Per-entity unread lookup for badges. */
   unreadFor: (entityType: DiscussionEntityType, entityId?: string) => number;
+  /** Per-entity thread lookup (ongoing-discussion indicator). */
+  discussionFor: (entityType: DiscussionEntityType, entityId?: string) => Discussion | null;
   members: Member[];
   /** The caller's project role (redact is admin/owner only). */
   role: Member['role'] | null;
@@ -217,14 +219,18 @@ export function DiscussionProvider({
     [reloadDiscussions],
   );
 
-  const unreadFor = useCallback(
-    (entityType: DiscussionEntityType, entityId?: string) => {
-      const match = discussions.find(
+  const discussionFor = useCallback(
+    (entityType: DiscussionEntityType, entityId?: string) =>
+      discussions.find(
         (d) => d.entityType === entityType && (entityId === undefined || d.entityId === entityId),
-      );
-      return match?.unreadCount ?? 0;
-    },
+      ) ?? null,
     [discussions],
+  );
+
+  const unreadFor = useCallback(
+    (entityType: DiscussionEntityType, entityId?: string) =>
+      discussionFor(entityType, entityId)?.unreadCount ?? 0,
+    [discussionFor],
   );
 
   // Leaving the sprint closes the thread.
@@ -246,6 +252,7 @@ export function DiscussionProvider({
       discussions,
       reloadDiscussions,
       unreadFor,
+      discussionFor,
       members,
       role,
     }),
@@ -262,6 +269,7 @@ export function DiscussionProvider({
       discussions,
       reloadDiscussions,
       unreadFor,
+      discussionFor,
       members,
       role,
     ],

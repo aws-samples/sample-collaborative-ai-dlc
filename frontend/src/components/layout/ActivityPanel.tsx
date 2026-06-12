@@ -78,6 +78,14 @@ export function ActivityPanel({ sprintId, onClose }: ActivityPanelProps) {
     0,
   );
 
+  // Opening a thread (from any entry point) jumps to the Discuss tab, where
+  // it swaps in for the list. Other tabs stay reachable while it's open.
+  const discussionOpen = !!discussionsCtx?.isOpen;
+  const activeDiscussionId = discussionsCtx?.activeDiscussion?.id ?? null;
+  useEffect(() => {
+    if (discussionOpen) setActiveTab('discussions');
+  }, [discussionOpen, activeDiscussionId]);
+
   // -- Agent state --
   const [streamingText, setStreamingText] = useState('');
   const [toolCalls, setToolCalls] = useState<ToolCallEntry[]>([]);
@@ -238,67 +246,66 @@ export function ActivityPanel({ sprintId, onClose }: ActivityPanelProps) {
 
   return (
     <div className="flex h-full w-full flex-col bg-background border-l">
-      {/* Open discussion takes over the panel (non-modal — the rest of the
-          app stays interactive). Closing it returns to the tabs. */}
-      {discussionsCtx?.isOpen ? (
+      {/* Header */}
+      <div className="flex h-10 items-center justify-between px-3 border-b shrink-0">
+        <Tabs value={activeTab} onValueChange={setActiveTab}>
+          <TabsList className="h-7 p-0.5">
+            <TabsTrigger value="agent" className="h-6 px-2.5 text-xs gap-1.5">
+              <Bot className="h-3 w-3" />
+              Agent
+              {agentRunning && (
+                <span className="relative flex h-1.5 w-1.5 ml-0.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-agent-running opacity-75" />
+                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-agent-running" />
+                </span>
+              )}
+            </TabsTrigger>
+            <TabsTrigger value="timeline" className="h-6 px-2.5 text-xs gap-1.5">
+              <Clock className="h-3 w-3" />
+              Timeline
+              {timelineEvents.length > 0 && (
+                <Badge variant="secondary" className="h-4 px-1 text-[9px] ml-0.5">
+                  {timelineEvents.length}
+                </Badge>
+              )}
+            </TabsTrigger>
+            <TabsTrigger value="discussions" className="h-6 px-2.5 text-xs gap-1.5">
+              <MessageSquare className="h-3 w-3" />
+              Discuss
+              {totalUnread > 0 && (
+                <Badge className="h-4 px-1 text-[9px] ml-0.5">
+                  {totalUnread > 99 ? '99+' : totalUnread}
+                </Badge>
+              )}
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onClose}>
+          <X className="h-3 w-3" />
+        </Button>
+      </div>
+
+      {/* Content. The Discuss tab swaps between the thread list and the open
+          thread (non-modal — the rest of the app stays interactive). The
+          thread manages its own scrolling + input footer, so it renders
+          outside the shared ScrollArea. */}
+      {activeTab === 'discussions' && discussionsCtx?.isOpen ? (
         <DiscussionPanel />
       ) : (
-        <>
-          {/* Header */}
-          <div className="flex h-10 items-center justify-between px-3 border-b shrink-0">
-            <Tabs value={activeTab} onValueChange={setActiveTab}>
-              <TabsList className="h-7 p-0.5">
-                <TabsTrigger value="agent" className="h-6 px-2.5 text-xs gap-1.5">
-                  <Bot className="h-3 w-3" />
-                  Agent
-                  {agentRunning && (
-                    <span className="relative flex h-1.5 w-1.5 ml-0.5">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-agent-running opacity-75" />
-                      <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-agent-running" />
-                    </span>
-                  )}
-                </TabsTrigger>
-                <TabsTrigger value="timeline" className="h-6 px-2.5 text-xs gap-1.5">
-                  <Clock className="h-3 w-3" />
-                  Timeline
-                  {timelineEvents.length > 0 && (
-                    <Badge variant="secondary" className="h-4 px-1 text-[9px] ml-0.5">
-                      {timelineEvents.length}
-                    </Badge>
-                  )}
-                </TabsTrigger>
-                <TabsTrigger value="discussions" className="h-6 px-2.5 text-xs gap-1.5">
-                  <MessageSquare className="h-3 w-3" />
-                  Discuss
-                  {totalUnread > 0 && (
-                    <Badge className="h-4 px-1 text-[9px] ml-0.5">
-                      {totalUnread > 99 ? '99+' : totalUnread}
-                    </Badge>
-                  )}
-                </TabsTrigger>
-              </TabsList>
-            </Tabs>
-            <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onClose}>
-              <X className="h-3 w-3" />
-            </Button>
-          </div>
-
-          {/* Content */}
-          <ScrollArea className="flex-1">
-            {activeTab === 'agent' ? (
-              <AgentTab
-                streamingText={streamingText}
-                toolCalls={toolCalls}
-                agentRunning={agentRunning}
-                agentStatus={agentStatus}
-              />
-            ) : activeTab === 'discussions' ? (
-              <DiscussionsTab sprintId={sprintId || ''} />
-            ) : (
-              <TimelineTab events={timelineEvents} loading={timelineLoading} />
-            )}
-          </ScrollArea>
-        </>
+        <ScrollArea className="flex-1">
+          {activeTab === 'agent' ? (
+            <AgentTab
+              streamingText={streamingText}
+              toolCalls={toolCalls}
+              agentRunning={agentRunning}
+              agentStatus={agentStatus}
+            />
+          ) : activeTab === 'discussions' ? (
+            <DiscussionsTab sprintId={sprintId || ''} />
+          ) : (
+            <TimelineTab events={timelineEvents} loading={timelineLoading} />
+          )}
+        </ScrollArea>
       )}
     </div>
   );

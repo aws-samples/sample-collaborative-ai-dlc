@@ -10,8 +10,8 @@ import { useDiscussions } from './DiscussionProvider';
 
 // ActivityPanel "Discussions" tab (plan §9): all threads of the sprint with
 // anchor badge, unread/total counts, resolved state + summary tooltip, and a
-// filter bar (text → search endpoint, open/resolved). Clicking a row opens
-// the shared DiscussionSheet.
+// filter bar (text → search endpoint, open/resolved). Clicking a row swaps
+// the tab to the shared non-modal DiscussionPanel.
 
 const ENTITY_LABELS: Record<string, string> = {
   sprint: 'Sprint',
