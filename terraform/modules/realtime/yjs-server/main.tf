@@ -81,8 +81,12 @@ module "yjs_docker_build" {
   ecr_repo        = aws_ecr_repository.yjs_server.name
   ecr_address     = format("%v.dkr.ecr.%v.%v", data.aws_caller_identity.current.account_id, data.aws_region.current.id, local.dns_suffix)
 
-  use_image_tag    = true
-  image_tag        = local.yjs_image_tag
+  use_image_tag = true
+  # substr(var.build_after, 0, 0) is always "" — it exists only to create a
+  # plan-graph dependency on the agents image build, so the two docker builds
+  # never run concurrently (parallel kreuzwerker provider builds deadlock).
+  # It can never change the tag or trigger a rebuild.
+  image_tag        = "${local.yjs_image_tag}${substr(var.build_after, 0, 0)}"
   source_path      = local.yjs_source_path
   docker_file_path = "${local.yjs_source_path}/Dockerfile"
   platform         = "linux/amd64"

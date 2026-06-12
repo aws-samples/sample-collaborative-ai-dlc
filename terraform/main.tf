@@ -292,6 +292,10 @@ module "yjs_server" {
   cognito_user_pool_id          = module.auth.user_pool_id
   cognito_client_id             = module.auth.user_pool_client_id
   realtime_doc_secret_param_arn = module.realtime.realtime_doc_secret_param_arn
+  # Serialize the yjs image build after the agents image build — concurrent
+  # builds from the two docker provider instances deadlock at context
+  # transfer. Value-neutral: only creates a dependency edge (see variable).
+  build_after = module.agents.agent_image_uri
 }
 
 # ECS Cluster for Agents

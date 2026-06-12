@@ -44,3 +44,15 @@ variable "doc_token_enforce" {
   type        = bool
   default     = true
 }
+
+variable "build_after" {
+  description = <<-EOT
+    Opaque value used ONLY to serialize this module's docker build after
+    another image build (pass that build's image URI). Concurrent builds
+    from separate kreuzwerker/docker provider instances deadlock at build
+    context transfer (both hang at 0/0 steps). The value never influences
+    the image content or tag.
+  EOT
+  type        = string
+  default     = ""
+}
