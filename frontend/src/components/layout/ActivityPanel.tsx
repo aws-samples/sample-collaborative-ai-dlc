@@ -12,6 +12,7 @@ import { agentsService } from '@/services/agents';
 import { timelineEventsService, type TimelineEvent } from '@/services/timelineEvents';
 import { useAuth } from '@/contexts/AuthContext';
 import { useQuestionLink } from '@/hooks/useQuestionAnchor';
+import { DiscussionPanel, useDiscussions } from '@/components/discussion';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -69,6 +70,7 @@ export function ActivityPanel({ sprintId, onClose }: ActivityPanelProps) {
   const { user } = useAuth();
   const userName = user?.displayName || user?.email || '';
   const [activeTab, setActiveTab] = useState('agent');
+  const discussionsCtx = useDiscussions();
 
   // -- Agent state --
   const [streamingText, setStreamingText] = useState('');
@@ -230,49 +232,57 @@ export function ActivityPanel({ sprintId, onClose }: ActivityPanelProps) {
 
   return (
     <div className="flex h-full w-full flex-col bg-background border-l">
-      {/* Header */}
-      <div className="flex h-10 items-center justify-between px-3 border-b shrink-0">
-        <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="h-7 p-0.5">
-            <TabsTrigger value="agent" className="h-6 px-2.5 text-xs gap-1.5">
-              <Bot className="h-3 w-3" />
-              Agent
-              {agentRunning && (
-                <span className="relative flex h-1.5 w-1.5 ml-0.5">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-agent-running opacity-75" />
-                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-agent-running" />
-                </span>
-              )}
-            </TabsTrigger>
-            <TabsTrigger value="timeline" className="h-6 px-2.5 text-xs gap-1.5">
-              <Clock className="h-3 w-3" />
-              Timeline
-              {timelineEvents.length > 0 && (
-                <Badge variant="secondary" className="h-4 px-1 text-[9px] ml-0.5">
-                  {timelineEvents.length}
-                </Badge>
-              )}
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
-        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onClose}>
-          <X className="h-3 w-3" />
-        </Button>
-      </div>
+      {/* Open discussion takes over the panel (non-modal — the rest of the
+          app stays interactive). Closing it returns to the tabs. */}
+      {discussionsCtx?.isOpen ? (
+        <DiscussionPanel />
+      ) : (
+        <>
+          {/* Header */}
+          <div className="flex h-10 items-center justify-between px-3 border-b shrink-0">
+            <Tabs value={activeTab} onValueChange={setActiveTab}>
+              <TabsList className="h-7 p-0.5">
+                <TabsTrigger value="agent" className="h-6 px-2.5 text-xs gap-1.5">
+                  <Bot className="h-3 w-3" />
+                  Agent
+                  {agentRunning && (
+                    <span className="relative flex h-1.5 w-1.5 ml-0.5">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-agent-running opacity-75" />
+                      <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-agent-running" />
+                    </span>
+                  )}
+                </TabsTrigger>
+                <TabsTrigger value="timeline" className="h-6 px-2.5 text-xs gap-1.5">
+                  <Clock className="h-3 w-3" />
+                  Timeline
+                  {timelineEvents.length > 0 && (
+                    <Badge variant="secondary" className="h-4 px-1 text-[9px] ml-0.5">
+                      {timelineEvents.length}
+                    </Badge>
+                  )}
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+            <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onClose}>
+              <X className="h-3 w-3" />
+            </Button>
+          </div>
 
-      {/* Content */}
-      <ScrollArea className="flex-1">
-        {activeTab === 'agent' ? (
-          <AgentTab
-            streamingText={streamingText}
-            toolCalls={toolCalls}
-            agentRunning={agentRunning}
-            agentStatus={agentStatus}
-          />
-        ) : (
-          <TimelineTab events={timelineEvents} loading={timelineLoading} />
-        )}
-      </ScrollArea>
+          {/* Content */}
+          <ScrollArea className="flex-1">
+            {activeTab === 'agent' ? (
+              <AgentTab
+                streamingText={streamingText}
+                toolCalls={toolCalls}
+                agentRunning={agentRunning}
+                agentStatus={agentStatus}
+              />
+            ) : (
+              <TimelineTab events={timelineEvents} loading={timelineLoading} />
+            )}
+          </ScrollArea>
+        </>
+      )}
     </div>
   );
 }

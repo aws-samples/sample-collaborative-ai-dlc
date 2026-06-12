@@ -1,13 +1,15 @@
-import { createContext, useCallback, useContext, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useParams } from 'react-router-dom';
 import { discussionsService } from '@/services/discussions';
 import type { Discussion, DiscussionEntityType } from '@/services/discussions';
-import { DiscussionSheet } from './DiscussionSheet';
 
-// DiscussionProvider (plan §9) — mounted once in SprintLayout. Owns the single
-// open DiscussionSheet (one at a time) and the lazy get-or-create call: a
-// thread vertex only exists once somebody actually opens the discussion.
+// DiscussionProvider (plan §9) — mounted once in AppShell so the entry-point
+// buttons (routed pages) and the ActivityPanel-hosted DiscussionPanel share
+// one state. Owns the single open thread (one at a time) and the lazy
+// get-or-create call: a thread vertex only exists once somebody actually
+// opens the discussion. The thread renders NON-modally inside the right
+// ActivityPanel; `onDiscussionOpen` lets the shell pop that panel open.
 
 export interface OpenDiscussionArgs {
   entityType: DiscussionEntityType;
@@ -22,6 +24,12 @@ interface DiscussionContextValue {
   close: () => void;
   /** The currently open thread (null while loading/closed). */
   activeDiscussion: Discussion | null;
+  /** True while a thread is open in the activity panel (incl. while loading). */
+  isOpen: boolean;
+  loading: boolean;
+  error: string | null;
+  /** Display fallback while the thread loads. */
+  fallbackTitle: string;
 }
 
 const DiscussionContext = createContext<DiscussionContextValue | null>(null);
@@ -34,7 +42,14 @@ export function useDiscussions(): DiscussionContextValue | null {
   return useContext(DiscussionContext);
 }
 
-export function DiscussionProvider({ children }: { children: ReactNode }) {
+export function DiscussionProvider({
+  children,
+  onDiscussionOpen,
+}: {
+  children: ReactNode;
+  /** Called whenever a thread opens — the shell uses it to show the activity panel. */
+  onDiscussionOpen?: () => void;
+}) {
   const { sprintId = '' } = useParams<{ sprintId: string }>();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -50,6 +65,7 @@ export function DiscussionProvider({ children }: { children: ReactNode }) {
       setError(null);
       setDiscussion(null);
       setPendingTitle(args.entityTitle || '');
+      onDiscussionOpen?.();
       discussionsService
         .getOrCreate(sprintId, {
           entityType: args.entityType,
@@ -63,7 +79,7 @@ export function DiscussionProvider({ children }: { children: ReactNode }) {
         })
         .finally(() => setLoading(false));
     },
-    [sprintId],
+    [sprintId, onDiscussionOpen],
   );
 
   const close = useCallback(() => {
@@ -72,23 +88,23 @@ export function DiscussionProvider({ children }: { children: ReactNode }) {
     setError(null);
   }, []);
 
+  // Leaving the sprint closes the thread.
+  useEffect(() => {
+    if (!sprintId) close();
+  }, [sprintId, close]);
+
   const value = useMemo(
-    () => ({ openDiscussion, close, activeDiscussion: discussion }),
-    [openDiscussion, close, discussion],
+    () => ({
+      openDiscussion,
+      close,
+      activeDiscussion: discussion,
+      isOpen: open,
+      loading,
+      error,
+      fallbackTitle: pendingTitle,
+    }),
+    [openDiscussion, close, discussion, open, loading, error, pendingTitle],
   );
 
-  return (
-    <DiscussionContext.Provider value={value}>
-      {children}
-      <DiscussionSheet
-        open={open}
-        loading={loading}
-        error={error}
-        discussion={discussion}
-        fallbackTitle={pendingTitle}
-        sprintId={sprintId}
-        onClose={close}
-      />
-    </DiscussionContext.Provider>
-  );
+  return <DiscussionContext.Provider value={value}>{children}</DiscussionContext.Provider>;
 }

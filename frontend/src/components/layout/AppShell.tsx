@@ -5,6 +5,7 @@ import { AppHeader } from '@/components/layout/AppHeader';
 import { ActivityPanel } from '@/components/layout/ActivityPanel';
 import { StatusBar } from '@/components/layout/StatusBar';
 import { CommandPalette } from '@/components/layout/CommandPalette';
+import { DiscussionProvider } from '@/components/discussion';
 import { useState, useCallback } from 'react';
 
 export function AppShell() {
@@ -21,59 +22,66 @@ export function AppShell() {
 
   const toggleSidebar = useCallback(() => setSidebarCollapsed((prev) => !prev), []);
   const toggleActivity = useCallback(() => setActivityPanelOpen((prev) => !prev), []);
+  // Opening a discussion pops the activity panel (the thread renders there).
+  const showActivityPanel = useCallback(() => setActivityPanelOpen(true), []);
 
   return (
     <TooltipProvider delayDuration={200}>
-      <div className="flex h-screen flex-col bg-background">
-        {/* Header */}
-        <AppHeader
-          onToggleSidebar={toggleSidebar}
-          onToggleActivity={toggleActivity}
-          onOpenCommand={() => setCommandOpen(true)}
-          sidebarCollapsed={sidebarCollapsed}
-          activityPanelOpen={activityPanelOpen}
-          inSprint={inSprint}
-        />
+      {/* DiscussionProvider sits above BOTH the routed pages and the
+          ActivityPanel so the entry-point buttons and the panel-hosted
+          thread share one state (plan §9). */}
+      <DiscussionProvider onDiscussionOpen={showActivityPanel}>
+        <div className="flex h-screen flex-col bg-background">
+          {/* Header */}
+          <AppHeader
+            onToggleSidebar={toggleSidebar}
+            onToggleActivity={toggleActivity}
+            onOpenCommand={() => setCommandOpen(true)}
+            sidebarCollapsed={sidebarCollapsed}
+            activityPanelOpen={activityPanelOpen}
+            inSprint={inSprint}
+          />
 
-        {/* Main content area */}
-        <div
-          className="flex-1 overflow-hidden grid"
-          style={{
-            gridTemplateColumns: [
-              showSidebar ? 'minmax(240px, 280px)' : '',
-              '1fr',
-              showActivity ? 'minmax(280px, 360px)' : '',
-            ]
-              .filter(Boolean)
-              .join(' '),
-          }}
-        >
-          {/* Sidebar - only in sprint views */}
-          {showSidebar && (
-            <aside className="hidden md:flex border-r overflow-hidden">
-              <AppSidebar />
-            </aside>
-          )}
+          {/* Main content area */}
+          <div
+            className="flex-1 overflow-hidden grid"
+            style={{
+              gridTemplateColumns: [
+                showSidebar ? 'minmax(240px, 280px)' : '',
+                '1fr',
+                showActivity ? 'minmax(280px, 360px)' : '',
+              ]
+                .filter(Boolean)
+                .join(' '),
+            }}
+          >
+            {/* Sidebar - only in sprint views */}
+            {showSidebar && (
+              <aside className="hidden md:flex border-r overflow-hidden">
+                <AppSidebar />
+              </aside>
+            )}
 
-          {/* Main content */}
-          <main className="h-full overflow-y-auto min-w-0">
-            <Outlet />
-          </main>
+            {/* Main content */}
+            <main className="h-full overflow-y-auto min-w-0">
+              <Outlet />
+            </main>
 
-          {/* Activity panel - only in sprint views */}
-          {showActivity && (
-            <aside className="hidden lg:flex overflow-hidden">
-              <ActivityPanel sprintId={sprintId} onClose={() => setActivityPanelOpen(false)} />
-            </aside>
-          )}
+            {/* Activity panel - only in sprint views */}
+            {showActivity && (
+              <aside className="hidden lg:flex overflow-hidden">
+                <ActivityPanel sprintId={sprintId} onClose={() => setActivityPanelOpen(false)} />
+              </aside>
+            )}
+          </div>
+
+          {/* Status bar */}
+          <StatusBar />
+
+          {/* Command palette */}
+          <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} />
         </div>
-
-        {/* Status bar */}
-        <StatusBar />
-
-        {/* Command palette */}
-        <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} />
-      </div>
+      </DiscussionProvider>
     </TooltipProvider>
   );
 }

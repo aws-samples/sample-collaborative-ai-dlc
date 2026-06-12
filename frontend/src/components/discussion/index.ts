@@ -1,6 +1,6 @@
 export { DiscussionProvider, useDiscussions } from './DiscussionProvider';
 export type { OpenDiscussionArgs } from './DiscussionProvider';
-export { DiscussionSheet } from './DiscussionSheet';
+export { DiscussionPanel } from './DiscussionPanel';
 export { DiscussionThread } from './DiscussionThread';
 export { MessageBubble } from './MessageBubble';
 export { DiscussionInput } from './DiscussionInput';
