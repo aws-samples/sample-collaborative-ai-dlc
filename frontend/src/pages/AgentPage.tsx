@@ -4,6 +4,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useAgentStatus } from '@/hooks/useAgentStatus';
 import { useSprintEvents } from '@/hooks/useSprintEvents';
 import { useQuestionAnchor } from '@/hooks/useQuestionAnchor';
+import { useAnswerQuestion } from '@/hooks/useAnswerQuestion';
 import { questionAnchorId } from '@/lib/questionAnchor';
 import { projectsService, type Project } from '@/services/projects';
 import { agentsService } from '@/services/agents';
@@ -19,7 +20,7 @@ import { AgentStartErrorBanner } from '@/components/AgentStartErrorBanner';
 import { extractAgentStartError, type AgentStartError } from '@/lib/agentStartError';
 import { Bot, GitBranch, Loader2, ArrowLeft, MessageCircleQuestion, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { questionsService, type StructuredAnswer } from '@/services/questions';
+import { type StructuredAnswer } from '@/services/questions';
 
 type PageState = 'prompt' | 'running' | 'completed' | 'failed';
 
@@ -134,38 +135,16 @@ export default function AgentPage() {
     }
   };
 
-  const handleAnswerQuestion = async (questionId: string, answer: StructuredAnswer) => {
-    try {
-      await agentStatus.answerQuestion(questionId, answer);
-      // question.answered is a server-origin event emitted by the
-      // questions/agents lambdas — clients never broadcast it.
-      timelineEventsService
-        .create(sprintId, {
-          type: 'question_answered',
-          title: 'Answered agent question',
-          userName,
-          questionId,
-        })
-        .catch(() => {});
-      // The answer endpoint also syncs the Neptune Question vertex — reload so
-      // the pending card clears and the Q&A history picks up the responder.
-      await reload();
-    } catch (err) {
-      console.error('Failed to answer question:', err);
-    }
-  };
-
-  const handleDismissQuestion = async (questionId: string) => {
-    const dismissed: StructuredAnswer = {
-      answers: [{ selectedOptions: [], freeText: '(dismissed — agent no longer running)' }],
-    };
-    try {
-      await questionsService.update(sprintId, questionId, { structuredAnswer: dismissed });
-      await reload();
-    } catch (err) {
-      console.error('Failed to dismiss question:', err);
-    }
-  };
+  // The agents answer endpoint also syncs the Neptune Question vertex, so the
+  // shared reload clears the pending card and the Q&A history picks up the
+  // responder.
+  const { answerQuestion: handleAnswerQuestion, dismissQuestion: handleDismissQuestion } =
+    useAnswerQuestion({
+      sprintId,
+      reload,
+      submitAnswer: (questionId: string, answer: StructuredAnswer) =>
+        agentStatus.answerQuestion(questionId, answer),
+    });
 
   const handleCancel = async () => {
     if (!executionArn) return;

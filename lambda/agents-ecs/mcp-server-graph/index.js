@@ -36,6 +36,17 @@ console.error = (...args) => {
   } catch {}
 };
 
+function toNeptuneSignerCredentials(credentials, region) {
+  return {
+    accessKeyId: credentials.accessKeyId,
+    accessKey: credentials.accessKeyId,
+    secretAccessKey: credentials.secretAccessKey,
+    secretKey: credentials.secretAccessKey,
+    sessionToken: credentials.sessionToken,
+    region,
+  };
+}
+
 const env = {
   neptuneEndpoint: process.env.NEPTUNE_ENDPOINT,
   projectId: process.env.PROJECT_ID,
@@ -78,8 +89,8 @@ let _g = null;
 
 async function getConnection() {
   const creds = await fromNodeProviderChain()();
-  creds.region = env.region;
-  const info = getUrlAndHeaders(env.neptuneEndpoint, '8182', creds, '/gremlin', 'wss');
+  const signerCreds = toNeptuneSignerCredentials(creds, env.region);
+  const info = getUrlAndHeaders(env.neptuneEndpoint, '8182', signerCreds, '/gremlin', 'wss');
   return new DriverRemoteConnection(info.url, { headers: info.headers });
 }
 

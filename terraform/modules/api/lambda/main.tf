@@ -695,7 +695,9 @@ module "questions_lambda" {
     {
       path = "${path.module}/../../../../lambda/questions"
       commands = [
-        "cd ../.. && npm run build -w questions",
+        # Anchor on the module path (absolute) instead of a relative `cd ../..`
+        # so the build does not depend on the command's working directory.
+        "cd ${abspath("${path.module}/../../../..")} && npm run build -w questions",
         ":zip lambda/questions/.build",
       ]
     }

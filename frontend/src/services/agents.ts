@@ -8,6 +8,7 @@ export interface AgentExecution {
   status?: 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'TIMED_OUT' | 'ABORTED';
   output?: string;
   outputText?: string;
+  errorMessage?: string;
 }
 
 export interface AgentQuestion {

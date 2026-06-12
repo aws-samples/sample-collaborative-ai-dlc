@@ -46,6 +46,13 @@ class SeqDeduplicator {
   }
 }
 
+function formatAgentErrorMessage(message?: string) {
+  return `\n\n### Agent failed\n\n${
+    message ||
+    'The agent failed before it could complete. Please check the agent settings and try again.'
+  }\n`;
+}
+
 export function useConstructionStatus({
   projectId,
   sprintId,
@@ -215,6 +222,33 @@ export function useConstructionStatus({
         }
       }),
       realtimeService.on('agent.completed', () => {
+        refreshTasks();
+        refreshOrchestrator();
+      }),
+      realtimeService.on('agent.error', (data) => {
+        const taskId = data.agentTaskId || 'orchestrator';
+        const message = data.error || data.message;
+        const text = formatAgentErrorMessage(message);
+        if (!streamBuffers.current[taskId]?.includes(message || text)) {
+          streamBuffers.current[taskId] = (streamBuffers.current[taskId] || '') + text;
+        }
+
+        if (taskId === 'orchestrator' || !data.agentTaskId) {
+          setOrchestratorStream((prev) => ({
+            ...prev,
+            text: streamBuffers.current[taskId],
+            activeToolCall: null,
+          }));
+        } else {
+          setTaskStreams((prev) => ({
+            ...prev,
+            [taskId]: {
+              text: streamBuffers.current[taskId],
+              activeToolCall: null,
+              toolCalls: prev[taskId]?.toolCalls || [],
+            },
+          }));
+        }
         refreshTasks();
         refreshOrchestrator();
       }),

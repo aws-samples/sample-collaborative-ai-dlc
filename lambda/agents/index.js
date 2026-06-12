@@ -1247,6 +1247,11 @@ exports.handler = async (event) => {
             ':a': structuredAnswerJson,
             ':u': userId,
             ':n': userName,
+            // Epoch millis: the agent-questions DynamoDB table stores all
+            // timestamps as Date.now() (createdAt in submit-question, the
+            // answer-question lambda) and the frontend types them as number.
+            // The Neptune graph uses ISO-8601 strings throughout — the sync
+            // below follows that convention instead.
             ':t': Date.now(),
           },
         }),
@@ -1266,7 +1271,28 @@ exports.handler = async (event) => {
             .next();
         });
       } catch (e) {
+        // The DynamoDB write above already succeeded, so the agent will see the
+        // answer; only the sprint pages would lag (question stays pending there
+        // until re-answered). Emit a CloudWatch metric (Embedded Metric Format)
+        // so the failure rate can be alarmed on, rather than failing the request.
         console.error('Neptune question sync failed:', e.message);
+        console.log(
+          JSON.stringify({
+            _aws: {
+              Timestamp: Date.now(),
+              CloudWatchMetrics: [
+                {
+                  Namespace: 'collaborative-ai-dlc',
+                  Dimensions: [['Lambda']],
+                  Metrics: [{ Name: 'NeptuneQuestionSyncFailure', Unit: 'Count' }],
+                },
+              ],
+            },
+            Lambda: 'agents',
+            NeptuneQuestionSyncFailure: 1,
+            questionId,
+          }),
+        );
       }
 
       // Server-origin reload hint: peers re-fetch the answered question.
@@ -1311,7 +1337,12 @@ exports.handler = async (event) => {
         if (outputItem) {
           const s = outputItem.status;
           const mapped = s === 'completed' ? 'SUCCEEDED' : s === 'failed' ? 'FAILED' : 'RUNNING';
-          return response(200, { status: mapped, executionArn: taskId });
+          return response(200, {
+            status: mapped,
+            executionArn: taskId,
+            outputText: outputItem.outputText,
+            errorMessage: outputItem.errorMessage,
+          });
         }
       }
       const taskStatus = await getTaskStatus(taskId);
