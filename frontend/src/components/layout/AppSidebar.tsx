@@ -38,12 +38,11 @@ export function AppSidebar() {
 
   // Re-fetch sprint on agent/phase events and auto-navigate on phase change.
   //
-  // INVARIANT (plan §4b): `sprint.phaseChanged` is an allowlisted CLIENT-origin
-  // event until PR 6 — allowlisted client events must never carry rendered or
-  // acted-upon content. This handler treats the event as a bare reload hint:
-  // it re-fetches the sprint and navigates from the FETCHED phase only,
-  // ignoring any payload. A same-document spoofer can at most force a
-  // redundant re-fetch; navigation always reflects server state.
+  // INVARIANT: `sprint.phaseChanged` is treated as a bare reload hint — this
+  // handler never renders or acts on the event payload. It re-fetches the
+  // sprint and navigates from the FETCHED phase only, so a spoofed or stale
+  // event can at most force a redundant re-fetch; navigation always reflects
+  // server state.
   useEffect(() => {
     if (!sprintId) return;
     const unsubs = [

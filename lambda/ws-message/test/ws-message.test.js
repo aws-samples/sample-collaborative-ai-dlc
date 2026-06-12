@@ -29,33 +29,13 @@ const makeEvent = (body, connectionId = SENDER) => ({
   body: JSON.stringify(body),
 });
 
-const nowSec = () => Math.floor(Date.now() / 1000);
-
-// Registers the sender's connection row for the GetItem lookup.
-const registerSender = (overrides = {}) => {
-  ddbMock
-    .on(GetItemCommand, {
-      TableName: TABLE,
-      Key: { connectionId: { S: SENDER } },
-    })
-    .resolves({
-      Item: {
-        connectionId: { S: SENDER },
-        documentId: { S: REGISTERED_DOC },
-        tokenExp: { N: String(nowSec() + 300) },
-        ...overrides,
-      },
-    });
-};
-
-const allowlistedBody = (overrides = {}) => ({
-  action: 'broadcastToDocument',
-  documentId: REGISTERED_DOC,
-  data: { action: 'question.answered', sprintId: 's-1', questionId: 'q-1' },
-  ...overrides,
-});
-
-describe('ws-message handler (hardened send path)', () => {
+// -----------------------------------------------------------------------------
+// The client-event allowlist is EMPTY: all realtime events are server-origin.
+// question.answered and sprint.phaseChanged are emitted server-side
+// (lambda/shared/ws-fanout.js from the questions/agents/sprints lambdas), and
+// connected clients cannot inject ANY event through broadcastToDocument.
+// -----------------------------------------------------------------------------
+describe('ws-message handler (fully server-origin)', () => {
   beforeEach(() => {
     ddbMock.reset();
     apiMock.reset();
@@ -80,110 +60,12 @@ describe('ws-message handler (hardened send path)', () => {
     ).rejects.toThrow();
   });
 
-  describe('allowlisted reload hints', () => {
-    it('broadcasts question.answered to peers of the registered document, excluding sender', async () => {
-      registerSender();
-      ddbMock.on(QueryCommand).resolves({
-        Items: [
-          { connectionId: { S: SENDER } },
-          { connectionId: { S: 'peer-1' } },
-          { connectionId: { S: 'peer-2' } },
-        ],
-      });
-      apiMock.on(PostToConnectionCommand).resolves({});
-
-      const handler = await loadHandler();
-      const res = await handler(makeEvent(allowlistedBody()));
-
-      expect(res).toEqual({ statusCode: 200 });
-      expect(ddbMock).toHaveReceivedCommandWith(QueryCommand, {
-        TableName: TABLE,
-        IndexName: 'DocumentIdIndex',
-        KeyConditionExpression: 'documentId = :docId',
-        ExpressionAttributeValues: { ':docId': { S: REGISTERED_DOC } },
-      });
-      const recipients = apiMock
-        .commandCalls(PostToConnectionCommand)
-        .map((c) => c.args[0].input.ConnectionId)
-        .sort();
-      expect(recipients).toEqual(['peer-1', 'peer-2']);
-      const sent = JSON.parse(apiMock.commandCalls(PostToConnectionCommand)[0].args[0].input.Data);
-      expect(sent).toEqual({ action: 'question.answered', sprintId: 's-1', questionId: 'q-1' });
-    });
-
-    it('broadcasts sprint.phaseChanged hints', async () => {
-      registerSender();
-      ddbMock.on(QueryCommand).resolves({ Items: [{ connectionId: { S: 'peer-1' } }] });
-      apiMock.on(PostToConnectionCommand).resolves({});
-
-      const handler = await loadHandler();
-      await handler(
-        makeEvent(allowlistedBody({ data: { action: 'sprint.phaseChanged', sprintId: 's-1' } })),
-      );
-
-      expect(apiMock).toHaveReceivedCommandTimes(PostToConnectionCommand, 1);
-      const sent = JSON.parse(apiMock.commandCalls(PostToConnectionCommand)[0].args[0].input.Data);
-      expect(sent).toEqual({ action: 'sprint.phaseChanged', sprintId: 's-1' });
-    });
-
-    it('accepts the event type via data.type as well as data.action', async () => {
-      registerSender();
-      ddbMock.on(QueryCommand).resolves({ Items: [{ connectionId: { S: 'peer-1' } }] });
-      apiMock.on(PostToConnectionCommand).resolves({});
-
-      const handler = await loadHandler();
-      await handler(
-        makeEvent(allowlistedBody({ data: { type: 'question.answered', sprintId: 's-1' } })),
-      );
-
-      expect(apiMock).toHaveReceivedCommandTimes(PostToConnectionCommand, 1);
-    });
-  });
-
-  describe('registered-target binding (anti cross-document spoofing)', () => {
-    it('ignores a spoofed body documentId and targets the registered document only', async () => {
-      registerSender();
-      ddbMock.on(QueryCommand).resolves({ Items: [{ connectionId: { S: 'peer-1' } }] });
-      apiMock.on(PostToConnectionCommand).resolves({});
-
-      const handler = await loadHandler();
-      await handler(makeEvent(allowlistedBody({ documentId: 'sprint:victim-sprint' })));
-
-      // The query must use the sender's REGISTERED documentId, not the body value.
-      expect(ddbMock).toHaveReceivedCommandWith(QueryCommand, {
-        TableName: TABLE,
-        IndexName: 'DocumentIdIndex',
-        KeyConditionExpression: 'documentId = :docId',
-        ExpressionAttributeValues: { ':docId': { S: REGISTERED_DOC } },
-      });
-    });
-
-    it('drops messages from connections without a registered row', async () => {
-      ddbMock.on(GetItemCommand).resolves({});
-
-      const handler = await loadHandler();
-      const res = await handler(makeEvent(allowlistedBody()));
-
-      expect(res).toEqual({ statusCode: 200 });
-      expect(ddbMock).toHaveReceivedCommandTimes(QueryCommand, 0);
-      expect(apiMock).toHaveReceivedCommandTimes(PostToConnectionCommand, 0);
-    });
-
-    it('drops messages when the sender lookup fails', async () => {
-      ddbMock.on(GetItemCommand).rejects(new Error('DDB timeout'));
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
-      const handler = await loadHandler();
-      const res = await handler(makeEvent(allowlistedBody()));
-
-      expect(res).toEqual({ statusCode: 200 });
-      expect(apiMock).toHaveReceivedCommandTimes(PostToConnectionCommand, 0);
-      consoleSpy.mockRestore();
-    });
-  });
-
-  describe('client-event allowlist', () => {
+  describe('client broadcastToDocument of ANY event type is rejected', () => {
     it.each([
+      // The two formerly-allowlisted reload hints — now server-origin only.
+      ['question.answered', { action: 'question.answered', sprintId: 's-1', questionId: 'q-1' }],
+      ['sprint.phaseChanged', { action: 'sprint.phaseChanged', sprintId: 's-1' }],
+      // Everything that was always forbidden.
       ['discussion.message', { action: 'discussion.message', message: { content: 'spoofed' } }],
       ['agent.chunk', { type: 'agent.chunk', text: 'spoofed stream' }],
       ['agent.completed', { type: 'agent.completed' }],
@@ -192,20 +74,19 @@ describe('ws-message handler (hardened send path)', () => {
       ['awareness', { action: 'awareness', type: 'leave', userId: 'victim' }],
       ['unknown', { action: 'unknown' }],
       ['missing type', { foo: 'bar' }],
-    ])('drops non-allowlisted client event: %s', async (_label, data) => {
-      registerSender();
-
+    ])('drops %s without touching DynamoDB or API Gateway', async (_label, data) => {
       const handler = await loadHandler();
-      const res = await handler(makeEvent(allowlistedBody({ data })));
+      const res = await handler(
+        makeEvent({ action: 'broadcastToDocument', documentId: REGISTERED_DOC, data }),
+      );
 
       expect(res).toEqual({ statusCode: 200 });
+      expect(ddbMock).toHaveReceivedCommandTimes(GetItemCommand, 0);
       expect(ddbMock).toHaveReceivedCommandTimes(QueryCommand, 0);
       expect(apiMock).toHaveReceivedCommandTimes(PostToConnectionCommand, 0);
     });
 
     it('drops a body without data entirely', async () => {
-      registerSender();
-
       const handler = await loadHandler();
       const res = await handler(
         makeEvent({ action: 'broadcastToDocument', documentId: REGISTERED_DOC }),
@@ -244,121 +125,6 @@ describe('ws-message handler (hardened send path)', () => {
 
       expect(res).toEqual({ statusCode: 200 });
       expect(ddbMock).toHaveReceivedCommandTimes(QueryCommand, 0);
-    });
-  });
-
-  describe('token expiry', () => {
-    it('rejects sends from a connection whose tokenExp has passed', async () => {
-      registerSender({ tokenExp: { N: String(nowSec() - 10) } });
-
-      const handler = await loadHandler();
-      const res = await handler(makeEvent(allowlistedBody()));
-
-      expect(res).toEqual({ statusCode: 200 });
-      expect(ddbMock).toHaveReceivedCommandTimes(QueryCommand, 0);
-      expect(apiMock).toHaveReceivedCommandTimes(PostToConnectionCommand, 0);
-    });
-
-    it('allows sends from legacy rows without tokenExp (pre-enforcement grace)', async () => {
-      registerSender({ tokenExp: undefined });
-      ddbMock.on(QueryCommand).resolves({ Items: [{ connectionId: { S: 'peer-1' } }] });
-      apiMock.on(PostToConnectionCommand).resolves({});
-
-      const handler = await loadHandler();
-      await handler(makeEvent(allowlistedBody()));
-
-      expect(apiMock).toHaveReceivedCommandTimes(PostToConnectionCommand, 1);
-    });
-
-    it('excludes expired-token rows from the fan-out targets', async () => {
-      registerSender();
-      ddbMock.on(QueryCommand).resolves({
-        Items: [
-          { connectionId: { S: 'peer-live' }, tokenExp: { N: String(nowSec() + 300) } },
-          { connectionId: { S: 'peer-expired' }, tokenExp: { N: String(nowSec() - 10) } },
-          { connectionId: { S: 'peer-legacy' } },
-        ],
-      });
-      apiMock.on(PostToConnectionCommand).resolves({});
-
-      const handler = await loadHandler();
-      await handler(makeEvent(allowlistedBody()));
-
-      const recipients = apiMock
-        .commandCalls(PostToConnectionCommand)
-        .map((c) => c.args[0].input.ConnectionId)
-        .sort();
-      expect(recipients).toEqual(['peer-legacy', 'peer-live']);
-    });
-  });
-
-  describe('error handling', () => {
-    it('swallows 410 Gone errors silently', async () => {
-      registerSender();
-      ddbMock.on(QueryCommand).resolves({
-        Items: [{ connectionId: { S: 'stale' } }, { connectionId: { S: 'alive' } }],
-      });
-      const goneError = new Error('GoneException');
-      goneError.statusCode = 410;
-      apiMock
-        .on(PostToConnectionCommand, { ConnectionId: 'stale' })
-        .rejects(goneError)
-        .on(PostToConnectionCommand, { ConnectionId: 'alive' })
-        .resolves({});
-
-      const handler = await loadHandler();
-      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-
-      const res = await handler(makeEvent(allowlistedBody()));
-
-      expect(res).toEqual({ statusCode: 200 });
-      expect(consoleSpy).not.toHaveBeenCalledWith(
-        expect.stringContaining('Send error'),
-        expect.anything(),
-        expect.anything(),
-        expect.anything(),
-      );
-      consoleSpy.mockRestore();
-    });
-
-    it('logs non-410 errors but does not abort the broadcast', async () => {
-      registerSender();
-      ddbMock.on(QueryCommand).resolves({
-        Items: [{ connectionId: { S: 'bad' } }, { connectionId: { S: 'good' } }],
-      });
-      const otherError = new Error('InternalError');
-      otherError.statusCode = 500;
-      apiMock
-        .on(PostToConnectionCommand, { ConnectionId: 'bad' })
-        .rejects(otherError)
-        .on(PostToConnectionCommand, { ConnectionId: 'good' })
-        .resolves({});
-
-      const handler = await loadHandler();
-      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-
-      const res = await handler(makeEvent(allowlistedBody()));
-
-      expect(res).toEqual({ statusCode: 200 });
-      expect(apiMock).toHaveReceivedCommandTimes(PostToConnectionCommand, 2);
-      expect(consoleSpy).toHaveBeenCalledWith('Send error to', 'bad', ':', 'InternalError');
-      consoleSpy.mockRestore();
-    });
-
-    it('handles DynamoDB query errors in broadcastToDocument gracefully', async () => {
-      registerSender();
-      ddbMock.on(QueryCommand).rejects(new Error('DDB timeout'));
-      apiMock.on(PostToConnectionCommand).resolves({});
-
-      const handler = await loadHandler();
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
-      const res = await handler(makeEvent(allowlistedBody()));
-
-      expect(res).toEqual({ statusCode: 200 });
-      expect(apiMock).toHaveReceivedCommandTimes(PostToConnectionCommand, 0);
-      expect(consoleSpy).toHaveBeenCalled();
-      consoleSpy.mockRestore();
     });
   });
 });

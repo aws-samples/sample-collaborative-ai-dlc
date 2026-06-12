@@ -770,18 +770,61 @@ resource "aws_api_gateway_resource" "timeline_events" {
   path_part   = "timeline-events"
 }
 
-# /sprints/{sprintId}/realtime-token (discussions plan §4a)
+# /sprints/{sprintId}/realtime-token
 resource "aws_api_gateway_resource" "sprint_realtime_token" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.sprint_root.id
   path_part   = "realtime-token"
 }
 
-# /projects/{projectId}/realtime-token (discussions plan §4a)
+# /projects/{projectId}/realtime-token
 resource "aws_api_gateway_resource" "project_realtime_token" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.project.id
   path_part   = "realtime-token"
+}
+
+# /sprints/{sprintId}/discussions
+resource "aws_api_gateway_resource" "discussions" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.sprint_root.id
+  path_part   = "discussions"
+}
+resource "aws_api_gateway_resource" "discussion" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.discussions.id
+  path_part   = "{discussionId}"
+}
+resource "aws_api_gateway_resource" "discussion_messages" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.discussion.id
+  path_part   = "messages"
+}
+resource "aws_api_gateway_resource" "discussion_message" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.discussion_messages.id
+  path_part   = "{messageId}"
+}
+resource "aws_api_gateway_resource" "discussion_message_redact" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.discussion_message.id
+  path_part   = "redact"
+}
+resource "aws_api_gateway_resource" "discussion_read" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.discussion.id
+  path_part   = "read"
+}
+resource "aws_api_gateway_resource" "discussion_assist" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.discussion.id
+  path_part   = "assist"
+}
+# Static sibling of {discussionId} — API Gateway resolves static parts first.
+resource "aws_api_gateway_resource" "discussions_search" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.discussions.id
+  path_part   = "search"
 }
 
 # =============================================================================
@@ -1051,7 +1094,7 @@ resource "aws_api_gateway_integration" "timeline_events_post" {
 }
 
 # =============================================================================
-# Realtime-token Methods (POST sprint + project variants — discussions §4a)
+# Realtime-token Methods (POST sprint + project variants)
 # =============================================================================
 resource "aws_api_gateway_method" "sprint_realtime_token_post" {
   rest_api_id        = aws_api_gateway_rest_api.main.id
@@ -1082,6 +1125,94 @@ resource "aws_api_gateway_integration" "project_realtime_token_post" {
   rest_api_id             = aws_api_gateway_rest_api.main.id
   resource_id             = aws_api_gateway_resource.project_realtime_token.id
   http_method             = aws_api_gateway_method.project_realtime_token_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.discussions_lambda_invoke_arn
+}
+
+# =============================================================================
+# Discussions Methods
+#   GET/POST /sprints/{sprintId}/discussions
+#   GET/POST /sprints/{sprintId}/discussions/{discussionId}/messages
+# =============================================================================
+locals {
+  discussion_routes = {
+    discussions_get = {
+      resource = "discussions"
+      method   = "GET"
+      params   = { "method.request.path.sprintId" = true }
+    }
+    discussions_post = {
+      resource = "discussions"
+      method   = "POST"
+      params   = { "method.request.path.sprintId" = true }
+    }
+    discussions_search_get = {
+      resource = "discussions_search"
+      method   = "GET"
+      params   = { "method.request.path.sprintId" = true }
+    }
+    discussion_put = {
+      resource = "discussion"
+      method   = "PUT"
+      params   = { "method.request.path.sprintId" = true, "method.request.path.discussionId" = true }
+    }
+    discussion_read_put = {
+      resource = "discussion_read"
+      method   = "PUT"
+      params   = { "method.request.path.sprintId" = true, "method.request.path.discussionId" = true }
+    }
+    discussion_assist_post = {
+      resource = "discussion_assist"
+      method   = "POST"
+      params   = { "method.request.path.sprintId" = true, "method.request.path.discussionId" = true }
+    }
+    discussion_messages_get = {
+      resource = "discussion_messages"
+      method   = "GET"
+      params   = { "method.request.path.sprintId" = true, "method.request.path.discussionId" = true }
+    }
+    discussion_messages_post = {
+      resource = "discussion_messages"
+      method   = "POST"
+      params   = { "method.request.path.sprintId" = true, "method.request.path.discussionId" = true }
+    }
+    discussion_message_redact_post = {
+      resource = "discussion_message_redact"
+      method   = "POST"
+      params = {
+        "method.request.path.sprintId"     = true,
+        "method.request.path.discussionId" = true,
+        "method.request.path.messageId"    = true,
+      }
+    }
+  }
+  discussion_resource_ids = {
+    discussions               = aws_api_gateway_resource.discussions.id
+    discussions_search        = aws_api_gateway_resource.discussions_search.id
+    discussion                = aws_api_gateway_resource.discussion.id
+    discussion_read           = aws_api_gateway_resource.discussion_read.id
+    discussion_assist         = aws_api_gateway_resource.discussion_assist.id
+    discussion_messages       = aws_api_gateway_resource.discussion_messages.id
+    discussion_message_redact = aws_api_gateway_resource.discussion_message_redact.id
+  }
+}
+
+resource "aws_api_gateway_method" "discussion_routes" {
+  for_each           = local.discussion_routes
+  rest_api_id        = aws_api_gateway_rest_api.main.id
+  resource_id        = local.discussion_resource_ids[each.value.resource]
+  http_method        = each.value.method
+  authorization      = "COGNITO_USER_POOLS"
+  authorizer_id      = aws_api_gateway_authorizer.cognito.id
+  request_parameters = each.value.params
+}
+
+resource "aws_api_gateway_integration" "discussion_routes" {
+  for_each                = local.discussion_routes
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = local.discussion_resource_ids[each.value.resource]
+  http_method             = aws_api_gateway_method.discussion_routes[each.key].http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
   uri                     = var.discussions_lambda_invoke_arn
@@ -1252,6 +1383,48 @@ module "cors_project_realtime_token" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.project_realtime_token.id
+}
+
+module "cors_discussions" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.discussions.id
+}
+
+module "cors_discussion" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.discussion.id
+}
+
+module "cors_discussion_messages" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.discussion_messages.id
+}
+
+module "cors_discussion_message_redact" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.discussion_message_redact.id
+}
+
+module "cors_discussion_read" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.discussion_read.id
+}
+
+module "cors_discussion_assist" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.discussion_assist.id
+}
+
+module "cors_discussions_search" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.discussions_search.id
 }
 
 # =============================================================================

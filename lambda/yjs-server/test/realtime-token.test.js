@@ -3,7 +3,7 @@ import * as yjsImpl from '../realtime-token.js';
 import sharedImpl from '../../shared/realtime-token.js';
 
 // -----------------------------------------------------------------------------
-// 1. Doc-name inventory test (plan §4a / §11).
+// 1. Doc-name inventory test.
 //
 // Enumerates EVERY Yjs doc-name format and app-WS documentId format in the
 // codebase against the scope-extractor table. If you add a new doc-name

@@ -13,7 +13,7 @@ const PORT = Number(process.env.PORT) || 1234;
 const DOC_TTL_MS = 60_000; // Keep docs alive 60 s after last client leaves
 
 // -----------------------------------------------------------------------------
-// Realtime scope-token enforcement (discussions plan §4a)
+// Realtime scope-token enforcement
 //
 // In addition to the Cognito JWT, every upgrade must present a short-lived
 // HMAC-signed scope token (`?docToken=`) issued by `lambda/discussions` after
@@ -228,7 +228,7 @@ server.on('upgrade', async (req, socket, head) => {
   // CloudFront `/yjs/*` routing prefix (see doc-name.js).
   const docName = docNameFromPath(parsedUrl.pathname);
 
-  // Scope-token check (plan §4a): signature, expiry, scope coverage for this
+  // Scope-token check: signature, expiry, scope coverage for this
   // doc name, and principal binding to the JWT-authenticated user. Deny by
   // default for unknown doc-name formats.
   const docToken = parsedUrl.searchParams.get('docToken');
@@ -265,7 +265,7 @@ wss.on('connection', (conn, req) => {
   const docData = getDoc(docName);
   docData.conns.set(conn, new Set());
 
-  // Post-connect token lifecycle (plan §4a): an established socket must not
+  // Post-connect token lifecycle: an established socket must not
   // outlive its scope token. Close at expiry with 4401 — the client's
   // reconnect logic fetches a fresh token, so membership is re-validated at
   // most every token TTL (10 min).

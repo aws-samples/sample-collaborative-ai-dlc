@@ -34,7 +34,7 @@ variable "websocket_stage_name" {
   default     = "ws"
 }
 variable "doc_token_enforce" {
-  description = "Enforce realtime scope tokens on the app-WS connect path (operational kill switch — plan §4, D3)"
+  description = "Enforce realtime scope tokens on the app-WS connect path (operational kill switch)"
   type        = bool
   default     = true
 }

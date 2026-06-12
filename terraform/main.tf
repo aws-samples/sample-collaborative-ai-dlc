@@ -184,6 +184,16 @@ module "lambda" {
   realtime_doc_secret_param_arn  = module.realtime.realtime_doc_secret_param_arn
   realtime_doc_secret_param_name = module.realtime.realtime_doc_secret_param_name
 
+  # Discussions feature
+  discussion_locks_table_name      = module.dynamodb.discussion_locks_table_name
+  discussion_locks_table_arn       = module.dynamodb.discussion_locks_table_arn
+  discussion_read_state_table_name = module.dynamodb.discussion_read_state_table_name
+  discussion_read_state_table_arn  = module.dynamodb.discussion_read_state_table_arn
+  connections_table_name           = module.dynamodb.connections_table_name
+  connections_table_arn            = module.dynamodb.connections_table_arn
+  websocket_api_endpoint_https     = replace(module.realtime.websocket_api_endpoint, "wss://", "https://")
+  websocket_execution_arn          = module.realtime.websocket_execution_arn
+
   # IAM scoping inputs for the agents-orchestrator role (ECS RunTask / PassRole).
   ecs_cluster_arn                  = module.compute.cluster_arn
   agent_task_definition_family_arn = module.agents.agent_task_definition_family_arn
@@ -248,6 +258,10 @@ module "api" {
   cloudfront_origin_secret          = module.frontend.cloudfront_origin_secret
   enable_cloudfront_origin_policy   = false
   api_gateway_account_id            = aws_api_gateway_account.main.id
+  # Server-origin event fanout: all realtime events originate server-side
+  # (the client-event allowlist is empty).
+  connections_table_name       = module.dynamodb.connections_table_name
+  websocket_api_endpoint_https = replace(module.realtime.websocket_api_endpoint, "wss://", "https://")
 }
 
 # Real-time (WebSocket)
@@ -343,6 +357,9 @@ module "agents" {
   ecs_cluster_arn             = module.compute.cluster_arn
   agent_pool_table_name       = module.dynamodb.agent_pool_table_name
   agent_pool_table_arn        = module.dynamodb.agent_pool_table_arn
+  # Discussion assist locks
+  discussion_locks_table_name = module.dynamodb.discussion_locks_table_name
+  discussion_locks_table_arn  = module.dynamodb.discussion_locks_table_arn
   agents_lambda_name          = "${var.project_name}-agents-${var.environment}"
   agents_lambda_arn           = "arn:${local.partition}:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-agents-${var.environment}"
   create_pr_lambda_name       = module.orchestration.create_pr_lambda_name

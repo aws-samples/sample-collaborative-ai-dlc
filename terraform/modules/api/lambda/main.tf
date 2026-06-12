@@ -35,7 +35,7 @@ locals {
 # =============================================================================
 # Least-privilege IAM roles — one per Lambda responsibility domain.
 #
-# Threat model reference: §7.1 Pattern 2 (over-privileged shared role).
+# Threat model: avoids an over-privileged shared role.
 # Prior to this split, all 16 REST-API Lambdas shared a single role with
 # permissions for SecretsManager, SSM git-token/*, ECS RunTask, IAM PassRole,
 # Cognito ListUsers — a compromise of any Lambda exposed all of them.
@@ -505,6 +505,10 @@ module "sprints_lambda" {
     NEPTUNE_ENDPOINT     = var.neptune_endpoint
     ENVIRONMENT          = var.environment
     CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    # Server-origin sprint.phaseChanged fanout: the sprints lambda pushes the
+    # event to sprint-channel WS connections.
+    CONNECTIONS_TABLE  = var.connections_table_name
+    WEBSOCKET_ENDPOINT = var.websocket_api_endpoint_https
   }
 }
 
@@ -708,6 +712,10 @@ module "questions_lambda" {
     ENVIRONMENT           = var.environment
     AGENT_QUESTIONS_TABLE = var.agent_questions_table_name
     CORS_ALLOWED_ORIGINS  = var.cors_allowed_origins
+    # Server-origin question.answered fanout: the questions lambda pushes the
+    # event to sprint-channel WS connections.
+    CONNECTIONS_TABLE  = var.connections_table_name
+    WEBSOCKET_ENDPOINT = var.websocket_api_endpoint_https
   }
 }
 
@@ -891,9 +899,10 @@ module "timeline_events_lambda" {
 # -----------------------------------------------------------------------------
 # Role: discussions (1 Lambda — discussions)
 # Neptune CRUD + read access to the realtime doc-token secret (issues HMAC
-# scope tokens after a membership check — discussions plan §4a). PR 2 adds
-# the discussion-locks/read-state tables, connections fan-out and the agents
-# dispatch invoke.
+# scope tokens after a membership check) + the discussion-locks / read-state
+# tables (creation + message guards) + connections-table fan-out
+# (server-driven discussion.message broadcasts) + a synchronous invoke of the
+# agents lambda for assist dispatch.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "discussions" {
   name               = "${var.project_name}-discussions-${var.environment}"
@@ -911,7 +920,7 @@ resource "aws_iam_role_policy_attachment" "discussions_vpc" {
 }
 
 resource "aws_iam_role_policy" "discussions" {
-  name = "neptune-and-doc-secret"
+  name = "neptune-doc-secret-locks-fanout"
   role = aws_iam_role.discussions.id
   policy = jsonencode({
     Version = "2012-10-17"
@@ -921,6 +930,31 @@ resource "aws_iam_role_policy" "discussions" {
         Effect   = "Allow"
         Action   = ["ssm:GetParameter"]
         Resource = var.realtime_doc_secret_param_arn
+      },
+      {
+        Effect = "Allow"
+        Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem"]
+        Resource = [
+          var.discussion_locks_table_arn,
+          var.discussion_read_state_table_arn,
+        ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:Query"]
+        Resource = ["${var.discussion_read_state_table_arn}", "${var.connections_table_arn}/index/*"]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["execute-api:ManageConnections"]
+        Resource = "${var.websocket_execution_arn}/*"
+      },
+      {
+        # Assist dispatch: synchronous invoke of the agents lambda with
+        # phase:'discussion' (assist runs as a pool-worker 'discussion' phase).
+        Effect   = "Allow"
+        Action   = ["lambda:InvokeFunction"]
+        Resource = "arn:${local.partition}:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-agents-${var.environment}"
       }
     ]
   })
@@ -957,6 +991,14 @@ module "discussions_lambda" {
     ENVIRONMENT           = var.environment
     CORS_ALLOWED_ORIGINS  = var.cors_allowed_origins
     REALTIME_SECRET_PARAM = var.realtime_doc_secret_param_name
+    LOCKS_TABLE           = var.discussion_locks_table_name
+    READ_STATE_TABLE      = var.discussion_read_state_table_name
+    CONNECTIONS_TABLE     = var.connections_table_name
+    WEBSOCKET_ENDPOINT    = var.websocket_api_endpoint_https
+    AGENTS_LAMBDA         = "${var.project_name}-agents-${var.environment}"
+    # Takeover-safety invariant: must match `timeout` above; the
+    # lambda asserts message-guard pending window (120 s) > this at init.
+    LAMBDA_TIMEOUT_SECONDS = "30"
   }
 }
 
@@ -1059,4 +1101,37 @@ module "migrate_tracker_fields_lambda" {
     NEPTUNE_ENDPOINT = var.neptune_endpoint
     ENVIRONMENT      = var.environment
   }
+}
+
+# -----------------------------------------------------------------------------
+# Server-origin realtime fanout.
+#
+# question.answered (questions + agents lambdas) and sprint.phaseChanged
+# (sprints lambda) are emitted server-side via lambda/shared/ws-fanout.js —
+# the ws-message client allowlist is EMPTY. These roles gain only the
+# narrow fan-out permissions (connections-index query + PostToConnection).
+# -----------------------------------------------------------------------------
+resource "aws_iam_role_policy" "realtime_fanout" {
+  for_each = {
+    neptune_reader      = aws_iam_role.neptune_reader.id    # sprints lambda
+    neptune_questions   = aws_iam_role.neptune_questions.id # questions lambda
+    agents_orchestrator = aws_iam_role.agents_orchestrator.id
+  }
+  name = "realtime-fanout"
+  role = each.value
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:Query"]
+        Resource = ["${var.connections_table_arn}/index/*"]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["execute-api:ManageConnections"]
+        Resource = "${var.websocket_execution_arn}/*"
+      }
+    ]
+  })
 }

@@ -11,7 +11,6 @@ import { reviewsService } from '@/services/reviews';
 import { questionsService } from '@/services/questions';
 import { githubService, type PRComment } from '@/services/github';
 import { sprintGraphService, extractPrs, type PrInfo } from '@/services/sprintGraph';
-import { realtimeService } from '@/services/realtime';
 import { sprintsService } from '@/services/sprints';
 import { agentsService } from '@/services/agents';
 import { timelineEventsService } from '@/services/timelineEvents';
@@ -61,6 +60,7 @@ import {
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { StructuredAnswer } from '@/services/questions';
+import { DiscussButton } from '@/components/discussion';
 
 function RiskBadge({ score, reasoning }: { score: string; reasoning: string }) {
   const n = parseInt(score);
@@ -380,9 +380,8 @@ export default function ReviewPage() {
   const handleAnswerQuestion = async (questionId: string, answer: StructuredAnswer) => {
     try {
       await questionsService.update(sprintId, questionId, { structuredAnswer: answer });
-      realtimeService.send('broadcastToDocument', {
-        data: { action: 'question.answered', sprintId, questionId },
-      });
+      // question.answered is a server-origin event emitted by the
+      // questions/agents lambdas — clients never broadcast it.
       timelineEventsService
         .create(sprintId, {
           type: 'question_answered',
@@ -932,7 +931,16 @@ export default function ReviewPage() {
           {/* Human review */}
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm">Your Review</CardTitle>
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-sm">Your Review</CardTitle>
+                {review && (
+                  <DiscussButton
+                    entityType="review"
+                    entityId={review.id}
+                    entityTitle="Sprint Review"
+                  />
+                )}
+              </div>
             </CardHeader>
             <CardContent>
               <ReviewEditor
@@ -965,12 +973,8 @@ export default function ReviewPage() {
                   });
                   if (review.status === 'PASSED') {
                     await sprintsService.update(projectId, sprintId, { phase: 'COMPLETED' });
-                    // Pure reload hint (§4b): peers re-fetch the sprint and
-                    // act on server state — never include the phase in the
-                    // payload.
-                    realtimeService.send('broadcastToDocument', {
-                      data: { action: 'sprint.phaseChanged', sprintId },
-                    });
+                    // sprint.phaseChanged is a server-origin event emitted by
+                    // the sprints lambda — clients never broadcast it.
                     await reload();
                   }
                 }}

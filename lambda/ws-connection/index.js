@@ -18,7 +18,7 @@ import {
 const client = new DynamoDBClient();
 const ssm = new SSMClient();
 
-// Operational kill switch only (plan §4, D3): set to "false" to log-and-allow
+// Operational kill switch only: set to "false" to log-and-allow
 // during an incident. Default is enforcing.
 const docTokenEnforce = () => process.env.DOC_TOKEN_ENFORCE !== 'false';
 
@@ -46,7 +46,7 @@ export const handler = async (event) => {
   console.log('Connection event:', routeKey, connectionId, documentId);
 
   if (routeKey === '$connect') {
-    // Scope-token check (plan §4a): signature, expiry, scope coverage for the
+    // Scope-token check: signature, expiry, scope coverage for the
     // requested documentId, and principal binding to the JWT-authenticated
     // user (the ws-authorizer puts the Cognito sub in `authorizer.userId`).
     // Unknown documentId formats are rejected (deny-by-default).
@@ -76,7 +76,7 @@ export const handler = async (event) => {
       expiresAt: { N: String(Math.floor(Date.now() / 1000) + 3600) },
     };
     // Stored so every fan-out path (and the ws-message send path) can filter
-    // out connections whose authorization has lapsed (plan §4a).
+    // out connections whose authorization has lapsed.
     if (access.ok) item.tokenExp = { N: String(access.payload.exp) };
 
     await client.send(
@@ -102,7 +102,7 @@ export const handler = async (event) => {
     await Promise.all(
       (existing.Items || []).map(async (item) => {
         if (item.connectionId.S === connectionId) return;
-        // Never target connections whose scope token has expired (plan §4a).
+        // Never target connections whose scope token has expired.
         if (!isTokenLive(item.tokenExp?.N)) return;
         await api
           .send(

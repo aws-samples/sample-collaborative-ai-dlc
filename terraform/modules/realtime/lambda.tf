@@ -49,7 +49,7 @@ resource "aws_iam_role_policy" "lambda" {
         Resource = "${aws_apigatewayv2_api.websocket.execution_arn}/*"
       },
       {
-        # ws-connection verifies realtime scope tokens at $connect (plan §4a).
+        # ws-connection verifies realtime scope tokens at $connect.
         Effect   = "Allow"
         Action   = ["ssm:GetParameter"]
         Resource = aws_ssm_parameter.realtime_doc_secret.arn

@@ -10,22 +10,16 @@ const getApiClient = () =>
   new ApiGatewayManagementApiClient({ endpoint: process.env.WEBSOCKET_ENDPOINT });
 
 // -----------------------------------------------------------------------------
-// Client-origin event allowlist (discussions plan §4b, D10).
+// Client-origin event allowlist.
 //
-// The frontend broadcasts exactly two event types today (grep-verified):
-//   question.answered    InceptionPage / ConstructionPage / ReviewPage / AgentPage
-//   sprint.phaseChanged  InceptionPage / ConstructionPage / ReviewPage
-//
-// Allowlisted client events must be pure reload/navigate HINTS: handlers
-// re-fetch from REST and never render or act on payload content (the
-// AppSidebar sprint.phaseChanged handler navigates from the re-fetched sprint
-// phase, never from the payload). Everything else — discussion.*, agent.*,
-// artifact.*, notification — is server-origin only and is dropped here.
-//
-// PR 6 migrates both events to server-origin emitters and shrinks this list
-// to empty.
+// All realtime events are SERVER-ORIGIN: `question.answered` is emitted by
+// the questions lambda (PUT) and the agents lambda (answer endpoint), and
+// `sprint.phaseChanged` by the sprints lambda (phase update) — see
+// lambda/shared/ws-fanout.js. The frontend no longer client-broadcasts
+// anything, so the allowlist is EMPTY: every client `broadcastToDocument` is
+// dropped and logged. Connected clients cannot inject events at all.
 // -----------------------------------------------------------------------------
-const CLIENT_EVENT_ALLOWLIST = ['question.answered', 'sprint.phaseChanged'];
+const CLIENT_EVENT_ALLOWLIST = [];
 
 export const handler = async (event) => {
   const connectionId = event.requestContext.connectionId;
@@ -35,9 +29,18 @@ export const handler = async (event) => {
 
   // Only broadcastToDocument remains client-reachable. The legacy `broadcast`
   // (table scan) and client-origin `notification` paths had no frontend
-  // callers and allowed cross-document/event spoofing — removed (plan §4b).
+  // callers and allowed cross-document/event spoofing — removed.
   if (action !== 'broadcastToDocument') {
     console.warn(`Dropped non-allowlisted action "${action}" from ${connectionId}`);
+    return { statusCode: 200 };
+  }
+
+  // Allowlist check FIRST (it is empty — nothing client-origin passes), so
+  // dropped messages cost no DynamoDB work.
+  const message = body.data || {};
+  const eventType = message.action || message.type;
+  if (!CLIENT_EVENT_ALLOWLIST.includes(eventType)) {
+    console.warn(`Dropped non-allowlisted client event "${eventType}" from ${connectionId}`);
     return { statusCode: 200 };
   }
 
@@ -61,7 +64,7 @@ export const handler = async (event) => {
     return { statusCode: 200 };
   }
 
-  // Reject sends from connections whose scope token has lapsed (plan §4a).
+  // Reject sends from connections whose scope token has lapsed.
   if (!isTokenLive(senderRow.tokenExp?.N)) {
     console.warn(`Dropped message from connection ${connectionId} with expired token`);
     return { statusCode: 200 };
@@ -73,13 +76,6 @@ export const handler = async (event) => {
     console.warn(
       `documentId mismatch from ${connectionId}: body="${body.documentId}" registered="${registeredDocumentId}"`,
     );
-  }
-
-  const message = body.data || {};
-  const eventType = message.action || message.type;
-  if (!CLIENT_EVENT_ALLOWLIST.includes(eventType)) {
-    console.warn(`Dropped non-allowlisted client event "${eventType}" from ${connectionId}`);
-    return { statusCode: 200 };
   }
 
   await broadcastToDocument(registeredDocumentId, message, connectionId);
@@ -110,7 +106,7 @@ const broadcast = async (items, message, excludeConnectionId) => {
     items.map(async (item) => {
       const connId = item.connectionId.S;
       if (connId === excludeConnectionId) return;
-      // Never target connections whose scope token has expired (plan §4a).
+      // Never target connections whose scope token has expired.
       if (!isTokenLive(item.tokenExp?.N)) return;
       try {
         await api.send(new PostToConnectionCommand({ ConnectionId: connId, Data: payload }));

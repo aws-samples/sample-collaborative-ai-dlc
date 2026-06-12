@@ -40,6 +40,7 @@ import {
   BarChart3,
   Keyboard,
   Bot,
+  MessageSquare,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -149,6 +150,16 @@ const NODE_TYPES: Record<
     label: 'Agent Run',
     shortLabel: 'Run',
   },
+  Discussion: {
+    color: '#14b8a6',
+    darkColor: '#0d9488',
+    gradientFrom: '#2dd4bf',
+    gradientTo: '#0d9488',
+    textColor: '#fff',
+    icon: MessageSquare,
+    label: 'Discussion',
+    shortLabel: 'Disc',
+  },
 };
 
 const EDGE_LABELS: Record<string, string> = {
@@ -160,6 +171,7 @@ const EDGE_LABELS: Record<string, string> = {
   INFLUENCES: 'influences',
   RELATES_TO: 'relates to',
   CARRIED_FROM: 'carried from',
+  DISCUSSES: 'discusses',
 };
 
 const NODE_W = 156;
@@ -178,6 +190,7 @@ const TYPE_HIERARCHY: string[] = [
   'Review',
   'Question',
   'PullRequest',
+  'Discussion',
 ];
 
 // ---------------------------------------------------------------------------

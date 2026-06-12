@@ -15,7 +15,6 @@ import { tasksService } from '@/services/tasks';
 import { generalInfoService } from '@/services/generalInfo';
 import type { StructuredAnswer } from '@/services/questions';
 import { questionsService } from '@/services/questions';
-import { realtimeService } from '@/services/realtime';
 import { timelineEventsService } from '@/services/timelineEvents';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -68,6 +67,7 @@ import {
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { DiscussButton } from '@/components/discussion';
 
 export default function InceptionPage() {
   const { user } = useAuth();
@@ -317,11 +317,8 @@ export default function InceptionPage() {
     setApprovingPhase(true);
     try {
       await sprintsService.update(projectId, sprintId, { phase: 'CONSTRUCTION' });
-      // Pure reload hint (§4b): peers re-fetch the sprint and act on server
-      // state — never include the phase in the payload.
-      realtimeService.send('broadcastToDocument', {
-        data: { action: 'sprint.phaseChanged', sprintId },
-      });
+      // sprint.phaseChanged is a server-origin event emitted by the sprints
+      // lambda on the phase update — clients never broadcast it.
       timelineEventsService
         .create(sprintId, {
           type: 'phase_changed',
@@ -340,9 +337,8 @@ export default function InceptionPage() {
   const handleAnswerQuestion = async (questionId: string, answer: StructuredAnswer) => {
     try {
       await questionsService.update(sprintId, questionId, { structuredAnswer: answer });
-      realtimeService.send('broadcastToDocument', {
-        data: { action: 'question.answered', sprintId, questionId },
-      });
+      // question.answered is a server-origin event emitted by the
+      // questions/agents lambdas — clients never broadcast it.
       timelineEventsService
         .create(sprintId, {
           type: 'question_answered',
@@ -469,6 +465,7 @@ export default function InceptionPage() {
                     {remoteUsers.size} collaborator{remoteUsers.size > 1 ? 's' : ''}
                   </span>
                 )}
+                <DiscussButton entityType="inception" entityTitle="Project Description" />
               </div>
             </CardHeader>
             <CardContent>
@@ -779,7 +776,14 @@ export default function InceptionPage() {
                 <div className="space-y-3">
                   {answeredQuestions.map((q) => (
                     <div key={q.id} id={questionAnchorId(q.id)} className="border rounded-lg p-3">
-                      <p className="text-xs font-medium mb-1">Agent: {q.agent}</p>
+                      <div className="flex items-center justify-between mb-1">
+                        <p className="text-xs font-medium">Agent: {q.agent}</p>
+                        <DiscussButton
+                          entityType="question"
+                          entityId={q.id}
+                          entityTitle={q.questions[0]?.text || `${q.agent} agent question`}
+                        />
+                      </div>
                       {q.questions.map((sq, i) => (
                         <div key={i} className="mb-2">
                           <p className="text-xs text-muted-foreground">{sq.text}</p>

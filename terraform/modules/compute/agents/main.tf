@@ -216,6 +216,14 @@ resource "aws_iam_role_policy" "agent_task" {
         Resource = compact([var.agent_pool_table_arn])
       },
       {
+        # Assist-lock heartbeat + release: the pool
+        # worker renews `assist:{discussionId}` while a discussion session
+        # runs and deletes it on completion.
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem"]
+        Resource = compact([var.discussion_locks_table_arn])
+      },
+      {
         Effect = "Allow"
         Action = ["dynamodb:Query"]
         Resource = compact([
@@ -330,6 +338,7 @@ resource "aws_ecs_task_definition" "agent" {
       { name = "QUESTIONS_TABLE", value = var.agent_questions_table_name },
       { name = "CONNECTIONS_TABLE", value = var.connections_table_name },
       { name = "WEBSOCKET_ENDPOINT", value = var.websocket_endpoint },
+      { name = "LOCKS_TABLE", value = var.discussion_locks_table_name },
       { name = "AGENTS_LAMBDA_NAME", value = var.agents_lambda_name },
       { name = "CREATE_PR_LAMBDA_NAME", value = var.create_pr_lambda_name },
       { name = "AWS_REGION", value = var.aws_region },

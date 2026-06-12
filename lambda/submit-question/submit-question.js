@@ -132,7 +132,7 @@ async function getSprintConnections(sprintId) {
       ExpressionAttributeValues: { ':docId': `sprint:${sprintId}` },
     }),
   );
-  // Never target connections whose scope token has expired (plan §4a).
+  // Never target connections whose scope token has expired.
   // Inline copy of shared/realtime-token.js#isTokenLive — this lambda is
   // zip-packaged without bundling, so it cannot import lambda/shared.
   // Rows without tokenExp are pre-enforcement legacy rows (TTL ≤1h) — allow.

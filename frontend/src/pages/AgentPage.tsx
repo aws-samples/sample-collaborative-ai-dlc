@@ -20,7 +20,6 @@ import { extractAgentStartError, type AgentStartError } from '@/lib/agentStartEr
 import { Bot, GitBranch, Loader2, ArrowLeft, MessageCircleQuestion, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { questionsService, type StructuredAnswer } from '@/services/questions';
-import { realtimeService } from '@/services/realtime';
 
 type PageState = 'prompt' | 'running' | 'completed' | 'failed';
 
@@ -138,9 +137,8 @@ export default function AgentPage() {
   const handleAnswerQuestion = async (questionId: string, answer: StructuredAnswer) => {
     try {
       await agentStatus.answerQuestion(questionId, answer);
-      realtimeService.send('broadcastToDocument', {
-        data: { action: 'question.answered', sprintId, questionId },
-      });
+      // question.answered is a server-origin event emitted by the
+      // questions/agents lambdas — clients never broadcast it.
       timelineEventsService
         .create(sprintId, {
           type: 'question_answered',
