@@ -33,11 +33,11 @@ export function AppShell() {
   const { sprintId } = useParams<{ sprintId: string }>();
   const inSprint = !!sprintId;
 
-  // Breakpoints (Tailwind md / lg): below them the side panels render as
-  // NON-modal overlays above the content instead of grid columns, so they
-  // stay usable on tablets/phones without blocking the page behind them.
-  const sidebarInline = useMediaQuery('(min-width: 768px)');
-  const activityInline = useMediaQuery('(min-width: 1024px)');
+  // Breakpoint (Tailwind lg): below it BOTH side panels render as NON-modal
+  // overlays above the content instead of grid columns, so they stay usable
+  // on tablets/phones without blocking the page behind them. One shared
+  // breakpoint keeps the two panels' behavior consistent.
+  const panelsInline = useMediaQuery('(min-width: 1024px)');
 
   // Small screens start with the panels closed (as overlays they'd cover the
   // content); large screens keep the previous always-open default.
@@ -45,7 +45,7 @@ export function AppShell() {
     () => window.matchMedia('(min-width: 1024px)').matches,
   );
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
-    () => !window.matchMedia('(min-width: 768px)').matches,
+    () => !window.matchMedia('(min-width: 1024px)').matches,
   );
   const [commandOpen, setCommandOpen] = useState(false);
   const [activityWidth, setActivityWidth] = useState(loadActivityWidth);
@@ -97,9 +97,9 @@ export function AppShell() {
   // Grid columns only contain panels that render INLINE at the current
   // breakpoint — overlay panels must not reserve track space.
   const gridColumns = [
-    showSidebar && sidebarInline ? 'minmax(240px, 280px)' : null,
+    showSidebar && panelsInline ? 'minmax(240px, 280px)' : null,
     'minmax(0, 1fr)',
-    showActivity && activityInline ? `min(${activityWidth}px, 45vw)` : null,
+    showActivity && panelsInline ? `min(${activityWidth}px, 45vw)` : null,
   ]
     .filter(Boolean)
     .join(' ');
@@ -127,8 +127,8 @@ export function AppShell() {
             className="relative flex-1 overflow-hidden grid"
             style={{ gridTemplateColumns: gridColumns }}
           >
-            {/* Sidebar - inline column on md+ */}
-            {showSidebar && sidebarInline && (
+            {/* Sidebar - inline column on lg+ */}
+            {showSidebar && panelsInline && (
               <aside className="flex border-r overflow-hidden">
                 <AppSidebar />
               </aside>
@@ -140,7 +140,7 @@ export function AppShell() {
             </main>
 
             {/* Activity panel - inline column on lg+, with a resize handle */}
-            {showActivity && activityInline && (
+            {showActivity && panelsInline && (
               <aside className="relative flex overflow-hidden">
                 <div
                   role="separator"
@@ -158,12 +158,12 @@ export function AppShell() {
 
             {/* Small-screen overlays — NON-modal: no backdrop, the content
                 behind stays visible and interactive. */}
-            {showSidebar && !sidebarInline && (
+            {showSidebar && !panelsInline && (
               <aside className="absolute inset-y-0 left-0 z-40 flex w-72 max-w-[85vw] overflow-hidden border-r bg-background shadow-2xl">
                 <AppSidebar />
               </aside>
             )}
-            {showActivity && !activityInline && (
+            {showActivity && !panelsInline && (
               <aside className="absolute inset-y-0 right-0 z-40 flex w-full max-w-md overflow-hidden bg-background shadow-2xl">
                 <ActivityPanel sprintId={sprintId} onClose={() => setActivityPanelOpen(false)} />
               </aside>
