@@ -86,6 +86,13 @@ module "agents_docker_build" {
   source_path      = local.agents_source_path
   docker_file_path = "${local.agents_source_path}/agents-ecs/Dockerfile"
   platform         = "linux/amd64"
+  # Use the buildx "default" builder (BuildKit session) instead of the
+  # provider's legacy /build path. The legacy path streams the whole context
+  # as a single tar.gz and corrupts it on large contexts (unpigz: invalid
+  # deflate data); the BuildKit session transfers files incrementally and
+  # applies .dockerignore client-side. "default" exists on every Docker
+  # Desktop and docker-engine install.
+  builder = "default"
 
   build_args = {
     IMAGE_TAG = local.agents_image_tag

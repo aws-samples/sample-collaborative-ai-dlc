@@ -90,6 +90,9 @@ module "yjs_docker_build" {
   source_path      = local.yjs_source_path
   docker_file_path = "${local.yjs_source_path}/Dockerfile"
   platform         = "linux/amd64"
+  # BuildKit session path instead of the provider's legacy tar.gz streaming —
+  # see the agents module for rationale.
+  builder = "default"
 
   triggers = {
     dir_sha = local.yjs_files_sha
