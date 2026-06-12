@@ -198,7 +198,7 @@ export function DiscussionThread({
             <Bot className="h-3.5 w-3.5 text-primary" />
           </div>
           <div className="min-w-0 flex-1 rounded-md bg-primary/5 px-2 py-1">
-            <div className="prose prose-sm dark:prose-invert max-w-none text-sm leading-relaxed break-words [&_p]:my-0.5 [&_pre]:my-1 [&_ul]:my-1 [&_ol]:my-1">
+            <div className="prose prose-sm dark:prose-invert max-w-none text-sm leading-relaxed break-words [&_p]:my-0.5 [&_pre]:my-1 [&_ul]:my-1 [&_ol]:my-1 [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingReply}</ReactMarkdown>
             </div>
             <span className="inline-block w-1.5 h-3.5 bg-muted-foreground animate-pulse align-middle" />
