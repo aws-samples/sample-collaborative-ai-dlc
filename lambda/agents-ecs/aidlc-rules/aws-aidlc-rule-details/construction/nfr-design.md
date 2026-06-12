@@ -46,7 +46,8 @@ add_node(label: "Requirement", id: "nfr-design-[unit-name]", properties: {
 
 ```
 update_node(label: "Sprint", id: env.sprintId, properties: {
-  current_stage: "nfr-design"
+  current_stage: "nfr-design",
+  phase_status: "active"
 })
 ```
 

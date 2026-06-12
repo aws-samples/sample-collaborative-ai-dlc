@@ -113,7 +113,8 @@ update_node(label: "Task", id: "unit-[name]", properties: {
 })
 
 update_node(label: "Sprint", id: env.sprintId, properties: {
-  current_stage: "code-generation"
+  current_stage: "code-generation",
+  phase_status: "active"
 })
 ```
 

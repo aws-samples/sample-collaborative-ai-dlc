@@ -93,6 +93,7 @@ Update the Sprint node to track current stage:
 update_node(label: "Sprint", id: env.sprintId, properties: {
   phase: "INCEPTION",
   current_stage: "workspace-detection",
+  phase_status: "active",
   project_type: "greenfield" or "brownfield",
   has_previous_context: "true" or "false"
 })

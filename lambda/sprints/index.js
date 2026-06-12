@@ -71,6 +71,8 @@ const mapSprint = (v) => {
     name: v.get('name')?.[0] || '',
     description: v.get('description')?.[0] || '',
     phase: v.get('phase')?.[0] || 'INCEPTION',
+    currentStage: v.get('current_stage')?.[0] || null,
+    phaseStatus: v.get('phase_status')?.[0] || null,
     createdAt: v.get('created_at')?.[0] || '',
     currentExecutionArn: arn && arn !== '' ? arn : null,
     currentExecutionId: execId && execId !== '' ? execId : null,
@@ -180,6 +182,8 @@ export const handler = async (event) => {
           .property('name', data.name)
           .property('description', data.description || '')
           .property('phase', phase)
+          .property('current_stage', '')
+          .property('phase_status', 'active')
           .property('sprint_id', id)
           .property('created_at', createdAt)
           .property('current_execution_arn', '')
@@ -205,6 +209,8 @@ export const handler = async (event) => {
           name: data.name,
           description: data.description || '',
           phase,
+          currentStage: null,
+          phaseStatus: 'active',
           createdAt,
           currentExecutionArn: null,
           currentExecutionId: null,
@@ -231,9 +237,20 @@ export const handler = async (event) => {
         const existing = await g.V().has('Sprint', 'id', sprintId).valueMap().next();
         if (!existing.value) return res(404, { error: 'Sprint not found' });
 
-        // Agent state fields are system-write-only; strip them from user requests.
-        // The orchestrator and pool-worker update these via internal invocations.
-        const USER_WRITABLE = ['name', 'description', 'phase'];
+        // Execution fields are system-write-only; strip them from user requests.
+        // The UI may update phase/currentStage/phaseStatus when it performs a
+        // user-owned phase transition and persist selected construction
+        // branches, while agents update currentStage and phaseStatus directly
+        // on the Sprint vertex through graph tools.
+        const USER_WRITABLE = [
+          'name',
+          'description',
+          'phase',
+          'currentStage',
+          'phaseStatus',
+          'branch',
+          'baseBranch',
+        ];
         const isSystemCaller = event.requestContext?.authorizer?.claims?.sub === 'system';
         const SYSTEM_FIELDS = [
           'currentExecutionArn',
@@ -277,6 +294,20 @@ export const handler = async (event) => {
             .V()
             .has('Sprint', 'id', sprintId)
             .property(cardinality.single, 'phase', data.phase)
+            .next();
+        }
+        if (data.currentStage !== undefined) {
+          await g
+            .V()
+            .has('Sprint', 'id', sprintId)
+            .property(cardinality.single, 'current_stage', data.currentStage || '')
+            .next();
+        }
+        if (data.phaseStatus !== undefined) {
+          await g
+            .V()
+            .has('Sprint', 'id', sprintId)
+            .property(cardinality.single, 'phase_status', data.phaseStatus || '')
             .next();
         }
 

@@ -47,7 +47,15 @@ export async function fetchProjectInfos(l2: L2Intelligence): Promise<ProjectAgen
             /* graph not available yet */
           }
 
-          if (latest.phase === 'CONSTRUCTION') {
+          const hasConstructionEvidence =
+            latest.phase === 'CONSTRUCTION' ||
+            latest.currentAgentType === 'construction-orchestrator' ||
+            latest.currentAgentType === 'construction' ||
+            Boolean(latest.branch) ||
+            Boolean(latest.prUrl) ||
+            (progress?.codeFileCount ?? 0) > 0;
+
+          if (hasConstructionEvidence) {
             try {
               const { tasks } = await agentsService.getTaskAgentStatuses(project.id, latest.id);
               taskStatuses = tasks;

@@ -36,7 +36,15 @@ beforeEach(async () => {
   await g.V().drop().next();
 });
 
-const addSprint = async (sprintId) => g.addV('Sprint').property('id', sprintId).next();
+const addSprint = async (sprintId) =>
+  g
+    .addV('Sprint')
+    .property('id', sprintId)
+    .property('name', 'Sprint')
+    .property('phase', 'INCEPTION')
+    .property('current_stage', 'requirements-analysis')
+    .property('phase_status', 'active')
+    .next();
 
 // containment is one of: CONTAINS, HAS_REVIEW, HAS_PR, HAS_AGENT_RUN
 const addContained = async (sprintId, label, props, containment = 'CONTAINS') => {
@@ -75,13 +83,25 @@ describe('OPTIONS', () => {
 });
 
 describe('GET /sprint-graph', () => {
-  it('returns empty nodes and edges when the sprint has no contained vertices', async () => {
+  it('returns the Sprint workflow state when the sprint has no contained vertices', async () => {
     const sprintId = `s-${randomUUID()}`;
     await addSprint(sprintId);
 
     const res = await invoke(sprintId);
     expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body)).toEqual({ nodes: [], edges: [] });
+    expect(JSON.parse(res.body)).toEqual({
+      nodes: [
+        expect.objectContaining({
+          id: sprintId,
+          type: 'Sprint',
+          label: 'Sprint',
+          phase: 'INCEPTION',
+          current_stage: 'requirements-analysis',
+          phase_status: 'active',
+        }),
+      ],
+      edges: [],
+    });
   });
 
   it('uses the title → file_path → agent_type → status → "(unnamed)" label fallback chain', async () => {
@@ -108,6 +128,7 @@ describe('GET /sprint-graph', () => {
     const { nodes } = JSON.parse(res.body);
     const byId = Object.fromEntries(nodes.map((n) => [n.id, n]));
 
+    expect(byId[sprintId]).toMatchObject({ type: 'Sprint', label: 'Sprint' });
     expect(byId[taskId]).toMatchObject({ type: 'Task', label: 'T' });
     expect(byId[fileId]).toMatchObject({ type: 'CodeFile', label: '/a.js' });
     expect(byId[runId]).toMatchObject({ type: 'AgentRun', label: 'inception' });
@@ -126,8 +147,8 @@ describe('GET /sprint-graph', () => {
 
     const res = await invoke(sprintId);
     const { nodes } = JSON.parse(res.body);
-    expect(nodes).toHaveLength(1);
-    expect(nodes[0]).toMatchObject({
+    expect(nodes).toHaveLength(2);
+    expect(nodes.find((n) => n.id === taskId)).toMatchObject({
       id: taskId,
       type: 'Task',
       label: 'My Task',
@@ -161,7 +182,7 @@ describe('GET /sprint-graph', () => {
 
     const res = await invoke(sprintId);
     const { nodes, edges } = JSON.parse(res.body);
-    expect(nodes.map((n) => n.id)).toEqual([inSprint]);
+    expect(nodes.map((n) => n.id).sort()).toEqual([inSprint, sprintId].sort());
     expect(edges).toEqual([]);
   });
 
@@ -190,7 +211,10 @@ describe('GET /sprint-graph', () => {
     // Same sprintId in our partition — should be empty.
     await addSprint(sprintId);
     const res = await invoke(sprintId);
-    expect(JSON.parse(res.body)).toEqual({ nodes: [], edges: [] });
+    expect(JSON.parse(res.body)).toEqual({
+      nodes: [expect.objectContaining({ id: sprintId, type: 'Sprint' })],
+      edges: [],
+    });
 
     await otherG.V().drop().next();
   });

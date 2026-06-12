@@ -49,7 +49,7 @@ The MCP tool used for ALL human communication. When called, it sends the questio
 
 ### Sprint
 
-A Sprint is a graph node that represents a development cycle. It contains all artifacts (Requirements, UserStories, Tasks, CodeFiles, Questions, Reviews) via CONTAINS edges. The Sprint node's properties track the current `phase` and `current_stage`.
+A Sprint is a graph node that represents a development cycle. It contains all artifacts (Requirements, UserStories, Tasks, CodeFiles, Questions, Reviews) via CONTAINS edges. The Sprint node is the single workflow cursor: `phase` is the UI-owned lifecycle phase, while `current_stage` and `phase_status` are agent-updated progress signals that the UI visualizes.
 
 ### Graph Nodes
 

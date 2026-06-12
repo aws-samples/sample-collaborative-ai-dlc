@@ -39,17 +39,24 @@ export const handler = async (event) => {
     }
     const { sprintId } = event.pathParameters || {};
 
-    // Get all vertices contained in this sprint (CONTAINS + HAS_REVIEW + HAS_PR + HAS_AGENT_RUN)
+    // Get the Sprint workflow cursor plus all vertices contained in this sprint.
     const vertices = await g
       .V()
       .has('Sprint', 'id', sprintId)
-      .union(__.out('CONTAINS'), __.out('HAS_REVIEW'), __.out('HAS_PR'), __.out('HAS_AGENT_RUN'))
+      .union(
+        __.identity(),
+        __.out('CONTAINS'),
+        __.out('HAS_REVIEW'),
+        __.out('HAS_PR'),
+        __.out('HAS_AGENT_RUN'),
+      )
       .project('id', 'type', 'label', 'props')
       .by('id')
       .by(T.label)
       .by(
         __.coalesce(
           __.values('title'),
+          __.values('name'),
           __.values('file_path'),
           __.values('agent_type'),
           __.values('status'),
@@ -65,7 +72,13 @@ export const handler = async (event) => {
     const edges = await g
       .V()
       .has('Sprint', 'id', sprintId)
-      .union(__.out('CONTAINS'), __.out('HAS_REVIEW'), __.out('HAS_PR'), __.out('HAS_AGENT_RUN'))
+      .union(
+        __.identity(),
+        __.out('CONTAINS'),
+        __.out('HAS_REVIEW'),
+        __.out('HAS_PR'),
+        __.out('HAS_AGENT_RUN'),
+      )
       .bothE()
       .where(__.otherV().has('id', P.within(...nodeIds)))
       .project('source', 'target', 'label')

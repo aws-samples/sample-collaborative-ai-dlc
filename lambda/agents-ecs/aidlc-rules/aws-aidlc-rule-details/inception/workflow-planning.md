@@ -69,6 +69,7 @@ Store the execution plan as Sprint node properties:
 ```
 update_node(label: "Sprint", id: env.sprintId, properties: {
   current_stage: "workflow-planning",
+  phase_status: "active",
   execution_plan: "[JSON or text summary of stages to execute/skip with rationale]",
   risk_level: "[low/medium/high/critical]"
 })

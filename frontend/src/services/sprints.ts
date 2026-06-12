@@ -1,6 +1,7 @@
 import { api } from './api';
 
 export type SprintPhase = 'INCEPTION' | 'CONSTRUCTION' | 'REVIEW' | 'COMPLETED';
+export type SprintPhaseStatus = 'active' | 'ready_for_transition' | 'completed' | null;
 export type AgentStatus = 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled' | null;
 
 // Polymorphic link from a Sprint to the tracker resource it was started from.
@@ -30,6 +31,8 @@ export interface Sprint {
   name: string;
   description: string;
   phase: SprintPhase;
+  currentStage: string | null;
+  phaseStatus: SprintPhaseStatus;
   createdAt: string;
   // Agent state fields (Phase 1 & 2)
   currentExecutionArn: string | null;
