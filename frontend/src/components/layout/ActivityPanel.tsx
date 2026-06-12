@@ -12,6 +12,9 @@ import { agentsService } from '@/services/agents';
 import { timelineEventsService, type TimelineEvent } from '@/services/timelineEvents';
 import { useAuth } from '@/contexts/AuthContext';
 import { useQuestionLink } from '@/hooks/useQuestionAnchor';
+import { DiscussionsTab } from '@/components/discussion/DiscussionsTab';
+import { DiscussionPanel, useDiscussions } from '@/components/discussion';
+import { MessageSquare } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -69,6 +72,19 @@ export function ActivityPanel({ sprintId, onClose }: ActivityPanelProps) {
   const { user } = useAuth();
   const userName = user?.displayName || user?.email || '';
   const [activeTab, setActiveTab] = useState('agent');
+  const discussionsCtx = useDiscussions();
+  const totalUnread = (discussionsCtx?.discussions ?? []).reduce(
+    (sum, d) => sum + (d.unreadCount ?? 0),
+    0,
+  );
+
+  // Opening a thread (from any entry point) jumps to the Discuss tab, where
+  // it swaps in for the list. Other tabs stay reachable while it's open.
+  const discussionOpen = !!discussionsCtx?.isOpen;
+  const activeDiscussionId = discussionsCtx?.activeDiscussion?.id ?? null;
+  useEffect(() => {
+    if (discussionOpen) setActiveTab('discussions');
+  }, [discussionOpen, activeDiscussionId]);
 
   // -- Agent state --
   const [streamingText, setStreamingText] = useState('');
@@ -250,6 +266,15 @@ export function ActivityPanel({ sprintId, onClose }: ActivityPanelProps) {
                 </Badge>
               )}
             </TabsTrigger>
+            <TabsTrigger value="discussions" className="h-6 px-2.5 text-xs gap-1.5">
+              <MessageSquare className="h-3 w-3" />
+              Discuss
+              {totalUnread > 0 && (
+                <Badge className="h-4 px-1 text-[9px] ml-0.5">
+                  {totalUnread > 99 ? '99+' : totalUnread}
+                </Badge>
+              )}
+            </TabsTrigger>
           </TabsList>
         </Tabs>
         <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onClose}>
@@ -257,19 +282,28 @@ export function ActivityPanel({ sprintId, onClose }: ActivityPanelProps) {
         </Button>
       </div>
 
-      {/* Content */}
-      <ScrollArea className="flex-1">
-        {activeTab === 'agent' ? (
-          <AgentTab
-            streamingText={streamingText}
-            toolCalls={toolCalls}
-            agentRunning={agentRunning}
-            agentStatus={agentStatus}
-          />
-        ) : (
-          <TimelineTab events={timelineEvents} loading={timelineLoading} />
-        )}
-      </ScrollArea>
+      {/* Content. The Discuss tab swaps between the thread list and the open
+          thread (non-modal — the rest of the app stays interactive). The
+          thread manages its own scrolling + input footer, so it renders
+          outside the shared ScrollArea. */}
+      {activeTab === 'discussions' && discussionsCtx?.isOpen ? (
+        <DiscussionPanel />
+      ) : (
+        <ScrollArea className="flex-1">
+          {activeTab === 'agent' ? (
+            <AgentTab
+              streamingText={streamingText}
+              toolCalls={toolCalls}
+              agentRunning={agentRunning}
+              agentStatus={agentStatus}
+            />
+          ) : activeTab === 'discussions' ? (
+            <DiscussionsTab sprintId={sprintId || ''} />
+          ) : (
+            <TimelineTab events={timelineEvents} loading={timelineLoading} />
+          )}
+        </ScrollArea>
+      )}
     </div>
   );
 }

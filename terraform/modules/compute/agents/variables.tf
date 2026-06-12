@@ -212,3 +212,15 @@ variable "git_author_email" {
   type        = string
   default     = "ai-dlc@example.com"
 }
+
+variable "discussion_locks_table_name" {
+  description = "DynamoDB table name for discussion assist locks (heartbeat + release from the pool worker)"
+  type        = string
+  default     = ""
+}
+
+variable "discussion_locks_table_arn" {
+  description = "DynamoDB table ARN for discussion locks"
+  type        = string
+  default     = ""
+}

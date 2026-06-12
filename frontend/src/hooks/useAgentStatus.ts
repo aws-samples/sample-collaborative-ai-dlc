@@ -3,6 +3,7 @@ import { agentsService } from '../services/agents';
 import type { AgentExecution, AgentQuestion } from '../services/agents';
 import type { StructuredAnswer } from '../services/questions';
 import { realtimeService } from '../services/realtime';
+import { SeqDeduplicator } from '../lib/seqDeduplicator';
 
 export interface ToolCallEvent {
   id: string; // toolCallId from backend, or generated fallback
@@ -19,38 +20,6 @@ interface UseAgentStatusOptions {
   sprintId?: string;
   /** Pass sprint.currentAgentStatus to trigger re-fetch when sprint data changes */
   sprintAgentStatus?: string | null;
-}
-
-/**
- * Deduplicates streaming events using seq numbers.
- * Uses a Set-based approach to handle out-of-order delivery robustly.
- * Each event type (chunk, tool, tool_update) gets its own dedup tracker
- * so a tool event with seq=5 doesn't cause a chunk with seq=4 to be dropped.
- */
-class SeqDeduplicator {
-  private seen = new Set<number>();
-  private maxSeen = 0;
-
-  /** Returns true if this seq should be processed (not a duplicate) */
-  accept(seq: number | null | undefined): boolean {
-    if (seq == null) return true; // No seq = always accept
-    if (this.seen.has(seq)) return false;
-    this.seen.add(seq);
-    this.maxSeen = Math.max(this.maxSeen, seq);
-    // Prune old entries to prevent memory growth (keep last 500)
-    if (this.seen.size > 1000) {
-      const cutoff = this.maxSeen - 500;
-      for (const s of this.seen) {
-        if (s < cutoff) this.seen.delete(s);
-      }
-    }
-    return true;
-  }
-
-  reset() {
-    this.seen.clear();
-    this.maxSeen = 0;
-  }
 }
 
 function formatAgentErrorMessage(message?: string) {

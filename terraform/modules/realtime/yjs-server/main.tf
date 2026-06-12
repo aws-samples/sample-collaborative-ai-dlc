@@ -81,11 +81,18 @@ module "yjs_docker_build" {
   ecr_repo        = aws_ecr_repository.yjs_server.name
   ecr_address     = format("%v.dkr.ecr.%v.%v", data.aws_caller_identity.current.account_id, data.aws_region.current.id, local.dns_suffix)
 
-  use_image_tag    = true
-  image_tag        = local.yjs_image_tag
+  use_image_tag = true
+  # substr(var.build_after, 0, 0) is always "" — it exists only to create a
+  # plan-graph dependency on the agents image build, so the two docker builds
+  # never run concurrently (parallel kreuzwerker provider builds deadlock).
+  # It can never change the tag or trigger a rebuild.
+  image_tag        = "${local.yjs_image_tag}${substr(var.build_after, 0, 0)}"
   source_path      = local.yjs_source_path
   docker_file_path = "${local.yjs_source_path}/Dockerfile"
   platform         = "linux/amd64"
+  # BuildKit session path instead of the provider's legacy tar.gz streaming —
+  # see the agents module for rationale.
+  builder = "default"
 
   triggers = {
     dir_sha = local.yjs_files_sha
@@ -119,6 +126,24 @@ resource "aws_iam_role" "ecs_execution" {
 resource "aws_iam_role_policy_attachment" "ecs_execution" {
   role       = aws_iam_role.ecs_execution.name
   policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+# The realtime doc-token secret is injected as an ECS secret from SSM,
+# which the execution role resolves at task start.
+resource "aws_iam_role_policy" "ecs_execution_doc_secret" {
+  name = "${var.project_name}-yjs-doc-secret-${var.environment}"
+  role = aws_iam_role.ecs_execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameters"]
+        Resource = var.realtime_doc_secret_param_arn
+      }
+    ]
+  })
 }
 
 # ECS Task Role
@@ -177,6 +202,18 @@ resource "aws_ecs_task_definition" "yjs_server" {
       {
         name  = "COGNITO_CLIENT_ID"
         value = var.cognito_client_id
+      },
+      {
+        name  = "DOC_TOKEN_ENFORCE"
+        value = var.doc_token_enforce ? "true" : "false"
+      },
+    ]
+    secrets = [
+      {
+        # Realtime doc-token secret — verifies HMAC scope tokens
+        # on every WebSocket upgrade.
+        name      = "REALTIME_DOC_SECRET"
+        valueFrom = var.realtime_doc_secret_param_arn
       },
     ]
     logConfiguration = {

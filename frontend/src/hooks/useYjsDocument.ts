@@ -6,11 +6,19 @@ import * as syncProtocol from 'y-protocols/sync';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import { realtimeService } from '../services/realtime';
 import { authService } from '../services/auth';
+import {
+  getRealtimeToken,
+  invalidateRealtimeToken,
+  msUntilRefresh,
+  scopeTargetForYjsDoc,
+} from '../lib/realtimeToken';
 
 export interface AwarenessUser {
   name: string;
   color: string;
   cursor?: { index: number; length: number };
+  /** Set by discussion inputs — typing indicator. */
+  typing?: boolean;
 }
 
 export function useYjsDocument(documentId: string | null, userName?: string, userColor?: string) {
@@ -21,6 +29,7 @@ export function useYjsDocument(documentId: string | null, userName?: string, use
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
   const pingIntervalRef = useRef<number | null>(null);
+  const tokenRefreshRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!documentId) {
@@ -49,7 +58,23 @@ export function useYjsDocument(documentId: string | null, userName?: string, use
         return;
       }
 
-      const yjsUrl = realtimeService.getYjsUrl(documentId, session.idToken);
+      // Realtime scope token: the Yjs server verifies signature,
+      // expiry, scope coverage for this doc name, and sub binding at upgrade.
+      const target = scopeTargetForYjsDoc(documentId);
+      if (!target) {
+        console.error('Yjs: unknown doc-name format, cannot authorize:', documentId);
+        return;
+      }
+      let docToken;
+      try {
+        docToken = await getRealtimeToken(target);
+      } catch (e) {
+        console.error('Yjs: failed to fetch realtime token:', e);
+        return;
+      }
+      if (cancelled) return;
+
+      const yjsUrl = realtimeService.getYjsUrl(documentId, session.idToken, docToken.token);
       const ws = new WebSocket(yjsUrl);
       wsRef.current = ws;
       ws.binaryType = 'arraybuffer';
@@ -63,6 +88,18 @@ export function useYjsDocument(documentId: string | null, userName?: string, use
       ws.onopen = () => {
         console.log('Yjs WebSocket connected');
         reconnectAttempts = 0;
+
+        // Proactively reconnect shortly before the scope token expires — the
+        // server force-closes the socket at expiry (close code 4401), so
+        // beating it keeps the session seamless.
+        if (tokenRefreshRef.current) clearTimeout(tokenRefreshRef.current);
+        tokenRefreshRef.current = window.setTimeout(() => {
+          tokenRefreshRef.current = null;
+          if (cancelled || wsRef.current !== ws) return;
+          invalidateRealtimeToken(target);
+          console.log('Yjs: scope token expiring — reconnecting');
+          ws.close();
+        }, msUntilRefresh(docToken.exp));
 
         // Send sync step 1 immediately to request document state
         const encoder = encoding.createEncoder();
@@ -118,6 +155,15 @@ export function useYjsDocument(documentId: string | null, userName?: string, use
         console.log('Yjs WebSocket closed:', event.code, event.reason);
         setSynced(false);
         if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
+        if (tokenRefreshRef.current) {
+          clearTimeout(tokenRefreshRef.current);
+          tokenRefreshRef.current = null;
+        }
+
+        // 4401 = scope token expired (server-side close at token exp) or
+        // an authorization rejection — make sure the reconnect fetches a
+        // fresh token instead of replaying the cached one.
+        if (event.code === 4401) invalidateRealtimeToken(target);
 
         // Reconnect with exponential backoff
         if (reconnectAttempts < maxReconnectAttempts) {
@@ -166,7 +212,7 @@ export function useYjsDocument(documentId: string | null, userName?: string, use
       const users = new Map<number, AwarenessUser>();
       awarenessProt.getStates().forEach((state, clientId) => {
         if (clientId !== doc.clientID && state.user) {
-          users.set(clientId, { ...state.user, cursor: state.cursor });
+          users.set(clientId, { ...state.user, cursor: state.cursor, typing: state.typing });
         }
       });
       setRemoteUsers(users);
@@ -183,6 +229,7 @@ export function useYjsDocument(documentId: string | null, userName?: string, use
       awarenessProtocol.removeAwarenessStates(awarenessProt, [doc.clientID], 'disconnect');
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
+      if (tokenRefreshRef.current) clearTimeout(tokenRefreshRef.current);
       wsRef.current?.close();
       wsRef.current = null;
     };

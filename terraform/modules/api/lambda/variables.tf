@@ -174,3 +174,52 @@ variable "agent_execution_role_arn" {
   type        = string
   default     = ""
 }
+variable "realtime_doc_secret_param_arn" {
+  description = "SSM parameter ARN of the realtime doc-token secret (discussions lambda reads it to sign scope tokens)"
+  type        = string
+}
+
+variable "realtime_doc_secret_param_name" {
+  description = "SSM parameter name of the realtime doc-token secret"
+  type        = string
+}
+
+variable "discussion_locks_table_name" {
+  description = "DynamoDB table name for discussion creation guards / message guards / assist locks"
+  type        = string
+}
+
+variable "discussion_locks_table_arn" {
+  description = "DynamoDB table ARN for discussion locks"
+  type        = string
+}
+
+variable "discussion_read_state_table_name" {
+  description = "DynamoDB table name for per-user discussion read cursors"
+  type        = string
+}
+
+variable "discussion_read_state_table_arn" {
+  description = "DynamoDB table ARN for discussion read state"
+  type        = string
+}
+
+variable "connections_table_name" {
+  description = "DynamoDB table name for WebSocket connections (discussions fan-out)"
+  type        = string
+}
+
+variable "connections_table_arn" {
+  description = "DynamoDB table ARN for WebSocket connections"
+  type        = string
+}
+
+variable "websocket_api_endpoint_https" {
+  description = "WebSocket API management endpoint (https:// form) for PostToConnection fan-out"
+  type        = string
+}
+
+variable "websocket_execution_arn" {
+  description = "Execution ARN of the WebSocket API (ManageConnections IAM scope)"
+  type        = string
+}

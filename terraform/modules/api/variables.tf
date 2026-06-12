@@ -95,6 +95,13 @@ variable "timeline_events_lambda_name" {
   type = string
 }
 
+variable "discussions_lambda_invoke_arn" {
+  type = string
+}
+variable "discussions_lambda_name" {
+  type = string
+}
+
 variable "state_machine_arn" {
   description = "ARN of the agent workflow state machine"
   type        = string
@@ -247,4 +254,16 @@ variable "enable_cloudfront_origin_policy" {
 variable "api_gateway_account_id" {
   description = "ID of the aws_api_gateway_account resource. Passed through to create a depends_on edge so the REST API stage waits for account-level CloudWatch logging to be configured."
   type        = string
+}
+
+variable "connections_table_name" {
+  description = "DynamoDB table name for WebSocket connections (server-origin event fanout)"
+  type        = string
+  default     = ""
+}
+
+variable "websocket_api_endpoint_https" {
+  description = "WebSocket API management endpoint (https:// form) for PostToConnection fanout"
+  type        = string
+  default     = ""
 }

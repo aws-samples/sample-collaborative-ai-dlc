@@ -3,6 +3,12 @@ import { randomUUID } from 'node:crypto';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 
+// The fanout helper is mocked at module level — its internals are covered by
+// its consumers' own suites; here we only assert the sprints lambda EMITS the
+// server-origin phase-change hint.
+vi.mock('../../shared/ws-fanout.js', () => ({ broadcastToSprintChannel: vi.fn() }));
+const { broadcastToSprintChannel } = await import('../../shared/ws-fanout.js');
+
 const NOW = new Date('2026-05-28T00:00:00.000Z');
 const PARTITION = `t-${randomUUID()}`;
 
@@ -34,6 +40,7 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
+  vi.mocked(broadcastToSprintChannel).mockClear();
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(NOW);
 });
@@ -182,5 +189,100 @@ describe('GET /sprints/:id (backward compatibility)', () => {
     expect(fetched.tracker).toEqual(created.tracker);
     expect(fetched.issueNumber).toBe('7');
     expect(fetched.issueUrl).toBe('https://github.com/octo/repo/issues/7');
+  });
+});
+
+describe('DELETE /sprints/:id — discussion cascade', () => {
+  it('drops the sprint together with its discussions AND their messages', async () => {
+    const projectId = await seedProject();
+    const sprintId = await seedLegacySprint(projectId);
+
+    // Sprint -HAS_DISCUSSION-> Discussion -HAS_MESSAGE-> DiscussionMessage,
+    // plus a CONTAINS artifact to confirm the existing cascade still works.
+    await g
+      .V()
+      .has('Sprint', 'id', sprintId)
+      .as('s')
+      .addV('Discussion')
+      .property('id', 'disc-cascade')
+      .property('sprint_id', sprintId)
+      .as('d')
+      .addE('HAS_DISCUSSION')
+      .from_('s')
+      .to('d')
+      .select('d')
+      .addE('DISCUSSES')
+      .from_('d')
+      .to('s')
+      .select('d')
+      .addV('DiscussionMessage')
+      .property('id', 'dm-cascade-msg00001')
+      .property('discussion_id', 'disc-cascade')
+      .as('m')
+      .addE('HAS_MESSAGE')
+      .from_('d')
+      .to('m')
+      .next();
+    await g
+      .V()
+      .has('Sprint', 'id', sprintId)
+      .as('s')
+      .addV('Task')
+      .property('id', 'task-cascade')
+      .as('t')
+      .addE('CONTAINS')
+      .from_('s')
+      .to('t')
+      .next();
+
+    const res = await handler({ httpMethod: 'DELETE', pathParameters: { sprintId } });
+    expect(res.statusCode).toBe(204);
+
+    // Scope to this test's vertices (by the `id` property — the codebase
+    // never uses native T.id) — the file partition accumulates vertices from
+    // other tests.
+    const remaining = await g
+      .V()
+      .has(
+        'id',
+        gremlin.process.P.within(sprintId, 'disc-cascade', 'dm-cascade-msg00001', 'task-cascade'),
+      )
+      .values('id')
+      .toList();
+    expect(remaining).toEqual([]);
+  });
+});
+
+describe('server-origin sprint.phaseChanged fanout', () => {
+  it('emits the payload-blind reload hint on a phase update', async () => {
+    const projectId = await seedProject();
+    const sprintId = await seedLegacySprint(projectId);
+
+    const res = await handler({
+      httpMethod: 'PUT',
+      pathParameters: { sprintId },
+      body: JSON.stringify({ phase: 'CONSTRUCTION' }),
+    });
+    expect(res.statusCode).toBe(200);
+
+    // The hint deliberately carries NO phase — handlers re-fetch and act on
+    // server state only (payload-blind invariant).
+    expect(broadcastToSprintChannel).toHaveBeenCalledExactlyOnceWith(sprintId, {
+      action: 'sprint.phaseChanged',
+      sprintId,
+    });
+  });
+
+  it('does NOT emit on non-phase updates', async () => {
+    const projectId = await seedProject();
+    const sprintId = await seedLegacySprint(projectId);
+
+    const res = await handler({
+      httpMethod: 'PUT',
+      pathParameters: { sprintId },
+      body: JSON.stringify({ description: 'updated description' }),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(broadcastToSprintChannel).not.toHaveBeenCalled();
   });
 });

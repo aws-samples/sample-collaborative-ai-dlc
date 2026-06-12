@@ -12,7 +12,6 @@ import { reviewsService } from '@/services/reviews';
 import { questionsService } from '@/services/questions';
 import { githubService, type PRComment } from '@/services/github';
 import { sprintGraphService, extractPrs, type PrInfo } from '@/services/sprintGraph';
-import { realtimeService } from '@/services/realtime';
 import { sprintsService } from '@/services/sprints';
 import { agentsService } from '@/services/agents';
 import { Button } from '@/components/ui/button';
@@ -60,6 +59,7 @@ import {
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { DiscussButton } from '@/components/discussion';
 
 function RiskBadge({ score, reasoning }: { score: string; reasoning: string }) {
   const n = parseInt(score);
@@ -902,7 +902,16 @@ export default function ReviewPage() {
           {/* Human review */}
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm">Your Review</CardTitle>
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-sm">Your Review</CardTitle>
+                {review && (
+                  <DiscussButton
+                    entityType="review"
+                    entityId={review.id}
+                    entityTitle="Sprint Review"
+                  />
+                )}
+              </div>
             </CardHeader>
             <CardContent>
               <ReviewEditor
@@ -935,11 +944,8 @@ export default function ReviewPage() {
                   });
                   if (review.status === 'PASSED') {
                     await sprintsService.update(projectId, sprintId, { phase: 'COMPLETED' });
-                    realtimeService.send('broadcastToDocument', {
-                      documentId: `sprint:${sprintId}`,
-                      action: 'sprint.phaseChanged',
-                      data: { phase: 'COMPLETED', sprintId },
-                    });
+                    // sprint.phaseChanged is a server-origin event emitted by
+                    // the sprints lambda — clients never broadcast it.
                     await reload();
                   }
                 }}

@@ -36,17 +36,31 @@ export function AppSidebar() {
     loadSprint();
   }, [loadSprint]);
 
-  // Re-fetch sprint on agent/phase events and auto-navigate on phase change
+  // Re-fetch sprint on agent/phase events and auto-navigate on phase change.
+  //
+  // INVARIANT: `sprint.phaseChanged` is treated as a bare reload hint — this
+  // handler never renders or acts on the event payload. It re-fetches the
+  // sprint and navigates from the FETCHED phase only, so a spoofed or stale
+  // event can at most force a redundant re-fetch; navigation always reflects
+  // server state.
   useEffect(() => {
     if (!sprintId) return;
     const unsubs = [
       realtimeService.on('agent.started', () => loadSprint()),
       realtimeService.on('agent.completed', () => loadSprint()),
       realtimeService.on('agent.error', () => loadSprint()),
-      realtimeService.on('sprint.phaseChanged', (data: { phase?: string }) => {
-        loadSprint();
-        if (data.phase && PHASE_URL_SUFFIX[data.phase] !== undefined) {
-          navigate(`/project/${projectId}/sprint/${sprintId}${PHASE_URL_SUFFIX[data.phase]}`);
+      realtimeService.on('sprint.phaseChanged', async () => {
+        try {
+          const data = await sprintsService.get(projectId, sprintId);
+          setSprint(data);
+          const suffix = PHASE_URL_SUFFIX[data.phase];
+          if (suffix === undefined) return;
+          const target = `/project/${projectId}/sprint/${sprintId}${suffix}`;
+          // Navigate only when the current route doesn't already reflect the
+          // fetched phase.
+          if (window.location.pathname !== target) navigate(target);
+        } catch (err) {
+          console.error('Failed to reload sprint on phase change:', err);
         }
       }),
     ];

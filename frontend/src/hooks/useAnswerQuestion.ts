@@ -1,6 +1,5 @@
 import { useAuth } from '@/contexts/AuthContext';
 import { questionsService, type StructuredAnswer } from '@/services/questions';
-import { realtimeService } from '@/services/realtime';
 import { timelineEventsService } from '@/services/timelineEvents';
 
 interface UseAnswerQuestionOptions {
@@ -18,10 +17,11 @@ interface UseAnswerQuestionOptions {
 /**
  * Shared answer/dismiss flow for agent questions, used by all phase pages
  * (Inception, Construction, Review, Agent). Answering persists the answer,
- * broadcasts `question.answered` to collaborators, records a
- * `question_answered` timeline event linked to the question, and reloads the
- * sprint so the pending card clears and the Q&A history picks up the
- * responder.
+ * records a `question_answered` timeline event linked to the question, and
+ * reloads the sprint so the pending card clears and the Q&A history picks up
+ * the responder. Collaborators are notified via the server-origin
+ * `question.answered` event emitted by the questions/agents lambdas —
+ * clients never broadcast it.
  */
 export function useAnswerQuestion({ sprintId, reload, submitAnswer }: UseAnswerQuestionOptions) {
   const { user } = useAuth();
@@ -34,9 +34,6 @@ export function useAnswerQuestion({ sprintId, reload, submitAnswer }: UseAnswerQ
       } else {
         await questionsService.update(sprintId, questionId, { structuredAnswer: answer });
       }
-      realtimeService.send('broadcastToDocument', {
-        data: { action: 'question.answered', sprintId, questionId },
-      });
       timelineEventsService
         .create(sprintId, {
           type: 'question_answered',

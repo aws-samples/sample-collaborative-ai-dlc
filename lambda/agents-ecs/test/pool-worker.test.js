@@ -183,3 +183,66 @@ describe('pool-worker construction task branch cleanup', () => {
     expect(prompt).toContain('Do NOT delete the task branch yourself');
   });
 });
+
+describe('discussion-assist phase', () => {
+  it('builds the discussion prompt with the post_discussion_message contract', () => {
+    expect(poolWorker).toContain("if (phase === 'discussion') return buildDiscussionPrompt(job);");
+    const promptSrc = poolWorker.slice(
+      poolWorker.indexOf('function buildDiscussionPrompt('),
+      poolWorker.indexOf('function buildInceptionPrompt('),
+    );
+    expect(promptSrc).toContain('post_discussion_message');
+    expect(promptSrc).toContain('EXACTLY ONCE');
+    // suggest-answer is ADVICE ONLY — never modifies the question.
+    expect(promptSrc).toContain('ADVICE ONLY');
+    for (const cmd of ["'suggest-answer'", 'summarize:', 'explain:', 'custom:']) {
+      expect(promptSrc).toContain(cmd);
+    }
+  });
+
+  it('is excluded from branch checkout and push phases (no-workspace mode)', () => {
+    const needsBranchSrc = poolWorker.slice(
+      poolWorker.indexOf('const needsBranch = ['),
+      poolWorker.indexOf('].includes(job.agentType)'),
+    );
+    expect(needsBranchSrc).not.toContain('discussion');
+    const pushGate = poolWorker.slice(
+      poolWorker.indexOf("phase === 'construction' ||"),
+      poolWorker.indexOf('job.branch') + 20,
+    );
+    expect(pushGate).not.toContain('discussion');
+  });
+
+  it('heartbeats and releases the assist lock around the session, conditioned on the executionId', () => {
+    expect(poolWorker).toContain('function startAssistLockHeartbeat(');
+    const heartbeatSrc = poolWorker.slice(
+      poolWorker.indexOf('function startAssistLockHeartbeat('),
+      poolWorker.indexOf('function runAcpSession('),
+    );
+    expect(heartbeatSrc).toContain("ConditionExpression: 'executionId = :eid'");
+    expect(heartbeatSrc).toContain('clearInterval(timer)');
+    // Wired around the session with a guaranteed release.
+    expect(poolWorker).toContain('const assistLock = startAssistLockHeartbeat(job);');
+    expect(poolWorker).toMatch(/finally \{\s*if \(assistLock\) await assistLock\.stop\(\);/);
+  });
+
+  it('passes the discussion job fields to acp-client', () => {
+    for (const name of [
+      'DISCUSSION_ID: job.discussionId',
+      'DISCUSSION_COMMAND: job.command',
+      'DISCUSSION_REQUESTED_BY: job.requestedBy',
+      'DISCUSSION_REQUESTED_BY_NAME: job.requestedByName',
+    ]) {
+      expect(poolWorker).toContain(name);
+    }
+  });
+});
+
+describe('discussions nudge in phase prompts', () => {
+  it('appends the get_discussions nudge to every non-discussion prompt', () => {
+    expect(poolWorker).toContain('const DISCUSSIONS_NUDGE');
+    expect(poolWorker).toContain('return prompt + DISCUSSIONS_NUDGE;');
+    // The discussion phase itself returns early — no recursive nudge.
+    expect(poolWorker).toContain("if (phase === 'discussion') return buildDiscussionPrompt(job);");
+  });
+});
