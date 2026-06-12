@@ -21,7 +21,9 @@ export function DiscussionInput({ onSend, onTyping, disabled }: Props) {
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = 'auto';
-    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+    // Clamp between the CSS min-h-10 (40px) and max-h-40 (160px); without the
+    // lower bound the initial rows={1} box clips even the placeholder text.
+    el.style.height = `${Math.max(Math.min(el.scrollHeight, 160), 40)}px`;
   }, []);
 
   const send = useCallback(() => {
@@ -42,9 +44,9 @@ export function DiscussionInput({ onSend, onTyping, disabled }: Props) {
         disabled={disabled}
         placeholder="Write a message… (Enter to send, Shift+Enter for newline)"
         className={cn(
-          'flex-1 resize-none rounded-md border bg-background px-3 py-2 text-sm',
+          'flex-1 resize-none rounded-md border bg-background px-3 py-2 text-sm leading-5',
           'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
-          'disabled:opacity-50 max-h-40',
+          'disabled:opacity-50 min-h-10 max-h-40',
         )}
         onChange={(e) => {
           setValue(e.target.value);
@@ -61,7 +63,7 @@ export function DiscussionInput({ onSend, onTyping, disabled }: Props) {
       />
       <Button
         size="icon"
-        className="h-9 w-9 shrink-0"
+        className="h-10 w-10 shrink-0"
         onClick={send}
         disabled={disabled || !value.trim()}
         aria-label="Send message"
