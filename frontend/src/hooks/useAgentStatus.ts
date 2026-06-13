@@ -53,6 +53,13 @@ class SeqDeduplicator {
   }
 }
 
+function formatAgentErrorMessage(message?: string) {
+  return `\n\n### Agent failed\n\n${
+    message ||
+    'The agent failed before it could complete. Please check the agent settings and try again.'
+  }\n`;
+}
+
 export function useAgentStatus({
   executionArn,
   executionId,
@@ -143,6 +150,15 @@ export function useAgentStatus({
           streamBuffer.current = execStatus.outputText;
           setStreamingText(execStatus.outputText);
           setCompletedOutput(execStatus.outputText);
+        } else if (
+          execStatus.status === 'FAILED' &&
+          execStatus.errorMessage &&
+          !streamBuffer.current
+        ) {
+          const text = formatAgentErrorMessage(execStatus.errorMessage);
+          streamBuffer.current = text;
+          setStreamingText(text);
+          setCompletedOutput(text);
         }
       }
       if (questionsRes) setQuestions(questionsRes.questions || []);
@@ -225,8 +241,14 @@ export function useAgentStatus({
       realtimeService.on('agent.artifacts', () => {
         setArtifactsUpdated((prev) => prev + 1);
       }),
-      realtimeService.on('agent.error', () => {
+      realtimeService.on('agent.error', (data) => {
+        if (data.agentTaskId) return;
         setStatus((prev) => (prev ? { ...prev, status: 'FAILED' } : prev));
+        const message = data.error || data.message;
+        if (message && !streamBuffer.current.includes(message)) {
+          streamBuffer.current += formatAgentErrorMessage(message);
+          setStreamingText(streamBuffer.current);
+        }
         // Still save whatever we got as completed output
         if (streamBuffer.current) {
           setCompletedOutput(streamBuffer.current);

@@ -1172,7 +1172,9 @@ exports.handler = async (event) => {
     // POST /agents/{taskId}/questions/{questionId}/answer
     if (httpMethod === 'POST' && questionId) {
       const { structuredAnswer } = JSON.parse(body);
-      const userId = event.requestContext.authorizer.claims.sub;
+      const claims = event.requestContext.authorizer.claims;
+      const userId = claims.sub;
+      const userName = claims['custom:display_name'] || claims.email || '';
       const question = await ddb.send(
         new GetCommand({ TableName: process.env.QUESTIONS_TABLE, Key: { questionId } }),
       );
@@ -1183,16 +1185,61 @@ exports.handler = async (event) => {
         new UpdateCommand({
           TableName: process.env.QUESTIONS_TABLE,
           Key: { questionId },
-          UpdateExpression: 'SET #s = :s, structuredAnswer = :a, answeredBy = :u, answeredAt = :t',
+          UpdateExpression:
+            'SET #s = :s, structuredAnswer = :a, answeredBy = :u, answeredByName = :n, answeredAt = :t',
           ExpressionAttributeNames: { '#s': 'status' },
           ExpressionAttributeValues: {
             ':s': 'answered',
             ':a': structuredAnswerJson,
             ':u': userId,
+            ':n': userName,
+            // Epoch millis: the agent-questions DynamoDB table stores all
+            // timestamps as Date.now() (createdAt in submit-question, the
+            // answer-question lambda) and the frontend types them as number.
+            // The Neptune graph uses ISO-8601 strings throughout — the sync
+            // below follows that convention instead.
             ':t': Date.now(),
           },
         }),
       );
+      // Best-effort sync to the Neptune Question vertex: the sprint pages and
+      // Q&A history render questions from Neptune, so without this the question
+      // would stay "pending" there and the responder would not be traceable.
+      try {
+        await withNeptune(async (g) => {
+          await g
+            .V()
+            .has('Question', 'id', questionId)
+            .property(cardinality.single, 'structured_answer', structuredAnswerJson)
+            .property(cardinality.single, 'answered_by', userId)
+            .property(cardinality.single, 'answered_by_name', userName)
+            .property(cardinality.single, 'answered_at', new Date().toISOString())
+            .next();
+        });
+      } catch (e) {
+        // The DynamoDB write above already succeeded, so the agent will see the
+        // answer; only the sprint pages would lag (question stays pending there
+        // until re-answered). Emit a CloudWatch metric (Embedded Metric Format)
+        // so the failure rate can be alarmed on, rather than failing the request.
+        console.error('Neptune question sync failed:', e.message);
+        console.log(
+          JSON.stringify({
+            _aws: {
+              Timestamp: Date.now(),
+              CloudWatchMetrics: [
+                {
+                  Namespace: 'collaborative-ai-dlc',
+                  Dimensions: [['Lambda']],
+                  Metrics: [{ Name: 'NeptuneQuestionSyncFailure', Unit: 'Count' }],
+                },
+              ],
+            },
+            Lambda: 'agents',
+            NeptuneQuestionSyncFailure: 1,
+            questionId,
+          }),
+        );
+      }
       return response(200, { success: true });
     }
 
@@ -1225,7 +1272,12 @@ exports.handler = async (event) => {
         if (outputItem) {
           const s = outputItem.status;
           const mapped = s === 'completed' ? 'SUCCEEDED' : s === 'failed' ? 'FAILED' : 'RUNNING';
-          return response(200, { status: mapped, executionArn: taskId });
+          return response(200, {
+            status: mapped,
+            executionArn: taskId,
+            outputText: outputItem.outputText,
+            errorMessage: outputItem.errorMessage,
+          });
         }
       }
       const taskStatus = await getTaskStatus(taskId);

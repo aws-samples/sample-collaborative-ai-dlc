@@ -81,6 +81,7 @@ exports.handler = async (event) => {
           .property('user_name', '')
           .property('timestamp', timestamp)
           .property('sprint_id', sprintId)
+          .property('question_id', questionId)
           .as('e')
           .addE('HAS_TIMELINE_EVENT')
           .from_('s')

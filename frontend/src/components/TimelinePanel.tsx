@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { TimelineEvent } from '../services/timelineEvents';
+import { useQuestionLink } from '../hooks/useQuestionAnchor';
 
 interface Props {
   events: TimelineEvent[];
@@ -36,6 +37,7 @@ function relativeTime(timestamp: string): string {
 
 export function TimelinePanel({ events, loading }: Props) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const openQuestion = useQuestionLink();
 
   if (loading) {
     return <div className="text-center text-muted-foreground text-sm py-4">Loading...</div>;
@@ -59,7 +61,18 @@ export function TimelinePanel({ events, loading }: Props) {
               {!isLast && <div className="w-px flex-1 bg-border min-h-[24px]" />}
             </div>
             <div className="pb-4 min-w-0 flex-1">
-              <p className="text-sm leading-tight">{event.title}</p>
+              {event.questionId ? (
+                <button
+                  type="button"
+                  onClick={() => openQuestion(event.questionId!)}
+                  title="Go to question"
+                  className="text-sm leading-tight text-left hover:underline cursor-pointer"
+                >
+                  {event.title}
+                </button>
+              ) : (
+                <p className="text-sm leading-tight">{event.title}</p>
+              )}
               <div className="flex items-center gap-2 mt-0.5">
                 <span className="text-xs text-muted-foreground">
                   {relativeTime(event.timestamp)}

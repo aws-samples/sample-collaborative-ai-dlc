@@ -58,6 +58,13 @@ class SeqDeduplicator {
   }
 }
 
+function formatAgentErrorMessage(message?: string) {
+  return `\n\n### Agent failed\n\n${
+    message ||
+    'The agent failed before it could complete. Please check the agent settings and try again.'
+  }\n`;
+}
+
 export function useReviewAgents({ projectId, sprintId }: UseReviewAgentsOptions) {
   const [blindAgent, setBlindAgent] = useState<AgentState>(initialAgentState);
   const [fullAgent, setFullAgent] = useState<AgentState>(initialAgentState);
@@ -348,13 +355,37 @@ export function useReviewAgents({ projectId, sprintId }: UseReviewAgentsOptions)
         const type = resolveAgentType(data);
         if (!type) return;
 
+        const message = data.error || data.message;
+        if (message) {
+          const text = formatAgentErrorMessage(message);
+          if (type === 'review-blind' && !blindBuffer.current.includes(message)) {
+            blindBuffer.current += text;
+          } else if (type === 'review-full' && !fullBuffer.current.includes(message)) {
+            fullBuffer.current += text;
+          } else if (type === 'review-modify' && !modifyBuffer.current.includes(message)) {
+            modifyBuffer.current += text;
+          }
+        }
+
         const setter =
           type === 'review-blind'
             ? setBlindAgent
             : type === 'review-full'
               ? setFullAgent
               : setModifyAgent;
-        setter((prev) => ({ ...prev, status: 'FAILED', activeToolCall: null }));
+        const buffer =
+          type === 'review-blind'
+            ? blindBuffer.current
+            : type === 'review-full'
+              ? fullBuffer.current
+              : modifyBuffer.current;
+        setter((prev) => ({
+          ...prev,
+          status: 'FAILED',
+          activeToolCall: null,
+          streamingText: buffer,
+          completedOutput: buffer,
+        }));
       }),
 
       realtimeService.on('agent.started', (data) => {

@@ -46,28 +46,29 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
     && chmod -R a+rX "$UV_PYTHON_INSTALL_DIR"
 
 # Embed AI-DLC workflow rules
-COPY aidlc-rules /opt/aidlc-rules
+COPY agents-ecs/aidlc-rules /opt/aidlc-rules
 
 # Install MCP server
-COPY mcp-server-graph/package.json mcp-server-graph/index.js mcp-server-graph/merge-task-branches.js mcp-server-graph/create-repo-prs.js /opt/mcp-server-graph/
+COPY agents-ecs/mcp-server-graph/package.json agents-ecs/mcp-server-graph/index.js agents-ecs/mcp-server-graph/merge-task-branches.js agents-ecs/mcp-server-graph/create-repo-prs.js /opt/mcp-server-graph/
 RUN cd /opt/mcp-server-graph && npm install --production
 
 # Install ACP client (includes drivers)
-COPY package.json /opt/acp-client/package.json
+COPY agents-ecs/package.json /opt/acp-client/package.json
 RUN cd /opt/acp-client && npm install --production
 
 ARG IMAGE_TAG=latest
 ENV IMAGE_TAG=${IMAGE_TAG}
 
-COPY acp-client.js pool-worker.js branch-cleanup.js construction-orchestrator-prompt.js /opt/acp-client/
-COPY drivers/ /opt/acp-client/drivers/
+COPY agents-ecs/acp-client.js agents-ecs/pool-worker.js agents-ecs/branch-cleanup.js agents-ecs/construction-orchestrator-prompt.js /opt/acp-client/
+COPY agents-ecs/drivers/ /opt/acp-client/drivers/
+COPY shared/mcp-validator.js /opt/shared/mcp-validator.js
 
 RUN mkdir -p /workspace \
     && chown -R node:node /workspace /opt/aidlc-rules /opt/mcp-server-graph /opt/acp-client /opt/kiro
 
 WORKDIR /workspace
 
-COPY --chown=node:node entrypoint.sh /entrypoint.sh
+COPY --chown=node:node agents-ecs/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 USER node
