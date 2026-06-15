@@ -79,6 +79,12 @@ class RealtimeService {
 
   disconnect(): void {
     if (this.ws) {
+      // Detach handlers before closing: an intentional close must not trigger
+      // scheduleReconnect() via onclose, which would resurrect the connection.
+      this.ws.onclose = null;
+      this.ws.onerror = null;
+      this.ws.onmessage = null;
+      this.ws.onopen = null;
       this.ws.close();
       this.ws = null;
     }

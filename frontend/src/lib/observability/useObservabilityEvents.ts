@@ -25,11 +25,14 @@ export function useObservabilityEvents(cb: Callbacks) {
   cbRef.current = cb;
 
   // Connect to the active sprint's WebSocket channel so we receive real-time events.
-  // realtimeService is a singleton — we connect to the most recently active sprint.
+  // realtimeService is a process-wide singleton shared with the sprint pages
+  // (useSprintEvents / ActivityPanel / useAgentStatus). We must NOT disconnect on
+  // unmount: that would tear down a socket a sprint page may have just (re)opened
+  // on the same documentId. The singleton's connect() already closes the previous
+  // socket when a consumer connects to a different documentId.
   useEffect(() => {
-    if (cb.activeSprintId) {
-      realtimeService.connect(`sprint:${cb.activeSprintId}`);
-    }
+    if (!cb.activeSprintId) return;
+    realtimeService.connect(`sprint:${cb.activeSprintId}`);
   }, [cb.activeSprintId]);
 
   // Register event handlers once on mount. All callbacks accessed via cbRef to avoid stale closures.
