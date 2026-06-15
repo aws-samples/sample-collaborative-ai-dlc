@@ -11,9 +11,12 @@ import {
   type RuntimeModelCli,
   type TrackerBinding,
   type SteeringDoc,
+  type ProjectRepo,
 } from '../services/projects';
 import { trackersService, type TrackerConnection } from '../services/trackers';
 import { agentsService } from '../services/agents';
+import { GitHubRepoSelect } from '../components/GitHubRepoSelect';
+import type { GitHubRepo } from '../services/github';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -68,7 +71,7 @@ const ROLE_BADGE: Record<ProjectRole, string> = {
 const AGENT_CLI_CONFIG: Record<AgentCli, { label: string; description: string }> = {
   kiro: {
     label: 'Kiro',
-    description: 'AWS Kiro CLI — API key authentication',
+    description: 'AWS Kiro CLI — device-flow SSO authentication',
   },
   claude: {
     label: 'Claude Code',
@@ -103,6 +106,18 @@ const MODEL_ID_HELP: Record<RuntimeModelCli, { label: string; url: string }> = {
   },
 };
 
+const REPO_ROLE_COLORS: Record<string, string> = {
+  primary: 'bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300',
+  secondary: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
+  frontend: 'bg-cyan-100 text-cyan-800 dark:bg-cyan-900/40 dark:text-cyan-300',
+  backend: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
+  api: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300',
+  infra: 'bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300',
+  shared: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300',
+  docs: 'bg-gray-100 text-gray-600 dark:bg-gray-800/60 dark:text-gray-400',
+  unknown: 'bg-gray-100 text-gray-500 dark:bg-gray-800/60 dark:text-gray-400',
+};
+
 export default function ProjectSettings() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
@@ -113,6 +128,7 @@ export default function ProjectSettings() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
+  // Edit state
   const [editName, setEditName] = useState('');
   const [editGitRepo, setEditGitRepo] = useState('');
   const [saving, setSaving] = useState(false);
@@ -130,6 +146,7 @@ export default function ProjectSettings() {
   const [connectingJira, setConnectingJira] = useState(false);
   const [showJiraProjectPicker, setShowJiraProjectPicker] = useState(false);
 
+  // Agent CLI state
   const [editAgentCli, setEditAgentCli] = useState<AgentCli>('kiro');
   const [savingAgentCli, setSavingAgentCli] = useState(false);
   const [availableCliNames, setAvailableCliNames] = useState<AgentCli[]>(['kiro']);
@@ -152,6 +169,16 @@ export default function ProjectSettings() {
     projectsApplied: number;
   } | null>(null);
 
+  // Repositories state
+  const [repos, setRepos] = useState<ProjectRepo[]>([]);
+  const [showAddRepo, setShowAddRepo] = useState(false);
+  const [selectedNewRepos, setSelectedNewRepos] = useState<string[]>([]);
+  const [addingRepo, setAddingRepo] = useState(false);
+  const [removingRepo, setRemovingRepo] = useState<string | null>(null);
+  const [settingPrimary, setSettingPrimary] = useState<string | null>(null);
+  const [confirmRemoveRepo, setConfirmRemoveRepo] = useState<string | null>(null);
+
+  // Add member state
   const [showAddMember, setShowAddMember] = useState(false);
   const [newMemberUserId, setNewMemberUserId] = useState('');
   const [newMemberEmail, setNewMemberEmail] = useState('');
@@ -164,6 +191,7 @@ export default function ProjectSettings() {
   const [showUserDropdown, setShowUserDropdown] = useState(false);
   const userDropdownRef = useRef<HTMLDivElement>(null);
 
+  // Role change confirmation
   const [confirmRoleChange, setConfirmRoleChange] = useState<{
     userId: string;
     newRole: ProjectRole;
@@ -193,6 +221,7 @@ export default function ProjectSettings() {
       setEditGitRepo(proj.gitRepo);
       setEditAgentCli(proj.agentCli ?? 'kiro');
       setEditCliModels(proj.cliModels || {});
+      setRepos(proj.repos ?? []);
       setMembers(Array.isArray(mems) ? mems : []);
       setTrackerConnections(Array.isArray(conns) ? conns : []);
 
@@ -211,6 +240,7 @@ export default function ProjectSettings() {
     }
   }, [projectId]);
 
+  // Load available CLI capabilities separately (non-blocking)
   useEffect(() => {
     agentsService
       .getCapabilities()
@@ -255,6 +285,7 @@ export default function ProjectSettings() {
     setLoadingUsers(true);
     try {
       const users = await projectsService.listCognitoUsers();
+      // Filter out users who are already members
       const memberIds = new Set(members.map((m) => m.userId));
       setCognitoUsers(
         users.filter((u) => u.enabled && u.status === 'CONFIRMED' && !memberIds.has(u.userId)),
@@ -389,10 +420,8 @@ export default function ProjectSettings() {
     try {
       const updates: {
         name?: string;
-        gitRepo?: string;
       } = {};
       if (editName !== project.name) updates.name = editName;
-      if (editGitRepo !== project.gitRepo) updates.gitRepo = editGitRepo;
       if (Object.keys(updates).length === 0) {
         setSaving(false);
         return;
@@ -443,6 +472,69 @@ export default function ProjectSettings() {
       setError(err instanceof Error ? err.message : 'Failed to update model override');
     } finally {
       setSavingCliModels(false);
+    }
+  };
+
+  const handleAddRepos = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!projectId || selectedNewRepos.length === 0) return;
+    clearMessages();
+    setAddingRepo(true);
+    const results = await Promise.allSettled(
+      selectedNewRepos.map((url) => projectsService.addRepo(projectId, { url })),
+    );
+    const succeeded = results.filter((r) => r.status === 'fulfilled').length;
+    const failedRepos = results
+      .map((r, i) => (r.status === 'rejected' ? selectedNewRepos[i] : null))
+      .filter((n): n is string => n !== null);
+    await loadData();
+    setAddingRepo(false);
+    if (failedRepos.length === 0) {
+      setSelectedNewRepos([]);
+      setShowAddRepo(false);
+      setSuccess(`${succeeded} repositor${succeeded === 1 ? 'y' : 'ies'} added`);
+    } else {
+      // Keep the dialog open with only the failed repos still selected so the
+      // user can retry or deselect them; the error also renders in-dialog.
+      setSelectedNewRepos(failedRepos);
+      setError(
+        succeeded > 0
+          ? `${succeeded} added. Failed to add: ${failedRepos.join(', ')}`
+          : `Failed to add: ${failedRepos.join(', ')}`,
+      );
+    }
+  };
+
+  const handleRemoveRepo = async (repoUrl: string) => {
+    if (!projectId) return;
+    setConfirmRemoveRepo(null);
+    clearMessages();
+    setRemovingRepo(repoUrl);
+    try {
+      await projectsService.removeRepo(projectId, repoUrl);
+      setSuccess('Repository removed');
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to remove repository');
+    } finally {
+      setRemovingRepo(null);
+    }
+  };
+
+  const handleSetPrimaryRepo = async (repoUrl: string) => {
+    if (!projectId) return;
+    clearMessages();
+    setSettingPrimary(repoUrl);
+    try {
+      await projectsService.update(projectId, { gitRepo: repoUrl });
+      setEditGitRepo(repoUrl);
+      setProject((prev) => (prev ? { ...prev, gitRepo: repoUrl } : prev));
+      setSuccess('Primary repository updated');
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to set primary repository');
+    } finally {
+      setSettingPrimary(null);
     }
   };
 
@@ -617,16 +709,14 @@ export default function ProjectSettings() {
                     <Input
                       id="proj-repo"
                       value={editGitRepo}
-                      onChange={(e) => setEditGitRepo(e.target.value)}
                       placeholder="owner/repo"
                       className="font-mono text-sm"
-                      disabled={!canEditProject || saving}
+                      disabled
+                      readOnly
                     />
-                    {!canEditProject && (
-                      <p className="text-xs text-muted-foreground">
-                        Only owners and admins can change the repository
-                      </p>
-                    )}
+                    <p className="text-xs text-muted-foreground">
+                      Primary repository — managed in the Repositories section below
+                    </p>
                   </div>
                   {canEditProject && (
                     <div className="flex justify-end pt-2">
@@ -724,6 +814,84 @@ export default function ProjectSettings() {
                       setShowJiraProjectPicker(true);
                     }}
                   />
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Repositories */}
+            <Card className="mb-6">
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-base">Repositories ({repos.length})</CardTitle>
+                  {canEditProject && (
+                    <Button size="sm" onClick={() => setShowAddRepo(true)}>
+                      + Add
+                    </Button>
+                  )}
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  Additional repositories linked to this project. Role and tech stack are detected
+                  automatically.
+                </p>
+              </CardHeader>
+              <CardContent>
+                {repos.length === 0 ? (
+                  <p className="text-sm text-muted-foreground text-center py-3">
+                    No repositories linked yet.
+                  </p>
+                ) : (
+                  <div className="divide-y divide-border">
+                    {repos.map((repo) => (
+                      <div key={repo.url} className="py-2.5 flex items-center gap-2">
+                        <div className="flex-1 min-w-0 flex items-center gap-2">
+                          <span className="text-sm font-mono truncate">{repo.url}</span>
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              'text-[10px] h-4 shrink-0',
+                              REPO_ROLE_COLORS[repo.role] || REPO_ROLE_COLORS.unknown,
+                            )}
+                          >
+                            {repo.role}
+                          </Badge>
+                          {repo.detectedStack && (
+                            <span className="shrink-0 text-[10px] text-muted-foreground">
+                              {repo.detectedStack}
+                            </span>
+                          )}
+                        </div>
+                        {canEditProject && (
+                          <div className="flex items-center gap-1 shrink-0">
+                            {repo.role !== 'primary' && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-7 text-[11px] px-2"
+                                onClick={() => handleSetPrimaryRepo(repo.url)}
+                                disabled={removingRepo === repo.url || settingPrimary === repo.url}
+                              >
+                                {settingPrimary === repo.url ? '...' : 'Set as primary'}
+                              </Button>
+                            )}
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                              onClick={() => setConfirmRemoveRepo(repo.url)}
+                              disabled={removingRepo === repo.url || settingPrimary === repo.url}
+                              title="Remove repository"
+                            >
+                              {removingRepo === repo.url ? (
+                                <span className="text-[10px]">...</span>
+                              ) : (
+                                <Trash2 className="h-3.5 w-3.5" />
+                              )}
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 )}
               </CardContent>
             </Card>
@@ -1035,6 +1203,60 @@ export default function ProjectSettings() {
         onConfirm={handleAddJiraBinding}
       />
 
+      {/* Add Repos Dialog */}
+      <Dialog
+        open={showAddRepo}
+        onOpenChange={(open) => {
+          if (!addingRepo) {
+            setShowAddRepo(open);
+            if (!open) setSelectedNewRepos([]);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <form onSubmit={handleAddRepos}>
+            <DialogHeader>
+              <DialogTitle>Add Repositories</DialogTitle>
+              <DialogDescription>
+                Select repositories to link to this project. Role and tech stack are detected
+                automatically.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="py-4 space-y-3">
+              <GitHubRepoSelect
+                multiple
+                value={selectedNewRepos}
+                onChange={(selected: GitHubRepo[]) => {
+                  setSelectedNewRepos(selected.map((r) => r.fullName));
+                }}
+                exclude={repos.map((r) => r.url)}
+              />
+              {error && <p className="text-sm text-destructive">{error}</p>}
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setShowAddRepo(false);
+                  setSelectedNewRepos([]);
+                }}
+                disabled={addingRepo}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={addingRepo || selectedNewRepos.length === 0}>
+                {addingRepo
+                  ? 'Adding...'
+                  : selectedNewRepos.length > 0
+                    ? `Add ${selectedNewRepos.length} Repositor${selectedNewRepos.length === 1 ? 'y' : 'ies'}`
+                    : 'Add Repositories'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
       {/* Add Member Dialog */}
       <Dialog open={showAddMember} onOpenChange={setShowAddMember}>
         <DialogContent className="sm:max-w-md">
@@ -1198,6 +1420,31 @@ export default function ProjectSettings() {
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => confirmRemove && handleRemoveMember(confirmRemove)}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!confirmRemoveRepo} onOpenChange={() => setConfirmRemoveRepo(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove Repository</AlertDialogTitle>
+            <AlertDialogDescription>
+              Remove <span className="font-mono">{confirmRemoveRepo}</span> from this project?
+              {repos.find((r) => r.url === confirmRemoveRepo)?.role === 'primary' &&
+                repos.length > 1 &&
+                ' This is the primary repository — the oldest remaining repository will be promoted to primary.'}
+              {repos.length === 1 &&
+                ' This is the last repository — the project will have no linked repository and sprints cannot run until one is added.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => confirmRemoveRepo && handleRemoveRepo(confirmRemoveRepo)}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               Remove

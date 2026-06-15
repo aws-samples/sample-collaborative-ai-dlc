@@ -141,8 +141,34 @@ async function cleanupConstructionTaskBranches({
   return { deleted, failed, skipped };
 }
 
+// A 422 from POST /pulls is benign when the sprint simply produced no changes
+// for this repository (normal in multi-repo projects where a sprint only
+// touches a subset of repos):
+//   (a) the branch exists but is identical to base — GitHub says
+//       "No commits between <base> and <head>"
+//   (b) the head branch was never pushed (the pool-worker skips empty repos
+//       with reason 'no_commits') — GitHub reports the head as invalid, either
+//       as {"field":"head","code":"invalid"} or the older custom message
+//       "head sha can't be blank"
+// Any other 422 (invalid base, validation failures, ...) is a real error and
+// must keep throwing.
+function isNoChanges422(errorText) {
+  const text = (errorText || '').toLowerCase();
+  if (text.includes('no commits between')) return true;
+  if (/head sha can't be blank|head ref.*(does not|doesn't) exist/.test(text)) return true;
+  // Structured variant: {"errors":[{"resource":"PullRequest","field":"head","code":"invalid"}]}
+  // — parsed instead of substring-matched so a "field":"base" error never matches.
+  try {
+    const body = JSON.parse(errorText);
+    const errors = Array.isArray(body?.errors) ? body.errors : [];
+    return errors.some((e) => e?.field === 'head' && e?.code === 'invalid');
+  } catch {
+    return false;
+  }
+}
+
 exports.handler = async (event) => {
-  const { projectId, branch, baseBranch, gitRepo, gitToken, executionId } = event;
+  const { projectId, branch, baseBranch, gitRepo, gitToken, executionId, title } = event;
   console.log('Request:', JSON.stringify({ projectId, branch, baseBranch, gitRepo, executionId }));
 
   if (!gitRepo || !branch || !gitToken) {
@@ -158,7 +184,7 @@ exports.handler = async (event) => {
     const [owner, repo] = parts;
 
     // Create PR using GitHub API
-    const prTitle = `AI-DLC: ${branch}`;
+    const prTitle = title || `AI-DLC: ${branch}`;
     const prBody = `Automated PR created by AI-DLC Construction Agent\n\nExecution ID: ${executionId}\nProject: ${projectId}`;
 
     const ghHeaders = {
@@ -247,6 +273,13 @@ exports.handler = async (event) => {
             prNumber: anyPr.number,
             existing: true,
           };
+        }
+        // No PR exists for this branch in any state. If the 422 only says the
+        // sprint produced no changes for this repo, report "skipped" instead
+        // of failing — the orchestrator must not page a human for it.
+        if (isNoChanges422(errorText)) {
+          console.log(`No changes on ${branch} for ${owner}/${repo} — skipping PR creation`);
+          return { statusCode: 200, skipped: true, reason: 'no_changes' };
         }
       }
       console.error('GitHub API error:', errorText);

@@ -6,10 +6,19 @@ const loadConstructionOrchestratorPrompt = async () =>
   await import('../construction-orchestrator-prompt.js');
 
 const dockerfile = readFileSync(new URL('../Dockerfile', import.meta.url), 'utf8');
+const acpClient = readFileSync(new URL('../acp-client.js', import.meta.url), 'utf8');
 const poolWorker = readFileSync(new URL('../pool-worker.js', import.meta.url), 'utf8');
 
 const dockerfileCopiesPath = (requiredPath) => {
   const relativePath = requiredPath.slice('./'.length);
+  const pathWithExtension = `agents-ecs/${relativePath}.js`;
+  return dockerfile
+    .split('\n')
+    .some((line) => line.startsWith('COPY ') && line.includes(`${pathWithExtension} `));
+};
+
+const dockerfileCopiesSharedPath = (requiredPath) => {
+  const relativePath = requiredPath.slice('../'.length);
   const pathWithExtension = `${relativePath}.js`;
   return dockerfile
     .split('\n')
@@ -28,7 +37,18 @@ describe('pool-worker construction task branch cleanup', () => {
     expect(localRequires.filter((requiredPath) => !dockerfileCopiesPath(requiredPath))).toEqual([
       './drivers',
     ]);
-    expect(dockerfile).toContain('COPY drivers/ /opt/acp-client/drivers/');
+    expect(dockerfile).toContain('COPY agents-ecs/drivers/ /opt/acp-client/drivers/');
+  });
+
+  it('packages shared MCP validator used by the ACP client into the ECS image', () => {
+    const sharedRequires = [
+      ...acpClient.matchAll(/require\('(?<path>\.\.\/shared\/[\w-]+)'\)/g),
+    ].map((match) => match.groups.path);
+
+    expect(sharedRequires).toContain('../shared/mcp-validator');
+    expect(
+      sharedRequires.filter((requiredPath) => !dockerfileCopiesSharedPath(requiredPath)),
+    ).toEqual([]);
   });
 
   it('passes resolved model into ACP child sessions and workspace config', () => {

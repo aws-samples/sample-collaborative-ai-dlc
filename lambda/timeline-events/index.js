@@ -37,6 +37,7 @@ const mapEvent = (v) => ({
   userName: v.get('user_name')?.[0] || '',
   timestamp: v.get('timestamp')?.[0] || '',
   sprintId: v.get('sprint_id')?.[0] || '',
+  questionId: v.get('question_id')?.[0] || '',
 });
 
 export const handler = async (event) => {
@@ -82,6 +83,7 @@ export const handler = async (event) => {
             .property('user_name', data.userName || '')
             .property('timestamp', timestamp)
             .property('sprint_id', sprintId)
+            .property('question_id', data.questionId || '')
             .as('e')
             .addE('HAS_TIMELINE_EVENT')
             .from_('s')
@@ -98,6 +100,7 @@ export const handler = async (event) => {
           userName: data.userName || '',
           timestamp,
           sprintId,
+          questionId: data.questionId || '',
         });
       }
 

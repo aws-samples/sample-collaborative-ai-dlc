@@ -8,6 +8,7 @@ export interface AgentExecution {
   status?: 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'TIMED_OUT' | 'ABORTED';
   output?: string;
   outputText?: string;
+  errorMessage?: string;
 }
 
 export interface AgentQuestion {
@@ -16,7 +17,12 @@ export interface AgentQuestion {
   questions: StructuredQuestion[];
   status: 'pending' | 'answered';
   structuredAnswer?: StructuredAnswer;
+  /** Cognito sub of the user who answered */
   answeredBy?: string;
+  /** Display name of the user who answered */
+  answeredByName?: string;
+  /** Epoch ms of when the answer was submitted */
+  answeredAt?: number;
   createdAt: number;
 }
 

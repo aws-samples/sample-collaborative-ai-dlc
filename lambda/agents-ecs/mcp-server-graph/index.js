@@ -12,6 +12,7 @@ const gremlin = require('gremlin');
 const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
 const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
 const fs = require('fs');
+const { createPrsForRepos, missingRepos } = require('./create-repo-prs');
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const lambda = new LambdaClient({});
@@ -35,6 +36,17 @@ console.error = (...args) => {
     fs.appendFileSync(LOG_FILE, args.join(' ') + '\n');
   } catch {}
 };
+
+function toNeptuneSignerCredentials(credentials, region) {
+  return {
+    accessKeyId: credentials.accessKeyId,
+    accessKey: credentials.accessKeyId,
+    secretAccessKey: credentials.secretAccessKey,
+    secretKey: credentials.secretAccessKey,
+    sessionToken: credentials.sessionToken,
+    region,
+  };
+}
 
 const env = {
   neptuneEndpoint: process.env.NEPTUNE_ENDPOINT,
@@ -78,8 +90,8 @@ let _g = null;
 
 async function getConnection() {
   const creds = await fromNodeProviderChain()();
-  creds.region = env.region;
-  const info = getUrlAndHeaders(env.neptuneEndpoint, '8182', creds, '/gremlin', 'wss');
+  const signerCreds = toNeptuneSignerCredentials(creds, env.region);
+  const info = getUrlAndHeaders(env.neptuneEndpoint, '8182', signerCreds, '/gremlin', 'wss');
   return new DriverRemoteConnection(info.url, { headers: info.headers });
 }
 
@@ -1155,7 +1167,9 @@ In multi-repo projects, creates one PR per repository and groups them in a PRGro
     // --- Multi-repo path: create one PR per repo, group them ---
     if (env.gitRepos.length > 1) {
       try {
-        // Check for existing open PRGroup for this sprint to prevent duplicates on re-runs
+        // Check for existing open PRGroup for this sprint to prevent duplicates on re-runs.
+        // A Neptune read failure here must fail the tool (outer catch) rather than be
+        // swallowed: treating "read failed" as "no group" would mint duplicate PRs/groups.
         const existingGroup = await withGraph(async (g) => {
           const groups = await g
             .V()
@@ -1180,7 +1194,16 @@ In multi-repo projects, creates one PR per repository and groups them in a PRGro
             .valueMap(true)
             .toList();
           return { group: latestGroup, prs: linkedPrs.map(propsToObj) };
-        }).catch(() => null);
+        });
+
+        let reuseGroup = null;
+        let reposToProcess = env.gitRepos;
+
+        if (existingGroup && existingGroup.prs.length === 0) {
+          // Orphaned group from an interrupted persist — adopt it instead of
+          // minting a second live PRGroup for the sprint.
+          reuseGroup = existingGroup;
+        }
 
         // If a PRGroup exists with open PRs, verify they're still open on GitHub
         if (existingGroup && existingGroup.prs.length > 0) {
@@ -1223,45 +1246,61 @@ In multi-repo projects, creates one PR per repository and groups them in a PRGro
             }
           }
           if (allOpen) {
+            const missing = missingRepos(env.gitRepos, existingGroup.prs);
+            if (missing.length === 0) {
+              console.error(
+                `[trigger_pr_creation] Multi-repo: existing PRGroup ${existingGroup.group.id} still has all open PRs — reusing`,
+              );
+              return ok({
+                multiRepo: true,
+                existing: true,
+                pullRequests: existingGroup.prs.map((p) => ({
+                  prUrl: p.pr_url,
+                  prNumber: p.pr_number,
+                  repository: p.repository,
+                })),
+              });
+            }
+            // All linked PRs are open but some configured repos have none — a
+            // previous run partially failed. Without this branch the early
+            // return above would report success forever and the failed repos
+            // would never get a PR (their work would silently never reach
+            // review). Keep the open PRs and their group; create PRs only for
+            // the missing repos and link them into the same group.
             console.error(
-              `[trigger_pr_creation] Multi-repo: existing PRGroup ${existingGroup.group.id} still has all open PRs — reusing`,
+              `[trigger_pr_creation] Multi-repo: existing PRGroup ${existingGroup.group.id} has open PRs but is missing ${missing
+                .map((r) => r.url)
+                .join(', ')} — reconciling missing repos`,
             );
-            return ok({
-              multiRepo: true,
-              existing: true,
-              pullRequests: existingGroup.prs.map((p) => ({
-                prUrl: p.pr_url,
-                prNumber: p.pr_number,
-                repository: p.repository,
-              })),
-            });
+            reuseGroup = existingGroup;
+            reposToProcess = missing;
+          } else {
+            // Some PRs are stale — supersede the old PRGroup so we don't leave
+            // multiple live PRGroups for one sprint (which would double-link the
+            // still-open PRs and violate "one PRGroup per logical change").
+            await withGraph(async (g) => {
+              await g
+                .V()
+                .has('PRGroup', 'id', existingGroup.group.id)
+                .property(cardinality.single, 'stale', 'true')
+                .property(cardinality.single, 'stale_at', new Date().toISOString())
+                .next();
+              // Clear the denormalized PR copy on the Sprint vertex so it can't keep
+              // pointing at a now-stale/closed PR after the re-run (mirrors the
+              // single-repo stale path below). Fresh values are written when the new
+              // PRGroup's PRs are persisted further down.
+              await g
+                .V()
+                .has('Sprint', 'id', env.sprintId)
+                .property(cardinality.single, 'pr_url', '')
+                .property(cardinality.single, 'pr_number', '')
+                .next();
+            }).catch(() => {});
           }
-          // Some PRs are stale — supersede the old PRGroup so we don't leave
-          // multiple live PRGroups for one sprint (which would double-link the
-          // still-open PRs and violate "one PRGroup per logical change").
-          await withGraph(async (g) => {
-            await g
-              .V()
-              .has('PRGroup', 'id', existingGroup.group.id)
-              .property(cardinality.single, 'stale', 'true')
-              .property(cardinality.single, 'stale_at', new Date().toISOString())
-              .next();
-            // Clear the denormalized PR copy on the Sprint vertex so it can't keep
-            // pointing at a now-stale/closed PR after the re-run (mirrors the
-            // single-repo stale path below). Fresh values are written when the new
-            // PRGroup's PRs are persisted further down.
-            await g
-              .V()
-              .has('Sprint', 'id', env.sprintId)
-              .property(cardinality.single, 'pr_url', '')
-              .property(cardinality.single, 'pr_number', '')
-              .next();
-          }).catch(() => {});
         }
 
-        const prResults = [];
-        for (const repo of env.gitRepos) {
-          const result = await lambda.send(
+        const invokeCreatePr = async (repoUrl) => {
+          const inv = await lambda.send(
             new InvokeCommand({
               FunctionName: createPrLambda,
               Payload: Buffer.from(
@@ -1269,135 +1308,193 @@ In multi-repo projects, creates one PR per repository and groups them in a PRGro
                   projectId: env.projectId,
                   branch,
                   baseBranch,
-                  title:
-                    title || `Construction: ${env.sprintId} (${parseOwnerRepo(repo.url).repo})`,
+                  title: title || `Construction: ${env.sprintId} (${parseOwnerRepo(repoUrl).repo})`,
                   gitToken: env.gitToken,
-                  gitRepo: repo.url,
+                  gitRepo: repoUrl,
                   executionId: process.env.EXECUTION_ID || '',
                 }),
               ),
             }),
           );
-          const resp = JSON.parse(Buffer.from(result.Payload).toString());
-          if (resp.prUrl && resp.prNumber) {
-            prResults.push({ ...resp, repository: repo.url });
-          } else {
-            console.error(`[trigger_pr_creation] No PR created for ${repo.url}:`, resp);
+          return JSON.parse(Buffer.from(inv.Payload).toString());
+        };
+
+        const { prResults, failedRepos, skippedRepos } = await createPrsForRepos({
+          repos: reposToProcess,
+          sprintBranch: branch,
+          gitToken: env.gitToken,
+          invokeCreatePr,
+          parseOwnerRepo,
+        });
+
+        const keptPrs = reuseGroup
+          ? reuseGroup.prs.map((p) => ({
+              prUrl: p.pr_url,
+              prNumber: p.pr_number,
+              repository: p.repository,
+            }))
+          : [];
+
+        if (prResults.length === 0 && keptPrs.length === 0) {
+          if (failedRepos.length === 0 && skippedRepos.length > 0) {
+            // Every repo was skipped (no changes anywhere this sprint). Not a
+            // failure — erroring here would page a human for a no-op run.
+            return ok({ multiRepo: true, pullRequests: [], skippedRepos });
           }
+          return err(
+            `No PRs were created across any repository. Failures: ${JSON.stringify(failedRepos)}`,
+          );
         }
 
-        if (prResults.length === 0) return err('No PRs were created across any repository');
+        // Persist each PR to Neptune; create the PRGroup, or extend the
+        // existing one when reconciling a partially-failed earlier run.
+        const expectedRepoUrls = env.gitRepos.map((r) => r.url);
+        if (prResults.length) {
+          await withGraph(async (g) => {
+            const groupId = reuseGroup ? reuseGroup.group.id : `prg-${env.sprintId}-${Date.now()}`;
+            const prIds = [];
 
-        // Persist each PR to Neptune and create a PRGroup
-        await withGraph(async (g) => {
-          const groupId = `prg-${env.sprintId}-${Date.now()}`;
-          const prIds = [];
+            for (const pr of prResults) {
+              // Include the FULL owner/repo in the id. GitHub PR numbers are per-repository,
+              // so prNumber alone collides across repos (e.g. acme/api#1 and globex/api#1), and
+              // repo-name-only (split('/')[1]) collides across orgs. owner/repo is the unique key
+              // and matches the convention used everywhere else (clone dirs, `repository` prop).
+              // The id is opaque (never parsed or used as a path), so the slash is safe.
+              const prId = `pr-${env.sprintId}-${pr.repository}-${pr.prNumber}`;
+              prIds.push(prId);
 
-          for (const pr of prResults) {
-            // Include the FULL owner/repo in the id. GitHub PR numbers are per-repository,
-            // so prNumber alone collides across repos (e.g. acme/api#1 and globex/api#1), and
-            // repo-name-only (split('/')[1]) collides across orgs. owner/repo is the unique key
-            // and matches the convention used everywhere else (clone dirs, `repository` prop).
-            // The id is opaque (never parsed or used as a path), so the slash is safe.
-            const prId = `pr-${env.sprintId}-${pr.repository}-${pr.prNumber}`;
-            prIds.push(prId);
+              await g
+                .V()
+                .has('PullRequest', 'id', prId)
+                .fold()
+                .coalesce(
+                  __.unfold(),
+                  __.addV('PullRequest')
+                    .property(cardinality.single, 'id', prId)
+                    .property(cardinality.single, 'sprint_id', env.sprintId)
+                    .property(cardinality.single, 'created_at', new Date().toISOString()),
+                )
+                .property(cardinality.single, 'pr_url', pr.prUrl)
+                .property(cardinality.single, 'pr_number', String(pr.prNumber))
+                .property(cardinality.single, 'branch', branch)
+                .property(cardinality.single, 'base_branch', baseBranch || 'main')
+                .property(cardinality.single, 'repository', pr.repository)
+                .property(cardinality.single, 'pr_state', 'open')
+                .next();
 
-            await g
-              .V()
-              .has('PullRequest', 'id', prId)
-              .fold()
-              .coalesce(
-                __.unfold(),
-                __.addV('PullRequest')
-                  .property(cardinality.single, 'id', prId)
-                  .property(cardinality.single, 'sprint_id', env.sprintId)
-                  .property(cardinality.single, 'created_at', new Date().toISOString()),
-              )
-              .property(cardinality.single, 'pr_url', pr.prUrl)
-              .property(cardinality.single, 'pr_number', String(pr.prNumber))
-              .property(cardinality.single, 'branch', branch)
-              .property(cardinality.single, 'base_branch', baseBranch || 'main')
-              .property(cardinality.single, 'repository', pr.repository)
-              .property(cardinality.single, 'pr_state', 'open')
-              .next();
+              // Link Sprint --HAS_PR--> PullRequest
+              const edgeExists = await g
+                .V()
+                .has('Sprint', 'id', env.sprintId)
+                .outE('HAS_PR')
+                .inV()
+                .has('PullRequest', 'id', prId)
+                .hasNext();
+              if (!edgeExists) {
+                await g
+                  .V()
+                  .has('Sprint', 'id', env.sprintId)
+                  .addE('HAS_PR')
+                  .to(__.V().has('PullRequest', 'id', prId))
+                  .next();
+              }
+            }
 
-            // Link Sprint --HAS_PR--> PullRequest
-            const edgeExists = await g
-              .V()
-              .has('Sprint', 'id', env.sprintId)
-              .outE('HAS_PR')
-              .inV()
-              .has('PullRequest', 'id', prId)
-              .hasNext();
-            if (!edgeExists) {
+            if (!reuseGroup) {
+              await g
+                .addV('PRGroup')
+                .property(cardinality.single, 'id', groupId)
+                .property(cardinality.single, 'title', title || `Construction: ${env.sprintId}`)
+                .property(cardinality.single, 'sprint_id', env.sprintId)
+                .property(cardinality.single, 'created_at', new Date().toISOString())
+                .next();
+
+              // Link Sprint --HAS_PR_GROUP--> PRGroup
               await g
                 .V()
                 .has('Sprint', 'id', env.sprintId)
-                .addE('HAS_PR')
-                .to(__.V().has('PullRequest', 'id', prId))
+                .addE('HAS_PR_GROUP')
+                .to(__.V().has('PRGroup', 'id', groupId))
                 .next();
             }
-          }
 
-          // Create PRGroup vertex
-          await g
-            .addV('PRGroup')
-            .property(cardinality.single, 'id', groupId)
-            .property(cardinality.single, 'title', title || `Construction: ${env.sprintId}`)
-            .property(cardinality.single, 'sprint_id', env.sprintId)
-            .property(cardinality.single, 'created_at', new Date().toISOString())
-            .next();
-
-          // Link Sprint --HAS_PR_GROUP--> PRGroup
-          await g
-            .V()
-            .has('Sprint', 'id', env.sprintId)
-            .addE('HAS_PR_GROUP')
-            .to(__.V().has('PRGroup', 'id', groupId))
-            .next();
-
-          // Link PRGroup --GROUPS--> each PullRequest
-          for (const prId of prIds) {
+            // Record which repos this group is supposed to cover so an
+            // incomplete group is detectable (by operators and by the
+            // reconciliation pass above) without re-deriving project config.
             await g
               .V()
               .has('PRGroup', 'id', groupId)
-              .addE('GROUPS')
-              .to(__.V().has('PullRequest', 'id', prId))
+              .property(cardinality.single, 'expected_repos', JSON.stringify(expectedRepoUrls))
               .next();
-          }
 
-          // Store first PR on Sprint vertex for backward compat (UI quick-access)
-          await g
-            .V()
-            .has('Sprint', 'id', env.sprintId)
-            .property(cardinality.single, 'pr_url', prResults[0].prUrl)
-            .property(cardinality.single, 'pr_number', String(prResults[0].prNumber))
-            .next();
+            // Link PRGroup --GROUPS--> each PullRequest (guarded: reconciling
+            // re-runs may upsert PRs that are already linked)
+            for (const prId of prIds) {
+              const grouped = await g
+                .V()
+                .has('PRGroup', 'id', groupId)
+                .outE('GROUPS')
+                .inV()
+                .has('PullRequest', 'id', prId)
+                .hasNext();
+              if (!grouped) {
+                await g
+                  .V()
+                  .has('PRGroup', 'id', groupId)
+                  .addE('GROUPS')
+                  .to(__.V().has('PullRequest', 'id', prId))
+                  .next();
+              }
+            }
 
-          console.error(
-            `[trigger_pr_creation] Multi-repo: created ${prIds.length} PRs in group ${groupId}`,
-          );
-        });
+            // Store first PR on Sprint vertex for backward compat (UI
+            // quick-access). When reconciling, the existing group's first PR
+            // is already denormalized there — don't overwrite it.
+            if (!reuseGroup || keptPrs.length === 0) {
+              await g
+                .V()
+                .has('Sprint', 'id', env.sprintId)
+                .property(cardinality.single, 'pr_url', prResults[0].prUrl)
+                .property(cardinality.single, 'pr_number', String(prResults[0].prNumber))
+                .next();
+            }
 
-        // Broadcast PR creation event
-        broadcastEvent('pr.created', {
-          prUrl: prResults[0].prUrl,
-          prNumber: prResults[0].prNumber,
-          branch,
-          prGroup: prResults.map((p) => ({
+            console.error(
+              `[trigger_pr_creation] Multi-repo: persisted ${prIds.length} PRs in group ${groupId}${
+                reuseGroup ? ' (reconciled into existing group)' : ''
+              }`,
+            );
+          });
+        }
+
+        const allPullRequests = [
+          ...keptPrs,
+          ...prResults.map((p) => ({
             prUrl: p.prUrl,
             prNumber: p.prNumber,
             repository: p.repository,
           })),
-        }).catch(() => {});
+        ];
+
+        // Broadcast PR creation event
+        if (prResults.length) {
+          broadcastEvent('pr.created', {
+            prUrl: allPullRequests[0].prUrl,
+            prNumber: allPullRequests[0].prNumber,
+            branch,
+            prGroup: allPullRequests,
+          }).catch(() => {});
+        }
 
         return ok({
           multiRepo: true,
-          pullRequests: prResults.map((p) => ({
-            prUrl: p.prUrl,
-            prNumber: p.prNumber,
-            repository: p.repository,
-          })),
+          pullRequests: allPullRequests,
+          // Skipped repos had no changes this sprint — normal, never a
+          // failure. They are NOT persisted to the PRGroup, so a re-run lists
+          // them as missing and cheaply re-skips them (see missingRepos in
+          // create-repo-prs.js).
+          ...(skippedRepos.length ? { skippedRepos } : {}),
+          ...(failedRepos.length ? { partialFailure: true, failedRepos } : {}),
         });
       } catch (e) {
         return err(`Failed to trigger multi-repo PR creation: ${e.message}`);

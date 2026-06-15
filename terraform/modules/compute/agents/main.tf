@@ -56,9 +56,9 @@ resource "aws_ecr_lifecycle_policy" "agents" {
 
 # Calculate hash of all source files for change detection
 locals {
-  agents_source_path = abspath("${path.module}/../../../../lambda/agents-ecs")
+  agents_source_path = abspath("${path.module}/../../../../lambda")
 
-  path_include = ["**"]
+  path_include = ["agents-ecs/**", "shared/mcp-validator.js"]
   path_exclude = ["**/node_modules/**", "**/.git/**"]
 
   agents_files_include = setunion([for f in local.path_include : fileset(local.agents_source_path, f)]...)
@@ -84,7 +84,7 @@ module "agents_docker_build" {
   use_image_tag    = true
   image_tag        = local.agents_image_tag
   source_path      = local.agents_source_path
-  docker_file_path = "${local.agents_source_path}/Dockerfile"
+  docker_file_path = "${local.agents_source_path}/agents-ecs/Dockerfile"
   platform         = "linux/amd64"
 
   build_args = {

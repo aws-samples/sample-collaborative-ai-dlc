@@ -8,6 +8,7 @@
     "lambda/notify",
     "lambda/projects",
     "lambda/purge-neptune",
+    "lambda/questions",
     "lambda/sprint-graph",
     "lambda/sprints",
     "lambda/tasks",

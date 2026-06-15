@@ -686,17 +686,18 @@ module "questions_lambda" {
 
   function_name = "${var.project_name}-questions-${var.environment}"
   handler       = "index.handler"
-  runtime       = "nodejs18.x"
+  runtime       = "nodejs24.x"
   timeout       = 30
 
   source_path = [
     {
-      path             = "${path.module}/../../../../lambda/questions"
-      npm_requirements = true
-    },
-    {
-      path          = "${path.module}/../../../../lambda/shared"
-      prefix_in_zip = "shared"
+      path = "${path.module}/../../../../lambda/questions"
+      commands = [
+        # Anchor on the module path (absolute) instead of a relative `cd ../..`
+        # so the build does not depend on the command's working directory.
+        "cd ${abspath("${path.module}/../../../..")} && npm run build -w questions",
+        ":zip lambda/questions/.build",
+      ]
     }
   ]
 

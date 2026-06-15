@@ -242,7 +242,7 @@ describe('PUT /projects/:id', () => {
       pathParameters: { projectId: id },
       body: JSON.stringify({
         name: 'New',
-        gitRepo: 'g2',
+        gitRepo: 'g2-org/g2',
         gitProvider: 'gitlab',
         agentCli: 'claude',
       }),
@@ -257,10 +257,24 @@ describe('PUT /projects/:id', () => {
     });
     expect(JSON.parse(fetched.body)).toMatchObject({
       name: 'New',
-      gitRepo: 'g2',
+      gitRepo: 'g2-org/g2',
       gitProvider: 'gitlab',
       agentCli: 'claude',
     });
+  });
+
+  it('returns 400 when gitRepo is not in strict owner/repo format', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, { name: 'Old' });
+    for (const gitRepo of ['g2', 'https://github.com/o/r', 'o/r/extra']) {
+      const res = await handler({
+        httpMethod: 'PUT',
+        pathParameters: { projectId: id },
+        body: JSON.stringify({ gitRepo }),
+        ...claims(sub),
+      });
+      expect(res.statusCode).toBe(400);
+    }
   });
 
   it('returns 400 for an invalid agentCli', async () => {
