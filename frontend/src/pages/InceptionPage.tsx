@@ -16,6 +16,7 @@ import { tasksService } from '@/services/tasks';
 import { generalInfoService } from '@/services/generalInfo';
 import { questionsService } from '@/services/questions';
 import { timelineEventsService } from '@/services/timelineEvents';
+import { refreshProjectSprints } from '@/hooks/useProjectsCache';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -319,6 +320,7 @@ export default function InceptionPage() {
       await sprintsService.update(projectId, sprintId, { phase: 'CONSTRUCTION' });
       // sprint.phaseChanged is a server-origin event emitted by the sprints
       // lambda on the phase update — clients never broadcast it.
+      refreshProjectSprints(projectId);
       timelineEventsService
         .create(sprintId, {
           type: 'phase_changed',

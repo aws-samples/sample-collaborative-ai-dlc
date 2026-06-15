@@ -8,7 +8,6 @@ import {
   ChevronRight,
   Settings,
   LogOut,
-  Activity,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
@@ -24,10 +23,9 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useAuth } from '@/contexts/AuthContext';
 import { PresenceAvatars } from '@/components/domain/PresenceAvatars';
-import { useEffect, useState } from 'react';
 import { type Project } from '@/services/projects';
-import { sprintsService, type Sprint } from '@/services/sprints';
-import { useProjectCache } from '@/hooks/useProjectsCache';
+import { type Sprint } from '@/services/sprints';
+import { useProjectCache, useProjectSprintsCache } from '@/hooks/useProjectsCache';
 
 interface AppHeaderProps {
   onToggleSidebar: () => void;
@@ -50,19 +48,10 @@ export function AppHeader({
   const location = useLocation();
   const params = useParams();
   const { project } = useProjectCache(params.projectId ?? null);
-  const [sprint, setSprint] = useState<Sprint | null>(null);
-
-  // Load sprint if we have a sprintId
-  useEffect(() => {
-    if (params.projectId && params.sprintId) {
-      sprintsService
-        .get(params.projectId, params.sprintId)
-        .then(setSprint)
-        .catch(() => setSprint(null));
-    } else {
-      setSprint(null);
-    }
-  }, [params.projectId, params.sprintId]);
+  const { sprints } = useProjectSprintsCache(
+    params.projectId && params.sprintId ? params.projectId : null,
+  );
+  const sprint = params.sprintId ? (sprints.find((s) => s.id === params.sprintId) ?? null) : null;
 
   const breadcrumbs = buildBreadcrumbs(location.pathname, params, project, sprint);
 
@@ -156,22 +145,8 @@ export function AppHeader({
 
       <Separator orientation="vertical" className="h-5" />
 
-      {/* Right: theme + observability + activity toggle + user */}
+      {/* Right: theme + activity toggle + user */}
       <ThemeToggle />
-
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon"
-            className={`h-7 w-7 ${location.pathname === '/observability' ? 'text-primary bg-primary/10' : ''}`}
-            onClick={() => navigate('/observability')}
-          >
-            <Activity className="h-4 w-4" />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>Observability</TooltipContent>
-      </Tooltip>
 
       {params.sprintId && (
         <Tooltip>

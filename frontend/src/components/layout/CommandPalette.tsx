@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { useEffect, useCallback, useState } from 'react';
+import { useEffect, useCallback } from 'react';
 import {
   CommandDialog,
   CommandInput,
@@ -21,7 +21,7 @@ import {
   Shield,
   Activity,
 } from 'lucide-react';
-import { projectsService, type Project } from '@/services/projects';
+import { useProjectsCache } from '@/hooks/useProjectsCache';
 
 interface CommandPaletteProps {
   open: boolean;
@@ -30,7 +30,7 @@ interface CommandPaletteProps {
 
 export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const navigate = useNavigate();
-  const [projects, setProjects] = useState<Project[]>([]);
+  const { projects: projectsWithSprint } = useProjectsCache();
 
   // Global keyboard shortcut
   useEffect(() => {
@@ -43,16 +43,6 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
     document.addEventListener('keydown', down);
     return () => document.removeEventListener('keydown', down);
   }, [open, onOpenChange]);
-
-  // Load projects when opened
-  useEffect(() => {
-    if (open) {
-      projectsService
-        .list()
-        .then(setProjects)
-        .catch(() => {});
-    }
-  }, [open]);
 
   const runCommand = useCallback(
     (command: () => void) => {
@@ -88,17 +78,17 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
         <CommandSeparator />
 
         {/* Projects */}
-        {projects.length > 0 && (
+        {projectsWithSprint.length > 0 && (
           <CommandGroup heading="Projects">
-            {projects.map((project) => (
+            {projectsWithSprint.map((p) => (
               <CommandItem
-                key={project.id}
-                onSelect={() => runCommand(() => navigate(`/project/${project.id}`))}
+                key={p.project.id}
+                onSelect={() => runCommand(() => navigate(`/project/${p.project.id}`))}
               >
                 <FolderGit2 className="mr-2 h-4 w-4" />
-                {project.name}
-                {project.gitRepo && (
-                  <span className="ml-auto text-xs text-muted-foreground">{project.gitRepo}</span>
+                {p.project.name}
+                {p.project.gitRepo && (
+                  <span className="ml-auto text-xs text-muted-foreground">{p.project.gitRepo}</span>
                 )}
               </CommandItem>
             ))}

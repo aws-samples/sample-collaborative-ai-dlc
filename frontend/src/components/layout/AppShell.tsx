@@ -2,6 +2,7 @@ import { Outlet, useParams } from 'react-router-dom';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { AppSidebar } from '@/components/layout/AppSidebar';
 import { AppHeader } from '@/components/layout/AppHeader';
+import { SprintPipelineBar } from '@/components/layout/SprintPipelineBar';
 import { ActivityPanel } from '@/components/layout/ActivityPanel';
 import { StatusBar } from '@/components/layout/StatusBar';
 import { CommandPalette } from '@/components/layout/CommandPalette';
@@ -151,8 +152,11 @@ export function AppShell() {
             )}
 
             {/* Main content */}
-            <main className="h-full overflow-y-auto min-w-0">
-              <Outlet />
+            <main className="h-full overflow-hidden min-w-0 flex flex-col">
+              {inSprint && <SprintPipelineBar />}
+              <div className="flex-1 overflow-y-auto min-w-0">
+                <Outlet />
+              </div>
             </main>
 
             {/* Activity panel - inline column on lg+, with a resize handle */}

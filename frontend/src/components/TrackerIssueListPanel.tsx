@@ -242,9 +242,9 @@ export function TrackerIssueListPanel({ project, binding, sprints, onSprintCreat
   })();
 
   return (
-    <Card className="mt-6">
+    <Card>
       <CardHeader className="pb-3">
-        <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center justify-between gap-3 flex-wrap min-h-7">
           <div className="flex items-center gap-2">
             {chrome.icon}
             <CardTitle className="text-sm">{chrome.panelTitle}</CardTitle>
