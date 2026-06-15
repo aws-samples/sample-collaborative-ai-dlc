@@ -17,13 +17,16 @@ interface CacheEntry<T> {
 
 let projectsCache: CacheEntry<ProjectWithSprint[]> | null = null;
 let projectsFetching = false;
-let projectsListeners = new Set<() => void>();
+let projectsError: string | null = null;
+const projectsListeners = new Set<() => void>();
 let projectsVersion = 0;
 
 const sprintsCache = new Map<string, CacheEntry<Sprint[]>>();
 const sprintsFetching = new Set<string>();
 const sprintsListeners = new Map<string, Set<() => void>>();
-let sprintsVersion = 0;
+// Per-project version counters so a sprint update for project A does not
+// re-render components subscribed to project B's sprints.
+const sprintsVersions = new Map<string, number>();
 
 function notifyProjectListeners() {
   projectsVersion++;
@@ -31,7 +34,7 @@ function notifyProjectListeners() {
 }
 
 function notifySprintListeners(projectId: string) {
-  sprintsVersion++;
+  sprintsVersions.set(projectId, (sprintsVersions.get(projectId) ?? 0) + 1);
   sprintsListeners.get(projectId)?.forEach((fn) => fn());
 }
 
@@ -40,27 +43,28 @@ function isStale(entry: { fetchedAt: number } | null, ttl: number): boolean {
   return Date.now() - entry.fetchedAt > ttl;
 }
 
+function latestOf(sprints: Sprint[]): Sprint | null {
+  if (sprints.length === 0) return null;
+  return sprints.reduce((latest, s) =>
+    new Date(s.createdAt).getTime() > new Date(latest.createdAt).getTime() ? s : latest,
+  );
+}
+
 async function fetchProjects(): Promise<ProjectWithSprint[]> {
   const projs = await projectsService.list();
   const results = await Promise.allSettled(
     projs.map(async (project): Promise<ProjectWithSprint> => {
       const cached = sprintsCache.get(project.id);
       if (cached && !isStale(cached, SPRINTS_TTL)) {
-        const sorted = [...cached.data].sort(
-          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-        );
-        return { project, latestSprint: sorted[0] ?? null };
+        return { project, latestSprint: latestOf(cached.data) };
       }
       try {
         const sprints = await sprintsService.list(project.id);
         sprintsCache.set(project.id, { data: sprints, fetchedAt: Date.now() });
         notifySprintListeners(project.id);
-        const sorted = [...sprints].sort(
-          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-        );
-        return { project, latestSprint: sorted[0] ?? null };
+        return { project, latestSprint: latestOf(sprints) };
       } catch {
-        return { project, latestSprint: cached?.data?.[0] ?? null };
+        return { project, latestSprint: cached ? latestOf(cached.data) : null };
       }
     }),
   );
@@ -69,37 +73,51 @@ async function fetchProjects(): Promise<ProjectWithSprint[]> {
     .filter((v): v is ProjectWithSprint => v !== null);
 }
 
-async function revalidateProjects(force = false) {
-  if (projectsFetching) return;
-  if (!force && !isStale(projectsCache, PROJECTS_TTL)) return;
+let projectsInflight: Promise<void> | null = null;
+
+function revalidateProjects(force = false): Promise<void> {
+  if (projectsInflight) return projectsInflight;
+  if (!force && !isStale(projectsCache, PROJECTS_TTL)) return Promise.resolve();
   projectsFetching = true;
-  try {
-    const data = await fetchProjects();
-    projectsCache = { data, fetchedAt: Date.now() };
-    notifyProjectListeners();
-  } catch {
-    /* network failure — keep stale cache */
-  } finally {
-    projectsFetching = false;
-  }
+  // Notify so subscribers see the loading transition (no flash of empty
+  // content on cold load — they can render a skeleton instead).
+  notifyProjectListeners();
+  projectsInflight = (async () => {
+    try {
+      const data = await fetchProjects();
+      projectsCache = { data, fetchedAt: Date.now() };
+      projectsError = null;
+    } catch (err) {
+      // Keep stale cache (if any); surface the failure to subscribers.
+      projectsError = err instanceof Error ? err.message : 'Failed to load projects';
+    } finally {
+      projectsFetching = false;
+      projectsInflight = null;
+      notifyProjectListeners();
+    }
+  })();
+  return projectsInflight;
+}
+
+export async function getProjectsWithSprints(): Promise<ProjectWithSprint[]> {
+  if (projectsCache && !isStale(projectsCache, PROJECTS_TTL)) return projectsCache.data;
+  await revalidateProjects();
+  if (projectsCache) return projectsCache.data;
+  throw new Error(projectsError ?? 'Failed to load projects');
 }
 
 async function revalidateSprints(projectId: string, force = false) {
   if (sprintsFetching.has(projectId)) return;
   if (!force && !isStale(sprintsCache.get(projectId) ?? null, SPRINTS_TTL)) return;
   sprintsFetching.add(projectId);
+  notifySprintListeners(projectId);
   try {
     const sprints = await sprintsService.list(projectId);
     sprintsCache.set(projectId, { data: sprints, fetchedAt: Date.now() });
-    notifySprintListeners(projectId);
     if (projectsCache) {
-      const updated = projectsCache.data.map((p) => {
-        if (p.project.id !== projectId) return p;
-        const sorted = [...sprints].sort(
-          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-        );
-        return { ...p, latestSprint: sorted[0] ?? null };
-      });
+      const updated = projectsCache.data.map((p) =>
+        p.project.id === projectId ? { ...p, latestSprint: latestOf(sprints) } : p,
+      );
       projectsCache = { data: updated, fetchedAt: projectsCache.fetchedAt };
       notifyProjectListeners();
     }
@@ -107,10 +125,43 @@ async function revalidateSprints(projectId: string, force = false) {
     /* network failure — keep stale cache */
   } finally {
     sprintsFetching.delete(projectId);
+    notifySprintListeners(projectId);
   }
 }
 
-let initialFetchFired = false;
+// One shared poll timer for all mounted useProjectsCache instances.
+let pollTimer: ReturnType<typeof setInterval> | null = null;
+let pollRefCount = 0;
+
+function retainPolling() {
+  pollRefCount++;
+  if (!pollTimer) {
+    pollTimer = setInterval(() => revalidateProjects(), PROJECTS_TTL);
+  }
+}
+
+function releasePolling() {
+  pollRefCount = Math.max(0, pollRefCount - 1);
+  if (pollRefCount === 0 && pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+}
+
+// Module-level (stable) mutation API — safe to use in effect dep arrays.
+export function refreshProjects() {
+  return revalidateProjects(true);
+}
+
+export function invalidateProjects() {
+  projectsCache = null;
+  projectsError = null;
+  return revalidateProjects(true);
+}
+
+export function refreshProjectSprints(projectId: string) {
+  return revalidateSprints(projectId, true);
+}
 
 export function useProjectsCache() {
   const subscribe = useCallback((onStoreChange: () => void) => {
@@ -125,31 +176,27 @@ export function useProjectsCache() {
   useSyncExternalStore(subscribe, getSnapshot);
 
   useEffect(() => {
-    if (!initialFetchFired) {
-      initialFetchFired = true;
-      revalidateProjects();
-    }
-    const timer = setInterval(() => revalidateProjects(), 120_000);
-    return () => clearInterval(timer);
+    // TTL-guarded: fresh cache → no fetch; failed/expired → retry.
+    revalidateProjects();
+    retainPolling();
+    return () => releasePolling();
   }, []);
 
   return {
     projects: projectsCache?.data ?? [],
     loading: !projectsCache && projectsFetching,
-    refresh: () => revalidateProjects(true),
-    invalidate: () => {
-      projectsCache = null;
-      revalidateProjects(true);
-    },
+    error: projectsCache ? null : projectsError,
+    refresh: refreshProjects,
+    invalidate: invalidateProjects,
   };
 }
 
 export function useProjectCache(projectId: string | null) {
-  const { projects, loading } = useProjectsCache();
+  const { projects, loading, error } = useProjectsCache();
   const project = projectId
     ? (projects.find((p) => p.project.id === projectId)?.project ?? null)
     : null;
-  return { project, loading };
+  return { project, loading, error };
 }
 
 export function useProjectSprintsCache(projectId: string | null) {
@@ -169,13 +216,20 @@ export function useProjectSprintsCache(projectId: string | null) {
     [projectId],
   );
 
-  const getSnapshot = useCallback(() => sprintsVersion, []);
+  const getSnapshot = useCallback(
+    () => (projectId ? (sprintsVersions.get(projectId) ?? 0) : 0),
+    [projectId],
+  );
 
   useSyncExternalStore(subscribe, getSnapshot);
 
   useEffect(() => {
     if (!projectId) return;
     revalidateSprints(projectId);
+  }, [projectId]);
+
+  const refresh = useCallback(() => {
+    if (projectId) revalidateSprints(projectId, true);
   }, [projectId]);
 
   const cached = projectId ? sprintsCache.get(projectId) : null;
@@ -188,8 +242,6 @@ export function useProjectSprintsCache(projectId: string | null) {
   return {
     sprints: sorted,
     loading: projectId ? !cached && sprintsFetching.has(projectId) : false,
-    refresh: () => {
-      if (projectId) revalidateSprints(projectId, true);
-    },
+    refresh,
   };
 }

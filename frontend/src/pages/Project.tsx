@@ -10,7 +10,7 @@ import { useSprintEvents } from '@/hooks/useSprintEvents';
 import { projectsService, type Project as ProjectType } from '@/services/projects';
 import { getTrackerProvider } from '@/lib/trackerProviders';
 import { sprintsService, type Sprint } from '@/services/sprints';
-import { Card, CardContent } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -37,7 +37,6 @@ import {
 } from '@/components/ui/alert-dialog';
 import {
   FolderGit2,
-  Bot,
   Loader2,
   CheckCircle2,
   XCircle,
@@ -50,12 +49,14 @@ import {
 } from 'lucide-react';
 import { TrackerIssueListPanel } from '@/components/TrackerIssueListPanel';
 import { MigrateTrackerCard } from '@/components/MigrateTrackerCard';
+import { effectiveSprintStatus, isActiveStatus } from '@/lib/sprintStatus';
 
 const STATUS_ICON: Record<string, typeof Loader2> = {
   running: Loader2,
   waiting: MessageCircleQuestion,
   completed: CheckCircle2,
   failed: XCircle,
+  passed: CheckCircle2,
 };
 
 const STATUS_LABEL: Record<string, string> = {
@@ -63,6 +64,7 @@ const STATUS_LABEL: Record<string, string> = {
   waiting: 'Waiting for input',
   completed: 'Completed',
   failed: 'Failed',
+  passed: 'Passed',
 };
 
 function formatRelativeTime(dateStr: string | null): string {
@@ -86,6 +88,7 @@ export default function Project() {
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState('');
   const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [activeTrackerTab, setActiveTrackerTab] = useState<string | null>(null);
   const [migrating, setMigrating] = useState(false);
@@ -95,8 +98,8 @@ export default function Project() {
   } | null>(null);
 
   const latestSprint = sprints[0] ?? null;
-  const agentStatus = latestSprint?.currentAgentStatus;
-  const isAgentActive = agentStatus === 'running' || agentStatus === 'waiting';
+  const agentStatus = effectiveSprintStatus(latestSprint);
+  const isAgentActive = isActiveStatus(agentStatus);
 
   useSprintEvents(
     latestSprint?.id ?? '',
@@ -113,11 +116,14 @@ export default function Project() {
     e.preventDefault();
     if (!projectId || !newName.trim()) return;
     setCreating(true);
+    setCreateError(null);
     try {
       await sprintsService.create(projectId, { name: newName, description: '' });
       refreshSprints();
       setShowCreate(false);
       setNewName('');
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : 'Failed to create sprint');
     } finally {
       setCreating(false);
     }
@@ -155,12 +161,8 @@ export default function Project() {
     }
   };
 
-  const activeSprints = sprints.filter(
-    (s) => s.currentAgentStatus === 'running' || s.currentAgentStatus === 'waiting',
-  );
-  const pastSprints = sprints.filter(
-    (s) => s.currentAgentStatus !== 'running' && s.currentAgentStatus !== 'waiting',
-  );
+  const activeSprints = sprints.filter((s) => isActiveStatus(effectiveSprintStatus(s)));
+  const pastSprints = sprints.filter((s) => !isActiveStatus(effectiveSprintStatus(s)));
 
   if (!projectId) return <div className="p-6">Project not found</div>;
 
@@ -180,17 +182,14 @@ export default function Project() {
 
   if (!project) return <div className="p-6">Project not found</div>;
 
+  const hasTrackers = project.trackers.length > 0;
+
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-6">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-3 min-w-0">
           <FolderGit2 className="h-5 w-5 text-primary shrink-0" />
           <h1 className="text-lg font-bold tracking-tight truncate">{project.name}</h1>
-          {latestSprint && (
-            <Badge variant="outline" className="text-[10px] shrink-0">
-              {latestSprint.phase}
-            </Badge>
-          )}
           {isAgentActive && (
             <Badge
               variant="outline"
@@ -201,49 +200,37 @@ export default function Project() {
             </Badge>
           )}
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          className="gap-1.5 h-7 shrink-0"
-          onClick={() => navigate(`/project/${projectId}/settings`)}
-        >
-          <Settings className="h-3 w-3" />
-          Settings
-        </Button>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1.5 h-7"
+            onClick={() => navigate(`/project/${projectId}/settings`)}
+          >
+            <Settings className="h-3 w-3" />
+            Settings
+          </Button>
+        </div>
       </div>
 
       <div className="grid md:grid-cols-2 gap-3">
         <Card>
           <CardContent className="px-4 py-3">
             <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
-              <Bot className="h-3 w-3" />
-              Agent
+              <FolderGit2 className="h-3 w-3" />
+              Repository
             </div>
-            <div className="flex items-center gap-2">
-              {agentStatus &&
-                STATUS_ICON[agentStatus] &&
-                (() => {
-                  const Icon = STATUS_ICON[agentStatus];
-                  return (
-                    <Icon
-                      className={cn(
-                        'h-3.5 w-3.5',
-                        agentStatus === 'running' && 'animate-spin text-agent-running',
-                        agentStatus === 'waiting' && 'text-agent-waiting',
-                        agentStatus === 'completed' && 'text-agent-success',
-                        agentStatus === 'failed' && 'text-agent-error',
-                      )}
-                    />
-                  );
-                })()}
-              <p className="text-sm font-medium">
-                {agentStatus ? STATUS_LABEL[agentStatus] : 'Idle'}
-              </p>
-            </div>
-            {latestSprint?.currentAgentType && (
-              <p className="text-[11px] text-muted-foreground mt-1 capitalize">
-                {latestSprint.currentAgentType.replace(/[_-]/g, ' ')}
-              </p>
+            {project.gitRepo ? (
+              <>
+                <p className="text-sm font-medium truncate">{project.gitRepo}</p>
+                {latestSprint?.branch && (
+                  <p className="text-[11px] text-muted-foreground mt-1 truncate">
+                    Branch: {latestSprint.branch}
+                  </p>
+                )}
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">Not configured</p>
             )}
           </CardContent>
         </Card>
@@ -251,7 +238,7 @@ export default function Project() {
           <CardContent className="px-4 py-3">
             <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
               <Clock className="h-3 w-3" />
-              Sprints
+              Iterations
             </div>
             <p className="text-sm font-medium">
               {sprints.length} iteration{sprints.length !== 1 ? 's' : ''}
@@ -259,6 +246,16 @@ export default function Project() {
             <p className="text-[11px] text-muted-foreground mt-1">
               {activeSprints.length} active · Created{' '}
               {new Date(project.createdAt).toLocaleDateString()}
+              {(() => {
+                const lastActive = sprints
+                  .map((s) => s.agentCompletedAt ?? s.agentStartedAt)
+                  .filter(Boolean)
+                  .sort()
+                  .pop();
+                return lastActive
+                  ? ` · Last activity ${formatRelativeTime(lastActive)}`
+                  : '';
+              })()}
             </p>
           </CardContent>
         </Card>
@@ -277,90 +274,104 @@ export default function Project() {
         onMigrate={handleMigrateTracker}
       />
 
-      <div className="grid md:grid-cols-2 gap-6">
-        {/* Tracker issue panels. With one binding we render the panel inline.
-            With multiple, a tab strip selects which binding's panel to show
-            (per Phase 3 spec — "GitHub aws-samples/X · Jira PROJ"). */}
-        <div>
-          {project.trackers.length === 1 && (
-            <TrackerIssueListPanel
-              project={project}
-              binding={project.trackers[0]}
-              sprints={sprints}
-              onSprintCreated={handleSprintCreated}
-            />
-          )}
-          {project.trackers.length > 1 && (
-            <TrackerTabs
-              project={project}
-              sprints={sprints}
-              activeTabId={activeTrackerTab}
-              onTabChange={setActiveTrackerTab}
-              onSprintCreated={handleSprintCreated}
-            />
-          )}
-        </div>
-
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              Iterations
-            </h3>
-            <Button onClick={() => setShowCreate(true)} size="sm" className="gap-1.5 h-7">
-              <Plus className="h-3.5 w-3.5" />
-              New Sprint
-            </Button>
+      <div className={cn('grid gap-6', hasTrackers && 'md:grid-cols-2')}>
+        {hasTrackers && (
+          <div>
+            {project.trackers.length === 1 && (
+              <TrackerIssueListPanel
+                project={project}
+                binding={project.trackers[0]}
+                sprints={sprints}
+                onSprintCreated={handleSprintCreated}
+              />
+            )}
+            {project.trackers.length > 1 && (
+              <TrackerTabs
+                project={project}
+                sprints={sprints}
+                activeTabId={activeTrackerTab}
+                onTabChange={setActiveTrackerTab}
+                onSprintCreated={handleSprintCreated}
+              />
+            )}
           </div>
+        )}
 
-          {activeSprints.length > 0 && (
-            <div className="space-y-2">
-              {activeSprints.map((s) => (
-                <SprintRow
-                  key={s.id}
-                  sprint={s}
-                  projectId={projectId}
-                  active
-                  onNavigate={navigate}
-                  onDelete={setConfirmDelete}
-                />
-              ))}
+        <Card className="flex flex-col">
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between gap-3 min-h-7">
+              <div className="flex items-center gap-2">
+                <CardTitle className="text-sm">Iterations</CardTitle>
+                {sprints.length > 0 && (
+                  <Badge variant="secondary" className="text-[10px] h-5">
+                    {sprints.length}
+                  </Badge>
+                )}
+              </div>
+              <Button onClick={() => setShowCreate(true)} size="sm" className="gap-1.5 h-7">
+                <Plus className="h-3.5 w-3.5" />
+                New Sprint
+              </Button>
             </div>
-          )}
+          </CardHeader>
+          <CardContent className="flex-1 space-y-4 pt-0">
+            {activeSprints.length > 0 && (
+              <div className="space-y-2">
+                {activeSprints.map((s) => (
+                  <SprintRow
+                    key={s.id}
+                    sprint={s}
+                    projectId={projectId}
+                    active
+                    onNavigate={navigate}
+                    onDelete={setConfirmDelete}
+                  />
+                ))}
+              </div>
+            )}
 
-          {pastSprints.length > 0 && (
-            <Collapsible defaultOpen={pastSprints.length <= 5}>
-              <CollapsibleTrigger className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors group w-full">
-                <ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]:rotate-90" />
-                <span>Past iterations ({pastSprints.length})</span>
-              </CollapsibleTrigger>
-              <CollapsibleContent>
-                <div className="space-y-1 mt-2">
-                  {pastSprints.map((s) => (
-                    <SprintRow
-                      key={s.id}
-                      sprint={s}
-                      projectId={projectId}
-                      onNavigate={navigate}
-                      onDelete={setConfirmDelete}
-                    />
-                  ))}
-                </div>
-              </CollapsibleContent>
-            </Collapsible>
-          )}
+            {pastSprints.length > 0 && (
+              <Collapsible defaultOpen={pastSprints.length <= 5}>
+                <CollapsibleTrigger className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors group w-full">
+                  <ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]:rotate-90" />
+                  <span>Past iterations ({pastSprints.length})</span>
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <div className="space-y-1 mt-2">
+                    {pastSprints.map((s) => (
+                      <SprintRow
+                        key={s.id}
+                        sprint={s}
+                        projectId={projectId}
+                        onNavigate={navigate}
+                        onDelete={setConfirmDelete}
+                      />
+                    ))}
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
+            )}
 
-          {sprints.length === 0 && (
-            <Card className="border-dashed">
-              <CardContent className="px-4 py-6 text-center">
+            {sprints.length === 0 && (
+              <div className="flex flex-col items-center justify-center rounded-lg border border-dashed py-10 text-center">
                 <p className="text-sm text-muted-foreground">No iterations yet</p>
-              </CardContent>
-            </Card>
-          )}
-        </div>
+                <p className="text-xs text-muted-foreground/60 mt-1">
+                  Start one to kick off the AI-DLC lifecycle.
+                </p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
       </div>
 
       {/* Create Sprint Dialog */}
-      <Dialog open={showCreate} onOpenChange={setShowCreate}>
+      <Dialog
+        open={showCreate}
+        onOpenChange={(open) => {
+          setShowCreate(open);
+          if (!open) setCreateError(null);
+        }}
+      >
         <DialogContent className="sm:max-w-md">
           <form onSubmit={handleCreate}>
             <DialogHeader>
@@ -381,6 +392,7 @@ export default function Project() {
                 required
                 autoFocus
               />
+              {createError && <p className="mt-2 text-xs text-destructive">{createError}</p>}
             </div>
             <DialogFooter>
               <Button
@@ -491,7 +503,7 @@ function SprintRow({
   onNavigate: (path: string) => void;
   onDelete: (sprintId: string) => void;
 }) {
-  const status = sprint.currentAgentStatus;
+  const status = effectiveSprintStatus(sprint);
   const phaseRoute =
     sprint.phase === 'CONSTRUCTION' ? '/construction' : sprint.phase === 'REVIEW' ? '/review' : '';
 
@@ -518,17 +530,19 @@ function SprintRow({
           {sprint.prUrl && ' · PR open'}
         </p>
       </button>
-      {status &&
+      {status !== 'idle' &&
         STATUS_ICON[status] &&
         (() => {
           const Icon = STATUS_ICON[status];
           return (
             <Icon
+              aria-label={STATUS_LABEL[status]}
               className={cn(
                 'h-3.5 w-3.5 shrink-0',
                 status === 'running' && 'animate-spin text-agent-running',
                 status === 'waiting' && 'text-agent-waiting',
                 status === 'completed' && 'text-agent-success',
+                status === 'passed' && 'text-agent-success',
                 status === 'failed' && 'text-agent-error',
               )}
             />

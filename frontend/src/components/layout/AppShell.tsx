@@ -2,11 +2,13 @@ import { Outlet, useParams } from 'react-router-dom';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { AppSidebar } from '@/components/layout/AppSidebar';
 import { AppHeader } from '@/components/layout/AppHeader';
+import { SprintPipelineBar } from '@/components/layout/SprintPipelineBar';
 import { ActivityPanel } from '@/components/layout/ActivityPanel';
 import { StatusBar } from '@/components/layout/StatusBar';
 import { CommandPalette } from '@/components/layout/CommandPalette';
 import { useProjectSprintsCache } from '@/hooks/useProjectsCache';
 import { useState, useCallback, useMemo, useEffect } from 'react';
+import { cn } from '@/lib/utils';
 
 export function AppShell() {
   const { sprintId, projectId } = useParams<{ sprintId: string; projectId: string }>();
@@ -49,16 +51,12 @@ export function AppShell() {
         />
 
         <div
-          className="flex-1 overflow-hidden grid"
-          style={{
-            gridTemplateColumns: [
-              showSidebar ? '240px' : '',
-              '1fr',
-              showActivity ? 'minmax(280px, 360px)' : '',
-            ]
-              .filter(Boolean)
-              .join(' '),
-          }}
+          className={cn(
+            'flex-1 overflow-hidden grid grid-cols-1',
+            showSidebar && 'md:grid-cols-[240px_1fr]',
+            showActivity && !showSidebar && 'lg:grid-cols-[1fr_minmax(280px,360px)]',
+            showActivity && showSidebar && 'lg:grid-cols-[240px_1fr_minmax(280px,360px)]',
+          )}
         >
           {showSidebar && (
             <aside className="hidden md:flex border-r overflow-hidden">
@@ -66,8 +64,11 @@ export function AppShell() {
             </aside>
           )}
 
-          <main className="h-full overflow-y-auto min-w-0">
-            <Outlet />
+          <main className="h-full overflow-hidden min-w-0 flex flex-col">
+            {inSprint && <SprintPipelineBar />}
+            <div className="flex-1 overflow-y-auto min-w-0">
+              <Outlet />
+            </div>
           </main>
 
           {showActivity && (

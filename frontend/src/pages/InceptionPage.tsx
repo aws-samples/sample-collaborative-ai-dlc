@@ -17,6 +17,7 @@ import { generalInfoService } from '@/services/generalInfo';
 import { questionsService } from '@/services/questions';
 import { realtimeService } from '@/services/realtime';
 import { timelineEventsService } from '@/services/timelineEvents';
+import { refreshProjectSprints } from '@/hooks/useProjectsCache';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -317,6 +318,7 @@ export default function InceptionPage() {
     setApprovingPhase(true);
     try {
       await sprintsService.update(projectId, sprintId, { phase: 'CONSTRUCTION' });
+      refreshProjectSprints(projectId);
       realtimeService.send('broadcastToDocument', {
         documentId: `sprint:${sprintId}`,
         action: 'sprint.phaseChanged',

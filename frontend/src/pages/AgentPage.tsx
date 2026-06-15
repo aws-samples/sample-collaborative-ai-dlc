@@ -6,7 +6,7 @@ import { useSprintEvents } from '@/hooks/useSprintEvents';
 import { useQuestionAnchor } from '@/hooks/useQuestionAnchor';
 import { useAnswerQuestion } from '@/hooks/useAnswerQuestion';
 import { questionAnchorId } from '@/lib/questionAnchor';
-import { projectsService, type Project } from '@/services/projects';
+import { useProjectCache } from '@/hooks/useProjectsCache';
 import { agentsService } from '@/services/agents';
 import { timelineEventsService } from '@/services/timelineEvents';
 import { Button } from '@/components/ui/button';
@@ -37,7 +37,7 @@ export default function AgentPage() {
     loading: sprintLoading,
   } = useSprint();
 
-  const [project, setProject] = useState<Project | null>(null);
+  const { project } = useProjectCache(projectId ?? null);
   const [showBranchSelector, setShowBranchSelector] = useState(false);
   const [instructions, setInstructions] = useState('');
   const [startingAgent, setStartingAgent] = useState(false);
@@ -66,15 +66,6 @@ export default function AgentPage() {
       reload();
     }, [reload]),
   );
-
-  // Load project for git repo info
-  useEffect(() => {
-    if (projectId)
-      projectsService
-        .get(projectId)
-        .then(setProject)
-        .catch(() => {});
-  }, [projectId]);
 
   // Track agent completion/failure from streaming status
   useEffect(() => {

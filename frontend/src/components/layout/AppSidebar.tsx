@@ -1,39 +1,125 @@
 import { useNavigate, useLocation, useParams } from 'react-router-dom';
-import { Activity, LayoutDashboard, Loader2, MessageCircleQuestion, Settings } from 'lucide-react';
+import { useState } from 'react';
+import {
+  Activity,
+  CheckCircle2,
+  LayoutDashboard,
+  ListFilter,
+  Loader2,
+  MessageCircleQuestion,
+  Plus,
+  Settings,
+  XCircle,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { CreateProjectModal } from '@/components/CreateProjectModal';
 import { useProjectsCache } from '@/hooks/useProjectsCache';
+import {
+  effectiveSprintStatus,
+  isAttentionStatus,
+  isActiveStatus,
+  type EffectiveSprintStatus,
+} from '@/lib/sprintStatus';
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+} from '@/components/ui/dropdown-menu';
+
+type IterationFilter = 'attention' | 'active' | 'in-progress';
+
+const FILTER_LABELS: Record<IterationFilter, string> = {
+  attention: 'Needs attention',
+  active: 'Active',
+  'in-progress': 'In progress',
+};
+
+const FILTER_EMPTY: Record<IterationFilter, string> = {
+  attention: 'Nothing needs attention',
+  active: 'No active iterations',
+  'in-progress': 'No iterations in progress',
+};
+
+const STORAGE_KEY = 'aidlc-sidebar-iterations-filter';
+
+const VALID_FILTERS: ReadonlySet<IterationFilter> = new Set(['attention', 'active', 'in-progress']);
+
+function readStoredFilter(): IterationFilter {
+  const stored = localStorage.getItem(STORAGE_KEY);
+  return stored && VALID_FILTERS.has(stored as IterationFilter)
+    ? (stored as IterationFilter)
+    : 'active';
+}
+
+function matchesFilter(status: EffectiveSprintStatus, filter: IterationFilter): boolean {
+  switch (filter) {
+    case 'attention':
+      return isAttentionStatus(status);
+    case 'active':
+      return isActiveStatus(status);
+    case 'in-progress':
+      return status !== 'passed' && status !== 'idle';
+  }
+}
 
 const STATUS_DOT: Record<string, string> = {
   running: 'bg-agent-running',
   waiting: 'bg-agent-waiting',
   completed: 'bg-agent-success',
+  passed: 'bg-agent-success',
   failed: 'bg-agent-error',
+};
+
+const STATUS_LABEL: Record<string, string> = {
+  running: 'Agent running',
+  waiting: 'Agent waiting for input',
+  completed: 'Completed',
+  passed: 'Passed',
+  failed: 'Agent failed',
 };
 
 export function AppSidebar() {
   const navigate = useNavigate();
   const location = useLocation();
   const params = useParams<{ projectId?: string }>();
-  const { projects } = useProjectsCache();
+  const { projects, loading, refresh } = useProjectsCache();
+
+  const projectId = params.projectId ?? null;
+
+  const [showCreateProject, setShowCreateProject] = useState(false);
+
+  const [iterationFilter, setIterationFilter] = useState<IterationFilter>(readStoredFilter);
+
+  const handleFilterChange = (value: string) => {
+    const filter = value as IterationFilter;
+    setIterationFilter(filter);
+    localStorage.setItem(STORAGE_KEY, filter);
+  };
 
   const runningCount = projects.filter((p) => {
-    const s = p.latestSprint?.currentAgentStatus;
-    return s === 'running' || s === 'waiting';
+    const status = effectiveSprintStatus(p.latestSprint);
+    return status === 'running' || status === 'waiting';
   }).length;
 
   const isOnDashboard = location.pathname === '/dashboard';
   const isOnObservability = location.pathname === '/observability';
   const isOnAdmin = location.pathname === '/admin';
-  const activeProjectId = params.projectId ?? null;
+
+  const filteredIterations = projects.filter(({ latestSprint }) => {
+    const status = effectiveSprintStatus(latestSprint);
+    return matchesFilter(status, iterationFilter);
+  });
 
   return (
     <div className="flex h-full w-full flex-col bg-sidebar text-sidebar-foreground">
-      <nav className="flex flex-col gap-0.5 px-3 py-3">
+      <div className="flex items-center gap-1 px-3 pt-3 pb-1">
         <button
           onClick={() => navigate('/dashboard')}
           className={cn(
-            'flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors rounded-md text-left w-full',
+            'flex flex-1 items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors rounded-md text-left min-w-0',
             isOnDashboard
               ? 'bg-sidebar-accent text-sidebar-foreground'
               : 'text-sidebar-foreground/80 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
@@ -42,48 +128,36 @@ export function AppSidebar() {
           <LayoutDashboard className="h-4 w-4 shrink-0" />
           <span className="flex-1 truncate">Projects</span>
         </button>
-
         <button
-          onClick={() => navigate('/observability')}
-          className={cn(
-            'flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors rounded-md text-left w-full',
-            isOnObservability
-              ? 'bg-sidebar-accent text-sidebar-foreground'
-              : 'text-sidebar-foreground/80 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
-          )}
+          onClick={() => setShowCreateProject(true)}
+          title="New project"
+          aria-label="New project"
+          className="h-6 w-6 shrink-0 flex items-center justify-center rounded text-sidebar-foreground/40 hover:text-sidebar-foreground/70 hover:bg-sidebar-accent/50 transition-colors"
         >
-          <Activity className="h-4 w-4 shrink-0" />
-          <span className="flex-1 truncate">Observability</span>
-          {runningCount > 0 && (
-            <span className="flex items-center gap-1.5">
-              <span className="relative flex h-2 w-2">
-                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-agent-running opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-agent-running" />
-              </span>
-              <span className="text-[11px] font-medium text-agent-running">{runningCount}</span>
-            </span>
-          )}
+          <Plus className="h-3.5 w-3.5" />
         </button>
-      </nav>
-
-      <div className="px-3 py-1.5">
-        <div className="text-[10px] font-medium uppercase tracking-widest font-mono text-sidebar-foreground/40 px-3">
-          Projects
-        </div>
       </div>
 
       <ScrollArea className="flex-1 min-h-0">
         <div className="flex flex-col gap-0.5 px-3 pb-3">
+          {loading && projects.length === 0 && (
+            <div className="flex flex-col gap-1.5 px-3 py-1" aria-hidden="true">
+              {[0, 1, 2].map((i) => (
+                <div key={i} className="h-6 rounded-md bg-sidebar-accent/40 animate-pulse" />
+              ))}
+            </div>
+          )}
           {projects.map(({ project, latestSprint }) => {
-            const status = latestSprint?.currentAgentStatus;
+            const status = effectiveSprintStatus(latestSprint);
             const isActive = status === 'running' || status === 'waiting';
-            const dotColor = status ? STATUS_DOT[status] : undefined;
-            const isSelected = activeProjectId === project.id;
+            const dotColor = STATUS_DOT[status];
+            const isSelected = projectId === project.id;
 
             return (
               <button
                 key={project.id}
                 onClick={() => navigate(`/project/${project.id}`)}
+                title={dotColor ? `${project.name} — ${STATUS_LABEL[status]}` : project.name}
                 className={cn(
                   'flex items-center gap-2.5 px-3 py-1.5 text-[13px] font-medium transition-colors rounded-md text-left w-full min-w-0',
                   isSelected
@@ -95,6 +169,8 @@ export function AppSidebar() {
                   <span className="block h-3.5 w-3.5 rounded-sm bg-sidebar-primary/30" />
                   {dotColor && (
                     <span
+                      role="img"
+                      aria-label={STATUS_LABEL[status]}
                       className={cn(
                         'absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full shadow-[0_0_0_2px_hsl(var(--sidebar-background))]',
                         dotColor,
@@ -114,6 +190,88 @@ export function AppSidebar() {
             );
           })}
         </div>
+
+        <div className="px-3 pb-3">
+          <div className="flex items-center gap-1 pt-1 pb-1">
+            <button
+              onClick={() => navigate('/observability')}
+              className={cn(
+                'flex flex-1 items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors rounded-md text-left min-w-0',
+                isOnObservability
+                  ? 'bg-sidebar-accent text-sidebar-foreground'
+                  : 'text-sidebar-foreground/80 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
+              )}
+            >
+              <Activity className="h-4 w-4 shrink-0" />
+              <span className="flex-1 truncate">Observability</span>
+              {runningCount > 0 && (
+                <span className="flex items-center gap-1.5 shrink-0">
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-agent-running opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-agent-running" />
+                  </span>
+                  <span className="text-[11px] font-medium text-agent-running">{runningCount}</span>
+                </span>
+              )}
+            </button>
+
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  title={`Filter: ${FILTER_LABELS[iterationFilter]}`}
+                  aria-label="Filter iterations"
+                  className="h-6 w-6 shrink-0 flex items-center justify-center rounded text-sidebar-foreground/40 hover:text-sidebar-foreground/70 hover:bg-sidebar-accent/50 transition-colors"
+                >
+                  <ListFilter className="h-3.5 w-3.5" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-44">
+                <DropdownMenuRadioGroup value={iterationFilter} onValueChange={handleFilterChange}>
+                  <DropdownMenuRadioItem value="attention">
+                    {FILTER_LABELS.attention}
+                  </DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="active">
+                    {FILTER_LABELS.active}
+                  </DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="in-progress">
+                    {FILTER_LABELS['in-progress']}
+                  </DropdownMenuRadioItem>
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+
+          <div className="flex flex-col gap-0.5">
+            {filteredIterations.length === 0 && (
+              <span className="px-3 py-2 text-[10px] text-sidebar-foreground/40">
+                {FILTER_EMPTY[iterationFilter]}
+              </span>
+            )}
+            {filteredIterations.map(({ project, latestSprint }) => {
+              const status = effectiveSprintStatus(latestSprint);
+
+              return (
+                <button
+                  key={project.id}
+                  onClick={() =>
+                    navigate(`/observability?project=${project.id}&sprint=${latestSprint!.id}`)
+                  }
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-md text-left w-full min-w-0 hover:bg-sidebar-accent/50 transition-colors"
+                >
+                  <IterationStatusIcon status={status} />
+                  <div className="flex-1 min-w-0">
+                    <span className="block text-[11px] font-medium text-sidebar-foreground/80 truncate">
+                      {latestSprint!.name}
+                    </span>
+                    <span className="block text-[10px] text-sidebar-foreground/40 truncate">
+                      {project.name}
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </ScrollArea>
 
       <div className="border-t border-sidebar-border p-2">
@@ -130,6 +288,26 @@ export function AppSidebar() {
           Admin & Settings
         </button>
       </div>
+
+      {showCreateProject && (
+        <CreateProjectModal onClose={() => setShowCreateProject(false)} onCreated={refresh} />
+      )}
     </div>
   );
+}
+
+function IterationStatusIcon({ status }: { status: EffectiveSprintStatus }) {
+  switch (status) {
+    case 'running':
+      return <Loader2 className="h-3.5 w-3.5 text-agent-running animate-spin shrink-0" />;
+    case 'waiting':
+      return <MessageCircleQuestion className="h-3.5 w-3.5 text-agent-waiting shrink-0" />;
+    case 'failed':
+      return <XCircle className="h-3.5 w-3.5 text-agent-error shrink-0" />;
+    case 'passed':
+    case 'completed':
+      return <CheckCircle2 className="h-3.5 w-3.5 text-agent-success shrink-0" />;
+    default:
+      return <Activity className="h-3.5 w-3.5 text-sidebar-foreground/40 shrink-0" />;
+  }
 }

@@ -44,6 +44,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import { ArrowLeft, Trash2, X, AlertCircle, CheckCircle2, ExternalLink } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { invalidateProjects } from '@/hooks/useProjectsCache';
 import { MigrateTrackerCard } from '@/components/MigrateTrackerCard';
 import { JiraConnectButton } from '@/components/JiraConnectButton';
 import { JiraProjectPickerDialog } from '@/components/JiraProjectPickerDialog';
@@ -428,6 +429,7 @@ export default function ProjectSettings() {
       }
       await projectsService.update(projectId, updates);
       setProject({ ...project, ...updates });
+      invalidateProjects();
       setSuccess('Project settings saved');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save');
@@ -445,6 +447,7 @@ export default function ProjectSettings() {
     try {
       await projectsService.update(projectId, { agentCli: editAgentCli });
       setProject({ ...project, agentCli: editAgentCli });
+      invalidateProjects();
       setSuccess('Agent CLI updated');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update agent CLI');
