@@ -1520,7 +1520,8 @@ In multi-repo projects, creates one PR per repository and groups them in a PRGro
         }
 
         const prResults = [];
-        for (const repo of env.gitRepos) {
+        for (let repoIndex = 0; repoIndex < env.gitRepos.length; repoIndex++) {
+          const repo = env.gitRepos[repoIndex];
           const result = await lambda.send(
             new InvokeCommand({
               FunctionName: createPrLambda,
@@ -1542,7 +1543,13 @@ In multi-repo projects, creates one PR per repository and groups them in a PRGro
           if (resp.prUrl && resp.prNumber) {
             prResults.push({ ...resp, repository: repo.url });
           } else {
-            console.error(`[trigger_pr_creation] No PR created for ${repo.url}:`, resp);
+            // Identify the repo by its position in GIT_REPOS, not its URL —
+            // repo URLs can embed credentials (https://<token>@host/...) which
+            // must never reach logs.
+            console.error(
+              `[trigger_pr_creation] No PR created for repo #${repoIndex + 1} of ${env.gitRepos.length}:`,
+              resp,
+            );
           }
         }
 
