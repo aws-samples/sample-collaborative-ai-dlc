@@ -989,6 +989,7 @@ async function runAcpMode() {
     { name: 'AWS_REGION', value: env.region || 'us-east-1' },
     { name: 'GIT_TOKEN', value: process.env.GIT_TOKEN || '' },
     { name: 'GIT_REPO', value: process.env.GIT_REPO || '' },
+    { name: 'GIT_REPOS', value: process.env.GIT_REPOS || '[]' },
     // Discussion-assist context — lets post_discussion_message stamp
     // author/command/requested-by audit fields. Empty for other phases.
     { name: 'AGENT_CLI', value: AGENT_CLI },

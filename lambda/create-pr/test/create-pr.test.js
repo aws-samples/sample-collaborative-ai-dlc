@@ -291,3 +291,80 @@ describe('create-pr handler — findByBranch fallback (PR already exists)', () =
     }
   });
 });
+
+describe('create-pr handler — benign 422 (repo has no changes this sprint)', () => {
+  const makeNoPrFetch = (errorBody) =>
+    vi.fn(async (url) => {
+      if (url.includes('/git/matching-refs/')) return { ok: true, json: async () => [] };
+      if (url.endsWith('/pulls') && !url.includes('?'))
+        return { ok: false, status: 422, text: async () => errorBody };
+      // Both the head-qualified and the list lookups find nothing.
+      return { ok: true, json: async () => [] };
+    });
+
+  const invoke = async (errorBody) => {
+    const { handler } = await loadCreatePr();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = makeNoPrFetch(errorBody);
+    try {
+      return await handler({
+        projectId: 'p1',
+        branch: 'feat/x',
+        baseBranch: 'main',
+        gitRepo: 'owner/repo',
+        gitToken: 'token',
+        executionId: 'e1',
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  };
+
+  it('returns skipped/no_changes when GitHub reports no commits between base and head', async () => {
+    const result = await invoke(
+      JSON.stringify({
+        message: 'Validation Failed',
+        errors: [
+          {
+            resource: 'PullRequest',
+            code: 'custom',
+            message: 'No commits between main and feat/x',
+          },
+        ],
+      }),
+    );
+    expect(result).toEqual({ statusCode: 200, skipped: true, reason: 'no_changes' });
+  });
+
+  it('returns skipped/no_changes when the head branch was never pushed (field head invalid)', async () => {
+    const result = await invoke(
+      JSON.stringify({
+        message: 'Validation Failed',
+        errors: [{ resource: 'PullRequest', field: 'head', code: 'invalid' }],
+      }),
+    );
+    expect(result).toEqual({ statusCode: 200, skipped: true, reason: 'no_changes' });
+  });
+
+  it('returns skipped/no_changes on the legacy "head sha can\'t be blank" message', async () => {
+    const result = await invoke(
+      JSON.stringify({
+        message: 'Validation Failed',
+        errors: [{ resource: 'PullRequest', code: 'custom', message: "head sha can't be blank" }],
+      }),
+    );
+    expect(result).toEqual({ statusCode: 200, skipped: true, reason: 'no_changes' });
+  });
+
+  it('still returns 500 for a real 422 with a different message', async () => {
+    const result = await invoke(
+      JSON.stringify({
+        message: 'Validation Failed',
+        errors: [{ resource: 'PullRequest', field: 'base', code: 'invalid' }],
+      }),
+    );
+    expect(result.statusCode).toBe(500);
+    expect(result.skipped).toBeUndefined();
+    expect(result.error).toMatch(/Failed to create PR: 422/);
+  });
+});
