@@ -1,24 +1,44 @@
+import { useMemo } from 'react';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
-import { Loader2, MessageCircleQuestion, CheckCircle2, XCircle, Clock, AlertTriangle, TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import {
+  Loader2,
+  MessageCircleQuestion,
+  CheckCircle2,
+  XCircle,
+  Clock,
+  AlertTriangle,
+  TrendingUp,
+  TrendingDown,
+  Minus,
+} from 'lucide-react';
 import { buildFocusSentence } from '@/lib/observability/buildFocusSentence';
-import type { ProjectAgentInfo, LastToolMap, PendingQuestionsMap, VelocityMetrics } from '@/hooks/useObservability';
+import { effectiveSprintStatus } from '@/lib/sprintStatus';
+import type {
+  ProjectAgentInfo,
+  LastToolMap,
+  PendingQuestionsMap,
+  VelocityMetrics,
+} from '@/hooks/useObservability';
 
 interface AgentStatusCardsProps {
   projects: ProjectAgentInfo[];
   lastToolMap: LastToolMap;
   pendingQuestions: PendingQuestionsMap;
   velocityMap: Record<string, VelocityMetrics>;
-  onSelectProject?: (projectId: string) => void;
+  onSelectSprint?: (projectId: string, sprintId: string) => void;
 }
 
-const STATUS_CONFIG: Record<string, {
-  icon: typeof Loader2;
-  borderClass: string;
-  bgClass: string;
-  label: string;
-  color: string;
-}> = {
+const STATUS_CONFIG: Record<
+  string,
+  {
+    icon: typeof Loader2;
+    borderClass: string;
+    bgClass: string;
+    label: string;
+    color: string;
+  }
+> = {
   running: {
     icon: Loader2,
     borderClass: 'border-agent-running/25',
@@ -47,6 +67,13 @@ const STATUS_CONFIG: Record<string, {
     label: 'Failed',
     color: 'text-agent-error',
   },
+  passed: {
+    icon: CheckCircle2,
+    borderClass: 'border-border',
+    bgClass: 'bg-background/70',
+    label: 'Passed',
+    color: 'text-agent-success',
+  },
 };
 
 function formatDuration(startedAt: string | null): string {
@@ -61,22 +88,45 @@ function formatDuration(startedAt: string | null): string {
   return `${hours}h ${remainingMinutes}m`;
 }
 
-function sortByStatus(a: ProjectAgentInfo, b: ProjectAgentInfo): number {
-  const order: Record<string, number> = { running: 0, waiting: 1, failed: 2, completed: 3 };
-  const aStatus = a.sprint?.currentAgentStatus ?? 'completed';
-  const bStatus = b.sprint?.currentAgentStatus ?? 'completed';
-  return (order[aStatus] ?? 4) - (order[bStatus] ?? 4);
+function formatAgo(dateStr: string | null): string {
+  if (!dateStr) return '';
+  const mins = Math.floor((Date.now() - new Date(dateStr).getTime()) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
 }
 
-export function AgentStatusCards({ projects, lastToolMap, pendingQuestions, velocityMap, onSelectProject }: AgentStatusCardsProps) {
-  const withSprints = projects
-    .filter(p => p.sprint?.currentAgentStatus)
-    .sort(sortByStatus);
+function sortByStatus(a: ProjectAgentInfo, b: ProjectAgentInfo): number {
+  const order: Record<string, number> = {
+    running: 0,
+    waiting: 1,
+    failed: 2,
+    completed: 3,
+    passed: 4,
+  };
+  const aStatus = effectiveSprintStatus(a.sprint);
+  const bStatus = effectiveSprintStatus(b.sprint);
+  return (order[aStatus] ?? 5) - (order[bStatus] ?? 5);
+}
+
+export function AgentStatusCards({
+  projects,
+  lastToolMap,
+  pendingQuestions,
+  velocityMap,
+  onSelectSprint,
+}: AgentStatusCardsProps) {
+  const withSprints = useMemo(
+    () => projects.filter((p) => effectiveSprintStatus(p.sprint) !== 'idle').sort(sortByStatus),
+    [projects],
+  );
 
   return (
     <div>
       <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-        Agents
+        Active Agents
       </h3>
       {withSprints.length === 0 ? (
         <div className="rounded-xl border border-border p-4">
@@ -86,7 +136,7 @@ export function AgentStatusCards({ projects, lastToolMap, pendingQuestions, velo
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
           {withSprints.map(({ project, sprint, progress }) => {
             if (!sprint) return null;
-            const status = sprint.currentAgentStatus ?? 'completed';
+            const status = effectiveSprintStatus(sprint);
             const cfg = STATUS_CONFIG[status] ?? STATUS_CONFIG.completed;
             const StatusIcon = cfg.icon;
             const isActive = status === 'running' || status === 'waiting';
@@ -94,26 +144,35 @@ export function AgentStatusCards({ projects, lastToolMap, pendingQuestions, velo
             const questions = pendingQuestions[sprint.id] ?? 0;
             const velocity = velocityMap[sprint.id];
 
-            const focus = status === 'waiting'
-              ? 'Waiting for answer'
-              : buildFocusSentence(sprint.currentAgentType, sprint, progress, lastTool);
+            const focus =
+              status === 'waiting'
+                ? 'Waiting for answer'
+                : status === 'passed'
+                  ? 'Iteration completed'
+                  : buildFocusSentence(sprint.currentAgentType, sprint, progress, lastTool);
 
-            const TrendIcon = velocity?.trend === 'improving' ? TrendingUp
-              : velocity?.trend === 'declining' ? TrendingDown
-              : Minus;
-            const trendColor = velocity?.trend === 'improving' ? 'text-green-600'
-              : velocity?.trend === 'declining' ? 'text-red-500'
-              : 'text-muted-foreground';
+            const TrendIcon =
+              velocity?.trend === 'improving'
+                ? TrendingUp
+                : velocity?.trend === 'declining'
+                  ? TrendingDown
+                  : Minus;
+            const trendColor =
+              velocity?.trend === 'improving'
+                ? 'text-green-600'
+                : velocity?.trend === 'declining'
+                  ? 'text-red-500'
+                  : 'text-muted-foreground';
 
             return (
               <div
                 key={project.id}
-                onClick={() => onSelectProject?.(project.id)}
+                onClick={() => onSelectSprint?.(project.id, sprint.id)}
                 className={cn(
                   'flex flex-col overflow-hidden rounded-xl border shadow-sm transition-shadow',
                   cfg.borderClass,
                   cfg.bgClass,
-                  onSelectProject && 'cursor-pointer hover:shadow-md',
+                  onSelectSprint && 'cursor-pointer hover:shadow-md',
                 )}
               >
                 <div className="border-b border-border/60 px-3 py-3">
@@ -122,8 +181,18 @@ export function AgentStatusCards({ projects, lastToolMap, pendingQuestions, velo
                       <div className="flex items-center gap-2">
                         {isActive ? (
                           <span className="relative flex h-2.5 w-2.5 shrink-0">
-                            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-current opacity-70" style={{ color: status === 'running' ? 'rgb(59,130,246)' : 'rgb(234,179,8)' }} />
-                            <span className={cn('relative inline-flex h-2.5 w-2.5 rounded-full', status === 'running' ? 'bg-agent-running' : 'bg-agent-waiting')} />
+                            <span
+                              className="absolute inline-flex h-full w-full animate-ping rounded-full bg-current opacity-70"
+                              style={{
+                                color: status === 'running' ? 'rgb(59,130,246)' : 'rgb(234,179,8)',
+                              }}
+                            />
+                            <span
+                              className={cn(
+                                'relative inline-flex h-2.5 w-2.5 rounded-full',
+                                status === 'running' ? 'bg-agent-running' : 'bg-agent-waiting',
+                              )}
+                            />
                           </span>
                         ) : (
                           <span className="inline-flex h-2.5 w-2.5 rounded-full bg-muted-foreground/35" />
@@ -131,16 +200,26 @@ export function AgentStatusCards({ projects, lastToolMap, pendingQuestions, velo
                         <span className="text-sm font-semibold truncate">{project.name}</span>
                       </div>
                       <div className="mt-1.5 flex items-center gap-2 text-[11px] text-muted-foreground">
-                        {isActive ? 'Live now' : `${cfg.label} ${formatDuration(sprint.agentStartedAt)}`}
+                        {isActive
+                          ? 'Live now'
+                          : `${cfg.label} · ${formatAgo(sprint.agentCompletedAt ?? sprint.agentStartedAt)}`}
                       </div>
                     </div>
                     <Badge
                       variant="outline"
-                      className={cn('gap-1 text-[10px] h-5 font-medium shrink-0', cfg.color, `border-current/30`)}
+                      className={cn(
+                        'gap-1 text-[10px] h-5 font-medium shrink-0',
+                        cfg.color,
+                        `border-current/30`,
+                      )}
                     >
-                      <StatusIcon className={cn('h-3 w-3', status === 'running' && 'animate-spin')} />
+                      <StatusIcon
+                        className={cn('h-3 w-3', status === 'running' && 'animate-spin')}
+                      />
                       {sprint.currentAgentType && (
-                        <span className="capitalize">{sprint.currentAgentType.replace(/[_-]/g, ' ')}</span>
+                        <span className="capitalize">
+                          {sprint.currentAgentType.replace(/[_-]/g, ' ')}
+                        </span>
                       )}
                     </Badge>
                   </div>
@@ -155,10 +234,14 @@ export function AgentStatusCards({ projects, lastToolMap, pendingQuestions, velo
 
                 <div className="flex-1 px-3 py-3 space-y-2">
                   {focus && (
-                    <p className={cn(
-                      'text-xs truncate',
-                      status === 'waiting' ? 'text-agent-waiting font-medium' : 'text-muted-foreground',
-                    )}>
+                    <p
+                      className={cn(
+                        'text-xs truncate',
+                        status === 'waiting'
+                          ? 'text-agent-waiting font-medium'
+                          : 'text-muted-foreground',
+                      )}
+                    >
                       {focus}
                     </p>
                   )}

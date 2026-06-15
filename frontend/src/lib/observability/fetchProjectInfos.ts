@@ -2,25 +2,23 @@
  * Data fetching helpers for useObservability — keeps the hook lean.
  */
 import { agentsService, type TaskAgentStatus } from '../../services/agents';
-import { projectsService } from '../../services/projects';
-import { sprintsService } from '../../services/sprints';
 import { sprintGraphService } from '../../services/sprintGraph';
+import {
+  getProjectsWithSprints,
+  refreshProjects as refreshProjectsCache,
+} from '@/hooks/useProjectsCache';
 import type { SprintProgress, ProjectAgentInfo } from '@/hooks/useObservability';
 import type { L2Intelligence } from './l2Intelligence';
 
-export async function fetchProjectInfos(l2: L2Intelligence): Promise<ProjectAgentInfo[]> {
-  const allProjects = await projectsService.list();
+export async function fetchProjectInfos(
+  l2: L2Intelligence,
+  { forceRefresh = false }: { forceRefresh?: boolean } = {},
+): Promise<ProjectAgentInfo[]> {
+  if (forceRefresh) await refreshProjectsCache();
+  const withSprints = await getProjectsWithSprints();
   return Promise.all(
-    allProjects.map(async (project) => {
+    withSprints.map(async ({ project, latestSprint: latest }) => {
       try {
-        const sprints = await sprintsService.list(project.id);
-        const latest =
-          sprints.length > 0
-            ? sprints.sort(
-                (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-              )[0]
-            : null;
-
         let progress: SprintProgress | null = null;
         let taskStatuses: TaskAgentStatus[] = [];
 
@@ -66,7 +64,7 @@ export async function fetchProjectInfos(l2: L2Intelligence): Promise<ProjectAgen
 
         return { project, sprint: latest, progress, taskStatuses };
       } catch {
-        return { project, sprint: null, progress: null, taskStatuses: [] };
+        return { project, sprint: latest ?? null, progress: null, taskStatuses: [] };
       }
     }),
   );

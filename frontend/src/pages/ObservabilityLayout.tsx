@@ -1,8 +1,7 @@
 import { createContext, useContext, useState, useMemo, useEffect, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useObservability } from '@/hooks/useObservability';
-import { useProjectSprintsCache } from '@/hooks/useProjectsCache';
-import { ProjectDetailView } from '@/components/observability/ProjectDetailView';
+import { IterationDetailView } from '@/components/observability/IterationDetailView';
 import ObservabilityDashboard from './ObservabilityDashboard';
 import type {
   ProjectAgentInfo,
@@ -17,13 +16,15 @@ export interface ObservabilityContextValue {
   projects: ProjectAgentInfo[];
   filtered: ProjectAgentInfo[];
   projectsLoading: boolean;
+  projectsError: string | null;
   activityFeed: ActivityEvent[];
   lastToolMap: LastToolMap;
   pendingQuestions: PendingQuestionsMap;
   stuckDetections: StuckDetection[];
   velocityMap: Record<string, VelocityMetrics>;
   selectedProjectId: string | null;
-  setSelectedProjectId: (id: string | null) => void;
+  selectedSprintId: string | null;
+  selectSprint: (projectId: string, sprintId: string) => void;
   refresh: () => void;
 }
 
@@ -40,29 +41,58 @@ export default function ObservabilityLayout() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const urlProjectId = searchParams.get('project');
+  const urlSprintId = searchParams.get('sprint');
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(urlProjectId);
-  const { sprints: projectSprints } = useProjectSprintsCache(selectedProjectId);
+  const [selectedSprintId, setSelectedSprintId] = useState<string | null>(urlSprintId);
 
   useEffect(() => {
     setSelectedProjectId(urlProjectId);
-  }, [urlProjectId]);
+    setSelectedSprintId(urlSprintId);
+  }, [urlProjectId, urlSprintId]);
 
-  const selectProject = useCallback(
-    (id: string | null) => {
-      setSelectedProjectId(id);
-      if (id) {
-        navigate(`/observability?project=${id}`, { replace: true });
-      } else {
-        navigate('/observability', { replace: true });
-      }
+  const selectSprint = useCallback(
+    (projectId: string, sprintId: string) => {
+      setSelectedProjectId(projectId);
+      setSelectedSprintId(sprintId);
+      navigate(`/observability?project=${projectId}&sprint=${sprintId}`, { replace: true });
     },
     [navigate],
   );
 
+  const goBack = useCallback(() => {
+    setSelectedProjectId(null);
+    setSelectedSprintId(null);
+    navigate('/observability', { replace: true });
+  }, [navigate]);
+
   const selectedInfo = useMemo(() => {
-    if (!selectedProjectId) return null;
-    return obs.projects.find((p) => p.project.id === selectedProjectId) ?? null;
-  }, [obs.projects, selectedProjectId]);
+    if (!selectedProjectId || !selectedSprintId) return null;
+    return (
+      obs.projects.find(
+        (p) => p.project.id === selectedProjectId && p.sprint?.id === selectedSprintId,
+      ) ?? null
+    );
+  }, [obs.projects, selectedProjectId, selectedSprintId]);
+
+  // Unknown ?project= or ?sprint= id: drop params once projects loaded
+  useEffect(() => {
+    if (
+      selectedProjectId &&
+      selectedSprintId &&
+      !selectedInfo &&
+      !obs.projectsLoading &&
+      obs.projects.length > 0
+    ) {
+      navigate('/observability', { replace: true });
+    }
+  }, [
+    selectedProjectId,
+    selectedSprintId,
+    selectedInfo,
+    obs.projectsLoading,
+    obs.projects.length,
+    navigate,
+  ]);
 
   const filtered = useMemo(() => {
     if (!selectedProjectId) return obs.projects;
@@ -94,32 +124,41 @@ export default function ObservabilityLayout() {
       projects: obs.projects,
       filtered,
       projectsLoading: obs.projectsLoading,
+      projectsError: obs.projectsError,
       activityFeed: filteredActivity,
       lastToolMap: obs.lastToolMap,
       pendingQuestions: obs.pendingQuestions,
       stuckDetections: filteredStuck,
       velocityMap: obs.velocityMap,
       selectedProjectId,
-      setSelectedProjectId: selectProject,
+      selectedSprintId,
+      selectSprint,
       refresh: obs.refresh,
     }),
-    [obs, filtered, filteredActivity, filteredStuck, selectedProjectId],
+    [
+      obs,
+      filtered,
+      filteredActivity,
+      filteredStuck,
+      selectedProjectId,
+      selectedSprintId,
+      selectSprint,
+    ],
   );
 
   const handleNavigate = useCallback((path: string) => navigate(path), [navigate]);
 
   return (
     <ObservabilityContext.Provider value={ctx}>
-      {selectedProjectId && selectedInfo ? (
-        <ProjectDetailView
+      {selectedProjectId && selectedSprintId && selectedInfo ? (
+        <IterationDetailView
           info={selectedInfo}
-          allSprints={projectSprints}
           pendingQuestions={
             selectedInfo.sprint ? (obs.pendingQuestions[selectedInfo.sprint.id] ?? 0) : 0
           }
           velocity={selectedInfo.sprint ? obs.velocityMap[selectedInfo.sprint.id] : undefined}
           onNavigate={handleNavigate}
-          onBack={() => selectProject(null)}
+          onBack={goBack}
         />
       ) : (
         <ObservabilityDashboard />

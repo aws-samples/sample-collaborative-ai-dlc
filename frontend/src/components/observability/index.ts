@@ -8,4 +8,4 @@ export { StuckAlert } from './StuckAlert';
 export { BusinessView } from './BusinessView';
 export { AgentTeamSummary } from './AgentTeamSummary';
 export { AgentStatusCards } from './AgentStatusCards';
-export { ProjectDetailView } from './ProjectDetailView';
+export { IterationDetailView } from './IterationDetailView';
