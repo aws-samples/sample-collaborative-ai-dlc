@@ -90,11 +90,43 @@ composed into the `aidlc-v2` workflow with 5 inline phases and 32 stage
 placements (each placement's `scopeMembership` transposed from the stage's V2
 `scopes:` list). Compiling it yields a 32-node, acyclic graph with **zero
 dangling consumes** and no unresolved agent/stage/sensor references — proving
-the building blocks can model V2 end-to-end. Known modeling boundary: V2's
-per-stage human-approval gates live in its stage-protocol, not in frontmatter,
-so the seeded autonomy profile reads all-self-halting; encoding protocol gates
-is a later refinement. Stage/agent/rule markdown **bodies** are also a deferred
-data-seam addition (only structured frontmatter is seeded today).
+the building blocks can model V2 end-to-end. Stage/agent/rule markdown
+**bodies** are a deferred data-seam addition (only structured frontmatter is
+seeded today).
+
+### V2 deep-validation pass (against `awslabs/aidlc-workflows@v2-unified`)
+
+The model was re-validated block-by-block against the real source (cloned
+`v2-unified`: `stage-definition.md`, the `*-schema.ts` parsers, the protocols,
+and every `core/` block dir). Counts match exactly and the pull-authoring shape
+(bindings on the stage, satellites as pure capability descriptors) matches V2's
+keystone. The following gaps were closed in this pass:
+
+| Gap                     | Fix                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Autonomy read backwards | V2 gates every non-init stage on human approval. The seed now sets `c2_verification.humanValidation: 'required'` on the 29 non-init stages, so the compiled autonomy rollup is **`selfHalting:3, humanGated:29`** (was all-self-halting) — matching V2's real default. A fork relaxes it.                                                                                                                                                |
+| No artifact vocabulary  | Added an **`ARTIFACT`** block type. The baseline derives one ARTIFACT per distinct produced name from the stage data (so the registry can't drift), each flagged `terminal` when consumed by no stage. The stage-graph compiler now takes an optional registry and reports `unknownArtifacts` — the typo case `orphanProduces` alone couldn't distinguish (122 artifacts, 60 terminal = the former 60 "orphan produces", **0 unknown**). |
+| Scope missing test axis | `SCOPE` gained an optional **`testStrategy`** (orthogonal to `depth`, defaults to it). Only `workshop` overrides — Standard depth, Minimal tests.                                                                                                                                                                                                                                                                                        |
+| Knowledge enum-only     | **`KNOWLEDGE`** modeled with a `tier` (`methodology`\|`team`) + `agentRef` (an agent id or `shared`). The 56 methodology-tier docs from V2's `core/knowledge/` are seeded per-agent; the team tier ships empty (it is the execution-time / learning-loop write-back seam, not authored).                                                                                                                                                 |
+
+**Deferred to their own focused passes** (deliberately, with the product owner):
+
+- **STAGE field re-port (A2):** V2 stages carry 14 authored fields; we still
+  drop `condition` (required branching prose), `consumes[].conditional_on`
+  (`brownfield`\|`greenfield`), and the `inputs`/`outputs` prose lines. Adding
+  them is a mechanical re-port from the 32 V2 stage files.
+- **RULE wiring (B):** the 7 rule blocks are seeded but inert — `ruleRefSk`
+  exists in `shared/workflows.js` but no route writes it and the compiler
+  ignores rules. Wiring = rule-ref routes + compose + a `compileRules` view
+  (global org/team/project layers always apply; phase rules auto-attach to
+  placements by matching `phase`).
+
+**Confirmed out of scope** (this is authoring, not execution, per the locked
+decisions): the runtime entities — the 6-state stage-instance machine, the
+67-event audit trail, sessions, Bolts, worktrees, swarm, the conductor persona,
+and the directive contract. The one seam we keep open is the learning-loop
+write-back (`c3_learning` → promote into the library + the empty team-knowledge
+tier), which slice 4's learnings queue consumes.
 
 ---
 

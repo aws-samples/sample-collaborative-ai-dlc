@@ -213,6 +213,67 @@ describe('building-blocks handler', () => {
     expect(llm.status).toBe(201);
   });
 
+  it('validates scope depth and testStrategy against the depth enum', async () => {
+    const badDepth = parse(
+      await handler(
+        event({ method: 'POST', type: 'scope', body: { id: 'x', name: 'X', depth: 'Deep' } }),
+      ),
+    );
+    expect(badDepth.status).toBe(400);
+
+    const ok = parse(
+      await handler(
+        event({
+          method: 'POST',
+          type: 'scope',
+          body: { id: 'wkshop', name: 'Workshop', depth: 'Standard', testStrategy: 'Minimal' },
+        }),
+      ),
+    );
+    expect(ok.status).toBe(201);
+    expect(ok.body.testStrategy).toBe('Minimal');
+  });
+
+  it('validates knowledge tier and persists agentRef', async () => {
+    const badTier = parse(
+      await handler(
+        event({
+          method: 'POST',
+          type: 'knowledge',
+          body: { id: 'k1', name: 'K', tier: 'bogus' },
+        }),
+      ),
+    );
+    expect(badTier.status).toBe(400);
+
+    const ok = parse(
+      await handler(
+        event({
+          method: 'POST',
+          type: 'knowledge',
+          body: { id: 'k1', name: 'K', tier: 'methodology', agentRef: 'aidlc-product-agent' },
+        }),
+      ),
+    );
+    expect(ok.status).toBe(201);
+    expect(ok.body.tier).toBe('methodology');
+    expect(ok.body.agentRef).toBe('aidlc-product-agent');
+  });
+
+  it('creates an artifact block', async () => {
+    const res = parse(
+      await handler(
+        event({
+          method: 'POST',
+          type: 'artifact',
+          body: { id: 'intent-statement', name: 'Intent Statement', terminal: false },
+        }),
+      ),
+    );
+    expect(res.status).toBe(201);
+    expect(res.body.id).toBe('intent-statement');
+  });
+
   it('400s on malformed JSON', async () => {
     const res = parse(
       await handler({

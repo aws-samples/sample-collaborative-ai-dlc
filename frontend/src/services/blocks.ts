@@ -8,8 +8,17 @@ import { api } from './api';
 
 // The library block types, named to match AI-DLC V2, lowercased for use as
 // `/blocks/{type}` path parts. Phases are not a block type (defined inline on a
-// workflow); a Stage is the atomic unit, a Sensor a check, a Rule a guardrail.
-export const BLOCK_TYPES = ['stage', 'agent', 'scope', 'rule', 'sensor', 'knowledge'] as const;
+// workflow); a Stage is the atomic unit, a Sensor a check, a Rule a guardrail,
+// an Artifact a named output that wires stages, Knowledge the per-agent corpus.
+export const BLOCK_TYPES = [
+  'stage',
+  'agent',
+  'scope',
+  'rule',
+  'sensor',
+  'artifact',
+  'knowledge',
+] as const;
 
 export type BlockType = (typeof BLOCK_TYPES)[number];
 
@@ -20,6 +29,7 @@ export const BLOCK_TYPE_LABELS: Record<BlockType, { singular: string; plural: st
   scope: { singular: 'Scope', plural: 'Scopes' },
   rule: { singular: 'Rule', plural: 'Rules' },
   sensor: { singular: 'Sensor', plural: 'Sensors' },
+  artifact: { singular: 'Artifact', plural: 'Artifacts' },
   knowledge: { singular: 'Knowledge', plural: 'Knowledge' },
 };
 

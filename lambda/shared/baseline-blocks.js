@@ -103,6 +103,9 @@ const agentBlock = ([id, displayName, modelOverride, description]) => ({
 });
 
 // ─── Scopes (9) ───
+// [id, depth, keywords, description, testStrategy?]. testStrategy is an
+// optional override of the test depth (V2 defaults it to `depth`); only
+// workshop declares its own (Standard depth, but Minimal tests).
 const SCOPES = [
   ['bugfix', 'Minimal', ['fix', 'bug', 'broken'], 'Fix a specific bug'],
   ['enterprise', 'Comprehensive', [], 'Regulated enterprise feature, full audit trail'],
@@ -117,14 +120,17 @@ const SCOPES = [
     'Standard',
     ['workshop', 'lab', 'training'],
     'Facilitated group session with mandatory gates',
+    'Minimal',
   ],
 ];
 
-const scopeBlock = ([id, depth, keywords, description]) => ({
+const scopeBlock = ([id, depth, keywords, description, testStrategy]) => ({
   type: 'SCOPE',
   id,
   name: titleCase(id),
   depth,
+  // Defaults to depth when the scope declares no override (V2 semantics).
+  testStrategy: testStrategy ?? depth,
   keywords,
   description,
 });
@@ -974,8 +980,121 @@ const stageBlock = (s) => ({
   },
   // Sensors are referenced by id; their modes live on the SENSOR blocks. The
   // baseline ships only deterministic sensors.
-  c2_verification: { sensors: s.sensors, humanValidation: 'none' },
+  //
+  // V2's stage-protocol gates every stage on explicit human approval EXCEPT the
+  // 3 Initialization stages (workspace-scaffold/detection, state-init). We
+  // encode that universal gate here so the compiled autonomy profile reflects
+  // V2's real default (human-gated), not a misleading all-autonomous reading.
+  // The gate is a per-stage default a fork can relax.
+  c2_verification: {
+    sensors: s.sensors,
+    humanValidation: s.phase === 'initialization' ? 'none' : 'required',
+  },
   c3_learning: { captures: ['human-corrections'], promotionTargets: ['guardrail-library'] },
+});
+
+// ─── Artifacts ───
+// The artifact vocabulary, derived from the stages so the registry can never
+// drift from the graph: one ARTIFACT block per distinct produced name. A
+// `terminal` artifact is produced but consumed by no stage — a deliberate
+// end-of-flow output (reports, questions files), as opposed to an unregistered
+// name, which the compiler now flags as a likely typo.
+const buildArtifacts = () => {
+  const consumed = new Set();
+  for (const s of STAGES) {
+    for (const [artifact] of s.consumes) consumed.add(artifact);
+  }
+  const producedBy = new Map();
+  for (const s of STAGES) {
+    for (const artifact of s.produces) {
+      if (!producedBy.has(artifact)) producedBy.set(artifact, []);
+      producedBy.get(artifact).push(s.id);
+    }
+  }
+  return [...producedBy.keys()].toSorted().map((artifact) => ({
+    type: 'ARTIFACT',
+    id: artifact,
+    name: titleCase(artifact),
+    producedBy: producedBy.get(artifact),
+    terminal: !consumed.has(artifact),
+  }));
+};
+const ARTIFACTS = buildArtifacts();
+
+// ─── Knowledge ───
+// The methodology-tier knowledge corpus, ported from V2's core/knowledge/.
+// Each entry attaches to an agent id (or the `shared` cross-cutting corpus).
+// Only the methodology tier ships in the baseline; the team tier is accrued
+// per-project at execution time (the learning-loop write-back seam).
+const KNOWLEDGE = [
+  ['aidlc-architect-agent', 'adr-template'],
+  ['aidlc-architect-agent', 'architecture-guide'],
+  ['aidlc-architect-agent', 'architecture-patterns'],
+  ['aidlc-architect-agent', 'ddd-patterns'],
+  ['aidlc-architect-agent', 'nfr-design-guide'],
+  ['aidlc-architect-agent', 'nfr-design-patterns'],
+  ['aidlc-aws-platform-agent', 'cdk-best-practices'],
+  ['aidlc-aws-platform-agent', 'cost-optimization-patterns'],
+  ['aidlc-aws-platform-agent', 'infrastructure-guide'],
+  ['aidlc-aws-platform-agent', 'well-architected-framework'],
+  ['aidlc-compliance-agent', 'regulatory-frameworks'],
+  ['aidlc-delivery-agent', 'mob-programming-guide'],
+  ['aidlc-delivery-agent', 'team-topologies'],
+  ['aidlc-delivery-agent', 'workflow-planning-guide'],
+  ['aidlc-design-agent', 'accessibility-wcag'],
+  ['aidlc-design-agent', 'component-spec-template'],
+  ['aidlc-design-agent', 'interaction-design-patterns'],
+  ['aidlc-design-agent', 'ux-guide'],
+  ['aidlc-design-agent', 'wireframing-guide'],
+  ['aidlc-developer-agent', 'api-design-guide'],
+  ['aidlc-developer-agent', 'code-analysis-guide'],
+  ['aidlc-developer-agent', 'code-generation-guide'],
+  ['aidlc-developer-agent', 'code-generation-patterns'],
+  ['aidlc-developer-agent', 'data-modelling-patterns'],
+  ['aidlc-developer-agent', 're-artifacts'],
+  ['aidlc-devsecops-agent', 'devsecops-pipeline-patterns'],
+  ['aidlc-devsecops-agent', 'nfr-requirements-guide'],
+  ['aidlc-devsecops-agent', 'security-guide'],
+  ['aidlc-devsecops-agent', 'threat-modelling-stride'],
+  ['aidlc-operations-agent', 'incident-response-guide'],
+  ['aidlc-operations-agent', 'nfr-performance-guide'],
+  ['aidlc-operations-agent', 'observability-patterns'],
+  ['aidlc-operations-agent', 'slo-sli-patterns'],
+  ['aidlc-pipeline-deploy-agent', 'branching-strategies'],
+  ['aidlc-pipeline-deploy-agent', 'cicd-patterns'],
+  ['aidlc-pipeline-deploy-agent', 'deployment-strategies'],
+  ['aidlc-product-agent', 'functional-design-guide'],
+  ['aidlc-product-agent', 'market-research-methods'],
+  ['aidlc-product-agent', 'prioritization-frameworks'],
+  ['aidlc-product-agent', 'product-guide'],
+  ['aidlc-product-agent', 'requirements-elicitation'],
+  ['aidlc-product-agent', 'requirements-guide'],
+  ['aidlc-product-agent', 'user-story-patterns'],
+  ['aidlc-quality-agent', 'nfr-reliability-guide'],
+  ['aidlc-quality-agent', 'nfr-validation-methods'],
+  ['aidlc-quality-agent', 'test-strategy-patterns'],
+  ['aidlc-quality-agent', 'testing-guide'],
+  ['aidlc-shared', 'ai-dlc-principles'],
+  ['aidlc-shared', 'audit-format'],
+  ['aidlc-shared', 'brownfield'],
+  ['aidlc-shared', 'knowledge-readme-template'],
+  ['aidlc-shared', 'memory-template'],
+  ['aidlc-shared', 'rules-reading'],
+  ['aidlc-shared', 'state-template'],
+  ['aidlc-shared', 'verification'],
+  ['aidlc-shared', 'worktree-info-schema'],
+];
+
+// `agentRef` is the V2 knowledge namespace: an agent id, or `shared` for the
+// cross-cutting corpus. The block id namespaces the doc under its agent so two
+// agents can own a same-named doc without colliding.
+const knowledgeBlock = ([agentRef, doc]) => ({
+  type: 'KNOWLEDGE',
+  id: agentRef === 'aidlc-shared' ? `shared-${doc}` : `${agentRef.replace(/^aidlc-/, '')}-${doc}`,
+  name: titleCase(doc),
+  tier: 'methodology',
+  agentRef: agentRef === 'aidlc-shared' ? 'shared' : agentRef,
+  description: `Methodology knowledge: ${titleCase(doc)} (${agentRef}).`,
 });
 
 const BASELINE_BLOCKS = [
@@ -984,6 +1103,8 @@ const BASELINE_BLOCKS = [
   ...SENSORS.map(sensorBlock),
   ...RULES.map(ruleBlock),
   ...STAGES.map(stageBlock),
+  ...ARTIFACTS,
+  ...KNOWLEDGE.map(knowledgeBlock),
 ];
 
 // ─── Default workflow ───

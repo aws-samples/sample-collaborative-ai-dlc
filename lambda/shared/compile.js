@@ -80,7 +80,11 @@ const stageConsumes = (stage) =>
   (stage?.c1_definition?.inputs ?? []).map((i) => (typeof i === 'object' ? i.artifact : i));
 const stageRequires = (stage) => stage?.c1_definition?.requires ?? [];
 
-const compileStageGraph = (placements, stagesById) => {
+// `artifactsById` is the optional artifact registry (id → ARTIFACT block).
+// When supplied, it lets us tell a deliberate terminal output (a registered
+// artifact no stage consumes) apart from an unregistered name (a likely typo),
+// and flag consumed/produced names that are absent from the vocabulary.
+const compileStageGraph = (placements, stagesById, artifactsById = null) => {
   const nodes = placements.map((p) => ({
     stageId: p.stageId,
     phasePath: p.phasePath ?? null,
@@ -136,12 +140,34 @@ const compileStageGraph = (placements, stagesById) => {
 
   const cycles = detectCycle(adjacency);
 
+  // Registry cross-check (only when an artifact vocabulary is supplied): any
+  // produced or consumed name with no ARTIFACT block is unknown vocabulary —
+  // the typo case that orphanProduces alone can't distinguish from a genuine
+  // terminal output. A terminal output is one that IS registered but unconsumed.
+  const unknownArtifacts = [];
+  if (artifactsById) {
+    const seen = new Set();
+    const flagUnknown = (name, stageId, role) => {
+      if (artifactsById[name]) return;
+      const key = `${name}|${stageId}|${role}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      unknownArtifacts.push({ artifact: name, stageId, role });
+    };
+    for (const p of placements) {
+      const stage = stagesById[p.stageId];
+      for (const a of stageProduces(stage)) flagUnknown(a, p.stageId, 'produces');
+      for (const a of stageConsumes(stage)) flagUnknown(a, p.stageId, 'consumes');
+    }
+  }
+
   return {
     nodes,
     edges,
     cycles,
     danglingConsumes,
     orphanProduces,
+    unknownArtifacts,
     acyclic: cycles.length === 0,
   };
 };
@@ -179,10 +205,10 @@ const detectCycle = (adjacency) => {
   return found;
 };
 
-const compileWorkflow = (placements, scopeSlugs, stagesById) => ({
+const compileWorkflow = (placements, scopeSlugs, stagesById, artifactsById = null) => ({
   scopeGrid: compileScopeGrid(placements, scopeSlugs),
   autonomy: compileAutonomyProfile(placements, stagesById),
-  graph: compileStageGraph(placements, stagesById),
+  graph: compileStageGraph(placements, stagesById, artifactsById),
 });
 
 module.exports = {

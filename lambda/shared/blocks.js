@@ -15,11 +15,18 @@ const { createHash } = require('node:crypto');
 
 // The block types that form the reusable library, named to match the AI-DLC
 // V2 source (awslabs/aidlc-workflows): a STAGE is the atomic unit of work, a
-// SENSOR is a deterministic check, a RULE is a layered guardrail. Phases are
-// NOT a block type — they are defined inline in each workflow's grouping tree
-// (V2 treats a phase as an organizing label, not a standalone object).
-// Workflows and artifacts are modeled separately and are not in this set.
-const BLOCK_TYPES = ['STAGE', 'AGENT', 'SCOPE', 'RULE', 'SENSOR', 'KNOWLEDGE'];
+// SENSOR is a deterministic check, a RULE is a layered guardrail, an ARTIFACT
+// is a named output that wires stages together (V2's artifact vocabulary), and
+// KNOWLEDGE is the two-tier (methodology/team) per-agent expertise corpus.
+// Phases are NOT a block type — they are defined inline in each workflow's
+// grouping tree (V2 treats a phase as an organizing label, not a standalone
+// object). Workflows are modeled separately and are not in this set.
+const BLOCK_TYPES = ['STAGE', 'AGENT', 'SCOPE', 'RULE', 'SENSOR', 'ARTIFACT', 'KNOWLEDGE'];
+
+// Knowledge tiers: the methodology tier ships in the SYSTEM baseline (authored,
+// forkable); the team tier is accumulated per-project at execution time (the
+// learning-loop / team-knowledge write-back seam) and is not seeded.
+const KNOWLEDGE_TIERS = ['methodology', 'team'];
 
 const LATEST = 'V#latest';
 
@@ -83,6 +90,8 @@ const validateBlockInput = (type, input) => {
   return errors;
 };
 
+const DEPTHS = ['Minimal', 'Standard', 'Comprehensive'];
+
 // Per-type required/shape checks. Kept small and explicit — only the fields
 // whose absence would make a block unusable are enforced.
 const validateTypeFields = (type, input) => {
@@ -98,6 +107,26 @@ const validateTypeFields = (type, input) => {
       errors.push('a deterministic sensor requires a command');
     }
   }
+  if (type === 'SCOPE') {
+    // depth is the V2 scope's core dimension; testStrategy is an optional
+    // override (defaults to depth when absent). Both share the depth enum.
+    if (input.depth != null && !DEPTHS.includes(input.depth)) {
+      errors.push(`scope depth must be one of ${DEPTHS.join(', ')}`);
+    }
+    if (input.testStrategy != null && !DEPTHS.includes(input.testStrategy)) {
+      errors.push(`scope testStrategy must be one of ${DEPTHS.join(', ')}`);
+    }
+  }
+  if (type === 'KNOWLEDGE') {
+    // Knowledge attaches to an agent (or the shared corpus) and belongs to a
+    // tier; the tier decides whether it ships in the baseline or is accrued.
+    if (input.tier != null && !KNOWLEDGE_TIERS.includes(input.tier)) {
+      errors.push(`knowledge tier must be one of ${KNOWLEDGE_TIERS.join(', ')}`);
+    }
+    if (input.agentRef != null && typeof input.agentRef !== 'string') {
+      errors.push('knowledge agentRef must be a string (an agent id or "shared")');
+    }
+  }
   return errors;
 };
 
@@ -111,6 +140,7 @@ const validateId = (id) => {
 
 module.exports = {
   BLOCK_TYPES,
+  KNOWLEDGE_TIERS,
   LATEST,
   MAX_BODY_BYTES,
   isBlockType,

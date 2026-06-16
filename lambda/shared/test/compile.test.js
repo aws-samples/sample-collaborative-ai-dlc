@@ -150,4 +150,27 @@ describe('compileStageGraph', () => {
     expect(graph.edges).toContainEqual({ from: 'a', to: 'b', kind: 'requires' });
     expect(graph.edges.filter((e) => e.from === 'not-placed')).toEqual([]);
   });
+
+  it('reports no unknownArtifacts when no registry is supplied', () => {
+    const stagesById = { a: stage('a', { outputs: ['doc'] }) };
+    const graph = compileStageGraph([placement('a')], stagesById);
+    expect(graph.unknownArtifacts).toEqual([]);
+  });
+
+  it('flags produced/consumed names absent from the artifact registry', () => {
+    const stagesById = {
+      a: stage('a', { outputs: ['doc', 'typoo'] }),
+      b: stage('b', { inputs: [{ artifact: 'doc', required: true }] }),
+    };
+    // Registry knows `doc` but not `typoo` — the typo case orphanProduces can't
+    // distinguish from a deliberate terminal output.
+    const registry = { doc: { blockId: 'doc' } };
+    const graph = compileStageGraph([placement('a'), placement('b')], stagesById, registry);
+    expect(graph.unknownArtifacts).toContainEqual({
+      artifact: 'typoo',
+      stageId: 'a',
+      role: 'produces',
+    });
+    expect(graph.unknownArtifacts.find((u) => u.artifact === 'doc')).toBeUndefined();
+  });
 });

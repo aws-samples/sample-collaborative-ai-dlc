@@ -39,7 +39,7 @@ import {
   validateName,
   validatePhaseNode,
 } from '../shared/workflows.js';
-import { blockPk, LATEST } from '../shared/blocks.js';
+import { blockPk, catalogGsi1Pk, LATEST } from '../shared/blocks.js';
 import { compileWorkflow } from '../shared/compile.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -360,10 +360,39 @@ const getCompiled = async (event, res, tenant, workflowId) => {
   const placements = items.filter((i) => i.sk.startsWith('PLACEMENT#')).map(placementToApi);
   const scopeSlugs = items.filter((i) => i.sk.startsWith('SCOPEREF#')).map((i) => i.scopeId);
 
-  // Batch-get the referenced Stage library blocks (V#latest), keyed by id.
+  // Batch-get the referenced Stage library blocks (V#latest), keyed by id, and
+  // load the artifact vocabulary so the graph can flag unknown (typo) names.
   const stagesById = await loadStages(placements);
-  const compiled = compileWorkflow(placements, scopeSlugs, stagesById);
+  const artifactsById = await loadArtifacts(resolved.owner);
+  const compiled = compileWorkflow(placements, scopeSlugs, stagesById, artifactsById);
   return res(200, compiled);
+};
+
+// Load the artifact registry visible to the workflow's owner (its own ARTIFACT
+// blocks plus the SYSTEM baseline), keyed by id. Used only to distinguish
+// terminal outputs from unregistered names — absence is non-fatal (null grid).
+const loadArtifacts = async (owner) => {
+  const tenants = owner === SYSTEM_TENANT ? [SYSTEM_TENANT] : [owner, SYSTEM_TENANT];
+  const results = await Promise.all(
+    tenants.map((t) =>
+      ddb.send(
+        new QueryCommand({
+          TableName: blocksTable(),
+          IndexName: 'GSI1',
+          KeyConditionExpression: 'GSI1PK = :pk',
+          ExpressionAttributeValues: { ':pk': catalogGsi1Pk(t, 'ARTIFACT') },
+        }),
+      ),
+    ),
+  );
+  const byId = {};
+  // Owner's own blocks win over SYSTEM (listed first → set first, don't clobber).
+  for (const r of results) {
+    for (const item of r.Items || []) {
+      if (!(item.blockId in byId)) byId[item.blockId] = item;
+    }
+  }
+  return byId;
 };
 
 // Resolve each placement's Stage block from its owning tenant (pinned version
