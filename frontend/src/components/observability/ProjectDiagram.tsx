@@ -7,11 +7,75 @@ import type { ProjectAgentInfo, SprintProgress, VelocityMetrics } from '@/hooks/
 import type { Sprint } from '@/services/sprints';
 import type { TaskAgentStatus } from '@/services/agents';
 
+function hasConstructionEvidence(
+  sprint: Sprint | null,
+  progress: SprintProgress | null,
+  taskStatuses: TaskAgentStatus[],
+): boolean {
+  return Boolean(
+    sprint &&
+    (sprint.phase === 'CONSTRUCTION' ||
+      sprint.currentAgentType === 'construction-orchestrator' ||
+      sprint.currentAgentType === 'construction' ||
+      sprint.branch ||
+      sprint.prUrl ||
+      (progress?.codeFileCount ?? 0) > 0 ||
+      taskStatuses.length > 0),
+  );
+}
+
+function getEffectivePhase(
+  sprint: Sprint | null,
+  progress: SprintProgress | null,
+  taskStatuses: TaskAgentStatus[],
+): PhaseKey | undefined {
+  if (!sprint) return undefined;
+  if (sprint.phase === 'INCEPTION' && hasConstructionEvidence(sprint, progress, taskStatuses)) {
+    return 'CONSTRUCTION';
+  }
+  return sprint.phase as PhaseKey;
+}
+
+function getEffectivePhaseStatus(
+  sprint: Sprint | null,
+  progress: SprintProgress | null,
+  taskStatuses: TaskAgentStatus[],
+): string | null {
+  if (!sprint) return null;
+  if (sprint.phaseStatus) return sprint.phaseStatus;
+  if (sprint.phase === 'INCEPTION' && (progress?.taskCount ?? 0) > 0) return 'ready_for_transition';
+  if (
+    hasConstructionEvidence(sprint, progress, taskStatuses) &&
+    (sprint.prUrl ||
+      (taskStatuses.length > 0 && taskStatuses.every((t) => t.executionStatus === 'SUCCEEDED')))
+  ) {
+    return 'ready_for_transition';
+  }
+  return null;
+}
+
+function normalizeStageKey(stage: string | null | undefined): string | null {
+  return stage ? stage.replaceAll('-', '_') : null;
+}
+
+function getActiveStageKey(
+  phase: PhaseKey,
+  sprint: Sprint | null,
+  effectivePhase: PhaseKey | undefined,
+  effectivePhaseStatus: string | null,
+): string | null {
+  if (!sprint || effectivePhase !== phase || effectivePhaseStatus === 'ready_for_transition') {
+    return null;
+  }
+  return normalizeStageKey(sprint.currentStage);
+}
+
 function getStepsDone(
   phase: PhaseKey,
   progress: SprintProgress | null,
   sprint: Sprint | null,
   taskStatuses: TaskAgentStatus[],
+  effectivePhaseStatus: string | null,
 ): Set<string> {
   const done = new Set<string>();
   if (!sprint) return done;
@@ -25,6 +89,9 @@ function getStepsDone(
       done.add('workflow_planning');
       done.add('units_generation');
     }
+    if (sprint.phase === 'INCEPTION' && effectivePhaseStatus === 'ready_for_transition') {
+      done.add('units_generation');
+    }
   }
 
   if (phase === 'CONSTRUCTION') {
@@ -35,6 +102,9 @@ function getStepsDone(
       taskStatuses.length > 0 && taskStatuses.every((t) => t.executionStatus === 'SUCCEEDED');
     if (hasRunningOrDone || progress?.codeFileCount) done.add('code_generation');
     if (allDone || sprint.prUrl) done.add('build_and_test');
+    if (phase === 'CONSTRUCTION' && effectivePhaseStatus === 'ready_for_transition') {
+      done.add('build_and_test');
+    }
   }
 
   if (phase === 'REVIEW') {
@@ -78,7 +148,8 @@ export function ProjectDiagram({
 }: Props) {
   const { project, sprint, progress, taskStatuses } = info;
   const agentStatus = sprint?.currentAgentStatus;
-  const currentPhase = sprint?.phase as PhaseKey | undefined;
+  const currentPhase = getEffectivePhase(sprint ?? null, progress, taskStatuses);
+  const effectivePhaseStatus = getEffectivePhaseStatus(sprint ?? null, progress, taskStatuses);
   const currentPhaseIdx = currentPhase ? PHASE_ORDER.indexOf(currentPhase) : -1;
 
   const handleClick = () => {
@@ -149,8 +220,15 @@ export function ProjectDiagram({
             progress,
             sprint ?? null,
             phase.key === 'CONSTRUCTION' ? taskStatuses : [],
+            effectivePhaseStatus,
           );
           const stepsSkipped = getStepsSkipped(phase.key, stepsDone, isPastPhase, phase.steps);
+          const activeStageKey = getActiveStageKey(
+            phase.key,
+            sprint ?? null,
+            currentPhase,
+            effectivePhaseStatus,
+          );
           return (
             <div key={phase.key}>
               {phaseIdx > 0 && (
@@ -169,6 +247,7 @@ export function ProjectDiagram({
                   sprint !== null && (currentPhaseIdx === -1 || currentPhaseIdx >= phaseIdx)
                 }
                 agentStatus={agentStatus}
+                activeStageKey={activeStageKey}
                 progress={progress}
                 sprint={sprint ?? null}
                 taskStatuses={phase.key === 'CONSTRUCTION' ? taskStatuses : []}

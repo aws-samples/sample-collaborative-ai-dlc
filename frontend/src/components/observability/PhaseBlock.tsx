@@ -18,6 +18,7 @@ interface Props {
   isFuturePhase: boolean;
   isUnlocked: boolean;
   agentStatus?: string | null;
+  activeStageKey?: string | null;
   progress: SprintProgress | null;
   sprint: Sprint | null;
   taskStatuses?: TaskAgentStatus[];
@@ -33,6 +34,7 @@ export function PhaseBlock({
   isFuturePhase,
   isUnlocked,
   agentStatus,
+  activeStageKey,
   progress,
   taskStatuses = [],
   prUrl,
@@ -116,14 +118,16 @@ export function PhaseBlock({
           {/* Rangée principale — avec flèches entre les steps */}
           <div className="flex flex-wrap items-center gap-1">
             {config.mainSteps.map((step, idx) => {
-              const isFirstIncompleteMandatory =
-                isCurrentPhase &&
-                agentStatus === 'running' &&
-                step.mandatory &&
-                !stepsDone.has(step.key) &&
-                !config.mainSteps.some(
-                  (s) => s.mandatory && !stepsDone.has(s.key) && config.mainSteps.indexOf(s) < idx,
-                );
+              const isActive = activeStageKey
+                ? activeStageKey === step.key
+                : isCurrentPhase &&
+                  agentStatus === 'running' &&
+                  step.mandatory &&
+                  !stepsDone.has(step.key) &&
+                  !config.mainSteps.some(
+                    (s) =>
+                      s.mandatory && !stepsDone.has(s.key) && config.mainSteps.indexOf(s) < idx,
+                  );
               return (
                 <div key={step.key} className="flex items-center gap-1">
                   {idx > 0 && <span className="text-muted-foreground/40 text-xs">→</span>}
@@ -131,7 +135,7 @@ export function PhaseBlock({
                     step={step}
                     isDone={stepsDone.has(step.key)}
                     isSkipped={stepsSkipped.has(step.key)}
-                    isActive={isFirstIncompleteMandatory}
+                    isActive={isActive}
                     isCurrentPhase={isCurrentPhase}
                     isPastPhase={isPastPhase}
                     mandatoryBg={config.mandatoryBg}
@@ -151,7 +155,7 @@ export function PhaseBlock({
                   step={step}
                   isDone={stepsDone.has(step.key)}
                   isSkipped={stepsSkipped.has(step.key)}
-                  isActive={false}
+                  isActive={activeStageKey === step.key}
                   isCurrentPhase={isCurrentPhase}
                   isPastPhase={isPastPhase}
                   mandatoryBg={config.mandatoryBg}

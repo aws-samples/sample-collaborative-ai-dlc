@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useSprint } from '@/contexts/SprintContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { usePresence } from '@/hooks/usePresence';
@@ -52,6 +53,7 @@ import { CollaborativeTextarea } from '@/components/CollaborativeTextarea';
 import { AiModifyModal } from '@/components/AiModifyModal';
 import { AgentStartErrorBanner } from '@/components/AgentStartErrorBanner';
 import { extractAgentStartError, type AgentStartError } from '@/lib/agentStartError';
+import { getSprintPhasePath } from '@/lib/sprintPhaseNavigation';
 import {
   AlertCircle,
   ArrowRight,
@@ -70,6 +72,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 export default function InceptionPage() {
+  const navigate = useNavigate();
   const { user } = useAuth();
   const {
     sprint,
@@ -307,6 +310,8 @@ export default function InceptionPage() {
         })
         .catch(() => {});
       await reload();
+      const nextPath = getSprintPhasePath(projectId, sprintId, 'CONSTRUCTION');
+      if (nextPath) navigate(nextPath);
     } catch (err) {
       console.error('Start over failed:', err);
     }
@@ -316,7 +321,11 @@ export default function InceptionPage() {
   const handleApprovePhase = async () => {
     setApprovingPhase(true);
     try {
-      await sprintsService.update(projectId, sprintId, { phase: 'CONSTRUCTION' });
+      await sprintsService.update(projectId, sprintId, {
+        phase: 'CONSTRUCTION',
+        currentStage: null,
+        phaseStatus: 'active',
+      });
       realtimeService.send('broadcastToDocument', {
         documentId: `sprint:${sprintId}`,
         action: 'sprint.phaseChanged',

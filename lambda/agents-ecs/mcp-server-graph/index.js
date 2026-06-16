@@ -354,7 +354,13 @@ dependency chain of the sprint at a glance.`,
         const vertices = await g
           .V()
           .has('Sprint', 'id', env.sprintId)
-          .union(__.out('CONTAINS'), __.out('HAS_REVIEW'), __.out('HAS_PR'), __.out('HAS_PR_GROUP'))
+          .union(
+            __.identity(),
+            __.out('CONTAINS'),
+            __.out('HAS_REVIEW'),
+            __.out('HAS_PR'),
+            __.out('HAS_PR_GROUP'),
+          )
           .project('id', 'label', 'props')
           .by('id')
           .by(T_label)
@@ -367,7 +373,13 @@ dependency chain of the sprint at a glance.`,
         const edges = await g
           .V()
           .has('Sprint', 'id', env.sprintId)
-          .union(__.out('CONTAINS'), __.out('HAS_REVIEW'), __.out('HAS_PR'), __.out('HAS_PR_GROUP'))
+          .union(
+            __.identity(),
+            __.out('CONTAINS'),
+            __.out('HAS_REVIEW'),
+            __.out('HAS_PR'),
+            __.out('HAS_PR_GROUP'),
+          )
           .bothE()
           .where(__.otherV().has('id', P.within(...nodeIds)))
           .project('source', 'target', 'label')

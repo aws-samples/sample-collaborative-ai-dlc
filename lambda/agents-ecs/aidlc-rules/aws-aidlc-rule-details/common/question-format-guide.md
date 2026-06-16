@@ -137,16 +137,16 @@ The tool blocks until clarification is received.
 
 ### Approval Gates
 
-For stage completion approvals:
+For intra-phase stage completion approvals:
 
 ```
 Call `ask_question` with:
 {
   questions: [{
-    text: "Requirements analysis is complete. I identified 5 functional requirements and 3 non-functional requirements:\n- [brief summary of key requirements]\n\nDo you approve to proceed to User Stories?",
+    text: "Requirements analysis is complete. I identified 5 functional requirements and 3 non-functional requirements:\n- [brief summary of key requirements]\n\nDo you approve these requirements so I can continue with User Stories inside Inception?",
     type: "single",
     options: [
-      { label: "Approve", description: "Proceed to User Stories phase" },
+      { label: "Approve", description: "Continue to the User Stories stage inside Inception" },
       { label: "Request changes", description: "Describe what needs to change in the free text below" }
     ]
   }]
@@ -154,6 +154,8 @@ Call `ask_question` with:
 ```
 
 If the response is "Request changes" (with or without free text), treat it as a change request. Make the requested changes, then call `ask_question` again with the updated summary.
+
+Do not use approval gates for phase-boundary transitions. Inception → Construction, Construction → Review, and Review → Completed are user-initiated UI actions. At a phase boundary, update the Sprint node (`current_stage` plus `phase_status: "ready_for_transition"`), provide a final summary, and exit without calling `ask_question`.
 
 ---
 

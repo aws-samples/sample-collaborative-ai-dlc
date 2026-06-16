@@ -6,12 +6,7 @@ import { PipelineView } from '@/components/layout/PipelineView';
 import { useState, useEffect, useCallback } from 'react';
 import { sprintsService, type Sprint } from '@/services/sprints';
 import { realtimeService } from '@/services/realtime';
-
-const PHASE_URL_SUFFIX: Record<string, string> = {
-  INCEPTION: '',
-  CONSTRUCTION: '/construction',
-  REVIEW: '/review',
-};
+import { getSprintPhasePath } from '@/lib/sprintPhaseNavigation';
 
 export function AppSidebar() {
   const navigate = useNavigate();
@@ -45,9 +40,8 @@ export function AppSidebar() {
       realtimeService.on('agent.error', () => loadSprint()),
       realtimeService.on('sprint.phaseChanged', (data: { phase?: string }) => {
         loadSprint();
-        if (data.phase && PHASE_URL_SUFFIX[data.phase] !== undefined) {
-          navigate(`/project/${projectId}/sprint/${sprintId}${PHASE_URL_SUFFIX[data.phase]}`);
-        }
+        const nextPath = data.phase ? getSprintPhasePath(projectId, sprintId, data.phase) : null;
+        if (nextPath) navigate(nextPath);
       }),
     ];
     return () => unsubs.forEach((unsub) => unsub());

@@ -46,6 +46,8 @@ The AI model intelligently assesses what stages are needed based on:
 
 **NEVER create question files, use `[Answer]:` tags, or ask questions inline in chat. The `ask_question` tool is the ONLY way to get human input.**
 
+**NO PHASE-BOUNDARY APPROVALS**: Do not use `ask_question` to ask whether the team approves moving from Inception to Construction, Construction to Review, or Review to Completed. Phase transitions are UI-owned. The agent updates Sprint workflow state and exits; the user clicks the UI transition button.
+
 ## MANDATORY: Custom Welcome Message
 
 **CRITICAL**: When starting ANY software development request, you MUST display the welcome message.
@@ -63,11 +65,21 @@ The AI model intelligently assesses what stages are needed based on:
 
 - Use `add_node` to create artifacts (Requirements, UserStories, Tasks, CodeFiles, Reviews). ALWAYS pass the `edges` parameter to link the new node to its parent in the same call (e.g. `edges: [{ direction: "from", label: "Requirement", id: "req-xxx", edgeLabel: "BREAKS_INTO" }]`).
 - Use `add_edge` only when you need to add a relationship after the fact (prefer using `edges` in `add_node` instead)
-- Use `update_node` to track state changes (Sprint phase, stage, Task status)
+- Use `update_node` to track workflow state on the Sprint node and work state on Task nodes
 - Use `get_sprint_graph` to load current state at the start of any stage
 - Use `list_nodes` to enumerate artifacts of a specific type
 - **NEVER** create markdown files as artifact output. The graph is the only output channel.
 - **Application code** (actual source files) is still written to the workspace filesystem.
+
+## MANDATORY: Sprint Workflow State
+
+The Sprint node is the single source of truth for where the workflow is. The UI visualizes these properties directly.
+
+- `phase`: UI-owned lifecycle phase (`INCEPTION`, `CONSTRUCTION`, `REVIEW`, `COMPLETED`). Agents must not change this to transition phases.
+- `current_stage`: agent-owned stage cursor in kebab-case, for example `requirements-analysis`, `units-generation`, or `build-and-test`.
+- `phase_status`: agent-owned phase progress status. Use `active` while work is in progress and `ready_for_transition` when the final stage of a phase is complete and the UI should offer the phase-transition button.
+
+At the start of every stage, call `update_node(label: "Sprint", id: env.sprintId, properties: { current_stage: "[stage-id]", phase_status: "active" })`. At the end of terminal phase stages, update `phase_status` to `ready_for_transition` and provide a final summary without calling `ask_question` for the phase transition.
 
 # Adaptive Software Development Workflow
 
@@ -107,7 +119,7 @@ The AI model intelligently assesses what stages are needed based on:
      b. "Proceed directly" — continue with the carried-forward context loaded silently
      c. Or describe any changes since the last sprint that the agent should be aware of
    - **If no previous sprints**: Skip this step entirely
-4. Update Sprint node with current stage: `update_node(label: "Sprint", id: env.sprintId, properties: {phase: "INCEPTION", current_stage: "workspace-detection"})`
+4. Update Sprint node with current stage: `update_node(label: "Sprint", id: env.sprintId, properties: {phase: "INCEPTION", current_stage: "workspace-detection", phase_status: "active"})`
 5. Determine next phase: Reverse Engineering (if brownfield and no current RE artifacts) OR Requirements Analysis
 6. Present completion message to user (see workspace-detection.md for message formats)
 7. Automatically proceed to next phase
@@ -273,7 +285,8 @@ The AI model intelligently assesses what stages are needed based on:
 2. Load reverse engineering artifacts from graph (if brownfield)
 3. Execute at appropriate depth (minimal/standard/comprehensive)
 4. Create Task nodes representing units of work via `add_node`
-5. **Wait for Explicit Approval**: Call `ask_question` with approval prompt - DO NOT PROCEED until user confirms
+5. Update Sprint workflow state to `current_stage: "units-generation"` and `phase_status: "ready_for_transition"`
+6. Present a final Inception summary and exit. Do not call `ask_question` for the Inception → Construction transition.
 
 ---
 
@@ -433,7 +446,8 @@ When all tasks done:
 2. Generate comprehensive build and test instructions
 3. Keep build/test instructions as filesystem files (these are actual working scripts/docs, not artifacts)
 4. Update Task node statuses in graph as testing completes
-5. **Wait for Explicit Approval**: Call `ask_question`: "Build and test instructions complete. Ready to proceed?" - DO NOT PROCEED until user confirms
+5. Update Sprint workflow state to `current_stage: "build-and-test"` and `phase_status: "ready_for_transition"`
+6. Present a final Construction summary and exit. Do not call `ask_question` for the Construction → Review transition.
 
 ---
 
