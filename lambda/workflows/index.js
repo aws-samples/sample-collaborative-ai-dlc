@@ -40,7 +40,7 @@ import {
   validateName,
   validatePhaseNode,
 } from '../shared/workflows.js';
-import { blockPk, catalogGsi1Pk, LATEST } from '../shared/blocks.js';
+import { blockPk, catalogGsi1Pk, LATEST, RULE_LAYERS } from '../shared/blocks.js';
 import { compileWorkflow } from '../shared/compile.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -353,8 +353,9 @@ const removeScopeRef = async (event, res, tenant, workflowId, scopeId) => {
 // ── Rule refs ── layer a library rule into this workflow. Keyed by layer + id
 // so the same rule id can't be layered twice; the compiler resolves which
 // stages each rule applies to (universal layers everywhere, phase rules by
-// matching phase).
-const VALID_RULE_LAYERS = new Set(['org', 'team', 'project', 'phase', 'stage']);
+// matching phase). Layers are V2's resolution chain incl. the two learnings
+// tiers (sourced from shared/blocks.js so the enum lives in one place).
+const VALID_RULE_LAYERS = new Set(RULE_LAYERS);
 
 const addRuleRef = async (event, res, tenant, workflowId) => {
   if (tenant === SYSTEM_TENANT) return res(403, { error: 'SYSTEM workflows are read-only' });

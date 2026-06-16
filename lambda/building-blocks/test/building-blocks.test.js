@@ -200,13 +200,30 @@ describe('building-blocks handler', () => {
     );
     expect(ok.status).toBe(201);
 
-    // llm-judged needs no command → 201.
-    const llm = parse(
+    // llm-judged needs no command but DOES need a reviewerAgent → 400 without.
+    const noReviewer = parse(
       await handler(
         event({
           method: 'POST',
           type: 'sensor',
           body: { id: 'coherent', name: 'Coherent', mode: 'llm-judged' },
+        }),
+      ),
+    );
+    expect(noReviewer.status).toBe(400);
+
+    // llm-judged with a reviewerAgent (no command) → 201.
+    const llm = parse(
+      await handler(
+        event({
+          method: 'POST',
+          type: 'sensor',
+          body: {
+            id: 'coherent',
+            name: 'Coherent',
+            mode: 'llm-judged',
+            reviewerAgent: 'aidlc-architecture-reviewer-agent',
+          },
         }),
       ),
     );

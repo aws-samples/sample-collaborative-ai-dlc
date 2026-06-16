@@ -28,6 +28,31 @@ const BLOCK_TYPES = ['STAGE', 'AGENT', 'SCOPE', 'RULE', 'SENSOR', 'ARTIFACT', 'K
 // learning-loop / team-knowledge write-back seam) and is not seeded.
 const KNOWLEDGE_TIERS = ['methodology', 'team'];
 
+// V2's rule resolution chain. The three universal layers (org/team/project)
+// apply to every stage; `phase`/`stage` attach by matching the stage's phase /
+// slug. `team-learnings` + `project-learnings` are the two learnings tiers V2's
+// resolver interleaves (priorities 1.5 / 2.5, between team→project): they are
+// universal-style layers accrued by the runtime learning loop, seeded empty
+// like the team-knowledge tier. RULE_LAYER_PRIORITY drives the resolved order.
+const RULE_LAYERS = [
+  'org',
+  'team',
+  'team-learnings',
+  'project',
+  'project-learnings',
+  'phase',
+  'stage',
+];
+const RULE_LAYER_PRIORITY = {
+  org: 0,
+  team: 1,
+  'team-learnings': 1.5,
+  project: 2,
+  'project-learnings': 2.5,
+  phase: 3,
+  stage: 4,
+};
+
 const LATEST = 'V#latest';
 
 const ID_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/; // kebab-case
@@ -92,10 +117,22 @@ const validateBlockInput = (type, input) => {
 
 const DEPTHS = ['Minimal', 'Standard', 'Comprehensive'];
 
+// V2's stage execution modes. `inline` and `subagent` are active; `agent-team`
+// is reserved (no stage declares it yet, but the value must round-trip as known
+// so a future consumer isn't surprised by an "unknown mode").
+const STAGE_MODES = ['inline', 'subagent', 'agent-team'];
+
 // Per-type required/shape checks. Kept small and explicit — only the fields
 // whose absence would make a block unusable are enforced.
 const validateTypeFields = (type, input) => {
   const errors = [];
+  if (type === 'STAGE') {
+    // mode is optional on input (the editor may omit it), but if present it
+    // must be one of V2's three values — guards the reserved `agent-team`.
+    if (input.mode != null && !STAGE_MODES.includes(input.mode)) {
+      errors.push(`stage mode must be one of ${STAGE_MODES.join(', ')}`);
+    }
+  }
   if (type === 'SENSOR') {
     // A sensor's mode decides whether it can self-halt; it is mandatory.
     if (input.mode !== 'deterministic' && input.mode !== 'llm-judged') {
@@ -105,6 +142,44 @@ const validateTypeFields = (type, input) => {
     // (The script itself rides in the body; the command is how it's run.)
     if (input.mode === 'deterministic' && (typeof input.command !== 'string' || !input.command)) {
       errors.push('a deterministic sensor requires a command');
+    }
+    // An llm-judged sensor is the V2 Reviewer: a clean-room sub-agent. It is
+    // bound to a reviewer agent and runs zero or more validation tools. The
+    // reviewerAgent is what makes the check runnable (the analogue of a
+    // deterministic sensor's command), so it is mandatory in this mode.
+    if (input.mode === 'llm-judged') {
+      if (typeof input.reviewerAgent !== 'string' || !input.reviewerAgent) {
+        errors.push('an llm-judged sensor requires a reviewerAgent');
+      }
+      if (
+        input.maxIterations != null &&
+        (!Number.isInteger(input.maxIterations) || input.maxIterations < 1)
+      ) {
+        errors.push('sensor maxIterations must be a positive integer');
+      }
+      if (input.validationTools != null && !Array.isArray(input.validationTools)) {
+        errors.push('sensor validationTools must be an array');
+      }
+    }
+  }
+  if (type === 'RULE') {
+    // The five-layer chain plus the two interleaved learnings tiers V2's
+    // resolver admits (team-learnings, project-learnings). Optional on input.
+    if (input.layer != null && !RULE_LAYERS.includes(input.layer)) {
+      errors.push(`rule layer must be one of ${RULE_LAYERS.join(', ')}`);
+    }
+    // pairing binds the feedforward (rule) half to a feedback (sensor) half, or
+    // the sentinel 'feedforward-only' for a rule that needs no sensor.
+    if (input.pairing != null && typeof input.pairing !== 'string') {
+      errors.push("rule pairing must be a string (a sensor id or 'feedforward-only')");
+    }
+  }
+  if (type === 'AGENT') {
+    if (input.examples != null && !Array.isArray(input.examples)) {
+      errors.push('agent examples must be an array');
+    }
+    if (input.tools != null && !Array.isArray(input.tools)) {
+      errors.push('agent tools must be an array');
     }
   }
   if (type === 'SCOPE') {
@@ -141,6 +216,9 @@ const validateId = (id) => {
 module.exports = {
   BLOCK_TYPES,
   KNOWLEDGE_TIERS,
+  RULE_LAYERS,
+  RULE_LAYER_PRIORITY,
+  STAGE_MODES,
   LATEST,
   MAX_BODY_BYTES,
   isBlockType,

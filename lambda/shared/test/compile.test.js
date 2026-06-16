@@ -220,4 +220,72 @@ describe('compileRules', () => {
     });
     expect(out.unresolved).toEqual(['ghost']);
   });
+
+  it('admits the two learnings tiers as universal layers, priority-sorted', () => {
+    const withLearnings = {
+      ...rulesById,
+      'r-team-learn': rule('r-team-learn', 'team-learnings'),
+      'r-proj-learn': rule('r-proj-learn', 'project-learnings'),
+      'r-project': rule('r-project', 'project'),
+    };
+    // Deliberately out of order to prove the compiler sorts by layer priority.
+    const refs = [
+      { ruleId: 'r-proj-learn', layer: 'project-learnings' },
+      { ruleId: 'r-org', layer: 'org' },
+      { ruleId: 'r-project', layer: 'project' },
+      { ruleId: 'r-team-learn', layer: 'team-learnings' },
+      { ruleId: 'r-team', layer: 'team' },
+    ];
+    const out = compileRules([placement('a')], refs, withLearnings, {
+      a: phaseStage('a', 'ideation'),
+    });
+    // org → team → team-learnings → project → project-learnings.
+    expect(out.universal.map((u) => u.ruleId)).toEqual([
+      'r-org',
+      'r-team',
+      'r-team-learn',
+      'r-project',
+      'r-proj-learn',
+    ]);
+  });
+
+  it('surfaces rule→sensor pairings (the feedforward/feedback link)', () => {
+    const paired = {
+      'r-org': { blockId: 'r-org', layer: 'org', pairing: 'required-sections' },
+      'r-team': { blockId: 'r-team', layer: 'team', pairing: 'feedforward-only' },
+    };
+    const out = compileRules(
+      [placement('a')],
+      [
+        { ruleId: 'r-org', layer: 'org' },
+        { ruleId: 'r-team', layer: 'team' },
+      ],
+      paired,
+      { a: phaseStage('a', 'ideation') },
+    );
+    expect(out.pairings).toContainEqual({ ruleId: 'r-org', sensor: 'required-sections' });
+    expect(out.pairings).toContainEqual({ ruleId: 'r-team', sensor: 'feedforward-only' });
+  });
+});
+
+describe('compileStageGraph — blocks_on ordering edges', () => {
+  it('emits a kind:blocks edge for a placed blocksOn dependency', () => {
+    const stagesById = {
+      a: stage('a'),
+      b: { ...stage('b'), c1_definition: { ...stage('b').c1_definition, blocksOn: ['a'] } },
+    };
+    const graph = compileStageGraph([placement('a'), placement('b')], stagesById);
+    expect(graph.edges).toContainEqual({ from: 'a', to: 'b', kind: 'blocks' });
+  });
+
+  it('counts a blocksOn edge in cycle detection', () => {
+    // a blocks-on b AND b blocks-on a → a cycle even with no data edges.
+    const withBlocks = (id, dep) => ({
+      ...stage(id),
+      c1_definition: { ...stage(id).c1_definition, blocksOn: [dep] },
+    });
+    const stagesById = { a: withBlocks('a', 'b'), b: withBlocks('b', 'a') };
+    const graph = compileStageGraph([placement('a'), placement('b')], stagesById);
+    expect(graph.acyclic).toBe(false);
+  });
 });

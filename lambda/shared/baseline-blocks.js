@@ -2,8 +2,9 @@
 
 // The shipped baseline block library + default workflow, owned by the SYSTEM
 // tenant and read-only to everyone else. Ported from the AI-DLC V2 source
-// (awslabs/aidlc-workflows, v2-unified branch): 32 stages, 11 agents, 9 scopes,
-// 4 sensors, 7 rules, composed into the default `aidlc-v2` workflow.
+// (awslabs/aidlc-workflows, v2-unified branch): 32 stages, 14 agents (11
+// builders + 3 reviewers), 9 scopes, 7 sensors (4 deterministic + 3 llm-judged
+// reviewers), 7 rules, composed into the default `aidlc-v2` workflow.
 //
 // This file is the data seam — the seed lambda just writes what's here. Grow or
 // retune the baseline by editing the data tables below; no code change needed.
@@ -22,77 +23,115 @@ const titleCase = (slug) =>
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(' ');
 
-// ─── Agents (11) ───
+// ─── Agents (11 builders + 3 reviewers) ───
+// [id, displayName, modelOverride, description, examples]. `examples` is V2's
+// agent frontmatter list of example team-knowledge files (ported verbatim).
 const AGENTS = [
   [
     'aidlc-architect-agent',
     'Architect Agent',
     'opus',
     'Solutions architect: application design, domain modelling, NFR patterns, component design.',
+    ['tech-stack.md', 'infrastructure-preferences.md'],
   ],
   [
     'aidlc-aws-platform-agent',
     'AWS Platform Agent',
     'opus',
     'AWS solutions architect: infrastructure design, environment provisioning, cloud-native patterns.',
+    ['account-structure.md', 'service-limits.md'],
   ],
   [
     'aidlc-compliance-agent',
     'Compliance Agent',
     'opus',
     'GRC analyst: compliance mapping, data classification, risk assessment.',
+    ['data-governance.md', 'audit-requirements.md'],
   ],
   [
     'aidlc-delivery-agent',
     'Delivery Agent',
     'sonnet',
     'Engineering manager: team formation, Bolt sequencing, phase handoffs.',
+    ['sprint-cadence.md', 'definition-of-done.md'],
   ],
   [
     'aidlc-design-agent',
     'Design Agent',
     'opus',
     'UX/UI designer: wireframing, interaction design, accessibility, design systems.',
+    ['design-system.md', 'accessibility.md'],
   ],
   [
     'aidlc-developer-agent',
     'Developer Agent',
     'opus',
     'Senior developer: code generation, reverse engineering, data modelling.',
+    ['db-conventions.md', 'error-handling.md'],
   ],
   [
     'aidlc-devsecops-agent',
     'DevSecOps Agent',
     'opus',
     'Security engineer: threat modelling, security requirements, scanning.',
+    ['security-baseline.md', 'compliance-rules.md'],
   ],
   [
     'aidlc-operations-agent',
     'Operations Agent',
     'sonnet',
     'SRE: observability, incident response, operational optimization.',
+    ['monitoring.md', 'incident-response.md'],
   ],
   [
     'aidlc-pipeline-deploy-agent',
     'Pipeline & Deploy Agent',
     'sonnet',
     'CI/CD engineer: pipeline configuration, deployment strategy, releases.',
+    ['pipeline-standards.md', 'deployment-gates.md'],
   ],
   [
     'aidlc-product-agent',
     'Product Agent',
     'opus',
     'Product manager / business analyst: requirements, user stories, market research.',
+    ['roadmap.md', 'personas.md'],
   ],
   [
     'aidlc-quality-agent',
     'Quality Agent',
     'opus',
     'QA lead: test strategy, test case design, quality gates, performance validation.',
+    ['test-strategy.md', 'coverage-requirements.md'],
+  ],
+  // Reviewers (V2 `v2-unified` HEAD). Clean-room critics — they do NOT inherit
+  // the builder's reasoning; they read only the artifact, the stage definition,
+  // and the Q&A, then return a binary READY/NOT-READY verdict. Tools are
+  // read-only (no Task) so a reviewer can never spawn or mutate code.
+  [
+    'aidlc-requirements-reviewer-agent',
+    'Requirements Reviewer',
+    'opus',
+    'Reviews requirements artifacts for completeness, coherence, and traceability. Finds gaps and unstated assumptions.',
+    [],
+  ],
+  [
+    'aidlc-architecture-reviewer-agent',
+    'Architecture Reviewer',
+    'opus',
+    'Reviews technical design artifacts for completeness, coherence, and architectural soundness. Finds broken cross-references and oversimplifications.',
+    [],
+  ],
+  [
+    'aidlc-code-reviewer-agent',
+    'Code Reviewer',
+    'opus',
+    'Reviews generated code for correctness, quality, and adherence to the design it implements.',
+    [],
   ],
 ];
 
-const agentBlock = ([id, displayName, modelOverride, description]) => ({
+const agentBlock = ([id, displayName, modelOverride, description, examples]) => ({
   type: 'AGENT',
   id,
   name: displayName,
@@ -100,6 +139,7 @@ const agentBlock = ([id, displayName, modelOverride, description]) => ({
   description,
   modelOverride,
   disallowedTools: 'Task',
+  examples: examples ?? [],
 });
 
 // ─── Scopes (9) ───
@@ -185,6 +225,54 @@ const sensorBlock = ([id, command, category, matches, timeoutSeconds, descriptio
   timeoutSeconds,
 });
 
+// ─── Reviewer sensors (3) ── the llm-judged half of Compartment-2 verification.
+// A reviewer is the realized form of an `llm-judged` sensor: a clean-room
+// sub-agent (reviewerAgent) that returns a binary READY/NOT-READY verdict,
+// looping up to maxIterations before escalating. validationTools are the
+// deterministic instruments it runs to inform (not decide) its judgment.
+// [id, reviewerAgent, category, matches, validationTools, description].
+const REVIEWERS = [
+  [
+    'requirements-review',
+    'aidlc-requirements-reviewer-agent',
+    'quality-judgment',
+    '**/aidlc-docs/**/requirements*.md',
+    [],
+    'Reviews requirements for completeness, coherence, and traceability.',
+  ],
+  [
+    'architecture-review',
+    'aidlc-architecture-reviewer-agent',
+    'quality-judgment',
+    '**/aidlc-docs/**',
+    ['bun {{HARNESS_DIR}}/tools/aidlc-validate-domain-model.ts'],
+    'Reviews design artifacts for architectural soundness and broken cross-references.',
+  ],
+  [
+    'code-review',
+    'aidlc-code-reviewer-agent',
+    'quality-judgment',
+    '**/*.{ts,tsx,js,py}',
+    [],
+    'Reviews generated code for correctness and adherence to the design.',
+  ],
+];
+
+const reviewerBlock = ([id, reviewerAgent, category, matches, validationTools, description]) => ({
+  type: 'SENSOR',
+  id,
+  name: titleCase(id),
+  description,
+  mode: 'llm-judged',
+  // llm-judged checks escalate to a human; they are gates, not advisory.
+  severity: 'blocking',
+  reviewerAgent,
+  maxIterations: 2,
+  validationTools,
+  category,
+  matches,
+});
+
 // ─── Rules (7) ── layered guardrails on V2's five-layer chain
 // (org → team → project → phase → stage). org/team/project are universal
 // defaults that apply to every stage; a phase rule attaches to a stage when its
@@ -238,6 +326,10 @@ const ruleBlock = ([id, layer, phase, summary]) => ({
   layer,
   // The phase a phase-layer rule attaches to (null for the universal layers).
   phase,
+  // The sensor this rule's feedforward half pairs with (the feedback half), or
+  // null. Shipped V2 rule files leave this empty — the relation exists in the
+  // model and is seeded null, ready for a fork to populate.
+  pairing: null,
   description: summary,
 });
 
@@ -1216,6 +1308,18 @@ const CONDITIONAL_ON = {
   'user-stories': { 'business-overview': 'brownfield', 'component-inventory': 'brownfield' },
 };
 
+// The reviewer (llm-judged) sensor each MVP stage runs after its builder
+// finishes. V2's reviewer-agent MVP scope (wip/reviewer-agent-spec.md): the
+// foundational + expensive-to-reverse design stages. Other stages have no
+// reviewer (the deterministic sensors remain their only Compartment-2 check).
+const STAGE_REVIEWERS = {
+  'requirements-analysis': 'requirements-review',
+  'application-design': 'architecture-review',
+  'functional-design': 'architecture-review',
+  'infrastructure-design': 'architecture-review',
+  'code-generation': 'code-review',
+};
+
 const stageBlock = (s) => ({
   type: 'STAGE',
   id: s.id,
@@ -1255,7 +1359,10 @@ const stageBlock = (s) => ({
   // V2's real default (human-gated), not a misleading all-autonomous reading.
   // The gate is a per-stage default a fork can relax.
   c2_verification: {
-    sensors: s.sensors,
+    // A stage's deterministic sensors plus its reviewer (the llm-judged sensor),
+    // if any. Both are referenced by sensor id — the modes live on the SENSOR
+    // blocks. The reviewer is appended last so it runs after the cheap checks.
+    sensors: STAGE_REVIEWERS[s.id] ? [...s.sensors, STAGE_REVIEWERS[s.id]] : s.sensors,
     humanValidation: s.phase === 'initialization' ? 'none' : 'required',
   },
   c3_learning: { captures: ['human-corrections'], promotionTargets: ['guardrail-library'] },
@@ -1369,6 +1476,7 @@ const BASELINE_BLOCKS = [
   ...AGENTS.map(agentBlock),
   ...SCOPES.map(scopeBlock),
   ...SENSORS.map(sensorBlock),
+  ...REVIEWERS.map(reviewerBlock),
   ...RULES.map(ruleBlock),
   ...STAGES.map(stageBlock),
   ...ARTIFACTS,

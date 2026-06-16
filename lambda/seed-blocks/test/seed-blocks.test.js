@@ -120,6 +120,33 @@ describe('seed-blocks handler', () => {
     expect(reqEdge.conditionalOn).toBeUndefined();
   });
 
+  it('seeds the reviewer (llm-judged) verification half and wires it onto MVP stages', async () => {
+    await handler({});
+    // The 3 reviewers are llm-judged sensors bound to a reviewer agent.
+    const review = tableStore.get('BLOCK#SYSTEM#SENSOR#architecture-review|V#latest');
+    expect(review.mode).toBe('llm-judged');
+    expect(review.reviewerAgent).toBe('aidlc-architecture-reviewer-agent');
+    expect(review.maxIterations).toBe(2);
+    // The reviewer agents exist as their own AGENT blocks.
+    expect(tableStore.has('BLOCK#SYSTEM#AGENT#aidlc-architecture-reviewer-agent|V#latest')).toBe(
+      true,
+    );
+    // application-design runs the architecture reviewer after its det. sensors.
+    const stage = tableStore.get('BLOCK#SYSTEM#STAGE#application-design|V#latest');
+    expect(stage.c2_verification.sensors).toContain('architecture-review');
+    // A non-MVP stage carries no reviewer — only its deterministic sensors.
+    const intent = tableStore.get('BLOCK#SYSTEM#STAGE#intent-capture|V#latest');
+    expect(intent.c2_verification.sensors).not.toContain('architecture-review');
+  });
+
+  it('seeds agent examples and a null rule pairing (reserved relation)', async () => {
+    await handler({});
+    const agent = tableStore.get('BLOCK#SYSTEM#AGENT#aidlc-product-agent|V#latest');
+    expect(agent.examples).toEqual(['roadmap.md', 'personas.md']);
+    const rule = tableStore.get('BLOCK#SYSTEM#RULE#aidlc-org|V#latest');
+    expect(rule.pairing).toBeNull();
+  });
+
   it('seeds each baseline workflow as a SYSTEM partition (META + phases + placements)', async () => {
     await handler({});
     for (const wf of BASELINE_WORKFLOWS) {

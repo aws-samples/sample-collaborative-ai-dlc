@@ -61,10 +61,19 @@ export interface ScopeRef {
   scopeTenant: string;
 }
 
-// A rule layered into the workflow. `layer` is the five-layer chain
-// (org/team/project/phase/stage); the compiler resolves which stages it applies
-// to (universal layers everywhere, phase rules by matching phase).
-export type RuleLayer = 'org' | 'team' | 'project' | 'phase' | 'stage';
+// A rule layered into the workflow. `layer` is V2's resolution chain
+// (org → team → team-learnings → project → project-learnings → phase → stage);
+// the compiler resolves which stages it applies to (universal layers — incl. the
+// two learnings tiers — everywhere, phase rules by matching phase). The
+// learnings tiers are accrued by the runtime learning loop and ship empty.
+export type RuleLayer =
+  | 'org'
+  | 'team'
+  | 'team-learnings'
+  | 'project'
+  | 'project-learnings'
+  | 'phase'
+  | 'stage';
 
 export interface RuleRef {
   ruleId: string;
@@ -91,7 +100,7 @@ export interface CompiledWorkflow {
   };
   graph: {
     nodes: { stageId: string; phasePath: string | null; order: number }[];
-    edges: { from: string; to: string; artifact?: string; kind: 'data' | 'requires' }[];
+    edges: { from: string; to: string; artifact?: string; kind: 'data' | 'requires' | 'blocks' }[];
     cycles: string[];
     danglingConsumes: { stageId: string; artifact: string }[];
     orphanProduces: { artifact: string; producedBy: string[] }[];
@@ -101,6 +110,7 @@ export interface CompiledWorkflow {
   rules: {
     universal: { ruleId: string; layer: RuleLayer }[];
     phaseRules: Record<string, string[]>;
+    pairings: { ruleId: string; sensor: string }[];
     perStage: Record<string, { universal: string[]; phase: string[] }>;
     unresolved: string[];
   };

@@ -143,6 +143,53 @@ tier), which slice 4's learnings queue consumes.
 
 ---
 
+## V2 completeness re-validation (against `v2-unified` HEAD + the 2.0 PDF)
+
+A second deep pass re-cloned `awslabs/aidlc-workflows@v2-unified` and read it
+block-by-block against the **AI-DLC Workflows 2.0** PDF spec. The structural
+model holds: counts match exactly (32 stages 3/7/8/7/7, 11 agents, 9 scopes, 4
+sensors, 7 rules, 56 methodology-knowledge docs), the `aidlc-v2` workflow
+compiles to a 32-node acyclic graph with zero dangling consumes and zero
+unresolved refs, and the SYSTEM-baseline + fork/clone + per-tenant override
+design directly satisfies the PDF's extensibility contract (Principle 8:
+additive / replacement / composable variations). **A customer can read the
+default V2 definition and author their own variation today.**
+
+The pass surfaced gaps, triaged with the product owner into three tiers:
+
+### Tier 1 — model gaps to close now (this slice)
+
+| Gap                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Source                                                                 | Decision                                                                                      | Change                                                                                                                                                                                                                                                                                                                                                           |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- | --------------------------------------------------------------------------------------------------------- |
+| **LLM-judged verification half is not first-class.** The PDF (p.5, L215–233) makes Compartment-2 self-verification two co-equal modes — _LLM instructions_ and _Executables_. We ship the deterministic half (SENSOR) richly; the LLM-judged half was only an unused enum value. `v2-unified` HEAD (today) adds a **Reviewer** spec: a clean-room sub-agent with its own persona, a validation-tool list, an iteration cap, and a binary READY/NOT-READY verdict. | `wip/reviewer-agent-spec.md`, PDF Principle 4                          | **Model the reviewer as the realized form of an `llm-judged` SENSOR** (not a new block type). | A `mode: 'llm-judged'` sensor carries `reviewerAgent`, `maxIterations`, `validationTools`; a stage references it from `c2_verification.sensors` like any other sensor. Adds 3 reviewer AGENTs + 3 reviewer SENSORs to the baseline, wired onto the 5 MVP reviewer stages (requirements-analysis, application/functional/infrastructure-design, code-generation). |
+| **Learnings rule tiers absent.** V2's resolver runs `org → team → team-learnings → project → project-learnings → phase` (priorities 0/1/1.5/2/2.5/3); our RULE `layer` enum stopped at org/team/project/phase/stage.                                                                                                                                                                                                                                              | `docs/reference/08-rule-system.md:93`, `core/tools/aidlc-graph.ts:301` | **Reserve room now** (model, not runtime write-back).                                         | Add `team-learnings` + `project-learnings` to the RULE layer enum and the workflow ruleRef layers; the rule compiler treats them as universal layers and sorts the resolved chain by layer priority. They ship empty (accrued at runtime), mirroring the empty team-knowledge tier.                                                                              |
+| **rule ↔ sensor `pairing` relation missing.** A rule may declare `pairing: <sensor-id>` (or `feedforward-only`) to bind the feedforward (rule) half to the feedback (sensor) half of the control loop.                                                                                                                                                                                                                                                            | `docs/reference/08-rule-system.md:59`, `07-sensor-system.md:209`       | **Address now.**                                                                              | Add an optional `pairing` field to RULE; the rule compiler reports unresolved/unpaired sensors. (Shipped V2 rule files leave it empty, so the baseline seeds it null.)                                                                                                                                                                                           |
+| **`blocks_on` vs `requires` conflation.** V2 reserves `blocks_on` to split a completion-only ordering edge from a data-dependency edge; both we and V2-today overload `requires`.                                                                                                                                                                                                                                                                                 | `stage-definition.md:170`                                              | **Address now.**                                                                              | Add `blocksOn` to a stage's `c1_definition`; the stage-graph compiler emits `kind: 'blocks'` ordering edges (counted in cycle detection, distinct from `data`/`requires`).                                                                                                                                                                                       |
+| **AGENT `examples` + optional `tools` fields.** Every V2 agent frontmatter carries `examples:` (example team-knowledge files) and may carry a `tools:` allowlist.                                                                                                                                                                                                                                                                                                 | `core/agents/*.md`, `05-agent-system.md:32`                            | **Address now.**                                                                              | Add `examples` (string[]) and `tools` (optional string[]) to AGENT; seed `examples` verbatim from V2.                                                                                                                                                                                                                                                            |
+| **`mode: agent-team` reserved value unguarded.** V2's stage `mode` enum is `inline                                                                                                                                                                                                                                                                                                                                                                                | subagent                                                               | agent-team`(the third reserved). Our STAGE never validated`mode`.                             | `stage-definition.md:55`                                                                                                                                                                                                                                                                                                                                         | **Address now.** | Validate STAGE `mode` against the three-value enum so `agent-team` round-trips as a known-reserved value. |
+
+### Tier 2 — confirmed-reserved, backlog (no model change)
+
+These are reserved-but-unused in the shipped V2 source too, so they are
+documented here and added to the roadmap rather than built: stage `when:`
+(structured `condition` replacement, supersedes `conditional_on`), stage
+`on_failure:` (declarative recovery), sensor/loop `timeout`/`retry` budgets, the
+reserved `stage`-layer rule binding (`aidlc-stage-<slug>.md`), and the authored
+`bolt_dag` edge block embedded in the units-generation artifact (a runtime-graph
+input, not an authoring primitive).
+
+### Tier 3 — confirmed out of scope (unchanged)
+
+The "skill" primitive is V2's command/runner packaging (generated _from_ the
+stage graph — `aidlc-<slug>` stage-runners, `aidlc-<scope>` scope-runners, the
+base conductor, and 3 hand-authored session skills); our STAGE-as-atomic-unit
+is the correct authoring primitive and a "skill block" would be a packaging
+concern, not a model gap. All runtime entities (state machine, Bolts, swarm,
+worktrees, audit trail, directives, conductor persona, `memory.md` diary)
+remain execution-time and out of this authoring model.
+
+---
+
 ## Slice 1 — Library block CRUD
 
 The 9 library block types (Skill, Grouping, Agent, Scope, Guardrail,

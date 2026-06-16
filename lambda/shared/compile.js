@@ -79,6 +79,10 @@ const stageProduces = (stage) => {
 const stageConsumes = (stage) =>
   (stage?.c1_definition?.inputs ?? []).map((i) => (typeof i === 'object' ? i.artifact : i));
 const stageRequires = (stage) => stage?.c1_definition?.requires ?? [];
+// V2's reserved `blocks_on`: a completion-only ordering edge (run after, but no
+// data is read). Distinct from `requires` (data dependency) and from the
+// produces→consumes data edges. Empty on every shipped stage today.
+const stageBlocksOn = (stage) => stage?.c1_definition?.blocksOn ?? [];
 
 // `artifactsById` is the optional artifact registry (id → ARTIFACT block).
 // When supplied, it lets us tell a deliberate terminal output (a registered
@@ -125,6 +129,13 @@ const compileStageGraph = (placements, stagesById, artifactsById = null) => {
       if (!placed.has(req)) continue;
       edges.push({ from: req, to: p.stageId, kind: 'requires' });
       ensure(p.stageId).add(req);
+    }
+    // blocks_on: completion-only ordering edge (no data read). Also constrains
+    // run order, so it participates in cycle detection alongside requires.
+    for (const dep of stageBlocksOn(stage)) {
+      if (!placed.has(dep)) continue;
+      edges.push({ from: dep, to: p.stageId, kind: 'blocks' });
+      ensure(p.stageId).add(dep);
     }
   }
 
@@ -206,14 +217,27 @@ const detectCycle = (adjacency) => {
 };
 
 // ── Rule resolution ──
-// V2's five-layer chain (org → team → project → phase → stage). The universal
-// layers (org/team/project) apply to every stage; a `phase`-layer rule attaches
-// to a placement when its rule's `phase` matches the stage's phase (pull
-// authoring — the rule binds via the stage's existing phase declaration). Takes
-// the workflow's ruleRefs, the rule library blocks they point at (keyed by id),
-// and the stage blocks (for each placement's phase). Returns the universal layer
-// stack plus a per-stage applicable-rule list, and flags refs that don't resolve.
-const UNIVERSAL_LAYERS = ['org', 'team', 'project'];
+// V2's resolution chain (org → team → team-learnings → project →
+// project-learnings → phase → stage). The universal layers (org/team/project
+// plus the two interleaved learnings tiers) apply to every stage; a
+// `phase`-layer rule attaches to a placement when its rule's `phase` matches the
+// stage's phase (pull authoring — the rule binds via the stage's existing phase
+// declaration). Takes the workflow's ruleRefs, the rule library blocks they
+// point at (keyed by id), and the stage blocks (for each placement's phase).
+// Returns the priority-ordered universal layer stack, a per-stage applicable-rule
+// list, the rule→sensor pairings, and flags refs that don't resolve.
+const UNIVERSAL_LAYERS = ['org', 'team', 'team-learnings', 'project', 'project-learnings'];
+// Resolved-order priority (mirrors blocks.js RULE_LAYER_PRIORITY); learnings
+// tiers sort immediately after their parent tier.
+const LAYER_PRIORITY = {
+  org: 0,
+  team: 1,
+  'team-learnings': 1.5,
+  project: 2,
+  'project-learnings': 2.5,
+  phase: 3,
+  stage: 4,
+};
 
 const compileRules = (placements, ruleRefs, rulesById, stagesById) => {
   const resolved = ruleRefs.map((ref) => rulesById[ref.ruleId]).filter(Boolean);
@@ -221,13 +245,23 @@ const compileRules = (placements, ruleRefs, rulesById, stagesById) => {
 
   const universal = resolved
     .filter((rule) => UNIVERSAL_LAYERS.includes(rule.layer))
-    .map((rule) => ({ ruleId: rule.blockId ?? rule.id, layer: rule.layer }));
+    .map((rule) => ({ ruleId: rule.blockId ?? rule.id, layer: rule.layer }))
+    .toSorted((a, b) => (LAYER_PRIORITY[a.layer] ?? 99) - (LAYER_PRIORITY[b.layer] ?? 99));
 
   // Phase rules indexed by the phase they attach to.
   const phaseRules = {};
   for (const rule of resolved) {
     if (rule.layer === 'phase' && rule.phase) {
       (phaseRules[rule.phase] ??= []).push(rule.blockId ?? rule.id);
+    }
+  }
+
+  // rule → sensor pairings (the feedforward/feedback control-loop link). A
+  // `feedforward-only` sentinel means the rule deliberately needs no sensor.
+  const pairings = [];
+  for (const rule of resolved) {
+    if (rule.pairing) {
+      pairings.push({ ruleId: rule.blockId ?? rule.id, sensor: rule.pairing });
     }
   }
 
@@ -243,7 +277,7 @@ const compileRules = (placements, ruleRefs, rulesById, stagesById) => {
     };
   }
 
-  return { universal, phaseRules, perStage, unresolved };
+  return { universal, phaseRules, pairings, perStage, unresolved };
 };
 
 const compileWorkflow = (
