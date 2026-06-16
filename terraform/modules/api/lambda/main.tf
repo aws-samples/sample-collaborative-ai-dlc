@@ -422,6 +422,9 @@ resource "aws_iam_role_policy" "blocks" {
           "dynamodb:UpdateItem",
           "dynamodb:DeleteItem",
           "dynamodb:Query",
+          # Scan: the seed-blocks reseed mode scans for SYSTEM-owned partitions
+          # to clear before rewriting the baseline (rare admin op, small table).
+          "dynamodb:Scan",
           "dynamodb:BatchGetItem",
           "dynamodb:BatchWriteItem",
         ]

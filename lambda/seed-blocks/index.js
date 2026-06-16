@@ -9,17 +9,39 @@
 //     --function-name $(terraform output -raw seed_blocks_lambda_name) \
 //     --payload '{"dryRun":true}' --cli-binary-format raw-in-base64-out /tmp/out.json
 //
-//   # Apply
+//   # Apply (insert-only: adds blocks new since the last run, skips existing)
 //   aws lambda invoke \
 //     --function-name $(terraform output -raw seed_blocks_lambda_name) \
 //     --payload '{}' --cli-binary-format raw-in-base64-out /tmp/out.json
 //
-// Idempotent: a conditional write skips any block that already exists, so
-// re-running only inserts blocks added to the baseline since the last run.
+//   # Reseed (refresh the whole SYSTEM baseline — see below)
+//   aws lambda invoke \
+//     --function-name $(terraform output -raw seed_blocks_lambda_name) \
+//     --payload '{"reseed":true}' --cli-binary-format raw-in-base64-out /tmp/out.json
+//
+// Two modes:
+//   - Default (insert-only): a conditional write skips any block that already
+//     exists, so re-running only inserts blocks added to the baseline since the
+//     last run. Safe, but it CANNOT update an existing baseline block — once a
+//     SYSTEM partition exists, later field changes are silently skipped, and
+//     rows under a since-renamed SK (e.g. a stage's old GROUPING# items) are
+//     left orphaned because the insert path can't reach them.
+//   - reseed: the vendor baseline re-ships on every deploy, so it must be
+//     re-seedable. `{"reseed":true}` first DELETES every SYSTEM-owned partition
+//     (BLOCK#SYSTEM#* and WF#SYSTEM#*), clearing orphans, then writes the full
+//     current baseline fresh. Scoped to SYSTEM only — customer forks live in
+//     BLOCK#<tenant># / WF#<tenant># partitions and are never scanned or
+//     touched. Combine with dryRun to preview the clear without deleting.
+//
 // Stays deployed indefinitely — OSS forks are on their own upgrade timelines.
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
+import {
+  DynamoDBDocumentClient,
+  PutCommand,
+  ScanCommand,
+  BatchWriteCommand,
+} from '@aws-sdk/lib-dynamodb';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { SYSTEM_TENANT } from '../shared/tenant.js';
 import { BASELINE_BLOCKS, BASELINE_WORKFLOWS } from '../shared/baseline-blocks.js';
@@ -118,11 +140,62 @@ const buildWorkflowItems = (wf, now) => {
   return { meta, children: [...phases, ...placements, ...ruleRefs] };
 };
 
+// Deletes every SYSTEM-owned partition (BLOCK#SYSTEM#* and WF#SYSTEM#*) so the
+// baseline can be rewritten fresh. Scoped by a FilterExpression on the pk
+// prefix — customer forks (BLOCK#<tenant>#, WF#<tenant>#) are never matched.
+// A Scan is acceptable here: this is a rarely-run admin op on a small table,
+// not a hot path. Returns the count of deleted items.
+const clearSystemPartitions = async (dryRun) => {
+  const keys = [];
+  let lastKey;
+  do {
+    const page = await ddb.send(
+      new ScanCommand({
+        TableName: blocksTable(),
+        FilterExpression: 'begins_with(pk, :blockSys) OR begins_with(pk, :wfSys)',
+        ExpressionAttributeValues: {
+          ':blockSys': `BLOCK#${SYSTEM_TENANT}#`,
+          ':wfSys': `WF#${SYSTEM_TENANT}#`,
+        },
+        ProjectionExpression: 'pk, sk',
+        ExclusiveStartKey: lastKey,
+      }),
+    );
+    for (const item of page.Items || []) keys.push({ pk: item.pk, sk: item.sk });
+    lastKey = page.LastEvaluatedKey;
+  } while (lastKey);
+
+  if (dryRun) return keys.length;
+
+  // BatchWrite deletes in chunks of 25.
+  for (let i = 0; i < keys.length; i += 25) {
+    const group = keys.slice(i, i + 25);
+    await ddb.send(
+      new BatchWriteCommand({
+        RequestItems: {
+          [blocksTable()]: group.map((Key) => ({ DeleteRequest: { Key } })),
+        },
+      }),
+    );
+  }
+  return keys.length;
+};
+
 export const handler = async (event = {}) => {
   const dryRun = event?.dryRun === true;
+  const reseed = event?.reseed === true;
   const now = new Date().toISOString();
   const seeded = [];
   const skipped = [];
+
+  // Reseed: clear the SYSTEM baseline first so the writes below land fresh.
+  // After the clear, no SYSTEM pk exists, so the attribute_not_exists guards
+  // below all pass and write the full current baseline. (On dryRun we only
+  // count what would be cleared; nothing is deleted or written.)
+  let cleared = 0;
+  if (reseed) {
+    cleared = await clearSystemPartitions(dryRun);
+  }
 
   for (const block of BASELINE_BLOCKS) {
     const ref = block.body ? buildBodyRef(block.body) : null;
@@ -197,6 +270,8 @@ export const handler = async (event = {}) => {
 
   const result = {
     dryRun,
+    reseed,
+    cleared,
     total: BASELINE_BLOCKS.length + BASELINE_WORKFLOWS.length,
     seeded,
     skipped,

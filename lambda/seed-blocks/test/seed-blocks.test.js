@@ -1,6 +1,11 @@
 import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
+import {
+  DynamoDBDocumentClient,
+  PutCommand,
+  ScanCommand,
+  BatchWriteCommand,
+} from '@aws-sdk/lib-dynamodb';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { BASELINE_BLOCKS, BASELINE_WORKFLOWS } from '../../shared/baseline-blocks.js';
 
@@ -36,6 +41,30 @@ const installFakes = () => {
       throw condFail();
     }
     tableStore.set(k, { ...item });
+    return {};
+  });
+
+  // Scan with the reseed FilterExpression: return only SYSTEM-owned partitions
+  // (BLOCK#SYSTEM# / WF#SYSTEM#), mirroring the begins_with filter. Single page.
+  ddbMock.on(ScanCommand).callsFake(() => {
+    const items = [...tableStore.values()].filter(
+      (i) => i.pk.startsWith('BLOCK#SYSTEM#') || i.pk.startsWith('WF#SYSTEM#'),
+    );
+    return { Items: items.map((i) => ({ pk: i.pk, sk: i.sk })) };
+  });
+
+  ddbMock.on(BatchWriteCommand).callsFake((input) => {
+    for (const reqs of Object.values(input.RequestItems)) {
+      for (const req of reqs) {
+        if (req.DeleteRequest) {
+          const { pk, sk } = req.DeleteRequest.Key;
+          tableStore.delete(keyOf(pk, sk));
+        } else if (req.PutRequest) {
+          const item = req.PutRequest.Item;
+          tableStore.set(keyOf(item.pk, item.sk), { ...item });
+        }
+      }
+    }
     return {};
   });
 
@@ -165,5 +194,92 @@ describe('seed-blocks handler', () => {
         expect(tableStore.has(`${pk}|PLACEMENT#${p.stageId}`)).toBe(true);
       }
     }
+  });
+});
+
+describe('seed-blocks reseed mode', () => {
+  // Simulate the production bug: a stale baseline from an earlier seed. The
+  // insert-only path skips it forever; reseed must refresh it.
+  const seedStale = () => {
+    // A stale stage block missing fields the current baseline adds.
+    tableStore.set('BLOCK#SYSTEM#STAGE#application-design|V#latest', {
+      pk: 'BLOCK#SYSTEM#STAGE#application-design',
+      sk: 'V#latest',
+      tenantId: 'SYSTEM',
+      blockType: 'STAGE',
+      blockId: 'application-design',
+      name: 'Application Design',
+      condition: undefined, // the stale row had no condition
+    });
+    // A stale workflow partition with the pre-rename GROUPING# rows + 1 placement.
+    tableStore.set('WF#SYSTEM#aidlc-v2|META', {
+      pk: 'WF#SYSTEM#aidlc-v2',
+      sk: 'META',
+      tenantId: 'SYSTEM',
+      name: 'AI-DLC v2 (default)',
+    });
+    tableStore.set('WF#SYSTEM#aidlc-v2|GROUPING#01#ideation', {
+      pk: 'WF#SYSTEM#aidlc-v2',
+      sk: 'GROUPING#01#ideation',
+    });
+    // A customer fork that must NEVER be touched by a SYSTEM reseed.
+    tableStore.set('BLOCK#default#STAGE#my-fork|V#latest', {
+      pk: 'BLOCK#default#STAGE#my-fork',
+      sk: 'V#latest',
+      tenantId: 'default',
+      name: 'My Fork',
+    });
+    tableStore.set('WF#default#my-wf|META', {
+      pk: 'WF#default#my-wf',
+      sk: 'META',
+      tenantId: 'default',
+    });
+  };
+
+  it('refreshes a stale baseline the insert-only path would skip', async () => {
+    seedStale();
+    // Insert-only first: proves the bug — the stale stage is left as-is.
+    await handler({});
+    const afterInsert = tableStore.get('BLOCK#SYSTEM#STAGE#application-design|V#latest');
+    expect(afterInsert.condition).toBeUndefined();
+    expect(afterInsert.leadAgent).toBeUndefined();
+
+    // Reseed: the stage is rewritten from the current baseline (now has fields).
+    const result = await handler({ reseed: true });
+    expect(result.reseed).toBe(true);
+    expect(result.cleared).toBeGreaterThan(0);
+    expect(result.skipped).toHaveLength(0); // nothing skipped — partitions were cleared first
+    const refreshed = tableStore.get('BLOCK#SYSTEM#STAGE#application-design|V#latest');
+    expect(refreshed.leadAgent).toBe('aidlc-architect-agent');
+    expect(refreshed.condition).toMatch(/^Execute when new components/);
+  });
+
+  it('clears orphaned rows under since-renamed SKs (old GROUPING#) and rebuilds PHASE#', async () => {
+    seedStale();
+    await handler({ reseed: true });
+    // The orphaned pre-rename row is gone; the current PHASE# tree is present.
+    expect(tableStore.has('WF#SYSTEM#aidlc-v2|GROUPING#01#ideation')).toBe(false);
+    expect(tableStore.has('WF#SYSTEM#aidlc-v2|PHASE#02#ideation')).toBe(true);
+    // And the full 32-placement set landed (was 1 in the stale partition).
+    const placements = [...tableStore.keys()].filter((k) =>
+      k.startsWith('WF#SYSTEM#aidlc-v2|PLACEMENT#'),
+    );
+    expect(placements.length).toBe(BASELINE_WORKFLOWS[0].placements.length);
+  });
+
+  it('never touches non-SYSTEM (customer fork) partitions', async () => {
+    seedStale();
+    await handler({ reseed: true });
+    expect(tableStore.get('BLOCK#default#STAGE#my-fork|V#latest').name).toBe('My Fork');
+    expect(tableStore.has('WF#default#my-wf|META')).toBe(true);
+  });
+
+  it('dry-run reseed reports the clear count but deletes nothing', async () => {
+    seedStale();
+    const before = tableStore.size;
+    const result = await handler({ reseed: true, dryRun: true });
+    expect(result.dryRun).toBe(true);
+    expect(result.cleared).toBeGreaterThan(0);
+    expect(tableStore.size).toBe(before); // nothing deleted or written
   });
 });

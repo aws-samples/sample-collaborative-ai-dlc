@@ -38,8 +38,15 @@ echo "Applying changes..."
 terraform apply tfplan
 rm -f tfplan
 
-echo "Applying AI-DLC default workflow and building blocks"
-aws lambda invoke --function-name "$(cd "$TF_DIR" && terraform output -raw seed_blocks_lambda_name)" --payload '{}' --cli-binary-format raw-in-base64-out /tmp/out.json
+# Reseed the SYSTEM baseline (vendor-owned blocks + default workflow). reseed
+# clears the existing SYSTEM partitions and rewrites them from the current
+# baseline, so a deploy that changed baseline-blocks.js actually takes effect —
+# the default insert-only mode would skip every already-existing block. Scoped
+# to SYSTEM only; customer forks (per-tenant partitions) are never touched.
+echo "Applying AI-DLC default workflow and building blocks (reseed)"
+aws lambda invoke --function-name "$(cd "$TF_DIR" && terraform output -raw seed_blocks_lambda_name)" --payload '{"reseed":true}' --cli-binary-format raw-in-base64-out /tmp/out.json
+cat /tmp/out.json
+echo ""
 echo "✅ AI-DLC default workflow & building blocks applied!"
 
 echo "✅ Deployment complete!"
