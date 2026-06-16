@@ -225,11 +225,6 @@ const putGroupings = async (event, res, tenant, workflowId) => {
     if (err) return res(400, { error: err });
   }
 
-  const existing = await queryPartition(tenant, workflowId, {
-    skBeginsWith: 'GROUPING#',
-    projection: 'pk, sk',
-  });
-  const deletes = existing.map((i) => ({ DeleteRequest: { Key: { pk: i.pk, sk: i.sk } } }));
   const puts = input.groupings.map((node) => ({
     PutRequest: {
       Item: {
@@ -245,6 +240,19 @@ const putGroupings = async (event, res, tenant, workflowId) => {
       },
     },
   }));
+
+  // Only delete groupings that the new tree no longer contains. A node whose
+  // key is unchanged is just overwritten by its Put — a key may not appear in
+  // both a delete and a put of the same BatchWrite (DynamoDB rejects it as a
+  // duplicate), and re-putting is an idempotent upsert anyway.
+  const nextSks = new Set(puts.map((p) => p.PutRequest.Item.sk));
+  const existing = await queryPartition(tenant, workflowId, {
+    skBeginsWith: 'GROUPING#',
+    projection: 'pk, sk',
+  });
+  const deletes = existing
+    .filter((i) => !nextSks.has(i.sk))
+    .map((i) => ({ DeleteRequest: { Key: { pk: i.pk, sk: i.sk } } }));
   await batchWrite([...deletes, ...puts]);
   const items = await queryPartition(tenant, workflowId);
   return res(200, composeWorkflow(tenant, items));
@@ -403,7 +411,9 @@ export const handler = async (event) => {
     if (method === 'POST') return await createWorkflow(event, res, tenant);
     return res(405, { error: 'Method not allowed' });
   } catch (err) {
-    console.error('workflows handler error:', err?.name || 'error');
+    // Log name + message (no PII in these handlers) so failures are diagnosable
+    // from CloudWatch without a redeploy.
+    console.error('workflows handler error:', err?.name || 'error', '-', err?.message || '');
     return res(500, { error: 'Internal server error' });
   }
 };

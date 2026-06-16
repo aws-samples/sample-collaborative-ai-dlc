@@ -53,6 +53,21 @@ const installFakes = () => {
   ddbMock.on(BatchWriteCommand).callsFake((input) => {
     for (const [table, requests] of Object.entries(input.RequestItems)) {
       if (table !== BLOCKS_TABLE) continue;
+      // DynamoDB rejects a BatchWrite that references the same key more than
+      // once (e.g. a delete + put of the same key). Mirror that so tests catch
+      // the collision instead of silently coalescing it.
+      const seen = new Set();
+      for (const req of requests) {
+        const key = req.PutRequest
+          ? keyOf(req.PutRequest.Item.pk, req.PutRequest.Item.sk)
+          : keyOf(req.DeleteRequest.Key.pk, req.DeleteRequest.Key.sk);
+        if (seen.has(key)) {
+          const e = new Error('Provided list of item keys contains duplicates');
+          e.name = 'ValidationException';
+          throw e;
+        }
+        seen.add(key);
+      }
       for (const req of requests) {
         if (req.PutRequest) {
           const item = req.PutRequest.Item;
@@ -167,6 +182,68 @@ describe('workflows handler', () => {
     const nested = res.body.groupings.find((g) => g.path === '01.02');
     expect(nested.parentPath).toBe('01');
     expect(nested.order).toBe(2);
+  });
+
+  it('adds a second grouping when one already exists (no delete+put key collision)', async () => {
+    await createWorkflow({ id: 'wf', name: 'WF' });
+    // First tree: one grouping.
+    await handler(
+      event({
+        method: 'PUT',
+        workflowId: 'wf',
+        path: 'groupings',
+        body: { groupings: [{ groupingId: 'ideation', path: '01', kind: 'phase' }] },
+      }),
+    );
+    // Second tree: keep the first (unchanged key) and add a second. The
+    // unchanged node must not appear in both a delete and a put of one
+    // BatchWrite — that previously triggered a ValidationException → 500.
+    const res = parse(
+      await handler(
+        event({
+          method: 'PUT',
+          workflowId: 'wf',
+          path: 'groupings',
+          body: {
+            groupings: [
+              { groupingId: 'ideation', path: '01', kind: 'phase' },
+              { groupingId: 'construction', path: '02', kind: 'phase' },
+            ],
+          },
+        }),
+      ),
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.groupings.map((g) => g.groupingId)).toEqual(['ideation', 'construction']);
+  });
+
+  it('removes a grouping when the new tree omits it', async () => {
+    await createWorkflow({ id: 'wf', name: 'WF' });
+    await handler(
+      event({
+        method: 'PUT',
+        workflowId: 'wf',
+        path: 'groupings',
+        body: {
+          groupings: [
+            { groupingId: 'ideation', path: '01', kind: 'phase' },
+            { groupingId: 'construction', path: '02', kind: 'phase' },
+          ],
+        },
+      }),
+    );
+    const res = parse(
+      await handler(
+        event({
+          method: 'PUT',
+          workflowId: 'wf',
+          path: 'groupings',
+          body: { groupings: [{ groupingId: 'construction', path: '01', kind: 'phase' }] },
+        }),
+      ),
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.groupings.map((g) => g.groupingId)).toEqual(['construction']);
   });
 
   it('rejects a malformed grouping path', async () => {
