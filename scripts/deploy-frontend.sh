@@ -2,6 +2,11 @@
 
 set -e
 
+# Disable the AWS CLI v2 pager so commands like `cloudfront create-invalidation`
+# print their JSON result and return immediately instead of opening it in `less`
+# (which would otherwise wait for the user to press `q`).
+export AWS_PAGER=""
+
 ENVIRONMENT=${1:-dev}
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TF_DIR="$SCRIPT_DIR/../terraform"
