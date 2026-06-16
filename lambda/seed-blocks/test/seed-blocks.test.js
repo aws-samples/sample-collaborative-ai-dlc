@@ -105,6 +105,21 @@ describe('seed-blocks handler', () => {
     expect(tableStore.size).toBe(sizeAfterFirst);
   });
 
+  it('seeds the V2 stage authored fields (condition, brownfield conditional_on, prose)', async () => {
+    await handler({});
+    // application-design carries a condition, brownfield-only consume edges,
+    // and the human Inputs/Outputs prose — the A2 lossless round-trip fields.
+    const stage = tableStore.get('BLOCK#SYSTEM#STAGE#application-design|V#latest');
+    expect(stage.condition).toMatch(/^Execute when new components/);
+    expect(stage.c1_definition.inputsProse).toBeTruthy();
+    expect(stage.c1_definition.outputsProse).toBeTruthy();
+    const archEdge = stage.c1_definition.inputs.find((i) => i.artifact === 'architecture');
+    expect(archEdge.conditionalOn).toBe('brownfield');
+    // A greenfield-unconditional consume carries no conditionalOn.
+    const reqEdge = stage.c1_definition.inputs.find((i) => i.artifact === 'requirements');
+    expect(reqEdge.conditionalOn).toBeUndefined();
+  });
+
   it('seeds each baseline workflow as a SYSTEM partition (META + phases + placements)', async () => {
     await handler({});
     for (const wf of BASELINE_WORKFLOWS) {

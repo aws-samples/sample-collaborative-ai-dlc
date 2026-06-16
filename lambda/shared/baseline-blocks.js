@@ -961,11 +961,263 @@ const STAGES = [
   },
 ];
 
+// V2 stage prose (condition + the human Inputs/Outputs lines), keyed by stage
+// id. Ported verbatim from the v2-unified stage frontmatter so a stage
+// round-trips losslessly. Kept as a side table rather than inlined into the
+// compact STAGES tuples to keep those readable.
+const STAGE_PROSE = {
+  'application-design': {
+    condition:
+      'Execute when new components or services are needed, or service layer design is required. Skip when changes are modifications to existing components only.',
+    inputs:
+      'aidlc-docs/inception/requirements-analysis/requirements.md, aidlc-docs/inception/user-stories/stories.md (if produced), RE artifacts (if brownfield)',
+    outputs:
+      'aidlc-docs/inception/application-design/components.md, aidlc-docs/inception/application-design/component-methods.md, aidlc-docs/inception/application-design/services.md, aidlc-docs/inception/application-design/component-dependency.md, aidlc-docs/inception/application-design/decisions.md',
+  },
+  'approval-handoff': {
+    condition:
+      'Always executes — compiles all Ideation artifacts into initiative brief for approval',
+    inputs:
+      'All Ideation phase artifacts (intent, market research, feasibility, scope, team, mockups)',
+    outputs:
+      'aidlc-docs/ideation/approval-handoff/initiative-brief.md, aidlc-docs/ideation/approval-handoff/decision-log.md, aidlc-docs/ideation/approval-handoff/approval-handoff-questions.md',
+  },
+  'build-and-test': {
+    condition: 'Always executes once after all per-unit stages are finished.',
+    inputs: 'ALL code generation outputs across all units',
+    outputs:
+      'aidlc-docs/construction/build-and-test/ (build-instructions.md, unit-test-instructions.md, integration-test-instructions.md, performance-test-instructions.md, security-test-instructions.md, build-and-test-summary.md, test-results.md)',
+  },
+  'ci-pipeline': {
+    condition:
+      'Execute when CI pipeline needs creation or significant modification. Skip if CI already exists and is adequate.',
+    inputs:
+      'Code generation output from code-generation stage, build/test results from build-and-test stage',
+    outputs:
+      'aidlc-docs/construction/ci-pipeline/ci-config.md, aidlc-docs/construction/ci-pipeline/quality-gates.md, aidlc-docs/construction/ci-pipeline/ci-pipeline-questions.md',
+  },
+  'code-generation': {
+    condition: 'Always executes for every unit in the execution plan.',
+    inputs: 'ALL prior design artifacts for this unit',
+    outputs:
+      'application code + aidlc-docs/construction/{unit-name}/code-generation/ (code-generation-plan.md, code-summary.md)',
+  },
+  'delivery-planning': {
+    condition:
+      'Always executes — capstone Inception stage, produces the detailed execution plan for Construction and Operation',
+    inputs: 'All Inception artifacts (requirements, stories, mockups, architecture, units)',
+    outputs:
+      'aidlc-docs/inception/delivery-planning/bolt-plan.md, aidlc-docs/inception/delivery-planning/team-allocation.md, aidlc-docs/inception/delivery-planning/risk-and-sequencing-rationale.md, aidlc-docs/inception/delivery-planning/external-dependency-map.md, aidlc-docs/inception/delivery-planning/delivery-planning-questions.md',
+  },
+  'deployment-execution': {
+    condition: 'Execute after deployment pipeline and environment are ready',
+    inputs:
+      'CD pipeline config from deployment-pipeline stage, provisioned environments from environment-provisioning stage, built artifacts from Construction',
+    outputs:
+      'aidlc-docs/operation/deployment-execution/deployment-log.md, aidlc-docs/operation/deployment-execution/smoke-test-results.md, aidlc-docs/operation/deployment-execution/health-check-report.md, aidlc-docs/operation/deployment-execution/deployment-execution-questions.md',
+  },
+  'deployment-pipeline': {
+    condition: 'Execute when CD pipeline needs creation or significant modification',
+    inputs:
+      'CI pipeline config from ci-pipeline stage, infrastructure design from infrastructure-design stage',
+    outputs:
+      'aidlc-docs/operation/deployment-pipeline/cd-config.md, aidlc-docs/operation/deployment-pipeline/deployment-strategy.md, aidlc-docs/operation/deployment-pipeline/rollback-runbook.md, aidlc-docs/operation/deployment-pipeline/deployment-pipeline-questions.md',
+  },
+  'environment-provisioning': {
+    condition: 'Execute when AWS environments need provisioning or validation',
+    inputs:
+      'Infrastructure design from infrastructure-design stage, CD pipeline config from deployment-pipeline stage',
+    outputs:
+      'aidlc-docs/operation/environment-provisioning/environment-inventory.md, aidlc-docs/operation/environment-provisioning/validation-report.md, aidlc-docs/operation/environment-provisioning/environment-provisioning-questions.md',
+  },
+  feasibility: {
+    condition:
+      'Execute when there are integration constraints, regulatory requirements, or significant technical uncertainty. Skip for trivial changes with no technical risk.',
+    inputs:
+      'Intent statement from intent-capture stage, market research from market-research stage (if executed)',
+    outputs:
+      'aidlc-docs/ideation/feasibility/feasibility-assessment.md, aidlc-docs/ideation/feasibility/constraint-register.md, aidlc-docs/ideation/feasibility/raid-log.md, aidlc-docs/ideation/feasibility/feasibility-questions.md',
+  },
+  'feedback-optimization': {
+    condition: 'Execute when ongoing operational monitoring and optimization are needed',
+    inputs: 'All Operation phase artifacts, production monitoring data',
+    outputs:
+      'aidlc-docs/operation/feedback-optimization/slo-report.md, aidlc-docs/operation/feedback-optimization/cost-analysis.md, aidlc-docs/operation/feedback-optimization/drift-report.md, aidlc-docs/operation/feedback-optimization/feedback-loop.md, aidlc-docs/operation/feedback-optimization/feedback-optimization-questions.md',
+  },
+  'functional-design': {
+    condition:
+      'New data models, complex business logic, or business rules need design. Skip if simple logic changes with no new business logic.',
+    inputs:
+      'unit-of-work.md, unit-of-work-story-map.md, requirements.md, application design artifacts',
+    outputs:
+      'aidlc-docs/construction/{unit-name}/functional-design/ (business-logic-model.md, business-rules.md, domain-entities.md, CONDITIONAL: frontend-components.md)',
+  },
+  'incident-response': {
+    condition: 'Execute when operational runbooks and incident response procedures are needed',
+    inputs:
+      'Observability setup from observability-setup stage, NFR design from nfr-design stage, infrastructure design from infrastructure-design stage',
+    outputs:
+      'aidlc-docs/operation/incident-response/runbooks.md, aidlc-docs/operation/incident-response/incident-plan.md, aidlc-docs/operation/incident-response/escalation-matrix.md, aidlc-docs/operation/incident-response/incident-response-questions.md',
+  },
+  'infrastructure-design': {
+    condition:
+      'Infrastructure services need mapping, deployment architecture required, or cloud resources needed. Skip if no infrastructure changes and infrastructure already defined.',
+    inputs: 'NFR design artifacts, application design, functional design',
+    outputs:
+      'aidlc-docs/construction/{unit-name}/infrastructure-design/ (deployment-architecture.md, infrastructure-services.md, monitoring-design.md, cicd-pipeline.md, CONDITIONAL: shared-infrastructure.md)',
+  },
+  'intent-capture': {
+    condition: "First stage of every workflow — establishes the initiative's foundation",
+    inputs: "User's project description ($ARGUMENTS), scope selection",
+    outputs:
+      'aidlc-docs/ideation/intent-capture/intent-statement.md, aidlc-docs/ideation/intent-capture/stakeholder-map.md, aidlc-docs/ideation/intent-capture/intent-capture-questions.md',
+  },
+  'market-research': {
+    condition:
+      'Execute when initiative has external market positioning or build-vs-buy considerations. Skip for internal tools, bug fixes, or refactors.',
+    inputs: 'Intent statement from intent-capture stage',
+    outputs:
+      'aidlc-docs/ideation/market-research/competitive-analysis.md, aidlc-docs/ideation/market-research/market-trends.md, aidlc-docs/ideation/market-research/build-vs-buy.md, aidlc-docs/ideation/market-research/market-research-questions.md',
+  },
+  'nfr-design': {
+    condition:
+      'NFR Requirements was executed and NFR patterns need design. Skip if NFR Requirements was skipped.',
+    inputs: 'NFR requirements artifacts, functional design artifacts',
+    outputs:
+      'aidlc-docs/construction/{unit-name}/nfr-design/ (performance-design.md, security-design.md, scalability-design.md, reliability-design.md, logical-components.md)',
+  },
+  'nfr-requirements': {
+    condition:
+      'Performance requirements, security considerations, scalability concerns, or tech stack selection needed. Skip if no NFR requirements and tech stack already determined.',
+    inputs: 'functional design artifacts, requirements.md, RE artifacts',
+    outputs:
+      'aidlc-docs/construction/{unit-name}/nfr-requirements/ (performance-requirements.md, security-requirements.md, scalability-requirements.md, reliability-requirements.md, tech-stack-decisions.md)',
+  },
+  'observability-setup': {
+    condition: 'Execute when monitoring, dashboards, alarms, or tracing need configuration',
+    inputs:
+      'NFR design from nfr-design stage, infrastructure design from infrastructure-design stage, deployed application',
+    outputs:
+      'aidlc-docs/operation/observability-setup/dashboards.md, aidlc-docs/operation/observability-setup/alarms.md, aidlc-docs/operation/observability-setup/slo-config.md, aidlc-docs/operation/observability-setup/log-queries.md, aidlc-docs/operation/observability-setup/tracing-config.md, aidlc-docs/operation/observability-setup/anomaly-config.md, aidlc-docs/operation/observability-setup/observability-setup-questions.md',
+  },
+  'performance-validation': {
+    condition: 'Execute when NFR performance targets need validation under load',
+    inputs:
+      'NFR requirements from nfr-requirements stage, NFR design from nfr-design stage, deployed application, observability data from observability-setup stage',
+    outputs:
+      'aidlc-docs/operation/performance-validation/load-test-plan.md, aidlc-docs/operation/performance-validation/test-results.md, aidlc-docs/operation/performance-validation/nfr-validation-matrix.md, aidlc-docs/operation/performance-validation/performance-validation-questions.md',
+  },
+  'practices-discovery': {
+    condition:
+      'Always rerun for freshness. Brownfield discovers from evidence + reverse-engineering artifacts. Greenfield prompts user via structured questions using org.md defaults.',
+    inputs: "aidlc-docs/aidlc-state.md + (brownfield) reverse-engineering's 8 artifacts",
+    outputs:
+      "aidlc-docs/inception/practices-discovery/ (4 artifacts: team-practices.md, discovered-rules.md, evidence.md, practices-discovery-timestamp.md). On affirmation, content is promoted to the harness rule layer's aidlc-team.md and aidlc-project.md.",
+  },
+  'refined-mockups': {
+    condition:
+      'Execute when user-facing UI exists and rough mockups were produced in Ideation; for APIs, refine interaction diagrams',
+    inputs:
+      'Rough mockups from rough-mockups stage, user stories from user-stories stage, requirements from requirements-analysis stage',
+    outputs:
+      'aidlc-docs/inception/refined-mockups/mockups.md, aidlc-docs/inception/refined-mockups/interaction-spec.md, aidlc-docs/inception/refined-mockups/design-system-mapping.md, aidlc-docs/inception/refined-mockups/accessibility-checklist.md, aidlc-docs/inception/refined-mockups/refined-mockups-questions.md',
+  },
+  'requirements-analysis': {
+    condition: 'Always executes — depth scales with project complexity',
+    inputs: "RE artifacts (if brownfield), user's project description (from audit.md)",
+    outputs:
+      'aidlc-docs/inception/requirements-analysis/requirements.md, aidlc-docs/inception/requirements-analysis/requirements-analysis-questions.md',
+  },
+  'reverse-engineering': {
+    condition:
+      'Execute when project is brownfield. Always rerun for freshness. Skip for greenfield projects.',
+    inputs: 'aidlc-docs/aidlc-state.md',
+    outputs:
+      'aidlc-docs/inception/reverse-engineering/ (9 artifacts: business-overview.md, architecture.md, code-structure.md, api-documentation.md, component-inventory.md, technology-stack.md, dependencies.md, code-quality-assessment.md, reverse-engineering-timestamp.md)',
+  },
+  'rough-mockups': {
+    condition:
+      'Execute when user-facing UI is part of the initiative; for API/backend, produce system interaction diagrams. Skip for non-UI, API-only, or infrastructure-only initiatives.',
+    inputs: 'Intent statement, scope definition, intent backlog',
+    outputs:
+      'aidlc-docs/ideation/rough-mockups/wireframes.md, aidlc-docs/ideation/rough-mockups/user-flow.md, aidlc-docs/ideation/rough-mockups/rough-mockups-questions.md',
+  },
+  'scope-definition': {
+    condition: 'Always executes — defines the scope boundary and prioritized backlog',
+    inputs: 'Intent statement, feasibility assessment, constraint register',
+    outputs:
+      'aidlc-docs/ideation/scope-definition/scope-document.md, aidlc-docs/ideation/scope-definition/intent-backlog.md, aidlc-docs/ideation/scope-definition/scope-definition-questions.md',
+  },
+  'state-init': {
+    condition: 'Creates full populated state file and determines routing — auto-proceeds',
+    inputs: 'workspace classification from workspace-detection, scope from orchestrator',
+    outputs: 'aidlc-docs/aidlc-state.md (full populated version)',
+  },
+  'team-formation': {
+    condition:
+      'Execute when team composition, capacity, or mob planning is relevant. Skip for solo developer or small team projects.',
+    inputs: 'Scope definition, intent backlog, feasibility assessment',
+    outputs:
+      'aidlc-docs/ideation/team-formation/team-assessment.md, aidlc-docs/ideation/team-formation/skill-matrix.md, aidlc-docs/ideation/team-formation/mob-composition.md, aidlc-docs/ideation/team-formation/team-formation-questions.md',
+  },
+  'units-generation': {
+    condition:
+      'Always executes when in scope. Produces the dependency DAG that Stage 2.8 Delivery Planning consumes for Bolt sequencing. In the compiled scope grid, 2.7 and 2.8 travel together — both EXECUTE or both SKIP per scope.',
+    inputs:
+      'aidlc-docs/inception/application-design/ (all design artifacts), aidlc-docs/inception/requirements-analysis/requirements.md, aidlc-docs/inception/user-stories/stories.md (if produced)',
+    outputs:
+      'aidlc-docs/inception/units-generation/unit-of-work.md, aidlc-docs/inception/units-generation/unit-of-work-dependency.md, aidlc-docs/inception/units-generation/unit-of-work-story-map.md',
+  },
+  'user-stories': {
+    condition:
+      'Execute when user-facing features, multiple personas, complex business logic, or cross-team work is involved. Skip for pure refactoring, isolated bug fixes, infrastructure-only changes, or developer tooling.',
+    inputs:
+      'aidlc-docs/inception/requirements-analysis/requirements.md, RE artifacts (if brownfield)',
+    outputs:
+      'aidlc-docs/inception/user-stories/stories.md, aidlc-docs/inception/user-stories/personas.md, aidlc-docs/inception/user-stories/user-stories-assessment.md',
+  },
+  'workspace-detection': {
+    condition: 'Scans and classifies workspace — auto-proceeds (no approval gate)',
+    inputs: 'none (scans filesystem)',
+    outputs: 'workspace classification (greenfield/brownfield), technology stack detection',
+  },
+  'workspace-scaffold': {
+    condition: 'Scaffolds aidlc-docs/ directory tree — idempotent (skips existing dirs/files)',
+    inputs: 'none (first stage after session start)',
+    outputs: 'aidlc-docs/ directory tree (knowledge dirs, stage artifact dirs, verification dir)',
+  },
+};
+
+// Consume edges that only apply to brownfield (existing-codebase) runs, keyed
+// by stage id then artifact. V2 frontmatter expresses this as
+// `consumes[].conditional_on: brownfield`; greenfield runs skip them.
+const CONDITIONAL_ON = {
+  'application-design': { architecture: 'brownfield', 'component-inventory': 'brownfield' },
+  'nfr-requirements': { 'technology-stack': 'brownfield' },
+  'practices-discovery': {
+    'code-structure': 'brownfield',
+    'technology-stack': 'brownfield',
+    dependencies: 'brownfield',
+    'code-quality-assessment': 'brownfield',
+    architecture: 'brownfield',
+    'business-overview': 'brownfield',
+  },
+  'requirements-analysis': {
+    'business-overview': 'brownfield',
+    architecture: 'brownfield',
+    'code-structure': 'brownfield',
+  },
+  'user-stories': { 'business-overview': 'brownfield', 'component-inventory': 'brownfield' },
+};
+
 const stageBlock = (s) => ({
   type: 'STAGE',
   id: s.id,
   name: titleCase(s.id),
   defaultGrouping: s.phase,
+  // V2's branching rationale (free-form prose the orchestrator reads to decide
+  // whether a CONDITIONAL stage runs). Required in V2 frontmatter.
+  condition: STAGE_PROSE[s.id]?.condition ?? '',
   leadAgent: s.leadAgent,
   supportAgents: s.support ?? [],
   mode: s.mode,
@@ -973,10 +1225,20 @@ const stageBlock = (s) => ({
   forEach: s.forEach ?? null,
   c1_definition: {
     purpose: '',
-    inputs: s.consumes.map(([artifact, required]) => ({ artifact, required })),
+    // Structured consume edges. `conditional_on` marks an edge that only
+    // applies to a brownfield run (V2's consumes[].conditional_on); absent for
+    // unconditional consumes.
+    inputs: s.consumes.map(([artifact, required]) => {
+      const conditionalOn = CONDITIONAL_ON[s.id]?.[artifact];
+      return conditionalOn ? { artifact, required, conditionalOn } : { artifact, required };
+    }),
     outputs: s.produces,
     intermediates: [],
     requires: s.requires,
+    // V2's human Inputs/Outputs prose lines, preserved verbatim for a lossless
+    // round-trip (distinct from the structured inputs/outputs above).
+    inputsProse: STAGE_PROSE[s.id]?.inputs ?? '',
+    outputsProse: STAGE_PROSE[s.id]?.outputs ?? '',
   },
   // Sensors are referenced by id; their modes live on the SENSOR blocks. The
   // baseline ships only deterministic sensors.

@@ -109,12 +109,18 @@ keystone. The following gaps were closed in this pass:
 | Scope missing test axis | `SCOPE` gained an optional **`testStrategy`** (orthogonal to `depth`, defaults to it). Only `workshop` overrides — Standard depth, Minimal tests.                                                                                                                                                                                                                                                                                        |
 | Knowledge enum-only     | **`KNOWLEDGE`** modeled with a `tier` (`methodology`\|`team`) + `agentRef` (an agent id or `shared`). The 56 methodology-tier docs from V2's `core/knowledge/` are seeded per-agent; the team tier ships empty (it is the execution-time / learning-loop write-back seam, not authored).                                                                                                                                                 |
 
-**Deferred to their own focused passes** (deliberately, with the product owner):
+**STAGE field re-port (A2) — done.** All 32 stages now carry V2's previously
+dropped authored fields, ported verbatim from the v2-unified frontmatter: a
+top-level `condition` (branching rationale), `consumes[].conditionalOn`
+(`brownfield` — 14 edges across the 5 brownfield-aware stages), and the human
+`inputs`/`outputs` prose preserved as `c1_definition.inputsProse` /
+`outputsProse` (kept separate from the structured consume/produce edges so the
+compiler is unaffected). The prose + conditional-on data live in `STAGE_PROSE`
+and `CONDITIONAL_ON` side tables in `baseline-blocks.js`. A stage now
+round-trips V2 frontmatter losslessly.
 
-- **STAGE field re-port (A2):** V2 stages carry 14 authored fields; we still
-  drop `condition` (required branching prose), `consumes[].conditional_on`
-  (`brownfield`\|`greenfield`), and the `inputs`/`outputs` prose lines. Adding
-  them is a mechanical re-port from the 32 V2 stage files.
+**Deferred to its own focused pass** (deliberately, with the product owner):
+
 - **RULE wiring (B):** the 7 rule blocks are seeded but inert — `ruleRefSk`
   exists in `shared/workflows.js` but no route writes it and the compiler
   ignores rules. Wiring = rule-ref routes + compose + a `compileRules` view
