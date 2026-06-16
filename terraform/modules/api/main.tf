@@ -220,7 +220,7 @@ resource "aws_api_gateway_deployment" "main" {
       aws_api_gateway_resource.block_item_body.id,
       aws_api_gateway_resource.workflows.id,
       aws_api_gateway_resource.workflow.id,
-      aws_api_gateway_resource.workflow_groupings.id,
+      aws_api_gateway_resource.workflow_phases.id,
       aws_api_gateway_resource.workflow_placements.id,
       aws_api_gateway_resource.workflow_placement.id,
       aws_api_gateway_resource.workflow_scopes.id,

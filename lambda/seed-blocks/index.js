@@ -24,7 +24,7 @@ import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { SYSTEM_TENANT } from '../shared/tenant.js';
 import { BASELINE_BLOCKS, BASELINE_WORKFLOWS } from '../shared/baseline-blocks.js';
 import { LATEST, blockPk, versionSk, catalogGsi1Pk, buildBodyRef } from '../shared/blocks.js';
-import { META, workflowPk, groupingSk, placementSk, workflowGsi1Pk } from '../shared/workflows.js';
+import { META, workflowPk, phaseSk, placementSk, workflowGsi1Pk } from '../shared/workflows.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const s3 = new S3Client({});
@@ -58,7 +58,7 @@ const buildItems = (block, bodyRef, now) => {
 };
 
 // Builds the items for a baseline workflow partition: the META header (carrying
-// the workflow catalog GSI1 keys), the grouping-tree refs, and the skill
+// the workflow catalog GSI1 keys), the inline phase tree, and the stage
 // placements. References the baseline blocks; never copies them.
 const buildWorkflowItems = (wf, now) => {
   const pk = workflowPk(SYSTEM_TENANT, wf.id);
@@ -78,12 +78,12 @@ const buildWorkflowItems = (wf, now) => {
     GSI1PK: workflowGsi1Pk(SYSTEM_TENANT),
     GSI1SK: wf.name,
   };
-  const groupings = (wf.groupings ?? []).map((node) => ({
+  const phases = (wf.phases ?? []).map((node) => ({
     pk,
-    sk: groupingSk(node.path, node.groupingId),
-    type: 'GroupingRef',
-    groupingId: node.groupingId,
-    groupingTenant: node.groupingTenant ?? SYSTEM_TENANT,
+    sk: phaseSk(node.path, node.phaseId),
+    type: 'Phase',
+    phaseId: node.phaseId,
+    name: node.name ?? node.phaseId,
     kind: node.kind ?? 'phase',
     path: node.path,
     parentPath: node.path.includes('.') ? node.path.split('.').slice(0, -1).join('.') : null,
@@ -91,16 +91,16 @@ const buildWorkflowItems = (wf, now) => {
   }));
   const placements = (wf.placements ?? []).map((p) => ({
     pk,
-    sk: placementSk(p.skillId),
-    type: 'SkillPlacement',
-    skillId: p.skillId,
-    skillTenant: p.skillTenant ?? SYSTEM_TENANT,
+    sk: placementSk(p.stageId),
+    type: 'StagePlacement',
+    stageId: p.stageId,
+    stageTenant: p.stageTenant ?? SYSTEM_TENANT,
     pinnedVersion: p.pinnedVersion ?? null,
-    groupingPath: p.groupingPath ?? null,
+    phasePath: p.phasePath ?? null,
     order: typeof p.order === 'number' ? p.order : 0,
     scopeMembership: p.scopeMembership ?? {},
   }));
-  return { meta, children: [...groupings, ...placements] };
+  return { meta, children: [...phases, ...placements] };
 };
 
 export const handler = async (event = {}) => {
@@ -151,7 +151,7 @@ export const handler = async (event = {}) => {
   }
 
   // Workflows: the "from default" fork sources. Guard on the META item; only
-  // when it is newly created do we write the grouping/placement children, so
+  // when it is newly created do we write the phase/placement children, so
   // re-running never disturbs an existing baseline workflow.
   for (const wf of BASELINE_WORKFLOWS) {
     if (dryRun) {

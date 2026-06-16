@@ -31,13 +31,13 @@ import { resolveTenant, SYSTEM_TENANT } from '../shared/tenant.js';
 import {
   META,
   workflowPk,
-  groupingSk,
+  phaseSk,
   placementSk,
   scopeRefSk,
   workflowGsi1Pk,
   validateId,
   validateName,
-  validateGroupingNode,
+  validatePhaseNode,
 } from '../shared/workflows.js';
 import { blockPk, LATEST } from '../shared/blocks.js';
 import { compileWorkflow } from '../shared/compile.js';
@@ -213,29 +213,30 @@ const deleteWorkflow = async (event, res, tenant, workflowId) => {
   return res(204, {});
 };
 
-// Replace the whole grouping tree in one write: the editor sends the full
-// ordered, nestable node list, so we delete the old GROUPING# items and write
-// the new ones. Whole-tree replace keeps ordering/nesting trivially correct.
-const putGroupings = async (event, res, tenant, workflowId) => {
+// Replace the whole phase tree in one write: the editor sends the full
+// ordered, nestable node list, so we write the new PHASE# items and delete any
+// the new tree dropped. Phases are defined inline (id + name + kind), not
+// referenced from a library — so the node carries its own label.
+const putPhases = async (event, res, tenant, workflowId) => {
   if (tenant === SYSTEM_TENANT) return res(403, { error: 'SYSTEM workflows are read-only' });
   if (!(await loadMeta(tenant, workflowId))) return res(404, { error: 'Not found' });
   const input = parseBody(event);
-  if (input === undefined || !Array.isArray(input.groupings)) {
-    return res(400, { error: 'groupings must be an array' });
+  if (input === undefined || !Array.isArray(input.phases)) {
+    return res(400, { error: 'phases must be an array' });
   }
-  for (const node of input.groupings) {
-    const err = validateGroupingNode(node);
+  for (const node of input.phases) {
+    const err = validatePhaseNode(node);
     if (err) return res(400, { error: err });
   }
 
-  const puts = input.groupings.map((node) => ({
+  const puts = input.phases.map((node) => ({
     PutRequest: {
       Item: {
         pk: workflowPk(tenant, workflowId),
-        sk: groupingSk(node.path, node.groupingId),
-        type: 'GroupingRef',
-        groupingId: node.groupingId,
-        groupingTenant: node.groupingTenant ?? SYSTEM_TENANT,
+        sk: phaseSk(node.path, node.phaseId),
+        type: 'Phase',
+        phaseId: node.phaseId,
+        name: typeof node.name === 'string' ? node.name : node.phaseId,
         kind: node.kind ?? 'phase',
         path: node.path,
         parentPath: node.path.includes('.') ? node.path.split('.').slice(0, -1).join('.') : null,
@@ -244,13 +245,13 @@ const putGroupings = async (event, res, tenant, workflowId) => {
     },
   }));
 
-  // Only delete groupings that the new tree no longer contains. A node whose
-  // key is unchanged is just overwritten by its Put — a key may not appear in
-  // both a delete and a put of the same BatchWrite (DynamoDB rejects it as a
+  // Only delete phases the new tree no longer contains. A node whose key is
+  // unchanged is just overwritten by its Put — a key may not appear in both a
+  // delete and a put of the same BatchWrite (DynamoDB rejects it as a
   // duplicate), and re-putting is an idempotent upsert anyway.
   const nextSks = new Set(puts.map((p) => p.PutRequest.Item.sk));
   const existing = await queryPartition(tenant, workflowId, {
-    skBeginsWith: 'GROUPING#',
+    skBeginsWith: 'PHASE#',
     projection: 'pk, sk',
   });
   const deletes = existing
@@ -266,23 +267,23 @@ const addPlacement = async (event, res, tenant, workflowId) => {
   if (!(await loadMeta(tenant, workflowId))) return res(404, { error: 'Not found' });
   const input = parseBody(event);
   if (input === undefined) return res(400, { error: 'Invalid JSON body' });
-  const skillId = input.skillId;
-  if (typeof skillId !== 'string' || !skillId) return res(400, { error: 'skillId is required' });
+  const stageId = input.stageId;
+  if (typeof stageId !== 'string' || !stageId) return res(400, { error: 'stageId is required' });
 
-  const sk = placementSk(skillId);
+  const sk = placementSk(stageId);
   const existing = await ddb.send(
     new GetCommand({ TableName: blocksTable(), Key: { pk: workflowPk(tenant, workflowId), sk } }),
   );
-  if (existing.Item) return res(409, { error: 'Skill already placed' });
+  if (existing.Item) return res(409, { error: 'Stage already placed' });
 
-  const item = buildPlacementItem(tenant, workflowId, skillId, input);
+  const item = buildPlacementItem(tenant, workflowId, stageId, input);
   await ddb.send(new PutCommand({ TableName: blocksTable(), Item: item }));
   return res(201, placementToApi(item));
 };
 
-const updatePlacement = async (event, res, tenant, workflowId, skillId) => {
+const updatePlacement = async (event, res, tenant, workflowId, stageId) => {
   if (tenant === SYSTEM_TENANT) return res(403, { error: 'SYSTEM workflows are read-only' });
-  const sk = placementSk(skillId);
+  const sk = placementSk(stageId);
   const current = await ddb.send(
     new GetCommand({ TableName: blocksTable(), Key: { pk: workflowPk(tenant, workflowId), sk } }),
   );
@@ -290,14 +291,14 @@ const updatePlacement = async (event, res, tenant, workflowId, skillId) => {
   const input = parseBody(event);
   if (input === undefined) return res(400, { error: 'Invalid JSON body' });
 
-  const item = buildPlacementItem(tenant, workflowId, skillId, { ...current.Item, ...input });
+  const item = buildPlacementItem(tenant, workflowId, stageId, { ...current.Item, ...input });
   await ddb.send(new PutCommand({ TableName: blocksTable(), Item: item }));
   return res(200, placementToApi(item));
 };
 
-const deletePlacement = async (event, res, tenant, workflowId, skillId) => {
+const deletePlacement = async (event, res, tenant, workflowId, stageId) => {
   if (tenant === SYSTEM_TENANT) return res(403, { error: 'SYSTEM workflows are read-only' });
-  const sk = placementSk(skillId);
+  const sk = placementSk(stageId);
   const current = await ddb.send(
     new GetCommand({ TableName: blocksTable(), Key: { pk: workflowPk(tenant, workflowId), sk } }),
   );
@@ -348,8 +349,8 @@ const removeScopeRef = async (event, res, tenant, workflowId, scopeId) => {
   return res(204, {});
 };
 
-// ── Compiled views ── derive scope-grid + autonomy-profile + skill-graph from
-// the placements, scope refs, and the library Skill blocks they reference.
+// ── Compiled views ── derive scope-grid + autonomy-profile + stage-graph from
+// the placements, scope refs, and the library Stage blocks they reference.
 // Computed on demand (no cache yet); the pure compilers live in shared/compile.
 const getCompiled = async (event, res, tenant, workflowId) => {
   const resolved = await resolveWorkflow(tenant, workflowId);
@@ -359,42 +360,42 @@ const getCompiled = async (event, res, tenant, workflowId) => {
   const placements = items.filter((i) => i.sk.startsWith('PLACEMENT#')).map(placementToApi);
   const scopeSlugs = items.filter((i) => i.sk.startsWith('SCOPEREF#')).map((i) => i.scopeId);
 
-  // Batch-get the referenced Skill library blocks (V#latest), keyed by id.
-  const skillsById = await loadSkills(placements);
-  const compiled = compileWorkflow(placements, scopeSlugs, skillsById);
+  // Batch-get the referenced Stage library blocks (V#latest), keyed by id.
+  const stagesById = await loadStages(placements);
+  const compiled = compileWorkflow(placements, scopeSlugs, stagesById);
   return res(200, compiled);
 };
 
-// Resolve each placement's Skill block from its owning tenant (pinned version
+// Resolve each placement's Stage block from its owning tenant (pinned version
 // support is deferred — we read V#latest, which is what the editor shows).
-const loadSkills = async (placements) => {
+const loadStages = async (placements) => {
   const results = await Promise.all(
     placements.map((p) =>
       ddb.send(
         new GetCommand({
           TableName: blocksTable(),
-          Key: { pk: blockPk(p.skillTenant ?? SYSTEM_TENANT, 'SKILL', p.skillId), sk: LATEST },
+          Key: { pk: blockPk(p.stageTenant ?? SYSTEM_TENANT, 'STAGE', p.stageId), sk: LATEST },
         }),
       ),
     ),
   );
-  const skillsById = {};
+  const stagesById = {};
   for (const { Item } of results) {
-    if (Item) skillsById[Item.blockId] = Item;
+    if (Item) stagesById[Item.blockId] = Item;
   }
-  return skillsById;
+  return stagesById;
 };
 
 // ─── Shapers ───
 
-const buildPlacementItem = (tenant, workflowId, skillId, input) => ({
+const buildPlacementItem = (tenant, workflowId, stageId, input) => ({
   pk: workflowPk(tenant, workflowId),
-  sk: placementSk(skillId),
-  type: 'SkillPlacement',
-  skillId,
-  skillTenant: input.skillTenant ?? SYSTEM_TENANT,
+  sk: placementSk(stageId),
+  type: 'StagePlacement',
+  stageId,
+  stageTenant: input.stageTenant ?? SYSTEM_TENANT,
   pinnedVersion: input.pinnedVersion ?? null,
-  groupingPath: input.groupingPath ?? null,
+  phasePath: input.phasePath ?? null,
   order: typeof input.order === 'number' ? input.order : 0,
   scopeMembership:
     input.scopeMembership && typeof input.scopeMembership === 'object' ? input.scopeMembership : {},
@@ -414,9 +415,9 @@ const metaToApi = (item) => ({
   updatedAt: item.updatedAt,
 });
 
-const groupingToApi = (item) => ({
-  groupingId: item.groupingId,
-  groupingTenant: item.groupingTenant,
+const phaseToApi = (item) => ({
+  phaseId: item.phaseId,
+  name: item.name ?? item.phaseId,
   kind: item.kind,
   path: item.path,
   parentPath: item.parentPath ?? null,
@@ -424,10 +425,10 @@ const groupingToApi = (item) => ({
 });
 
 const placementToApi = (item) => ({
-  skillId: item.skillId,
-  skillTenant: item.skillTenant,
+  stageId: item.stageId,
+  stageTenant: item.stageTenant,
   pinnedVersion: item.pinnedVersion ?? null,
-  groupingPath: item.groupingPath ?? null,
+  phasePath: item.phasePath ?? null,
   order: item.order ?? 0,
   scopeMembership: item.scopeMembership ?? {},
 });
@@ -437,9 +438,9 @@ const scopeRefToApi = (item) => ({ scopeId: item.scopeId, scopeTenant: item.scop
 // Assemble the partition items into the composition the editor loads.
 const composeWorkflow = (owner, items) => {
   const meta = items.find((i) => i.sk === META);
-  const groupings = items
-    .filter((i) => i.sk.startsWith('GROUPING#'))
-    .map(groupingToApi)
+  const phases = items
+    .filter((i) => i.sk.startsWith('PHASE#'))
+    .map(phaseToApi)
     .toSorted((a, b) => a.path.localeCompare(b.path));
   const placements = items
     .filter((i) => i.sk.startsWith('PLACEMENT#'))
@@ -453,7 +454,7 @@ const composeWorkflow = (owner, items) => {
     ...(meta ? metaToApi(meta) : {}),
     owner,
     readOnly: owner === SYSTEM_TENANT,
-    groupings,
+    phases,
     placements,
     scopeRefs,
   };
@@ -468,21 +469,21 @@ export const handler = async (event) => {
   try {
     const method = event.httpMethod;
     const path = event.resource || event.path || '';
-    const { workflowId, skillId, scopeId } = event.pathParameters || {};
+    const { workflowId, stageId, scopeId } = event.pathParameters || {};
     const tenant = resolveTenant(getClaims(event));
 
-    if (path.endsWith('/placements/{skillId}')) {
-      if (method === 'PUT') return await updatePlacement(event, res, tenant, workflowId, skillId);
+    if (path.endsWith('/placements/{stageId}')) {
+      if (method === 'PUT') return await updatePlacement(event, res, tenant, workflowId, stageId);
       if (method === 'DELETE')
-        return await deletePlacement(event, res, tenant, workflowId, skillId);
+        return await deletePlacement(event, res, tenant, workflowId, stageId);
       return res(405, { error: 'Method not allowed' });
     }
     if (path.endsWith('/placements')) {
       if (method === 'POST') return await addPlacement(event, res, tenant, workflowId);
       return res(405, { error: 'Method not allowed' });
     }
-    if (path.endsWith('/groupings')) {
-      if (method === 'PUT') return await putGroupings(event, res, tenant, workflowId);
+    if (path.endsWith('/phases')) {
+      if (method === 'PUT') return await putPhases(event, res, tenant, workflowId);
       return res(405, { error: 'Method not allowed' });
     }
     if (path.endsWith('/scopes/{scopeId}')) {

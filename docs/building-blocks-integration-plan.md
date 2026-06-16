@@ -64,6 +64,38 @@ optimization, not a correctness need).
 The single-table + S3 pointer design makes slices 2–4 **additive** (new SK
 types), never rewrites.
 
+## V2 alignment audit (after slice 3)
+
+Before slice 4, the block model was validated against the real V2 source
+(`awslabs/aidlc-workflows`, `v2-unified` branch) and renamed to V2's canonical
+vocabulary so the model is understandable and can represent the whole
+methodology:
+
+| Was (abstraction) | Now (V2 canonical)                                                                                                  |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `SKILL`           | `STAGE` (atomic unit; V2's "skill" is a slash-command pack)                                                         |
+| `GROUPING` block  | **dropped** — phases are defined **inline** on the workflow (V2 treats a phase as a label, not a standalone object) |
+| `POSTCONDITION`   | `SENSOR` (deterministic check; `command` runs a Bun/TypeScript script)                                              |
+| `GUARDRAIL`       | `RULE` (layered org/team/project/phase)                                                                             |
+
+Other corrections: the Sensor editor now carries the full check contract
+(`mode`, `command`, `runtime`, `matches`, `severity`, `category`,
+`timeoutSeconds` + the script in the body); the Stage editor gained
+`condition`, `support_agents`, `for_each`. Workflow routes/keys renamed
+(`/groupings`→`/phases`, `{skillId}`→`{stageId}`, `groupingPath`→`phasePath`).
+
+**Validation harness:** the seed now ports the entire V2 default workflow — 32
+stages, 11 agents, 9 scopes, 4 sensors, 7 rules — into `baseline-blocks.js`,
+composed into the `aidlc-v2` workflow with 5 inline phases and 32 stage
+placements (each placement's `scopeMembership` transposed from the stage's V2
+`scopes:` list). Compiling it yields a 32-node, acyclic graph with **zero
+dangling consumes** and no unresolved agent/stage/sensor references — proving
+the building blocks can model V2 end-to-end. Known modeling boundary: V2's
+per-stage human-approval gates live in its stage-protocol, not in frontmatter,
+so the seeded autonomy profile reads all-self-halting; encoding protocol gates
+is a later refinement. Stage/agent/rule markdown **bodies** are also a deferred
+data-seam addition (only structured frontmatter is seeded today).
+
 ---
 
 ## Slice 1 — Library block CRUD

@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import {
   workflowsService,
   type Workflow,
-  type GroupingNodeInput,
+  type PhaseNodeInput,
   type CompiledWorkflow,
 } from '@/services/workflows';
 import { blocksService, type Block } from '@/services/blocks';
@@ -20,8 +20,7 @@ export default function WorkflowComposer() {
   const { workflowId } = useParams<{ workflowId: string }>();
 
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
-  const [skillLib, setSkillLib] = useState<Block[]>([]);
-  const [groupingLib, setGroupingLib] = useState<Block[]>([]);
+  const [stageLib, setStageLib] = useState<Block[]>([]);
   const [scopeLib, setScopeLib] = useState<Block[]>([]);
   const [compiled, setCompiled] = useState<CompiledWorkflow | null>(null);
   const [loading, setLoading] = useState(true);
@@ -34,16 +33,14 @@ export default function WorkflowComposer() {
     if (!workflowId) return;
     setLoading(true);
     try {
-      const [wf, skills, groupings, scopes, comp] = await Promise.all([
+      const [wf, stages, scopes, comp] = await Promise.all([
         workflowsService.get(workflowId),
-        blocksService.list('skill'),
-        blocksService.list('grouping'),
+        blocksService.list('stage'),
         blocksService.list('scope'),
         workflowsService.compiled(workflowId),
       ]);
       setWorkflow(wf);
-      setSkillLib(skills.blocks);
-      setGroupingLib(groupings.blocks);
+      setStageLib(stages.blocks);
       setScopeLib(scopes.blocks);
       setCompiled(comp);
     } catch (e) {
@@ -84,63 +81,62 @@ export default function WorkflowComposer() {
     }
   };
 
-  // ── Groupings (whole-tree replace) ──
-  const replaceGroupings = async (nodes: GroupingNodeInput[]) => {
+  // ── Phases (whole-tree replace; defined inline) ──
+  const replacePhases = async (nodes: PhaseNodeInput[]) => {
     if (!workflowId) return;
     try {
-      const updated = await workflowsService.putGroupings(workflowId, nodes);
+      const updated = await workflowsService.putPhases(workflowId, nodes);
       setWorkflow(updated);
-      flash('Grouping tree updated.');
+      flash('Phase tree updated.');
     } catch (e) {
       fail(e);
     }
   };
 
-  const addGrouping = (groupingId: string) => {
+  const existingPhases = () =>
+    (workflow?.phases ?? []).map((p) => ({
+      phaseId: p.phaseId,
+      name: p.name,
+      path: p.path,
+      kind: p.kind,
+    }));
+
+  // Add a new top-level phase inline (prompt for a kebab-case id + label).
+  const addPhase = () => {
     if (!workflow) return;
-    // Append as a new top-level node with the next two-digit order.
-    const topPaths = workflow.groupings.filter((g) => !g.path.includes('.')).map((g) => g.path);
-    const nextOrder = topPaths.length + 1;
-    const path = String(nextOrder).padStart(2, '0');
-    const lib = groupingLib.find((g) => g.id === groupingId);
-    const nodes: GroupingNodeInput[] = [
-      ...workflow.groupings.map((g) => ({
-        groupingId: g.groupingId,
-        path: g.path,
-        kind: g.kind,
-        groupingTenant: g.groupingTenant,
-      })),
-      { groupingId, path, kind: (lib?.kind as string) ?? 'phase' },
-    ];
-    replaceGroupings(nodes);
+    const phaseId = window.prompt('Phase id (kebab-case), e.g. ideation')?.trim();
+    if (!phaseId) return;
+    const phaseName = window.prompt('Phase name', phaseId)?.trim() || phaseId;
+    const topCount = workflow.phases.filter((p) => !p.path.includes('.')).length;
+    const path = String(topCount + 1).padStart(2, '0');
+    replacePhases([...existingPhases(), { phaseId, name: phaseName, path, kind: 'phase' }]);
   };
 
-  const removeGrouping = (path: string) => {
+  const removePhase = (path: string) => {
     if (!workflow) return;
     // Drop the node and any descendants (paths nested under it).
-    const nodes: GroupingNodeInput[] = workflow.groupings
-      .filter((g) => g.path !== path && !g.path.startsWith(`${path}.`))
-      .map((g) => ({ groupingId: g.groupingId, path: g.path, kind: g.kind }));
-    replaceGroupings(nodes);
+    replacePhases(
+      existingPhases().filter((p) => p.path !== path && !p.path.startsWith(`${path}.`)),
+    );
   };
 
   // ── Placements ──
-  const addPlacement = async (skillId: string) => {
+  const addPlacement = async (stageId: string) => {
     if (!workflowId) return;
     try {
-      await workflowsService.addPlacement(workflowId, { skillId });
+      await workflowsService.addPlacement(workflowId, { stageId });
       await load();
-      flash('Skill placed.');
+      flash('Stage placed.');
     } catch (e) {
       fail(e);
     }
   };
 
-  const setPlacementGrouping = async (skillId: string, groupingPath: string) => {
+  const setPlacementPhase = async (stageId: string, phasePath: string) => {
     if (!workflowId) return;
     try {
-      await workflowsService.updatePlacement(workflowId, skillId, {
-        groupingPath: groupingPath || null,
+      await workflowsService.updatePlacement(workflowId, stageId, {
+        phasePath: phasePath || null,
       });
       await load();
     } catch (e) {
@@ -148,10 +144,10 @@ export default function WorkflowComposer() {
     }
   };
 
-  const removePlacement = async (skillId: string) => {
+  const removePlacement = async (stageId: string) => {
     if (!workflowId) return;
     try {
-      await workflowsService.removePlacement(workflowId, skillId);
+      await workflowsService.removePlacement(workflowId, stageId);
       await load();
       flash('Placement removed.');
     } catch (e) {
@@ -182,12 +178,12 @@ export default function WorkflowComposer() {
 
   // Toggle one matrix cell: merge the new state into the placement's
   // scopeMembership and persist, then refresh the derived grid.
-  const toggleCell = async (skillId: string, scopeId: string, next: 'EXECUTE' | 'SKIP') => {
+  const toggleCell = async (stageId: string, scopeId: string, next: 'EXECUTE' | 'SKIP') => {
     if (!workflowId || !workflow) return;
-    const placement = workflow.placements.find((p) => p.skillId === skillId);
+    const placement = workflow.placements.find((p) => p.stageId === stageId);
     const membership = { ...placement?.scopeMembership, [scopeId]: next };
     try {
-      await workflowsService.updatePlacement(workflowId, skillId, { scopeMembership: membership });
+      await workflowsService.updatePlacement(workflowId, stageId, { scopeMembership: membership });
       await load();
     } catch (e) {
       fail(e);
@@ -203,10 +199,8 @@ export default function WorkflowComposer() {
     );
   }
 
-  const placedSkillIds = new Set(workflow.placements.map((p) => p.skillId));
-  const unplacedSkills = skillLib.filter((s) => !placedSkillIds.has(s.id));
-  const placedGroupingIds = new Set(workflow.groupings.map((g) => g.groupingId));
-  const availableGroupings = groupingLib.filter((g) => !placedGroupingIds.has(g.id));
+  const placedStageIds = new Set(workflow.placements.map((p) => p.stageId));
+  const unplacedStages = stageLib.filter((s) => !placedStageIds.has(s.id));
 
   return (
     <div className="h-full overflow-y-auto">
@@ -290,38 +284,38 @@ export default function WorkflowComposer() {
           </CardContent>
         </Card>
 
-        {/* Grouping tree */}
+        {/* Phase tree */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm">Grouping tree</CardTitle>
+            <CardTitle className="text-sm">Phase tree</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
             <p className="text-xs text-muted-foreground">
-              Your own phases/stages. Order and nesting follow the path (e.g. 01, 01.02).
+              Your own phases, defined inline. Order and nesting follow the path (e.g. 01, 01.02).
             </p>
-            {workflow.groupings.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No groupings yet.</p>
+            {workflow.phases.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No phases yet.</p>
             ) : (
               <ul className="space-y-1">
-                {workflow.groupings.map((g) => (
+                {workflow.phases.map((p) => (
                   <li
-                    key={g.path}
+                    key={p.path}
                     className="flex items-center gap-2 text-sm"
-                    style={{ paddingLeft: `${(g.path.split('.').length - 1) * 20}px` }}
+                    style={{ paddingLeft: `${(p.path.split('.').length - 1) * 20}px` }}
                   >
                     <span className="font-mono text-[11px] text-muted-foreground w-12">
-                      {g.path}
+                      {p.path}
                     </span>
-                    <span className="font-medium">{g.groupingId}</span>
+                    <span className="font-medium">{p.name}</span>
                     <Badge variant="outline" className="h-4 px-1.5 text-[9px]">
-                      {g.kind}
+                      {p.kind}
                     </Badge>
                     {!readOnly && (
                       <Button
                         variant="ghost"
                         size="icon"
                         className="h-6 w-6 ml-auto"
-                        onClick={() => removeGrouping(g.path)}
+                        onClick={() => removePhase(p.path)}
                       >
                         <Trash2 className="h-3 w-3 text-destructive" />
                       </Button>
@@ -330,12 +324,11 @@ export default function WorkflowComposer() {
                 ))}
               </ul>
             )}
-            {!readOnly && availableGroupings.length > 0 && (
-              <AddPicker
-                placeholder="Add a grouping…"
-                options={availableGroupings.map((g) => ({ id: g.id, label: g.name }))}
-                onAdd={addGrouping}
-              />
+            {!readOnly && (
+              <Button variant="outline" size="sm" className="gap-1.5" onClick={addPhase}>
+                <Plus className="h-3.5 w-3.5" />
+                Add phase
+              </Button>
             )}
           </CardContent>
         </Card>
@@ -343,29 +336,29 @@ export default function WorkflowComposer() {
         {/* Placements */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm">Skill placements</CardTitle>
+            <CardTitle className="text-sm">Stage placements</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
             <p className="text-xs text-muted-foreground">
-              Reference library skills into this workflow and home each under a grouping.
+              Reference library stages into this workflow and home each under a phase.
             </p>
             {workflow.placements.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No skills placed yet.</p>
+              <p className="text-sm text-muted-foreground">No stages placed yet.</p>
             ) : (
               <ul className="space-y-2">
                 {workflow.placements.map((p) => (
-                  <li key={p.skillId} className="flex items-center gap-2 text-sm">
-                    <span className="font-medium min-w-0 truncate">{p.skillId}</span>
+                  <li key={p.stageId} className="flex items-center gap-2 text-sm">
+                    <span className="font-medium min-w-0 truncate">{p.stageId}</span>
                     <select
-                      value={p.groupingPath ?? ''}
-                      onChange={(e) => setPlacementGrouping(p.skillId, e.target.value)}
+                      value={p.phasePath ?? ''}
+                      onChange={(e) => setPlacementPhase(p.stageId, e.target.value)}
                       disabled={readOnly}
                       className="h-8 rounded-md border bg-background px-2 text-xs ml-auto"
                     >
-                      <option value="">— no grouping —</option>
-                      {workflow.groupings.map((g) => (
-                        <option key={g.path} value={g.path}>
-                          {g.path} {g.groupingId}
+                      <option value="">— no phase —</option>
+                      {workflow.phases.map((ph) => (
+                        <option key={ph.path} value={ph.path}>
+                          {ph.path} {ph.name}
                         </option>
                       ))}
                     </select>
@@ -374,7 +367,7 @@ export default function WorkflowComposer() {
                         variant="ghost"
                         size="icon"
                         className="h-6 w-6"
-                        onClick={() => removePlacement(p.skillId)}
+                        onClick={() => removePlacement(p.stageId)}
                       >
                         <Trash2 className="h-3 w-3 text-destructive" />
                       </Button>
@@ -383,17 +376,17 @@ export default function WorkflowComposer() {
                 ))}
               </ul>
             )}
-            {!readOnly && unplacedSkills.length > 0 && (
+            {!readOnly && unplacedStages.length > 0 && (
               <AddPicker
-                placeholder="Place a skill…"
-                options={unplacedSkills.map((s) => ({ id: s.id, label: s.name }))}
+                placeholder="Place a stage…"
+                options={unplacedStages.map((s) => ({ id: s.id, label: s.name }))}
                 onAdd={addPlacement}
               />
             )}
           </CardContent>
         </Card>
 
-        {/* Derived views: autonomy, scope × skill matrix, validation */}
+        {/* Derived views: autonomy, scope × stage matrix, validation */}
         <WorkflowInsights
           workflow={workflow}
           scopeLib={scopeLib}

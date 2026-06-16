@@ -2,19 +2,19 @@ import { describe, it, expect } from 'vitest';
 import {
   compileScopeGrid,
   compileAutonomyProfile,
-  compileSkillGraph,
-  skillAutonomy,
+  compileStageGraph,
+  stageAutonomy,
 } from '../compile.js';
 
-// A library Skill block, minimally shaped for the compilers.
-const skill = (
+// A library Stage block, minimally shaped for the compilers.
+const stage = (
   id,
-  { clarification, postConditions, humanValidation, inputs, outputs, requires } = {},
+  { clarification, sensors, humanValidation, inputs, outputs, requires } = {},
 ) => ({
   blockId: id,
   clarification: clarification ? { required: clarification } : undefined,
   c2_verification: {
-    postConditions: postConditions ?? [],
+    sensors: sensors ?? [],
     humanValidation: humanValidation ?? 'none',
   },
   c1_definition: {
@@ -25,9 +25,9 @@ const skill = (
   },
 });
 
-const placement = (skillId, scopeMembership = {}, extra = {}) => ({
-  skillId,
-  groupingPath: extra.groupingPath ?? null,
+const placement = (stageId, scopeMembership = {}, extra = {}) => ({
+  stageId,
+  phasePath: extra.phasePath ?? null,
   order: extra.order ?? 0,
   scopeMembership,
 });
@@ -51,108 +51,102 @@ describe('compileScopeGrid', () => {
   });
 });
 
-describe('skillAutonomy — both gates', () => {
+describe('stageAutonomy — both gates', () => {
   it('self-halting: no clarification, all deterministic', () => {
-    expect(skillAutonomy(skill('s', { postConditions: [{ mode: 'deterministic' }] }))).toBe(
+    expect(stageAutonomy(stage('s', { sensors: [{ mode: 'deterministic' }] }))).toBe(
       'self-halting',
     );
   });
 
   it('self-halting: no gates at all', () => {
-    expect(skillAutonomy(skill('s'))).toBe('self-halting');
+    expect(stageAutonomy(stage('s'))).toBe('self-halting');
   });
 
   it('human-gated: front gate open (clarification always)', () => {
     expect(
-      skillAutonomy(
-        skill('s', { clarification: 'always', postConditions: [{ mode: 'deterministic' }] }),
-      ),
+      stageAutonomy(stage('s', { clarification: 'always', sensors: [{ mode: 'deterministic' }] })),
     ).toBe('human-gated');
   });
 
   it('human-gated: humanValidation required', () => {
-    expect(skillAutonomy(skill('s', { humanValidation: 'required' }))).toBe('human-gated');
+    expect(stageAutonomy(stage('s', { humanValidation: 'required' }))).toBe('human-gated');
   });
 
-  it('human-gated: only llm-judged post-conditions', () => {
-    expect(skillAutonomy(skill('s', { postConditions: [{ mode: 'llm-judged' }] }))).toBe(
-      'human-gated',
-    );
+  it('human-gated: only llm-judged sensors', () => {
+    expect(stageAutonomy(stage('s', { sensors: [{ mode: 'llm-judged' }] }))).toBe('human-gated');
   });
 
   it('mixed: both deterministic and llm-judged', () => {
     expect(
-      skillAutonomy(
-        skill('s', { postConditions: [{ mode: 'deterministic' }, { mode: 'llm-judged' }] }),
-      ),
+      stageAutonomy(stage('s', { sensors: [{ mode: 'deterministic' }, { mode: 'llm-judged' }] })),
     ).toBe('mixed');
   });
 
   it('mixed: conditional clarification with deterministic checks', () => {
     expect(
-      skillAutonomy(
-        skill('s', { clarification: 'conditional', postConditions: [{ mode: 'deterministic' }] }),
+      stageAutonomy(
+        stage('s', { clarification: 'conditional', sensors: [{ mode: 'deterministic' }] }),
       ),
     ).toBe('mixed');
   });
 });
 
 describe('compileAutonomyProfile', () => {
-  it('rolls up per-skill levels', () => {
-    const skillsById = {
-      a: skill('a', { postConditions: [{ mode: 'deterministic' }] }), // self-halting
-      b: skill('b', { postConditions: [{ mode: 'llm-judged' }] }), // human-gated
-      c: skill('c', { postConditions: [{ mode: 'deterministic' }, { mode: 'llm-judged' }] }), // mixed
+  it('rolls up per-stage levels', () => {
+    const stagesById = {
+      a: stage('a', { sensors: [{ mode: 'deterministic' }] }), // self-halting
+      b: stage('b', { sensors: [{ mode: 'llm-judged' }] }), // human-gated
+      c: stage('c', { sensors: [{ mode: 'deterministic' }, { mode: 'llm-judged' }] }), // mixed
     };
-    const { perSkill, rollup } = compileAutonomyProfile(
+    const { perStage, rollup } = compileAutonomyProfile(
       [placement('a'), placement('b'), placement('c')],
-      skillsById,
+      stagesById,
     );
-    expect(perSkill).toEqual({ a: 'self-halting', b: 'human-gated', c: 'mixed' });
+    expect(perStage).toEqual({ a: 'self-halting', b: 'human-gated', c: 'mixed' });
     expect(rollup).toEqual({ selfHalting: 1, mixed: 1, humanGated: 1, total: 3 });
   });
 });
 
-describe('compileSkillGraph', () => {
+describe('compileStageGraph', () => {
   it('wires produces→consumes edges', () => {
-    const skillsById = {
-      a: skill('a', { outputs: ['doc'] }),
-      b: skill('b', { inputs: [{ artifact: 'doc', required: true }] }),
+    const stagesById = {
+      a: stage('a', { outputs: ['doc'] }),
+      b: stage('b', { inputs: [{ artifact: 'doc', required: true }] }),
     };
-    const graph = compileSkillGraph([placement('a'), placement('b')], skillsById);
+    const graph = compileStageGraph([placement('a'), placement('b')], stagesById);
     expect(graph.acyclic).toBe(true);
     expect(graph.edges).toContainEqual({ from: 'a', to: 'b', artifact: 'doc', kind: 'data' });
     expect(graph.danglingConsumes).toEqual([]);
   });
 
   it('flags a consumed-but-never-produced artifact', () => {
-    const skillsById = { b: skill('b', { inputs: [{ artifact: 'ghost', required: true }] }) };
-    const graph = compileSkillGraph([placement('b')], skillsById);
-    expect(graph.danglingConsumes).toContainEqual({ skillId: 'b', artifact: 'ghost' });
+    const stagesById = { b: stage('b', { inputs: [{ artifact: 'ghost', required: true }] }) };
+    const graph = compileStageGraph([placement('b')], stagesById);
+    expect(graph.danglingConsumes).toContainEqual({ stageId: 'b', artifact: 'ghost' });
   });
 
   it('flags a produced-but-never-consumed artifact (orphan warning)', () => {
-    const skillsById = { a: skill('a', { outputs: ['unused'] }) };
-    const graph = compileSkillGraph([placement('a')], skillsById);
+    const stagesById = { a: stage('a', { outputs: ['unused'] }) };
+    const graph = compileStageGraph([placement('a')], stagesById);
     expect(graph.orphanProduces).toContainEqual({ artifact: 'unused', producedBy: ['a'] });
   });
 
   it('detects a cycle via produces/consumes', () => {
-    const skillsById = {
-      a: skill('a', { outputs: ['x'], inputs: [{ artifact: 'y' }] }),
-      b: skill('b', { outputs: ['y'], inputs: [{ artifact: 'x' }] }),
+    const stagesById = {
+      a: stage('a', { outputs: ['x'], inputs: [{ artifact: 'y' }] }),
+      b: stage('b', { outputs: ['y'], inputs: [{ artifact: 'x' }] }),
     };
-    const graph = compileSkillGraph([placement('a'), placement('b')], skillsById);
+    const graph = compileStageGraph([placement('a'), placement('b')], stagesById);
     expect(graph.acyclic).toBe(false);
     expect(graph.cycles.toSorted()).toEqual(['a', 'b']);
   });
 
   it('adds requires ordering edges only for placed skills', () => {
-    const skillsById = {
-      a: skill('a'),
-      b: skill('b', { requires: ['a', 'not-placed'] }),
+    const stagesById = {
+      a: stage('a'),
+      b: stage('b', { requires: ['a', 'not-placed'] }),
     };
-    const graph = compileSkillGraph([placement('a'), placement('b')], skillsById);
+    const graph = compileStageGraph([placement('a'), placement('b')], stagesById);
     expect(graph.edges).toContainEqual({ from: 'a', to: 'b', kind: 'requires' });
     expect(graph.edges.filter((e) => e.from === 'not-placed')).toEqual([]);
   });

@@ -12,8 +12,8 @@ interface Props {
   readOnly: boolean;
   onAddScope: (scopeId: string) => void;
   onRemoveScope: (scopeId: string) => void;
-  // Toggle a single (skill, scope) cell EXECUTE↔SKIP.
-  onToggleCell: (skillId: string, scopeId: string, next: 'EXECUTE' | 'SKIP') => void;
+  // Toggle a single (stage, scope) cell EXECUTE↔SKIP.
+  onToggleCell: (stageId: string, scopeId: string, next: 'EXECUTE' | 'SKIP') => void;
 }
 
 const AUTONOMY: Record<AutonomyLevel, { dot: string; label: string }> = {
@@ -32,13 +32,13 @@ export function WorkflowInsights({
   onToggleCell,
 }: Props) {
   const scopeIds = workflow.scopeRefs.map((s) => s.scopeId);
-  const placedSkillIds = workflow.placements.map((p) => p.skillId);
+  const placedStageIds = workflow.placements.map((p) => p.stageId);
   const refScopeIds = new Set(scopeIds);
   const availableScopes = scopeLib.filter((s) => !refScopeIds.has(s.id));
 
   // Cell state from the compiled grid (server-derived, SKIP by default).
-  const cell = (skillId: string, scopeId: string): 'EXECUTE' | 'SKIP' =>
-    compiled?.scopeGrid?.[scopeId]?.[skillId] === 'EXECUTE' ? 'EXECUTE' : 'SKIP';
+  const cell = (stageId: string, scopeId: string): 'EXECUTE' | 'SKIP' =>
+    compiled?.scopeGrid?.[scopeId]?.[stageId] === 'EXECUTE' ? 'EXECUTE' : 'SKIP';
 
   const rollup = compiled?.autonomy.rollup;
   const graph = compiled?.graph;
@@ -71,30 +71,30 @@ export function WorkflowInsights({
             </div>
           ) : (
             <p className="text-sm text-muted-foreground">
-              Place skills to see the autonomy profile.
+              Place stages to see the autonomy profile.
             </p>
           )}
         </CardContent>
       </Card>
 
-      {/* Scope × skill matrix */}
+      {/* Scope × stage matrix */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-sm">Scope × skill matrix</CardTitle>
+          <CardTitle className="text-sm">Scope × stage matrix</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
           <p className="text-xs text-muted-foreground">
-            Toggle EXECUTE/SKIP per skill per scope. Columns are the scopes available in this
+            Toggle EXECUTE/SKIP per stage per scope. Columns are the scopes available in this
             workflow.
           </p>
-          {placedSkillIds.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Place skills to populate the matrix.</p>
+          {placedStageIds.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Place stages to populate the matrix.</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="text-sm border-collapse">
                 <thead>
                   <tr>
-                    <th className="text-left font-medium p-2 sticky left-0 bg-background">Skill</th>
+                    <th className="text-left font-medium p-2 sticky left-0 bg-background">Stage</th>
                     <th className="p-2 text-center font-medium">
                       <span className="text-muted-foreground/60">⬤</span> autonomy
                     </th>
@@ -116,11 +116,11 @@ export function WorkflowInsights({
                   </tr>
                 </thead>
                 <tbody>
-                  {placedSkillIds.map((skillId) => {
-                    const level = compiled?.autonomy.perSkill[skillId];
+                  {placedStageIds.map((stageId) => {
+                    const level = compiled?.autonomy.perStage[stageId];
                     return (
-                      <tr key={skillId} className="border-t">
-                        <td className="p-2 font-medium sticky left-0 bg-background">{skillId}</td>
+                      <tr key={stageId} className="border-t">
+                        <td className="p-2 font-medium sticky left-0 bg-background">{stageId}</td>
                         <td className="p-2 text-center">
                           {level && (
                             <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
@@ -130,7 +130,7 @@ export function WorkflowInsights({
                           )}
                         </td>
                         {scopeIds.map((scopeId) => {
-                          const state = cell(skillId, scopeId);
+                          const state = cell(stageId, scopeId);
                           return (
                             <td key={scopeId} className="p-2 text-center">
                               <button
@@ -138,7 +138,7 @@ export function WorkflowInsights({
                                 disabled={readOnly}
                                 onClick={() =>
                                   onToggleCell(
-                                    skillId,
+                                    stageId,
                                     scopeId,
                                     state === 'EXECUTE' ? 'SKIP' : 'EXECUTE',
                                   )
@@ -206,11 +206,11 @@ export function WorkflowInsights({
                 )}
                 {graph.danglingConsumes.map((d) => (
                   <li
-                    key={`${d.skillId}-${d.artifact}`}
+                    key={`${d.stageId}-${d.artifact}`}
                     className="flex items-center gap-2 text-rose-600"
                   >
                     <AlertTriangle className="h-3.5 w-3.5" />
-                    <strong>{d.skillId}</strong> consumes <strong>{d.artifact}</strong> — no
+                    <strong>{d.stageId}</strong> consumes <strong>{d.artifact}</strong> — no
                     producer.
                   </li>
                 ))}

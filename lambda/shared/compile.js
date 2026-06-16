@@ -1,18 +1,18 @@
 'use strict';
 
 // Pure compilers for the per-workflow derived views. These take already-loaded
-// data (placements, scope slugs, and the skill blocks the placements reference)
+// data (placements, scope slugs, and the stage blocks the placements reference)
 // and return plain objects — no I/O, so they are trivially testable and the
 // same logic backs the API response and any future cache.
 //
 // Three views (spec 01-building-blocks.md):
-//   - scope-grid:       { scope → { skillId → EXECUTE | SKIP } }
-//   - autonomy-profile: per-skill autonomy + a workflow roll-up
-//   - skill-graph:      placed-skill nodes + produces/consumes/requires edges,
+//   - scope-grid:       { scope → { stageId → EXECUTE | SKIP } }
+//   - autonomy-profile: per-stage autonomy + a workflow roll-up
+//   - stage-graph:      placed-stage nodes + produces/consumes/requires edges,
 //                       with cycle + orphan-artifact detection
 //
-// A "skill block" here is the library Skill item (its c1_definition,
-// c2_verification, clarification), keyed by skillId.
+// A "stage block" here is the library Stage item (its c1_definition,
+// c2_verification, clarification), keyed by stageId.
 
 // ── Scope grid ──
 // Transpose placements' scopeMembership into { scope → { skill → state } }.
@@ -22,20 +22,20 @@ const compileScopeGrid = (placements, scopeSlugs) => {
   for (const scope of scopeSlugs) {
     grid[scope] = {};
     for (const p of placements) {
-      grid[scope][p.skillId] = p.scopeMembership?.[scope] === 'EXECUTE' ? 'EXECUTE' : 'SKIP';
+      grid[scope][p.stageId] = p.scopeMembership?.[scope] === 'EXECUTE' ? 'EXECUTE' : 'SKIP';
     }
   }
   return grid;
 };
 
 // ── Autonomy ──
-// A skill self-halts only when BOTH gates are closed: no mandatory front-gate
-// clarification AND all post-conditions deterministic (and humanValidation not
+// A stage self-halts only when BOTH gates are closed: no mandatory front-gate
+// clarification AND all sensors deterministic (and humanValidation not
 // required). See the Autonomy Profile table in the spec.
-const skillAutonomy = (skill) => {
-  const clarification = skill?.clarification?.required ?? 'none';
-  const c2 = skill?.c2_verification ?? {};
-  const postConditions = c2.postConditions ?? [];
+const stageAutonomy = (stage) => {
+  const clarification = stage?.clarification?.required ?? 'none';
+  const c2 = stage?.c2_verification ?? {};
+  const sensors = c2.sensors ?? c2.postConditions ?? [];
   const humanValidation = c2.humanValidation ?? 'none';
 
   // Front gate.
@@ -43,7 +43,7 @@ const skillAutonomy = (skill) => {
   // Back gate: an explicit required validation, or any llm-judged check.
   if (humanValidation === 'required') return 'human-gated';
 
-  const modes = postConditions.map((pc) => (typeof pc === 'object' ? pc.mode : pc?.mode));
+  const modes = sensors.map((s) => (typeof s === 'object' ? s.mode : s?.mode));
   const hasLlm = modes.includes('llm-judged');
   const hasDeterministic = modes.includes('deterministic');
 
@@ -55,79 +55,79 @@ const skillAutonomy = (skill) => {
   return 'self-halting';
 };
 
-const compileAutonomyProfile = (placements, skillsById) => {
-  const perSkill = {};
+const compileAutonomyProfile = (placements, stagesById) => {
+  const perStage = {};
   const rollup = { selfHalting: 0, mixed: 0, humanGated: 0, total: 0 };
   for (const p of placements) {
-    const level = skillAutonomy(skillsById[p.skillId]);
-    perSkill[p.skillId] = level;
+    const level = stageAutonomy(stagesById[p.stageId]);
+    perStage[p.stageId] = level;
     rollup.total += 1;
     if (level === 'self-halting') rollup.selfHalting += 1;
     else if (level === 'mixed') rollup.mixed += 1;
     else rollup.humanGated += 1;
   }
-  return { perSkill, rollup };
+  return { perStage, rollup };
 };
 
-// ── Skill graph ──
-// Nodes = placed skills; edges = produces→consumes (data) and requires
+// ── Stage graph ──
+// Nodes = placed stages; edges = produces→consumes (data) and requires
 // (ordering). Detects cycles and orphan artifacts.
-const skillProduces = (skill) => {
-  const c1 = skill?.c1_definition ?? {};
+const stageProduces = (stage) => {
+  const c1 = stage?.c1_definition ?? {};
   return [...(c1.outputs ?? []), ...(c1.intermediates ?? [])];
 };
-const skillConsumes = (skill) =>
-  (skill?.c1_definition?.inputs ?? []).map((i) => (typeof i === 'object' ? i.artifact : i));
-const skillRequires = (skill) => skill?.c1_definition?.requires ?? [];
+const stageConsumes = (stage) =>
+  (stage?.c1_definition?.inputs ?? []).map((i) => (typeof i === 'object' ? i.artifact : i));
+const stageRequires = (stage) => stage?.c1_definition?.requires ?? [];
 
-const compileSkillGraph = (placements, skillsById) => {
+const compileStageGraph = (placements, stagesById) => {
   const nodes = placements.map((p) => ({
-    skillId: p.skillId,
-    groupingPath: p.groupingPath ?? null,
+    stageId: p.stageId,
+    phasePath: p.phasePath ?? null,
     order: p.order ?? 0,
   }));
-  const placed = new Set(placements.map((p) => p.skillId));
+  const placed = new Set(placements.map((p) => p.stageId));
 
-  // Producer map: artifact → [skillId].
+  // Producer map: artifact → [stageId].
   const producers = {};
   for (const p of placements) {
-    for (const artifact of skillProduces(skillsById[p.skillId])) {
-      (producers[artifact] ??= []).push(p.skillId);
+    for (const artifact of stageProduces(stagesById[p.stageId])) {
+      (producers[artifact] ??= []).push(p.stageId);
     }
   }
 
   const edges = [];
-  const adjacency = {}; // skillId → Set(dependency skillId) for cycle detection
+  const adjacency = {}; // stageId → Set(dependency stageId) for cycle detection
   const ensure = (id) => (adjacency[id] ??= new Set());
 
-  const danglingConsumes = []; // { skillId, artifact } consumed but never produced
+  const danglingConsumes = []; // { stageId, artifact } consumed but never produced
   for (const p of placements) {
-    const skill = skillsById[p.skillId];
-    ensure(p.skillId);
-    for (const artifact of skillConsumes(skill)) {
+    const stage = stagesById[p.stageId];
+    ensure(p.stageId);
+    for (const artifact of stageConsumes(stage)) {
       const from = producers[artifact];
       if (!from || from.length === 0) {
-        danglingConsumes.push({ skillId: p.skillId, artifact });
+        danglingConsumes.push({ stageId: p.stageId, artifact });
         continue;
       }
       for (const producer of from) {
-        if (producer === p.skillId) continue;
-        edges.push({ from: producer, to: p.skillId, artifact, kind: 'data' });
-        ensure(p.skillId).add(producer);
+        if (producer === p.stageId) continue;
+        edges.push({ from: producer, to: p.stageId, artifact, kind: 'data' });
+        ensure(p.stageId).add(producer);
       }
     }
-    // requires: ordering-only edges (skill must run after the required skill).
-    for (const req of skillRequires(skill)) {
+    // requires: ordering-only edges (stage must run after the required stage).
+    for (const req of stageRequires(stage)) {
       if (!placed.has(req)) continue;
-      edges.push({ from: req, to: p.skillId, kind: 'requires' });
-      ensure(p.skillId).add(req);
+      edges.push({ from: req, to: p.stageId, kind: 'requires' });
+      ensure(p.stageId).add(req);
     }
   }
 
   // Produced-but-never-consumed (warning, not error).
   const allConsumed = new Set();
   for (const p of placements) {
-    for (const a of skillConsumes(skillsById[p.skillId])) allConsumed.add(a);
+    for (const a of stageConsumes(stagesById[p.stageId])) allConsumed.add(a);
   }
   const orphanProduces = [];
   for (const [artifact, from] of Object.entries(producers)) {
@@ -179,16 +179,16 @@ const detectCycle = (adjacency) => {
   return found;
 };
 
-const compileWorkflow = (placements, scopeSlugs, skillsById) => ({
+const compileWorkflow = (placements, scopeSlugs, stagesById) => ({
   scopeGrid: compileScopeGrid(placements, scopeSlugs),
-  autonomy: compileAutonomyProfile(placements, skillsById),
-  graph: compileSkillGraph(placements, skillsById),
+  autonomy: compileAutonomyProfile(placements, stagesById),
+  graph: compileStageGraph(placements, stagesById),
 });
 
 module.exports = {
   compileScopeGrid,
   compileAutonomyProfile,
-  compileSkillGraph,
+  compileStageGraph,
   compileWorkflow,
-  skillAutonomy,
+  stageAutonomy,
 };

@@ -31,7 +31,7 @@ const isBlockType = (v: string | undefined): v is BlockType =>
 export default function BlockLibrary() {
   const navigate = useNavigate();
   const { type: typeParam } = useParams<{ type: string }>();
-  const activeType: BlockType = isBlockType(typeParam) ? typeParam : 'skill';
+  const activeType: BlockType = isBlockType(typeParam) ? typeParam : 'stage';
 
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [loading, setLoading] = useState(true);

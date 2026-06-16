@@ -4,10 +4,10 @@
 // reference and arrange library blocks. Workflows share the blocks table:
 //   PK = WF#<tenant>#<workflowId>
 //   SK = META                              workflow header
-//   SK = GROUPING#<path>#<groupingId>      ordered, nestable grouping ref
-//   SK = PLACEMENT#<skillId>               a placed skill (workflow × skill join)
+//   SK = PHASE#<path>#<phaseId>            ordered, nestable inline phase
+//   SK = PLACEMENT#<stageId>               a placed stage (workflow × stage join)
 //   SK = SCOPEREF#<scopeId>                a scope available in this workflow
-//   SK = GUARDRAILREF#<layer>#<id>         a guardrail layered into this workflow
+//   SK = RULEREF#<layer>#<id>              a rule layered into this workflow
 // One Query(PK = WF#…) loads the whole composition. Listing reuses the blocks
 // catalog index: GSI1PK = TENANT#<tenant>#WORKFLOW on the META item.
 
@@ -21,10 +21,14 @@ const WORKFLOW = 'WORKFLOW';
 const META = 'META';
 
 const workflowPk = (tenant, workflowId) => `WF#${tenant}#${workflowId}`;
-const groupingSk = (path, groupingId) => `GROUPING#${path}#${groupingId}`;
-const placementSk = (skillId) => `PLACEMENT#${skillId}`;
+// A phase is the workflow's organizing tier, defined INLINE in the tree (V2
+// treats a phase as a label, not a standalone library object). Order + nesting
+// are encoded in the path (01, 01.02), so the same shape expresses phase ▸
+// stage ▸ … without a separate "grouping" block type.
+const phaseSk = (path, phaseId) => `PHASE#${path}#${phaseId}`;
+const placementSk = (stageId) => `PLACEMENT#${stageId}`;
 const scopeRefSk = (scopeId) => `SCOPEREF#${scopeId}`;
-const guardrailRefSk = (layer, id) => `GUARDRAILREF#${layer}#${id}`;
+const ruleRefSk = (layer, id) => `RULEREF#${layer}#${id}`;
 const workflowGsi1Pk = (tenant) => `TENANT#${tenant}#${WORKFLOW}`;
 
 const validateId = (id) => {
@@ -40,14 +44,15 @@ const validateName = (name) => {
   return null;
 };
 
-// Validates a grouping-tree node ref as posted by the editor.
-const validateGroupingNode = (node) => {
-  if (!node || typeof node !== 'object') return 'grouping node must be an object';
-  if (typeof node.groupingId !== 'string' || !ID_RE.test(node.groupingId)) {
-    return 'grouping node groupingId must be kebab-case';
+// Validates a phase node as posted by the editor. The phase is defined inline:
+// an id + path + free-text name + kind label — no reference to a library block.
+const validatePhaseNode = (node) => {
+  if (!node || typeof node !== 'object') return 'phase node must be an object';
+  if (typeof node.phaseId !== 'string' || !ID_RE.test(node.phaseId)) {
+    return 'phase node phaseId must be kebab-case';
   }
   if (typeof node.path !== 'string' || !PATH_RE.test(node.path)) {
-    return 'grouping node path must look like 01 or 01.02';
+    return 'phase node path must look like 01 or 01.02';
   }
   return null;
 };
@@ -56,12 +61,12 @@ module.exports = {
   WORKFLOW,
   META,
   workflowPk,
-  groupingSk,
+  phaseSk,
   placementSk,
   scopeRefSk,
-  guardrailRefSk,
+  ruleRefSk,
   workflowGsi1Pk,
   validateId,
   validateName,
-  validateGroupingNode,
+  validatePhaseNode,
 };

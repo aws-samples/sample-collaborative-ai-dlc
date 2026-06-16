@@ -6,27 +6,20 @@ import { api } from './api';
 // Mirrors the backend in lambda/building-blocks. Workflows/artifacts are
 // separate concerns and not part of this set.
 
-// The library block types, lowercased for use as `/blocks/{type}` path parts.
-export const BLOCK_TYPES = [
-  'skill',
-  'grouping',
-  'agent',
-  'scope',
-  'guardrail',
-  'postcondition',
-  'knowledge',
-] as const;
+// The library block types, named to match AI-DLC V2, lowercased for use as
+// `/blocks/{type}` path parts. Phases are not a block type (defined inline on a
+// workflow); a Stage is the atomic unit, a Sensor a check, a Rule a guardrail.
+export const BLOCK_TYPES = ['stage', 'agent', 'scope', 'rule', 'sensor', 'knowledge'] as const;
 
 export type BlockType = (typeof BLOCK_TYPES)[number];
 
 // Human labels for each type (singular / plural) for headings and tabs.
 export const BLOCK_TYPE_LABELS: Record<BlockType, { singular: string; plural: string }> = {
-  skill: { singular: 'Skill', plural: 'Skills' },
-  grouping: { singular: 'Grouping', plural: 'Groupings' },
+  stage: { singular: 'Stage', plural: 'Stages' },
   agent: { singular: 'Agent', plural: 'Agents' },
   scope: { singular: 'Scope', plural: 'Scopes' },
-  guardrail: { singular: 'Guardrail', plural: 'Guardrails' },
-  postcondition: { singular: 'Post-Condition', plural: 'Post-Conditions' },
+  rule: { singular: 'Rule', plural: 'Rules' },
+  sensor: { singular: 'Sensor', plural: 'Sensors' },
   knowledge: { singular: 'Knowledge', plural: 'Knowledge' },
 };
 

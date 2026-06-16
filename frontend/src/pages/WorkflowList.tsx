@@ -188,8 +188,8 @@ export default function WorkflowList() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Workflow</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete <strong>{confirmDelete?.name}</strong>? Its grouping
-              tree and placements are removed; the referenced library blocks are untouched.
+              Are you sure you want to delete <strong>{confirmDelete?.name}</strong>? Its phase tree
+              and placements are removed; the referenced library blocks are untouched.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -245,7 +245,7 @@ function CreateWorkflowDialog({ workflows, onClose, onCreated }: CreateProps) {
         <DialogHeader>
           <DialogTitle>New Workflow</DialogTitle>
           <DialogDescription>
-            Start blank, or fork an existing workflow to reuse its grouping tree and placements.
+            Start blank, or fork an existing workflow to reuse its phase tree and placements.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4 py-2">

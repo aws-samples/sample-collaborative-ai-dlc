@@ -1,104 +1,1020 @@
 'use strict';
 
-// The shipped baseline block library, owned by the SYSTEM tenant and read-only
-// to everyone else. The seed lambda writes these into the blocks table + the
-// artifacts bucket.
+// The shipped baseline block library + default workflow, owned by the SYSTEM
+// tenant and read-only to everyone else. Ported from the AI-DLC V2 source
+// (awslabs/aidlc-workflows, v2-unified branch): 32 stages, 11 agents, 9 scopes,
+// 4 sensors, 7 rules, composed into the default `aidlc-v2` workflow.
 //
-// This file is the data seam: growing the baseline means appending entries
-// here — no code change to the seed lambda. It ships today with a deliberately
-// minimal set (one of each common type, plus one skill wired to them) to prove
-// the shape end-to-end; the full AI-DLC baseline (the complete skill/agent/
-// scope/grouping set) lands later by extending this array.
+// This file is the data seam — the seed lambda just writes what's here. Grow or
+// retune the baseline by editing the data tables below; no code change needed.
 //
-// Each entry:
-//   { type, id, name, body?, ...attrs }
-// `type` is a block type (see shared/blocks.js BLOCK_TYPES); `id` is kebab-case;
-// `body`, when present, is stored in S3 and replaced by a content-addressed
-// pointer. Everything else is persisted verbatim as block attributes.
+// Modeling notes:
+//   - A STAGE is the atomic unit (V2's "stage"); its DAG edges are produces /
+//     consumes / requires (c1), its checks are sensors (c2).
+//   - Phases are NOT library blocks — they are defined inline on the workflow's
+//     phase tree (V2 treats a phase as a label, not a standalone object).
+//   - A stage's V2 `scopes:` list (which scopes include it) is transposed onto
+//     the workflow placement's scopeMembership (listed → EXECUTE).
 
-const BASELINE_BLOCKS = [
-  // ── Groupings (organizing labels; the AI-DLC phases) ──
-  {
-    type: 'GROUPING',
-    id: 'ideation',
-    name: 'Ideation',
-    kind: 'phase',
-    description: 'Intent, research, scope, approval.',
-  },
-  {
-    type: 'GROUPING',
-    id: 'construction',
-    name: 'Construction',
-    kind: 'phase',
-    description: 'Design, build, and verify the solution.',
-  },
+const titleCase = (slug) =>
+  slug
+    .split('-')
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
 
-  // ── Agent (a persona that runs skills) ──
-  {
-    type: 'AGENT',
-    id: 'product-agent',
-    name: 'Product Agent',
-    description: 'Owns intent capture and scope definition.',
-    body: '# Product Agent\n\nResponsible for turning an ambiguous intent into a clear, bounded scope.\n',
-  },
+// ─── Agents (11) ───
+const AGENTS = [
+  [
+    'aidlc-architect-agent',
+    'Architect Agent',
+    'opus',
+    'Solutions architect: application design, domain modelling, NFR patterns, component design.',
+  ],
+  [
+    'aidlc-aws-platform-agent',
+    'AWS Platform Agent',
+    'opus',
+    'AWS solutions architect: infrastructure design, environment provisioning, cloud-native patterns.',
+  ],
+  [
+    'aidlc-compliance-agent',
+    'Compliance Agent',
+    'opus',
+    'GRC analyst: compliance mapping, data classification, risk assessment.',
+  ],
+  [
+    'aidlc-delivery-agent',
+    'Delivery Agent',
+    'sonnet',
+    'Engineering manager: team formation, Bolt sequencing, phase handoffs.',
+  ],
+  [
+    'aidlc-design-agent',
+    'Design Agent',
+    'opus',
+    'UX/UI designer: wireframing, interaction design, accessibility, design systems.',
+  ],
+  [
+    'aidlc-developer-agent',
+    'Developer Agent',
+    'opus',
+    'Senior developer: code generation, reverse engineering, data modelling.',
+  ],
+  [
+    'aidlc-devsecops-agent',
+    'DevSecOps Agent',
+    'opus',
+    'Security engineer: threat modelling, security requirements, scanning.',
+  ],
+  [
+    'aidlc-operations-agent',
+    'Operations Agent',
+    'sonnet',
+    'SRE: observability, incident response, operational optimization.',
+  ],
+  [
+    'aidlc-pipeline-deploy-agent',
+    'Pipeline & Deploy Agent',
+    'sonnet',
+    'CI/CD engineer: pipeline configuration, deployment strategy, releases.',
+  ],
+  [
+    'aidlc-product-agent',
+    'Product Agent',
+    'opus',
+    'Product manager / business analyst: requirements, user stories, market research.',
+  ],
+  [
+    'aidlc-quality-agent',
+    'Quality Agent',
+    'opus',
+    'QA lead: test strategy, test case design, quality gates, performance validation.',
+  ],
+];
 
-  // ── Scope (a reusable EXECUTE/SKIP preset) ──
-  {
-    type: 'SCOPE',
-    id: 'mvp',
-    name: 'MVP',
-    depth: 'Standard',
-    keywords: ['mvp', 'minimum viable'],
-    description: 'Skip operations, ship the core.',
-    body: '# MVP scope\n\nExecute the core path; skip operational hardening until later.\n',
-  },
+const agentBlock = ([id, displayName, modelOverride, description]) => ({
+  type: 'AGENT',
+  id,
+  name: displayName,
+  displayName,
+  description,
+  modelOverride,
+  disallowedTools: 'Task',
+});
 
-  // ── Skill (the atomic three-compartment unit) ──
+// ─── Scopes (9) ───
+const SCOPES = [
+  ['bugfix', 'Minimal', ['fix', 'bug', 'broken'], 'Fix a specific bug'],
+  ['enterprise', 'Comprehensive', [], 'Regulated enterprise feature, full audit trail'],
+  ['feature', 'Standard', [], 'Default for new features, practical depth'],
+  ['infra', 'Standard', ['infrastructure', 'deploy', 'infra'], 'Infrastructure changes'],
+  ['mvp', 'Standard', ['mvp', 'minimum viable'], 'Skip operations, ship the core'],
+  ['poc', 'Minimal', ['proof of concept', 'prototype', 'poc', 'spike'], 'Prove feasibility fast'],
+  ['refactor', 'Minimal', ['refactor', 'clean up', 'simplify'], 'Clean up existing code'],
+  ['security-patch', 'Minimal', ['security', 'CVE', 'vulnerability', 'patch'], 'CVE response'],
+  [
+    'workshop',
+    'Standard',
+    ['workshop', 'lab', 'training'],
+    'Facilitated group session with mandatory gates',
+  ],
+];
+
+const scopeBlock = ([id, depth, keywords, description]) => ({
+  type: 'SCOPE',
+  id,
+  name: titleCase(id),
+  depth,
+  keywords,
+  description,
+});
+
+// ─── Sensors (4) ── all deterministic, advisory (V2 ships only these) ───
+const SENSORS = [
+  [
+    'linter',
+    'bun {{HARNESS_DIR}}/tools/aidlc-sensor-linter.ts',
+    'code-quality',
+    '**/*.{ts,js}',
+    30,
+    "Wraps the project's configured linter; fires on TS/JS code outputs.",
+  ],
+  [
+    'required-sections',
+    'bun {{HARNESS_DIR}}/tools/aidlc-sensor-required-sections.ts',
+    'document-shape',
+    '**/aidlc-docs/**',
+    5,
+    'Checks stage output contains the required H2 headings.',
+  ],
+  [
+    'type-check',
+    'bun {{HARNESS_DIR}}/tools/aidlc-sensor-type-check.ts',
+    'code-quality',
+    '**/*.{ts,tsx}',
+    60,
+    "Wraps the project's configured type-checker; fires on TS/TSX code outputs.",
+  ],
+  [
+    'upstream-coverage',
+    'bun {{HARNESS_DIR}}/tools/aidlc-sensor-upstream-coverage.ts',
+    'document-shape',
+    '**/aidlc-docs/**',
+    5,
+    'Checks the output references the upstream artifacts the stage consumes.',
+  ],
+];
+
+const sensorBlock = ([id, command, category, matches, timeoutSeconds, description]) => ({
+  type: 'SENSOR',
+  id,
+  name: titleCase(id),
+  description,
+  mode: 'deterministic',
+  severity: 'advisory',
+  command,
+  runtime: 'bun',
+  category,
+  matches,
+  timeoutSeconds,
+});
+
+// ─── Rules (7) ── layered guardrails; V2 ships them frontmatter-free ───
+const RULES = [
+  [
+    'aidlc-org',
+    'org',
+    null,
+    'Framework defaults: trunk-based development, walking skeleton, testing posture.',
+  ],
+  ['aidlc-team', 'team', null, "Team's affirmed practices and corrections. Overrides org."],
+  [
+    'aidlc-project',
+    'project',
+    null,
+    'Project-specific overrides and corrections. Overrides team and org.',
+  ],
+  [
+    'aidlc-phase-ideation',
+    'grouping',
+    'ideation',
+    'Ideation rules: evidence standards, scope discipline, output quality.',
+  ],
+  [
+    'aidlc-phase-inception',
+    'grouping',
+    'inception',
+    'Inception rules: requirements quality, architecture standards, traceability.',
+  ],
+  [
+    'aidlc-phase-construction',
+    'grouping',
+    'construction',
+    'Construction rules: code completeness, error handling, testing, security.',
+  ],
+  [
+    'aidlc-phase-operation',
+    'grouping',
+    'operation',
+    'Operation rules: infra safety, deployment procedures, observability, incident response.',
+  ],
+];
+
+const ruleBlock = ([id, layer, groupingRef, summary]) => ({
+  type: 'RULE',
+  id,
+  name: titleCase(id.replace(/^aidlc-/, '')),
+  layer,
+  groupingRef,
+  description: summary,
+});
+
+// ─── Stages (32) ───
+// Compact tuples: [id, phase, execution, leadAgent, mode, produces, consumes,
+// requires, sensors, scopes, forEach?]. consumes entries are [artifact, required].
+const r = true; // required
+const o = false; // optional
+const ALL_SCOPES = [
+  'enterprise',
+  'feature',
+  'mvp',
+  'poc',
+  'bugfix',
+  'refactor',
+  'infra',
+  'security-patch',
+  'workshop',
+];
+
+const STAGES = [
+  // initialization (3) — orchestrator-run, no artifacts/sensors
   {
-    type: 'SKILL',
-    id: 'scope-definition',
-    name: 'Scope Definition',
-    defaultGrouping: 'ideation',
-    leadAgent: 'product-agent',
-    mode: 'inline',
+    id: 'workspace-scaffold',
+    phase: 'initialization',
     execution: 'ALWAYS',
-    c1_definition: {
-      purpose: 'Define the scope boundary and backlog for the intent.',
-      inputs: [{ artifact: 'intent-statement', required: true }],
-      outputs: ['scope-document'],
-      intermediates: [],
-      requires: [],
-    },
-    c2_verification: {
-      postConditions: [],
-      humanValidation: 'conditional',
-    },
-    body: '# Scope Definition\n\nProduce a scope document that bounds the intent and lists the backlog.\n',
+    leadAgent: 'aidlc-delivery-agent',
+    mode: 'inline',
+    produces: [],
+    consumes: [],
+    requires: [],
+    sensors: [],
+    scopes: ALL_SCOPES,
+  },
+  {
+    id: 'workspace-detection',
+    phase: 'initialization',
+    execution: 'ALWAYS',
+    leadAgent: 'aidlc-delivery-agent',
+    mode: 'inline',
+    produces: [],
+    consumes: [],
+    requires: ['workspace-scaffold'],
+    sensors: [],
+    scopes: ALL_SCOPES,
+  },
+  {
+    id: 'state-init',
+    phase: 'initialization',
+    execution: 'ALWAYS',
+    leadAgent: 'aidlc-delivery-agent',
+    mode: 'inline',
+    produces: [],
+    consumes: [],
+    requires: ['workspace-detection'],
+    sensors: [],
+    scopes: ALL_SCOPES,
+  },
+
+  // ideation (7)
+  {
+    id: 'intent-capture',
+    phase: 'ideation',
+    execution: 'ALWAYS',
+    leadAgent: 'aidlc-product-agent',
+    support: ['aidlc-architect-agent'],
+    mode: 'inline',
+    produces: ['intent-statement', 'stakeholder-map', 'intent-capture-questions'],
+    consumes: [],
+    requires: [],
+    sensors: ['required-sections', 'upstream-coverage'],
+    scopes: ['enterprise', 'feature', 'mvp', 'poc'],
+  },
+  {
+    id: 'market-research',
+    phase: 'ideation',
+    execution: 'CONDITIONAL',
+    leadAgent: 'aidlc-product-agent',
+    mode: 'inline',
+    produces: [
+      'competitive-analysis',
+      'market-trends',
+      'build-vs-buy',
+      'market-research-questions',
+    ],
+    consumes: [['intent-statement', r]],
+    requires: ['intent-capture'],
+    sensors: ['required-sections', 'upstream-coverage'],
+    scopes: ['enterprise', 'feature'],
+  },
+  {
+    id: 'feasibility',
+    phase: 'ideation',
+    execution: 'CONDITIONAL',
+    leadAgent: 'aidlc-architect-agent',
+    support: ['aidlc-aws-platform-agent', 'aidlc-compliance-agent'],
+    mode: 'inline',
+    produces: [
+      'feasibility-assessment',
+      'constraint-register',
+      'raid-log',
+      'feasibility-questions',
+    ],
+    consumes: [
+      ['intent-statement', r],
+      ['competitive-analysis', o],
+      ['market-trends', o],
+      ['build-vs-buy', o],
+    ],
+    requires: ['intent-capture', 'market-research'],
+    sensors: ['required-sections', 'upstream-coverage'],
+    scopes: ['enterprise', 'feature', 'mvp'],
+  },
+  {
+    id: 'scope-definition',
+    phase: 'ideation',
+    execution: 'ALWAYS',
+    leadAgent: 'aidlc-product-agent',
+    support: ['aidlc-delivery-agent'],
+    mode: 'inline',
+    produces: ['scope-document', 'intent-backlog', 'scope-definition-questions'],
+    consumes: [
+      ['intent-statement', r],
+      ['feasibility-assessment', o],
+      ['constraint-register', o],
+    ],
+    requires: ['intent-capture', 'feasibility'],
+    sensors: ['required-sections', 'upstream-coverage'],
+    scopes: ['enterprise', 'feature', 'mvp'],
+  },
+  {
+    id: 'team-formation',
+    phase: 'ideation',
+    execution: 'CONDITIONAL',
+    leadAgent: 'aidlc-delivery-agent',
+    mode: 'inline',
+    produces: ['team-assessment', 'skill-matrix', 'mob-composition', 'team-formation-questions'],
+    consumes: [
+      ['scope-document', r],
+      ['intent-backlog', r],
+      ['feasibility-assessment', o],
+    ],
+    requires: ['scope-definition'],
+    sensors: ['required-sections', 'upstream-coverage'],
+    scopes: ['enterprise', 'feature'],
+  },
+  {
+    id: 'rough-mockups',
+    phase: 'ideation',
+    execution: 'CONDITIONAL',
+    leadAgent: 'aidlc-design-agent',
+    support: ['aidlc-product-agent'],
+    mode: 'inline',
+    produces: ['wireframes', 'user-flow', 'rough-mockups-questions'],
+    consumes: [
+      ['intent-statement', r],
+      ['scope-document', r],
+      ['intent-backlog', r],
+    ],
+    requires: ['scope-definition', 'team-formation'],
+    sensors: ['required-sections', 'upstream-coverage'],
+    scopes: ['enterprise', 'feature', 'mvp'],
+  },
+  {
+    id: 'approval-handoff',
+    phase: 'ideation',
+    execution: 'ALWAYS',
+    leadAgent: 'aidlc-delivery-agent',
+    support: ['aidlc-product-agent'],
+    mode: 'inline',
+    produces: ['initiative-brief', 'decision-log', 'approval-handoff-questions'],
+    consumes: [
+      ['intent-statement', r],
+      ['scope-document', r],
+      ['intent-backlog', r],
+      ['competitive-analysis', o],
+      ['feasibility-assessment', o],
+      ['constraint-register', o],
+      ['team-assessment', o],
+      ['wireframes', o],
+    ],
+    requires: [
+      'intent-capture',
+      'feasibility',
+      'scope-definition',
+      'team-formation',
+      'rough-mockups',
+    ],
+    sensors: ['required-sections', 'upstream-coverage'],
+    scopes: ['enterprise', 'feature'],
+  },
+
+  // inception (8)
+  {
+    id: 'reverse-engineering',
+    phase: 'inception',
+    execution: 'CONDITIONAL',
+    leadAgent: 'aidlc-developer-agent',
+    support: ['aidlc-architect-agent'],
+    mode: 'subagent',
+    produces: [
+      'business-overview',
+      'architecture',
+      'code-structure',
+      'api-documentation',
+      'component-inventory',
+      'technology-stack',
+      'dependencies',
+      'code-quality-assessment',
+      'reverse-engineering-timestamp',
+    ],
+    consumes: [],
+    requires: ['state-init'],
+    sensors: ['required-sections', 'upstream-coverage'],
+    scopes: [
+      'enterprise',
+      'feature',
+      'mvp',
+      'poc',
+      'bugfix',
+      'refactor',
+      'security-patch',
+      'workshop',
+    ],
+  },
+  {
+    id: 'practices-discovery',
+    phase: 'inception',
+    execution: 'CONDITIONAL',
+    leadAgent: 'aidlc-pipeline-deploy-agent',
+    support: ['aidlc-quality-agent', 'aidlc-developer-agent', 'aidlc-devsecops-agent'],
+    mode: 'inline',
+    produces: ['team-practices', 'discovered-rules', 'evidence', 'practices-discovery-timestamp'],
+    consumes: [
+      ['code-structure', o],
+      ['technology-stack', o],
+      ['dependencies', o],
+      ['code-quality-assessment', o],
+      ['architecture', o],
+      ['business-overview', o],
+    ],
+    requires: ['state-init', 'reverse-engineering'],
+    sensors: ['required-sections', 'upstream-coverage'],
+    scopes: ['enterprise', 'feature', 'mvp', 'infra', 'workshop'],
+  },
+  {
+    id: 'requirements-analysis',
+    phase: 'inception',
+    execution: 'ALWAYS',
+    leadAgent: 'aidlc-product-agent',
+    mode: 'inline',
+    produces: ['requirements', 'requirements-analysis-questions'],
+    consumes: [
+      ['intent-statement', o],
+      ['scope-document', o],
+      ['business-overview', o],
+      ['architecture', o],
+      ['code-structure', o],
+      ['team-practices', o],
+    ],
+    requires: ['approval-handoff', 'reverse-engineering'],
+    sensors: ['required-sections', 'upstream-coverage'],
+    scopes: ['enterprise', 'feature', 'mvp', 'poc', 'bugfix', 'refactor', 'infra', 'workshop'],
+  },
+  {
+    id: 'user-stories',
+    phase: 'inception',
+    execution: 'CONDITIONAL',
+    leadAgent: 'aidlc-product-agent',
+    support: ['aidlc-design-agent'],
+    mode: 'inline',
+    produces: ['stories', 'personas', 'user-stories-assessment'],
+    consumes: [
+      ['requirements', r],
+      ['business-overview', o],
+      ['component-inventory', o],
+      ['team-practices', o],
+    ],
+    requires: ['requirements-analysis'],
+    sensors: ['required-sections', 'upstream-coverage'],
+    scopes: ['enterprise', 'feature', 'mvp', 'workshop'],
+  },
+  {
+    id: 'refined-mockups',
+    phase: 'inception',
+    execution: 'CONDITIONAL',
+    leadAgent: 'aidlc-design-agent',
+    support: ['aidlc-product-agent'],
+    mode: 'inline',
+    produces: [
+      'mockups',
+      'interaction-spec',
+      'design-system-mapping',
+      'accessibility-checklist',
+      'refined-mockups-questions',
+    ],
+    consumes: [
+      ['wireframes', r],
+      ['user-flow', r],
+      ['stories', o],
+      ['requirements', r],
+      ['team-practices', o],
+    ],
+    requires: ['user-stories'],
+    sensors: ['required-sections', 'upstream-coverage'],
+    scopes: ['enterprise', 'feature', 'mvp', 'workshop'],
+  },
+  {
+    id: 'application-design',
+    phase: 'inception',
+    execution: 'CONDITIONAL',
+    leadAgent: 'aidlc-architect-agent',
+    support: ['aidlc-aws-platform-agent', 'aidlc-design-agent'],
+    mode: 'inline',
+    produces: ['components', 'component-methods', 'services', 'component-dependency', 'decisions'],
+    consumes: [
+      ['requirements', r],
+      ['stories', o],
+      ['architecture', o],
+      ['component-inventory', o],
+      ['team-practices', o],
+    ],
+    requires: ['requirements-analysis', 'refined-mockups'],
+    sensors: ['required-sections', 'upstream-coverage'],
+    scopes: ['enterprise', 'feature', 'mvp', 'workshop'],
+  },
+  {
+    id: 'units-generation',
+    phase: 'inception',
+    execution: 'ALWAYS',
+    leadAgent: 'aidlc-architect-agent',
+    support: ['aidlc-delivery-agent'],
+    mode: 'inline',
+    produces: ['unit-of-work', 'unit-of-work-dependency', 'unit-of-work-story-map'],
+    consumes: [
+      ['components', r],
+      ['component-methods', r],
+      ['services', r],
+      ['component-dependency', r],
+      ['decisions', r],
+      ['requirements', r],
+      ['stories', o],
+    ],
+    requires: ['application-design'],
+    sensors: ['required-sections', 'upstream-coverage'],
+    scopes: ['enterprise', 'feature', 'mvp', 'workshop'],
+  },
+  {
+    id: 'delivery-planning',
+    phase: 'inception',
+    execution: 'ALWAYS',
+    leadAgent: 'aidlc-delivery-agent',
+    support: ['aidlc-architect-agent'],
+    mode: 'inline',
+    produces: [
+      'bolt-plan',
+      'team-allocation',
+      'risk-and-sequencing-rationale',
+      'external-dependency-map',
+      'delivery-planning-questions',
+    ],
+    consumes: [
+      ['requirements', r],
+      ['stories', o],
+      ['mockups', o],
+      ['components', r],
+      ['unit-of-work', r],
+      ['unit-of-work-dependency', r],
+      ['unit-of-work-story-map', o],
+      ['team-practices', o],
+    ],
+    requires: ['units-generation'],
+    sensors: ['required-sections', 'upstream-coverage'],
+    scopes: ['enterprise', 'feature', 'mvp', 'workshop'],
+  },
+
+  // construction (7) — most run once per unit-of-work
+  {
+    id: 'functional-design',
+    phase: 'construction',
+    execution: 'CONDITIONAL',
+    leadAgent: 'aidlc-architect-agent',
+    support: ['aidlc-developer-agent'],
+    mode: 'inline',
+    forEach: 'unit-of-work',
+    produces: ['business-logic-model', 'business-rules', 'domain-entities', 'frontend-components'],
+    consumes: [
+      ['unit-of-work', r],
+      ['unit-of-work-story-map', o],
+      ['requirements', r],
+      ['components', r],
+      ['component-methods', r],
+      ['services', r],
+    ],
+    requires: ['units-generation'],
+    sensors: ['required-sections', 'upstream-coverage', 'linter', 'type-check'],
+    scopes: ['enterprise', 'feature', 'mvp', 'refactor', 'workshop'],
+  },
+  {
+    id: 'nfr-requirements',
+    phase: 'construction',
+    execution: 'CONDITIONAL',
+    leadAgent: 'aidlc-architect-agent',
+    support: ['aidlc-devsecops-agent', 'aidlc-compliance-agent', 'aidlc-quality-agent'],
+    mode: 'inline',
+    forEach: 'unit-of-work',
+    produces: [
+      'performance-requirements',
+      'security-requirements',
+      'scalability-requirements',
+      'reliability-requirements',
+      'tech-stack-decisions',
+    ],
+    consumes: [
+      ['business-logic-model', r],
+      ['business-rules', r],
+      ['requirements', r],
+      ['technology-stack', o],
+    ],
+    requires: ['units-generation', 'functional-design'],
+    sensors: ['required-sections', 'upstream-coverage', 'linter', 'type-check'],
+    scopes: ['enterprise', 'feature', 'mvp', 'infra', 'security-patch', 'workshop'],
+  },
+  {
+    id: 'nfr-design',
+    phase: 'construction',
+    execution: 'CONDITIONAL',
+    leadAgent: 'aidlc-architect-agent',
+    support: ['aidlc-aws-platform-agent'],
+    mode: 'inline',
+    forEach: 'unit-of-work',
+    produces: [
+      'performance-design',
+      'security-design',
+      'scalability-design',
+      'reliability-design',
+      'logical-components',
+    ],
+    consumes: [
+      ['performance-requirements', r],
+      ['security-requirements', r],
+      ['scalability-requirements', r],
+      ['reliability-requirements', r],
+      ['tech-stack-decisions', r],
+      ['business-logic-model', r],
+    ],
+    requires: ['units-generation', 'nfr-requirements'],
+    sensors: ['required-sections', 'upstream-coverage', 'linter', 'type-check'],
+    scopes: ['enterprise', 'feature', 'mvp', 'infra', 'workshop'],
+  },
+  {
+    id: 'infrastructure-design',
+    phase: 'construction',
+    execution: 'CONDITIONAL',
+    leadAgent: 'aidlc-aws-platform-agent',
+    support: ['aidlc-devsecops-agent', 'aidlc-compliance-agent'],
+    mode: 'inline',
+    forEach: 'unit-of-work',
+    produces: [
+      'deployment-architecture',
+      'infrastructure-services',
+      'monitoring-design',
+      'cicd-pipeline',
+      'shared-infrastructure',
+    ],
+    consumes: [
+      ['performance-design', r],
+      ['security-design', r],
+      ['scalability-design', r],
+      ['reliability-design', r],
+      ['logical-components', r],
+      ['components', r],
+      ['services', r],
+      ['business-logic-model', r],
+    ],
+    requires: ['units-generation', 'nfr-design'],
+    sensors: ['required-sections', 'upstream-coverage', 'linter', 'type-check'],
+    scopes: ['enterprise', 'feature', 'mvp', 'infra', 'workshop'],
+  },
+  {
+    id: 'code-generation',
+    phase: 'construction',
+    execution: 'ALWAYS',
+    leadAgent: 'aidlc-developer-agent',
+    mode: 'subagent',
+    forEach: 'unit-of-work',
+    produces: ['code-generation-plan', 'code-summary'],
+    consumes: [
+      ['business-logic-model', o],
+      ['business-rules', o],
+      ['domain-entities', o],
+      ['performance-design', o],
+      ['security-design', o],
+      ['deployment-architecture', o],
+      ['unit-of-work', r],
+      ['requirements', r],
+    ],
+    requires: [
+      'units-generation',
+      'functional-design',
+      'nfr-requirements',
+      'nfr-design',
+      'infrastructure-design',
+    ],
+    sensors: ['linter', 'type-check'],
+    scopes: [
+      'enterprise',
+      'feature',
+      'mvp',
+      'poc',
+      'bugfix',
+      'refactor',
+      'security-patch',
+      'workshop',
+    ],
+  },
+  {
+    id: 'build-and-test',
+    phase: 'construction',
+    execution: 'ALWAYS',
+    leadAgent: 'aidlc-quality-agent',
+    support: ['aidlc-devsecops-agent'],
+    mode: 'inline',
+    produces: [
+      'build-instructions',
+      'unit-test-instructions',
+      'integration-test-instructions',
+      'performance-test-instructions',
+      'security-test-instructions',
+      'build-and-test-summary',
+      'build-test-results',
+    ],
+    consumes: [
+      ['code-generation-plan', r],
+      ['code-summary', r],
+    ],
+    requires: ['code-generation'],
+    sensors: ['required-sections', 'upstream-coverage', 'type-check'],
+    scopes: [
+      'enterprise',
+      'feature',
+      'mvp',
+      'poc',
+      'bugfix',
+      'refactor',
+      'security-patch',
+      'workshop',
+    ],
+  },
+  {
+    id: 'ci-pipeline',
+    phase: 'construction',
+    execution: 'CONDITIONAL',
+    leadAgent: 'aidlc-pipeline-deploy-agent',
+    mode: 'inline',
+    produces: ['ci-config', 'quality-gates', 'ci-pipeline-questions'],
+    consumes: [
+      ['code-summary', r],
+      ['build-and-test-summary', r],
+      ['build-test-results', r],
+    ],
+    requires: ['build-and-test'],
+    sensors: ['required-sections', 'upstream-coverage', 'linter', 'type-check'],
+    scopes: ['enterprise', 'feature', 'mvp', 'infra', 'workshop'],
+  },
+
+  // operation (7)
+  {
+    id: 'deployment-pipeline',
+    phase: 'operation',
+    execution: 'CONDITIONAL',
+    leadAgent: 'aidlc-pipeline-deploy-agent',
+    mode: 'inline',
+    produces: [
+      'cd-config',
+      'deployment-strategy',
+      'rollback-runbook',
+      'deployment-pipeline-questions',
+    ],
+    consumes: [
+      ['ci-config', r],
+      ['quality-gates', r],
+      ['deployment-architecture', r],
+      ['cicd-pipeline', r],
+    ],
+    requires: ['ci-pipeline', 'infrastructure-design'],
+    sensors: ['required-sections', 'upstream-coverage'],
+    scopes: ['enterprise', 'feature', 'infra', 'security-patch', 'workshop'],
+  },
+  {
+    id: 'environment-provisioning',
+    phase: 'operation',
+    execution: 'CONDITIONAL',
+    leadAgent: 'aidlc-aws-platform-agent',
+    support: ['aidlc-devsecops-agent', 'aidlc-compliance-agent'],
+    mode: 'inline',
+    produces: ['environment-inventory', 'validation-report', 'environment-provisioning-questions'],
+    consumes: [
+      ['deployment-architecture', r],
+      ['infrastructure-services', r],
+      ['cd-config', r],
+    ],
+    requires: ['infrastructure-design', 'deployment-pipeline'],
+    sensors: ['required-sections', 'upstream-coverage'],
+    scopes: ['enterprise', 'feature', 'infra', 'workshop'],
+  },
+  {
+    id: 'deployment-execution',
+    phase: 'operation',
+    execution: 'CONDITIONAL',
+    leadAgent: 'aidlc-pipeline-deploy-agent',
+    support: ['aidlc-developer-agent'],
+    mode: 'inline',
+    produces: [
+      'deployment-log',
+      'smoke-test-results',
+      'health-check-report',
+      'deployment-execution-questions',
+    ],
+    consumes: [
+      ['cd-config', r],
+      ['deployment-strategy', r],
+      ['environment-inventory', r],
+      ['build-test-results', r],
+    ],
+    requires: ['deployment-pipeline', 'environment-provisioning'],
+    sensors: ['required-sections', 'upstream-coverage'],
+    scopes: ['enterprise', 'feature', 'infra', 'security-patch', 'workshop'],
+  },
+  {
+    id: 'observability-setup',
+    phase: 'operation',
+    execution: 'CONDITIONAL',
+    leadAgent: 'aidlc-operations-agent',
+    mode: 'inline',
+    produces: [
+      'dashboards',
+      'alarms',
+      'slo-config',
+      'log-queries',
+      'tracing-config',
+      'anomaly-config',
+      'observability-setup-questions',
+    ],
+    consumes: [
+      ['performance-design', r],
+      ['security-design', r],
+      ['reliability-design', r],
+      ['monitoring-design', r],
+      ['infrastructure-services', r],
+    ],
+    requires: ['nfr-design', 'infrastructure-design', 'deployment-execution'],
+    sensors: ['required-sections', 'upstream-coverage'],
+    scopes: ['enterprise', 'feature', 'infra', 'workshop'],
+  },
+  {
+    id: 'incident-response',
+    phase: 'operation',
+    execution: 'CONDITIONAL',
+    leadAgent: 'aidlc-operations-agent',
+    mode: 'inline',
+    produces: ['runbooks', 'incident-plan', 'escalation-matrix', 'incident-response-questions'],
+    consumes: [
+      ['dashboards', r],
+      ['alarms', r],
+      ['reliability-design', r],
+      ['security-design', r],
+      ['deployment-architecture', r],
+    ],
+    requires: ['observability-setup'],
+    sensors: ['required-sections', 'upstream-coverage'],
+    scopes: ['enterprise', 'feature', 'workshop'],
+  },
+  {
+    id: 'performance-validation',
+    phase: 'operation',
+    execution: 'CONDITIONAL',
+    leadAgent: 'aidlc-quality-agent',
+    mode: 'inline',
+    produces: [
+      'load-test-plan',
+      'load-test-results',
+      'nfr-validation-matrix',
+      'performance-validation-questions',
+    ],
+    consumes: [
+      ['performance-requirements', r],
+      ['scalability-requirements', r],
+      ['performance-design', r],
+      ['scalability-design', r],
+      ['dashboards', r],
+    ],
+    requires: ['nfr-requirements', 'nfr-design', 'observability-setup'],
+    sensors: ['required-sections', 'upstream-coverage'],
+    scopes: ['enterprise', 'feature', 'workshop'],
+  },
+  {
+    id: 'feedback-optimization',
+    phase: 'operation',
+    execution: 'CONDITIONAL',
+    leadAgent: 'aidlc-operations-agent',
+    support: ['aidlc-aws-platform-agent'],
+    mode: 'inline',
+    produces: [
+      'slo-report',
+      'cost-analysis',
+      'drift-report',
+      'feedback-loop',
+      'feedback-optimization-questions',
+    ],
+    consumes: [
+      ['dashboards', r],
+      ['alarms', r],
+      ['slo-config', r],
+      ['deployment-log', r],
+      ['load-test-results', o],
+      ['incident-plan', o],
+    ],
+    requires: [
+      'observability-setup',
+      'deployment-execution',
+      'incident-response',
+      'performance-validation',
+    ],
+    sensors: ['required-sections', 'upstream-coverage'],
+    scopes: ['enterprise', 'feature', 'workshop'],
   },
 ];
 
-// The shipped baseline workflows, owned by the SYSTEM tenant and read-only to
-// everyone else. A workflow references the baseline blocks above — it does not
-// copy them. This is the "from default" fork source: a tenant clones it to get
-// an editable composition. Like BASELINE_BLOCKS, this is a data seam — grow the
-// default flow (or add more shipped workflows) by editing here.
-//
-// Each entry:
-//   { id, name, objective?, groupings: [{ groupingId, path, kind }],
-//     placements: [{ skillId, groupingPath, order, scopeMembership? }] }
-// `path` encodes order + nesting (01, 01.02); placements reference library
-// skills by id and home under a grouping path.
+const stageBlock = (s) => ({
+  type: 'STAGE',
+  id: s.id,
+  name: titleCase(s.id),
+  defaultGrouping: s.phase,
+  leadAgent: s.leadAgent,
+  supportAgents: s.support ?? [],
+  mode: s.mode,
+  execution: s.execution,
+  forEach: s.forEach ?? null,
+  c1_definition: {
+    purpose: '',
+    inputs: s.consumes.map(([artifact, required]) => ({ artifact, required })),
+    outputs: s.produces,
+    intermediates: [],
+    requires: s.requires,
+  },
+  // Sensors are referenced by id; their modes live on the SENSOR blocks. The
+  // baseline ships only deterministic sensors.
+  c2_verification: { sensors: s.sensors, humanValidation: 'none' },
+  c3_learning: { captures: ['human-corrections'], promotionTargets: ['guardrail-library'] },
+});
+
+const BASELINE_BLOCKS = [
+  ...AGENTS.map(agentBlock),
+  ...SCOPES.map(scopeBlock),
+  ...SENSORS.map(sensorBlock),
+  ...RULES.map(ruleBlock),
+  ...STAGES.map(stageBlock),
+];
+
+// ─── Default workflow ───
+// The 5 AI-DLC phases, defined inline (path encodes order), and one placement
+// per stage homed under its phase. Each placement's scopeMembership is the
+// transpose of the stage's V2 `scopes:` list (listed → EXECUTE).
+const PHASE_ORDER = ['initialization', 'ideation', 'inception', 'construction', 'operation'];
+const phasePath = (phase) => String(PHASE_ORDER.indexOf(phase) + 1).padStart(2, '0');
+
+const DEFAULT_WORKFLOW_PHASES = PHASE_ORDER.map((phase) => ({
+  phaseId: phase,
+  name: titleCase(phase),
+  kind: 'phase',
+  path: phasePath(phase),
+}));
+
+const DEFAULT_WORKFLOW_PLACEMENTS = STAGES.map((s, i) => ({
+  stageId: s.id,
+  phasePath: phasePath(s.phase),
+  order: i,
+  scopeMembership: Object.fromEntries(s.scopes.map((scope) => [scope, 'EXECUTE'])),
+}));
 
 const BASELINE_WORKFLOWS = [
   {
     id: 'aidlc-v2',
     name: 'AI-DLC v2 (default)',
-    objective: 'The default AI-DLC v2 flow — a starting point to fork and tailor.',
-    groupings: [
-      { groupingId: 'ideation', path: '01', kind: 'phase' },
-      { groupingId: 'construction', path: '02', kind: 'phase' },
-    ],
-    placements: [{ skillId: 'scope-definition', groupingPath: '01', order: 1 }],
+    objective: 'The default AI-DLC v2 flow — the full 32-stage methodology to fork and tailor.',
+    defaultScope: 'feature',
+    phases: DEFAULT_WORKFLOW_PHASES,
+    placements: DEFAULT_WORKFLOW_PLACEMENTS,
   },
 ];
 

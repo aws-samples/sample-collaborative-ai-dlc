@@ -8,7 +8,7 @@ import {
   type BlockType,
 } from '@/services/blocks';
 import { SIMPLE_BLOCK_FORMS } from '@/components/blocks/blockFields';
-import { SkillEditor, type SkillForm } from '@/components/blocks/SkillEditor';
+import { StageEditor, type StageForm } from '@/components/blocks/StageEditor';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -26,10 +26,10 @@ const ID_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export default function BlockEditor() {
   const navigate = useNavigate();
   const { type: typeParam, id } = useParams<{ type: string; id: string }>();
-  const blockType: BlockType = isBlockType(typeParam) ? typeParam : 'skill';
+  const blockType: BlockType = isBlockType(typeParam) ? typeParam : 'stage';
   const isNew = id === 'new' || id === undefined;
   const labels = BLOCK_TYPE_LABELS[blockType];
-  const isSkill = blockType === 'skill';
+  const isStage = blockType === 'stage';
   const typeForm = SIMPLE_BLOCK_FORMS[blockType];
 
   // The whole editable block as a flat form object; type-specific attributes
@@ -234,16 +234,16 @@ export default function BlockEditor() {
           </CardContent>
         </Card>
 
-        {/* Type-specific: Skill gets the three-compartment editor; the rest get
+        {/* Type-specific: Stage gets the three-compartment editor; the rest get
             the data-driven simple-field form. */}
-        {isSkill ? (
+        {isStage ? (
           <Card>
             <CardHeader>
               <CardTitle className="text-sm">Contract</CardTitle>
             </CardHeader>
             <CardContent>
-              <SkillEditor
-                value={form as SkillForm}
+              <StageEditor
+                value={form as StageForm}
                 onChange={(next) => setForm(next as Record<string, unknown>)}
                 disabled={readOnly}
               />
@@ -302,11 +302,11 @@ export default function BlockEditor() {
         )}
 
         {/* Body — markdown instructions / prose, stored in S3. */}
-        {(isSkill || typeForm?.bodyLabel) && (
+        {(isStage || typeForm?.bodyLabel) && (
           <Card>
             <CardHeader>
               <CardTitle className="text-sm">
-                {isSkill ? 'Instructions' : typeForm!.bodyLabel}
+                {isStage ? 'Instructions' : typeForm!.bodyLabel}
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
@@ -317,7 +317,7 @@ export default function BlockEditor() {
                 className="min-h-[200px] font-mono text-xs"
                 disabled={readOnly}
               />
-              {!isSkill && typeForm?.bodyHelp && (
+              {!isStage && typeForm?.bodyHelp && (
                 <p className="text-xs text-muted-foreground">{typeForm.bodyHelp}</p>
               )}
             </CardContent>

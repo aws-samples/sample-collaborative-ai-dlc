@@ -3,17 +3,20 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 
-// The Skill's three-compartment contract (C1 define / C2 verify / C3 learn)
-// plus the front-of-skill clarification gate. Edits a plain `value` object and
+// The Stage's three-compartment contract (C1 define / C2 verify / C3 learn)
+// plus the front-of-stage clarification gate. Edits a plain `value` object and
 // reports changes up via `onChange`. Reference fields (agents, artifacts,
-// post-conditions) are comma-separated text for now — autocomplete pickers can
-// replace them later without changing the stored shape.
+// sensors) are comma-separated text for now — autocomplete pickers can replace
+// them later without changing the stored shape.
 
-export interface SkillForm {
+export interface StageForm {
   leadAgent?: string;
+  supportAgents?: string[];
   defaultGrouping?: string;
   mode?: string;
   execution?: string;
+  condition?: string;
+  forEach?: string | null;
   c1_definition?: {
     purpose?: string;
     inputs?: { artifact: string; required: boolean }[];
@@ -22,7 +25,7 @@ export interface SkillForm {
     requires?: string[];
   };
   c2_verification?: {
-    postConditions?: string[];
+    sensors?: string[];
     humanValidation?: string;
   };
   c3_learning?: {
@@ -37,8 +40,8 @@ export interface SkillForm {
 }
 
 interface Props {
-  value: SkillForm;
-  onChange: (next: SkillForm) => void;
+  value: StageForm;
+  onChange: (next: StageForm) => void;
   disabled?: boolean;
 }
 
@@ -49,16 +52,16 @@ const csvToList = (s: string) =>
     .filter(Boolean);
 const listToCsv = (l?: string[]) => (l ?? []).join(', ');
 
-export function SkillEditor({ value, onChange, disabled }: Props) {
+export function StageEditor({ value, onChange, disabled }: Props) {
   // Shallow/nested setters that always produce a new object for React state.
-  const set = (patch: Partial<SkillForm>) => onChange({ ...value, ...patch });
-  const setC1 = (patch: Partial<NonNullable<SkillForm['c1_definition']>>) =>
+  const set = (patch: Partial<StageForm>) => onChange({ ...value, ...patch });
+  const setC1 = (patch: Partial<NonNullable<StageForm['c1_definition']>>) =>
     set({ c1_definition: { ...value.c1_definition, ...patch } });
-  const setC2 = (patch: Partial<NonNullable<SkillForm['c2_verification']>>) =>
+  const setC2 = (patch: Partial<NonNullable<StageForm['c2_verification']>>) =>
     set({ c2_verification: { ...value.c2_verification, ...patch } });
-  const setC3 = (patch: Partial<NonNullable<SkillForm['c3_learning']>>) =>
+  const setC3 = (patch: Partial<NonNullable<StageForm['c3_learning']>>) =>
     set({ c3_learning: { ...value.c3_learning, ...patch } });
-  const setClarify = (patch: Partial<NonNullable<SkillForm['clarification']>>) =>
+  const setClarify = (patch: Partial<NonNullable<StageForm['clarification']>>) =>
     set({ clarification: { ...value.clarification, ...patch } });
 
   const c1 = value.c1_definition ?? {};
@@ -86,11 +89,11 @@ export function SkillEditor({ value, onChange, disabled }: Props) {
         <TabsTrigger value="meta">Agent &amp; Mode</TabsTrigger>
       </TabsList>
 
-      {/* ⊣ Clarify — the front-of-skill human gate (P2) */}
+      {/* ⊣ Clarify — the front-of-stage human gate (P2) */}
       <TabsContent value="clarify" className="space-y-4 pt-2">
         <p className="text-xs text-muted-foreground">
           Resolve ambiguity with a human before generating. Setting this to <code>always</code>{' '}
-          opens the front gate — the skill cannot fully self-halt.
+          opens the front gate — the stage cannot fully self-halt.
         </p>
         <div className="grid gap-2 max-w-xs">
           <Label>Required</Label>
@@ -119,7 +122,7 @@ export function SkillEditor({ value, onChange, disabled }: Props) {
           <Textarea
             value={c1.purpose ?? ''}
             onChange={(e) => setC1({ purpose: e.target.value })}
-            placeholder="What transformation or validation this skill performs"
+            placeholder="What transformation or validation this stage performs"
             disabled={disabled}
           />
         </div>
@@ -165,16 +168,16 @@ export function SkillEditor({ value, onChange, disabled }: Props) {
       {/* C2 — Verification */}
       <TabsContent value="c2" className="space-y-4 pt-2">
         <div className="grid gap-2">
-          <Label>Post-conditions</Label>
+          <Label>Sensors</Label>
           <Input
-            value={listToCsv(c2.postConditions)}
-            onChange={(e) => setC2({ postConditions: csvToList(e.target.value) })}
+            value={listToCsv(c2.sensors)}
+            onChange={(e) => setC2({ sensors: csvToList(e.target.value) })}
             placeholder="required-sections, upstream-coverage"
             disabled={disabled}
           />
           <p className="text-xs text-muted-foreground">
-            All-deterministic post-conditions let a skill self-halt; any llm-judged one escalates to
-            a human.
+            All-deterministic sensors let a stage self-halt; any llm-judged one escalates to a
+            human.
           </p>
         </div>
         <div className="grid gap-2 max-w-xs">
@@ -204,25 +207,34 @@ export function SkillEditor({ value, onChange, disabled }: Props) {
           <Input
             value={listToCsv(c3.promotionTargets)}
             onChange={(e) => setC3({ promotionTargets: csvToList(e.target.value) })}
-            placeholder="c2-postcondition, guardrail-library, exemplar"
+            placeholder="c2-sensor, guardrail-library, exemplar"
             disabled={disabled}
           />
         </div>
       </TabsContent>
 
-      {/* Agent & mode — intrinsic skill metadata */}
+      {/* Agent & mode — intrinsic stage metadata */}
       <TabsContent value="meta" className="space-y-4 pt-2">
         <div className="grid gap-2">
           <Label>Lead agent</Label>
           <Input
             value={value.leadAgent ?? ''}
             onChange={(e) => set({ leadAgent: e.target.value })}
-            placeholder="product-agent"
+            placeholder="aidlc-product-agent"
             disabled={disabled}
           />
         </div>
         <div className="grid gap-2">
-          <Label>Default grouping</Label>
+          <Label>Support agents</Label>
+          <Input
+            value={listToCsv(value.supportAgents)}
+            onChange={(e) => set({ supportAgents: csvToList(e.target.value) })}
+            placeholder="aidlc-delivery-agent, aidlc-architect-agent"
+            disabled={disabled}
+          />
+        </div>
+        <div className="grid gap-2">
+          <Label>Default phase</Label>
           <Input
             value={value.defaultGrouping ?? ''}
             onChange={(e) => set({ defaultGrouping: e.target.value })}
@@ -245,6 +257,24 @@ export function SkillEditor({ value, onChange, disabled }: Props) {
             value={value.execution ?? ''}
             onChange={(e) => set({ execution: e.target.value })}
             placeholder="ALWAYS | CONDITIONAL"
+            disabled={disabled}
+          />
+        </div>
+        <div className="grid gap-2">
+          <Label>Condition (when CONDITIONAL)</Label>
+          <Input
+            value={value.condition ?? ''}
+            onChange={(e) => set({ condition: e.target.value })}
+            placeholder="e.g. project is brownfield"
+            disabled={disabled}
+          />
+        </div>
+        <div className="grid gap-2 max-w-xs">
+          <Label>For each (fan-out)</Label>
+          <Input
+            value={value.forEach ?? ''}
+            onChange={(e) => set({ forEach: e.target.value || null })}
+            placeholder="unit-of-work"
             disabled={disabled}
           />
         </div>

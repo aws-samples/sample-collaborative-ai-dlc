@@ -83,18 +83,18 @@ const installFakes = () => {
 
 const claims = { sub: 'user-1', email: 'user@example.com' };
 
-const event = ({ method, workflowId, skillId, scopeId, body, path }) => {
+const event = ({ method, workflowId, stageId, scopeId, body, path }) => {
   let resource = '/workflows';
   const pathParameters = {};
   if (workflowId) {
     resource = '/workflows/{workflowId}';
     pathParameters.workflowId = workflowId;
   }
-  if (path === 'groupings') resource = '/workflows/{workflowId}/groupings';
+  if (path === 'phases') resource = '/workflows/{workflowId}/phases';
   if (path === 'placements') resource = '/workflows/{workflowId}/placements';
   if (path === 'placement') {
-    resource = '/workflows/{workflowId}/placements/{skillId}';
-    pathParameters.skillId = skillId;
+    resource = '/workflows/{workflowId}/placements/{stageId}';
+    pathParameters.stageId = stageId;
   }
   if (path === 'scopes') resource = '/workflows/{workflowId}/scopes';
   if (path === 'scope') {
@@ -160,45 +160,45 @@ describe('workflows handler', () => {
     await createWorkflow({ id: 'wf', name: 'WF' });
     const res = parse(await handler(event({ method: 'GET', workflowId: 'wf' })));
     expect(res.status).toBe(200);
-    expect(res.body.groupings).toEqual([]);
+    expect(res.body.phases).toEqual([]);
     expect(res.body.placements).toEqual([]);
   });
 
-  it('replaces the grouping tree (ordered, nestable)', async () => {
+  it('replaces the phase tree (ordered, nestable)', async () => {
     await createWorkflow({ id: 'wf', name: 'WF' });
     const res = parse(
       await handler(
         event({
           method: 'PUT',
           workflowId: 'wf',
-          path: 'groupings',
+          path: 'phases',
           body: {
-            groupings: [
-              { groupingId: 'ideation', path: '01', kind: 'phase' },
-              { groupingId: 'requirements', path: '01.02', kind: 'stage' },
-              { groupingId: 'construction', path: '02', kind: 'phase' },
+            phases: [
+              { phaseId: 'ideation', path: '01', kind: 'phase' },
+              { phaseId: 'requirements', path: '01.02', kind: 'stage' },
+              { phaseId: 'construction', path: '02', kind: 'phase' },
             ],
           },
         }),
       ),
     );
     expect(res.status).toBe(200);
-    expect(res.body.groupings.map((g) => g.path)).toEqual(['01', '01.02', '02']);
+    expect(res.body.phases.map((g) => g.path)).toEqual(['01', '01.02', '02']);
     // Nesting is derived from the path.
-    const nested = res.body.groupings.find((g) => g.path === '01.02');
+    const nested = res.body.phases.find((g) => g.path === '01.02');
     expect(nested.parentPath).toBe('01');
     expect(nested.order).toBe(2);
   });
 
-  it('adds a second grouping when one already exists (no delete+put key collision)', async () => {
+  it('adds a second phase when one already exists (no delete+put key collision)', async () => {
     await createWorkflow({ id: 'wf', name: 'WF' });
-    // First tree: one grouping.
+    // First tree: one phase.
     await handler(
       event({
         method: 'PUT',
         workflowId: 'wf',
-        path: 'groupings',
-        body: { groupings: [{ groupingId: 'ideation', path: '01', kind: 'phase' }] },
+        path: 'phases',
+        body: { phases: [{ phaseId: 'ideation', path: '01', kind: 'phase' }] },
       }),
     );
     // Second tree: keep the first (unchanged key) and add a second. The
@@ -209,31 +209,31 @@ describe('workflows handler', () => {
         event({
           method: 'PUT',
           workflowId: 'wf',
-          path: 'groupings',
+          path: 'phases',
           body: {
-            groupings: [
-              { groupingId: 'ideation', path: '01', kind: 'phase' },
-              { groupingId: 'construction', path: '02', kind: 'phase' },
+            phases: [
+              { phaseId: 'ideation', path: '01', kind: 'phase' },
+              { phaseId: 'construction', path: '02', kind: 'phase' },
             ],
           },
         }),
       ),
     );
     expect(res.status).toBe(200);
-    expect(res.body.groupings.map((g) => g.groupingId)).toEqual(['ideation', 'construction']);
+    expect(res.body.phases.map((g) => g.phaseId)).toEqual(['ideation', 'construction']);
   });
 
-  it('removes a grouping when the new tree omits it', async () => {
+  it('removes a phase when the new tree omits it', async () => {
     await createWorkflow({ id: 'wf', name: 'WF' });
     await handler(
       event({
         method: 'PUT',
         workflowId: 'wf',
-        path: 'groupings',
+        path: 'phases',
         body: {
-          groupings: [
-            { groupingId: 'ideation', path: '01', kind: 'phase' },
-            { groupingId: 'construction', path: '02', kind: 'phase' },
+          phases: [
+            { phaseId: 'ideation', path: '01', kind: 'phase' },
+            { phaseId: 'construction', path: '02', kind: 'phase' },
           ],
         },
       }),
@@ -243,31 +243,31 @@ describe('workflows handler', () => {
         event({
           method: 'PUT',
           workflowId: 'wf',
-          path: 'groupings',
-          body: { groupings: [{ groupingId: 'construction', path: '01', kind: 'phase' }] },
+          path: 'phases',
+          body: { phases: [{ phaseId: 'construction', path: '01', kind: 'phase' }] },
         }),
       ),
     );
     expect(res.status).toBe(200);
-    expect(res.body.groupings.map((g) => g.groupingId)).toEqual(['construction']);
+    expect(res.body.phases.map((g) => g.phaseId)).toEqual(['construction']);
   });
 
-  it('rejects a malformed grouping path', async () => {
+  it('rejects a malformed phase path', async () => {
     await createWorkflow({ id: 'wf', name: 'WF' });
     const res = parse(
       await handler(
         event({
           method: 'PUT',
           workflowId: 'wf',
-          path: 'groupings',
-          body: { groupings: [{ groupingId: 'x', path: 'nope' }] },
+          path: 'phases',
+          body: { phases: [{ phaseId: 'x', path: 'nope' }] },
         }),
       ),
     );
     expect(res.status).toBe(400);
   });
 
-  it('adds, updates, and removes a skill placement', async () => {
+  it('adds, updates, and removes a stage placement', async () => {
     await createWorkflow({ id: 'wf', name: 'WF' });
 
     const added = parse(
@@ -276,12 +276,12 @@ describe('workflows handler', () => {
           method: 'POST',
           workflowId: 'wf',
           path: 'placements',
-          body: { skillId: 'scope-definition', groupingPath: '01', order: 4 },
+          body: { stageId: 'scope-definition', phasePath: '01', order: 4 },
         }),
       ),
     );
     expect(added.status).toBe(201);
-    expect(added.body.skillId).toBe('scope-definition');
+    expect(added.body.stageId).toBe('scope-definition');
     expect(added.body.order).toBe(4);
 
     // Duplicate placement rejected.
@@ -291,7 +291,7 @@ describe('workflows handler', () => {
           method: 'POST',
           workflowId: 'wf',
           path: 'placements',
-          body: { skillId: 'scope-definition' },
+          body: { stageId: 'scope-definition' },
         }),
       ),
     );
@@ -303,7 +303,7 @@ describe('workflows handler', () => {
         event({
           method: 'PUT',
           workflowId: 'wf',
-          skillId: 'scope-definition',
+          stageId: 'scope-definition',
           path: 'placement',
           body: { scopeMembership: { mvp: 'EXECUTE', enterprise: 'SKIP' } },
         }),
@@ -318,7 +318,7 @@ describe('workflows handler', () => {
 
     // Remove it.
     const removed = await handler(
-      event({ method: 'DELETE', workflowId: 'wf', skillId: 'scope-definition', path: 'placement' }),
+      event({ method: 'DELETE', workflowId: 'wf', stageId: 'scope-definition', path: 'placement' }),
     );
     expect(removed.statusCode).toBe(204);
     const after = parse(await handler(event({ method: 'GET', workflowId: 'wf' })));
@@ -346,30 +346,30 @@ describe('workflows handler', () => {
     expect(after.body.scopeRefs).toEqual([]);
   });
 
-  it('compiles scope-grid + autonomy + graph from placements and referenced skills', async () => {
-    // Seed two library Skill blocks the placements will reference.
-    const seedSkill = (id, attrs) => {
-      store.set(`BLOCK#SYSTEM#SKILL#${id}|V#latest`, {
-        pk: `BLOCK#SYSTEM#SKILL#${id}`,
+  it('compiles scope-grid + autonomy + graph from placements and referenced stages', async () => {
+    // Seed two library Stage blocks the placements will reference.
+    const seedStage = (id, attrs) => {
+      store.set(`BLOCK#SYSTEM#STAGE#${id}|V#latest`, {
+        pk: `BLOCK#SYSTEM#STAGE#${id}`,
         sk: 'V#latest',
         tenantId: 'SYSTEM',
-        blockType: 'SKILL',
+        blockType: 'STAGE',
         blockId: id,
         ...attrs,
       });
     };
-    seedSkill('scope-definition', {
+    seedStage('scope-definition', {
       c1_definition: { outputs: ['scope-document'], inputs: [], intermediates: [], requires: [] },
-      c2_verification: { postConditions: [{ mode: 'deterministic' }], humanValidation: 'none' },
+      c2_verification: { sensors: [{ mode: 'deterministic' }], humanValidation: 'none' },
     });
-    seedSkill('design', {
+    seedStage('design', {
       c1_definition: {
         inputs: [{ artifact: 'scope-document', required: true }],
         outputs: [],
         intermediates: [],
         requires: [],
       },
-      c2_verification: { postConditions: [{ mode: 'llm-judged' }], humanValidation: 'none' },
+      c2_verification: { sensors: [{ mode: 'llm-judged' }], humanValidation: 'none' },
     });
 
     await createWorkflow({ id: 'wf', name: 'WF' });
@@ -381,11 +381,11 @@ describe('workflows handler', () => {
         method: 'POST',
         workflowId: 'wf',
         path: 'placements',
-        body: { skillId: 'scope-definition', scopeMembership: { mvp: 'EXECUTE' } },
+        body: { stageId: 'scope-definition', scopeMembership: { mvp: 'EXECUTE' } },
       }),
     );
     await handler(
-      event({ method: 'POST', workflowId: 'wf', path: 'placements', body: { skillId: 'design' } }),
+      event({ method: 'POST', workflowId: 'wf', path: 'placements', body: { stageId: 'design' } }),
     );
 
     const res = parse(await handler(event({ method: 'GET', workflowId: 'wf', path: 'compiled' })));
@@ -393,8 +393,8 @@ describe('workflows handler', () => {
     // scope grid: scope-definition EXECUTE under mvp, design defaults to SKIP.
     expect(res.body.scopeGrid.mvp).toEqual({ 'scope-definition': 'EXECUTE', design: 'SKIP' });
     // autonomy: deterministic → self-halting; llm-judged → human-gated.
-    expect(res.body.autonomy.perSkill['scope-definition']).toBe('self-halting');
-    expect(res.body.autonomy.perSkill.design).toBe('human-gated');
+    expect(res.body.autonomy.perStage['scope-definition']).toBe('self-halting');
+    expect(res.body.autonomy.perStage.design).toBe('human-gated');
     expect(res.body.autonomy.rollup).toEqual({ selfHalting: 1, mixed: 0, humanGated: 1, total: 2 });
     // graph: scope-document produced by scope-definition, consumed by design.
     expect(res.body.graph.edges).toContainEqual({
@@ -406,14 +406,14 @@ describe('workflows handler', () => {
     expect(res.body.graph.acyclic).toBe(true);
   });
 
-  it('forks a workflow: copies groupings + placements, not META identity', async () => {
+  it('forks a workflow: copies phases + placements, not META identity', async () => {
     await createWorkflow({ id: 'base', name: 'Base' });
     await handler(
       event({
         method: 'PUT',
         workflowId: 'base',
-        path: 'groupings',
-        body: { groupings: [{ groupingId: 'ideation', path: '01', kind: 'phase' }] },
+        path: 'phases',
+        body: { phases: [{ phaseId: 'ideation', path: '01', kind: 'phase' }] },
       }),
     );
     await handler(
@@ -421,7 +421,7 @@ describe('workflows handler', () => {
         method: 'POST',
         workflowId: 'base',
         path: 'placements',
-        body: { skillId: 'scope-definition' },
+        body: { stageId: 'scope-definition' },
       }),
     );
 
@@ -430,8 +430,8 @@ describe('workflows handler', () => {
     expect(fork.body.basedOn).toBe('base');
 
     const loaded = parse(await handler(event({ method: 'GET', workflowId: 'fork' })));
-    expect(loaded.body.groupings.map((g) => g.groupingId)).toEqual(['ideation']);
-    expect(loaded.body.placements.map((p) => p.skillId)).toEqual(['scope-definition']);
+    expect(loaded.body.phases.map((g) => g.phaseId)).toEqual(['ideation']);
+    expect(loaded.body.placements.map((p) => p.stageId)).toEqual(['scope-definition']);
   });
 
   it('updates and deletes a workflow', async () => {

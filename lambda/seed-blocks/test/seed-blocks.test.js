@@ -81,11 +81,13 @@ describe('seed-blocks handler', () => {
     }
   });
 
-  it('externalizes bodies to S3 and stores a pointer, not inline text', async () => {
+  it('externalizes any baseline body to S3 and stores a pointer, not inline text', async () => {
     await handler({});
-    const withBody = BASELINE_BLOCKS.filter((b) => b.body);
-    expect(withBody.length).toBeGreaterThan(0);
-    for (const block of withBody) {
+    // The baseline currently models structured frontmatter only — bodies (the
+    // V2 instructions/personas/rule prose) are a deferred data-seam addition.
+    // Whenever a baseline block does carry a body, it must be externalized.
+    // (The S3 round-trip itself is covered in the building-blocks suite.)
+    for (const block of BASELINE_BLOCKS.filter((b) => b.body)) {
       const item = tableStore.get(`BLOCK#SYSTEM#${block.type}#${block.id}|V#latest`);
       expect(item.bodyRef).toBeTruthy();
       expect(item.bodyRef.s3Key).toMatch(/^blocks\/bodies\/sha256\//);
@@ -103,7 +105,7 @@ describe('seed-blocks handler', () => {
     expect(tableStore.size).toBe(sizeAfterFirst);
   });
 
-  it('seeds each baseline workflow as a SYSTEM partition (META + groupings + placements)', async () => {
+  it('seeds each baseline workflow as a SYSTEM partition (META + phases + placements)', async () => {
     await handler({});
     for (const wf of BASELINE_WORKFLOWS) {
       const pk = `WF#SYSTEM#${wf.id}`;
@@ -113,12 +115,12 @@ describe('seed-blocks handler', () => {
       expect(meta.status).toBe('PUBLISHED');
       // Listed via the workflow catalog index.
       expect(meta.GSI1PK).toBe('TENANT#SYSTEM#WORKFLOW');
-      // Grouping refs + placements landed in the partition.
-      for (const g of wf.groupings ?? []) {
-        expect(tableStore.has(`${pk}|GROUPING#${g.path}#${g.groupingId}`)).toBe(true);
+      // Inline phases + stage placements landed in the partition.
+      for (const phase of wf.phases ?? []) {
+        expect(tableStore.has(`${pk}|PHASE#${phase.path}#${phase.phaseId}`)).toBe(true);
       }
       for (const p of wf.placements ?? []) {
-        expect(tableStore.has(`${pk}|PLACEMENT#${p.skillId}`)).toBe(true);
+        expect(tableStore.has(`${pk}|PLACEMENT#${p.stageId}`)).toBe(true);
       }
     }
   });

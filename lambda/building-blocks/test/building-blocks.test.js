@@ -128,23 +128,23 @@ describe('building-blocks handler', () => {
       await handler(
         event({
           method: 'POST',
-          type: 'grouping',
-          body: { id: 'ideation', name: 'Ideation', kind: 'phase' },
+          type: 'agent',
+          body: { id: 'architect', name: 'Architect', displayName: 'Architect Agent' },
         }),
       ),
     );
     expect(res.status).toBe(201);
-    expect(res.body.id).toBe('ideation');
+    expect(res.body.id).toBe('architect');
     expect(res.body.version).toBe(1);
-    expect(res.body.kind).toBe('phase');
+    expect(res.body.displayName).toBe('Architect Agent');
     // Both the mutable pointer and the immutable first snapshot exist.
-    expect(tableStore.has('BLOCK#default#GROUPING#ideation|V#latest')).toBe(true);
-    expect(tableStore.has('BLOCK#default#GROUPING#ideation|V#1')).toBe(true);
+    expect(tableStore.has('BLOCK#default#AGENT#architect|V#latest')).toBe(true);
+    expect(tableStore.has('BLOCK#default#AGENT#architect|V#1')).toBe(true);
   });
 
   it('rejects a duplicate id with 409', async () => {
     const make = () =>
-      handler(event({ method: 'POST', type: 'grouping', body: { id: 'dup', name: 'Dup' } }));
+      handler(event({ method: 'POST', type: 'agent', body: { id: 'dup', name: 'Dup' } }));
     await make();
     const res = parse(await make());
     expect(res.status).toBe(409);
@@ -160,6 +160,57 @@ describe('building-blocks handler', () => {
       await handler(event({ method: 'POST', type: 'scope', body: { id: 'mvp' } })),
     );
     expect(noName.status).toBe(400);
+  });
+
+  it('enforces sensor-specific fields (mode required; deterministic needs a command)', async () => {
+    // Missing mode → 400.
+    const noMode = parse(
+      await handler(
+        event({ method: 'POST', type: 'sensor', body: { id: 'linter', name: 'Linter' } }),
+      ),
+    );
+    expect(noMode.status).toBe(400);
+
+    // Deterministic without a command → 400.
+    const noCmd = parse(
+      await handler(
+        event({
+          method: 'POST',
+          type: 'sensor',
+          body: { id: 'linter', name: 'Linter', mode: 'deterministic' },
+        }),
+      ),
+    );
+    expect(noCmd.status).toBe(400);
+
+    // Deterministic with a command → 201.
+    const ok = parse(
+      await handler(
+        event({
+          method: 'POST',
+          type: 'sensor',
+          body: {
+            id: 'linter',
+            name: 'Linter',
+            mode: 'deterministic',
+            command: 'bun {{HARNESS_DIR}}/tools/aidlc-sensor-linter.ts',
+          },
+        }),
+      ),
+    );
+    expect(ok.status).toBe(201);
+
+    // llm-judged needs no command → 201.
+    const llm = parse(
+      await handler(
+        event({
+          method: 'POST',
+          type: 'sensor',
+          body: { id: 'coherent', name: 'Coherent', mode: 'llm-judged' },
+        }),
+      ),
+    );
+    expect(llm.status).toBe(201);
   });
 
   it('400s on malformed JSON', async () => {

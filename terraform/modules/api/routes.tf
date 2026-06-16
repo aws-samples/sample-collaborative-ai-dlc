@@ -1018,10 +1018,10 @@ resource "aws_api_gateway_resource" "workflow" {
   path_part   = "{workflowId}"
 }
 
-resource "aws_api_gateway_resource" "workflow_groupings" {
+resource "aws_api_gateway_resource" "workflow_phases" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.workflow.id
-  path_part   = "groupings"
+  path_part   = "phases"
 }
 
 resource "aws_api_gateway_resource" "workflow_placements" {
@@ -1033,7 +1033,7 @@ resource "aws_api_gateway_resource" "workflow_placements" {
 resource "aws_api_gateway_resource" "workflow_placement" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.workflow_placements.id
-  path_part   = "{skillId}"
+  path_part   = "{stageId}"
 }
 
 resource "aws_api_gateway_resource" "workflow_scopes" {
@@ -1063,7 +1063,7 @@ locals {
     item_get         = { resource = aws_api_gateway_resource.workflow.id, method = "GET" }
     item_put         = { resource = aws_api_gateway_resource.workflow.id, method = "PUT" }
     item_delete      = { resource = aws_api_gateway_resource.workflow.id, method = "DELETE" }
-    groupings_put    = { resource = aws_api_gateway_resource.workflow_groupings.id, method = "PUT" }
+    phases_put       = { resource = aws_api_gateway_resource.workflow_phases.id, method = "PUT" }
     placements_post  = { resource = aws_api_gateway_resource.workflow_placements.id, method = "POST" }
     placement_put    = { resource = aws_api_gateway_resource.workflow_placement.id, method = "PUT" }
     placement_delete = { resource = aws_api_gateway_resource.workflow_placement.id, method = "DELETE" }
@@ -1104,10 +1104,10 @@ module "cors_workflow" {
   resource_id = aws_api_gateway_resource.workflow.id
 }
 
-module "cors_workflow_groupings" {
+module "cors_workflow_phases" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
-  resource_id = aws_api_gateway_resource.workflow_groupings.id
+  resource_id = aws_api_gateway_resource.workflow_phases.id
 }
 
 module "cors_workflow_placements" {

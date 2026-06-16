@@ -13,17 +13,13 @@
 
 const { createHash } = require('node:crypto');
 
-// The block types that form the reusable library. Workflows and artifacts are
-// modeled separately and are not part of this set.
-const BLOCK_TYPES = [
-  'SKILL',
-  'GROUPING',
-  'AGENT',
-  'SCOPE',
-  'GUARDRAIL',
-  'POSTCONDITION',
-  'KNOWLEDGE',
-];
+// The block types that form the reusable library, named to match the AI-DLC
+// V2 source (awslabs/aidlc-workflows): a STAGE is the atomic unit of work, a
+// SENSOR is a deterministic check, a RULE is a layered guardrail. Phases are
+// NOT a block type — they are defined inline in each workflow's grouping tree
+// (V2 treats a phase as an organizing label, not a standalone object).
+// Workflows and artifacts are modeled separately and are not in this set.
+const BLOCK_TYPES = ['STAGE', 'AGENT', 'SCOPE', 'RULE', 'SENSOR', 'KNOWLEDGE'];
 
 const LATEST = 'V#latest';
 
@@ -81,6 +77,25 @@ const validateBlockInput = (type, input) => {
       errors.push('body must be a string');
     } else if (Buffer.byteLength(input.body, 'utf8') > MAX_BODY_BYTES) {
       errors.push(`body exceeds ${MAX_BODY_BYTES} bytes`);
+    }
+  }
+  errors.push(...validateTypeFields(type, input));
+  return errors;
+};
+
+// Per-type required/shape checks. Kept small and explicit — only the fields
+// whose absence would make a block unusable are enforced.
+const validateTypeFields = (type, input) => {
+  const errors = [];
+  if (type === 'SENSOR') {
+    // A sensor's mode decides whether it can self-halt; it is mandatory.
+    if (input.mode !== 'deterministic' && input.mode !== 'llm-judged') {
+      errors.push("sensor mode must be 'deterministic' or 'llm-judged'");
+    }
+    // A deterministic sensor is an executable check — it needs a command.
+    // (The script itself rides in the body; the command is how it's run.)
+    if (input.mode === 'deterministic' && (typeof input.command !== 'string' || !input.command)) {
+      errors.push('a deterministic sensor requires a command');
     }
   }
   return errors;
