@@ -33,11 +33,14 @@ import {
   workflowPk,
   groupingSk,
   placementSk,
+  scopeRefSk,
   workflowGsi1Pk,
   validateId,
   validateName,
   validateGroupingNode,
 } from '../shared/workflows.js';
+import { blockPk, LATEST } from '../shared/blocks.js';
+import { compileWorkflow } from '../shared/compile.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const blocksTable = () => process.env.BLOCKS_TABLE;
@@ -308,6 +311,80 @@ const deletePlacement = async (event, res, tenant, workflowId, skillId) => {
   return res(204, {});
 };
 
+// ── Scope refs ── make a library scope available in this workflow (the
+// columns of the scope × skill matrix). Membership itself lives on placements.
+const addScopeRef = async (event, res, tenant, workflowId) => {
+  if (tenant === SYSTEM_TENANT) return res(403, { error: 'SYSTEM workflows are read-only' });
+  if (!(await loadMeta(tenant, workflowId))) return res(404, { error: 'Not found' });
+  const input = parseBody(event);
+  if (input === undefined) return res(400, { error: 'Invalid JSON body' });
+  const scopeId = input.scopeId;
+  if (typeof scopeId !== 'string' || !scopeId) return res(400, { error: 'scopeId is required' });
+
+  const item = {
+    pk: workflowPk(tenant, workflowId),
+    sk: scopeRefSk(scopeId),
+    type: 'ScopeRef',
+    scopeId,
+    scopeTenant: input.scopeTenant ?? SYSTEM_TENANT,
+  };
+  await ddb.send(new PutCommand({ TableName: blocksTable(), Item: item }));
+  return res(201, scopeRefToApi(item));
+};
+
+const removeScopeRef = async (event, res, tenant, workflowId, scopeId) => {
+  if (tenant === SYSTEM_TENANT) return res(403, { error: 'SYSTEM workflows are read-only' });
+  const sk = scopeRefSk(scopeId);
+  const current = await ddb.send(
+    new GetCommand({ TableName: blocksTable(), Key: { pk: workflowPk(tenant, workflowId), sk } }),
+  );
+  if (!current.Item) return res(404, { error: 'Not found' });
+  await ddb.send(
+    new DeleteCommand({
+      TableName: blocksTable(),
+      Key: { pk: workflowPk(tenant, workflowId), sk },
+    }),
+  );
+  return res(204, {});
+};
+
+// ── Compiled views ── derive scope-grid + autonomy-profile + skill-graph from
+// the placements, scope refs, and the library Skill blocks they reference.
+// Computed on demand (no cache yet); the pure compilers live in shared/compile.
+const getCompiled = async (event, res, tenant, workflowId) => {
+  const resolved = await resolveWorkflow(tenant, workflowId);
+  if (!resolved) return res(404, { error: 'Not found' });
+  const items = await queryPartition(resolved.owner, workflowId);
+
+  const placements = items.filter((i) => i.sk.startsWith('PLACEMENT#')).map(placementToApi);
+  const scopeSlugs = items.filter((i) => i.sk.startsWith('SCOPEREF#')).map((i) => i.scopeId);
+
+  // Batch-get the referenced Skill library blocks (V#latest), keyed by id.
+  const skillsById = await loadSkills(placements);
+  const compiled = compileWorkflow(placements, scopeSlugs, skillsById);
+  return res(200, compiled);
+};
+
+// Resolve each placement's Skill block from its owning tenant (pinned version
+// support is deferred — we read V#latest, which is what the editor shows).
+const loadSkills = async (placements) => {
+  const results = await Promise.all(
+    placements.map((p) =>
+      ddb.send(
+        new GetCommand({
+          TableName: blocksTable(),
+          Key: { pk: blockPk(p.skillTenant ?? SYSTEM_TENANT, 'SKILL', p.skillId), sk: LATEST },
+        }),
+      ),
+    ),
+  );
+  const skillsById = {};
+  for (const { Item } of results) {
+    if (Item) skillsById[Item.blockId] = Item;
+  }
+  return skillsById;
+};
+
 // ─── Shapers ───
 
 const buildPlacementItem = (tenant, workflowId, skillId, input) => ({
@@ -355,6 +432,8 @@ const placementToApi = (item) => ({
   scopeMembership: item.scopeMembership ?? {},
 });
 
+const scopeRefToApi = (item) => ({ scopeId: item.scopeId, scopeTenant: item.scopeTenant });
+
 // Assemble the partition items into the composition the editor loads.
 const composeWorkflow = (owner, items) => {
   const meta = items.find((i) => i.sk === META);
@@ -366,12 +445,17 @@ const composeWorkflow = (owner, items) => {
     .filter((i) => i.sk.startsWith('PLACEMENT#'))
     .map(placementToApi)
     .toSorted((a, b) => a.order - b.order);
+  const scopeRefs = items
+    .filter((i) => i.sk.startsWith('SCOPEREF#'))
+    .map(scopeRefToApi)
+    .toSorted((a, b) => a.scopeId.localeCompare(b.scopeId));
   return {
     ...(meta ? metaToApi(meta) : {}),
     owner,
     readOnly: owner === SYSTEM_TENANT,
     groupings,
     placements,
+    scopeRefs,
   };
 };
 
@@ -384,7 +468,7 @@ export const handler = async (event) => {
   try {
     const method = event.httpMethod;
     const path = event.resource || event.path || '';
-    const { workflowId, skillId } = event.pathParameters || {};
+    const { workflowId, skillId, scopeId } = event.pathParameters || {};
     const tenant = resolveTenant(getClaims(event));
 
     if (path.endsWith('/placements/{skillId}')) {
@@ -399,6 +483,18 @@ export const handler = async (event) => {
     }
     if (path.endsWith('/groupings')) {
       if (method === 'PUT') return await putGroupings(event, res, tenant, workflowId);
+      return res(405, { error: 'Method not allowed' });
+    }
+    if (path.endsWith('/scopes/{scopeId}')) {
+      if (method === 'DELETE') return await removeScopeRef(event, res, tenant, workflowId, scopeId);
+      return res(405, { error: 'Method not allowed' });
+    }
+    if (path.endsWith('/scopes')) {
+      if (method === 'POST') return await addScopeRef(event, res, tenant, workflowId);
+      return res(405, { error: 'Method not allowed' });
+    }
+    if (path.endsWith('/compiled')) {
+      if (method === 'GET') return await getCompiled(event, res, tenant, workflowId);
       return res(405, { error: 'Method not allowed' });
     }
     if (workflowId) {

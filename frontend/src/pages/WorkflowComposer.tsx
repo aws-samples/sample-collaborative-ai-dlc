@@ -1,7 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { workflowsService, type Workflow, type GroupingNodeInput } from '@/services/workflows';
+import {
+  workflowsService,
+  type Workflow,
+  type GroupingNodeInput,
+  type CompiledWorkflow,
+} from '@/services/workflows';
 import { blocksService, type Block } from '@/services/blocks';
+import { WorkflowInsights } from '@/components/blocks/WorkflowInsights';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -16,6 +22,8 @@ export default function WorkflowComposer() {
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
   const [skillLib, setSkillLib] = useState<Block[]>([]);
   const [groupingLib, setGroupingLib] = useState<Block[]>([]);
+  const [scopeLib, setScopeLib] = useState<Block[]>([]);
+  const [compiled, setCompiled] = useState<CompiledWorkflow | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -26,14 +34,18 @@ export default function WorkflowComposer() {
     if (!workflowId) return;
     setLoading(true);
     try {
-      const [wf, skills, groupings] = await Promise.all([
+      const [wf, skills, groupings, scopes, comp] = await Promise.all([
         workflowsService.get(workflowId),
         blocksService.list('skill'),
         blocksService.list('grouping'),
+        blocksService.list('scope'),
+        workflowsService.compiled(workflowId),
       ]);
       setWorkflow(wf);
       setSkillLib(skills.blocks);
       setGroupingLib(groupings.blocks);
+      setScopeLib(scopes.blocks);
+      setCompiled(comp);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load workflow');
     } finally {
@@ -142,6 +154,41 @@ export default function WorkflowComposer() {
       await workflowsService.removePlacement(workflowId, skillId);
       await load();
       flash('Placement removed.');
+    } catch (e) {
+      fail(e);
+    }
+  };
+
+  // ── Scopes + matrix ──
+  const addScope = async (scopeId: string) => {
+    if (!workflowId) return;
+    try {
+      await workflowsService.addScopeRef(workflowId, scopeId);
+      await load();
+    } catch (e) {
+      fail(e);
+    }
+  };
+
+  const removeScope = async (scopeId: string) => {
+    if (!workflowId) return;
+    try {
+      await workflowsService.removeScopeRef(workflowId, scopeId);
+      await load();
+    } catch (e) {
+      fail(e);
+    }
+  };
+
+  // Toggle one matrix cell: merge the new state into the placement's
+  // scopeMembership and persist, then refresh the derived grid.
+  const toggleCell = async (skillId: string, scopeId: string, next: 'EXECUTE' | 'SKIP') => {
+    if (!workflowId || !workflow) return;
+    const placement = workflow.placements.find((p) => p.skillId === skillId);
+    const membership = { ...placement?.scopeMembership, [scopeId]: next };
+    try {
+      await workflowsService.updatePlacement(workflowId, skillId, { scopeMembership: membership });
+      await load();
     } catch (e) {
       fail(e);
     }
@@ -345,6 +392,17 @@ export default function WorkflowComposer() {
             )}
           </CardContent>
         </Card>
+
+        {/* Derived views: autonomy, scope × skill matrix, validation */}
+        <WorkflowInsights
+          workflow={workflow}
+          scopeLib={scopeLib}
+          compiled={compiled}
+          readOnly={readOnly}
+          onAddScope={addScope}
+          onRemoveScope={removeScope}
+          onToggleCell={toggleCell}
+        />
       </div>
     </div>
   );

@@ -36,12 +36,12 @@ inline — consistent with how every other lambda in this repo uses DynamoDB.
 
 ## Slicing roadmap
 
-| Slice | Scope                                                                     | Status |
-| ----- | ------------------------------------------------------------------------- | ------ |
-| **1** | **Library block CRUD**                                                    | done   |
-| **2** | **Workflow + placements + grouping tree**                                 | done   |
-| 3     | Scope × skill matrix + compiled views (skill-graph, scope-grid, autonomy) | later  |
-| 4     | Learnings queue + fork/clone + 3-way baseline merge                       | later  |
+| Slice | Scope                                                                         | Status |
+| ----- | ----------------------------------------------------------------------------- | ------ |
+| **1** | **Library block CRUD**                                                        | done   |
+| **2** | **Workflow + placements + grouping tree**                                     | done   |
+| **3** | **Scope × skill matrix + compiled views (skill-graph, scope-grid, autonomy)** | done   |
+| 4     | Learnings queue + fork/clone + 3-way baseline merge                           | later  |
 
 Slice 2 shipped the workflows lambda (workflows share the blocks table via
 `WF#…` partitions; one Query loads the whole composition), the grouping-tree
@@ -50,8 +50,19 @@ Slice 2 shipped the workflows lambda (workflows share the blocks table via
 intent→workflow version-pin link is deferred to whenever the intent feature
 consumes a workflow.
 
+Slice 3 added scope refs (`SCOPEREF#` items) and the derived views, computed on
+demand by pure functions in `lambda/shared/compile.js` and served from
+`GET /workflows/{id}/compiled`: the scope grid (`{scope → {skill → EXECUTE|SKIP}}`
+transposed from placements), the autonomy profile (per-skill self-halting /
+mixed / human-gated from each skill's two gates, plus a roll-up), and the skill
+graph (produces→consumes + requires edges with cycle and orphan-artifact
+detection). The composer gained the scope × skill matrix (cells toggle
+`scopeMembership`), an autonomy panel, and a validation summary. Compiled views
+are recomputed per request — no cache yet (a `COMPILED#*` cache is a later
+optimization, not a correctness need).
+
 The single-table + S3 pointer design makes slices 2–4 **additive** (new SK
-types + GSI2/3/4), never rewrites.
+types), never rewrites.
 
 ---
 

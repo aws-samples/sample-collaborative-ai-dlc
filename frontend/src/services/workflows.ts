@@ -55,10 +55,35 @@ export interface PlacementInput {
   scopeMembership?: Record<string, 'EXECUTE' | 'SKIP'>;
 }
 
+export interface ScopeRef {
+  scopeId: string;
+  scopeTenant: string;
+}
+
 // The full composition returned by GET /workflows/{id}.
 export interface Workflow extends WorkflowSummary {
   groupings: GroupingNode[];
   placements: Placement[];
+  scopeRefs: ScopeRef[];
+}
+
+export type AutonomyLevel = 'self-halting' | 'mixed' | 'human-gated';
+
+// The derived views returned by GET /workflows/{id}/compiled.
+export interface CompiledWorkflow {
+  scopeGrid: Record<string, Record<string, 'EXECUTE' | 'SKIP'>>;
+  autonomy: {
+    perSkill: Record<string, AutonomyLevel>;
+    rollup: { selfHalting: number; mixed: number; humanGated: number; total: number };
+  };
+  graph: {
+    nodes: { skillId: string; groupingPath: string | null; order: number }[];
+    edges: { from: string; to: string; artifact?: string; kind: 'data' | 'requires' }[];
+    cycles: string[];
+    danglingConsumes: { skillId: string; artifact: string }[];
+    orphanProduces: { artifact: string; producedBy: string[] }[];
+    acyclic: boolean;
+  };
 }
 
 export interface CreateWorkflowInput {
@@ -94,4 +119,11 @@ export const workflowsService = {
     api.put<Placement>(`/workflows/${id}/placements/${skillId}`, input),
   removePlacement: (id: string, skillId: string) =>
     api.delete(`/workflows/${id}/placements/${skillId}`),
+
+  addScopeRef: (id: string, scopeId: string, scopeTenant?: string) =>
+    api.post<ScopeRef>(`/workflows/${id}/scopes`, { scopeId, scopeTenant }),
+  removeScopeRef: (id: string, scopeId: string) => api.delete(`/workflows/${id}/scopes/${scopeId}`),
+
+  // The derived scope-grid + autonomy + skill-graph for this workflow.
+  compiled: (id: string) => api.get<CompiledWorkflow>(`/workflows/${id}/compiled`),
 };

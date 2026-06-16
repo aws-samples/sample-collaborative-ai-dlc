@@ -1036,6 +1036,24 @@ resource "aws_api_gateway_resource" "workflow_placement" {
   path_part   = "{skillId}"
 }
 
+resource "aws_api_gateway_resource" "workflow_scopes" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.workflow.id
+  path_part   = "scopes"
+}
+
+resource "aws_api_gateway_resource" "workflow_scope" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.workflow_scopes.id
+  path_part   = "{scopeId}"
+}
+
+resource "aws_api_gateway_resource" "workflow_compiled" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.workflow.id
+  path_part   = "compiled"
+}
+
 # Method + AWS_PROXY integration for every (resource, verb) the workflows
 # lambda serves. Driven by a map so the boilerplate stays in one place.
 locals {
@@ -1049,6 +1067,9 @@ locals {
     placements_post  = { resource = aws_api_gateway_resource.workflow_placements.id, method = "POST" }
     placement_put    = { resource = aws_api_gateway_resource.workflow_placement.id, method = "PUT" }
     placement_delete = { resource = aws_api_gateway_resource.workflow_placement.id, method = "DELETE" }
+    scopes_post      = { resource = aws_api_gateway_resource.workflow_scopes.id, method = "POST" }
+    scope_delete     = { resource = aws_api_gateway_resource.workflow_scope.id, method = "DELETE" }
+    compiled_get     = { resource = aws_api_gateway_resource.workflow_compiled.id, method = "GET" }
   }
 }
 
@@ -1099,6 +1120,24 @@ module "cors_workflow_placement" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.workflow_placement.id
+}
+
+module "cors_workflow_scopes" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.workflow_scopes.id
+}
+
+module "cors_workflow_scope" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.workflow_scope.id
+}
+
+module "cors_workflow_compiled" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.workflow_compiled.id
 }
 
 resource "aws_lambda_permission" "workflows" {

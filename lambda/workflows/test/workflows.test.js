@@ -83,7 +83,7 @@ const installFakes = () => {
 
 const claims = { sub: 'user-1', email: 'user@example.com' };
 
-const event = ({ method, workflowId, skillId, body, path }) => {
+const event = ({ method, workflowId, skillId, scopeId, body, path }) => {
   let resource = '/workflows';
   const pathParameters = {};
   if (workflowId) {
@@ -96,6 +96,12 @@ const event = ({ method, workflowId, skillId, body, path }) => {
     resource = '/workflows/{workflowId}/placements/{skillId}';
     pathParameters.skillId = skillId;
   }
+  if (path === 'scopes') resource = '/workflows/{workflowId}/scopes';
+  if (path === 'scope') {
+    resource = '/workflows/{workflowId}/scopes/{scopeId}';
+    pathParameters.scopeId = scopeId;
+  }
+  if (path === 'compiled') resource = '/workflows/{workflowId}/compiled';
   return {
     httpMethod: method,
     resource,
@@ -317,6 +323,87 @@ describe('workflows handler', () => {
     expect(removed.statusCode).toBe(204);
     const after = parse(await handler(event({ method: 'GET', workflowId: 'wf' })));
     expect(after.body.placements).toHaveLength(0);
+  });
+
+  it('adds and removes scope refs, exposed in the composition', async () => {
+    await createWorkflow({ id: 'wf', name: 'WF' });
+    const added = parse(
+      await handler(
+        event({ method: 'POST', workflowId: 'wf', path: 'scopes', body: { scopeId: 'mvp' } }),
+      ),
+    );
+    expect(added.status).toBe(201);
+    expect(added.body.scopeId).toBe('mvp');
+
+    const loaded = parse(await handler(event({ method: 'GET', workflowId: 'wf' })));
+    expect(loaded.body.scopeRefs.map((s) => s.scopeId)).toEqual(['mvp']);
+
+    const removed = await handler(
+      event({ method: 'DELETE', workflowId: 'wf', scopeId: 'mvp', path: 'scope' }),
+    );
+    expect(removed.statusCode).toBe(204);
+    const after = parse(await handler(event({ method: 'GET', workflowId: 'wf' })));
+    expect(after.body.scopeRefs).toEqual([]);
+  });
+
+  it('compiles scope-grid + autonomy + graph from placements and referenced skills', async () => {
+    // Seed two library Skill blocks the placements will reference.
+    const seedSkill = (id, attrs) => {
+      store.set(`BLOCK#SYSTEM#SKILL#${id}|V#latest`, {
+        pk: `BLOCK#SYSTEM#SKILL#${id}`,
+        sk: 'V#latest',
+        tenantId: 'SYSTEM',
+        blockType: 'SKILL',
+        blockId: id,
+        ...attrs,
+      });
+    };
+    seedSkill('scope-definition', {
+      c1_definition: { outputs: ['scope-document'], inputs: [], intermediates: [], requires: [] },
+      c2_verification: { postConditions: [{ mode: 'deterministic' }], humanValidation: 'none' },
+    });
+    seedSkill('design', {
+      c1_definition: {
+        inputs: [{ artifact: 'scope-document', required: true }],
+        outputs: [],
+        intermediates: [],
+        requires: [],
+      },
+      c2_verification: { postConditions: [{ mode: 'llm-judged' }], humanValidation: 'none' },
+    });
+
+    await createWorkflow({ id: 'wf', name: 'WF' });
+    await handler(
+      event({ method: 'POST', workflowId: 'wf', path: 'scopes', body: { scopeId: 'mvp' } }),
+    );
+    await handler(
+      event({
+        method: 'POST',
+        workflowId: 'wf',
+        path: 'placements',
+        body: { skillId: 'scope-definition', scopeMembership: { mvp: 'EXECUTE' } },
+      }),
+    );
+    await handler(
+      event({ method: 'POST', workflowId: 'wf', path: 'placements', body: { skillId: 'design' } }),
+    );
+
+    const res = parse(await handler(event({ method: 'GET', workflowId: 'wf', path: 'compiled' })));
+    expect(res.status).toBe(200);
+    // scope grid: scope-definition EXECUTE under mvp, design defaults to SKIP.
+    expect(res.body.scopeGrid.mvp).toEqual({ 'scope-definition': 'EXECUTE', design: 'SKIP' });
+    // autonomy: deterministic → self-halting; llm-judged → human-gated.
+    expect(res.body.autonomy.perSkill['scope-definition']).toBe('self-halting');
+    expect(res.body.autonomy.perSkill.design).toBe('human-gated');
+    expect(res.body.autonomy.rollup).toEqual({ selfHalting: 1, mixed: 0, humanGated: 1, total: 2 });
+    // graph: scope-document produced by scope-definition, consumed by design.
+    expect(res.body.graph.edges).toContainEqual({
+      from: 'scope-definition',
+      to: 'design',
+      artifact: 'scope-document',
+      kind: 'data',
+    });
+    expect(res.body.graph.acyclic).toBe(true);
   });
 
   it('forks a workflow: copies groupings + placements, not META identity', async () => {
