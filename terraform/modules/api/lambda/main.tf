@@ -392,6 +392,50 @@ resource "aws_iam_role_policy" "neptune_artifacts" {
   })
 }
 
+# -----------------------------------------------------------------------------
+# Role 7: blocks (2 Lambdas — building-blocks CRUD + seed-blocks)
+# DynamoDB RW on the blocks table + its GSI1, plus S3 RW scoped to the blocks/
+# prefix of the artifacts bucket (the content-addressed bodies/scripts).
+# No Neptune, no VPC — pure DDB + S3.
+# -----------------------------------------------------------------------------
+resource "aws_iam_role" "blocks" {
+  name               = "${var.project_name}-blocks-${var.environment}"
+  assume_role_policy = local.lambda_assume_role_policy
+}
+
+resource "aws_iam_role_policy_attachment" "blocks_basic" {
+  role       = aws_iam_role.blocks.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy" "blocks" {
+  name = "blocks-table-and-bucket"
+  role = aws_iam_role.blocks.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:Query",
+          "dynamodb:BatchGetItem",
+          "dynamodb:BatchWriteItem",
+        ]
+        Resource = [var.blocks_table_arn, "${var.blocks_table_arn}/index/*"]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:PutObject"]
+        Resource = ["${var.artifacts_bucket_arn}/blocks/*"]
+      }
+    ]
+  })
+}
+
 # Security group for Lambda
 resource "aws_security_group" "lambda" {
   name        = "${var.project_name}-lambda-sg-${var.environment}"
@@ -1102,6 +1146,73 @@ module "migrate_tracker_fields_lambda" {
 
   environment_variables = {
     NEPTUNE_ENDPOINT = var.neptune_endpoint
+    ENVIRONMENT      = var.environment
+  }
+}
+
+# Building Blocks Lambda — CRUD over the reusable-block library. DynamoDB + S3
+# only, so no VPC config. Generic over all block types; block metadata lives in
+# the blocks table, bodies/scripts in the artifacts bucket under blocks/.
+module "building_blocks_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-building-blocks-${var.environment}"
+  handler       = "index.handler"
+  runtime       = "nodejs24.x"
+  timeout       = 30
+
+  source_path = [
+    {
+      path = "${path.module}/../../../../lambda/building-blocks"
+      commands = [
+        "cd ../.. && npm run build -w building-blocks",
+        ":zip lambda/building-blocks/.build",
+      ]
+    }
+  ]
+
+  create_role = false
+  lambda_role = aws_iam_role.blocks.arn
+
+  environment_variables = {
+    BLOCKS_TABLE         = var.blocks_table_name
+    ARTIFACTS_BUCKET     = var.artifacts_bucket_name
+    ENVIRONMENT          = var.environment
+    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+  }
+}
+
+# Seed-blocks Lambda (admin one-shot, invoked directly via CLI). Writes the
+# SYSTEM baseline library blocks into the blocks table + artifacts bucket.
+# Idempotent (attribute_not_exists guard); supports {dryRun:true}. Mirrors the
+# migrate-tracker-fields operational-job pattern. Reuses the blocks IAM role.
+# Stays deployed permanently — OSS forks are on their own upgrade timelines.
+module "seed_blocks_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-seed-blocks-${var.environment}"
+  handler       = "index.handler"
+  runtime       = "nodejs24.x"
+  timeout       = 300
+
+  source_path = [
+    {
+      path = "${path.module}/../../../../lambda/seed-blocks"
+      commands = [
+        "cd ../.. && npm run build -w seed-blocks",
+        ":zip lambda/seed-blocks/.build",
+      ]
+    }
+  ]
+
+  create_role = false
+  lambda_role = aws_iam_role.blocks.arn
+
+  environment_variables = {
+    BLOCKS_TABLE     = var.blocks_table_name
+    ARTIFACTS_BUCKET = var.artifacts_bucket_name
     ENVIRONMENT      = var.environment
   }
 }

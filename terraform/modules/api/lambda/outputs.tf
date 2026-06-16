@@ -177,6 +177,21 @@ output "migrate_tracker_fields_lambda_name" {
   value       = module.migrate_tracker_fields_lambda.lambda_function_name
 }
 
+output "building_blocks_lambda_invoke_arn" {
+  description = "Invoke ARN of the building-blocks CRUD Lambda"
+  value       = module.building_blocks_lambda.lambda_function_invoke_arn
+}
+
+output "building_blocks_lambda_name" {
+  description = "Name of the building-blocks CRUD Lambda"
+  value       = module.building_blocks_lambda.lambda_function_name
+}
+
+output "seed_blocks_lambda_name" {
+  description = "Name of the one-shot baseline seed Lambda. Invoke via `aws lambda invoke` after deploy; see lambda/seed-blocks/index.js for the payload contract."
+  value       = module.seed_blocks_lambda.lambda_function_name
+}
+
 output "cognito_users_lambda_arn" {
   description = "ARN of the cognito-users Lambda function"
   value       = module.cognito_users_lambda.lambda_function_arn

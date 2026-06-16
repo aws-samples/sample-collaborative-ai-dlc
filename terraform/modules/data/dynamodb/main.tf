@@ -231,6 +231,61 @@ resource "aws_dynamodb_table" "discussion_locks" {
   tags = var.tags
 }
 
+# Reusable workflow building blocks — single-table design. Unlike the other
+# tables here this holds DOMAIN data, not infra: a shared library of reusable
+# blocks (Skill, Grouping, Agent, Scope, Guardrail, PostCondition, Knowledge),
+# and the workflows that compose them.
+#   PK = BLOCK#<tenant>#<TYPE>#<id>   SK = V#latest | V#<n> (immutable versions)
+# GSI1 is the catalog browse index (list blocks of a type for a tenant). Large
+# bodies/scripts live in the artifacts S3 bucket under blocks/, referenced by a
+# content-addressed pointer — never inline.
+resource "aws_dynamodb_table" "blocks" {
+  name           = "${var.project_name}-blocks-${var.environment}"
+  billing_mode   = local.billing_mode
+  hash_key       = "pk"
+  range_key      = "sk"
+  read_capacity  = local.read_capacity
+  write_capacity = local.write_capacity
+
+  attribute {
+    name = "pk"
+    type = "S"
+  }
+
+  attribute {
+    name = "sk"
+    type = "S"
+  }
+
+  attribute {
+    name = "GSI1PK"
+    type = "S"
+  }
+
+  attribute {
+    name = "GSI1SK"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "GSI1"
+    projection_type = "ALL"
+    read_capacity   = local.read_capacity
+    write_capacity  = local.write_capacity
+
+    key_schema {
+      attribute_name = "GSI1PK"
+      key_type       = "HASH"
+    }
+    key_schema {
+      attribute_name = "GSI1SK"
+      key_type       = "RANGE"
+    }
+  }
+
+  tags = var.tags
+}
+
 # Per-user composite read cursors: {lastReadAt,
 # lastReadMessageId, sprintId}. High-churn per-user KV — wrong shape for the
 # graph.

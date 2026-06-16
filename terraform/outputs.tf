@@ -98,6 +98,22 @@ output "yjs_documents_table_arn" {
   value       = module.dynamodb.yjs_documents_table_arn
 }
 
+output "blocks_table_name" {
+  description = "Name of the building-blocks table"
+  value       = module.dynamodb.blocks_table_name
+}
+
+output "blocks_table_arn" {
+  description = "ARN of the building-blocks table"
+  value       = module.dynamodb.blocks_table_arn
+}
+
+# Building Blocks
+output "seed_blocks_lambda_name" {
+  description = "Name of the one-shot baseline seed Lambda. Invoke via `aws lambda invoke` after deploy; see lambda/seed-blocks/index.js for the payload contract."
+  value       = module.lambda.seed_blocks_lambda_name
+}
+
 # Neptune
 output "neptune_cluster_id" {
   description = "Neptune cluster identifier"

@@ -165,6 +165,8 @@ module "lambda" {
   ]
   artifacts_bucket_name          = module.s3.artifacts_bucket_name
   artifacts_bucket_arn           = module.s3.artifacts_bucket_arn
+  blocks_table_name              = module.dynamodb.blocks_table_name
+  blocks_table_arn               = module.dynamodb.blocks_table_arn
   github_oauth_secret_name       = module.git.github_oauth_secret_name
   github_oauth_secret_arn        = module.git.github_oauth_secret_arn
   git_connections_table_name     = module.git.git_connections_table_name
@@ -234,6 +236,8 @@ module "api" {
   timeline_events_lambda_name       = module.lambda.timeline_events_lambda_name
   discussions_lambda_invoke_arn     = module.lambda.discussions_lambda_invoke_arn
   discussions_lambda_name           = module.lambda.discussions_lambda_name
+  building_blocks_lambda_invoke_arn = module.lambda.building_blocks_lambda_invoke_arn
+  building_blocks_lambda_name       = module.lambda.building_blocks_lambda_name
   github_lambda_invoke_arn          = module.lambda.github_lambda_invoke_arn
   github_lambda_name                = module.lambda.github_lambda_name
   trackers_lambda_invoke_arn        = module.lambda.trackers_lambda_invoke_arn

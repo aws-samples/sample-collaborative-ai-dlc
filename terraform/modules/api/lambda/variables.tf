@@ -48,6 +48,16 @@ variable "artifacts_bucket_arn" {
   type        = string
 }
 
+variable "blocks_table_name" {
+  description = "Name of the building-blocks table"
+  type        = string
+}
+
+variable "blocks_table_arn" {
+  description = "ARN of the building-blocks table"
+  type        = string
+}
+
 variable "github_oauth_secret_name" {
   description = "Secrets Manager secret name for GitHub OAuth credentials"
   type        = string

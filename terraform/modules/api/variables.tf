@@ -102,6 +102,15 @@ variable "discussions_lambda_name" {
   type = string
 }
 
+variable "building_blocks_lambda_invoke_arn" {
+  description = "Invoke ARN of the building-blocks CRUD Lambda"
+  type        = string
+}
+variable "building_blocks_lambda_name" {
+  description = "Name of the building-blocks CRUD Lambda"
+  type        = string
+}
+
 variable "state_machine_arn" {
   description = "ARN of the agent workflow state machine"
   type        = string

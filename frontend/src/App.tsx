@@ -18,6 +18,8 @@ import JiraCallback from './pages/JiraCallback';
 import Admin from './pages/Admin';
 import { TRACKER_PROVIDERS } from './lib/trackerProviders';
 import ObservabilityPage from './pages/ObservabilityPage';
+import BlockLibrary from './pages/BlockLibrary';
+import BlockEditor from './pages/BlockEditor';
 
 function App() {
   return (
@@ -48,6 +50,10 @@ function App() {
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/admin" element={<Admin />} />
               <Route path="/observability" element={<ObservabilityPage />} />
+              <Route path="/blocks" element={<BlockLibrary />} />
+              <Route path="/blocks/:type" element={<BlockLibrary />} />
+              <Route path="/blocks/:type/new" element={<BlockEditor />} />
+              <Route path="/blocks/:type/:id" element={<BlockEditor />} />
               <Route path="/project/:projectId" element={<Project />} />
               <Route path="/project/:projectId/settings" element={<ProjectSettings />} />
 

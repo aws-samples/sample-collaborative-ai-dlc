@@ -84,3 +84,13 @@ output "discussion_read_state_table_name" {
 output "discussion_read_state_table_arn" {
   value = aws_dynamodb_table.discussion_read_state.arn
 }
+
+output "blocks_table_name" {
+  description = "Name of the building-blocks table"
+  value       = aws_dynamodb_table.blocks.name
+}
+
+output "blocks_table_arn" {
+  description = "ARN of the building-blocks table"
+  value       = aws_dynamodb_table.blocks.arn
+}
