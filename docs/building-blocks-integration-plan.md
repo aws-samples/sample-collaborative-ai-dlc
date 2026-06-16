@@ -36,12 +36,19 @@ inline — consistent with how every other lambda in this repo uses DynamoDB.
 
 ## Slicing roadmap
 
-| Slice | Scope                                                                     | Status      |
-| ----- | ------------------------------------------------------------------------- | ----------- |
-| **1** | **Library block CRUD** (this plan)                                        | in progress |
-| 2     | Workflow + placements + grouping tree (+ intent→workflow version pin)     | later       |
-| 3     | Scope × skill matrix + compiled views (skill-graph, scope-grid, autonomy) | later       |
-| 4     | Learnings queue + fork/clone + 3-way baseline merge                       | later       |
+| Slice | Scope                                                                     | Status |
+| ----- | ------------------------------------------------------------------------- | ------ |
+| **1** | **Library block CRUD**                                                    | done   |
+| **2** | **Workflow + placements + grouping tree**                                 | done   |
+| 3     | Scope × skill matrix + compiled views (skill-graph, scope-grid, autonomy) | later  |
+| 4     | Learnings queue + fork/clone + 3-way baseline merge                       | later  |
+
+Slice 2 shipped the workflows lambda (workflows share the blocks table via
+`WF#…` partitions; one Query loads the whole composition), the grouping-tree
+(define-your-own, nestable phases via SK paths) and skill-placement APIs, fork
+(copy grouping tree + placements), and the Workflows list + composer UI. The
+intent→workflow version-pin link is deferred to whenever the intent feature
+consumes a workflow.
 
 The single-table + S3 pointer design makes slices 2–4 **additive** (new SK
 types + GSI2/3/4), never rewrites.

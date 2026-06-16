@@ -1217,6 +1217,39 @@ module "seed_blocks_lambda" {
   }
 }
 
+# Workflows Lambda — composition over the block library: a workflow references
+# and arranges library blocks (grouping tree + skill placements + scope/
+# guardrail refs). Workflows share the blocks table (WF#… partitions) and the
+# blocks IAM role; no S3 (workflows carry no bodies), so no VPC config.
+module "workflows_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-workflows-${var.environment}"
+  handler       = "index.handler"
+  runtime       = "nodejs24.x"
+  timeout       = 30
+
+  source_path = [
+    {
+      path = "${path.module}/../../../../lambda/workflows"
+      commands = [
+        "cd ../.. && npm run build -w workflows",
+        ":zip lambda/workflows/.build",
+      ]
+    }
+  ]
+
+  create_role = false
+  lambda_role = aws_iam_role.blocks.arn
+
+  environment_variables = {
+    BLOCKS_TABLE         = var.blocks_table_name
+    ENVIRONMENT          = var.environment
+    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+  }
+}
+
 # -----------------------------------------------------------------------------
 # Server-origin realtime fanout.
 #

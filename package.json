@@ -17,6 +17,7 @@
     "lambda/tasks",
     "lambda/timeline-events",
     "lambda/trackers",
+    "lambda/workflows",
     "lambda/ws-authorizer",
     "lambda/ws-connection",
     "lambda/ws-message"

@@ -10,6 +10,7 @@ import {
   LogOut,
   Activity,
   Blocks,
+  Workflow,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
@@ -190,6 +191,20 @@ export function AppHeader({
           <Button
             variant="ghost"
             size="icon"
+            className={`h-7 w-7 ${location.pathname.startsWith('/workflows') ? 'text-primary bg-primary/10' : ''}`}
+            onClick={() => navigate('/workflows')}
+          >
+            <Workflow className="h-4 w-4" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Workflows</TooltipContent>
+      </Tooltip>
+
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
             className={`h-7 w-7 ${location.pathname === '/observability' ? 'text-primary bg-primary/10' : ''}`}
             onClick={() => navigate('/observability')}
           >
@@ -276,6 +291,12 @@ function buildBreadcrumbs(
   // Building Blocks library
   if (pathname.startsWith('/blocks')) {
     return [{ label: 'Building Blocks' }];
+  }
+
+  // Workflows
+  if (pathname.startsWith('/workflows')) {
+    const base = { label: 'Workflows', href: '/workflows' };
+    return pathname === '/workflows' ? [{ label: 'Workflows' }] : [base, { label: 'Composer' }];
   }
 
   const crumbs: Breadcrumb[] = [{ label: 'Projects', href: '/dashboard' }];

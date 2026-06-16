@@ -996,6 +996,119 @@ resource "aws_lambda_permission" "building_blocks" {
   source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
 }
 
+# -----------------------------------------------------------------------------
+# /workflows Resources (composition over the block library)
+# Top-level (tenant-scoped). A workflow loads whole in one request:
+#   /workflows                              GET (list), POST (create)
+#   /workflows/{workflowId}                 GET (full composition), PUT, DELETE
+#   /workflows/{workflowId}/groupings       PUT (replace the grouping tree)
+#   /workflows/{workflowId}/placements      POST (add a skill placement)
+#   /workflows/{workflowId}/placements/{skillId}   PUT, DELETE
+# All routes hit the single workflows Lambda, which routes by path + method.
+# -----------------------------------------------------------------------------
+resource "aws_api_gateway_resource" "workflows" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.api.id
+  path_part   = "workflows"
+}
+
+resource "aws_api_gateway_resource" "workflow" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.workflows.id
+  path_part   = "{workflowId}"
+}
+
+resource "aws_api_gateway_resource" "workflow_groupings" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.workflow.id
+  path_part   = "groupings"
+}
+
+resource "aws_api_gateway_resource" "workflow_placements" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.workflow.id
+  path_part   = "placements"
+}
+
+resource "aws_api_gateway_resource" "workflow_placement" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.workflow_placements.id
+  path_part   = "{skillId}"
+}
+
+# Method + AWS_PROXY integration for every (resource, verb) the workflows
+# lambda serves. Driven by a map so the boilerplate stays in one place.
+locals {
+  workflow_routes = {
+    collection_get   = { resource = aws_api_gateway_resource.workflows.id, method = "GET" }
+    collection_post  = { resource = aws_api_gateway_resource.workflows.id, method = "POST" }
+    item_get         = { resource = aws_api_gateway_resource.workflow.id, method = "GET" }
+    item_put         = { resource = aws_api_gateway_resource.workflow.id, method = "PUT" }
+    item_delete      = { resource = aws_api_gateway_resource.workflow.id, method = "DELETE" }
+    groupings_put    = { resource = aws_api_gateway_resource.workflow_groupings.id, method = "PUT" }
+    placements_post  = { resource = aws_api_gateway_resource.workflow_placements.id, method = "POST" }
+    placement_put    = { resource = aws_api_gateway_resource.workflow_placement.id, method = "PUT" }
+    placement_delete = { resource = aws_api_gateway_resource.workflow_placement.id, method = "DELETE" }
+  }
+}
+
+resource "aws_api_gateway_method" "workflow" {
+  for_each      = local.workflow_routes
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = each.value.resource
+  http_method   = each.value.method
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "workflow" {
+  for_each                = local.workflow_routes
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = each.value.resource
+  http_method             = aws_api_gateway_method.workflow[each.key].http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.workflows_lambda_invoke_arn
+}
+
+module "cors_workflows" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.workflows.id
+}
+
+module "cors_workflow" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.workflow.id
+}
+
+module "cors_workflow_groupings" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.workflow_groupings.id
+}
+
+module "cors_workflow_placements" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.workflow_placements.id
+}
+
+module "cors_workflow_placement" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.workflow_placement.id
+}
+
+resource "aws_lambda_permission" "workflows" {
+  statement_id  = "AllowAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = var.workflows_lambda_name
+  principal     = "apigateway.${local.dns_suffix}"
+  source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
+}
+
 # =============================================================================
 # Helper locals for sprint-scoped CRUD pattern
 # =============================================================================

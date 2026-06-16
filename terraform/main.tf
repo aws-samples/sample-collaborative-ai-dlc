@@ -238,6 +238,8 @@ module "api" {
   discussions_lambda_name           = module.lambda.discussions_lambda_name
   building_blocks_lambda_invoke_arn = module.lambda.building_blocks_lambda_invoke_arn
   building_blocks_lambda_name       = module.lambda.building_blocks_lambda_name
+  workflows_lambda_invoke_arn       = module.lambda.workflows_lambda_invoke_arn
+  workflows_lambda_name             = module.lambda.workflows_lambda_name
   github_lambda_invoke_arn          = module.lambda.github_lambda_invoke_arn
   github_lambda_name                = module.lambda.github_lambda_name
   trackers_lambda_invoke_arn        = module.lambda.trackers_lambda_invoke_arn
