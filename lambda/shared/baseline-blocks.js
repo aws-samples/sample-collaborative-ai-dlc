@@ -77,4 +77,29 @@ const BASELINE_BLOCKS = [
   },
 ];
 
-module.exports = { BASELINE_BLOCKS };
+// The shipped baseline workflows, owned by the SYSTEM tenant and read-only to
+// everyone else. A workflow references the baseline blocks above — it does not
+// copy them. This is the "from default" fork source: a tenant clones it to get
+// an editable composition. Like BASELINE_BLOCKS, this is a data seam — grow the
+// default flow (or add more shipped workflows) by editing here.
+//
+// Each entry:
+//   { id, name, objective?, groupings: [{ groupingId, path, kind }],
+//     placements: [{ skillId, groupingPath, order, scopeMembership? }] }
+// `path` encodes order + nesting (01, 01.02); placements reference library
+// skills by id and home under a grouping path.
+
+const BASELINE_WORKFLOWS = [
+  {
+    id: 'aidlc-v2',
+    name: 'AI-DLC v2 (default)',
+    objective: 'The default AI-DLC v2 flow — a starting point to fork and tailor.',
+    groupings: [
+      { groupingId: 'ideation', path: '01', kind: 'phase' },
+      { groupingId: 'construction', path: '02', kind: 'phase' },
+    ],
+    placements: [{ skillId: 'scope-definition', groupingPath: '01', order: 1 }],
+  },
+];
+
+module.exports = { BASELINE_BLOCKS, BASELINE_WORKFLOWS };

@@ -22,8 +22,9 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { SYSTEM_TENANT } from '../shared/tenant.js';
-import { BASELINE_BLOCKS } from '../shared/baseline-blocks.js';
+import { BASELINE_BLOCKS, BASELINE_WORKFLOWS } from '../shared/baseline-blocks.js';
 import { LATEST, blockPk, versionSk, catalogGsi1Pk, buildBodyRef } from '../shared/blocks.js';
+import { META, workflowPk, groupingSk, placementSk, workflowGsi1Pk } from '../shared/workflows.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const s3 = new S3Client({});
@@ -54,6 +55,52 @@ const buildItems = (block, bodyRef, now) => {
     latest: { ...base, sk: LATEST, GSI1PK: catalogGsi1Pk(SYSTEM_TENANT, type), GSI1SK: name },
     snapshot: { ...base, sk: versionSk(1) },
   };
+};
+
+// Builds the items for a baseline workflow partition: the META header (carrying
+// the workflow catalog GSI1 keys), the grouping-tree refs, and the skill
+// placements. References the baseline blocks; never copies them.
+const buildWorkflowItems = (wf, now) => {
+  const pk = workflowPk(SYSTEM_TENANT, wf.id);
+  const meta = {
+    pk,
+    sk: META,
+    type: 'Workflow',
+    tenantId: SYSTEM_TENANT,
+    workflowId: wf.id,
+    name: wf.name,
+    objective: wf.objective ?? '',
+    basedOn: null,
+    defaultScope: wf.defaultScope ?? null,
+    status: 'PUBLISHED',
+    createdAt: now,
+    updatedAt: now,
+    GSI1PK: workflowGsi1Pk(SYSTEM_TENANT),
+    GSI1SK: wf.name,
+  };
+  const groupings = (wf.groupings ?? []).map((node) => ({
+    pk,
+    sk: groupingSk(node.path, node.groupingId),
+    type: 'GroupingRef',
+    groupingId: node.groupingId,
+    groupingTenant: node.groupingTenant ?? SYSTEM_TENANT,
+    kind: node.kind ?? 'phase',
+    path: node.path,
+    parentPath: node.path.includes('.') ? node.path.split('.').slice(0, -1).join('.') : null,
+    order: Number(node.path.split('.').at(-1)),
+  }));
+  const placements = (wf.placements ?? []).map((p) => ({
+    pk,
+    sk: placementSk(p.skillId),
+    type: 'SkillPlacement',
+    skillId: p.skillId,
+    skillTenant: p.skillTenant ?? SYSTEM_TENANT,
+    pinnedVersion: p.pinnedVersion ?? null,
+    groupingPath: p.groupingPath ?? null,
+    order: typeof p.order === 'number' ? p.order : 0,
+    scopeMembership: p.scopeMembership ?? {},
+  }));
+  return { meta, children: [...groupings, ...placements] };
 };
 
 export const handler = async (event = {}) => {
@@ -103,7 +150,42 @@ export const handler = async (event = {}) => {
     }
   }
 
-  const result = { dryRun, total: BASELINE_BLOCKS.length, seeded, skipped };
+  // Workflows: the "from default" fork sources. Guard on the META item; only
+  // when it is newly created do we write the grouping/placement children, so
+  // re-running never disturbs an existing baseline workflow.
+  for (const wf of BASELINE_WORKFLOWS) {
+    if (dryRun) {
+      seeded.push(`WORKFLOW#${wf.id}`);
+      continue;
+    }
+    const { meta, children } = buildWorkflowItems(wf, now);
+    try {
+      await ddb.send(
+        new PutCommand({
+          TableName: blocksTable(),
+          Item: meta,
+          ConditionExpression: 'attribute_not_exists(pk)',
+        }),
+      );
+    } catch (err) {
+      if (isConditionalCheckFailed(err)) {
+        skipped.push(`WORKFLOW#${wf.id}`);
+        continue;
+      }
+      throw err;
+    }
+    for (const child of children) {
+      await ddb.send(new PutCommand({ TableName: blocksTable(), Item: child }));
+    }
+    seeded.push(`WORKFLOW#${wf.id}`);
+  }
+
+  const result = {
+    dryRun,
+    total: BASELINE_BLOCKS.length + BASELINE_WORKFLOWS.length,
+    seeded,
+    skipped,
+  };
   console.log('seed-blocks result:', JSON.stringify(result));
   return result;
 };

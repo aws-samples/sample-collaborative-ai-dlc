@@ -2,7 +2,7 @@ import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
-import { BASELINE_BLOCKS } from '../../shared/baseline-blocks.js';
+import { BASELINE_BLOCKS, BASELINE_WORKFLOWS } from '../../shared/baseline-blocks.js';
 
 const BLOCKS_TABLE = 'blocks-test';
 const ARTIFACTS_BUCKET = 'artifacts-test';
@@ -61,7 +61,7 @@ describe('seed-blocks handler', () => {
   it('dry-run writes nothing but reports every baseline block', async () => {
     const result = await handler({ dryRun: true });
     expect(result.dryRun).toBe(true);
-    expect(result.seeded).toHaveLength(BASELINE_BLOCKS.length);
+    expect(result.seeded).toHaveLength(BASELINE_BLOCKS.length + BASELINE_WORKFLOWS.length);
     expect(result.skipped).toHaveLength(0);
     expect(tableStore.size).toBe(0);
     expect(s3Store.size).toBe(0);
@@ -69,10 +69,8 @@ describe('seed-blocks handler', () => {
 
   it('seeds each baseline block as a SYSTEM V#latest + V#1 pair', async () => {
     const result = await handler({});
-    expect(result.seeded).toHaveLength(BASELINE_BLOCKS.length);
+    expect(result.seeded).toHaveLength(BASELINE_BLOCKS.length + BASELINE_WORKFLOWS.length);
     expect(result.skipped).toHaveLength(0);
-    // Two items (V#latest + V#1) per block.
-    expect(tableStore.size).toBe(BASELINE_BLOCKS.length * 2);
     for (const block of BASELINE_BLOCKS) {
       const pk = `BLOCK#SYSTEM#${block.type}#${block.id}`;
       expect(tableStore.has(`${pk}|V#latest`)).toBe(true);
@@ -101,7 +99,27 @@ describe('seed-blocks handler', () => {
     const sizeAfterFirst = tableStore.size;
     const result = await handler({});
     expect(result.seeded).toHaveLength(0);
-    expect(result.skipped).toHaveLength(BASELINE_BLOCKS.length);
+    expect(result.skipped).toHaveLength(BASELINE_BLOCKS.length + BASELINE_WORKFLOWS.length);
     expect(tableStore.size).toBe(sizeAfterFirst);
+  });
+
+  it('seeds each baseline workflow as a SYSTEM partition (META + groupings + placements)', async () => {
+    await handler({});
+    for (const wf of BASELINE_WORKFLOWS) {
+      const pk = `WF#SYSTEM#${wf.id}`;
+      const meta = tableStore.get(`${pk}|META`);
+      expect(meta).toBeTruthy();
+      expect(meta.tenantId).toBe('SYSTEM');
+      expect(meta.status).toBe('PUBLISHED');
+      // Listed via the workflow catalog index.
+      expect(meta.GSI1PK).toBe('TENANT#SYSTEM#WORKFLOW');
+      // Grouping refs + placements landed in the partition.
+      for (const g of wf.groupings ?? []) {
+        expect(tableStore.has(`${pk}|GROUPING#${g.path}#${g.groupingId}`)).toBe(true);
+      }
+      for (const p of wf.placements ?? []) {
+        expect(tableStore.has(`${pk}|PLACEMENT#${p.skillId}`)).toBe(true);
+      }
+    }
   });
 });
