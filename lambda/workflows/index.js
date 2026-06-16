@@ -34,6 +34,7 @@ import {
   phaseSk,
   placementSk,
   scopeRefSk,
+  ruleRefSk,
   workflowGsi1Pk,
   validateId,
   validateName,
@@ -349,6 +350,52 @@ const removeScopeRef = async (event, res, tenant, workflowId, scopeId) => {
   return res(204, {});
 };
 
+// ── Rule refs ── layer a library rule into this workflow. Keyed by layer + id
+// so the same rule id can't be layered twice; the compiler resolves which
+// stages each rule applies to (universal layers everywhere, phase rules by
+// matching phase).
+const VALID_RULE_LAYERS = new Set(['org', 'team', 'project', 'phase', 'stage']);
+
+const addRuleRef = async (event, res, tenant, workflowId) => {
+  if (tenant === SYSTEM_TENANT) return res(403, { error: 'SYSTEM workflows are read-only' });
+  if (!(await loadMeta(tenant, workflowId))) return res(404, { error: 'Not found' });
+  const input = parseBody(event);
+  if (input === undefined) return res(400, { error: 'Invalid JSON body' });
+  const ruleId = input.ruleId;
+  if (typeof ruleId !== 'string' || !ruleId) return res(400, { error: 'ruleId is required' });
+  const layer = input.layer;
+  if (!VALID_RULE_LAYERS.has(layer)) {
+    return res(400, { error: `layer must be one of ${[...VALID_RULE_LAYERS].join(', ')}` });
+  }
+
+  const item = {
+    pk: workflowPk(tenant, workflowId),
+    sk: ruleRefSk(layer, ruleId),
+    type: 'RuleRef',
+    ruleId,
+    layer,
+    ruleTenant: input.ruleTenant ?? SYSTEM_TENANT,
+  };
+  await ddb.send(new PutCommand({ TableName: blocksTable(), Item: item }));
+  return res(201, ruleRefToApi(item));
+};
+
+const removeRuleRef = async (event, res, tenant, workflowId, layer, ruleId) => {
+  if (tenant === SYSTEM_TENANT) return res(403, { error: 'SYSTEM workflows are read-only' });
+  const sk = ruleRefSk(layer, ruleId);
+  const current = await ddb.send(
+    new GetCommand({ TableName: blocksTable(), Key: { pk: workflowPk(tenant, workflowId), sk } }),
+  );
+  if (!current.Item) return res(404, { error: 'Not found' });
+  await ddb.send(
+    new DeleteCommand({
+      TableName: blocksTable(),
+      Key: { pk: workflowPk(tenant, workflowId), sk },
+    }),
+  );
+  return res(204, {});
+};
+
 // ── Compiled views ── derive scope-grid + autonomy-profile + stage-graph from
 // the placements, scope refs, and the library Stage blocks they reference.
 // Computed on demand (no cache yet); the pure compilers live in shared/compile.
@@ -359,13 +406,42 @@ const getCompiled = async (event, res, tenant, workflowId) => {
 
   const placements = items.filter((i) => i.sk.startsWith('PLACEMENT#')).map(placementToApi);
   const scopeSlugs = items.filter((i) => i.sk.startsWith('SCOPEREF#')).map((i) => i.scopeId);
+  const ruleRefs = items.filter((i) => i.sk.startsWith('RULEREF#')).map(ruleRefToApi);
 
-  // Batch-get the referenced Stage library blocks (V#latest), keyed by id, and
-  // load the artifact vocabulary so the graph can flag unknown (typo) names.
+  // Batch-get the referenced Stage library blocks (V#latest), keyed by id; the
+  // artifact vocabulary (so the graph can flag unknown/typo names); and the
+  // referenced Rule blocks (so the rule view can resolve layers + phase match).
   const stagesById = await loadStages(placements);
   const artifactsById = await loadArtifacts(resolved.owner);
-  const compiled = compileWorkflow(placements, scopeSlugs, stagesById, artifactsById);
+  const rulesById = await loadRules(ruleRefs);
+  const compiled = compileWorkflow(
+    placements,
+    scopeSlugs,
+    stagesById,
+    artifactsById,
+    ruleRefs,
+    rulesById,
+  );
   return res(200, compiled);
+};
+
+// Resolve each rule ref's Rule block from its owning tenant (own or SYSTEM).
+const loadRules = async (ruleRefs) => {
+  const results = await Promise.all(
+    ruleRefs.map((ref) =>
+      ddb.send(
+        new GetCommand({
+          TableName: blocksTable(),
+          Key: { pk: blockPk(ref.ruleTenant ?? SYSTEM_TENANT, 'RULE', ref.ruleId), sk: LATEST },
+        }),
+      ),
+    ),
+  );
+  const rulesById = {};
+  for (const { Item } of results) {
+    if (Item) rulesById[Item.blockId] = Item;
+  }
+  return rulesById;
 };
 
 // Load the artifact registry visible to the workflow's owner (its own ARTIFACT
@@ -464,6 +540,12 @@ const placementToApi = (item) => ({
 
 const scopeRefToApi = (item) => ({ scopeId: item.scopeId, scopeTenant: item.scopeTenant });
 
+const ruleRefToApi = (item) => ({
+  ruleId: item.ruleId,
+  layer: item.layer,
+  ruleTenant: item.ruleTenant ?? SYSTEM_TENANT,
+});
+
 // Assemble the partition items into the composition the editor loads.
 const composeWorkflow = (owner, items) => {
   const meta = items.find((i) => i.sk === META);
@@ -479,6 +561,10 @@ const composeWorkflow = (owner, items) => {
     .filter((i) => i.sk.startsWith('SCOPEREF#'))
     .map(scopeRefToApi)
     .toSorted((a, b) => a.scopeId.localeCompare(b.scopeId));
+  const ruleRefs = items
+    .filter((i) => i.sk.startsWith('RULEREF#'))
+    .map(ruleRefToApi)
+    .toSorted((a, b) => a.layer.localeCompare(b.layer) || a.ruleId.localeCompare(b.ruleId));
   return {
     ...(meta ? metaToApi(meta) : {}),
     owner,
@@ -486,6 +572,7 @@ const composeWorkflow = (owner, items) => {
     phases,
     placements,
     scopeRefs,
+    ruleRefs,
   };
 };
 
@@ -498,7 +585,7 @@ export const handler = async (event) => {
   try {
     const method = event.httpMethod;
     const path = event.resource || event.path || '';
-    const { workflowId, stageId, scopeId } = event.pathParameters || {};
+    const { workflowId, stageId, scopeId, layer, ruleId } = event.pathParameters || {};
     const tenant = resolveTenant(getClaims(event));
 
     if (path.endsWith('/placements/{stageId}')) {
@@ -521,6 +608,15 @@ export const handler = async (event) => {
     }
     if (path.endsWith('/scopes')) {
       if (method === 'POST') return await addScopeRef(event, res, tenant, workflowId);
+      return res(405, { error: 'Method not allowed' });
+    }
+    if (path.endsWith('/rules/{layer}/{ruleId}')) {
+      if (method === 'DELETE')
+        return await removeRuleRef(event, res, tenant, workflowId, layer, ruleId);
+      return res(405, { error: 'Method not allowed' });
+    }
+    if (path.endsWith('/rules')) {
+      if (method === 'POST') return await addRuleRef(event, res, tenant, workflowId);
       return res(405, { error: 'Method not allowed' });
     }
     if (path.endsWith('/compiled')) {

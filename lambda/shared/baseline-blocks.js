@@ -185,7 +185,12 @@ const sensorBlock = ([id, command, category, matches, timeoutSeconds, descriptio
   timeoutSeconds,
 });
 
-// ─── Rules (7) ── layered guardrails; V2 ships them frontmatter-free ───
+// ─── Rules (7) ── layered guardrails on V2's five-layer chain
+// (org → team → project → phase → stage). org/team/project are universal
+// defaults that apply to every stage; a phase rule attaches to a stage when its
+// `phase` matches the stage's phase (V2's pull-authoring: the rule binds via
+// the stage's existing `phase:` declaration, no glob scoping). Tuple:
+// [id, layer, phase|null, summary].
 const RULES = [
   [
     'aidlc-org',
@@ -202,36 +207,37 @@ const RULES = [
   ],
   [
     'aidlc-phase-ideation',
-    'grouping',
+    'phase',
     'ideation',
     'Ideation rules: evidence standards, scope discipline, output quality.',
   ],
   [
     'aidlc-phase-inception',
-    'grouping',
+    'phase',
     'inception',
     'Inception rules: requirements quality, architecture standards, traceability.',
   ],
   [
     'aidlc-phase-construction',
-    'grouping',
+    'phase',
     'construction',
     'Construction rules: code completeness, error handling, testing, security.',
   ],
   [
     'aidlc-phase-operation',
-    'grouping',
+    'phase',
     'operation',
     'Operation rules: infra safety, deployment procedures, observability, incident response.',
   ],
 ];
 
-const ruleBlock = ([id, layer, groupingRef, summary]) => ({
+const ruleBlock = ([id, layer, phase, summary]) => ({
   type: 'RULE',
   id,
   name: titleCase(id.replace(/^aidlc-/, '')),
   layer,
-  groupingRef,
+  // The phase a phase-layer rule attaches to (null for the universal layers).
+  phase,
   description: summary,
 });
 
@@ -1390,6 +1396,12 @@ const DEFAULT_WORKFLOW_PLACEMENTS = STAGES.map((s, i) => ({
   scopeMembership: Object.fromEntries(s.scopes.map((scope) => [scope, 'EXECUTE'])),
 }));
 
+// Every rule in the baseline is layered into the default workflow: the 3
+// universal layers (org/team/project) plus the 4 phase rules. A phase rule
+// resolves onto a placement when its `phase` matches the placement's phase (the
+// compiler does the join); the universal layers apply to every stage.
+const DEFAULT_WORKFLOW_RULE_REFS = RULES.map(([id, layer]) => ({ layer, ruleId: id }));
+
 const BASELINE_WORKFLOWS = [
   {
     id: 'aidlc-v2',
@@ -1398,6 +1410,7 @@ const BASELINE_WORKFLOWS = [
     defaultScope: 'feature',
     phases: DEFAULT_WORKFLOW_PHASES,
     placements: DEFAULT_WORKFLOW_PLACEMENTS,
+    ruleRefs: DEFAULT_WORKFLOW_RULE_REFS,
   },
 ];
 

@@ -40,6 +40,13 @@ export const SIMPLE_BLOCK_FORMS: Partial<Record<BlockType, BlockTypeForm>> = {
         placeholder: 'Minimal | Standard | Comprehensive',
       },
       {
+        key: 'testStrategy',
+        label: 'Test strategy',
+        kind: 'text',
+        placeholder: 'Minimal | Standard | Comprehensive',
+        help: 'Test depth, orthogonal to depth. Defaults to depth when left blank.',
+      },
+      {
         key: 'keywords',
         label: 'Keywords',
         kind: 'csv',
@@ -56,14 +63,15 @@ export const SIMPLE_BLOCK_FORMS: Partial<Record<BlockType, BlockTypeForm>> = {
         key: 'layer',
         label: 'Layer',
         kind: 'text',
-        placeholder: 'org | team | project | grouping',
-        help: 'Determines precedence — later layers win.',
+        placeholder: 'org | team | project | phase',
+        help: 'Five-layer chain org → team → project → phase → stage; later layers win.',
       },
       {
-        key: 'groupingRef',
-        label: 'Phase (when layer = grouping)',
+        key: 'phase',
+        label: 'Phase (when layer = phase)',
         kind: 'text',
-        placeholder: 'ideation | construction | …',
+        placeholder: 'ideation | inception | construction | operation',
+        help: 'A phase rule attaches to every stage in that phase.',
       },
     ],
     bodyLabel: 'Constraint',
@@ -100,8 +108,36 @@ export const SIMPLE_BLOCK_FORMS: Partial<Record<BlockType, BlockTypeForm>> = {
     bodyHelp: 'The check script (TypeScript). Stored in S3, run by the command above.',
   },
   knowledge: {
-    fields: [],
+    fields: [
+      {
+        key: 'tier',
+        label: 'Tier',
+        kind: 'text',
+        placeholder: 'methodology | team',
+        help: 'methodology ships in the baseline; team is accrued per-project.',
+      },
+      {
+        key: 'agentRef',
+        label: 'Agent',
+        kind: 'text',
+        placeholder: 'aidlc-product-agent | shared',
+        help: 'The agent this knowledge attaches to, or "shared" for the cross-cutting corpus.',
+      },
+    ],
     bodyLabel: 'Document',
     bodyHelp: 'Markdown reference loaded by agents on activation.',
+  },
+  artifact: {
+    fields: [
+      {
+        key: 'terminal',
+        label: 'Terminal',
+        kind: 'text',
+        placeholder: 'true | false',
+        help: 'A terminal artifact is a deliberate end-of-flow output no stage consumes.',
+      },
+    ],
+    bodyLabel: 'Notes',
+    bodyHelp: 'Optional notes on the artifact and its shape.',
   },
 };

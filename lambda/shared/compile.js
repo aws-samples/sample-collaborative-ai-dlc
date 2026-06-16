@@ -205,16 +205,66 @@ const detectCycle = (adjacency) => {
   return found;
 };
 
-const compileWorkflow = (placements, scopeSlugs, stagesById, artifactsById = null) => ({
+// ── Rule resolution ──
+// V2's five-layer chain (org → team → project → phase → stage). The universal
+// layers (org/team/project) apply to every stage; a `phase`-layer rule attaches
+// to a placement when its rule's `phase` matches the stage's phase (pull
+// authoring — the rule binds via the stage's existing phase declaration). Takes
+// the workflow's ruleRefs, the rule library blocks they point at (keyed by id),
+// and the stage blocks (for each placement's phase). Returns the universal layer
+// stack plus a per-stage applicable-rule list, and flags refs that don't resolve.
+const UNIVERSAL_LAYERS = ['org', 'team', 'project'];
+
+const compileRules = (placements, ruleRefs, rulesById, stagesById) => {
+  const resolved = ruleRefs.map((ref) => rulesById[ref.ruleId]).filter(Boolean);
+  const unresolved = ruleRefs.filter((ref) => !rulesById[ref.ruleId]).map((ref) => ref.ruleId);
+
+  const universal = resolved
+    .filter((rule) => UNIVERSAL_LAYERS.includes(rule.layer))
+    .map((rule) => ({ ruleId: rule.blockId ?? rule.id, layer: rule.layer }));
+
+  // Phase rules indexed by the phase they attach to.
+  const phaseRules = {};
+  for (const rule of resolved) {
+    if (rule.layer === 'phase' && rule.phase) {
+      (phaseRules[rule.phase] ??= []).push(rule.blockId ?? rule.id);
+    }
+  }
+
+  // Per stage: the universal layers (always) plus any phase rule matching the
+  // stage's phase. The stage's phase is its `defaultGrouping` (the phase name).
+  const perStage = {};
+  for (const p of placements) {
+    const stage = stagesById[p.stageId];
+    const phase = stage?.defaultGrouping ?? null;
+    perStage[p.stageId] = {
+      universal: universal.map((u) => u.ruleId),
+      phase: phase && phaseRules[phase] ? [...phaseRules[phase]] : [],
+    };
+  }
+
+  return { universal, phaseRules, perStage, unresolved };
+};
+
+const compileWorkflow = (
+  placements,
+  scopeSlugs,
+  stagesById,
+  artifactsById = null,
+  ruleRefs = [],
+  rulesById = {},
+) => ({
   scopeGrid: compileScopeGrid(placements, scopeSlugs),
   autonomy: compileAutonomyProfile(placements, stagesById),
   graph: compileStageGraph(placements, stagesById, artifactsById),
+  rules: compileRules(placements, ruleRefs, rulesById, stagesById),
 });
 
 module.exports = {
   compileScopeGrid,
   compileAutonomyProfile,
   compileStageGraph,
+  compileRules,
   compileWorkflow,
   stageAutonomy,
 };

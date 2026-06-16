@@ -1054,6 +1054,26 @@ resource "aws_api_gateway_resource" "workflow_compiled" {
   path_part   = "compiled"
 }
 
+# Rule refs layer a library rule into a workflow. The item path carries two
+# params — the layer and the rule id — so the DELETE key is unambiguous.
+resource "aws_api_gateway_resource" "workflow_rules" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.workflow.id
+  path_part   = "rules"
+}
+
+resource "aws_api_gateway_resource" "workflow_rule_layer" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.workflow_rules.id
+  path_part   = "{layer}"
+}
+
+resource "aws_api_gateway_resource" "workflow_rule" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.workflow_rule_layer.id
+  path_part   = "{ruleId}"
+}
+
 # Method + AWS_PROXY integration for every (resource, verb) the workflows
 # lambda serves. Driven by a map so the boilerplate stays in one place.
 locals {
@@ -1069,6 +1089,8 @@ locals {
     placement_delete = { resource = aws_api_gateway_resource.workflow_placement.id, method = "DELETE" }
     scopes_post      = { resource = aws_api_gateway_resource.workflow_scopes.id, method = "POST" }
     scope_delete     = { resource = aws_api_gateway_resource.workflow_scope.id, method = "DELETE" }
+    rules_post       = { resource = aws_api_gateway_resource.workflow_rules.id, method = "POST" }
+    rule_delete      = { resource = aws_api_gateway_resource.workflow_rule.id, method = "DELETE" }
     compiled_get     = { resource = aws_api_gateway_resource.workflow_compiled.id, method = "GET" }
   }
 }
@@ -1138,6 +1160,18 @@ module "cors_workflow_compiled" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.workflow_compiled.id
+}
+
+module "cors_workflow_rules" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.workflow_rules.id
+}
+
+module "cors_workflow_rule" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.workflow_rule.id
 }
 
 resource "aws_lambda_permission" "workflows" {

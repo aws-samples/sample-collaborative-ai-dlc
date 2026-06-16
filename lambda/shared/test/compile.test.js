@@ -3,6 +3,7 @@ import {
   compileScopeGrid,
   compileAutonomyProfile,
   compileStageGraph,
+  compileRules,
   stageAutonomy,
 } from '../compile.js';
 
@@ -172,5 +173,51 @@ describe('compileStageGraph', () => {
       role: 'produces',
     });
     expect(graph.unknownArtifacts.find((u) => u.artifact === 'doc')).toBeUndefined();
+  });
+});
+
+describe('compileRules', () => {
+  // A library Rule block, shaped as a stored item (blockId + layer + phase).
+  const rule = (id, layer, phase = null) => ({ blockId: id, id, layer, phase });
+  // A stage block here only needs its phase (carried as defaultGrouping).
+  const phaseStage = (id, phase) => ({ blockId: id, defaultGrouping: phase });
+
+  const rulesById = {
+    'r-org': rule('r-org', 'org'),
+    'r-team': rule('r-team', 'team'),
+    'r-ideation': rule('r-ideation', 'phase', 'ideation'),
+    'r-construction': rule('r-construction', 'phase', 'construction'),
+  };
+  const ruleRefs = [
+    { ruleId: 'r-org', layer: 'org' },
+    { ruleId: 'r-team', layer: 'team' },
+    { ruleId: 'r-ideation', layer: 'phase' },
+    { ruleId: 'r-construction', layer: 'phase' },
+  ];
+
+  it('applies universal layers to every stage and phase rules by phase match', () => {
+    const stagesById = {
+      a: phaseStage('a', 'ideation'),
+      b: phaseStage('b', 'construction'),
+      c: phaseStage('c', 'initialization'),
+    };
+    const out = compileRules(
+      [placement('a'), placement('b'), placement('c')],
+      ruleRefs,
+      rulesById,
+      stagesById,
+    );
+    expect(out.universal.map((u) => u.ruleId)).toEqual(['r-org', 'r-team']);
+    expect(out.perStage.a).toEqual({ universal: ['r-org', 'r-team'], phase: ['r-ideation'] });
+    expect(out.perStage.b).toEqual({ universal: ['r-org', 'r-team'], phase: ['r-construction'] });
+    // initialization has no phase rule → universal only.
+    expect(out.perStage.c).toEqual({ universal: ['r-org', 'r-team'], phase: [] });
+  });
+
+  it('reports a ref whose rule block is missing as unresolved', () => {
+    const out = compileRules([placement('a')], [{ ruleId: 'ghost', layer: 'org' }], rulesById, {
+      a: phaseStage('a', 'ideation'),
+    });
+    expect(out.unresolved).toEqual(['ghost']);
   });
 });

@@ -83,7 +83,7 @@ const installFakes = () => {
 
 const claims = { sub: 'user-1', email: 'user@example.com' };
 
-const event = ({ method, workflowId, stageId, scopeId, body, path }) => {
+const event = ({ method, workflowId, stageId, scopeId, layer, ruleId, body, path }) => {
   let resource = '/workflows';
   const pathParameters = {};
   if (workflowId) {
@@ -100,6 +100,12 @@ const event = ({ method, workflowId, stageId, scopeId, body, path }) => {
   if (path === 'scope') {
     resource = '/workflows/{workflowId}/scopes/{scopeId}';
     pathParameters.scopeId = scopeId;
+  }
+  if (path === 'rules') resource = '/workflows/{workflowId}/rules';
+  if (path === 'rule') {
+    resource = '/workflows/{workflowId}/rules/{layer}/{ruleId}';
+    pathParameters.layer = layer;
+    pathParameters.ruleId = ruleId;
   }
   if (path === 'compiled') resource = '/workflows/{workflowId}/compiled';
   return {
@@ -344,6 +350,115 @@ describe('workflows handler', () => {
     expect(removed.statusCode).toBe(204);
     const after = parse(await handler(event({ method: 'GET', workflowId: 'wf' })));
     expect(after.body.scopeRefs).toEqual([]);
+  });
+
+  it('adds and removes rule refs, exposed in the composition and rejecting bad layers', async () => {
+    await createWorkflow({ id: 'wf', name: 'WF' });
+
+    const bad = parse(
+      await handler(
+        event({
+          method: 'POST',
+          workflowId: 'wf',
+          path: 'rules',
+          body: { ruleId: 'aidlc-org', layer: 'nonsense' },
+        }),
+      ),
+    );
+    expect(bad.status).toBe(400);
+
+    const added = parse(
+      await handler(
+        event({
+          method: 'POST',
+          workflowId: 'wf',
+          path: 'rules',
+          body: { ruleId: 'aidlc-org', layer: 'org' },
+        }),
+      ),
+    );
+    expect(added.status).toBe(201);
+    expect(added.body).toMatchObject({ ruleId: 'aidlc-org', layer: 'org' });
+
+    const loaded = parse(await handler(event({ method: 'GET', workflowId: 'wf' })));
+    expect(loaded.body.ruleRefs.map((r) => `${r.layer}:${r.ruleId}`)).toEqual(['org:aidlc-org']);
+
+    const removed = await handler(
+      event({
+        method: 'DELETE',
+        workflowId: 'wf',
+        layer: 'org',
+        ruleId: 'aidlc-org',
+        path: 'rule',
+      }),
+    );
+    expect(removed.statusCode).toBe(204);
+    const after = parse(await handler(event({ method: 'GET', workflowId: 'wf' })));
+    expect(after.body.ruleRefs).toEqual([]);
+  });
+
+  it('compiles the rule view: universal layers everywhere, phase rules by phase match', async () => {
+    const seedRule = (id, layer, phase) => {
+      store.set(`BLOCK#SYSTEM#RULE#${id}|V#latest`, {
+        pk: `BLOCK#SYSTEM#RULE#${id}`,
+        sk: 'V#latest',
+        tenantId: 'SYSTEM',
+        blockType: 'RULE',
+        blockId: id,
+        layer,
+        phase: phase ?? null,
+      });
+    };
+    const seedStage = (id, phase) => {
+      store.set(`BLOCK#SYSTEM#STAGE#${id}|V#latest`, {
+        pk: `BLOCK#SYSTEM#STAGE#${id}`,
+        sk: 'V#latest',
+        tenantId: 'SYSTEM',
+        blockType: 'STAGE',
+        blockId: id,
+        defaultGrouping: phase,
+        c1_definition: { inputs: [], outputs: [], intermediates: [], requires: [] },
+        c2_verification: { sensors: [], humanValidation: 'none' },
+      });
+    };
+    seedRule('aidlc-org', 'org');
+    seedRule('aidlc-phase-ideation', 'phase', 'ideation');
+    seedStage('intent-capture', 'ideation');
+
+    await createWorkflow({ id: 'wf', name: 'WF' });
+    await handler(
+      event({
+        method: 'POST',
+        workflowId: 'wf',
+        path: 'placements',
+        body: { stageId: 'intent-capture' },
+      }),
+    );
+    await handler(
+      event({
+        method: 'POST',
+        workflowId: 'wf',
+        path: 'rules',
+        body: { ruleId: 'aidlc-org', layer: 'org' },
+      }),
+    );
+    await handler(
+      event({
+        method: 'POST',
+        workflowId: 'wf',
+        path: 'rules',
+        body: { ruleId: 'aidlc-phase-ideation', layer: 'phase' },
+      }),
+    );
+
+    const res = parse(await handler(event({ method: 'GET', workflowId: 'wf', path: 'compiled' })));
+    expect(res.status).toBe(200);
+    expect(res.body.rules.universal.map((u) => u.ruleId)).toEqual(['aidlc-org']);
+    expect(res.body.rules.perStage['intent-capture']).toEqual({
+      universal: ['aidlc-org'],
+      phase: ['aidlc-phase-ideation'],
+    });
+    expect(res.body.rules.unresolved).toEqual([]);
   });
 
   it('compiles scope-grid + autonomy + graph from placements and referenced stages', async () => {

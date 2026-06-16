@@ -24,7 +24,14 @@ import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { SYSTEM_TENANT } from '../shared/tenant.js';
 import { BASELINE_BLOCKS, BASELINE_WORKFLOWS } from '../shared/baseline-blocks.js';
 import { LATEST, blockPk, versionSk, catalogGsi1Pk, buildBodyRef } from '../shared/blocks.js';
-import { META, workflowPk, phaseSk, placementSk, workflowGsi1Pk } from '../shared/workflows.js';
+import {
+  META,
+  workflowPk,
+  phaseSk,
+  placementSk,
+  ruleRefSk,
+  workflowGsi1Pk,
+} from '../shared/workflows.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const s3 = new S3Client({});
@@ -100,7 +107,15 @@ const buildWorkflowItems = (wf, now) => {
     order: typeof p.order === 'number' ? p.order : 0,
     scopeMembership: p.scopeMembership ?? {},
   }));
-  return { meta, children: [...phases, ...placements] };
+  const ruleRefs = (wf.ruleRefs ?? []).map((rr) => ({
+    pk,
+    sk: ruleRefSk(rr.layer, rr.ruleId),
+    type: 'RuleRef',
+    ruleId: rr.ruleId,
+    layer: rr.layer,
+    ruleTenant: rr.ruleTenant ?? SYSTEM_TENANT,
+  }));
+  return { meta, children: [...phases, ...placements, ...ruleRefs] };
 };
 
 export const handler = async (event = {}) => {

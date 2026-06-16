@@ -61,11 +61,23 @@ export interface ScopeRef {
   scopeTenant: string;
 }
 
+// A rule layered into the workflow. `layer` is the five-layer chain
+// (org/team/project/phase/stage); the compiler resolves which stages it applies
+// to (universal layers everywhere, phase rules by matching phase).
+export type RuleLayer = 'org' | 'team' | 'project' | 'phase' | 'stage';
+
+export interface RuleRef {
+  ruleId: string;
+  layer: RuleLayer;
+  ruleTenant: string;
+}
+
 // The full composition returned by GET /workflows/{id}.
 export interface Workflow extends WorkflowSummary {
   phases: PhaseNode[];
   placements: Placement[];
   scopeRefs: ScopeRef[];
+  ruleRefs: RuleRef[];
 }
 
 export type AutonomyLevel = 'self-halting' | 'mixed' | 'human-gated';
@@ -83,7 +95,14 @@ export interface CompiledWorkflow {
     cycles: string[];
     danglingConsumes: { stageId: string; artifact: string }[];
     orphanProduces: { artifact: string; producedBy: string[] }[];
+    unknownArtifacts: { artifact: string; stageId: string; role: 'produces' | 'consumes' }[];
     acyclic: boolean;
+  };
+  rules: {
+    universal: { ruleId: string; layer: RuleLayer }[];
+    phaseRules: Record<string, string[]>;
+    perStage: Record<string, { universal: string[]; phase: string[] }>;
+    unresolved: string[];
   };
 }
 
@@ -124,6 +143,11 @@ export const workflowsService = {
   addScopeRef: (id: string, scopeId: string, scopeTenant?: string) =>
     api.post<ScopeRef>(`/workflows/${id}/scopes`, { scopeId, scopeTenant }),
   removeScopeRef: (id: string, scopeId: string) => api.delete(`/workflows/${id}/scopes/${scopeId}`),
+
+  addRuleRef: (id: string, ruleId: string, layer: RuleLayer, ruleTenant?: string) =>
+    api.post<RuleRef>(`/workflows/${id}/rules`, { ruleId, layer, ruleTenant }),
+  removeRuleRef: (id: string, layer: RuleLayer, ruleId: string) =>
+    api.delete(`/workflows/${id}/rules/${layer}/${ruleId}`),
 
   // The derived scope-grid + autonomy + stage-graph for this workflow.
   compiled: (id: string) => api.get<CompiledWorkflow>(`/workflows/${id}/compiled`),

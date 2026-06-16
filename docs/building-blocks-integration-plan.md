@@ -119,13 +119,20 @@ compiler is unaffected). The prose + conditional-on data live in `STAGE_PROSE`
 and `CONDITIONAL_ON` side tables in `baseline-blocks.js`. A stage now
 round-trips V2 frontmatter losslessly.
 
-**Deferred to its own focused pass** (deliberately, with the product owner):
-
-- **RULE wiring (B):** the 7 rule blocks are seeded but inert — `ruleRefSk`
-  exists in `shared/workflows.js` but no route writes it and the compiler
-  ignores rules. Wiring = rule-ref routes + compose + a `compileRules` view
-  (global org/team/project layers always apply; phase rules auto-attach to
-  placements by matching `phase`).
+**RULE wiring (B) — done.** Rules are now a live workflow relation on V2's
+five-layer chain (org → team → project → phase → stage). The rule data was
+aligned to V2's vocabulary (`layer: 'phase'` + `phase: <name>`, replacing the
+old `grouping`/`groupingRef` abstraction). Backend: `RULEREF#<layer>#<id>`
+items, `POST /workflows/{id}/rules` + `DELETE /workflows/{id}/rules/{layer}/{ruleId}`,
+composed into the workflow load. Compiler: a `compileRules` view returns the
+universal layer stack plus a per-stage applicable-rule list — universal layers
+apply everywhere, a phase rule attaches to a placement when its `phase` matches
+the stage's phase (pull authoring, no glob) — and flags unresolved refs. The
+baseline `aidlc-v2` workflow seeds all 7 rule refs; compiling it resolves the 3
+universal layers onto every stage and each phase rule onto its phase's stages,
+with zero unresolved. Terraform routes + frontend service/editor updated to the
+`phase` vocabulary; surfacing the rule view in the composer UI is follow-on UI
+work, not model wiring.
 
 **Confirmed out of scope** (this is authoring, not execution, per the locked
 decisions): the runtime entities — the 6-state stage-instance machine, the
