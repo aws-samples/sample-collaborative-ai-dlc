@@ -33,4 +33,8 @@ echo "Applying changes..."
 terraform apply tfplan
 rm -f tfplan
 
+echo "Applying AI-DLC default workflow and building blocks"
+aws lambda invoke --function-name "$(cd "$TF_DIR" && terraform output -raw seed_blocks_lambda_name)" --payload '{}' --cli-binary-format raw-in-base64-out /tmp/out.json
+echo "✅ AI-DLC default workflow & building blocks applied!"
+
 echo "✅ Deployment complete!"
