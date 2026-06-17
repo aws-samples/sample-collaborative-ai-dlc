@@ -103,7 +103,9 @@ export interface CompiledWorkflow {
     edges: { from: string; to: string; artifact?: string; kind: 'data' | 'requires' | 'blocks' }[];
     cycles: string[];
     danglingConsumes: { stageId: string; artifact: string }[];
-    orphanProduces: { artifact: string; producedBy: string[] }[];
+    // `terminal` tags a deliberate end-of-flow output (registered terminal
+    // artifact) vs a genuine unwired producer; null when no registry was used.
+    orphanProduces: { artifact: string; producedBy: string[]; terminal: boolean | null }[];
     unknownArtifacts: { artifact: string; stageId: string; role: 'produces' | 'consumes' }[];
     acyclic: boolean;
   };

@@ -129,7 +129,33 @@ describe('compileStageGraph', () => {
   it('flags a produced-but-never-consumed artifact (orphan warning)', () => {
     const stagesById = { a: stage('a', { outputs: ['unused'] }) };
     const graph = compileStageGraph([placement('a')], stagesById);
-    expect(graph.orphanProduces).toContainEqual({ artifact: 'unused', producedBy: ['a'] });
+    // No registry supplied → terminal is unknown (null), reads as a warning.
+    expect(graph.orphanProduces).toContainEqual({
+      artifact: 'unused',
+      producedBy: ['a'],
+      terminal: null,
+    });
+  });
+
+  it('tags an orphan terminal:true for a registered terminal artifact, false otherwise', () => {
+    const stagesById = { a: stage('a', { outputs: ['final-report', 'forgot-to-wire'] }) };
+    // Registry marks final-report terminal (deliberate end-of-flow); the other
+    // name is registered but not terminal (a genuine unwired producer).
+    const registry = {
+      'final-report': { blockId: 'final-report', terminal: true },
+      'forgot-to-wire': { blockId: 'forgot-to-wire', terminal: false },
+    };
+    const graph = compileStageGraph([placement('a')], stagesById, registry);
+    expect(graph.orphanProduces).toContainEqual({
+      artifact: 'final-report',
+      producedBy: ['a'],
+      terminal: true,
+    });
+    expect(graph.orphanProduces).toContainEqual({
+      artifact: 'forgot-to-wire',
+      producedBy: ['a'],
+      terminal: false,
+    });
   });
 
   it('detects a cycle via produces/consumes', () => {

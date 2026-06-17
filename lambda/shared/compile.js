@@ -139,14 +139,22 @@ const compileStageGraph = (placements, stagesById, artifactsById = null) => {
     }
   }
 
-  // Produced-but-never-consumed (warning, not error).
+  // Produced-but-never-consumed. Each entry is tagged `terminal` from the
+  // artifact registry: a terminal artifact (questions file, report, final
+  // brief) is a deliberate end-of-flow output, not a wiring mistake — so the UI
+  // can quiet it. A non-terminal orphan (or one absent from the registry) is the
+  // genuine "produced but nothing reads it" warning. When no registry is
+  // supplied, terminal is null (unknown) and every orphan reads as a warning.
   const allConsumed = new Set();
   for (const p of placements) {
     for (const a of stageConsumes(stagesById[p.stageId])) allConsumed.add(a);
   }
   const orphanProduces = [];
   for (const [artifact, from] of Object.entries(producers)) {
-    if (!allConsumed.has(artifact)) orphanProduces.push({ artifact, producedBy: from });
+    if (!allConsumed.has(artifact)) {
+      const terminal = artifactsById ? Boolean(artifactsById[artifact]?.terminal) : null;
+      orphanProduces.push({ artifact, producedBy: from, terminal });
+    }
   }
 
   const cycles = detectCycle(adjacency);

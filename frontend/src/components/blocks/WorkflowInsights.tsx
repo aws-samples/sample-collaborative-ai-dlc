@@ -1,6 +1,7 @@
+import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Plus, Trash2, AlertTriangle } from 'lucide-react';
+import { Plus, Trash2, AlertTriangle, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Workflow, CompiledWorkflow, AutonomyLevel } from '@/services/workflows';
 import type { Block } from '@/services/blocks';
@@ -42,6 +43,25 @@ export function WorkflowInsights({
 
   const rollup = compiled?.autonomy.rollup;
   const graph = compiled?.graph;
+  const [showTerminal, setShowTerminal] = useState(false);
+
+  // Split orphan-produces into deliberate end-of-flow outputs (registered
+  // terminal artifacts — quiet) and genuine unwired producers (warn). A null
+  // terminal flag (no registry) is treated as a warning, to be safe.
+  const orphans = graph?.orphanProduces ?? [];
+  const terminalOutputs = orphans.filter((o) => o.terminal === true);
+  const unwiredProduces = orphans.filter((o) => o.terminal !== true);
+  const unknownArtifacts = graph?.unknownArtifacts ?? [];
+
+  // The workflow is "clean" when there are no hard errors (cycles, dangling
+  // consumes, unknown/typo names) and no unwired producers. Terminal outputs
+  // alone are by design and do not count against a clean bill of health.
+  const isClean =
+    graph != null &&
+    graph.acyclic &&
+    graph.danglingConsumes.length === 0 &&
+    unknownArtifacts.length === 0 &&
+    unwiredProduces.length === 0;
 
   return (
     <>
@@ -190,14 +210,13 @@ export function WorkflowInsights({
             <CardTitle className="text-sm">Validation</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2 text-sm">
-            {graph.acyclic &&
-            graph.danglingConsumes.length === 0 &&
-            graph.orphanProduces.length === 0 ? (
+            {isClean && terminalOutputs.length === 0 ? (
               <p className="flex items-center gap-2 text-emerald-700 dark:text-emerald-400">
                 <CheckIcon /> No cycles, no orphan artifacts.
               </p>
             ) : (
               <ul className="space-y-1">
+                {/* Errors (rose): cycles, dangling consumes, unknown/typo names. */}
                 {!graph.acyclic && (
                   <li className="flex items-center gap-2 text-rose-600">
                     <AlertTriangle className="h-3.5 w-3.5" />
@@ -214,13 +233,59 @@ export function WorkflowInsights({
                     producer.
                   </li>
                 ))}
-                {graph.orphanProduces.map((o) => (
+                {unknownArtifacts.map((u) => (
+                  <li
+                    key={`${u.stageId}-${u.artifact}-${u.role}`}
+                    className="flex items-center gap-2 text-rose-600"
+                  >
+                    <AlertTriangle className="h-3.5 w-3.5" />
+                    <strong>{u.stageId}</strong> {u.role} <strong>{u.artifact}</strong> — not in the
+                    artifact registry (typo?).
+                  </li>
+                ))}
+
+                {/* Warnings (amber): genuine unwired producers only. */}
+                {unwiredProduces.map((o) => (
                   <li key={o.artifact} className="flex items-center gap-2 text-amber-600">
                     <AlertTriangle className="h-3.5 w-3.5" />
                     <strong>{o.artifact}</strong> produced but never consumed.
                   </li>
                 ))}
+
+                {/* A clean bill of health when only terminal outputs remain. */}
+                {isClean && (
+                  <li className="flex items-center gap-2 text-emerald-700 dark:text-emerald-400">
+                    <CheckIcon /> No cycles, no dangling consumes, no unwired producers.
+                  </li>
+                )}
               </ul>
+            )}
+
+            {/* Terminal outputs: deliberate end-of-flow artifacts — collapsed. */}
+            {terminalOutputs.length > 0 && (
+              <div className="pt-1">
+                <button
+                  type="button"
+                  onClick={() => setShowTerminal((v) => !v)}
+                  className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                >
+                  <ChevronRight
+                    className={cn('h-3 w-3 transition-transform', showTerminal && 'rotate-90')}
+                  />
+                  {terminalOutputs.length} terminal output
+                  {terminalOutputs.length === 1 ? '' : 's'} (end-of-flow artifacts, not consumed by
+                  design)
+                </button>
+                {showTerminal && (
+                  <ul className="mt-1 ml-4 flex flex-wrap gap-x-3 gap-y-0.5">
+                    {terminalOutputs.map((o) => (
+                      <li key={o.artifact} className="text-xs text-muted-foreground">
+                        {o.artifact}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             )}
           </CardContent>
         </Card>
