@@ -17,7 +17,7 @@ export const compareByUpdated = (a: DiscussionMessage, b: DiscussionMessage): nu
 };
 
 export const sortMessages = (messages: DiscussionMessage[]): DiscussionMessage[] =>
-  [...messages].sort(compareByCreated);
+  [...messages].toSorted(compareByCreated);
 
 /**
  * Merge precedence: entries with a newer `updatedAt` overwrite —
