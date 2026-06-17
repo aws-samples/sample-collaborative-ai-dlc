@@ -3,7 +3,7 @@ import { useParams } from 'react-router-dom';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Loader2, CheckCircle2, RotateCcw, ArrowLeft } from 'lucide-react';
+import { Loader2, CheckCircle2, RotateCcw, ArrowLeft, AlertTriangle, X } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useDiscussion } from '@/hooks/useDiscussion';
 import { discussionsService } from '@/services/discussions';
@@ -76,6 +76,10 @@ export function DiscussionPanel() {
 
   const [resolveOpen, setResolveOpen] = useState(false);
   const [statusBusy, setStatusBusy] = useState(false);
+  // Redaction is a security / legal / compliance action — a silent failure
+  // would leave the operator believing sensitive content was removed when it
+  // wasn't, so surface failures in a dismissible banner.
+  const [redactError, setRedactError] = useState<string | null>(null);
 
   // ── First-unread divider: pinned to the message that WAS first unread when
   // the thread opened (newer arrivals stay below it) ──
@@ -83,6 +87,7 @@ export function DiscussionPanel() {
   const initialUnreadRef = useRef(0);
   useEffect(() => {
     setDividerId(null);
+    setRedactError(null);
     initialUnreadRef.current = discussion?.unreadCount ?? 0;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [discussion?.id]);
@@ -132,11 +137,17 @@ export function DiscussionPanel() {
 
   const redact = async (messageId: string) => {
     if (!discussion) return;
+    setRedactError(null);
     try {
       const redacted = await discussionsService.redact(sprintId, discussion.id, messageId);
       applyMessages([redacted]);
     } catch (err) {
       console.error('Redact failed:', err);
+      setRedactError(
+        err instanceof Error
+          ? `Couldn't redact the message: ${err.message}. The content was NOT removed — please try again.`
+          : "Couldn't redact the message. The content was NOT removed — please try again.",
+      );
     }
   };
 
@@ -254,6 +265,24 @@ export function DiscussionPanel() {
           {assistError && (
             <div className="px-3 pt-2">
               <AgentStartErrorBanner error={assistError} onDismiss={clearAssistError} />
+            </div>
+          )}
+          {redactError && (
+            <div className="px-3 pt-2">
+              <div
+                role="alert"
+                className="flex items-start gap-2 rounded-md border border-agent-error/30 bg-agent-error/10 px-3 py-2 text-sm text-agent-error"
+              >
+                <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+                <div className="flex-1 min-w-0 break-words">{redactError}</div>
+                <button
+                  onClick={() => setRedactError(null)}
+                  className="shrink-0 opacity-60 hover:opacity-100"
+                  aria-label="Dismiss"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
             </div>
           )}
           <DiscussionInput
