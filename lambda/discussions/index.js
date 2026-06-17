@@ -1450,8 +1450,8 @@ export const handler = async (event) => {
     }
 
     return res(404, { error: 'Not found' });
-  } catch {
-    console.error('discussions handler error');
+  } catch (err) {
+    console.error('discussions handler error', err);
     return res(500, { error: 'Internal server error' });
   }
 };
