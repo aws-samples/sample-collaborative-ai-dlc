@@ -22,7 +22,7 @@ export interface AwarenessUser {
 }
 
 export function useYjsDocument(documentId: string | null, userName?: string, userColor?: string) {
-  const [doc] = useState(() => new Y.Doc());
+  const doc = useMemo(() => new Y.Doc(), [documentId]);
   const [synced, setSynced] = useState(false);
   const [awareness, setAwareness] = useState<awarenessProtocol.Awareness | null>(null);
   const [remoteUsers, setRemoteUsers] = useState<Map<number, AwarenessUser>>(new Map());
