@@ -24,6 +24,8 @@ const ENTITY_LABELS: Record<string, string> = {
   generalinfo: 'Info',
 };
 
+const EMPTY_DISCUSSIONS: Discussion[] = [];
+
 const timeAgo = (iso: string): string => {
   const diff = Date.now() - new Date(iso).getTime();
   if (Number.isNaN(diff)) return '';
@@ -65,7 +67,7 @@ export function DiscussionsTab({ sprintId }: { sprintId: string }) {
     return () => clearTimeout(timer);
   }, [query, statusFilter, sprintId]);
 
-  const discussions = ctx?.discussions ?? [];
+  const discussions = ctx?.discussions ?? EMPTY_DISCUSSIONS;
   const filtered = useMemo(
     () => discussions.filter((d) => statusFilter === 'all' || d.status === statusFilter),
     [discussions, statusFilter],
