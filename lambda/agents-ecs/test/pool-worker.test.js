@@ -51,6 +51,12 @@ describe('pool-worker construction task branch cleanup', () => {
     ).toEqual([]);
   });
 
+  it('passes resolved model into ACP child sessions and workspace config', () => {
+    expect(poolWorker).toContain("AGENT_MODEL: job.agentModel || ''");
+    expect(poolWorker).toContain("model=${job.agentModel || 'driver-default'}");
+    expect(poolWorker).toContain("model=${childEnv.AGENT_MODEL || 'driver-default'}");
+  });
+
   it('builds task branch names with the same task id normalization as launch_construction_agent', async () => {
     const { getTaskBranchName } = await loadBranchCleanup();
 

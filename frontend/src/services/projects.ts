@@ -2,6 +2,8 @@ import { api } from './api';
 
 export type ProjectRole = 'owner' | 'admin' | 'member';
 export type AgentCli = 'kiro' | 'claude' | 'opencode';
+export type RuntimeModelCli = 'kiro' | 'claude' | 'opencode';
+export type CliModels = Partial<Record<RuntimeModelCli, string>>;
 export type RepoRole =
   | 'primary'
   | 'secondary'
@@ -40,6 +42,7 @@ export interface Project {
   gitProvider: 'github' | 'gitlab';
   gitRepo: string;
   agentCli: AgentCli;
+  cliModels?: CliModels;
   issueIntegrationEnabled?: boolean;
   createdAt: string;
   userRole?: ProjectRole;
@@ -63,6 +66,7 @@ export interface CreateProjectInput {
   gitProvider: 'github' | 'gitlab';
   gitRepo: string;
   agentCli?: AgentCli;
+  cliModels?: CliModels;
   issueIntegrationEnabled?: boolean;
   repos?: { url: string; provider?: string; role?: RepoRole }[];
 }
@@ -72,6 +76,7 @@ export interface UpdateProjectInput {
   gitRepo?: string;
   gitProvider?: 'github' | 'gitlab';
   agentCli?: AgentCli;
+  cliModels?: CliModels;
   issueIntegrationEnabled?: boolean;
 }
 

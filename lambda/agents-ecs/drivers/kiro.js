@@ -9,7 +9,7 @@
 
 'use strict';
 
-const { execSync, execFileSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const path = require('path');
 const { SSMClient, GetParameterCommand } = require('@aws-sdk/client-ssm');
 
@@ -91,15 +91,19 @@ async function authenticate(env) {
  * Called by entrypoint.js after authenticate() succeeds.
  */
 function configureSettings(env) {
-  if (env.KIRO_MODEL) {
-    console.log(`[driver:kiro] Setting model: ${env.KIRO_MODEL}`);
+  const model = env.AGENT_MODEL || env.KIRO_MODEL || '';
+  const source = env.AGENT_MODEL ? 'AGENT_MODEL' : env.KIRO_MODEL ? 'KIRO_MODEL' : 'driver-default';
+  if (model) {
+    console.log(`[driver:kiro] Setting model: ${model} (source=${source})`);
     try {
-      execSync(`kiro-cli settings chat.defaultModel "${env.KIRO_MODEL}" --global`, {
+      execFileSync('kiro-cli', ['settings', 'chat.defaultModel', model, '--global'], {
         stdio: 'inherit',
       });
     } catch (err) {
       console.error('[driver:kiro] Failed to set model:', err.message);
     }
+  } else {
+    console.log('[driver:kiro] Using driver-default model (source=driver-default)');
   }
 }
 

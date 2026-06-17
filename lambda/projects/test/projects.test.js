@@ -100,6 +100,7 @@ describe('POST /projects', () => {
       gitRepo: '',
       gitProvider: 'github',
       agentCli: 'kiro',
+      cliModels: {},
       issueIntegrationEnabled: false,
       repos: [],
       createdAt: NOW.toISOString(),
@@ -131,6 +132,7 @@ describe('POST /projects', () => {
       gitRepo: 'git@x:y.git',
       gitProvider: 'github',
       agentCli: 'kiro',
+      cliModels: {},
       issueIntegrationEnabled: false,
       repos: [
         {
@@ -288,6 +290,98 @@ describe('PUT /projects/:id', () => {
     expect(JSON.parse(res.body)).toEqual({
       error: 'Invalid agentCli value. Must be one of: kiro, claude, opencode',
     });
+  });
+
+  it('persists cliModels overrides', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, {
+      name: 'Models',
+      cliModels: { kiro: 'kiro-model', opencode: 'amazon-bedrock/model' },
+    });
+
+    let fetched = await handler({
+      httpMethod: 'GET',
+      pathParameters: { projectId: id },
+      ...claims(sub),
+    });
+    expect(JSON.parse(fetched.body).cliModels).toEqual({
+      kiro: 'kiro-model',
+      opencode: 'amazon-bedrock/model',
+    });
+
+    const res = await handler({
+      httpMethod: 'PUT',
+      pathParameters: { projectId: id },
+      body: JSON.stringify({ cliModels: { kiro: '  next-model  ', opencode: '' } }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).cliModels).toEqual({ kiro: 'next-model' });
+
+    fetched = await handler({
+      httpMethod: 'GET',
+      pathParameters: { projectId: id },
+      ...claims(sub),
+    });
+    expect(JSON.parse(fetched.body).cliModels).toEqual({ kiro: 'next-model' });
+  });
+
+  it('returns 400 for invalid cliModels keys', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const res = await handler({
+      httpMethod: 'PUT',
+      pathParameters: { projectId: id },
+      body: JSON.stringify({ cliModels: { cursor: 'not-supported' } }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({
+      error: 'Invalid cliModels configuration',
+      issues: [
+        {
+          path: 'cursor',
+          message: 'Unknown model key "cursor". Allowed: kiro, claude, opencode.',
+        },
+      ],
+    });
+  });
+
+  it('rejects a Claude cliModels value with the amazon-bedrock prefix', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const res = await handler({
+      httpMethod: 'PUT',
+      pathParameters: { projectId: id },
+      body: JSON.stringify({
+        cliModels: { claude: 'amazon-bedrock/us.anthropic.claude-opus-4-8' },
+      }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({
+      error: 'Invalid cliModels configuration',
+      issues: [
+        {
+          path: 'claude',
+          message:
+            'Claude model must be a bare Bedrock inference profile ID (no "amazon-bedrock/" prefix).',
+        },
+      ],
+    });
+  });
+
+  it('persists a bare Claude cliModels override', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const res = await handler({
+      httpMethod: 'PUT',
+      pathParameters: { projectId: id },
+      body: JSON.stringify({ cliModels: { claude: '  us.anthropic.claude-opus-4-8  ' } }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).cliModels).toEqual({ claude: 'us.anthropic.claude-opus-4-8' });
   });
 
   it('returns 403 when the caller is not a member', async () => {

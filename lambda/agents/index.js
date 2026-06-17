@@ -23,6 +23,7 @@ const { buildResponse } = require('./shared/response');
 const { resolveGitToken } = require('./shared/git-token');
 const { validateMcpServersJson } = require('./shared/mcp-validator');
 const { broadcastToSprintChannel } = require('./shared/ws-fanout');
+const { normalizeCliModels, parseCliModels } = require('./shared/cli-models');
 
 const ecs = new ECSClient({});
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -41,6 +42,14 @@ const POOL_VERSION = process.env.POOL_VERSION || 'unknown';
 const STALE_STARTING_MS = 5 * 60 * 1000; // 5 minutes
 const STALE_IDLE_MS = 3 * 60 * 1000; // 3 minutes
 const STALE_BUSY_MS = 30 * 60 * 1000; // 30 minutes — sub-agents should not run this long
+const RUNTIME_MODEL_OVERRIDE = {
+  kiro: true,
+  // Claude honors a runtime model override: the driver injects the resolved
+  // model as ANTHROPIC_MODEL (a bare Bedrock cross-region inference profile ID)
+  // into the claude-agent-acp subprocess. See lambda/agents-ecs/drivers/claude.js.
+  claude: true,
+  opencode: true,
+};
 
 // ---------------------------------------------------------------------------
 // Repo / branch validation — authoritative gate before values reach the
@@ -117,6 +126,36 @@ function humanCliName(cliName) {
       : cliName === 'opencode'
         ? 'OpenCode'
         : cliName;
+}
+
+function modelSettingsPath() {
+  const prefix = process.env.AGENT_SETTINGS_SSM_PREFIX || '';
+  return prefix ? `${prefix}/cli-models` : '';
+}
+
+function resolveAgentModel(projectCliModels, globalCliModels, cliName) {
+  const projectModel = projectCliModels?.[cliName];
+  if (projectModel) return { model: projectModel, source: 'project' };
+  const globalModel = globalCliModels?.[cliName];
+  if (globalModel) return { model: globalModel, source: 'global' };
+  return { model: '', source: 'fallback' };
+}
+
+async function loadGlobalCliModels() {
+  const path = modelSettingsPath();
+  if (!path) return {};
+  try {
+    const result = await ssm.send(
+      new GetParametersCommand({
+        Names: [path],
+        WithDecryption: false,
+      }),
+    );
+    return parseCliModels(result.Parameters?.[0]?.Value || '{}');
+  } catch (err) {
+    console.warn('[settings] Failed to load global CLI models:', err.message);
+    return {};
+  }
 }
 
 /**
@@ -396,10 +435,11 @@ exports.handler = async (event) => {
       const bearerPath = `${prefix}/bedrock-bearer-token`;
       const mcpPath = `${prefix}/mcp-servers`;
       const kiroApiKeyPath = `${prefix}/kiro-api-key`;
+      const cliModelsPath = `${prefix}/cli-models`;
       try {
         const result = await ssm.send(
           new GetParametersCommand({
-            Names: [bearerPath, mcpPath, kiroApiKeyPath],
+            Names: [bearerPath, mcpPath, kiroApiKeyPath, cliModelsPath],
             WithDecryption: true,
           }),
         );
@@ -408,11 +448,13 @@ exports.handler = async (event) => {
         const bearerToken = byName[bearerPath] || '';
         const kiroApiKey = byName[kiroApiKeyPath] || '';
         const mcpServersRaw = byName[mcpPath] || '[]';
+        const cliModels = parseCliModels(byName[cliModelsPath] || '{}');
         // Return secrets as masked flags (never send the raw values to the browser)
         return response(200, {
           bedrockBearerTokenSet: bearerToken !== '' && bearerToken !== 'placeholder',
           kiroApiKeySet: kiroApiKey !== '' && kiroApiKey !== 'placeholder',
           mcpServers: mcpServersRaw,
+          cliModels,
         });
       } catch (err) {
         console.error('[settings] GET failed:', err.message);
@@ -484,6 +526,29 @@ exports.handler = async (event) => {
         }
       }
 
+      if (input.cliModels !== undefined) {
+        const validation = normalizeCliModels(input.cliModels);
+        if (!validation.valid) {
+          return response(400, {
+            error: 'Invalid CLI model configuration',
+            issues: validation.issues,
+          });
+        }
+        try {
+          await ssm.send(
+            new PutParameterCommand({
+              Name: `${prefix}/cli-models`,
+              Value: JSON.stringify(validation.value),
+              Type: 'String',
+              Overwrite: true,
+            }),
+          );
+        } catch (err) {
+          console.error('[settings] Failed to write CLI models:', err.message);
+          errors.push('cliModels: ' + err.message);
+        }
+      }
+
       if (errors.length > 0) return response(500, { error: errors.join('; ') });
       return response(200, { saved: true });
     }
@@ -507,7 +572,10 @@ exports.handler = async (event) => {
           console.error('[capabilities] pool scan failed:', e.message);
         }
       }
-      return response(200, { available: [...cliSet] });
+      return response(200, {
+        available: [...cliSet],
+        runtimeModelOverride: RUNTIME_MODEL_OVERRIDE,
+      });
     }
 
     // GET /agents/pool - List all pool workers
@@ -645,6 +713,7 @@ exports.handler = async (event) => {
         description = input.description || '',
         sprintPhase = '',
         projectAgentCli = 'kiro';
+      let projectCliModels = {};
       let gitRepos = [];
       let isMember = false;
       await withNeptune(async (g) => {
@@ -652,6 +721,7 @@ exports.handler = async (event) => {
         if (result.value?.get) {
           gitRepo = result.value.get('git_repo')?.[0] || '';
           projectAgentCli = result.value.get('agent_cli')?.[0] || 'kiro';
+          projectCliModels = parseCliModels(result.value.get('cli_models')?.[0] || '{}');
         }
         // Fetch all Repository vertices linked to the project (multi-repo support)
         const repoVertices = await g
@@ -781,6 +851,12 @@ exports.handler = async (event) => {
         }
       }
 
+      const globalCliModels = await loadGlobalCliModels();
+      const resolvedModel = resolveAgentModel(projectCliModels, globalCliModels, projectAgentCli);
+      console.log(
+        `[agents] resolved model execution=${executionId} project=${projectId} cli=${projectAgentCli} source=${resolvedModel.source} model=${resolvedModel.model || 'driver-default'}`,
+      );
+
       const job = {
         executionId,
         projectId,
@@ -798,6 +874,7 @@ exports.handler = async (event) => {
         runNumber: 1,
         changeRequest: input.changeRequest || '',
         agentCli: projectAgentCli,
+        agentModel: resolvedModel.model,
         // Discussion-assist job fields — empty for other phases.
         discussionId: input.discussionId || '',
         command: input.command || '',

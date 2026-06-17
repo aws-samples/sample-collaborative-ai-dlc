@@ -138,6 +138,25 @@ resource "aws_ssm_parameter" "mcp_servers" {
   tags = var.tags
 }
 
+# Default agent models by CLI — JSON object managed by the Admin UI at runtime.
+resource "aws_ssm_parameter" "cli_models" {
+  name        = "/${var.project_name}/${var.environment}/cli-models"
+  description = "Default agent model IDs by CLI (JSON object)"
+  type        = "String"
+  value = jsonencode(merge(
+    var.kiro_model != "" ? { kiro = var.kiro_model } : {},
+    var.bedrock_model != "" ? {
+      opencode = can(regex("^amazon-bedrock/", var.bedrock_model)) ? var.bedrock_model : "amazon-bedrock/${var.bedrock_model}"
+    } : {}
+  ))
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+
+  tags = var.tags
+}
+
 # Kiro API key — stored as SecureString; set via Admin UI.
 # Created with a placeholder; the driver treats "placeholder" as "not configured".
 resource "aws_ssm_parameter" "kiro_api_key" {
@@ -263,6 +282,7 @@ resource "aws_iam_role_policy" "agent_task" {
         Resource = [
           aws_ssm_parameter.bedrock_bearer_token.arn,
           aws_ssm_parameter.mcp_servers.arn,
+          aws_ssm_parameter.cli_models.arn,
           aws_ssm_parameter.kiro_api_key.arn,
         ]
       },

@@ -62,15 +62,23 @@ The following tools are optional. Install them to enable additional features.
 
 Agents authenticate using API keys configured through the platform UI. The platform supports two options:
 
-### Kiro CLI API key
+An agent CLI cannot start until its credential is configured. The platform runs a pre-flight check before dispatching a job and blocks it with a clear error if the credential is missing, so set the relevant value below before starting agents for a project.
 
-In the platform settings, enter your Kiro CLI API key. Agent containers use this key to authenticate with the Kiro CLI during Construction.
+### Kiro CLI API key (required for the Kiro CLI driver)
 
-### Amazon Bedrock API key (for Claude Code and OpenCode setups)
+Kiro API keys are turned **off by default**. A Kiro administrator must first enable them in the Kiro console (**Settings → Kiro settings → Enable users to generate API keys → On**). Users can then sign in to the Kiro portal and generate a key. See the [Kiro API keys documentation](https://kiro.dev/docs/enterprise/governance/api-keys/) for details.
 
-For agents using Claude Code or OpenCode with Amazon Bedrock, enter your Amazon Bedrock credentials (Access Key ID, Secret Access Key, Region) in the platform settings.
+In the platform settings, enter this key as the **Kiro API Key**. Agent containers use it to authenticate with the Kiro CLI during Construction, and the driver validates it at startup with `kiro-cli whoami`.
 
-You can also use [AWS IAM Identity Center](https://docs.aws.amazon.com/singlesignon/latest/userguide/what-is.html), IAM roles, or any method supported by the [AWS SDK credential provider chain](https://docs.aws.amazon.com/sdkref/latest/guide/standardized-credentials.html).
+### Amazon Bedrock API key (required for Claude Code and OpenCode setups)
+
+Generate an Amazon Bedrock API key in the AWS Console (**Amazon Bedrock → API keys → Generate long-term API key**, scoped to your account and region). In the platform settings, enter this key as the **Bedrock Bearer Token**. The platform stores it and provides it to agent containers as the `AWS_BEARER_TOKEN_BEDROCK` environment variable.
+
+This token is required for Claude Code and OpenCode agents: the ECS task IAM role intentionally has no Amazon Bedrock permissions, so there is no IAM-role fallback. Agents authenticate to Bedrock exclusively through this token.
+
+### Where these values are stored
+
+Both credentials are stored in **AWS Systems Manager Parameter Store** as `SecureString` parameters: `/<project_name>/<environment>/bedrock-bearer-token` and `/<project_name>/<environment>/kiro-api-key`. An unset credential holds the literal value `placeholder`, which the platform treats as "not configured." Saving an empty value in the platform settings resets the parameter to `placeholder` rather than deleting it.
 
 ## AWS credentials for LLM features
 

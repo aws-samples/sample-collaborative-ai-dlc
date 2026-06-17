@@ -447,7 +447,10 @@ async function setupWorkspace(job) {
   // This must run AFTER cloning so it overwrites whatever the repo ships.
   const activeDriver = getDriver(job.agentCli);
   if (typeof activeDriver.writeProjectConfig === 'function') {
-    activeDriver.writeProjectConfig('/workspace', process.env);
+    activeDriver.writeProjectConfig('/workspace', {
+      ...process.env,
+      AGENT_MODEL: job.agentModel || '',
+    });
   }
 
   // Multi-repo: symlink steering/config dirs into each repo so CLIs that search
@@ -1372,12 +1375,17 @@ function runAcpSession(job) {
       GIT_REPO: job.gitRepo || '',
       GIT_REPOS: JSON.stringify(job.gitRepos || []),
       RUN_NUMBER: String(job.runNumber || 1),
+      AGENT_MODEL: job.agentModel || '',
       // Discussion-assist context — empty for other phases.
       DISCUSSION_ID: job.discussionId || '',
       DISCUSSION_COMMAND: job.command || '',
       DISCUSSION_REQUESTED_BY: job.requestedBy || '',
       DISCUSSION_REQUESTED_BY_NAME: job.requestedByName || '',
     };
+
+    console.log(
+      `[pool-worker] Starting ACP child execution=${job.executionId} cli=${job.agentCli} model=${childEnv.AGENT_MODEL || 'driver-default'}`,
+    );
 
     const child = spawn('node', ['/opt/acp-client/acp-client.js'], {
       cwd: '/workspace',
@@ -1558,7 +1566,7 @@ async function main() {
         const job = poll.job;
         const jobCli = job.agentCli;
         console.log(
-          `[pool-worker] Got job: ${job.executionId} for project ${job.projectId} (cli=${jobCli})`,
+          `[pool-worker] Got job: ${job.executionId} project=${job.projectId} cli=${jobCli} model=${job.agentModel || 'driver-default'}`,
         );
 
         await setupWorkspace(job);
