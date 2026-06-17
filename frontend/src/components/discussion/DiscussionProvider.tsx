@@ -1,4 +1,12 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import type { ReactNode } from 'react';
 import { useParams } from 'react-router-dom';
 import { discussionsService } from '@/services/discussions';
@@ -63,6 +71,8 @@ export function useDiscussions(): DiscussionContextValue | null {
 }
 
 const TOAST_TTL_MS = 8000;
+// Trailing-debounce window for fanout-triggered list refreshes (see below).
+const RELOAD_DEBOUNCE_MS = 600;
 
 export function DiscussionProvider({
   children,
@@ -98,16 +108,34 @@ export function DiscussionProvider({
     reloadDiscussions();
   }, [reloadDiscussions]);
 
-  // Refresh on server fanout — covers other users' messages, resolves
-  // and redactions. Cheap: one list query per event.
+  // Coalesce bursts of fan-out events into a single list query. A sprint-wide
+  // message broadcasts to every connected member, and each would otherwise
+  // fire its own GET /discussions (a non-trivial Neptune traversal): N members
+  // chatting in parallel turn one message into N list queries, multiplied
+  // across concurrent sprints. Trailing debounce collapses rapid chatter into
+  // one refresh per window (lower the delay if it feels laggy).
+  const reloadTimerRef = useRef<number | null>(null);
+  const scheduleReload = useCallback(() => {
+    if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current);
+    reloadTimerRef.current = window.setTimeout(() => {
+      reloadTimerRef.current = null;
+      reloadDiscussions();
+    }, RELOAD_DEBOUNCE_MS);
+  }, [reloadDiscussions]);
+
+  // Refresh on server fanout — covers other users' messages, resolves and
+  // redactions. Debounced so a burst of messages costs one list query.
   useEffect(() => {
     if (!sprintId) return;
     const unsubs = [
-      realtimeService.on('discussion.message', () => reloadDiscussions()),
-      realtimeService.on('discussion.updated', () => reloadDiscussions()),
+      realtimeService.on('discussion.message', () => scheduleReload()),
+      realtimeService.on('discussion.updated', () => scheduleReload()),
     ];
-    return () => unsubs.forEach((u) => u());
-  }, [sprintId, reloadDiscussions]);
+    return () => {
+      unsubs.forEach((u) => u());
+      if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current);
+    };
+  }, [sprintId, scheduleReload]);
 
   // ── Project members (mention combobox + caller role) ──
   useEffect(() => {
