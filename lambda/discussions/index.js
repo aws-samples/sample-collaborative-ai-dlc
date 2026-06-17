@@ -1451,12 +1451,7 @@ export const handler = async (event) => {
 
     return res(404, { error: 'Not found' });
   } catch (err) {
-    const rawMessage = err instanceof Error ? err.message : 'unknown error';
-    const safeMessage = String(rawMessage).replace(
-      /(secret|token|password|authorization|apikey|api[-_ ]?key)\s*[:=]\s*\S+/gi,
-      '$1=[REDACTED]',
-    );
-    console.error(`discussions handler error: ${safeMessage}`);
+    console.error('discussions handler error');
     return res(500, { error: 'Internal server error' });
   }
 };
