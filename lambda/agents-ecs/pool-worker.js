@@ -45,11 +45,11 @@ const { buildConstructionOrchestratorPrompt } = require('./construction-orchestr
 // Driver — pluggable agent CLI abstraction
 // At startup, discoverInstalledDrivers() probes which CLI binaries are present
 // on PATH. Only installed CLIs are attempted — no env var or deploy-time config.
-// _availableClis is populated with whichever ones authenticate successfully.
+// availableClis is populated with whichever ones authenticate successfully.
 // ---------------------------------------------------------------------------
 const { getDriver, discoverInstalledDrivers } = require('./drivers');
-let _availableClis = []; // populated by main() at startup
-let _cliAuthErrors = {}; // populated by main() at startup
+let availableClis = []; // populated by main() at startup
+let cliAuthErrors = {}; // populated by main() at startup
 
 // Prevent unhandled exceptions/rejections from killing the ECS task.
 // Each pool worker is a long-lived ECS task; a crash wastes the entire container.
@@ -99,8 +99,8 @@ async function setIdle() {
         ':s': 'idle',
         ':t': Date.now(),
         ':v': env.version,
-        ':clis': _availableClis,
-        ':errs': _cliAuthErrors,
+        ':clis': availableClis,
+        ':errs': cliAuthErrors,
       },
     }),
   );
@@ -174,7 +174,7 @@ const RULES_DIR = '/opt/aidlc-rules';
 
 // Fetch Neptune property value(s) from a vertex valueMap result.
 // Neptune returns each property as an array; this helper unwraps the first element.
-function _neptuneVal(valueMap, key) {
+function neptuneVal(valueMap, key) {
   if (!valueMap) return '';
   const raw = valueMap instanceof Map ? valueMap.get(key) : valueMap[key];
   if (Array.isArray(raw)) return raw[0] ?? '';
@@ -207,7 +207,7 @@ function renderRuleFile(srcPath, destPath, rulesDirRel) {
 // `.md` extension, and verifies the resolved path stays under `rulesDir`
 // (defence in depth against future path.basename quirks). Returns null if
 // the filename is unsafe or empty.
-function _safeRulesDest(rulesDir, filename, prefix) {
+function safeRulesDest(rulesDir, filename, prefix) {
   if (!filename || typeof filename !== 'string') return null;
   const base = path.basename(filename);
   if (!base || base === '.' || base === '..') return null;
@@ -248,7 +248,7 @@ async function writeScopedRules(rulesDir, projectId, taskId) {
         .valueMap('steering_docs')
         .next();
       if (projectResult.value) {
-        const raw = _neptuneVal(projectResult.value, 'steering_docs');
+        const raw = neptuneVal(projectResult.value, 'steering_docs');
         if (raw) {
           try {
             projectDocs = JSON.parse(raw);
@@ -262,7 +262,7 @@ async function writeScopedRules(rulesDir, projectId, taskId) {
       if (taskId) {
         const taskResult = await g.V().has('Task', 'id', taskId).valueMap('steering_docs').next();
         if (taskResult.value) {
-          const raw = _neptuneVal(taskResult.value, 'steering_docs');
+          const raw = neptuneVal(taskResult.value, 'steering_docs');
           if (raw) {
             try {
               taskDocs = JSON.parse(raw);
@@ -283,7 +283,7 @@ async function writeScopedRules(rulesDir, projectId, taskId) {
     for (const doc of projectDocs) {
       if (!doc.s3Key) continue;
       const filename = doc.filename || path.basename(doc.s3Key);
-      const dest = _safeRulesDest(rulesDir, filename, 'project--');
+      const dest = safeRulesDest(rulesDir, filename, 'project--');
       if (!dest) {
         console.warn(
           `[pool-worker] Skipping project steering doc with unsafe filename: ${filename}`,
@@ -311,7 +311,7 @@ async function writeScopedRules(rulesDir, projectId, taskId) {
     for (const doc of taskDocs) {
       if (!doc.s3Key) continue;
       const filename = doc.filename || path.basename(doc.s3Key);
-      const dest = _safeRulesDest(rulesDir, filename, 'task--');
+      const dest = safeRulesDest(rulesDir, filename, 'task--');
       if (!dest) {
         console.warn(`[pool-worker] Skipping task steering doc with unsafe filename: ${filename}`);
         continue;
@@ -393,7 +393,7 @@ async function fetchSteeringFiles(phase, agentCli, projectId, taskId) {
   // Copy common rules into the rules directory (with logical-path rendering)
   const commonDir = `${RULES_DIR}/aws-aidlc-rule-details/common`;
   try {
-    for (const f of fs.readdirSync(commonDir).filter((f) => f.endsWith('.md'))) {
+    for (const f of fs.readdirSync(commonDir).filter((name) => name.endsWith('.md'))) {
       renderRuleFile(path.join(commonDir, f), path.join(rulesDir, `common-${f}`), rulesDirRel);
     }
   } catch {
@@ -404,7 +404,7 @@ async function fetchSteeringFiles(phase, agentCli, projectId, taskId) {
   const phaseDir = effectivePhase === 'review' ? 'operations' : effectivePhase;
   const phasePath = `${RULES_DIR}/aws-aidlc-rule-details/${phaseDir}`;
   try {
-    for (const f of fs.readdirSync(phasePath).filter((f) => f.endsWith('.md'))) {
+    for (const f of fs.readdirSync(phasePath).filter((name) => name.endsWith('.md'))) {
       renderRuleFile(path.join(phasePath, f), path.join(rulesDir, `${phaseDir}-${f}`), rulesDirRel);
     }
   } catch {
@@ -1479,28 +1479,28 @@ async function main() {
   console.log(`[pool-worker] Installed CLIs: [${installedClis.join(', ')}]`);
 
   // Attempt authentication for every installed CLI.
-  // CLIs that succeed are added to _availableClis and advertised to the pool.
-  // Failures are captured in _cliAuthErrors so the dispatch Lambda and Admin
+  // CLIs that succeed are added to availableClis and advertised to the pool.
+  // Failures are captured in cliAuthErrors so the dispatch Lambda and Admin
   // UI can show the user why a particular CLI isn't available.
   for (const cli of installedClis) {
     try {
       await getDriver(cli).authenticate(process.env);
-      _availableClis.push(cli);
+      availableClis.push(cli);
       console.log(`[pool-worker] CLI "${cli}" authenticated and available`);
     } catch (err) {
       const msg = err && err.message ? err.message : String(err);
-      _cliAuthErrors[cli] = msg;
+      cliAuthErrors[cli] = msg;
       console.warn(`[pool-worker] CLI "${cli}" not available: ${msg}`);
     }
   }
 
-  if (_availableClis.length === 0) {
+  if (availableClis.length === 0) {
     console.error('[pool-worker] No CLIs authenticated — exiting');
     process.exit(1);
   }
 
   console.log(
-    `[pool-worker] Worker ${env.workerId} ready. Available CLIs: [${_availableClis.join(', ')}]`,
+    `[pool-worker] Worker ${env.workerId} ready. Available CLIs: [${availableClis.join(', ')}]`,
   );
 
   // If the dispatcher pre-assigned a job to this worker (cold-start path where
@@ -1527,8 +1527,8 @@ async function main() {
         ExpressionAttributeValues: {
           ':t': Date.now(),
           ':v': env.version,
-          ':clis': _availableClis,
-          ':errs': _cliAuthErrors,
+          ':clis': availableClis,
+          ':errs': cliAuthErrors,
         },
       }),
     );
