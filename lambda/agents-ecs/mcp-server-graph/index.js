@@ -27,15 +27,7 @@ const {
 } = gremlin.process;
 const __ = gremlin.process.statics;
 
-const LOG_FILE = '/tmp/mcp-graph.log';
 const POLL_INTERVAL_MS = 3000;
-const _origErr = console.error.bind(console);
-console.error = (...args) => {
-  _origErr(...args);
-  try {
-    fs.appendFileSync(LOG_FILE, args.join(' ') + '\n');
-  } catch {}
-};
 
 function toNeptuneSignerCredentials(credentials, region) {
   return {
