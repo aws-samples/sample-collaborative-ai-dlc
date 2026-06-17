@@ -24,6 +24,8 @@ const ENTITY_LABELS: Record<string, string> = {
   generalinfo: 'Info',
 };
 
+const EMPTY_DISCUSSIONS: Discussion[] = [];
+
 const timeAgo = (iso: string): string => {
   const diff = Date.now() - new Date(iso).getTime();
   if (Number.isNaN(diff)) return '';
