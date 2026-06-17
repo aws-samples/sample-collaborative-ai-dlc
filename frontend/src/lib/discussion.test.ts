@@ -8,6 +8,7 @@ import {
   makeMessageId,
   groupMessages,
   firstUnreadIndex,
+  mentionedUserIds,
 } from './discussion';
 
 // NOTE: per the platform's known CI gap, frontend vitest tests do not run in
@@ -141,5 +142,55 @@ describe('firstUnreadIndex', () => {
 
   it('clamps when unreadCount exceeds the loaded page (capped server counts)', () => {
     expect(firstUnreadIndex(5, 99)).toBe(0);
+  });
+});
+
+describe('mentionedUserIds', () => {
+  const mentioned: Array<[string, string]> = [
+    ['user-john', 'john'],
+    ['user-johnny', 'johnny'],
+  ];
+
+  it('does NOT count a prefix label when only the longer one is mentioned', () => {
+    // The bug: text.includes('@john') is true for '@johnny'.
+    expect(mentionedUserIds('hey @johnny', mentioned)).toEqual(['user-johnny']);
+  });
+
+  it('counts the prefix label when it is actually mentioned', () => {
+    expect(mentionedUserIds('hey @john', mentioned)).toEqual(['user-john']);
+  });
+
+  it('counts both when both are mentioned', () => {
+    expect(mentionedUserIds('@john and @johnny', mentioned)).toEqual(['user-john', 'user-johnny']);
+  });
+
+  it('matches a mention at the very start of the text', () => {
+    expect(mentionedUserIds('@john hi', [['user-john', 'john']])).toEqual(['user-john']);
+  });
+
+  it('requires an @ — a bare label does not count', () => {
+    expect(mentionedUserIds('john was here', [['user-john', 'john']])).toEqual([]);
+  });
+
+  it('does not match a label glued to a preceding mention char (email-ish)', () => {
+    // `foo@john` is an email-like token, not a mention.
+    expect(mentionedUserIds('foo@john', [['user-john', 'john']])).toEqual([]);
+  });
+
+  it('handles labels containing regex-special and mention charset chars', () => {
+    expect(mentionedUserIds('ping @john.doe please', [['user-jd', 'john.doe']])).toEqual([
+      'user-jd',
+    ]);
+    // `john.doe` must not be falsely matched by a `john.do` prefix label.
+    expect(
+      mentionedUserIds('ping @john.doe', [
+        ['user-prefix', 'john.do'],
+        ['user-jd', 'john.doe'],
+      ]),
+    ).toEqual(['user-jd']);
+  });
+
+  it('returns an empty array when nothing is mentioned', () => {
+    expect(mentionedUserIds('no mentions here', mentioned)).toEqual([]);
   });
 });

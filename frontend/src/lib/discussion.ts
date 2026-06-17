@@ -66,6 +66,33 @@ export const firstUnreadIndex = (messageCount: number, unreadCount: number): num
   return Math.max(messageCount - unreadCount, 0);
 };
 
+// Characters that can appear inside an `@token` — must mirror the mention
+// charset the input recognizes (see DiscussionInput's `/(^|\s)@([\w.+-]*)$/`).
+const MENTION_BOUNDARY = '\\w.+-';
+
+const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Resolve which mentioned userIds survived editing. A naive
+ * `text.includes('@' + label)` false-matches a prefix: with members `john` and
+ * `johnny`, the text `@johnny` would also count `john` as mentioned. Require
+ * each `@label` to sit on a token boundary — preceded by start-of-string or a
+ * non-mention char, and NOT followed by another mention char — so `@johnny`
+ * matches `johnny` only.
+ *
+ * @param mentioned [userId, label] pairs, as produced by the mention combobox.
+ */
+export const mentionedUserIds = (text: string, mentioned: Iterable<[string, string]>): string[] => {
+  const ids: string[] = [];
+  for (const [userId, label] of mentioned) {
+    const re = new RegExp(
+      `(^|[^${MENTION_BOUNDARY}])@${escapeRegExp(label)}(?![${MENTION_BOUNDARY}])`,
+    );
+    if (re.test(text)) ids.push(userId);
+  }
+  return ids;
+};
+
 const RELATIVE_STEPS: Array<[number, Intl.RelativeTimeFormatUnit]> = [
   [60, 'second'],
   [60, 'minute'],

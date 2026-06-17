@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils';
 import type { Member } from '@/services/projects';
 import type { AssistCommand } from '@/services/discussions';
 import { generateColor } from '@/utils/colors';
+import { mentionedUserIds } from '@/lib/discussion';
 
 // DiscussionInput: auto-growing textarea, Enter = send,
 // Shift+Enter = newline, typing awareness, the @-mention combobox over
@@ -109,10 +110,10 @@ export function DiscussionInput({
   const send = useCallback(() => {
     const trimmed = value.trim();
     if (!trimmed || disabled) return;
-    // Only count mentions whose @label text survived editing.
-    const mentions = [...mentioned.entries()]
-      .filter(([, label]) => trimmed.includes(`@${label}`))
-      .map(([userId]) => userId);
+    // Only count mentions whose @label text survived editing — matched on a
+    // token boundary so a prefix label (john) isn't falsely counted from a
+    // longer one (@johnny).
+    const mentions = mentionedUserIds(trimmed, mentioned);
     onSend(trimmed, mentions);
     onTyping(false);
     setValue('');
