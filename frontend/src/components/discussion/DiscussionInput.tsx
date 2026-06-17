@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { SendHorizontal, AtSign, Sparkles, Loader2 } from 'lucide-react';
@@ -75,6 +75,10 @@ export function DiscussionInput({
     // lower bound the initial rows={1} box clips even the placeholder text.
     el.style.height = `${Math.max(Math.min(el.scrollHeight, 160), 40)}px`;
   }, []);
+
+  // Apply the clamped height once on mount — otherwise the rows={1} box renders
+  // a hair too short until the first keystroke triggers autoGrow.
+  useEffect(autoGrow, [autoGrow]);
 
   // Detect an active "@token" immediately before the caret.
   const updateMentionQuery = useCallback((text: string, caret: number) => {
