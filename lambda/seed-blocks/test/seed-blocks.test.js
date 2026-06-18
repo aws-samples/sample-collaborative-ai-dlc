@@ -184,14 +184,20 @@ describe('seed-blocks handler', () => {
       expect(meta).toBeTruthy();
       expect(meta.tenantId).toBe('SYSTEM');
       expect(meta.status).toBe('PUBLISHED');
+      expect(meta.version).toBe(1);
       // Listed via the workflow catalog index.
       expect(meta.GSI1PK).toBe('TENANT#SYSTEM#WORKFLOW');
+      expect(tableStore.has(`${pk}|V#1#META`)).toBe(true);
       // Inline phases + stage placements landed in the partition.
       for (const phase of wf.phases ?? []) {
         expect(tableStore.has(`${pk}|PHASE#${phase.path}#${phase.phaseId}`)).toBe(true);
+        expect(tableStore.has(`${pk}|V#1#PHASE#${phase.path}#${phase.phaseId}`)).toBe(true);
       }
       for (const p of wf.placements ?? []) {
         expect(tableStore.has(`${pk}|PLACEMENT#${p.stageId}`)).toBe(true);
+        const snapshot = tableStore.get(`${pk}|V#1#PLACEMENT#${p.stageId}`);
+        expect(snapshot).toBeTruthy();
+        expect(snapshot.pinnedVersion).toBe(1);
       }
     }
   });

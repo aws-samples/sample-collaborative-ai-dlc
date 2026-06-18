@@ -6,16 +6,18 @@
 // Routes (all behind the Cognito authorizer):
 //   GET    /workflows                              list (GSI1)
 //   POST   /workflows                              create (META, optional fork)
-//   GET    /workflows/{workflowId}                 full composition
+//   GET    /workflows/{workflowId}[?version=N]     full composition (live or immutable snapshot)
 //   PUT    /workflows/{workflowId}                 update META
 //   DELETE /workflows/{workflowId}                 delete the whole partition
 //   PUT    /workflows/{workflowId}/groupings       replace the grouping tree
 //   POST   /workflows/{workflowId}/placements      add a skill placement
 //   PUT    /workflows/{workflowId}/placements/{skillId}    update a placement
 //   DELETE /workflows/{workflowId}/placements/{skillId}    remove a placement
+//   GET    /workflows/{workflowId}/compiled[?version=N]    derived views (live or snapshot)
 //
-// SYSTEM-owned workflows are the shipped baseline: read-only to tenants (fork
-// to customize). Reads fall back to SYSTEM; writes never do.
+// SYSTEM-owned workflows are the imported baseline: read-only through the API
+// and replaceable by the seed job. User-created or forked workflows live under
+// the shared `default` owner. Reads fall back to SYSTEM; writes never do.
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
@@ -31,6 +33,10 @@ import { resolveTenant, SYSTEM_TENANT } from '../shared/tenant.js';
 import {
   META,
   workflowPk,
+  workflowVersionPrefix,
+  workflowVersionSk,
+  isWorkflowVersionSk,
+  liveSkFromVersionSk,
   phaseSk,
   placementSk,
   scopeRefSk,
@@ -40,12 +46,21 @@ import {
   validateName,
   validatePhaseNode,
 } from '../shared/workflows.js';
-import { blockPk, catalogGsi1Pk, LATEST, RULE_LAYERS } from '../shared/blocks.js';
+import { blockPk, catalogGsi1Pk, LATEST, RULE_LAYERS, versionSk } from '../shared/blocks.js';
 import { compileWorkflow } from '../shared/compile.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const blocksTable = () => process.env.BLOCKS_TABLE;
 const getClaims = (event) => event?.requestContext?.authorizer?.claims || {};
+const getRequestedVersion = (event) => {
+  const raw = event?.queryStringParameters?.version;
+  if (raw == null || raw === '') return { version: null };
+  const version = Number(raw);
+  if (!Number.isInteger(version) || version < 1) {
+    return { error: 'version must be a positive integer' };
+  }
+  return { version };
+};
 
 const parseBody = (event) => {
   if (!event.body) return {};
@@ -85,6 +100,21 @@ const queryPartition = async (tenant, workflowId, opts = {}) => {
   return Items || [];
 };
 
+const isLiveWorkflowItem = (item) => !isWorkflowVersionSk(item.sk);
+
+const queryLivePartition = async (tenant, workflowId, opts = {}) =>
+  (await queryPartition(tenant, workflowId, opts)).filter(isLiveWorkflowItem);
+
+const querySnapshotPartition = async (tenant, workflowId, version) =>
+  (await queryPartition(tenant, workflowId, { skBeginsWith: workflowVersionPrefix(version) })).map(
+    (item) => ({ ...item, sk: liveSkFromVersionSk(item.sk) }),
+  );
+
+const queryWorkflowItems = async (tenant, workflowId, version = null) =>
+  version == null
+    ? queryLivePartition(tenant, workflowId)
+    : querySnapshotPartition(tenant, workflowId, version);
+
 const loadMeta = async (tenant, workflowId) => {
   const { Item } = await ddb.send(
     new GetCommand({
@@ -95,8 +125,64 @@ const loadMeta = async (tenant, workflowId) => {
   return Item || null;
 };
 
-// Read resolution: a workflow the tenant can see is its own or the SYSTEM
-// baseline (a tenant fork shadows it). Returns the owning tenant + meta.
+const loadPlacedStageVersion = async (placement) => {
+  const { Item } = await ddb.send(
+    new GetCommand({
+      TableName: blocksTable(),
+      Key: {
+        pk: blockPk(placement.stageTenant ?? SYSTEM_TENANT, 'STAGE', placement.stageId),
+        sk: LATEST,
+      },
+    }),
+  );
+  return Item?.version ?? null;
+};
+
+const buildSnapshotItems = async (liveItems, version) => {
+  const stageVersionByPlacement = new Map();
+  const placements = liveItems.filter(
+    (item) => item.type === 'StagePlacement' && item.pinnedVersion == null,
+  );
+  const versions = await Promise.all(placements.map(loadPlacedStageVersion));
+  placements.forEach((placement, index) => {
+    stageVersionByPlacement.set(placement.sk, versions[index]);
+  });
+
+  return liveItems.map((item) => {
+    const snapshot = { ...item, sk: workflowVersionSk(version, item.sk), version };
+    // Snapshots are not catalog rows; only live META should appear in GSI1 lists.
+    delete snapshot.GSI1PK;
+    delete snapshot.GSI1SK;
+    if (snapshot.type === 'StagePlacement' && snapshot.pinnedVersion == null) {
+      snapshot.pinnedVersion = stageVersionByPlacement.get(item.sk);
+    }
+    return snapshot;
+  });
+};
+
+const writeWorkflowSnapshot = async (tenant, workflowId, version, liveItems = null) => {
+  const items = liveItems ?? (await queryLivePartition(tenant, workflowId));
+  const snapshots = await buildSnapshotItems(items, version);
+  await batchWrite(snapshots.map((Item) => ({ PutRequest: { Item } })));
+};
+
+const bumpWorkflowVersion = async (tenant, workflowId, metaOverrides = {}) => {
+  const current = await loadMeta(tenant, workflowId);
+  if (!current) return null;
+  const meta = {
+    ...current,
+    ...metaOverrides,
+    version: (current.version ?? 1) + 1,
+    updatedAt: new Date().toISOString(),
+  };
+  await ddb.send(new PutCommand({ TableName: blocksTable(), Item: meta }));
+  await writeWorkflowSnapshot(tenant, workflowId, meta.version);
+  return meta;
+};
+
+// Read resolution: a workflow visible to the user library is either its own
+// `default` copy or the SYSTEM baseline (a fork shadows the imported baseline).
+// Returns the owning namespace + meta.
 const resolveWorkflow = async (tenant, workflowId) => {
   const own = await loadMeta(tenant, workflowId);
   if (own) return { owner: tenant, meta: own };
@@ -128,9 +214,13 @@ const listWorkflows = async (event, res, tenant) => {
 };
 
 const getWorkflow = async (event, res, tenant, workflowId) => {
+  const requested = getRequestedVersion(event);
+  if (requested.error) return res(400, { error: requested.error });
   const resolved = await resolveWorkflow(tenant, workflowId);
   if (!resolved) return res(404, { error: 'Not found' });
-  const items = await queryPartition(resolved.owner, workflowId);
+  const items = await queryWorkflowItems(resolved.owner, workflowId, requested.version);
+  if (requested.version != null && items.length === 0)
+    return res(404, { error: 'Version not found' });
   return res(200, composeWorkflow(resolved.owner, items));
 };
 
@@ -152,7 +242,7 @@ const createWorkflow = async (event, res, tenant) => {
   if (input.basedOn) {
     const src = await resolveWorkflow(tenant, input.basedOn);
     if (!src) return res(400, { error: 'basedOn workflow not found' });
-    sourceItems = (await queryPartition(src.owner, input.basedOn)).filter((i) => i.sk !== META);
+    sourceItems = (await queryLivePartition(src.owner, input.basedOn)).filter((i) => i.sk !== META);
   }
 
   const now = new Date().toISOString();
@@ -167,16 +257,19 @@ const createWorkflow = async (event, res, tenant) => {
     basedOn: input.basedOn ?? null,
     defaultScope: input.defaultScope ?? null,
     status: 'DRAFT',
+    version: 1,
     createdAt: now,
     updatedAt: now,
     GSI1PK: workflowGsi1Pk(tenant),
     GSI1SK: input.name,
   };
 
-  const requests = [{ PutRequest: { Item: meta } }];
+  const liveItems = [meta];
   for (const item of sourceItems) {
-    requests.push({ PutRequest: { Item: { ...item, pk: workflowPk(tenant, id) } } });
+    liveItems.push({ ...item, pk: workflowPk(tenant, id) });
   }
+  const snapshotItems = await buildSnapshotItems(liveItems, meta.version);
+  const requests = [...liveItems, ...snapshotItems].map((Item) => ({ PutRequest: { Item } }));
   await batchWrite(requests);
   return res(201, metaToApi(meta));
 };
@@ -193,16 +286,13 @@ const updateWorkflow = async (event, res, tenant, workflowId) => {
     if (nameError) return res(400, { error: nameError });
   }
 
-  const meta = {
-    ...current,
+  const meta = await bumpWorkflowVersion(tenant, workflowId, {
     name: input.name ?? current.name,
     objective: input.objective ?? current.objective,
     defaultScope: input.defaultScope ?? current.defaultScope,
     status: input.status ?? current.status,
-    updatedAt: new Date().toISOString(),
     GSI1SK: input.name ?? current.name,
-  };
-  await ddb.send(new PutCommand({ TableName: blocksTable(), Item: meta }));
+  });
   return res(200, metaToApi(meta));
 };
 
@@ -259,7 +349,8 @@ const putPhases = async (event, res, tenant, workflowId) => {
     .filter((i) => !nextSks.has(i.sk))
     .map((i) => ({ DeleteRequest: { Key: { pk: i.pk, sk: i.sk } } }));
   await batchWrite([...deletes, ...puts]);
-  const items = await queryPartition(tenant, workflowId);
+  await bumpWorkflowVersion(tenant, workflowId);
+  const items = await queryLivePartition(tenant, workflowId);
   return res(200, composeWorkflow(tenant, items));
 };
 
@@ -279,6 +370,7 @@ const addPlacement = async (event, res, tenant, workflowId) => {
 
   const item = buildPlacementItem(tenant, workflowId, stageId, input);
   await ddb.send(new PutCommand({ TableName: blocksTable(), Item: item }));
+  await bumpWorkflowVersion(tenant, workflowId);
   return res(201, placementToApi(item));
 };
 
@@ -294,6 +386,7 @@ const updatePlacement = async (event, res, tenant, workflowId, stageId) => {
 
   const item = buildPlacementItem(tenant, workflowId, stageId, { ...current.Item, ...input });
   await ddb.send(new PutCommand({ TableName: blocksTable(), Item: item }));
+  await bumpWorkflowVersion(tenant, workflowId);
   return res(200, placementToApi(item));
 };
 
@@ -310,6 +403,7 @@ const deletePlacement = async (event, res, tenant, workflowId, stageId) => {
       Key: { pk: workflowPk(tenant, workflowId), sk },
     }),
   );
+  await bumpWorkflowVersion(tenant, workflowId);
   return res(204, {});
 };
 
@@ -331,6 +425,7 @@ const addScopeRef = async (event, res, tenant, workflowId) => {
     scopeTenant: input.scopeTenant ?? SYSTEM_TENANT,
   };
   await ddb.send(new PutCommand({ TableName: blocksTable(), Item: item }));
+  await bumpWorkflowVersion(tenant, workflowId);
   return res(201, scopeRefToApi(item));
 };
 
@@ -347,6 +442,7 @@ const removeScopeRef = async (event, res, tenant, workflowId, scopeId) => {
       Key: { pk: workflowPk(tenant, workflowId), sk },
     }),
   );
+  await bumpWorkflowVersion(tenant, workflowId);
   return res(204, {});
 };
 
@@ -378,6 +474,7 @@ const addRuleRef = async (event, res, tenant, workflowId) => {
     ruleTenant: input.ruleTenant ?? SYSTEM_TENANT,
   };
   await ddb.send(new PutCommand({ TableName: blocksTable(), Item: item }));
+  await bumpWorkflowVersion(tenant, workflowId);
   return res(201, ruleRefToApi(item));
 };
 
@@ -394,6 +491,7 @@ const removeRuleRef = async (event, res, tenant, workflowId, layer, ruleId) => {
       Key: { pk: workflowPk(tenant, workflowId), sk },
     }),
   );
+  await bumpWorkflowVersion(tenant, workflowId);
   return res(204, {});
 };
 
@@ -401,9 +499,13 @@ const removeRuleRef = async (event, res, tenant, workflowId, layer, ruleId) => {
 // the placements, scope refs, and the library Stage blocks they reference.
 // Computed on demand (no cache yet); the pure compilers live in shared/compile.
 const getCompiled = async (event, res, tenant, workflowId) => {
+  const requested = getRequestedVersion(event);
+  if (requested.error) return res(400, { error: requested.error });
   const resolved = await resolveWorkflow(tenant, workflowId);
   if (!resolved) return res(404, { error: 'Not found' });
-  const items = await queryPartition(resolved.owner, workflowId);
+  const items = await queryWorkflowItems(resolved.owner, workflowId, requested.version);
+  if (requested.version != null && items.length === 0)
+    return res(404, { error: 'Version not found' });
 
   const placements = items.filter((i) => i.sk.startsWith('PLACEMENT#')).map(placementToApi);
   const scopeSlugs = items.filter((i) => i.sk.startsWith('SCOPEREF#')).map((i) => i.scopeId);
@@ -472,15 +574,20 @@ const loadArtifacts = async (owner) => {
   return byId;
 };
 
-// Resolve each placement's Stage block from its owning tenant (pinned version
-// support is deferred — we read V#latest, which is what the editor shows).
+// Resolve each placement's Stage block from its owning tenant. Live workflows
+// normally read V#latest; immutable workflow snapshots freeze null pins to the
+// current stage version when the snapshot is written, so compiled ?version=N
+// views replay the stage definitions that were current at that workflow version.
 const loadStages = async (placements) => {
   const results = await Promise.all(
     placements.map((p) =>
       ddb.send(
         new GetCommand({
           TableName: blocksTable(),
-          Key: { pk: blockPk(p.stageTenant ?? SYSTEM_TENANT, 'STAGE', p.stageId), sk: LATEST },
+          Key: {
+            pk: blockPk(p.stageTenant ?? SYSTEM_TENANT, 'STAGE', p.stageId),
+            sk: p.pinnedVersion ? versionSk(Number(p.pinnedVersion)) : LATEST,
+          },
         }),
       ),
     ),
@@ -516,6 +623,7 @@ const metaToApi = (item) => ({
   basedOn: item.basedOn ?? null,
   defaultScope: item.defaultScope ?? null,
   status: item.status ?? 'DRAFT',
+  version: item.version ?? 1,
   readOnly: item.tenantId === SYSTEM_TENANT,
   createdAt: item.createdAt,
   updatedAt: item.updatedAt,
@@ -549,20 +657,21 @@ const ruleRefToApi = (item) => ({
 
 // Assemble the partition items into the composition the editor loads.
 const composeWorkflow = (owner, items) => {
-  const meta = items.find((i) => i.sk === META);
-  const phases = items
+  const liveItems = items.filter(isLiveWorkflowItem);
+  const meta = liveItems.find((i) => i.sk === META);
+  const phases = liveItems
     .filter((i) => i.sk.startsWith('PHASE#'))
     .map(phaseToApi)
     .toSorted((a, b) => a.path.localeCompare(b.path));
-  const placements = items
+  const placements = liveItems
     .filter((i) => i.sk.startsWith('PLACEMENT#'))
     .map(placementToApi)
     .toSorted((a, b) => a.order - b.order);
-  const scopeRefs = items
+  const scopeRefs = liveItems
     .filter((i) => i.sk.startsWith('SCOPEREF#'))
     .map(scopeRefToApi)
     .toSorted((a, b) => a.scopeId.localeCompare(b.scopeId));
-  const ruleRefs = items
+  const ruleRefs = liveItems
     .filter((i) => i.sk.startsWith('RULEREF#'))
     .map(ruleRefToApi)
     .toSorted((a, b) => a.layer.localeCompare(b.layer) || a.ruleId.localeCompare(b.ruleId));

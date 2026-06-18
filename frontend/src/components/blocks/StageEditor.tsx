@@ -207,7 +207,7 @@ export function StageEditor({ value, onChange, disabled }: Props) {
           <Input
             value={listToCsv(c3.promotionTargets)}
             onChange={(e) => setC3({ promotionTargets: csvToList(e.target.value) })}
-            placeholder="c2-sensor, guardrail-library, exemplar"
+            placeholder="c2-sensor, rule-library, exemplar"
             disabled={disabled}
           />
         </div>

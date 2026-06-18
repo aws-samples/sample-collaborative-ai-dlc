@@ -232,9 +232,9 @@ resource "aws_dynamodb_table" "discussion_locks" {
 }
 
 # Reusable workflow building blocks — single-table design. Unlike the other
-# tables here this holds DOMAIN data, not infra: a shared library of reusable
-# blocks (Skill, Grouping, Agent, Scope, Guardrail, PostCondition, Knowledge),
-# and the workflows that compose them.
+# tables here this holds DOMAIN data, not infra: imported SYSTEM definitions plus
+# the shared default user-owned library of reusable blocks and the workflows that
+# compose them.
 #   PK = BLOCK#<tenant>#<TYPE>#<id>   SK = V#latest | V#<n> (immutable versions)
 # GSI1 is the catalog browse index (list blocks of a type for a tenant). Large
 # bodies/scripts live in the artifacts S3 bucket under blocks/, referenced by a

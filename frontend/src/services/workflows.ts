@@ -13,6 +13,7 @@ export interface WorkflowSummary {
   basedOn: string | null;
   defaultScope: string | null;
   status: string;
+  version: number;
   readOnly: boolean;
   createdAt: string;
   updatedAt: string;
@@ -41,7 +42,7 @@ export interface PhaseNodeInput {
 export interface Placement {
   stageId: string;
   stageTenant: string;
-  pinnedVersion: string | null;
+  pinnedVersion: number | string | null;
   phasePath: string | null;
   order: number;
   scopeMembership: Record<string, 'EXECUTE' | 'SKIP'>;
@@ -50,7 +51,7 @@ export interface Placement {
 export interface PlacementInput {
   stageId: string;
   stageTenant?: string;
-  pinnedVersion?: string | null;
+  pinnedVersion?: number | string | null;
   phasePath?: string | null;
   order?: number;
   scopeMembership?: Record<string, 'EXECUTE' | 'SKIP'>;
@@ -135,7 +136,8 @@ export interface UpdateWorkflowInput {
 
 export const workflowsService = {
   list: () => api.get<{ workflows: WorkflowSummary[] }>('/workflows'),
-  get: (id: string) => api.get<Workflow>(`/workflows/${id}`),
+  get: (id: string, version?: number) =>
+    api.get<Workflow>(`/workflows/${id}${version ? `?version=${version}` : ''}`),
   create: (input: CreateWorkflowInput) => api.post<WorkflowSummary>('/workflows', input),
   update: (id: string, input: UpdateWorkflowInput) =>
     api.put<WorkflowSummary>(`/workflows/${id}`, input),
@@ -162,5 +164,6 @@ export const workflowsService = {
     api.delete(`/workflows/${id}/rules/${layer}/${ruleId}`),
 
   // The derived scope-grid + autonomy + stage-graph for this workflow.
-  compiled: (id: string) => api.get<CompiledWorkflow>(`/workflows/${id}/compiled`),
+  compiled: (id: string, version?: number) =>
+    api.get<CompiledWorkflow>(`/workflows/${id}/compiled${version ? `?version=${version}` : ''}`),
 };

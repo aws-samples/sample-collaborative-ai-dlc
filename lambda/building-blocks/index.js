@@ -4,15 +4,16 @@
 // content-addressed pointer.
 //
 // Routes (all behind the Cognito authorizer):
-//   GET    /blocks/{type}            list the catalog (tenant blocks + SYSTEM)
+//   GET    /blocks/{type}            list the catalog (user blocks + SYSTEM)
 //   POST   /blocks/{type}            create a block (V#latest + V#1)
 //   GET    /blocks/{type}/{id}       get one block's metadata (no body)
 //   GET    /blocks/{type}/{id}/body  lazily resolve the body/script from S3
 //   PUT    /blocks/{type}/{id}       new version (V#latest + immutable V#n+1)
 //   DELETE /blocks/{type}/{id}       delete the block partition
 //
-// SYSTEM-owned blocks are the shipped baseline: read-only to tenants. Writes
-// that target them are rejected — tenants clone first (a later slice).
+// SYSTEM-owned blocks are the imported baseline: read-only through the API and
+// replaceable by the seed job. User-created or forked blocks live under the
+// shared `default` owner.
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
@@ -233,9 +234,10 @@ const loadLatest = async (tenant, type, id) => {
   return Item || null;
 };
 
-// Read resolution: a block visible to the tenant is either its own or the
-// read-only SYSTEM baseline. The tenant's own copy wins (a clone shadows the
-// baseline). Used by the read paths; writes never fall back to SYSTEM.
+// Read resolution: a block visible to the user library is either its own
+// `default` copy or the read-only SYSTEM baseline. The user copy wins (a fork
+// shadows the imported baseline). Used by read paths; writes never fall back to
+// SYSTEM.
 const loadLatestResolved = async (tenant, type, id) => {
   if (tenant === SYSTEM_TENANT) return loadLatest(SYSTEM_TENANT, type, id);
   return (await loadLatest(tenant, type, id)) ?? (await loadLatest(SYSTEM_TENANT, type, id));

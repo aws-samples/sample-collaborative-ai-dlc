@@ -305,7 +305,7 @@ describe('building-blocks handler', () => {
     expect(res.status).toBe(400);
   });
 
-  it('lists tenant blocks via GSI1', async () => {
+  it('lists user-owned blocks via GSI1', async () => {
     await handler(
       event({ method: 'POST', type: 'agent', body: { id: 'arch', name: 'Architect' } }),
     );
@@ -369,9 +369,9 @@ describe('building-blocks handler', () => {
     expect([...tableStore.keys()].filter((k) => k.includes('SCOPE#tmp'))).toHaveLength(0);
   });
 
-  // Regression: a tenant reads SYSTEM baseline blocks (e.g. the seeded `mvp`
-  // scope) it does not own. The read paths must fall back to SYSTEM; writes
-  // must not. Seed a raw SYSTEM item the way the seed lambda would.
+  // Regression: the shared user library reads SYSTEM baseline blocks (e.g. the
+  // seeded `mvp` scope) it does not own. The read paths must fall back to SYSTEM;
+  // writes must not. Seed a raw SYSTEM item the way the seed lambda would.
   describe('SYSTEM baseline resolution', () => {
     const seedSystem = (type, id, attrs = {}, body) => {
       const TYPE = type.toUpperCase();
@@ -394,7 +394,7 @@ describe('building-blocks handler', () => {
       if (body) s3Store.set(item.bodyRef.s3Key, body);
     };
 
-    it('GET resolves a SYSTEM block the tenant does not own', async () => {
+    it('GET resolves a SYSTEM block the user library does not own', async () => {
       seedSystem('scope', 'mvp', { name: 'MVP' });
       const res = parse(await handler(event({ method: 'GET', type: 'scope', id: 'mvp' })));
       expect(res.status).toBe(200);
@@ -411,7 +411,7 @@ describe('building-blocks handler', () => {
       expect(res.body.body).toBe('# Scoping guide');
     });
 
-    it('a tenant clone shadows the SYSTEM baseline of the same id', async () => {
+    it('a user fork shadows the SYSTEM baseline of the same id', async () => {
       seedSystem('scope', 'mvp', { name: 'MVP (system)' });
       await handler(
         event({ method: 'POST', type: 'scope', body: { id: 'mvp', name: 'MVP (mine)' } }),

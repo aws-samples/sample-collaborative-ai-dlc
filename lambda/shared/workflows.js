@@ -8,6 +8,7 @@
 //   SK = PLACEMENT#<stageId>               a placed stage (workflow × stage join)
 //   SK = SCOPEREF#<scopeId>                a scope available in this workflow
 //   SK = RULEREF#<layer>#<id>              a rule layered into this workflow
+//   SK = V#<n>#<live-sk>                   immutable workflow version snapshot
 // One Query(PK = WF#…) loads the whole composition. Listing reuses the blocks
 // catalog index: GSI1PK = TENANT#<tenant>#WORKFLOW on the META item.
 
@@ -21,6 +22,10 @@ const WORKFLOW = 'WORKFLOW';
 const META = 'META';
 
 const workflowPk = (tenant, workflowId) => `WF#${tenant}#${workflowId}`;
+const workflowVersionPrefix = (version) => `V#${version}#`;
+const workflowVersionSk = (version, liveSk) => `${workflowVersionPrefix(version)}${liveSk}`;
+const isWorkflowVersionSk = (sk) => /^V#[1-9][0-9]*#/.test(sk);
+const liveSkFromVersionSk = (sk) => sk.replace(/^V#[1-9][0-9]*#/, '');
 // A phase is the workflow's organizing tier, defined INLINE in the tree (V2
 // treats a phase as a label, not a standalone library object). Order + nesting
 // are encoded in the path (01, 01.02), so the same shape expresses phase ▸
@@ -61,6 +66,10 @@ module.exports = {
   WORKFLOW,
   META,
   workflowPk,
+  workflowVersionPrefix,
+  workflowVersionSk,
+  isWorkflowVersionSk,
+  liveSkFromVersionSk,
   phaseSk,
   placementSk,
   scopeRefSk,

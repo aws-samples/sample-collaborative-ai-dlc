@@ -829,7 +829,8 @@ resource "aws_api_gateway_resource" "discussions_search" {
 
 # -----------------------------------------------------------------------------
 # /blocks Resources (reusable-block library)
-# Top-level (tenant-scoped, not project/sprint-scoped). Generic over block type:
+# Top-level shared library routes (SYSTEM imported baseline + default user-owned
+# catalog; not project/sprint scoped). Generic over block type:
 #   /blocks/{type}                 GET (list), POST (create)
 #   /blocks/{type}/{id}            GET, PUT, DELETE
 #   /blocks/{type}/{id}/body       GET (lazy-load the S3 body/script)
@@ -998,7 +999,8 @@ resource "aws_lambda_permission" "building_blocks" {
 
 # -----------------------------------------------------------------------------
 # /workflows Resources (composition over the block library)
-# Top-level (tenant-scoped). A workflow loads whole in one request:
+# Top-level shared library routes (SYSTEM imported baseline + default user-owned
+# catalog). A workflow loads whole in one request:
 #   /workflows                              GET (list), POST (create)
 #   /workflows/{workflowId}                 GET (full composition), PUT, DELETE
 #   /workflows/{workflowId}/groupings       PUT (replace the grouping tree)

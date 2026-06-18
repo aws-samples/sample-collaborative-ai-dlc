@@ -1365,7 +1365,7 @@ const stageBlock = (s) => ({
     sensors: STAGE_REVIEWERS[s.id] ? [...s.sensors, STAGE_REVIEWERS[s.id]] : s.sensors,
     humanValidation: s.phase === 'initialization' ? 'none' : 'required',
   },
-  c3_learning: { captures: ['human-corrections'], promotionTargets: ['guardrail-library'] },
+  c3_learning: { captures: ['human-corrections'], promotionTargets: ['rule-library'] },
 });
 
 // ─── Artifacts ───

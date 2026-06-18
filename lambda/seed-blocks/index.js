@@ -31,7 +31,9 @@
 //     (BLOCK#SYSTEM#* and WF#SYSTEM#*), clearing orphans, then writes the full
 //     current baseline fresh. Scoped to SYSTEM only — customer forks live in
 //     BLOCK#<tenant># / WF#<tenant># partitions and are never scanned or
-//     touched. Combine with dryRun to preview the clear without deleting.
+//     touched. Here "tenant" is an ownership namespace: SYSTEM is imported and
+//     reseedable; default is user-created. Combine with dryRun to preview the
+//     clear without deleting.
 //
 // Stays deployed indefinitely — OSS forks are on their own upgrade timelines.
 
@@ -52,6 +54,7 @@ import {
   phaseSk,
   placementSk,
   ruleRefSk,
+  workflowVersionSk,
   workflowGsi1Pk,
 } from '../shared/workflows.js';
 
@@ -86,9 +89,21 @@ const buildItems = (block, bodyRef, now) => {
   };
 };
 
+const workflowSnapshotItem = (item, version) => {
+  const snapshot = { ...item, sk: workflowVersionSk(version, item.sk), version };
+  delete snapshot.GSI1PK;
+  delete snapshot.GSI1SK;
+  if (snapshot.type === 'StagePlacement' && snapshot.pinnedVersion == null) {
+    // Baseline block versions are seeded as V#1 in the same run.
+    snapshot.pinnedVersion = 1;
+  }
+  return snapshot;
+};
+
 // Builds the items for a baseline workflow partition: the META header (carrying
-// the workflow catalog GSI1 keys), the inline phase tree, and the stage
-// placements. References the baseline blocks; never copies them.
+// the workflow catalog GSI1 keys), the inline phase tree, stage placements, and
+// immutable V#1 workflow snapshot rows. References the baseline blocks; never
+// copies them.
 const buildWorkflowItems = (wf, now) => {
   const pk = workflowPk(SYSTEM_TENANT, wf.id);
   const meta = {
@@ -102,6 +117,7 @@ const buildWorkflowItems = (wf, now) => {
     basedOn: null,
     defaultScope: wf.defaultScope ?? null,
     status: 'PUBLISHED',
+    version: 1,
     createdAt: now,
     updatedAt: now,
     GSI1PK: workflowGsi1Pk(SYSTEM_TENANT),
@@ -137,12 +153,15 @@ const buildWorkflowItems = (wf, now) => {
     layer: rr.layer,
     ruleTenant: rr.ruleTenant ?? SYSTEM_TENANT,
   }));
-  return { meta, children: [...phases, ...placements, ...ruleRefs] };
+  const liveItems = [meta, ...phases, ...placements, ...ruleRefs];
+  const snapshots = liveItems.map((item) => workflowSnapshotItem(item, 1));
+  return { meta, children: [...phases, ...placements, ...ruleRefs, ...snapshots] };
 };
 
 // Deletes every SYSTEM-owned partition (BLOCK#SYSTEM#* and WF#SYSTEM#*) so the
-// baseline can be rewritten fresh. Scoped by a FilterExpression on the pk
-// prefix — customer forks (BLOCK#<tenant>#, WF#<tenant>#) are never matched.
+// imported baseline can be rewritten fresh. Scoped by a FilterExpression on the
+// pk prefix — user-created/forked rows (BLOCK#default#*, WF#default#*) are never
+// matched.
 // A Scan is acceptable here: this is a rarely-run admin op on a small table,
 // not a hot path. Returns the count of deleted items.
 const clearSystemPartitions = async (dryRun) => {

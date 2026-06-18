@@ -1,8 +1,10 @@
 import { api } from './api';
 
-// The reusable building-blocks library. Blocks live in a per-tenant catalog
-// with a read-only SYSTEM baseline; each is versioned (V#latest + immutable
-// snapshots) and may carry a markdown body stored in S3 and fetched lazily.
+// The reusable building-blocks library. The backend key calls the owner a
+// tenant, but the product model is simpler: SYSTEM is the read-only imported
+// baseline, and default is the shared user-created/forked catalog. Each block is
+// versioned (V#latest + immutable snapshots) and may carry a markdown body
+// stored in S3 and fetched lazily.
 // Mirrors the backend in lambda/building-blocks. Workflows/artifacts are
 // separate concerns and not part of this set.
 

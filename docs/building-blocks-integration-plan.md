@@ -7,21 +7,23 @@
 
 ## Decisions (locked with the product owner)
 
-| Decision            | Choice                                                                    | Rationale                                                                                                                                                                                                                                                                         |
-| ------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Datastore**       | **DynamoDB single-table `aidlc-blocks` + S3**                             | Follow the spec's data model literally. A _new_ table — the project's existing DynamoDB tables are infra-only (locks/sessions/cursors); domain data lives in Neptune, but the spec is DynamoDB-first and we honor it.                                                             |
-| **Content storage** | **Reuse the existing `artifacts` S3 bucket** under a `blocks/` key prefix | Avoids a new bucket + lifecycle/policy. Bodies/scripts are content-addressed (`blocks/bodies/sha256/<hash>`).                                                                                                                                                                     |
-| **Tenancy**         | **Per-tenant global library**, single-tenant resolution for now           | No org/tenant entity exists in the app today (tenancy is structural via `Project` membership). `resolveTenant(claims)` returns a constant; `SYSTEM` is reserved for the shipped baseline. Seam to later derive tenant from a Cognito group/attribute without a data-model change. |
-| **First slice**     | **Library block CRUD only**                                               | Smallest self-contained slice; everything else builds on it. No workflow composition yet.                                                                                                                                                                                         |
-| **S3 bodies**       | **In slice 1**                                                            | The content-addressed pointer is core to the spec; small to include now.                                                                                                                                                                                                          |
-| **Seed**            | **Establish the pattern now, minimal data; full baseline later**          | Mirror the repo's existing operational-data-job convention (`migrate-tracker-fields`, `purge-neptune`): a standalone lambda invoked via `aws lambda invoke`, idempotent, dry-run support.                                                                                         |
+| Decision                | Choice                                                                    | Rationale                                                                                                                                                                                                                                                                                                                           |
+| ----------------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Datastore**           | **DynamoDB single-table `aidlc-blocks` + S3**                             | Follow the spec's data model literally. A _new_ table — the project's existing DynamoDB tables are infra-only (locks/sessions/cursors); domain data lives in Neptune, but the spec is DynamoDB-first and we honor it.                                                                                                               |
+| **Content storage**     | **Reuse the existing `artifacts` S3 bucket** under a `blocks/` key prefix | Avoids a new bucket + lifecycle/policy. Bodies/scripts are content-addressed (`blocks/bodies/sha256/<hash>`).                                                                                                                                                                                                                       |
+| **Ownership namespace** | **`SYSTEM` imported baseline + shared `default` user library**            | The partition key still carries a `tenant` segment, but this is not a team/org boundary. `SYSTEM` owns imported vendor workflows/blocks so the seed job can overwrite them and the API can keep them read-only. `default` owns all user-created/forked definitions. Project/team authorization stays in the existing project graph. |
+| **First slice**         | **Library block CRUD only**                                               | Smallest self-contained slice; everything else builds on it. No workflow composition yet.                                                                                                                                                                                                                                           |
+| **S3 bodies**           | **In slice 1**                                                            | The content-addressed pointer is core to the spec; small to include now.                                                                                                                                                                                                                                                            |
+| **Seed**                | **Establish the pattern now, minimal data; full baseline later**          | Mirror the repo's existing operational-data-job convention (`migrate-tracker-fields`, `purge-neptune`): a standalone lambda invoked via `aws lambda invoke`, idempotent, dry-run support.                                                                                                                                           |
 
 ### Note on the intent → workflow link (future slice)
 
 A workflow will later be referenced by an _intent_. That reference must **pin a
 version** (`{workflowId, version}`), not a bare id — the spec's immutable
-published versions (`V#n`) make this safe. Recorded here so we don't design it
-out; it is a slice-2+ concern.
+published versions (`V#n`) make this safe. Workflow composition now writes
+immutable snapshot rows (`V#<n>#META`, `V#<n>#PHASE#…`, `V#<n>#PLACEMENT#…`,
+etc.) on every mutation, so the future intent link can resolve an exact
+composition instead of chasing mutable live placements.
 
 ## Datastore conflict, resolved
 
@@ -47,8 +49,8 @@ Slice 2 shipped the workflows lambda (workflows share the blocks table via
 `WF#…` partitions; one Query loads the whole composition), the grouping-tree
 (define-your-own, nestable phases via SK paths) and skill-placement APIs, fork
 (copy grouping tree + placements), and the Workflows list + composer UI. The
-intent→workflow version-pin link is deferred to whenever the intent feature
-consumes a workflow.
+intent→workflow link itself is deferred to whenever the intent feature consumes
+a workflow, but the backend now has immutable workflow versions to pin to.
 
 Slice 3 added scope refs (`SCOPEREF#` items) and the derived views, computed on
 demand by pure functions in `lambda/shared/compile.js` and served from
@@ -150,7 +152,7 @@ block-by-block against the **AI-DLC Workflows 2.0** PDF spec. The structural
 model holds: counts match exactly (32 stages 3/7/8/7/7, 11 agents, 9 scopes, 4
 sensors, 7 rules, 56 methodology-knowledge docs), the `aidlc-v2` workflow
 compiles to a 32-node acyclic graph with zero dangling consumes and zero
-unresolved refs, and the SYSTEM-baseline + fork/clone + per-tenant override
+unresolved refs, and the SYSTEM-baseline + fork/clone + user-owned override
 design directly satisfies the PDF's extensibility contract (Principle 8:
 additive / replacement / composable variations). **A customer can read the
 default V2 definition and author their own variation today.**
@@ -244,10 +246,12 @@ OPTIONS short-circuit (mirror `lambda/discussions`). Routes:
 - `PUT  /blocks/{type}/{id}` → new `V#latest` + immutable `V#<n+1>`; re-hash body if changed
 - `DELETE /blocks/{type}/{id}` → delete partition
 
-Cross-cutting: **SYSTEM read-only guard** (reject writes to `SYSTEM` /
-non-owned), inline validation (block-type enum, kebab-case id, length caps,
-per-type required fields — no schema lib, matches the codebase), and
-`lambda/shared/tenant.js` (`resolveTenant(claims)` — constant for now).
+Cross-cutting: **SYSTEM read-only guard** (reject writes to the imported
+baseline; user edits happen in `default`), inline validation (block-type enum,
+kebab-case id, length caps, per-type required fields — no schema lib, matches
+the codebase), and `lambda/shared/tenant.js` (`resolveTenant(claims)` —
+constant by design, because the ownership split is imported vs user-created,
+not one library per team/project).
 
 ### Part 1c — Backend tests (`lambda/building-blocks/test/`)
 
@@ -286,7 +290,8 @@ Mirrors `lambda/migrate-tracker-fields`:
 - `lambda/seed-blocks/index.js`: standalone lambda (DDB/S3 only). For each
   entry: body → S3 if present; PutItem `BLOCK#SYSTEM#<TYPE>#<id>` `V#latest` +
   `V#1` with `ConditionExpression: attribute_not_exists(pk)` (idempotent).
-  `{"dryRun":true}` previews; `{}` applies. Writes to `tenantId: SYSTEM`.
+  `{"dryRun":true}` previews; `{}` applies. Writes to `tenantId: SYSTEM`,
+  which is intentionally replaceable/reseedable and never user-editable.
 - `terraform`: `module "seed_blocks_lambda"` reusing the blocks IAM role; no API
   route (operator-invoked); output `seed_blocks_lambda_name`.
 - Tests: idempotency (second run no-ops) + correct key placement.

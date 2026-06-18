@@ -83,7 +83,7 @@ const installFakes = () => {
 
 const claims = { sub: 'user-1', email: 'user@example.com' };
 
-const event = ({ method, workflowId, stageId, scopeId, layer, ruleId, body, path }) => {
+const event = ({ method, workflowId, stageId, scopeId, layer, ruleId, body, path, query }) => {
   let resource = '/workflows';
   const pathParameters = {};
   if (workflowId) {
@@ -113,6 +113,7 @@ const event = ({ method, workflowId, stageId, scopeId, layer, ruleId, body, path
     resource,
     pathParameters,
     body: body === undefined ? null : JSON.stringify(body),
+    queryStringParameters: query ?? {},
     requestContext: { authorizer: { claims } },
     headers: {},
   };
@@ -168,6 +169,114 @@ describe('workflows handler', () => {
     expect(res.status).toBe(200);
     expect(res.body.phases).toEqual([]);
     expect(res.body.placements).toEqual([]);
+    expect(res.body.version).toBe(1);
+  });
+
+  it('writes immutable workflow snapshots and serves pinned versions', async () => {
+    store.set('BLOCK#SYSTEM#STAGE#scope-definition|V#latest', {
+      pk: 'BLOCK#SYSTEM#STAGE#scope-definition',
+      sk: 'V#latest',
+      tenantId: 'SYSTEM',
+      blockType: 'STAGE',
+      blockId: 'scope-definition',
+      version: 7,
+      c1_definition: { inputs: [], outputs: [], intermediates: [], requires: [] },
+      c2_verification: { sensors: [{ mode: 'deterministic' }], humanValidation: 'none' },
+    });
+    store.set('BLOCK#SYSTEM#STAGE#scope-definition|V#7', {
+      pk: 'BLOCK#SYSTEM#STAGE#scope-definition',
+      sk: 'V#7',
+      tenantId: 'SYSTEM',
+      blockType: 'STAGE',
+      blockId: 'scope-definition',
+      version: 7,
+      c1_definition: { inputs: [], outputs: [], intermediates: [], requires: [] },
+      c2_verification: { sensors: [{ mode: 'deterministic' }], humanValidation: 'none' },
+    });
+
+    await createWorkflow({ id: 'wf', name: 'WF' });
+    expect(store.has('WF#default#wf|V#1#META')).toBe(true);
+
+    const v2 = parse(
+      await handler(
+        event({
+          method: 'PUT',
+          workflowId: 'wf',
+          path: 'phases',
+          body: { phases: [{ phaseId: 'ideation', path: '01', kind: 'phase' }] },
+        }),
+      ),
+    );
+    expect(v2.body.version).toBe(2);
+
+    await handler(
+      event({
+        method: 'POST',
+        workflowId: 'wf',
+        path: 'placements',
+        body: { stageId: 'scope-definition', phasePath: '01' },
+      }),
+    );
+
+    const latest = parse(await handler(event({ method: 'GET', workflowId: 'wf' })));
+    expect(latest.body.version).toBe(3);
+    expect(latest.body.placements[0].pinnedVersion).toBeNull();
+
+    const initial = parse(
+      await handler(event({ method: 'GET', workflowId: 'wf', query: { version: '1' } })),
+    );
+    expect(initial.body.version).toBe(1);
+    expect(initial.body.phases).toEqual([]);
+    expect(initial.body.placements).toEqual([]);
+
+    const afterPhase = parse(
+      await handler(event({ method: 'GET', workflowId: 'wf', query: { version: '2' } })),
+    );
+    expect(afterPhase.body.version).toBe(2);
+    expect(afterPhase.body.phases.map((p) => p.phaseId)).toEqual(['ideation']);
+    expect(afterPhase.body.placements).toEqual([]);
+
+    const afterPlacement = parse(
+      await handler(event({ method: 'GET', workflowId: 'wf', query: { version: '3' } })),
+    );
+    expect(afterPlacement.body.version).toBe(3);
+    expect(afterPlacement.body.placements).toHaveLength(1);
+    expect(afterPlacement.body.placements[0].pinnedVersion).toBe(7);
+
+    store.set('BLOCK#SYSTEM#STAGE#scope-definition|V#latest', {
+      pk: 'BLOCK#SYSTEM#STAGE#scope-definition',
+      sk: 'V#latest',
+      tenantId: 'SYSTEM',
+      blockType: 'STAGE',
+      blockId: 'scope-definition',
+      version: 8,
+      c1_definition: { inputs: [], outputs: [], intermediates: [], requires: [] },
+      c2_verification: { sensors: [{ mode: 'llm-judged' }], humanValidation: 'none' },
+    });
+
+    const compiledPinned = parse(
+      await handler(
+        event({ method: 'GET', workflowId: 'wf', path: 'compiled', query: { version: '3' } }),
+      ),
+    );
+    expect(compiledPinned.body.autonomy.perStage['scope-definition']).toBe('self-halting');
+    const compiledLatest = parse(
+      await handler(event({ method: 'GET', workflowId: 'wf', path: 'compiled' })),
+    );
+    expect(compiledLatest.body.autonomy.perStage['scope-definition']).toBe('human-gated');
+
+    await handler(
+      event({
+        method: 'PUT',
+        workflowId: 'wf',
+        path: 'phases',
+        body: { phases: [{ phaseId: 'construction', path: '01', kind: 'phase' }] },
+      }),
+    );
+    const stillV2 = parse(
+      await handler(event({ method: 'GET', workflowId: 'wf', query: { version: '2' } })),
+    );
+    expect(stillV2.body.phases.map((p) => p.phaseId)).toEqual(['ideation']);
   });
 
   it('replaces the phase tree (ordered, nestable)', async () => {
@@ -565,8 +674,8 @@ describe('workflows handler', () => {
     expect(parse(await handler(event({ method: 'GET', workflowId: 'ghost' }))).status).toBe(404);
   });
 
-  // SYSTEM read-only resolution: seed a raw SYSTEM workflow and confirm a tenant
-  // can read it but cannot mutate it.
+  // SYSTEM read-only resolution: seed a raw SYSTEM workflow and confirm the
+  // shared user library can read it but cannot mutate it.
   describe('SYSTEM baseline', () => {
     const seedSystem = (id, name) => {
       store.set(`WF#SYSTEM#${id}|META`, {
@@ -583,7 +692,7 @@ describe('workflows handler', () => {
       });
     };
 
-    it('GET resolves a SYSTEM workflow the tenant does not own', async () => {
+    it('GET resolves a SYSTEM workflow the user library does not own', async () => {
       seedSystem('aidlc-v2', 'AI-DLC v2');
       const res = parse(await handler(event({ method: 'GET', workflowId: 'aidlc-v2' })));
       expect(res.status).toBe(200);
@@ -592,8 +701,8 @@ describe('workflows handler', () => {
 
     it('refuses to mutate a SYSTEM workflow', async () => {
       seedSystem('aidlc-v2', 'AI-DLC v2');
-      // resolveTenant returns a non-SYSTEM tenant, so PUT targets the tenant
-      // partition and 404s — the SYSTEM copy is never touched.
+      // resolveTenant returns the shared user owner, so PUT targets `default`
+      // and 404s — the SYSTEM copy is never touched.
       const res = parse(
         await handler(event({ method: 'PUT', workflowId: 'aidlc-v2', body: { name: 'hacked' } })),
       );
@@ -601,7 +710,7 @@ describe('workflows handler', () => {
       expect(store.get('WF#SYSTEM#aidlc-v2|META').name).toBe('AI-DLC v2');
     });
 
-    it('a tenant fork of a SYSTEM workflow is editable', async () => {
+    it('a user fork of a SYSTEM workflow is editable', async () => {
       seedSystem('aidlc-v2', 'AI-DLC v2');
       const fork = parse(
         await createWorkflow({ id: 'my-flow', name: 'Mine', basedOn: 'aidlc-v2' }),
