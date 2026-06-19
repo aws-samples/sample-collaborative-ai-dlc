@@ -5,7 +5,7 @@
   "scripts": {
     "test": "vitest run --project=notify",
     "test:watch": "vitest --project=notify",
-    "build": "esbuild notify.js --bundle --platform=node --target=node24 --format=esm --external:@aws-sdk/* --outfile=.build/notify.mjs",
+    "build": "esbuild notify.js --bundle --platform=node --target=node24 --format=esm --external:@aws-sdk/* --banner:js=\"import{createRequire}from'node:module';const require=createRequire(import.meta.url);\" --outfile=.build/notify.mjs",
     "lint": "oxlint .",
     "format": "oxfmt .",
     "format:check": "oxfmt --check ."

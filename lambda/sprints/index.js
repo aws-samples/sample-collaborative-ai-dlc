@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { buildResponse } from '../shared/response.js';
+import { broadcastToSprintChannel } from '../shared/ws-fanout.js';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -353,17 +354,36 @@ export const handler = async (event) => {
         }
 
         const updated = await g.V().has('Sprint', 'id', sprintId).valueMap().next();
+
+        // Server-origin reload hint: peers re-fetch the sprint and navigate
+        // from the FETCHED phase — the payload deliberately carries no
+        // phase. Replaces the client broadcast.
+        if (data.phase) {
+          await broadcastToSprintChannel(sprintId, {
+            action: 'sprint.phaseChanged',
+            sprintId,
+          });
+        }
+
         return res(200, mapSprint(updated.value));
       }
 
       case 'DELETE': {
-        // Drop sprint and all contained vertices
+        // Drop sprint and all contained vertices (incl. discussion threads
+        // and their messages — cascade delete)
         await g
           .V()
           .has('Sprint', 'id', sprintId)
           .union(
             gremlin.process.statics.out('CONTAINS'),
             gremlin.process.statics.out('HAS_REVIEW'),
+            gremlin.process.statics.out('HAS_DISCUSSION').union(
+              // Messages BEFORE their thread: drop() consumes eagerly, and
+              // out('HAS_MESSAGE') from an already-dropped Discussion
+              // yields nothing.
+              gremlin.process.statics.out('HAS_MESSAGE'),
+              gremlin.process.statics.identity(),
+            ),
             gremlin.process.statics.identity(),
           )
           .drop()

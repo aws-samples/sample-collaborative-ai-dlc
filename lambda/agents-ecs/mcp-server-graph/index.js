@@ -27,15 +27,7 @@ const {
 } = gremlin.process;
 const __ = gremlin.process.statics;
 
-const LOG_FILE = '/tmp/mcp-graph.log';
 const POLL_INTERVAL_MS = 3000;
-const _origErr = console.error.bind(console);
-console.error = (...args) => {
-  _origErr(...args);
-  try {
-    fs.appendFileSync(LOG_FILE, args.join(' ') + '\n');
-  } catch {}
-};
 
 function toNeptuneSignerCredentials(credentials, region) {
   return {
@@ -183,6 +175,8 @@ const VALID_LABELS = [
   'PullRequest',
   'PRGroup',
   'AgentRun',
+  'Discussion',
+  'DiscussionMessage',
 ];
 const VALID_EDGES = [
   'HAS_SPRINT',
@@ -200,6 +194,9 @@ const VALID_EDGES = [
   'DEPENDS_ON',
   'RELATES_TO',
   'HAS_AGENT_RUN',
+  'HAS_DISCUSSION',
+  'DISCUSSES',
+  'HAS_MESSAGE',
 ];
 
 // --- MCP Server ---
@@ -222,7 +219,9 @@ const DATA_MODEL = `# Graph Data Model
 - GeneralInfo: id, type, title, content, sprint_id, created_at
 - PullRequest: id, pr_url, pr_number, branch, base_branch, repository (owner/repo), sprint_id, created_at, stale (true|false), stale_at, pr_state (open|closed|merged)
 - PRGroup: id, title, sprint_id, created_at — groups related PRs across multiple repos into a single logical unit
-- AgentRun: id, phase (INCEPTION|CONSTRUCTION|REVIEW), agent_type, run_number, prompt, execution_id, status (running|completed|failed), started_at, completed_at, sprint_id
+- AgentRun: id, phase (INCEPTION|CONSTRUCTION|REVIEW|DISCUSSION), agent_type, run_number, prompt, execution_id, status (running|completed|failed), started_at, completed_at, sprint_id — DISCUSSION runs are in-thread assists (discussion_id, command, requested_by, requested_by_name), not pipeline phases
+- Discussion: id, title (nullable), entity_type (sprint|inception|question|requirement|userstory|task|review|generalinfo), entity_id, entity_title, sprint_id, status (open|resolved), resolved_by, resolved_by_name, resolved_at, resolution_summary, outcome_message_id, created_at, created_by, created_by_name, last_message_at — team discussion thread anchored to a sprint entity. Resolution summaries represent TEAM DECISIONS.
+- DiscussionMessage: id, content (markdown), author_id, author_name, author_type (user|agent), command, requested_by, requested_by_name, mentions (JSON array of user subs), redacted, created_at, updated_at, discussion_id, sprint_id
 
 ## Edge Types
 - Project --HAS_SPRINT--> Sprint (1..*)
@@ -243,6 +242,9 @@ const DATA_MODEL = `# Graph Data Model
 - Requirement --CARRIED_FROM--> Requirement (0..1, cross-sprint lineage)
 - GeneralInfo --CARRIED_FROM--> GeneralInfo (0..1, cross-sprint knowledge carry-forward)
 - GeneralInfo --RELATES_TO--> Requirement|UserStory|Task (0..*, general info can relate to any artifact)
+- Sprint --HAS_DISCUSSION--> Discussion (0..*, structural scoping)
+- Discussion --DISCUSSES--> Sprint|Question|Requirement|UserStory|Task|Review|GeneralInfo (1, the anchored entity)
+- Discussion --HAS_MESSAGE--> DiscussionMessage (0..*)
 `;
 
 server.resource('data-model', 'graph://data-model', { mimeType: 'text/plain' }, async () => ({
@@ -295,6 +297,11 @@ Valid labels: ${VALID_LABELS.join(', ')}.`,
           q = g.V().has('Sprint', 'id', env.sprintId).out('HAS_PR');
         } else if (label === 'PRGroup') {
           q = g.V().has('Sprint', 'id', env.sprintId).out('HAS_PR_GROUP');
+        } else if (label === 'Discussion') {
+          // Discussions hang off HAS_DISCUSSION, not CONTAINS.
+          q = g.V().has('Sprint', 'id', env.sprintId).out('HAS_DISCUSSION');
+        } else if (label === 'DiscussionMessage') {
+          q = g.V().has('Sprint', 'id', env.sprintId).out('HAS_DISCUSSION').out('HAS_MESSAGE');
         } else {
           q = g.V().has('Sprint', 'id', env.sprintId).out('CONTAINS').hasLabel(label);
         }
@@ -307,7 +314,174 @@ Valid labels: ${VALID_LABELS.join(', ')}.`,
   },
 );
 
+server.tool(
+  'post_discussion_message',
+  `Post your final reply into a team discussion thread. ONLY available for discussion-assist runs — call it EXACTLY ONCE with your complete markdown answer as the last step of the assist.
+The message is persisted to the graph and broadcast live to the team.`,
+  {
+    discussionId: z.string().describe('The discussion thread id (from your assist instructions)'),
+    content: z.string().min(1).max(10_000).describe('The final reply, as markdown'),
+  },
+  async ({ discussionId, content }) => {
+    try {
+      const jobDiscussionId = process.env.DISCUSSION_ID || '';
+      if (!jobDiscussionId) {
+        return err('post_discussion_message is only available for discussion-assist runs');
+      }
+      if (discussionId !== jobDiscussionId) {
+        return err(
+          `This assist run may only post to discussion "${jobDiscussionId}" — got "${discussionId}"`,
+        );
+      }
+      const agentCli = process.env.AGENT_CLI || 'agent';
+      const now = new Date().toISOString();
+      const message = {
+        id: `dm-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+        content,
+        authorId: `agent:${agentCli}`,
+        authorName: `${agentCli} assistant`,
+        authorType: 'agent',
+        command: process.env.DISCUSSION_COMMAND || undefined,
+        requestedBy: process.env.DISCUSSION_REQUESTED_BY || undefined,
+        requestedByName: process.env.DISCUSSION_REQUESTED_BY_NAME || undefined,
+        mentions: [],
+        createdAt: now,
+        updatedAt: now,
+        discussionId,
+        sprintId: env.sprintId || '',
+      };
+
+      return await withGraph(async (g) => {
+        const { cardinality } = gremlin.process;
+        const exists = await g.V().has('Discussion', 'id', discussionId).hasNext();
+        if (!exists) return err(`Discussion "${discussionId}" not found`);
+        await g
+          .V()
+          .has('Discussion', 'id', discussionId)
+          .as('d')
+          .addV('DiscussionMessage')
+          .property('id', message.id)
+          .property('content', message.content)
+          .property('author_id', message.authorId)
+          .property('author_name', message.authorName)
+          .property('author_type', 'agent')
+          .property('command', process.env.DISCUSSION_COMMAND || '')
+          .property('requested_by', process.env.DISCUSSION_REQUESTED_BY || '')
+          .property('requested_by_name', process.env.DISCUSSION_REQUESTED_BY_NAME || '')
+          .property('mentions', '[]')
+          .property('created_at', now)
+          .property('updated_at', now)
+          .property('discussion_id', discussionId)
+          .property('sprint_id', env.sprintId || '')
+          .as('m')
+          .addE('HAS_MESSAGE')
+          .from_('d')
+          .to('m')
+          .select('d')
+          .property(cardinality.single, 'last_message_at', now)
+          .next();
+
+        // Marker for acp-client's fallback-post guard — proves the
+        // reply landed through the tool.
+        try {
+          fs.writeFileSync(`/tmp/discussion-posted-${process.env.EXECUTION_ID || ''}`, message.id);
+        } catch {
+          /* best-effort */
+        }
+
+        // Full-payload broadcast to the sprint channel: clients that
+        // missed every stream chunk still render the durable reply.
+        await broadcastToSprintChannel({
+          type: 'discussion.message',
+          executionId: process.env.EXECUTION_ID || undefined,
+          sprintId: env.sprintId || '',
+          discussionId,
+          message,
+        });
+
+        return ok({ posted: true, messageId: message.id });
+      });
+    } catch (e) {
+      return err(e.message);
+    }
+  },
+);
+
 // ─── TRAVERSE ───
+
+server.tool(
+  'get_discussions',
+  `Get the team discussion threads of the current sprint, each with its chronological messages and (when resolved) the resolution summary. Discussions are chat threads the human team attaches to sprint entities (questions, requirements, user stories, tasks, reviews, the sprint itself, ...).
+USE THIS for team context on entities you work on — resolution summaries represent TEAM DECISIONS and open threads show unresolved positions.
+Optionally filter to the thread(s) anchored on one entity via entityId.`,
+  {
+    entityId: z
+      .string()
+      .optional()
+      .describe('Optional: only threads anchored on this entity id (e.g. a Task or Question id)'),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .default(20)
+      .describe('Max messages returned per thread (most recent first trimmed to oldest-first)'),
+  },
+  async ({ entityId, limit }) => {
+    try {
+      return await withGraph(async (g) => {
+        let q = g
+          .V()
+          .has('Sprint', 'id', env.sprintId)
+          .out('HAS_DISCUSSION')
+          .hasLabel('Discussion');
+        if (entityId) q = q.has('entity_id', entityId);
+        const rows = await q
+          .project('props', 'messages')
+          .by(__.valueMap())
+          .by(__.out('HAS_MESSAGE').valueMap().fold())
+          .toList();
+
+        const sortKey = (m) => `${m.created_at}|${m.id}`;
+        const discussions = rows.map((row) => {
+          const d = propsToObj(row.get('props'));
+          const messages = (row.get('messages') || [])
+            .map(propsToObj)
+            .sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : 1));
+          // Most recent `limit` messages, returned oldest-first. Redacted
+          // messages already carry replacement content only — the original
+          // is purged at redact time.
+          const trimmed = messages.slice(-limit).map((m) => ({
+            id: m.id,
+            content: m.content,
+            authorName: m.author_name,
+            authorType: m.author_type,
+            command: m.command || undefined,
+            redacted: m.redacted === 'true' || m.redacted === true || undefined,
+            createdAt: m.created_at,
+          }));
+          return {
+            id: d.id,
+            entityType: d.entity_type,
+            entityId: d.entity_id,
+            entityTitle: d.entity_title,
+            status: d.status,
+            resolutionSummary: d.resolution_summary || undefined,
+            outcomeMessageId: d.outcome_message_id || undefined,
+            createdByName: d.created_by_name,
+            lastMessageAt: d.last_message_at,
+            messageCount: messages.length,
+            messages: trimmed,
+          };
+        });
+        discussions.sort((a, b) => (a.lastMessageAt < b.lastMessageAt ? 1 : -1));
+        return ok(discussions);
+      });
+    } catch (e) {
+      return err(e.message);
+    }
+  },
+);
 
 server.tool(
   'get_neighbors',
@@ -354,7 +528,15 @@ dependency chain of the sprint at a glance.`,
         const vertices = await g
           .V()
           .has('Sprint', 'id', env.sprintId)
-          .union(__.out('CONTAINS'), __.out('HAS_REVIEW'), __.out('HAS_PR'), __.out('HAS_PR_GROUP'))
+          .union(
+            __.out('CONTAINS'),
+            __.out('HAS_REVIEW'),
+            __.out('HAS_PR'),
+            __.out('HAS_PR_GROUP'),
+            // Discussion threads are part of the sprint graph (linked to their
+            // anchors by DISCUSSES); individual messages are excluded — clutter.
+            __.out('HAS_DISCUSSION'),
+          )
           .project('id', 'label', 'props')
           .by('id')
           .by(T_label)
@@ -367,7 +549,13 @@ dependency chain of the sprint at a glance.`,
         const edges = await g
           .V()
           .has('Sprint', 'id', env.sprintId)
-          .union(__.out('CONTAINS'), __.out('HAS_REVIEW'), __.out('HAS_PR'), __.out('HAS_PR_GROUP'))
+          .union(
+            __.out('CONTAINS'),
+            __.out('HAS_REVIEW'),
+            __.out('HAS_PR'),
+            __.out('HAS_PR_GROUP'),
+            __.out('HAS_DISCUSSION'),
+          )
           .bothE()
           .where(__.otherV().has('id', P.within(...nodeIds)))
           .project('source', 'target', 'label')
@@ -384,7 +572,10 @@ dependency chain of the sprint at a glance.`,
         }));
         const edgeList = edges
           .filter(
-            (e) => !['CONTAINS', 'HAS_REVIEW', 'HAS_PR', 'HAS_PR_GROUP'].includes(e.get('label')),
+            (e) =>
+              !['CONTAINS', 'HAS_REVIEW', 'HAS_PR', 'HAS_PR_GROUP', 'HAS_DISCUSSION'].includes(
+                e.get('label'),
+              ),
           )
           .map((e) => ({
             source: e.get('source'),
@@ -726,8 +917,18 @@ async function broadcastEvent(type, data) {
     );
     const wsClient = new ApiGatewayManagementApiClient({ endpoint: env.websocketEndpoint });
     const payload = JSON.stringify({ type, ...data });
+    // Never target connections whose scope token has expired.
+    // Inline copy of shared/realtime-token.js#isTokenLive — the agents-ecs
+    // Docker build context cannot reach lambda/shared. Rows without tokenExp
+    // are pre-enforcement legacy rows (TTL ≤1h) — allow.
+    const nowMs = Date.now();
+    const liveItems = (conns.Items || []).filter((item) => {
+      const raw = item.tokenExp?.N;
+      const exp = Number(raw);
+      return !raw || !Number.isFinite(exp) || exp * 1000 > nowMs;
+    });
     await Promise.all(
-      (conns.Items || []).map((item) =>
+      liveItems.map((item) =>
         wsClient
           .send(
             new PostToConnectionCommand({
@@ -740,6 +941,46 @@ async function broadcastEvent(type, data) {
     );
   } catch (e) {
     console.error('Broadcast failed:', e.message);
+  }
+}
+
+// Sprint-channel variant of broadcastEvent — discussion events fan out to
+// `sprint:{sprintId}` connections (where the chat clients listen), not the
+// bare projectId channel. Same per-send token-liveness filter.
+async function broadcastToSprintChannel(payload) {
+  if (!env.sprintId) return;
+  try {
+    const ddbRaw = new DynamoDBClient({});
+    const conns = await ddbRaw.send(
+      new DDBRawQueryCommand({
+        TableName: env.connectionsTable,
+        IndexName: 'DocumentIdIndex',
+        KeyConditionExpression: 'documentId = :docId',
+        ExpressionAttributeValues: { ':docId': { S: `sprint:${env.sprintId}` } },
+      }),
+    );
+    const wsClient = new ApiGatewayManagementApiClient({ endpoint: env.websocketEndpoint });
+    const data = JSON.stringify(payload);
+    const nowMs = Date.now();
+    const liveItems = (conns.Items || []).filter((item) => {
+      const raw = item.tokenExp?.N;
+      const exp = Number(raw);
+      return !raw || !Number.isFinite(exp) || exp * 1000 > nowMs;
+    });
+    await Promise.all(
+      liveItems.map((item) =>
+        wsClient
+          .send(
+            new PostToConnectionCommand({
+              ConnectionId: item.connectionId.S,
+              Data: data,
+            }),
+          )
+          .catch(() => {}),
+      ),
+    );
+  } catch (e) {
+    console.error('Sprint-channel broadcast failed:', e.message);
   }
 }
 

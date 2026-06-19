@@ -45,11 +45,11 @@ const { buildConstructionOrchestratorPrompt } = require('./construction-orchestr
 // Driver — pluggable agent CLI abstraction
 // At startup, discoverInstalledDrivers() probes which CLI binaries are present
 // on PATH. Only installed CLIs are attempted — no env var or deploy-time config.
-// _availableClis is populated with whichever ones authenticate successfully.
+// availableClis is populated with whichever ones authenticate successfully.
 // ---------------------------------------------------------------------------
 const { getDriver, discoverInstalledDrivers } = require('./drivers');
-let _availableClis = []; // populated by main() at startup
-let _cliAuthErrors = {}; // populated by main() at startup
+let availableClis = []; // populated by main() at startup
+let cliAuthErrors = {}; // populated by main() at startup
 
 // Prevent unhandled exceptions/rejections from killing the ECS task.
 // Each pool worker is a long-lived ECS task; a crash wastes the entire container.
@@ -99,8 +99,8 @@ async function setIdle() {
         ':s': 'idle',
         ':t': Date.now(),
         ':v': env.version,
-        ':clis': _availableClis,
-        ':errs': _cliAuthErrors,
+        ':clis': availableClis,
+        ':errs': cliAuthErrors,
       },
     }),
   );
@@ -174,7 +174,7 @@ const RULES_DIR = '/opt/aidlc-rules';
 
 // Fetch Neptune property value(s) from a vertex valueMap result.
 // Neptune returns each property as an array; this helper unwraps the first element.
-function _neptuneVal(valueMap, key) {
+function neptuneVal(valueMap, key) {
   if (!valueMap) return '';
   const raw = valueMap instanceof Map ? valueMap.get(key) : valueMap[key];
   if (Array.isArray(raw)) return raw[0] ?? '';
@@ -207,7 +207,7 @@ function renderRuleFile(srcPath, destPath, rulesDirRel) {
 // `.md` extension, and verifies the resolved path stays under `rulesDir`
 // (defence in depth against future path.basename quirks). Returns null if
 // the filename is unsafe or empty.
-function _safeRulesDest(rulesDir, filename, prefix) {
+function safeRulesDest(rulesDir, filename, prefix) {
   if (!filename || typeof filename !== 'string') return null;
   const base = path.basename(filename);
   if (!base || base === '.' || base === '..') return null;
@@ -248,7 +248,7 @@ async function writeScopedRules(rulesDir, projectId, taskId) {
         .valueMap('steering_docs')
         .next();
       if (projectResult.value) {
-        const raw = _neptuneVal(projectResult.value, 'steering_docs');
+        const raw = neptuneVal(projectResult.value, 'steering_docs');
         if (raw) {
           try {
             projectDocs = JSON.parse(raw);
@@ -262,7 +262,7 @@ async function writeScopedRules(rulesDir, projectId, taskId) {
       if (taskId) {
         const taskResult = await g.V().has('Task', 'id', taskId).valueMap('steering_docs').next();
         if (taskResult.value) {
-          const raw = _neptuneVal(taskResult.value, 'steering_docs');
+          const raw = neptuneVal(taskResult.value, 'steering_docs');
           if (raw) {
             try {
               taskDocs = JSON.parse(raw);
@@ -283,7 +283,7 @@ async function writeScopedRules(rulesDir, projectId, taskId) {
     for (const doc of projectDocs) {
       if (!doc.s3Key) continue;
       const filename = doc.filename || path.basename(doc.s3Key);
-      const dest = _safeRulesDest(rulesDir, filename, 'project--');
+      const dest = safeRulesDest(rulesDir, filename, 'project--');
       if (!dest) {
         console.warn(
           `[pool-worker] Skipping project steering doc with unsafe filename: ${filename}`,
@@ -311,7 +311,7 @@ async function writeScopedRules(rulesDir, projectId, taskId) {
     for (const doc of taskDocs) {
       if (!doc.s3Key) continue;
       const filename = doc.filename || path.basename(doc.s3Key);
-      const dest = _safeRulesDest(rulesDir, filename, 'task--');
+      const dest = safeRulesDest(rulesDir, filename, 'task--');
       if (!dest) {
         console.warn(`[pool-worker] Skipping task steering doc with unsafe filename: ${filename}`);
         continue;
@@ -393,7 +393,7 @@ async function fetchSteeringFiles(phase, agentCli, projectId, taskId) {
   // Copy common rules into the rules directory (with logical-path rendering)
   const commonDir = `${RULES_DIR}/aws-aidlc-rule-details/common`;
   try {
-    for (const f of fs.readdirSync(commonDir).filter((f) => f.endsWith('.md'))) {
+    for (const f of fs.readdirSync(commonDir).filter((name) => name.endsWith('.md'))) {
       renderRuleFile(path.join(commonDir, f), path.join(rulesDir, `common-${f}`), rulesDirRel);
     }
   } catch {
@@ -404,7 +404,7 @@ async function fetchSteeringFiles(phase, agentCli, projectId, taskId) {
   const phaseDir = effectivePhase === 'review' ? 'operations' : effectivePhase;
   const phasePath = `${RULES_DIR}/aws-aidlc-rule-details/${phaseDir}`;
   try {
-    for (const f of fs.readdirSync(phasePath).filter((f) => f.endsWith('.md'))) {
+    for (const f of fs.readdirSync(phasePath).filter((name) => name.endsWith('.md'))) {
       renderRuleFile(path.join(phasePath, f), path.join(rulesDir, `${phaseDir}-${f}`), rulesDirRel);
     }
   } catch {
@@ -606,21 +606,86 @@ function cloneAndSetupBranch(job, repoUrl, targetDir) {
 // driver — e.g. ".kiro/steering" for Kiro, ".claude/rules" for Claude,
 // ".opencode/rules" for OpenCode. The agent's CLI auto-loads them; we cite
 // the directory in prompts so the agent knows where to find named rule files.
+// Appended to every non-discussion phase prompt: discussions are
+// durable, queryable collaboration context — not chat history.
+const DISCUSSIONS_NUDGE = `
+
+## TEAM DISCUSSIONS
+
+Check \`get_discussions\` for team context on the entities you work on — open threads show unresolved positions, and resolution summaries represent TEAM DECISIONS you must respect.`;
+
 function buildPrompt(job, rulesDir) {
   const phase = (job.agentType || 'inception').toLowerCase();
-  if (phase === 'inception') return buildInceptionPrompt(job, rulesDir);
-  if (phase === 'construction') return buildConstructionPrompt(job, rulesDir);
-  if (phase === 'construction-orchestrator') return buildConstructionOrchestratorPrompt(job);
-  if (phase === 'review-blind') return buildBlindReviewPrompt(job);
-  if (phase === 'review-full') return buildFullReviewPrompt(job);
-  if (phase === 'review-modify') return buildReviewModifyPrompt(job);
-  if (phase === 'bugfix') return buildBugfixPrompt(job);
-  // Default prompt for other phases
-  return (
-    `You are an AI-DLC agent running the "${phase}" phase. Your master workflow is preloaded as AGENTS.md; detailed rule files for this phase are in \`${rulesDir}/\`.\n\n` +
-    (job.description ? `PROJECT DESCRIPTION:\n${job.description}\n\n` : '') +
-    `Begin the ${phase} phase. Use the graph MCP tools to read and write all artifacts to Neptune. Do NOT create or modify markdown files as output.`
-  );
+  if (phase === 'discussion') return buildDiscussionPrompt(job);
+  let prompt;
+  if (phase === 'inception') prompt = buildInceptionPrompt(job, rulesDir);
+  else if (phase === 'construction') prompt = buildConstructionPrompt(job, rulesDir);
+  else if (phase === 'construction-orchestrator') prompt = buildConstructionOrchestratorPrompt(job);
+  else if (phase === 'review-blind') prompt = buildBlindReviewPrompt(job);
+  else if (phase === 'review-full') prompt = buildFullReviewPrompt(job);
+  else if (phase === 'review-modify') prompt = buildReviewModifyPrompt(job);
+  else if (phase === 'bugfix') prompt = buildBugfixPrompt(job);
+  else {
+    // Default prompt for other phases
+    prompt =
+      `You are an AI-DLC agent running the "${phase}" phase. Your master workflow is preloaded as AGENTS.md; detailed rule files for this phase are in \`${rulesDir}/\`.\n\n` +
+      (job.description ? `PROJECT DESCRIPTION:\n${job.description}\n\n` : '') +
+      `Begin the ${phase} phase. Use the graph MCP tools to read and write all artifacts to Neptune. Do NOT create or modify markdown files as output.`;
+  }
+  return prompt + DISCUSSIONS_NUDGE;
+}
+
+// Discussion-assist prompt. The agent SELF-SERVES context via MCP —
+// no Lambda-side prompt assembly. It must finish by calling
+// `post_discussion_message` exactly once (acp-client posts the output buffer
+// as a fallback if it forgets).
+function buildDiscussionPrompt(job) {
+  const command = (job.command || 'custom').toLowerCase();
+
+  const COMMAND_TEMPLATES = {
+    'suggest-answer': `## YOUR COMMAND: suggest-answer
+
+The discussion is anchored on an agent Question. Recommend how the team should answer it:
+1. Find the thread with id "${job.discussionId}" via \`get_discussions\` to read the conversation, then \`get_node\` on the anchored Question (label "Question", id = the thread's entityId) to read the structured question and its options.
+2. Recommend specific option selections and/or free-text answers for each sub-question.
+3. Quote the supporting arguments from the discussion (who said what) and flag any unresolved disagreement explicitly.
+4. **ADVICE ONLY**: you must NOT modify the question, its draft answer, or any artifact. The humans answer the question themselves.`,
+    summarize: `## YOUR COMMAND: summarize
+
+Summarize this discussion for the team:
+1. Decisions that were reached (and by whom).
+2. Open points and unanswered questions.
+3. The distinct positions taken, attributed by participant.
+Keep it tight — a team member should grasp the state of the thread in 30 seconds.`,
+    explain: `## YOUR COMMAND: explain
+
+Explain the entity this discussion is anchored on, in the context of the sprint:
+1. Use \`get_node\` / \`get_neighbors\` / \`get_sprint_graph\` to understand the anchored entity and how it relates to other artifacts.
+2. Explain what it is, why it exists, and what depends on it — written for a team member who just joined the discussion.`,
+    custom: `## YOUR COMMAND: custom instruction from ${job.requestedByName || 'a team member'}
+
+${job.instruction || '(no instruction provided — summarize the discussion instead)'}
+
+**GUARDRAIL**: stay scoped to this discussion and this sprint. You are advising humans — do NOT create, modify, or delete any artifact, question, or code.`,
+  };
+
+  return `You are a discussion assistant for the AI-DLC platform. A team member asked you to help inside a discussion thread.
+
+## CONTEXT (self-serve via MCP tools)
+
+- Discussion id: ${job.discussionId}
+- Requested by: ${job.requestedByName || job.requestedBy || 'a team member'}
+
+1. Call \`get_discussions\` and locate the thread with id "${job.discussionId}" — read its messages, the anchored entity (entityType/entityId/entityTitle), and any resolution summary. Resolution summaries represent TEAM DECISIONS.
+2. Use \`get_node\`, \`get_neighbors\`, and \`get_sprint_graph\` for deeper sprint context where useful.
+
+${COMMAND_TEMPLATES[command] || COMMAND_TEMPLATES.custom}
+
+## OUTPUT CONTRACT (CRITICAL)
+
+- You MUST finish by calling \`post_discussion_message\` EXACTLY ONCE with your final answer as markdown. That is how your reply reaches the team.
+- Do NOT create, modify, or delete graph artifacts, questions, or files. There is no repository in this workspace.
+- Keep the reply focused and readable in a chat thread (markdown, no preamble).`;
 }
 
 function buildInceptionPrompt(job, rulesDir) {
@@ -1228,6 +1293,65 @@ function pushBranchWithRetry(job, branch, maxRetries = 3, workDir = '/workspace'
 }
 
 // Run the ACP client for a single job
+// ---------------------------------------------------------------------------
+// Assist-lock heartbeat
+//
+// The discussions lambda acquires `assist:{discussionId}` (15 min) before
+// dispatch; the worker renews it every 60 s while the session runs —
+// conditional on the lock still carrying THIS executionId (a post-crash
+// recovery may have stolen it) — and releases it on completion/error.
+// Renewal failure is logged but never aborts the job: message append is
+// idempotent, so a stolen lock at worst allows a concurrent assist.
+// ---------------------------------------------------------------------------
+const ASSIST_LOCK_RENEW_INTERVAL_MS = 60_000;
+const ASSIST_LOCK_TTL_SECONDS = 900;
+
+function startAssistLockHeartbeat(job) {
+  if ((job.agentType || '').toLowerCase() !== 'discussion' || !job.discussionId) return null;
+  const locksTable = process.env.LOCKS_TABLE;
+  if (!locksTable) return null;
+  const lockId = `assist:${job.discussionId}`;
+
+  const renew = async () => {
+    try {
+      await ddb.send(
+        new UpdateCommand({
+          TableName: locksTable,
+          Key: { lockId },
+          UpdateExpression: 'SET expiresAt = :exp',
+          ConditionExpression: 'executionId = :eid',
+          ExpressionAttributeValues: {
+            ':exp': Math.floor(Date.now() / 1000) + ASSIST_LOCK_TTL_SECONDS,
+            ':eid': job.executionId,
+          },
+        }),
+      );
+    } catch (err) {
+      console.warn(`[pool-worker] Assist-lock renewal failed for ${lockId}: ${err.message}`);
+    }
+  };
+
+  const timer = setInterval(renew, ASSIST_LOCK_RENEW_INTERVAL_MS);
+  return {
+    stop: async () => {
+      clearInterval(timer);
+      try {
+        await ddb.send(
+          new DeleteCommand({
+            TableName: locksTable,
+            Key: { lockId },
+            ConditionExpression: 'executionId = :eid',
+            ExpressionAttributeValues: { ':eid': job.executionId },
+          }),
+        );
+        console.log(`[pool-worker] Released assist lock ${lockId}`);
+      } catch (err) {
+        console.warn(`[pool-worker] Assist-lock release skipped for ${lockId}: ${err.message}`);
+      }
+    },
+  };
+}
+
 // Returns { exitCode, pushSucceeded } — pushSucceeded is only relevant for construction phases
 function runAcpSession(job) {
   return new Promise((resolve) => {
@@ -1252,6 +1376,11 @@ function runAcpSession(job) {
       GIT_REPOS: JSON.stringify(job.gitRepos || []),
       RUN_NUMBER: String(job.runNumber || 1),
       AGENT_MODEL: job.agentModel || '',
+      // Discussion-assist context — empty for other phases.
+      DISCUSSION_ID: job.discussionId || '',
+      DISCUSSION_COMMAND: job.command || '',
+      DISCUSSION_REQUESTED_BY: job.requestedBy || '',
+      DISCUSSION_REQUESTED_BY_NAME: job.requestedByName || '',
     };
 
     console.log(
@@ -1350,28 +1479,28 @@ async function main() {
   console.log(`[pool-worker] Installed CLIs: [${installedClis.join(', ')}]`);
 
   // Attempt authentication for every installed CLI.
-  // CLIs that succeed are added to _availableClis and advertised to the pool.
-  // Failures are captured in _cliAuthErrors so the dispatch Lambda and Admin
+  // CLIs that succeed are added to availableClis and advertised to the pool.
+  // Failures are captured in cliAuthErrors so the dispatch Lambda and Admin
   // UI can show the user why a particular CLI isn't available.
   for (const cli of installedClis) {
     try {
       await getDriver(cli).authenticate(process.env);
-      _availableClis.push(cli);
+      availableClis.push(cli);
       console.log(`[pool-worker] CLI "${cli}" authenticated and available`);
     } catch (err) {
       const msg = err && err.message ? err.message : String(err);
-      _cliAuthErrors[cli] = msg;
+      cliAuthErrors[cli] = msg;
       console.warn(`[pool-worker] CLI "${cli}" not available: ${msg}`);
     }
   }
 
-  if (_availableClis.length === 0) {
+  if (availableClis.length === 0) {
     console.error('[pool-worker] No CLIs authenticated — exiting');
     process.exit(1);
   }
 
   console.log(
-    `[pool-worker] Worker ${env.workerId} ready. Available CLIs: [${_availableClis.join(', ')}]`,
+    `[pool-worker] Worker ${env.workerId} ready. Available CLIs: [${availableClis.join(', ')}]`,
   );
 
   // If the dispatcher pre-assigned a job to this worker (cold-start path where
@@ -1398,8 +1527,8 @@ async function main() {
         ExpressionAttributeValues: {
           ':t': Date.now(),
           ':v': env.version,
-          ':clis': _availableClis,
-          ':errs': _cliAuthErrors,
+          ':clis': availableClis,
+          ':errs': cliAuthErrors,
         },
       }),
     );
@@ -1441,7 +1570,15 @@ async function main() {
         );
 
         await setupWorkspace(job);
-        const { exitCode, pushSucceeded, pushResults } = await runAcpSession(job);
+        // Discussion assists hold a per-thread lock — heartbeat it while the
+        // session runs, release on completion/error.
+        const assistLock = startAssistLockHeartbeat(job);
+        let exitCode, pushSucceeded, pushResults;
+        try {
+          ({ exitCode, pushSucceeded, pushResults } = await runAcpSession(job));
+        } finally {
+          if (assistLock) await assistLock.stop();
+        }
 
         const status = exitCode === 0 ? 'completed' : 'failed';
         await saveStatus(job.executionId, job.agentType || 'inception', job.projectId, status);

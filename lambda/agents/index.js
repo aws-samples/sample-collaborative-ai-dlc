@@ -22,6 +22,7 @@ const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
 const { buildResponse } = require('./shared/response');
 const { resolveGitToken } = require('./shared/git-token');
 const { validateMcpServersJson } = require('./shared/mcp-validator');
+const { broadcastToSprintChannel } = require('./shared/ws-fanout');
 const { normalizeCliModels, parseCliModels } = require('./shared/cli-models');
 
 const ecs = new ECSClient({});
@@ -297,17 +298,21 @@ async function cleanupStaleWorkers() {
         console.log(
           `Cleaning up stale ${status} worker ${w.workerId} (last heartbeat ${now - w.lastHeartbeat}ms ago)`,
         );
-        // When cleaning up a stale busy worker with a sprint job, mark Sprint and AgentRun as failed
+        // When cleaning up a stale busy worker with a sprint job, mark Sprint and AgentRun as failed.
+        // Discussion assists never own the Sprint status — only their AgentRun is failed.
         if (status === 'busy' && w.job?.sprintId) {
+          const isDiscussionJob = (w.job.agentType || '').toLowerCase() === 'discussion';
           try {
             await withNeptune(async (g) => {
               const completedAt = new Date().toISOString();
-              await g
-                .V()
-                .has('Sprint', 'id', w.job.sprintId)
-                .property(cardinality.single, 'current_agent_status', 'failed')
-                .property(cardinality.single, 'agent_completed_at', completedAt)
-                .next();
+              if (!isDiscussionJob) {
+                await g
+                  .V()
+                  .has('Sprint', 'id', w.job.sprintId)
+                  .property(cardinality.single, 'current_agent_status', 'failed')
+                  .property(cardinality.single, 'agent_completed_at', completedAt)
+                  .next();
+              }
               if (w.job.executionId) {
                 await g
                   .V()
@@ -691,6 +696,19 @@ exports.handler = async (event) => {
       const input = JSON.parse(body || '{}');
       const executionId = `exec-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+      // Discussion assists run as a pool-worker phase with NO workspace —
+      // no git clone/branch/push, no repo validation, no git token, and most
+      // importantly NO Sprint current_* writes (assists must never hijack the
+      // sprint status shown on phase pages). The AgentRun vertex is the
+      // assist's only run-tracking record.
+      const isDiscussion = (input.phase || '').toLowerCase() === 'discussion';
+      if (isDiscussion && (!input.sprintId || !input.discussionId)) {
+        return response(400, {
+          error: 'Invalid discussion job',
+          message: 'phase=discussion requires sprintId and discussionId',
+        });
+      }
+
       let gitRepo = '',
         description = input.description || '',
         sprintPhase = '',
@@ -773,9 +791,14 @@ exports.handler = async (event) => {
         }
       }
 
-      // Look up user's GitHub token from git connections table
+      // Look up user's GitHub token from git connections table.
+      // Discussion assists have no repository — skip the git plumbing entirely.
       let gitToken = '';
-      if (userId && process.env.GIT_CONNECTIONS_TABLE) {
+      if (isDiscussion) {
+        gitRepo = '';
+        gitRepos = [];
+      }
+      if (!isDiscussion && userId && process.env.GIT_CONNECTIONS_TABLE) {
         try {
           const { Item } = await ddb.send(
             new GetCommand({
@@ -852,6 +875,12 @@ exports.handler = async (event) => {
         changeRequest: input.changeRequest || '',
         agentCli: projectAgentCli,
         agentModel: resolvedModel.model,
+        // Discussion-assist job fields — empty for other phases.
+        discussionId: input.discussionId || '',
+        command: input.command || '',
+        instruction: input.instruction || '',
+        requestedBy: input.requestedBy || userId || '',
+        requestedByName: input.requestedByName || '',
       };
 
       // Cleanup stale workers before looking for idle ones
@@ -948,7 +977,32 @@ exports.handler = async (event) => {
           }
 
           // Store execution info on Sprint node (NEW: replaces Project storage)
-          if (input.sprintId) {
+          if (isDiscussion) {
+            // Discussion assist: AgentRun only, keyed run-{executionId} —
+            // per-sprint {n} counters race across concurrent assists in
+            // different threads (locks are per discussion, not per sprint).
+            // NEVER touch Sprint current_* properties.
+            await g
+              .addV('AgentRun')
+              .property('id', `run-${executionId}`)
+              .property('phase', 'DISCUSSION')
+              .property('agent_type', 'discussion')
+              .property('run_number', 1)
+              .property('execution_id', executionId)
+              .property('status', 'running')
+              .property('started_at', new Date().toISOString())
+              .property('sprint_id', input.sprintId)
+              .property('discussion_id', input.discussionId)
+              .property('command', input.command || '')
+              .property('requested_by', input.requestedBy || userId || '')
+              .property('requested_by_name', input.requestedByName || '')
+              .as('run')
+              .V()
+              .has('Sprint', 'id', input.sprintId)
+              .addE('HAS_AGENT_RUN')
+              .to('run')
+              .next();
+          } else if (input.sprintId) {
             const updateQuery = g
               .V()
               .has('Sprint', 'id', input.sprintId)
@@ -1317,6 +1371,17 @@ exports.handler = async (event) => {
           }),
         );
       }
+
+      // Server-origin reload hint: peers re-fetch the answered question.
+      // Replaces the client broadcast.
+      if (question.Item.sprintId) {
+        await broadcastToSprintChannel(question.Item.sprintId, {
+          action: 'question.answered',
+          sprintId: question.Item.sprintId,
+          questionId,
+        });
+      }
+
       return response(200, { success: true });
     }
 

@@ -39,17 +39,27 @@ export const handler = async (event) => {
     }
     const { sprintId } = event.pathParameters || {};
 
-    // Get all vertices contained in this sprint (CONTAINS + HAS_REVIEW + HAS_PR + HAS_AGENT_RUN)
+    // Get all vertices contained in this sprint (CONTAINS + HAS_REVIEW + HAS_PR
+    // + HAS_AGENT_RUN + HAS_DISCUSSION). Discussion threads are shown (linked
+    // to their anchors by DISCUSSES); DiscussionMessage vertices are excluded —
+    // clutter.
     const vertices = await g
       .V()
       .has('Sprint', 'id', sprintId)
-      .union(__.out('CONTAINS'), __.out('HAS_REVIEW'), __.out('HAS_PR'), __.out('HAS_AGENT_RUN'))
+      .union(
+        __.out('CONTAINS'),
+        __.out('HAS_REVIEW'),
+        __.out('HAS_PR'),
+        __.out('HAS_AGENT_RUN'),
+        __.out('HAS_DISCUSSION'),
+      )
       .project('id', 'type', 'label', 'props')
       .by('id')
       .by(T.label)
       .by(
         __.coalesce(
           __.values('title'),
+          __.values('entity_title'),
           __.values('file_path'),
           __.values('agent_type'),
           __.values('status'),
@@ -65,7 +75,13 @@ export const handler = async (event) => {
     const edges = await g
       .V()
       .has('Sprint', 'id', sprintId)
-      .union(__.out('CONTAINS'), __.out('HAS_REVIEW'), __.out('HAS_PR'), __.out('HAS_AGENT_RUN'))
+      .union(
+        __.out('CONTAINS'),
+        __.out('HAS_REVIEW'),
+        __.out('HAS_PR'),
+        __.out('HAS_AGENT_RUN'),
+        __.out('HAS_DISCUSSION'),
+      )
       .bothE()
       .where(__.otherV().has('id', P.within(...nodeIds)))
       .project('source', 'target', 'label')
@@ -91,7 +107,9 @@ export const handler = async (event) => {
           e.get('label') !== 'CONTAINS' &&
           e.get('label') !== 'HAS_REVIEW' &&
           e.get('label') !== 'HAS_PR' &&
-          e.get('label') !== 'HAS_AGENT_RUN',
+          e.get('label') !== 'HAS_AGENT_RUN' &&
+          e.get('label') !== 'HAS_DISCUSSION' &&
+          e.get('label') !== 'HAS_MESSAGE',
       )
       .map((e) => ({
         source: e.get('source'),

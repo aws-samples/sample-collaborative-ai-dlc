@@ -1,91 +1,21 @@
-import { DynamoDBClient, QueryCommand, ScanCommand } from '@aws-sdk/client-dynamodb';
-import {
-  ApiGatewayManagementApiClient,
-  PostToConnectionCommand,
-} from '@aws-sdk/client-apigatewaymanagementapi';
-
-const dynamodb = new DynamoDBClient();
-const getApiClient = () =>
-  new ApiGatewayManagementApiClient({ endpoint: process.env.WEBSOCKET_ENDPOINT });
-
+// -----------------------------------------------------------------------------
+// WebSocket default/catch-all handler — defensive no-op.
+//
+// All realtime events are SERVER-ORIGIN: `question.answered` is emitted by the
+// questions lambda (PUT) and the agents lambda (answer endpoint), and
+// `sprint.phaseChanged` by the sprints lambda (phase update) — see
+// lambda/shared/ws-fanout.js. The frontend never client-broadcasts, so this
+// lambda exists ONLY to absorb the $default / sync / notification routes and
+// drop whatever a client sends. Connected clients cannot inject events.
+//
+// Earlier revisions carried a client-event allowlist plus sender-row lookup and
+// fan-out machinery for client-origin broadcast. That path was permanently off
+// (the allowlist was empty) and had no frontend callers, so it has been removed.
+// Recover it from git history if client-origin broadcast is ever revived.
+// -----------------------------------------------------------------------------
 export const handler = async (event) => {
   const connectionId = event.requestContext.connectionId;
-  const body = JSON.parse(event.body || '{}');
-  const { action, documentId } = body;
-  console.log('Message received:', JSON.stringify({ action, connectionId }));
-
-  if (action === 'notification' && body.data?.userId) {
-    await broadcastToUser(body.data.userId, body);
-  } else if (action === 'broadcast') {
-    await broadcastToAll(body, connectionId);
-  } else if (action === 'broadcastToDocument' && documentId) {
-    // Broadcast a message to all connections on the same document, excluding sender.
-    // The inner `data` payload is forwarded so receivers get the actual event type.
-    await broadcastToDocument(documentId, body.data || body, connectionId);
-  }
+  const { action } = JSON.parse(event.body || '{}');
+  console.warn(`Dropped client message "${action}" from ${connectionId}`);
   return { statusCode: 200 };
-};
-
-const broadcastToDocument = async (documentId, message, excludeConnectionId) => {
-  const connections = await dynamodb
-    .send(
-      new QueryCommand({
-        TableName: process.env.CONNECTIONS_TABLE,
-        IndexName: 'DocumentIdIndex',
-        KeyConditionExpression: 'documentId = :docId',
-        ExpressionAttributeValues: { ':docId': { S: documentId } },
-      }),
-    )
-    .catch((e) => {
-      console.error('Query error:', e);
-      return { Items: [] };
-    });
-  await broadcast(connections.Items || [], message, excludeConnectionId);
-};
-
-const broadcastToUser = async (userId, message) => {
-  const connections = await dynamodb
-    .send(
-      new QueryCommand({
-        TableName: process.env.CONNECTIONS_TABLE,
-        IndexName: 'UserIdIndex',
-        KeyConditionExpression: 'userId = :uid',
-        ExpressionAttributeValues: { ':uid': { S: userId } },
-      }),
-    )
-    .catch((e) => {
-      console.error('Query error:', e);
-      return { Items: [] };
-    });
-  await broadcast(connections.Items || [], message);
-};
-
-const broadcastToAll = async (message, excludeConnectionId) => {
-  const connections = await dynamodb
-    .send(
-      new ScanCommand({
-        TableName: process.env.CONNECTIONS_TABLE,
-      }),
-    )
-    .catch((e) => {
-      console.error('Scan error:', e);
-      return { Items: [] };
-    });
-  await broadcast(connections.Items || [], message, excludeConnectionId);
-};
-
-const broadcast = async (items, message, excludeConnectionId) => {
-  const api = getApiClient();
-  const payload = JSON.stringify(message);
-  await Promise.all(
-    items.map(async (item) => {
-      const connId = item.connectionId.S;
-      if (connId === excludeConnectionId) return;
-      try {
-        await api.send(new PostToConnectionCommand({ ConnectionId: connId, Data: payload }));
-      } catch (e) {
-        if (e.statusCode !== 410) console.log('Send error to', connId, ':', e.message);
-      }
-    }),
-  );
 };

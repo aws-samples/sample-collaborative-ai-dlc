@@ -232,6 +232,11 @@ const env = {
   websocketEndpoint: process.env.WEBSOCKET_ENDPOINT,
   neptuneEndpoint: process.env.NEPTUNE_ENDPOINT,
   region: process.env.AWS_REGION || 'us-east-1',
+  // Discussion-assist job fields — empty for other phases.
+  discussionId: process.env.DISCUSSION_ID || '',
+  discussionCommand: process.env.DISCUSSION_COMMAND || '',
+  discussionRequestedBy: process.env.DISCUSSION_REQUESTED_BY || '',
+  discussionRequestedByName: process.env.DISCUSSION_REQUESTED_BY_NAME || '',
 };
 
 function toNeptuneSignerCredentials(credentials, region) {
@@ -377,10 +382,25 @@ const broadcastWsClient = env.websocketEndpoint
   ? new ApiGatewayManagementApiClient({ endpoint: env.websocketEndpoint })
   : null;
 
-// Cache connections to avoid querying DynamoDB on every broadcast
+// Cache connections to avoid querying DynamoDB on every broadcast.
+// IMPORTANT: the cache stores
+// `{connectionId, tokenExp}` pairs — NOT bare IDs — and the
+// `tokenExp > now` liveness filter is applied PER SEND in broadcastEvent,
+// never at cache-fill time. Otherwise a cached list would keep an expired
+// connection targetable for up to the cache TTL.
 let cachedConnections = null;
 let connectionsCacheTime = 0;
 const CONNECTIONS_CACHE_TTL = 10000; // 10 seconds
+
+// Inline copy of shared/realtime-token.js#isTokenLive — the agents-ecs
+// Docker build context cannot reach lambda/shared. Rows without tokenExp
+// are pre-enforcement legacy rows (TTL ≤1h) — allow.
+function isTokenLive(tokenExp, nowMs = Date.now()) {
+  if (tokenExp === undefined || tokenExp === null || tokenExp === '') return true;
+  const exp = Number(tokenExp);
+  if (!Number.isFinite(exp)) return true;
+  return exp * 1000 > nowMs;
+}
 
 async function getConnections() {
   const now = Date.now();
@@ -398,7 +418,10 @@ async function getConnections() {
         ExpressionAttributeValues: { ':docId': { S: documentId } },
       }),
     );
-    cachedConnections = (result.Items || []).map((item) => item.connectionId.S);
+    cachedConnections = (result.Items || []).map((item) => ({
+      connectionId: item.connectionId.S,
+      tokenExp: item.tokenExp?.N,
+    }));
     connectionsCacheTime = now;
     return cachedConnections;
   } catch (err) {
@@ -416,17 +439,22 @@ function broadcastEvent(type, data) {
   // Chain onto the queue so broadcasts are serialized
   broadcastQueue = broadcastQueue.then(async () => {
     try {
-      const connectionIds = await getConnections();
-      if (connectionIds.length === 0) return;
+      const connections = await getConnections();
+      // Liveness filter applied per send — a connection whose token expires
+      // mid-cache-window must receive nothing.
+      const liveIds = connections.filter((c) => isTokenLive(c.tokenExp)).map((c) => c.connectionId);
+      if (liveIds.length === 0) return;
+      // executionId rides on EVERY event so clients can correlate streams —
+      // agentTaskId is empty for discussion jobs.
       const payload = JSON.stringify({
         type,
+        agentTaskId: env.agentTaskId || undefined,
         executionId: env.executionId,
         agentType: env.agentType,
-        agentTaskId: env.agentTaskId || undefined,
         ...data,
       });
       await Promise.all(
-        connectionIds.map((connId) =>
+        liveIds.map((connId) =>
           broadcastWsClient
             .send(
               new PostToConnectionCommand({
@@ -493,6 +521,79 @@ function flushChunksSync() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Discussion-assist fallback post
+//
+// The discussion prompt instructs the agent to finish by calling the
+// `post_discussion_message` MCP tool exactly once; the MCP server drops a
+// marker file when it does. If the session ends WITHOUT the tool having been
+// called, the accumulated output buffer is posted as the reply — the reply
+// can never be silently lost.
+// ---------------------------------------------------------------------------
+const discussionPostMarkerPath = () => `/tmp/discussion-posted-${env.executionId}`;
+
+async function fallbackPostDiscussionReply() {
+  if (env.agentType !== 'discussion' || !env.discussionId) return;
+  if (fs.existsSync(discussionPostMarkerPath())) return;
+  const content = (fullOutputBuffer || '').trim().slice(0, 10_000);
+  if (!content) return;
+  console.log('[acp] post_discussion_message was not called — posting fallback reply');
+  const now = new Date().toISOString();
+  const message = {
+    id: `dm-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+    content,
+    authorId: `agent:${AGENT_CLI}`,
+    authorName: `${AGENT_CLI} assistant`,
+    authorType: 'agent',
+    command: env.discussionCommand || undefined,
+    requestedBy: env.discussionRequestedBy || undefined,
+    requestedByName: env.discussionRequestedByName || undefined,
+    mentions: [],
+    createdAt: now,
+    updatedAt: now,
+    discussionId: env.discussionId,
+    sprintId: env.sprintId,
+  };
+  try {
+    await withNeptune(async (g) => {
+      const { cardinality } = gremlin.process;
+      await g
+        .V()
+        .has('Discussion', 'id', env.discussionId)
+        .as('d')
+        .addV('DiscussionMessage')
+        .property('id', message.id)
+        .property('content', message.content)
+        .property('author_id', message.authorId)
+        .property('author_name', message.authorName)
+        .property('author_type', 'agent')
+        .property('command', env.discussionCommand || '')
+        .property('requested_by', env.discussionRequestedBy || '')
+        .property('requested_by_name', env.discussionRequestedByName || '')
+        .property('mentions', '[]')
+        .property('created_at', now)
+        .property('updated_at', now)
+        .property('discussion_id', env.discussionId)
+        .property('sprint_id', env.sprintId)
+        .as('m')
+        .addE('HAS_MESSAGE')
+        .from_('d')
+        .to('m')
+        .select('d')
+        .property(cardinality.single, 'last_message_at', now)
+        .next();
+    });
+    broadcastEvent('discussion.message', {
+      sprintId: env.sprintId,
+      discussionId: env.discussionId,
+      message,
+    });
+    await broadcastQueue;
+  } catch (err) {
+    console.error('[acp] Fallback discussion post failed:', err.message);
+  }
+}
+
 async function saveStatus(status) {
   if (!env.agentOutputsTable) return;
   if (statusSaved) {
@@ -524,8 +625,10 @@ async function saveStatus(status) {
     return;
   }
 
-  // Update Sprint vertex with completion status
-  if (env.sprintId) {
+  // Update Sprint vertex with completion status — NEVER for discussion
+  // assists, which must not hijack the sprint status shown on phase pages.
+  // Their AgentRun is updated by the pool-worker.
+  if (env.sprintId && env.agentType !== 'discussion') {
     try {
       await withNeptune(async (g) => {
         const { cardinality } = gremlin.process;
@@ -893,6 +996,13 @@ async function runAcpMode() {
     { name: 'GIT_TOKEN', value: process.env.GIT_TOKEN || '' },
     { name: 'GIT_REPO', value: process.env.GIT_REPO || '' },
     { name: 'GIT_REPOS', value: process.env.GIT_REPOS || '[]' },
+    // Discussion-assist context — lets post_discussion_message stamp
+    // author/command/requested-by audit fields. Empty for other phases.
+    { name: 'AGENT_CLI', value: AGENT_CLI },
+    { name: 'DISCUSSION_ID', value: env.discussionId },
+    { name: 'DISCUSSION_COMMAND', value: env.discussionCommand },
+    { name: 'DISCUSSION_REQUESTED_BY', value: env.discussionRequestedBy },
+    { name: 'DISCUSSION_REQUESTED_BY_NAME', value: env.discussionRequestedByName },
   ];
   // Forward ECS task role credential env vars so the MCP server can call AWS APIs.
   // These are set automatically by ECS when a task role is attached; without them
@@ -992,6 +1102,8 @@ async function runAcpMode() {
     console.log('[acp] Prompt completed');
     // Flush any buffered text chunks before saving/broadcasting completion
     flushChunksSync();
+    // Discussion assists: guarantee the reply landed in the thread.
+    await fallbackPostDiscussionReply();
     await saveStatus('completed');
     // Wait for any pending broadcasts to drain before sending completion
     await broadcastQueue;

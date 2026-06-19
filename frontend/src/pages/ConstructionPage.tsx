@@ -265,11 +265,8 @@ export default function ConstructionPage() {
     setApprovingPhase(true);
     try {
       await sprintsService.update(projectId, sprintId, { phase: 'REVIEW' });
-      realtimeService.send('broadcastToDocument', {
-        documentId: `sprint:${sprintId}`,
-        action: 'sprint.phaseChanged',
-        data: { phase: 'REVIEW', sprintId },
-      });
+      // sprint.phaseChanged is a server-origin event emitted by the sprints
+      // lambda on the phase update — clients never broadcast it.
       timelineEventsService
         .create(sprintId, { type: 'phase_changed', title: 'Moved to Review phase', userName })
         .catch(() => {});

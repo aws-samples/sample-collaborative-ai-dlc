@@ -6,6 +6,7 @@ import { CollaborativeTextarea } from './CollaborativeTextarea';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { Loader2 } from 'lucide-react';
+import { DiscussButton } from '@/components/discussion';
 import type { Question, StructuredQuestion, StructuredAnswer } from '../services/questions';
 
 interface Props {
@@ -82,7 +83,14 @@ export default function QuestionEditor({
 
   return (
     <div className="rounded-lg border border-agent-waiting/40 bg-agent-waiting/5 p-3">
-      <p className="text-xs text-muted-foreground mb-1">{question.agent} agent</p>
+      <div className="flex items-center justify-between mb-1">
+        <p className="text-xs text-muted-foreground">{question.agent} agent</p>
+        <DiscussButton
+          entityType="question"
+          entityId={question.id}
+          entityTitle={question.questions[0]?.text || `${question.agent} agent question`}
+        />
+      </div>
 
       {remoteCount > 0 && (
         <div className="flex items-center gap-1 mb-3">

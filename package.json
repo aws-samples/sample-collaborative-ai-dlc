@@ -2,6 +2,7 @@
   "name": "sample-collaborative-ai-dlc",
   "private": true,
   "workspaces": [
+    "lambda/discussions",
     "lambda/get-agent-output",
     "lambda/github",
     "lambda/migrate-tracker-fields",
@@ -34,6 +35,7 @@
   "devDependencies": {
     "@aws-sdk/client-apigatewaymanagementapi": "^3.1060.0",
     "@aws-sdk/client-dynamodb": "^3.1060.0",
+    "@aws-sdk/client-lambda": "^3.1066.0",
     "@aws-sdk/client-secrets-manager": "^3.1060.0",
     "@aws-sdk/client-ssm": "^3.1060.0",
     "@aws-sdk/credential-providers": "^3.1060.0",

@@ -4,6 +4,7 @@ import {
   ApiGatewayManagementApiClient,
   PostToConnectionCommand,
 } from '@aws-sdk/client-apigatewaymanagementapi';
+import { isTokenLive } from '../shared/realtime-token.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const wsClient = new ApiGatewayManagementApiClient({ endpoint: process.env.WEBSOCKET_ENDPOINT });
@@ -31,14 +32,17 @@ export const handler = async (event) => {
     );
 
     await Promise.allSettled(
-      (connections.Items ?? []).map((item) =>
-        wsClient.send(
-          new PostToConnectionCommand({
-            ConnectionId: item.connectionId,
-            Data: message,
-          }),
+      (connections.Items ?? [])
+        // Never target connections whose scope token has expired.
+        .filter((item) => isTokenLive(item.tokenExp))
+        .map((item) =>
+          wsClient.send(
+            new PostToConnectionCommand({
+              ConnectionId: item.connectionId,
+              Data: message,
+            }),
+          ),
         ),
-      ),
     );
   }
 

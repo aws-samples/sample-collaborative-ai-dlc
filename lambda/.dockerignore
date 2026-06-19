@@ -9,3 +9,12 @@ test
 **/test
 *.test.js
 .dockerignore
+# Lambda packaging outputs — written DURING terraform apply by the
+# terraform-aws-modules/lambda build commands. Tarring them while they are
+# rewritten corrupts the docker build context (archive/tar: invalid tar
+# header) and stalls parallel image builds. The agents image copies only
+# agents-ecs/** and shared/mcp-validator.js — never .build artifacts.
+.build
+**/.build
+builds
+**/builds

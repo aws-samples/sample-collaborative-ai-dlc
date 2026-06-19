@@ -23,6 +23,7 @@ nav = [
     "using-the-platform/organizations-and-projects.md",
     "using-the-platform/writing-specs.md",
     "using-the-platform/real-time-collaboration.md",
+    "using-the-platform/discussions.md",
     "using-the-platform/running-inception.md",
     "using-the-platform/running-agents.md",
     "using-the-platform/reviewing-work.md",

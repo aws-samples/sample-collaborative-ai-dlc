@@ -86,6 +86,13 @@ module "agents_docker_build" {
   source_path      = local.agents_source_path
   docker_file_path = "${local.agents_source_path}/agents-ecs/Dockerfile"
   platform         = "linux/amd64"
+  # Use the buildx "default" builder (BuildKit session) instead of the
+  # provider's legacy /build path. The legacy path streams the whole context
+  # as a single tar.gz and corrupts it on large contexts (unpigz: invalid
+  # deflate data); the BuildKit session transfers files incrementally and
+  # applies .dockerignore client-side. "default" exists on every Docker
+  # Desktop and docker-engine install.
+  builder = "default"
 
   build_args = {
     IMAGE_TAG = local.agents_image_tag
@@ -235,6 +242,14 @@ resource "aws_iam_role_policy" "agent_task" {
         Resource = compact([var.agent_pool_table_arn])
       },
       {
+        # Assist-lock heartbeat + release: the pool
+        # worker renews `assist:{discussionId}` while a discussion session
+        # runs and deletes it on completion.
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem"]
+        Resource = compact([var.discussion_locks_table_arn])
+      },
+      {
         Effect = "Allow"
         Action = ["dynamodb:Query"]
         Resource = compact([
@@ -350,6 +365,7 @@ resource "aws_ecs_task_definition" "agent" {
       { name = "QUESTIONS_TABLE", value = var.agent_questions_table_name },
       { name = "CONNECTIONS_TABLE", value = var.connections_table_name },
       { name = "WEBSOCKET_ENDPOINT", value = var.websocket_endpoint },
+      { name = "LOCKS_TABLE", value = var.discussion_locks_table_name },
       { name = "AGENTS_LAMBDA_NAME", value = var.agents_lambda_name },
       { name = "CREATE_PR_LAMBDA_NAME", value = var.create_pr_lambda_name },
       { name = "AWS_REGION", value = var.aws_region },
