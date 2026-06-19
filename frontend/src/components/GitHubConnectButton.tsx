@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { githubService } from '../services/github';
+import { githubService } from '../services/gitProvider';
 import { ApiError } from '../services/api';
 import { useTrackerProviders } from '@/hooks/useTrackerProviders';
 
@@ -74,7 +74,7 @@ export function GitHubConnectButton({ connected, onDisconnect }: Props) {
           Connect GitHub
         </button>
         <p className="text-xs text-gray-600 max-w-md">
-          GitHub Issues isn’t configured for this deployment. Ask an administrator to add OAuth
+          GitHub Issues isn't configured for this deployment. Ask an administrator to add OAuth
           credentials in <strong>Admin → Tracker OAuth Apps</strong>.
         </p>
       </div>

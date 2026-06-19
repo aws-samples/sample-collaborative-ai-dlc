@@ -1847,6 +1847,356 @@ resource "aws_lambda_permission" "github" {
 }
 
 # =============================================================================
+# GitLab OAuth Routes
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# /gitlab Resource
+# -----------------------------------------------------------------------------
+resource "aws_api_gateway_resource" "gitlab" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.api.id
+  path_part   = "gitlab"
+}
+
+resource "aws_api_gateway_resource" "gitlab_auth" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.gitlab.id
+  path_part   = "auth"
+}
+
+resource "aws_api_gateway_resource" "gitlab_callback" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.gitlab.id
+  path_part   = "callback"
+}
+
+resource "aws_api_gateway_resource" "gitlab_repos" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.gitlab.id
+  path_part   = "repos"
+}
+
+resource "aws_api_gateway_resource" "gitlab_status" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.gitlab.id
+  path_part   = "status"
+}
+
+resource "aws_api_gateway_resource" "gitlab_disconnect" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.gitlab.id
+  path_part   = "disconnect"
+}
+
+# /gitlab/projects
+resource "aws_api_gateway_resource" "gitlab_projects" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.gitlab.id
+  path_part   = "projects"
+}
+
+# /gitlab/projects/{projectId}
+resource "aws_api_gateway_resource" "gitlab_projects_id" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.gitlab_projects.id
+  path_part   = "{projectId}"
+}
+
+# /gitlab/projects/{projectId}/branches
+resource "aws_api_gateway_resource" "gitlab_projects_branches" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.gitlab_projects_id.id
+  path_part   = "branches"
+}
+
+# /gitlab/projects/{projectId}/tree
+resource "aws_api_gateway_resource" "gitlab_projects_tree" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.gitlab_projects_id.id
+  path_part   = "tree"
+}
+
+# /gitlab/projects/{projectId}/contents
+resource "aws_api_gateway_resource" "gitlab_projects_contents" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.gitlab_projects_id.id
+  path_part   = "contents"
+}
+
+# /gitlab/projects/{projectId}/merge_requests
+resource "aws_api_gateway_resource" "gitlab_projects_merge_requests" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.gitlab_projects_id.id
+  path_part   = "merge_requests"
+}
+
+# /gitlab/projects/{projectId}/merge_requests/{mrIid}
+resource "aws_api_gateway_resource" "gitlab_projects_mr_iid" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.gitlab_projects_merge_requests.id
+  path_part   = "{mrIid}"
+}
+
+# /gitlab/projects/{projectId}/merge_requests/{mrIid}/notes
+resource "aws_api_gateway_resource" "gitlab_projects_mr_notes" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.gitlab_projects_mr_iid.id
+  path_part   = "notes"
+}
+
+# -----------------------------------------------------------------------------
+# GitLab Methods
+# -----------------------------------------------------------------------------
+
+# GET /gitlab/auth (authenticated)
+resource "aws_api_gateway_method" "gitlab_auth_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.gitlab_auth.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "gitlab_auth_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.gitlab_auth.id
+  http_method             = aws_api_gateway_method.gitlab_auth_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.gitlab_lambda_invoke_arn
+}
+
+# GET /gitlab/callback (no auth - OAuth redirect)
+resource "aws_api_gateway_method" "gitlab_callback_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.gitlab_callback.id
+  http_method   = "GET"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "gitlab_callback_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.gitlab_callback.id
+  http_method             = aws_api_gateway_method.gitlab_callback_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.gitlab_lambda_invoke_arn
+}
+
+# GET /gitlab/repos (authenticated)
+resource "aws_api_gateway_method" "gitlab_repos_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.gitlab_repos.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "gitlab_repos_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.gitlab_repos.id
+  http_method             = aws_api_gateway_method.gitlab_repos_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.gitlab_lambda_invoke_arn
+}
+
+# GET /gitlab/status (authenticated)
+resource "aws_api_gateway_method" "gitlab_status_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.gitlab_status.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "gitlab_status_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.gitlab_status.id
+  http_method             = aws_api_gateway_method.gitlab_status_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.gitlab_lambda_invoke_arn
+}
+
+# DELETE /gitlab/disconnect (authenticated)
+resource "aws_api_gateway_method" "gitlab_disconnect_delete" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.gitlab_disconnect.id
+  http_method   = "DELETE"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "gitlab_disconnect_delete" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.gitlab_disconnect.id
+  http_method             = aws_api_gateway_method.gitlab_disconnect_delete.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.gitlab_lambda_invoke_arn
+}
+
+# GET /gitlab/projects/{projectId}/branches (authenticated)
+resource "aws_api_gateway_method" "gitlab_projects_branches_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.gitlab_projects_branches.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "gitlab_projects_branches_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.gitlab_projects_branches.id
+  http_method             = aws_api_gateway_method.gitlab_projects_branches_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.gitlab_lambda_invoke_arn
+}
+
+# GET /gitlab/projects/{projectId}/tree (authenticated)
+resource "aws_api_gateway_method" "gitlab_projects_tree_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.gitlab_projects_tree.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "gitlab_projects_tree_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.gitlab_projects_tree.id
+  http_method             = aws_api_gateway_method.gitlab_projects_tree_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.gitlab_lambda_invoke_arn
+}
+
+# GET /gitlab/projects/{projectId}/contents (authenticated)
+resource "aws_api_gateway_method" "gitlab_projects_contents_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.gitlab_projects_contents.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "gitlab_projects_contents_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.gitlab_projects_contents.id
+  http_method             = aws_api_gateway_method.gitlab_projects_contents_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.gitlab_lambda_invoke_arn
+}
+
+# GET /gitlab/projects/{projectId}/merge_requests/{mrIid}/notes (authenticated)
+resource "aws_api_gateway_method" "gitlab_mr_notes_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.gitlab_projects_mr_notes.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "gitlab_mr_notes_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.gitlab_projects_mr_notes.id
+  http_method             = aws_api_gateway_method.gitlab_mr_notes_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.gitlab_lambda_invoke_arn
+}
+
+# POST /gitlab/projects/{projectId}/merge_requests/{mrIid}/notes (authenticated)
+resource "aws_api_gateway_method" "gitlab_mr_notes_post" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.gitlab_projects_mr_notes.id
+  http_method   = "POST"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "gitlab_mr_notes_post" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.gitlab_projects_mr_notes.id
+  http_method             = aws_api_gateway_method.gitlab_mr_notes_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.gitlab_lambda_invoke_arn
+}
+
+# -----------------------------------------------------------------------------
+# GitLab CORS
+# -----------------------------------------------------------------------------
+module "cors_gitlab_auth" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.gitlab_auth.id
+}
+
+module "cors_gitlab_callback" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.gitlab_callback.id
+}
+
+module "cors_gitlab_repos" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.gitlab_repos.id
+}
+
+module "cors_gitlab_status" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.gitlab_status.id
+}
+
+module "cors_gitlab_disconnect" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.gitlab_disconnect.id
+}
+
+module "cors_gitlab_projects_branches" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.gitlab_projects_branches.id
+}
+
+module "cors_gitlab_projects_tree" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.gitlab_projects_tree.id
+}
+
+module "cors_gitlab_projects_contents" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.gitlab_projects_contents.id
+}
+
+module "cors_gitlab_mr_notes" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.gitlab_projects_mr_notes.id
+}
+
+# -----------------------------------------------------------------------------
+# GitLab Lambda Permission
+# -----------------------------------------------------------------------------
+resource "aws_lambda_permission" "gitlab" {
+  statement_id  = "AllowAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = var.gitlab_lambda_name
+  principal     = "apigateway.${local.dns_suffix}"
+  source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
+}
+
+# =============================================================================
 # /trackers — provider-agnostic tracker provider routes (issue #196)
 #
 # Backs the post-Phase-2 frontend. Replaces /github/repos/{o}/{r}/issues* —

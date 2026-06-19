@@ -5,110 +5,20 @@ import {
   PutCommand,
   DeleteCommand,
 } from '@aws-sdk/lib-dynamodb';
-import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
-import {
-  SSMClient,
-  PutParameterCommand,
-  DeleteParameterCommand,
-  GetParameterCommand,
-} from '@aws-sdk/client-ssm';
-import crypto from 'crypto';
+import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
+import { SSMClient, PutParameterCommand, DeleteParameterCommand } from '@aws-sdk/client-ssm';
 import { buildResponse } from '../shared/response.js';
+import {
+  getOAuthCredentials,
+  createSignedState,
+  verifySignedState,
+  resolveGitTokenFull,
+  getUserId,
+} from '../shared/git-oauth.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const secrets = new SecretsManagerClient({});
 const ssm = new SSMClient({});
-
-const GIT_TOKEN_PARAM_PATTERN = /^\/[\w-]+\/[\w-]+\/[\w-]+\/[\w-]+$/;
-
-// Inlined from shared/git-token.js — esbuild cannot bundle the CJS module
-// because it does `require('@aws-sdk/client-ssm')` which becomes a dynamic
-// require not supported in the ESM runtime. Mirrors the pattern adopted by
-// lambda/github (see PR #180).
-const resolveGitToken = async (ssmClient, item) => {
-  if (item?.parameterName) {
-    if (!GIT_TOKEN_PARAM_PATTERN.test(item.parameterName)) {
-      throw new Error('Invalid SSM parameter name format');
-    }
-    const param = await ssmClient.send(
-      new GetParameterCommand({ Name: item.parameterName, WithDecryption: true }),
-    );
-    const parsed = JSON.parse(param.Parameter.Value);
-    return { accessToken: parsed.accessToken, refreshToken: parsed.refreshToken };
-  }
-  throw new Error('No SSM parameter name set');
-};
-
-class OAuthNotConfiguredError extends Error {
-  constructor() {
-    super(
-      'GitLab OAuth is not configured on this environment. See README §4 for setup instructions.',
-    );
-    this.name = 'OAuthNotConfiguredError';
-    this.statusCode = 503;
-    this.errorCode = 'OAUTH_NOT_CONFIGURED';
-  }
-}
-
-const getOAuthCredentials = async () => {
-  let result;
-  try {
-    result = await secrets.send(
-      new GetSecretValueCommand({
-        SecretId: process.env.GITLAB_OAUTH_SECRET_NAME,
-      }),
-    );
-  } catch (e) {
-    if (e.name === 'ResourceNotFoundException') {
-      throw new OAuthNotConfiguredError();
-    }
-    throw e;
-  }
-  if (!result.SecretString) {
-    throw new OAuthNotConfiguredError();
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(result.SecretString);
-  } catch {
-    throw new OAuthNotConfiguredError();
-  }
-  const { client_id, client_secret } = parsed || {};
-  if (
-    typeof client_id !== 'string' ||
-    !client_id ||
-    typeof client_secret !== 'string' ||
-    !client_secret
-  ) {
-    throw new OAuthNotConfiguredError();
-  }
-  return { client_id, client_secret };
-};
-
-// Create HMAC-signed state parameter to prevent CSRF/forgery attacks on OAuth callback
-const createSignedState = (payload, secret) => {
-  const data = Buffer.from(JSON.stringify(payload)).toString('base64');
-  const hmac = crypto.createHmac('sha256', secret).update(data).digest('hex');
-  return `${data}.${hmac}`;
-};
-
-// Verify and decode HMAC-signed state parameter
-const verifySignedState = (state, secret) => {
-  const parts = state.split('.');
-  if (parts.length !== 2) return null;
-  const [data, signature] = parts;
-  const expectedSignature = crypto.createHmac('sha256', secret).update(data).digest('hex');
-  if (
-    !crypto.timingSafeEqual(Buffer.from(signature, 'hex'), Buffer.from(expectedSignature, 'hex'))
-  ) {
-    return null;
-  }
-  return JSON.parse(Buffer.from(data, 'base64').toString());
-};
-
-const getUserId = (event) => {
-  return event.requestContext?.authorizer?.claims?.sub;
-};
 
 const mapNote = (n) => ({
   id: n.id,
@@ -124,7 +34,7 @@ const mapNote = (n) => ({
 // Refresh an expired GitLab access token using the stored refresh token.
 // Returns the new access token and persists updated tokens in SSM + DynamoDB.
 const refreshAccessToken = async (item, credentials) => {
-  const { refreshToken } = await resolveGitToken(ssm, item);
+  const { refreshToken } = await resolveGitTokenFull(ssm, item);
   if (!refreshToken) {
     throw new Error('No refresh token available');
   }
@@ -181,7 +91,11 @@ const gitlabFetch = async (url, options, item) => {
   if (res.status === 401 && item) {
     // Attempt token refresh
     try {
-      const credentials = await getOAuthCredentials();
+      const credentials = await getOAuthCredentials(
+        secrets,
+        process.env.GITLAB_OAUTH_SECRET_NAME,
+        'GitLab',
+      );
       const newToken = await refreshAccessToken(item, credentials);
       const retryOptions = {
         ...options,
@@ -217,7 +131,11 @@ export const handler = async (event) => {
   try {
     // GET /gitlab/auth - Return OAuth URL
     if (httpMethod === 'GET' && path.endsWith('/auth')) {
-      const { client_id, client_secret } = await getOAuthCredentials();
+      const { client_id, client_secret } = await getOAuthCredentials(
+        secrets,
+        process.env.GITLAB_OAUTH_SECRET_NAME,
+        'GitLab',
+      );
       const redirectUri = process.env.GITLAB_REDIRECT_URI;
       const scope = 'api read_user';
       const state = createSignedState({ userId, ts: Date.now() }, client_secret);
@@ -232,7 +150,11 @@ export const handler = async (event) => {
       if (!code) return response(400, { error: 'Missing code parameter' });
       if (!state) return response(400, { error: 'Missing state parameter' });
 
-      const { client_id, client_secret } = await getOAuthCredentials();
+      const { client_id, client_secret } = await getOAuthCredentials(
+        secrets,
+        process.env.GITLAB_OAUTH_SECRET_NAME,
+        'GitLab',
+      );
 
       // Verify HMAC signature on state to prevent CSRF/forgery
       const statePayload = verifySignedState(decodeURIComponent(state), client_secret);
@@ -321,7 +243,7 @@ export const handler = async (event) => {
       );
 
       if (!Item) return response(400, { error: 'GitLab not connected' });
-      const { accessToken: token } = await resolveGitToken(ssm, Item);
+      const { accessToken: token } = await resolveGitTokenFull(ssm, Item);
 
       const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
       const reposRes = await gitlabFetch(
@@ -388,7 +310,7 @@ export const handler = async (event) => {
       );
 
       if (!Item) return response(400, { error: 'GitLab not connected' });
-      const { accessToken: token } = await resolveGitToken(ssm, Item);
+      const { accessToken: token } = await resolveGitTokenFull(ssm, Item);
 
       const pathMatch = path.match(/\/projects\/([^/]+)\/branches$/);
       if (!pathMatch) return response(400, { error: 'Invalid path' });
@@ -427,7 +349,7 @@ export const handler = async (event) => {
       );
 
       if (!Item) return response(400, { error: 'GitLab not connected' });
-      const { accessToken: token } = await resolveGitToken(ssm, Item);
+      const { accessToken: token } = await resolveGitTokenFull(ssm, Item);
 
       const pathMatch = path.match(/\/projects\/([^/]+)\/tree/);
       if (!pathMatch) return response(400, { error: 'Invalid path' });
@@ -474,7 +396,7 @@ export const handler = async (event) => {
       );
 
       if (!Item) return response(400, { error: 'GitLab not connected' });
-      const { accessToken: token } = await resolveGitToken(ssm, Item);
+      const { accessToken: token } = await resolveGitTokenFull(ssm, Item);
 
       const pathMatch = path.match(/\/projects\/([^/]+)\/contents/);
       if (!pathMatch) return response(400, { error: 'Invalid path' });
@@ -520,7 +442,7 @@ export const handler = async (event) => {
       );
 
       if (!Item) return response(400, { error: 'GitLab not connected' });
-      const { accessToken: token } = await resolveGitToken(ssm, Item);
+      const { accessToken: token } = await resolveGitTokenFull(ssm, Item);
 
       const mrMatch = path.match(/\/projects\/([^/]+)\/merge_requests\/(\d+)\/notes/);
       if (!mrMatch) return response(400, { error: 'Invalid path' });
@@ -591,7 +513,7 @@ export const handler = async (event) => {
       );
 
       if (!Item) return response(400, { error: 'GitLab not connected' });
-      const { accessToken: token } = await resolveGitToken(ssm, Item);
+      const { accessToken: token } = await resolveGitTokenFull(ssm, Item);
 
       const mrMatch = path.match(/\/projects\/([^/]+)\/merge_requests\/(\d+)\/notes/);
       if (!mrMatch) return response(400, { error: 'Invalid path' });

@@ -5,109 +5,20 @@ import {
   PutCommand,
   DeleteCommand,
 } from '@aws-sdk/lib-dynamodb';
-import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
-import {
-  SSMClient,
-  PutParameterCommand,
-  DeleteParameterCommand,
-  GetParameterCommand,
-} from '@aws-sdk/client-ssm';
-import crypto from 'crypto';
+import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
+import { SSMClient, PutParameterCommand, DeleteParameterCommand } from '@aws-sdk/client-ssm';
 import { buildResponse } from '../shared/response.js';
+import {
+  getOAuthCredentials,
+  createSignedState,
+  verifySignedState,
+  resolveGitTokenFull,
+  getUserId,
+} from '../shared/git-oauth.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const secrets = new SecretsManagerClient({});
 const ssm = new SSMClient({});
-
-const GIT_TOKEN_PARAM_PATTERN = /^\/[\w-]+\/[\w-]+\/[\w-]+\/[\w-]+$/;
-
-// Inlined from shared/git-token.js — esbuild cannot bundle the CJS module
-// because it does `require('@aws-sdk/client-ssm')` which becomes a dynamic
-// require not supported in the ESM runtime. Mirrors the pattern adopted by
-// lambda/github-issues (see PR #180).
-const resolveGitToken = async (ssmClient, item) => {
-  if (item?.parameterName) {
-    if (!GIT_TOKEN_PARAM_PATTERN.test(item.parameterName)) {
-      throw new Error('Invalid SSM parameter name format');
-    }
-    const param = await ssmClient.send(
-      new GetParameterCommand({ Name: item.parameterName, WithDecryption: true }),
-    );
-    return JSON.parse(param.Parameter.Value).accessToken;
-  }
-  throw new Error('No SSM parameter name set');
-};
-
-class OAuthNotConfiguredError extends Error {
-  constructor() {
-    super(
-      'GitHub OAuth is not configured on this environment. See README §4 for setup instructions.',
-    );
-    this.name = 'OAuthNotConfiguredError';
-    this.statusCode = 503;
-    this.errorCode = 'OAUTH_NOT_CONFIGURED';
-  }
-}
-
-const getOAuthCredentials = async () => {
-  let result;
-  try {
-    result = await secrets.send(
-      new GetSecretValueCommand({
-        SecretId: process.env.GITHUB_OAUTH_SECRET_NAME,
-      }),
-    );
-  } catch (e) {
-    if (e.name === 'ResourceNotFoundException') {
-      throw new OAuthNotConfiguredError();
-    }
-    throw e;
-  }
-  if (!result.SecretString) {
-    throw new OAuthNotConfiguredError();
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(result.SecretString);
-  } catch {
-    throw new OAuthNotConfiguredError();
-  }
-  const { client_id, client_secret } = parsed || {};
-  if (
-    typeof client_id !== 'string' ||
-    !client_id ||
-    typeof client_secret !== 'string' ||
-    !client_secret
-  ) {
-    throw new OAuthNotConfiguredError();
-  }
-  return { client_id, client_secret };
-};
-
-// Create HMAC-signed state parameter to prevent CSRF/forgery attacks on OAuth callback
-const createSignedState = (payload, secret) => {
-  const data = Buffer.from(JSON.stringify(payload)).toString('base64');
-  const hmac = crypto.createHmac('sha256', secret).update(data).digest('hex');
-  return `${data}.${hmac}`;
-};
-
-// Verify and decode HMAC-signed state parameter
-const verifySignedState = (state, secret) => {
-  const parts = state.split('.');
-  if (parts.length !== 2) return null;
-  const [data, signature] = parts;
-  const expectedSignature = crypto.createHmac('sha256', secret).update(data).digest('hex');
-  if (
-    !crypto.timingSafeEqual(Buffer.from(signature, 'hex'), Buffer.from(expectedSignature, 'hex'))
-  ) {
-    return null;
-  }
-  return JSON.parse(Buffer.from(data, 'base64').toString());
-};
-
-const getUserId = (event) => {
-  return event.requestContext?.authorizer?.claims?.sub;
-};
 
 export const handler = async (event) => {
   const response = buildResponse(event, { methods: 'GET,POST,DELETE,OPTIONS' });
@@ -130,7 +41,11 @@ export const handler = async (event) => {
   try {
     // GET /github/auth - Return OAuth URL
     if (httpMethod === 'GET' && path.endsWith('/auth')) {
-      const { client_id, client_secret } = await getOAuthCredentials();
+      const { client_id, client_secret } = await getOAuthCredentials(
+        secrets,
+        process.env.GITHUB_OAUTH_SECRET_NAME,
+        'GitHub',
+      );
       const redirectUri = process.env.GITHUB_REDIRECT_URI;
       const scope = 'repo read:user';
       const state = createSignedState({ userId, ts: Date.now() }, client_secret);
@@ -145,7 +60,11 @@ export const handler = async (event) => {
       if (!code) return response(400, { error: 'Missing code parameter' });
       if (!state) return response(400, { error: 'Missing state parameter' });
 
-      const { client_id, client_secret } = await getOAuthCredentials();
+      const { client_id, client_secret } = await getOAuthCredentials(
+        secrets,
+        process.env.GITHUB_OAUTH_SECRET_NAME,
+        'GitHub',
+      );
 
       // Verify HMAC signature on state to prevent CSRF/forgery
       const statePayload = verifySignedState(decodeURIComponent(state), client_secret);
@@ -226,7 +145,7 @@ export const handler = async (event) => {
       );
 
       if (!Item) return response(400, { error: 'GitHub not connected' });
-      const token = await resolveGitToken(ssm, Item);
+      const { accessToken: token } = await resolveGitTokenFull(ssm, Item);
 
       const reposRes = await fetch('https://api.github.com/user/repos?per_page=100&sort=updated', {
         headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
@@ -290,7 +209,7 @@ export const handler = async (event) => {
       );
 
       if (!Item) return response(400, { error: 'GitHub not connected' });
-      const token = await resolveGitToken(ssm, Item);
+      const { accessToken: token } = await resolveGitTokenFull(ssm, Item);
 
       const pathMatch = path.match(/\/repos\/([^/]+)\/([^/]+)\/branches$/);
       if (!pathMatch) return response(400, { error: 'Invalid path' });
@@ -329,7 +248,7 @@ export const handler = async (event) => {
       );
 
       if (!Item) return response(400, { error: 'GitHub not connected' });
-      const token = await resolveGitToken(ssm, Item);
+      const { accessToken: token } = await resolveGitTokenFull(ssm, Item);
 
       const pathMatch = path.match(/\/repos\/([^/]+)\/([^/]+)\/tree/);
       if (!pathMatch) return response(400, { error: 'Invalid path' });
@@ -372,7 +291,7 @@ export const handler = async (event) => {
       );
 
       if (!Item) return response(400, { error: 'GitHub not connected' });
-      const token = await resolveGitToken(ssm, Item);
+      const { accessToken: token } = await resolveGitTokenFull(ssm, Item);
 
       const pathMatch = path.match(/\/repos\/([^/]+)\/([^/]+)\/contents/);
       if (!pathMatch) return response(400, { error: 'Invalid path' });
@@ -418,7 +337,7 @@ export const handler = async (event) => {
       );
 
       if (!Item) return response(400, { error: 'GitHub not connected' });
-      const token = await resolveGitToken(ssm, Item);
+      const { accessToken: token } = await resolveGitTokenFull(ssm, Item);
 
       const prMatch = path.match(/\/repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)\/comments/);
       if (!prMatch) return response(400, { error: 'Invalid path' });
@@ -438,23 +357,32 @@ export const handler = async (event) => {
       const reviewComments = await reviewCommentsRes.json();
       const issueComments = await issueCommentsRes.json();
 
-      const mapComment = (c, type) => ({
-        id: c.id,
-        type,
-        body: c.body,
-        user: { login: c.user?.login, avatarUrl: c.user?.avatar_url },
-        path: c.path || null,
-        line: c.line || c.original_line || null,
-        createdAt: c.created_at,
-        updatedAt: c.updated_at,
-      });
-
       const comments = [
         ...(Array.isArray(reviewComments)
-          ? reviewComments.map((c) => mapComment(c, 'review'))
+          ? reviewComments.map((c) => ({
+              id: c.id,
+              type: 'review',
+              body: c.body,
+              user: { login: c.user?.login, avatarUrl: c.user?.avatar_url },
+              path: c.path || null,
+              line: c.line || c.original_line || null,
+              createdAt: c.created_at,
+              updatedAt: c.updated_at,
+            }))
           : []),
-        ...(Array.isArray(issueComments) ? issueComments.map((c) => mapComment(c, 'issue')) : []),
-      ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+        ...(Array.isArray(issueComments)
+          ? issueComments.map((c) => ({
+              id: c.id,
+              type: 'issue',
+              body: c.body,
+              user: { login: c.user?.login, avatarUrl: c.user?.avatar_url },
+              path: null,
+              line: null,
+              createdAt: c.created_at,
+              updatedAt: c.updated_at,
+            }))
+          : []),
+      ].toSorted((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
       return response(200, { comments });
     }
@@ -471,7 +399,7 @@ export const handler = async (event) => {
       );
 
       if (!Item) return response(400, { error: 'GitHub not connected' });
-      const token = await resolveGitToken(ssm, Item);
+      const { accessToken: token } = await resolveGitTokenFull(ssm, Item);
 
       const prMatch = path.match(/\/repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)\/comments/);
       if (!prMatch) return response(400, { error: 'Invalid path' });
