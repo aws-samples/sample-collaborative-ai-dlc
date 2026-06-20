@@ -38,6 +38,14 @@ const resolveGithubToken = async (ddb, ssm, userId) => {
     err.code = 'NOT_CONNECTED';
     throw err;
   }
+  // git-connections is keyed by userId alone; ensure the stored row is a GitHub
+  // connection so a GitLab token never gets used against the GitHub API. Legacy
+  // rows predate the `provider` field and are treated as GitHub.
+  if (Item.provider && Item.provider !== 'github') {
+    const err = new Error('GitHub not connected');
+    err.code = 'NOT_CONNECTED';
+    throw err;
+  }
   if (!Item.parameterName || !GIT_TOKEN_PARAM_PATTERN.test(Item.parameterName)) {
     const err = new Error('Invalid SSM parameter name');
     err.code = 'NOT_CONNECTED';

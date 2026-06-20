@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
+import githubProvider from '../../shared/git-providers/github.js';
 
 const loadCreatePr = async () => await import('../create-pr.js');
 
-describe('create-pr construction branch cleanup', () => {
+describe('create-pr construction branch cleanup (github provider)', () => {
   it('deletes only task branches for the branch used to create the PR', async () => {
-    const { cleanupConstructionTaskBranches } = await loadCreatePr();
     const requests = [];
     const fetchImpl = vi.fn(async (url, options = {}) => {
       requests.push({ url, options });
@@ -27,13 +27,11 @@ describe('create-pr construction branch cleanup', () => {
       return { ok: true, text: async () => '' };
     });
 
-    const result = await cleanupConstructionTaskBranches({
-      owner: 'owner',
-      repo: 'repo',
-      branch: 'ai-dlc/feature/dashboard-improvement-1780474313832',
-      ghHeaders: { Authorization: 'token token' },
-      fetchImpl,
-    });
+    const result = await githubProvider.cleanupConstructionTaskBranches(
+      { token: 'token', fetchImpl },
+      'owner/repo',
+      'ai-dlc/feature/dashboard-improvement-1780474313832',
+    );
 
     expect(result).toEqual({ deleted: 2, failed: 0, skipped: 0 });
     expect(requests.map((request) => request.url)).toEqual([
@@ -47,7 +45,6 @@ describe('create-pr construction branch cleanup', () => {
   });
 
   it('does not delete task branches that are not merged into the PR branch', async () => {
-    const { cleanupConstructionTaskBranches } = await loadCreatePr();
     const requests = [];
     const fetchImpl = vi.fn(async (url, options = {}) => {
       requests.push({ url, options });
@@ -62,13 +59,11 @@ describe('create-pr construction branch cleanup', () => {
       return { ok: true, text: async () => '' };
     });
 
-    const result = await cleanupConstructionTaskBranches({
-      owner: 'owner',
-      repo: 'repo',
-      branch: 'ai-dlc/sprint-1',
-      ghHeaders: { Authorization: 'token token' },
-      fetchImpl,
-    });
+    const result = await githubProvider.cleanupConstructionTaskBranches(
+      { token: 'token', fetchImpl },
+      'owner/repo',
+      'ai-dlc/sprint-1',
+    );
 
     expect(result).toEqual({ deleted: 0, failed: 0, skipped: 1 });
     expect(requests.some((request) => request.options.method === 'DELETE')).toBe(false);

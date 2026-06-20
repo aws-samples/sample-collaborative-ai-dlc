@@ -33,6 +33,19 @@ const JiraIcon = ({ className }: { className?: string }) => (
   </svg>
 );
 
+const GitLabIcon = ({ className }: { className?: string }) => (
+  <svg
+    role="img"
+    viewBox="0 0 24 24"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-label="GitLab"
+    className={className}
+    fill="currentColor"
+  >
+    <path d="M23.955 13.587l-1.342-4.135-2.664-8.189c-.135-.423-.73-.423-.867 0L16.418 9.45H7.582L4.919 1.263C4.783.84 4.185.84 4.05 1.264L1.386 9.45.044 13.587c-.121.375.014.789.331 1.023L12 23.054l11.625-8.443c.318-.235.453-.647.33-1.024" />
+  </svg>
+);
+
 export interface TrackerProviderMeta {
   id: string;
   // The single supported instance for now. Multi-instance providers (e.g.
@@ -99,6 +112,28 @@ export const TRACKER_PROVIDERS: Record<string, TrackerProviderMeta> = {
         'Open the Settings tab and copy the Client ID and Client Secret, then paste both above.',
       ],
       scopeNote: 'offline_access is required to issue refresh tokens — don’t skip it.',
+    },
+  },
+  'gitlab-issues': {
+    id: 'gitlab-issues',
+    instance: 'public',
+    displayName: 'GitLab Issues',
+    tabLabel: 'GitLab',
+    panelTitle: 'Start a sprint from a GitLab issue',
+    resourceLabel: 'GitLab issue',
+    callbackPath: '/gitlab/callback',
+    icon: GitLabIcon,
+    registration: {
+      url: 'https://gitlab.com/-/profile/applications',
+      label: 'GitLab User Settings → Applications',
+      steps: [
+        'Open GitLab → User Settings → Applications → Add new application.',
+        'Set the Redirect URI to the value shown below.',
+        'Grant the api and read_user scopes.',
+        'Save, then copy the Application ID (Client ID) and Secret, and paste both above.',
+      ],
+      scopeNote:
+        'GitLab issues reuse your GitLab connection — connecting GitLab also enables issues.',
     },
   },
 };

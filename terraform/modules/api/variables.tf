@@ -126,6 +126,12 @@ variable "agents_lambda_role_arn" {
   default     = ""
 }
 
+variable "gitlab_oauth_secret_name" {
+  description = "Secrets Manager secret name holding the GitLab OAuth client credentials. Used by the agents Lambda's POST /git/refresh-token to refresh expired GitLab access tokens for long-running construction jobs."
+  type        = string
+  default     = ""
+}
+
 variable "github_lambda_invoke_arn" {
   description = "Invoke ARN of the github Lambda"
   type        = string

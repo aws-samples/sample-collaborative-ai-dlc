@@ -88,20 +88,19 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
         })),
       };
       const project = await projectsService.create(input);
-      if (
-        formData.issueIntegrationEnabled &&
-        formData.gitProvider === 'github' &&
-        formData.gitRepo
-      ) {
+      if (formData.issueIntegrationEnabled && formData.gitRepo) {
+        // GitHub and GitLab issues both reuse the project's git connection.
+        const trackerProvider =
+          formData.gitProvider === 'gitlab' ? 'gitlab-issues' : 'github-issues';
         try {
           await trackersService.addToProject(project.id, {
-            provider: 'github-issues',
+            provider: trackerProvider,
             instance: 'public',
             externalProjectKey: formData.gitRepo,
             displayName: formData.gitRepo,
           });
         } catch (err) {
-          console.error('Failed to add github-issues tracker:', err);
+          console.error(`Failed to add ${trackerProvider} tracker:`, err);
         }
       }
       onCreated();
@@ -330,7 +329,7 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
                 </p>
               )}
             </div>
-            {formData.gitProvider === 'github' && (
+            {(formData.gitProvider === 'github' || formData.gitProvider === 'gitlab') && (
               <div className="mb-4">
                 <label className="flex items-start gap-2 cursor-pointer">
                   <input
@@ -343,7 +342,10 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
                     disabled={submitting}
                   />
                   <span className="text-sm text-gray-700 dark:text-gray-300">
-                    <span className="font-medium">Enable GitHub issue integration</span>
+                    <span className="font-medium">
+                      Enable {formData.gitProvider === 'gitlab' ? 'GitLab' : 'GitHub'} issue
+                      integration
+                    </span>
                     <span className="block text-xs text-gray-500 dark:text-gray-400">
                       Browse issues on the project page and start sprints from them.
                       {selectedRepos.length > 1 ? ' Applies to the primary repository only.' : ''}

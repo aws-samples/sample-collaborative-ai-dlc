@@ -322,6 +322,23 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
         Action   = ["ssm:GetParameter"]
         Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
       },
+      # Just-in-time GitLab token refresh (POST /git/refresh-token): rotate the
+      # stored access token using the refresh token + GitLab OAuth secret so
+      # long-running construction jobs don't push/MR with an expired token.
+      # PutParameter writes the rotated token back; GetSecretValue reads the
+      # GitLab OAuth client credentials. GitHub needs neither (tokens don't
+      # expire). The gitlab secret ARN is empty when GitLab OAuth isn't
+      # provisioned, so the statement is dropped via compact().
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:PutParameter"]
+        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = var.gitlab_oauth_secret_arn != "" ? [var.gitlab_oauth_secret_arn] : ["arn:${local.partition}:secretsmanager:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:secret:nonexistent-gitlab-oauth-*"]
+      },
       {
         Effect   = "Allow"
         Action   = ["ecs:RunTask"]

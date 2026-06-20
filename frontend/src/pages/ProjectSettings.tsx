@@ -328,20 +328,22 @@ export default function ProjectSettings() {
     return u.email.toLowerCase().includes(q) || u.displayName.toLowerCase().includes(q);
   });
 
-  const handleAddGithubTracker = async () => {
+  // Add the git-issues tracker matching the project's git provider
+  // (github-issues / gitlab-issues). Both reuse the project's git connection.
+  const handleAddGitTracker = async (providerId: 'github-issues' | 'gitlab-issues') => {
     if (!projectId || !project || !project.gitRepo) return;
     clearMessages();
     setTogglingTracker(true);
     try {
-      const gh = TRACKER_PROVIDERS['github-issues'];
+      const meta = TRACKER_PROVIDERS[providerId];
       await trackersService.addToProject(projectId, {
-        provider: gh.id,
-        instance: gh.instance,
+        provider: meta.id,
+        instance: meta.instance,
         externalProjectKey: project.gitRepo,
         displayName: project.gitRepo,
       });
       await loadData();
-      setSuccess('GitHub issue integration enabled.');
+      setSuccess(`${meta.displayName} integration enabled.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to enable tracker');
     } finally {
@@ -730,8 +732,8 @@ export default function ProjectSettings() {
             </Card>
 
             {/* Trackers — provider-agnostic issue trackers wired to this
-                project. Phase 2 (#196) only manages github-issues here;
-                Phase 3 adds Jira via the same surface. */}
+                project. Manages the git-issues tracker matching the project's
+                git provider (github-issues / gitlab-issues) plus Jira Cloud. */}
             <Card className="mb-6">
               <CardHeader className="pb-3">
                 <CardTitle className="text-base">Trackers</CardTitle>
@@ -791,8 +793,31 @@ export default function ProjectSettings() {
                       b.externalProjectKey === project.gitRepo,
                   ) && (
                     <div className="flex justify-end pt-2">
-                      <Button size="sm" onClick={handleAddGithubTracker} disabled={togglingTracker}>
+                      <Button
+                        size="sm"
+                        onClick={() => handleAddGitTracker('github-issues')}
+                        disabled={togglingTracker}
+                      >
                         {togglingTracker ? 'Saving…' : `Add GitHub Issues for ${project.gitRepo}`}
+                      </Button>
+                    </div>
+                  )}
+
+                {canEditProject &&
+                  project?.gitProvider === 'gitlab' &&
+                  project.gitRepo &&
+                  !(project.trackers ?? []).some(
+                    (b) =>
+                      b.provider === TRACKER_PROVIDERS['gitlab-issues'].id &&
+                      b.externalProjectKey === project.gitRepo,
+                  ) && (
+                    <div className="flex justify-end pt-2">
+                      <Button
+                        size="sm"
+                        onClick={() => handleAddGitTracker('gitlab-issues')}
+                        disabled={togglingTracker}
+                      >
+                        {togglingTracker ? 'Saving…' : `Add GitLab Issues for ${project.gitRepo}`}
                       </Button>
                     </div>
                   )}

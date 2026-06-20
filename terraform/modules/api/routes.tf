@@ -1896,49 +1896,51 @@ resource "aws_api_gateway_resource" "gitlab_projects" {
   path_part   = "projects"
 }
 
-# /gitlab/projects/{projectId}
-resource "aws_api_gateway_resource" "gitlab_projects_id" {
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.gitlab_projects.id
-  path_part   = "{projectId}"
-}
+# GitLab project paths are namespaced (group/project, often group/subgroup/
+# project). Encoded slashes (%2F) in a REST API Gateway path segment are
+# fragile — API Gateway / CloudFront may reject or normalize them. So the
+# project reference travels as a `?project=<url-encoded path>` QUERY STRING
+# (passed through verbatim by API Gateway) rather than a path segment. The
+# Lambda then URL-encodes it into the GitLab API path, which is the format
+# GitLab requires on the server-to-server hop (no API Gateway in between).
 
-# /gitlab/projects/{projectId}/branches
+# /gitlab/projects/branches  (GET ?project=)
 resource "aws_api_gateway_resource" "gitlab_projects_branches" {
   rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.gitlab_projects_id.id
+  parent_id   = aws_api_gateway_resource.gitlab_projects.id
   path_part   = "branches"
 }
 
-# /gitlab/projects/{projectId}/tree
+# /gitlab/projects/tree  (GET ?project=&branch=)
 resource "aws_api_gateway_resource" "gitlab_projects_tree" {
   rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.gitlab_projects_id.id
+  parent_id   = aws_api_gateway_resource.gitlab_projects.id
   path_part   = "tree"
 }
 
-# /gitlab/projects/{projectId}/contents
+# /gitlab/projects/contents  (GET ?project=&path=&branch=)
 resource "aws_api_gateway_resource" "gitlab_projects_contents" {
   rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.gitlab_projects_id.id
+  parent_id   = aws_api_gateway_resource.gitlab_projects.id
   path_part   = "contents"
 }
 
-# /gitlab/projects/{projectId}/merge_requests
+# /gitlab/projects/merge_requests  (mrIid is numeric, so it is slash-free and
+# safe as a path segment; the project still travels as ?project=)
 resource "aws_api_gateway_resource" "gitlab_projects_merge_requests" {
   rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.gitlab_projects_id.id
+  parent_id   = aws_api_gateway_resource.gitlab_projects.id
   path_part   = "merge_requests"
 }
 
-# /gitlab/projects/{projectId}/merge_requests/{mrIid}
+# /gitlab/projects/merge_requests/{mrIid}
 resource "aws_api_gateway_resource" "gitlab_projects_mr_iid" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.gitlab_projects_merge_requests.id
   path_part   = "{mrIid}"
 }
 
-# /gitlab/projects/{projectId}/merge_requests/{mrIid}/notes
+# /gitlab/projects/merge_requests/{mrIid}/notes
 resource "aws_api_gateway_resource" "gitlab_projects_mr_notes" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.gitlab_projects_mr_iid.id
@@ -2038,7 +2040,7 @@ resource "aws_api_gateway_integration" "gitlab_disconnect_delete" {
   uri                     = var.gitlab_lambda_invoke_arn
 }
 
-# GET /gitlab/projects/{projectId}/branches (authenticated)
+# GET /gitlab/projects/branches?project= (authenticated)
 resource "aws_api_gateway_method" "gitlab_projects_branches_get" {
   rest_api_id   = aws_api_gateway_rest_api.main.id
   resource_id   = aws_api_gateway_resource.gitlab_projects_branches.id
@@ -2056,7 +2058,7 @@ resource "aws_api_gateway_integration" "gitlab_projects_branches_get" {
   uri                     = var.gitlab_lambda_invoke_arn
 }
 
-# GET /gitlab/projects/{projectId}/tree (authenticated)
+# GET /gitlab/projects/tree?project=&branch= (authenticated)
 resource "aws_api_gateway_method" "gitlab_projects_tree_get" {
   rest_api_id   = aws_api_gateway_rest_api.main.id
   resource_id   = aws_api_gateway_resource.gitlab_projects_tree.id
@@ -2074,7 +2076,7 @@ resource "aws_api_gateway_integration" "gitlab_projects_tree_get" {
   uri                     = var.gitlab_lambda_invoke_arn
 }
 
-# GET /gitlab/projects/{projectId}/contents (authenticated)
+# GET /gitlab/projects/contents?project=&path=&branch= (authenticated)
 resource "aws_api_gateway_method" "gitlab_projects_contents_get" {
   rest_api_id   = aws_api_gateway_rest_api.main.id
   resource_id   = aws_api_gateway_resource.gitlab_projects_contents.id
@@ -2092,7 +2094,7 @@ resource "aws_api_gateway_integration" "gitlab_projects_contents_get" {
   uri                     = var.gitlab_lambda_invoke_arn
 }
 
-# GET /gitlab/projects/{projectId}/merge_requests/{mrIid}/notes (authenticated)
+# GET /gitlab/projects/merge_requests/{mrIid}/notes?project= (authenticated)
 resource "aws_api_gateway_method" "gitlab_mr_notes_get" {
   rest_api_id   = aws_api_gateway_rest_api.main.id
   resource_id   = aws_api_gateway_resource.gitlab_projects_mr_notes.id
@@ -2110,7 +2112,7 @@ resource "aws_api_gateway_integration" "gitlab_mr_notes_get" {
   uri                     = var.gitlab_lambda_invoke_arn
 }
 
-# POST /gitlab/projects/{projectId}/merge_requests/{mrIid}/notes (authenticated)
+# POST /gitlab/projects/merge_requests/{mrIid}/notes?project= (authenticated)
 resource "aws_api_gateway_method" "gitlab_mr_notes_post" {
   rest_api_id   = aws_api_gateway_rest_api.main.id
   resource_id   = aws_api_gateway_resource.gitlab_projects_mr_notes.id

@@ -241,6 +241,7 @@ module "api" {
   github_lambda_name                = module.lambda.github_lambda_name
   gitlab_lambda_invoke_arn          = module.lambda.gitlab_lambda_invoke_arn
   gitlab_lambda_name                = module.lambda.gitlab_lambda_name
+  gitlab_oauth_secret_name          = module.git.gitlab_oauth_secret_name
   trackers_lambda_invoke_arn        = module.lambda.trackers_lambda_invoke_arn
   trackers_lambda_name              = module.lambda.trackers_lambda_name
   cognito_users_lambda_invoke_arn   = module.lambda.cognito_users_lambda_invoke_arn

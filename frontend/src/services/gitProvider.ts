@@ -128,20 +128,26 @@ export const gitlabService: GitProviderService & {
   getAuthUrl: () => api.get<{ url: string }>('/gitlab/auth'),
   getStatus: () => api.get<GitProviderStatus>('/gitlab/status'),
   listRepos: () => api.get<GitRepo[]>('/gitlab/repos'),
+  // GitLab project paths are namespaced (group/project, often deeper). Encoded
+  // slashes in an API Gateway path segment are fragile, so the project ref is
+  // sent as a `?project=` query string instead of a path segment. The backend
+  // re-encodes it into the GitLab API path (GitLab's required format).
   listBranches: (projectId: string) =>
-    api.get<{ branches: string[] }>(`/gitlab/projects/${encodeURIComponent(projectId)}/branches`),
+    api.get<{ branches: string[] }>(
+      `/gitlab/projects/branches?project=${encodeURIComponent(projectId)}`,
+    ),
   disconnect: () => api.delete('/gitlab/disconnect'),
   getRepoTree: (projectId: string, branch?: string) =>
     api.get<{ tree: GitFile[] }>(
-      `/gitlab/projects/${encodeURIComponent(projectId)}/tree${branch ? `?branch=${branch}` : ''}`,
+      `/gitlab/projects/tree?project=${encodeURIComponent(projectId)}${branch ? `&branch=${encodeURIComponent(branch)}` : ''}`,
     ),
   getFileContents: (projectId: string, path: string, branch?: string) =>
     api.get<GitFileContent>(
-      `/gitlab/projects/${encodeURIComponent(projectId)}/contents?path=${encodeURIComponent(path)}${branch ? `&branch=${branch}` : ''}`,
+      `/gitlab/projects/contents?project=${encodeURIComponent(projectId)}&path=${encodeURIComponent(path)}${branch ? `&branch=${encodeURIComponent(branch)}` : ''}`,
     ),
   getMRComments: (projectId: string, mrIid: number) =>
     api.get<{ comments: GitComment[] }>(
-      `/gitlab/projects/${encodeURIComponent(projectId)}/merge_requests/${mrIid}/notes`,
+      `/gitlab/projects/merge_requests/${mrIid}/notes?project=${encodeURIComponent(projectId)}`,
     ),
   addMRComment: (
     projectId: string,
@@ -149,7 +155,7 @@ export const gitlabService: GitProviderService & {
     comment: { body: string; path?: string; line?: number },
   ) =>
     api.post<{ id: number; body: string; createdAt: string }>(
-      `/gitlab/projects/${encodeURIComponent(projectId)}/merge_requests/${mrIid}/notes`,
+      `/gitlab/projects/merge_requests/${mrIid}/notes?project=${encodeURIComponent(projectId)}`,
       comment,
     ),
 };

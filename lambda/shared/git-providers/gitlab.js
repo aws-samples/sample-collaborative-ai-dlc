@@ -1,0 +1,578 @@
+'use strict';
+
+// GitLab provider — encapsulates every GitLab.com-specific detail behind the
+// uniform git-provider contract (see ./index.js for the contract docs).
+//
+// Pure of AWS SDK: the handler resolves the access token (and supplies an
+// optional onRefresh callback that re-mints + persists a token on 401). This
+// module only knows how to talk to GitLab once it has a token.
+
+const { ProviderError } = require('./errors');
+
+const API_BASE = 'https://gitlab.com/api/v4';
+
+// ---------------------------------------------------------------------------
+// Identity / git plumbing
+// ---------------------------------------------------------------------------
+
+const id = 'gitlab';
+const displayName = 'GitLab';
+const gitHost = 'gitlab.com';
+
+// GitLab clone URLs authenticate with the oauth2:<token> scheme.
+const buildCloneUrl = (repoId, token) => {
+  const auth = token ? `oauth2:${token}@` : '';
+  return `https://${auth}${gitHost}/${repoId}.git`;
+};
+
+// GitLab addresses projects by URL-encoded "group/project" path.
+const encodeProject = (repoId) => {
+  if (!repoId || typeof repoId !== 'string') {
+    throw new ProviderError(400, 'Invalid project reference for GitLab');
+  }
+  return encodeURIComponent(repoId);
+};
+
+// ---------------------------------------------------------------------------
+// HTTP — with optional 401 token-refresh retry
+// ---------------------------------------------------------------------------
+
+const apiHeaders = (token, extra = {}) => ({
+  Authorization: `Bearer ${token}`,
+  'Content-Type': 'application/json',
+  ...extra,
+});
+
+// ctx = { token, fetchImpl?, onRefresh? }
+//   onRefresh: async () => newAccessToken  — supplied by the handler to refresh
+//   an expired GitLab token (persisting to SSM/DDB) and mutate ctx.token.
+const glFetch = async (ctx, url, options = {}) => {
+  const doFetch = ctx.fetchImpl || fetch;
+  const withAuth = (token) => ({
+    ...options,
+    headers: { ...apiHeaders(token), ...options.headers },
+  });
+  const res = await doFetch(url, withAuth(ctx.token));
+  if (res.status === 401 && typeof ctx.onRefresh === 'function') {
+    try {
+      const newToken = await ctx.onRefresh();
+      ctx.token = newToken;
+      return doFetch(url, withAuth(newToken));
+    } catch {
+      return res;
+    }
+  }
+  return res;
+};
+
+// ---------------------------------------------------------------------------
+// OAuth
+// ---------------------------------------------------------------------------
+
+const oauth = {
+  secretEnvName: 'GITLAB_OAUTH_SECRET_NAME',
+  redirectUriEnvName: 'GITLAB_REDIRECT_URI',
+  scopes: 'api read_user',
+
+  buildAuthorizeUrl({ clientId, redirectUri, state }) {
+    return `https://gitlab.com/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(
+      redirectUri,
+    )}&response_type=code&scope=${encodeURIComponent(oauth.scopes)}&state=${encodeURIComponent(
+      state,
+    )}`;
+  },
+
+  async exchangeCode({ clientId, clientSecret, code, redirectUri, fetchImpl = fetch }) {
+    const res = await fetchImpl('https://gitlab.com/oauth/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        grant_type: 'authorization_code',
+        client_id: clientId,
+        client_secret: clientSecret,
+        code,
+        redirect_uri: redirectUri,
+      }),
+    });
+    const data = await res.json();
+    if (data.error) {
+      throw new ProviderError(400, data.error_description || data.error);
+    }
+    return {
+      accessToken: data.access_token,
+      refreshToken: data.refresh_token,
+      tokenType: data.token_type,
+      scope: data.scope,
+      expiresIn: data.expires_in,
+    };
+  },
+
+  // GitLab access tokens expire; refresh exchanges the refresh token for a new
+  // pair. Returns the same shape as exchangeCode so the handler can persist it.
+  async refreshAccessToken({ clientId, clientSecret, refreshToken, fetchImpl = fetch }) {
+    const res = await fetchImpl('https://gitlab.com/oauth/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: clientId,
+        client_secret: clientSecret,
+      }),
+    });
+    const data = await res.json();
+    if (data.error) {
+      throw new ProviderError(400, data.error_description || data.error);
+    }
+    return {
+      accessToken: data.access_token,
+      refreshToken: data.refresh_token,
+      tokenType: data.token_type,
+      scope: data.scope,
+      expiresIn: data.expires_in,
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Repo browse
+// ---------------------------------------------------------------------------
+
+const mapRepo = (r) => ({
+  id: r.id,
+  name: r.name,
+  fullName: r.path_with_namespace,
+  private: r.visibility !== 'public',
+  defaultBranch: r.default_branch,
+});
+
+const listRepos = async (ctx) => {
+  const res = await glFetch(
+    ctx,
+    `${API_BASE}/projects?membership=true&min_access_level=30&per_page=100&order_by=last_activity_at`,
+  );
+  const repos = await res.json();
+  if (!Array.isArray(repos)) {
+    throw new ProviderError(400, repos.message || repos.error || 'Failed to fetch projects');
+  }
+  return repos.map(mapRepo);
+};
+
+const listBranches = async (ctx, repoId) => {
+  const project = encodeProject(repoId);
+  const res = await glFetch(
+    ctx,
+    `${API_BASE}/projects/${project}/repository/branches?per_page=100`,
+  );
+  if (res.status === 404) return [];
+  const data = await res.json();
+  if (!Array.isArray(data)) {
+    throw new ProviderError(400, data.message || 'Failed to fetch branches');
+  }
+  return data.map((b) => b.name);
+};
+
+const getTree = async (ctx, repoId, branch = 'main') => {
+  const project = encodeProject(repoId);
+  const res = await glFetch(
+    ctx,
+    `${API_BASE}/projects/${project}/repository/tree?ref=${encodeURIComponent(
+      branch,
+    )}&recursive=true&per_page=100`,
+  );
+  const data = await res.json();
+  if (data.message || data.error) {
+    throw new ProviderError(400, data.message || data.error);
+  }
+  if (!Array.isArray(data)) throw new ProviderError(400, 'Failed to fetch tree');
+  return data
+    .filter((item) => item.type === 'blob')
+    .map((item) => ({ path: item.path, sha: item.id, size: 0 }));
+};
+
+const getFileContents = async (ctx, repoId, filePath, branch = 'main') => {
+  const project = encodeProject(repoId);
+  const res = await glFetch(
+    ctx,
+    `${API_BASE}/projects/${project}/repository/files/${encodeURIComponent(
+      filePath,
+    )}?ref=${encodeURIComponent(branch)}`,
+  );
+  const data = await res.json();
+  if (data.message || data.error) {
+    throw new ProviderError(400, data.message || data.error);
+  }
+  return {
+    path: data.file_path,
+    sha: data.blob_id,
+    size: data.size,
+    content: Buffer.from(data.content, 'base64').toString('utf-8'),
+  };
+};
+
+// ---------------------------------------------------------------------------
+// MR comments (notes + discussions)
+// ---------------------------------------------------------------------------
+
+const mapNote = (n) => ({
+  id: n.id,
+  type: 'issue',
+  body: n.body,
+  user: { login: n.author?.username, avatarUrl: n.author?.avatar_url },
+  path: null,
+  line: null,
+  createdAt: n.created_at,
+  updatedAt: n.updated_at,
+});
+
+const listPRComments = async (ctx, repoId, mrIid) => {
+  const project = encodeProject(repoId);
+  const [notesRes, discussionsRes] = await Promise.all([
+    glFetch(ctx, `${API_BASE}/projects/${project}/merge_requests/${mrIid}/notes?per_page=100`),
+    glFetch(
+      ctx,
+      `${API_BASE}/projects/${project}/merge_requests/${mrIid}/discussions?per_page=100`,
+    ),
+  ]);
+  const notes = await notesRes.json();
+  const discussions = await discussionsRes.json();
+
+  const inlineComments = [];
+  if (Array.isArray(discussions)) {
+    for (const discussion of discussions) {
+      if (!Array.isArray(discussion.notes)) continue;
+      for (const note of discussion.notes) {
+        if (note.position) {
+          inlineComments.push({
+            id: note.id,
+            type: 'review',
+            body: note.body,
+            user: { login: note.author?.username, avatarUrl: note.author?.avatar_url },
+            path: note.position?.new_path || note.position?.old_path || null,
+            line: note.position?.new_line || note.position?.old_line || null,
+            createdAt: note.created_at,
+            updatedAt: note.updated_at,
+          });
+        }
+      }
+    }
+  }
+
+  const generalNotes = Array.isArray(notes)
+    ? notes.filter((n) => !n.system && !n.position).map(mapNote)
+    : [];
+
+  return [...generalNotes, ...inlineComments].toSorted(
+    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+  );
+};
+
+const addPRComment = async (ctx, repoId, mrIid, { body, path, line }) => {
+  const project = encodeProject(repoId);
+  let result;
+  if (path && line) {
+    const mrRes = await glFetch(ctx, `${API_BASE}/projects/${project}/merge_requests/${mrIid}`);
+    const mrData = await mrRes.json();
+    const headSha = mrData.diff_refs?.head_sha;
+    const baseSha = mrData.diff_refs?.base_sha;
+    const startSha = mrData.diff_refs?.start_sha;
+    if (!headSha) throw new ProviderError(400, 'Could not determine commit SHA');
+    const discussionRes = await glFetch(
+      ctx,
+      `${API_BASE}/projects/${project}/merge_requests/${mrIid}/discussions`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          body,
+          position: {
+            position_type: 'text',
+            base_sha: baseSha,
+            head_sha: headSha,
+            start_sha: startSha,
+            new_path: path,
+            new_line: line,
+          },
+        }),
+      },
+    );
+    result = await discussionRes.json();
+    if (result.notes && result.notes.length > 0) result = result.notes[0];
+  } else {
+    const noteRes = await glFetch(
+      ctx,
+      `${API_BASE}/projects/${project}/merge_requests/${mrIid}/notes`,
+      { method: 'POST', body: JSON.stringify({ body }) },
+    );
+    result = await noteRes.json();
+  }
+  if (result.message || result.error) {
+    throw new ProviderError(400, result.message || result.error);
+  }
+  return {
+    id: result.id,
+    body: result.body,
+    user: { login: result.author?.username, avatarUrl: result.author?.avatar_url },
+    url: result.web_url || null,
+    createdAt: result.created_at,
+  };
+};
+
+// ---------------------------------------------------------------------------
+// MR creation + construction-task-branch helpers (used by create-pr) and
+// MR-state / server-side merge (used by the construction MCP server).
+//
+// Construction task branches follow the same "<sprintBranch>--task-..." naming
+// convention as GitHub; we list them via the branches API and check merge
+// status with the compare API.
+// ---------------------------------------------------------------------------
+
+const constructionBranchPrefix = (branch) => `${branch}--task-`;
+
+const listConstructionTaskBranches = async (ctx, repoId, branch) => {
+  const project = encodeProject(repoId);
+  const prefix = constructionBranchPrefix(branch);
+  const res = await glFetch(
+    ctx,
+    `${API_BASE}/projects/${project}/repository/branches?search=${encodeURIComponent(
+      prefix,
+    )}&per_page=100`,
+  );
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`Failed to list construction task branches: ${errorText}`);
+  }
+  const branches = await res.json();
+  if (!Array.isArray(branches)) return [];
+  // GitLab's `search` matches substrings — keep only true prefix matches.
+  return branches.map((b) => b.name).filter((name) => name.startsWith(prefix));
+};
+
+// GitLab compare with from=targetBranch, to=sourceBranch: a task branch is
+// merged into the sprint branch when it adds no commits the sprint lacks.
+const isBranchMergedInto = async (ctx, repoId, sourceBranch, targetBranch) => {
+  const project = encodeProject(repoId);
+  const res = await glFetch(
+    ctx,
+    `${API_BASE}/projects/${project}/repository/compare?from=${encodeURIComponent(
+      targetBranch,
+    )}&to=${encodeURIComponent(sourceBranch)}`,
+  );
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`Failed to compare ${sourceBranch} against ${targetBranch}: ${errorText}`);
+  }
+  const comparison = await res.json();
+  return Array.isArray(comparison.commits) && comparison.commits.length === 0;
+};
+
+const getUnmergedConstructionTaskBranches = async (ctx, repoId, branch) => {
+  const taskBranches = await listConstructionTaskBranches(ctx, repoId, branch);
+  const unmerged = [];
+  for (const taskBranch of taskBranches) {
+    const merged = await isBranchMergedInto(ctx, repoId, taskBranch, branch);
+    if (!merged) unmerged.push(taskBranch);
+  }
+  return unmerged;
+};
+
+const cleanupConstructionTaskBranches = async (ctx, repoId, branch) => {
+  const project = encodeProject(repoId);
+  let taskBranches;
+  try {
+    taskBranches = await listConstructionTaskBranches(ctx, repoId, branch);
+  } catch (err) {
+    console.error(err.message);
+    return { deleted: 0, failed: 1, skipped: 0 };
+  }
+  let deleted = 0;
+  let failed = 0;
+  let skipped = 0;
+  for (const taskBranch of taskBranches) {
+    let merged = false;
+    try {
+      merged = await isBranchMergedInto(ctx, repoId, taskBranch, branch);
+    } catch (err) {
+      failed += 1;
+      console.error(err.message);
+      continue;
+    }
+    if (!merged) {
+      skipped += 1;
+      console.error(`Skipping unmerged construction task branch ${taskBranch}`);
+      continue;
+    }
+    const delRes = await glFetch(
+      ctx,
+      `${API_BASE}/projects/${project}/repository/branches/${encodeURIComponent(taskBranch)}`,
+      { method: 'DELETE' },
+    );
+    if (delRes.ok || delRes.status === 204) {
+      deleted += 1;
+    } else {
+      failed += 1;
+      const errorText = await delRes.text().catch(() => '');
+      console.error(`Failed to delete construction task branch ${taskBranch}:`, errorText);
+    }
+  }
+  if (deleted || failed || skipped) {
+    console.log(
+      `Construction task branch cleanup complete: deleted=${deleted}, failed=${failed}, skipped=${skipped}`,
+    );
+  }
+  return { deleted, failed, skipped };
+};
+
+const findOpenMR = async (ctx, project, branch) => {
+  const res = await glFetch(
+    ctx,
+    `${API_BASE}/projects/${project}/merge_requests?source_branch=${encodeURIComponent(
+      branch,
+    )}&state=opened`,
+  );
+  if (!res.ok) return null;
+  const mrs = await res.json();
+  return Array.isArray(mrs) && mrs.length > 0 ? mrs[0] : null;
+};
+
+const findAnyMR = async (ctx, project, branch) => {
+  const res = await glFetch(
+    ctx,
+    `${API_BASE}/projects/${project}/merge_requests?source_branch=${encodeURIComponent(
+      branch,
+    )}&per_page=1`,
+  );
+  if (!res.ok) return null;
+  const mrs = await res.json();
+  return Array.isArray(mrs) && mrs.length > 0 ? mrs[0] : null;
+};
+
+// Create a merge request. Enforces the unmerged-construction-task-branch guard
+// for parity with GitHub. Returns { prUrl, prNumber } on success,
+// { skipped, reason } for a no-change repo, { conflict, unmergedBranches } when
+// task branches remain unmerged.
+const createPullRequest = async (ctx, repoId, { branch, baseBranch, title, body }) => {
+  const project = encodeProject(repoId);
+
+  const unmergedBranches = await getUnmergedConstructionTaskBranches(ctx, repoId, branch);
+  if (unmergedBranches.length) {
+    return {
+      conflict: true,
+      error: `Cannot create MR: ${unmergedBranches.length} construction task branch(es) are not merged into ${branch}`,
+      unmergedBranches,
+    };
+  }
+
+  const existing = await findOpenMR(ctx, project, branch);
+  if (existing) {
+    return { prUrl: existing.web_url, prNumber: existing.iid, existing: true };
+  }
+
+  const res = await glFetch(ctx, `${API_BASE}/projects/${project}/merge_requests`, {
+    method: 'POST',
+    body: JSON.stringify({
+      title,
+      description: body,
+      source_branch: branch,
+      target_branch: baseBranch || 'main',
+    }),
+  });
+
+  if (!res.ok) {
+    const errorText = await res.text();
+    if (res.status === 409) {
+      if (errorText.toLowerCase().includes('already exists')) {
+        const any = await findAnyMR(ctx, project, branch);
+        if (any) return { prUrl: any.web_url, prNumber: any.iid, existing: true };
+      }
+      return { skipped: true, reason: 'no_changes' };
+    }
+    if (res.status === 422) {
+      const text = (errorText || '').toLowerCase();
+      if (
+        text.includes('source branch') ||
+        text.includes('no commits') ||
+        text.includes('does not exist')
+      ) {
+        return { skipped: true, reason: 'no_changes' };
+      }
+    }
+    throw new Error(`Failed to create MR: ${res.status} ${errorText}`);
+  }
+
+  await cleanupConstructionTaskBranches(ctx, repoId, branch);
+  const mr = await res.json();
+  return { prUrl: mr.web_url, prNumber: mr.iid };
+};
+
+// Get the live state of an MR ('open' | 'closed' | 'merged' | null).
+const getPullRequestState = async (ctx, repoId, mrIid) => {
+  const project = encodeProject(repoId);
+  const res = await glFetch(ctx, `${API_BASE}/projects/${project}/merge_requests/${mrIid}`);
+  if (!res.ok) return null;
+  const mr = await res.json();
+  if (mr.state === 'opened') return 'open';
+  if (mr.state === 'merged') return 'merged';
+  return 'closed';
+};
+
+// Server-side merge of a task branch into the sprint branch. GitLab has no
+// "merge arbitrary branch" API like GitHub's /merges, so we open a transient MR
+// and merge it. Returns 'merged' | 'conflict' | { error }.
+const mergeBranch = async (ctx, repoId, { base, head, message }) => {
+  const project = encodeProject(repoId);
+  let createRes;
+  try {
+    createRes = await glFetch(ctx, `${API_BASE}/projects/${project}/merge_requests`, {
+      method: 'POST',
+      body: JSON.stringify({
+        source_branch: head,
+        target_branch: base,
+        title: message || `Merge ${head} into ${base} (auto)`,
+      }),
+    });
+  } catch (e) {
+    return { error: e.message };
+  }
+  if (!createRes.ok) {
+    const text = await createRes.text().catch(() => '');
+    if (createRes.status === 409) return 'merged';
+    return { error: `GitLab create-MR returned ${createRes.status}: ${text.slice(0, 300)}` };
+  }
+  const mr = await createRes.json();
+  const mergeRes = await glFetch(
+    ctx,
+    `${API_BASE}/projects/${project}/merge_requests/${mr.iid}/merge`,
+    { method: 'PUT' },
+  );
+  if (mergeRes.ok) return 'merged';
+  if (mergeRes.status === 405 || mergeRes.status === 406 || mergeRes.status === 409) {
+    return 'conflict';
+  }
+  const text = await mergeRes.text().catch(() => '');
+  return { error: `GitLab merge returned ${mergeRes.status}: ${text.slice(0, 300)}` };
+};
+
+module.exports = {
+  id,
+  displayName,
+  gitHost,
+  apiBase: API_BASE,
+  buildCloneUrl,
+  encodeProject,
+  apiHeaders,
+  glFetch,
+  oauth,
+  mapRepo,
+  listRepos,
+  listBranches,
+  getTree,
+  getFileContents,
+  listPRComments,
+  addPRComment,
+  getUnmergedConstructionTaskBranches,
+  cleanupConstructionTaskBranches,
+  createPullRequest,
+  getPullRequestState,
+  mergeBranch,
+  constructionBranchPrefix,
+};

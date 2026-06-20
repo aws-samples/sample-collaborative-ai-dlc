@@ -49,7 +49,11 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
 COPY agents-ecs/aidlc-rules /opt/aidlc-rules
 
 # Install MCP server
-COPY agents-ecs/mcp-server-graph/package.json agents-ecs/mcp-server-graph/index.js agents-ecs/mcp-server-graph/merge-task-branches.js agents-ecs/mcp-server-graph/create-repo-prs.js /opt/mcp-server-graph/
+COPY agents-ecs/mcp-server-graph/package.json agents-ecs/mcp-server-graph/index.js agents-ecs/mcp-server-graph/merge-task-branches.js agents-ecs/mcp-server-graph/create-repo-prs.js agents-ecs/mcp-server-graph/git-providers.js /opt/mcp-server-graph/
+# Single-sourced git-provider registry (shared/git-providers). Copied into the
+# MCP server package so its ./git-providers shim resolves ./shared/git-providers.
+COPY shared/git-providers.js /opt/mcp-server-graph/shared/git-providers.js
+COPY shared/git-providers/ /opt/mcp-server-graph/shared/git-providers/
 RUN cd /opt/mcp-server-graph && npm install --production
 
 # Install ACP client (includes drivers)
@@ -62,6 +66,8 @@ ENV IMAGE_TAG=${IMAGE_TAG}
 COPY agents-ecs/acp-client.js agents-ecs/pool-worker.js agents-ecs/branch-cleanup.js agents-ecs/construction-orchestrator-prompt.js /opt/acp-client/
 COPY agents-ecs/drivers/ /opt/acp-client/drivers/
 COPY shared/mcp-validator.js /opt/shared/mcp-validator.js
+COPY shared/git-providers.js /opt/shared/git-providers.js
+COPY shared/git-providers/ /opt/shared/git-providers/
 
 RUN mkdir -p /workspace \
     && chown -R node:node /workspace /opt/aidlc-rules /opt/mcp-server-graph /opt/acp-client /opt/kiro

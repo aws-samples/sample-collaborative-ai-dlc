@@ -150,8 +150,11 @@ module "create_pr_lambda" {
 
   source_path = [
     {
-      path             = "${path.module}/../../../lambda/create-pr"
-      npm_requirements = true
+      path = "${path.module}/../../../lambda/create-pr"
+      commands = [
+        "cd ../.. && npm run build -w create-pr",
+        ":zip lambda/create-pr/.build",
+      ]
     }
   ]
 

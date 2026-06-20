@@ -1019,7 +1019,7 @@ describe('github handler', () => {
       expect(res.statusCode).toBe(401);
     });
 
-    it('still deletes DynamoDB row when no item found (no SSM to clean)', async () => {
+    it('is a successful no-op when no connection row exists for this provider', async () => {
       ddbMock.on(GetCommand).resolves({});
       ddbMock.on(DeleteCommand).resolves({});
 
@@ -1028,10 +1028,9 @@ describe('github handler', () => {
 
       expect(res.statusCode).toBe(200);
       expect(ssmMock).toHaveReceivedCommandTimes(DeleteParameterCommand, 0);
-      expect(ddbMock).toHaveReceivedCommandWith(DeleteCommand, {
-        TableName: CONNECTIONS_TABLE,
-        Key: { userId: USER_ID },
-      });
+      // git-connections is keyed by userId alone; with no GitHub row present we
+      // must NOT delete (it could be another provider's row).
+      expect(ddbMock).toHaveReceivedCommandTimes(DeleteCommand, 0);
     });
   });
 

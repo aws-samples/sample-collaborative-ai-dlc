@@ -23,6 +23,7 @@ async function createPrsForRepos({
   repos, // [{ url }] — env.gitRepos
   sprintBranch,
   gitToken,
+  gitProvider, // 'github' | 'gitlab' — selects the server-side merge API
   invokeCreatePr, // async (repoUrl) => parsed create-pr Lambda response
   parseOwnerRepo, // (s) => { owner, repo } — throws on malformed input
   mergeFn = mergeUnmergedTaskBranches,
@@ -47,6 +48,7 @@ async function createPrsForRepos({
           sprintBranch,
           unmergedBranches: resp.unmergedBranches,
           gitToken,
+          gitProvider,
         });
 
         if (mergeResult.conflicts.length || mergeResult.errors.length) {

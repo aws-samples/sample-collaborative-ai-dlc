@@ -35,6 +35,7 @@ const JIRA_PARAM_NAME = '/aidlc/dev/jira-token/user-1';
 const TOKEN = 'gho_testtoken';
 const JIRA_OAUTH_SECRET_NAME = 'jira-oauth-secret';
 const GITHUB_OAUTH_SECRET_NAME = 'github-oauth-secret';
+const GITLAB_OAUTH_SECRET_NAME = 'gitlab-oauth-secret';
 const JIRA_CLIENT_ID = 'jira-cid';
 const JIRA_CLIENT_SECRET = 'jira-cs';
 const JIRA_REDIRECT_URI = 'https://example.com/trackers/callback/jira-cloud';
@@ -54,6 +55,7 @@ beforeAll(async () => {
   vi.stubEnv('CORS_ALLOWED_ORIGINS', 'https://example.com');
   vi.stubEnv('JIRA_OAUTH_SECRET_NAME', JIRA_OAUTH_SECRET_NAME);
   vi.stubEnv('GITHUB_OAUTH_SECRET_NAME', GITHUB_OAUTH_SECRET_NAME);
+  vi.stubEnv('GITLAB_OAUTH_SECRET_NAME', GITLAB_OAUTH_SECRET_NAME);
   vi.stubEnv('JIRA_REDIRECT_URI', JIRA_REDIRECT_URI);
   vi.stubEnv('JIRA_TOKEN_SSM_PREFIX', 'aidlc/dev/jira-token');
   ({ handler } = await import('../index.js'));
@@ -1327,7 +1329,7 @@ describe('Jira Cloud — GET /trackers/external-projects/jira-cloud/cloud', () =
 });
 
 describe('GET /trackers/providers — operator OAuth-config status', () => {
-  it('reports configured: true for both providers when their secrets are populated', async () => {
+  it('reports configured: true for all providers when their secrets are populated', async () => {
     const res = await handler({
       httpMethod: 'GET',
       path: '/trackers/providers',
@@ -1339,6 +1341,7 @@ describe('GET /trackers/providers — operator OAuth-config status', () => {
     const body = JSON.parse(res.body);
     const ids = body.map((p) => p.id);
     expect(ids).toContain('github-issues');
+    expect(ids).toContain('gitlab-issues');
     expect(ids).toContain('jira-cloud');
     for (const p of body) {
       expect(p.configured).toBe(true);

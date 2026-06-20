@@ -16,11 +16,12 @@ const {
   ScanCommand,
 } = require('@aws-sdk/lib-dynamodb');
 const { SSMClient, GetParametersCommand, PutParameterCommand } = require('@aws-sdk/client-ssm');
+const { SecretsManagerClient } = require('@aws-sdk/client-secrets-manager');
 const gremlin = require('gremlin');
 const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
 const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
 const { buildResponse } = require('./shared/response');
-const { resolveGitToken } = require('./shared/git-token');
+const { resolveGitToken, ensureFreshGitToken } = require('./shared/git-token');
 const { validateMcpServersJson } = require('./shared/mcp-validator');
 const { broadcastToSprintChannel } = require('./shared/ws-fanout');
 const { normalizeCliModels, parseCliModels } = require('./shared/cli-models');
@@ -28,6 +29,7 @@ const { normalizeCliModels, parseCliModels } = require('./shared/cli-models');
 const ecs = new ECSClient({});
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({ region: process.env.AWS_REGION || 'us-east-1' });
+const secrets = new SecretsManagerClient({ region: process.env.AWS_REGION || 'us-east-1' });
 
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
@@ -427,6 +429,58 @@ exports.handler = async (event) => {
   const storyId = pathParameters?.storyId;
 
   try {
+    // ===== INTERNAL: just-in-time git token refresh =====
+    // POST /git/refresh-token — used by the construction runtime (pool-worker
+    // before push, mcp-server-graph before create-pr / PR-state / comments) to
+    // obtain a non-stale GitLab access token. GitLab OAuth tokens expire (~2h)
+    // and a long-running construction job bakes only the dispatch-time token;
+    // this endpoint refreshes via the stored refresh token + GitLab OAuth
+    // secret and persists the rotation. GitHub OAuth-App tokens never expire,
+    // so this is a passthrough for GitHub. Internal only — restricted to the
+    // 'system' caller (the worker/MCP invoke this Lambda directly, never via
+    // API Gateway / Cognito).
+    if (httpMethod === 'POST' && path.endsWith('/git/refresh-token')) {
+      const callerSub = event.requestContext?.authorizer?.claims?.sub;
+      if (callerSub !== 'system' && callerSub !== 'orchestrator') {
+        return response(403, { error: 'Forbidden' });
+      }
+      let input = {};
+      try {
+        input = body ? JSON.parse(body) : {};
+      } catch {
+        return response(400, { error: 'Invalid JSON body' });
+      }
+      const refreshUserId = input.userId;
+      const refreshProvider = input.gitProvider || 'github';
+      if (!refreshUserId) return response(400, { error: 'userId is required' });
+      if (!process.env.GIT_CONNECTIONS_TABLE) {
+        return response(500, { error: 'GIT_CONNECTIONS_TABLE not configured' });
+      }
+      try {
+        const { Item } = await ddb.send(
+          new GetCommand({
+            TableName: process.env.GIT_CONNECTIONS_TABLE,
+            Key: { userId: refreshUserId },
+          }),
+        );
+        const connectionProvider = Item?.provider || 'github';
+        if (!Item?.parameterName || connectionProvider !== refreshProvider) {
+          return response(400, { error: `${refreshProvider} not connected` });
+        }
+        const accessToken = await ensureFreshGitToken({
+          ssm,
+          secrets,
+          ddb,
+          item: Item,
+          gitProvider: refreshProvider,
+        });
+        return response(200, { accessToken });
+      } catch (e) {
+        console.error('[agents] git token refresh failed:', e.message);
+        return response(502, { error: 'Token refresh failed' });
+      }
+    }
+
     // ===== AGENT SETTINGS (SSM-backed, editable via Admin UI) =====
 
     // GET /agents/settings — read bearer token, Kiro API key, and MCP servers from SSM
@@ -715,6 +769,7 @@ exports.handler = async (event) => {
         projectAgentCli = 'kiro';
       let projectCliModels = {};
       let gitRepos = [];
+      let gitProvider = 'github';
       let isMember = false;
       await withNeptune(async (g) => {
         const result = await g.V().has('Project', 'id', projectId).valueMap().next();
@@ -722,6 +777,7 @@ exports.handler = async (event) => {
           gitRepo = result.value.get('git_repo')?.[0] || '';
           projectAgentCli = result.value.get('agent_cli')?.[0] || 'kiro';
           projectCliModels = parseCliModels(result.value.get('cli_models')?.[0] || '{}');
+          gitProvider = result.value.get('git_provider')?.[0] || 'github';
         }
         // Fetch all Repository vertices linked to the project (multi-repo support)
         const repoVertices = await g
@@ -791,7 +847,11 @@ exports.handler = async (event) => {
         }
       }
 
-      // Look up user's GitHub token from git connections table.
+      // Look up the user's git token from the connections table. The table is
+      // keyed by userId alone (one row per user), so we must confirm the stored
+      // connection is for THIS project's provider — otherwise a GitHub token
+      // could be handed to a GitLab clone (or vice versa). Legacy rows predate
+      // the `provider` field and are treated as GitHub.
       // Discussion assists have no repository — skip the git plumbing entirely.
       let gitToken = '';
       if (isDiscussion) {
@@ -806,7 +866,8 @@ exports.handler = async (event) => {
               Key: { userId },
             }),
           );
-          if (Item?.parameterName || Item?.accessToken) {
+          const connectionProvider = Item?.provider || 'github';
+          if ((Item?.parameterName || Item?.accessToken) && connectionProvider === gitProvider) {
             gitToken = await resolveGitToken(ssm, Item);
           }
         } catch (e) {
@@ -819,12 +880,12 @@ exports.handler = async (event) => {
         gitToken = input.gitToken;
       }
 
-      // Require GitHub connection for projects with a git repo
+      // Require a matching provider connection for projects with a git repo
       if (gitRepo && !gitToken) {
+        const providerLabel = gitProvider === 'gitlab' ? 'GitLab' : 'GitHub';
         return response(400, {
-          error: 'GitHub not connected',
-          message:
-            'You must connect your GitHub account before running agents on this project. Go to project settings to connect GitHub.',
+          error: `${providerLabel} not connected`,
+          message: `You must connect your ${providerLabel} account before running agents on this project. Go to project settings to connect ${providerLabel}.`,
         });
       }
 
@@ -864,6 +925,7 @@ exports.handler = async (event) => {
         description,
         gitRepo,
         gitRepos,
+        gitProvider,
         userId: userId || '',
         sprintId: input.sprintId || '',
         taskId: input.taskId || '',

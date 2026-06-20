@@ -292,6 +292,44 @@ describe('gitlab handler', () => {
       });
     });
 
+    it('persists expiresAt when the token response includes expires_in', async () => {
+      mockOAuthSecret();
+      const validState = createSignedState({ userId: USER_ID, ts: Date.now() }, CLIENT_SECRET);
+      ssmMock.on(PutParameterCommand).resolves({});
+      ddbMock.on(PutCommand).resolves({});
+      mockFetch([
+        {
+          body: {
+            access_token: 'glpat-new',
+            refresh_token: 'refresh-new',
+            token_type: 'bearer',
+            scope: 'api read_user',
+            expires_in: 7200,
+          },
+        },
+      ]);
+
+      const before = Date.now();
+      const handler = await loadHandler();
+      const res = await handler(
+        makeEvent('GET', '/gitlab/callback', {
+          queryStringParameters: { code: 'valid-code', state: validState },
+        }),
+      );
+
+      expect(res.statusCode).toBe(200);
+      const put = ssmMock.commandCalls(PutParameterCommand)[0].args[0].input;
+      const persisted = JSON.parse(put.Value);
+      expect(persisted).toMatchObject({
+        accessToken: 'glpat-new',
+        refreshToken: 'refresh-new',
+        tokenType: 'bearer',
+      });
+      // expiresAt ~= now + 7200s, allowing for test execution time.
+      expect(persisted.expiresAt).toBeGreaterThanOrEqual(before + 7200 * 1000 - 5000);
+      expect(persisted.expiresAt).toBeLessThanOrEqual(Date.now() + 7200 * 1000 + 5000);
+    });
+
     it('surfaces GitLab error_description on token exchange failure', async () => {
       mockOAuthSecret();
       const validState = createSignedState({ userId: USER_ID, ts: Date.now() }, CLIENT_SECRET);
@@ -351,6 +389,47 @@ describe('gitlab handler', () => {
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.body);
       expect(body).toEqual({ connected: false, provider: undefined });
+    });
+
+    it('returns connected: false when the only connection belongs to GitHub', async () => {
+      // git-connections is keyed by userId alone; a GitHub row must NOT make
+      // GitLab look connected (otherwise GitLab APIs get a GitHub token).
+      ddbMock.on(GetCommand).resolves({
+        Item: { userId: USER_ID, provider: 'github', parameterName: `/${SSM_PREFIX}/${USER_ID}` },
+      });
+
+      const handler = await loadHandler();
+      const res = await handler(makeEvent('GET', '/gitlab/status'));
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ connected: false, provider: undefined });
+    });
+
+    it('does not use a GitHub connection for GitLab repo listing', async () => {
+      ddbMock.on(GetCommand).resolves({
+        Item: { userId: USER_ID, provider: 'github', parameterName: `/${SSM_PREFIX}/${USER_ID}` },
+      });
+
+      const handler = await loadHandler();
+      const res = await handler(makeEvent('GET', '/gitlab/repos'));
+
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toBe('GitLab not connected');
+    });
+
+    it('does not delete a GitHub connection on GitLab disconnect', async () => {
+      ddbMock.on(GetCommand).resolves({
+        Item: { userId: USER_ID, provider: 'github', parameterName: `/${SSM_PREFIX}/${USER_ID}` },
+      });
+      ssmMock.on(DeleteParameterCommand).resolves({});
+      ddbMock.on(DeleteCommand).resolves({});
+
+      const handler = await loadHandler();
+      const res = await handler(makeEvent('DELETE', '/gitlab/disconnect'));
+
+      expect(res.statusCode).toBe(200);
+      expect(ssmMock).toHaveReceivedCommandTimes(DeleteParameterCommand, 0);
+      expect(ddbMock).toHaveReceivedCommandTimes(DeleteCommand, 0);
     });
   });
 
@@ -436,7 +515,7 @@ describe('gitlab handler', () => {
     });
   });
 
-  describe('GET /projects/:id/branches', () => {
+  describe('GET /projects/branches?project=', () => {
     it('returns branch names', async () => {
       mockGitConnection();
       mockResolveGitToken();
@@ -447,7 +526,11 @@ describe('gitlab handler', () => {
       ]);
 
       const handler = await loadHandler();
-      const res = await handler(makeEvent('GET', '/gitlab/projects/101/branches'));
+      const res = await handler(
+        makeEvent('GET', '/gitlab/projects/branches', {
+          queryStringParameters: { project: encodeURIComponent('group/widgets') },
+        }),
+      );
 
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.body);
@@ -460,7 +543,11 @@ describe('gitlab handler', () => {
       mockFetch([{ status: 404, body: { message: 'Not Found' } }]);
 
       const handler = await loadHandler();
-      const res = await handler(makeEvent('GET', '/gitlab/projects/101/branches'));
+      const res = await handler(
+        makeEvent('GET', '/gitlab/projects/branches', {
+          queryStringParameters: { project: encodeURIComponent('group/widgets') },
+        }),
+      );
 
       expect(res.statusCode).toBe(200);
       expect(JSON.parse(res.body)).toEqual({ branches: [] });
@@ -470,14 +557,37 @@ describe('gitlab handler', () => {
       ddbMock.on(GetCommand).resolves({});
 
       const handler = await loadHandler();
-      const res = await handler(makeEvent('GET', '/gitlab/projects/101/branches'));
+      const res = await handler(
+        makeEvent('GET', '/gitlab/projects/branches', {
+          queryStringParameters: { project: encodeURIComponent('group/widgets') },
+        }),
+      );
 
       expect(res.statusCode).toBe(400);
       expect(JSON.parse(res.body).error).toBe('GitLab not connected');
     });
+
+    it('passes the URL-encoded namespaced project path through to the GitLab API', async () => {
+      mockGitConnection();
+      mockResolveGitToken();
+      const fetchMock = mockFetch([{ body: [{ name: 'main' }] }]);
+
+      const handler = await loadHandler();
+      const res = await handler(
+        makeEvent('GET', '/gitlab/projects/branches', {
+          queryStringParameters: { project: encodeURIComponent('group/subgroup/widgets') },
+        }),
+      );
+
+      expect(res.statusCode).toBe(200);
+      // The Lambda must URL-encode the namespaced path into the GitLab API path.
+      expect(fetchMock.mock.calls[0][0]).toContain(
+        `/projects/${encodeURIComponent('group/subgroup/widgets')}/repository/branches`,
+      );
+    });
   });
 
-  describe('GET /projects/:id/tree', () => {
+  describe('GET /projects/tree?project=', () => {
     it('returns tree filtered to blobs only', async () => {
       mockGitConnection();
       mockResolveGitToken();
@@ -493,8 +603,8 @@ describe('gitlab handler', () => {
 
       const handler = await loadHandler();
       const res = await handler(
-        makeEvent('GET', '/gitlab/projects/101/tree', {
-          queryStringParameters: { branch: 'main' },
+        makeEvent('GET', '/gitlab/projects/tree', {
+          queryStringParameters: { project: encodeURIComponent('group/widgets'), branch: 'main' },
         }),
       );
 
@@ -512,14 +622,18 @@ describe('gitlab handler', () => {
       mockFetch([{ body: { message: '404 Tree Not Found' } }]);
 
       const handler = await loadHandler();
-      const res = await handler(makeEvent('GET', '/gitlab/projects/101/tree'));
+      const res = await handler(
+        makeEvent('GET', '/gitlab/projects/tree', {
+          queryStringParameters: { project: encodeURIComponent('group/widgets') },
+        }),
+      );
 
       expect(res.statusCode).toBe(400);
       expect(JSON.parse(res.body).error).toBe('404 Tree Not Found');
     });
   });
 
-  describe('GET /projects/:id/contents', () => {
+  describe('GET /projects/contents?project=', () => {
     it('returns base64-decoded file content', async () => {
       mockGitConnection();
       mockResolveGitToken();
@@ -537,8 +651,12 @@ describe('gitlab handler', () => {
 
       const handler = await loadHandler();
       const res = await handler(
-        makeEvent('GET', '/gitlab/projects/101/contents', {
-          queryStringParameters: { path: 'src/index.js', branch: 'main' },
+        makeEvent('GET', '/gitlab/projects/contents', {
+          queryStringParameters: {
+            project: encodeURIComponent('group/widgets'),
+            path: 'src/index.js',
+            branch: 'main',
+          },
         }),
       );
 
@@ -558,8 +676,8 @@ describe('gitlab handler', () => {
 
       const handler = await loadHandler();
       const res = await handler(
-        makeEvent('GET', '/gitlab/projects/101/contents', {
-          queryStringParameters: { branch: 'main' },
+        makeEvent('GET', '/gitlab/projects/contents', {
+          queryStringParameters: { project: encodeURIComponent('group/widgets'), branch: 'main' },
         }),
       );
 
@@ -568,7 +686,7 @@ describe('gitlab handler', () => {
     });
   });
 
-  describe('GET /projects/:id/merge_requests/:iid/notes', () => {
+  describe('GET /projects/merge_requests/:iid/notes?project=', () => {
     it('merges notes and discussion comments sorted by createdAt', async () => {
       mockGitConnection();
       mockResolveGitToken();
@@ -604,7 +722,11 @@ describe('gitlab handler', () => {
       ]);
 
       const handler = await loadHandler();
-      const res = await handler(makeEvent('GET', '/gitlab/projects/101/merge_requests/42/notes'));
+      const res = await handler(
+        makeEvent('GET', '/gitlab/projects/merge_requests/42/notes', {
+          queryStringParameters: { project: encodeURIComponent('group/widgets') },
+        }),
+      );
 
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.body);
@@ -621,14 +743,18 @@ describe('gitlab handler', () => {
       ddbMock.on(GetCommand).resolves({});
 
       const handler = await loadHandler();
-      const res = await handler(makeEvent('GET', '/gitlab/projects/101/merge_requests/42/notes'));
+      const res = await handler(
+        makeEvent('GET', '/gitlab/projects/merge_requests/42/notes', {
+          queryStringParameters: { project: encodeURIComponent('group/widgets') },
+        }),
+      );
 
       expect(res.statusCode).toBe(400);
       expect(JSON.parse(res.body).error).toBe('GitLab not connected');
     });
   });
 
-  describe('POST /projects/:id/merge_requests/:iid/notes', () => {
+  describe('POST /projects/merge_requests/:iid/notes?project=', () => {
     it('creates a general MR note when path and line are not provided', async () => {
       mockGitConnection();
       mockResolveGitToken();
@@ -645,7 +771,8 @@ describe('gitlab handler', () => {
 
       const handler = await loadHandler();
       const res = await handler(
-        makeEvent('POST', '/gitlab/projects/101/merge_requests/42/notes', {
+        makeEvent('POST', '/gitlab/projects/merge_requests/42/notes', {
+          queryStringParameters: { project: encodeURIComponent('group/widgets') },
           body: JSON.stringify({ body: 'looks good' }),
         }),
       );
@@ -662,7 +789,8 @@ describe('gitlab handler', () => {
 
       const handler = await loadHandler();
       const res = await handler(
-        makeEvent('POST', '/gitlab/projects/101/merge_requests/42/notes', {
+        makeEvent('POST', '/gitlab/projects/merge_requests/42/notes', {
+          queryStringParameters: { project: encodeURIComponent('group/widgets') },
           body: JSON.stringify({}),
         }),
       );
@@ -676,7 +804,8 @@ describe('gitlab handler', () => {
 
       const handler = await loadHandler();
       const res = await handler(
-        makeEvent('POST', '/gitlab/projects/101/merge_requests/42/notes', {
+        makeEvent('POST', '/gitlab/projects/merge_requests/42/notes', {
+          queryStringParameters: { project: encodeURIComponent('group/widgets') },
           body: JSON.stringify({ body: 'hi' }),
         }),
       );
@@ -689,7 +818,7 @@ describe('gitlab handler', () => {
   describe('DELETE /disconnect', () => {
     it('deletes SSM parameter and DynamoDB row', async () => {
       ddbMock.on(GetCommand).resolves({
-        Item: { userId: USER_ID, parameterName: `/${SSM_PREFIX}/${USER_ID}` },
+        Item: { userId: USER_ID, provider: 'gitlab', parameterName: `/${SSM_PREFIX}/${USER_ID}` },
       });
       ssmMock.on(DeleteParameterCommand).resolves({});
       ddbMock.on(DeleteCommand).resolves({});

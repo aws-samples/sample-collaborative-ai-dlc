@@ -22,6 +22,7 @@ describe('mcp-server-graph image packaging', () => {
 
     expect([...seen]).toContain('create-repo-prs.js');
     expect([...seen]).toContain('merge-task-branches.js');
+    expect([...seen]).toContain('git-providers.js');
 
     const mcpCopyLine = dockerfile
       .split('\n')
@@ -30,5 +31,14 @@ describe('mcp-server-graph image packaging', () => {
     for (const file of seen) {
       expect(mcpCopyLine).toContain(`mcp-server-graph/${file}`);
     }
+
+    // The ./git-providers shim resolves ./shared/git-providers in the image, so
+    // the canonical shared module + its impl dir must be copied alongside it.
+    expect(dockerfile).toContain(
+      'COPY shared/git-providers.js /opt/mcp-server-graph/shared/git-providers.js',
+    );
+    expect(dockerfile).toContain(
+      'COPY shared/git-providers/ /opt/mcp-server-graph/shared/git-providers/',
+    );
   });
 });

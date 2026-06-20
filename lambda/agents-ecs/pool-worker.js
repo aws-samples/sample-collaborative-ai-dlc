@@ -40,6 +40,7 @@ const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
 const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
 const { cleanupMergedTaskBranch } = require('./branch-cleanup');
 const { buildConstructionOrchestratorPrompt } = require('./construction-orchestrator-prompt');
+const { buildCloneUrl } = require('../shared/git-providers');
 
 // ---------------------------------------------------------------------------
 // Driver — pluggable agent CLI abstraction
@@ -482,21 +483,18 @@ async function setupWorkspace(job) {
  */
 function cloneAndSetupBranch(job, repoUrl, targetDir) {
   try {
-    const auth = job.gitToken ? `x-access-token:${job.gitToken}@` : '';
+    const cloneUrl = buildCloneUrl(job.gitProvider, repoUrl, job.gitToken);
 
     // Try to clone - may fail if repo is empty
     try {
-      execSync(`git clone "https://${auth}github.com/${repoUrl}.git" "${targetDir}"`, {
+      execSync(`git clone "${cloneUrl}" "${targetDir}"`, {
         stdio: 'inherit',
       });
     } catch {
       // If clone fails (empty repo), initialize new repo
       console.log(`[pool-worker] Clone failed for ${repoUrl} (likely empty repo), initializing...`);
       execSync(`mkdir -p "${targetDir}" && git init "${targetDir}"`, { stdio: 'inherit' });
-      execSync(
-        `cd "${targetDir}" && git remote add origin "https://${auth}github.com/${repoUrl}.git"`,
-        { stdio: 'inherit' },
-      );
+      execSync(`cd "${targetDir}" && git remote add origin "${cloneUrl}"`, { stdio: 'inherit' });
     }
 
     // Configure git. Identity is overridable via env (set by the task def);
@@ -1177,15 +1175,52 @@ function getRepoUrlForDir(job, workDir) {
   return match ? match.url : job.gitRepo || '';
 }
 
+// GitLab access tokens expire (~2h); a long construction run can outlive the
+// dispatch-time token before the push phase. Refresh just-in-time via the
+// agents Lambda (which holds the git-connections row + refresh token + OAuth
+// secret) and update job.gitToken in place. No-op for GitHub (OAuth-App tokens
+// never expire) and when we lack the inputs to refresh. Best-effort: on any
+// failure we keep the existing token and let the push surface the real error.
+async function refreshGitTokenIfNeeded(job) {
+  if ((job.gitProvider || 'github') !== 'gitlab') return;
+  if (!job.userId || !process.env.AGENTS_LAMBDA_NAME) return;
+  try {
+    const inv = await lambda.send(
+      new InvokeCommand({
+        FunctionName: process.env.AGENTS_LAMBDA_NAME,
+        Payload: Buffer.from(
+          JSON.stringify({
+            httpMethod: 'POST',
+            path: '/git/refresh-token',
+            body: JSON.stringify({ userId: job.userId, gitProvider: job.gitProvider }),
+            requestContext: { authorizer: { claims: { sub: 'system' } } },
+          }),
+        ),
+      }),
+    );
+    const resp = JSON.parse(Buffer.from(inv.Payload).toString());
+    const parsed = resp.body ? JSON.parse(resp.body) : {};
+    if (resp.statusCode === 200 && parsed.accessToken) {
+      job.gitToken = parsed.accessToken;
+      console.log('[pool-worker] Refreshed GitLab token before push');
+    } else {
+      console.error(
+        `[pool-worker] GitLab token refresh returned status ${resp.statusCode}; using existing token`,
+      );
+    }
+  } catch (e) {
+    console.error(`[pool-worker] GitLab token refresh failed (${e.message}); using existing token`);
+  }
+}
+
 function pushBranchWithRetry(job, branch, maxRetries = 3, workDir = '/workspace') {
   // Returns: true (pushed OK) | false (real push failure after retries) | 'empty' (no commits — expected no-op)
   // Re-inject token into remote URL for push authentication.
-  const auth = job.gitToken ? `x-access-token:${job.gitToken}@` : '';
   const repoUrl = getRepoUrlForDir(job, workDir);
-  if (auth && repoUrl) {
+  if (job.gitToken && repoUrl) {
     try {
       execSync(
-        `cd "${workDir}" && git remote set-url origin "https://${auth}github.com/${repoUrl}.git"`,
+        `cd "${workDir}" && git remote set-url origin "${buildCloneUrl(job.gitProvider, repoUrl, job.gitToken)}"`,
         { stdio: 'inherit' },
       );
     } catch (urlErr) {
@@ -1373,6 +1408,8 @@ function runAcpSession(job) {
       BRANCH: job.branch || '',
       GIT_TOKEN: job.gitToken || '',
       GIT_REPO: job.gitRepo || '',
+      GIT_PROVIDER: job.gitProvider || 'github',
+      GIT_USER_ID: job.userId || '',
       GIT_REPOS: JSON.stringify(job.gitRepos || []),
       RUN_NUMBER: String(job.runNumber || 1),
       AGENT_MODEL: job.agentModel || '',
@@ -1400,69 +1437,82 @@ function runAcpSession(job) {
       // For construction and review-modify phases, push changes to remote.
       // CRITICAL: Wrapped in try/catch so no git error can crash the pool-worker process.
       // An uncaught exception here would kill the ECS task, wasting the worker permanently.
-      if (
-        (phase === 'construction' ||
-          phase === 'construction-orchestrator' ||
-          phase === 'review-modify' ||
-          phase === 'bugfix') &&
-        code === 0 &&
-        (job.gitRepo || (job.gitRepos && job.gitRepos.length > 0)) &&
-        job.branch
-      ) {
-        try {
-          const isMultiRepo = job.gitRepos && job.gitRepos.length > 1;
-          if (isMultiRepo) {
-            // Multi-repo: push each repo from its subdirectory.
-            // A repo with no commits for this task is normal (the agent only touched
-            // some repos) — it must NOT mark the whole push as failed, otherwise the
-            // orchestrator would skip merging the repos that DID change.
-            let anyPushed = false;
-            let anyRealFailure = false;
-            for (const repo of job.gitRepos) {
-              const repoDir = `/workspace/${repo.url}`;
-              if (!fs.existsSync(repoDir)) {
-                pushResults.push({ repository: repo.url, pushed: false, reason: 'dir_not_found' });
-                anyRealFailure = true;
-                continue;
-              }
-              const res = pushBranchWithRetry(job, job.branch, 3, repoDir);
-              if (res === 'empty') {
-                pushResults.push({ repository: repo.url, pushed: false, reason: 'no_commits' });
-              } else if (res === true) {
-                pushResults.push({ repository: repo.url, pushed: true });
-                anyPushed = true;
-              } else {
-                pushResults.push({ repository: repo.url, pushed: false, reason: 'push_failed' });
-                anyRealFailure = true;
-              }
-            }
-            // Success = at least one repo's changes landed AND no repo that had changes
-            // failed to push. Untouched ('no_commits') repos are neutral.
-            pushSucceeded = anyPushed && !anyRealFailure;
-          } else {
-            pushSucceeded = pushBranchWithRetry(job, job.branch) === true;
-          }
-        } catch (pushErr) {
-          console.error(
-            `[pool-worker] FATAL-PREVENTED: pushBranchWithRetry threw unexpectedly: ${pushErr.message}`,
-          );
-          console.error(pushErr.stack);
-          pushSucceeded = false;
-        }
-
-        if (phase === 'construction-orchestrator' && pushSucceeded) {
+      //
+      // The push needs a possibly-refreshed GitLab token (the agent may have run
+      // long enough for the dispatch-time token to expire), so the post-exit work
+      // runs in an async IIFE; `resolve` is captured from the Promise executor.
+      void (async () => {
+        if (
+          (phase === 'construction' ||
+            phase === 'construction-orchestrator' ||
+            phase === 'review-modify' ||
+            phase === 'bugfix') &&
+          code === 0 &&
+          (job.gitRepo || (job.gitRepos && job.gitRepos.length > 0)) &&
+          job.branch
+        ) {
           try {
-            cleanupMergedTaskBranch(job);
-          } catch (cleanupErr) {
+            // Refresh an expired GitLab token before pushing — the agent may have
+            // run long enough for the dispatch-time access token to expire.
+            await refreshGitTokenIfNeeded(job);
+            const isMultiRepo = job.gitRepos && job.gitRepos.length > 1;
+            if (isMultiRepo) {
+              // Multi-repo: push each repo from its subdirectory.
+              // A repo with no commits for this task is normal (the agent only touched
+              // some repos) — it must NOT mark the whole push as failed, otherwise the
+              // orchestrator would skip merging the repos that DID change.
+              let anyPushed = false;
+              let anyRealFailure = false;
+              for (const repo of job.gitRepos) {
+                const repoDir = `/workspace/${repo.url}`;
+                if (!fs.existsSync(repoDir)) {
+                  pushResults.push({
+                    repository: repo.url,
+                    pushed: false,
+                    reason: 'dir_not_found',
+                  });
+                  anyRealFailure = true;
+                  continue;
+                }
+                const res = pushBranchWithRetry(job, job.branch, 3, repoDir);
+                if (res === 'empty') {
+                  pushResults.push({ repository: repo.url, pushed: false, reason: 'no_commits' });
+                } else if (res === true) {
+                  pushResults.push({ repository: repo.url, pushed: true });
+                  anyPushed = true;
+                } else {
+                  pushResults.push({ repository: repo.url, pushed: false, reason: 'push_failed' });
+                  anyRealFailure = true;
+                }
+              }
+              // Success = at least one repo's changes landed AND no repo that had changes
+              // failed to push. Untouched ('no_commits') repos are neutral.
+              pushSucceeded = anyPushed && !anyRealFailure;
+            } else {
+              pushSucceeded = pushBranchWithRetry(job, job.branch) === true;
+            }
+          } catch (pushErr) {
             console.error(
-              `[pool-worker] FATAL-PREVENTED: cleanupMergedTaskBranch threw unexpectedly: ${cleanupErr.message}`,
+              `[pool-worker] FATAL-PREVENTED: pushBranchWithRetry threw unexpectedly: ${pushErr.message}`,
             );
-            console.error(cleanupErr.stack);
+            console.error(pushErr.stack);
+            pushSucceeded = false;
+          }
+
+          if (phase === 'construction-orchestrator' && pushSucceeded) {
+            try {
+              cleanupMergedTaskBranch(job);
+            } catch (cleanupErr) {
+              console.error(
+                `[pool-worker] FATAL-PREVENTED: cleanupMergedTaskBranch threw unexpectedly: ${cleanupErr.message}`,
+              );
+              console.error(cleanupErr.stack);
+            }
           }
         }
-      }
 
-      resolve({ exitCode: code || 0, pushSucceeded, pushResults });
+        resolve({ exitCode: code || 0, pushSucceeded, pushResults });
+      })();
     });
     child.on('error', (err) => {
       console.error('ACP child error:', err);
