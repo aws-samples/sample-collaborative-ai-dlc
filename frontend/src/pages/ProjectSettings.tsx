@@ -15,8 +15,8 @@ import {
 } from '../services/projects';
 import { trackersService, type TrackerConnection } from '../services/trackers';
 import { agentsService } from '../services/agents';
-import { GitHubRepoSelect } from '../components/GitHubRepoSelect';
-import type { GitHubRepo } from '../services/github';
+import { GitRepoSelect } from '../components/GitRepoSelect';
+import type { GitRepo } from '../services/gitProvider';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -1248,10 +1248,11 @@ export default function ProjectSettings() {
               </DialogDescription>
             </DialogHeader>
             <div className="py-4 space-y-3">
-              <GitHubRepoSelect
+              <GitRepoSelect
+                provider={project?.gitProvider ?? 'github'}
                 multiple
                 value={selectedNewRepos}
-                onChange={(selected: GitHubRepo[]) => {
+                onChange={(selected: GitRepo[]) => {
                   setSelectedNewRepos(selected.map((r) => r.fullName));
                 }}
                 exclude={repos.map((r) => r.url)}

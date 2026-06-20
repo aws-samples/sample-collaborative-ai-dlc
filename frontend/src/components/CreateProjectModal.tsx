@@ -3,12 +3,9 @@ import { projectsService, type CreateProjectInput } from '../services/projects';
 import { trackersService } from '../services/trackers';
 import { useGitHubStatus } from '../hooks/useGitHubStatus';
 import { useGitLabStatus } from '../hooks/useGitLabStatus';
-import { GitHubConnectButton } from './GitHubConnectButton';
-import { GitLabConnectButton } from './GitLabConnectButton';
-import { GitHubRepoSelect } from './GitHubRepoSelect';
-import { GitLabRepoSelect } from './GitLabRepoSelect';
-import type { GitHubRepo } from '../services/github';
-import type { GitLabRepo } from '../services/gitlab';
+import { GitConnectButton } from './GitConnectButton';
+import { GitRepoSelect } from './GitRepoSelect';
+import type { GitRepo } from '../services/gitProvider';
 
 interface Props {
   onClose: () => void;
@@ -53,7 +50,7 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
     }));
   };
 
-  const handleReposChange = (repos: GitHubRepo[] | GitLabRepo[]) => {
+  const handleReposChange = (repos: GitRepo[]) => {
     const fullNames = repos.map((r) => r.fullName);
     setSelectedRepos(fullNames);
     applyPrimaryRepo(
@@ -191,7 +188,8 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
                 {githubStatusLoading ? (
                   <p className="text-sm text-gray-500 dark:text-gray-400">Checking connection...</p>
                 ) : (
-                  <GitHubConnectButton
+                  <GitConnectButton
+                    provider="github"
                     connected={githubStatus?.connected || false}
                     onDisconnect={githubRefresh}
                   />
@@ -208,7 +206,8 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
                 {gitlabStatusLoading ? (
                   <p className="text-sm text-gray-500 dark:text-gray-400">Checking connection...</p>
                 ) : (
-                  <GitLabConnectButton
+                  <GitConnectButton
+                    provider="gitlab"
                     connected={gitlabStatus?.connected || false}
                     onDisconnect={gitlabRefresh}
                   />
@@ -241,11 +240,12 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
               Choose one or more repositories. The primary repo drives issue integration and project
               naming.
             </p>
-            {formData.gitProvider === 'github' ? (
-              <GitHubRepoSelect multiple value={selectedRepos} onChange={handleReposChange} />
-            ) : (
-              <GitLabRepoSelect multiple value={selectedRepos} onChange={handleReposChange} />
-            )}
+            <GitRepoSelect
+              provider={formData.gitProvider}
+              multiple
+              value={selectedRepos}
+              onChange={handleReposChange}
+            />
             {selectedRepos.length > 1 && (
               <div className="mt-3 border dark:border-gray-600 rounded divide-y dark:divide-gray-600">
                 <div className="px-3 py-1.5 bg-gray-50 dark:bg-gray-700">
