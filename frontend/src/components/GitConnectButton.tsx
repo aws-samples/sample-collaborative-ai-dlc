@@ -28,9 +28,9 @@ const PROVIDER_META = {
   gitlab: {
     label: 'GitLab',
     connectClass:
-      'px-4 py-2 bg-orange-600 text-white rounded hover:bg-orange-700 disabled:opacity-50 self-start',
+      'px-4 py-2 bg-[#fc6d26] text-white rounded hover:bg-[#e24329] disabled:opacity-50 self-start',
     disabledClass:
-      'px-4 py-2 bg-orange-600 text-white rounded opacity-50 cursor-not-allowed self-start',
+      'px-4 py-2 bg-[#fc6d26] text-white rounded opacity-50 cursor-not-allowed self-start',
     connectedClass: 'text-green-600 text-sm',
   },
 };
