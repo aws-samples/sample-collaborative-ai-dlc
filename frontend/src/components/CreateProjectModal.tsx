@@ -1,9 +1,11 @@
 import { useState } from 'react';
+import { Github, Gitlab } from 'lucide-react';
 import { projectsService, type CreateProjectInput } from '../services/projects';
 import { trackersService } from '../services/trackers';
 import { useGitProviderStatus } from '../hooks/useGitProviderStatus';
 import { GitConnectButton } from './GitConnectButton';
 import { GitRepoSelect } from './GitRepoSelect';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { trackerIdForGitProvider, type GitProvider, type GitRepo } from '../services/gitProvider';
 
 interface Props {
@@ -147,31 +149,37 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
         {/* Step 1: Connect Git Provider */}
         {step === 1 && (
           <div>
-            <h3 className="font-medium mb-3 text-gray-900 dark:text-white">Choose Git Provider</h3>
-            <div className="flex gap-2 mb-4">
-              <button
-                type="button"
-                onClick={() => handleProviderChange('github')}
-                className={`flex-1 px-3 py-2 rounded border text-sm font-medium ${
-                  formData.gitProvider === 'github'
-                    ? 'border-indigo-600 bg-indigo-50 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300 dark:border-indigo-500'
-                    : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'
-                }`}
-              >
-                GitHub
-              </button>
-              <button
-                type="button"
-                onClick={() => handleProviderChange('gitlab')}
-                className={`flex-1 px-3 py-2 rounded border text-sm font-medium ${
-                  formData.gitProvider === 'gitlab'
-                    ? 'border-indigo-600 bg-indigo-50 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300 dark:border-indigo-500'
-                    : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'
-                }`}
-              >
-                GitLab
-              </button>
-            </div>
+            <label
+              htmlFor="git-provider-select"
+              className="block font-medium mb-1 text-gray-900 dark:text-white"
+            >
+              Choose Git Provider
+            </label>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+              A project connects to a single git provider.
+            </p>
+            <Select
+              value={formData.gitProvider}
+              onValueChange={(v) => handleProviderChange(v as GitProvider)}
+            >
+              <SelectTrigger id="git-provider-select" className="mb-4">
+                <SelectValue placeholder="Select a git provider" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="github">
+                  <span className="flex items-center gap-2">
+                    <Github />
+                    GitHub
+                  </span>
+                </SelectItem>
+                <SelectItem value="gitlab">
+                  <span className="flex items-center gap-2">
+                    <Gitlab />
+                    GitLab
+                  </span>
+                </SelectItem>
+              </SelectContent>
+            </Select>
             {gitStatusError && (
               <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4 text-sm">
                 {gitStatusError}

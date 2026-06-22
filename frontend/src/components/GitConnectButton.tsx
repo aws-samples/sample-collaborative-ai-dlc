@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Check } from 'lucide-react';
 import {
   getGitProviderService,
   trackerIdForGitProvider,
@@ -81,11 +82,14 @@ export function GitConnectButton({ provider, connected, onDisconnect }: GitConne
   if (connected) {
     return (
       <div className="flex items-center gap-3">
-        <span className={meta.connectedClass}>✓ {meta.label} Connected</span>
+        <span className={`inline-flex items-center gap-1 ${meta.connectedClass}`}>
+          <Check className="w-4 h-4" /> {meta.label} Connected
+        </span>
         <button
+          type="button"
           onClick={handleDisconnect}
           disabled={loading}
-          className="text-sm text-red-600 hover:underline disabled:opacity-50"
+          className="inline-flex items-center px-3 py-1 text-sm font-medium rounded border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-700 dark:hover:bg-red-950/40"
         >
           {loading ? 'Disconnecting...' : 'Disconnect'}
         </button>
