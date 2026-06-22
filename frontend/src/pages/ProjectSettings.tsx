@@ -18,6 +18,7 @@ import { agentsService } from '../services/agents';
 import { GitRepoSelect } from '../components/GitRepoSelect';
 import {
   trackerIdForGitProvider,
+  gitProviderTerminology,
   type GitRepo,
   type GitTrackerProviderId,
 } from '../services/gitProvider';
@@ -62,7 +63,7 @@ const ROLE_LABELS: Record<ProjectRole, string> = {
 
 const ROLE_DESCRIPTIONS: Record<ProjectRole, string> = {
   owner: 'Full control: manage project, members, and settings',
-  admin: 'Manage members and update GitHub repository',
+  admin: 'Manage members and update the project repository',
   member: 'Collaborate on sprints and trigger agents',
 };
 
@@ -711,7 +712,9 @@ export default function ProjectSettings() {
                     />
                   </div>
                   <div className="space-y-1.5">
-                    <Label htmlFor="proj-repo">GitHub Repository</Label>
+                    <Label htmlFor="proj-repo">
+                      {gitProviderTerminology(project?.gitProvider ?? 'github').label} Repository
+                    </Label>
                     <Input
                       id="proj-repo"
                       value={editGitRepo}

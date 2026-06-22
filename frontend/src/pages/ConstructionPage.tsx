@@ -10,6 +10,7 @@ import { useAnswerQuestion } from '@/hooks/useAnswerQuestion';
 import { questionAnchorId } from '@/lib/questionAnchor';
 import { sprintsService } from '@/services/sprints';
 import { projectsService, type Project } from '@/services/projects';
+import { gitProviderTerminology } from '@/services/gitProvider';
 import { agentsService } from '@/services/agents';
 import { questionsService } from '@/services/questions';
 import { tasksService } from '@/services/tasks';
@@ -315,6 +316,8 @@ export default function ConstructionPage() {
     failed: tasks.filter((t) => t.status === 'failed'),
   };
 
+  const prTerm = gitProviderTerminology(project?.gitProvider ?? 'github');
+
   return (
     <div className="flex flex-col h-full">
       <div className="flex-1 overflow-y-auto">
@@ -387,14 +390,14 @@ export default function ConstructionPage() {
                 <div className="flex items-center gap-3">
                   <GitBranch className="h-5 w-5 text-agent-success" />
                   <div className="flex-1">
-                    <p className="text-sm font-medium">Pull Request Created</p>
+                    <p className="text-sm font-medium">{prTerm.changeRequest} Created</p>
                     <a
                       href={sprint.prUrl}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-xs text-agent-success hover:underline"
                     >
-                      PR #{sprint.prNumber} -- View on GitHub
+                      {prTerm.changeRequestShort} #{sprint.prNumber} -- View on {prTerm.label}
                     </a>
                   </div>
                   <Button
@@ -403,7 +406,7 @@ export default function ConstructionPage() {
                     className="gap-1.5"
                     onClick={() => window.open(sprint.prUrl!, '_blank')}
                   >
-                    <ExternalLink className="h-3 w-3" /> View PR
+                    <ExternalLink className="h-3 w-3" /> View {prTerm.changeRequestShort}
                   </Button>
                 </div>
                 {sprint.prNumber && (
@@ -471,7 +474,9 @@ export default function ConstructionPage() {
                 ) : (
                   <GitBranch className="h-4 w-4" />
                 )}
-                {startingConstruction ? 'Creating PR...' : 'Create PR'}
+                {startingConstruction
+                  ? `Creating ${prTerm.changeRequestShort}...`
+                  : `Create ${prTerm.changeRequestShort}`}
               </Button>
             )}
 
@@ -505,9 +510,10 @@ export default function ConstructionPage() {
           {constructionComplete && !sprint?.prUrl && agentStatus.status?.status !== 'RUNNING' && (
             <Card className="border-amber-500/50 bg-amber-500/5">
               <CardContent className="p-3 text-sm text-amber-600 dark:text-amber-400">
-                Construction is complete but no Pull Request was created. Click{' '}
-                <strong>Create PR</strong> to have the orchestrator create one now, or advance to
-                Review and link a PR manually from there.
+                Construction is complete but no {prTerm.changeRequest} was created. Click{' '}
+                <strong>Create {prTerm.changeRequestShort}</strong> to have the orchestrator create
+                one now, or advance to Review and link a {prTerm.changeRequestShort} manually from
+                there.
               </CardContent>
             </Card>
           )}

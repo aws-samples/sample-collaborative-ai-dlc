@@ -2,15 +2,17 @@ import { useEffect, useState } from 'react';
 import { useCollaborativeArtifact } from '../hooks/useCollaborativeArtifact';
 import { CollaborativeTextarea } from './CollaborativeTextarea';
 import type { Review, ReviewStatus } from '../services/reviews';
+import { gitProviderTerminology, type GitProvider } from '../services/gitProvider';
 
 interface Props {
   review: Review | null;
   sprintId: string;
   userName: string;
+  gitProvider: GitProvider;
   readOnly?: boolean;
   onCreate: () => Promise<void>;
   onSave: (updates: { status?: ReviewStatus; comments?: string }) => Promise<void>;
-  onSendToGitHub: () => Promise<void>;
+  onSendToProvider: () => Promise<void>;
   onFocus?: () => void;
   onBlur?: () => void;
 }
@@ -36,15 +38,17 @@ export default function ReviewEditor({
   review,
   sprintId,
   userName,
+  gitProvider,
   readOnly = false,
   onCreate,
   onSave,
-  onSendToGitHub,
+  onSendToProvider,
   onFocus,
   onBlur,
 }: Props) {
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState<'success' | 'error' | null>(null);
+  const term = gitProviderTerminology(gitProvider);
 
   const { values, setField, initFields, synced, remoteUsers, setCursor } =
     useCollaborativeArtifact<{ comments: string }>(
@@ -68,11 +72,11 @@ export default function ReviewEditor({
     await onSave({ status, comments: values.comments });
   };
 
-  const handleSendToGitHub = async () => {
+  const handleSendToProvider = async () => {
     setSending(true);
     setSendResult(null);
     try {
-      await onSendToGitHub();
+      await onSendToProvider();
       setSendResult('success');
       setTimeout(() => setSendResult(null), 2000);
     } catch {
@@ -99,7 +103,7 @@ export default function ReviewEditor({
   }
 
   const remoteCount = remoteUsers.size;
-  const canSendToGitHub = review.status !== 'PENDING' && !readOnly;
+  const canSendToProvider = review.status !== 'PENDING' && !readOnly;
 
   return (
     <div>
@@ -150,8 +154,8 @@ export default function ReviewEditor({
           </button>
         ))}
         <button
-          onClick={handleSendToGitHub}
-          disabled={!canSendToGitHub || sending}
+          onClick={handleSendToProvider}
+          disabled={!canSendToProvider || sending}
           className={`px-3 py-1.5 text-sm rounded ml-auto disabled:opacity-50 disabled:cursor-not-allowed ${
             sendResult === 'success'
               ? 'bg-green-600 text-white'
@@ -161,8 +165,8 @@ export default function ReviewEditor({
           }`}
           title={
             review.status === 'PASSED'
-              ? 'Post to PR and mark sprint as COMPLETED'
-              : 'Post the review verdict and comments to the GitHub PR'
+              ? `Post to ${term.changeRequestShort} and mark sprint as COMPLETED`
+              : `Post the review verdict and comments to the ${term.label} ${term.changeRequestShort}`
           }
         >
           {sending
@@ -171,7 +175,7 @@ export default function ReviewEditor({
               ? 'Sent!'
               : sendResult === 'error'
                 ? 'Failed'
-                : 'Send to GitHub'}
+                : `Send to ${term.label}`}
         </button>
       </div>
     </div>

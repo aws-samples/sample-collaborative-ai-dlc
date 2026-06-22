@@ -688,9 +688,9 @@ export default function Admin() {
               Tracker OAuth Apps
             </CardTitle>
             <p className="text-xs text-muted-foreground">
-              Connect external tracker providers (Jira Cloud, GitHub Issues) by registering an OAuth
-              app with each provider and pasting its credentials below. Users then connect their
-              personal accounts from Project Settings → Trackers.
+              Connect external tracker providers (Jira Cloud, GitHub Issues, GitLab Issues) by
+              registering an OAuth app with each provider and pasting its credentials below. Users
+              then connect their personal accounts from Project Settings → Trackers.
             </p>
           </CardHeader>
           <CardContent className="px-5 pb-5 space-y-4">

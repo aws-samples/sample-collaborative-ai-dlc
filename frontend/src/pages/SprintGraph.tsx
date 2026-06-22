@@ -2403,7 +2403,7 @@ function NodeDetailContent({ node }: { node: LayoutNode }) {
                 rel="noopener noreferrer"
                 className="text-xs text-primary hover:underline underline-offset-2 break-all"
               >
-                Open on GitHub
+                Open link
               </a>
             </DetailField>
           )}

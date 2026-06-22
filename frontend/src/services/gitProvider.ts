@@ -183,3 +183,25 @@ export const gitlabService: GitProviderService = {
 export const getGitProviderService = (provider: GitProvider): GitProviderService => {
   return provider === 'gitlab' ? gitlabService : githubService;
 };
+
+// =============================================================================
+// Provider display terminology — centralizes user-facing wording so UI copy
+// stays correct per provider. GitHub uses "Pull Request" (PR); GitLab uses
+// "Merge Request" (MR). `label` is the brand name for buttons/headings.
+// =============================================================================
+
+export interface GitProviderTerminology {
+  label: string;
+  // The change-request term, e.g. "Pull Request" / "Merge Request".
+  changeRequest: string;
+  // The short form, e.g. "PR" / "MR".
+  changeRequestShort: string;
+}
+
+const GIT_PROVIDER_TERMINOLOGY: Record<GitProvider, GitProviderTerminology> = {
+  github: { label: 'GitHub', changeRequest: 'Pull Request', changeRequestShort: 'PR' },
+  gitlab: { label: 'GitLab', changeRequest: 'Merge Request', changeRequestShort: 'MR' },
+};
+
+export const gitProviderTerminology = (provider: GitProvider): GitProviderTerminology =>
+  GIT_PROVIDER_TERMINOLOGY[provider] ?? GIT_PROVIDER_TERMINOLOGY.github;
