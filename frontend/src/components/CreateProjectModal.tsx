@@ -4,7 +4,7 @@ import { trackersService } from '../services/trackers';
 import { useGitProviderStatus } from '../hooks/useGitProviderStatus';
 import { GitConnectButton } from './GitConnectButton';
 import { GitRepoSelect } from './GitRepoSelect';
-import type { GitProvider, GitRepo } from '../services/gitProvider';
+import { trackerIdForGitProvider, type GitProvider, type GitRepo } from '../services/gitProvider';
 
 interface Props {
   onClose: () => void;
@@ -83,8 +83,7 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
       const project = await projectsService.create(input);
       if (formData.issueIntegrationEnabled && formData.gitRepo) {
         // GitHub and GitLab issues both reuse the project's git connection.
-        const trackerProvider =
-          formData.gitProvider === 'gitlab' ? 'gitlab-issues' : 'github-issues';
+        const trackerProvider = trackerIdForGitProvider(formData.gitProvider);
         try {
           await trackersService.addToProject(project.id, {
             provider: trackerProvider,

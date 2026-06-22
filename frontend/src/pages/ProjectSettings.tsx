@@ -16,7 +16,11 @@ import {
 import { trackersService, type TrackerConnection } from '../services/trackers';
 import { agentsService } from '../services/agents';
 import { GitRepoSelect } from '../components/GitRepoSelect';
-import type { GitRepo } from '../services/gitProvider';
+import {
+  trackerIdForGitProvider,
+  type GitRepo,
+  type GitTrackerProviderId,
+} from '../services/gitProvider';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -330,7 +334,7 @@ export default function ProjectSettings() {
 
   // Add the git-issues tracker matching the project's git provider
   // (github-issues / gitlab-issues). Both reuse the project's git connection.
-  const handleAddGitTracker = async (providerId: 'github-issues' | 'gitlab-issues') => {
+  const handleAddGitTracker = async (providerId: GitTrackerProviderId) => {
     if (!projectId || !project || !project.gitRepo) return;
     clearMessages();
     setTogglingTracker(true);
@@ -784,43 +788,34 @@ export default function ProjectSettings() {
                   </div>
                 )}
 
-                {canEditProject &&
-                  project?.gitProvider === 'github' &&
-                  project.gitRepo &&
-                  !(project.trackers ?? []).some(
-                    (b) =>
-                      b.provider === TRACKER_PROVIDERS['github-issues'].id &&
-                      b.externalProjectKey === project.gitRepo,
-                  ) && (
+                {/* Add the git-issues tracker matching the project's git
+                    provider (github-issues / gitlab-issues). One block — the
+                    provider selects the tracker id + label. */}
+                {(() => {
+                  if (!canEditProject || !project?.gitRepo) return null;
+                  if (project.gitProvider !== 'github' && project.gitProvider !== 'gitlab') {
+                    return null;
+                  }
+                  const trackerId = trackerIdForGitProvider(project.gitProvider);
+                  const meta = TRACKER_PROVIDERS[trackerId];
+                  const alreadyBound = (project.trackers ?? []).some(
+                    (b) => b.provider === meta.id && b.externalProjectKey === project.gitRepo,
+                  );
+                  if (alreadyBound) return null;
+                  return (
                     <div className="flex justify-end pt-2">
                       <Button
                         size="sm"
-                        onClick={() => handleAddGitTracker('github-issues')}
+                        onClick={() => handleAddGitTracker(trackerId)}
                         disabled={togglingTracker}
                       >
-                        {togglingTracker ? 'Saving…' : `Add GitHub Issues for ${project.gitRepo}`}
+                        {togglingTracker
+                          ? 'Saving…'
+                          : `Add ${meta.displayName} for ${project.gitRepo}`}
                       </Button>
                     </div>
-                  )}
-
-                {canEditProject &&
-                  project?.gitProvider === 'gitlab' &&
-                  project.gitRepo &&
-                  !(project.trackers ?? []).some(
-                    (b) =>
-                      b.provider === TRACKER_PROVIDERS['gitlab-issues'].id &&
-                      b.externalProjectKey === project.gitRepo,
-                  ) && (
-                    <div className="flex justify-end pt-2">
-                      <Button
-                        size="sm"
-                        onClick={() => handleAddGitTracker('gitlab-issues')}
-                        disabled={togglingTracker}
-                      >
-                        {togglingTracker ? 'Saving…' : `Add GitLab Issues for ${project.gitRepo}`}
-                      </Button>
-                    </div>
-                  )}
+                  );
+                })()}
 
                 {canEditProject && (
                   <JiraConnectButton

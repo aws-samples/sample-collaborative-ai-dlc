@@ -1,5 +1,9 @@
 import { useState } from 'react';
-import { getGitProviderService, type GitProvider } from '../services/gitProvider';
+import {
+  getGitProviderService,
+  trackerIdForGitProvider,
+  type GitProvider,
+} from '../services/gitProvider';
 import { ApiError } from '../services/api';
 import { useTrackerProviders } from '@/hooks/useTrackerProviders';
 
@@ -9,12 +13,11 @@ export interface GitConnectButtonProps {
   onDisconnect: () => void;
 }
 
+// Button styling + label per provider. The git→tracker association lives in
+// the gitProvider service (trackerIdForGitProvider) — not duplicated here.
 const PROVIDER_META = {
   github: {
     label: 'GitHub',
-    // The git provider and its issue-tracker share one OAuth app/secret, so the
-    // operator-config status is reported under the tracker provider id.
-    trackerId: 'github-issues',
     connectClass:
       'px-4 py-2 bg-gray-900 text-white rounded hover:bg-gray-800 disabled:opacity-50 self-start',
     disabledClass:
@@ -23,7 +26,6 @@ const PROVIDER_META = {
   },
   gitlab: {
     label: 'GitLab',
-    trackerId: 'gitlab-issues',
     connectClass:
       'px-4 py-2 bg-orange-600 text-white rounded hover:bg-orange-700 disabled:opacity-50 self-start',
     disabledClass:
@@ -40,7 +42,9 @@ export function GitConnectButton({ provider, connected, onDisconnect }: GitConne
 
   // Operator-side OAuth-app config — disable the Connect button when the
   // deployment hasn't populated this provider's OAuth secret yet, with helper
-  // text pointing the user at the Admin panel.
+  // text pointing the user at the Admin panel. The git provider and its
+  // issue-tracker share one OAuth app, so config status is keyed by tracker id.
+  const trackerId = trackerIdForGitProvider(provider);
   const { providers, loading: providersLoading, failed: providersFailed } = useTrackerProviders();
   // null while loading; true if the provider reports configured OR the fetch
   // itself failed (let the user try anyway rather than block on a transient blip).
@@ -48,7 +52,7 @@ export function GitConnectButton({ provider, connected, onDisconnect }: GitConne
     ? null
     : providersFailed
       ? true
-      : (providers.find((p) => p.id === meta.trackerId)?.configured ?? false);
+      : (providers.find((p) => p.id === trackerId)?.configured ?? false);
 
   const handleConnect = async () => {
     setLoading(true);

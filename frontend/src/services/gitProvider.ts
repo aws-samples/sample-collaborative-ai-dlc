@@ -9,6 +9,20 @@ import { api } from './api';
 // the DB — a union assigns directly from those strings with zero runtime cost.
 export type GitProvider = 'github' | 'gitlab';
 
+// A git provider and its issue-tracker share one OAuth app/connection, so each
+// git provider maps to exactly one tracker-provider id. Centralized here so the
+// association lives in one place instead of being re-derived with inline
+// ternaries at every call site.
+export type GitTrackerProviderId = 'github-issues' | 'gitlab-issues';
+
+const GIT_PROVIDER_TRACKER_ID: Record<GitProvider, GitTrackerProviderId> = {
+  github: 'github-issues',
+  gitlab: 'gitlab-issues',
+};
+
+export const trackerIdForGitProvider = (provider: GitProvider): GitTrackerProviderId =>
+  GIT_PROVIDER_TRACKER_ID[provider];
+
 export interface GitRepo {
   id: number;
   name: string;
