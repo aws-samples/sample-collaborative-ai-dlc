@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { projectsService, type Project } from '@/services/projects';
 import { CreateProjectModal } from '@/components/CreateProjectModal';
+import type { GitProvider } from '@/services/gitProvider';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -26,6 +27,7 @@ export default function Dashboard() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [createInitialProvider, setCreateInitialProvider] = useState<GitProvider>('github');
   const [deleting, setDeleting] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -48,6 +50,10 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (searchParams.get('reopenCreateProject') === '1') {
+      const provider = searchParams.get('gitProvider');
+      if (provider === 'gitlab' || provider === 'github') {
+        setCreateInitialProvider(provider);
+      }
       setShowCreateModal(true);
       setSearchParams({}, { replace: true });
     }
@@ -293,7 +299,11 @@ export default function Dashboard() {
 
       {/* Create modal */}
       {showCreateModal && (
-        <CreateProjectModal onClose={() => setShowCreateModal(false)} onCreated={loadProjects} />
+        <CreateProjectModal
+          initialProvider={createInitialProvider}
+          onClose={() => setShowCreateModal(false)}
+          onCreated={loadProjects}
+        />
       )}
 
       {/* Delete confirmation */}

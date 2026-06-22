@@ -38,7 +38,13 @@ export function GitOAuthCallback({ trackerProviderId }: Props) {
       .then((data) => {
         if (data.success) {
           setStatus('success');
-          setTimeout(() => navigate('/dashboard?reopenCreateProject=1'), 1500);
+          // Carry the git provider back so the reopened create-project modal
+          // re-selects what the user just connected (gitlab-issues → gitlab).
+          const gitProvider = trackerProviderId === 'gitlab-issues' ? 'gitlab' : 'github';
+          setTimeout(
+            () => navigate(`/dashboard?reopenCreateProject=1&gitProvider=${gitProvider}`),
+            1500,
+          );
         } else {
           setStatus('error');
           setError(data.error || `Failed to connect ${meta.tabLabel}`);
@@ -48,7 +54,7 @@ export function GitOAuthCallback({ trackerProviderId }: Props) {
         setStatus('error');
         setError(`Failed to connect ${meta.tabLabel}`);
       });
-  }, [searchParams, navigate, meta.callbackPath, meta.tabLabel]);
+  }, [searchParams, navigate, meta.callbackPath, meta.tabLabel, trackerProviderId]);
 
   return <OAuthCallbackShell status={status} providerLabel={meta.tabLabel} errorMessage={error} />;
 }

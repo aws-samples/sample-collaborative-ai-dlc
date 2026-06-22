@@ -11,17 +11,20 @@ import { trackerIdForGitProvider, type GitProvider, type GitRepo } from '../serv
 interface Props {
   onClose: () => void;
   onCreated: () => void;
+  // Provider to preselect — used to restore the user's choice after an OAuth
+  // round-trip (the redirect to the provider and back resets in-memory state).
+  initialProvider?: GitProvider;
 }
 
 const repoShortName = (fullName: string) => fullName.split('/').pop() || '';
 
-export function CreateProjectModal({ onClose, onCreated }: Props) {
+export function CreateProjectModal({ onClose, onCreated, initialProvider = 'github' }: Props) {
   const [step, setStep] = useState(1);
   const [selectedRepos, setSelectedRepos] = useState<string[]>([]);
   const [primaryRepo, setPrimaryRepo] = useState<string>('');
   const [formData, setFormData] = useState<CreateProjectInput>({
     name: '',
-    gitProvider: 'github',
+    gitProvider: initialProvider,
     gitRepo: '',
     issueIntegrationEnabled: false,
   });
