@@ -71,7 +71,7 @@ export default function ConstructionPage() {
   const [branchSelectorMode, setBranchSelectorMode] = useState<'construction' | 'create-pr'>(
     'construction',
   );
-  const [showGitHub, setShowGitHub] = useState(false);
+  const [showFileBrowser, setShowFileBrowser] = useState(false);
   const [startingConstruction, setStartingConstruction] = useState(false);
   const [executionArn, setExecutionArn] = useState<string | null>(null);
   const [executionId, setExecutionId] = useState<string | null>(null);
@@ -158,7 +158,7 @@ export default function ConstructionPage() {
 
   const pendingQuestions = questions
     .filter((q) => !q.structuredAnswer)
-    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    .toSorted((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
   // Scroll to a question referenced by a #question-{id} URL hash (timeline links)
   useQuestionAnchor(questions.length > 0);
@@ -495,7 +495,7 @@ export default function ConstructionPage() {
               variant="outline"
               size="sm"
               className="gap-1.5 ml-auto"
-              onClick={() => setShowGitHub(true)}
+              onClick={() => setShowFileBrowser(true)}
             >
               <Eye className="h-3.5 w-3.5" /> View Repo Files
             </Button>
@@ -714,7 +714,7 @@ export default function ConstructionPage() {
                       return (
                         <Accordion type="multiple" className="space-y-1">
                           {Array.from(grouped.entries())
-                            .sort(([a], [b]) => a.localeCompare(b))
+                            .toSorted(([a], [b]) => a.localeCompare(b))
                             .map(([folder, files]) => (
                               <AccordionItem
                                 key={folder}
@@ -733,7 +733,7 @@ export default function ConstructionPage() {
                                 <AccordionContent className="px-3 pb-2">
                                   <div className="space-y-1.5">
                                     {files
-                                      .sort((a, b) => a.filePath.localeCompare(b.filePath))
+                                      .toSorted((a, b) => a.filePath.localeCompare(b.filePath))
                                       .map((file) => (
                                         <CodeFileViewer key={file.id} codeFile={file} />
                                       ))}
@@ -829,12 +829,12 @@ export default function ConstructionPage() {
       )}
 
       {/* Repository file browser */}
-      {showGitHub && project && (
+      {showFileBrowser && project && (
         <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-8">
           <Card className="w-full max-w-5xl max-h-[80vh] overflow-hidden">
             <CardHeader className="py-2 px-4 flex flex-row items-center justify-between">
               <CardTitle className="text-sm">Repository Files</CardTitle>
-              <Button variant="ghost" size="sm" onClick={() => setShowGitHub(false)}>
+              <Button variant="ghost" size="sm" onClick={() => setShowFileBrowser(false)}>
                 Close
               </Button>
             </CardHeader>
