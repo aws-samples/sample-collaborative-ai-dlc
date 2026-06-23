@@ -6,6 +6,19 @@ locals {
   partition  = data.aws_partition.current.partition
   dns_suffix = data.aws_partition.current.dns_suffix
 
+  # Lambdas that bundle code from lambda/shared/** via esbuild (gitlab, github,
+  # projects, trackers) are packaged by the terraform-aws-modules/lambda module,
+  # which only hashes each Lambda's OWN source_path directory. A change in a
+  # bundled shared file therefore does NOT change the package hash and the Lambda
+  # is silently NOT redeployed. To fix this, we fold a hash of the entire shared
+  # tree into each affected module's `hash_extra`, so any shared-file edit forces
+  # a rebuild. Covers nested dirs (e.g. git-providers/) via the "**" glob.
+  shared_dir = "${path.module}/../../../../lambda/shared"
+  shared_sources_hash = sha256(join("", [
+    for f in sort(fileset(local.shared_dir, "**/*.{js,mjs,cjs,json}")) :
+    filesha256("${local.shared_dir}/${f}")
+  ]))
+
   # Neptune IAM resource ARN (scoped to the specific cluster only)
   neptune_resource_arn = "arn:${local.partition}:neptune-db:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:${var.neptune_cluster_resource_id}/*"
 
@@ -455,6 +468,9 @@ module "projects_lambda" {
     }
   ]
 
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
+
   create_role = false
   lambda_role = aws_iam_role.neptune_artifacts.arn
 
@@ -838,6 +854,9 @@ module "github_lambda" {
     }
   ]
 
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
+
   create_role = false
   lambda_role = aws_iam_role.github_connector.arn
 
@@ -911,6 +930,9 @@ module "gitlab_lambda" {
     }
   ]
 
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
+
   create_role = false
   lambda_role = aws_iam_role.gitlab_connector.arn
 
@@ -948,6 +970,9 @@ module "trackers_lambda" {
       ]
     }
   ]
+
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.trackers.arn
