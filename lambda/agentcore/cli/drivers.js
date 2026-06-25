@@ -1,0 +1,90 @@
+// Headless CLI drivers — one consistent interface across agent CLIs.
+//
+// We run each CLI HEADLESS (one prompt, non-interactive, exit when done) with our
+// MCP server wired in via the CLI's mcp-config flag. The agent's human-facing
+// output flows through the MCP `send_output` tool (so streaming is identical
+// across CLIs), not by parsing CLI stdout — the runner only cares about the exit
+// code.
+//
+// Each driver exposes a SMALL surface:
+//   buildInvocation({ prompt, mcpConfigPath, model, allowedTools }) ->
+//     { command, args, env, promptViaStdin }
+//   envForAuth(env) -> { ...auth env vars }   (Bedrock bearer / Kiro key)
+// Pure of process spawning so argv construction is unit-tested directly. Auth
+// secret loading is the caller's job (loadSecrets), kept out of argv.
+
+// The MCP server name we register under in mcp-config (see stage-materializer).
+export const MCP_SERVER_NAME = 'aidlc';
+
+// ── Claude Code (headless) ──
+// `claude -p <prompt> --mcp-config <file> --permission-mode bypassPermissions
+//  --model <id> --output-format stream-json --verbose`
+// Bedrock auth via env (CLAUDE_CODE_USE_BEDROCK + AWS_BEARER_TOKEN_BEDROCK),
+// mirroring the v1 claude driver. Prompt on argv (-p).
+const claudeDriver = {
+  name: 'claude',
+  buildInvocation({ prompt, mcpConfigPath, model, allowedTools = [] }) {
+    const args = [
+      '-p',
+      prompt,
+      '--mcp-config',
+      mcpConfigPath,
+      '--permission-mode',
+      'bypassPermissions',
+    ];
+    if (model) args.push('--model', model);
+    if (allowedTools.length) args.push('--allowedTools', allowedTools.join(','));
+    args.push('--output-format', 'stream-json', '--verbose');
+    return { command: 'claude', args, env: {}, promptViaStdin: false };
+  },
+  envForAuth(env) {
+    const region = env.BEDROCK_REGION || env.AWS_REGION || 'us-east-1';
+    const out = {
+      CLAUDE_CODE_USE_BEDROCK: '1',
+      AWS_REGION: region,
+      IS_SANDBOX: '1',
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+    };
+    if (env.AWS_BEARER_TOKEN_BEDROCK) out.AWS_BEARER_TOKEN_BEDROCK = env.AWS_BEARER_TOKEN_BEDROCK;
+    return out;
+  },
+};
+
+// ── Kiro CLI (headless) ──
+// `kiro-cli chat --no-interactive --trust-all-tools --mcp-config <file> <prompt>`
+// (Kiro reads the model from its own settings; the runner sets it via env/config
+// where supported.) API-key auth via env (KIRO_API_KEY). Prompt on argv.
+const kiroDriver = {
+  name: 'kiro',
+  buildInvocation({ prompt, mcpConfigPath, model }) {
+    const args = ['chat', '--no-interactive', '--trust-all-tools', '--mcp-config', mcpConfigPath];
+    if (model) args.push('--model', model);
+    args.push(prompt);
+    return { command: 'kiro-cli', args, env: {}, promptViaStdin: false };
+  },
+  envForAuth(env) {
+    return env.KIRO_API_KEY ? { KIRO_API_KEY: env.KIRO_API_KEY } : {};
+  },
+};
+
+export const DRIVERS = { claude: claudeDriver, kiro: kiroDriver };
+
+// CLIs the runtime can drive, in stable preference order.
+export const SUPPORTED_CLIS = ['claude', 'kiro'];
+
+export const getDriver = (cli) => {
+  const d = DRIVERS[cli];
+  if (!d) throw new Error(`unsupported CLI "${cli}" (have: ${SUPPORTED_CLIS.join(', ')})`);
+  return d;
+};
+
+// Pick the CLI to drive a stage: explicit request if installed, else the first
+// installed CLI in preference order. Returns null when none is available.
+export const selectCli = ({ requested, availableClis = [] } = {}) => {
+  const installed = availableClis.filter((c) => SUPPORTED_CLIS.includes(c));
+  if (requested && installed.includes(requested)) return requested;
+  for (const cli of SUPPORTED_CLIS) if (installed.includes(cli)) return cli;
+  return null;
+};
+
+export { claudeDriver, kiroDriver };
