@@ -1,14 +1,23 @@
 import { describe, it, expect } from 'vitest';
 import { tmpdir } from 'node:os';
 import { mkdtemp, readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   OUTPUT_CONTRACT,
+  MCP_EXECUTION_ANNEX,
+  neutralizeHarnessDir,
   buildStagePrompt,
   buildMcpConfig,
   renderRulesDoc,
   materializeStage,
 } from '../stage-materializer.js';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+// The real, filesystem-laden upstream stage body — proves the annex governs
+// genuine prose (aidlc-docs paths, bun tools, [Answer]: files, approval block).
+const upstreamBody = readFileSync(path.join(here, 'fixtures', 'requirements-analysis.md'), 'utf8');
 
 const stage = (extra = {}) => ({
   stageId: 'requirements-analysis',
@@ -36,7 +45,7 @@ describe('buildStagePrompt', () => {
     expect(prompt).toContain('- intent-capture — from intent-capture');
     expect(prompt).toContain('- requirements-analysis');
     expect(prompt).toContain('Reference knowledge');
-    expect(prompt).toContain('requires human approval');
+    expect(prompt).toContain('reviewed by a human out-of-band');
     expect(prompt).toContain(OUTPUT_CONTRACT);
   });
 
@@ -48,7 +57,73 @@ describe('buildStagePrompt', () => {
     expect(prompt).toContain('## Inputs (read via the MCP tools)\n- none');
     expect(prompt).not.toContain('## Your role');
     expect(prompt).not.toContain('Reference knowledge');
-    expect(prompt).not.toContain('requires human approval');
+    expect(prompt).not.toContain('reviewed by a human out-of-band');
+    // The annex is unconditional — present even when optional sections are omitted.
+    expect(prompt).toContain(MCP_EXECUTION_ANNEX);
+  });
+});
+
+describe('buildStagePrompt — MCP execution annex binding', () => {
+  it('injects the annex exactly once, ahead of the stage body and the output contract', () => {
+    const prompt = buildStagePrompt({
+      stage: stage(),
+      stageBody: upstreamBody,
+      agentPersona: 'You are a product manager.',
+    });
+    // Present exactly once.
+    expect(prompt.split(MCP_EXECUTION_ANNEX)).toHaveLength(2);
+    // Ordering: annex < persona < stage instructions < output contract.
+    const iAnnex = prompt.indexOf(MCP_EXECUTION_ANNEX);
+    const iRole = prompt.indexOf('## Your role');
+    const iBody = prompt.indexOf('## Stage instructions');
+    const iContract = prompt.indexOf(OUTPUT_CONTRACT);
+    expect(iAnnex).toBeGreaterThanOrEqual(0);
+    expect(iAnnex).toBeLessThan(iRole);
+    expect(iRole).toBeLessThan(iBody);
+    expect(iBody).toBeLessThan(iContract);
+  });
+
+  it('carries the translation-table keywords the agent needs to redirect to MCP', () => {
+    const prompt = buildStagePrompt({ stage: stage(), stageBody: upstreamBody });
+    for (const kw of [
+      'overrides stage mechanics',
+      'create_artifact',
+      'ask_question',
+      'send_output',
+      'IGNORE',
+      'runtime-owned bookkeeping',
+    ]) {
+      expect(prompt).toContain(kw);
+    }
+  });
+
+  it('neutralizes every {{HARNESS_DIR}} token from the rendered prompt', () => {
+    // The fixture body carries multiple raw tokens.
+    expect(upstreamBody).toContain('{{HARNESS_DIR}}');
+    const prompt = buildStagePrompt({
+      stage: stage(),
+      stageBody: upstreamBody,
+      agentPersona: 'knowledge from {{HARNESS_DIR}}/knowledge/',
+      knowledge: 'see {{HARNESS_DIR}}/rules/',
+    });
+    expect(prompt).not.toContain('{{HARNESS_DIR}}');
+    expect(prompt).toContain('<runtime-managed>');
+  });
+
+  it('still emits the annex when the stage body is empty', () => {
+    const prompt = buildStagePrompt({ stage: stage(), stageBody: '' });
+    expect(prompt.split(MCP_EXECUTION_ANNEX)).toHaveLength(2);
+    expect(prompt).toContain('(no stage body supplied)');
+  });
+});
+
+describe('neutralizeHarnessDir', () => {
+  it('replaces every occurrence and leaves token-free text untouched', () => {
+    expect(neutralizeHarnessDir('{{HARNESS_DIR}}/a and {{HARNESS_DIR}}/b')).toBe(
+      '<runtime-managed>/a and <runtime-managed>/b',
+    );
+    expect(neutralizeHarnessDir('no token here')).toBe('no token here');
+    expect(neutralizeHarnessDir('')).toBe('');
   });
 });
 

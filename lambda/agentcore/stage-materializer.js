@@ -1,7 +1,8 @@
 // Stage materializer — turns a resolved plan stage + the loaded library into the
 // concrete things the headless CLI needs to run ONE stage:
-//   1. a stage PROMPT with a strict OUTPUT CONTRACT (business writes go ONLY
-//      through the MCP tools; process notes/output through the bridge tools),
+//   1. a stage PROMPT that injects the MCP execution annex FIRST (the harness
+//      binding that redirects the upstream filesystem/bun stage prose onto our
+//      MCP tools), then the persona + stage body + a tail output-contract reminder,
 //   2. the rule + knowledge bodies written into the workspace as steering files,
 //   3. an `--mcp-config` JSON pointing at our stdio MCP server with the trusted
 //      scope ENV.
@@ -10,24 +11,39 @@
 // isolation; the workspace write is the thin effectful shell.
 
 import { writeFile, mkdir } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-// The strict output contract appended to every stage prompt. Load-bearing: it
-// keeps the stage machine intact — an agent that only prints markdown produces
-// nothing the graph or the audit trail can see.
+// The MCP execution annex — the harness binding that redirects the upstream
+// stage prose (which is written for a filesystem + `bun` harness) onto our MCP
+// tool surface. Injected FIRST in the prompt so the agent reads the binding
+// before the filesystem-laden stage instructions. Authored + owned by us; see
+// docs/v2-runtime.md. Loaded once at module init.
+const annexPath = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  'prompts',
+  'mcp-execution-annex.md',
+);
+export const MCP_EXECUTION_ANNEX = readFileSync(annexPath, 'utf8').trimEnd();
+
+// Upstream bodies carry a literal `{{HARNESS_DIR}}` token (substituted only at
+// upstream's own dist build, which we bypass by fetching core/ raw). We neutralize
+// it at the PROMPT layer — the seeded block body stays verbatim — so the agent
+// never sees a raw templating artifact. The annex tells it to ignore the location.
+const HARNESS_DIR_TOKEN = /\{\{HARNESS_DIR\}\}/g;
+export const neutralizeHarnessDir = (text = '') =>
+  text.replace(HARNESS_DIR_TOKEN, '<runtime-managed>');
+
+// The strict output contract — a short tail reminder of the load-bearing tool
+// calls. The annex (injected first) owns the full "MCP is your only I/O" framing;
+// this just restates the must-not-forget writes at the end of the prompt.
 export const OUTPUT_CONTRACT = [
-  '## Output contract (MANDATORY)',
+  '## Output contract (reminder)',
   '',
-  '- Record EVERY business artifact you produce by CALLING `create_artifact`',
-  '  (artifactType = the expected output name, e.g. "requirements-analysis"),',
-  '  and wire relationships with `link_artifacts`. Output not written through a',
-  '  tool is DISCARDED — the stage will have produced nothing.',
-  '- Read upstream inputs with `get_artifact` / `lookup_artifacts` and orient with',
-  '  `get_intent_graph` / `search_graph` before you start.',
-  '- Stream human-facing progress and your final summary with `send_output`.',
-  '- If you need a human decision before continuing, call `ask_question` and wait',
-  '  for the answer — do not guess on ambiguous requirements.',
-  '- Report token/context usage with `collect_metric` when you finish.',
+  '- Record EVERY business artifact via `create_artifact`; wire links with',
+  '  `link_artifacts`. Output not written through a tool is DISCARDED.',
+  '- Finish with a `send_output` summary and `collect_metric` for usage.',
   '- Do exactly THIS stage. Do not start other stages or invent status.',
 ].join('\n');
 
@@ -61,22 +77,32 @@ export const buildStagePrompt = ({
     `# Stage: ${stage.stageId ?? 'unknown'} (phase: ${stage.phase ?? 'unphased'})`,
     '',
     `You are the **${stage.agentRef ?? 'assigned'}** agent executing ONE stage of an`,
-    'AI-DLC v2 workflow. Follow the stage instructions exactly.',
+    'AI-DLC v2 workflow. Follow the stage instructions for WORK QUALITY; follow the',
+    'execution environment below for MECHANICS.',
   ];
-  if (agentPersona) sections.push('', '## Your role', agentPersona);
-  sections.push('', '## Stage instructions', stageBody || '(no stage body supplied)');
+  // The harness binding goes FIRST — it must be read before the filesystem-laden
+  // stage prose so the agent translates rather than obeys it literally.
+  sections.push('', MCP_EXECUTION_ANNEX);
+  if (agentPersona) sections.push('', '## Your role', neutralizeHarnessDir(agentPersona));
+  sections.push(
+    '',
+    '## Stage instructions',
+    neutralizeHarnessDir(stageBody) || '(no stage body supplied)',
+  );
   sections.push('', '## Inputs (read via the MCP tools)', renderInputs(stage.inputArtifacts));
   sections.push(
     '',
     '## Expected outputs (record each via create_artifact)',
     renderOutputs(stage.outputArtifacts),
   );
-  if (knowledge) sections.push('', '## Reference knowledge', knowledge);
+  if (knowledge) sections.push('', '## Reference knowledge', neutralizeHarnessDir(knowledge));
   if (stage.humanValidation === 'required') {
     sections.push(
       '',
       '## Human validation',
-      'This stage requires human approval of its output before the workflow proceeds.',
+      "This stage's output is reviewed by a human out-of-band, after you finish —",
+      'the runtime owns that gate. Do NOT prompt for approval or render an approval',
+      'question; end with a `send_output` summary of what you produced.',
     );
   }
   sections.push('', OUTPUT_CONTRACT);

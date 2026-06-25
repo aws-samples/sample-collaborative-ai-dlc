@@ -9,10 +9,20 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import { readFileSync, readdirSync } from 'node:fs';
+import { mkdtemp } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { makeDdb, createV2Table, deleteV2Table } from './helpers/v2-table.js';
 import { initWs } from '../commands/init-ws.js';
 import { runStage } from '../commands/run-stage.js';
-import { renderRulesDoc, materializeStage } from '../stage-materializer.js';
+import { renderRulesDoc, materializeStage, MCP_EXECUTION_ANNEX } from '../stage-materializer.js';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+// The real upstream stage body the runtime would seed verbatim — filesystem +
+// bun + [Answer]: + approval-block laden. The annex must redirect all of it.
+const upstreamBody = readFileSync(path.join(here, 'fixtures', 'requirements-analysis.md'), 'utf8');
 import { createGraphWriter } from '../mcp/graph-writer.js';
 import { createProcessBridge } from '../mcp/process-bridge.js';
 import { buildToolHandlers } from '../mcp/server.js';
@@ -89,6 +99,8 @@ beforeEach(async () => {
 describe('end-to-end: init-ws → run-stage with a real agent-equivalent MCP session', () => {
   it('bootstraps the intent, executes the stage, and lands artifact + state + output', async () => {
     const scope = { projectId: 'p1', intentId: 'i1', executionId: 'e1', scope: 'feature' };
+    // A real workspace dir so we can assert what the runtime writes to disk.
+    const workspaceDir = await mkdtemp(path.join(tmpdir(), 'aidlc-int-'));
 
     // 1. init-ws: create Intent + seed state (git checkout stubbed).
     const init = await initWs(
@@ -97,7 +109,7 @@ describe('end-to-end: init-ws → run-stage with a real agent-equivalent MCP ses
         store,
         openGraph: async () => g,
         checkoutRepos: async () => [],
-        workspaceDir: '/tmp/aidlc-int',
+        workspaceDir,
       },
     );
     expect(init.ok).toBe(true);
@@ -155,19 +167,29 @@ describe('end-to-end: init-ws → run-stage with a real agent-equivalent MCP ses
       return child;
     };
 
+    // Capture the prompt the runtime hands the CLI so we can assert the annex
+    // binding governs the real, filesystem-laden upstream stage body.
+    let capturedPrompt = null;
+    const capturingMaterialize = async (args) => {
+      const out = await materializeStage(args);
+      capturedPrompt = out.prompt;
+      return out;
+    };
+
     const res = await runStage(
       {
         ...scope,
         stageId: 'requirements-analysis',
         workflowId: 'aidlc-v2',
         workflowVersion: 1,
-        workspaceDir: '/tmp/aidlc-int',
+        workspaceDir,
       },
       {
         store,
         loadLibrary: async () => ({ workflow: workflow(), library: library() }),
-        loadBlockBody: async () => 'stage body',
-        materializeStage,
+        // Feed the REAL upstream stage body (and the same prose as the persona).
+        loadBlockBody: async () => upstreamBody,
+        materializeStage: capturingMaterialize,
         renderRulesDoc,
         mcpEntry: '/opt/agentcore/mcp/index.js',
         availableClis: ['claude'],
@@ -177,6 +199,23 @@ describe('end-to-end: init-ws → run-stage with a real agent-equivalent MCP ses
     );
 
     expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED', cli: 'claude' });
+
+    // 3z. The prompt carries the MCP binding over the real upstream prose, with no
+    // raw {{HARNESS_DIR}} token leaking through.
+    expect(capturedPrompt).toContain(MCP_EXECUTION_ANNEX);
+    expect(capturedPrompt).not.toContain('{{HARNESS_DIR}}');
+
+    // 3y. The runtime wrote ONLY its steering files under .aidlc — no aidlc-docs/
+    // tree. The agent's outputs went to Neptune via create_artifact, not to disk.
+    const topLevel = readdirSync(workspaceDir);
+    expect(topLevel).toContain('.aidlc');
+    expect(topLevel).not.toContain('aidlc-docs');
+    // No rules in this library, so only the mcp-config is materialized; either
+    // way every workspace write stays inside .aidlc (steering), never aidlc-docs.
+    for (const f of readdirSync(path.join(workspaceDir, '.aidlc'))) {
+      expect(['mcp-config.json', 'rules.md']).toContain(f);
+    }
+    expect(readdirSync(path.join(workspaceDir, '.aidlc'))).toContain('mcp-config.json');
 
     // 3a. Business artifact landed in Neptune, typed + anchored to the Intent.
     const anchored = await g

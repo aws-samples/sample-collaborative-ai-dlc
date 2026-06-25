@@ -33,6 +33,11 @@ RUN cd /opt/agentcore && npm install --omit=dev
 COPY agentcore/ /opt/agentcore/
 COPY shared/ /opt/shared/
 
+# The shared/ helpers are CommonJS loaded from /opt/shared, so Node resolves their
+# @aws-sdk deps upward from /opt/shared — never into /opt/agentcore/node_modules
+# where they are installed. Symlink so the shared helpers see the same deps.
+RUN ln -s /opt/agentcore/node_modules /opt/shared/node_modules
+
 RUN mkdir -p /workspace && chown -R node:node /workspace /opt/agentcore /opt/shared /opt/kiro
 
 WORKDIR /workspace
