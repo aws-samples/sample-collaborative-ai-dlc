@@ -11,8 +11,9 @@
 //   - stage-graph:      placed-stage nodes + produces/consumes/requires edges,
 //                       with cycle + orphan-artifact detection
 //
-// A "stage block" here is the library Stage item (its c1_definition,
-// c2_verification, clarification), keyed by stageId.
+// A "stage block" here is the library Stage item (its flat V2 fields: produces,
+// consumes, requires, blocksOn, sensors, reviewer, humanValidation), keyed by
+// stageId.
 
 // ── Scope grid ──
 // Transpose placements' scopeMembership into { scope → { skill → state } }.
@@ -29,29 +30,23 @@ const compileScopeGrid = (placements, scopeSlugs) => {
 };
 
 // ── Autonomy ──
-// A stage self-halts only when BOTH gates are closed: no mandatory front-gate
-// clarification AND all sensors deterministic (and humanValidation not
-// required). See the Autonomy Profile table in the spec.
+// A stage's autonomy reflects three orthogonal verification axes (flat V2
+// fields): the human gate (`humanValidation`), the LLM-judged `reviewer`, and
+// deterministic `sensors`. A stage self-halts only when no axis forces a human
+// in the loop: humanValidation not required AND no reviewer. A reviewer alone
+// (READY/NOT-READY, may escalate) is `mixed`; a required human gate is
+// `human-gated`. Deterministic sensors never block self-halting (they are
+// advisory). See the Autonomy Profile table in the spec.
 const stageAutonomy = (stage) => {
-  const clarification = stage?.clarification?.required ?? 'none';
-  const c2 = stage?.c2_verification ?? {};
-  const sensors = c2.sensors ?? c2.postConditions ?? [];
-  const humanValidation = c2.humanValidation ?? 'none';
+  const humanValidation = stage?.humanValidation ?? 'none';
+  const hasReviewer = Boolean(stage?.reviewer);
 
-  // Front gate.
-  if (clarification === 'always') return 'human-gated';
-  // Back gate: an explicit required validation, or any llm-judged check.
+  // The human gate is the strongest signal.
   if (humanValidation === 'required') return 'human-gated';
-
-  const modes = sensors.map((s) => (typeof s === 'object' ? s.mode : s?.mode));
-  const hasLlm = modes.includes('llm-judged');
-  const hasDeterministic = modes.includes('deterministic');
-
-  if (hasLlm && !hasDeterministic) return 'human-gated';
-  if (hasLlm || clarification === 'conditional' || humanValidation === 'conditional') {
-    return 'mixed';
-  }
-  // Both gates closed.
+  // A reviewer (or a conditional gate) puts a non-deterministic judge in the
+  // loop without an unconditional human stop → mixed.
+  if (hasReviewer || humanValidation === 'conditional') return 'mixed';
+  // No human gate, no reviewer — only (advisory) deterministic sensors remain.
   return 'self-halting';
 };
 
@@ -72,17 +67,14 @@ const compileAutonomyProfile = (placements, stagesById) => {
 // ── Stage graph ──
 // Nodes = placed stages; edges = produces→consumes (data) and requires
 // (ordering). Detects cycles and orphan artifacts.
-const stageProduces = (stage) => {
-  const c1 = stage?.c1_definition ?? {};
-  return [...(c1.outputs ?? []), ...(c1.intermediates ?? [])];
-};
+const stageProduces = (stage) => stage?.produces ?? [];
 const stageConsumes = (stage) =>
-  (stage?.c1_definition?.inputs ?? []).map((i) => (typeof i === 'object' ? i.artifact : i));
-const stageRequires = (stage) => stage?.c1_definition?.requires ?? [];
+  (stage?.consumes ?? []).map((i) => (typeof i === 'object' ? i.artifact : i));
+const stageRequires = (stage) => stage?.requires ?? [];
 // V2's reserved `blocks_on`: a completion-only ordering edge (run after, but no
 // data is read). Distinct from `requires` (data dependency) and from the
 // produces→consumes data edges. Empty on every shipped stage today.
-const stageBlocksOn = (stage) => stage?.c1_definition?.blocksOn ?? [];
+const stageBlocksOn = (stage) => stage?.blocksOn ?? [];
 
 // `artifactsById` is the optional artifact registry (id → ARTIFACT block).
 // When supplied, it lets us tell a deliberate terminal output (a registered
@@ -274,11 +266,11 @@ const compileRules = (placements, ruleRefs, rulesById, stagesById) => {
   }
 
   // Per stage: the universal layers (always) plus any phase rule matching the
-  // stage's phase. The stage's phase is its `defaultGrouping` (the phase name).
+  // stage's phase (the flat `phase` field).
   const perStage = {};
   for (const p of placements) {
     const stage = stagesById[p.stageId];
-    const phase = stage?.defaultGrouping ?? null;
+    const phase = stage?.phase ?? null;
     perStage[p.stageId] = {
       universal: universal.map((u) => u.ruleId),
       phase: phase && phaseRules[phase] ? [...phaseRules[phase]] : [],

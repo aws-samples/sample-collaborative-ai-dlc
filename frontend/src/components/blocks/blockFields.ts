@@ -19,6 +19,10 @@ export interface BlockTypeForm {
   fields: BlockField[];
   bodyLabel?: string; // omit to hide the body editor
   bodyHelp?: string;
+  // When set, the type also shows a second editor for the block's executable
+  // script (stored separately from the body as scriptRef — e.g. a SENSOR check).
+  scriptLabel?: string;
+  scriptHelp?: string;
 }
 
 export const SIMPLE_BLOCK_FORMS: Partial<Record<BlockType, BlockTypeForm>> = {
@@ -101,41 +105,13 @@ export const SIMPLE_BLOCK_FORMS: Partial<Record<BlockType, BlockTypeForm>> = {
   sensor: {
     fields: [
       {
-        key: 'mode',
-        label: 'Mode',
-        kind: 'text',
-        placeholder: 'deterministic | llm-judged',
-        help: 'deterministic self-halts; llm-judged escalates to a human.',
-      },
-      { key: 'severity', label: 'Severity', kind: 'text', placeholder: 'advisory | blocking' },
-      {
         key: 'command',
-        label: 'Command (deterministic)',
+        label: 'Command',
         kind: 'text',
         placeholder: 'bun {{HARNESS_DIR}}/tools/aidlc-sensor-linter.ts',
-        help: 'How a deterministic check is run. AI-DLC sensors are TypeScript run via Bun.',
+        help: 'How the deterministic check is run. AI-DLC sensors are TypeScript run via Bun. (The LLM-judged half of verification is a stage reviewer, not a sensor.)',
       },
-      {
-        key: 'reviewerAgent',
-        label: 'Reviewer agent (llm-judged)',
-        kind: 'text',
-        placeholder: 'aidlc-architecture-reviewer-agent',
-        help: 'For llm-judged: the clean-room reviewer sub-agent that returns the READY/NOT-READY verdict.',
-      },
-      {
-        key: 'maxIterations',
-        label: 'Max review iterations',
-        kind: 'text',
-        placeholder: '2',
-        help: 'For llm-judged: review cycles before escalating to a human (default 2).',
-      },
-      {
-        key: 'validationTools',
-        label: 'Validation tools',
-        kind: 'csv',
-        placeholder: 'bun {{HARNESS_DIR}}/tools/aidlc-validate-domain-model.ts',
-        help: 'For llm-judged: deterministic instruments the reviewer runs to inform its judgment.',
-      },
+      { key: 'severity', label: 'Severity', kind: 'text', placeholder: 'advisory' },
       { key: 'runtime', label: 'Runtime', kind: 'text', placeholder: 'bun' },
       { key: 'matches', label: 'Matches (glob)', kind: 'text', placeholder: '**/*.{ts,js}' },
       {
@@ -146,8 +122,10 @@ export const SIMPLE_BLOCK_FORMS: Partial<Record<BlockType, BlockTypeForm>> = {
       },
       { key: 'timeoutSeconds', label: 'Timeout (seconds)', kind: 'text', placeholder: '30' },
     ],
-    bodyLabel: 'Script',
-    bodyHelp: 'The check script (TypeScript). Stored in S3, run by the command above.',
+    bodyLabel: 'Manifest',
+    bodyHelp: 'The sensor manifest prose (what it checks, failure mode). Stored in S3.',
+    scriptLabel: 'Script',
+    scriptHelp: 'The check script (TypeScript) the command above runs. Stored in S3.',
   },
   knowledge: {
     fields: [
@@ -181,5 +159,37 @@ export const SIMPLE_BLOCK_FORMS: Partial<Record<BlockType, BlockTypeForm>> = {
     ],
     bodyLabel: 'Notes',
     bodyHelp: 'Optional notes on the artifact and its shape.',
+  },
+  skill: {
+    fields: [
+      {
+        key: 'argumentHint',
+        label: 'Argument hint',
+        kind: 'text',
+        placeholder: '"" | <stage-slug>',
+        help: 'Hint shown for the slash-command argument when the skill is invoked.',
+      },
+      {
+        key: 'userInvocable',
+        label: 'User-invocable',
+        kind: 'text',
+        placeholder: 'true | false',
+        help: 'Whether the user can invoke this skill directly as a slash command.',
+      },
+      {
+        key: 'classification',
+        label: 'Classification',
+        kind: 'text',
+        placeholder: 'read-only',
+        help: 'Side-effect class, e.g. read-only (never mutates workflow state or emits audit events).',
+      },
+    ],
+    bodyLabel: 'Instructions',
+    bodyHelp: 'The runner-pack instructions (SKILL.md body).',
+  },
+  template: {
+    fields: [],
+    bodyLabel: 'Template',
+    bodyHelp: 'The scaffold template body, including any {{SLOT:…}} placeholders.',
   },
 };

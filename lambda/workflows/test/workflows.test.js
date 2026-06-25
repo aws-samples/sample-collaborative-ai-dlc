@@ -180,8 +180,13 @@ describe('workflows handler', () => {
       blockType: 'STAGE',
       blockId: 'scope-definition',
       version: 7,
-      c1_definition: { inputs: [], outputs: [], intermediates: [], requires: [] },
-      c2_verification: { sensors: [{ mode: 'deterministic' }], humanValidation: 'none' },
+      produces: [],
+      consumes: [],
+      requires: [],
+      blocksOn: [],
+      sensors: ['linter'],
+      reviewer: null,
+      humanValidation: 'none',
     });
     store.set('BLOCK#SYSTEM#STAGE#scope-definition|V#7', {
       pk: 'BLOCK#SYSTEM#STAGE#scope-definition',
@@ -190,8 +195,13 @@ describe('workflows handler', () => {
       blockType: 'STAGE',
       blockId: 'scope-definition',
       version: 7,
-      c1_definition: { inputs: [], outputs: [], intermediates: [], requires: [] },
-      c2_verification: { sensors: [{ mode: 'deterministic' }], humanValidation: 'none' },
+      produces: [],
+      consumes: [],
+      requires: [],
+      blocksOn: [],
+      sensors: ['linter'],
+      reviewer: null,
+      humanValidation: 'none',
     });
 
     await createWorkflow({ id: 'wf', name: 'WF' });
@@ -250,8 +260,13 @@ describe('workflows handler', () => {
       blockType: 'STAGE',
       blockId: 'scope-definition',
       version: 8,
-      c1_definition: { inputs: [], outputs: [], intermediates: [], requires: [] },
-      c2_verification: { sensors: [{ mode: 'llm-judged' }], humanValidation: 'none' },
+      produces: [],
+      consumes: [],
+      requires: [],
+      blocksOn: [],
+      sensors: ['linter'],
+      reviewer: 'aidlc-product-lead-agent',
+      humanValidation: 'none',
     });
 
     const compiledPinned = parse(
@@ -259,11 +274,13 @@ describe('workflows handler', () => {
         event({ method: 'GET', workflowId: 'wf', path: 'compiled', query: { version: '3' } }),
       ),
     );
+    // Pinned V#7: deterministic sensor only, no reviewer → self-halting.
     expect(compiledPinned.body.autonomy.perStage['scope-definition']).toBe('self-halting');
     const compiledLatest = parse(
       await handler(event({ method: 'GET', workflowId: 'wf', path: 'compiled' })),
     );
-    expect(compiledLatest.body.autonomy.perStage['scope-definition']).toBe('human-gated');
+    // Latest V#8: a reviewer was added (no unconditional human gate) → mixed.
+    expect(compiledLatest.body.autonomy.perStage['scope-definition']).toBe('mixed');
 
     await handler(
       event({
@@ -525,9 +542,14 @@ describe('workflows handler', () => {
         tenantId: 'SYSTEM',
         blockType: 'STAGE',
         blockId: id,
-        defaultGrouping: phase,
-        c1_definition: { inputs: [], outputs: [], intermediates: [], requires: [] },
-        c2_verification: { sensors: [], humanValidation: 'none' },
+        phase,
+        produces: [],
+        consumes: [],
+        requires: [],
+        blocksOn: [],
+        sensors: [],
+        reviewer: null,
+        humanValidation: 'none',
       });
     };
     seedRule('aidlc-org', 'org');
@@ -583,17 +605,22 @@ describe('workflows handler', () => {
       });
     };
     seedStage('scope-definition', {
-      c1_definition: { outputs: ['scope-document'], inputs: [], intermediates: [], requires: [] },
-      c2_verification: { sensors: [{ mode: 'deterministic' }], humanValidation: 'none' },
+      produces: ['scope-document'],
+      consumes: [],
+      requires: [],
+      blocksOn: [],
+      sensors: ['linter'],
+      reviewer: null,
+      humanValidation: 'none',
     });
     seedStage('design', {
-      c1_definition: {
-        inputs: [{ artifact: 'scope-document', required: true }],
-        outputs: [],
-        intermediates: [],
-        requires: [],
-      },
-      c2_verification: { sensors: [{ mode: 'llm-judged' }], humanValidation: 'none' },
+      produces: [],
+      consumes: [{ artifact: 'scope-document', required: true }],
+      requires: [],
+      blocksOn: [],
+      sensors: [],
+      reviewer: 'aidlc-architecture-reviewer-agent',
+      humanValidation: 'none',
     });
 
     await createWorkflow({ id: 'wf', name: 'WF' });
@@ -616,10 +643,10 @@ describe('workflows handler', () => {
     expect(res.status).toBe(200);
     // scope grid: scope-definition EXECUTE under mvp, design defaults to SKIP.
     expect(res.body.scopeGrid.mvp).toEqual({ 'scope-definition': 'EXECUTE', design: 'SKIP' });
-    // autonomy: deterministic → self-halting; llm-judged → human-gated.
+    // autonomy: deterministic sensor only → self-halting; a reviewer → mixed.
     expect(res.body.autonomy.perStage['scope-definition']).toBe('self-halting');
-    expect(res.body.autonomy.perStage.design).toBe('human-gated');
-    expect(res.body.autonomy.rollup).toEqual({ selfHalting: 1, mixed: 0, humanGated: 1, total: 2 });
+    expect(res.body.autonomy.perStage.design).toBe('mixed');
+    expect(res.body.autonomy.rollup).toEqual({ selfHalting: 1, mixed: 1, humanGated: 0, total: 2 });
     // graph: scope-document produced by scope-definition, consumed by design.
     expect(res.body.graph.edges).toContainEqual({
       from: 'scope-definition',

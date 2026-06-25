@@ -7,7 +7,8 @@
 //   GET    /blocks/{type}            list the catalog (user blocks + SYSTEM)
 //   POST   /blocks/{type}            create a block (V#latest + V#1)
 //   GET    /blocks/{type}/{id}       get one block's metadata (no body)
-//   GET    /blocks/{type}/{id}/body  lazily resolve the body/script from S3
+//   GET    /blocks/{type}/{id}/body  lazily resolve the markdown body from S3
+//   GET    /blocks/{type}/{id}/script lazily resolve the sensor script from S3
 //   PUT    /blocks/{type}/{id}       new version (V#latest + immutable V#n+1)
 //   DELETE /blocks/{type}/{id}       delete the block partition
 //
@@ -33,6 +34,7 @@ import {
   versionSk,
   catalogGsi1Pk,
   buildBodyRef,
+  buildScriptRef,
   validateBlockInput,
   validateId,
 } from '../shared/blocks.js';
@@ -56,6 +58,7 @@ const RESERVED_FIELDS = new Set([
   'blockId',
   'version',
   'bodyRef',
+  'scriptRef',
   'createdAt',
   'updatedAt',
 ]);
@@ -65,7 +68,7 @@ const RESERVED_FIELDS = new Set([
 const sanitizeInput = (input) => {
   const out = {};
   for (const [k, v] of Object.entries(input)) {
-    if (k === 'body' || RESERVED_FIELDS.has(k)) continue;
+    if (k === 'body' || k === 'script' || RESERVED_FIELDS.has(k)) continue;
     out[k] = v;
   }
   return out;
@@ -82,6 +85,22 @@ const putBody = async (body) => {
       Key: ref.s3Key,
       Body: body,
       ContentType: 'text/markdown',
+    }),
+  );
+  return ref;
+};
+
+// Writes a block script (e.g. a SENSOR's executable check) to S3 and returns
+// its pointer, or null when there is no script.
+const putScript = async (script) => {
+  if (script == null || script === '') return null;
+  const ref = buildScriptRef(script);
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: artifactsBucket(),
+      Key: ref.s3Key,
+      Body: script,
+      ContentType: 'text/plain',
     }),
   );
   return ref;
@@ -134,6 +153,17 @@ const getBlockBody = async (event, res, tenant, type, id) => {
   return res(200, { body });
 };
 
+const getBlockScript = async (event, res, tenant, type, id) => {
+  const item = await loadLatestResolved(tenant, type, id);
+  if (!item) return res(404, { error: 'Not found' });
+  if (!item.scriptRef) return res(200, { script: '' });
+  const obj = await s3.send(
+    new GetObjectCommand({ Bucket: artifactsBucket(), Key: item.scriptRef.s3Key }),
+  );
+  const script = await streamToString(obj.Body);
+  return res(200, { script });
+};
+
 const createBlock = async (event, res, tenant, type) => {
   if (tenant === SYSTEM_TENANT) {
     return res(403, { error: 'SYSTEM blocks are read-only' });
@@ -152,6 +182,7 @@ const createBlock = async (event, res, tenant, type) => {
   if (existing) return res(409, { error: 'Block already exists' });
 
   const bodyRef = await putBody(input.body);
+  const scriptRef = await putScript(input.script);
   const now = new Date().toISOString();
   const item = {
     pk: blockPk(tenant, type, id),
@@ -160,6 +191,7 @@ const createBlock = async (event, res, tenant, type) => {
     blockId: id,
     version: 1,
     bodyRef,
+    ...(scriptRef ? { scriptRef } : {}),
     createdAt: now,
     updatedAt: now,
     ...sanitizeInput(input),
@@ -181,8 +213,9 @@ const updateBlock = async (event, res, tenant, type, id) => {
   const current = await loadLatest(tenant, type, id);
   if (!current) return res(404, { error: 'Not found' });
 
-  // Reuse the existing body pointer unless a new body was supplied.
+  // Reuse the existing body/script pointers unless new content was supplied.
   const bodyRef = input.body != null ? await putBody(input.body) : current.bodyRef;
+  const scriptRef = input.script != null ? await putScript(input.script) : current.scriptRef;
   const item = {
     pk: blockPk(tenant, type, id),
     tenantId: tenant,
@@ -190,6 +223,7 @@ const updateBlock = async (event, res, tenant, type, id) => {
     blockId: id,
     version: (current.version || 1) + 1,
     bodyRef,
+    ...(scriptRef ? { scriptRef } : {}),
     createdAt: current.createdAt,
     updatedAt: new Date().toISOString(),
     ...sanitizeInput(input),
@@ -274,10 +308,11 @@ const persistVersion = async (item) => {
 };
 
 // Internal storage keys never exposed in the API shape.
-const INTERNAL_KEYS = new Set(['pk', 'sk', 'GSI1PK', 'GSI1SK', 'bodyRef']);
+const INTERNAL_KEYS = new Set(['pk', 'sk', 'GSI1PK', 'GSI1SK', 'bodyRef', 'scriptRef']);
 
 // Maps a stored item to its API shape: drop the internal keys, expose a stable
-// `id`, the body pointer metadata, and a `readOnly` flag for SYSTEM blocks.
+// `id`, the body/script pointer metadata, and a `readOnly` flag for SYSTEM
+// blocks.
 const toApi = (item) => {
   const out = {};
   for (const [k, v] of Object.entries(item)) {
@@ -286,6 +321,8 @@ const toApi = (item) => {
   out.id = item.blockId;
   out.hasBody = Boolean(item.bodyRef);
   out.bodyBytes = item.bodyRef?.bytes ?? 0;
+  out.hasScript = Boolean(item.scriptRef);
+  out.scriptBytes = item.scriptRef?.bytes ?? 0;
   out.readOnly = item.tenantId === SYSTEM_TENANT;
   return out;
 };
@@ -308,6 +345,11 @@ export const handler = async (event) => {
 
     if (path.endsWith('/body')) {
       if (method === 'GET') return await getBlockBody(event, res, tenant, type, id);
+      return res(405, { error: 'Method not allowed' });
+    }
+
+    if (path.endsWith('/script')) {
+      if (method === 'GET') return await getBlockScript(event, res, tenant, type, id);
       return res(405, { error: 'Method not allowed' });
     }
 

@@ -833,7 +833,8 @@ resource "aws_api_gateway_resource" "discussions_search" {
 # catalog; not project/sprint scoped). Generic over block type:
 #   /blocks/{type}                 GET (list), POST (create)
 #   /blocks/{type}/{id}            GET, PUT, DELETE
-#   /blocks/{type}/{id}/body       GET (lazy-load the S3 body/script)
+#   /blocks/{type}/{id}/body       GET (lazy-load the S3 markdown body)
+#   /blocks/{type}/{id}/script     GET (lazy-load the S3 sensor script)
 # All routes hit the single building-blocks Lambda, which routes by path+method.
 # -----------------------------------------------------------------------------
 resource "aws_api_gateway_resource" "blocks" {
@@ -858,6 +859,12 @@ resource "aws_api_gateway_resource" "block_item_body" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.block_item.id
   path_part   = "body"
+}
+
+resource "aws_api_gateway_resource" "block_item_script" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.block_item.id
+  path_part   = "script"
 }
 
 # Collection: GET (list), POST (create)
@@ -971,6 +978,25 @@ resource "aws_api_gateway_integration" "block_item_body_get" {
   uri                     = var.building_blocks_lambda_invoke_arn
 }
 
+# Item script: GET (lazy-load the S3-stored sensor script)
+resource "aws_api_gateway_method" "block_item_script_get" {
+  rest_api_id        = aws_api_gateway_rest_api.main.id
+  resource_id        = aws_api_gateway_resource.block_item_script.id
+  http_method        = "GET"
+  authorization      = "COGNITO_USER_POOLS"
+  authorizer_id      = aws_api_gateway_authorizer.cognito.id
+  request_parameters = { "method.request.path.type" = true, "method.request.path.id" = true }
+}
+
+resource "aws_api_gateway_integration" "block_item_script_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.block_item_script.id
+  http_method             = aws_api_gateway_method.block_item_script_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.building_blocks_lambda_invoke_arn
+}
+
 module "cors_block_type" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
@@ -987,6 +1013,12 @@ module "cors_block_item_body" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.block_item_body.id
+}
+
+module "cors_block_item_script" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.block_item_script.id
 }
 
 resource "aws_lambda_permission" "building_blocks" {

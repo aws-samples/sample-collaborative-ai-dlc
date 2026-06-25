@@ -20,6 +20,8 @@ export const BLOCK_TYPES = [
   'sensor',
   'artifact',
   'knowledge',
+  'skill',
+  'template',
 ] as const;
 
 export type BlockType = (typeof BLOCK_TYPES)[number];
@@ -33,6 +35,8 @@ export const BLOCK_TYPE_LABELS: Record<BlockType, { singular: string; plural: st
   sensor: { singular: 'Sensor', plural: 'Sensors' },
   artifact: { singular: 'Artifact', plural: 'Artifacts' },
   knowledge: { singular: 'Knowledge', plural: 'Knowledge' },
+  skill: { singular: 'Skill', plural: 'Skills' },
+  template: { singular: 'Template', plural: 'Templates' },
 };
 
 // The metadata returned for a block (the body is fetched separately). Block
@@ -48,9 +52,12 @@ export interface Block {
   readOnly: boolean;
   hasBody: boolean;
   bodyBytes: number;
+  // A SENSOR's executable check rides in scriptRef, separate from its body.
+  hasScript: boolean;
+  scriptBytes: number;
   createdAt: string;
   updatedAt: string;
-  // Type-specific attributes (kind, leadAgent, c1_definition, …).
+  // Type-specific attributes (leadAgent, produces, sensors, reviewer, …).
   [key: string]: unknown;
 }
 
@@ -61,6 +68,8 @@ export interface BlockInput {
   name: string;
   description?: string;
   body?: string;
+  // Optional executable script (SENSOR check). Stored in S3, separate from body.
+  script?: string;
   [key: string]: unknown;
 }
 
@@ -68,6 +77,8 @@ export const blocksService = {
   list: (type: BlockType) => api.get<{ blocks: Block[] }>(`/blocks/${type}`),
   get: (type: BlockType, id: string) => api.get<Block>(`/blocks/${type}/${id}`),
   getBody: (type: BlockType, id: string) => api.get<{ body: string }>(`/blocks/${type}/${id}/body`),
+  getScript: (type: BlockType, id: string) =>
+    api.get<{ script: string }>(`/blocks/${type}/${id}/script`),
   create: (type: BlockType, input: BlockInput) => api.post<Block>(`/blocks/${type}`, input),
   update: (type: BlockType, id: string, input: BlockInput) =>
     api.put<Block>(`/blocks/${type}/${id}`, input),

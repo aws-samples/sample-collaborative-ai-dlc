@@ -58,6 +58,12 @@ variable "blocks_table_arn" {
   type        = string
 }
 
+variable "aidlc_repo_ref" {
+  description = "Pinned ref (commit SHA, tag, or branch) of awslabs/aidlc-workflows the seed-blocks lambda fetches the baseline from"
+  type        = string
+  default     = "ba0cfe999856033ecb909a9135b46fe10811bf55"
+}
+
 variable "github_oauth_secret_name" {
   description = "Secrets Manager secret name for GitHub OAuth credentials"
   type        = string

@@ -88,6 +88,9 @@ const event = ({ method, type, id, body, sub = 'body' }) => {
   if (id && sub === 'bodyPath') {
     resource = '/blocks/{type}/{id}/body';
   }
+  if (id && sub === 'scriptPath') {
+    resource = '/blocks/{type}/{id}/script';
+  }
   return {
     httpMethod: method,
     resource,
@@ -162,28 +165,16 @@ describe('building-blocks handler', () => {
     expect(noName.status).toBe(400);
   });
 
-  it('enforces sensor-specific fields (mode required; deterministic needs a command)', async () => {
-    // Missing mode → 400.
-    const noMode = parse(
+  it('enforces sensor fields (deterministic-only; command required)', async () => {
+    // No command → 400 (a sensor is an executable check).
+    const noCmd = parse(
       await handler(
         event({ method: 'POST', type: 'sensor', body: { id: 'linter', name: 'Linter' } }),
       ),
     );
-    expect(noMode.status).toBe(400);
-
-    // Deterministic without a command → 400.
-    const noCmd = parse(
-      await handler(
-        event({
-          method: 'POST',
-          type: 'sensor',
-          body: { id: 'linter', name: 'Linter', mode: 'deterministic' },
-        }),
-      ),
-    );
     expect(noCmd.status).toBe(400);
 
-    // Deterministic with a command → 201.
+    // Command present → 201 (mode defaults to deterministic).
     const ok = parse(
       await handler(
         event({
@@ -192,7 +183,6 @@ describe('building-blocks handler', () => {
           body: {
             id: 'linter',
             name: 'Linter',
-            mode: 'deterministic',
             command: 'bun {{HARNESS_DIR}}/tools/aidlc-sensor-linter.ts',
           },
         }),
@@ -200,34 +190,54 @@ describe('building-blocks handler', () => {
     );
     expect(ok.status).toBe(201);
 
-    // llm-judged needs no command but DOES need a reviewerAgent → 400 without.
-    const noReviewer = parse(
-      await handler(
-        event({
-          method: 'POST',
-          type: 'sensor',
-          body: { id: 'coherent', name: 'Coherent', mode: 'llm-judged' },
-        }),
-      ),
-    );
-    expect(noReviewer.status).toBe(400);
-
-    // llm-judged with a reviewerAgent (no command) → 201.
+    // llm-judged is retired — sensors are deterministic-only; the LLM-judged
+    // half of verification is a stage `reviewer`, not a sensor. → 400.
     const llm = parse(
       await handler(
         event({
           method: 'POST',
           type: 'sensor',
+          body: { id: 'coherent', name: 'Coherent', mode: 'llm-judged', command: 'x' },
+        }),
+      ),
+    );
+    expect(llm.status).toBe(400);
+  });
+
+  it('validates the stage reviewer fields (reviewer string; positive max iterations)', async () => {
+    // A non-integer reviewerMaxIterations → 400.
+    const badIters = parse(
+      await handler(
+        event({
+          method: 'POST',
+          type: 'stage',
           body: {
-            id: 'coherent',
-            name: 'Coherent',
-            mode: 'llm-judged',
-            reviewerAgent: 'aidlc-architecture-reviewer-agent',
+            id: 'design',
+            name: 'Design',
+            reviewer: 'aidlc-product-lead-agent',
+            reviewerMaxIterations: 0,
           },
         }),
       ),
     );
-    expect(llm.status).toBe(201);
+    expect(badIters.status).toBe(400);
+
+    // A valid reviewer binding → 201.
+    const ok = parse(
+      await handler(
+        event({
+          method: 'POST',
+          type: 'stage',
+          body: {
+            id: 'design',
+            name: 'Design',
+            reviewer: 'aidlc-architecture-reviewer-agent',
+            reviewerMaxIterations: 2,
+          },
+        }),
+      ),
+    );
+    expect(ok.status).toBe(201);
   });
 
   it('validates scope depth and testStrategy against the depth enum', async () => {
@@ -339,6 +349,124 @@ describe('building-blocks handler', () => {
     );
     expect(res.status).toBe(200);
     expect(res.body.body).toBe('# Scoping guide');
+  });
+
+  it('round-trips a sensor script through S3 (scriptRef, separate from body)', async () => {
+    const created = parse(
+      await handler(
+        event({
+          method: 'POST',
+          type: 'sensor',
+          body: {
+            id: 'linter',
+            name: 'Linter',
+            command: 'bun {{HARNESS_DIR}}/tools/aidlc-sensor-linter.ts',
+            body: '# linter manifest',
+            script: '// linter check script',
+          },
+        }),
+      ),
+    );
+    expect(created.status).toBe(201);
+    expect(created.body.hasScript).toBe(true);
+    expect(created.body.scriptBytes).toBeGreaterThan(0);
+    // The script resolves via the /script route, the manifest via /body.
+    const script = parse(
+      await handler(event({ method: 'GET', type: 'sensor', id: 'linter', sub: 'scriptPath' })),
+    );
+    expect(script.status).toBe(200);
+    expect(script.body.script).toBe('// linter check script');
+    const body = parse(
+      await handler(event({ method: 'GET', type: 'sensor', id: 'linter', sub: 'bodyPath' })),
+    );
+    expect(body.body.body).toBe('# linter manifest');
+  });
+
+  it('preserves an existing script when an update omits it', async () => {
+    await handler(
+      event({
+        method: 'POST',
+        type: 'sensor',
+        body: {
+          id: 'linter',
+          name: 'Linter',
+          command: 'bun x.ts',
+          script: '// v1 script',
+        },
+      }),
+    );
+    // Update touches only the name — the script pointer must carry forward.
+    await handler(
+      event({
+        method: 'PUT',
+        type: 'sensor',
+        id: 'linter',
+        body: { name: 'Linter v2', command: 'bun x.ts' },
+      }),
+    );
+    const script = parse(
+      await handler(event({ method: 'GET', type: 'sensor', id: 'linter', sub: 'scriptPath' })),
+    );
+    expect(script.body.script).toBe('// v1 script');
+  });
+
+  it('returns an empty script for a block with none', async () => {
+    await handler(event({ method: 'POST', type: 'knowledge', body: { id: 'k1', name: 'K1' } }));
+    const res = parse(
+      await handler(event({ method: 'GET', type: 'knowledge', id: 'k1', sub: 'scriptPath' })),
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.script).toBe('');
+  });
+
+  it('creates a SKILL block with its invocation contract', async () => {
+    const res = parse(
+      await handler(
+        event({
+          method: 'POST',
+          type: 'skill',
+          body: {
+            id: 'aidlc-replay',
+            name: 'Replay',
+            userInvocable: true,
+            classification: 'read-only',
+            body: '# Replay',
+          },
+        }),
+      ),
+    );
+    expect(res.status).toBe(201);
+    expect(res.body.userInvocable).toBe(true);
+    expect(res.body.classification).toBe('read-only');
+    expect(tableStore.has('BLOCK#default#SKILL#aidlc-replay|V#1')).toBe(true);
+  });
+
+  it('rejects a SKILL with a non-boolean userInvocable', async () => {
+    const res = parse(
+      await handler(
+        event({
+          method: 'POST',
+          type: 'skill',
+          body: { id: 'bad', name: 'Bad', userInvocable: 'yes' },
+        }),
+      ),
+    );
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/userInvocable/);
+  });
+
+  it('creates a TEMPLATE block', async () => {
+    const res = parse(
+      await handler(
+        event({
+          method: 'POST',
+          type: 'template',
+          body: { id: 'onboarding', name: 'Onboarding', body: '{{SLOT:title}}' },
+        }),
+      ),
+    );
+    expect(res.status).toBe(201);
+    expect(tableStore.has('BLOCK#default#TEMPLATE#onboarding|V#1')).toBe(true);
   });
 
   it('bumps the version on update and writes a new immutable snapshot', async () => {

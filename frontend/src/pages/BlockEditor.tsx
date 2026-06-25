@@ -33,9 +33,11 @@ export default function BlockEditor() {
   const typeForm = SIMPLE_BLOCK_FORMS[blockType];
 
   // The whole editable block as a flat form object; type-specific attributes
-  // (kind, c1_definition, …) ride along untyped and are sent back verbatim.
+  // (leadAgent, produces, sensors, reviewer, …) ride along untyped and are sent
+  // back verbatim.
   const [form, setForm] = useState<Record<string, unknown>>({});
   const [body, setBody] = useState('');
+  const [script, setScript] = useState('');
   const [readOnly, setReadOnly] = useState(false);
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
@@ -55,6 +57,10 @@ export default function BlockEditor() {
       if (block.hasBody) {
         const { body: text } = await blocksService.getBody(blockType, id);
         setBody(text);
+      }
+      if (block.hasScript) {
+        const { script: text } = await blocksService.getScript(blockType, id);
+        setScript(text);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load block');
@@ -78,6 +84,8 @@ export default function BlockEditor() {
       readOnly: _ro,
       hasBody,
       bodyBytes,
+      hasScript,
+      scriptBytes,
       createdAt,
       updatedAt,
       ...attrs
@@ -90,9 +98,14 @@ export default function BlockEditor() {
     void _ro;
     void hasBody;
     void bodyBytes;
+    void hasScript;
+    void scriptBytes;
     void createdAt;
     void updatedAt;
-    return { ...attrs, name: str('name'), body } as BlockInput;
+    const payload = { ...attrs, name: str('name'), body } as BlockInput;
+    // Only send a script for types that carry one (avoids clobbering with '').
+    if (typeForm?.scriptLabel) payload.script = script;
+    return payload;
   };
 
   const handleSave = async (e: React.FormEvent) => {
@@ -319,6 +332,28 @@ export default function BlockEditor() {
               />
               {!isStage && typeForm?.bodyHelp && (
                 <p className="text-xs text-muted-foreground">{typeForm.bodyHelp}</p>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Script — a separate executable (SENSOR check), stored in S3 as
+            scriptRef apart from the markdown body. */}
+        {typeForm?.scriptLabel && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">{typeForm.scriptLabel}</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              <Textarea
+                value={script}
+                onChange={(e) => setScript(e.target.value)}
+                placeholder="TypeScript…"
+                className="min-h-[200px] font-mono text-xs"
+                disabled={readOnly}
+              />
+              {typeForm.scriptHelp && (
+                <p className="text-xs text-muted-foreground">{typeForm.scriptHelp}</p>
               )}
             </CardContent>
           </Card>

@@ -18,10 +18,22 @@ const { createHash } = require('node:crypto');
 // SENSOR is a deterministic check, a RULE is a layered guardrail, an ARTIFACT
 // is a named output that wires stages together (V2's artifact vocabulary), and
 // KNOWLEDGE is the two-tier (methodology/team) per-agent expertise corpus.
-// Phases are NOT a block type — they are defined inline in each workflow's
-// grouping tree (V2 treats a phase as an organizing label, not a standalone
-// object). Workflows are modeled separately and are not in this set.
-const BLOCK_TYPES = ['STAGE', 'AGENT', 'SCOPE', 'RULE', 'SENSOR', 'ARTIFACT', 'KNOWLEDGE'];
+// SKILL is a user-invocable runner pack (V2's SKILL.md) and TEMPLATE is an
+// authored scaffold (V2's core/templates) — both editable so users can author
+// their own. Phases are NOT a block type — they are defined inline in each
+// workflow's grouping tree (V2 treats a phase as an organizing label, not a
+// standalone object). Workflows are modeled separately and are not in this set.
+const BLOCK_TYPES = [
+  'STAGE',
+  'AGENT',
+  'SCOPE',
+  'RULE',
+  'SENSOR',
+  'ARTIFACT',
+  'KNOWLEDGE',
+  'SKILL',
+  'TEMPLATE',
+];
 
 // Knowledge tiers: the methodology tier ships in the SYSTEM baseline (authored,
 // forkable); the team tier is accumulated per-project at execution time (the
@@ -85,6 +97,16 @@ const buildBodyRef = (body) => {
   return { s3Key: bodyS3Key(hash), sha256: hash, bytes };
 };
 
+// The script sibling of bodyRef: a SENSOR's executable check rides here (the
+// .ts the sensor `command` runs), kept separate from the markdown body (the
+// sensor's manifest prose) so a sensor can carry both.
+const scriptS3Key = (hash) => `blocks/scripts/sha256/${hash}`;
+const buildScriptRef = (script) => {
+  const bytes = Buffer.byteLength(script, 'utf8');
+  const hash = sha256(script);
+  return { s3Key: scriptS3Key(hash), sha256: hash, bytes };
+};
+
 // Validates the create/update payload for a block. Returns an array of error
 // strings (empty = valid). Hand-rolled, matching the codebase convention of
 // inline validation over a schema library.
@@ -111,6 +133,13 @@ const validateBlockInput = (type, input) => {
       errors.push(`body exceeds ${MAX_BODY_BYTES} bytes`);
     }
   }
+  if (input.script != null) {
+    if (typeof input.script !== 'string') {
+      errors.push('script must be a string');
+    } else if (Buffer.byteLength(input.script, 'utf8') > MAX_BODY_BYTES) {
+      errors.push(`script exceeds ${MAX_BODY_BYTES} bytes`);
+    }
+  }
   errors.push(...validateTypeFields(type, input));
   return errors;
 };
@@ -132,34 +161,33 @@ const validateTypeFields = (type, input) => {
     if (input.mode != null && !STAGE_MODES.includes(input.mode)) {
       errors.push(`stage mode must be one of ${STAGE_MODES.join(', ')}`);
     }
+    // The reviewer is V2's LLM-judged verification: a clean-room sub-agent
+    // (a reviewer AGENT id) that returns a READY/NOT-READY verdict, looping up
+    // to reviewerMaxIterations. It is the third, orthogonal verification axis
+    // alongside deterministic sensors and the human gate — a flat stage field,
+    // matching V2 frontmatter, not a sensor.
+    if (input.reviewer != null && typeof input.reviewer !== 'string') {
+      errors.push('stage reviewer must be a string (a reviewer agent id)');
+    }
+    if (
+      input.reviewerMaxIterations != null &&
+      (!Number.isInteger(input.reviewerMaxIterations) || input.reviewerMaxIterations < 1)
+    ) {
+      errors.push('stage reviewerMaxIterations must be a positive integer');
+    }
   }
   if (type === 'SENSOR') {
-    // A sensor's mode decides whether it can self-halt; it is mandatory.
-    if (input.mode !== 'deterministic' && input.mode !== 'llm-judged') {
-      errors.push("sensor mode must be 'deterministic' or 'llm-judged'");
+    // Sensors are deterministic-only (V2 reserves `llm` and rejects it at
+    // parse). The LLM-judged half of verification is the stage `reviewer` field,
+    // not a sensor mode. `mode` is optional on input; if present it must be
+    // 'deterministic'.
+    if (input.mode != null && input.mode !== 'deterministic') {
+      errors.push("sensor mode must be 'deterministic'");
     }
     // A deterministic sensor is an executable check — it needs a command.
     // (The script itself rides in the body; the command is how it's run.)
-    if (input.mode === 'deterministic' && (typeof input.command !== 'string' || !input.command)) {
-      errors.push('a deterministic sensor requires a command');
-    }
-    // An llm-judged sensor is the V2 Reviewer: a clean-room sub-agent. It is
-    // bound to a reviewer agent and runs zero or more validation tools. The
-    // reviewerAgent is what makes the check runnable (the analogue of a
-    // deterministic sensor's command), so it is mandatory in this mode.
-    if (input.mode === 'llm-judged') {
-      if (typeof input.reviewerAgent !== 'string' || !input.reviewerAgent) {
-        errors.push('an llm-judged sensor requires a reviewerAgent');
-      }
-      if (
-        input.maxIterations != null &&
-        (!Number.isInteger(input.maxIterations) || input.maxIterations < 1)
-      ) {
-        errors.push('sensor maxIterations must be a positive integer');
-      }
-      if (input.validationTools != null && !Array.isArray(input.validationTools)) {
-        errors.push('sensor validationTools must be an array');
-      }
+    if (typeof input.command !== 'string' || !input.command) {
+      errors.push('a sensor requires a command');
     }
   }
   if (type === 'RULE') {
@@ -202,6 +230,16 @@ const validateTypeFields = (type, input) => {
       errors.push('knowledge agentRef must be a string (an agent id or "shared")');
     }
   }
+  if (type === 'SKILL') {
+    // A user-invocable runner pack. The invocation contract is optional on
+    // input; if present it must be the right shape.
+    if (input.userInvocable != null && typeof input.userInvocable !== 'boolean') {
+      errors.push('skill userInvocable must be a boolean');
+    }
+    if (input.classification != null && typeof input.classification !== 'string') {
+      errors.push('skill classification must be a string');
+    }
+  }
   return errors;
 };
 
@@ -229,6 +267,8 @@ module.exports = {
   sha256,
   bodyS3Key,
   buildBodyRef,
+  scriptS3Key,
+  buildScriptRef,
   validateBlockInput,
   validateId,
 };

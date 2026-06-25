@@ -395,8 +395,9 @@ resource "aws_iam_role_policy" "neptune_artifacts" {
 # -----------------------------------------------------------------------------
 # Role 7: blocks (2 Lambdas — building-blocks CRUD + seed-blocks)
 # DynamoDB RW on the blocks table + its GSI1, plus S3 RW scoped to the blocks/
-# prefix of the artifacts bucket (the content-addressed bodies/scripts).
-# No Neptune, no VPC — pure DDB + S3.
+# prefix (content-addressed block bodies/scripts) and the aidlc-runtime/ prefix
+# (the seed job's commit-pinned internal runtime snapshot) of the artifacts
+# bucket. No Neptune, no VPC — pure DDB + S3.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "blocks" {
   name               = "${var.project_name}-blocks-${var.environment}"
@@ -431,9 +432,12 @@ resource "aws_iam_role_policy" "blocks" {
         Resource = [var.blocks_table_arn, "${var.blocks_table_arn}/index/*"]
       },
       {
-        Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:PutObject"]
-        Resource = ["${var.artifacts_bucket_arn}/blocks/*"]
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:PutObject"]
+        Resource = [
+          "${var.artifacts_bucket_arn}/blocks/*",
+          "${var.artifacts_bucket_arn}/aidlc-runtime/*",
+        ]
       }
     ]
   })
@@ -1217,6 +1221,7 @@ module "seed_blocks_lambda" {
     BLOCKS_TABLE     = var.blocks_table_name
     ARTIFACTS_BUCKET = var.artifacts_bucket_name
     ENVIRONMENT      = var.environment
+    AIDLC_REPO_REF   = var.aidlc_repo_ref
   }
 }
 

@@ -3,39 +3,34 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 
-// The Stage's three-compartment contract (C1 define / C2 verify / C3 learn)
-// plus the front-of-stage clarification gate. Edits a plain `value` object and
-// reports changes up via `onChange`. Reference fields (agents, artifacts,
-// sensors) are comma-separated text for now — autocomplete pickers can replace
-// them later without changing the stored shape.
+// The Stage's flat V2 frontmatter shape, grouped into editor tabs for clarity
+// (Define / Verify / Agent & Mode) — the grouping is presentation only; the
+// stored object is flat. Edits a plain `value` object and reports changes up via
+// `onChange`. Reference fields (agents, artifacts, sensors) are comma-separated
+// text for now — autocomplete pickers can replace them later without changing
+// the stored shape.
+//
+// Verification has three orthogonal axes: deterministic `sensors`, an LLM-judged
+// `reviewer` agent, and the human `humanValidation` gate.
 
 export interface StageForm {
   leadAgent?: string;
   supportAgents?: string[];
-  defaultGrouping?: string;
+  phase?: string;
   mode?: string;
   execution?: string;
   condition?: string;
   forEach?: string | null;
-  c1_definition?: {
-    purpose?: string;
-    inputs?: { artifact: string; required: boolean }[];
-    outputs?: string[];
-    intermediates?: string[];
-    requires?: string[];
-  };
-  c2_verification?: {
-    sensors?: string[];
-    humanValidation?: string;
-  };
-  c3_learning?: {
-    captures?: string[];
-    promotionTargets?: string[];
-  };
-  clarification?: {
-    required?: string;
-    condition?: string;
-  };
+  produces?: string[];
+  consumes?: { artifact: string; required: boolean; conditionalOn?: string }[];
+  requires?: string[];
+  blocksOn?: string[];
+  inputs?: string;
+  outputs?: string;
+  sensors?: string[];
+  reviewer?: string | null;
+  reviewerMaxIterations?: number | null;
+  humanValidation?: string;
   [key: string]: unknown;
 }
 
@@ -53,163 +48,135 @@ const csvToList = (s: string) =>
 const listToCsv = (l?: string[]) => (l ?? []).join(', ');
 
 export function StageEditor({ value, onChange, disabled }: Props) {
-  // Shallow/nested setters that always produce a new object for React state.
   const set = (patch: Partial<StageForm>) => onChange({ ...value, ...patch });
-  const setC1 = (patch: Partial<NonNullable<StageForm['c1_definition']>>) =>
-    set({ c1_definition: { ...value.c1_definition, ...patch } });
-  const setC2 = (patch: Partial<NonNullable<StageForm['c2_verification']>>) =>
-    set({ c2_verification: { ...value.c2_verification, ...patch } });
-  const setC3 = (patch: Partial<NonNullable<StageForm['c3_learning']>>) =>
-    set({ c3_learning: { ...value.c3_learning, ...patch } });
-  const setClarify = (patch: Partial<NonNullable<StageForm['clarification']>>) =>
-    set({ clarification: { ...value.clarification, ...patch } });
 
-  const c1 = value.c1_definition ?? {};
-  const c2 = value.c2_verification ?? {};
-  const c3 = value.c3_learning ?? {};
-  const clarify = value.clarification ?? {};
-
-  // Inputs are objects ({artifact, required}); edit the artifact names as CSV
-  // and preserve each one's required flag (default true for new entries).
-  const inputsCsv = listToCsv((c1.inputs ?? []).map((i) => i.artifact));
-  const setInputs = (s: string) => {
-    const prev = new Map((c1.inputs ?? []).map((i) => [i.artifact, i.required]));
-    setC1({
-      inputs: csvToList(s).map((artifact) => ({ artifact, required: prev.get(artifact) ?? true })),
+  // Consumes are objects ({artifact, required, conditionalOn?}); edit the
+  // artifact names as CSV and preserve each one's required flag + conditionalOn
+  // (default required=true for new entries).
+  const consumesCsv = listToCsv((value.consumes ?? []).map((i) => i.artifact));
+  const setConsumes = (s: string) => {
+    const prev = new Map((value.consumes ?? []).map((i) => [i.artifact, i]));
+    set({
+      consumes: csvToList(s).map((artifact) => prev.get(artifact) ?? { artifact, required: true }),
     });
   };
 
   return (
-    <Tabs defaultValue="clarify" className="w-full">
+    <Tabs defaultValue="define" className="w-full">
       <TabsList className="flex-wrap h-auto">
-        <TabsTrigger value="clarify">⊣ Clarify</TabsTrigger>
-        <TabsTrigger value="c1">C1 Define</TabsTrigger>
-        <TabsTrigger value="c2">C2 Verify</TabsTrigger>
-        <TabsTrigger value="c3">C3 Learn</TabsTrigger>
+        <TabsTrigger value="define">Define</TabsTrigger>
+        <TabsTrigger value="verify">Verify</TabsTrigger>
         <TabsTrigger value="meta">Agent &amp; Mode</TabsTrigger>
       </TabsList>
 
-      {/* ⊣ Clarify — the front-of-stage human gate (P2) */}
-      <TabsContent value="clarify" className="space-y-4 pt-2">
-        <p className="text-xs text-muted-foreground">
-          Resolve ambiguity with a human before generating. Setting this to <code>always</code>{' '}
-          opens the front gate — the stage cannot fully self-halt.
-        </p>
-        <div className="grid gap-2 max-w-xs">
-          <Label>Required</Label>
-          <Input
-            value={clarify.required ?? ''}
-            onChange={(e) => setClarify({ required: e.target.value })}
-            placeholder="always | conditional | none"
-            disabled={disabled}
-          />
-        </div>
+      {/* Define — the stage's DAG edges + human prose */}
+      <TabsContent value="define" className="space-y-4 pt-2">
         <div className="grid gap-2">
-          <Label>Condition</Label>
+          <Label>Consumes (inputs)</Label>
           <Input
-            value={clarify.condition ?? ''}
-            onChange={(e) => setClarify({ condition: e.target.value })}
-            placeholder="e.g. intent lacks measurable acceptance criteria"
-            disabled={disabled}
-          />
-        </div>
-      </TabsContent>
-
-      {/* C1 — Definition */}
-      <TabsContent value="c1" className="space-y-4 pt-2">
-        <div className="grid gap-2">
-          <Label>Purpose</Label>
-          <Textarea
-            value={c1.purpose ?? ''}
-            onChange={(e) => setC1({ purpose: e.target.value })}
-            placeholder="What transformation or validation this stage performs"
-            disabled={disabled}
-          />
-        </div>
-        <div className="grid gap-2">
-          <Label>Inputs (consumes)</Label>
-          <Input
-            value={inputsCsv}
-            onChange={(e) => setInputs(e.target.value)}
+            value={consumesCsv}
+            onChange={(e) => setConsumes(e.target.value)}
             placeholder="intent-statement, feasibility-assessment"
             disabled={disabled}
           />
           <p className="text-xs text-muted-foreground">Comma-separated artifact names.</p>
         </div>
         <div className="grid gap-2">
-          <Label>Outputs (produces)</Label>
+          <Label>Produces (outputs)</Label>
           <Input
-            value={listToCsv(c1.outputs)}
-            onChange={(e) => setC1({ outputs: csvToList(e.target.value) })}
+            value={listToCsv(value.produces)}
+            onChange={(e) => set({ produces: csvToList(e.target.value) })}
             placeholder="scope-document, intent-backlog"
             disabled={disabled}
           />
         </div>
         <div className="grid gap-2">
-          <Label>Intermediates</Label>
+          <Label>Requires (data/ordering)</Label>
           <Input
-            value={listToCsv(c1.intermediates)}
-            onChange={(e) => setC1({ intermediates: csvToList(e.target.value) })}
-            placeholder="scope-definition-questions"
-            disabled={disabled}
-          />
-        </div>
-        <div className="grid gap-2">
-          <Label>Requires (ordering)</Label>
-          <Input
-            value={listToCsv(c1.requires)}
-            onChange={(e) => setC1({ requires: csvToList(e.target.value) })}
+            value={listToCsv(value.requires)}
+            onChange={(e) => set({ requires: csvToList(e.target.value) })}
             placeholder="intent-capture, feasibility"
             disabled={disabled}
           />
         </div>
+        <div className="grid gap-2">
+          <Label>Blocks on (completion-only ordering)</Label>
+          <Input
+            value={listToCsv(value.blocksOn)}
+            onChange={(e) => set({ blocksOn: csvToList(e.target.value) })}
+            placeholder="(reserved — run after, no data read)"
+            disabled={disabled}
+          />
+        </div>
+        <div className="grid gap-2">
+          <Label>Inputs (prose)</Label>
+          <Textarea
+            value={value.inputs ?? ''}
+            onChange={(e) => set({ inputs: e.target.value })}
+            placeholder="Human-readable description of what this stage reads"
+            disabled={disabled}
+          />
+        </div>
+        <div className="grid gap-2">
+          <Label>Outputs (prose)</Label>
+          <Textarea
+            value={value.outputs ?? ''}
+            onChange={(e) => set({ outputs: e.target.value })}
+            placeholder="Human-readable description of what this stage writes"
+            disabled={disabled}
+          />
+        </div>
       </TabsContent>
 
-      {/* C2 — Verification */}
-      <TabsContent value="c2" className="space-y-4 pt-2">
+      {/* Verify — the three orthogonal verification axes */}
+      <TabsContent value="verify" className="space-y-4 pt-2">
         <div className="grid gap-2">
-          <Label>Sensors</Label>
+          <Label>Sensors (deterministic)</Label>
           <Input
-            value={listToCsv(c2.sensors)}
-            onChange={(e) => setC2({ sensors: csvToList(e.target.value) })}
+            value={listToCsv(value.sensors)}
+            onChange={(e) => set({ sensors: csvToList(e.target.value) })}
             placeholder="required-sections, upstream-coverage"
             disabled={disabled}
           />
           <p className="text-xs text-muted-foreground">
-            All-deterministic sensors let a stage self-halt; any llm-judged one escalates to a
-            human.
+            Deterministic checks (advisory). They never block a stage from self-halting.
           </p>
+        </div>
+        <div className="grid gap-2 max-w-xs">
+          <Label>Reviewer (LLM-judged)</Label>
+          <Input
+            value={value.reviewer ?? ''}
+            onChange={(e) => set({ reviewer: e.target.value || null })}
+            placeholder="aidlc-architecture-reviewer-agent"
+            disabled={disabled}
+          />
+          <p className="text-xs text-muted-foreground">
+            A reviewer agent returns READY/NOT-READY and can escalate — puts a judge in the loop.
+          </p>
+        </div>
+        <div className="grid gap-2 max-w-xs">
+          <Label>Reviewer max iterations</Label>
+          <Input
+            type="number"
+            value={value.reviewerMaxIterations ?? ''}
+            onChange={(e) =>
+              set({ reviewerMaxIterations: e.target.value ? Number(e.target.value) : null })
+            }
+            placeholder="2"
+            disabled={disabled}
+          />
         </div>
         <div className="grid gap-2 max-w-xs">
           <Label>Human validation</Label>
           <Input
-            value={c2.humanValidation ?? ''}
-            onChange={(e) => setC2({ humanValidation: e.target.value })}
+            value={value.humanValidation ?? ''}
+            onChange={(e) => set({ humanValidation: e.target.value })}
             placeholder="required | conditional | none"
             disabled={disabled}
           />
-        </div>
-      </TabsContent>
-
-      {/* C3 — Learning */}
-      <TabsContent value="c3" className="space-y-4 pt-2">
-        <div className="grid gap-2">
-          <Label>Captures</Label>
-          <Input
-            value={listToCsv(c3.captures)}
-            onChange={(e) => setC3({ captures: csvToList(e.target.value) })}
-            placeholder="human-corrections, reruns, escape-hatch-acceptances"
-            disabled={disabled}
-          />
-        </div>
-        <div className="grid gap-2">
-          <Label>Promotion targets</Label>
-          <Input
-            value={listToCsv(c3.promotionTargets)}
-            onChange={(e) => setC3({ promotionTargets: csvToList(e.target.value) })}
-            placeholder="c2-sensor, rule-library, exemplar"
-            disabled={disabled}
-          />
+          <p className="text-xs text-muted-foreground">
+            A required gate makes the stage human-gated; conditional or a reviewer makes it mixed.
+          </p>
         </div>
       </TabsContent>
 
@@ -234,10 +201,10 @@ export function StageEditor({ value, onChange, disabled }: Props) {
           />
         </div>
         <div className="grid gap-2">
-          <Label>Default phase</Label>
+          <Label>Phase</Label>
           <Input
-            value={value.defaultGrouping ?? ''}
-            onChange={(e) => set({ defaultGrouping: e.target.value })}
+            value={value.phase ?? ''}
+            onChange={(e) => set({ phase: e.target.value })}
             placeholder="ideation"
             disabled={disabled}
           />

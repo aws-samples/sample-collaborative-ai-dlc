@@ -1,6 +1,18 @@
-// Seeds the shipped SYSTEM baseline block library into the blocks table + the
-// artifacts bucket. The blocks themselves live in shared/baseline-blocks.js;
-// this lambda just writes them.
+// Seeds the SYSTEM baseline block library from the official aidlc-workflows
+// repo at a pinned commit. The seed is the single fetch point: it downloads the
+// repo tarball at the pinned ref, parses every core/** file, and writes:
+//   - editable BLOCKS (stage/agent/scope/rule/sensor/knowledge/skill/template)
+//     into the blocks table, each with its markdown body externalized to S3;
+//   - the SENSOR check SCRIPTS (core/tools/aidlc-sensor-<id>.ts) to S3 as each
+//     sensor's scriptRef;
+//   - the `aidlc-v2` default WORKFLOW (phases + placements + rule refs) derived
+//     from the parsed stages;
+//   - the INTERNAL RUNTIME files (engine tools, hooks, protocols, conductor) to
+//     a commit-pinned S3 snapshot under aidlc-runtime/<ref>/<repo-path> — NOT
+//     editable blocks, but available for the execution layer to inject.
+//
+// The pinned ref comes from the AIDLC_REPO_REF env var (set by Terraform) and
+// can be overridden per-invoke with {"ref":"<sha|tag|branch>"}.
 //
 // Admin one-shot, invoked directly via `aws lambda invoke` (no API route):
 //
@@ -14,28 +26,24 @@
 //     --function-name $(terraform output -raw seed_blocks_lambda_name) \
 //     --payload '{}' --cli-binary-format raw-in-base64-out /tmp/out.json
 //
-//   # Reseed (refresh the whole SYSTEM baseline — see below)
+//   # Reseed the whole SYSTEM baseline fresh (e.g. after bumping the pin)
 //   aws lambda invoke \
 //     --function-name $(terraform output -raw seed_blocks_lambda_name) \
 //     --payload '{"reseed":true}' --cli-binary-format raw-in-base64-out /tmp/out.json
 //
+//   # Seed from a specific ref instead of the pinned default
+//   aws lambda invoke \
+//     --function-name $(terraform output -raw seed_blocks_lambda_name) \
+//     --payload '{"reseed":true,"ref":"v2"}' --cli-binary-format raw-in-base64-out /tmp/out.json
+//
 // Two modes:
 //   - Default (insert-only): a conditional write skips any block that already
-//     exists, so re-running only inserts blocks added to the baseline since the
-//     last run. Safe, but it CANNOT update an existing baseline block — once a
-//     SYSTEM partition exists, later field changes are silently skipped, and
-//     rows under a since-renamed SK (e.g. a stage's old GROUPING# items) are
-//     left orphaned because the insert path can't reach them.
-//   - reseed: the vendor baseline re-ships on every deploy, so it must be
-//     re-seedable. `{"reseed":true}` first DELETES every SYSTEM-owned partition
-//     (BLOCK#SYSTEM#* and WF#SYSTEM#*), clearing orphans, then writes the full
-//     current baseline fresh. Scoped to SYSTEM only — customer forks live in
-//     BLOCK#<tenant># / WF#<tenant># partitions and are never scanned or
-//     touched. Here "tenant" is an ownership namespace: SYSTEM is imported and
-//     reseedable; default is user-created. Combine with dryRun to preview the
-//     clear without deleting.
-//
-// Stays deployed indefinitely — OSS forks are on their own upgrade timelines.
+//     exists, so re-running only inserts blocks added since the last run. Safe,
+//     but it CANNOT update an existing baseline block.
+//   - reseed: DELETES every SYSTEM-owned partition (BLOCK#SYSTEM#* and
+//     WF#SYSTEM#*) first, then writes the full current baseline fresh. Scoped to
+//     SYSTEM only — customer forks (BLOCK#default# / WF#default#) are untouched.
+//     Combine with dryRun to preview the clear without deleting.
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
@@ -46,8 +54,16 @@ import {
 } from '@aws-sdk/lib-dynamodb';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { SYSTEM_TENANT } from '../shared/tenant.js';
-import { BASELINE_BLOCKS, BASELINE_WORKFLOWS } from '../shared/baseline-blocks.js';
-import { LATEST, blockPk, versionSk, catalogGsi1Pk, buildBodyRef } from '../shared/blocks.js';
+import { fetchCoreFiles } from '../shared/repo-fetch.js';
+import { buildFromFiles } from '../shared/block-mappers.js';
+import {
+  LATEST,
+  blockPk,
+  versionSk,
+  catalogGsi1Pk,
+  buildBodyRef,
+  buildScriptRef,
+} from '../shared/blocks.js';
 import {
   META,
   workflowPk,
@@ -63,14 +79,20 @@ const s3 = new S3Client({});
 
 const blocksTable = () => process.env.BLOCKS_TABLE;
 const artifactsBucket = () => process.env.ARTIFACTS_BUCKET;
+const defaultRef = () => process.env.AIDLC_REPO_REF;
 
 const isConditionalCheckFailed = (err) => err?.name === 'ConditionalCheckFailedException';
 
-// Builds the two stored items (V#latest pointer + V#1 snapshot) for a baseline
-// block, with its body (if any) externalized to S3.
-const buildItems = (block, bodyRef, now) => {
-  const { type, id, name, body, ...attrs } = block;
-  void body; // body is externalized into bodyRef, not stored inline
+// The S3 prefix for the commit-pinned internal runtime snapshot.
+const runtimePrefix = (ref) => `aidlc-runtime/${ref}`;
+const runtimeKey = (ref, repoPath) => `${runtimePrefix(ref)}/${repoPath}`;
+
+// Builds the two stored items (V#latest pointer + V#1 snapshot) for a block,
+// with its body (and, for a sensor, its script) externalized to S3.
+const buildItems = (block, bodyRef, scriptRef, now) => {
+  const { type, id, name, body, script, ...attrs } = block;
+  void body; // externalized into bodyRef
+  void script; // externalized into scriptRef
   const base = {
     pk: blockPk(SYSTEM_TENANT, type, id),
     tenantId: SYSTEM_TENANT,
@@ -79,6 +101,7 @@ const buildItems = (block, bodyRef, now) => {
     name,
     version: 1,
     bodyRef,
+    ...(scriptRef ? { scriptRef } : {}),
     createdAt: now,
     updatedAt: now,
     ...attrs,
@@ -101,9 +124,8 @@ const workflowSnapshotItem = (item, version) => {
 };
 
 // Builds the items for a baseline workflow partition: the META header (carrying
-// the workflow catalog GSI1 keys), the inline phase tree, stage placements, and
-// immutable V#1 workflow snapshot rows. References the baseline blocks; never
-// copies them.
+// the workflow catalog GSI1 keys), the inline phase tree, stage placements, rule
+// refs, and immutable V#1 workflow snapshot rows.
 const buildWorkflowItems = (wf, now) => {
   const pk = workflowPk(SYSTEM_TENANT, wf.id);
   const meta = {
@@ -160,10 +182,8 @@ const buildWorkflowItems = (wf, now) => {
 
 // Deletes every SYSTEM-owned partition (BLOCK#SYSTEM#* and WF#SYSTEM#*) so the
 // imported baseline can be rewritten fresh. Scoped by a FilterExpression on the
-// pk prefix — user-created/forked rows (BLOCK#default#*, WF#default#*) are never
-// matched.
-// A Scan is acceptable here: this is a rarely-run admin op on a small table,
-// not a hot path. Returns the count of deleted items.
+// pk prefix — user-created/forked rows are never matched. Returns the count of
+// deleted items (or, on dryRun, the count that would be deleted).
 const clearSystemPartitions = async (dryRun) => {
   const keys = [];
   let lastKey;
@@ -186,7 +206,6 @@ const clearSystemPartitions = async (dryRun) => {
 
   if (dryRun) return keys.length;
 
-  // BatchWrite deletes in chunks of 25.
   for (let i = 0; i < keys.length; i += 25) {
     const group = keys.slice(i, i + 25);
     await ddb.send(
@@ -200,42 +219,56 @@ const clearSystemPartitions = async (dryRun) => {
   return keys.length;
 };
 
+const putObject = (key, body, contentType) =>
+  s3.send(
+    new PutObjectCommand({
+      Bucket: artifactsBucket(),
+      Key: key,
+      Body: body,
+      ContentType: contentType,
+    }),
+  );
+
 export const handler = async (event = {}) => {
   const dryRun = event?.dryRun === true;
   const reseed = event?.reseed === true;
+  const ref = event?.ref || defaultRef();
+  if (!ref) {
+    throw new Error('seed-blocks: no repo ref — set AIDLC_REPO_REF or pass {"ref":"<sha>"}');
+  }
   const now = new Date().toISOString();
   const seeded = [];
   const skipped = [];
 
+  // Fetch + parse the pinned repo. Hard-fails (no fallback) — a partial or
+  // stale seed is worse than a clear failure the operator retries.
+  const files = await fetchCoreFiles(ref);
+  const { blocks, workflow, sensorScripts, runtimeFiles } = buildFromFiles(files);
+
   // Reseed: clear the SYSTEM baseline first so the writes below land fresh.
-  // After the clear, no SYSTEM pk exists, so the attribute_not_exists guards
-  // below all pass and write the full current baseline. (On dryRun we only
-  // count what would be cleared; nothing is deleted or written.)
   let cleared = 0;
   if (reseed) {
     cleared = await clearSystemPartitions(dryRun);
   }
 
-  for (const block of BASELINE_BLOCKS) {
-    const ref = block.body ? buildBodyRef(block.body) : null;
+  for (const block of blocks) {
+    const bodyRef = block.body ? buildBodyRef(block.body) : null;
+    const script = block.type === 'SENSOR' ? sensorScripts.get(block.id)?.content : null;
+    const scriptRef = script ? buildScriptRef(script) : null;
 
     if (dryRun) {
       seeded.push(`${block.type}#${block.id}`);
       continue;
     }
 
-    if (ref) {
-      await s3.send(
-        new PutObjectCommand({
-          Bucket: artifactsBucket(),
-          Key: ref.s3Key,
-          Body: block.body,
-          ContentType: 'text/markdown',
-        }),
-      );
+    if (bodyRef) {
+      await putObject(bodyRef.s3Key, block.body, 'text/markdown');
+    }
+    if (scriptRef) {
+      await putObject(scriptRef.s3Key, script, 'text/plain');
     }
 
-    const { latest, snapshot } = buildItems(block, ref, now);
+    const { latest, snapshot } = buildItems(block, bodyRef, scriptRef, now);
     try {
       // Guard on V#latest only — its absence means the block is new. The
       // snapshot write follows unconditionally so a half-seeded block heals.
@@ -257,14 +290,12 @@ export const handler = async (event = {}) => {
     }
   }
 
-  // Workflows: the "from default" fork sources. Guard on the META item; only
-  // when it is newly created do we write the phase/placement children, so
-  // re-running never disturbs an existing baseline workflow.
-  for (const wf of BASELINE_WORKFLOWS) {
-    if (dryRun) {
-      seeded.push(`WORKFLOW#${wf.id}`);
-      continue;
-    }
+  // The default workflow: the "from default" fork source. Guard on the META
+  // item; only when it is newly created do we write the children.
+  const wf = workflow;
+  if (dryRun) {
+    seeded.push(`WORKFLOW#${wf.id}`);
+  } else {
     const { meta, children } = buildWorkflowItems(wf, now);
     try {
       await ddb.send(
@@ -274,27 +305,63 @@ export const handler = async (event = {}) => {
           ConditionExpression: 'attribute_not_exists(pk)',
         }),
       );
+      for (const child of children) {
+        await ddb.send(new PutCommand({ TableName: blocksTable(), Item: child }));
+      }
+      seeded.push(`WORKFLOW#${wf.id}`);
     } catch (err) {
       if (isConditionalCheckFailed(err)) {
         skipped.push(`WORKFLOW#${wf.id}`);
-        continue;
+      } else {
+        throw err;
       }
-      throw err;
     }
-    for (const child of children) {
-      await ddb.send(new PutCommand({ TableName: blocksTable(), Item: child }));
+  }
+
+  // Internal runtime snapshot: the engine tools, hooks, protocols, and
+  // conductor, written to a commit-pinned S3 prefix so the execution layer can
+  // load the exact files this baseline was seeded from. Content-addressed by
+  // commit, so re-seeding the same ref just overwrites identical bytes.
+  let runtimeWritten = 0;
+  for (const [repoPath, content] of runtimeFiles) {
+    if (dryRun) {
+      runtimeWritten += 1;
+      continue;
     }
-    seeded.push(`WORKFLOW#${wf.id}`);
+    const contentType = repoPath.endsWith('.ts') ? 'text/plain' : 'text/markdown';
+    await putObject(runtimeKey(ref, repoPath), content, contentType);
+    runtimeWritten += 1;
+  }
+
+  // A manifest pins what this snapshot contains, for execution-time discovery.
+  if (!dryRun) {
+    await putObject(
+      `${runtimePrefix(ref)}/manifest.json`,
+      JSON.stringify(
+        {
+          ref,
+          seededAt: now,
+          runtimeFiles: [...runtimeFiles.keys()].toSorted(),
+          sensorScripts: [...sensorScripts.values()].map((s) => s.path).toSorted(),
+        },
+        null,
+        2,
+      ),
+      'application/json',
+    );
   }
 
   const result = {
     dryRun,
     reseed,
+    ref,
     cleared,
-    total: BASELINE_BLOCKS.length + BASELINE_WORKFLOWS.length,
+    total: blocks.length + 1,
+    runtimeFiles: runtimeWritten,
+    sensorScripts: sensorScripts.size,
     seeded,
     skipped,
   };
-  console.log('seed-blocks result:', JSON.stringify(result));
+  console.log('seed-blocks result:', JSON.stringify({ ...result, seeded: seeded.length }));
   return result;
 };

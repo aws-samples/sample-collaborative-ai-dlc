@@ -7,23 +7,22 @@ import {
   stageAutonomy,
 } from '../compile.js';
 
-// A library Stage block, minimally shaped for the compilers.
+// A library Stage block, minimally shaped for the compilers — flat V2 fields.
 const stage = (
   id,
-  { clarification, sensors, humanValidation, inputs, outputs, requires } = {},
+  { reviewer, sensors, humanValidation, inputs, outputs, requires, blocksOn } = {},
 ) => ({
   blockId: id,
-  clarification: clarification ? { required: clarification } : undefined,
-  c2_verification: {
-    sensors: sensors ?? [],
-    humanValidation: humanValidation ?? 'none',
-  },
-  c1_definition: {
-    inputs: inputs ?? [],
-    outputs: outputs ?? [],
-    intermediates: [],
-    requires: requires ?? [],
-  },
+  // Verification axes: deterministic sensors, an LLM-judged reviewer agent, the
+  // human gate.
+  sensors: sensors ?? [],
+  reviewer: reviewer ?? null,
+  humanValidation: humanValidation ?? 'none',
+  // DAG edges (flat).
+  consumes: inputs ?? [],
+  produces: outputs ?? [],
+  requires: requires ?? [],
+  blocksOn: blocksOn ?? [],
 });
 
 const placement = (stageId, scopeMembership = {}, extra = {}) => ({
@@ -52,52 +51,50 @@ describe('compileScopeGrid', () => {
   });
 });
 
-describe('stageAutonomy — both gates', () => {
-  it('self-halting: no clarification, all deterministic', () => {
-    expect(stageAutonomy(stage('s', { sensors: [{ mode: 'deterministic' }] }))).toBe(
-      'self-halting',
-    );
+describe('stageAutonomy — three verification axes', () => {
+  it('self-halting: deterministic sensors only (advisory, no human in loop)', () => {
+    expect(stageAutonomy(stage('s', { sensors: ['linter'] }))).toBe('self-halting');
   });
 
-  it('self-halting: no gates at all', () => {
+  it('self-halting: no verification at all', () => {
     expect(stageAutonomy(stage('s'))).toBe('self-halting');
-  });
-
-  it('human-gated: front gate open (clarification always)', () => {
-    expect(
-      stageAutonomy(stage('s', { clarification: 'always', sensors: [{ mode: 'deterministic' }] })),
-    ).toBe('human-gated');
   });
 
   it('human-gated: humanValidation required', () => {
     expect(stageAutonomy(stage('s', { humanValidation: 'required' }))).toBe('human-gated');
   });
 
-  it('human-gated: only llm-judged sensors', () => {
-    expect(stageAutonomy(stage('s', { sensors: [{ mode: 'llm-judged' }] }))).toBe('human-gated');
-  });
-
-  it('mixed: both deterministic and llm-judged', () => {
-    expect(
-      stageAutonomy(stage('s', { sensors: [{ mode: 'deterministic' }, { mode: 'llm-judged' }] })),
-    ).toBe('mixed');
-  });
-
-  it('mixed: conditional clarification with deterministic checks', () => {
+  it('human-gated: required gate wins even with a reviewer', () => {
     expect(
       stageAutonomy(
-        stage('s', { clarification: 'conditional', sensors: [{ mode: 'deterministic' }] }),
+        stage('s', { humanValidation: 'required', reviewer: 'aidlc-product-lead-agent' }),
       ),
+    ).toBe('human-gated');
+  });
+
+  it('mixed: a reviewer without an unconditional human gate', () => {
+    expect(stageAutonomy(stage('s', { reviewer: 'aidlc-architecture-reviewer-agent' }))).toBe(
+      'mixed',
+    );
+  });
+
+  it('mixed: a reviewer alongside deterministic sensors', () => {
+    expect(
+      stageAutonomy(stage('s', { sensors: ['linter'], reviewer: 'aidlc-product-lead-agent' })),
     ).toBe('mixed');
+  });
+
+  it('mixed: conditional human validation', () => {
+    expect(stageAutonomy(stage('s', { humanValidation: 'conditional' }))).toBe('mixed');
   });
 });
 
 describe('compileAutonomyProfile', () => {
   it('rolls up per-stage levels', () => {
     const stagesById = {
-      a: stage('a', { sensors: [{ mode: 'deterministic' }] }), // self-halting
-      b: stage('b', { sensors: [{ mode: 'llm-judged' }] }), // human-gated
-      c: stage('c', { sensors: [{ mode: 'deterministic' }, { mode: 'llm-judged' }] }), // mixed
+      a: stage('a', { sensors: ['linter'] }), // self-halting
+      b: stage('b', { humanValidation: 'required' }), // human-gated
+      c: stage('c', { reviewer: 'aidlc-product-lead-agent' }), // mixed
     };
     const { perStage, rollup } = compileAutonomyProfile(
       [placement('a'), placement('b'), placement('c')],
@@ -205,8 +202,8 @@ describe('compileStageGraph', () => {
 describe('compileRules', () => {
   // A library Rule block, shaped as a stored item (blockId + layer + phase).
   const rule = (id, layer, phase = null) => ({ blockId: id, id, layer, phase });
-  // A stage block here only needs its phase (carried as defaultGrouping).
-  const phaseStage = (id, phase) => ({ blockId: id, defaultGrouping: phase });
+  // A stage block here only needs its (flat) phase field.
+  const phaseStage = (id, phase) => ({ blockId: id, phase });
 
   const rulesById = {
     'r-org': rule('r-org', 'org'),
@@ -298,7 +295,7 @@ describe('compileStageGraph — blocks_on ordering edges', () => {
   it('emits a kind:blocks edge for a placed blocksOn dependency', () => {
     const stagesById = {
       a: stage('a'),
-      b: { ...stage('b'), c1_definition: { ...stage('b').c1_definition, blocksOn: ['a'] } },
+      b: stage('b', { blocksOn: ['a'] }),
     };
     const graph = compileStageGraph([placement('a'), placement('b')], stagesById);
     expect(graph.edges).toContainEqual({ from: 'a', to: 'b', kind: 'blocks' });
@@ -306,11 +303,7 @@ describe('compileStageGraph — blocks_on ordering edges', () => {
 
   it('counts a blocksOn edge in cycle detection', () => {
     // a blocks-on b AND b blocks-on a → a cycle even with no data edges.
-    const withBlocks = (id, dep) => ({
-      ...stage(id),
-      c1_definition: { ...stage(id).c1_definition, blocksOn: [dep] },
-    });
-    const stagesById = { a: withBlocks('a', 'b'), b: withBlocks('b', 'a') };
+    const stagesById = { a: stage('a', { blocksOn: ['b'] }), b: stage('b', { blocksOn: ['a'] }) };
     const graph = compileStageGraph([placement('a'), placement('b')], stagesById);
     expect(graph.acyclic).toBe(false);
   });
