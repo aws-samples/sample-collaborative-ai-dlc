@@ -3,8 +3,10 @@
 The authoring layer for composable AI-DLC v2 workflows: a library of reusable
 **blocks**, the **workflows** that arrange them, and a **seed** that imports the
 official methodology from the upstream repo. This is authoring, not execution —
-the runtime entities (stage-instance machine, Bolts, swarm, worktrees, audit
-trail, sessions) live elsewhere.
+the **execution** layer (the AgentCore container that runs a stage at a time, the
+MCP integration contract, the process/state table) lives in
+[`v2-runtime.md`](./v2-runtime.md); open items and the trigger/resume lambda seam
+are tracked in [`v2-open.md`](./v2-open.md).
 
 ## Block types
 
