@@ -2,6 +2,7 @@
   "name": "sample-collaborative-ai-dlc",
   "private": true,
   "workspaces": [
+    "lambda/agentcore",
     "lambda/building-blocks",
     "lambda/discussions",
     "lambda/get-agent-output",

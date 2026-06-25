@@ -20,6 +20,7 @@
 //     SK = EVENT#<ts>#<eventId>       — append-only audit trail
 //     SK = HUMAN#<humanTaskId>        — a pending/answered human gate (question/approval)
 //     SK = METRIC#<ts>#<metricId>     — token usage / context-window samples
+//     SK = OUTPUT#<seq>               — agent output chunks (restore-on-reload)
 //   GSI1PK = PROJECT#<projectId>      GSI1SK = STATUS#<status>#STARTED#<ts>#EXEC#<id>
 //     (list a project's executions by status, newest first)
 //   GSI2PK = EXEC#<executionId>       GSI2SK = TYPE#<type>#STATE#<state>#<id>
@@ -48,6 +49,13 @@ const humanTaskKey = (executionId, humanTaskId) => ({
 const metricKey = (executionId, timestamp, metricId) => ({
   pk: executionPk(executionId),
   sk: `METRIC#${timestamp}#${metricId}`,
+});
+// Output chunks use a zero-padded monotonic sequence so SK sort == emit order
+// (a timestamp can collide for rapid chunks; a sequence can't).
+const outputSeq = (n) => String(n).padStart(12, '0');
+const outputKey = (executionId, seq) => ({
+  pk: executionPk(executionId),
+  sk: `OUTPUT#${outputSeq(seq)}`,
 });
 
 // ── Index projections ──
@@ -189,6 +197,27 @@ const buildHumanTaskRow = ({
   createdAt: now,
 });
 
+// An agent output chunk persisted for restore-on-reload. The live copy is
+// broadcast over the websocket; this row is the durable record the page replays.
+const buildOutputRow = ({
+  executionId,
+  stageInstanceId = null,
+  seq,
+  kind = 'text',
+  content,
+  now,
+}) => ({
+  ...outputKey(executionId, seq),
+  ...executionTypeStateIndex({ executionId, type: 'OUTPUT', state: kind, id: outputSeq(seq) }),
+  type: 'Output',
+  executionId,
+  stageInstanceId,
+  seq,
+  kind,
+  content,
+  timestamp: now,
+});
+
 const buildMetricRow = ({ executionId, stageInstanceId = null, metricId, metrics, now }) => ({
   ...metricKey(executionId, now, metricId),
   ...executionTypeStateIndex({ executionId, type: 'METRIC', state: 'sample', id: metricId }),
@@ -210,6 +239,8 @@ module.exports = {
   eventKey,
   humanTaskKey,
   metricKey,
+  outputKey,
+  outputSeq,
   projectStatusIndex,
   executionTypeStateIndex,
   EXECUTION_STATUS,
@@ -221,4 +252,5 @@ module.exports = {
   buildEventRow,
   buildHumanTaskRow,
   buildMetricRow,
+  buildOutputRow,
 };

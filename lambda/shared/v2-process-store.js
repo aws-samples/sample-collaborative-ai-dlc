@@ -26,6 +26,7 @@ const {
   buildEventRow,
   buildHumanTaskRow,
   buildMetricRow,
+  buildOutputRow,
 } = require('./v2-process-keys.js');
 
 const bySk = (a, b) => a.sk.localeCompare(b.sk);
@@ -279,6 +280,37 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return item;
   };
 
+  // Append an agent output chunk for restore-on-reload. The sequence is an atomic
+  // counter on the META row (ADD), so concurrent chunks never collide and SK sort
+  // == emit order. The live copy is broadcast over the websocket by the caller.
+  const appendOutput = async ({ executionId, stageInstanceId, kind = 'text', content }) => {
+    const { Attributes } = await ddb.send(
+      new UpdateCommand({
+        TableName: table(),
+        Key: executionMetaKey(executionId),
+        UpdateExpression: 'ADD outputSeq :one',
+        ExpressionAttributeValues: { ':one': 1 },
+        ReturnValues: 'UPDATED_NEW',
+      }),
+    );
+    const seq = Number(Attributes?.outputSeq ?? 1);
+    const item = buildOutputRow({ executionId, stageInstanceId, seq, kind, content, now: now() });
+    await ddb.send(new PutCommand({ TableName: table(), Item: item }));
+    return item;
+  };
+
+  // Read output chunks in emit order (for restore-on-reload).
+  const getOutputs = async (executionId) => {
+    const { Items } = await ddb.send(
+      new QueryCommand({
+        TableName: table(),
+        KeyConditionExpression: 'pk = :pk AND begins_with(sk, :p)',
+        ExpressionAttributeValues: { ':pk': executionPk(executionId), ':p': 'OUTPUT#' },
+      }),
+    );
+    return Items ?? [];
+  };
+
   // Read every record for an execution, grouped by type (for the resume lambda /
   // admin / restore-on-reload).
   const getExecutionRecords = async (executionId) => {
@@ -296,6 +328,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       events: records.filter((r) => r.sk.startsWith('EVENT#')),
       humanTasks: records.filter((r) => r.sk.startsWith('HUMAN#')),
       metrics: records.filter((r) => r.sk.startsWith('METRIC#')),
+      outputs: records.filter((r) => r.sk.startsWith('OUTPUT#')),
     };
   };
 
@@ -310,6 +343,8 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     getHumanTask,
     answerHumanTask,
     recordMetric,
+    appendOutput,
+    getOutputs,
     getExecutionRecords,
   };
 };

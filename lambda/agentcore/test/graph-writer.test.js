@@ -1,0 +1,214 @@
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import gremlin from 'gremlin';
+import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
+import { createGraphWriter, GraphWriteError } from '../mcp/graph-writer.js';
+
+const PARTITION = 'agentcore-graph-writer';
+
+const SCOPE = {
+  projectId: 'proj-1',
+  intentId: 'intent-1',
+  executionId: 'exec-1',
+  stageInstanceId: 'si-req',
+};
+
+let conn;
+let g;
+let writer;
+
+// Seed the Intent anchor the writer hangs artifacts off (init-ws creates it in
+// production; the writer requires it to exist).
+const seedIntent = (id = SCOPE.intentId) =>
+  g.addV('Intent').property('id', id).property('project_id', SCOPE.projectId).next();
+
+beforeAll(async () => {
+  const url = `ws://${process.env.NEPTUNE_ENDPOINT}:${process.env.GREMLIN_PORT}/gremlin`;
+  conn = new gremlin.driver.DriverRemoteConnection(url);
+  g = gremlin.process.AnonymousTraversalSource.traversal()
+    .withRemote(conn)
+    .withStrategies(
+      new PartitionStrategy({
+        partitionKey: '_partition',
+        writePartition: PARTITION,
+        readPartitions: [PARTITION],
+      }),
+    );
+});
+
+afterAll(async () => {
+  await conn?.close();
+});
+
+beforeEach(async () => {
+  await g.V().drop().next();
+  let t = 0;
+  writer = createGraphWriter({ g, scope: SCOPE, clock: () => `2026-01-01T00:00:0${t++}.000Z` });
+});
+
+describe('createGraphWriter — guards', () => {
+  it('requires an intentId in scope', () => {
+    expect(() => createGraphWriter({ g, scope: {} })).toThrow(/intentId/);
+  });
+});
+
+describe('createArtifact', () => {
+  it('fails when the Intent anchor does not exist', async () => {
+    await expect(
+      writer.createArtifact({ artifactType: 'requirements-analysis', id: 'a1' }),
+    ).rejects.toBeInstanceOf(GraphWriteError);
+  });
+
+  it('creates an Artifact typed by name, stamped with provenance, anchored to the Intent', async () => {
+    await seedIntent();
+    const created = await writer.createArtifact({
+      artifactType: 'requirements-analysis',
+      id: 'a1',
+      title: 'Requirements',
+      content: '# reqs',
+      props: { status: 'draft' },
+    });
+    expect(created.artifact_type).toBe('requirements-analysis');
+    expect(created.project_id).toBe('proj-1');
+    expect(created.created_by_stage_instance_id).toBe('si-req');
+
+    const fetched = await writer.getArtifact({ id: 'a1' });
+    expect(fetched).toMatchObject({
+      id: 'a1',
+      artifact_type: 'requirements-analysis',
+      title: 'Requirements',
+      status: 'draft',
+    });
+
+    // Anchored Intent --CONTAINS--> Artifact.
+    const anchored = await g
+      .V()
+      .has('Intent', 'id', 'intent-1')
+      .out('CONTAINS')
+      .has('Artifact', 'id', 'a1')
+      .hasNext();
+    expect(anchored).toBe(true);
+  });
+
+  it('drops caller-supplied reserved/provenance props (spoof-proof)', async () => {
+    await seedIntent();
+    const created = await writer.createArtifact({
+      artifactType: 'design',
+      id: 'a2',
+      props: { project_id: 'EVIL', created_by_execution_id: 'EVIL', legit: 'ok' },
+    });
+    expect(created.project_id).toBe('proj-1');
+    expect(created.created_by_execution_id).toBe('exec-1');
+    expect(created.legit).toBe('ok');
+  });
+
+  it('is idempotent on re-create (upsert by id), not duplicated', async () => {
+    await seedIntent();
+    await writer.createArtifact({ artifactType: 'design', id: 'a3', title: 'v1' });
+    await writer.createArtifact({ artifactType: 'design', id: 'a3', title: 'v2' });
+    const count = await g.V().has('Artifact', 'id', 'a3').count().next();
+    expect(count.value).toBe(1);
+    expect((await writer.getArtifact({ id: 'a3' })).title).toBe('v2');
+    const edges = await g.V().has('Intent', 'id', 'intent-1').outE('CONTAINS').count().next();
+    expect(edges.value).toBe(1);
+  });
+
+  it('wires links to existing artifacts in the same call', async () => {
+    await seedIntent();
+    await writer.createArtifact({ artifactType: 'requirements-analysis', id: 'req' });
+    await writer.createArtifact({
+      artifactType: 'user-stories',
+      id: 'us',
+      links: [{ toId: 'req', edge: 'DERIVED_FROM' }],
+    });
+    const neighbors = await writer.getNeighbors({
+      id: 'us',
+      edge: 'DERIVED_FROM',
+      direction: 'out',
+    });
+    expect(neighbors.map((n) => n.id)).toEqual(['req']);
+  });
+});
+
+describe('linkArtifacts', () => {
+  beforeEach(async () => {
+    await seedIntent();
+    await writer.createArtifact({ artifactType: 'a', id: 'x' });
+    await writer.createArtifact({ artifactType: 'b', id: 'y' });
+  });
+
+  it('rejects a non-allowlisted edge', async () => {
+    await expect(
+      writer.linkArtifacts({ fromId: 'x', toId: 'y', edge: 'HACKS' }),
+    ).rejects.toBeInstanceOf(GraphWriteError);
+  });
+
+  it('creates an allowlisted edge and is idempotent', async () => {
+    await writer.linkArtifacts({ fromId: 'x', toId: 'y', edge: 'PRODUCES' });
+    await writer.linkArtifacts({ fromId: 'x', toId: 'y', edge: 'PRODUCES' });
+    const count = await g.V().has('Artifact', 'id', 'x').outE('PRODUCES').count().next();
+    expect(count.value).toBe(1);
+  });
+
+  it('rejects a link to a missing artifact', async () => {
+    await expect(
+      writer.linkArtifacts({ fromId: 'x', toId: 'ghost', edge: 'PRODUCES' }),
+    ).rejects.toBeInstanceOf(GraphWriteError);
+  });
+});
+
+describe('reads', () => {
+  beforeEach(async () => {
+    await seedIntent();
+    await writer.createArtifact({
+      artifactType: 'requirements-analysis',
+      id: 'r1',
+      title: 'Auth requirements',
+      content: 'login',
+    });
+    await writer.createArtifact({
+      artifactType: 'requirements-analysis',
+      id: 'r2',
+      title: 'Billing',
+    });
+    await writer.createArtifact({ artifactType: 'design', id: 'd1', title: 'Auth design' });
+  });
+
+  it('lookupArtifacts filters by type within the intent', async () => {
+    const reqs = await writer.lookupArtifacts({ artifactType: 'requirements-analysis' });
+    expect(reqs.map((a) => a.id).toSorted()).toEqual(['r1', 'r2']);
+  });
+
+  it('getIntentGraph returns every contained artifact', async () => {
+    const all = await writer.getIntentGraph();
+    expect(all.map((a) => a.id).toSorted()).toEqual(['d1', 'r1', 'r2']);
+  });
+
+  it('searchGraph matches title/content substrings, optionally by type', async () => {
+    const hits = await writer.searchGraph({ query: 'auth' });
+    expect(hits.map((a) => a.id).toSorted()).toEqual(['d1', 'r1']);
+    const typed = await writer.searchGraph({ query: 'auth', artifactType: 'design' });
+    expect(typed.map((a) => a.id)).toEqual(['d1']);
+  });
+
+  it('updateArtifact patches props and errors on a missing artifact', async () => {
+    await writer.updateArtifact({ id: 'r1', props: { status: 'final' } });
+    expect((await writer.getArtifact({ id: 'r1' })).status).toBe('final');
+    await expect(writer.updateArtifact({ id: 'nope', props: {} })).rejects.toBeInstanceOf(
+      GraphWriteError,
+    );
+  });
+});
+
+describe('recordQuestion', () => {
+  it('creates a Question vertex anchored to the Intent', async () => {
+    await seedIntent();
+    await writer.recordQuestion({ questionId: 'q1', questionsJson: '[{"text":"?"}]' });
+    const anchored = await g
+      .V()
+      .has('Intent', 'id', 'intent-1')
+      .out('CONTAINS')
+      .has('Question', 'id', 'q1')
+      .hasNext();
+    expect(anchored).toBe(true);
+  });
+});
