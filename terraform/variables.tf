@@ -22,6 +22,12 @@ variable "bedrock_model" {
   default     = "us.anthropic.claude-sonnet-4-6"
 }
 
+variable "aidlc_repo_ref" {
+  description = "Pinned ref (commit SHA/tag/branch) of awslabs/aidlc-workflows the seed + AgentCore runtime use. Keep in sync with the seed-blocks lambda."
+  type        = string
+  default     = "ba0cfe999856033ecb909a9135b46fe10811bf55"
+}
+
 variable "git_author_name" {
   description = "Git author name used by agents for commits they create"
   type        = string

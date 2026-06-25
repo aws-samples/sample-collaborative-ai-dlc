@@ -100,6 +100,20 @@ For now: **no declared clarification gate**; clarifications happen via the
 - **Team-knowledge write-back** — the `team` knowledge tier and the
   `team-learnings`/`project-learnings` rule layers are seeded empty and accrued
   at runtime. The learning-loop write path is not built yet.
-- **Bedrock AgentCore Terraform support** — confirm the `bedrock-agentcore`
-  runtime has first-class provider coverage; fall back to `awscc` or a CLI/null
-  resource if not, and document which path was taken.
+- **Bedrock AgentCore Terraform support** — RESOLVED: the runtime is declared via
+  the `hashicorp/awscc` provider (`awscc_bedrockagentcore_runtime`, mirroring the
+  CloudFormation `AWS::BedrockAgentCore::Runtime` type) in
+  `terraform/modules/compute/agentcore/`. It is the single awscc resource; the
+  rest of the stack stays on `hashicorp/aws`. **Open:** the module sets
+  `network_configuration.network_mode = "PUBLIC"`. Neptune lives in a private VPC —
+  if AgentCore Runtime PUBLIC mode cannot reach it, switch to the VPC network mode
+  and wire `private_subnet_ids` + a security group (parallel to the agents module)
+  once VPC support is confirmed in-region. Also verify the awscc artifact shape
+  (`agent_runtime_artifact.container_configuration.container_uri`) against the
+  installed provider version before first apply.
+- **Trigger/resume Lambda (next)** — the AgentCore image + state table + runtime
+  exist but nothing invokes them yet. The future lambda: on intent create →
+  invoke `init-ws` (new session id); per stage → invoke `run-stage` reusing the
+  SAME session id (keeps the checkout); on human answer → write the HUMAN# gate
+  (the MCP `ask_question` poll unblocks) and re-invoke the next stage. It
+  reads/writes the same `v2-process-keys` schema this work already provisions.

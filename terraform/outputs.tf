@@ -262,3 +262,19 @@ output "jira_oauth_secret_name" {
   description = "Name of the Secrets Manager secret holding the Jira Cloud OAuth client_id/client_secret"
   value       = module.git.jira_oauth_secret_name
 }
+
+# AgentCore Runtime (v2 stage executor)
+output "agentcore_runtime_arn" {
+  description = "ARN of the Bedrock AgentCore Runtime that executes v2 stages"
+  value       = module.agentcore.runtime_arn
+}
+
+output "agentcore_image_uri" {
+  description = "Container image URI built for the AgentCore runtime"
+  value       = module.agentcore.image_uri
+}
+
+output "v2_executions_table_name" {
+  description = "v2 process/state DynamoDB table name"
+  value       = module.agentcore.v2_executions_table_name
+}

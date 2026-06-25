@@ -389,6 +389,44 @@ module "agents" {
   }
 }
 
+# Bedrock AgentCore Runtime — v2 stage execution image + state table.
+# NOT wired into any Lambda yet: this provisions the image, the v2 process table,
+# the IAM role, and the AgentCore runtime so a future trigger/resume lambda can
+# invoke it. See docs/v2-building-blocks.md (runtime) and docs/v2-open.md.
+module "agentcore" {
+  source = "./modules/compute/agentcore"
+
+  project_name                = var.project_name
+  environment                 = var.environment
+  aws_region                  = var.aws_region
+  neptune_endpoint            = module.neptune.cluster_endpoint
+  neptune_cluster_resource_id = module.neptune.cluster_resource_id
+  artifacts_bucket_name       = module.s3.artifacts_bucket_name
+  artifacts_bucket_arn        = module.s3.artifacts_bucket_arn
+  blocks_table_name           = module.dynamodb.blocks_table_name
+  blocks_table_arn            = module.dynamodb.blocks_table_arn
+  connections_table_name      = module.dynamodb.connections_table_name
+  connections_table_arn       = module.dynamodb.connections_table_arn
+  websocket_endpoint          = replace(module.realtime.websocket_api_endpoint, "wss://", "https://")
+  websocket_execution_arn     = module.realtime.websocket_execution_arn
+  aidlc_repo_ref              = var.aidlc_repo_ref
+  bedrock_model               = var.bedrock_model
+
+  # Reuse the agent settings SSM parameters (same auth model as v1 agents).
+  bedrock_bearer_token_ssm_name = "/${var.project_name}/${var.environment}/bedrock-bearer-token"
+  kiro_api_key_ssm_name         = "/${var.project_name}/${var.environment}/kiro-api-key"
+  agent_settings_ssm_arns = [
+    "arn:${local.partition}:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/bedrock-bearer-token",
+    "arn:${local.partition}:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/kiro-api-key",
+    "arn:${local.partition}:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/cli-models",
+  ]
+
+  tags = {
+    Environment = var.environment
+    Project     = var.project_name
+  }
+}
+
 # Step Functions Orchestration
 module "orchestration" {
   source = "./modules/orchestration"
