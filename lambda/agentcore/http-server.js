@@ -128,6 +128,13 @@ const main = async () => {
   const { materializeStage, renderRulesDoc } = await import('./stage-materializer.js');
   const { checkoutRepos } = await import('./workspace.js');
   const { discoverInstalledClis } = await import('./cli/discover.js');
+  const { resolveAgentAuth } = await import('./auth-resolver.js');
+
+  // Load the agent CLI's Bedrock bearer token / Kiro key from SSM into env so the
+  // CLI drivers (envForAuth) forward them — without this the CLI falls back to
+  // task-role SigV4 and Bedrock returns 403. Best-effort; logs which were set.
+  const resolvedAuth = await resolveAgentAuth({ env: process.env });
+  console.error(`[agentcore] resolved agent auth: ${resolvedAuth.join(', ') || 'none'}`);
 
   const workspaceDir = process.env.V2_WORKSPACE_DIR || '/workspace';
   const mcpEntry = process.env.V2_MCP_ENTRY || new URL('./mcp/index.js', import.meta.url).pathname;
