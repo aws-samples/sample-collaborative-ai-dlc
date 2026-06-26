@@ -2,9 +2,10 @@
 
 The execution layer that runs a single v2 workflow **stage** at a time. It pairs
 with the authoring layer ([`v2-building-blocks.md`](./v2-building-blocks.md)): the
-blocks/workflows are composed and seeded there; this runtime executes them. Open
-items and the not-yet-built trigger/resume lambda are tracked in
-[`v2-open.md`](./v2-open.md).
+blocks/workflows are composed and seeded there; this runtime executes them. The
+agent-facing slice — how the LLM agent is prompted, bound to MCP, authenticated,
+and model-selected — is in [`v2-agent.md`](./v2-agent.md). Open items and the
+not-yet-built trigger/resume lambda are tracked in [`v2-open.md`](./v2-open.md).
 
 ## Shape
 
