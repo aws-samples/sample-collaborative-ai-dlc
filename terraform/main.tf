@@ -412,6 +412,12 @@ module "agentcore" {
   aidlc_repo_ref              = var.aidlc_repo_ref
   bedrock_model               = var.bedrock_model
 
+  # VPC networking so the runtime's ENIs reach Neptune (private). Subnets are
+  # carved in this VPC in AgentCore-supported AZs; egress via the private NAT route.
+  vpc_id                  = module.networking.vpc_id
+  vpc_cidr                = module.networking.vpc_cidr_block
+  private_route_table_ids = module.networking.private_route_table_ids
+
   # Reuse the agent settings SSM parameters (same auth model as v1 agents).
   bedrock_bearer_token_ssm_name = "/${var.project_name}/${var.environment}/bedrock-bearer-token"
   kiro_api_key_ssm_name         = "/${var.project_name}/${var.environment}/kiro-api-key"

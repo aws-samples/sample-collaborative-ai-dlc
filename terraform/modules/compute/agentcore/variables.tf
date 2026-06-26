@@ -96,14 +96,47 @@ variable "agent_settings_ssm_arns" {
   default     = []
 }
 
-# AgentCore Runtime network mode. NOTE: Neptune lives in a private VPC. If the
-# runtime only supports PUBLIC networking in your region/account, the container
-# cannot reach Neptune directly — see docs/v2-open.md §4. Switch to the VPC mode
-# (and wire subnets/security groups) once confirmed available.
+# AgentCore Runtime network mode. Neptune lives in a private VPC, so VPC mode is
+# the default — the runtime's ENIs are placed in dedicated subnets in this VPC
+# (in AgentCore-supported AZs) and reach Neptune over the VPC. Set to PUBLIC only
+# if you have no private dependency.
 variable "network_mode" {
-  description = "AgentCore Runtime network mode (PUBLIC or VPC)"
+  description = "AgentCore Runtime network mode (VPC or PUBLIC)"
   type        = string
-  default     = "PUBLIC"
+  default     = "VPC"
+
+  validation {
+    condition     = contains(["VPC", "PUBLIC"], var.network_mode)
+    error_message = "network_mode must be \"VPC\" or \"PUBLIC\"."
+  }
+}
+
+variable "vpc_id" {
+  description = "VPC the runtime ENIs join (must be the VPC Neptune lives in). Required when network_mode = VPC."
+  type        = string
+  default     = ""
+}
+
+variable "vpc_cidr" {
+  description = "CIDR of the VPC, used to carve dedicated AgentCore subnets. Required when network_mode = VPC."
+  type        = string
+  default     = ""
+}
+
+variable "private_route_table_ids" {
+  description = "NAT-routed private route table IDs to associate the AgentCore subnets with (for egress). Required when network_mode = VPC."
+  type        = list(string)
+  default     = []
+}
+
+# AgentCore Runtime VPC mode is only available in a subset of AZs per region,
+# published as stable AZ IDs (e.g. use1-az1). Leave empty to use the module's
+# built-in per-region defaults (or every available AZ in an unlisted region);
+# set explicitly to pin/override the supported AZ IDs for your region.
+variable "agentcore_supported_az_ids" {
+  description = "AgentCore-supported AZ IDs for this region (e.g. [\"use1-az1\",\"use1-az2\"]). Empty = module default."
+  type        = list(string)
+  default     = []
 }
 
 variable "tags" {

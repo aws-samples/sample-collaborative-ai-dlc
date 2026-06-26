@@ -3,6 +3,13 @@ data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 data "aws_ecr_authorization_token" "token" {}
 
+# AZ names are randomized per account; AZ IDs (use1-az1, …) are stable. We map the
+# region's AgentCore-supported AZ IDs to the names that exist in THIS account so the
+# runtime only ever lands in AZs where AgentCore VPC mode is available.
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
 # Bedrock AgentCore Runtime is exposed through the AWS Cloud Control provider
 # (awscc) — the resource type AWS::BedrockAgentCore::Runtime is new and not yet a
 # first-class hashicorp/aws resource. The rest of the stack stays on hashicorp/aws;
@@ -49,6 +56,57 @@ locals {
   billing_mode   = var.environment == "prod" ? "PROVISIONED" : "PAY_PER_REQUEST"
   read_capacity  = var.environment == "prod" ? 5 : null
   write_capacity = var.environment == "prod" ? 5 : null
+
+  # ── AgentCore VPC networking (region-agnostic AZ selection) ──────────────────
+  # AgentCore Runtime VPC mode only accepts subnets in specific AZs per region,
+  # published as stable AZ IDs (not the per-account-randomized names). Subnets in
+  # unsupported AZs fail at resource creation. Map ID → name for this account,
+  # intersect with the region's supported set, and place dedicated AgentCore
+  # subnets only in those AZs. Override per-region via var.agentcore_supported_az_ids.
+  vpc_enabled = var.network_mode == "VPC"
+
+  az_id_to_name = zipmap(
+    data.aws_availability_zones.available.zone_ids,
+    data.aws_availability_zones.available.names,
+  )
+
+  # Verified supported AZ IDs for every AgentCore-Runtime region, transcribed from
+  # the AWS devguide "Supported Availability Zones" table (verified 2026-06-26):
+  # https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-vpc.html
+  # IDs are NON-CONTIGUOUS (e.g. us-east-1 has az1/az2/az4 — no az3/az5/az6); do not
+  # "fill in" gaps. Update from that table as AWS expands coverage, or override per
+  # region via var.agentcore_supported_az_ids.
+  default_agentcore_az_ids = {
+    "us-east-1"      = ["use1-az1", "use1-az2", "use1-az4"]
+    "us-east-2"      = ["use2-az1", "use2-az2", "use2-az3"]
+    "us-west-2"      = ["usw2-az1", "usw2-az2", "usw2-az3"]
+    "ap-southeast-2" = ["apse2-az1", "apse2-az2", "apse2-az3"]
+    "ap-south-1"     = ["aps1-az1", "aps1-az2", "aps1-az3"]
+    "ap-southeast-1" = ["apse1-az1", "apse1-az2", "apse1-az3"]
+    "ap-northeast-1" = ["apne1-az1", "apne1-az2", "apne1-az4"]
+    "eu-west-1"      = ["euw1-az1", "euw1-az2", "euw1-az3"]
+    "eu-central-1"   = ["euc1-az1", "euc1-az2", "euc1-az3"]
+    "eu-north-1"     = ["eun1-az1", "eun1-az2", "eun1-az3"]
+    "eu-west-3"      = ["euw3-az1", "euw3-az2", "euw3-az3"]
+    "ap-northeast-2" = ["apne2-az1", "apne2-az2", "apne2-az3"]
+    "eu-west-2"      = ["euw2-az1", "euw2-az2", "euw2-az3"]
+    "ca-central-1"   = ["cac1-az1", "cac1-az2", "cac1-az4"]
+    "sa-east-1"      = ["sae1-az1", "sae1-az2", "sae1-az3"]
+    "us-gov-west-1"  = ["usgw1-az1", "usgw1-az2", "usgw1-az3"]
+  }
+
+  # Explicit override wins; else region default; else every available AZ (lets a
+  # new region work, trusting the apply to surface any unsupported-AZ error).
+  region_supported_az_ids = length(var.agentcore_supported_az_ids) > 0 ? var.agentcore_supported_az_ids : lookup(local.default_agentcore_az_ids, var.aws_region, data.aws_availability_zones.available.zone_ids)
+
+  # Supported AZ IDs that actually exist in this account, resolved to AZ names.
+  agentcore_az_ids   = [for id in local.region_supported_az_ids : id if contains(keys(local.az_id_to_name), id)]
+  agentcore_az_names = [for id in local.agentcore_az_ids : local.az_id_to_name[id]]
+
+  # Use up to 2 AZs for the runtime ENIs. Carve dedicated /24s high in the VPC
+  # range (offset 200) so they never collide with networking's public (0..) or
+  # private (10..) subnets.
+  agentcore_subnet_azs = slice(local.agentcore_az_names, 0, min(2, length(local.agentcore_az_names)))
 }
 
 # ---------------------------------------------------------------------------
@@ -265,6 +323,51 @@ resource "aws_cloudwatch_log_group" "agentcore" {
 }
 
 # ---------------------------------------------------------------------------
+# VPC networking for the runtime (only when network_mode = "VPC")
+#   Dedicated private subnets in AgentCore-supported AZs, NAT-routed for egress
+#   (AWS API calls + agent CLI HTTPS), reaching Neptune over the VPC.
+# ---------------------------------------------------------------------------
+
+resource "aws_subnet" "agentcore" {
+  count = local.vpc_enabled ? length(local.agentcore_subnet_azs) : 0
+
+  vpc_id            = var.vpc_id
+  availability_zone = local.agentcore_subnet_azs[count.index]
+  # /24s high in the VPC range (offset 200), clear of networking's 0.. and 10.. subnets.
+  cidr_block = cidrsubnet(var.vpc_cidr, 8, count.index + 200)
+
+  tags = merge(var.tags, {
+    Name = "${var.project_name}-agentcore-${var.environment}-${count.index + 1}"
+  })
+}
+
+resource "aws_route_table_association" "agentcore" {
+  count = local.vpc_enabled ? length(aws_subnet.agentcore) : 0
+
+  subnet_id = aws_subnet.agentcore[count.index].id
+  # Reuse the networking module's NAT-routed private route table(s) for egress.
+  route_table_id = element(var.private_route_table_ids, count.index)
+}
+
+resource "aws_security_group" "agentcore" {
+  count = local.vpc_enabled ? 1 : 0
+
+  name_prefix = "${var.project_name}-agentcore-${var.environment}"
+  description = "AgentCore Runtime ENIs; egress only (Neptune over VPC + AWS APIs + CLI HTTPS)"
+  vpc_id      = var.vpc_id
+
+  egress {
+    description = "All egress (Neptune 8182 in-VPC, AWS API + agent CLI HTTPS via NAT)"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = var.tags
+}
+
+# ---------------------------------------------------------------------------
 # The AgentCore Runtime (awscc → AWS::BedrockAgentCore::Runtime)
 # ---------------------------------------------------------------------------
 
@@ -280,9 +383,14 @@ resource "awscc_bedrockagentcore_runtime" "stage_executor" {
     }
   }
 
-  # VPC networking so the runtime reaches Neptune (private) + AWS APIs.
+  # VPC mode so the runtime's ENIs reach Neptune (private) over the VPC; PUBLIC
+  # otherwise. network_mode_config is required iff network_mode = "VPC".
   network_configuration = {
-    network_mode = "PUBLIC"
+    network_mode = var.network_mode
+    network_mode_config = local.vpc_enabled ? {
+      subnets         = aws_subnet.agentcore[*].id
+      security_groups = aws_security_group.agentcore[*].id
+    } : null
   }
 
   environment_variables = {
