@@ -131,6 +131,51 @@ describe('runStage — happy path', () => {
   });
 });
 
+describe('runStage — model resolution precedence', () => {
+  // Capture the --model value the selected driver was invoked with.
+  const captureModel = () => {
+    let model = null;
+    const spawnFn = (command, args) => {
+      const i = args.indexOf('--model');
+      model = i >= 0 ? args[i + 1] : null;
+      return { on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)), stdin: { end() {} } };
+    };
+    return { spawnFn, get: () => model };
+  };
+
+  it('uses the project cliModels[cli] over the env default', async () => {
+    const cap = captureModel();
+    await runStage(
+      { ...baseArgs, cliModels: { claude: 'us.anthropic.claude-opus-4-8' } },
+      baseDeps({ spawnFn: cap.spawnFn }),
+    );
+    expect(cap.get()).toBe('us.anthropic.claude-opus-4-8');
+  });
+
+  it('falls back to the env default when no cliModels entry for the selected CLI', async () => {
+    const cap = captureModel();
+    await runStage(
+      { ...baseArgs, cliModels: { kiro: 'some-kiro-model' } }, // no claude key
+      baseDeps({ spawnFn: cap.spawnFn }),
+    );
+    expect(cap.get()).toBe('us.anthropic.claude-sonnet-4-6'); // env BEDROCK_MODEL
+  });
+
+  it('lets a stage/agent modelOverride win over project cliModels', async () => {
+    const cap = captureModel();
+    const lib = library();
+    lib.agentsById['aidlc-product-agent'].modelOverride = 'agent-pinned-model';
+    await runStage(
+      { ...baseArgs, cliModels: { claude: 'project-model' } },
+      baseDeps({
+        spawnFn: cap.spawnFn,
+        loadLibrary: async () => ({ workflow: workflow(), library: lib }),
+      }),
+    );
+    expect(cap.get()).toBe('agent-pinned-model');
+  });
+});
+
 describe('runStage — failure paths (always records terminal state)', () => {
   it('fails when no CLI is installed', async () => {
     const deps = baseDeps({ availableClis: [] });

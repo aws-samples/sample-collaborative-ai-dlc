@@ -20,19 +20,20 @@ stages carried nested `c1_definition` (inputs/outputs/intermediates) and
 reworked stages to **flat V2 frontmatter** (see `lambda/shared/block-mappers.js`
 `mapStage`):
 
-| Old (compiler reads)              | New (current model)                          |
-| --------------------------------- | -------------------------------------------- |
-| `stage.c1_definition.inputs`      | `stage.consumes[]` (`{artifact, required, conditionalOn}`) |
-| `stage.c1_definition.outputs`     | `stage.produces[]`                           |
-| `stage.c1_definition.intermediates` | (folded into `produces`)                   |
-| `stage.c2_verification.sensors`   | `stage.sensors[]` (sensor ids)               |
-| `stage.c2_verification.humanValidation` | `stage.humanValidation` (flat: `'none'`/`'required'`) |
-| llm-judged **sensor**             | `stage.reviewer` + `stage.reviewerMaxIterations` (flat field, NOT a sensor) |
-| `stage.clarification.required`    | (no direct equivalent yet — see §3)          |
-| `stage.defaultGrouping` (phase)   | `stage.phase`                                |
-| `stage.leadAgent`/`supportAgents` | same (`leadAgent`, `supportAgents[]`)        |
+| Old (compiler reads)                    | New (current model)                                                         |
+| --------------------------------------- | --------------------------------------------------------------------------- |
+| `stage.c1_definition.inputs`            | `stage.consumes[]` (`{artifact, required, conditionalOn}`)                  |
+| `stage.c1_definition.outputs`           | `stage.produces[]`                                                          |
+| `stage.c1_definition.intermediates`     | (folded into `produces`)                                                    |
+| `stage.c2_verification.sensors`         | `stage.sensors[]` (sensor ids)                                              |
+| `stage.c2_verification.humanValidation` | `stage.humanValidation` (flat: `'none'`/`'required'`)                       |
+| llm-judged **sensor**                   | `stage.reviewer` + `stage.reviewerMaxIterations` (flat field, NOT a sensor) |
+| `stage.clarification.required`          | (no direct equivalent yet — see §3)                                         |
+| `stage.defaultGrouping` (phase)         | `stage.phase`                                                               |
+| `stage.leadAgent`/`supportAgents`       | same (`leadAgent`, `supportAgents[]`)                                       |
 
 **What to salvage from the old compiler** (`git show 96dd3f4:lambda/shared/v2-execution-plan.js`):
+
 - the overall contract `{ valid, errors, plan }` (never throws; structured errors);
 - deterministic stage-instance ids (sha256 of `namespace:stageId`);
 - reuse of `compileStageGraph` / `compileRules` from `compile.js` over the
@@ -43,6 +44,7 @@ reworked stages to **flat V2 frontmatter** (see `lambda/shared/block-mappers.js`
   `conditionalOn` (brownfield-style gating).
 
 **Rewrite shape (new model):**
+
 - `produces` = `stage.produces` directly.
 - `consumes` = `stage.consumes` directly (already `{artifact, required, conditionalOn}`).
 - dependencies = union of data producers (produces→consumes), `requires` (stage
@@ -61,6 +63,7 @@ reviewer into an "llm-judged sensor" and derived a `review-verdict` human gate
 from it — that mapping is now wrong.
 
 Runtime needs to treat them separately:
+
 - **sensors[]** — deterministic checks (command + `bun` runtime); advisory or
   blocking per sensor `severity`. Salvage `v2-script-runner.js` +
   `shared/v2-script-contract.js` from `96dd3f4` (pure, well-tested; runtime model
@@ -80,6 +83,7 @@ Runtime needs to treat them separately:
 The old model had `stage.clarification.required` (`always`/`conditional`) which
 the spike turned into a front-gate `question` human task. The flat frontmatter
 model has no `clarification` field. Decide later whether:
+
 - agents just call the `ask_question` MCP tool ad hoc when they need input
   (current assumption — no declared front gate), or
 - we reintroduce a declared clarification gate on the stage block.
@@ -117,3 +121,10 @@ For now: **no declared clarification gate**; clarifications happen via the
   SAME session id (keeps the checkout); on human answer → write the HUMAN# gate
   (the MCP `ask_question` poll unblocks) and re-invoke the next stage. It
   reads/writes the same `v2-process-keys` schema this work already provisions.
+  **It also owns per-project model selection:** `run-stage` accepts a `cliModels`
+  payload field and resolves the model as `agent.modelOverride > cliModels[cli] >
+env default`. The control plane must read the project vertex's `cli_models`
+  (saved by Admin.tsx via the projects lambda) and pass it in the invoke payload.
+  Until that lambda exists, `scripts/phaseb.sh` supplies `cliModels` (via
+  `CLI_MODELS_JSON`) for testing; with no payload the runtime falls back to the
+  static `BEDROCK_MODEL` env.

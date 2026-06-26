@@ -52,6 +52,7 @@ export const runStage = async (
     workflowVersion,
     scope,
     requestedCli,
+    cliModels = {},
     workspaceDir,
   },
   deps,
@@ -167,7 +168,15 @@ export const runStage = async (
 
   // 5. Spawn the headless CLI.
   const driver = getDriver(cli);
-  const model = env.AGENT_MODEL || agentBlock?.modelOverride || env.BEDROCK_MODEL || undefined;
+  // Model precedence (most specific wins): a stage/agent block's explicit
+  // modelOverride > the project's per-CLI selection from Admin (cliModels[cli],
+  // keyed by the CLI we actually selected) > the static env default.
+  const model =
+    agentBlock?.modelOverride ||
+    cliModels?.[cli] ||
+    env.AGENT_MODEL ||
+    env.BEDROCK_MODEL ||
+    undefined;
   const invocation = driver.buildInvocation({ prompt, mcpConfigPath, model, allowedTools: [] });
   const childEnv = { ...invocation.env, ...driver.envForAuth(env) };
 

@@ -83,8 +83,11 @@ JSON
 
 run-stage)
   STAGE_ID="${2:-intent-capture}"
+  # Optional per-CLI model selection (mirrors Admin.tsx cliModels on the project).
+  # e.g. CLI_MODELS_JSON='{"claude":"us.anthropic.claude-sonnet-4-6"}'
+  CLI_MODELS_JSON="${CLI_MODELS_JSON:-}"
   PAYLOAD=$(cat <<JSON
-{"command":"run-stage","projectId":"$PROJECT_ID","intentId":"$INTENT_ID","executionId":"$EXEC_ID","stageId":"$STAGE_ID","workflowId":"$WORKFLOW_ID","workflowVersion":$WORKFLOW_VERSION,"scope":"$SCOPE"}
+{"command":"run-stage","projectId":"$PROJECT_ID","intentId":"$INTENT_ID","executionId":"$EXEC_ID","stageId":"$STAGE_ID","workflowId":"$WORKFLOW_ID","workflowVersion":$WORKFLOW_VERSION,"scope":"$SCOPE"${CLI_MODELS_JSON:+,\"cliModels\":$CLI_MODELS_JSON}}
 JSON
 )
   echo "=== run-stage $STAGE_ID (session=$SESSION_ID) ==="
