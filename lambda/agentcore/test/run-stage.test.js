@@ -161,18 +161,34 @@ describe('runStage — model resolution precedence', () => {
     expect(cap.get()).toBe('us.anthropic.claude-sonnet-4-6'); // env BEDROCK_MODEL
   });
 
-  it('lets a stage/agent modelOverride win over project cliModels', async () => {
+  it('lets the project cliModels WIN over a stage/agent modelOverride', async () => {
     const cap = captureModel();
     const lib = library();
-    lib.agentsById['aidlc-product-agent'].modelOverride = 'agent-pinned-model';
+    lib.agentsById['aidlc-product-agent'].modelOverride = 'opus';
     await runStage(
-      { ...baseArgs, cliModels: { claude: 'project-model' } },
+      { ...baseArgs, cliModels: { claude: 'us.anthropic.claude-sonnet-4-6' } },
       baseDeps({
         spawnFn: cap.spawnFn,
         loadLibrary: async () => ({ workflow: workflow(), library: lib }),
       }),
     );
-    expect(cap.get()).toBe('agent-pinned-model');
+    // Project selection wins — not the agent's opus override.
+    expect(cap.get()).toBe('us.anthropic.claude-sonnet-4-6');
+  });
+
+  it('resolves a bare agent alias (opus) to a full region-prefixed id when no project model', async () => {
+    const cap = captureModel();
+    const lib = library();
+    lib.agentsById['aidlc-product-agent'].modelOverride = 'opus';
+    await runStage(
+      baseArgs, // no cliModels
+      baseDeps({
+        spawnFn: cap.spawnFn,
+        loadLibrary: async () => ({ workflow: workflow(), library: lib }),
+        env: { BEDROCK_MODEL: 'unused', AWS_REGION: 'us-east-1' },
+      }),
+    );
+    expect(cap.get()).toBe('us.anthropic.claude-opus-4-6-v1');
   });
 });
 

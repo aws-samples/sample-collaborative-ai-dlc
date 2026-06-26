@@ -16,6 +16,7 @@
 import { createRequire } from 'node:module';
 import { selectCli, getDriver } from '../cli/drivers.js';
 import { runChild } from '../cli/spawn.js';
+import { resolveStageModel } from '../model-resolver.js';
 
 const require = createRequire(import.meta.url);
 const { buildExecutionPlan } = require('../../shared/v2-execution-plan.js');
@@ -168,15 +169,10 @@ export const runStage = async (
 
   // 5. Spawn the headless CLI.
   const driver = getDriver(cli);
-  // Model precedence (most specific wins): a stage/agent block's explicit
-  // modelOverride > the project's per-CLI selection from Admin (cliModels[cli],
-  // keyed by the CLI we actually selected) > the static env default.
-  const model =
-    agentBlock?.modelOverride ||
-    cliModels?.[cli] ||
-    env.AGENT_MODEL ||
-    env.BEDROCK_MODEL ||
-    undefined;
+  // Resolve the model: the project's per-CLI Admin selection wins, then the
+  // stage/agent block's modelOverride, then the static env default; bare tier
+  // aliases (opus/sonnet) are resolved to full region-prefixed Bedrock ids.
+  const model = resolveStageModel({ cliModels, agentBlock, cli, env });
   const invocation = driver.buildInvocation({ prompt, mcpConfigPath, model, allowedTools: [] });
   const childEnv = { ...invocation.env, ...driver.envForAuth(env) };
 
