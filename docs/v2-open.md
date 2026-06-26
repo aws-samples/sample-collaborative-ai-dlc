@@ -24,6 +24,16 @@ testing and gates are answered with `scripts/phaseb-answer.mjs`.
 
 It reads/writes the same `v2-process-keys` schema already provisioned.
 
+It also **owns the learning-loop curation gate** (see the runtime learning loop
+below). Accrued `TeamKnowledge` / `LearningRule` are append-only and unvetted
+today. When this lambda lands, give the learning loop the same human-validation
+gate as a stage: on a stage that recorded learnings, park a `HUMAN#` approval
+before they steer later intents, and on approval mark the learning `active`
+(`run-stage`'s reads should then filter to `active`). This is also the natural
+home for **promotion** — an approved project learning can be promoted into a
+`default`/SYSTEM library block (team-knowledge tier / a rule layer) so it crosses
+projects, reusing the building-blocks CRUD path.
+
 ## Verification axes not yet executed
 
 The execution-plan resolver validates these on a stage, but `run-stage` does not
@@ -80,8 +90,7 @@ layer })` for an ALWAYS/NEVER constraint that must bind later work.
   resolved order; `get_learning_rules` lists them on demand. An authored library
   rule of the same id is never overridden by an accrued one.
 
-What remains is **promotion / curation**, not plumbing: accrued knowledge and
-rules are append-only per project; there is no UI to review, edit, retire, or
-promote a project learning into a SYSTEM/`default` library block. The
-human-validation gate that would approve a learning before it steers later
-intents is the same out-of-band gate still open above.
+What remains is **curation / promotion**, not plumbing: accrued knowledge and
+rules are append-only and unvetted per project. That work is folded into the
+trigger / resume lambda above (the curation gate + cross-project promotion) — to
+be tackled when that lambda is implemented.
