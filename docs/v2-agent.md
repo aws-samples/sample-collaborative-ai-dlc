@@ -138,6 +138,32 @@ The control plane passes `cliModels` in the `run-stage` payload (the future
 trigger/resume lambda reads it from the project vertex; see
 [`v2-open.md`](./v2-open.md)).
 
+## Realtime broadcasts (what the UI reacts to)
+
+Every relevant process write is **persisted to DynamoDB AND broadcast** on the
+intent's realtime channel (`intent:<intentId>`), so the UI can notify users and
+react live. DynamoDB is the source of truth; the broadcast is best-effort and
+never blocks or fails a stage. The fan-out reuses `broadcastToIntent`
+(`clients.js`) — the same pattern as v1's sprint channel, keyed on the intent.
+
+Payloads share an envelope (`{ action, executionId, intentId, projectId?,
+stageInstanceId?, … }`):
+
+| `action`          | Emitted by     | When                                                       |
+| ----------------- | -------------- | ---------------------------------------------------------- |
+| `agent.workspace` | `init-ws`      | intent booted (repos checked out, Intent vertex created)   |
+| `agent.execution` | `run-stage`    | execution status / current phase+stage advanced            |
+| `agent.stage`     | `run-stage`    | a stage flips RUNNING / SUCCEEDED / FAILED (carries phase) |
+| `agent.output`    | process bridge | an agent output chunk (also persisted for reload)          |
+| `agent.question`  | process bridge | a human gate opened (blocks the agent until answered)      |
+| `agent.metric`    | process bridge | a metric sample (token usage, context-window %)            |
+| `agent.note`      | process bridge | a stage progress / audit note                              |
+
+The container (`http-server.js`) injects `broadcast` into both commands; the MCP
+server injects it into the process bridge. The frontend consumer of the
+`intent:` channel is the next step (the realtime-token layer still scopes only
+`sprint:` / `project:` channels today; see [`v2-open.md`](./v2-open.md)).
+
 ## Verification
 
 Neptune is private (in-VPC), so artifacts are inspected **through** the runtime:

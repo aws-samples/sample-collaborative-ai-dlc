@@ -117,7 +117,7 @@ export const createServer = ({
 
 // Container entry: wire the real commands + clients, then listen on 8080.
 const main = async () => {
-  const { ddb, openGraph } = await import('./clients.js');
+  const { ddb, openGraph, broadcastToIntent } = await import('./clients.js');
   const { createRequire } = await import('node:module');
   const require = createRequire(import.meta.url);
   const { createProcessStore } = require('../shared/v2-process-store.js');
@@ -141,8 +141,13 @@ const main = async () => {
   const store = createProcessStore({ ddb, tableName: process.env.V2_PROCESS_TABLE });
   const availableClis = await discoverInstalledClis();
 
+  // Publish a process-state payload on the intent's realtime channel. The
+  // payload carries its own intentId (the command stamps it), so fan-out is keyed
+  // off the payload rather than a closed-over id.
+  const broadcast = (payload) => broadcastToIntent(payload?.intentId, payload);
+
   const handlers = {
-    initWs: (p) => initWs(p, { store, openGraph, checkoutRepos, workspaceDir }),
+    initWs: (p) => initWs(p, { store, openGraph, checkoutRepos, workspaceDir, broadcast }),
     runStage: (p) =>
       runStage(
         { ...p, workspaceDir },
@@ -155,6 +160,7 @@ const main = async () => {
           mcpEntry,
           openGraph,
           availableClis,
+          broadcast,
           env: process.env,
         },
       ),

@@ -54,6 +54,7 @@ export const initWs = async (
     openGraph,
     checkoutRepos,
     workspaceDir,
+    broadcast = async () => {},
     clock = () => new Date().toISOString(),
   } = deps;
   const now = clock();
@@ -103,6 +104,17 @@ export const initWs = async (
       summary: `Workspace initialized (${checkedOut.length} repo(s))`,
     })
     .catch(() => {});
+
+  // Broadcast the workspace init so the UI can show the intent has booted.
+  // Best-effort: the DynamoDB event is the source of truth.
+  await broadcast({
+    action: 'agent.workspace',
+    executionId,
+    intentId,
+    projectId,
+    state: 'INITIALIZED',
+    repos: checkedOut.map((r) => r.repo),
+  }).catch(() => {});
 
   return { ok: true, intentId, executionId, repos: checkedOut.map((r) => r.repo) };
 };

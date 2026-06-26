@@ -97,19 +97,37 @@ export const createProcessBridge = ({
     return { seq: row.seq, kind };
   };
 
-  // Record a numeric metric sample (token usage, context-window %, etc.).
+  // Record a numeric metric sample (token usage, context-window %, etc.) and
+  // broadcast it live so the UI can render usage in real time.
   const collectMetric = async ({ metrics }) => {
     const row = await store.recordMetric({ executionId, stageInstanceId, metrics });
+    await broadcast({
+      action: 'agent.metric',
+      executionId,
+      intentId,
+      stageInstanceId,
+      metricId: row.metricId,
+      metrics,
+    });
     return { metricId: row.metricId };
   };
 
-  // Append a process/audit note.
+  // Append a process/audit note and broadcast it live (progress feed).
   const emitStageNote = async ({ summary, type = 'v2.stage.note' }) => {
     const row = await store.appendEvent({
       executionId,
       type,
       stageInstanceId,
       actor: stageInstanceId ?? 'agent',
+      summary,
+    });
+    await broadcast({
+      action: 'agent.note',
+      executionId,
+      intentId,
+      stageInstanceId,
+      eventId: row.eventId,
+      noteType: type,
       summary,
     });
     return { eventId: row.eventId };

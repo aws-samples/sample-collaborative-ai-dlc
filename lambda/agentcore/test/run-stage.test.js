@@ -209,6 +209,71 @@ describe('runStage — knowledge injection (both tiers reach the prompt)', () =>
   });
 });
 
+describe('runStage — realtime broadcasts (state mirrors DynamoDB writes)', () => {
+  const okSpawn = () => ({
+    on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
+    stdin: { end() {} },
+  });
+
+  it('publishes stage RUNNING + execution advance, then stage SUCCEEDED', async () => {
+    const sent = [];
+    await runStage(baseArgs, baseDeps({ spawnFn: okSpawn, broadcast: async (p) => sent.push(p) }));
+    const actions = sent.map((p) => p.action);
+    expect(actions).toContain('agent.stage');
+    expect(actions).toContain('agent.execution');
+
+    const running = sent.find((p) => p.action === 'agent.stage' && p.state === 'RUNNING');
+    expect(running).toMatchObject({
+      executionId: 'e1',
+      intentId: 'i1',
+      projectId: 'p1',
+      stageId: 'requirements-analysis',
+      phase: 'inception',
+    });
+    const exec = sent.find((p) => p.action === 'agent.execution');
+    expect(exec).toMatchObject({
+      status: 'RUNNING',
+      currentStage: 'requirements-analysis',
+      currentPhase: 'inception',
+    });
+    // Terminal success is broadcast last.
+    expect(sent.at(-1)).toMatchObject({ action: 'agent.stage', state: 'SUCCEEDED' });
+  });
+
+  it('publishes stage FAILED on a non-zero CLI exit', async () => {
+    const sent = [];
+    const res = await runStage(
+      baseArgs,
+      baseDeps({
+        broadcast: async (p) => sent.push(p),
+        spawnFn: () => ({
+          on: (ev, cb) => ev === 'close' && setImmediate(() => cb(2)),
+          stdin: { end() {} },
+        }),
+      }),
+    );
+    expect(res).toMatchObject({ ok: false, reason: 'cli_nonzero_exit' });
+    expect(sent.at(-1)).toMatchObject({
+      action: 'agent.stage',
+      state: 'FAILED',
+      reason: 'cli_nonzero_exit',
+    });
+  });
+
+  it('never lets a broadcast failure break the stage', async () => {
+    const res = await runStage(
+      baseArgs,
+      baseDeps({
+        spawnFn: okSpawn,
+        broadcast: async () => {
+          throw new Error('ws down');
+        },
+      }),
+    );
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+  });
+});
+
 describe('mergeLearningRules — feeds the existing resolver at the right precedence', () => {
   const { mergeLearningRules } = __test;
 

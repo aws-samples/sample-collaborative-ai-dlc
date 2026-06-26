@@ -143,10 +143,17 @@ export const runStage = async (
     availableClis = [],
     env = process.env,
     spawnFn,
+    broadcast = async () => {},
     clock = () => new Date().toISOString(),
   } = deps;
 
   const now = () => clock();
+  // Publish a process event on the intent's realtime channel. Best-effort: the
+  // DynamoDB write is the source of truth, so a failed broadcast must never break
+  // a stage (mirrors the process bridge's broadcast contract).
+  const publish = (payload) =>
+    broadcast({ executionId, intentId, projectId, ...payload }).catch(() => {});
+
   const fail = async (stageInstanceId, reason, detail) => {
     if (stageInstanceId) {
       await store
@@ -168,6 +175,7 @@ export const runStage = async (
         summary: `${reason}${detail ? `: ${detail}` : ''}`,
       })
       .catch(() => {});
+    await publish({ action: 'agent.stage', stageInstanceId, stageId, state: 'FAILED', reason });
     return { ok: false, reason, detail };
   };
 
@@ -225,6 +233,21 @@ export const runStage = async (
     stageInstanceId,
     actor: 'agentcore',
     summary: `Stage ${stageId} running`,
+  });
+  // Broadcast the stage start + the execution's new phase/stage pointer so the
+  // UI reflects the advance in real time.
+  await publish({
+    action: 'agent.stage',
+    stageInstanceId,
+    stageId,
+    phase: stage.phase,
+    state: 'RUNNING',
+  });
+  await publish({
+    action: 'agent.execution',
+    status: 'RUNNING',
+    currentPhase: stage.phase,
+    currentStage: stageId,
   });
 
   // 3. Select the CLI before doing workspace work — fail fast if none.
@@ -321,6 +344,7 @@ export const runStage = async (
     summary: `Stage ${stageId} succeeded`,
     payloadRef: now(),
   });
+  await publish({ action: 'agent.stage', stageInstanceId, stageId, state: 'SUCCEEDED' });
   return { ok: true, state: 'SUCCEEDED', stageInstanceId, cli };
 };
 

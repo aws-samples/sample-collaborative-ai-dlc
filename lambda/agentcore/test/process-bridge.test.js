@@ -76,22 +76,39 @@ describe('sendOutput', () => {
 });
 
 describe('collectMetric + emitStageNote', () => {
-  it('records a metric bag', async () => {
+  it('records a metric bag and broadcasts it live', async () => {
     const store = fakeStore();
-    const bridge = createProcessBridge({ store, scope: SCOPE });
+    const sent = [];
+    const bridge = createProcessBridge({ store, scope: SCOPE, broadcast: (p) => sent.push(p) });
     const res = await bridge.collectMetric({ metrics: { tokensInput: 5, contextWindowPct: 12 } });
     expect(res).toEqual({ metricId: 'm1' });
     expect(store.metrics[0]).toEqual({ tokensInput: 5, contextWindowPct: 12 });
+    expect(sent[0]).toMatchObject({
+      action: 'agent.metric',
+      executionId: 'exec-1',
+      intentId: 'intent-1',
+      stageInstanceId: 'si-1',
+      metricId: 'm1',
+      metrics: { tokensInput: 5, contextWindowPct: 12 },
+    });
   });
 
-  it('appends an audit note event', async () => {
+  it('appends an audit note event and broadcasts it live', async () => {
     const store = fakeStore();
-    const bridge = createProcessBridge({ store, scope: SCOPE });
+    const sent = [];
+    const bridge = createProcessBridge({ store, scope: SCOPE, broadcast: (p) => sent.push(p) });
     await bridge.emitStageNote({ summary: 'started' });
     expect(store.events[0]).toMatchObject({
       type: 'v2.stage.note',
       summary: 'started',
       actor: 'si-1',
+    });
+    expect(sent[0]).toMatchObject({
+      action: 'agent.note',
+      executionId: 'exec-1',
+      intentId: 'intent-1',
+      noteType: 'v2.stage.note',
+      summary: 'started',
     });
   });
 });

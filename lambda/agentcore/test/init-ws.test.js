@@ -98,6 +98,22 @@ describe('initWs', () => {
     });
   });
 
+  it('broadcasts the workspace init on success', async () => {
+    const sent = [];
+    await initWs(
+      { projectId: 'p1', intentId: 'i1', executionId: 'e1', repos: ['acme/api'] },
+      deps({ broadcast: async (p) => sent.push(p) }),
+    );
+    expect(sent[0]).toMatchObject({
+      action: 'agent.workspace',
+      executionId: 'e1',
+      intentId: 'i1',
+      projectId: 'p1',
+      state: 'INITIALIZED',
+      repos: ['acme/api'],
+    });
+  });
+
   it('tolerates a re-init (execution already exists)', async () => {
     const store = spyStore(async () => {
       throw Object.assign(new Error('exists'), { name: 'ConditionalCheckFailedException' });

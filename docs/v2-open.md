@@ -55,6 +55,23 @@ yet run them:
   `send_output` summary; the actual human approval is expected to be owned by the
   control plane out-of-band. The gating mechanism there is not built.
 
+## Realtime intent channel — frontend consumer
+
+The runtime now **publishes** every relevant process event on the intent's
+realtime channel (`intent:<intentId>`): `agent.workspace`, `agent.execution`,
+`agent.stage`, `agent.output`, `agent.question`, `agent.metric`, `agent.note`
+(see [`v2-agent.md`](./v2-agent.md) for the envelope + table). The backend
+publish side is built and tested.
+
+What remains is the **frontend consumer**: the realtime-token layer
+(`frontend/src/lib/realtimeToken.ts`) and the `$connect` authorizer scope only
+`sprint:` / `project:` channels today, so the UI can't yet subscribe to
+`intent:`. To light up the v2 UI: add an `intent:` channel format (token target +
+scope check), a realtime-token endpoint for an intent, and a hook that subscribes
+and reacts (notify on `agent.question`, advance state on `agent.stage` /
+`agent.execution`, stream `agent.output`, show usage from `agent.metric`). The v1
+`useObservabilityEvents` hook is the pattern to mirror.
+
 ## Runtime learning loop — built
 
 Both halves of the runtime learning loop now accrue per-project in Neptune (hung
