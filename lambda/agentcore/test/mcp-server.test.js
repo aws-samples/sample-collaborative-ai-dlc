@@ -52,6 +52,14 @@ const stubWriter = () => ({
     this.calls.push(['recordTeamKnowledge', args]);
     return { id: args.id, agentRef: args.agentRef };
   },
+  getLearningRules() {
+    this.calls.push(['getLearningRules']);
+    return [{ id: 'no-secrets', layer: 'project-learnings' }];
+  },
+  recordLearningRule(args) {
+    this.calls.push(['recordLearningRule', args]);
+    return { id: args.id, layer: args.layer };
+  },
 });
 
 const stubBridge = () => ({
@@ -123,6 +131,27 @@ describe('buildToolHandlers — routing + envelopes', () => {
     expect(writer.calls[0]).toEqual(['getTeamKnowledge', { agentRef: null }]);
   });
 
+  it('routes record_learning_rule through the writer (defaulting layer + pairing)', async () => {
+    const env = await h.record_learning_rule({ id: 'no-secrets', content: 'NEVER plaintext' });
+    expect(parse(env)).toEqual({ id: 'no-secrets', layer: 'project-learnings' });
+    expect(writer.calls[0]).toEqual([
+      'recordLearningRule',
+      {
+        id: 'no-secrets',
+        title: undefined,
+        content: 'NEVER plaintext',
+        layer: 'project-learnings',
+        pairing: 'feedforward-only',
+      },
+    ]);
+  });
+
+  it('routes get_learning_rules through the writer', async () => {
+    const env = await h.get_learning_rules({});
+    expect(parse(env)).toEqual([{ id: 'no-secrets', layer: 'project-learnings' }]);
+    expect(writer.calls[0]).toEqual(['getLearningRules']);
+  });
+
   it('turns a GraphWriteError into a clean isError envelope', async () => {
     writer.createArtifact = () => {
       throw new GraphWriteError('bad edge');
@@ -155,6 +184,9 @@ describe('role gating', () => {
     // A reviewer may READ team knowledge but never WRITE it.
     expect(reviewer.get_team_knowledge).toBeDefined();
     expect(reviewer.record_team_knowledge).toBeUndefined();
+    // Same for learning rules: read-only for a reviewer.
+    expect(reviewer.get_learning_rules).toBeDefined();
+    expect(reviewer.record_learning_rule).toBeUndefined();
   });
 
   it('author gets the full surface', () => {

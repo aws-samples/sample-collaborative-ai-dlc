@@ -58,9 +58,10 @@ Author role gets the full set; a clean-room **reviewer** gets the read-only
 subset only.
 
 - **Business reads** — `get_artifact`, `lookup_artifacts`, `get_intent_graph`,
-  `get_artifact_neighbors`, `search_graph`, `get_team_knowledge`
+  `get_artifact_neighbors`, `search_graph`, `get_team_knowledge`,
+  `get_learning_rules`
 - **Business writes** — `create_artifact`, `update_artifact`, `link_artifacts`,
-  `record_team_knowledge`
+  `record_team_knowledge`, `record_learning_rule`
 - **Collaboration / process** — `ask_question` (blocks until answered),
   `send_output`, `collect_metric`, `emit_stage_note`
 
@@ -85,9 +86,28 @@ the stage's agent (+ the cross-cutting `shared` corpus):
 
 The write-back is **agent-initiated**: the author agent calls
 `record_team_knowledge` when it learns something durable; `get_team_knowledge`
-re-reads on demand (and is granted to reviewers). See
-[`v2-open.md`](./v2-open.md) for the design and what remains (the
-`team-learnings` rule layer).
+re-reads on demand (and is granted to reviewers).
+
+## Learning rules (the feedback half — guardrails)
+
+Team knowledge steers by **reference** (prose the agent reads); a learning rule
+steers by **precedence**. A learning rule is a binding ALWAYS/NEVER constraint
+the agent records via `record_learning_rule({ id, title, content, layer })`,
+where `layer` is `team-learnings` or `project-learnings`. It lives in Neptune as
+a `LearningRule` vertex on the `Project` (`Project --HAS_LEARNING-->
+LearningRule`), project-scoped like team knowledge.
+
+The elegant part is that the rule resolver already commits to these layers:
+`compile.js` lists `team-learnings` / `project-learnings` in its universal chain
+at priorities 1.5 / 2.5. So `run-stage` does not re-implement precedence — it
+reads the project's learning rules and **merges them into `workflow.ruleRefs` +
+`library.rulesById` before `buildExecutionPlan`**, and the existing resolver
+interleaves them into each stage's rule stack, rendered into `rules.md` in
+resolved order. The rule body rides inline from Neptune (no S3 round-trip). An
+authored library rule of the same id is never overridden by an accrued one.
+
+See [`v2-open.md`](./v2-open.md) for the full loop and what remains (curation /
+promotion of accrued learnings, and the human-approval gate).
 
 ## Authentication
 

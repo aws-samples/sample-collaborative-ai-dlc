@@ -7,6 +7,7 @@ Intent lives in dynamo but refs the neptune node and vice versa
 Business data (blocks from ai-dlc v2 block definition live in neptune
 Disucssions, questions, answers live in Neptune as well
 Team knowledge (runtime-accrued learnings) lives in Neptune as TeamKnowledge nodes hung off the Project node (Project -HAS_KNOWLEDGE-> TeamKnowledge) — shared across all intents in the project, written by the agent via record_team_knowledge
+Learning rules (runtime-accrued guardrails) live in Neptune as LearningRule nodes hung off the Project node (Project -HAS_LEARNING-> LearningRule) at the team-learnings/project-learnings layers — written via record_learning_rule, merged into the rule resolver per stage at their layer precedence
 State (question pending -> ref to question, current phase and stage) is handeled in DynamoDB
 Any agent execution for an intent is stored in DynamoDB
 Current phase and stage are stored in DynamoDB

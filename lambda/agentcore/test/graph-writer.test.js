@@ -264,6 +264,54 @@ describe('team knowledge (project-scoped, cross-intent)', () => {
   });
 });
 
+describe('learning rules (project-scoped guardrails)', () => {
+  it('records a LearningRule vertex anchored to the Project, stamped + layered', async () => {
+    const created = await writer.recordLearningRule({
+      id: 'no-secrets',
+      title: 'No plaintext secrets',
+      content: 'NEVER store secrets in plaintext config',
+      layer: 'project-learnings',
+    });
+    expect(created).toMatchObject({
+      id: 'no-secrets',
+      layer: 'project-learnings',
+      pairing: 'feedforward-only',
+      project_id: 'proj-1',
+      created_by_intent_id: 'intent-1',
+    });
+    const anchored = await g
+      .V()
+      .has('Project', 'id', 'proj-1')
+      .out('HAS_LEARNING')
+      .has('LearningRule', 'id', 'no-secrets')
+      .hasNext();
+    expect(anchored).toBe(true);
+  });
+
+  it('rejects a layer outside the two learnings tiers', async () => {
+    await expect(
+      writer.recordLearningRule({ id: 'x', content: 'c', layer: 'org' }),
+    ).rejects.toBeInstanceOf(GraphWriteError);
+  });
+
+  it('upserts by id and keeps one anchor edge', async () => {
+    await writer.recordLearningRule({ id: 'r', content: 'v1', layer: 'team-learnings' });
+    await writer.recordLearningRule({ id: 'r', content: 'v2', layer: 'project-learnings' });
+    const count = await g.V().has('LearningRule', 'id', 'r').count().next();
+    expect(count.value).toBe(1);
+    const edges = await g.V().has('Project', 'id', 'proj-1').outE('HAS_LEARNING').count().next();
+    expect(edges.value).toBe(1);
+    const rows = await writer.getLearningRules();
+    const r = rows.find((x) => x.id === 'r');
+    expect(r.content).toBe('v2');
+    expect(r.layer).toBe('project-learnings');
+  });
+
+  it('getLearningRules returns [] when the Project has none', async () => {
+    expect(await writer.getLearningRules()).toEqual([]);
+  });
+});
+
 describe('recordQuestion', () => {
   it('creates a Question vertex anchored to the Intent', async () => {
     await seedIntent();

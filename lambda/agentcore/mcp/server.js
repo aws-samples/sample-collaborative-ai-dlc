@@ -49,6 +49,7 @@ export const buildToolHandlers = ({ writer, bridge }) => ({
     ),
   get_team_knowledge: ({ agentRef }) =>
     guard(() => writer.getTeamKnowledge({ agentRef: agentRef ?? null })),
+  get_learning_rules: () => guard(() => writer.getLearningRules()),
 
   // ── Business writes ──
   create_artifact: ({ artifactType, id, title, content, props, links }) =>
@@ -62,6 +63,16 @@ export const buildToolHandlers = ({ writer, bridge }) => ({
   record_team_knowledge: ({ id, title, content, agentRef, props }) =>
     guard(() =>
       writer.recordTeamKnowledge({ id, title, content, agentRef: agentRef ?? 'shared', props }),
+    ),
+  record_learning_rule: ({ id, title, content, layer, pairing }) =>
+    guard(() =>
+      writer.recordLearningRule({
+        id,
+        title,
+        content,
+        layer: layer ?? 'project-learnings',
+        pairing: pairing ?? 'feedforward-only',
+      }),
     ),
 
   // ── Collaboration / process ──
@@ -81,6 +92,7 @@ export const READ_TOOLS = [
   'get_artifact_neighbors',
   'search_graph',
   'get_team_knowledge',
+  'get_learning_rules',
 ];
 
 // All author tool names.
@@ -90,6 +102,7 @@ export const AUTHOR_TOOLS = [
   'update_artifact',
   'link_artifacts',
   'record_team_knowledge',
+  'record_learning_rule',
   'ask_question',
   'send_output',
   'collect_metric',
@@ -142,6 +155,11 @@ export const toolSchemas = (z) => ({
       "Read the PROJECT's accrued team knowledge — durable learnings from prior intents in this project (conventions, decisions, gotchas). Shared across all intents. Optionally narrow to one agent (the 'shared' corpus is always included). The relevant entries are also injected into your prompt; use this to re-read or pull another agent's corpus.",
     shape: { agentRef: z.string().optional() },
   },
+  get_learning_rules: {
+    description:
+      "Read the PROJECT's accrued learning rules — guardrails (ALWAYS/NEVER conventions) prior intents recorded. These already steer you: they are merged into your resolved rules at their layer's precedence. Use this to see them explicitly.",
+    shape: {},
+  },
   create_artifact: {
     description:
       'Record a business artifact this stage produces. artifactType is the v2 artifact name (e.g. "requirements-analysis"). Output NOT written through a tool is discarded.',
@@ -183,6 +201,17 @@ export const toolSchemas = (z) => ({
       content: z.string(),
       agentRef: z.string().optional(),
       props: z.record(z.string(), z.string()).optional(),
+    },
+  },
+  record_learning_rule: {
+    description:
+      "Record a durable GUARDRAIL for the project — a binding ALWAYS/NEVER convention that should constrain FUTURE intents (e.g. 'NEVER store secrets in plaintext config'). Unlike record_team_knowledge (reference prose the agent reads), a learning rule enters the rule-resolution stack at its layer's precedence and overrides broader layers. Use a stable kebab-case id so a later run updates it. layer: 'team-learnings' for a broad convention, 'project-learnings' for a specific binding constraint that should win.",
+    shape: {
+      id: z.string(),
+      title: z.string().optional(),
+      content: z.string(),
+      layer: z.enum(['team-learnings', 'project-learnings']).optional(),
+      pairing: z.string().optional(),
     },
   },
   ask_question: {

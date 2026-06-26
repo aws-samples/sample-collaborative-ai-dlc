@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { runStage } from '../commands/run-stage.js';
+import { createRequire } from 'node:module';
+import { runStage, __test } from '../commands/run-stage.js';
 import { renderRulesDoc } from '../stage-materializer.js';
+
+const require = createRequire(import.meta.url);
+const { buildExecutionPlan } = require('../../shared/v2-execution-plan.js');
 
 // A flat-frontmatter STAGE block + a minimal library/workflow that resolves to a
 // single in-scope stage.
@@ -202,6 +206,79 @@ describe('runStage — knowledge injection (both tiers reach the prompt)', () =>
     // The stage still succeeds; knowledge falls back to the methodology tier.
     expect(res).toMatchObject({ ok: true });
     expect(cap.get()).toContain('BODY:k/style');
+  });
+});
+
+describe('mergeLearningRules — feeds the existing resolver at the right precedence', () => {
+  const { mergeLearningRules } = __test;
+
+  it('returns the inputs unchanged when there are no learning rules', () => {
+    const wf = workflow();
+    const lib = library();
+    const out = mergeLearningRules({ workflow: wf, library: lib, learningRules: [] });
+    expect(out.workflow).toBe(wf);
+    expect(out.library).toBe(lib);
+  });
+
+  it('adds a RULE block + ruleRef so the plan resolver interleaves it at layer precedence', () => {
+    const learningRules = [
+      {
+        id: 'no-secrets',
+        title: 'No plaintext secrets',
+        content: 'NEVER store secrets in plaintext',
+        layer: 'project-learnings',
+        pairing: 'feedforward-only',
+      },
+    ];
+    const { workflow: wf, library: lib } = mergeLearningRules({
+      workflow: workflow(),
+      library: library(),
+      learningRules,
+    });
+    // The merged rule is a RULE block carrying its Neptune content inline as body.
+    expect(lib.rulesById['no-secrets']).toMatchObject({
+      type: 'RULE',
+      layer: 'project-learnings',
+      body: 'NEVER store secrets in plaintext',
+    });
+    expect(wf.ruleRefs).toContainEqual({ layer: 'project-learnings', ruleId: 'no-secrets' });
+
+    // The REAL resolver places it in the stage's universal stack (proves the
+    // pre-wired team-learnings/project-learnings precedence is what carries it).
+    const { valid, plan } = buildExecutionPlan({ workflow: wf, scope: 'feature', library: lib });
+    expect(valid).toBe(true);
+    const stage = plan.stages.find((s) => s.stageId === 'requirements-analysis');
+    expect(stage.rules.universal).toContain('no-secrets');
+  });
+
+  it('does not clone-mutate the caller library (pure)', () => {
+    const lib = library();
+    mergeLearningRules({
+      workflow: workflow(),
+      library: lib,
+      learningRules: [{ id: 'r', content: 'c', layer: 'team-learnings' }],
+    });
+    expect(lib.rulesById.r).toBeUndefined();
+  });
+
+  it('never overrides an authored library rule of the same id', () => {
+    const lib = library();
+    lib.rulesById['no-secrets'] = {
+      id: 'no-secrets',
+      type: 'RULE',
+      layer: 'org',
+      body: 'authored',
+    };
+    const wf0 = workflow();
+    wf0.ruleRefs = [{ layer: 'org', ruleId: 'no-secrets' }];
+    const { workflow: wf, library: out } = mergeLearningRules({
+      workflow: wf0,
+      library: lib,
+      learningRules: [{ id: 'no-secrets', content: 'accrued', layer: 'project-learnings' }],
+    });
+    // Authored rule wins; no duplicate ruleRef added.
+    expect(out.rulesById['no-secrets'].body).toBe('authored');
+    expect(wf.ruleRefs.filter((r) => r.ruleId === 'no-secrets')).toHaveLength(1);
   });
 });
 

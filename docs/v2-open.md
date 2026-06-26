@@ -45,29 +45,43 @@ yet run them:
   `send_output` summary; the actual human approval is expected to be owned by the
   control plane out-of-band. The gating mechanism there is not built.
 
-## Team-knowledge write-back
+## Runtime learning loop — built
 
-**Knowledge tier — built.** The `team` knowledge tier now accrues at runtime. It
-lives in Neptune as `TeamKnowledge` vertices hung off the `Project`
-(`Project --HAS_KNOWLEDGE--> TeamKnowledge`), so a learning recorded in one
-intent is readable by every intent in the project (business data that steers
-future outcomes, kept where the rest of the business graph is — not in the blocks
-table). The loop:
+Both halves of the runtime learning loop now accrue per-project in Neptune (hung
+off the `Project` vertex, so a learning recorded in one intent steers every later
+intent in the project — business data kept where the rest of the business graph
+is, not in the blocks table). Provenance (`project_id`, `created_by_intent_id`,
+execution/stage) is stamped from the trusted container ENV on every write, never
+agent args — spoof-proof like artifacts. Two steering KINDS:
 
-- **Write** — the author agent calls the `record_team_knowledge` MCP tool when it
-  learns something durable (a convention, decision, constraint, gotcha). The
-  annex's learnings ritual now routes here instead of being ignored. Provenance
-  (`project_id`, `created_by_intent_id`, execution/stage) is stamped from the
-  trusted container ENV, never agent args — spoof-proof like artifacts.
-- **Read** — `run-stage` fetches the project's team knowledge for the stage's
-  agent (+ the `shared` corpus) and injects it into the prompt's
-  `## Reference knowledge` section, so the agent always receives it; the
-  read-only `get_team_knowledge` tool (also granted to reviewers) re-reads or
-  pulls another agent's corpus on demand. This also fixed the methodology tier,
-  whose read path was silently dead (`loadLibrary` never loaded `KNOWLEDGE`).
+**Team knowledge (reference prose).** `TeamKnowledge` vertices
+(`Project --HAS_KNOWLEDGE--> TeamKnowledge`).
 
-**Still open — rule-layer learnings.** The `team-learnings` / `project-learnings`
-rule layers (the feedback half that turns a learning into a layered _guardrail_,
-priorities 1.5 / 2.5 in the resolver) are still seeded empty. Knowledge steers by
-reference; a learnings _rule_ would steer by precedence. That write path is not
-built.
+- **Write** — the author agent calls `record_team_knowledge` when it learns
+  something durable (a convention, decision, constraint, gotcha).
+- **Read** — `run-stage` fetches the project's knowledge for the stage's agent
+  (+ the `shared` corpus) and injects it into the prompt's `## Reference
+knowledge` section; the read-only `get_team_knowledge` tool (also granted to
+  reviewers) re-reads on demand. This also fixed the methodology tier, whose read
+  path was silently dead (`loadLibrary` never loaded `KNOWLEDGE`).
+
+**Learning rules (binding guardrails).** `LearningRule` vertices
+(`Project --HAS_LEARNING--> LearningRule`) at the `team-learnings` /
+`project-learnings` layers. Where knowledge steers by reference, a rule steers by
+**precedence**.
+
+- **Write** — the author agent calls `record_learning_rule({ id, title, content,
+layer })` for an ALWAYS/NEVER constraint that must bind later work.
+- **Read / apply** — `run-stage` reads the project's learning rules and merges
+  them into `workflow.ruleRefs` + `library.rulesById` _before_ the execution-plan
+  resolver runs, so the **existing** resolver interleaves them into each stage's
+  rule stack at priority 1.5 / 2.5 (no new precedence logic — the chain in
+  `compile.js` already names these layers). They render into `rules.md` in
+  resolved order; `get_learning_rules` lists them on demand. An authored library
+  rule of the same id is never overridden by an accrued one.
+
+What remains is **promotion / curation**, not plumbing: accrued knowledge and
+rules are append-only per project; there is no UI to review, edit, retire, or
+promote a project learning into a SYSTEM/`default` library block. The
+human-validation gate that would approve a learning before it steers later
+intents is the same out-of-band gate still open above.

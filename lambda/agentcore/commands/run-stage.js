@@ -45,20 +45,55 @@ const loadMethodologyKnowledge = async ({ agentRef, library, loadBlockBody }) =>
   return bodies.filter(Boolean).join('\n\n---\n\n');
 };
 
-// Read the project's accrued TEAM knowledge from Neptune (the runtime learning
-// tier — what prior intents in this project recorded via record_team_knowledge),
-// scoped to this stage's agent + the shared corpus. Best-effort: a graph that is
-// unreachable or empty just yields no extra knowledge, never a stage failure.
-const loadTeamKnowledge = async ({ agentRef, projectId, intentId, executionId, openGraph }) => {
-  if (!openGraph || !projectId) return [];
-  let g;
+// Read the project's runtime-accrued steering from Neptune in ONE pass: the team
+// KNOWLEDGE for this stage's agent (+ shared) and the LEARNING rules (guardrails)
+// for the whole project. Both accrue across the project's intents. Best-effort:
+// a graph that is unreachable or empty just yields nothing — never a stage
+// failure (the methodology tier + library rules still steer the stage).
+const readProjectMemory = async ({ agentRef, projectId, intentId, executionId, openGraph }) => {
+  const empty = { teamKnowledge: [], learningRules: [] };
+  if (!openGraph || !projectId) return empty;
   try {
-    g = await openGraph();
+    const g = await openGraph();
     const writer = createGraphWriter({ g, scope: { projectId, intentId, executionId } });
-    return await writer.getTeamKnowledge({ agentRef });
+    const [teamKnowledge, learningRules] = await Promise.all([
+      writer.getTeamKnowledge({ agentRef }).catch(() => []),
+      writer.getLearningRules().catch(() => []),
+    ]);
+    return { teamKnowledge, learningRules };
   } catch {
-    return [];
+    return empty;
   }
+};
+
+// Merge the project's accrued learning rules into the workflow + library so the
+// EXISTING rule resolver interleaves them — no new precedence logic. Each row
+// becomes a RULE block (its Neptune `content` carried inline as `body`) plus a
+// ruleRef at its learnings layer; compileRules then sorts it into the universal
+// stack at priority 1.5 (team-learnings) / 2.5 (project-learnings). Pure: returns
+// shallow-cloned workflow + library, never mutating the loaded blocks.
+const mergeLearningRules = ({ workflow, library, learningRules }) => {
+  if (!learningRules.length) return { workflow, library };
+  const rulesById = { ...library.rulesById };
+  const ruleRefs = [...(workflow.ruleRefs ?? [])];
+  for (const r of learningRules) {
+    // A library rule of the same id wins (an authored rule is not overridden by
+    // an accrued one); skip to avoid a duplicate ruleRef.
+    if (rulesById[r.id]) continue;
+    rulesById[r.id] = {
+      id: r.id,
+      blockId: r.id,
+      type: 'RULE',
+      name: r.title || r.id,
+      layer: r.layer,
+      phase: null,
+      pairing: r.pairing ?? null,
+      // Inline body (Neptune content) — no S3 bodyRef; resolveRuleBody reads it.
+      body: r.content ?? '',
+    };
+    ruleRefs.push({ layer: r.layer, ruleId: r.id });
+  }
+  return { workflow: { ...workflow, ruleRefs }, library: { ...library, rulesById } };
 };
 
 // Render the team-knowledge rows as a markdown sub-section, newest last.
@@ -136,10 +171,32 @@ export const runStage = async (
     return { ok: false, reason, detail };
   };
 
-  // 1. Load + resolve.
-  const { workflow, library } = await loadLibrary({ workflowId, workflowVersion });
-  if (!workflow || !library)
+  // 1. Load the pinned workflow + library, then fold in the project's accrued
+  // runtime memory (team knowledge + learning rules) read from Neptune. Learning
+  // rules are merged into the workflow/library BEFORE resolution so the existing
+  // rule resolver interleaves them at their learnings-layer precedence; team
+  // knowledge is held for the prompt. Reading the agentRef needs the stage, but
+  // the merge needs to precede resolution — so we resolve once to read the
+  // agentRef, merge, then resolve against the enriched library.
+  const loaded = await loadLibrary({ workflowId, workflowVersion });
+  if (!loaded.workflow || !loaded.library)
     return fail(null, 'workflow_not_found', `${workflowId}@${workflowVersion}`);
+
+  const probe = resolveStage({ ...loaded, scope: { scope }, stageId });
+  if (probe.error) return fail(null, probe.error, JSON.stringify(probe.detail));
+
+  const memory = await readProjectMemory({
+    agentRef: probe.stage.agentRef,
+    projectId,
+    intentId,
+    executionId,
+    openGraph,
+  });
+  const { workflow, library } = mergeLearningRules({
+    workflow: loaded.workflow,
+    library: loaded.library,
+    learningRules: memory.learningRules,
+  });
 
   const resolved = resolveStage({ workflow, library, scope: { scope }, stageId });
   if (resolved.error) return fail(null, resolved.error, JSON.stringify(resolved.detail));
@@ -183,28 +240,29 @@ export const runStage = async (
     agentBlock ? loadBlockBody(agentBlock).catch(() => '') : Promise.resolve(''),
   ]);
   // Knowledge has two tiers: the authored methodology (library blocks) and the
-  // project's accrued team learnings (Neptune). Both are injected into the prompt
-  // so the agent always receives them; the team tier is also re-readable on
-  // demand via the get_team_knowledge MCP tool.
-  const [methodology, teamRows] = await Promise.all([
-    loadMethodologyKnowledge({ agentRef: stage.agentRef, library, loadBlockBody }),
-    loadTeamKnowledge({
-      agentRef: stage.agentRef,
-      projectId,
-      intentId,
-      executionId,
-      openGraph,
-    }),
-  ]);
-  const knowledge = composeKnowledge(methodology, teamRows);
+  // project's accrued team knowledge (already read from Neptune above). Both are
+  // injected into the prompt so the agent always receives them; the team tier is
+  // also re-readable on demand via the get_team_knowledge MCP tool.
+  const methodology = await loadMethodologyKnowledge({
+    agentRef: stage.agentRef,
+    library,
+    loadBlockBody,
+  });
+  const knowledge = composeKnowledge(methodology, memory.teamKnowledge);
 
-  // Resolve rule bodies for the steering doc.
+  // Resolve rule bodies for the steering doc. A merged learning rule carries its
+  // text inline (`body`, from Neptune); an authored library rule resolves its
+  // body from S3 via its bodyRef. Prefer the inline body when present.
   const ruleIds = [...(stage.rules?.universal ?? []), ...(stage.rules?.phase ?? [])];
   const ruleBodyEntries = await Promise.all(
-    ruleIds.map(async (id) => [
-      id,
-      await loadBlockBody(library.rulesById[id] ?? {}).catch(() => ''),
-    ]),
+    ruleIds.map(async (id) => {
+      const ruleBlock = library.rulesById[id] ?? {};
+      const body =
+        typeof ruleBlock.body === 'string' && ruleBlock.body
+          ? ruleBlock.body
+          : await loadBlockBody(ruleBlock).catch(() => '');
+      return [id, body];
+    }),
   );
   const rulesDoc = renderRulesDoc(stage, Object.fromEntries(ruleBodyEntries));
 
@@ -265,3 +323,6 @@ export const runStage = async (
   });
   return { ok: true, state: 'SUCCEEDED', stageInstanceId, cli };
 };
+
+// Exposed for unit tests (pure helpers; the runStage flow is integration-tested).
+export const __test = { mergeLearningRules, composeKnowledge, renderTeamKnowledge };

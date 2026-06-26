@@ -38,11 +38,25 @@ export const QUESTION_LABEL = 'Question';
 export const PROJECT_LABEL = 'Project';
 export const TEAM_KNOWLEDGE_LABEL = 'TeamKnowledge';
 
+// Learning rules: the feedback half of the loop. Where team knowledge is
+// reference prose the agent reads, a learning rule is a GUARDRAIL that enters
+// the rule-resolution stack at the team-learnings / project-learnings layers
+// (priorities 1.5 / 2.5) — a more-specific layer overrides a broader one. Also
+// project-scoped (hung off Project), accrued at runtime, so a constraint learned
+// in one intent steers every later intent in the project.
+export const LEARNING_RULE_LABEL = 'LearningRule';
+
+// The two runtime learnings layers V2's resolver interleaves. Mirrors the
+// learnings half of shared/blocks.js RULE_LAYERS.
+export const LEARNING_LAYERS = ['team-learnings', 'project-learnings'];
+
 // Anchor edge: Intent --CONTAINS--> Artifact (scope membership).
 export const ANCHOR_EDGE = 'CONTAINS';
 // Anchor edge: Project --HAS_KNOWLEDGE--> TeamKnowledge (project-scoped, shared
 // across all the project's intents).
 export const KNOWLEDGE_EDGE = 'HAS_KNOWLEDGE';
+// Anchor edge: Project --HAS_LEARNING--> LearningRule (project-scoped guardrails).
+export const LEARNING_EDGE = 'HAS_LEARNING';
 
 // Business edges the tools may create between artifacts. PRODUCES/CONSUMES wire
 // the stage data flow; the rest are durable semantic relations. Kept explicit so
@@ -369,6 +383,73 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     return filtered.toSorted((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
   };
 
+  // ── Learning rules (project-scoped guardrails, the feedback half) ──
+
+  // Record a learning rule for the project — a guardrail that enters the rule
+  // stack at its `team-learnings` / `project-learnings` layer (the resolver sorts
+  // it to priority 1.5 / 2.5). Upserts the Project anchor, then the LearningRule
+  // vertex. `pairing` optionally binds it to a sensor (the feedforward/feedback
+  // link), defaulting to the 'feedforward-only' sentinel. Provenance is stamped
+  // from the trusted scope; `layer` is validated against the two learnings tiers.
+  const recordLearningRule = async ({
+    id,
+    title = '',
+    content = '',
+    layer = 'project-learnings',
+    pairing = 'feedforward-only',
+    props = {},
+  }) => {
+    assertId(id);
+    if (!scope.projectId) throw new GraphWriteError('projectId is required to record a learning');
+    if (!LEARNING_LAYERS.includes(layer)) {
+      throw new GraphWriteError(`learning layer must be one of ${LEARNING_LAYERS.join(', ')}`);
+    }
+
+    await upsertVertex(PROJECT_LABEL, scope.projectId);
+    await upsertVertex(LEARNING_RULE_LABEL, id);
+
+    const stamped = {
+      ...sanitizeProps(props),
+      title: String(title ?? ''),
+      content: String(content ?? ''),
+      layer,
+      pairing: String(pairing || 'feedforward-only'),
+      ...knowledgeStamp(),
+      id,
+    };
+    let q = g.V().has(LEARNING_RULE_LABEL, 'id', id);
+    for (const [k, v] of Object.entries(stamped)) q = q.property(cardinality.single, k, v);
+    await q.next();
+
+    await ensureEdge({
+      fromLabel: PROJECT_LABEL,
+      fromId: scope.projectId,
+      toLabel: LEARNING_RULE_LABEL,
+      toId: id,
+      edge: LEARNING_EDGE,
+    });
+    return { id, ...stamped };
+  };
+
+  // Read the project's accrued learning rules (both learnings layers). Returns
+  // flat rows ordered by creation time; run-stage merges them into the rule
+  // resolver so the existing layer-precedence interleaving applies.
+  const getLearningRules = async () => {
+    if (!scope.projectId) return [];
+    const exists = await g.V().has(PROJECT_LABEL, 'id', scope.projectId).hasNext();
+    if (!exists) return [];
+    const list = await g
+      .V()
+      .has(PROJECT_LABEL, 'id', scope.projectId)
+      .out(LEARNING_EDGE)
+      .hasLabel(LEARNING_RULE_LABEL)
+      .valueMap(true)
+      .toList();
+    return list
+      .map(flattenValueMap)
+      .toSorted((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+  };
+
   // Create a Question vertex on the Intent so the page can render it. The
   // blocking/answer flow lives in the process bridge (DynamoDB); this is the
   // business-graph mirror, matching v1.
@@ -402,6 +483,8 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     searchGraph,
     recordTeamKnowledge,
     getTeamKnowledge,
+    recordLearningRule,
+    getLearningRules,
     recordQuestion,
   };
 };
