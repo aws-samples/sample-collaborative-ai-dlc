@@ -51,6 +51,25 @@ describe('pool-worker construction task branch cleanup', () => {
     ).toEqual([]);
   });
 
+  it('packages shared git-providers used by the pool worker + orchestrator prompt', () => {
+    const orchestratorPrompt = readFileSync(
+      new URL('../construction-orchestrator-prompt.js', import.meta.url),
+      'utf8',
+    );
+    const sharedRequires = [
+      ...poolWorker.matchAll(/require\('(?<path>\.\.\/shared\/[\w-]+)'\)/g),
+      ...orchestratorPrompt.matchAll(/require\('(?<path>\.\.\/shared\/[\w-]+)'\)/g),
+    ].map((match) => match.groups.path);
+
+    expect(sharedRequires).toContain('../shared/git-providers');
+    expect(
+      sharedRequires.filter((requiredPath) => !dockerfileCopiesSharedPath(requiredPath)),
+    ).toEqual([]);
+    // The git-providers entry point pulls in its ./git-providers/ impl dir, so
+    // the Dockerfile must copy the directory too.
+    expect(dockerfile).toContain('COPY shared/git-providers/ /opt/shared/git-providers/');
+  });
+
   it('passes resolved model into ACP child sessions and workspace config', () => {
     expect(poolWorker).toContain("AGENT_MODEL: job.agentModel || ''");
     expect(poolWorker).toContain("model=${job.agentModel || 'driver-default'}");

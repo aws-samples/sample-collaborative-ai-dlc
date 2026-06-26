@@ -1,35 +1,40 @@
 import { useState, useEffect, useMemo } from 'react';
-import { githubService, type GitHubRepo } from '../services/github';
+import { getGitProviderService, type GitProvider, type GitRepo } from '../services/gitProvider';
 
 interface SingleProps {
+  provider: GitProvider;
   multiple?: false;
   value: string;
-  onChange: (repo: GitHubRepo | null) => void;
+  onChange: (repo: GitRepo | null) => void;
   exclude?: string[];
 }
 
 interface MultiProps {
+  provider: GitProvider;
   multiple: true;
   value: string[];
-  onChange: (repos: GitHubRepo[]) => void;
+  onChange: (repos: GitRepo[]) => void;
   exclude?: string[];
 }
 
-type Props = SingleProps | MultiProps;
+export type GitRepoSelectProps = SingleProps | MultiProps;
 
-export function GitHubRepoSelect(props: Props) {
-  const [repos, setRepos] = useState<GitHubRepo[]>([]);
+export function GitRepoSelect(props: GitRepoSelectProps) {
+  const { provider } = props;
+  const service = getGitProviderService(provider);
+
+  const [repos, setRepos] = useState<GitRepo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
 
   useEffect(() => {
-    githubService
+    service
       .listRepos()
       .then(setRepos)
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
-  }, []);
+  }, [service]);
 
   const excludeSet = useMemo(() => new Set(props.exclude ?? []), [props.exclude]);
 
@@ -46,14 +51,14 @@ export function GitHubRepoSelect(props: Props) {
   if (props.multiple) {
     const selected = new Set(props.value);
 
-    const toggle = (repo: GitHubRepo) => {
+    const toggle = (repo: GitRepo) => {
       const next = selected.has(repo.fullName)
         ? props.value.filter((v) => v !== repo.fullName)
         : [...props.value, repo.fullName];
       props.onChange(
         next
           .map((fn) => repos.find((r) => r.fullName === fn))
-          .filter((r): r is GitHubRepo => r !== undefined),
+          .filter((r): r is GitRepo => r !== undefined),
       );
     };
 

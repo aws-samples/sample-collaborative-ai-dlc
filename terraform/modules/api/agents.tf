@@ -28,19 +28,22 @@ module "agents_lambda" {
   vpc_security_group_ids = var.lambda_security_group_ids
 
   environment_variables = {
-    ECS_CLUSTER_ARN           = var.ecs_cluster_arn
-    AGENT_TASK_DEFINITION_ARN = var.agent_task_definition_arn
-    POOL_TABLE                = var.agent_pool_table_name
-    POOL_SIZE                 = tostring(var.pool_size)
-    POOL_VERSION              = var.agent_image_tag
-    PRIVATE_SUBNET_IDS        = jsonencode(var.private_subnet_ids)
-    AGENT_SECURITY_GROUP_ID   = var.agent_security_group_id
-    QUESTIONS_TABLE           = var.agent_questions_table_name
-    NEPTUNE_ENDPOINT          = var.neptune_endpoint
-    AGENT_OUTPUTS_TABLE       = var.agent_outputs_table_name
-    GIT_CONNECTIONS_TABLE     = var.git_connections_table_name
-    AGENT_SETTINGS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
-    CORS_ALLOWED_ORIGINS      = var.cors_allowed_origins
+    ECS_CLUSTER_ARN                = var.ecs_cluster_arn
+    AGENT_TASK_DEFINITION_ARN      = var.agent_task_definition_arn
+    POOL_TABLE                     = var.agent_pool_table_name
+    POOL_SIZE                      = tostring(var.pool_size)
+    POOL_VERSION                   = var.agent_image_tag
+    PRIVATE_SUBNET_IDS             = jsonencode(var.private_subnet_ids)
+    AGENT_SECURITY_GROUP_ID        = var.agent_security_group_id
+    QUESTIONS_TABLE                = var.agent_questions_table_name
+    NEPTUNE_ENDPOINT               = var.neptune_endpoint
+    AGENT_OUTPUTS_TABLE            = var.agent_outputs_table_name
+    GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
+    GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
+    GITLAB_OAUTH_SECRET_NAME       = var.gitlab_oauth_secret_name
+    GITLAB_REDIRECT_URI            = var.gitlab_redirect_uri
+    AGENT_SETTINGS_SSM_PREFIX      = "/${var.project_name}/${var.environment}"
+    CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
     # Server-origin question.answered fanout: the agents lambda pushes the
     # event to sprint-channel WS connections.
     CONNECTIONS_TABLE  = var.connections_table_name

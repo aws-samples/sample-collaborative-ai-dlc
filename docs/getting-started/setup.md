@@ -48,13 +48,13 @@ The deployment takes 15-30 minutes. Neptune DB cluster creation takes the longes
 
 After deployment, configure agent authentication in the platform UI by entering either a Kiro CLI API key or Bedrock credentials (for Claude Code / OpenCode setups). Check the agent pool DynamoDB table or ECS task logs to confirm agents are authenticated and ready.
 
-### Configure tracker OAuth apps
+### Configure provider OAuth apps
 
-The platform integrates with external trackers (GitHub Issues, Jira Cloud) so a sprint can be started from a tracker issue. For each tracker you want to enable, register an OAuth app with the provider and paste the credentials into **Admin → Tracker OAuth Apps** in the deployed app.
+The platform integrates with external providers as code hosts (GitHub, GitLab) and issue trackers (GitHub Issues, GitLab Issues, Jira Cloud) so a sprint can be started from a tracker issue. For each provider you want to enable, register an OAuth app and paste the credentials into **Admin → Tracker OAuth Apps** in the deployed app.
 
-Both providers are optional. Skip a section if you don't need that tracker — the corresponding **Connect** buttons in the UI will stay disabled with a hint pointing to this admin panel.
+For GitHub and GitLab a single OAuth app serves both the code host and that provider's issue tracker. Jira Cloud is a tracker only. All providers are optional — skip a section if you don't need that provider; the corresponding **Connect** buttons in the UI stay disabled with a hint pointing to this admin panel.
 
-#### GitHub Issues
+#### GitHub (code host + GitHub Issues)
 
 1. Open [GitHub Developer Settings → OAuth Apps → New OAuth App](https://github.com/settings/developers).
    Choose an **OAuth App**, _not_ a GitHub App — the flow expects OAuth App semantics.
@@ -63,6 +63,16 @@ Both providers are optional. Skip a section if you don't need that tracker — t
    - **Authorization callback URL**: `https://<your-cloudfront-domain>/github/callback`
 3. Copy the **Client ID** and generate a **Client Secret**.
 4. In the deployed app, sign in and open **Admin → Tracker OAuth Apps → GitHub Issues**. Paste both values and click **Save**.
+
+#### GitLab (code host + GitLab Issues)
+
+1. Open [GitLab → User Settings → Applications](https://gitlab.com/-/user_settings/applications) → **Add new application**.
+2. Set:
+   - **Redirect URI**: `https://<your-cloudfront-domain>/gitlab/callback`
+   - **Scopes**: `api` and `read_user`
+   - Leave **Confidential** enabled.
+3. Save, then copy the **Application ID** (Client ID) and **Secret**.
+4. In the deployed app, sign in and open **Admin → Tracker OAuth Apps → GitLab Issues**. Paste both values and click **Save**.
 
 #### Jira Cloud
 
@@ -83,6 +93,10 @@ The Admin UI is a wrapper around AWS Secrets Manager. To populate the secrets in
     ```bash
     aws secretsmanager put-secret-value \
       --secret-id $(terraform -chdir=terraform output -raw github_oauth_secret_name) \
+      --secret-string '{"client_id":"...","client_secret":"..."}'
+
+    aws secretsmanager put-secret-value \
+      --secret-id $(terraform -chdir=terraform output -raw gitlab_oauth_secret_name) \
       --secret-string '{"client_id":"...","client_secret":"..."}'
 
     aws secretsmanager put-secret-value \
@@ -219,6 +233,6 @@ Check CloudWatch Logs for the ECS service. Common issues: missing IAM permission
 
 Verify User Pool ID and App Client ID match Terraform outputs, and that the user exists in the correct group.
 
-**Tracker integration not working (GitHub or Jira)**
+**Provider integration not working (GitHub, GitLab, or Jira)**
 
 In the deployed app, open **Admin → Tracker OAuth Apps**. Each provider should show **Configured**; if it shows **Not configured**, finish the OAuth-app setup and paste the credentials. Also confirm the OAuth app's **Authorization callback URL** matches the values listed above for your CloudFront domain — provider apps reject mismatched callbacks at sign-in time.

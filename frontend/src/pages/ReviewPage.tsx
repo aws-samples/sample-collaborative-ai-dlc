@@ -10,7 +10,11 @@ import { questionAnchorId } from '@/lib/questionAnchor';
 import { projectsService, type Project } from '@/services/projects';
 import { reviewsService } from '@/services/reviews';
 import { questionsService } from '@/services/questions';
-import { githubService, type PRComment } from '@/services/github';
+import {
+  getGitProviderService,
+  gitProviderTerminology,
+  type GitComment,
+} from '@/services/gitProvider';
 import { sprintGraphService, extractPrs, type PrInfo } from '@/services/sprintGraph';
 import { sprintsService } from '@/services/sprints';
 import { agentsService } from '@/services/agents';
@@ -150,7 +154,7 @@ export default function ReviewPage() {
   const [project, setProject] = useState<Project | null>(null);
   const [prs, setPrs] = useState<PrInfo[]>([]);
   const [selectedPrId, setSelectedPrId] = useState<string>('');
-  const [prComments, setPrComments] = useState<PRComment[]>([]);
+  const [prComments, setPrComments] = useState<GitComment[]>([]);
   const [prBranch, setPrBranch] = useState('');
   const [prBaseBranch, setPrBaseBranch] = useState('main');
   const [newComment, setNewComment] = useState('');
@@ -240,6 +244,14 @@ export default function ReviewPage() {
   const selectedBaseBranch = selectedPr?.baseBranch || 'main';
   const hasPr = prs.length > 0 || !!sprint?.prUrl;
 
+  // Provider-aware copy for the "Link existing PR/MR" dialog. Falls back to
+  // GitHub terminology before the project loads (matches backend defaults).
+  const prTerm = gitProviderTerminology(project?.gitProvider ?? 'github');
+  const prPlaceholderUrl =
+    project?.gitProvider === 'gitlab'
+      ? 'https://gitlab.com/group/project/-/merge_requests/42'
+      : 'https://github.com/owner/repo/pull/42';
+
   const repoShort = (repo: string) => repo.split('/').pop() || repo || '';
   const prTabLabel = (p: PrInfo) => `${repoShort(p.repository) || 'repo'} #${p.prNumber}`;
   // open = emerald, merged = violet, closed = red, unknown = zinc
@@ -254,8 +266,8 @@ export default function ReviewPage() {
   const repoCount = new Set(prs.map((p) => p.repository)).size;
   const prCount = prs.length || (sprint?.prUrl ? 1 : 0);
   const viewPrLabel = selectedPr
-    ? `View ${repoShort(selectedPr.repository) ? `${repoShort(selectedPr.repository)} #${selectedPr.prNumber}` : `PR #${selectedPr.prNumber}`}`
-    : 'View PR';
+    ? `View ${repoShort(selectedPr.repository) ? `${repoShort(selectedPr.repository)} #${selectedPr.prNumber}` : `${prTerm.changeRequestShort} #${selectedPr.prNumber}`}`
+    : `View ${prTerm.changeRequestShort}`;
 
   // Keep the branch used by "Modify Code" aligned with the selected PR's repo.
   useEffect(() => {
@@ -266,15 +278,13 @@ export default function ReviewPage() {
 
   // Load PR comments for the selected PR
   useEffect(() => {
-    if (!activePrNumber || !activeRepo) return;
-    const [owner, repo] = activeRepo.split('/');
-    if (!owner || !repo) return;
+    if (!activePrNumber || !activeRepo || !project) return;
     let cancelled = false;
     // Clear previous PR's comments so a slow response can't show them under the
     // newly selected PR, and guard against out-of-order resolution on fast switches.
     setPrComments([]);
-    githubService
-      .getPRComments(owner, repo, parseInt(activePrNumber))
+    getGitProviderService(project.gitProvider)
+      .getPullRequestComments(activeRepo, parseInt(activePrNumber))
       .then((res) => {
         if (!cancelled) setPrComments(res.comments);
       })
@@ -282,7 +292,7 @@ export default function ReviewPage() {
     return () => {
       cancelled = true;
     };
-  }, [activePrNumber, activeRepo]);
+  }, [activePrNumber, activeRepo, project]);
 
   const pendingQuestions = questions
     .filter((q) => !q.structuredAnswer)
@@ -311,8 +321,10 @@ export default function ReviewPage() {
     if (!linkPrUrl.trim()) return;
     setLinkingPr(true);
     try {
-      // Extract PR number from URL if not manually entered
-      const extractedNumber = linkPrNumber.trim() || linkPrUrl.match(/\/pull\/(\d+)/)?.[1] || '';
+      // Extract PR/MR number from URL if not manually entered. GitHub PRs are
+      // ".../pull/N"; GitLab MRs are ".../-/merge_requests/N".
+      const extractedNumber =
+        linkPrNumber.trim() || linkPrUrl.match(/\/(?:pull|merge_requests)\/(\d+)/)?.[1] || '';
       await sprintsService.update(projectId, sprintId, {
         prUrl: linkPrUrl.trim(),
         prNumber: extractedNumber,
@@ -359,15 +371,18 @@ export default function ReviewPage() {
   };
 
   const handleAddComment = async () => {
-    if (!newComment.trim() || !activePrNumber || !activeRepo) return;
+    if (!newComment.trim() || !activePrNumber || !activeRepo || !project) return;
     setSubmittingComment(true);
     try {
-      const [owner, repo] = activeRepo.split('/');
-      await githubService.addPRComment(owner, repo, parseInt(activePrNumber), {
+      const gitService = getGitProviderService(project.gitProvider);
+      await gitService.addPullRequestComment(activeRepo, parseInt(activePrNumber), {
         body: newComment,
       });
       setNewComment('');
-      const comments = await githubService.getPRComments(owner, repo, parseInt(activePrNumber));
+      const comments = await gitService.getPullRequestComments(
+        activeRepo,
+        parseInt(activePrNumber),
+      );
       setPrComments(comments.comments);
     } catch (err) {
       alert('Failed to add comment: ' + (err instanceof Error ? err.message : 'Unknown error'));
@@ -583,7 +598,8 @@ export default function ReviewPage() {
             <Card className="border-amber-500/50 bg-amber-500/5">
               <CardContent className="p-4 space-y-3">
                 <p className="text-sm text-amber-600 dark:text-amber-400">
-                  No Pull Request found. AI review agents and code modification require an open PR.
+                  No {prTerm.changeRequest} found. AI review agents and code modification require an
+                  open {prTerm.changeRequestShort}.
                 </p>
                 <div className="flex gap-2 flex-wrap">
                   <Button
@@ -597,7 +613,9 @@ export default function ReviewPage() {
                     ) : (
                       <GitBranch className="h-3.5 w-3.5" />
                     )}
-                    {creatingPr ? 'Creating PR...' : 'Create PR'}
+                    {creatingPr
+                      ? `Creating ${prTerm.changeRequestShort}...`
+                      : `Create ${prTerm.changeRequestShort}`}
                   </Button>
                   <Button
                     size="sm"
@@ -605,7 +623,7 @@ export default function ReviewPage() {
                     className="gap-1.5"
                     onClick={() => setShowLinkPrModal(true)}
                   >
-                    <Link className="h-3.5 w-3.5" /> Link Existing PR
+                    <Link className="h-3.5 w-3.5" /> Link Existing {prTerm.changeRequestShort}
                   </Button>
                 </div>
               </CardContent>
@@ -684,7 +702,7 @@ export default function ReviewPage() {
                   )}
                 </TabsTrigger>
                 <TabsTrigger value="comments" className="gap-1.5 text-xs">
-                  PR Comments{' '}
+                  {prTerm.changeRequestShort} Comments{' '}
                   {prComments.length > 0 && (
                     <Badge variant="secondary" className="h-4 px-1 text-[9px]">
                       {prComments.length}
@@ -834,7 +852,9 @@ export default function ReviewPage() {
                 <Card>
                   <CardContent className="p-4 space-y-4">
                     {prComments.length === 0 ? (
-                      <p className="text-sm text-muted-foreground">No PR comments yet.</p>
+                      <p className="text-sm text-muted-foreground">
+                        No {prTerm.changeRequestShort} comments yet.
+                      </p>
                     ) : (
                       prComments.map((comment) => (
                         <div key={comment.id} className="border rounded-lg p-3">
@@ -918,6 +938,7 @@ export default function ReviewPage() {
                 review={review}
                 sprintId={sprintId}
                 userName={user?.displayName || user?.email || ''}
+                gitProvider={project?.gitProvider ?? 'github'}
                 readOnly={sprint?.phase === 'COMPLETED'}
                 onCreate={async () => {
                   await reviewsService.create(sprintId);
@@ -927,9 +948,8 @@ export default function ReviewPage() {
                   await reviewsService.update(sprintId, updates);
                   await reloadReview();
                 }}
-                onSendToGitHub={async () => {
+                onSendToProvider={async () => {
                   if (!review || !sprint?.prNumber || !project?.gitRepo) return;
-                  const [owner, repo] = project.gitRepo.split('/');
                   const emoji =
                     review.status === 'PASSED' ? '✅' : review.status === 'FAILED' ? '❌' : '⚠️';
                   const body = [
@@ -939,9 +959,11 @@ export default function ReviewPage() {
                     '',
                     review.comments ? review.comments : '_No comments provided._',
                   ].join('\n');
-                  await githubService.addPRComment(owner, repo, parseInt(sprint.prNumber), {
-                    body,
-                  });
+                  await getGitProviderService(project.gitProvider).addPullRequestComment(
+                    project.gitRepo,
+                    parseInt(sprint.prNumber),
+                    { body },
+                  );
                   if (review.status === 'PASSED') {
                     await sprintsService.update(projectId, sprintId, { phase: 'COMPLETED' });
                     // sprint.phaseChanged is a server-origin event emitted by
@@ -961,8 +983,8 @@ export default function ReviewPage() {
           <DialogHeader>
             <DialogTitle>Fix Review Findings</DialogTitle>
             <DialogDescription>
-              The agent will read all PR comments (review findings and human feedback), fix clear
-              issues, and ask questions about anything ambiguous.
+              The agent will read all {prTerm.changeRequestShort} comments (review findings and
+              human feedback), fix clear issues, and ask questions about anything ambiguous.
             </DialogDescription>
           </DialogHeader>
           <Textarea
@@ -989,24 +1011,25 @@ export default function ReviewPage() {
       <Dialog open={showLinkPrModal} onOpenChange={setShowLinkPrModal}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Link Existing Pull Request</DialogTitle>
+            <DialogTitle>Link Existing {prTerm.changeRequest}</DialogTitle>
             <DialogDescription>
-              Paste the URL of an existing GitHub PR. The PR number will be extracted automatically.
+              Paste the URL of an existing {prTerm.label} {prTerm.changeRequestShort}. The{' '}
+              {prTerm.changeRequestShort} number will be extracted automatically.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div className="space-y-1.5">
-              <Label htmlFor="pr-url">PR URL</Label>
+              <Label htmlFor="pr-url">{prTerm.changeRequestShort} URL</Label>
               <Input
                 id="pr-url"
-                placeholder="https://github.com/owner/repo/pull/42"
+                placeholder={prPlaceholderUrl}
                 value={linkPrUrl}
                 onChange={(e) => setLinkPrUrl(e.target.value)}
               />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="pr-number">
-                PR Number{' '}
+                {prTerm.changeRequestShort} Number{' '}
                 <span className="text-muted-foreground text-xs">
                   (optional — auto-extracted from URL)
                 </span>
@@ -1033,7 +1056,7 @@ export default function ReviewPage() {
               ) : (
                 <Link className="h-3.5 w-3.5" />
               )}
-              {linkingPr ? 'Linking...' : 'Link PR'}
+              {linkingPr ? 'Linking...' : `Link ${prTerm.changeRequestShort}`}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1042,6 +1065,7 @@ export default function ReviewPage() {
       {/* Branch selector for manual PR creation */}
       {showCreatePrBranch && project && (
         <BranchSelector
+          provider={project.gitProvider}
           gitRepo={project.gitRepo}
           onSelect={(branch, baseBranch) => handleCreatePr(branch, baseBranch)}
           onCancel={() => setShowCreatePrBranch(false)}

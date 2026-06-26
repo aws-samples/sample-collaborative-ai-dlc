@@ -1,5 +1,14 @@
 {
   "name": "create-pr",
   "version": "1.0.0",
+  "private": true,
+  "main": "create-pr.js",
+  "scripts": {
+    "test": "vitest run --project=create-pr",
+    "build": "esbuild create-pr.js --bundle --platform=node --target=node24 --format=cjs --external:@aws-sdk/* --outfile=.build/create-pr.js",
+    "lint": "oxlint .",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check ."
+  },
   "dependencies": {}
 }

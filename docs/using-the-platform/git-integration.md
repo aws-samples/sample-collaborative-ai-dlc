@@ -2,29 +2,35 @@
 
 AIDLC Collaborative integrates with external systems on two independent axes:
 
-- **Code host** — currently GitHub. The repository is cloned into the agent workspace and all code changes flow back as a pull request.
-- **Issue trackers** — GitHub Issues and Jira Cloud. A sprint can be started from any tracker issue; the issue's title, body, and comments become the sprint's brief for the agent.
+- **Code host** — GitHub or GitLab. The repository is cloned into the agent workspace and all code changes flow back as a pull request (GitHub) or merge request (GitLab).
+- **Issue trackers** — GitHub Issues, GitLab Issues, and Jira Cloud. A sprint can be started from any tracker issue; the issue's title, body, and comments become the sprint's brief for the agent.
 
 A project can bind to _one_ code host and to _zero or more_ trackers. Both are configured per project in **Project Settings**.
 
+GitHub and GitLab each span both axes: a single connection serves as the code host **and** backs that provider's issue tracker (GitHub Issues / GitLab Issues), so you authenticate once per provider. Jira Cloud is a tracker only.
+
 ## Operator setup (one time per deployment)
 
-Before users can connect their accounts, an administrator registers OAuth apps with each provider and pastes the credentials into the platform. See [Setup → Configure tracker OAuth apps](../getting-started/setup.md#configure-tracker-oauth-apps) for the full walkthrough.
+Before users can connect their accounts, an administrator registers OAuth apps with each provider and pastes the credentials into the platform. See [Setup → Configure provider OAuth apps](../getting-started/setup.md#configure-provider-oauth-apps) for the full walkthrough.
 
 The status of each provider is visible in **Admin → Tracker OAuth Apps**. Until a provider shows **Configured**, the corresponding **Connect** button in Project Settings stays disabled with a hint pointing back to the admin panel.
 
 ## Connecting your account
 
-Each user connects their own GitHub / Atlassian account once; the connection is reused across every project that needs that tracker.
+Each user connects their own GitHub / GitLab / Atlassian account once; the connection is reused across every project that needs that provider.
 
-- **GitHub**: from the dashboard, click **Connect GitHub** and approve the OAuth flow. The button stays disabled if your administrator hasn't configured GitHub OAuth credentials yet.
+- **GitHub**: from the dashboard (or the project-creation flow), click **Connect GitHub** and approve the OAuth flow. The button stays disabled if your administrator hasn't configured GitHub OAuth credentials yet.
+- **GitLab**: choose **GitLab** as the provider in the project-creation flow, then click **Connect GitLab** and approve the OAuth flow. The button stays disabled until your administrator has configured GitLab OAuth credentials. GitLab access tokens are short-lived; the platform refreshes them automatically using the stored refresh token, so you don't need to reconnect periodically.
 - **Jira Cloud**: open **Project Settings → Trackers → Connect Jira Cloud**. After the Atlassian consent screen, if your account has access to multiple Atlassian sites you'll be asked to pick one. The chosen site is remembered; you can disconnect and reconnect later to change it.
+
+A connection is scoped to its provider: connecting GitHub does not satisfy a GitLab project (and vice versa). Each project uses the connection matching its selected code host.
 
 ## Selecting a code repository
 
 1. Click **Create new Project** in the project overview.
-2. The platform checks for an active GitHub connection and prompts you to connect if one is missing.
-3. Pick the repository that should back the project.
+2. Choose the code host — **GitHub** or **GitLab**.
+3. The platform checks for an active connection to that provider and prompts you to connect if one is missing.
+4. Pick the repository (GitHub) or project (GitLab) that should back the collaborative project.
 
 The repository is cloned into the agent workspace and becomes available to the LLM assistant and agents during inception, construction, and review.
 
@@ -34,8 +40,11 @@ A tracker binding tells the platform which external project to list issues from 
 
 In **Project Settings → Trackers**:
 
-- **GitHub Issues**: click **Add GitHub Issues for `<owner>/<repo>`**. The repository name comes from the project's code-host setting.
+- **GitHub Issues**: click **Add GitHub Issues for `<owner>/<repo>`**. The repository name comes from the project's code-host setting. Shown for GitHub-backed projects.
+- **GitLab Issues**: click **Add GitLab Issues for `<group>/<project>`**. The project path comes from the project's code-host setting. Shown for GitLab-backed projects.
 - **Jira Cloud**: click **Add Jira project**, pick the Jira project to bind, and confirm. You can repeat this to bind multiple Jira projects to the same collaborative project.
+
+You can also enable the matching git-issues tracker in one step at project creation by checking **Enable GitHub/GitLab issue integration**.
 
 When a project has more than one tracker bound, the project page renders a tab strip above the issue list — one tab per binding, labeled with the provider and external project key.
 
@@ -49,11 +58,13 @@ On the project page, the **Start a sprint from a … issue** panel lists open is
 
 Issues already linked to an existing sprint show **Open sprint** instead of **Start sprint**, scoped per binding so the same numeric ID across two trackers (`PROJ-1` vs `OTHER-1`) doesn't collide.
 
-The Jira integration is **read-only** — the agent never writes back to Jira. Comments and status changes stay in your team's normal Jira workflow.
+The Jira and GitLab Issues integrations are **read-only** — the agent never writes back issue comments or status changes. (On the code-host side, the agent does open a pull request / merge request and posts review results back to it — see [Reviews](#reviews).)
 
 ## Reconnecting a tracker
 
-If a Jira refresh token is revoked at the provider (for example, a user logs out of Atlassian or the workspace admin revokes the app), the tracker panel surfaces a **Reconnect Jira** banner. The binding is preserved — only the user's authentication needs renewing — so reconnecting restores access without losing the project↔tracker relationship.
+If a provider refresh token is revoked (for example, a user logs out of Atlassian or GitLab, or a workspace admin revokes the app), the tracker panel surfaces a **Reconnect** banner for that provider. The binding is preserved — only the user's authentication needs renewing — so reconnecting restores access without losing the project↔tracker relationship.
+
+For GitLab specifically, routine token expiry does **not** require reconnecting: access tokens are refreshed automatically from the stored refresh token. A reconnect is only needed if that refresh token itself is revoked.
 
 ## Migrating from legacy issue integration
 
@@ -79,4 +90,4 @@ Why nothing is removed: this is open source. Downstream forks are on their own u
 
 ## Reviews
 
-The platform creates a pull request on the bound code host once construction finishes. You can start a review on the platform; the review results are written back as a comment on the pull request.
+The platform opens a pull request (GitHub) or merge request (GitLab) on the bound code host once construction finishes. You can start a review on the platform; the review results are written back as a comment on that pull/merge request.

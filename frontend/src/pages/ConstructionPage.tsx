@@ -10,6 +10,7 @@ import { useAnswerQuestion } from '@/hooks/useAnswerQuestion';
 import { questionAnchorId } from '@/lib/questionAnchor';
 import { sprintsService } from '@/services/sprints';
 import { projectsService, type Project } from '@/services/projects';
+import { gitProviderTerminology } from '@/services/gitProvider';
 import { agentsService } from '@/services/agents';
 import { questionsService } from '@/services/questions';
 import { tasksService } from '@/services/tasks';
@@ -39,7 +40,7 @@ import { ArtifactCard } from '@/components/domain/ArtifactCard';
 import QuestionEditor from '@/components/QuestionEditor';
 import { BranchSelector } from '@/components/BranchSelector';
 import CodeFileViewer from '@/components/CodeFileViewer';
-import { GitHubFileBrowser } from '@/components/GitHubFileBrowser';
+import { GitFileBrowser } from '@/components/GitFileBrowser';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -71,7 +72,7 @@ export default function ConstructionPage() {
   const [branchSelectorMode, setBranchSelectorMode] = useState<'construction' | 'create-pr'>(
     'construction',
   );
-  const [showGitHub, setShowGitHub] = useState(false);
+  const [showFileBrowser, setShowFileBrowser] = useState(false);
   const [startingConstruction, setStartingConstruction] = useState(false);
   const [executionArn, setExecutionArn] = useState<string | null>(null);
   const [executionId, setExecutionId] = useState<string | null>(null);
@@ -158,7 +159,7 @@ export default function ConstructionPage() {
 
   const pendingQuestions = questions
     .filter((q) => !q.structuredAnswer)
-    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    .toSorted((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
   // Scroll to a question referenced by a #question-{id} URL hash (timeline links)
   useQuestionAnchor(questions.length > 0);
@@ -315,6 +316,8 @@ export default function ConstructionPage() {
     failed: tasks.filter((t) => t.status === 'failed'),
   };
 
+  const prTerm = gitProviderTerminology(project?.gitProvider ?? 'github');
+
   return (
     <div className="flex flex-col h-full">
       <div className="flex-1 overflow-y-auto">
@@ -387,14 +390,14 @@ export default function ConstructionPage() {
                 <div className="flex items-center gap-3">
                   <GitBranch className="h-5 w-5 text-agent-success" />
                   <div className="flex-1">
-                    <p className="text-sm font-medium">Pull Request Created</p>
+                    <p className="text-sm font-medium">{prTerm.changeRequest} Created</p>
                     <a
                       href={sprint.prUrl}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-xs text-agent-success hover:underline"
                     >
-                      PR #{sprint.prNumber} -- View on GitHub
+                      {prTerm.changeRequestShort} #{sprint.prNumber} -- View on {prTerm.label}
                     </a>
                   </div>
                   <Button
@@ -403,7 +406,7 @@ export default function ConstructionPage() {
                     className="gap-1.5"
                     onClick={() => window.open(sprint.prUrl!, '_blank')}
                   >
-                    <ExternalLink className="h-3 w-3" /> View PR
+                    <ExternalLink className="h-3 w-3" /> View {prTerm.changeRequestShort}
                   </Button>
                 </div>
                 {sprint.prNumber && (
@@ -471,7 +474,9 @@ export default function ConstructionPage() {
                 ) : (
                   <GitBranch className="h-4 w-4" />
                 )}
-                {startingConstruction ? 'Creating PR...' : 'Create PR'}
+                {startingConstruction
+                  ? `Creating ${prTerm.changeRequestShort}...`
+                  : `Create ${prTerm.changeRequestShort}`}
               </Button>
             )}
 
@@ -495,7 +500,7 @@ export default function ConstructionPage() {
               variant="outline"
               size="sm"
               className="gap-1.5 ml-auto"
-              onClick={() => setShowGitHub(true)}
+              onClick={() => setShowFileBrowser(true)}
             >
               <Eye className="h-3.5 w-3.5" /> View Repo Files
             </Button>
@@ -505,9 +510,10 @@ export default function ConstructionPage() {
           {constructionComplete && !sprint?.prUrl && agentStatus.status?.status !== 'RUNNING' && (
             <Card className="border-amber-500/50 bg-amber-500/5">
               <CardContent className="p-3 text-sm text-amber-600 dark:text-amber-400">
-                Construction is complete but no Pull Request was created. Click{' '}
-                <strong>Create PR</strong> to have the orchestrator create one now, or advance to
-                Review and link a PR manually from there.
+                Construction is complete but no {prTerm.changeRequest} was created. Click{' '}
+                <strong>Create {prTerm.changeRequestShort}</strong> to have the orchestrator create
+                one now, or advance to Review and link a {prTerm.changeRequestShort} manually from
+                there.
               </CardContent>
             </Card>
           )}
@@ -714,7 +720,7 @@ export default function ConstructionPage() {
                       return (
                         <Accordion type="multiple" className="space-y-1">
                           {Array.from(grouped.entries())
-                            .sort(([a], [b]) => a.localeCompare(b))
+                            .toSorted(([a], [b]) => a.localeCompare(b))
                             .map(([folder, files]) => (
                               <AccordionItem
                                 key={folder}
@@ -733,7 +739,7 @@ export default function ConstructionPage() {
                                 <AccordionContent className="px-3 pb-2">
                                   <div className="space-y-1.5">
                                     {files
-                                      .sort((a, b) => a.filePath.localeCompare(b.filePath))
+                                      .toSorted((a, b) => a.filePath.localeCompare(b.filePath))
                                       .map((file) => (
                                         <CodeFileViewer key={file.id} codeFile={file} />
                                       ))}
@@ -817,6 +823,7 @@ export default function ConstructionPage() {
       {/* Branch selector modal (only shown when branch not yet stored) */}
       {showBranchSelector && project && (
         <BranchSelector
+          provider={project.gitProvider}
           gitRepo={project.gitRepo}
           onSelect={(branch, baseBranch) =>
             branchSelectorMode === 'create-pr'
@@ -827,27 +834,22 @@ export default function ConstructionPage() {
         />
       )}
 
-      {/* GitHub file browser */}
-      {showGitHub &&
-        project &&
-        (() => {
-          const [owner, repo] = project.gitRepo.split('/');
-          return (
-            <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-8">
-              <Card className="w-full max-w-5xl max-h-[80vh] overflow-hidden">
-                <CardHeader className="py-2 px-4 flex flex-row items-center justify-between">
-                  <CardTitle className="text-sm">Repository Files</CardTitle>
-                  <Button variant="ghost" size="sm" onClick={() => setShowGitHub(false)}>
-                    Close
-                  </Button>
-                </CardHeader>
-                <CardContent className="p-0">
-                  <GitHubFileBrowser owner={owner} repo={repo} />
-                </CardContent>
-              </Card>
-            </div>
-          );
-        })()}
+      {/* Repository file browser */}
+      {showFileBrowser && project && (
+        <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-8">
+          <Card className="w-full max-w-5xl max-h-[80vh] overflow-hidden">
+            <CardHeader className="py-2 px-4 flex flex-row items-center justify-between">
+              <CardTitle className="text-sm">Repository Files</CardTitle>
+              <Button variant="ghost" size="sm" onClick={() => setShowFileBrowser(false)}>
+                Close
+              </Button>
+            </CardHeader>
+            <CardContent className="p-0">
+              <GitFileBrowser provider={project.gitProvider} repoId={project.gitRepo} />
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       {/* Task Settings */}
       {sprintId && settingsTask && (

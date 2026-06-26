@@ -1,4 +1,5 @@
 import { api } from './api';
+import type { GitProvider } from './gitProvider';
 
 export type ProjectRole = 'owner' | 'admin' | 'member';
 export type AgentCli = 'kiro' | 'claude' | 'opencode';
@@ -17,7 +18,7 @@ export type RepoRole =
 
 export interface ProjectRepo {
   url: string;
-  provider: 'github' | 'gitlab';
+  provider: GitProvider;
   role: RepoRole;
   detectedStack: string;
   addedAt: string;
@@ -39,7 +40,7 @@ export interface TrackerBinding {
 export interface Project {
   id: string;
   name: string;
-  gitProvider: 'github' | 'gitlab';
+  gitProvider: GitProvider;
   gitRepo: string;
   agentCli: AgentCli;
   cliModels?: CliModels;
@@ -63,7 +64,7 @@ export type TrackerMigrationStatus = TrackerMigrationResult;
 
 export interface CreateProjectInput {
   name: string;
-  gitProvider: 'github' | 'gitlab';
+  gitProvider: GitProvider;
   gitRepo: string;
   agentCli?: AgentCli;
   cliModels?: CliModels;
@@ -74,7 +75,7 @@ export interface CreateProjectInput {
 export interface UpdateProjectInput {
   name?: string;
   gitRepo?: string;
-  gitProvider?: 'github' | 'gitlab';
+  gitProvider?: GitProvider;
   agentCli?: AgentCli;
   cliModels?: CliModels;
   issueIntegrationEnabled?: boolean;
@@ -82,7 +83,7 @@ export interface UpdateProjectInput {
 
 export interface AddRepoInput {
   url: string;
-  provider?: 'github' | 'gitlab';
+  provider?: GitProvider;
   role?: RepoRole;
   detectedStack?: string;
 }

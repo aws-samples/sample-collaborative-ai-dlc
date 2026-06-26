@@ -15,8 +15,14 @@ import {
 } from '../services/projects';
 import { trackersService, type TrackerConnection } from '../services/trackers';
 import { agentsService } from '../services/agents';
-import { GitHubRepoSelect } from '../components/GitHubRepoSelect';
-import type { GitHubRepo } from '../services/github';
+import { GitRepoSelect } from '../components/GitRepoSelect';
+import {
+  trackerIdForGitProvider,
+  getGitProviderService,
+  gitProviderTerminology,
+  type GitRepo,
+  type GitTrackerProviderId,
+} from '../services/gitProvider';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -58,7 +64,7 @@ const ROLE_LABELS: Record<ProjectRole, string> = {
 
 const ROLE_DESCRIPTIONS: Record<ProjectRole, string> = {
   owner: 'Full control: manage project, members, and settings',
-  admin: 'Manage members and update GitHub repository',
+  admin: 'Manage members and update the project repository',
   member: 'Collaborate on sprints and trigger agents',
 };
 
@@ -328,20 +334,22 @@ export default function ProjectSettings() {
     return u.email.toLowerCase().includes(q) || u.displayName.toLowerCase().includes(q);
   });
 
-  const handleAddGithubTracker = async () => {
+  // Add the git-issues tracker matching the project's git provider
+  // (github-issues / gitlab-issues). Both reuse the project's git connection.
+  const handleAddGitTracker = async (providerId: GitTrackerProviderId) => {
     if (!projectId || !project || !project.gitRepo) return;
     clearMessages();
     setTogglingTracker(true);
     try {
-      const gh = TRACKER_PROVIDERS['github-issues'];
+      const meta = TRACKER_PROVIDERS[providerId];
       await trackersService.addToProject(projectId, {
-        provider: gh.id,
-        instance: gh.instance,
+        provider: meta.id,
+        instance: meta.instance,
         externalProjectKey: project.gitRepo,
         displayName: project.gitRepo,
       });
       await loadData();
-      setSuccess('GitHub issue integration enabled.');
+      setSuccess(`${meta.displayName} integration enabled.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to enable tracker');
     } finally {
@@ -388,6 +396,28 @@ export default function ProjectSettings() {
       setError(err instanceof Error ? err.message : 'Failed to remove tracker');
     } finally {
       setTogglingTracker(false);
+    }
+  };
+
+  const handleReconnectTracker = async (binding: TrackerBinding) => {
+    clearMessages();
+    try {
+      // Store the return path so the OAuth callback redirects back here instead
+      // of the create-project flow.
+      sessionStorage.setItem('oauth_return_to', `/project/${projectId}/settings`);
+      // Git-based trackers (github-issues / gitlab-issues) share the git
+      // provider's OAuth connection — reconnect via the git auth flow.
+      if (binding.provider === 'github-issues' || binding.provider === 'gitlab-issues') {
+        const gitProvider = binding.provider === 'gitlab-issues' ? 'gitlab' : 'github';
+        const { url } = await getGitProviderService(gitProvider).getAuthUrl();
+        window.location.href = url;
+        return;
+      }
+      // Standalone tracker providers (Jira) use the trackers auth endpoint.
+      const { url } = await trackersService.getAuthUrl(binding.provider);
+      window.location.href = url;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start reconnection');
     }
   };
 
@@ -481,7 +511,9 @@ export default function ProjectSettings() {
     clearMessages();
     setAddingRepo(true);
     const results = await Promise.allSettled(
-      selectedNewRepos.map((url) => projectsService.addRepo(projectId, { url })),
+      selectedNewRepos.map((url) =>
+        projectsService.addRepo(projectId, { url, provider: project?.gitProvider }),
+      ),
     );
     const succeeded = results.filter((r) => r.status === 'fulfilled').length;
     const failedRepos = results
@@ -705,7 +737,9 @@ export default function ProjectSettings() {
                     />
                   </div>
                   <div className="space-y-1.5">
-                    <Label htmlFor="proj-repo">GitHub Repository</Label>
+                    <Label htmlFor="proj-repo">
+                      {gitProviderTerminology(project?.gitProvider ?? 'github').label} Repository
+                    </Label>
                     <Input
                       id="proj-repo"
                       value={editGitRepo}
@@ -730,8 +764,8 @@ export default function ProjectSettings() {
             </Card>
 
             {/* Trackers — provider-agnostic issue trackers wired to this
-                project. Phase 2 (#196) only manages github-issues here;
-                Phase 3 adds Jira via the same surface. */}
+                project. Manages the git-issues tracker matching the project's
+                git provider (github-issues / gitlab-issues) plus Jira Cloud. */}
             <Card className="mb-6">
               <CardHeader className="pb-3">
                 <CardTitle className="text-base">Trackers</CardTitle>
@@ -767,14 +801,24 @@ export default function ProjectSettings() {
                             </p>
                           </div>
                           {canEditProject && !isLegacy && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => handleRemoveTracker(b)}
-                              disabled={togglingTracker}
-                            >
-                              Remove
-                            </Button>
+                            <div className="flex items-center gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleReconnectTracker(b)}
+                                disabled={togglingTracker}
+                              >
+                                Reconnect
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleRemoveTracker(b)}
+                                disabled={togglingTracker}
+                              >
+                                Remove
+                              </Button>
+                            </div>
                           )}
                         </div>
                       );
@@ -782,20 +826,34 @@ export default function ProjectSettings() {
                   </div>
                 )}
 
-                {canEditProject &&
-                  project?.gitProvider === 'github' &&
-                  project.gitRepo &&
-                  !(project.trackers ?? []).some(
-                    (b) =>
-                      b.provider === TRACKER_PROVIDERS['github-issues'].id &&
-                      b.externalProjectKey === project.gitRepo,
-                  ) && (
+                {/* Add the git-issues tracker matching the project's git
+                    provider (github-issues / gitlab-issues). One block — the
+                    provider selects the tracker id + label. */}
+                {(() => {
+                  if (!canEditProject || !project?.gitRepo) return null;
+                  if (project.gitProvider !== 'github' && project.gitProvider !== 'gitlab') {
+                    return null;
+                  }
+                  const trackerId = trackerIdForGitProvider(project.gitProvider);
+                  const meta = TRACKER_PROVIDERS[trackerId];
+                  const alreadyBound = (project.trackers ?? []).some(
+                    (b) => b.provider === meta.id && b.externalProjectKey === project.gitRepo,
+                  );
+                  if (alreadyBound) return null;
+                  return (
                     <div className="flex justify-end pt-2">
-                      <Button size="sm" onClick={handleAddGithubTracker} disabled={togglingTracker}>
-                        {togglingTracker ? 'Saving…' : `Add GitHub Issues for ${project.gitRepo}`}
+                      <Button
+                        size="sm"
+                        onClick={() => handleAddGitTracker(trackerId)}
+                        disabled={togglingTracker}
+                      >
+                        {togglingTracker
+                          ? 'Saving…'
+                          : `Add ${meta.displayName} for ${project.gitRepo}`}
                       </Button>
                     </div>
-                  )}
+                  );
+                })()}
 
                 {canEditProject && (
                   <JiraConnectButton
@@ -1223,10 +1281,11 @@ export default function ProjectSettings() {
               </DialogDescription>
             </DialogHeader>
             <div className="py-4 space-y-3">
-              <GitHubRepoSelect
+              <GitRepoSelect
+                provider={project?.gitProvider ?? 'github'}
                 multiple
                 value={selectedNewRepos}
-                onChange={(selected: GitHubRepo[]) => {
+                onChange={(selected: GitRepo[]) => {
                   setSelectedNewRepos(selected.map((r) => r.fullName));
                 }}
                 exclude={repos.map((r) => r.url)}

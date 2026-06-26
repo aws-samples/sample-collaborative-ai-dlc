@@ -1,29 +1,47 @@
 import { useState } from 'react';
+import { Github, Gitlab } from 'lucide-react';
 import { projectsService, type CreateProjectInput } from '../services/projects';
 import { trackersService } from '../services/trackers';
-import { useGitHubStatus } from '../hooks/useGitHubStatus';
-import { GitHubConnectButton } from './GitHubConnectButton';
-import { GitHubRepoSelect } from './GitHubRepoSelect';
-import type { GitHubRepo } from '../services/github';
+import { useGitProviderStatus } from '../hooks/useGitProviderStatus';
+import { GitConnectButton } from './GitConnectButton';
+import { GitRepoSelect } from './GitRepoSelect';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
+import { trackerIdForGitProvider, type GitProvider, type GitRepo } from '../services/gitProvider';
 
 interface Props {
   onClose: () => void;
   onCreated: () => void;
+  // Provider to preselect — used to restore the user's choice after an OAuth
+  // round-trip (the redirect to the provider and back resets in-memory state).
+  // Empty string (the default) leaves the provider UNSELECTED so opening the
+  // modal does not trigger a connection check / OAuth login until the user picks.
+  initialProvider?: GitProvider | '';
 }
 
 const repoShortName = (fullName: string) => fullName.split('/').pop() || '';
 
-export function CreateProjectModal({ onClose, onCreated }: Props) {
-  const { status, loading: statusLoading, error: statusError, refresh } = useGitHubStatus();
+// Local form shape: gitProvider may be '' before the user selects one.
+type ProjectForm = Omit<CreateProjectInput, 'gitProvider'> & { gitProvider: GitProvider | '' };
+
+export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }: Props) {
   const [step, setStep] = useState(1);
   const [selectedRepos, setSelectedRepos] = useState<string[]>([]);
   const [primaryRepo, setPrimaryRepo] = useState<string>('');
-  const [formData, setFormData] = useState<CreateProjectInput>({
+  const [formData, setFormData] = useState<ProjectForm>({
     name: '',
-    gitProvider: 'github',
+    gitProvider: initialProvider,
     gitRepo: '',
     issueIntegrationEnabled: false,
   });
+  // Only the selected provider's connection status is needed — the modal shows
+  // one provider at a time. Switching providers re-fetches via the hook's
+  // provider-keyed effect.
+  const {
+    status: gitStatus,
+    loading: gitStatusLoading,
+    error: gitStatusError,
+    refresh: gitRefresh,
+  } = useGitProviderStatus(formData.gitProvider);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -38,12 +56,18 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
     }));
   };
 
-  const handleReposChange = (repos: GitHubRepo[]) => {
+  const handleReposChange = (repos: GitRepo[]) => {
     const fullNames = repos.map((r) => r.fullName);
     setSelectedRepos(fullNames);
     applyPrimaryRepo(
       fullNames.length === 0 ? '' : fullNames.includes(primaryRepo) ? primaryRepo : fullNames[0],
     );
+  };
+
+  const handleProviderChange = (provider: GitProvider) => {
+    setFormData((prev) => ({ ...prev, gitProvider: provider, gitRepo: '' }));
+    setSelectedRepos([]);
+    setPrimaryRepo('');
   };
 
   const handleSetPrimary = (repoFullName: string) => {
@@ -59,28 +83,33 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
     setSubmitting(true);
     setError(null);
     try {
+      const gitProvider = formData.gitProvider;
+      if (!gitProvider) {
+        setError('Select a git provider.');
+        setSubmitting(false);
+        return;
+      }
       const input: CreateProjectInput = {
         ...formData,
+        gitProvider,
         repos: selectedRepos.map((url) => ({
           url,
           role: url === primaryRepo ? ('primary' as const) : ('secondary' as const),
         })),
       };
       const project = await projectsService.create(input);
-      if (
-        formData.issueIntegrationEnabled &&
-        formData.gitProvider === 'github' &&
-        formData.gitRepo
-      ) {
+      if (formData.issueIntegrationEnabled && formData.gitRepo) {
+        // GitHub and GitLab issues both reuse the project's git connection.
+        const trackerProvider = trackerIdForGitProvider(gitProvider);
         try {
           await trackersService.addToProject(project.id, {
-            provider: 'github-issues',
+            provider: trackerProvider,
             instance: 'public',
             externalProjectKey: formData.gitRepo,
             displayName: formData.gitRepo,
           });
         } catch (err) {
-          console.error('Failed to add github-issues tracker:', err);
+          console.error(`Failed to add ${trackerProvider} tracker:`, err);
         }
       }
       onCreated();
@@ -92,7 +121,7 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
     }
   };
 
-  const canProceedStep1 = status?.connected;
+  const canProceedStep1 = gitStatus?.connected;
   const canProceedStep2 = selectedRepos.length > 0;
 
   return (
@@ -132,19 +161,57 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
           </div>
         )}
 
-        {/* Step 1: Connect GitHub */}
+        {/* Step 1: Connect Git Provider */}
         {step === 1 && (
           <div>
-            <h3 className="font-medium mb-3 text-gray-900 dark:text-white">Connect GitHub</h3>
-            {statusError && (
+            <label
+              htmlFor="git-provider-select"
+              className="block font-medium mb-1 text-gray-900 dark:text-white"
+            >
+              Choose Git Provider
+            </label>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+              A project connects to a single git provider.
+            </p>
+            <Select
+              value={formData.gitProvider}
+              onValueChange={(v) => handleProviderChange(v as GitProvider)}
+            >
+              <SelectTrigger id="git-provider-select" className="mb-4">
+                <SelectValue placeholder="Select a git provider" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="github">
+                  <span className="flex items-center gap-2">
+                    <Github />
+                    GitHub
+                  </span>
+                </SelectItem>
+                <SelectItem value="gitlab">
+                  <span className="flex items-center gap-2">
+                    <Gitlab />
+                    GitLab
+                  </span>
+                </SelectItem>
+              </SelectContent>
+            </Select>
+            {gitStatusError && (
               <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4 text-sm">
-                {statusError}
+                {gitStatusError}
               </div>
             )}
-            {statusLoading ? (
+            {!formData.gitProvider ? (
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                Select a git provider to continue.
+              </p>
+            ) : gitStatusLoading ? (
               <p className="text-sm text-gray-500 dark:text-gray-400">Checking connection...</p>
             ) : (
-              <GitHubConnectButton connected={status?.connected || false} onDisconnect={refresh} />
+              <GitConnectButton
+                provider={formData.gitProvider}
+                connected={gitStatus?.connected || false}
+                onDisconnect={gitRefresh}
+              />
             )}
             <div className="flex justify-end gap-2 mt-6">
               <button
@@ -164,15 +231,20 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
           </div>
         )}
 
-        {/* Step 2: Select Repositories */}
-        {step === 2 && (
+        {/* Step 2: Select Repositories (provider is always set past step 1) */}
+        {step === 2 && formData.gitProvider && (
           <div>
             <h3 className="font-medium mb-1 text-gray-900 dark:text-white">Select Repositories</h3>
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
               Choose one or more repositories. The primary repo drives issue integration and project
               naming.
             </p>
-            <GitHubRepoSelect multiple value={selectedRepos} onChange={handleReposChange} />
+            <GitRepoSelect
+              provider={formData.gitProvider}
+              multiple
+              value={selectedRepos}
+              onChange={handleReposChange}
+            />
             {selectedRepos.length > 1 && (
               <div className="mt-3 border dark:border-gray-600 rounded divide-y dark:divide-gray-600">
                 <div className="px-3 py-1.5 bg-gray-50 dark:bg-gray-700">
@@ -223,7 +295,7 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
         )}
 
         {/* Step 3: Project Details */}
-        {step === 3 && (
+        {step === 3 && formData.gitProvider && (
           <form onSubmit={handleSubmit}>
             <h3 className="font-medium mb-3 text-gray-900 dark:text-white">Project Details</h3>
             <div className="mb-4">
@@ -256,7 +328,7 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
                 </p>
               )}
             </div>
-            {formData.gitProvider === 'github' && (
+            {(formData.gitProvider === 'github' || formData.gitProvider === 'gitlab') && (
               <div className="mb-4">
                 <label className="flex items-start gap-2 cursor-pointer">
                   <input
@@ -269,7 +341,10 @@ export function CreateProjectModal({ onClose, onCreated }: Props) {
                     disabled={submitting}
                   />
                   <span className="text-sm text-gray-700 dark:text-gray-300">
-                    <span className="font-medium">Enable GitHub issue integration</span>
+                    <span className="font-medium">
+                      Enable {formData.gitProvider === 'gitlab' ? 'GitLab' : 'GitHub'} issue
+                      integration
+                    </span>
                     <span className="block text-xs text-gray-500 dark:text-gray-400">
                       Browse issues on the project page and start sprints from them.
                       {selectedRepos.length > 1 ? ' Applies to the primary repository only.' : ''}

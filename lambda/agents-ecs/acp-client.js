@@ -996,6 +996,8 @@ async function runAcpMode() {
     { name: 'GIT_TOKEN', value: process.env.GIT_TOKEN || '' },
     { name: 'GIT_REPO', value: process.env.GIT_REPO || '' },
     { name: 'GIT_REPOS', value: process.env.GIT_REPOS || '[]' },
+    { name: 'GIT_PROVIDER', value: process.env.GIT_PROVIDER || 'github' },
+    { name: 'GIT_USER_ID', value: process.env.GIT_USER_ID || '' },
     // Discussion-assist context — lets post_discussion_message stamp
     // author/command/requested-by audit fields. Empty for other phases.
     { name: 'AGENT_CLI', value: AGENT_CLI },
