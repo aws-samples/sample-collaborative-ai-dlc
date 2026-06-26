@@ -14,6 +14,7 @@ const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
 const fs = require('fs');
 const { createPrsForRepos, missingRepos } = require('./create-repo-prs');
 const { getProvider } = require('./git-providers');
+const { refreshGitToken } = require('../shared/git-token-refresh');
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const lambda = new LambdaClient({});
@@ -70,36 +71,11 @@ const env = {
 // in place. No-op for GitHub (OAuth-App tokens never expire) and when inputs
 // are missing. Best-effort: on failure we keep the existing token.
 async function refreshGitTokenIfNeeded() {
-  if ((env.gitProvider || 'github') !== 'gitlab') return;
-  if (!env.gitUserId || !process.env.AGENTS_LAMBDA_NAME) return;
-  try {
-    const inv = await lambda.send(
-      new InvokeCommand({
-        FunctionName: process.env.AGENTS_LAMBDA_NAME,
-        Payload: Buffer.from(
-          JSON.stringify({
-            httpMethod: 'POST',
-            path: '/git/refresh-token',
-            body: JSON.stringify({ userId: env.gitUserId, gitProvider: env.gitProvider }),
-            requestContext: { authorizer: { claims: { sub: 'system' } } },
-          }),
-        ),
-      }),
-    );
-    const resp = JSON.parse(Buffer.from(inv.Payload).toString());
-    const parsed = resp.body ? JSON.parse(resp.body) : {};
-    if (resp.statusCode === 200 && parsed.accessToken) {
-      env.gitToken = parsed.accessToken;
-    } else {
-      console.error(
-        `[mcp-server-graph] GitLab token refresh returned status ${resp.statusCode}; using existing token`,
-      );
-    }
-  } catch (e) {
-    console.error(
-      `[mcp-server-graph] GitLab token refresh failed (${e.message}); using existing token`,
-    );
-  }
+  const token = await refreshGitToken(lambda, {
+    userId: env.gitUserId,
+    gitProvider: env.gitProvider,
+  });
+  if (token) env.gitToken = token;
 }
 
 // Parse a GitHub repository identifier in "owner/repo" form into its parts.

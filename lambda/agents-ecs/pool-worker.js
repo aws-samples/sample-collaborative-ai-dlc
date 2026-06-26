@@ -41,6 +41,7 @@ const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
 const { cleanupMergedTaskBranch } = require('./branch-cleanup');
 const { buildConstructionOrchestratorPrompt } = require('./construction-orchestrator-prompt');
 const { buildCloneUrl } = require('../shared/git-providers');
+const { refreshGitToken } = require('../shared/git-token-refresh');
 
 // ---------------------------------------------------------------------------
 // Driver — pluggable agent CLI abstraction
@@ -1182,35 +1183,8 @@ function getRepoUrlForDir(job, workDir) {
 // never expire) and when we lack the inputs to refresh. Best-effort: on any
 // failure we keep the existing token and let the push surface the real error.
 async function refreshGitTokenIfNeeded(job) {
-  if ((job.gitProvider || 'github') !== 'gitlab') return;
-  if (!job.userId || !process.env.AGENTS_LAMBDA_NAME) return;
-  try {
-    const inv = await lambda.send(
-      new InvokeCommand({
-        FunctionName: process.env.AGENTS_LAMBDA_NAME,
-        Payload: Buffer.from(
-          JSON.stringify({
-            httpMethod: 'POST',
-            path: '/git/refresh-token',
-            body: JSON.stringify({ userId: job.userId, gitProvider: job.gitProvider }),
-            requestContext: { authorizer: { claims: { sub: 'system' } } },
-          }),
-        ),
-      }),
-    );
-    const resp = JSON.parse(Buffer.from(inv.Payload).toString());
-    const parsed = resp.body ? JSON.parse(resp.body) : {};
-    if (resp.statusCode === 200 && parsed.accessToken) {
-      job.gitToken = parsed.accessToken;
-      console.log('[pool-worker] Refreshed GitLab token before push');
-    } else {
-      console.error(
-        `[pool-worker] GitLab token refresh returned status ${resp.statusCode}; using existing token`,
-      );
-    }
-  } catch (e) {
-    console.error(`[pool-worker] GitLab token refresh failed (${e.message}); using existing token`);
-  }
+  const token = await refreshGitToken(lambda, { userId: job.userId, gitProvider: job.gitProvider });
+  if (token) job.gitToken = token;
 }
 
 function pushBranchWithRetry(job, branch, maxRetries = 3, workDir = '/workspace') {

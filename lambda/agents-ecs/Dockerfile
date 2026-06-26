@@ -68,6 +68,7 @@ COPY agents-ecs/drivers/ /opt/acp-client/drivers/
 COPY shared/mcp-validator.js /opt/shared/mcp-validator.js
 COPY shared/git-providers.js /opt/shared/git-providers.js
 COPY shared/git-providers/ /opt/shared/git-providers/
+COPY shared/git-token-refresh.js /opt/shared/git-token-refresh.js
 
 RUN mkdir -p /workspace \
     && chown -R node:node /workspace /opt/aidlc-rules /opt/mcp-server-graph /opt/acp-client /opt/kiro
