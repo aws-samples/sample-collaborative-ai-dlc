@@ -1,15 +1,19 @@
-// inspect — READ-ONLY verification command. Given an intentId, open the business
-// graph and return its artifact snapshot (+ optionally one artifact's full props).
+// inspect — verification command for PRIVATE Neptune from outside the VPC: invoke
+// the VPC-attached runtime over /invocations and let it run the query. Read mode
+// reuses the SAME graph-writer read path the agent's MCP tools use (getIntentGraph
+// / getArtifact / lookupArtifacts), so a green inspect proves the real read works.
 //
-// This is the only way to read PRIVATE Neptune from outside the VPC: invoke the
-// VPC-attached runtime over /invocations and let it run the query. It reuses the
-// SAME graph-writer read path the agent's MCP tools use (getIntentGraph /
-// getArtifact / lookupArtifacts), so a green inspect proves the real read works —
-// not a side channel. No writes, no process-state mutation.
+// With `drop:true` it instead performs a SCOPED delete of ONE intent's subgraph
+// (the Intent vertex + everything it CONTAINS — artifacts/questions), bounded to
+// the named intentId. It is NOT a full-graph wipe (cf. the purge-neptune lambda).
+// Intended for test-data cleanup of a known intent id.
 
-import { createGraphWriter } from '../mcp/graph-writer.js';
+import { createGraphWriter, INTENT_LABEL, ANCHOR_EDGE } from '../mcp/graph-writer.js';
 
-export const inspect = async ({ intentId, artifactType = null, artifactId = null }, deps) => {
+export const inspect = async (
+  { intentId, artifactType = null, artifactId = null, drop = false },
+  deps,
+) => {
   const { openGraph } = deps;
   if (!intentId) return { ok: false, reason: 'missing_intentId' };
 
@@ -18,6 +22,21 @@ export const inspect = async ({ intentId, artifactType = null, artifactId = null
     g = await openGraph();
   } catch (e) {
     return { ok: false, reason: 'graph_open_failed', detail: e.message };
+  }
+
+  // Scoped delete: drop the contained vertices, then the Intent anchor itself.
+  // Bounded to this intentId — never a global drop.
+  if (drop) {
+    try {
+      const before = await g.V().has(INTENT_LABEL, 'id', intentId).out(ANCHOR_EDGE).count().next();
+      // Terminate with next() (not iterate(): its discard() step is unsupported
+      // on some Gremlin server versions).
+      await g.V().has(INTENT_LABEL, 'id', intentId).out(ANCHOR_EDGE).drop().next();
+      await g.V().has(INTENT_LABEL, 'id', intentId).drop().next();
+      return { ok: true, intentId, dropped: true, containedDropped: before.value };
+    } catch (e) {
+      return { ok: false, reason: 'graph_drop_failed', detail: e.message };
+    }
   }
 
   try {

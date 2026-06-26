@@ -128,6 +128,15 @@ JSON
   echo "--- response ---"; cat /tmp/aidlc-inspect.json; echo
   ;;
 
+drop-intent)
+  # SCOPED Neptune cleanup: drop one intent's subgraph (anchor + contained
+  # artifacts/questions) THROUGH the runtime. Bounded to $INTENT_ID, not a wipe.
+  PAYLOAD=$(jq -nc --arg intentId "$INTENT_ID" '{command:"inspect",intentId:$intentId,drop:true}')
+  echo "=== drop-intent $INTENT_ID (scoped Neptune delete via runtime) ==="
+  invoke "$PAYLOAD" /tmp/aidlc-drop.json
+  echo "--- response ---"; cat /tmp/aidlc-drop.json; echo
+  ;;
+
 neptune-hint)
   cat <<TXT
 Neptune is private — query the Intent subgraph from inside the VPC (app, a
@@ -139,7 +148,7 @@ TXT
   ;;
 
 *)
-  echo "usage: $0 {outputs|seed|init-ws|run-stage [stageId]|state|inspect [artifactType]|neptune-hint}"
+  echo "usage: $0 {outputs|seed|init-ws|run-stage [stageId]|state|inspect [artifactType]|drop-intent|neptune-hint}"
   exit 1
   ;;
 esac

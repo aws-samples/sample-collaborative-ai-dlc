@@ -90,4 +90,38 @@ describe('inspect command', () => {
     expect(res).toMatchObject({ ok: true, artifactCount: 0 });
     expect(res.artifacts).toEqual([]);
   });
+
+  it('drop:true scoped-deletes ONLY the named intent subgraph, leaving others intact', async () => {
+    // Two intents, each with an artifact.
+    await g
+      .addV('Intent')
+      .property('id', SCOPE.intentId)
+      .property('project_id', SCOPE.projectId)
+      .next();
+    await g.addV('Intent').property('id', 'other-intent').property('project_id', 'p2').next();
+    const w1 = createGraphWriter({ g, scope: SCOPE, clock: () => '2026-01-01T00:00:00.000Z' });
+    await w1.createArtifact({ artifactType: 'requirements-analysis', id: 'ra-1', content: 'x' });
+    const w2 = createGraphWriter({
+      g,
+      scope: { ...SCOPE, intentId: 'other-intent' },
+      clock: () => '2026-01-01T00:00:00.000Z',
+    });
+    await w2.createArtifact({ artifactType: 'requirements-analysis', id: 'ra-2', content: 'y' });
+
+    const res = await inspect({ intentId: SCOPE.intentId, drop: true }, { openGraph });
+    expect(res).toMatchObject({ ok: true, dropped: true, containedDropped: 1 });
+
+    // Named intent gone; the other intent + its artifact survive.
+    expect(await inspect({ intentId: SCOPE.intentId }, { openGraph })).toMatchObject({
+      ok: true,
+      artifactCount: 0,
+    });
+    expect(await inspect({ intentId: 'other-intent' }, { openGraph })).toMatchObject({
+      ok: true,
+      artifactCount: 1,
+    });
+    // The Intent anchor vertex itself is removed too.
+    const anchor = await g.V().has('Intent', 'id', SCOPE.intentId).count().next();
+    expect(anchor.value).toBe(0);
+  });
 });
