@@ -261,7 +261,7 @@ const listBindingsForProject = async (g, projectId) => {
 const handleProviderError = (response, err) => {
   if (err instanceof ProviderError) {
     if (err.status === 429) return response(429, err.extra);
-    return response(err.status, { error: err.message || 'Provider error' });
+    return response(err.status, { error: err.message || 'Provider error', ...err.extra });
   }
   if (err.code === 'NOT_CONNECTED') {
     return response(400, { error: err.message || 'Provider not connected' });

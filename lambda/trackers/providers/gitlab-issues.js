@@ -101,7 +101,7 @@ const refreshToken = async ({ ddb, ssm, secrets, item, refreshTokenValue }) => {
       userId: item?.userId,
       hasRedirectUri: Boolean(redirectUri),
     });
-    throw new ProviderError(401, data.error_description || data.error);
+    throw new ProviderError(401, data.error_description || data.error, { reconnect: true });
   }
   await ssm.send(
     new PutParameterCommand({
@@ -143,7 +143,11 @@ const buildContext = async ({ ddb, ssm, secrets, userId }) => {
         refreshTokenValue: tokens.refreshToken,
       });
       ctx.token = newToken;
-      return fetch(url, withAuth(newToken));
+      const retry = await fetch(url, withAuth(newToken));
+      if (retry.status === 401) {
+        throw new ProviderError(401, 'GitLab authentication expired', { reconnect: true });
+      }
+      return retry;
     }
     return res;
   };

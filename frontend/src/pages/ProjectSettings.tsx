@@ -18,6 +18,7 @@ import { agentsService } from '../services/agents';
 import { GitRepoSelect } from '../components/GitRepoSelect';
 import {
   trackerIdForGitProvider,
+  getGitProviderService,
   gitProviderTerminology,
   type GitRepo,
   type GitTrackerProviderId,
@@ -398,6 +399,28 @@ export default function ProjectSettings() {
     }
   };
 
+  const handleReconnectTracker = async (binding: TrackerBinding) => {
+    clearMessages();
+    try {
+      // Store the return path so the OAuth callback redirects back here instead
+      // of the create-project flow.
+      sessionStorage.setItem('oauth_return_to', `/project/${projectId}/settings`);
+      // Git-based trackers (github-issues / gitlab-issues) share the git
+      // provider's OAuth connection — reconnect via the git auth flow.
+      if (binding.provider === 'github-issues' || binding.provider === 'gitlab-issues') {
+        const gitProvider = binding.provider === 'gitlab-issues' ? 'gitlab' : 'github';
+        const { url } = await getGitProviderService(gitProvider).getAuthUrl();
+        window.location.href = url;
+        return;
+      }
+      // Standalone tracker providers (Jira) use the trackers auth endpoint.
+      const { url } = await trackersService.getAuthUrl(binding.provider);
+      window.location.href = url;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start reconnection');
+    }
+  };
+
   const handleMigrateTracker = async () => {
     if (!projectId) return;
     clearMessages();
@@ -488,7 +511,9 @@ export default function ProjectSettings() {
     clearMessages();
     setAddingRepo(true);
     const results = await Promise.allSettled(
-      selectedNewRepos.map((url) => projectsService.addRepo(projectId, { url })),
+      selectedNewRepos.map((url) =>
+        projectsService.addRepo(projectId, { url, provider: project?.gitProvider }),
+      ),
     );
     const succeeded = results.filter((r) => r.status === 'fulfilled').length;
     const failedRepos = results
@@ -776,14 +801,24 @@ export default function ProjectSettings() {
                             </p>
                           </div>
                           {canEditProject && !isLegacy && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => handleRemoveTracker(b)}
-                              disabled={togglingTracker}
-                            >
-                              Remove
-                            </Button>
+                            <div className="flex items-center gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleReconnectTracker(b)}
+                                disabled={togglingTracker}
+                              >
+                                Reconnect
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleRemoveTracker(b)}
+                                disabled={togglingTracker}
+                              >
+                                Remove
+                              </Button>
+                            </div>
                           )}
                         </div>
                       );
