@@ -72,10 +72,15 @@ seed)
 
 init-ws)
   [ -z "$REPO" ] && { echo "ERROR: set REPO=owner/repo (and GIT_TOKEN=...)"; exit 1; }
-  PAYLOAD=$(cat <<JSON
-{"command":"init-ws","projectId":"$PROJECT_ID","intentId":"$INTENT_ID","executionId":"$EXEC_ID","repos":["$REPO"],"branch":"$BRANCH","baseBranch":"$BASE_BRANCH","gitToken":"$GIT_TOKEN","title":"Phase B test intent","workflowId":"$WORKFLOW_ID","workflowVersion":$WORKFLOW_VERSION,"scope":"$SCOPE"}
-JSON
-)
+  # Build JSON with jq so values are always correctly escaped.
+  PAYLOAD=$(jq -nc \
+    --arg projectId "$PROJECT_ID" --arg intentId "$INTENT_ID" --arg executionId "$EXEC_ID" \
+    --arg repo "$REPO" --arg branch "$BRANCH" --arg baseBranch "$BASE_BRANCH" \
+    --arg gitToken "$GIT_TOKEN" --arg workflowId "$WORKFLOW_ID" \
+    --argjson workflowVersion "$WORKFLOW_VERSION" --arg scope "$SCOPE" \
+    '{command:"init-ws",projectId:$projectId,intentId:$intentId,executionId:$executionId,
+      repos:[$repo],branch:$branch,baseBranch:$baseBranch,gitToken:$gitToken,
+      title:"Phase B test intent",workflowId:$workflowId,workflowVersion:$workflowVersion,scope:$scope}')
   echo "=== init-ws (session=$SESSION_ID) ==="
   invoke "$PAYLOAD" /tmp/aidlc-initws.json
   echo "--- response ---"; cat /tmp/aidlc-initws.json; echo
@@ -86,11 +91,17 @@ run-stage)
   # Optional per-CLI model selection (mirrors Admin.tsx cliModels on the project).
   # e.g. CLI_MODELS_JSON='{"claude":"us.anthropic.claude-sonnet-4-6"}'
   CLI_MODELS_JSON="${CLI_MODELS_JSON:-}"
-  PAYLOAD=$(cat <<JSON
-{"command":"run-stage","projectId":"$PROJECT_ID","intentId":"$INTENT_ID","executionId":"$EXEC_ID","stageId":"$STAGE_ID","workflowId":"$WORKFLOW_ID","workflowVersion":$WORKFLOW_VERSION,"scope":"$SCOPE"${CLI_MODELS_JSON:+,\"cliModels\":$CLI_MODELS_JSON}}
-JSON
-)
+  # jq builds the base object; merge cliModels only when provided (valid JSON).
+  PAYLOAD=$(jq -nc \
+    --arg projectId "$PROJECT_ID" --arg intentId "$INTENT_ID" --arg executionId "$EXEC_ID" \
+    --arg stageId "$STAGE_ID" --arg workflowId "$WORKFLOW_ID" \
+    --argjson workflowVersion "$WORKFLOW_VERSION" --arg scope "$SCOPE" \
+    --argjson cliModels "${CLI_MODELS_JSON:-null}" \
+    '{command:"run-stage",projectId:$projectId,intentId:$intentId,executionId:$executionId,
+      stageId:$stageId,workflowId:$workflowId,workflowVersion:$workflowVersion,scope:$scope}
+     + (if $cliModels == null then {} else {cliModels:$cliModels} end)')
   echo "=== run-stage $STAGE_ID (session=$SESSION_ID) ==="
+  echo "payload: $PAYLOAD"
   invoke "$PAYLOAD" /tmp/aidlc-runstage.json
   echo "--- response ---"; cat /tmp/aidlc-runstage.json; echo
   ;;
