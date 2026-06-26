@@ -153,6 +153,7 @@ const main = async () => {
           materializeStage,
           renderRulesDoc,
           mcpEntry,
+          openGraph,
           availableClis,
           env: process.env,
         },

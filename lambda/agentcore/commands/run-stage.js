@@ -17,6 +17,7 @@ import { createRequire } from 'node:module';
 import { selectCli, getDriver } from '../cli/drivers.js';
 import { runChild } from '../cli/spawn.js';
 import { resolveStageModel } from '../model-resolver.js';
+import { createGraphWriter } from '../mcp/graph-writer.js';
 
 const require = createRequire(import.meta.url);
 const { buildExecutionPlan } = require('../../shared/v2-execution-plan.js');
@@ -34,13 +35,51 @@ const resolveStage = ({ workflow, library, scope, stageId }) => {
   return { plan, stage };
 };
 
-// Concatenate the methodology knowledge bodies for an agent (best-effort).
-const loadAgentKnowledge = async ({ agentRef, library, loadBlockBody }) => {
+// Concatenate the methodology knowledge bodies for an agent (best-effort). This
+// is the authored, baseline-shipped tier (KNOWLEDGE blocks from the library).
+const loadMethodologyKnowledge = async ({ agentRef, library, loadBlockBody }) => {
   const knowledgeBlocks = Object.values(library.knowledgeById ?? {}).filter(
     (k) => k.agentRef === agentRef || k.agentRef === 'shared',
   );
   const bodies = await Promise.all(knowledgeBlocks.map((k) => loadBlockBody(k).catch(() => '')));
   return bodies.filter(Boolean).join('\n\n---\n\n');
+};
+
+// Read the project's accrued TEAM knowledge from Neptune (the runtime learning
+// tier — what prior intents in this project recorded via record_team_knowledge),
+// scoped to this stage's agent + the shared corpus. Best-effort: a graph that is
+// unreachable or empty just yields no extra knowledge, never a stage failure.
+const loadTeamKnowledge = async ({ agentRef, projectId, intentId, executionId, openGraph }) => {
+  if (!openGraph || !projectId) return [];
+  let g;
+  try {
+    g = await openGraph();
+    const writer = createGraphWriter({ g, scope: { projectId, intentId, executionId } });
+    return await writer.getTeamKnowledge({ agentRef });
+  } catch {
+    return [];
+  }
+};
+
+// Render the team-knowledge rows as a markdown sub-section, newest last.
+const renderTeamKnowledge = (rows = []) =>
+  rows
+    .map(
+      (r) =>
+        `### ${r.title || r.id}${r.agent_ref ? ` (${r.agent_ref})` : ''}\n\n${r.content ?? ''}`,
+    )
+    .join('\n\n');
+
+// Combine the two knowledge tiers into the single prompt section. Methodology
+// (authored baseline) first, then the project's accrued team learnings under a
+// labelled heading so the agent can tell durable conventions from doctrine.
+const composeKnowledge = (methodology, teamRows) => {
+  const parts = [];
+  if (methodology) parts.push(methodology);
+  if (teamRows.length) {
+    parts.push(`## Team learnings (accrued in this project)\n\n${renderTeamKnowledge(teamRows)}`);
+  }
+  return parts.join('\n\n---\n\n');
 };
 
 export const runStage = async (
@@ -65,6 +104,7 @@ export const runStage = async (
     materializeStage,
     renderRulesDoc,
     mcpEntry,
+    openGraph = null,
     availableClis = [],
     env = process.env,
     spawnFn,
@@ -142,7 +182,21 @@ export const runStage = async (
     loadBlockBody(stageBlock).catch(() => ''),
     agentBlock ? loadBlockBody(agentBlock).catch(() => '') : Promise.resolve(''),
   ]);
-  const knowledge = await loadAgentKnowledge({ agentRef: stage.agentRef, library, loadBlockBody });
+  // Knowledge has two tiers: the authored methodology (library blocks) and the
+  // project's accrued team learnings (Neptune). Both are injected into the prompt
+  // so the agent always receives them; the team tier is also re-readable on
+  // demand via the get_team_knowledge MCP tool.
+  const [methodology, teamRows] = await Promise.all([
+    loadMethodologyKnowledge({ agentRef: stage.agentRef, library, loadBlockBody }),
+    loadTeamKnowledge({
+      agentRef: stage.agentRef,
+      projectId,
+      intentId,
+      executionId,
+      openGraph,
+    }),
+  ]);
+  const knowledge = composeKnowledge(methodology, teamRows);
 
   // Resolve rule bodies for the steering doc.
   const ruleIds = [...(stage.rules?.universal ?? []), ...(stage.rules?.phase ?? [])];

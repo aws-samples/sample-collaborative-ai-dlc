@@ -29,8 +29,20 @@ export const INTENT_LABEL = 'Intent';
 // Question vertex so the Intent page can render agent questions (parity with v1).
 export const QUESTION_LABEL = 'Question';
 
+// Team knowledge: durable learnings an agent accrues while working an intent,
+// but which are reusable across EVERY intent in the project — so they hang off
+// the Project vertex, not the per-run Intent. This is the runtime half of the
+// two-tier knowledge corpus (the `methodology` tier ships in the block library;
+// this `team` tier accrues here). Business data that steers future intents, so
+// it lives in Neptune like any other business artifact.
+export const PROJECT_LABEL = 'Project';
+export const TEAM_KNOWLEDGE_LABEL = 'TeamKnowledge';
+
 // Anchor edge: Intent --CONTAINS--> Artifact (scope membership).
 export const ANCHOR_EDGE = 'CONTAINS';
+// Anchor edge: Project --HAS_KNOWLEDGE--> TeamKnowledge (project-scoped, shared
+// across all the project's intents).
+export const KNOWLEDGE_EDGE = 'HAS_KNOWLEDGE';
 
 // Business edges the tools may create between artifacts. PRODUCES/CONSUMES wire
 // the stage data flow; the rest are durable semantic relations. Kept explicit so
@@ -282,6 +294,81 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       .slice(0, limit);
   };
 
+  // ── Team knowledge (project-scoped, cross-intent) ──
+
+  // Provenance for a team-knowledge entry: project scope + which run produced it.
+  // Unlike an artifact (stamped with the owning intent), knowledge is project
+  // data, so `created_by_intent_id` is provenance, not scope.
+  const knowledgeStamp = () => ({
+    project_id: scope.projectId ?? '',
+    created_by_intent_id: scope.intentId ?? '',
+    created_by_execution_id: scope.executionId ?? '',
+    created_by_stage_instance_id: scope.stageInstanceId ?? '',
+    created_at: now(),
+  });
+
+  // Record a durable learning for the project. Upserts the Project anchor (it is
+  // normally created by the projects service, but a v2 project may predate the
+  // vertex), then upserts the TeamKnowledge vertex and anchors it. `agentRef`
+  // scopes the learning to one agent's corpus, or 'shared' for cross-cutting.
+  // Provenance is stamped from the trusted scope, never agent args.
+  const recordTeamKnowledge = async ({
+    id,
+    title = '',
+    content = '',
+    agentRef = 'shared',
+    props = {},
+  }) => {
+    assertId(id);
+    if (!scope.projectId) throw new GraphWriteError('projectId is required to record knowledge');
+
+    await upsertVertex(PROJECT_LABEL, scope.projectId);
+    await upsertVertex(TEAM_KNOWLEDGE_LABEL, id);
+
+    const stamped = {
+      ...sanitizeProps(props),
+      title: String(title ?? ''),
+      content: String(content ?? ''),
+      agent_ref: String(agentRef || 'shared'),
+      tier: 'team',
+      ...knowledgeStamp(),
+      id,
+    };
+    let q = g.V().has(TEAM_KNOWLEDGE_LABEL, 'id', id);
+    for (const [k, v] of Object.entries(stamped)) q = q.property(cardinality.single, k, v);
+    await q.next();
+
+    await ensureEdge({
+      fromLabel: PROJECT_LABEL,
+      fromId: scope.projectId,
+      toLabel: TEAM_KNOWLEDGE_LABEL,
+      toId: id,
+      edge: KNOWLEDGE_EDGE,
+    });
+    return { id, agentRef: stamped.agent_ref, ...stamped };
+  };
+
+  // Read the project's accrued team knowledge, optionally narrowed to one agent
+  // (always including the 'shared' corpus). Project-scoped, so it spans every
+  // intent in the project. Returns flat rows ordered by creation time.
+  const getTeamKnowledge = async ({ agentRef = null } = {}) => {
+    if (!scope.projectId) return [];
+    const exists = await g.V().has(PROJECT_LABEL, 'id', scope.projectId).hasNext();
+    if (!exists) return [];
+    const list = await g
+      .V()
+      .has(PROJECT_LABEL, 'id', scope.projectId)
+      .out(KNOWLEDGE_EDGE)
+      .hasLabel(TEAM_KNOWLEDGE_LABEL)
+      .valueMap(true)
+      .toList();
+    const rows = list.map(flattenValueMap);
+    const filtered = agentRef
+      ? rows.filter((r) => r.agent_ref === agentRef || r.agent_ref === 'shared')
+      : rows;
+    return filtered.toSorted((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+  };
+
   // Create a Question vertex on the Intent so the page can render it. The
   // blocking/answer flow lives in the process bridge (DynamoDB); this is the
   // business-graph mirror, matching v1.
@@ -313,6 +400,8 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     getIntentGraph,
     getNeighbors,
     searchGraph,
+    recordTeamKnowledge,
+    getTeamKnowledge,
     recordQuestion,
   };
 };

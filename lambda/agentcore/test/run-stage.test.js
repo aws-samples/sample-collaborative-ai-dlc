@@ -131,6 +131,80 @@ describe('runStage — happy path', () => {
   });
 });
 
+describe('runStage — knowledge injection (both tiers reach the prompt)', () => {
+  // Capture the `knowledge` string run-stage composes and hands to the materializer.
+  const captureKnowledge = () => {
+    let knowledge = null;
+    const materializeStage = async ({ stage, ...rest }) => {
+      knowledge = rest.knowledge;
+      return { prompt: `PROMPT ${stage.stageId}`, mcpConfigPath: '/ws/.aidlc/mcp.json' };
+    };
+    return { materializeStage, get: () => knowledge };
+  };
+
+  const okSpawn = () => ({
+    on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
+    stdin: { end() {} },
+  });
+
+  it('selects the agent + shared methodology blocks (not other agents) for the prompt', async () => {
+    const cap = captureKnowledge();
+    const lib = library();
+    lib.knowledgeById = {
+      'product-guide': {
+        id: 'product-guide',
+        agentRef: 'aidlc-product-agent',
+        bodyRef: { s3Key: 'k/guide' },
+      },
+      'shared-style': { id: 'shared-style', agentRef: 'shared', bodyRef: { s3Key: 'k/style' } },
+      'other-agent': {
+        id: 'other-agent',
+        agentRef: 'aidlc-arch-agent',
+        bodyRef: { s3Key: 'k/other' },
+      },
+    };
+    await runStage(
+      baseArgs,
+      baseDeps({
+        spawnFn: okSpawn,
+        materializeStage: cap.materializeStage,
+        loadLibrary: async () => ({ workflow: workflow(), library: lib }),
+        loadBlockBody: async (b) => (b?.bodyRef?.s3Key ? `BODY:${b.bodyRef.s3Key}` : ''),
+        // A graph whose writer returns one team-knowledge row.
+        openGraph: async () => ({}),
+      }),
+    );
+    const k = cap.get();
+    // Methodology: the agent's own + shared, never another agent's.
+    expect(k).toContain('BODY:k/guide');
+    expect(k).toContain('BODY:k/style');
+    expect(k).not.toContain('BODY:k/other');
+  });
+
+  it('degrades to methodology-only when the graph is unreachable', async () => {
+    const cap = captureKnowledge();
+    const lib = library();
+    lib.knowledgeById = {
+      'shared-style': { id: 'shared-style', agentRef: 'shared', bodyRef: { s3Key: 'k/style' } },
+    };
+    const res = await runStage(
+      baseArgs,
+      baseDeps({
+        spawnFn: okSpawn,
+        materializeStage: cap.materializeStage,
+        loadLibrary: async () => ({ workflow: workflow(), library: lib }),
+        loadBlockBody: async (b) => (b?.bodyRef?.s3Key ? `BODY:${b.bodyRef.s3Key}` : ''),
+        openGraph: async () => {
+          throw new Error('neptune down');
+        },
+      }),
+    );
+    // The stage still succeeds; knowledge falls back to the methodology tier.
+    expect(res).toMatchObject({ ok: true });
+    expect(cap.get()).toContain('BODY:k/style');
+  });
+});
+
 describe('runStage — model resolution precedence', () => {
   // Capture the --model value the selected driver was invoked with.
   const captureModel = () => {

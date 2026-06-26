@@ -44,6 +44,14 @@ const stubWriter = () => ({
     this.calls.push(['linkArtifacts', args]);
     return args;
   },
+  getTeamKnowledge(args) {
+    this.calls.push(['getTeamKnowledge', args]);
+    return [{ id: 'k1', title: 'Naming', agent_ref: 'shared' }];
+  },
+  recordTeamKnowledge(args) {
+    this.calls.push(['recordTeamKnowledge', args]);
+    return { id: args.id, agentRef: args.agentRef };
+  },
 });
 
 const stubBridge = () => ({
@@ -94,6 +102,27 @@ describe('buildToolHandlers — routing + envelopes', () => {
     expect(bridge.calls[0][1]).toEqual({ content: 'hi', kind: 'text' });
   });
 
+  it('routes record_team_knowledge through the writer (defaulting agentRef to shared)', async () => {
+    const env = await h.record_team_knowledge({ id: 'naming-conv', content: 'use kebab' });
+    expect(parse(env)).toEqual({ id: 'naming-conv', agentRef: 'shared' });
+    expect(writer.calls[0]).toEqual([
+      'recordTeamKnowledge',
+      {
+        id: 'naming-conv',
+        title: undefined,
+        content: 'use kebab',
+        agentRef: 'shared',
+        props: undefined,
+      },
+    ]);
+  });
+
+  it('routes get_team_knowledge through the writer (agentRef defaults to null)', async () => {
+    const env = await h.get_team_knowledge({});
+    expect(parse(env)).toEqual([{ id: 'k1', title: 'Naming', agent_ref: 'shared' }]);
+    expect(writer.calls[0]).toEqual(['getTeamKnowledge', { agentRef: null }]);
+  });
+
   it('turns a GraphWriteError into a clean isError envelope', async () => {
     writer.createArtifact = () => {
       throw new GraphWriteError('bad edge');
@@ -123,6 +152,9 @@ describe('role gating', () => {
     expect(Object.keys(reviewer).toSorted()).toEqual([...READ_TOOLS].toSorted());
     expect(reviewer.create_artifact).toBeUndefined();
     expect(reviewer.ask_question).toBeUndefined();
+    // A reviewer may READ team knowledge but never WRITE it.
+    expect(reviewer.get_team_knowledge).toBeDefined();
+    expect(reviewer.record_team_knowledge).toBeUndefined();
   });
 
   it('author gets the full surface', () => {

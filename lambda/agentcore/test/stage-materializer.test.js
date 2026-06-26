@@ -44,7 +44,7 @@ describe('buildStagePrompt', () => {
     expect(prompt).toContain('Analyze the intent.');
     expect(prompt).toContain('- intent-capture — from intent-capture');
     expect(prompt).toContain('- requirements-analysis');
-    expect(prompt).toContain('Reference knowledge');
+    expect(prompt).toContain('## Reference knowledge');
     expect(prompt).toContain('reviewed by a human out-of-band');
     expect(prompt).toContain(OUTPUT_CONTRACT);
   });
@@ -56,7 +56,7 @@ describe('buildStagePrompt', () => {
     });
     expect(prompt).toContain('## Inputs (read via the MCP tools)\n- none');
     expect(prompt).not.toContain('## Your role');
-    expect(prompt).not.toContain('Reference knowledge');
+    expect(prompt).not.toContain('## Reference knowledge');
     expect(prompt).not.toContain('reviewed by a human out-of-band');
     // The annex is unconditional — present even when optional sections are omitted.
     expect(prompt).toContain(MCP_EXECUTION_ANNEX);

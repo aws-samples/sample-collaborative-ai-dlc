@@ -199,6 +199,71 @@ describe('reads', () => {
   });
 });
 
+describe('team knowledge (project-scoped, cross-intent)', () => {
+  it('records a TeamKnowledge vertex anchored to the Project, stamped with provenance', async () => {
+    const created = await writer.recordTeamKnowledge({
+      id: 'naming-conv',
+      title: 'Naming convention',
+      content: 'kebab-case ids',
+      agentRef: 'aidlc-product-agent',
+    });
+    expect(created).toMatchObject({
+      id: 'naming-conv',
+      tier: 'team',
+      agent_ref: 'aidlc-product-agent',
+      project_id: 'proj-1',
+      created_by_intent_id: 'intent-1',
+      created_by_stage_instance_id: 'si-req',
+    });
+    // Anchored Project --HAS_KNOWLEDGE--> TeamKnowledge.
+    const anchored = await g
+      .V()
+      .has('Project', 'id', 'proj-1')
+      .out('HAS_KNOWLEDGE')
+      .has('TeamKnowledge', 'id', 'naming-conv')
+      .hasNext();
+    expect(anchored).toBe(true);
+  });
+
+  it('upserts by id (a later run updates, not duplicates) and keeps one anchor edge', async () => {
+    await writer.recordTeamKnowledge({ id: 'k', content: 'v1' });
+    await writer.recordTeamKnowledge({ id: 'k', content: 'v2' });
+    const count = await g.V().has('TeamKnowledge', 'id', 'k').count().next();
+    expect(count.value).toBe(1);
+    const edges = await g.V().has('Project', 'id', 'proj-1').outE('HAS_KNOWLEDGE').count().next();
+    expect(edges.value).toBe(1);
+    const rows = await writer.getTeamKnowledge();
+    expect(rows.find((r) => r.id === 'k').content).toBe('v2');
+  });
+
+  it('drops caller-supplied provenance props (spoof-proof)', async () => {
+    const created = await writer.recordTeamKnowledge({
+      id: 'k2',
+      content: 'x',
+      props: { project_id: 'EVIL', created_by_intent_id: 'EVIL', legit: 'ok' },
+    });
+    expect(created.project_id).toBe('proj-1');
+    expect(created.created_by_intent_id).toBe('intent-1');
+    expect(created.legit).toBe('ok');
+  });
+
+  it('getTeamKnowledge filters to one agent plus the shared corpus', async () => {
+    await writer.recordTeamKnowledge({ id: 'shared-1', content: 'a', agentRef: 'shared' });
+    await writer.recordTeamKnowledge({
+      id: 'prod-1',
+      content: 'b',
+      agentRef: 'aidlc-product-agent',
+    });
+    await writer.recordTeamKnowledge({ id: 'arch-1', content: 'c', agentRef: 'aidlc-arch-agent' });
+    const forProduct = await writer.getTeamKnowledge({ agentRef: 'aidlc-product-agent' });
+    expect(forProduct.map((r) => r.id).toSorted()).toEqual(['prod-1', 'shared-1']);
+  });
+
+  it('returns [] when the Project has no knowledge yet', async () => {
+    expect(await writer.getTeamKnowledge()).toEqual([]);
+  });
+});
+
 describe('recordQuestion', () => {
   it('creates a Question vertex anchored to the Intent', async () => {
     await seedIntent();

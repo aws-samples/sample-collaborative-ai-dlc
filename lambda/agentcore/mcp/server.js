@@ -47,6 +47,8 @@ export const buildToolHandlers = ({ writer, bridge }) => ({
     guard(() =>
       writer.searchGraph({ query, artifactType: artifactType ?? null, limit: limit ?? 25 }),
     ),
+  get_team_knowledge: ({ agentRef }) =>
+    guard(() => writer.getTeamKnowledge({ agentRef: agentRef ?? null })),
 
   // ── Business writes ──
   create_artifact: ({ artifactType, id, title, content, props, links }) =>
@@ -57,6 +59,10 @@ export const buildToolHandlers = ({ writer, bridge }) => ({
     guard(() => writer.updateArtifact({ id, props: props ?? {} })),
   link_artifacts: ({ fromId, toId, edge }) =>
     guard(() => writer.linkArtifacts({ fromId, toId, edge })),
+  record_team_knowledge: ({ id, title, content, agentRef, props }) =>
+    guard(() =>
+      writer.recordTeamKnowledge({ id, title, content, agentRef: agentRef ?? 'shared', props }),
+    ),
 
   // ── Collaboration / process ──
   ask_question: ({ questions }) => guard(() => bridge.askQuestion({ questions })),
@@ -74,6 +80,7 @@ export const READ_TOOLS = [
   'get_intent_graph',
   'get_artifact_neighbors',
   'search_graph',
+  'get_team_knowledge',
 ];
 
 // All author tool names.
@@ -82,6 +89,7 @@ export const AUTHOR_TOOLS = [
   'create_artifact',
   'update_artifact',
   'link_artifacts',
+  'record_team_knowledge',
   'ask_question',
   'send_output',
   'collect_metric',
@@ -129,6 +137,11 @@ export const toolSchemas = (z) => ({
       limit: z.number().int().min(1).max(100).optional(),
     },
   },
+  get_team_knowledge: {
+    description:
+      "Read the PROJECT's accrued team knowledge — durable learnings from prior intents in this project (conventions, decisions, gotchas). Shared across all intents. Optionally narrow to one agent (the 'shared' corpus is always included). The relevant entries are also injected into your prompt; use this to re-read or pull another agent's corpus.",
+    shape: { agentRef: z.string().optional() },
+  },
   create_artifact: {
     description:
       'Record a business artifact this stage produces. artifactType is the v2 artifact name (e.g. "requirements-analysis"). Output NOT written through a tool is discarded.',
@@ -159,6 +172,17 @@ export const toolSchemas = (z) => ({
       fromId: z.string(),
       toId: z.string(),
       edge: z.enum(['PRODUCES', 'CONSUMES', 'DERIVED_FROM', 'RELATES_TO', 'DEPENDS_ON']),
+    },
+  },
+  record_team_knowledge: {
+    description:
+      "Record a durable learning for the PROJECT — a reusable convention, decision, constraint, or gotcha that should steer FUTURE intents (not a per-intent output; use create_artifact for those). Shared across every intent in this project. Use a stable kebab-case id so a later run updates the same entry instead of duplicating it. agentRef scopes it to one agent's corpus, or 'shared' for cross-cutting knowledge.",
+    shape: {
+      id: z.string(),
+      title: z.string().optional(),
+      content: z.string(),
+      agentRef: z.string().optional(),
+      props: z.record(z.string(), z.string()).optional(),
     },
   },
   ask_question: {

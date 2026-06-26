@@ -58,8 +58,9 @@ Author role gets the full set; a clean-room **reviewer** gets the read-only
 subset only.
 
 - **Business reads** — `get_artifact`, `lookup_artifacts`, `get_intent_graph`,
-  `get_artifact_neighbors`, `search_graph`
-- **Business writes** — `create_artifact`, `update_artifact`, `link_artifacts`
+  `get_artifact_neighbors`, `search_graph`, `get_team_knowledge`
+- **Business writes** — `create_artifact`, `update_artifact`, `link_artifacts`,
+  `record_team_knowledge`
 - **Collaboration / process** — `ask_question` (blocks until answered),
   `send_output`, `collect_metric`, `emit_stage_note`
 
@@ -68,6 +69,25 @@ Provenance is **spoof-proof**: `project_id`, `intent_id`,
 stamped from the trusted container ENV, never from agent-supplied args. Business
 writes land in Neptune (typed, edge-allowlisted); process/collab land in DynamoDB
 (+ websocket broadcast).
+
+## Knowledge tiers (what the agent knows beyond the stage)
+
+The prompt's `## Reference knowledge` section carries two tiers, both filtered to
+the stage's agent (+ the cross-cutting `shared` corpus):
+
+- **methodology** — authored, baseline-shipped `KNOWLEDGE` blocks from the
+  library (`loadLibrary` → `loadMethodologyKnowledge`). Forkable like any block.
+- **team** — learnings the project has accrued at runtime, stored in Neptune as
+  `TeamKnowledge` vertices on the `Project` vertex
+  (`Project --HAS_KNOWLEDGE--> TeamKnowledge`) so they are shared across every
+  intent in the project. `run-stage` reads them via the graph-writer and appends
+  them under a "Team learnings" heading.
+
+The write-back is **agent-initiated**: the author agent calls
+`record_team_knowledge` when it learns something durable; `get_team_knowledge`
+re-reads on demand (and is granted to reviewers). See
+[`v2-open.md`](./v2-open.md) for the design and what remains (the
+`team-learnings` rule layer).
 
 ## Authentication
 

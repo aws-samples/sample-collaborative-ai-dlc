@@ -128,12 +128,13 @@ export const loadLibrary = async ({ workflowId, workflowVersion }) => {
   if (!wf) return { workflow: null, library: null };
   const workflow = assembleWorkflow(wf.items, { workflowId, workflowVersion });
 
-  const [stages, agents, sensors, rules, artifacts] = await Promise.all([
+  const [stages, agents, sensors, rules, artifacts, knowledge] = await Promise.all([
     listMergedBlocks('STAGE'),
     listMergedBlocks('AGENT'),
     listMergedBlocks('SENSOR'),
     listMergedBlocks('RULE'),
     listMergedBlocks('ARTIFACT'),
+    listMergedBlocks('KNOWLEDGE'),
   ]);
 
   const library = {
@@ -142,6 +143,10 @@ export const loadLibrary = async ({ workflowId, workflowVersion }) => {
     sensorsById: keyById(sensors),
     rulesById: keyById(rules),
     artifactsById: keyById(artifacts),
+    // The methodology knowledge tier (the team tier accrues in Neptune at
+    // runtime, fetched separately by run-stage). run-stage's loadAgentKnowledge
+    // filters these by agentRef/'shared'.
+    knowledgeById: keyById(knowledge),
   };
   return { workflow, library };
 };
