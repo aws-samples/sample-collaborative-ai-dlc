@@ -19,6 +19,7 @@ describe('dispatchInvocation', () => {
   const handlers = {
     initWs: async (p) => ({ ok: true, intentId: p.intentId }),
     runStage: async (p) => ({ ok: true, stageId: p.stageId, state: 'SUCCEEDED' }),
+    inspect: async (p) => ({ ok: true, intentId: p.intentId, artifactCount: 0 }),
   };
 
   it('rejects a missing command', async () => {
@@ -46,6 +47,14 @@ describe('dispatchInvocation', () => {
       handlers,
     });
     expect(b).toMatchObject({ statusCode: 200, body: { ok: true, stageId: 's1' } });
+    const c = await dispatchInvocation({
+      payload: { command: 'inspect', intentId: 'i1' },
+      handlers,
+    });
+    expect(c).toMatchObject({
+      statusCode: 200,
+      body: { ok: true, intentId: 'i1', command: 'inspect' },
+    });
   });
 
   it('maps a handler ok:false to 422', async () => {

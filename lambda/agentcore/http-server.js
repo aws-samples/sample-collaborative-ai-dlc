@@ -47,7 +47,11 @@ export const dispatchInvocation = async ({
 }) => {
   const command = payload?.command;
   if (!command) return { statusCode: 400, body: { error: 'missing "command"' } };
-  const handler = { 'init-ws': handlers.initWs, 'run-stage': handlers.runStage }[command];
+  const handler = {
+    'init-ws': handlers.initWs,
+    'run-stage': handlers.runStage,
+    inspect: handlers.inspect,
+  }[command];
   if (!handler) return { statusCode: 400, body: { error: `unknown command "${command}"` } };
 
   busy?.enter();
@@ -119,6 +123,7 @@ const main = async () => {
   const { createProcessStore } = require('../shared/v2-process-store.js');
   const { initWs } = await import('./commands/init-ws.js');
   const { runStage } = await import('./commands/run-stage.js');
+  const { inspect } = await import('./commands/inspect.js');
   const { loadLibrary, loadBlockBody } = await import('./block-loader.js');
   const { materializeStage, renderRulesDoc } = await import('./stage-materializer.js');
   const { checkoutRepos } = await import('./workspace.js');
@@ -145,6 +150,7 @@ const main = async () => {
           env: process.env,
         },
       ),
+    inspect: (p) => inspect(p, { openGraph }),
   };
 
   const server = createServer({ handlers });

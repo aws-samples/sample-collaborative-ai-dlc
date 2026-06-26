@@ -30,6 +30,14 @@ const { compileStageGraph, compileRules } = require('./compile.js');
 // fast at run time instead of crashing the resolver.
 const RUNNABLE_MODES = ['inline', 'subagent'];
 
+// Reserved lead-agent refs that are NOT domain AGENT blocks and therefore have no
+// library entry to resolve against. Upstream's initialization stages declare
+// `lead_agent: orchestrator`, where "orchestrator" is the conductor / forwarding
+// loop itself (its persona is conductor.md, not an AGENT file). Treat it as a
+// built-in: skip the unresolved-agent check, and the runtime runs the stage with
+// no injected persona (the conductor IS the default voice).
+const RESERVED_AGENT_REFS = new Set(['orchestrator']);
+
 // Every validation failure is a plain object (never thrown) so the caller can
 // surface all reasons at once and reject cleanly.
 const err = (code, message, extra = {}) => ({ code, message, ...extra });
@@ -248,11 +256,12 @@ const buildExecutionPlan = ({
         );
       }
 
-      // Lead + support agents must resolve.
+      // Lead + support agents must resolve — except reserved built-in refs
+      // (e.g. "orchestrator" = the conductor itself, which has no AGENT block).
       const agentRef = stage.leadAgent ?? null;
       const supportAgentRefs = stage.supportAgents ?? [];
       for (const ref of [agentRef, ...supportAgentRefs].filter(Boolean)) {
-        if (!agentsById[ref]) {
+        if (!RESERVED_AGENT_REFS.has(ref) && !agentsById[ref]) {
           errors.push(
             err('unresolved_agent', `stage "${stageId}" references unknown agent "${ref}"`, {
               stageId,

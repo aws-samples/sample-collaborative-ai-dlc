@@ -95,6 +95,20 @@ describe('buildExecutionPlan — validation', () => {
     expect(errors.map((e) => e.code)).toContain('unresolved_agent');
   });
 
+  it('exempts the reserved "orchestrator" lead agent (the conductor, no AGENT block)', () => {
+    // Mirrors upstream initialization stages (workspace-scaffold/-detection/
+    // state-init) which declare lead_agent: orchestrator with no agent file.
+    const lib = baseLibrary({ stagesById: { a: stage('a', { leadAgent: 'orchestrator' }) } });
+    const { valid, errors, plan } = buildExecutionPlan({
+      workflow: workflow([placement('a')]),
+      scope: 'feature',
+      library: lib,
+    });
+    expect(errors.map((e) => e.code)).not.toContain('unresolved_agent');
+    expect(valid).toBe(true);
+    expect(plan.stages.find((s) => s.stageId === 'a').agentRef).toBe('orchestrator');
+  });
+
   it('fails a required, unconditional dangling consume', () => {
     const lib = baseLibrary({
       stagesById: { a: stage('a', { consumes: [{ artifact: 'missing', required: true }] }) },
