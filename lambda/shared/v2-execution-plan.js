@@ -18,9 +18,9 @@
 // IN-SCOPE placement subset (SKIP stages never enter the plan), so cycle and
 // dangling-consume detection have a single source of truth.
 //
-// NOTE — model: this reads the CURRENT flat-frontmatter stage shape
-// (produces/consumes/sensors/reviewer/humanValidation), NOT the old
-// c1_definition/c2_verification nesting. See docs/v2-open.md §1 for the history.
+// NOTE — model: this reads the flat-frontmatter stage shape
+// (produces/consumes/sensors/reviewer/humanValidation); see `block-mappers.js`
+// `mapStage` for the seeded shape it consumes.
 
 const { createHash } = require('node:crypto');
 const { compileStageGraph, compileRules } = require('./compile.js');
