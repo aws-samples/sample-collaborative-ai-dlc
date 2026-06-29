@@ -57,6 +57,19 @@ describe('v2-process-keys', () => {
     expect(pending.startedAt).toBeNull();
   });
 
+  it('carries the CLI session linkage (null by default) for park/resume', () => {
+    const fresh = buildStageRow({ executionId: 'e1', stageInstanceId: 'si-1', now: 'T' });
+    expect(fresh).toMatchObject({ cli: null, cliSessionId: null });
+    const linked = buildStageRow({
+      executionId: 'e1',
+      stageInstanceId: 'si-1',
+      cli: 'claude',
+      cliSessionId: 'sess-7',
+      now: 'T',
+    });
+    expect(linked).toMatchObject({ cli: 'claude', cliSessionId: 'sess-7' });
+  });
+
   it('builds a question human-task carrying the structured payload', () => {
     const row = buildHumanTaskRow({
       executionId: 'e1',

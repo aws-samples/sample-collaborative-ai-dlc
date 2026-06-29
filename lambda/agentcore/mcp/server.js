@@ -216,7 +216,7 @@ export const toolSchemas = (z) => ({
   },
   ask_question: {
     description:
-      'Ask the human team one or more structured questions. BLOCKS until answered. Use for ambiguous requirements or decisions you cannot make alone.',
+      'Ask the human team one or more structured questions. Use for ambiguous requirements or decisions you cannot make alone. Returns EITHER the answer inline (if the human responds quickly) OR { parked: true } — when parked, STOP IMMEDIATELY: end your turn with no further tool calls (do not send_output or summarize). You will be resumed with the answer and can continue then.',
     shape: {
       questions: z.array(
         z.object({

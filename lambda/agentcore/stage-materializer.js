@@ -152,6 +152,64 @@ export const renderRulesDoc = (stage, ruleBodies = {}) => {
   return parts.join('\n\n---\n\n');
 };
 
+// Effectful: write JUST the `.aidlc/mcp-config.json` the CLI loads and return its
+// path. A resume re-invocation needs only the MCP config re-attached (the prompt
+// + rules already shaped the parked conversation), so this is factored out of
+// materializeStage and reused by run-stage's resume branch.
+export const materializeMcpConfig = async ({
+  workspaceDir,
+  mcpEntry,
+  scope,
+  env = process.env,
+}) => {
+  const aidlcDir = path.join(workspaceDir, '.aidlc');
+  await mkdir(aidlcDir, { recursive: true });
+  const mcpConfig = buildMcpConfig({ mcpEntry, scope, env });
+  const mcpConfigPath = path.join(aidlcDir, 'mcp-config.json');
+  await writeFile(mcpConfigPath, JSON.stringify(mcpConfig, null, 2), 'utf8');
+  return mcpConfigPath;
+};
+
+// The Kiro agent-config name we register our MCP server under. Kiro (unlike
+// Claude) has NO `--mcp-config` flag — it discovers MCP servers from an AGENT
+// config at <cwd>/.kiro/agents/<name>.json and is told to use it via `--agent`.
+export const KIRO_AGENT_NAME = 'aidlc';
+
+// Build the Kiro agent config that wires our stdio MCP server. Reuses the exact
+// server spec buildMcpConfig produces (command/args/scope-env) — just wrapped in
+// Kiro's agent envelope. `tools:["*"]` exposes the MCP tools (we also pass
+// --trust-all-tools so none prompt for approval). Pure.
+export const buildKiroAgentConfig = ({ mcpEntry, scope, env = {} }) => ({
+  $schema:
+    'https://raw.githubusercontent.com/aws/amazon-q-developer-cli/refs/heads/main/schemas/agent-v1.json',
+  name: KIRO_AGENT_NAME,
+  description: 'AI-DLC v2 stage execution agent (runtime-managed MCP surface).',
+  mcpServers: buildMcpConfig({ mcpEntry, scope, env }).mcpServers,
+  tools: ['*'],
+  allowedTools: ['*'],
+});
+
+// Effectful: write the Kiro agent config to <workspaceDir>/.kiro/agents/aidlc.json
+// and return the agent name to pass via `--agent`. The cwd-local agent dir is what
+// `kiro-cli` discovers (verified: `agent list` reads <cwd>/.kiro/agents). Factored
+// out like materializeMcpConfig so the resume branch reuses it.
+export const materializeKiroAgent = async ({
+  workspaceDir,
+  mcpEntry,
+  scope,
+  env = process.env,
+}) => {
+  const agentsDir = path.join(workspaceDir, '.kiro', 'agents');
+  await mkdir(agentsDir, { recursive: true });
+  const config = buildKiroAgentConfig({ mcpEntry, scope, env });
+  await writeFile(
+    path.join(agentsDir, `${KIRO_AGENT_NAME}.json`),
+    JSON.stringify(config, null, 2),
+    'utf8',
+  );
+  return KIRO_AGENT_NAME;
+};
+
 // Effectful: write the workspace files for a stage and return the paths the CLI
 // runner needs. `workspaceDir` is the session-persistent checkout root.
 //   - .aidlc/rules.md            steering (resolved rules)
@@ -175,9 +233,7 @@ export const materializeStage = async ({
 
   if (rulesDoc) await writeFile(path.join(aidlcDir, 'rules.md'), rulesDoc, 'utf8');
 
-  const mcpConfig = buildMcpConfig({ mcpEntry, scope, env });
-  const mcpConfigPath = path.join(aidlcDir, 'mcp-config.json');
-  await writeFile(mcpConfigPath, JSON.stringify(mcpConfig, null, 2), 'utf8');
+  const mcpConfigPath = await materializeMcpConfig({ workspaceDir, mcpEntry, scope, env });
 
   const prompt = buildStagePrompt({ stage, stageBody, agentPersona, knowledge, conductor });
   return { prompt, mcpConfigPath, rulesPath: rulesDoc ? path.join(aidlcDir, 'rules.md') : null };

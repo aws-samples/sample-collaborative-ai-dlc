@@ -28,8 +28,12 @@ const fakeStore = () => {
     async getHumanTask(_executionId, humanTaskId) {
       return humanTasks.get(humanTaskId) ?? null;
     },
+    stagePatches: [],
     async updateExecution(patch) {
       execPatches.push(patch);
+    },
+    async updateStageState(patch) {
+      this.stagePatches.push(patch);
     },
     async appendEvent(e) {
       const row = { ...e, eventId: `e${events.length + 1}` };
@@ -113,7 +117,7 @@ describe('collectMetric + emitStageNote', () => {
   });
 });
 
-describe('askQuestion — blocking until answered', () => {
+describe('askQuestion — answered within the grace window (inline fast path)', () => {
   it('opens a gate, mirrors a Question vertex, broadcasts, parks/clears, returns the answer', async () => {
     const store = fakeStore();
     const recorded = [];
@@ -157,5 +161,44 @@ describe('askQuestion — blocking until answered', () => {
     expect(store.execPatches.at(-1)).toMatchObject({ pendingHumanTaskId: null });
     // An audit event was written.
     expect(store.events.some((e) => e.type === 'v2.question.asked')).toBe(true);
+  });
+});
+
+describe('askQuestion — parks when unanswered within the grace window', () => {
+  it('returns a parked sentinel, sets WAITING_FOR_HUMAN, leaves the gate pending', async () => {
+    const store = fakeStore();
+    const sent = [];
+    let polls = 0;
+    // Never answers; just counts the bounded polls so we can assert they stop.
+    const sleep = async () => {
+      polls += 1;
+    };
+    const bridge = createProcessBridge({
+      store,
+      scope: SCOPE,
+      broadcast: (p) => sent.push(p),
+      sleep,
+      pollIntervalMs: 1000,
+      parkGraceMs: 3000, // → 3 bounded polls, then park
+    });
+
+    const res = await bridge.askQuestion({
+      questions: [{ text: 'Proceed?', type: 'single', options: [] }],
+    });
+
+    expect(res).toMatchObject({ parked: true, humanTaskId: expect.stringMatching(/^q-/) });
+    expect(res.message).toMatch(/STOP NOW/);
+    // Bounded — did not loop forever.
+    expect(polls).toBe(3);
+    // Execution parked WAITING with the pending gate still set (never cleared).
+    expect(store.execPatches[0]).toMatchObject({
+      status: 'WAITING',
+      pendingHumanTaskId: expect.stringMatching(/^q-/),
+    });
+    expect(store.execPatches.every((p) => p.pendingHumanTaskId !== null)).toBe(true);
+    // Stage parked WAITING_FOR_HUMAN; never flipped back to RUNNING.
+    expect(store.stagePatches.at(-1)).toMatchObject({ state: 'WAITING_FOR_HUMAN' });
+    // The gate is still pending (resume answers it later).
+    expect([...store.humanTasks.values()][0].status).toBe('pending');
   });
 });

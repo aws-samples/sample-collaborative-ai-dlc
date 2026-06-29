@@ -49,14 +49,37 @@ COPY shared/ /opt/shared/
 # where they are installed. Symlink so the shared helpers see the same deps.
 RUN ln -s /opt/agentcore/node_modules /opt/shared/node_modules
 
-RUN mkdir -p /workspace && chown -R node:node /workspace /opt/agentcore /opt/shared /opt/kiro /opt/bun
+# /mnt/workspace is the AgentCore managed-session-storage mount (present only at
+# invocation time). Create a fallback dir for local/non-AgentCore runs; chown so
+# the node user can write the checkout + CLI stores when the mount is absent.
+RUN mkdir -p /mnt/workspace && chown -R node:node /mnt/workspace /opt/agentcore /opt/shared /opt/kiro /opt/bun
 
-WORKDIR /workspace
+WORKDIR /mnt/workspace
 USER node
+# CLI conversation-store placement (for park/resume durability):
+#  - Claude: plain JSONL — CLAUDE_CONFIG_DIR points straight at the persistent
+#    mount; append-only file needs no locking, works on the mount directly.
+#  - Kiro: SQLite — the managed mount does NOT provide the fcntl byte-range
+#    locking SQLite needs ("database is locked" on open). So XDG_DATA_HOME stays
+#    on EPHEMERAL local disk where locking works, and run-stage syncs the single
+#    data.sqlite3* store file between the mount (V2_KIRO_STORE_DIR, durable) and
+#    local XDG around each Kiro spawn so a resume after a microVM reap still
+#    recalls the conversation. See cli/kiro-store.js.
 ENV HOME=/home/node \
     PATH=/opt/kiro/bin:/opt/bun/bin:/usr/local/bin:/usr/bin:/bin \
-    V2_WORKSPACE_DIR=/workspace \
+    V2_WORKSPACE_DIR=/mnt/workspace \
+    CLAUDE_CONFIG_DIR=/mnt/workspace/.claude \
+    XDG_DATA_HOME=/home/node/.kiro-data \
+    V2_KIRO_STORE_DIR=/mnt/workspace/.kiro-data \
     V2_MCP_ENTRY=/opt/agentcore/mcp/index.js
+
+# The AgentCore managed-session-storage mount (/mnt/workspace) is owned by a uid
+# that differs from the node user, so git refuses to operate on the checkout
+# ("detected dubious ownership"). Mark all workspace checkouts safe. A wildcard
+# (not a single path) is required because multi-repo intents clone into
+# /mnt/workspace/<owner>/<repo> subdirs, each of which trips the per-repo check.
+# Written as the node user so it lands in this user's global ~/.gitconfig.
+RUN git config --global --add safe.directory '*'
 
 # AgentCore Runtime contract: listen on 8080. /ping is the health surface.
 EXPOSE 8080

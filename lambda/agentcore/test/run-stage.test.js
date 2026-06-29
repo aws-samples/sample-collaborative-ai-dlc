@@ -46,8 +46,9 @@ const workflow = () => ({
   scopeRefs: [{ scopeId: 'feature' }],
 });
 
-// A spy process store recording the calls run-stage makes.
-const spyStore = () => {
+// A spy process store recording the calls run-stage makes. `seed` pre-loads the
+// gate / stage / execution rows the resume + park paths read back.
+const spyStore = (seed = {}) => {
   const calls = [];
   const rec = (name) => async (args) => {
     calls.push([name, args]);
@@ -60,6 +61,18 @@ const spyStore = () => {
     updateStageState: rec('updateStageState'),
     appendEvent: rec('appendEvent'),
     recordSensorRun: rec('recordSensorRun'),
+    async getHumanTask(_e, id) {
+      calls.push(['getHumanTask', id]);
+      return seed.humanTask ?? null;
+    },
+    async getStage(_e, id) {
+      calls.push(['getStage', id]);
+      return seed.stage ?? null;
+    },
+    async getExecution(_e) {
+      calls.push(['getExecution']);
+      return seed.execution ?? null;
+    },
   };
 };
 
@@ -83,6 +96,8 @@ const baseDeps = (overrides = {}) => ({
     mcpConfigPath: '/ws/.aidlc/mcp.json',
     _scope: scope,
   }),
+  materializeMcpConfig: async () => '/ws/.aidlc/mcp.json',
+  materializeKiroAgent: async () => 'aidlc',
   renderRulesDoc,
   mcpEntry: '/opt/agentcore/mcp/index.js',
   availableClis: ['claude'],
@@ -533,5 +548,226 @@ describe('runStage — deterministic sensors', () => {
     });
     const res = await runStage(baseArgs, deps);
     expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+  });
+});
+
+describe('runStage — fresh run persists the CLI session + parks on a pending gate', () => {
+  const okSpawn = () => ({
+    on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
+    stdin: { end() {} },
+  });
+
+  it('forces a Claude session id up front and persists it on the stage row', async () => {
+    const deps = baseDeps({ spawnFn: okSpawn, ids: () => 'forced-uuid' });
+    const res = await runStage(baseArgs, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED', cli: 'claude' });
+    // putStage carried the minted session id + cli.
+    const putStage = deps.store.calls.find((c) => c[0] === 'putStage')[1];
+    expect(putStage).toMatchObject({ cli: 'claude', cliSessionId: 'forced-uuid' });
+  });
+
+  it('parks WAITING_FOR_HUMAN (no SUCCEEDED) when a gate is still pending at exit', async () => {
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      ids: () => 'forced-uuid',
+      store: spyStore({
+        execution: { pendingHumanTaskId: 'q-1' },
+        humanTask: { humanTaskId: 'q-1', status: 'pending' },
+      }),
+    });
+    const res = await runStage(baseArgs, deps);
+    expect(res).toMatchObject({
+      ok: true,
+      state: 'WAITING_FOR_HUMAN',
+      humanTaskId: 'q-1',
+      cli: 'claude',
+      cliSessionId: 'forced-uuid',
+    });
+    // The parked stage write is WAITING_FOR_HUMAN — never SUCCEEDED.
+    const states = deps.store.calls
+      .filter((c) => c[0] === 'updateStageState')
+      .map((c) => c[1].state);
+    expect(states).toContain('WAITING_FOR_HUMAN');
+    expect(states).not.toContain('SUCCEEDED');
+    expect(
+      deps.store.calls.some((c) => c[0] === 'appendEvent' && c[1].type === 'v2.stage.parked'),
+    ).toBe(true);
+  });
+
+  it('parks (not fails) on a NON-ZERO exit when a gate is pending — the gate is the truth', async () => {
+    // A Kiro-style run that parks a question then errors on its next model turn:
+    // CLI exits non-zero, but the durable pending gate means the stage is parked.
+    const crashAfterPark = () => ({
+      on: (ev, cb) => ev === 'close' && setImmediate(() => cb(1)),
+      stdin: { end() {} },
+    });
+    const deps = baseDeps({
+      spawnFn: crashAfterPark,
+      ids: () => 'forced-uuid',
+      store: spyStore({
+        execution: { pendingHumanTaskId: 'q-9' },
+        humanTask: { humanTaskId: 'q-9', status: 'pending' },
+      }),
+    });
+    const res = await runStage(baseArgs, deps);
+    expect(res).toMatchObject({ ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'q-9' });
+    // Did NOT mark the stage FAILED / report cli_nonzero_exit.
+    expect(res.reason).toBeUndefined();
+    const states = deps.store.calls
+      .filter((c) => c[0] === 'updateStageState')
+      .map((c) => c[1].state);
+    expect(states).not.toContain('FAILED');
+  });
+
+  it('still fails cli_nonzero_exit on a non-zero exit with NO pending gate', async () => {
+    const deps = baseDeps({
+      spawnFn: () => ({
+        on: (ev, cb) => ev === 'close' && setImmediate(() => cb(2)),
+        stdin: { end() {} },
+      }),
+      // default spyStore → getExecution returns null → no pending gate
+    });
+    const res = await runStage(baseArgs, deps);
+    expect(res).toMatchObject({ ok: false, reason: 'cli_nonzero_exit', detail: '2' });
+  });
+});
+
+describe('runStage — resume mode', () => {
+  const okSpawn = () => ({
+    on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
+    stdin: { end() {} },
+  });
+
+  // Capture the argv the resume invocation produced.
+  const captureArgv = () => {
+    let captured = null;
+    const spawnFn = (command, args) => {
+      captured = { command, args };
+      return { on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)), stdin: { end() {} } };
+    };
+    return { spawnFn, get: () => captured };
+  };
+
+  it('resumes the persisted Claude conversation with --resume + the answer, reaches SUCCEEDED', async () => {
+    const cap = captureArgv();
+    const deps = baseDeps({
+      spawnFn: cap.spawnFn,
+      store: spyStore({
+        humanTask: {
+          humanTaskId: 'q-1',
+          status: 'answered',
+          answer: { perQuestion: [{ text: 'Scope?', answer: 'MVP' }] },
+        },
+        stage: { cli: 'claude', cliSessionId: 'sess-7' },
+      }),
+    });
+    const res = await runStage({ ...baseArgs, resumeFrom: 'q-1' }, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED', cli: 'claude' });
+    // Built a --resume invocation targeting the persisted session id.
+    expect(cap.get().command).toBe('claude');
+    expect(cap.get().args).toContain('--resume');
+    expect(cap.get().args).toContain('sess-7');
+    // The answer text reached the prompt (-p arg).
+    const pi = cap.get().args.indexOf('-p');
+    expect(cap.get().args[pi + 1]).toMatch(/MVP/);
+    // A resumed event was recorded.
+    expect(
+      deps.store.calls.some((c) => c[0] === 'appendEvent' && c[1].type === 'v2.stage.resumed'),
+    ).toBe(true);
+  });
+
+  it('fails gate_not_answered when the gate is still pending', async () => {
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      store: spyStore({
+        humanTask: { humanTaskId: 'q-1', status: 'pending' },
+        stage: { cli: 'claude', cliSessionId: 'sess-7' },
+      }),
+    });
+    const res = await runStage({ ...baseArgs, resumeFrom: 'q-1' }, deps);
+    expect(res).toMatchObject({ ok: false, reason: 'gate_not_answered' });
+  });
+
+  it('fails resume_no_session when the stage has no persisted CLI session', async () => {
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      store: spyStore({
+        humanTask: { humanTaskId: 'q-1', status: 'answered', answer: { freeText: 'go' } },
+        stage: { cli: null, cliSessionId: null },
+      }),
+    });
+    const res = await runStage({ ...baseArgs, resumeFrom: 'q-1' }, deps);
+    expect(res).toMatchObject({ ok: false, reason: 'resume_no_session' });
+  });
+});
+
+describe('runStage — Kiro SQLite store sync (restore before spawn, persist after)', () => {
+  const okSpawn = () => ({
+    on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
+    stdin: { end() {} },
+  });
+  // Kiro library so selectCli picks kiro; capture sync ordering relative to spawn.
+  it('restores before the CLI spawns and persists after it exits', async () => {
+    const order = [];
+    const deps = baseDeps({
+      availableClis: ['kiro'],
+      // Kiro id capture (--list-sessions) + the run share spawnFn; both exit 0.
+      spawnFn: (command, args) => {
+        if (args.includes('--list-sessions')) {
+          order.push('capture');
+          return {
+            on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
+            stdout: {
+              on: (ev, cb) =>
+                ev === 'data' &&
+                cb(
+                  Buffer.from(
+                    JSON.stringify([
+                      {
+                        cwd: '/ws',
+                        sessions: [{ sessionId: 'kiro-7', updatedAt: '2026-06-29T12:00:00Z' }],
+                      },
+                    ]),
+                  ),
+                ),
+            },
+            stdin: { end() {} },
+          };
+        }
+        order.push('spawn');
+        return okSpawn();
+      },
+      restoreKiroStore: async () => {
+        order.push('restore');
+        return true;
+      },
+      persistKiroStore: async () => {
+        order.push('persist');
+        return true;
+      },
+    });
+    const res = await runStage({ ...baseArgs, requestedCli: 'kiro' }, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED', cli: 'kiro' });
+    // restore precedes the run spawn; persist follows it.
+    expect(order.indexOf('restore')).toBeLessThan(order.indexOf('spawn'));
+    expect(order.indexOf('persist')).toBeGreaterThan(order.indexOf('spawn'));
+    // Kiro session id captured post-run and persisted on the stage row.
+    const csid = deps.store.calls
+      .filter((c) => c[0] === 'updateStageState')
+      .map((c) => c[1].cliSessionId)
+      .filter(Boolean);
+    expect(csid).toContain('kiro-7');
+  });
+
+  it('does not sync the Kiro store for a Claude stage', async () => {
+    let touched = false;
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      restoreKiroStore: async () => ((touched = true), false),
+      persistKiroStore: async () => ((touched = true), false),
+    });
+    const res = await runStage(baseArgs, deps); // claude (default)
+    expect(res).toMatchObject({ ok: true, cli: 'claude' });
+    expect(touched).toBe(false);
   });
 });

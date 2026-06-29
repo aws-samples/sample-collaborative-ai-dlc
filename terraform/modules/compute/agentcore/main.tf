@@ -44,8 +44,21 @@ locals {
   # agentcore package and the shared/ helpers it imports via ../shared.
   agentcore_source_path = abspath("${path.module}/../../../../lambda")
 
+  # Both include roots and exclude patterns are ROOTED at agentcore/ + shared/.
+  # Rooting the excludes keeps `fileset` from walking sibling lambda packages
+  # (e.g. agents/node_modules), whose .bin/* symlinks trigger fileset's
+  # "inconsistent result" bug when a `**` glob traverses a symlink. The include
+  # set is already scoped to these two roots, so the resulting file set (and thus
+  # the image hash) is unchanged.
   path_include = ["agentcore/**", "shared/**"]
-  path_exclude = ["**/node_modules/**", "**/.git/**", "**/test/**", "**/.build/**"]
+  path_exclude = flatten([
+    for root in ["agentcore", "shared"] : [
+      "${root}/**/node_modules/**",
+      "${root}/**/.git/**",
+      "${root}/**/test/**",
+      "${root}/**/.build/**",
+    ]
+  ])
 
   agentcore_files_include = setunion([for f in local.path_include : fileset(local.agentcore_source_path, f)]...)
   agentcore_files_exclude = setunion([for f in local.path_exclude : fileset(local.agentcore_source_path, f)]...)
@@ -393,7 +406,25 @@ resource "awscc_bedrockagentcore_runtime" "stage_executor" {
     } : null
   }
 
+  # Managed session storage — a per-session persistent mount that survives
+  # stop/resume for the same runtimeSessionId (no VPC required). This is what lets
+  # a parked question resume hours-to-days later: the git checkout from init-ws AND
+  # the headless CLI's conversation store both live under /mnt/workspace, so a
+  # microVM reap mid-wait (or a deliberate StopRuntimeSession) loses no state.
+  # Two failure modes the resume path must handle (see docs/v2-resume.md, D2):
+  #   - WIPED on every runtime version update (image redeploy) — a parked session's
+  #     compute is already terminated, so it gets a fresh empty FS on next invoke.
+  #   - EXPIRES after 14 days idle.
+  filesystem_configurations = [{ session_storage = { mount_path = "/mnt/workspace" } }]
+
+  # idle 900s: with park/resume a parked question lets the session idle and free
+  # compute after 15 min (the resume lambda may also StopRuntimeSession sooner).
+  # max_lifetime 28800s (8h, the cap): long ACTIVE stages get headroom; a reap
+  # mid-park is now recoverable from the persistent mount. idle must be <= max.
+  lifecycle_configuration = { idle_runtime_session_timeout = 900, max_lifetime = 28800 }
+
   environment_variables = {
+    V2_WORKSPACE_DIR              = "/mnt/workspace"
     V2_PROCESS_TABLE              = aws_dynamodb_table.v2_executions.name
     BLOCKS_TABLE                  = var.blocks_table_name
     ARTIFACTS_BUCKET              = var.artifacts_bucket_name

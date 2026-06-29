@@ -137,7 +137,7 @@ const main = async () => {
   const resolvedAuth = await resolveAgentAuth({ env: process.env });
   console.error(`[agentcore] resolved agent auth: ${resolvedAuth.join(', ') || 'none'}`);
 
-  const workspaceDir = process.env.V2_WORKSPACE_DIR || '/workspace';
+  const workspaceDir = process.env.V2_WORKSPACE_DIR || '/mnt/workspace';
   const mcpEntry = process.env.V2_MCP_ENTRY || new URL('./mcp/index.js', import.meta.url).pathname;
   const store = createProcessStore({ ddb, tableName: process.env.V2_PROCESS_TABLE });
   const availableClis = await discoverInstalledClis();

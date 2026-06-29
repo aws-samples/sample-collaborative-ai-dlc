@@ -132,13 +132,24 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return item;
   };
 
-  // Patch a stage's state + terminal fields, re-stamping GSI2.
+  const getStage = async (executionId, stageInstanceId) => {
+    const { Item } = await ddb.send(
+      new GetCommand({ TableName: table(), Key: stageKey(executionId, stageInstanceId) }),
+    );
+    return Item ?? null;
+  };
+
+  // Patch a stage's state + terminal fields, re-stamping GSI2. `cli`/`cliSessionId`
+  // are set only when supplied (a Kiro session id is captured post-exit, so the
+  // terminal/park write back-fills it; an undefined value leaves the field intact).
   const updateStageState = async ({
     executionId,
     stageInstanceId,
     state,
     runtimeError = null,
     completedAt = null,
+    cli,
+    cliSessionId,
   }) => {
     const ts = now();
     const sets = ['#state = :state', 'updatedAt = :ts', 'GSI2SK = :g2sk', 'runtimeError = :err'];
@@ -152,6 +163,14 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     if (completedAt !== null) {
       sets.push('completedAt = :ca');
       values[':ca'] = completedAt === true ? ts : completedAt;
+    }
+    if (cli !== undefined) {
+      sets.push('cli = :cli');
+      values[':cli'] = cli;
+    }
+    if (cliSessionId !== undefined) {
+      sets.push('cliSessionId = :csid');
+      values[':csid'] = cliSessionId;
     }
     const { Attributes } = await ddb.send(
       new UpdateCommand({
@@ -367,6 +386,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     getExecution,
     updateExecution,
     putStage,
+    getStage,
     updateStageState,
     appendEvent,
     createHumanTask,

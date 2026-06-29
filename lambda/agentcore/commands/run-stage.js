@@ -6,16 +6,36 @@
 //   2. marks the stage RUNNING in the v2 process table (+ current phase/stage),
 //   3. materializes the stage workspace (prompt + rules + mcp-config),
 //   4. selects + spawns the headless CLI with our MCP server wired in,
-//   5. records the terminal stage state (SUCCEEDED/FAILED) and an event — ALWAYS,
-//      including on error, so the control plane never sees a stuck stage.
+//   5. records the terminal stage state (SUCCEEDED/FAILED/WAITING_FOR_HUMAN) and
+//      an event — ALWAYS, so the control plane never sees a stuck stage.
+//
+// RESUME (docs/v2-resume.md): when `resumeFrom` (an answered humanTaskId) is set,
+// the command re-invokes the SAME parked CLI conversation (recovered from the
+// stage row's persisted cli/cliSessionId) with the human's answer instead of
+// running fresh. At exit it re-checks for a still-pending question gate: if one
+// exists the stage PARKS (WAITING_FOR_HUMAN) rather than completing.
 //
 // Business artifacts are written by the agent through the MCP tools during the
 // run; this command owns ONLY process state. Every effect is injected so the
 // whole flow is unit-tested with the CLI + AWS mocked.
 
 import { createRequire } from 'node:module';
-import { selectCli, getDriver } from '../cli/drivers.js';
-import { runChild } from '../cli/spawn.js';
+import { randomUUID } from 'node:crypto';
+import {
+  selectCli,
+  getDriver,
+  buildKiroListSessions,
+  parseLatestKiroSession,
+} from '../cli/drivers.js';
+import { runChild, captureChild } from '../cli/spawn.js';
+import {
+  materializeMcpConfig as defaultMaterializeMcpConfig,
+  materializeKiroAgent as defaultMaterializeKiroAgent,
+} from '../stage-materializer.js';
+import {
+  restoreKiroStore as defaultRestoreKiroStore,
+  persistKiroStore as defaultPersistKiroStore,
+} from '../cli/kiro-store.js';
 import { resolveStageModel } from '../model-resolver.js';
 import { createGraphWriter } from '../mcp/graph-writer.js';
 import { createSensorRunner } from '../sensor-runner.js';
@@ -192,6 +212,47 @@ const runStageSensors = async ({
   return heldReasons.length ? heldReasons.join(', ') : null;
 };
 
+// Render an answered gate into the message that re-enters the parked conversation.
+// The agent asked structured questions; we feed back the human's answer so it
+// continues from where it parked. Tolerant of the answer shapes the resume lambda
+// / phaseb-answer write (`perQuestion[]`, `freeText`, or a raw string).
+const formatResumeAnswer = (gate) => {
+  const a = gate?.answer ?? null;
+  if (a && Array.isArray(a.perQuestion) && a.perQuestion.length) {
+    const lines = a.perQuestion.map((p) => `- ${p.text ?? 'Q'}: ${p.answer ?? ''}`);
+    return `The human answered your question(s):\n${lines.join('\n')}\n\nContinue the stage with these answers.`;
+  }
+  const text = typeof a === 'string' ? a : (a?.freeText ?? JSON.stringify(a ?? {}));
+  return `The human answered your question(s): ${text}\n\nContinue the stage with this answer.`;
+};
+
+// Capture the Kiro session id created by a just-finished fresh run (Kiro can't be
+// told the id up front). Lists sessions as JSON and returns the newest for the
+// cwd; null when nothing parseable. The list spawn captures stdout (runChild
+// inherits it, so it can't).
+const captureKiroSession = async ({ env, driver, workspaceDir, spawnFn }) => {
+  const list = buildKiroListSessions();
+  const { stdout } = await captureChild({
+    command: list.command,
+    args: list.args,
+    env: driver.envForAuth(env),
+    cwd: workspaceDir,
+    spawnFn,
+  });
+  return parseLatestKiroSession(stdout ?? '', workspaceDir);
+};
+
+// Return the execution's still-pending HUMAN gate (if any). The meta row's
+// `pendingHumanTaskId` is the source of truth ask_question sets when it parks; we
+// confirm the gate is still pending before treating the stage as parked.
+const pendingGate = async ({ store, executionId }) => {
+  const meta = await store.getExecution(executionId).catch(() => null);
+  const humanTaskId = meta?.pendingHumanTaskId ?? null;
+  if (!humanTaskId) return null;
+  const gate = await store.getHumanTask(executionId, humanTaskId).catch(() => null);
+  return gate && gate.status === 'pending' ? { humanTaskId } : null;
+};
+
 export const runStage = async (
   {
     projectId,
@@ -204,6 +265,10 @@ export const runStage = async (
     requestedCli,
     cliModels = {},
     workspaceDir,
+    // Resume mode: when set, re-invoke the SAME parked stage conversation with the
+    // human's answer to `resumeFrom` (a humanTaskId) instead of running fresh. The
+    // session's persistent /mnt/workspace mount restores the checkout + CLI store.
+    resumeFrom = null,
   },
   deps,
 ) => {
@@ -214,6 +279,8 @@ export const runStage = async (
     loadBlockScript = async () => '',
     loadConductor = async () => '',
     materializeStage,
+    materializeMcpConfig = defaultMaterializeMcpConfig,
+    materializeKiroAgent = defaultMaterializeKiroAgent,
     renderRulesDoc,
     mcpEntry,
     openGraph = null,
@@ -222,6 +289,11 @@ export const runStage = async (
     spawnFn,
     broadcast = async () => {},
     clock = () => new Date().toISOString(),
+    ids = randomUUID,
+    // Kiro SQLite store sync (mount ↔ ephemeral local XDG); no-ops for Claude and
+    // when the store env is unset. Injected for tests.
+    restoreKiroStore = defaultRestoreKiroStore,
+    persistKiroStore = defaultPersistKiroStore,
   } = deps;
 
   const now = () => clock();
@@ -290,13 +362,45 @@ export const runStage = async (
 
   if (stage.notImplemented) return fail(stageInstanceId, 'not_implemented', `mode ${stage.mode}`);
 
-  // 2. Mark RUNNING + advance the execution's current phase/stage pointer.
+  const agentBlock = library.agentsById[stage.agentRef] ?? null;
+  const stageScope = { executionId, intentId, projectId, stageInstanceId, role: 'author' };
+
+  // 2. Pick the CLI + recover (resume) or mint (fresh) the conversation handle.
+  // On resume the gate MUST be answered and the parked stage MUST carry a CLI
+  // session id (same conversation continues). On a fresh run Claude's id is forced
+  // up front; Kiro's is captured after the run (it has no start-time id flag).
+  let cli;
+  let cliSessionId = null;
+  let resumeAnswer = null;
+  if (resumeFrom) {
+    const gate = await store.getHumanTask(executionId, resumeFrom).catch(() => null);
+    if (!gate) return fail(stageInstanceId, 'gate_not_found', resumeFrom);
+    if (gate.status === 'pending') return fail(stageInstanceId, 'gate_not_answered', resumeFrom);
+    const row = await store.getStage(executionId, stageInstanceId).catch(() => null);
+    cli = row?.cli ?? null;
+    cliSessionId = row?.cliSessionId ?? null;
+    if (!cli || !cliSessionId)
+      return fail(stageInstanceId, 'resume_no_session', `stage has no persisted CLI session`);
+    if (!availableClis.includes(cli))
+      return fail(stageInstanceId, 'no_cli', `resume CLI "${cli}" not installed`);
+    resumeAnswer = formatResumeAnswer(gate);
+  } else {
+    cli = selectCli({ requested: requestedCli, availableClis });
+    if (!cli)
+      return fail(stageInstanceId, 'no_cli', `available: ${availableClis.join(', ') || 'none'}`);
+    if (cli === 'claude') cliSessionId = ids();
+  }
+
+  // Mark RUNNING + advance the execution pointer + persist the conversation
+  // handle. A resume flips the parked stage (WAITING_FOR_HUMAN) back to RUNNING.
   await store.putStage({
     executionId,
     stageInstanceId,
     stageId,
     phase: stage.phase,
     state: 'RUNNING',
+    cli,
+    cliSessionId,
   });
   await store.updateExecution({
     executionId,
@@ -306,10 +410,10 @@ export const runStage = async (
   });
   await store.appendEvent({
     executionId,
-    type: 'v2.stage.running',
+    type: resumeFrom ? 'v2.stage.resumed' : 'v2.stage.running',
     stageInstanceId,
     actor: 'agentcore',
-    summary: `Stage ${stageId} running`,
+    summary: resumeFrom ? `Stage ${stageId} resumed` : `Stage ${stageId} running`,
   });
   // Broadcast the stage start + the execution's new phase/stage pointer so the
   // UI reflects the advance in real time.
@@ -327,69 +431,119 @@ export const runStage = async (
     currentStage: stageId,
   });
 
-  // 3. Select the CLI before doing workspace work — fail fast if none.
-  const cli = selectCli({ requested: requestedCli, availableClis });
-  if (!cli)
-    return fail(stageInstanceId, 'no_cli', `available: ${availableClis.join(', ') || 'none'}`);
-
-  // 4. Materialize the workspace: stage body + persona + knowledge + rules.
-  const stageBlock = library.stagesById[stageId] ?? {};
-  const agentBlock = library.agentsById[stage.agentRef] ?? null;
-  const [stageBody, agentPersona, conductor] = await Promise.all([
-    loadBlockBody(stageBlock).catch(() => ''),
-    agentBlock ? loadBlockBody(agentBlock).catch(() => '') : Promise.resolve(''),
-    loadConductor(env.AIDLC_REPO_REF).catch(() => ''),
-  ]);
-  // Knowledge has two tiers: the authored methodology (library blocks) and the
-  // project's accrued team knowledge (already read from Neptune above). Both are
-  // injected into the prompt so the agent always receives them; the team tier is
-  // also re-readable on demand via the get_team_knowledge MCP tool.
-  const methodology = await loadMethodologyKnowledge({
-    agentRef: stage.agentRef,
-    library,
-    loadBlockBody,
-  });
-  const knowledge = composeKnowledge(methodology, memory.teamKnowledge);
-
-  // Resolve rule bodies for the steering doc. A merged learning rule carries its
-  // text inline (`body`, from Neptune); an authored library rule resolves its
-  // body from S3 via its bodyRef. Prefer the inline body when present.
-  const ruleIds = [...(stage.rules?.universal ?? []), ...(stage.rules?.phase ?? [])];
-  const ruleBodyEntries = await Promise.all(
-    ruleIds.map(async (id) => {
-      const ruleBlock = library.rulesById[id] ?? {};
-      const body =
-        typeof ruleBlock.body === 'string' && ruleBlock.body
-          ? ruleBlock.body
-          : await loadBlockBody(ruleBlock).catch(() => '');
-      return [id, body];
-    }),
-  );
-  const rulesDoc = renderRulesDoc(stage, Object.fromEntries(ruleBodyEntries));
-
-  const stageScope = { executionId, intentId, projectId, stageInstanceId, role: 'author' };
-  const { prompt, mcpConfigPath } = await materializeStage({
-    workspaceDir,
-    stage,
-    stageBody,
-    agentPersona,
-    knowledge,
-    conductor,
-    rulesDoc,
-    mcpEntry,
-    scope: stageScope,
-    env,
-  });
-
-  // 5. Spawn the headless CLI.
+  // 3. Build the invocation. A fresh run materializes the full workspace (prompt +
+  // rules + knowledge); a resume only re-attaches the MCP config (the parked
+  // conversation already holds the prompt) and feeds the human's answer.
   const driver = getDriver(cli);
   // Resolve the model: the project's per-CLI Admin selection wins, then the
   // stage/agent block's modelOverride, then the static env default; bare tier
   // aliases (opus/sonnet) are resolved to full region-prefixed Bedrock ids.
   const model = resolveStageModel({ cliModels, agentBlock, cli, env });
-  const invocation = driver.buildInvocation({ prompt, mcpConfigPath, model, allowedTools: [] });
-  const childEnv = { ...invocation.env, ...driver.envForAuth(env) };
 
+  // Materialize the MCP wiring the selected CLI expects: Claude loads a
+  // --mcp-config file; Kiro discovers an --agent config at .kiro/agents/. Returns
+  // the kwargs the driver's build* methods take (mcpConfigPath OR agentName).
+  const materializeCliMcp = async () => {
+    if (cli === 'kiro') {
+      const agentName = await materializeKiroAgent({
+        workspaceDir,
+        mcpEntry,
+        scope: stageScope,
+        env,
+      });
+      return { agentName };
+    }
+    const mcpConfigPath = await materializeMcpConfig({
+      workspaceDir,
+      mcpEntry,
+      scope: stageScope,
+      env,
+    });
+    return { mcpConfigPath };
+  };
+
+  let invocation;
+  let prompt = null;
+  if (resumeFrom) {
+    const mcpKwargs = await materializeCliMcp();
+    invocation = driver.buildResumeInvocation({
+      sessionId: cliSessionId,
+      answerMessage: resumeAnswer,
+      model,
+      ...mcpKwargs,
+    });
+  } else {
+    const stageBlock = library.stagesById[stageId] ?? {};
+    const [stageBody, agentPersona, conductor] = await Promise.all([
+      loadBlockBody(stageBlock).catch(() => ''),
+      agentBlock ? loadBlockBody(agentBlock).catch(() => '') : Promise.resolve(''),
+      loadConductor(env.AIDLC_REPO_REF).catch(() => ''),
+    ]);
+    // Knowledge has two tiers: the authored methodology (library blocks) and the
+    // project's accrued team knowledge (already read from Neptune above). Both are
+    // injected into the prompt so the agent always receives them; the team tier is
+    // also re-readable on demand via the get_team_knowledge MCP tool.
+    const methodology = await loadMethodologyKnowledge({
+      agentRef: stage.agentRef,
+      library,
+      loadBlockBody,
+    });
+    const knowledge = composeKnowledge(methodology, memory.teamKnowledge);
+
+    // Resolve rule bodies for the steering doc. A merged learning rule carries its
+    // text inline (`body`, from Neptune); an authored library rule resolves its
+    // body from S3 via its bodyRef. Prefer the inline body when present.
+    const ruleIds = [...(stage.rules?.universal ?? []), ...(stage.rules?.phase ?? [])];
+    const ruleBodyEntries = await Promise.all(
+      ruleIds.map(async (id) => {
+        const ruleBlock = library.rulesById[id] ?? {};
+        const body =
+          typeof ruleBlock.body === 'string' && ruleBlock.body
+            ? ruleBlock.body
+            : await loadBlockBody(ruleBlock).catch(() => '');
+        return [id, body];
+      }),
+    );
+    const rulesDoc = renderRulesDoc(stage, Object.fromEntries(ruleBodyEntries));
+
+    const materialized = await materializeStage({
+      workspaceDir,
+      stage,
+      stageBody,
+      agentPersona,
+      knowledge,
+      conductor,
+      rulesDoc,
+      mcpEntry,
+      scope: stageScope,
+      env,
+    });
+    prompt = materialized.prompt;
+    // materializeStage wrote the Claude --mcp-config; for Kiro we additionally
+    // need its --agent config. materializeCliMcp returns the right driver kwargs.
+    const mcpKwargs = await materializeCliMcp();
+    invocation = driver.buildInvocation({
+      prompt,
+      model,
+      allowedTools: [],
+      sessionId: cliSessionId,
+      ...mcpKwargs,
+    });
+  }
+
+  // Kiro only: restore the durable SQLite store (mount → ephemeral local XDG)
+  // before spawning so a resume recalls the parked conversation. Kiro's DB can't
+  // live on the managed mount (no fcntl locking), so it runs locally and we sync.
+  // A missing/unreadable store is not fatal — Kiro just starts fresh (logged).
+  if (cli === 'kiro') {
+    const restored = await restoreKiroStore({ env }).catch(() => false);
+    if (resumeFrom && !restored) {
+      console.error(`[run-stage] kiro store not restored for resume ${stageInstanceId}`);
+    }
+  }
+
+  // 4. Spawn the headless CLI.
+  const childEnv = { ...invocation.env, ...driver.envForAuth(env) };
   let result;
   try {
     result = await runChild({
@@ -406,7 +560,72 @@ export const runStage = async (
   }
 
   const exitCode = result?.exitCode ?? 0;
-  if (exitCode !== 0) return fail(stageInstanceId, 'cli_nonzero_exit', String(exitCode));
+
+  // Kiro only: persist the live local store back to the durable mount after the
+  // run. Runs on ANY exit (success, park, or crash) so a parked conversation is
+  // captured even if the CLI later errored. Best-effort — a failed persist never
+  // fails the stage, but a parked conversation then won't survive a reap, so log it.
+  if (cli === 'kiro') {
+    const persisted = await persistKiroStore({ env }).catch(() => false);
+    if (!persisted) {
+      console.error(`[run-stage] kiro store not persisted for ${stageInstanceId}`);
+    }
+  }
+
+  // Kiro has no start-time session-id flag — capture the id it created so a later
+  // resume can target the SAME conversation. Runs on ANY exit: a Kiro run can park
+  // a question and THEN exit non-zero (e.g. a transient model error on the turn
+  // after ask_question), and a parked stage still needs its session linked or
+  // resume can't find it. Best-effort — a failed capture leaves cliSessionId null.
+  if (!resumeFrom && cli === 'kiro') {
+    const captured = await captureKiroSession({ env, driver, workspaceDir, spawnFn }).catch(
+      () => null,
+    );
+    if (captured) {
+      cliSessionId = captured;
+      await store
+        .updateStageState({ executionId, stageInstanceId, state: 'RUNNING', cli, cliSessionId })
+        .catch(() => {});
+    }
+  }
+
+  // 5. Park check — did the agent leave a pending question? ask_question parks
+  // (returns a sentinel) instead of blocking, so the agent is told to stop. The
+  // durable pending gate — NOT the CLI exit code — is the source of truth for a
+  // park: a clean exit OR a non-zero exit AFTER parking both mean "waiting on a
+  // human". We therefore check the gate BEFORE treating a non-zero exit as failure,
+  // so a Kiro run that parks then errors on its next turn parks rather than fails.
+  const parked = await pendingGate({ store, executionId });
+  if (!parked && exitCode !== 0) {
+    return fail(stageInstanceId, 'cli_nonzero_exit', String(exitCode));
+  }
+  if (parked) {
+    await store
+      .updateStageState({
+        executionId,
+        stageInstanceId,
+        state: 'WAITING_FOR_HUMAN',
+        cli,
+        cliSessionId,
+      })
+      .catch(() => {});
+    await store.appendEvent({
+      executionId,
+      type: 'v2.stage.parked',
+      stageInstanceId,
+      actor: 'agentcore',
+      summary: `Stage ${stageId} parked on question ${parked.humanTaskId}`,
+    });
+    await publish({ action: 'agent.stage', stageInstanceId, stageId, state: 'WAITING_FOR_HUMAN' });
+    return {
+      ok: true,
+      state: 'WAITING_FOR_HUMAN',
+      stageInstanceId,
+      humanTaskId: parked.humanTaskId,
+      cliSessionId,
+      cli,
+    };
+  }
 
   // 6. Deterministic sensors — the verification axis that runs AFTER the agent.
   // Graph sensors evaluate the produced artifacts' content in-process; script
@@ -439,6 +658,8 @@ export const runStage = async (
     stageInstanceId,
     state: 'SUCCEEDED',
     completedAt: true,
+    cli,
+    cliSessionId,
   });
   await store.appendEvent({
     executionId,
@@ -453,4 +674,9 @@ export const runStage = async (
 };
 
 // Exposed for unit tests (pure helpers; the runStage flow is integration-tested).
-export const __test = { mergeLearningRules, composeKnowledge, renderTeamKnowledge };
+export const __test = {
+  mergeLearningRules,
+  composeKnowledge,
+  renderTeamKnowledge,
+  formatResumeAnswer,
+};

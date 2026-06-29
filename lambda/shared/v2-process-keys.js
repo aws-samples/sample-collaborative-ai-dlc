@@ -132,6 +132,12 @@ const buildStageRow = ({
   state = 'PENDING',
   attempt = 0,
   workerId = null,
+  // The headless CLI's conversation handle for this stage, persisted so a resume
+  // re-invocation can continue the SAME conversation: `cli` is the driver name
+  // (claude|kiro) and `cliSessionId` is the CLI-native session id. Both null on a
+  // stage that never spawned a CLI. See docs/v2-resume.md (park/resume).
+  cli = null,
+  cliSessionId = null,
   now,
 }) => ({
   ...stageKey(executionId, stageInstanceId),
@@ -144,6 +150,8 @@ const buildStageRow = ({
   state,
   attempt,
   workerId,
+  cli,
+  cliSessionId,
   runtimeError: null,
   startedAt: state === 'RUNNING' ? now : null,
   completedAt: null,

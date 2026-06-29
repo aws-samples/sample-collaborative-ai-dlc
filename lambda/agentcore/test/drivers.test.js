@@ -1,6 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { selectCli, getDriver, claudeDriver, kiroDriver, SUPPORTED_CLIS } from '../cli/drivers.js';
+import {
+  selectCli,
+  getDriver,
+  claudeDriver,
+  kiroDriver,
+  SUPPORTED_CLIS,
+  buildKiroListSessions,
+  parseLatestKiroSession,
+} from '../cli/drivers.js';
 import { runChild } from '../cli/spawn.js';
 
 describe('selectCli', () => {
@@ -65,24 +73,122 @@ describe('claude driver', () => {
       claudeDriver.envForAuth({ AWS_REGION: 'us-east-1' }).AWS_BEARER_TOKEN_BEDROCK,
     ).toBeUndefined();
   });
+
+  it('forces the session id up front when supplied (new-session-only)', () => {
+    const inv = claudeDriver.buildInvocation({
+      prompt: 'do it',
+      mcpConfigPath: '/cfg.json',
+      sessionId: 'sess-uuid-1',
+    });
+    const i = inv.args.indexOf('--session-id');
+    expect(i).toBeGreaterThan(-1);
+    expect(inv.args[i + 1]).toBe('sess-uuid-1');
+  });
+
+  it('omits --session-id when none is supplied', () => {
+    const inv = claudeDriver.buildInvocation({ prompt: 'x', mcpConfigPath: '/cfg.json' });
+    expect(inv.args).not.toContain('--session-id');
+  });
+
+  it('builds a resume invocation with --resume (never --session-id)', () => {
+    const inv = claudeDriver.buildResumeInvocation({
+      sessionId: 'sess-uuid-1',
+      answerMessage: 'the human said yes',
+      mcpConfigPath: '/cfg.json',
+      model: 'us.anthropic.claude-sonnet-4-6',
+    });
+    expect(inv.command).toBe('claude');
+    expect(inv.args).toEqual([
+      '--resume',
+      'sess-uuid-1',
+      '-p',
+      'the human said yes',
+      '--mcp-config',
+      '/cfg.json',
+      '--permission-mode',
+      'bypassPermissions',
+      '--model',
+      'us.anthropic.claude-sonnet-4-6',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+    ]);
+    expect(inv.args).not.toContain('--session-id');
+  });
 });
 
 describe('kiro driver', () => {
-  it('builds a headless chat invocation with trust-all-tools + mcp-config', () => {
-    const inv = kiroDriver.buildInvocation({ prompt: 'go', mcpConfigPath: '/cfg.json' });
+  it('builds a headless chat invocation with trust-all-tools + --agent (no --mcp-config)', () => {
+    const inv = kiroDriver.buildInvocation({ prompt: 'go', agentName: 'aidlc' });
     expect(inv.command).toBe('kiro-cli');
     expect(inv.args).toEqual([
       'chat',
       '--no-interactive',
       '--trust-all-tools',
-      '--mcp-config',
-      '/cfg.json',
+      '--agent',
+      'aidlc',
       'go',
     ]);
+    // Kiro 2.10 has no --mcp-config flag — must not be emitted.
+    expect(inv.args).not.toContain('--mcp-config');
   });
   it('passes the API key as auth env', () => {
     expect(kiroDriver.envForAuth({ KIRO_API_KEY: 'k' })).toEqual({ KIRO_API_KEY: 'k' });
     expect(kiroDriver.envForAuth({})).toEqual({});
+  });
+
+  it('builds a resume invocation with --agent + --resume-id', () => {
+    const inv = kiroDriver.buildResumeInvocation({
+      sessionId: 'kiro-sess-9',
+      answerMessage: 'the human said go',
+      agentName: 'aidlc',
+    });
+    expect(inv.command).toBe('kiro-cli');
+    expect(inv.args).toEqual([
+      'chat',
+      '--no-interactive',
+      '--trust-all-tools',
+      '--agent',
+      'aidlc',
+      '--resume-id',
+      'kiro-sess-9',
+      'the human said go',
+    ]);
+    expect(inv.args).not.toContain('--mcp-config');
+  });
+});
+
+describe('Kiro session capture', () => {
+  it('lists sessions as JSON', () => {
+    expect(buildKiroListSessions()).toEqual({
+      command: 'kiro-cli',
+      args: ['chat', '--list-sessions', '--format', 'json'],
+    });
+  });
+
+  it('returns the newest session id for the cwd (by updatedAt)', () => {
+    const stdout = JSON.stringify([
+      {
+        cwd: '/other',
+        sessions: [{ sessionId: 'nope', updatedAt: '2026-06-29T23:00:00Z' }],
+      },
+      {
+        cwd: '/mnt/workspace',
+        sessions: [
+          { sessionId: 'older', updatedAt: '2026-06-29T10:00:00Z' },
+          { sessionId: 'newest', updatedAt: '2026-06-29T12:00:00Z' },
+        ],
+      },
+    ]);
+    expect(parseLatestKiroSession(stdout, '/mnt/workspace')).toBe('newest');
+  });
+
+  it('returns null on unparseable output or no session for the cwd', () => {
+    expect(parseLatestKiroSession('not json', '/mnt/workspace')).toBeNull();
+    expect(parseLatestKiroSession(JSON.stringify([]), '/mnt/workspace')).toBeNull();
+    expect(
+      parseLatestKiroSession(JSON.stringify([{ cwd: '/x', sessions: [] }]), '/mnt/workspace'),
+    ).toBeNull();
   });
 });
 

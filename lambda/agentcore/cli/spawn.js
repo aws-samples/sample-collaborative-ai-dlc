@@ -41,3 +41,27 @@ export const runChild = ({
       }
     }
   });
+
+// Run a short command and CAPTURE its stdout — used for the Kiro post-run session
+// id capture (`--list-sessions --format json`), which the long-lived runChild
+// can't do (it inherits stdout to the log). Resolves { exitCode, stdout }; a
+// spawn error yields { exitCode: null, stdout: '' } so the caller degrades.
+export const captureChild = ({ command, args, env, cwd, spawnFn = spawn }) =>
+  new Promise((resolve) => {
+    const child = spawnFn(command, args, {
+      cwd,
+      env: { ...process.env, ...env },
+      shell: false,
+      stdio: ['ignore', 'pipe', 'inherit'],
+    });
+    let stdout = '';
+    child.stdout?.on('data', (c) => (stdout += c.toString()));
+    let settled = false;
+    const finish = (exitCode) => {
+      if (settled) return;
+      settled = true;
+      resolve({ exitCode, stdout });
+    };
+    child.on('error', () => finish(null));
+    child.on('close', (code) => finish(code));
+  });

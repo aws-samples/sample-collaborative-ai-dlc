@@ -10,6 +10,9 @@ import {
   neutralizeHarnessDir,
   buildStagePrompt,
   buildMcpConfig,
+  buildKiroAgentConfig,
+  materializeKiroAgent,
+  KIRO_AGENT_NAME,
   renderRulesDoc,
   materializeStage,
 } from '../stage-materializer.js';
@@ -190,5 +193,36 @@ describe('materializeStage (workspace write)', () => {
     const cfg = JSON.parse(await readFile(out.mcpConfigPath, 'utf8'));
     expect(cfg.mcpServers.aidlc.env.V2_EXECUTION_ID).toBe('e1');
     expect(await readFile(path.join(ws, '.aidlc', 'rules.md'), 'utf8')).toBe('RULES');
+  });
+});
+
+describe('buildKiroAgentConfig', () => {
+  it('wraps the same MCP server spec in a Kiro agent envelope', () => {
+    const cfg = buildKiroAgentConfig({
+      mcpEntry: '/opt/agentcore/mcp/index.js',
+      scope: { executionId: 'e1', intentId: 'i1' },
+      env: { V2_PROCESS_TABLE: 'proc' },
+    });
+    expect(cfg.name).toBe(KIRO_AGENT_NAME);
+    // Same server spec buildMcpConfig produces, just under the agent envelope.
+    expect(cfg.mcpServers.aidlc.command).toBe('node');
+    expect(cfg.mcpServers.aidlc.env.V2_EXECUTION_ID).toBe('e1');
+    expect(cfg.tools).toEqual(['*']);
+  });
+});
+
+describe('materializeKiroAgent (workspace write)', () => {
+  it('writes .kiro/agents/aidlc.json and returns the agent name', async () => {
+    const ws = await mkdtemp(path.join(tmpdir(), 'aidlc-kiro-'));
+    const name = await materializeKiroAgent({
+      workspaceDir: ws,
+      mcpEntry: '/opt/agentcore/mcp/index.js',
+      scope: { executionId: 'e1', intentId: 'i1' },
+      env: { V2_PROCESS_TABLE: 'proc' },
+    });
+    expect(name).toBe('aidlc');
+    const cfg = JSON.parse(await readFile(path.join(ws, '.kiro', 'agents', 'aidlc.json'), 'utf8'));
+    expect(cfg.name).toBe('aidlc');
+    expect(cfg.mcpServers.aidlc.env.V2_EXECUTION_ID).toBe('e1');
   });
 });

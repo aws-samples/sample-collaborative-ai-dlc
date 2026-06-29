@@ -79,6 +79,20 @@ describe('dispatchInvocation', () => {
     expect(r.body.error).toBe('boom');
   });
 
+  it('returns to Healthy after a parked run-stage dispatch (no longer pinned busy)', async () => {
+    const busy = createBusyTracker();
+    // ask_question now parks, so run-stage returns promptly with WAITING_FOR_HUMAN
+    // instead of blocking — busy.leave() fires and /ping can report Healthy.
+    await dispatchInvocation({
+      payload: { command: 'run-stage' },
+      handlers: {
+        runStage: async () => ({ ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'q-1' }),
+      },
+      busy,
+    });
+    expect(busy.status).toBe('Healthy');
+  });
+
   it('flips busy during the handler', async () => {
     const busy = createBusyTracker();
     let statusDuring;
