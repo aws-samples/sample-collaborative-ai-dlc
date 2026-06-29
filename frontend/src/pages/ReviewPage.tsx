@@ -7,7 +7,7 @@ import { useSprintEvents } from '@/hooks/useSprintEvents';
 import { useQuestionAnchor } from '@/hooks/useQuestionAnchor';
 import { useAnswerQuestion } from '@/hooks/useAnswerQuestion';
 import { questionAnchorId } from '@/lib/questionAnchor';
-import { projectsService, type Project } from '@/services/projects';
+import { useProjectCache, refreshProjectSprints } from '@/hooks/useProjectsCache';
 import { reviewsService } from '@/services/reviews';
 import { questionsService } from '@/services/questions';
 import {
@@ -151,7 +151,7 @@ export default function ReviewPage() {
     reloadReview,
   } = useSprint();
 
-  const [project, setProject] = useState<Project | null>(null);
+  const { project } = useProjectCache(projectId ?? null);
   const [prs, setPrs] = useState<PrInfo[]>([]);
   const [selectedPrId, setSelectedPrId] = useState<string>('');
   const [prComments, setPrComments] = useState<GitComment[]>([]);
@@ -194,15 +194,6 @@ export default function ReviewPage() {
       reload();
     }, [reload]),
   );
-
-  // Load project + graph
-  useEffect(() => {
-    if (projectId)
-      projectsService
-        .get(projectId)
-        .then(setProject)
-        .catch(() => {});
-  }, [projectId]);
 
   // Fetch the sprint graph (and its PRs) on sprintId only — a full graph refetch
   // is expensive and must not be triggered by realtime branch/baseBranch updates.
@@ -968,6 +959,7 @@ export default function ReviewPage() {
                     await sprintsService.update(projectId, sprintId, { phase: 'COMPLETED' });
                     // sprint.phaseChanged is a server-origin event emitted by
                     // the sprints lambda — clients never broadcast it.
+                    refreshProjectSprints(projectId);
                     await reload();
                   }
                 }}
