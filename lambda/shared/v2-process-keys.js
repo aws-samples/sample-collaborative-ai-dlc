@@ -21,6 +21,7 @@
 //     SK = HUMAN#<humanTaskId>        — a pending/answered human gate (question/approval)
 //     SK = METRIC#<ts>#<metricId>     — token usage / context-window samples
 //     SK = OUTPUT#<seq>               — agent output chunks (restore-on-reload)
+//     SK = SENSOR#<ts>#<sensorRunId>  — a deterministic sensor verdict for a stage
 //   GSI1PK = PROJECT#<projectId>      GSI1SK = STATUS#<status>#STARTED#<ts>#EXEC#<id>
 //     (list a project's executions by status, newest first)
 //   GSI2PK = EXEC#<executionId>       GSI2SK = TYPE#<type>#STATE#<state>#<id>
@@ -49,6 +50,10 @@ const humanTaskKey = (executionId, humanTaskId) => ({
 const metricKey = (executionId, timestamp, metricId) => ({
   pk: executionPk(executionId),
   sk: `METRIC#${timestamp}#${metricId}`,
+});
+const sensorRunKey = (executionId, timestamp, sensorRunId) => ({
+  pk: executionPk(executionId),
+  sk: `SENSOR#${timestamp}#${sensorRunId}`,
 });
 // Output chunks use a zero-padded monotonic sequence so SK sort == emit order
 // (a timestamp can collide for rapid chunks; a sequence can't).
@@ -230,6 +235,38 @@ const buildMetricRow = ({ executionId, stageInstanceId = null, metricId, metrics
   timestamp: now,
 });
 
+// A deterministic sensor verdict for a stage. `result` is the SENSOR_RESULT
+// enum (PASS/FAIL/INCONCLUSIVE/BLOCKED); `severity` carries the sensor's
+// advisory/blocking class so a reader knows whether the result held the stage.
+// `detail` is the sensor's structured output (heading counts, unreferenced
+// artifacts, violations, …) and `held` records whether this verdict blocked.
+const buildSensorRow = ({
+  executionId,
+  stageInstanceId = null,
+  sensorRunId,
+  sensorId,
+  kind,
+  severity,
+  result,
+  held = false,
+  detail = null,
+  now,
+}) => ({
+  ...sensorRunKey(executionId, now, sensorRunId),
+  ...executionTypeStateIndex({ executionId, type: 'SENSOR', state: result, id: sensorRunId }),
+  type: 'SensorRun',
+  executionId,
+  stageInstanceId,
+  sensorRunId,
+  sensorId,
+  kind,
+  severity,
+  result,
+  held,
+  detail,
+  timestamp: now,
+});
+
 module.exports = {
   META,
   executionPk,
@@ -239,6 +276,7 @@ module.exports = {
   eventKey,
   humanTaskKey,
   metricKey,
+  sensorRunKey,
   outputKey,
   outputSeq,
   projectStatusIndex,
@@ -252,5 +290,6 @@ module.exports = {
   buildEventRow,
   buildHumanTaskRow,
   buildMetricRow,
+  buildSensorRow,
   buildOutputRow,
 };

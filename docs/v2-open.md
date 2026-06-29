@@ -34,22 +34,8 @@ home for **promotion** — an approved project learning can be promoted into a
 `default`/SYSTEM library block (team-knowledge tier / a rule layer) so it crosses
 projects, reusing the building-blocks CRUD path.
 
-## Verification axes not yet executed
+## Verification axes
 
-The execution-plan resolver validates these on a stage, but `run-stage` does not
-yet run them:
-
-- **Sensors** (`stage.sensors[]`) — deterministic checks (a command + a `bun`
-  script). Runtime needs to fetch the produced artifact from Neptune and feed it
-  to the script as JSON in/out (so the script never touches a filesystem),
-  honouring each sensor's `severity` (advisory vs blocking). A salvageable
-  script-runner + script-contract exist in git history (backup commit `96dd3f4`:
-  `v2-script-runner.js`, `shared/v2-script-contract.js`).
-- **Reviewer** (`stage.reviewer` + `reviewerMaxIterations`) — a clean-room
-  sub-agent that judges the stage output READY / NOT-READY, looping up to the
-  budget. It must run with the **read-only MCP subset** (lookup/get/search), never
-  the write surface. `handlersForRole(..., 'reviewer')` already gates the tools;
-  the runner loop is unbuilt.
 - **humanValidation** — the flat `'none'`/`'required'` gate. Today the annex tells
   the agent not to render an in-stage approval prompt and to finish with a
   `send_output` summary; the actual human approval is expected to be owned by the
@@ -71,43 +57,3 @@ scope check), a realtime-token endpoint for an intent, and a hook that subscribe
 and reacts (notify on `agent.question`, advance state on `agent.stage` /
 `agent.execution`, stream `agent.output`, show usage from `agent.metric`). The v1
 `useObservabilityEvents` hook is the pattern to mirror.
-
-## Runtime learning loop — built
-
-Both halves of the runtime learning loop now accrue per-project in Neptune (hung
-off the `Project` vertex, so a learning recorded in one intent steers every later
-intent in the project — business data kept where the rest of the business graph
-is, not in the blocks table). Provenance (`project_id`, `created_by_intent_id`,
-execution/stage) is stamped from the trusted container ENV on every write, never
-agent args — spoof-proof like artifacts. Two steering KINDS:
-
-**Team knowledge (reference prose).** `TeamKnowledge` vertices
-(`Project --HAS_KNOWLEDGE--> TeamKnowledge`).
-
-- **Write** — the author agent calls `record_team_knowledge` when it learns
-  something durable (a convention, decision, constraint, gotcha).
-- **Read** — `run-stage` fetches the project's knowledge for the stage's agent
-  (+ the `shared` corpus) and injects it into the prompt's `## Reference
-knowledge` section; the read-only `get_team_knowledge` tool (also granted to
-  reviewers) re-reads on demand. This also fixed the methodology tier, whose read
-  path was silently dead (`loadLibrary` never loaded `KNOWLEDGE`).
-
-**Learning rules (binding guardrails).** `LearningRule` vertices
-(`Project --HAS_LEARNING--> LearningRule`) at the `team-learnings` /
-`project-learnings` layers. Where knowledge steers by reference, a rule steers by
-**precedence**.
-
-- **Write** — the author agent calls `record_learning_rule({ id, title, content,
-layer })` for an ALWAYS/NEVER constraint that must bind later work.
-- **Read / apply** — `run-stage` reads the project's learning rules and merges
-  them into `workflow.ruleRefs` + `library.rulesById` _before_ the execution-plan
-  resolver runs, so the **existing** resolver interleaves them into each stage's
-  rule stack at priority 1.5 / 2.5 (no new precedence logic — the chain in
-  `compile.js` already names these layers). They render into `rules.md` in
-  resolved order; `get_learning_rules` lists them on demand. An authored library
-  rule of the same id is never overridden by an accrued one.
-
-What remains is **curation / promotion**, not plumbing: accrued knowledge and
-rules are append-only and unvetted per project. That work is folded into the
-trigger / resume lambda above (the curation gate + cross-project promotion) — to
-be tackled when that lambda is implemented.

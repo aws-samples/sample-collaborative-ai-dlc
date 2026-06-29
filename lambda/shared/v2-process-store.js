@@ -26,6 +26,7 @@ const {
   buildEventRow,
   buildHumanTaskRow,
   buildMetricRow,
+  buildSensorRow,
   buildOutputRow,
 } = require('./v2-process-keys.js');
 
@@ -280,6 +281,34 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return item;
   };
 
+  // Persist a deterministic sensor verdict for a stage. Append-only (each run is
+  // a distinct row keyed by ts+id), so a re-run never clobbers a prior verdict.
+  const recordSensorRun = async ({
+    executionId,
+    stageInstanceId,
+    sensorId,
+    kind,
+    severity,
+    result,
+    held = false,
+    detail = null,
+  }) => {
+    const item = buildSensorRow({
+      executionId,
+      stageInstanceId,
+      sensorRunId: nextId(),
+      sensorId,
+      kind,
+      severity,
+      result,
+      held,
+      detail,
+      now: now(),
+    });
+    await ddb.send(new PutCommand({ TableName: table(), Item: item }));
+    return item;
+  };
+
   // Append an agent output chunk for restore-on-reload. The sequence is an atomic
   // counter on the META row (ADD), so concurrent chunks never collide and SK sort
   // == emit order. The live copy is broadcast over the websocket by the caller.
@@ -328,6 +357,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       events: records.filter((r) => r.sk.startsWith('EVENT#')),
       humanTasks: records.filter((r) => r.sk.startsWith('HUMAN#')),
       metrics: records.filter((r) => r.sk.startsWith('METRIC#')),
+      sensorRuns: records.filter((r) => r.sk.startsWith('SENSOR#')),
       outputs: records.filter((r) => r.sk.startsWith('OUTPUT#')),
     };
   };
@@ -343,6 +373,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     getHumanTask,
     answerHumanTask,
     recordMetric,
+    recordSensorRun,
     appendOutput,
     getOutputs,
     getExecutionRecords,

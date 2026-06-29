@@ -25,6 +25,17 @@ RUN curl -fsSL https://cli.kiro.dev/install | bash \
     && rm -rf /root/.local
 RUN npm install -g @anthropic-ai/claude-code
 
+# Bun — the runtime the deterministic CODE sensors (linter, type-check) run on.
+# They shell out to `bunx eslint`/`bunx tsc` against the workspace checkout, so
+# the binary must be on PATH for the script-kind sensor runner. Document-shape
+# sensors run in-process (no bun) — this is only for the code-quality axis.
+RUN curl -fsSL https://bun.sh/install | bash \
+    && mkdir -p /opt/bun \
+    && cp -a /root/.bun/bin /opt/bun/bin \
+    && ln -sf /opt/bun/bin/bun /usr/local/bin/bun \
+    && ln -sf /opt/bun/bin/bunx /usr/local/bin/bunx \
+    && rm -rf /root/.bun
+
 # Install the agentcore package deps (its own package.json — isolated).
 COPY agentcore/package.json /opt/agentcore/package.json
 RUN cd /opt/agentcore && npm install --omit=dev
@@ -38,12 +49,12 @@ COPY shared/ /opt/shared/
 # where they are installed. Symlink so the shared helpers see the same deps.
 RUN ln -s /opt/agentcore/node_modules /opt/shared/node_modules
 
-RUN mkdir -p /workspace && chown -R node:node /workspace /opt/agentcore /opt/shared /opt/kiro
+RUN mkdir -p /workspace && chown -R node:node /workspace /opt/agentcore /opt/shared /opt/kiro /opt/bun
 
 WORKDIR /workspace
 USER node
 ENV HOME=/home/node \
-    PATH=/opt/kiro/bin:/usr/local/bin:/usr/bin:/bin \
+    PATH=/opt/kiro/bin:/opt/bun/bin:/usr/local/bin:/usr/bin:/bin \
     V2_WORKSPACE_DIR=/workspace \
     V2_MCP_ENTRY=/opt/agentcore/mcp/index.js
 

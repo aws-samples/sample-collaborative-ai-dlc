@@ -13,7 +13,9 @@ const FREETEXT =
   process.argv[2] ||
   'Build a minimal URL shortener: anonymous shorten + fast redirect; signed-in users see click counts. MVP scope, ~1000 rps, p99<50ms.';
 
-const doc = DynamoDBDocumentClient.from(new DynamoDBClient({ region: process.env.AWS_REGION || 'us-east-1' }));
+const doc = DynamoDBDocumentClient.from(
+  new DynamoDBClient({ region: process.env.AWS_REGION || 'us-east-1' }),
+);
 
 const { Items = [] } = await doc.send(
   new QueryCommand({

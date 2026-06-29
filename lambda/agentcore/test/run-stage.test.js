@@ -59,6 +59,7 @@ const spyStore = () => {
     updateExecution: rec('updateExecution'),
     updateStageState: rec('updateStageState'),
     appendEvent: rec('appendEvent'),
+    recordSensorRun: rec('recordSensorRun'),
   };
 };
 
@@ -454,5 +455,83 @@ describe('runStage — failure paths (always records terminal state)', () => {
     const res = await runStage(baseArgs, deps);
     expect(res).toMatchObject({ ok: false, reason: 'not_implemented' });
     expect(spawned).toBe(false);
+  });
+});
+
+describe('runStage — deterministic sensors', () => {
+  const okSpawn = () => ({
+    on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
+    stdin: { end() {} },
+  });
+  // A library whose stage declares a graph sensor + the SENSOR block it resolves.
+  const libWithSensor = (severity) => {
+    const lib = library();
+    lib.stagesById['requirements-analysis'].sensors = ['required-sections'];
+    lib.sensorsById = {
+      'required-sections': {
+        id: 'required-sections',
+        command: 'bun <runtime-managed>/tools/aidlc-sensor-required-sections.ts',
+        runtime: 'bun',
+        severity,
+        matches: '**/aidlc-docs/**',
+      },
+    };
+    return lib;
+  };
+
+  // A graph whose lookupArtifacts traversal returns one row with the given
+  // content. A chainable proxy absorbs any gremlin step and yields the row at
+  // toList()/next() — robust to the exact traversal shape.
+  const graphReturning = (content) => async () => {
+    const rows = [{ id: ['a1'], content: [content], artifact_type: ['requirements-analysis'] }];
+    const proxy = new Proxy(
+      {},
+      {
+        get(_t, prop) {
+          // Must NOT be thenable — `await openGraph()` would hang otherwise.
+          if (prop === 'then' || typeof prop === 'symbol') return undefined;
+          if (prop === 'toList') return async () => rows;
+          if (prop === 'next') return async () => ({ value: rows[0] });
+          if (prop === 'hasNext') return async () => true;
+          return () => proxy;
+        },
+      },
+    );
+    return proxy;
+  };
+
+  it('an advisory sensor that does not PASS records a verdict but never fails the stage', async () => {
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      loadLibrary: async () => ({ workflow: workflow(), library: libWithSensor('advisory') }),
+      // No openGraph → graph sensor BLOCKED, but advisory never holds.
+    });
+    const res = await runStage(baseArgs, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(deps.store.calls.some((c) => c[0] === 'recordSensorRun')).toBe(true);
+  });
+
+  it('a blocking sensor that FAILS holds the stage (sensor_blocked, FAILED)', async () => {
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      loadLibrary: async () => ({ workflow: workflow(), library: libWithSensor('blocking') }),
+      // Graph returns content with < 2 H2 headings → required-sections FAIL.
+      openGraph: graphReturning('## only one heading\n\nbody'),
+    });
+    const res = await runStage(baseArgs, deps);
+    expect(res).toMatchObject({ ok: false, reason: 'sensor_blocked' });
+    expect(
+      deps.store.calls.some((c) => c[0] === 'updateStageState' && c[1].state === 'FAILED'),
+    ).toBe(true);
+  });
+
+  it('a blocking sensor that PASSES lets the stage succeed', async () => {
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      loadLibrary: async () => ({ workflow: workflow(), library: libWithSensor('blocking') }),
+      openGraph: graphReturning('## A\n\nx\n\n## B\n\ny'),
+    });
+    const res = await runStage(baseArgs, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
   });
 });

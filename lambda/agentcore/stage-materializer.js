@@ -72,6 +72,7 @@ export const buildStagePrompt = ({
   stageBody = '',
   agentPersona = '',
   knowledge = '',
+  conductor = '',
 }) => {
   const sections = [
     `# Stage: ${stage.stageId ?? 'unknown'} (phase: ${stage.phase ?? 'unphased'})`,
@@ -83,6 +84,13 @@ export const buildStagePrompt = ({
   // The harness binding goes FIRST — it must be read before the filesystem-laden
   // stage prose so the agent translates rather than obeys it literally.
   sections.push('', MCP_EXECUTION_ANNEX);
+  // The conductor persona (upstream execution-quality doctrine) — loaded from the
+  // pinned runtime snapshot so the quality guidance can't drift from upstream.
+  // The annex already declared it authoritative for WORK QUALITY (not mechanics);
+  // injecting the real file means the agent reads upstream's actual craft notes,
+  // not a hand-distilled paraphrase. Neutralized for the {{HARNESS_DIR}} token.
+  if (conductor)
+    sections.push('', '## Execution quality (conductor)', neutralizeHarnessDir(conductor));
   if (agentPersona) sections.push('', '## Your role', neutralizeHarnessDir(agentPersona));
   sections.push(
     '',
@@ -156,6 +164,7 @@ export const materializeStage = async ({
   stageBody,
   agentPersona,
   knowledge,
+  conductor = '',
   rulesDoc,
   mcpEntry,
   scope,
@@ -170,6 +179,6 @@ export const materializeStage = async ({
   const mcpConfigPath = path.join(aidlcDir, 'mcp-config.json');
   await writeFile(mcpConfigPath, JSON.stringify(mcpConfig, null, 2), 'utf8');
 
-  const prompt = buildStagePrompt({ stage, stageBody, agentPersona, knowledge });
+  const prompt = buildStagePrompt({ stage, stageBody, agentPersona, knowledge, conductor });
   return { prompt, mcpConfigPath, rulesPath: rulesDoc ? path.join(aidlcDir, 'rules.md') : null };
 };

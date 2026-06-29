@@ -12,15 +12,16 @@ store, no `bun` tools. Everything below exists to make that work faithfully.
 
 ## The pieces
 
-| Component             | File                                                                 | Role                                                                                                                       |
-| --------------------- | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| MCP execution annex   | `lambda/agentcore/prompts/mcp-execution-annex.md`                    | Binds upstream stage prose (written for a filesystem + `bun` harness) onto our MCP tools. Injected first in the prompt.    |
-| Stage prompt assembly | `lambda/agentcore/stage-materializer.js`                             | Builds the prompt: annex → persona → stage body → inputs/outputs → rules → output contract. Neutralizes `{{HARNESS_DIR}}`. |
-| MCP server            | `lambda/agentcore/mcp/{index,server,graph-writer,process-bridge}.js` | The agent↔app contract: business reads/writes to Neptune, collaboration/process to DynamoDB + websocket.                   |
-| CLI drivers           | `lambda/agentcore/cli/{drivers,discover,spawn}.js`                   | Headless invocation for claude/kiro behind one interface.                                                                  |
-| Auth resolver         | `lambda/agentcore/auth-resolver.js`                                  | Loads the Bedrock bearer token / Kiro key from SSM into the CLI env at startup.                                            |
-| Model resolver        | `lambda/agentcore/model-resolver.js`                                 | Picks the model (project selection > agent override > env) and resolves tier aliases.                                      |
-| Inspect command       | `lambda/agentcore/commands/inspect.js`                               | Read-only (and scoped-drop) access to private Neptune through the runtime, for verification + cleanup.                     |
+| Component             | File                                                                        | Role                                                                                                                                                                                         |
+| --------------------- | --------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| MCP execution annex   | `lambda/agentcore/prompts/mcp-execution-annex.md`                           | Binds upstream stage prose (written for a filesystem + `bun` harness) onto our MCP tools. Injected first in the prompt. Splits methodology docs (→ graph) from source code (→ working tree). |
+| Stage prompt assembly | `lambda/agentcore/stage-materializer.js`                                    | Builds the prompt: annex → conductor → persona → stage body → inputs/outputs → rules → output contract. Neutralizes `{{HARNESS_DIR}}`.                                                       |
+| Sensor runner         | `lambda/agentcore/sensor-runner.js` + `lambda/shared/v2-sensor-contract.js` | Runs a stage's deterministic sensors after the agent: graph sensors in-process over Neptune content, script sensors spawned (`bun`) against the workspace. Records a `SensorRun` verdict.    |
+| MCP server            | `lambda/agentcore/mcp/{index,server,graph-writer,process-bridge}.js`        | The agent↔app contract: business reads/writes to Neptune, collaboration/process to DynamoDB + websocket.                                                                                     |
+| CLI drivers           | `lambda/agentcore/cli/{drivers,discover,spawn}.js`                          | Headless invocation for claude/kiro behind one interface.                                                                                                                                    |
+| Auth resolver         | `lambda/agentcore/auth-resolver.js`                                         | Loads the Bedrock bearer token / Kiro key from SSM into the CLI env at startup.                                                                                                              |
+| Model resolver        | `lambda/agentcore/model-resolver.js`                                        | Picks the model (project selection > agent override > env) and resolves tier aliases.                                                                                                        |
+| Inspect command       | `lambda/agentcore/commands/inspect.js`                                      | Read-only (and scoped-drop) access to private Neptune through the runtime, for verification + cleanup.                                                                                       |
 
 ## The MCP execution annex (the harness binding)
 
@@ -34,7 +35,10 @@ runtime as a **new harness** in upstream's harness-neutral + binding-annex model
 
 The annex is injected **first** in every stage prompt and:
 
-1. Declares the environment — no filesystem, MCP tools are the only I/O.
+1. Declares the environment — no **methodology-document** filesystem (those go to
+   the graph via `create_artifact`), but the working directory IS the project's
+   real git checkout, so **source code** is written to the working tree normally.
+   MCP tools are the only I/O for methodology + collaboration.
 2. Provides a **translation table** keyed on upstream vocabulary:
    - "create `aidlc-docs/.../X.md`" → `create_artifact(artifactType=X)` + `link_artifacts`
    - "read `aidlc-docs/...`" / inputs → `get_artifact` / `lookup_artifacts` / `get_intent_graph` / `search_graph`
@@ -46,7 +50,11 @@ The annex is injected **first** in every stage prompt and:
    MECHANICS (paths, tools, state, gates). Where they conflict, the annex wins.
 4. Has a tight "execution quality" section distilled from upstream's
    `conductor.md` (ask before assuming, scan for vagueness, resolve contradictions,
-   adopt the lead persona, scale depth to complexity).
+   adopt the lead persona, scale depth to complexity). The **actual**
+   `conductor.md` is also injected verbatim (neutralized) right after the annex —
+   loaded from the pinned runtime snapshot (`loadConductor`) so the quality
+   doctrine can't drift from upstream; the annex's distilled section is the
+   floor, the real file the source of truth.
 
 The closing **output contract** enforces order: write every artifact via
 `create_artifact` _first_, then `send_output` a summary that may only describe
@@ -163,6 +171,37 @@ The container (`http-server.js`) injects `broadcast` into both commands; the MCP
 server injects it into the process bridge. The frontend consumer of the
 `intent:` channel is the next step (the realtime-token layer still scopes only
 `sprint:` / `project:` channels today; see [`v2-open.md`](./v2-open.md)).
+
+## Deterministic sensors (the post-stage verification axis)
+
+After a stage's agent finishes successfully, `run-stage` runs the stage's
+declared `sensors[]` (`sensor-runner.js`) and records a `SensorRun` verdict per
+sensor (+ an `agent.note` broadcast). The decision logic is pure and shared
+(`shared/v2-sensor-contract.js`); the runner is the I/O shell.
+
+There are **two execution kinds**, and the split is forced by _where the thing a
+sensor inspects actually lives_ — which differs because this runtime has two
+separate stores:
+
+- **`graph` sensors** — `required-sections`, `upstream-coverage`. They inspect a
+  **methodology document**, which lives in Neptune (`artifact.content`), not on
+  disk. So the runner reads the produced artifact's content via the graph-writer
+  and evaluates **in-process** — the upstream `.ts` (which `readFileSync`s a
+  file) is reimplemented faithfully in the contract (`evalRequiredSections`
+  ports the H2-count + `units:` DAG check; `evalUpstreamCoverage` the
+  consumes-coverage regex). No `bun`, no spawn, no filesystem.
+- **`script` sensors** — `linter`, `type-check`. They inspect **source code**,
+  which DOES exist on disk: the real git checkout `init-ws` cloned into the
+  workspace. The runner globs the workspace for files matching the sensor's
+  `matches`, materializes the sensor's `.ts` from S3 (its `scriptRef`), and
+  spawns it (`bun`) once per matching file. Inert until a code-producing stage
+  writes to the workspace (an empty glob → INCONCLUSIVE).
+
+`severity` governs the consequence: an `advisory` sensor records a note and never
+holds; a `blocking` sensor that does not PASS fails the stage (`sensor_blocked`).
+This is why the execution annex now distinguishes **methodology documents →
+`create_artifact` (graph)** from **source code → the working tree**: a code
+sensor needs the agent to actually write code to disk.
 
 ## Verification
 

@@ -19,7 +19,7 @@ source (`awslabs/aidlc-workflows`):
 | `AGENT`     | A domain-expert persona (lead/support/reviewer). Carries `modelOverride`, `examples`, optional `tools`.                                                                                        |
 | `SCOPE`     | A run profile: `depth` + orthogonal `testStrategy` + auto-select `keywords`. Decides which stages execute.                                                                                     |
 | `RULE`      | A layered guardrail on V2's chain `org → team → team-learnings → project → project-learnings → phase → stage`.                                                                                 |
-| `SENSOR`    | A deterministic check (`command` + glob `matches`); its executable script rides in `scriptRef`.                                                                                                |
+| `SENSOR`    | A deterministic check (`command` + glob `matches`); its executable script rides in `scriptRef`. Executed post-stage by the runtime (see [`v2-agent.md`](./v2-agent.md)).                       |
 | `ARTIFACT`  | A named output that wires stages (produces→consumes). Derived from the stage graph, so it can't drift.                                                                                         |
 | `KNOWLEDGE` | Per-agent (or `shared`) methodology corpus. `tier: methodology` ships; `team` is accrued at runtime.                                                                                           |
 | `SKILL`     | A user-invocable runner pack (V2 `SKILL.md`): `argumentHint`, `userInvocable`, `classification`.                                                                                               |
@@ -124,7 +124,11 @@ The dividing line is **"would a user tailor this?"**
   a user never edits to customize a workflow. Seeded to the commit-pinned S3
   snapshot `aidlc-runtime/<ref>/…` + a manifest, so execution loads the exact
   files this baseline was seeded from and injects the right one at the right
-  time.
+  time. Today the execution layer consumes **`conductor.md`** (injected into every
+  stage prompt — see [`v2-agent.md`](./v2-agent.md)) and the per-sensor scripts
+  under `core/tools/aidlc-sensor-*.ts` (`scriptRef`, run by the script-kind sensor
+  runner); the engine tools and hooks are seeded but inert (our MCP runtime + the
+  v2 process table replace upstream's filesystem/`bun` engine).
 
 ### Seed invocation
 

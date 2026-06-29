@@ -154,6 +154,12 @@ export const loadLibrary = async ({ workflowId, workflowVersion }) => {
 // Fetch the markdown body for a block (its instructions/prose) from S3.
 export const loadBlockBody = async (block) => getObjectText(block?.bodyRef?.s3Key);
 
+// Fetch a sensor block's executable check script from S3 (its `scriptRef`).
+// Returns '' when the block carries no script. The seed content-addresses the
+// upstream `core/tools/aidlc-sensor-<id>.ts` here; a `script` sensor's runner
+// materializes it to the workspace and spawns it against the checked-out code.
+export const loadBlockScript = async (block) => getObjectText(block?.scriptRef?.s3Key);
+
 // Fetch the runtime snapshot manifest for a pinned ref.
 export const loadRuntimeManifest = async (ref) => {
   const text = await getObjectText(`aidlc-runtime/${ref}/manifest.json`);
@@ -163,5 +169,12 @@ export const loadRuntimeManifest = async (ref) => {
 // Fetch a single runtime file's content from the pinned snapshot.
 export const loadRuntimeFile = async (ref, repoPath) =>
   getObjectText(`aidlc-runtime/${ref}/${repoPath}`);
+
+// Fetch the conductor persona (execution-quality doctrine) from the pinned
+// runtime snapshot. The stage prompt injects it so the quality guidance can
+// never drift from upstream's authored `conductor.md`. '' when the ref/file is
+// absent (the annex's distilled quality section still applies).
+export const loadConductor = async (ref) =>
+  ref ? getObjectText(`aidlc-runtime/${ref}/core/aidlc-common/conductor.md`) : '';
 
 export const __test = { assembleWorkflow, keyById, streamToString };

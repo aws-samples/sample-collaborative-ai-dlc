@@ -124,7 +124,8 @@ const main = async () => {
   const { initWs } = await import('./commands/init-ws.js');
   const { runStage } = await import('./commands/run-stage.js');
   const { inspect } = await import('./commands/inspect.js');
-  const { loadLibrary, loadBlockBody } = await import('./block-loader.js');
+  const { loadLibrary, loadBlockBody, loadBlockScript, loadConductor } =
+    await import('./block-loader.js');
   const { materializeStage, renderRulesDoc } = await import('./stage-materializer.js');
   const { checkoutRepos } = await import('./workspace.js');
   const { discoverInstalledClis } = await import('./cli/discover.js');
@@ -155,6 +156,8 @@ const main = async () => {
           store,
           loadLibrary,
           loadBlockBody,
+          loadBlockScript,
+          loadConductor,
           materializeStage,
           renderRulesDoc,
           mcpEntry,

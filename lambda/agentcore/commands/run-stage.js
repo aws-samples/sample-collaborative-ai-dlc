@@ -18,6 +18,7 @@ import { selectCli, getDriver } from '../cli/drivers.js';
 import { runChild } from '../cli/spawn.js';
 import { resolveStageModel } from '../model-resolver.js';
 import { createGraphWriter } from '../mcp/graph-writer.js';
+import { createSensorRunner } from '../sensor-runner.js';
 
 const require = createRequire(import.meta.url);
 const { buildExecutionPlan } = require('../../shared/v2-execution-plan.js');
@@ -117,6 +118,80 @@ const composeKnowledge = (methodology, teamRows) => {
   return parts.join('\n\n---\n\n');
 };
 
+// Run the stage's deterministic sensors after the agent finishes. Records a
+// SensorRun verdict + broadcasts an `agent.note` per sensor. Returns a
+// human-readable reason string when a BLOCKING sensor held the stage, else null.
+// `graph` sensors need a graph-writer; we open the same private graph the rest
+// of run-stage uses (best-effort — an unreachable graph yields INCONCLUSIVE
+// graph verdicts, never a crash).
+const runStageSensors = async ({
+  stage,
+  stageInstanceId,
+  executionId,
+  projectId,
+  intentId,
+  openGraph,
+  loadBlockScript,
+  workspaceDir,
+  env,
+  spawnFn,
+  store,
+  publish,
+}) => {
+  let graph = null;
+  if (openGraph) {
+    try {
+      const g = await openGraph();
+      graph = createGraphWriter({ g, scope: { projectId, intentId, executionId } });
+    } catch {
+      graph = null;
+    }
+  }
+  const runner = createSensorRunner({
+    graph,
+    loadBlockScript,
+    workspaceDir,
+    // The upstream sensor commands embed {{HARNESS_DIR}}; the materializer
+    // already neutralizes it in prose, but the script-argv builder ignores the
+    // command path entirely (it runs the S3-materialized script), so no
+    // substitution is needed here. Pass-through for future shell-form sensors.
+    substitutions: {},
+    spawnFn,
+    childEnv: env,
+  });
+
+  const verdicts = await runner.runStageSensors({
+    sensors: stage.sensors ?? [],
+    outputArtifacts: stage.outputArtifacts ?? [],
+    inputArtifacts: stage.inputArtifacts ?? [],
+    stageId: stage.stageId,
+  });
+
+  const heldReasons = [];
+  for (const v of verdicts) {
+    await store
+      .recordSensorRun({
+        executionId,
+        stageInstanceId,
+        sensorId: v.sensorId,
+        kind: v.kind,
+        severity: v.severity,
+        result: v.result,
+        held: v.held,
+        detail: v.detail,
+      })
+      .catch(() => {});
+    await publish({
+      action: 'agent.note',
+      stageInstanceId,
+      note: `sensor ${v.sensorId}: ${v.result}${v.held ? ' (blocking)' : ''}`,
+      kind: 'sensor',
+    });
+    if (v.held) heldReasons.push(`${v.sensorId}=${v.result}`);
+  }
+  return heldReasons.length ? heldReasons.join(', ') : null;
+};
+
 export const runStage = async (
   {
     projectId,
@@ -136,6 +211,8 @@ export const runStage = async (
     store,
     loadLibrary,
     loadBlockBody,
+    loadBlockScript = async () => '',
+    loadConductor = async () => '',
     materializeStage,
     renderRulesDoc,
     mcpEntry,
@@ -258,9 +335,10 @@ export const runStage = async (
   // 4. Materialize the workspace: stage body + persona + knowledge + rules.
   const stageBlock = library.stagesById[stageId] ?? {};
   const agentBlock = library.agentsById[stage.agentRef] ?? null;
-  const [stageBody, agentPersona] = await Promise.all([
+  const [stageBody, agentPersona, conductor] = await Promise.all([
     loadBlockBody(stageBlock).catch(() => ''),
     agentBlock ? loadBlockBody(agentBlock).catch(() => '') : Promise.resolve(''),
+    loadConductor(env.AIDLC_REPO_REF).catch(() => ''),
   ]);
   // Knowledge has two tiers: the authored methodology (library blocks) and the
   // project's accrued team knowledge (already read from Neptune above). Both are
@@ -296,6 +374,7 @@ export const runStage = async (
     stageBody,
     agentPersona,
     knowledge,
+    conductor,
     rulesDoc,
     mcpEntry,
     scope: stageScope,
@@ -329,7 +408,32 @@ export const runStage = async (
   const exitCode = result?.exitCode ?? 0;
   if (exitCode !== 0) return fail(stageInstanceId, 'cli_nonzero_exit', String(exitCode));
 
-  // 6. Terminal success.
+  // 6. Deterministic sensors — the verification axis that runs AFTER the agent.
+  // Graph sensors evaluate the produced artifacts' content in-process; script
+  // sensors spawn against the workspace checkout. Advisory verdicts record a
+  // note and never hold; a BLOCKING sensor that did not PASS fails the stage.
+  // Best-effort wiring: a sensor subsystem error never masks a successful run.
+  if ((stage.sensors ?? []).length > 0) {
+    const held = await runStageSensors({
+      stage,
+      stageInstanceId,
+      executionId,
+      projectId,
+      intentId,
+      openGraph,
+      loadBlockScript,
+      workspaceDir,
+      env,
+      spawnFn,
+      store,
+      publish,
+    }).catch(() => null);
+    if (held) {
+      return fail(stageInstanceId, 'sensor_blocked', held);
+    }
+  }
+
+  // 7. Terminal success.
   await store.updateStageState({
     executionId,
     stageInstanceId,
