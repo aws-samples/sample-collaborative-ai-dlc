@@ -51,6 +51,11 @@ const STATUS_CONFIG: Record<string, { icon: typeof Loader2; className: string; l
     className: 'bg-agent-error/15 text-agent-error border-agent-error/30',
     label: 'Failed',
   },
+  passed: {
+    icon: CheckCircle2,
+    className: 'bg-agent-success/15 text-agent-success border-agent-success/30',
+    label: 'Passed',
+  },
 };
 
 function timeAgo(ts: number): string {

@@ -46,6 +46,7 @@ export type PendingQuestionsMap = Record<string, number>;
 export function useObservability() {
   const [projects, setProjects] = useState<ProjectAgentInfo[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(true);
+  const [projectsError, setProjectsError] = useState<string | null>(null);
   const [activityFeed, setActivityFeed] = useState<ActivityEvent[]>([]);
   const [lastToolMap, setLastToolMap] = useState<LastToolMap>({});
   const [pendingQuestions, setPendingQuestions] = useState<PendingQuestionsMap>({});
@@ -99,10 +100,11 @@ export function useObservability() {
     });
   }, []);
 
-  const refreshProjects = useCallback(async () => {
+  const refreshProjects = useCallback(async (forceRefresh = false) => {
     try {
-      const infos = await fetchProjectInfos(l2.current);
+      const infos = await fetchProjectInfos(l2.current, { forceRefresh });
       setProjects(infos);
+      setProjectsError(null);
       projectsRef.current = infos;
 
       const newVelocityMap: Record<string, VelocityMetrics> = {};
@@ -152,18 +154,26 @@ export function useObservability() {
       });
     } catch (e) {
       console.error('[Observability] projects fetch failed:', e);
+      setProjectsError(e instanceof Error ? e.message : 'Failed to load projects');
     } finally {
       setProjectsLoading(false);
     }
   }, []);
 
-  const refresh = useCallback(() => refreshProjects(), [refreshProjects]);
+  const refresh = useCallback(() => refreshProjects(true), [refreshProjects]);
 
   useEffect(() => {
-    refresh();
-    const timer = setInterval(refreshProjects, 20000);
+    refreshProjects();
+    const timer = setInterval(() => refreshProjects(), 20000);
     return () => clearInterval(timer);
-  }, [refresh, refreshProjects]);
+  }, [refreshProjects]);
+
+  const refreshOnEvent = useCallback(() => {
+    // Agent lifecycle events must FORCE a refresh: the non-forced path can return
+    // cached data and leave the cards, active count, phase, and detail state stale
+    // until the cache TTL expires.
+    refreshProjects(true);
+  }, [refreshProjects]);
 
   useObservabilityEvents({
     addEvent,
@@ -172,7 +182,7 @@ export function useObservability() {
     setLastToolMap,
     setPendingQuestions,
     setStuckDetections,
-    refreshProjects,
+    refreshProjects: refreshOnEvent,
     projectsRef,
     l2,
     activeSprintId,
@@ -181,6 +191,7 @@ export function useObservability() {
   return {
     projects,
     projectsLoading,
+    projectsError,
     activityFeed,
     lastToolMap,
     pendingQuestions,
