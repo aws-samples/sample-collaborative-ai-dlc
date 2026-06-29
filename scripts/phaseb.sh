@@ -7,6 +7,8 @@
 #   ./scripts/phaseb.sh init-ws          # B1/B2: bootstrap an intent (reaches Neptune)
 #   ./scripts/phaseb.sh state            # inspect the v2 execution rows in DynamoDB
 #   ./scripts/phaseb.sh run-stage <id>   # B3: run one stage (default: intent-capture)
+#   ./scripts/phaseb.sh run-stage-resume # resume a parked stage (resumeFrom defaults
+#                                        #   to META.pendingHumanTaskId; answer it first)
 #   ./scripts/phaseb.sh neptune-hint     # how to query the Intent/Artifact graph
 #
 # Config via env (override as needed):
@@ -106,6 +108,34 @@ run-stage)
   echo "--- response ---"; cat /tmp/aidlc-runstage.json; echo
   ;;
 
+run-stage-resume)
+  # Resume a parked stage: re-invoke with the SAME session id + resumeFrom=<gate>.
+  # $2 = the humanTaskId to resume from; defaults to META.pendingHumanTaskId (the
+  # gate the stage actually parked on — answer it first with phaseb-answer.mjs).
+  STAGE_ID="${3:-intent-capture}"
+  RESUME_FROM="${2:-}"
+  if [ -z "$RESUME_FROM" ]; then
+    RESUME_FROM=$(aws dynamodb get-item --table-name "$TABLE" \
+      --key "{\"pk\":{\"S\":\"EXEC#$EXEC_ID\"},\"sk\":{\"S\":\"META\"}}" \
+      --query 'Item.pendingHumanTaskId.S' --output text 2>/dev/null)
+  fi
+  [ -z "$RESUME_FROM" ] || [ "$RESUME_FROM" = "None" ] && { echo "ERROR: no resumeFrom gate (pass one as \$2, or ensure META.pendingHumanTaskId is set)"; exit 1; }
+  CLI_MODELS_JSON="${CLI_MODELS_JSON:-}"
+  PAYLOAD=$(jq -nc \
+    --arg projectId "$PROJECT_ID" --arg intentId "$INTENT_ID" --arg executionId "$EXEC_ID" \
+    --arg stageId "$STAGE_ID" --arg workflowId "$WORKFLOW_ID" \
+    --argjson workflowVersion "$WORKFLOW_VERSION" --arg scope "$SCOPE" \
+    --arg resumeFrom "$RESUME_FROM" --argjson cliModels "${CLI_MODELS_JSON:-null}" \
+    '{command:"run-stage",projectId:$projectId,intentId:$intentId,executionId:$executionId,
+      stageId:$stageId,workflowId:$workflowId,workflowVersion:$workflowVersion,scope:$scope,
+      resumeFrom:$resumeFrom}
+     + (if $cliModels == null then {} else {cliModels:$cliModels} end)')
+  echo "=== run-stage-resume $STAGE_ID (resumeFrom=$RESUME_FROM, session=$SESSION_ID) ==="
+  echo "payload: $PAYLOAD"
+  invoke "$PAYLOAD" /tmp/aidlc-runstage-resume.json
+  echo "--- response ---"; cat /tmp/aidlc-runstage-resume.json; echo
+  ;;
+
 state)
   echo "=== v2 execution rows (EXEC#$EXEC_ID) in $TABLE ==="
   aws dynamodb query --table-name "$TABLE" \
@@ -148,7 +178,7 @@ TXT
   ;;
 
 *)
-  echo "usage: $0 {outputs|seed|init-ws|run-stage [stageId]|state|inspect [artifactType]|drop-intent|neptune-hint}"
+  echo "usage: $0 {outputs|seed|init-ws|run-stage [stageId]|run-stage-resume [humanTaskId] [stageId]|state|inspect [artifactType]|drop-intent|neptune-hint}"
   exit 1
   ;;
 esac

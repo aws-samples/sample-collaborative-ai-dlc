@@ -1,6 +1,11 @@
 // Answer the pending HUMAN gate for a Phase B execution against the DEPLOYED v2
-// table — what the future resume lambda will do. Reads the pending gate, writes
-// a plausible answer per question so the blocked agent unblocks.
+// table — what the future resume lambda will do. Writes a plausible answer per
+// question so the parked agent can be resumed.
+//
+// A stage may leave MULTIPLE pending gates (the agent can call ask_question more
+// than once). The gate a resume targets is the one META.pendingHumanTaskId points
+// at (the latest), so we answer THAT specific gate — not just "the first pending"
+// one, which could be an older gate and would leave the resume target unanswered.
 //
 //   AWS_PROFILE=... AWS_REGION=... EXEC_ID=e-b3 TABLE=<v2-exec-table> \
 //     node scripts/phaseb-answer.mjs "<free-text answer applied to all questions>"
@@ -17,14 +22,24 @@ const doc = DynamoDBDocumentClient.from(
   new DynamoDBClient({ region: process.env.AWS_REGION || 'us-east-1' }),
 );
 
+// Read the META row (carries pendingHumanTaskId — the gate a resume targets) and
+// all HUMAN gates in one partition query.
 const { Items = [] } = await doc.send(
   new QueryCommand({
     TableName: TABLE,
-    KeyConditionExpression: 'pk = :p AND begins_with(sk, :h)',
-    ExpressionAttributeValues: { ':p': `EXEC#${EXEC_ID}`, ':h': 'HUMAN#' },
+    KeyConditionExpression: 'pk = :p',
+    ExpressionAttributeValues: { ':p': `EXEC#${EXEC_ID}` },
   }),
 );
-const gate = Items.find((i) => i.status === 'pending');
+const meta = Items.find((i) => i.sk === 'META');
+const gates = Items.filter((i) => i.sk?.startsWith('HUMAN#'));
+
+// Prefer the gate META points at (the latest, which resume will use); fall back to
+// any pending gate. Either way require it to still be pending before answering.
+const target = meta?.pendingHumanTaskId
+  ? gates.find((g) => g.sk === `HUMAN#${meta.pendingHumanTaskId}`)
+  : null;
+const gate = target?.status === 'pending' ? target : gates.find((g) => g.status === 'pending');
 if (!gate) {
   console.log('no pending gate for', EXEC_ID);
   process.exit(0);
