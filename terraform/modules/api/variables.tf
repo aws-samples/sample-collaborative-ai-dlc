@@ -306,7 +306,7 @@ variable "enable_cloudfront_origin_policy" {
 }
 
 variable "api_gateway_account_id" {
-  description = "ID of the aws_api_gateway_account resource. Passed through to create a depends_on edge so the REST API stage waits for account-level CloudWatch logging to be configured."
+  description = "An attribute of the aws_api_gateway_account resource (its cloudwatch_role_arn). The value is unused — it is interpolated into the stage description to create an implicit dependency so the REST API stage waits for account-level CloudWatch logging to be configured."
   type        = string
 }
 

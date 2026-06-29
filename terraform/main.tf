@@ -274,7 +274,11 @@ module "api" {
   cors_allowed_origins                = "https://${module.frontend.cloudfront_domain_name},http://localhost:5173"
   cloudfront_origin_secret            = module.frontend.cloudfront_origin_secret
   enable_cloudfront_origin_policy     = false
-  api_gateway_account_id              = aws_api_gateway_account.main.id
+  # Pass a non-deprecated attribute (the account's CloudWatch role ARN, not the
+  # deprecated `.id`). The value itself is unused — the api module interpolates it
+  # into the stage description to create an implicit dependency so the stage waits
+  # for this account-level CloudWatch config (see modules/api/main.tf).
+  api_gateway_account_id = aws_api_gateway_account.main.cloudwatch_role_arn
   # Server-origin event fanout: all realtime events originate server-side
   # (the client-event allowlist is empty).
   connections_table_name       = module.dynamodb.connections_table_name
