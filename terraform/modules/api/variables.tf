@@ -144,6 +144,18 @@ variable "agents_lambda_role_arn" {
   default     = ""
 }
 
+variable "gitlab_oauth_secret_name" {
+  description = "Secrets Manager secret name holding the GitLab OAuth client credentials. Used by the agents Lambda's POST /git/refresh-token to refresh expired GitLab access tokens for long-running construction jobs."
+  type        = string
+  default     = ""
+}
+
+variable "gitlab_redirect_uri" {
+  description = "GitLab OAuth redirect URI. Required on the refresh_token grant (must match the original authorization request) — without it GitLab rejects refresh with invalid_grant. Used by the agents Lambda's POST /git/refresh-token."
+  type        = string
+  default     = ""
+}
+
 variable "github_lambda_invoke_arn" {
   description = "Invoke ARN of the github Lambda"
   type        = string
@@ -152,6 +164,18 @@ variable "github_lambda_invoke_arn" {
 
 variable "github_lambda_name" {
   description = "Name of the github Lambda function"
+  type        = string
+  default     = ""
+}
+
+variable "gitlab_lambda_invoke_arn" {
+  description = "Invoke ARN of the gitlab Lambda"
+  type        = string
+  default     = ""
+}
+
+variable "gitlab_lambda_name" {
+  description = "Name of the gitlab Lambda function"
   type        = string
   default     = ""
 }
@@ -222,6 +246,18 @@ variable "agent_pool_table_name" {
 
 variable "git_connections_table_name" {
   description = "DynamoDB table name for user GitHub connections"
+  type        = string
+  default     = ""
+}
+
+variable "git_provider_connections_table_name" {
+  description = "DynamoDB table name for per-provider git connections (composite key userId+provider)"
+  type        = string
+  default     = ""
+}
+
+variable "git_provider_connections_table_arn" {
+  description = "DynamoDB table ARN for per-provider git connections"
   type        = string
   default     = ""
 }

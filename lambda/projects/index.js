@@ -5,9 +5,13 @@ import { randomUUID } from 'node:crypto';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import { SSMClient } from '@aws-sdk/client-ssm';
 import { buildResponse } from '../shared/response.js';
 import { runTrackerMigration } from '../shared/tracker-migration.js';
+import { getGitConnection } from '../shared/git-connection-store.js';
+import { resolveGitToken } from '../shared/git-token.js';
+import { getProvider } from '../shared/git-providers.js';
 import {
   getVal,
   projectTrackersFoldStep,
@@ -20,6 +24,7 @@ import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const ssm = new SSMClient({});
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -326,46 +331,65 @@ function detectRoleFromContents(fileNames, dirNames, frameworks) {
   return null;
 }
 
-const getUserGitToken = async (userId) => {
-  if (!userId || !process.env.GIT_CONNECTIONS_TABLE) return null;
+// Resolve a user's git access token for a given provider, for the optional
+// repo stack-detection below. Reads the connection row via the shared store
+// (composite key, with legacy migrate-on-read) and the token from SSM. Returns
+// null when the user has no connection for that provider — detection is
+// best-effort, so callers treat null as "skip detection".
+const getUserGitToken = async (userId, provider) => {
+  if (!userId || !provider) return null;
   try {
-    const { Item } = await ddb.send(
-      new GetCommand({
-        TableName: process.env.GIT_CONNECTIONS_TABLE,
-        Key: { userId },
-      }),
-    );
-    return Item?.accessToken || null;
+    const item = await getGitConnection(ddb, userId, provider);
+    if (!item?.parameterName) return null;
+    return await resolveGitToken(ssm, item);
   } catch {
     return null;
   }
 };
 
-const ghFetch = async (url, token) => {
-  const res = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-    },
-  });
-  if (!res.ok) return null;
-  return res.json();
+// Top-level file/dir names from a recursive blob tree. The provider abstraction
+// returns a flat list of blob paths (recursive); the signature scan only cares
+// about the repo root, so derive root files and root directories from paths.
+const rootEntriesFromTree = (tree) => {
+  const fileNames = new Set();
+  const dirNames = new Set();
+  for (const entry of tree) {
+    const segments = (entry.path || '').split('/');
+    if (segments.length === 1) {
+      if (segments[0]) fileNames.add(segments[0]);
+    } else if (segments.length > 1) {
+      if (segments[0]) dirNames.add(segments[0]);
+    }
+  }
+  return { fileNames, dirNames };
 };
 
-async function detectRepoStack(repoUrl, token) {
-  const [owner, repo] = (repoUrl || '').split('/');
-  if (!owner || !repo || !token) {
+// Provider-agnostic repo stack detection. Works for any git provider in the
+// shared abstraction (github, gitlab) — reads the repo tree + select config
+// files through the provider, so a GitLab repo is detected the same as GitHub.
+// All failures are non-fatal; the caller falls back to guessRole.
+async function detectRepoStack(repoUrl, token, providerId = 'github') {
+  if (!repoUrl || !token) {
     return { languages: [], frameworks: [], role: guessRole(repoUrl), summary: '' };
   }
 
-  const contents = await ghFetch(`https://api.github.com/repos/${owner}/${repo}/contents`, token);
-  if (!Array.isArray(contents)) {
+  let provider;
+  try {
+    provider = getProvider(providerId);
+  } catch {
+    return { languages: [], frameworks: [], role: guessRole(repoUrl), summary: '' };
+  }
+  const ctx = { token };
+
+  let tree;
+  try {
+    tree = await provider.getTree(ctx, repoUrl);
+  } catch {
+    // Branch may not be 'main', repo may be empty/inaccessible — non-fatal.
     return { languages: [], frameworks: [], role: guessRole(repoUrl), summary: '' };
   }
 
-  const fileNames = new Set(contents.map((f) => f.name));
-  const dirNames = new Set(contents.filter((f) => f.type === 'dir').map((f) => f.name));
+  const { fileNames, dirNames } = rootEntriesFromTree(tree);
   const languages = new Set();
   const frameworks = new Set();
 
@@ -376,19 +400,15 @@ async function detectRepoStack(repoUrl, token) {
     if (sig.framework) frameworks.add(sig.framework);
 
     if (sig.parse && !sig.type) {
-      const fileContent = await ghFetch(
-        `https://api.github.com/repos/${owner}/${repo}/contents/${name}`,
-        token,
-      );
-      if (fileContent?.content) {
-        try {
-          const decoded = Buffer.from(fileContent.content, 'base64').toString('utf8');
-          const result = sig.parse(decoded);
+      try {
+        const file = await provider.getFileContents(ctx, repoUrl, name);
+        if (file?.content) {
+          const result = sig.parse(file.content);
           if (result.frameworks) result.frameworks.forEach((f) => frameworks.add(f));
           if (result.hasTS) languages.add('TypeScript');
-        } catch {
-          /* parse failure is non-fatal */
         }
+      } catch {
+        /* parse / fetch failure is non-fatal */
       }
     }
   }
@@ -516,12 +536,14 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
       .hasNext();
     if (duplicate) return response(409, { error: 'Repository already added to this project' });
 
-    // Run quick detection (non-blocking — failures are non-fatal)
-    const token = await getUserGitToken(userId);
+    // Run quick detection (non-blocking — failures are non-fatal). Detection
+    // runs against the repo's own provider so GitLab repos are detected too.
+    const detectionProvider = data.provider || 'github';
+    const token = await getUserGitToken(userId, detectionProvider);
     let detection = { languages: [], frameworks: [], role: guessRole(data.url), summary: '' };
     if (token) {
       try {
-        detection = await detectRepoStack(data.url, token);
+        detection = await detectRepoStack(data.url, token, detectionProvider);
       } catch (e) {
         console.error('Quick detection failed:', e.message);
       }
@@ -530,7 +552,7 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
     const newRepoId = `repo-${randomUUID()}`;
     const addedAt = new Date().toISOString();
     const repoRole = data.role || detection.role || 'unknown';
-    const provider = data.provider || 'github';
+    const provider = detectionProvider;
     const detectedStack = data.detectedStack || detection.summary || '';
 
     await g

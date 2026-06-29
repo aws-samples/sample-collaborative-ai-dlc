@@ -13,7 +13,7 @@ import ConstructionPage from './pages/ConstructionPage';
 import ReviewPage from './pages/ReviewPage';
 import AgentPage from './pages/AgentPage';
 import SprintGraph from './pages/SprintGraph';
-import GitHubCallback from './pages/GitHubCallback';
+import { GitOAuthCallback } from './pages/GitOAuthCallback';
 import JiraCallback from './pages/JiraCallback';
 import Admin from './pages/Admin';
 import { TRACKER_PROVIDERS } from './lib/trackerProviders';
@@ -31,7 +31,16 @@ function App() {
           <Routes>
             {/* Public routes (no shell) */}
             <Route path="/login" element={<Login />} />
-            <Route path="/github/callback" element={<GitHubCallback />} />
+            {/* Git provider OAuth callbacks (GitHub, GitLab) — same shape,
+                driven from the tracker registry. Jira differs (auth-gated +
+                its own component) so it stays a separate route below. */}
+            {(['github-issues', 'gitlab-issues'] as const).map((id) => (
+              <Route
+                key={id}
+                path={TRACKER_PROVIDERS[id].callbackPath}
+                element={<GitOAuthCallback trackerProviderId={id} />}
+              />
+            ))}
             <Route
               path={TRACKER_PROVIDERS['jira-cloud'].callbackPath}
               element={

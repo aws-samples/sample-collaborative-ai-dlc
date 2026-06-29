@@ -88,6 +88,18 @@ variable "git_connections_table_arn" {
   default     = ""
 }
 
+variable "git_provider_connections_table_name" {
+  description = "DynamoDB table name for per-provider git connections (composite key userId+provider)"
+  type        = string
+  default     = ""
+}
+
+variable "git_provider_connections_table_arn" {
+  description = "DynamoDB table ARN for per-provider git connections"
+  type        = string
+  default     = ""
+}
+
 variable "tracker_connections_table_name" {
   description = "DynamoDB table name for tracker connections (Jira / GitHub Issues / …)"
   type        = string
@@ -102,6 +114,24 @@ variable "tracker_connections_table_arn" {
 
 variable "github_redirect_uri" {
   description = "OAuth redirect URI for GitHub callback"
+  type        = string
+  default     = ""
+}
+
+variable "gitlab_oauth_secret_name" {
+  description = "Secrets Manager secret name for GitLab OAuth credentials"
+  type        = string
+  default     = ""
+}
+
+variable "gitlab_oauth_secret_arn" {
+  description = "Secrets Manager secret ARN for GitLab OAuth credentials"
+  type        = string
+  default     = ""
+}
+
+variable "gitlab_redirect_uri" {
+  description = "OAuth redirect URI for GitLab callback"
   type        = string
   default     = ""
 }

@@ -87,18 +87,6 @@ variable "agent_outputs_table_arn" {
   default     = ""
 }
 
-variable "git_connections_table_name" {
-  description = "DynamoDB git connections table name"
-  type        = string
-  default     = ""
-}
-
-variable "git_connections_table_arn" {
-  description = "DynamoDB git connections table ARN"
-  type        = string
-  default     = ""
-}
-
 variable "agent_questions_table_name" {
   description = "DynamoDB agent questions table name"
   type        = string

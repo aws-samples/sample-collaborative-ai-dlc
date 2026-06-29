@@ -1,19 +1,25 @@
 import { useState, useEffect, useMemo } from 'react';
-import { githubService, type GitHubFile, type GitHubFileContent } from '../services/github';
+import {
+  getGitProviderService,
+  type GitProvider,
+  type GitFile,
+  type GitFileContent,
+} from '../services/gitProvider';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { TreeView, type TreeDataItem } from './ui/tree-view';
 import { Folder, File } from 'lucide-react';
 
-interface GitHubFileBrowserProps {
-  owner: string;
-  repo: string;
+interface GitFileBrowserProps {
+  provider: GitProvider;
+  // Canonical repo reference (owner/repo for GitHub, group/project for GitLab).
+  repoId: string;
   branch?: string;
 }
 
-export function GitHubFileBrowser({ owner, repo, branch = 'main' }: GitHubFileBrowserProps) {
-  const [files, setFiles] = useState<GitHubFile[]>([]);
-  const [selectedFile, setSelectedFile] = useState<GitHubFileContent | null>(null);
+export function GitFileBrowser({ provider, repoId, branch = 'main' }: GitFileBrowserProps) {
+  const [files, setFiles] = useState<GitFile[]>([]);
+  const [selectedFile, setSelectedFile] = useState<GitFileContent | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingContent, setLoadingContent] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -21,13 +27,13 @@ export function GitHubFileBrowser({ owner, repo, branch = 'main' }: GitHubFileBr
 
   useEffect(() => {
     loadFiles();
-  }, [owner, repo, branch]);
+  }, [provider, repoId, branch]);
 
   const loadFiles = async () => {
     try {
       setLoading(true);
       setError(null);
-      const data = await githubService.getRepoTree(owner, repo, branch);
+      const data = await getGitProviderService(provider).getRepoTree(repoId, branch);
       setFiles(data.tree);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load files');
@@ -39,7 +45,7 @@ export function GitHubFileBrowser({ owner, repo, branch = 'main' }: GitHubFileBr
   const loadFileContent = async (path: string) => {
     try {
       setLoadingContent(true);
-      const content = await githubService.getFileContents(owner, repo, path, branch);
+      const content = await getGitProviderService(provider).getFileContents(repoId, path, branch);
       setSelectedFile(content);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load file content');

@@ -13,6 +13,8 @@ const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
 const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
 const fs = require('fs');
 const { createPrsForRepos, missingRepos } = require('./create-repo-prs');
+const { getProvider } = require('./git-providers');
+const { refreshGitToken } = require('../shared/git-token-refresh');
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const lambda = new LambdaClient({});
@@ -51,6 +53,8 @@ const env = {
   region: process.env.AWS_REGION || 'us-east-1',
   gitToken: process.env.GIT_TOKEN || '',
   gitRepo: process.env.GIT_REPO || '',
+  gitProvider: process.env.GIT_PROVIDER || 'github',
+  gitUserId: process.env.GIT_USER_ID || '',
   gitRepos: (() => {
     try {
       return JSON.parse(process.env.GIT_REPOS || '[]');
@@ -59,6 +63,20 @@ const env = {
     }
   })(),
 };
+
+// GitLab access tokens expire (~2h); a long construction run can outlive the
+// dispatch-time token before the MCP server opens an MR / posts a comment /
+// checks PR state. Refresh just-in-time via the agents Lambda (which holds the
+// git-connections row + refresh token + OAuth secret) and update env.gitToken
+// in place. No-op for GitHub (OAuth-App tokens never expire) and when inputs
+// are missing. Best-effort: on failure we keep the existing token.
+async function refreshGitTokenIfNeeded() {
+  const token = await refreshGitToken(lambda, {
+    userId: env.gitUserId,
+    gitProvider: env.gitProvider,
+  });
+  if (token) env.gitToken = token;
+}
 
 // Parse a GitHub repository identifier in "owner/repo" form into its parts.
 // Multiple call sites .split('/') and destructure [owner, repo] before building
@@ -1405,6 +1423,10 @@ In multi-repo projects, creates one PR per repository and groups them in a PRGro
     if (!env.gitRepo && env.gitRepos.length === 0)
       return err('GIT_REPO not available — cannot create PR without repository info');
 
+    // Refresh an expired GitLab token before any PR/MR work — the agent may have
+    // run long enough for the dispatch-time access token to expire.
+    await refreshGitTokenIfNeeded();
+
     // --- Multi-repo path: create one PR per repo, group them ---
     if (env.gitRepos.length > 1) {
       try {
@@ -1446,41 +1468,31 @@ In multi-repo projects, creates one PR per repository and groups them in a PRGro
           reuseGroup = existingGroup;
         }
 
-        // If a PRGroup exists with open PRs, verify they're still open on GitHub
+        // If a PRGroup exists with open PRs, verify they're still open on the
+        // provider (GitHub PRs / GitLab MRs).
         if (existingGroup && existingGroup.prs.length > 0) {
+          const provider = getProvider(env.gitProvider);
           let allOpen = true;
           for (const pr of existingGroup.prs) {
             try {
               const repoUrl = pr.repository || env.gitRepo;
-              const { owner, repo } = parseOwnerRepo(repoUrl);
-              const ghRes = await fetch(
-                `https://api.github.com/repos/${owner}/${repo}/pulls/${pr.pr_number}`,
-                {
-                  headers: {
-                    Authorization: `token ${env.gitToken}`,
-                    Accept: 'application/vnd.github.v3+json',
-                  },
-                },
+              const state = await provider.getPullRequestState(
+                { token: env.gitToken },
+                repoUrl,
+                pr.pr_number,
               );
-              if (ghRes.ok) {
-                const ghPr = await ghRes.json();
-                if (ghPr.state !== 'open') {
-                  allOpen = false;
-                  // Mark as stale
-                  await withGraph(async (g) => {
-                    await g
-                      .V()
-                      .has('PullRequest', 'id', pr.id)
-                      .property(cardinality.single, 'stale', 'true')
-                      .property(cardinality.single, 'stale_at', new Date().toISOString())
-                      .property(
-                        cardinality.single,
-                        'pr_state',
-                        ghPr.merged_at ? 'merged' : 'closed',
-                      )
-                      .next();
-                  }).catch(() => {});
-                }
+              if (state && state !== 'open') {
+                allOpen = false;
+                // Mark as stale
+                await withGraph(async (g) => {
+                  await g
+                    .V()
+                    .has('PullRequest', 'id', pr.id)
+                    .property(cardinality.single, 'stale', 'true')
+                    .property(cardinality.single, 'stale_at', new Date().toISOString())
+                    .property(cardinality.single, 'pr_state', state)
+                    .next();
+                }).catch(() => {});
               }
             } catch {
               // Can't verify — assume open
@@ -1552,6 +1564,7 @@ In multi-repo projects, creates one PR per repository and groups them in a PRGro
                   title: title || `Construction: ${env.sprintId} (${parseOwnerRepo(repoUrl).repo})`,
                   gitToken: env.gitToken,
                   gitRepo: repoUrl,
+                  gitProvider: env.gitProvider,
                   executionId: process.env.EXECUTION_ID || '',
                 }),
               ),
@@ -1564,6 +1577,7 @@ In multi-repo projects, creates one PR per repository and groups them in a PRGro
           repos: reposToProcess,
           sprintBranch: branch,
           gitToken: env.gitToken,
+          gitProvider: env.gitProvider,
           invokeCreatePr,
           parseOwnerRepo,
         });
@@ -1766,57 +1780,51 @@ In multi-repo projects, creates one PR per repository and groups them in a PRGro
       if (existingPr?.prUrl) {
         console.error(`[trigger_pr_creation] PR already exists in graph: ${existingPr.prUrl}`);
 
-        // Verify the PR is still open on GitHub — it may have been merged/closed since we stored it
+        // Verify the PR is still open on the provider — it may have been
+        // merged/closed since we stored it.
         let prIsOpen = true;
         try {
-          const { owner, repo } = parseOwnerRepo(env.gitRepo);
-          const ghRes = await fetch(
-            `https://api.github.com/repos/${owner}/${repo}/pulls/${existingPr.prNumber}`,
-            {
-              headers: {
-                Authorization: `token ${env.gitToken}`,
-                Accept: 'application/vnd.github.v3+json',
-              },
-            },
+          const provider = getProvider(env.gitProvider);
+          const state = await provider.getPullRequestState(
+            { token: env.gitToken },
+            env.gitRepo,
+            existingPr.prNumber,
           );
-          if (ghRes.ok) {
-            const ghPr = await ghRes.json();
-            if (ghPr.state !== 'open') {
-              prIsOpen = false;
-              const prState = ghPr.merged_at ? 'merged' : 'closed';
-              console.error(
-                `[trigger_pr_creation] Existing PR #${existingPr.prNumber} is ${prState} — marking stale and creating a new one`,
-              );
+          if (state && state !== 'open') {
+            prIsOpen = false;
+            const prState = state;
+            console.error(
+              `[trigger_pr_creation] Existing PR #${existingPr.prNumber} is ${prState} — marking stale and creating a new one`,
+            );
 
-              // Mark the existing PullRequest node as stale in Neptune
-              const prId = `pr-${env.sprintId}-${existingPr.prNumber}`;
-              await withGraph(async (g) => {
-                await g
-                  .V()
-                  .has('PullRequest', 'id', prId)
-                  .property(cardinality.single, 'stale', 'true')
-                  .property(cardinality.single, 'stale_at', new Date().toISOString())
-                  .property(cardinality.single, 'pr_state', prState)
-                  .next();
-                // Also clear pr_url/pr_number from the Sprint vertex so a fresh PR can be stored
-                await g
-                  .V()
-                  .has('Sprint', 'id', env.sprintId)
-                  .property(cardinality.single, 'pr_url', '')
-                  .property(cardinality.single, 'pr_number', '')
-                  .next();
-              }).catch((e) =>
-                console.error('[trigger_pr_creation] Failed to mark PR as stale:', e.message),
-              );
-            } else {
-              console.error(
-                `[trigger_pr_creation] Existing PR #${existingPr.prNumber} is still open — reusing it`,
-              );
-            }
+            // Mark the existing PullRequest node as stale in Neptune
+            const prId = `pr-${env.sprintId}-${existingPr.prNumber}`;
+            await withGraph(async (g) => {
+              await g
+                .V()
+                .has('PullRequest', 'id', prId)
+                .property(cardinality.single, 'stale', 'true')
+                .property(cardinality.single, 'stale_at', new Date().toISOString())
+                .property(cardinality.single, 'pr_state', prState)
+                .next();
+              // Also clear pr_url/pr_number from the Sprint vertex so a fresh PR can be stored
+              await g
+                .V()
+                .has('Sprint', 'id', env.sprintId)
+                .property(cardinality.single, 'pr_url', '')
+                .property(cardinality.single, 'pr_number', '')
+                .next();
+            }).catch((e) =>
+              console.error('[trigger_pr_creation] Failed to mark PR as stale:', e.message),
+            );
+          } else {
+            console.error(
+              `[trigger_pr_creation] Existing PR #${existingPr.prNumber} is still open — reusing it`,
+            );
           }
         } catch (ghCheckErr) {
           console.error(
-            '[trigger_pr_creation] Could not verify PR state on GitHub — reusing cached PR:',
+            '[trigger_pr_creation] Could not verify PR state — reusing cached PR:',
             ghCheckErr.message,
           );
         }
@@ -1838,6 +1846,7 @@ In multi-repo projects, creates one PR per repository and groups them in a PRGro
               title: title || `Construction: ${env.sprintId}`,
               gitToken: env.gitToken,
               gitRepo: env.gitRepo,
+              gitProvider: env.gitProvider,
               executionId: process.env.EXECUTION_ID || '',
             }),
           ),
@@ -1940,6 +1949,7 @@ If repository is omitted, posts to the primary PR (stored on the Sprint vertex).
   },
   async ({ body: commentBody, repository }) => {
     if (!env.gitToken) return err('GIT_TOKEN not available — cannot post PR comment');
+    await refreshGitTokenIfNeeded();
     try {
       let targetRepo = repository || env.gitRepo;
       let prNumber = null;
@@ -1979,30 +1989,20 @@ If repository is omitted, posts to the primary PR (stored on the Sprint vertex).
         prNumber = sprintData.prNumber;
       }
 
-      const { owner, repo } = parseOwnerRepo(targetRepo);
-      const response = await fetch(
-        `https://api.github.com/repos/${owner}/${repo}/issues/${prNumber}/comments`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `token ${env.gitToken}`,
-            Accept: 'application/vnd.github.v3+json',
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ body: commentBody }),
-        },
-      );
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        return err(`GitHub API error posting comment: ${response.status} ${errorText}`);
+      const provider = getProvider(env.gitProvider);
+      let comment;
+      try {
+        comment = await provider.addPRComment({ token: env.gitToken }, targetRepo, prNumber, {
+          body: commentBody,
+        });
+      } catch (e) {
+        return err(`Error posting comment: ${e.message}`);
       }
 
-      const comment = await response.json();
       console.error(
-        `[post_pr_comment] Posted comment to PR #${prNumber} on ${targetRepo}: ${comment.html_url}`,
+        `[post_pr_comment] Posted comment to PR #${prNumber} on ${targetRepo}: ${comment.url}`,
       );
-      return ok({ commentUrl: comment.html_url, prNumber, repository: targetRepo });
+      return ok({ commentUrl: comment.url, prNumber, repository: targetRepo });
     } catch (e) {
       return err(`Failed to post PR comment: ${e.message}`);
     }
@@ -2018,6 +2018,7 @@ Use this to understand reviewer feedback before making modifications.`,
   async () => {
     if (!env.gitToken) return err('GIT_TOKEN not available — cannot read PR comments');
     if (!env.gitRepo) return err('GIT_REPO not available — cannot read PR comments');
+    await refreshGitTokenIfNeeded();
     try {
       const sprintData = await withGraph(async (g) => {
         const result = await g.V().has('Sprint', 'id', env.sprintId).valueMap().next();
@@ -2028,45 +2029,30 @@ Use this to understand reviewer feedback before making modifications.`,
 
       if (!sprintData?.prNumber) return err('No PR found for this sprint');
 
-      const { owner, repo } = parseOwnerRepo(env.gitRepo);
-      const headers = {
-        Authorization: `token ${env.gitToken}`,
-        Accept: 'application/vnd.github.v3+json',
-      };
+      const provider = getProvider(env.gitProvider);
+      let providerComments;
+      try {
+        providerComments = await provider.listPRComments(
+          { token: env.gitToken },
+          env.gitRepo,
+          sprintData.prNumber,
+        );
+      } catch (e) {
+        return err(`Error reading PR comments: ${e.message}`);
+      }
 
-      const [reviewRes, issueRes] = await Promise.all([
-        fetch(
-          `https://api.github.com/repos/${owner}/${repo}/pulls/${sprintData.prNumber}/comments`,
-          { headers },
-        ),
-        fetch(
-          `https://api.github.com/repos/${owner}/${repo}/issues/${sprintData.prNumber}/comments`,
-          { headers },
-        ),
-      ]);
-
-      if (!reviewRes.ok || !issueRes.ok)
-        return err(`GitHub API error: review=${reviewRes.status} issue=${issueRes.status}`);
-
-      const reviewComments = await reviewRes.json();
-      const issueComments = await issueRes.json();
-
-      const mapComment = (c, type) => ({
+      // The provider returns the unified comment DTO (type 'review' | 'issue',
+      // user object). Reshape to this tool's flatter contract (author string,
+      // 'general' for non-review notes) so existing agent prompts stay stable.
+      const comments = providerComments.map((c) => ({
         id: c.id,
-        type,
+        type: c.type === 'review' ? 'review' : 'general',
         author: c.user?.login || 'unknown',
         body: c.body,
         path: c.path || null,
-        line: c.line || c.original_line || null,
-        createdAt: c.created_at,
-      });
-
-      const comments = [
-        ...(Array.isArray(reviewComments)
-          ? reviewComments.map((c) => mapComment(c, 'review'))
-          : []),
-        ...(Array.isArray(issueComments) ? issueComments.map((c) => mapComment(c, 'general')) : []),
-      ].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+        line: c.line || null,
+        createdAt: c.createdAt,
+      }));
 
       console.error(
         `[get_pr_comments] Fetched ${comments.length} comments from PR #${sprintData.prNumber}`,

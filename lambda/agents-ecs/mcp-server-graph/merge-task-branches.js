@@ -1,50 +1,43 @@
-// Merge a repo's unmerged construction task branches into its sprint branch via the
-// GitHub Merges API. The orchestrator merges task branches locally only in its single
-// (primary-repo) working dir, so non-primary repos stay unmerged and create-pr returns
-// 409. We reproduce that merge deterministically server-side instead of dropping the repo.
-// Returns { merged, conflicts, errors }. A 409 conflict is surfaced (never force-resolved);
-// 204 (already merged) is treated as success so re-runs are idempotent.
+// Merge a repo's unmerged construction task branches into its sprint branch via
+// the active git provider's server-side merge API. The orchestrator merges task
+// branches locally only in its single (primary-repo) working dir, so non-primary
+// repos stay unmerged and create-pr returns 409. We reproduce that merge
+// deterministically server-side instead of dropping the repo. Returns
+// { merged, conflicts, errors }. A conflict is surfaced (never force-resolved);
+// an already-merged branch is treated as success so re-runs are idempotent.
+const { getProvider } = require('./git-providers');
+
 async function mergeUnmergedTaskBranches({
   owner,
   repo,
   sprintBranch,
   unmergedBranches,
   gitToken,
+  gitProvider,
   fetchImpl = fetch,
 }) {
   const result = { merged: [], conflicts: [], errors: [] };
-  const headers = {
-    Authorization: `token ${gitToken}`,
-    Accept: 'application/vnd.github.v3+json',
-    'Content-Type': 'application/json',
-  };
+  const provider = getProvider(gitProvider);
+  // The provider addresses repos by its canonical fullName ("owner/repo" for
+  // GitHub, "group/project" for GitLab). Callers pass owner+repo split from the
+  // GitHub layout; recombine for the provider.
+  const repoId = `${owner}/${repo}`;
+  const ctx = { token: gitToken, fetchImpl };
 
   for (const taskBranch of unmergedBranches || []) {
-    let res;
-    try {
-      res = await fetchImpl(`https://api.github.com/repos/${owner}/${repo}/merges`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          base: sprintBranch,
-          head: taskBranch,
-          commit_message: `Merge ${taskBranch} into ${sprintBranch} (auto)`,
-        }),
-      });
-    } catch (e) {
-      result.errors.push({ branch: taskBranch, message: e.message });
-      continue;
-    }
-
-    if (res.status === 201 || res.status === 204) {
+    const outcome = await provider.mergeBranch(ctx, repoId, {
+      base: sprintBranch,
+      head: taskBranch,
+      message: `Merge ${taskBranch} into ${sprintBranch} (auto)`,
+    });
+    if (outcome === 'merged') {
       result.merged.push(taskBranch);
-    } else if (res.status === 409) {
+    } else if (outcome === 'conflict') {
       result.conflicts.push(taskBranch);
     } else {
-      const text = await res.text().catch(() => '');
       result.errors.push({
         branch: taskBranch,
-        message: `GitHub merges API returned ${res.status}: ${text.slice(0, 300)}`,
+        message: outcome?.error || 'Unknown merge failure',
       });
     }
   }

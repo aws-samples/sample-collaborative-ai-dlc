@@ -25,6 +25,8 @@ const bundles = [
   // seed-blocks bundles CommonJS shared modules (frontmatter, block-mappers,
   // repo-fetch) plus js-yaml + tar-stream — needs the createRequire banner.
   ['seed-blocks', 'lambda/seed-blocks/.build/index.mjs'],
+  ['github-lambda', 'lambda/github/.build/index.mjs'],
+  ['gitlab-lambda', 'lambda/gitlab/.build/index.mjs'],
 ];
 
 describe.each(bundles)('%s bundle', (name, bundlePath) => {

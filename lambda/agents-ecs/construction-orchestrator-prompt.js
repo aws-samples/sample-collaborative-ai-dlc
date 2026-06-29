@@ -1,7 +1,13 @@
 const { getTaskBranchName } = require('./branch-cleanup');
+const { getProvider } = require('../shared/git-providers');
 
 function buildConstructionOrchestratorPrompt(job) {
   const event = job.event || { event: 'start' };
+  // Provider-aware clone hint for the conflict-recovery instructions below:
+  // GitHub uses x-access-token:<token>@github.com, GitLab uses oauth2:<token>@gitlab.com.
+  const provider = getProvider(job.gitProvider);
+  const cloneAuthScheme = provider.id === 'gitlab' ? 'oauth2' : 'x-access-token';
+  const cloneHost = provider.gitHost;
   const isRerun = (job.runNumber || 1) > 1 && job.changeRequest;
   const isMultiRepo = job.gitRepos && job.gitRepos.length > 1;
   const changeRequestBlock = isRerun
@@ -144,7 +150,7 @@ ${isRerun ? '7.' : '6.'} **If no tasks remain** (all are "done" or "failed"):
       - In multi-repo projects, \`trigger_pr_creation\` auto-merges any unmerged construction task branches into each repo's sprint branch (server-side) before opening that repo's PR, so you do NOT need to merge non-primary repos yourself. It also fills in PRs for repos that failed on a previous run, so re-calling it after fixing a failure is always safe.
       - If the response contains \`partialFailure: true\`, each \`failedRepos\` entry describes ONE repository. Handle it by shape:
         * Entry has \`conflicts\`: the server-side auto-merge hit a real merge conflict in that repository. That repo is usually NOT your working directory — clone it into a scratch dir first:
-          \`git clone https://x-access-token:\${GIT_TOKEN}@github.com/<repository>.git /tmp/fix-repo && cd /tmp/fix-repo\`
+          \`git clone https://${cloneAuthScheme}:\${GIT_TOKEN}@${cloneHost}/<repository>.git /tmp/fix-repo && cd /tmp/fix-repo\`
           \`git checkout ${job.branch}\`, then for each branch listed in \`conflicts\`: \`git merge origin/<task-branch> --no-edit\`, resolve the conflicts, commit, and \`git push origin HEAD:refs/heads/${job.branch}\` (plain push — never force-push; the remote sprint branch may already contain server-side merge commits). Then call \`trigger_pr_creation\` again.
         * Entry has \`unmergedBranches\` but no \`conflicts\`: new task branches appeared while PRs were being created. Call \`trigger_pr_creation\` once more.
         * Entry has only \`mergeErrors\` or \`error\` (e.g. protected branch, deleted branch, permission or infrastructure failure): you CANNOT fix this with git. Do not retry more than once.

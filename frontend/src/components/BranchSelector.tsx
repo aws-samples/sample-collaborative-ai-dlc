@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { githubService } from '@/services/github';
+import { getGitProviderService, type GitProvider } from '@/services/gitProvider';
 
 interface BranchSelectorProps {
+  provider: GitProvider;
   gitRepo: string;
   onSelect: (branch: string, baseBranch: string) => void;
   onCancel: () => void;
@@ -14,6 +15,7 @@ interface BranchSelectorProps {
 }
 
 export function BranchSelector({
+  provider,
   gitRepo,
   onSelect,
   onCancel,
@@ -31,15 +33,14 @@ export function BranchSelector({
 
   useEffect(() => {
     loadBranches();
-  }, [gitRepo]);
+  }, [gitRepo, provider]);
 
   const loadBranches = async () => {
     if (!gitRepo) return;
 
     try {
       setLoading(true);
-      const [owner, repo] = gitRepo.split('/');
-      const data = await githubService.listBranches(owner, repo);
+      const data = await getGitProviderService(provider).listBranches(gitRepo);
       const branchNames = data.branches || [];
       setBranches(branchNames);
 

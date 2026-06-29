@@ -234,7 +234,7 @@ resource "aws_iam_role_policy" "agent_task" {
       {
         Effect   = "Allow"
         Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]
-        Resource = compact([var.agent_questions_table_arn, var.agent_outputs_table_arn, var.git_connections_table_arn, var.connections_table_arn, var.agent_pool_table_arn])
+        Resource = compact([var.agent_questions_table_arn, var.agent_outputs_table_arn, var.connections_table_arn, var.agent_pool_table_arn])
       },
       {
         Effect   = "Allow"
@@ -361,7 +361,6 @@ resource "aws_ecs_task_definition" "agent" {
       { name = "CODE_SNAPSHOTS_BUCKET", value = var.code_snapshots_bucket_name },
       { name = "SUBMIT_QUESTION_LAMBDA", value = var.submit_question_lambda_name },
       { name = "AGENT_OUTPUTS_TABLE", value = var.agent_outputs_table_name },
-      { name = "GIT_CONNECTIONS_TABLE", value = var.git_connections_table_name },
       { name = "QUESTIONS_TABLE", value = var.agent_questions_table_name },
       { name = "CONNECTIONS_TABLE", value = var.connections_table_name },
       { name = "WEBSOCKET_ENDPOINT", value = var.websocket_endpoint },

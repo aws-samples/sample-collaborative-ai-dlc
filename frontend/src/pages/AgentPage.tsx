@@ -378,6 +378,7 @@ export default function AgentPage() {
       {/* Branch Selector Modal */}
       {showBranchSelector && project?.gitRepo && (
         <BranchSelector
+          provider={project.gitProvider}
           gitRepo={project.gitRepo}
           onSelect={handleSelectBranch}
           onCancel={() => setShowBranchSelector(false)}

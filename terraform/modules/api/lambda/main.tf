@@ -6,6 +6,19 @@ locals {
   partition  = data.aws_partition.current.partition
   dns_suffix = data.aws_partition.current.dns_suffix
 
+  # Lambdas that bundle code from lambda/shared/** via esbuild (gitlab, github,
+  # projects, trackers) are packaged by the terraform-aws-modules/lambda module,
+  # which only hashes each Lambda's OWN source_path directory. A change in a
+  # bundled shared file therefore does NOT change the package hash and the Lambda
+  # is silently NOT redeployed. To fix this, we fold a hash of the entire shared
+  # tree into each affected module's `hash_extra`, so any shared-file edit forces
+  # a rebuild. Covers nested dirs (e.g. git-providers/) via the "**" glob.
+  shared_dir = "${path.module}/../../../../lambda/shared"
+  shared_sources_hash = sha256(join("", [
+    for f in sort(fileset(local.shared_dir, "**/*.{js,mjs,cjs,json}")) :
+    filesha256("${local.shared_dir}/${f}")
+  ]))
+
   # Neptune IAM resource ARN (scoped to the specific cluster only)
   neptune_resource_arn = "arn:${local.partition}:neptune-db:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:${var.neptune_cluster_resource_id}/*"
 
@@ -76,7 +89,7 @@ resource "aws_iam_role_policy" "neptune_reader" {
       {
         Effect   = "Allow"
         Action   = ["dynamodb:GetItem"]
-        Resource = [var.git_connections_table_arn]
+        Resource = compact([var.git_connections_table_arn, var.git_provider_connections_table_arn])
       }
     ]
   })
@@ -142,6 +155,7 @@ resource "aws_iam_role_policy" "github_connector" {
         Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Query"]
         Resource = compact([
           var.git_connections_table_arn,
+          var.git_provider_connections_table_arn,
           var.tracker_connections_table_arn,
         ])
       },
@@ -194,12 +208,13 @@ resource "aws_iam_role_policy" "trackers" {
           Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:Scan"]
           Resource = compact([
             var.git_connections_table_arn,
+            var.git_provider_connections_table_arn,
             var.tracker_connections_table_arn,
           ])
         },
         {
           Effect   = "Allow"
-          Action   = ["ssm:GetParameter", "ssm:DeleteParameter"]
+          Action   = ["ssm:GetParameter", "ssm:PutParameter", "ssm:DeleteParameter"]
           Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
         },
         # Jira Cloud (Phase 3 / #197): the trackers lambda owns the Jira OAuth
@@ -213,7 +228,7 @@ resource "aws_iam_role_policy" "trackers" {
         },
       ],
       # Tracker OAuth secrets — read for OAuth flows, write from the
-      # Admin "Tracker OAuth Apps" panel. Both Jira and GitHub now flow
+      # Admin "Tracker OAuth Apps" panel. Jira, GitHub and GitLab all flow
       # through the trackers Lambda's admin endpoints.
       var.jira_oauth_secret_arn != "" ? [
         {
@@ -227,6 +242,13 @@ resource "aws_iam_role_policy" "trackers" {
           Effect   = "Allow"
           Action   = ["secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue"]
           Resource = [var.github_oauth_secret_arn]
+        }
+      ] : [],
+      var.gitlab_oauth_secret_arn != "" ? [
+        {
+          Effect   = "Allow"
+          Action   = ["secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue"]
+          Resource = [var.gitlab_oauth_secret_arn]
         }
       ] : [],
     )
@@ -302,7 +324,9 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
           [for arn in var.dynamodb_table_arns : "${arn}/index/*"],
           compact([
             var.git_connections_table_arn,
-            var.git_connections_table_arn != "" ? "${var.git_connections_table_arn}/index/*" : ""
+            var.git_connections_table_arn != "" ? "${var.git_connections_table_arn}/index/*" : "",
+            var.git_provider_connections_table_arn,
+            var.git_provider_connections_table_arn != "" ? "${var.git_provider_connections_table_arn}/index/*" : ""
           ])
         )
       },
@@ -321,6 +345,23 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
         Effect   = "Allow"
         Action   = ["ssm:GetParameter"]
         Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
+      },
+      # Just-in-time GitLab token refresh (POST /git/refresh-token): rotate the
+      # stored access token using the refresh token + GitLab OAuth secret so
+      # long-running construction jobs don't push/MR with an expired token.
+      # PutParameter writes the rotated token back; GetSecretValue reads the
+      # GitLab OAuth client credentials. GitHub needs neither (tokens don't
+      # expire). The gitlab secret ARN is empty when GitLab OAuth isn't
+      # provisioned, so the statement is dropped via compact().
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:PutParameter"]
+        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = var.gitlab_oauth_secret_arn != "" ? [var.gitlab_oauth_secret_arn] : ["arn:${local.partition}:secretsmanager:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:secret:nonexistent-gitlab-oauth-*"]
       },
       {
         Effect   = "Allow"
@@ -478,6 +519,9 @@ module "projects_lambda" {
     }
   ]
 
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
+
   create_role = false
   lambda_role = aws_iam_role.neptune_artifacts.arn
 
@@ -485,11 +529,12 @@ module "projects_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT      = var.neptune_endpoint
-    ENVIRONMENT           = var.environment
-    CORS_ALLOWED_ORIGINS  = var.cors_allowed_origins
-    GIT_CONNECTIONS_TABLE = var.git_connections_table_name
-    ARTIFACTS_BUCKET      = var.artifacts_bucket_name
+    NEPTUNE_ENDPOINT               = var.neptune_endpoint
+    ENVIRONMENT                    = var.environment
+    CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
+    GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
+    GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
+    ARTIFACTS_BUCKET               = var.artifacts_bucket_name
   }
 }
 
@@ -860,16 +905,96 @@ module "github_lambda" {
     }
   ]
 
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
+
   create_role = false
   lambda_role = aws_iam_role.github_connector.arn
 
   environment_variables = {
-    GITHUB_OAUTH_SECRET_NAME = var.github_oauth_secret_name
-    GIT_CONNECTIONS_TABLE    = var.git_connections_table_name
-    GIT_TOKEN_SSM_PREFIX     = "${var.project_name}/${var.environment}/git-token"
-    GITHUB_REDIRECT_URI      = var.github_redirect_uri
-    ENVIRONMENT              = var.environment
-    CORS_ALLOWED_ORIGINS     = var.cors_allowed_origins
+    GITHUB_OAUTH_SECRET_NAME       = var.github_oauth_secret_name
+    GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
+    GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
+    GIT_TOKEN_SSM_PREFIX           = "${var.project_name}/${var.environment}/git-token"
+    GITHUB_REDIRECT_URI            = var.github_redirect_uri
+    ENVIRONMENT                    = var.environment
+    CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Role 3c: gitlab-connector (1 Lambda — gitlab)
+# OAuth callback + token storage for GitLab; mirrors github-connector.
+# -----------------------------------------------------------------------------
+resource "aws_iam_role" "gitlab_connector" {
+  name               = "${var.project_name}-gitlab-connector-${var.environment}"
+  assume_role_policy = local.lambda_assume_role_policy
+}
+
+resource "aws_iam_role_policy_attachment" "gitlab_connector_basic" {
+  role       = aws_iam_role.gitlab_connector.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy" "gitlab_connector" {
+  name = "gitlab-oauth-and-token-storage"
+  role = aws_iam_role.gitlab_connector.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"]
+        Resource = compact([var.git_connections_table_arn, var.git_provider_connections_table_arn])
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = [var.gitlab_oauth_secret_arn]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:PutParameter", "ssm:GetParameter", "ssm:DeleteParameter"]
+        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
+      }
+    ]
+  })
+}
+
+# GitLab Lambda
+module "gitlab_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-gitlab-${var.environment}"
+  handler       = "index.handler"
+  runtime       = "nodejs24.x"
+  timeout       = 30
+
+  source_path = [
+    {
+      path = "${path.module}/../../../../lambda/gitlab"
+      commands = [
+        "cd ../.. && npm run build -w gitlab-lambda",
+        ":zip lambda/gitlab/.build",
+      ]
+    }
+  ]
+
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
+
+  create_role = false
+  lambda_role = aws_iam_role.gitlab_connector.arn
+
+  environment_variables = {
+    GITLAB_OAUTH_SECRET_NAME       = var.gitlab_oauth_secret_name
+    GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
+    GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
+    GIT_TOKEN_SSM_PREFIX           = "${var.project_name}/${var.environment}/git-token"
+    GITLAB_REDIRECT_URI            = var.gitlab_redirect_uri
+    ENVIRONMENT                    = var.environment
+    CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
   }
 }
 
@@ -897,6 +1022,9 @@ module "trackers_lambda" {
     }
   ]
 
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
+
   create_role = false
   lambda_role = aws_iam_role.trackers.arn
 
@@ -904,16 +1032,19 @@ module "trackers_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT          = var.neptune_endpoint
-    GIT_CONNECTIONS_TABLE     = var.git_connections_table_name
-    TRACKER_CONNECTIONS_TABLE = var.tracker_connections_table_name
-    GIT_TOKEN_SSM_PREFIX      = "${var.project_name}/${var.environment}/git-token"
-    JIRA_OAUTH_SECRET_NAME    = var.jira_oauth_secret_name
-    JIRA_REDIRECT_URI         = var.jira_redirect_uri
-    JIRA_TOKEN_SSM_PREFIX     = "${var.project_name}/${var.environment}/jira-token"
-    GITHUB_OAUTH_SECRET_NAME  = var.github_oauth_secret_name
-    ENVIRONMENT               = var.environment
-    CORS_ALLOWED_ORIGINS      = var.cors_allowed_origins
+    NEPTUNE_ENDPOINT               = var.neptune_endpoint
+    GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
+    GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
+    TRACKER_CONNECTIONS_TABLE      = var.tracker_connections_table_name
+    GIT_TOKEN_SSM_PREFIX           = "${var.project_name}/${var.environment}/git-token"
+    JIRA_OAUTH_SECRET_NAME         = var.jira_oauth_secret_name
+    JIRA_REDIRECT_URI              = var.jira_redirect_uri
+    JIRA_TOKEN_SSM_PREFIX          = "${var.project_name}/${var.environment}/jira-token"
+    GITHUB_OAUTH_SECRET_NAME       = var.github_oauth_secret_name
+    GITLAB_OAUTH_SECRET_NAME       = var.gitlab_oauth_secret_name
+    GITLAB_REDIRECT_URI            = var.gitlab_redirect_uri
+    ENVIRONMENT                    = var.environment
+    CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
   }
 }
 
