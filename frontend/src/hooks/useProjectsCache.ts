@@ -23,6 +23,11 @@ let projectsVersion = 0;
 
 const sprintsCache = new Map<string, CacheEntry<Sprint[]>>();
 const sprintsFetching = new Set<string>();
+// In-flight sprint fetch per project, plus at most one queued forced follow-up
+// each. The follow-up lets a forced refresh await fresh (post-mutation) data
+// instead of the in-flight response (see revalidateSprints).
+const sprintsInflight = new Map<string, Promise<void>>();
+const sprintsQueuedRefetch = new Map<string, Promise<void>>();
 const sprintsListeners = new Map<string, Set<() => void>>();
 // Per-project version counters so a sprint update for project A does not
 // re-render components subscribed to project B's sprints.
@@ -74,9 +79,26 @@ async function fetchProjects(): Promise<ProjectWithSprint[]> {
 }
 
 let projectsInflight: Promise<void> | null = null;
+let projectsQueuedRefetch: Promise<void> | null = null;
 
 function revalidateProjects(force = false): Promise<void> {
-  if (projectsInflight) return projectsInflight;
+  if (projectsInflight) {
+    if (!force) return projectsInflight;
+    // Forced refresh (after create/delete/update) while a fetch is in flight:
+    // the in-flight response may predate the mutation, so chain ONE follow-up
+    // after it settles and return THAT promise — callers then await fresh data,
+    // not the stale in-flight result. Concurrent forced callers coalesce onto
+    // the same follow-up.
+    if (!projectsQueuedRefetch) {
+      projectsQueuedRefetch = projectsInflight
+        .catch(() => {})
+        .then(() => {
+          projectsQueuedRefetch = null;
+          return revalidateProjects(true);
+        });
+    }
+    return projectsQueuedRefetch;
+  }
   if (!force && !isStale(projectsCache, PROJECTS_TTL)) return Promise.resolve();
   projectsFetching = true;
   // Notify so subscribers see the loading transition (no flash of empty
@@ -106,27 +128,50 @@ export async function getProjectsWithSprints(): Promise<ProjectWithSprint[]> {
   throw new Error(projectsError ?? 'Failed to load projects');
 }
 
-async function revalidateSprints(projectId: string, force = false) {
-  if (sprintsFetching.has(projectId)) return;
-  if (!force && !isStale(sprintsCache.get(projectId) ?? null, SPRINTS_TTL)) return;
-  sprintsFetching.add(projectId);
-  notifySprintListeners(projectId);
-  try {
-    const sprints = await sprintsService.list(projectId);
-    sprintsCache.set(projectId, { data: sprints, fetchedAt: Date.now() });
-    if (projectsCache) {
-      const updated = projectsCache.data.map((p) =>
-        p.project.id === projectId ? { ...p, latestSprint: latestOf(sprints) } : p,
-      );
-      projectsCache = { data: updated, fetchedAt: projectsCache.fetchedAt };
-      notifyProjectListeners();
+function revalidateSprints(projectId: string, force = false): Promise<void> {
+  const inflight = sprintsInflight.get(projectId);
+  if (inflight) {
+    if (!force) return inflight;
+    // Same race as revalidateProjects: chain one forced follow-up after the
+    // in-flight fetch and return it, so forced callers await fresh data rather
+    // than the in-flight response that may predate the mutation.
+    let queued = sprintsQueuedRefetch.get(projectId);
+    if (!queued) {
+      queued = inflight
+        .catch(() => {})
+        .then(() => {
+          sprintsQueuedRefetch.delete(projectId);
+          return revalidateSprints(projectId, true);
+        });
+      sprintsQueuedRefetch.set(projectId, queued);
     }
-  } catch {
-    /* network failure — keep stale cache */
-  } finally {
-    sprintsFetching.delete(projectId);
-    notifySprintListeners(projectId);
+    return queued;
   }
+  if (!force && !isStale(sprintsCache.get(projectId) ?? null, SPRINTS_TTL))
+    return Promise.resolve();
+  const promise = (async () => {
+    try {
+      const sprints = await sprintsService.list(projectId);
+      sprintsCache.set(projectId, { data: sprints, fetchedAt: Date.now() });
+      if (projectsCache) {
+        const updated = projectsCache.data.map((p) =>
+          p.project.id === projectId ? { ...p, latestSprint: latestOf(sprints) } : p,
+        );
+        projectsCache = { data: updated, fetchedAt: projectsCache.fetchedAt };
+        notifyProjectListeners();
+      }
+    } catch {
+      /* network failure — keep stale cache */
+    } finally {
+      sprintsFetching.delete(projectId);
+      sprintsInflight.delete(projectId);
+      notifySprintListeners(projectId);
+    }
+  })();
+  sprintsFetching.add(projectId);
+  sprintsInflight.set(projectId, promise);
+  notifySprintListeners(projectId);
+  return promise;
 }
 
 // One shared poll timer for all mounted useProjectsCache instances.

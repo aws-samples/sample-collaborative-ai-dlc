@@ -299,15 +299,13 @@ export function SprintPipelineBar() {
                 variant="ghost"
                 size="sm"
                 className="h-7 w-7 p-0"
-                aria-label="Open pull request on GitHub"
-                onClick={() => window.open(sprint.prUrl!, '_blank', 'noopener,noreferrer')}
+                aria-label="Open review"
+                onClick={() => navigate(`/project/${projectId}/sprint/${sprintId}/review`)}
               >
                 <ExternalLink className="h-3.5 w-3.5" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>
-              Open PR{sprint.prNumber ? ` #${sprint.prNumber}` : ''} on GitHub
-            </TooltipContent>
+            <TooltipContent>Open review</TooltipContent>
           </Tooltip>
         )}
       </div>
