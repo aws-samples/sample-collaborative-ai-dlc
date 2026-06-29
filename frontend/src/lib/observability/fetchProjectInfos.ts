@@ -3,6 +3,8 @@
  */
 import { agentsService, type TaskAgentStatus } from '../../services/agents';
 import { sprintGraphService } from '../../services/sprintGraph';
+import { sprintsService } from '../../services/sprints';
+import type { Project } from '../../services/projects';
 import {
   getProjectsWithSprints,
   refreshProjects as refreshProjectsCache,
@@ -68,4 +70,49 @@ export async function fetchProjectInfos(
       }
     }),
   );
+}
+
+// Build a ProjectAgentInfo for a SPECIFIC sprint. getProjectsWithSprints only
+// returns each project's latest sprint, so a deep link to an older sprint needs
+// this to load directly instead of being redirected away.
+export async function fetchSprintInfo(
+  project: Project,
+  sprintId: string,
+): Promise<ProjectAgentInfo | null> {
+  try {
+    const sprint = await sprintsService.get(project.id, sprintId);
+    let progress: SprintProgress | null = null;
+    let taskStatuses: TaskAgentStatus[] = [];
+
+    try {
+      const graph = await sprintGraphService.get(sprint.id);
+      const nodes = graph.nodes;
+      const byType = (t: string) => nodes.filter((n) => n.type === t).length;
+      const tasks = nodes.filter((n) => n.type === 'Task');
+      progress = {
+        requirementCount: byType('Requirement'),
+        userStoryCount: byType('UserStory'),
+        taskCount: tasks.length,
+        taskDoneCount: tasks.filter((n) => (n as Record<string, unknown>).status === 'done').length,
+        codeFileCount: byType('CodeFile'),
+        totalNodes: nodes.length,
+        hasGeneralInfo: byType('GeneralInfo') > 0,
+      };
+    } catch {
+      /* graph not available yet */
+    }
+
+    if (sprint.phase === 'CONSTRUCTION') {
+      try {
+        const { tasks } = await agentsService.getTaskAgentStatuses(project.id, sprint.id);
+        taskStatuses = tasks;
+      } catch {
+        /* not available */
+      }
+    }
+
+    return { project, sprint, progress, taskStatuses };
+  } catch {
+    return null;
+  }
 }

@@ -169,7 +169,10 @@ export function useObservability() {
   }, [refreshProjects]);
 
   const refreshOnEvent = useCallback(() => {
-    refreshProjects();
+    // Agent lifecycle events must FORCE a refresh: the non-forced path can return
+    // cached data and leave the cards, active count, phase, and detail state stale
+    // until the cache TTL expires.
+    refreshProjects(true);
   }, [refreshProjects]);
 
   useObservabilityEvents({

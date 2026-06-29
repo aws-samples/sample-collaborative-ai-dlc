@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useObservability } from '@/hooks/useObservability';
 import { IterationDetailView } from '@/components/observability/IterationDetailView';
 import ObservabilityDashboard from './ObservabilityDashboard';
+import { fetchSprintInfo } from '@/lib/observability/fetchProjectInfos';
 import type {
   ProjectAgentInfo,
   ActivityEvent,
@@ -74,25 +75,37 @@ export default function ObservabilityLayout() {
     );
   }, [obs.projects, selectedProjectId, selectedSprintId]);
 
-  // Unknown ?project= or ?sprint= id: drop params once projects loaded
+  const knownProject = useMemo(
+    () => obs.projects.find((p) => p.project.id === selectedProjectId)?.project ?? null,
+    [obs.projects, selectedProjectId],
+  );
+
+  // Deep link to a NON-latest sprint: the projection only carries each project's
+  // latest sprint, so fetch the requested sprint directly rather than redirecting.
+  const [deepLinkInfo, setDeepLinkInfo] = useState<ProjectAgentInfo | null>(null);
   useEffect(() => {
-    if (
-      selectedProjectId &&
-      selectedSprintId &&
-      !selectedInfo &&
-      !obs.projectsLoading &&
-      obs.projects.length > 0
-    ) {
+    if (selectedInfo || !selectedProjectId || !selectedSprintId || !knownProject) {
+      setDeepLinkInfo(null);
+      return;
+    }
+    let cancelled = false;
+    setDeepLinkInfo(null);
+    void fetchSprintInfo(knownProject, selectedSprintId).then((info) => {
+      if (!cancelled) setDeepLinkInfo(info);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedInfo, selectedProjectId, selectedSprintId, knownProject]);
+
+  const resolvedInfo = selectedInfo ?? deepLinkInfo;
+
+  // Unknown ?project= id: drop params once projects have loaded.
+  useEffect(() => {
+    if (selectedProjectId && !knownProject && !obs.projectsLoading && obs.projects.length > 0) {
       navigate('/observability', { replace: true });
     }
-  }, [
-    selectedProjectId,
-    selectedSprintId,
-    selectedInfo,
-    obs.projectsLoading,
-    obs.projects.length,
-    navigate,
-  ]);
+  }, [selectedProjectId, knownProject, obs.projectsLoading, obs.projects.length, navigate]);
 
   const filtered = useMemo(() => {
     if (!selectedProjectId) return obs.projects;
@@ -150,13 +163,13 @@ export default function ObservabilityLayout() {
 
   return (
     <ObservabilityContext.Provider value={ctx}>
-      {selectedProjectId && selectedSprintId && selectedInfo ? (
+      {selectedProjectId && selectedSprintId && resolvedInfo ? (
         <IterationDetailView
-          info={selectedInfo}
+          info={resolvedInfo}
           pendingQuestions={
-            selectedInfo.sprint ? (obs.pendingQuestions[selectedInfo.sprint.id] ?? 0) : 0
+            resolvedInfo.sprint ? (obs.pendingQuestions[resolvedInfo.sprint.id] ?? 0) : 0
           }
-          velocity={selectedInfo.sprint ? obs.velocityMap[selectedInfo.sprint.id] : undefined}
+          velocity={resolvedInfo.sprint ? obs.velocityMap[resolvedInfo.sprint.id] : undefined}
           onNavigate={handleNavigate}
           onBack={goBack}
         />
