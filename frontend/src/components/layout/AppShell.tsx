@@ -2,11 +2,13 @@ import { Outlet, useParams } from 'react-router-dom';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { AppSidebar } from '@/components/layout/AppSidebar';
 import { AppHeader } from '@/components/layout/AppHeader';
+import { SprintPipelineBar } from '@/components/layout/SprintPipelineBar';
 import { ActivityPanel } from '@/components/layout/ActivityPanel';
 import { StatusBar } from '@/components/layout/StatusBar';
 import { CommandPalette } from '@/components/layout/CommandPalette';
 import { DiscussionProvider } from '@/components/discussion';
-import { useState, useCallback, useEffect } from 'react';
+import { useProjectSprintsCache } from '@/hooks/useProjectsCache';
+import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 
 // Activity panel sizing: user-resizable on large screens (drag the left edge,
@@ -30,14 +32,26 @@ function loadActivityWidth(): number {
 }
 
 export function AppShell() {
-  const { sprintId } = useParams<{ sprintId: string }>();
+  const { sprintId, projectId } = useParams<{ sprintId: string; projectId: string }>();
   const inSprint = !!sprintId;
+  const onProjectPage = !!projectId && !inSprint;
 
   // Breakpoint (Tailwind lg): below it BOTH side panels render as NON-modal
   // overlays above the content instead of grid columns, so they stay usable
   // on tablets/phones without blocking the page behind them. One shared
   // breakpoint keeps the two panels' behavior consistent.
   const panelsInline = useMediaQuery('(min-width: 1024px)');
+
+  // On a project page (not in a sprint) the activity panel surfaces the
+  // latest active sprint so it stays useful outside a sprint context.
+  const { sprints: projectSprints } = useProjectSprintsCache(onProjectPage ? projectId : null);
+  const latestActiveSprintId = useMemo(() => {
+    if (inSprint) return sprintId;
+    const active = projectSprints.find(
+      (s) => s.currentAgentStatus === 'running' || s.currentAgentStatus === 'waiting',
+    );
+    return active?.id ?? projectSprints[0]?.id ?? null;
+  }, [inSprint, sprintId, projectSprints]);
 
   // Small screens start with the panels closed (as overlays they'd cover the
   // content); large screens keep the previous always-open default.
@@ -57,9 +71,12 @@ export function AppShell() {
     return () => clearTimeout(timer);
   }, [activityWidth]);
 
-  // Only show panels when inside a sprint
-  const showSidebar = inSprint && !sidebarCollapsed;
-  const showActivity = inSprint && activityPanelOpen;
+  useEffect(() => {
+    setActivityPanelOpen(inSprint);
+  }, [inSprint]);
+
+  const showSidebar = !sidebarCollapsed;
+  const showActivity = (inSprint || onProjectPage) && activityPanelOpen;
 
   const toggleSidebar = useCallback(() => setSidebarCollapsed((prev) => !prev), []);
   const toggleActivity = useCallback(() => setActivityPanelOpen((prev) => !prev), []);
@@ -135,8 +152,11 @@ export function AppShell() {
             )}
 
             {/* Main content */}
-            <main className="h-full overflow-y-auto min-w-0">
-              <Outlet />
+            <main className="h-full overflow-hidden min-w-0 flex flex-col">
+              {inSprint && <SprintPipelineBar />}
+              <div className="flex-1 overflow-y-auto min-w-0">
+                <Outlet />
+              </div>
             </main>
 
             {/* Activity panel - inline column on lg+, with a resize handle */}
@@ -152,7 +172,10 @@ export function AppShell() {
                   onDoubleClick={resetActivityWidth}
                   className="absolute inset-y-0 left-0 z-10 w-1.5 cursor-col-resize touch-none hover:bg-primary/30 active:bg-primary/40 focus-visible:bg-primary/40 focus-visible:outline-none"
                 />
-                <ActivityPanel sprintId={sprintId} onClose={() => setActivityPanelOpen(false)} />
+                <ActivityPanel
+                  sprintId={inSprint ? sprintId : (latestActiveSprintId ?? undefined)}
+                  onClose={() => setActivityPanelOpen(false)}
+                />
               </aside>
             )}
 
@@ -165,7 +188,10 @@ export function AppShell() {
             )}
             {showActivity && !panelsInline && (
               <aside className="absolute inset-y-0 right-0 z-40 flex w-full max-w-md overflow-hidden bg-background shadow-2xl">
-                <ActivityPanel sprintId={sprintId} onClose={() => setActivityPanelOpen(false)} />
+                <ActivityPanel
+                  sprintId={inSprint ? sprintId : (latestActiveSprintId ?? undefined)}
+                  onClose={() => setActivityPanelOpen(false)}
+                />
               </aside>
             )}
           </div>

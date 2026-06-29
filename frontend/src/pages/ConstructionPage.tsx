@@ -9,8 +9,8 @@ import { useQuestionAnchor } from '@/hooks/useQuestionAnchor';
 import { useAnswerQuestion } from '@/hooks/useAnswerQuestion';
 import { questionAnchorId } from '@/lib/questionAnchor';
 import { sprintsService } from '@/services/sprints';
-import { projectsService, type Project } from '@/services/projects';
 import { gitProviderTerminology } from '@/services/gitProvider';
+import { useProjectCache, refreshProjectSprints } from '@/hooks/useProjectsCache';
 import { agentsService } from '@/services/agents';
 import { questionsService } from '@/services/questions';
 import { tasksService } from '@/services/tasks';
@@ -67,7 +67,7 @@ export default function ConstructionPage() {
   const { user } = useAuth();
   const { sprint, tasks, codeFiles, questions, projectId, sprintId, reload } = useSprint();
 
-  const [project, setProject] = useState<Project | null>(null);
+  const { project } = useProjectCache(projectId ?? null);
   const [showBranchSelector, setShowBranchSelector] = useState(false);
   const [branchSelectorMode, setBranchSelectorMode] = useState<'construction' | 'create-pr'>(
     'construction',
@@ -106,15 +106,6 @@ export default function ConstructionPage() {
       reload();
     }, [reload]),
   );
-
-  // Load project
-  useEffect(() => {
-    if (projectId)
-      projectsService
-        .get(projectId)
-        .then(setProject)
-        .catch(() => {});
-  }, [projectId]);
 
   // Restore execution (only when sprint is in CONSTRUCTION phase)
   useEffect(() => {
@@ -178,6 +169,7 @@ export default function ConstructionPage() {
     try {
       // Persist branch on sprint so subsequent runs skip the BranchSelector
       await sprintsService.update(projectId, sprintId, { branch, baseBranch });
+      refreshProjectSprints(projectId);
       const result = await agentsService.startWorkflow(projectId, {
         phase: 'construction-orchestrator',
         sprintId,
@@ -268,6 +260,7 @@ export default function ConstructionPage() {
       await sprintsService.update(projectId, sprintId, { phase: 'REVIEW' });
       // sprint.phaseChanged is a server-origin event emitted by the sprints
       // lambda on the phase update — clients never broadcast it.
+      refreshProjectSprints(projectId);
       timelineEventsService
         .create(sprintId, { type: 'phase_changed', title: 'Moved to Review phase', userName })
         .catch(() => {});

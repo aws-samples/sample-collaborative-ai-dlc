@@ -17,7 +17,7 @@ import { GitOAuthCallback } from './pages/GitOAuthCallback';
 import JiraCallback from './pages/JiraCallback';
 import Admin from './pages/Admin';
 import { TRACKER_PROVIDERS } from './lib/trackerProviders';
-import ObservabilityPage from './pages/ObservabilityPage';
+import ObservabilityLayout from './pages/ObservabilityLayout';
 import BlockLibrary from './pages/BlockLibrary';
 import BlockEditor from './pages/BlockEditor';
 import WorkflowList from './pages/WorkflowList';
@@ -60,7 +60,7 @@ function App() {
             >
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/admin" element={<Admin />} />
-              <Route path="/observability" element={<ObservabilityPage />} />
+              <Route path="/observability" element={<ObservabilityLayout />} />
               <Route path="/blocks" element={<BlockLibrary />} />
               <Route path="/blocks/:type" element={<BlockLibrary />} />
               <Route path="/blocks/:type/new" element={<BlockEditor />} />
@@ -78,6 +78,8 @@ function App() {
                 <Route path="agent" element={<AgentPage />} />
                 <Route path="graph" element={<SprintGraph />} />
               </Route>
+
+              <Route path="*" element={<Navigate to="/dashboard" replace />} />
             </Route>
 
             <Route path="/" element={<Navigate to="/dashboard" replace />} />

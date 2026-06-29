@@ -8,7 +8,6 @@ import {
   ChevronRight,
   Settings,
   LogOut,
-  Activity,
   Blocks,
   Workflow,
 } from 'lucide-react';
@@ -26,9 +25,9 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useAuth } from '@/contexts/AuthContext';
 import { PresenceAvatars } from '@/components/domain/PresenceAvatars';
-import { useEffect, useState } from 'react';
-import { projectsService, type Project } from '@/services/projects';
-import { sprintsService, type Sprint } from '@/services/sprints';
+import { type Project } from '@/services/projects';
+import { type Sprint } from '@/services/sprints';
+import { useProjectCache, useProjectSprintsCache } from '@/hooks/useProjectsCache';
 
 interface AppHeaderProps {
   onToggleSidebar: () => void;
@@ -50,32 +49,11 @@ export function AppHeader({
   const navigate = useNavigate();
   const location = useLocation();
   const params = useParams();
-  const [project, setProject] = useState<Project | null>(null);
-  const [sprint, setSprint] = useState<Sprint | null>(null);
-
-  // Load project if we have a projectId
-  useEffect(() => {
-    if (params.projectId) {
-      projectsService
-        .get(params.projectId)
-        .then(setProject)
-        .catch(() => setProject(null));
-    } else {
-      setProject(null);
-    }
-  }, [params.projectId]);
-
-  // Load sprint if we have a sprintId
-  useEffect(() => {
-    if (params.projectId && params.sprintId) {
-      sprintsService
-        .get(params.projectId, params.sprintId)
-        .then(setSprint)
-        .catch(() => setSprint(null));
-    } else {
-      setSprint(null);
-    }
-  }, [params.projectId, params.sprintId]);
+  const { project } = useProjectCache(params.projectId ?? null);
+  const { sprints } = useProjectSprintsCache(
+    params.projectId && params.sprintId ? params.projectId : null,
+  );
+  const sprint = params.sprintId ? (sprints.find((s) => s.id === params.sprintId) ?? null) : null;
 
   const breadcrumbs = buildBreadcrumbs(location.pathname, params, project, sprint);
 
@@ -169,7 +147,7 @@ export function AppHeader({
 
       <Separator orientation="vertical" className="h-5" />
 
-      {/* Right: theme + observability + activity toggle + user */}
+      {/* Right: theme + activity toggle + user */}
       <ThemeToggle />
 
       <Tooltip>
@@ -198,20 +176,6 @@ export function AppHeader({
           </Button>
         </TooltipTrigger>
         <TooltipContent>Workflows</TooltipContent>
-      </Tooltip>
-
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon"
-            className={`h-7 w-7 ${location.pathname === '/observability' ? 'text-primary bg-primary/10' : ''}`}
-            onClick={() => navigate('/observability')}
-          >
-            <Activity className="h-4 w-4" />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>Observability</TooltipContent>
       </Tooltip>
 
       {params.sprintId && (
@@ -282,7 +246,6 @@ function buildBreadcrumbs(
     return [{ label: 'Projects' }];
   }
 
-  // Observability
   // Observability
   if (pathname === '/observability') {
     return [{ label: 'Projects', href: '/dashboard' }, { label: 'Observability' }];

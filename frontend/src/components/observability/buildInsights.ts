@@ -1,4 +1,5 @@
 import type { ProjectAgentInfo, StuckDetection, VelocityMetrics } from '@/hooks/useObservability';
+import { effectiveSprintStatus } from '@/lib/sprintStatus';
 
 export interface Highlight {
   text: string;
@@ -40,11 +41,12 @@ export function buildInsights(
   const actions: ActionItem[] = [];
 
   const totalProjects = projects.length;
-  const activeCount = projects.filter(
-    (p) => p.sprint?.currentAgentStatus === 'running' || p.sprint?.currentAgentStatus === 'waiting',
-  ).length;
+  const activeCount = projects.filter((p) => {
+    const s = effectiveSprintStatus(p.sprint);
+    return s === 'running' || s === 'waiting';
+  }).length;
   const completedSprints = projects.filter(
-    (p) => p.sprint?.currentAgentStatus === 'completed',
+    (p) => effectiveSprintStatus(p.sprint) === 'passed',
   ).length;
   const prCreated = projects.filter((p) => p.sprint?.prUrl).length;
 
@@ -76,11 +78,11 @@ export function buildInsights(
         lowlights.push({ text: `${project.name} — no sprint started` });
         continue;
       }
-      const status = sprint.currentAgentStatus;
+      const status = effectiveSprintStatus(sprint);
       const phase = sprint.phase
         ? sprint.phase.charAt(0) + sprint.phase.slice(1).toLowerCase()
         : null;
-      if (status === 'completed') continue; // already counted above
+      if (status === 'passed' || status === 'completed') continue; // already counted above
       if (status === 'failed') {
         risks.push({
           text: `${project.name} — last sprint failed at ${phase ?? 'unknown'} phase`,
@@ -96,9 +98,10 @@ export function buildInsights(
   // ── Active state ─────────────────────────────────────────────────────────
   for (const { project, sprint, progress } of projects) {
     if (!sprint) continue;
-    const { phase, currentAgentStatus: status, prUrl, id: sprintId } = sprint;
+    const { phase, prUrl, id: sprintId } = sprint;
+    const status = effectiveSprintStatus(sprint);
 
-    if (status === 'completed') {
+    if (status === 'passed' || status === 'completed') {
       highlights.push({ text: `${project.name} — sprint completed` });
       if (prUrl) actions.push({ text: `Review PR for ${project.name}`, done: false });
       continue;

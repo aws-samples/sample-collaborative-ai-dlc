@@ -1,4 +1,5 @@
 import { cn } from '@/lib/utils';
+import { effectiveSprintStatus } from '@/lib/sprintStatus';
 import { FolderGit2, GitBranch } from 'lucide-react';
 import { PhaseBlock } from './PhaseBlock';
 import { AgentFocusCard } from './AgentFocusCard';
@@ -39,7 +40,7 @@ function getStepsDone(
 
   if (phase === 'REVIEW') {
     if (sprint.prUrl) done.add('code_review');
-    if (sprint.currentAgentStatus === 'completed' && sprint.phase === 'REVIEW')
+    if (effectiveSprintStatus(sprint) === 'passed' || sprint.currentAgentStatus === 'completed')
       done.add('pr_approval');
   }
 
@@ -77,7 +78,7 @@ export function ProjectDiagram({
   onNavigate,
 }: Props) {
   const { project, sprint, progress, taskStatuses } = info;
-  const agentStatus = sprint?.currentAgentStatus;
+  const agentStatus = effectiveSprintStatus(sprint);
   const currentPhase = sprint?.phase as PhaseKey | undefined;
   const currentPhaseIdx = currentPhase ? PHASE_ORDER.indexOf(currentPhase) : -1;
 
@@ -101,7 +102,9 @@ export function ProjectDiagram({
         'rounded-xl border-2 overflow-hidden cursor-pointer transition-all hover:shadow-lg',
         agentStatus === 'running' && 'border-agent-running/50 shadow-md shadow-agent-running/10',
         agentStatus === 'waiting' && 'border-agent-waiting/50',
-        (!agentStatus || agentStatus === 'completed') && 'border-border hover:border-foreground/20',
+        agentStatus !== 'running' &&
+          agentStatus !== 'waiting' &&
+          'border-border hover:border-foreground/20',
       )}
       onClick={handleClick}
     >
