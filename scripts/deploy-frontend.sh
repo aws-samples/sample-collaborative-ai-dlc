@@ -50,6 +50,9 @@ fi
 
 # Build frontend
 cd "$SCRIPT_DIR/../frontend"
+echo "Installing frontend dependencies..."
+npm ci
+
 echo "Building frontend..."
 npm run build
 

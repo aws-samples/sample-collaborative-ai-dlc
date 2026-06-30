@@ -11,7 +11,7 @@ ENVIRONMENT=${1:-dev}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 PROJECT_NAME="collaborative-ai-dlc"
-REGION="us-east-1"
+REGION="${REGION:-us-east-1}"
 
 if [[ -z "$ENVIRONMENT" ]]; then
     echo "Usage: $0 <environment>"
