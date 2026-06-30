@@ -1269,3 +1269,39 @@ resource "aws_iam_role_policy" "realtime_fanout" {
     ]
   })
 }
+
+# =============================================================================
+# Create PR Lambda — invoked by the construction MCP server (trigger_pr_creation)
+# =============================================================================
+module "create_pr_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-create-pull-request-${var.environment}"
+  handler       = "create-pr.handler"
+  runtime       = "nodejs24.x"
+  timeout       = 30
+
+  source_path = [
+    {
+      path = "${path.module}/../../../../lambda/create-pr"
+      commands = [
+        "cd ../.. && npm run build -w create-pr",
+        ":zip lambda/create-pr/.build",
+      ]
+    }
+  ]
+
+  create_role = false
+  lambda_role = aws_iam_role.create_pr.arn
+}
+
+resource "aws_iam_role" "create_pr" {
+  name               = "${var.project_name}-create-pull-request-${var.environment}"
+  assume_role_policy = local.lambda_assume_role_policy
+}
+
+resource "aws_iam_role_policy_attachment" "create_pr_basic" {
+  role       = aws_iam_role.create_pr.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}

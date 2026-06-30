@@ -138,12 +138,6 @@ variable "jira_redirect_uri" {
   default     = ""
 }
 
-variable "state_machine_arn" {
-  description = "ARN of the Step Functions state machine for agent workflows"
-  type        = string
-  default     = ""
-}
-
 variable "agent_questions_table_name" {
   description = "DynamoDB table name for agent questions"
   type        = string

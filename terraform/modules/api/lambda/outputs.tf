@@ -215,3 +215,13 @@ output "discussions_lambda_name" {
   description = "Name of the discussions Lambda"
   value       = module.discussions_lambda.lambda_function_name
 }
+
+output "create_pr_lambda_arn" {
+  description = "ARN of the create PR Lambda"
+  value       = module.create_pr_lambda.lambda_function_arn
+}
+
+output "create_pr_lambda_name" {
+  description = "Name of the create PR Lambda"
+  value       = module.create_pr_lambda.lambda_function_name
+}
