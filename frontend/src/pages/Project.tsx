@@ -51,6 +51,14 @@ import { TrackerIssueListPanel } from '@/components/TrackerIssueListPanel';
 import { MigrateTrackerCard } from '@/components/MigrateTrackerCard';
 import { effectiveSprintStatus, isActiveStatus } from '@/lib/sprintStatus';
 import { intentsService, type Intent } from '@/services/intents';
+import { workflowsService } from '@/services/workflows';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 
 const STATUS_ICON: Record<string, typeof Loader2> = {
   running: Loader2,
@@ -594,6 +602,31 @@ function IntentsView({
   const [prompt, setPrompt] = useState('');
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Scope is chosen per-intent (a project can hold features, bugfixes, etc.).
+  // The vocabulary MUST come from the project's workflow compiled scope grid — a
+  // free-typed scope would be rejected by buildExecutionPlan at run time.
+  const [scope, setScope] = useState<string>('');
+  const [scopeOptions, setScopeOptions] = useState<string[]>([]);
+
+  // Load the workflow's available scopes when the create dialog opens.
+  useEffect(() => {
+    if (!showCreate || scopeOptions.length > 0) return;
+    let cancelled = false;
+    workflowsService
+      .compiled(project.workflowId ?? 'aidlc-v2')
+      .then((compiled) => {
+        if (cancelled) return;
+        const scopes = Object.keys(compiled.scopeGrid ?? {});
+        setScopeOptions(scopes);
+        setScope((prev) => (prev && scopes.includes(prev) ? prev : (scopes[0] ?? '')));
+      })
+      .catch((e) => {
+        if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load workflow scopes');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showCreate, scopeOptions.length, project.workflowId]);
 
   const refresh = useCallback(() => {
     intentsService
@@ -609,13 +642,14 @@ function IntentsView({
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!prompt.trim()) return;
+    if (!prompt.trim() || !scope) return;
     setCreating(true);
     setError(null);
     try {
       const intent = await intentsService.create(projectId, {
         title: title.trim(),
         prompt: prompt.trim(),
+        scope,
       });
       setShowCreate(false);
       setTitle('');
@@ -665,9 +699,7 @@ function IntentsView({
               <Clock className="h-3 w-3" />
               Workflow
             </div>
-            <p className="text-sm font-medium">
-              {project.workflowId ?? 'aidlc-v2'} · {project.defaultScope ?? 'feature'}
-            </p>
+            <p className="text-sm font-medium">{project.workflowId ?? 'aidlc-v2'}</p>
           </CardContent>
         </Card>
       </div>
@@ -776,6 +808,25 @@ function IntentsView({
                   className="mt-1.5 w-full rounded-md border bg-background px-3 py-2 text-sm"
                 />
               </div>
+              <div>
+                <Label htmlFor="intent-scope">Scope</Label>
+                <Select value={scope} onValueChange={setScope} disabled={scopeOptions.length === 0}>
+                  <SelectTrigger id="intent-scope" className="mt-1.5">
+                    <SelectValue placeholder="Select a scope" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {scopeOptions.map((s) => (
+                      <SelectItem key={s} value={s}>
+                        {s}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="mt-1.5 text-xs text-muted-foreground">
+                  Decides which stages execute (e.g. feature vs. bugfix). Comes from the workflow's
+                  compiled scopes.
+                </p>
+              </div>
               {error && <p className="text-xs text-destructive">{error}</p>}
             </div>
             <DialogFooter>
@@ -787,7 +838,7 @@ function IntentsView({
               >
                 Cancel
               </Button>
-              <Button type="submit" disabled={creating || !prompt.trim()}>
+              <Button type="submit" disabled={creating || !prompt.trim() || !scope}>
                 {creating ? 'Creating…' : 'Create Intent'}
               </Button>
             </DialogFooter>

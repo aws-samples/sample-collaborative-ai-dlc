@@ -72,7 +72,6 @@ const readV2Settings = (v) => {
     kind,
     workflowId: getVal(v, 'workflow_id') || DEFAULT_V2_WORKFLOW_ID,
     workflowVersion: rawVersion ? Number(rawVersion) : null,
-    defaultScope: getVal(v, 'default_scope') || null,
     parkReleaseSeconds: Number(getVal(v, 'park_release_seconds') || DEFAULT_PARK_RELEASE_SECONDS),
   };
 };
@@ -922,7 +921,7 @@ export const handler = async (event) => {
             workflowId: data.workflowId || DEFAULT_V2_WORKFLOW_ID,
             // Empty pin = "resolve latest at intent create" (left to the intents API).
             workflowVersion: Number.isInteger(data.workflowVersion) ? data.workflowVersion : null,
-            defaultScope: data.scope || data.defaultScope || null,
+            // Scope is NOT a project property — it is chosen per-intent.
             parkReleaseSeconds: parkValidation.value,
           };
         }
@@ -947,7 +946,6 @@ export const handler = async (event) => {
               'workflow_version',
               v2Settings.workflowVersion == null ? '' : String(v2Settings.workflowVersion),
             )
-            .property('default_scope', v2Settings.defaultScope || '')
             .property('park_release_seconds', String(v2Settings.parkReleaseSeconds));
         }
         await createV.next();
@@ -1137,13 +1135,6 @@ export const handler = async (event) => {
               'workflow_version',
               Number.isInteger(data.workflowVersion) ? String(data.workflowVersion) : '',
             )
-            .next();
-        }
-        if (data.defaultScope !== undefined) {
-          await g
-            .V()
-            .has('Project', 'id', projectId)
-            .property(cardinality.single, 'default_scope', data.defaultScope || '')
             .next();
         }
         return response(200, {

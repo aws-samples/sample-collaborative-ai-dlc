@@ -204,4 +204,132 @@ describe('orchestrator durable handler', () => {
     expect(res.ok).toBe(false);
     expect(res.reason).toBe('plan_invalid');
   });
+
+  it('advances a 3-stage plan in order on ONE reused session id', async () => {
+    deps.loadPlan.mockResolvedValue({
+      valid: true,
+      plan: { stages: [{ stageId: 'a' }, { stageId: 'b' }, { stageId: 'c' }] },
+    });
+    // Capture the session id every runtime invoke used.
+    const sessions = [];
+    const ctx = makeCtx();
+    deps.invokeRuntime = vi.fn(async (payload, sessionId) => {
+      invokes.push(payload);
+      sessions.push(sessionId);
+      return { ok: true, state: 'SUCCEEDED' };
+    });
+    const res = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1' },
+      ctx,
+      deps,
+    );
+    expect(res).toEqual({ ok: true, intentId: 'i1', stages: 3 });
+    // init-ws + 3 run-stages, in plan order.
+    expect(invokes.filter((p) => p.command === 'run-stage').map((p) => p.stageId)).toEqual([
+      'a',
+      'b',
+      'c',
+    ]);
+    // The warm checkout is kept: every invoke shares the same session id.
+    expect(new Set(sessions).size).toBe(1);
+    expect(sessions[0]).toContain('aidlc-intent-i1');
+  });
+
+  it('re-parks across two gates on the same stage before succeeding (D3)', async () => {
+    deps.store.getExecution
+      .mockResolvedValueOnce(META) // load-meta
+      // park-loop re-reads: first park points at h1, second at h2.
+      .mockResolvedValueOnce({ ...META, pendingHumanTaskId: 'h1' })
+      .mockResolvedValue({ ...META, pendingHumanTaskId: 'h2' });
+    deps.loadPlan.mockResolvedValue({ valid: true, plan: { stages: [{ stageId: 'a' }] } });
+    let n = 0;
+    deps.invokeRuntime = vi.fn(async (payload) => {
+      invokes.push(payload);
+      n += 1;
+      if (n === 1) return { ok: true }; // init-ws
+      if (n === 2) return { ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'h1' };
+      if (n === 3) return { ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'h2' };
+      return { ok: true, state: 'SUCCEEDED' };
+    });
+    const res = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1' },
+      makeCtx(),
+      deps,
+    );
+    expect(res.ok).toBe(true);
+    // Both gates were bound to a durable callback, and each resumed the run.
+    const boundGates = deps.store.setGateCallbackId.mock.calls.map((c) => c[0].humanTaskId);
+    expect(boundGates).toEqual(['h1', 'h2']);
+    const resumes = invokes.filter((p) => p.command === 'run-stage' && p.resumeFrom);
+    expect(resumes.map((p) => p.resumeFrom)).toEqual(['h1', 'h2']);
+  });
+
+  it('replay discipline: no side effect runs outside a ctx.step (except createCallback/wait)', async () => {
+    // A ctx that tracks whether we are currently inside a step. The injected
+    // store/invoke fakes assert stepDepth>0 — a bare `await store.x()` or
+    // `await invokeRuntime()` outside a step would re-execute on durable replay.
+    let stepDepth = 0;
+    const ctx = {
+      logger: { info() {}, debug() {} },
+      step: async (_name, fn) => {
+        stepDepth += 1;
+        try {
+          return await fn();
+        } finally {
+          stepDepth -= 1;
+        }
+      },
+      // createCallback + wait are durable primitives, legitimately called outside
+      // a step (they ARE the checkpoint), so they don't assert.
+      createCallback: async (name) => [Promise.resolve({ answer: null }), `cb-${name}`],
+      wait: async () => undefined,
+      promise: { race: async (_n, promises) => Promise.race(promises) },
+    };
+    const assertInStep = (label) => {
+      if (stepDepth === 0) throw new Error(`side effect "${label}" ran OUTSIDE a ctx.step`);
+    };
+    deps.store = {
+      getExecution: vi.fn(async () => {
+        assertInStep('getExecution');
+        return META;
+      }),
+      updateExecution: vi.fn(async () => {
+        assertInStep('updateExecution');
+        return {};
+      }),
+      setGateCallbackId: vi.fn(async () => {
+        assertInStep('setGateCallbackId');
+        return {};
+      }),
+      getHumanTask: vi.fn(async () => {
+        assertInStep('getHumanTask');
+        return { status: 'answered' };
+      }),
+    };
+    deps.loadPlan = vi.fn(async () => {
+      assertInStep('loadPlan');
+      return { valid: true, plan: { stages: [{ stageId: 'a' }] } };
+    });
+    deps.resolveToken = vi.fn(async () => {
+      assertInStep('resolveToken');
+      return 'tok';
+    });
+    let n = 0;
+    deps.invokeRuntime = vi.fn(async (payload) => {
+      assertInStep(`invokeRuntime:${payload.command}`);
+      n += 1;
+      if (payload.command === 'init-ws') return { ok: true };
+      return n > 2 ? { ok: true, state: 'SUCCEEDED' } : { ok: true, state: 'SUCCEEDED' };
+    });
+    deps.stopSession = vi.fn(async () => {
+      assertInStep('stopSession');
+      return { stopped: true };
+    });
+    const res = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1' },
+      ctx,
+      deps,
+    );
+    expect(res.ok).toBe(true); // completed without any assertInStep throw
+  });
 });

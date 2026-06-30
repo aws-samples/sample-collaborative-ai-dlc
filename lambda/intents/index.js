@@ -16,9 +16,11 @@ import { buildResponse } from '../shared/response.js';
 import { fetchMembershipRole } from '../shared/trackers.js';
 import { signRealtimeToken } from '../shared/realtime-token.js';
 import cliModelsPkg from '../shared/cli-models.js';
+import workflowPlanPkg from '../shared/v2-workflow-plan.js';
 
 const { createProcessStore } = pkg;
 const { parseCliModels } = cliModelsPkg;
+const { loadWorkflowScopes } = workflowPlanPkg;
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -65,7 +67,8 @@ const getVal = (vertexMap, key) => {
 
 // ── Project / repo reads (mirror lambda/projects shapes) ──
 
-// Read the v2 project's run config (workflow pin, scope, repos, park-release).
+// Read the v2 project's run config (workflow pin, repos, park-release). Scope is
+// NOT a project property — it is chosen per-intent at create time.
 // Returns null when the project doesn't exist or isn't a v2 project.
 const fetchProjectConfig = async (g, projectId) => {
   const res = await g.V().has('Project', 'id', projectId).valueMap(true).next();
@@ -94,7 +97,6 @@ const fetchProjectConfig = async (g, projectId) => {
   return {
     workflowId: getVal(v, 'workflow_id') || DEFAULT_WORKFLOW_ID,
     workflowVersion: rawVersion ? Number(rawVersion) : null,
-    defaultScope: getVal(v, 'default_scope') || null,
     parkReleaseSeconds: Number(getVal(v, 'park_release_seconds') || 300),
     cliModels: Object.keys(cliModels).length ? cliModels : null,
     repos: ordered,
@@ -334,9 +336,24 @@ export const handler = async (event) => {
       if (!workflowVersion) {
         return response(400, { error: `Workflow "${workflowId}" has no published version` });
       }
-      const scope = data.scope || cfg.defaultScope;
+      // Scope is chosen per-intent (a project can hold features, bugfixes, …).
+      // It must be one of the pinned workflow's offered scopes — a free-typed
+      // scope would be rejected by buildExecutionPlan when the orchestrator runs.
+      const scope = data.scope;
       if (!scope) {
-        return response(400, { error: 'No scope: set the project default or pass one' });
+        return response(400, { error: 'scope is required' });
+      }
+      const scopes = await loadWorkflowScopes({
+        ddb,
+        tableName: BLOCKS_TABLE(),
+        workflowId,
+        workflowVersion,
+      });
+      if (!scopes.includes(scope)) {
+        return response(400, {
+          error: `Unknown scope "${scope}" for workflow "${workflowId}"`,
+          scopes,
+        });
       }
       const meta = await store.createExecution({
         executionId: newIntentId,

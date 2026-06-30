@@ -1,0 +1,61 @@
+name: Terraform Validate
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'terraform/**'
+      - '.github/workflows/terraform.yml'
+  pull_request:
+    paths:
+      - 'terraform/**'
+      - '.github/workflows/terraform.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terraform-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: '1.15.0'
+
+      # Formatting is fast and credential-free. The override file below is never
+      # present in the repo, so it can't affect this check.
+      - name: Terraform fmt
+        run: terraform fmt -check -recursive
+
+      # `terraform validate` re-parses the real `backend "s3" {}` block (which has
+      # no inline bucket), so it fails even with `-backend=false`. A throwaway
+      # *_override.tf — auto-merged by Terraform — swaps in a local backend so
+      # init/validate need NO AWS creds or backend config. It is created here at
+      # CI time only and never committed.
+      - name: Stage local-backend override (CI only)
+        run: |
+          cat > ci_backend_override.tf <<'EOF'
+          terraform {
+            backend "local" {}
+          }
+          EOF
+
+      # `-backend=false` + the override: no AWS calls. validate still type-checks
+      # every module, variable wiring, and provider argument (e.g. the v2 lambdas'
+      # durable_config + the intent API Gateway routes).
+      - name: Terraform init (no backend)
+        run: terraform init -backend=false
+
+      - name: Terraform validate
+        run: terraform validate

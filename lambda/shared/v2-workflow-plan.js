@@ -16,7 +16,7 @@ const { QueryCommand } = require('@aws-sdk/lib-dynamodb');
 const { catalogGsi1Pk } = require('./blocks.js');
 const { workflowPk, workflowVersionPrefix } = require('./workflows.js');
 const { DEFAULT_TENANT, SYSTEM_TENANT } = require('./tenant.js');
-const { buildExecutionPlan } = require('./v2-execution-plan.js');
+const { buildExecutionPlan, workflowScopes } = require('./v2-execution-plan.js');
 
 const keyById = (items) => {
   const byId = {};
@@ -130,4 +130,20 @@ const loadExecutionPlan = async ({ ddb, tableName, workflowId, workflowVersion, 
   return buildExecutionPlan({ workflow, scope, library });
 };
 
-module.exports = { loadExecutionPlan, assembleWorkflow, __test: { listMergedBlocks } };
+// List the scopes a pinned workflow offers (the vocabulary the intent scope
+// picker must choose from). Returns [] when the workflow snapshot is missing.
+// Used by the intents API to validate a scope at intent-create time without
+// loading the full block library that buildExecutionPlan needs.
+const loadWorkflowScopes = async ({ ddb, tableName, workflowId, workflowVersion }) => {
+  const items = await loadWorkflowItems(ddb, tableName, workflowId, workflowVersion);
+  if (!items.length) return [];
+  const workflow = assembleWorkflow(items, { workflowId, workflowVersion });
+  return [...workflowScopes(workflow)];
+};
+
+module.exports = {
+  loadExecutionPlan,
+  loadWorkflowScopes,
+  assembleWorkflow,
+  __test: { listMergedBlocks },
+};

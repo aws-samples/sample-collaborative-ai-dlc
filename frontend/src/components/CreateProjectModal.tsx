@@ -47,14 +47,11 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
   const [error, setError] = useState<string | null>(null);
 
   // v2 project options. `kind` defaults to v1; choosing v2 reveals the workflow
-  // + scope settings in step 3. Park release is tuned later in project settings.
+  // setting in step 3. Scope is chosen per-intent (not on the project), and park
+  // release is tuned later in project settings.
   const [kind, setKind] = useState<ProjectKind>('v1');
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
   const [workflowId, setWorkflowId] = useState<string>('');
-  // Scope vocabulary MUST come from the chosen workflow's compiled scope grid —
-  // a free-typed scope would be rejected by buildExecutionPlan at run time.
-  const [scopeOptions, setScopeOptions] = useState<string[]>([]);
-  const [scope, setScope] = useState<string>('');
   const [v2Loading, setV2Loading] = useState(false);
   const [v2Error, setV2Error] = useState<string | null>(null);
 
@@ -83,32 +80,6 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
       cancelled = true;
     };
   }, [kind, workflows.length]);
-
-  // When a workflow is chosen, fetch its compiled scope grid for the scope picker.
-  useEffect(() => {
-    if (kind !== 'v2' || !workflowId) return;
-    let cancelled = false;
-    setV2Loading(true);
-    setV2Error(null);
-    workflowsService
-      .compiled(workflowId)
-      .then((compiled) => {
-        if (cancelled) return;
-        const scopes = Object.keys(compiled.scopeGrid ?? {});
-        setScopeOptions(scopes);
-        setScope((prev) => (prev && scopes.includes(prev) ? prev : (scopes[0] ?? '')));
-      })
-      .catch((err) => {
-        if (!cancelled)
-          setV2Error(err instanceof Error ? err.message : 'Failed to load workflow scopes');
-      })
-      .finally(() => {
-        if (!cancelled) setV2Loading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [kind, workflowId]);
 
   const applyPrimaryRepo = (nextPrimary: string) => {
     const prevPrimaryName = repoShortName(primaryRepo);
@@ -154,8 +125,8 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
         setSubmitting(false);
         return;
       }
-      if (kind === 'v2' && (!workflowId || !scope)) {
-        setError('Select a workflow and scope for the v2 project.');
+      if (kind === 'v2' && !workflowId) {
+        setError('Select a workflow for the v2 project.');
         setSubmitting(false);
         return;
       }
@@ -166,7 +137,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
           url,
           role: url === primaryRepo ? ('primary' as const) : ('secondary' as const),
         })),
-        ...(kind === 'v2' ? { kind: 'v2' as const, workflowId, scope } : { kind: 'v1' as const }),
+        ...(kind === 'v2' ? { kind: 'v2' as const, workflowId } : { kind: 'v1' as const }),
       };
       const project = await projectsService.create(input);
       if (formData.issueIntegrationEnabled && formData.gitRepo) {
@@ -474,32 +445,9 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                     </SelectContent>
                   </Select>
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    Scope
-                  </label>
-                  <Select
-                    value={scope}
-                    onValueChange={setScope}
-                    disabled={submitting || scopeOptions.length === 0}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder={v2Loading ? 'Loading…' : 'Select a scope'} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {scopeOptions.map((s) => (
-                        <SelectItem key={s} value={s}>
-                          {s}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                    Decides which stages execute. Comes from the workflow's compiled scopes.
-                  </p>
-                </div>
                 <p className="text-xs text-gray-500 dark:text-gray-400">
-                  Park release and other runtime settings can be tuned later in project settings.
+                  Scope is chosen per-intent. Park release and other runtime settings can be tuned
+                  later in project settings.
                 </p>
               </div>
             )}
@@ -515,7 +463,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
               <button
                 type="submit"
                 className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50"
-                disabled={submitting || (kind === 'v2' && (!workflowId || !scope))}
+                disabled={submitting || (kind === 'v2' && !workflowId)}
               >
                 {submitting ? 'Creating...' : 'Create Project'}
               </button>

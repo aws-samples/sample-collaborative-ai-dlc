@@ -168,18 +168,18 @@ describe('POST /projects', () => {
     expect(JSON.parse(res.body)).toEqual({ error: 'Unauthorized' });
   });
 
-  it('persists v2 kind + workflow/scope/park settings', async () => {
+  it('persists v2 kind + workflow/park settings (scope is per-intent)', async () => {
     const sub = `u-${randomUUID()}`;
     const created = await createProject(sub, {
       name: 'V2',
       kind: 'v2',
       workflowId: 'aidlc-v2',
-      scope: 'feature',
       parkReleaseSeconds: 120,
     });
     expect(created.kind).toBe('v2');
     expect(created.workflowId).toBe('aidlc-v2');
-    expect(created.defaultScope).toBe('feature');
+    // Scope is chosen per-intent, never stored on the project.
+    expect(created.defaultScope).toBeUndefined();
     expect(created.parkReleaseSeconds).toBe(120);
     // workflowVersion left unpinned (resolved at intent create).
     expect(created.workflowVersion).toBeNull();
@@ -192,7 +192,7 @@ describe('POST /projects', () => {
     const body = JSON.parse(fetched.body);
     expect(body.kind).toBe('v2');
     expect(body.workflowId).toBe('aidlc-v2');
-    expect(body.defaultScope).toBe('feature');
+    expect(body.defaultScope).toBeUndefined();
     expect(body.parkReleaseSeconds).toBe(120);
   });
 

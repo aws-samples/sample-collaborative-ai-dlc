@@ -224,6 +224,15 @@ describe('createProcessStore', () => {
     expect(input.ExpressionAttributeValues[':baseBranch']).toBeUndefined();
     expect(input.UpdateExpression).toContain('prompt = :prompt');
   });
+
+  it('setGateCallbackId stamps the durable callbackId on the gate row', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: { callbackId: 'cb-1' } });
+    await store.setGateCallbackId({ executionId: 'e1', humanTaskId: 'h1', callbackId: 'cb-1' });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.Key).toEqual(humanTaskKey('e1', 'h1'));
+    expect(input.ExpressionAttributeValues[':cb']).toBe('cb-1');
+    expect(input.UpdateExpression).toContain('callbackId = :cb');
+  });
 });
 
 describe('buildExecutionMeta intent-config + DRAFT', () => {
@@ -254,6 +263,21 @@ describe('buildExecutionMeta intent-config + DRAFT', () => {
     expect(meta.GSI1SK).toBe('STATUS#DRAFT#STARTED#T#EXEC#e1');
   });
 
+  it('carries cliModels + parkReleaseSeconds (the orchestrator run config)', () => {
+    const meta = buildExecutionMeta({
+      executionId: 'e1',
+      projectId: 'p1',
+      intentId: 'i1',
+      workflowId: 'w',
+      workflowVersion: 1,
+      startedAt: 'T',
+      cliModels: { claude: 'us.anthropic.claude-opus-4-8' },
+      parkReleaseSeconds: 120,
+    });
+    expect(meta.cliModels).toEqual({ claude: 'us.anthropic.claude-opus-4-8' });
+    expect(meta.parkReleaseSeconds).toBe(120);
+  });
+
   it('defaults the config fields to null when omitted', () => {
     const meta = buildExecutionMeta({
       executionId: 'e1',
@@ -269,6 +293,8 @@ describe('buildExecutionMeta intent-config + DRAFT', () => {
       branch: null,
       baseBranch: null,
       repos: null,
+      cliModels: null,
+      parkReleaseSeconds: null,
     });
   });
 });

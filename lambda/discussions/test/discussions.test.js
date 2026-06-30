@@ -1434,7 +1434,13 @@ describe('intent-scoped discussions', () => {
     const projectId = randomUUID();
     const intentId = randomUUID();
     const artifactId = `art-${randomUUID()}`;
-    await seedProject({ projectId, members: [{ sub: MEMBER_SUB, role: 'member' }] });
+    await seedProject({
+      projectId,
+      members: [
+        { sub: MEMBER_SUB, role: 'member' },
+        { sub: ADMIN_SUB, role: 'admin' },
+      ],
+    });
     await g
       .V()
       .has('Project', 'id', projectId)
@@ -1558,5 +1564,53 @@ describe('intent-scoped discussions', () => {
       body: { command: 'summarize' },
     });
     expect(res.statusCode).toBe(400);
+  });
+
+  it('resolves + reopens an intent thread (scope-neutral status write)', async () => {
+    const { projectId, intentId } = await seedIntent();
+    const created = json(
+      await call('POST', intentPath('/discussions'), {
+        pathParameters: { projectId, intentId },
+        body: { entityType: 'intent' },
+      }),
+    );
+    const resolved = await call('PUT', intentPath(`/discussions/{discussionId}`), {
+      pathParameters: { projectId, intentId, discussionId: created.id },
+      body: { status: 'resolved', resolutionSummary: 'done' },
+    });
+    expect(resolved.statusCode).toBe(200);
+    expect(json(resolved).status).toBe('resolved');
+
+    const reopened = await call('PUT', intentPath(`/discussions/{discussionId}`), {
+      pathParameters: { projectId, intentId, discussionId: created.id },
+      body: { status: 'open' },
+    });
+    expect(json(reopened).status).toBe('open');
+  });
+
+  it('redacts an intent-thread message (admin) targeting the intent scope', async () => {
+    const { projectId, intentId } = await seedIntent();
+    const created = json(
+      await call('POST', intentPath('/discussions'), {
+        pathParameters: { projectId, intentId },
+        body: { entityType: 'intent' },
+      }),
+    );
+    const msgId = `dm-${Date.now()}-redact`;
+    await call('POST', intentPath(`/discussions/{discussionId}/messages`), {
+      pathParameters: { projectId, intentId, discussionId: created.id },
+      body: { id: msgId, content: 'secret' },
+    });
+    const redacted = await call(
+      'POST',
+      intentPath(`/discussions/{discussionId}/messages/{messageId}/redact`),
+      {
+        pathParameters: { projectId, intentId, discussionId: created.id, messageId: msgId },
+        sub: ADMIN_SUB,
+      },
+    );
+    expect(redacted.statusCode).toBe(200);
+    expect(json(redacted).redacted).toBe(true);
+    expect(json(redacted).content).not.toBe('secret');
   });
 });

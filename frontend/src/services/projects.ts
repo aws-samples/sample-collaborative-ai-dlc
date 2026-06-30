@@ -58,7 +58,6 @@ export interface Project {
   kind?: ProjectKind;
   workflowId?: string;
   workflowVersion?: number | null;
-  defaultScope?: string | null;
   parkReleaseSeconds?: number;
 }
 
@@ -85,7 +84,6 @@ export interface CreateProjectInput {
   kind?: ProjectKind;
   workflowId?: string;
   workflowVersion?: number | null;
-  scope?: string;
   parkReleaseSeconds?: number;
 }
 
@@ -99,7 +97,6 @@ export interface UpdateProjectInput {
   // v2 settings (owner/admin tunable).
   workflowId?: string;
   workflowVersion?: number | null;
-  defaultScope?: string;
   parkReleaseSeconds?: number;
 }
 

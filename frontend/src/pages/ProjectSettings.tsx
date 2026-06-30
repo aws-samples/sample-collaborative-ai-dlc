@@ -1154,28 +1154,19 @@ export default function ProjectSettings() {
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base">AI-DLC v2</CardTitle>
                   <p className="text-sm text-muted-foreground">
-                    Runtime settings for this v2 project. Workflow and scope are pinned at creation.
+                    Runtime settings for this v2 project. The workflow is pinned at creation; scope
+                    is chosen per-intent.
                   </p>
                 </CardHeader>
                 <CardContent>
                   <form onSubmit={handleSaveV2Settings} className="space-y-3">
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="space-y-1.5">
-                        <Label>Workflow</Label>
-                        <Input
-                          value={project.workflowId ?? 'aidlc-v2'}
-                          disabled
-                          className="font-mono text-sm"
-                        />
-                      </div>
-                      <div className="space-y-1.5">
-                        <Label>Scope</Label>
-                        <Input
-                          value={project.defaultScope ?? ''}
-                          disabled
-                          className="font-mono text-sm"
-                        />
-                      </div>
+                    <div className="space-y-1.5">
+                      <Label>Workflow</Label>
+                      <Input
+                        value={project.workflowId ?? 'aidlc-v2'}
+                        disabled
+                        className="font-mono text-sm"
+                      />
                     </div>
                     <div className="space-y-1.5">
                       <Label htmlFor="park-release">Park release (seconds)</Label>
