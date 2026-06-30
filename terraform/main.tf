@@ -13,25 +13,6 @@ terraform {
   backend "s3" {}
 }
 
-# =============================================================================
-# State migrations — resources moved from the deleted orchestration module.
-# Safe to remove these blocks after the next successful apply.
-# =============================================================================
-moved {
-  from = module.orchestration.module.create_pr_lambda
-  to   = module.lambda.module.create_pr_lambda
-}
-
-moved {
-  from = module.orchestration.aws_iam_role.create_pr
-  to   = module.lambda.aws_iam_role.create_pr
-}
-
-moved {
-  from = module.orchestration.aws_iam_role_policy.create_pr
-  to   = module.lambda.aws_iam_role_policy_attachment.create_pr_basic
-}
-
 provider "aws" {
   region = var.aws_region
 
