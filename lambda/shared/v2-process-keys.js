@@ -77,8 +77,19 @@ const executionTypeStateIndex = ({ executionId, type, state, id }) => ({
 });
 
 // ── Vocabularies ──
-// Execution-level status (the run as a whole).
-const EXECUTION_STATUS = ['CREATED', 'RUNNING', 'WAITING', 'SUCCEEDED', 'FAILED', 'CANCELLED'];
+// Execution-level status (the run as a whole). DRAFT is the pre-Start state:
+// the intent's META row exists (config captured) but init-ws/run-stage have not
+// been invoked yet, so there is no Neptune Intent anchor. Start transitions
+// DRAFT → CREATED → RUNNING.
+const EXECUTION_STATUS = [
+  'DRAFT',
+  'CREATED',
+  'RUNNING',
+  'WAITING',
+  'SUCCEEDED',
+  'FAILED',
+  'CANCELLED',
+];
 // Per-stage runtime status. The container drives a stage RUNNING → terminal; a
 // stage that opens a human gate parks on WAITING_FOR_HUMAN.
 const STAGE_STATE = ['PENDING', 'RUNNING', 'WAITING_FOR_HUMAN', 'SUCCEEDED', 'FAILED', 'SKIPPED'];
@@ -103,6 +114,21 @@ const buildExecutionMeta = ({
   pendingHumanTaskId = null,
   startedBy = null,
   startedAt,
+  // Intent configuration captured at create, read by the orchestrator at Start
+  // and forwarded to init-ws/run-stage (one place owns the run config — see
+  // docs/v2-data-model.md). `repos` is the array of clone targets (owner/repo).
+  title = null,
+  prompt = null,
+  branch = null,
+  baseBranch = null,
+  repos = null,
+  // Per-CLI model selection ({ claude, kiro }) snapshotted from the project at
+  // create; the orchestrator forwards it to run-stage (cliModels[cli] is the
+  // authoritative model knob — see v2-agent.md). null = use run-stage defaults.
+  cliModels = null,
+  // Seconds a parked stage's warm microVM lingers before the orchestrator frees
+  // it via StopRuntimeSession (v2-open.md D1). null = use the runtime default.
+  parkReleaseSeconds = null,
 }) => ({
   ...executionMetaKey(executionId),
   ...projectStatusIndex({ projectId, status, startedAt, executionId }),
@@ -120,6 +146,13 @@ const buildExecutionMeta = ({
   pendingHumanTaskId,
   startedBy,
   startedAt,
+  title,
+  prompt,
+  branch,
+  baseBranch,
+  repos,
+  cliModels,
+  parkReleaseSeconds,
   updatedAt: startedAt,
   completedAt: null,
 });
@@ -207,6 +240,11 @@ const buildHumanTaskRow = ({
   answer: null,
   answeredBy: null,
   answeredAt: null,
+  // The durable-execution callback id the orchestrator is suspended on for this
+  // gate (set only on the gate the run actually parked on — see v2-open.md D3).
+  // The answer path sends SendDurableExecutionCallbackSuccess against it to
+  // resume the suspended orchestrator. Null on sibling gates / before park.
+  callbackId: null,
   createdAt: now,
 });
 

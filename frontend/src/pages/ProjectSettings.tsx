@@ -205,6 +205,10 @@ export default function ProjectSettings() {
   } | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
 
+  // v2 settings state (only meaningful for kind === 'v2')
+  const [editParkReleaseSeconds, setEditParkReleaseSeconds] = useState<number>(300);
+  const [savingV2Settings, setSavingV2Settings] = useState(false);
+
   // MCP servers state (raw JSON string; persistence handled by McpServersSection)
   const [mcpServers, setMcpServers] = useState('[]');
 
@@ -228,6 +232,7 @@ export default function ProjectSettings() {
       setEditGitRepo(proj.gitRepo);
       setEditAgentCli(proj.agentCli ?? 'kiro');
       setEditCliModels(proj.cliModels || {});
+      setEditParkReleaseSeconds(proj.parkReleaseSeconds ?? 300);
       setRepos(proj.repos ?? []);
       setMembers(Array.isArray(mems) ? mems : []);
       setTrackerConnections(Array.isArray(conns) ? conns : []);
@@ -505,6 +510,26 @@ export default function ProjectSettings() {
       setError(err instanceof Error ? err.message : 'Failed to update model override');
     } finally {
       setSavingCliModels(false);
+    }
+  };
+
+  const handleSaveV2Settings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!projectId || !project) return;
+    clearMessages();
+    setSavingV2Settings(true);
+    try {
+      const saved = await projectsService.update(projectId, {
+        parkReleaseSeconds: editParkReleaseSeconds,
+      });
+      const next = saved.parkReleaseSeconds ?? editParkReleaseSeconds;
+      setEditParkReleaseSeconds(next);
+      setProject({ ...project, parkReleaseSeconds: next });
+      setSuccess('v2 settings updated');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update v2 settings');
+    } finally {
+      setSavingV2Settings(false);
     }
   };
 
@@ -1122,6 +1147,76 @@ export default function ProjectSettings() {
                 </form>
               </CardContent>
             </Card>
+
+            {/* AI-DLC v2 settings */}
+            {project?.kind === 'v2' && (
+              <Card className="mb-6">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">AI-DLC v2</CardTitle>
+                  <p className="text-sm text-muted-foreground">
+                    Runtime settings for this v2 project. Workflow and scope are pinned at creation.
+                  </p>
+                </CardHeader>
+                <CardContent>
+                  <form onSubmit={handleSaveV2Settings} className="space-y-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1.5">
+                        <Label>Workflow</Label>
+                        <Input
+                          value={project.workflowId ?? 'aidlc-v2'}
+                          disabled
+                          className="font-mono text-sm"
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label>Scope</Label>
+                        <Input
+                          value={project.defaultScope ?? ''}
+                          disabled
+                          className="font-mono text-sm"
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="park-release">Park release (seconds)</Label>
+                      <Input
+                        id="park-release"
+                        type="number"
+                        min={0}
+                        max={900}
+                        value={editParkReleaseSeconds}
+                        onChange={(e) => setEditParkReleaseSeconds(Number(e.target.value))}
+                        className="font-mono text-sm"
+                        disabled={!canEditProject || savingV2Settings}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        How long a stage waiting for a human keeps its compute before release
+                        (0–900). Bounded by the runtime idle backstop.
+                      </p>
+                    </div>
+                    {!canEditProject && (
+                      <p className="text-xs text-muted-foreground">
+                        Only owners and admins can change v2 settings
+                      </p>
+                    )}
+                    {canEditProject && (
+                      <div className="flex justify-end pt-2">
+                        <Button
+                          type="submit"
+                          size="sm"
+                          disabled={
+                            savingV2Settings ||
+                            editParkReleaseSeconds === (project.parkReleaseSeconds ?? 300)
+                          }
+                        >
+                          {savingV2Settings ? 'Saving...' : 'Save v2 Settings'}
+                        </Button>
+                      </div>
+                    )}
+                  </form>
+                </CardContent>
+              </Card>
+            )}
 
             {/* MCP Servers */}
             <div className="mb-6">

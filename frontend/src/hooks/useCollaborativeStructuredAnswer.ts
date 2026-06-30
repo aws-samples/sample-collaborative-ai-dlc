@@ -4,7 +4,24 @@ import { simpleDiffStringWithCursor } from 'lib0/diff';
 import { useYjsDocument } from './useYjsDocument';
 import { useAutoSave } from './useAutoSave';
 import { generateColor } from '../utils/colors';
+import type { RealtimeScopeTarget } from '../lib/realtimeToken';
 import type { StructuredAnswer, QuestionAnswer } from '../services/questions';
+
+// The collaboration scope a structured answer is keyed under. v1 sprints use
+// `{ kind: 'sprint', id }`; v2 intents use `{ kind: 'intent', id, projectId }`
+// (the realtime-token endpoint for an intent is project-scoped). The scope
+// decides both the Yjs doc-name prefix and the token target.
+export type CollabScope =
+  | { kind: 'sprint'; id: string }
+  | { kind: 'intent'; id: string; projectId: string };
+
+const docPrefixFor = (scope: CollabScope, questionId: string): string =>
+  scope.kind === 'intent' ? `intent-sq-${scope.id}-${questionId}` : `sq-${scope.id}-${questionId}`;
+
+const scopeTargetFor = (scope: CollabScope): RealtimeScopeTarget =>
+  scope.kind === 'intent'
+    ? { intentId: scope.id, projectId: scope.projectId }
+    : { sprintId: scope.id };
 
 /**
  * Collaborative hook for structured question answering.
@@ -18,17 +35,18 @@ import type { StructuredAnswer, QuestionAnswer } from '../services/questions';
  * Free text fields use Y.Text for character-level CRDT merging.
  */
 export function useCollaborativeStructuredAnswer(
-  sprintId: string,
+  scope: CollabScope,
   questionId: string,
   questionCount: number,
   userName: string,
   onAutoSave?: (draft: StructuredAnswer) => Promise<void>,
 ) {
-  const docId = `sq-${sprintId}-${questionId}`;
+  const docId = docPrefixFor(scope, questionId);
   const { doc, synced, remoteUsers, setCursor } = useYjsDocument(
     docId,
     userName,
     generateColor(userName),
+    scopeTargetFor(scope),
   );
 
   const [selections, setSelections] = useState<Map<number, number[]>>(new Map());

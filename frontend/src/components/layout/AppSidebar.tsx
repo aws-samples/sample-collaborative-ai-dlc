@@ -108,7 +108,10 @@ export function AppSidebar() {
   const isOnObservability = location.pathname === '/observability';
   const isOnAdmin = location.pathname === '/admin';
 
-  const filteredIterations = projects.filter(({ latestSprint }) => {
+  const filteredIterations = projects.filter(({ project, latestSprint }) => {
+    // v2 projects have no sprints — the iterations rail is sprint-only. Exclude
+    // them so the `latestSprint!` reads below are always safe.
+    if (project.kind === 'v2' || !latestSprint) return false;
     const status = effectiveSprintStatus(latestSprint);
     return matchesFilter(status, iterationFilter);
   });

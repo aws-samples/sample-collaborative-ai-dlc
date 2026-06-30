@@ -240,3 +240,23 @@ output "discussions_lambda_name" {
   description = "Name of the discussions Lambda"
   value       = module.discussions_lambda.lambda_function_name
 }
+
+output "intents_lambda_invoke_arn" {
+  description = "Invoke ARN of the v2 intents Lambda"
+  value       = module.intents_lambda.lambda_function_invoke_arn
+}
+
+output "intents_lambda_name" {
+  description = "Name of the v2 intents Lambda"
+  value       = module.intents_lambda.lambda_function_name
+}
+
+output "v2_orchestrator_lambda_arn" {
+  description = "ARN of the v2 orchestrator durable Lambda"
+  value       = module.v2_orchestrator_lambda.lambda_function_arn
+}
+
+output "v2_orchestrator_lambda_name" {
+  description = "Name of the v2 orchestrator durable Lambda"
+  value       = module.v2_orchestrator_lambda.lambda_function_name
+}

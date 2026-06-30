@@ -334,7 +334,7 @@ export default function AgentPage() {
                   <CardContent>
                     <QuestionEditor
                       question={pq}
-                      sprintId={sprintId}
+                      scope={{ kind: 'sprint', id: sprintId }}
                       userName={userName}
                       onAnswer={(answer: StructuredAnswer) => handleAnswerQuestion(pq.id, answer)}
                     />

@@ -5,15 +5,19 @@
 import { randomUUID } from 'node:crypto';
 import { PutCommand, UpdateCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { ddb, cardinality, order, __, locksTable, readStateTable } from './clients.js';
-import { ANCHOR_LABELS, MESSAGE_GUARD_COMPLETE_SECONDS } from './constants.js';
+import { MESSAGE_GUARD_COMPLETE_SECONDS } from './constants.js';
 import { getVal, mapDiscussion, nowSeconds, isConditionalCheckFailed } from './mappers.js';
 
 // ─── Read cursors (DynamoDB) ───
+//
+// The read-state table scopes a user's cursors to one root via the `sprintId`
+// attribute (kept under that legacy name — it is an internal filter, not part of
+// any external contract). It holds the scope ROOT id: a sprintId or an intentId.
 
 export const upsertReadCursor = async (
   userId,
   discussionId,
-  sprintId,
+  scopeRootId,
   lastReadAt,
   lastReadMessageId,
 ) => {
@@ -21,19 +25,19 @@ export const upsertReadCursor = async (
   await ddb.send(
     new PutCommand({
       TableName: readStateTable(),
-      Item: { userId, discussionId, sprintId, lastReadAt, lastReadMessageId },
+      Item: { userId, discussionId, sprintId: scopeRootId, lastReadAt, lastReadMessageId },
     }),
   );
 };
 
-export const fetchReadCursors = async (userId, sprintId) => {
+export const fetchReadCursors = async (userId, scopeRootId) => {
   if (!readStateTable()) return new Map();
   const result = await ddb.send(
     new QueryCommand({
       TableName: readStateTable(),
       KeyConditionExpression: 'userId = :uid',
       FilterExpression: 'sprintId = :sid',
-      ExpressionAttributeValues: { ':uid': userId, ':sid': sprintId },
+      ExpressionAttributeValues: { ':uid': userId, ':sid': scopeRootId },
     }),
   );
   return new Map((result.Items || []).map((item) => [item.discussionId, item]));
@@ -50,6 +54,13 @@ export const fetchProjectIdForSprint = async (g, sprintId) => {
     .hasLabel('Project')
     .values('id')
     .next();
+  return r.done ? null : r.value;
+};
+
+// Resolve the project an intent belongs to (the Intent vertex carries project_id,
+// set by init-ws). Used to authorize intent-scoped discussions.
+export const fetchProjectIdForIntent = async (g, intentId) => {
+  const r = await g.V().has('Intent', 'id', intentId).values('project_id').next();
   return r.done ? null : r.value;
 };
 
@@ -73,14 +84,33 @@ export const findDiscussionByAnchor = async (g, anchorLabel, entityId, entityTyp
   return mapDiscussion(r.value.get('props'), r.value.get('messageCount'));
 };
 
-export const anchorExistsInSprint = async (g, sprintId, entityType, entityId) => {
-  if (entityType === 'sprint' || entityType === 'inception') return entityId === sprintId;
+// Does the anchor (entityType, entityId) exist under this scope's root vertex?
+// - sprint: `sprint`/`inception` self-anchor on the Sprint; others hang off it
+//   via CONTAINS (or HAS_REVIEW for `review`) — original v1 behaviour verbatim.
+// - intent: `intent` self-anchors on the Intent; `artifact` hangs off it via
+//   CONTAINS (the same edge init-ws/graph-writer use for produced artifacts).
+export const anchorExistsInScope = async (g, scope, entityType, entityId) => {
+  if (scope.kind === 'intent') {
+    if (entityType === 'intent') return entityId === scope.rootId;
+    if (entityType === 'artifact') {
+      return g
+        .V()
+        .has('Intent', 'id', scope.rootId)
+        .out('CONTAINS')
+        .hasLabel('Artifact')
+        .has('id', entityId)
+        .hasNext();
+    }
+    return false;
+  }
+  // sprint scope (unchanged)
+  if (entityType === 'sprint' || entityType === 'inception') return entityId === scope.rootId;
   const edge = entityType === 'review' ? 'HAS_REVIEW' : 'CONTAINS';
   const r = await g
     .V()
-    .has('Sprint', 'id', sprintId)
+    .has('Sprint', 'id', scope.rootId)
     .out(edge)
-    .hasLabel(ANCHOR_LABELS[entityType])
+    .hasLabel(scope.anchorLabels[entityType])
     .has('id', entityId)
     .hasNext();
   return r;
@@ -94,12 +124,16 @@ export const fetchAnchorTitle = async (g, anchorLabel, entityId) => {
 
 export const createDiscussionVertex = async (
   g,
-  { id, sprintId, entityType, entityId, entityTitle, createdAt, sub, displayName },
+  { id, scope, entityType, entityId, entityTitle, createdAt, sub, displayName },
 ) => {
-  const anchorLabel = ANCHOR_LABELS[entityType];
+  const anchorLabel = scope.anchorLabels[entityType];
+  // The Discussion vertex carries the scope-root id under its scope-specific
+  // property (sprint_id | intent_id) AND hangs off the root via HAS_DISCUSSION,
+  // plus a DISCUSSES edge to the concrete anchor. Sprint scope reproduces the
+  // original graph exactly.
   await g
     .V()
-    .has('Sprint', 'id', sprintId)
+    .has(scope.rootLabel, 'id', scope.rootId)
     .as('s')
     .V()
     .has(anchorLabel, 'id', entityId)
@@ -109,7 +143,7 @@ export const createDiscussionVertex = async (
     .property('entity_type', entityType)
     .property('entity_id', entityId)
     .property('entity_title', entityTitle)
-    .property('sprint_id', sprintId)
+    .property(scope.idProp, scope.rootId)
     .property('status', 'open')
     .property('created_at', createdAt)
     .property('created_by', sub)
@@ -125,33 +159,36 @@ export const createDiscussionVertex = async (
     .to('a')
     .next();
 
-  // `discussion_started` TimelineEvent on first creation.
-  await g
-    .V()
-    .has('Sprint', 'id', sprintId)
-    .as('s')
-    .addV('TimelineEvent')
-    .property('id', randomUUID())
-    .property('type', 'discussion_started')
-    .property('title', `Discussion started on ${entityType}`)
-    .property('detail', entityTitle || '')
-    .property('user_id', sub)
-    .property('user_name', displayName)
-    .property('timestamp', createdAt)
-    .property('sprint_id', sprintId)
-    .property('question_id', '')
-    .as('e')
-    .addE('HAS_TIMELINE_EVENT')
-    .from_('s')
-    .to('e')
-    .next();
+  // `discussion_started` TimelineEvent on first creation — sprint scope only
+  // (v2 process events live in the v2 process table, not the Sprint timeline).
+  if (scope.timeline) {
+    await g
+      .V()
+      .has('Sprint', 'id', scope.rootId)
+      .as('s')
+      .addV('TimelineEvent')
+      .property('id', randomUUID())
+      .property('type', 'discussion_started')
+      .property('title', `Discussion started on ${entityType}`)
+      .property('detail', entityTitle || '')
+      .property('user_id', sub)
+      .property('user_name', displayName)
+      .property('timestamp', createdAt)
+      .property('sprint_id', scope.rootId)
+      .property('question_id', '')
+      .as('e')
+      .addE('HAS_TIMELINE_EVENT')
+      .from_('s')
+      .to('e')
+      .next();
+  }
 };
 
-export const fetchDiscussionInSprint = async (g, sprintId, discussionId) => {
+export const fetchDiscussionInScope = async (g, scope, discussionId) => {
   const r = await g
     .V()
     .has('Discussion', 'id', discussionId)
-    .has('sprint_id', sprintId)
+    .has(scope.idProp, scope.rootId)
     .valueMap()
     .next();
   return r.done ? null : r.value;
@@ -171,7 +208,7 @@ export const fetchMessageInDiscussion = async (g, discussionId, messageId) => {
   return r.done ? null : r.value;
 };
 
-export const createMessageVertex = async (g, { discussionId, sprintId, message }) => {
+export const createMessageVertex = async (g, { discussionId, scope, message }) => {
   await g
     .V()
     .has('Discussion', 'id', discussionId)
@@ -186,7 +223,7 @@ export const createMessageVertex = async (g, { discussionId, sprintId, message }
     .property('created_at', message.createdAt)
     .property('updated_at', message.updatedAt)
     .property('discussion_id', discussionId)
-    .property('sprint_id', sprintId)
+    .property(scope.idProp, scope.rootId)
     .as('m')
     .addE('HAS_MESSAGE')
     .from_('d')

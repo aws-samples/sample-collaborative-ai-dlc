@@ -1,0 +1,133 @@
+'use strict';
+
+// Shared workflow → ordered execution plan loader (DynamoDB-only).
+//
+// The orchestrator needs the ordered list of stage instances for a pinned
+// workflow + scope so it can sequence run-stage calls. That ordering comes from
+// `buildExecutionPlan`, which needs the workflow composition + block METADATA
+// (stages/artifacts) — NOT the markdown bodies (those live in S3 and are loaded
+// by the runtime container at stage time). So this loader reads only the blocks
+// table, keeping the orchestrator off S3 and out of the agentcore package.
+//
+// Ownership shadowing matches the rest of the app: a `default` (user) block/
+// workflow shadows the `SYSTEM` baseline of the same id.
+
+const { QueryCommand } = require('@aws-sdk/lib-dynamodb');
+const { catalogGsi1Pk } = require('./blocks.js');
+const { workflowPk, workflowVersionPrefix } = require('./workflows.js');
+const { DEFAULT_TENANT, SYSTEM_TENANT } = require('./tenant.js');
+const { buildExecutionPlan } = require('./v2-execution-plan.js');
+
+const keyById = (items) => {
+  const byId = {};
+  for (const b of items) byId[b.id ?? b.blockId] = b;
+  return byId;
+};
+
+// List every block of a type for a tenant via the catalog GSI.
+const listBlocks = async (ddb, tableName, tenant, type) => {
+  const { Items } = await ddb.send(
+    new QueryCommand({
+      TableName: tableName,
+      IndexName: 'GSI1',
+      KeyConditionExpression: 'GSI1PK = :pk',
+      ExpressionAttributeValues: { ':pk': catalogGsi1Pk(tenant, type) },
+    }),
+  );
+  return Items ?? [];
+};
+
+// Merge SYSTEM + default catalogs for a type; default shadows SYSTEM by id.
+const listMergedBlocks = async (ddb, tableName, type) => {
+  const [system, user] = await Promise.all([
+    listBlocks(ddb, tableName, SYSTEM_TENANT, type),
+    listBlocks(ddb, tableName, DEFAULT_TENANT, type),
+  ]);
+  const byId = new Map();
+  for (const b of system) byId.set(b.id ?? b.blockId, b);
+  for (const b of user) byId.set(b.id ?? b.blockId, b);
+  return [...byId.values()];
+};
+
+// Load the pinned workflow's version snapshot rows (default shadows SYSTEM).
+const loadWorkflowItems = async (ddb, tableName, workflowId, workflowVersion) => {
+  for (const tenant of [DEFAULT_TENANT, SYSTEM_TENANT]) {
+    const { Items } = await ddb.send(
+      new QueryCommand({
+        TableName: tableName,
+        KeyConditionExpression: 'pk = :pk AND begins_with(sk, :v)',
+        ExpressionAttributeValues: {
+          ':pk': workflowPk(tenant, workflowId),
+          ':v': workflowVersionPrefix(workflowVersion),
+        },
+      }),
+    );
+    if (Items && Items.length) return Items;
+  }
+  return [];
+};
+
+// Reduce the version snapshot rows into the workflow composition shape
+// buildExecutionPlan consumes (placements + ruleRefs + scopeRefs + phases).
+const assembleWorkflow = (items, { workflowId, workflowVersion }) => {
+  const liveSk = (sk) => sk.replace(workflowVersionPrefix(workflowVersion), '');
+  const placements = [];
+  const ruleRefs = [];
+  const scopeRefs = [];
+  const phases = [];
+  for (const it of items) {
+    const sk = liveSk(it.sk);
+    if (sk.startsWith('PLACEMENT#')) {
+      placements.push({
+        stageId: it.stageId,
+        order: it.order ?? 0,
+        phasePath: it.phasePath ?? null,
+        scopeMembership: it.scopeMembership ?? {},
+      });
+    } else if (sk.startsWith('RULEREF#')) {
+      ruleRefs.push({ layer: it.layer, ruleId: it.ruleId });
+    } else if (sk.startsWith('SCOPEREF#')) {
+      scopeRefs.push({ scopeId: it.scopeId });
+    } else if (sk.startsWith('PHASE#')) {
+      phases.push({ phaseId: it.phaseId, path: it.path ?? null });
+    }
+  }
+  return {
+    workflowId,
+    workflowVersion: Number(workflowVersion),
+    placements,
+    ruleRefs,
+    scopeRefs,
+    phases,
+  };
+};
+
+// Build the ordered execution plan for a pinned workflow + scope. Returns the
+// same `{ valid, errors, plan }` shape as buildExecutionPlan; `plan.stages` is
+// the ordered stage list the orchestrator sequences.
+const loadExecutionPlan = async ({ ddb, tableName, workflowId, workflowVersion, scope }) => {
+  const items = await loadWorkflowItems(ddb, tableName, workflowId, workflowVersion);
+  if (!items.length) {
+    return {
+      valid: false,
+      errors: [{ code: 'workflow_not_found', workflowId, workflowVersion }],
+      plan: null,
+    };
+  }
+  const workflow = assembleWorkflow(items, { workflowId, workflowVersion });
+  const [stages, sensors, rules, artifacts] = await Promise.all([
+    listMergedBlocks(ddb, tableName, 'STAGE'),
+    listMergedBlocks(ddb, tableName, 'SENSOR'),
+    listMergedBlocks(ddb, tableName, 'RULE'),
+    listMergedBlocks(ddb, tableName, 'ARTIFACT'),
+  ]);
+  const library = {
+    stagesById: keyById(stages),
+    sensorsById: keyById(sensors),
+    rulesById: keyById(rules),
+    artifactsById: keyById(artifacts),
+  };
+  return buildExecutionPlan({ workflow, scope, library });
+};
+
+module.exports = { loadExecutionPlan, assembleWorkflow, __test: { listMergedBlocks } };

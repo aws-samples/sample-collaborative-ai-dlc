@@ -8,6 +8,7 @@ import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Project from './pages/Project';
 import ProjectSettings from './pages/ProjectSettings';
+import IntentView from './pages/IntentView';
 import InceptionPage from './pages/InceptionPage';
 import ConstructionPage from './pages/ConstructionPage';
 import ReviewPage from './pages/ReviewPage';
@@ -69,6 +70,7 @@ function App() {
               <Route path="/workflows/:workflowId" element={<WorkflowComposer />} />
               <Route path="/project/:projectId" element={<Project />} />
               <Route path="/project/:projectId/settings" element={<ProjectSettings />} />
+              <Route path="/project/:projectId/intent/:intentId" element={<IntentView />} />
 
               {/* Sprint routes wrapped in SprintLayout for shared context */}
               <Route path="/project/:projectId/sprint/:sprintId" element={<SprintLayout />}>

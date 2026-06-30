@@ -1421,3 +1421,219 @@ resource "aws_iam_role_policy" "realtime_fanout" {
     ]
   })
 }
+
+# =============================================================================
+# v2 intents API Lambda
+#
+# CRUD over v2 intents: reads/writes the v2 process table (DynamoDB), reads
+# project membership + artifacts from Neptune (VPC), mints intent realtime scope
+# tokens (realtime doc secret), reads the blocks table to pin a workflow version,
+# starts the orchestrator durable execution (lambda:InvokeFunction), and resumes
+# a parked run by completing its durable callback
+# (lambda:SendDurableExecutionCallbackSuccess).
+# =============================================================================
+
+resource "aws_iam_role" "intents" {
+  name               = "${var.project_name}-intents-${var.environment}"
+  assume_role_policy = local.lambda_assume_role_policy
+}
+
+resource "aws_iam_role_policy_attachment" "intents_basic" {
+  role       = aws_iam_role.intents.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "intents_vpc" {
+  role       = aws_iam_role.intents.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+resource "aws_iam_role_policy" "intents" {
+  name = "v2-intents"
+  role = aws_iam_role.intents.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      local.neptune_statement,
+      {
+        # v2 process table: read/write execution state + GSI1 list.
+        Effect = "Allow"
+        Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]
+        Resource = [
+          var.v2_executions_table_arn,
+          "${var.v2_executions_table_arn}/index/*",
+        ]
+      },
+      {
+        # Blocks table: resolve a workflow's latest version to pin at create.
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem"]
+        Resource = [var.blocks_table_arn]
+      },
+      {
+        # Realtime scope-token signing secret.
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter"]
+        Resource = var.realtime_doc_secret_param_arn
+      },
+      {
+        # Start the orchestrator (Event invoke) + complete a parked durable
+        # callback to resume a suspended run.
+        Effect = "Allow"
+        Action = ["lambda:InvokeFunction", "lambda:SendDurableExecutionCallbackSuccess"]
+        Resource = [
+          "arn:${local.partition}:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}",
+        ]
+      }
+    ]
+  })
+}
+
+module "intents_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-intents-${var.environment}"
+  handler       = "index.handler"
+  runtime       = "nodejs24.x"
+  timeout       = 30
+
+  source_path = [
+    {
+      path = "${path.module}/../../../../lambda/intents"
+      commands = [
+        "cd ../.. && npm run build -w intents",
+        ":zip lambda/intents/.build",
+      ]
+    }
+  ]
+  hash_extra = local.shared_sources_hash
+
+  create_role = false
+  lambda_role = aws_iam_role.intents.arn
+
+  vpc_subnet_ids         = var.private_subnet_ids
+  vpc_security_group_ids = [aws_security_group.lambda.id]
+
+  environment_variables = {
+    NEPTUNE_ENDPOINT         = var.neptune_endpoint
+    ENVIRONMENT              = var.environment
+    CORS_ALLOWED_ORIGINS     = var.cors_allowed_origins
+    V2_PROCESS_TABLE         = var.v2_executions_table_name
+    BLOCKS_TABLE             = var.blocks_table_name
+    REALTIME_SECRET_PARAM    = var.realtime_doc_secret_param_name
+    V2_ORCHESTRATOR_FUNCTION = "${var.project_name}-v2-orchestrator-${var.environment}"
+  }
+}
+
+# =============================================================================
+# v2 orchestrator Lambda (durable function)
+#
+# Sequences an intent's stages end to end. NOT VPC-attached: it reaches Neptune
+# only THROUGH the AgentCore runtime (init-ws/run-stage), and reads the v2
+# process + blocks tables over the public DynamoDB endpoint. Durable execution
+# checkpoints each run-stage and suspends on human-gate callbacks.
+# =============================================================================
+
+resource "aws_iam_role" "v2_orchestrator" {
+  name               = "${var.project_name}-v2-orchestrator-${var.environment}"
+  assume_role_policy = local.lambda_assume_role_policy
+}
+
+resource "aws_iam_role_policy_attachment" "v2_orchestrator_basic" {
+  role       = aws_iam_role.v2_orchestrator.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy" "v2_orchestrator" {
+  name = "v2-orchestrator"
+  role = aws_iam_role.v2_orchestrator.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        # Durable execution: checkpoint + replay state.
+        Effect   = "Allow"
+        Action   = ["lambda:CheckpointDurableExecution", "lambda:GetDurableExecutionState"]
+        Resource = "*"
+      },
+      {
+        # Invoke the AgentCore stage-executor runtime (init-ws / run-stage) and
+        # release a parked session's warm compute (D1 release-on-park).
+        Effect   = "Allow"
+        Action   = ["bedrock-agentcore:InvokeAgentRuntime", "bedrock-agentcore:StopRuntimeSession"]
+        Resource = ["${var.agentcore_runtime_arn}", "${var.agentcore_runtime_arn}/*"]
+      },
+      {
+        # v2 process table: drive execution + stage + gate state.
+        Effect = "Allow"
+        Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]
+        Resource = [
+          var.v2_executions_table_arn,
+          "${var.v2_executions_table_arn}/index/*",
+        ]
+      },
+      {
+        # Blocks table: load the pinned workflow + block metadata for the plan.
+        Effect   = "Allow"
+        Action   = ["dynamodb:Query"]
+        Resource = [var.blocks_table_arn, "${var.blocks_table_arn}/index/*"]
+      },
+      {
+        # Git connections + token for init-ws clone.
+        Effect = "Allow"
+        Action = ["dynamodb:GetItem", "dynamodb:Query"]
+        Resource = compact([
+          var.git_connections_table_arn,
+          var.git_provider_connections_table_arn,
+        ])
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter"]
+        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
+      }
+    ]
+  })
+}
+
+module "v2_orchestrator_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-v2-orchestrator-${var.environment}"
+  handler       = "index.lambdaHandler"
+  runtime       = "nodejs24.x"
+  # A single run-stage invoke can be long; the durable runtime suspends across
+  # waits, but one step (a stage) must fit the function timeout.
+  timeout = 900
+
+  # Enable durable execution (checkpoint/replay + zero-compute waits).
+  durable_config_execution_timeout = 86400
+  durable_config_retention_period  = 7
+
+  # Durable functions only support structured (JSON) CloudWatch logs.
+  logging_log_format = "JSON"
+
+  source_path = [
+    {
+      path = "${path.module}/../../../../lambda/v2-orchestrator"
+      commands = [
+        "cd ../.. && npm run build -w v2-orchestrator",
+        ":zip lambda/v2-orchestrator/.build",
+      ]
+    }
+  ]
+  hash_extra = local.shared_sources_hash
+
+  create_role = false
+  lambda_role = aws_iam_role.v2_orchestrator.arn
+
+  environment_variables = {
+    ENVIRONMENT           = var.environment
+    V2_PROCESS_TABLE      = var.v2_executions_table_name
+    BLOCKS_TABLE          = var.blocks_table_name
+    AGENTCORE_RUNTIME_ARN = var.agentcore_runtime_arn
+    GIT_TOKEN_SSM_PREFIX  = "${var.project_name}/${var.environment}/git-token"
+  }
+}

@@ -1,0 +1,153 @@
+import { api } from './api';
+
+// AI-DLC v2 intents — the v2 unit of work (the v1 sprint analog). An intent
+// runs a compiled workflow's stages through dynamic phases. Process/runtime
+// state lives in the v2 process table (DynamoDB); business artifacts live in
+// Neptune. This service is the typed client over lambda/intents.
+
+export type IntentStatus =
+  | 'DRAFT'
+  | 'CREATED'
+  | 'RUNNING'
+  | 'WAITING'
+  | 'SUCCEEDED'
+  | 'FAILED'
+  | 'CANCELLED';
+
+export type StageState =
+  | 'PENDING'
+  | 'RUNNING'
+  | 'WAITING_FOR_HUMAN'
+  | 'SUCCEEDED'
+  | 'FAILED'
+  | 'SKIPPED';
+
+export interface Intent {
+  id: string;
+  executionId: string;
+  projectId: string;
+  title: string | null;
+  prompt: string | null;
+  status: IntentStatus;
+  branch: string | null;
+  baseBranch: string | null;
+  repos: string[] | null;
+  workflowId: string;
+  workflowVersion: number | null;
+  scope: string | null;
+  currentPhase: string | null;
+  currentStage: string | null;
+  pendingHumanTaskId: string | null;
+  cliModels: Record<string, string> | null;
+  parkReleaseSeconds: number | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  completedAt: string | null;
+}
+
+export interface IntentStage {
+  stageInstanceId: string;
+  stageId: string | null;
+  phase: string | null;
+  state: StageState;
+  attempt: number;
+  cli: string | null;
+  runtimeError: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  updatedAt: string | null;
+}
+
+// A human gate (HUMAN# row). `questions` is the v1-shaped structured-questions
+// JSON string when kind === 'question' — parsed into the QuestionEditor shape
+// by the IntentView.
+export interface IntentGate {
+  humanTaskId: string;
+  stageInstanceId: string | null;
+  kind: 'approval' | 'question' | 'review-verdict';
+  status: 'pending' | 'answered' | 'approved' | 'rejected';
+  prompt: string | null;
+  options: unknown;
+  questions: string | null;
+  answer: unknown;
+  answeredBy: string | null;
+  answeredAt: string | null;
+  createdAt: string | null;
+}
+
+export interface IntentMetric {
+  metricId: string;
+  stageInstanceId: string | null;
+  metrics: Record<string, number>;
+  timestamp: string;
+}
+
+export interface IntentOutput {
+  seq: number;
+  stageInstanceId: string | null;
+  kind: string;
+  content: string;
+  timestamp: string;
+}
+
+export interface IntentSensorRun {
+  sensorRunId: string;
+  stageInstanceId: string | null;
+  sensorId: string;
+  result: string;
+  severity: string;
+  held: boolean;
+  timestamp: string;
+}
+
+export interface IntentArtifact {
+  id: string;
+  artifactType: string | null;
+  title: string | null;
+  createdByExecutionId: string | null;
+  createdByStageInstanceId: string | null;
+  createdAt: string | null;
+  content: string | null;
+}
+
+// The assembled detail returned by GET /projects/{id}/intents/{intentId}.
+export interface IntentDetail {
+  intent: Intent;
+  stages: IntentStage[];
+  gates: IntentGate[];
+  metrics: IntentMetric[];
+  outputs: IntentOutput[];
+  sensorRuns: IntentSensorRun[];
+  artifacts: IntentArtifact[];
+}
+
+export interface CreateIntentInput {
+  title?: string;
+  prompt?: string;
+  branch?: string;
+  baseBranch?: string;
+  scope?: string;
+}
+
+// The structured answer the QuestionEditor produces, matching what the runtime's
+// formatResumeAnswer parses.
+export interface GateAnswer {
+  status?: 'answered' | 'approved' | 'rejected';
+  answer?: unknown;
+}
+
+export const intentsService = {
+  list: (projectId: string, status?: IntentStatus) =>
+    api.get<Intent[]>(`/projects/${projectId}/intents${status ? `?status=${status}` : ''}`),
+  get: (projectId: string, intentId: string) =>
+    api.get<IntentDetail>(`/projects/${projectId}/intents/${intentId}`),
+  create: (projectId: string, input: CreateIntentInput) =>
+    api.post<Intent>(`/projects/${projectId}/intents`, input),
+  start: (projectId: string, intentId: string) =>
+    api.post<Intent>(`/projects/${projectId}/intents/${intentId}/start`, {}),
+  answerGate: (projectId: string, intentId: string, humanTaskId: string, input: GateAnswer) =>
+    api.post<IntentGate>(
+      `/projects/${projectId}/intents/${intentId}/gates/${humanTaskId}/answer`,
+      input,
+    ),
+};

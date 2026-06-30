@@ -37,6 +37,11 @@ export interface TrackerBinding {
   createdBy: string | null;
 }
 
+// v1 (the default for every pre-existing project) runs the original sprint
+// lifecycle; v2 runs the AI-DLC v2 block/workflow runtime (intents, dynamic
+// phases/stages). There is no migration path between them.
+export type ProjectKind = 'v1' | 'v2';
+
 export interface Project {
   id: string;
   name: string;
@@ -49,6 +54,12 @@ export interface Project {
   userRole?: ProjectRole;
   trackers: TrackerBinding[];
   repos?: ProjectRepo[];
+  // v2 discriminator + settings (absent/`'v1'` for v1 projects).
+  kind?: ProjectKind;
+  workflowId?: string;
+  workflowVersion?: number | null;
+  defaultScope?: string | null;
+  parkReleaseSeconds?: number;
 }
 
 export interface TrackerMigrationResult {
@@ -70,6 +81,12 @@ export interface CreateProjectInput {
   cliModels?: CliModels;
   issueIntegrationEnabled?: boolean;
   repos?: { url: string; provider?: string; role?: RepoRole }[];
+  // v2 project options. `kind: 'v2'` enables the rest; omitted = v1.
+  kind?: ProjectKind;
+  workflowId?: string;
+  workflowVersion?: number | null;
+  scope?: string;
+  parkReleaseSeconds?: number;
 }
 
 export interface UpdateProjectInput {
@@ -79,6 +96,11 @@ export interface UpdateProjectInput {
   agentCli?: AgentCli;
   cliModels?: CliModels;
   issueIntegrationEnabled?: boolean;
+  // v2 settings (owner/admin tunable).
+  workflowId?: string;
+  workflowVersion?: number | null;
+  defaultScope?: string;
+  parkReleaseSeconds?: number;
 }
 
 export interface AddRepoInput {

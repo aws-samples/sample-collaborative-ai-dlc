@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import {
@@ -50,6 +50,7 @@ import {
 import { TrackerIssueListPanel } from '@/components/TrackerIssueListPanel';
 import { MigrateTrackerCard } from '@/components/MigrateTrackerCard';
 import { effectiveSprintStatus, isActiveStatus } from '@/lib/sprintStatus';
+import { intentsService, type Intent } from '@/services/intents';
 
 const STATUS_ICON: Record<string, typeof Loader2> = {
   running: Loader2,
@@ -181,6 +182,12 @@ export default function Project() {
   }
 
   if (!project) return <div className="p-6">Project not found</div>;
+
+  // v2 projects run intents (dynamic phases/stages), not the fixed sprint
+  // lifecycle — render the dedicated intents view.
+  if (project.kind === 'v2') {
+    return <IntentsView project={project} projectId={projectId} onNavigate={navigate} />;
+  }
 
   const hasTrackers = project.trackers.length > 0;
 
@@ -558,6 +565,235 @@ function SprintRow({
         <Trash2 className="h-3 w-3 text-destructive" />
       </Button>
       <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/40 shrink-0" />
+    </div>
+  );
+}
+
+// ── v2 projects: intents list + create ──
+
+const INTENT_STATUS_ICON: Record<string, typeof Loader2> = {
+  RUNNING: Loader2,
+  WAITING: MessageCircleQuestion,
+  SUCCEEDED: CheckCircle2,
+  FAILED: XCircle,
+};
+
+function IntentsView({
+  project,
+  projectId,
+  onNavigate,
+}: {
+  project: ProjectType;
+  projectId: string;
+  onNavigate: (path: string) => void;
+}) {
+  const [intents, setIntents] = useState<Intent[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showCreate, setShowCreate] = useState(false);
+  const [title, setTitle] = useState('');
+  const [prompt, setPrompt] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(() => {
+    intentsService
+      .list(projectId)
+      .then(setIntents)
+      .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load intents'))
+      .finally(() => setLoading(false));
+  }, [projectId]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const handleCreate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!prompt.trim()) return;
+    setCreating(true);
+    setError(null);
+    try {
+      const intent = await intentsService.create(projectId, {
+        title: title.trim(),
+        prompt: prompt.trim(),
+      });
+      setShowCreate(false);
+      setTitle('');
+      setPrompt('');
+      onNavigate(`/project/${projectId}/intent/${intent.id}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create intent');
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  return (
+    <div className="max-w-5xl mx-auto p-6 space-y-6">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-3 min-w-0">
+          <FolderGit2 className="h-5 w-5 text-primary shrink-0" />
+          <h1 className="text-lg font-bold tracking-tight truncate">{project.name}</h1>
+          <Badge variant="outline" className="text-[10px]">
+            v2
+          </Badge>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-1.5 h-7"
+          onClick={() => onNavigate(`/project/${projectId}/settings`)}
+        >
+          <Settings className="h-3 w-3" />
+          Settings
+        </Button>
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-3">
+        <Card>
+          <CardContent className="px-4 py-3">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
+              <FolderGit2 className="h-3 w-3" />
+              Repository
+            </div>
+            <p className="text-sm font-medium truncate">{project.gitRepo || 'Not configured'}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="px-4 py-3">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
+              <Clock className="h-3 w-3" />
+              Workflow
+            </div>
+            <p className="text-sm font-medium">
+              {project.workflowId ?? 'aidlc-v2'} · {project.defaultScope ?? 'feature'}
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card className="flex flex-col">
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between gap-3 min-h-7">
+            <div className="flex items-center gap-2">
+              <CardTitle className="text-sm">Intents</CardTitle>
+              {intents.length > 0 && (
+                <Badge variant="secondary" className="text-[10px] h-5">
+                  {intents.length}
+                </Badge>
+              )}
+            </div>
+            <Button onClick={() => setShowCreate(true)} size="sm" className="gap-1.5 h-7">
+              <Plus className="h-3.5 w-3.5" />
+              New Intent
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="flex-1 space-y-2 pt-0">
+          {error && <p className="text-xs text-destructive">{error}</p>}
+          {loading ? (
+            <Skeleton className="h-16 rounded-lg" />
+          ) : intents.length === 0 ? (
+            <div className="flex flex-col items-center justify-center rounded-lg border border-dashed py-10 text-center">
+              <p className="text-sm text-muted-foreground">No intents yet</p>
+              <p className="text-xs text-muted-foreground/60 mt-1">
+                Start one to kick off the AI-DLC v2 workflow.
+              </p>
+            </div>
+          ) : (
+            intents.map((it) => {
+              const Icon = INTENT_STATUS_ICON[it.status];
+              return (
+                <button
+                  key={it.id}
+                  onClick={() => onNavigate(`/project/${projectId}/intent/${it.id}`)}
+                  className="group flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors hover:bg-accent/50"
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-2">
+                      <span className="text-sm font-medium truncate">
+                        {it.title || 'Untitled intent'}
+                      </span>
+                      <Badge variant="outline" className="text-[9px] h-4 shrink-0">
+                        {it.status}
+                      </Badge>
+                    </span>
+                    {it.currentStage && (
+                      <span className="text-[11px] text-muted-foreground">
+                        stage: {it.currentStage}
+                      </span>
+                    )}
+                  </span>
+                  {Icon && (
+                    <Icon
+                      className={cn(
+                        'h-3.5 w-3.5 shrink-0',
+                        it.status === 'RUNNING' && 'animate-spin text-agent-running',
+                        it.status === 'WAITING' && 'text-agent-waiting',
+                        it.status === 'SUCCEEDED' && 'text-agent-success',
+                        it.status === 'FAILED' && 'text-agent-error',
+                      )}
+                    />
+                  )}
+                  <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/40 shrink-0" />
+                </button>
+              );
+            })
+          )}
+        </CardContent>
+      </Card>
+
+      <Dialog open={showCreate} onOpenChange={setShowCreate}>
+        <DialogContent className="sm:max-w-lg">
+          <form onSubmit={handleCreate}>
+            <DialogHeader>
+              <DialogTitle>New Intent</DialogTitle>
+              <DialogDescription>
+                Describe what you want the agents to build. You'll review and start it next.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3 py-4">
+              <div>
+                <Label htmlFor="intent-title">Title</Label>
+                <Input
+                  id="intent-title"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder="e.g. Add user authentication"
+                  className="mt-1.5"
+                  autoFocus
+                />
+              </div>
+              <div>
+                <Label htmlFor="intent-prompt">Prompt</Label>
+                <textarea
+                  id="intent-prompt"
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  rows={5}
+                  required
+                  placeholder="Describe the intent in detail…"
+                  className="mt-1.5 w-full rounded-md border bg-background px-3 py-2 text-sm"
+                />
+              </div>
+              {error && <p className="text-xs text-destructive">{error}</p>}
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setShowCreate(false)}
+                disabled={creating}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={creating || !prompt.trim()}>
+                {creating ? 'Creating…' : 'Create Intent'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

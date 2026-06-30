@@ -155,12 +155,23 @@ const SPRINT_DOC_RE = new RegExp(
 const PROJECT_DOC_RE = new RegExp(`^inception-(${UUID_PATTERN})$`);
 const SPRINT_CHANNEL_RE = new RegExp(`^sprint:(${UUID_PATTERN})$`);
 const PROJECT_CHANNEL_RE = new RegExp(`^${UUID_PATTERN}$`);
+// V2 intent realtime. The intent app-WS channel is `intent:<intentId>` (see
+// lambda/agentcore/clients.js broadcastToIntent). Intent collaboration Yjs docs
+// use intent-specific prefixes (`intent-sq-…`, `intent-discussion-…`) so the
+// extractor is unambiguous — sprintIds and intentIds are both bare UUIDs, so the
+// shared v1 prefixes (`sq-`, `discussion-`) can't be reused without collision.
+const INTENT_DOC_RE = new RegExp(`^intent-(?:sq|discussion|presence)-(${UUID_PATTERN})(?:-.+)?$`);
+const INTENT_CHANNEL_RE = new RegExp(`^intent:(${UUID_PATTERN})$`);
 
 /**
  * Yjs doc name → required scope, or null for unknown formats (deny).
  */
 const requiredScopeForYjsDoc = (docName) => {
   if (typeof docName !== 'string') return null;
+  // Intent docs first — their `intent-` prefix is more specific than the v1
+  // `sq-`/`discussion-` shapes and must win.
+  const intent = INTENT_DOC_RE.exec(docName);
+  if (intent) return `intent:${intent[1].toLowerCase()}`;
   const sprint = SPRINT_DOC_RE.exec(docName);
   if (sprint) return `sprint:${sprint[1].toLowerCase()}`;
   const project = PROJECT_DOC_RE.exec(docName);
@@ -173,6 +184,8 @@ const requiredScopeForYjsDoc = (docName) => {
  */
 const requiredScopeForChannel = (documentId) => {
   if (typeof documentId !== 'string') return null;
+  const intent = INTENT_CHANNEL_RE.exec(documentId);
+  if (intent) return `intent:${intent[1].toLowerCase()}`;
   const sprint = SPRINT_CHANNEL_RE.exec(documentId);
   if (sprint) return `sprint:${sprint[1].toLowerCase()}`;
   if (PROJECT_CHANNEL_RE.test(documentId)) return `project:${documentId.toLowerCase()}`;

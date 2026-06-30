@@ -10,8 +10,6 @@ import { signRealtimeToken } from '../shared/realtime-token.js';
 import { fetchMembershipRole } from '../shared/trackers.js';
 import { ddb, lambdaClient, query, cardinality, TextP, __, locksTable } from './clients.js';
 import {
-  ENTITY_TYPES,
-  ANCHOR_LABELS,
   MESSAGE_ID_RE,
   MAX_CONTENT_LENGTH,
   DEFAULT_PAGE_SIZE,
@@ -45,23 +43,25 @@ import {
   fetchReadCursors,
   upsertReadCursor,
   fetchProjectIdForSprint,
+  fetchProjectIdForIntent,
   findDiscussionByAnchor,
-  anchorExistsInSprint,
+  anchorExistsInScope,
   fetchAnchorTitle,
   createDiscussionVertex,
-  fetchDiscussionInSprint,
+  fetchDiscussionInScope,
   fetchMessageInDiscussion,
   createMessageVertex,
   fetchProjectMemberIds,
   completeGuard,
 } from './data-access.js';
-import { authorizeSprint, broadcastToSprint, broadcastToUser, getSecret } from './services.js';
+import { authorizeScope, broadcastToScope, broadcastToUser, getSecret } from './services.js';
+import { resolveScope } from './scope.js';
 
 export const issueRealtimeToken = async (event, res) => {
   const { sub } = getCaller(event);
   if (!sub) return res(401, { error: 'Unauthorized' });
 
-  const { sprintId, projectId: pathProjectId } = event.pathParameters || {};
+  const { sprintId, intentId, projectId: pathProjectId } = event.pathParameters || {};
 
   let projectId = pathProjectId;
   let scopes;
@@ -69,10 +69,16 @@ export const issueRealtimeToken = async (event, res) => {
     projectId = await query((g) => fetchProjectIdForSprint(g, sprintId));
     if (!projectId) return res(404, { error: 'Sprint not found' });
     scopes = [`sprint:${sprintId}`, `project:${projectId}`];
+  } else if (intentId) {
+    // Intent realtime token: the route is project-scoped; verify the intent
+    // belongs to the project when the Intent vertex exists (post-Start).
+    projectId = (await query((g) => fetchProjectIdForIntent(g, intentId))) || pathProjectId;
+    if (!projectId) return res(404, { error: 'Intent not found' });
+    scopes = [`intent:${intentId}`, `project:${projectId}`];
   } else if (pathProjectId) {
     scopes = [`project:${pathProjectId}`];
   } else {
-    return res(400, { error: 'Missing sprintId or projectId' });
+    return res(400, { error: 'Missing sprintId, intentId, or projectId' });
   }
 
   const role = await query((g) => fetchMembershipRole(g, projectId, sub));
@@ -84,15 +90,15 @@ export const issueRealtimeToken = async (event, res) => {
 };
 
 export const listDiscussions = async (event, res) => {
-  const { sprintId } = event.pathParameters || {};
+  const scope = resolveScope(event.pathParameters);
   const caller = getCaller(event);
-  const auth = await authorizeSprint(sprintId, caller.sub, res);
+  const auth = await authorizeScope(scope, caller.sub, res);
   if (auth.res) return auth.res;
 
   const rows = await query((g) =>
     g
       .V()
-      .has('Sprint', 'id', sprintId)
+      .has(scope.rootLabel, 'id', scope.rootId)
       .out('HAS_DISCUSSION')
       .hasLabel('Discussion')
       .project('props', 'messageCount', 'messageKeys')
@@ -104,7 +110,7 @@ export const listDiscussions = async (event, res) => {
       .toList(),
   );
 
-  const cursors = await fetchReadCursors(caller.sub, sprintId);
+  const cursors = await fetchReadCursors(caller.sub, scope.rootId);
 
   const discussions = rows
     .map((r) => {
@@ -124,9 +130,9 @@ export const listDiscussions = async (event, res) => {
 };
 
 export const getOrCreateDiscussion = async (event, res) => {
-  const { sprintId } = event.pathParameters || {};
+  const scope = resolveScope(event.pathParameters);
   const caller = getCaller(event);
-  const auth = await authorizeSprint(sprintId, caller.sub, res);
+  const auth = await authorizeScope(scope, caller.sub, res);
   if (auth.res) return auth.res;
 
   let body;
@@ -137,24 +143,29 @@ export const getOrCreateDiscussion = async (event, res) => {
   }
 
   const entityType = body.entityType;
-  if (!ENTITY_TYPES.includes(entityType)) {
-    return res(400, { error: `Invalid entityType — must be one of ${ENTITY_TYPES.join(', ')}` });
+  if (!scope.entityTypes.includes(entityType)) {
+    return res(400, {
+      error: `Invalid entityType — must be one of ${scope.entityTypes.join(', ')}`,
+    });
   }
-  const entityId =
-    entityType === 'sprint' || entityType === 'inception' ? sprintId : String(body.entityId || '');
+  // A self-anchored type (sprint/inception, or intent) targets the scope root.
+  const entityId = scope.selfTypes.includes(entityType)
+    ? scope.rootId
+    : String(body.entityId || '');
   if (!entityId) return res(400, { error: 'Missing entityId' });
 
-  const anchorLabel = ANCHOR_LABELS[entityType];
+  const anchorLabel = scope.anchorLabels[entityType];
 
   // Fast path: thread already exists — no lock.
   const existing = await query((g) => findDiscussionByAnchor(g, anchorLabel, entityId, entityType));
   if (existing) return res(200, existing);
 
-  // Validate the anchor lives in this sprint before creating anything.
-  const anchorOk = await query((g) => anchorExistsInSprint(g, sprintId, entityType, entityId));
-  if (!anchorOk) return res(404, { error: `${entityType} "${entityId}" not found in sprint` });
+  // Validate the anchor lives in this scope before creating anything.
+  const anchorOk = await query((g) => anchorExistsInScope(g, scope, entityType, entityId));
+  if (!anchorOk)
+    return res(404, { error: `${entityType} "${entityId}" not found in ${scope.kind}` });
 
-  const guardKey = `create:${sprintId}:${entityType}:${entityId}`;
+  const guardKey = `create:${scope.rootId}:${entityType}:${entityId}`;
 
   // Two iterations max: a crashed-winner takeover re-runs the acquire once.
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -199,7 +210,7 @@ export const getOrCreateDiscussion = async (event, res) => {
       await query((g) =>
         createDiscussionVertex(g, {
           id,
-          sprintId,
+          scope,
           entityType,
           entityId,
           entityTitle,
@@ -242,11 +253,12 @@ export const getOrCreateDiscussion = async (event, res) => {
 };
 
 export const listMessages = async (event, res) => {
-  const { sprintId, discussionId } = event.pathParameters || {};
-  const auth = await authorizeSprint(sprintId, getCaller(event).sub, res);
+  const { discussionId } = event.pathParameters || {};
+  const scope = resolveScope(event.pathParameters);
+  const auth = await authorizeScope(scope, getCaller(event).sub, res);
   if (auth.res) return auth.res;
 
-  const discussion = await query((g) => fetchDiscussionInSprint(g, sprintId, discussionId));
+  const discussion = await query((g) => fetchDiscussionInScope(g, scope, discussionId));
   if (!discussion) return res(404, { error: 'Discussion not found' });
 
   const params = event.queryStringParameters || {};
@@ -305,12 +317,13 @@ export const listMessages = async (event, res) => {
 };
 
 export const postMessage = async (event, res) => {
-  const { sprintId, discussionId } = event.pathParameters || {};
+  const { discussionId } = event.pathParameters || {};
+  const scope = resolveScope(event.pathParameters);
   const caller = getCaller(event);
-  const auth = await authorizeSprint(sprintId, caller.sub, res);
+  const auth = await authorizeScope(scope, caller.sub, res);
   if (auth.res) return auth.res;
 
-  const discussion = await query((g) => fetchDiscussionInSprint(g, sprintId, discussionId));
+  const discussion = await query((g) => fetchDiscussionInScope(g, scope, discussionId));
   if (!discussion) return res(404, { error: 'Discussion not found' });
 
   let body;
@@ -417,17 +430,19 @@ export const postMessage = async (event, res) => {
         createdAt,
         updatedAt: createdAt, // = created_at on create; bumped on redact
         discussionId,
-        sprintId,
+        // DTO field is `sprintId` for the v1 wire contract; carries the scope
+        // root id (sprintId or intentId).
+        sprintId: scope.rootId,
       };
 
-      await query((g) => createMessageVertex(g, { discussionId, sprintId, message }));
+      await query((g) => createMessageVertex(g, { discussionId, scope, message }));
       await completeGuard(guardKey, ownerToken);
 
       // Server-driven fanout with the FULL persisted message — sender
       // included; delivery never depends on the sender's tab surviving.
-      await broadcastToSprint(sprintId, {
+      await broadcastToScope(scope, {
         action: 'discussion.message',
-        sprintId,
+        sprintId: scope.rootId,
         discussionId,
         message,
       });
@@ -445,7 +460,7 @@ export const postMessage = async (event, res) => {
             broadcastToUser(userId, {
               action: 'notification',
               type: 'discussion.mention',
-              sprintId,
+              sprintId: scope.rootId,
               discussionId,
               messageId,
               byName: caller.displayName,
@@ -456,7 +471,7 @@ export const postMessage = async (event, res) => {
 
       // Auto-advance the author's read cursor — your own message is read.
       // Best-effort: a failure only leaves a stale badge.
-      await upsertReadCursor(caller.sub, discussionId, sprintId, createdAt, messageId).catch(
+      await upsertReadCursor(caller.sub, discussionId, scope.rootId, createdAt, messageId).catch(
         (err) => console.error('Read-cursor auto-advance failed:', err.message),
       );
 
@@ -503,12 +518,13 @@ export const postMessage = async (event, res) => {
 };
 
 export const updateDiscussion = async (event, res) => {
-  const { sprintId, discussionId } = event.pathParameters || {};
+  const { discussionId } = event.pathParameters || {};
+  const scope = resolveScope(event.pathParameters);
   const caller = getCaller(event);
-  const auth = await authorizeSprint(sprintId, caller.sub, res);
+  const auth = await authorizeScope(scope, caller.sub, res);
   if (auth.res) return auth.res;
 
-  const discussion = await query((g) => fetchDiscussionInSprint(g, sprintId, discussionId));
+  const discussion = await query((g) => fetchDiscussionInScope(g, scope, discussionId));
   if (!discussion) return res(404, { error: 'Discussion not found' });
 
   let body;
@@ -539,7 +555,7 @@ export const updateDiscussion = async (event, res) => {
     g
       .V()
       .has('Discussion', 'id', discussionId)
-      .has('sprint_id', sprintId)
+      .has(scope.idProp, scope.rootId)
       .property(cardinality.single, 'status', status)
       .property(cardinality.single, 'resolved_by', resolved ? caller.sub : '')
       .property(cardinality.single, 'resolved_by_name', resolved ? caller.displayName : '')
@@ -549,11 +565,11 @@ export const updateDiscussion = async (event, res) => {
       .next(),
   );
 
-  if (resolved) {
+  if (resolved && scope.timeline) {
     await query((g) =>
       g
         .V()
-        .has('Sprint', 'id', sprintId)
+        .has('Sprint', 'id', scope.rootId)
         .as('s')
         .addV('TimelineEvent')
         .property('id', randomUUID())
@@ -563,7 +579,7 @@ export const updateDiscussion = async (event, res) => {
         .property('user_id', caller.sub)
         .property('user_name', caller.displayName)
         .property('timestamp', now)
-        .property('sprint_id', sprintId)
+        .property('sprint_id', scope.rootId)
         .property('question_id', '')
         .as('e')
         .addE('HAS_TIMELINE_EVENT')
@@ -573,29 +589,30 @@ export const updateDiscussion = async (event, res) => {
     );
   }
 
-  await broadcastToSprint(sprintId, {
+  await broadcastToScope(scope, {
     action: 'discussion.updated',
-    sprintId,
+    sprintId: scope.rootId,
     discussionId,
     status,
     resolutionSummary: resolved ? resolutionSummary : undefined,
     outcomeMessageId: resolved && outcomeMessageId ? outcomeMessageId : undefined,
   });
 
-  const updated = await query((g) => fetchDiscussionInSprint(g, sprintId, discussionId));
+  const updated = await query((g) => fetchDiscussionInScope(g, scope, discussionId));
   return res(200, mapDiscussion(updated));
 };
 
 export const redactMessage = async (event, res) => {
-  const { sprintId, discussionId, messageId } = event.pathParameters || {};
+  const { discussionId, messageId } = event.pathParameters || {};
+  const scope = resolveScope(event.pathParameters);
   const caller = getCaller(event);
-  const auth = await authorizeSprint(sprintId, caller.sub, res);
+  const auth = await authorizeScope(scope, caller.sub, res);
   if (auth.res) return auth.res;
   if (auth.role !== 'admin' && auth.role !== 'owner') {
     return res(403, { error: 'Only project admins or owners can redact messages' });
   }
 
-  const discussion = await query((g) => fetchDiscussionInSprint(g, sprintId, discussionId));
+  const discussion = await query((g) => fetchDiscussionInScope(g, scope, discussionId));
   if (!discussion) return res(404, { error: 'Discussion not found' });
 
   const vertex = await query((g) => fetchMessageInDiscussion(g, discussionId, messageId));
@@ -622,31 +639,33 @@ export const redactMessage = async (event, res) => {
       .next(),
   );
 
-  await query((g) =>
-    g
-      .V()
-      .has('Sprint', 'id', sprintId)
-      .as('s')
-      .addV('TimelineEvent')
-      .property('id', randomUUID())
-      .property('type', 'message_redacted')
-      .property('title', 'Discussion message redacted')
-      .property('detail', '')
-      .property('user_id', caller.sub)
-      .property('user_name', caller.displayName)
-      .property('timestamp', now)
-      .property('sprint_id', sprintId)
-      .property('question_id', '')
-      .as('e')
-      .addE('HAS_TIMELINE_EVENT')
-      .from_('s')
-      .to('e')
-      .next(),
-  );
+  if (scope.timeline) {
+    await query((g) =>
+      g
+        .V()
+        .has('Sprint', 'id', scope.rootId)
+        .as('s')
+        .addV('TimelineEvent')
+        .property('id', randomUUID())
+        .property('type', 'message_redacted')
+        .property('title', 'Discussion message redacted')
+        .property('detail', '')
+        .property('user_id', caller.sub)
+        .property('user_name', caller.displayName)
+        .property('timestamp', now)
+        .property('sprint_id', scope.rootId)
+        .property('question_id', '')
+        .as('e')
+        .addE('HAS_TIMELINE_EVENT')
+        .from_('s')
+        .to('e')
+        .next(),
+    );
+  }
 
-  await broadcastToSprint(sprintId, {
+  await broadcastToScope(scope, {
     action: 'discussion.message.redacted',
-    sprintId,
+    sprintId: scope.rootId,
     discussionId,
     messageId,
     content: replacement,
@@ -659,12 +678,13 @@ export const redactMessage = async (event, res) => {
 };
 
 export const markRead = async (event, res) => {
-  const { sprintId, discussionId } = event.pathParameters || {};
+  const { discussionId } = event.pathParameters || {};
+  const scope = resolveScope(event.pathParameters);
   const caller = getCaller(event);
-  const auth = await authorizeSprint(sprintId, caller.sub, res);
+  const auth = await authorizeScope(scope, caller.sub, res);
   if (auth.res) return auth.res;
 
-  const discussion = await query((g) => fetchDiscussionInSprint(g, sprintId, discussionId));
+  const discussion = await query((g) => fetchDiscussionInScope(g, scope, discussionId));
   if (!discussion) return res(404, { error: 'Discussion not found' });
 
   let body;
@@ -680,13 +700,13 @@ export const markRead = async (event, res) => {
     return res(400, { error: 'lastReadAt and lastReadMessageId are required' });
   }
 
-  await upsertReadCursor(caller.sub, discussionId, sprintId, lastReadAt, lastReadMessageId);
+  await upsertReadCursor(caller.sub, discussionId, scope.rootId, lastReadAt, lastReadMessageId);
   return res(200, { lastReadAt, lastReadMessageId });
 };
 
 export const searchDiscussions = async (event, res) => {
-  const { sprintId } = event.pathParameters || {};
-  const auth = await authorizeSprint(sprintId, getCaller(event).sub, res);
+  const scope = resolveScope(event.pathParameters);
+  const auth = await authorizeScope(scope, getCaller(event).sub, res);
   if (auth.res) return auth.res;
 
   const params = event.queryStringParameters || {};
@@ -703,13 +723,17 @@ export const searchDiscussions = async (event, res) => {
   if (status && status !== 'open' && status !== 'resolved') {
     return res(400, { error: 'status must be "open" or "resolved"' });
   }
-  if (entityType && !ENTITY_TYPES.includes(entityType)) {
+  if (entityType && !scope.entityTypes.includes(entityType)) {
     return res(400, { error: 'Invalid entityType filter' });
   }
 
   // Message-content matches, each with its parent thread.
   const messageRows = await query((g) => {
-    let t = g.V().has('Sprint', 'id', sprintId).out('HAS_DISCUSSION').hasLabel('Discussion');
+    let t = g
+      .V()
+      .has(scope.rootLabel, 'id', scope.rootId)
+      .out('HAS_DISCUSSION')
+      .hasLabel('Discussion');
     if (status) t = t.has('status', status);
     if (entityType) t = t.has('entity_type', entityType);
     t = t.as('d').out('HAS_MESSAGE').has('content', TextP.containing(q));
@@ -729,7 +753,7 @@ export const searchDiscussions = async (event, res) => {
     : await query((g) => {
         let t = g
           .V()
-          .has('Sprint', 'id', sprintId)
+          .has(scope.rootLabel, 'id', scope.rootId)
           .out('HAS_DISCUSSION')
           .hasLabel('Discussion')
           .has('entity_title', TextP.containing(q));
@@ -761,11 +785,18 @@ export const searchDiscussions = async (event, res) => {
 
 export const invokeAssist = async (event, res) => {
   const { sprintId, discussionId } = event.pathParameters || {};
+  const scope = resolveScope(event.pathParameters);
   const caller = getCaller(event);
-  const auth = await authorizeSprint(sprintId, caller.sub, res);
+  const auth = await authorizeScope(scope, caller.sub, res);
   if (auth.res) return auth.res;
 
-  const discussion = await query((g) => fetchDiscussionInSprint(g, sprintId, discussionId));
+  // In-thread agent assist runs as a v1 pool-worker 'discussion' phase keyed on
+  // a sprint. v2 intents have no such pool agent, so assist is sprint-only.
+  if (scope.kind !== 'sprint') {
+    return res(400, { error: 'Assist is not available for intent discussions' });
+  }
+
+  const discussion = await query((g) => fetchDiscussionInScope(g, scope, discussionId));
   if (!discussion) return res(404, { error: 'Discussion not found' });
 
   let body;

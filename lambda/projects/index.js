@@ -37,6 +37,46 @@ const { cardinality, P } = gremlin.process;
 // The trackers lambda special-cases this id on the issue routes.
 export const LEGACY_GITHUB_BINDING_ID = 'legacy-github';
 
+// Project kind discriminator. Every existing project predates this field and is
+// implicitly v1 (no migration). v2 projects run the AI-DLC v2 block/workflow
+// runtime (intents, dynamic phases/stages) and carry the extra settings below.
+const DEFAULT_V2_WORKFLOW_ID = 'aidlc-v2';
+// Seconds a parked (waiting-for-human) stage's compute lingers before release.
+// Default 5 min; bounded by the runtime idle backstop (900s) — see v2-open.md D1.
+const DEFAULT_PARK_RELEASE_SECONDS = 300;
+const MAX_PARK_RELEASE_SECONDS = 900;
+
+// Validate + normalize park_release_seconds. Returns { valid, value?, error? }.
+const normalizeParkReleaseSeconds = (raw) => {
+  if (raw === undefined || raw === null || raw === '') {
+    return { valid: true, value: DEFAULT_PARK_RELEASE_SECONDS };
+  }
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0 || n > MAX_PARK_RELEASE_SECONDS) {
+    return {
+      valid: false,
+      error: `parkReleaseSeconds must be an integer between 0 and ${MAX_PARK_RELEASE_SECONDS}`,
+    };
+  }
+  return { valid: true, value: n };
+};
+
+// Assemble the v2 settings block returned on a project DTO. Reads are
+// defaulted so a v1 project (no v2 properties) still produces a coherent shape
+// without these fields surfacing.
+const readV2Settings = (v) => {
+  const kind = getVal(v, 'kind') || 'v1';
+  if (kind !== 'v2') return { kind };
+  const rawVersion = getVal(v, 'workflow_version');
+  return {
+    kind,
+    workflowId: getVal(v, 'workflow_id') || DEFAULT_V2_WORKFLOW_ID,
+    workflowVersion: rawVersion ? Number(rawVersion) : null,
+    defaultScope: getVal(v, 'default_scope') || null,
+    parkReleaseSeconds: Number(getVal(v, 'park_release_seconds') || DEFAULT_PARK_RELEASE_SECONDS),
+  };
+};
+
 const buildLegacyBinding = (project) => ({
   id: LEGACY_GITHUB_BINDING_ID,
   provider: 'github-issues',
@@ -756,6 +796,7 @@ export const handler = async (event) => {
             userRole: role || 'member',
             trackers: trackerMaps.map(mapBinding),
             repos,
+            ...readV2Settings(v),
           };
           return response(200, withLegacyTracker(project));
         }
@@ -803,6 +844,7 @@ export const handler = async (event) => {
               userRole: role || 'member',
               trackers: trackerMaps.map(mapBinding),
               repos,
+              ...readV2Settings(v),
             });
           }),
         );
@@ -869,8 +911,24 @@ export const handler = async (event) => {
         }
         const cliModels = cliModelsValidation.value;
 
+        // v2 project discriminator + settings. v1 (default) skips them entirely.
+        const kind = data.kind === 'v2' ? 'v2' : 'v1';
+        let v2Settings = { kind };
+        if (kind === 'v2') {
+          const parkValidation = normalizeParkReleaseSeconds(data.parkReleaseSeconds);
+          if (!parkValidation.valid) return response(400, { error: parkValidation.error });
+          v2Settings = {
+            kind,
+            workflowId: data.workflowId || DEFAULT_V2_WORKFLOW_ID,
+            // Empty pin = "resolve latest at intent create" (left to the intents API).
+            workflowVersion: Number.isInteger(data.workflowVersion) ? data.workflowVersion : null,
+            defaultScope: data.scope || data.defaultScope || null,
+            parkReleaseSeconds: parkValidation.value,
+          };
+        }
+
         // Create the project vertex with creator tracking
-        await g
+        const createV = g
           .addV('Project')
           .property('id', id)
           .property('name', data.name)
@@ -879,9 +937,20 @@ export const handler = async (event) => {
           .property('agent_cli', data.agentCli || 'kiro')
           .property('cli_models', JSON.stringify(cliModels))
           .property('issue_integration_enabled', issueIntegrationEnabled ? 'true' : 'false')
+          .property('kind', kind)
           .property('created_by', userId)
-          .property('created_at', createdAt)
-          .next();
+          .property('created_at', createdAt);
+        if (kind === 'v2') {
+          createV
+            .property('workflow_id', v2Settings.workflowId)
+            .property(
+              'workflow_version',
+              v2Settings.workflowVersion == null ? '' : String(v2Settings.workflowVersion),
+            )
+            .property('default_scope', v2Settings.defaultScope || '')
+            .property('park_release_seconds', String(v2Settings.parkReleaseSeconds));
+        }
+        await createV.next();
 
         // Create Repository vertices and HAS_REPO edges. Normalize so at most
         // one repo keeps the `primary` role: `primaryUrl` is the canonical
@@ -945,6 +1014,7 @@ export const handler = async (event) => {
           issueIntegrationEnabled,
           createdAt,
           repos: reposOut,
+          ...v2Settings,
         });
       }
 
@@ -1034,10 +1104,55 @@ export const handler = async (event) => {
             )
             .next();
         }
+        // v2 settings — owner/admin tunable. Only meaningful for v2 projects;
+        // writing them on a v1 project is harmless (readV2Settings ignores them).
+        let normalizedParkReleaseSeconds;
+        if (data.parkReleaseSeconds !== undefined) {
+          const parkValidation = normalizeParkReleaseSeconds(data.parkReleaseSeconds);
+          if (!parkValidation.valid) return response(400, { error: parkValidation.error });
+          normalizedParkReleaseSeconds = parkValidation.value;
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .property(
+              cardinality.single,
+              'park_release_seconds',
+              String(normalizedParkReleaseSeconds),
+            )
+            .next();
+        }
+        if (data.workflowId !== undefined) {
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .property(cardinality.single, 'workflow_id', data.workflowId || DEFAULT_V2_WORKFLOW_ID)
+            .next();
+        }
+        if (data.workflowVersion !== undefined) {
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .property(
+              cardinality.single,
+              'workflow_version',
+              Number.isInteger(data.workflowVersion) ? String(data.workflowVersion) : '',
+            )
+            .next();
+        }
+        if (data.defaultScope !== undefined) {
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .property(cardinality.single, 'default_scope', data.defaultScope || '')
+            .next();
+        }
         return response(200, {
           id: projectId,
           ...data,
           ...(normalizedCliModels !== undefined ? { cliModels: normalizedCliModels } : {}),
+          ...(normalizedParkReleaseSeconds !== undefined
+            ? { parkReleaseSeconds: normalizedParkReleaseSeconds }
+            : {}),
         });
       }
 

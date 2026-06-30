@@ -167,6 +167,9 @@ module "lambda" {
   artifacts_bucket_arn                = module.s3.artifacts_bucket_arn
   blocks_table_name                   = module.dynamodb.blocks_table_name
   blocks_table_arn                    = module.dynamodb.blocks_table_arn
+  v2_executions_table_name            = module.agentcore.v2_executions_table_name
+  v2_executions_table_arn             = module.agentcore.v2_executions_table_arn
+  agentcore_runtime_arn               = module.agentcore.runtime_arn
   github_oauth_secret_name            = module.git.github_oauth_secret_name
   github_oauth_secret_arn             = module.git.github_oauth_secret_arn
   gitlab_oauth_secret_name            = module.git.gitlab_oauth_secret_name
@@ -245,6 +248,8 @@ module "api" {
   building_blocks_lambda_name         = module.lambda.building_blocks_lambda_name
   workflows_lambda_invoke_arn         = module.lambda.workflows_lambda_invoke_arn
   workflows_lambda_name               = module.lambda.workflows_lambda_name
+  intents_lambda_invoke_arn           = module.lambda.intents_lambda_invoke_arn
+  intents_lambda_name                 = module.lambda.intents_lambda_name
   github_lambda_invoke_arn            = module.lambda.github_lambda_invoke_arn
   github_lambda_name                  = module.lambda.github_lambda_name
   gitlab_lambda_invoke_arn            = module.lambda.gitlab_lambda_invoke_arn

@@ -193,4 +193,82 @@ describe('createProcessStore', () => {
     expect(item.metrics).toEqual({ tokensInput: 10, contextWindowPct: 42 });
     expect(item.sk).toMatch(/^METRIC#T#id-/);
   });
+
+  it('listProjectExecutions queries GSI1 newest-first, optionally by status', async () => {
+    ddb.on(QueryCommand).resolves({ Items: [{ sk: 'META', executionId: 'e1' }] });
+    const all = await store.listProjectExecutions({ projectId: 'p1' });
+    expect(all).toHaveLength(1);
+    const input = ddb.commandCalls(QueryCommand)[0].args[0].input;
+    expect(input.IndexName).toBe('GSI1');
+    expect(input.ExpressionAttributeValues[':pk']).toBe('PROJECT#p1');
+    expect(input.ScanIndexForward).toBe(false);
+
+    ddb.reset();
+    ddb.on(QueryCommand).resolves({ Items: [] });
+    await store.listProjectExecutions({ projectId: 'p1', status: 'DRAFT' });
+    const byStatus = ddb.commandCalls(QueryCommand)[0].args[0].input;
+    expect(byStatus.KeyConditionExpression).toContain('begins_with(GSI1SK, :sk)');
+    expect(byStatus.ExpressionAttributeValues[':sk']).toBe('STATUS#DRAFT#');
+  });
+
+  it('patchExecutionConfig only sets supplied intent-config fields', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: {} });
+    await store.patchExecutionConfig({
+      executionId: 'e1',
+      prompt: 'do the thing',
+      branch: 'aidlc/i1',
+    });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ExpressionAttributeValues[':prompt']).toBe('do the thing');
+    expect(input.ExpressionAttributeValues[':branch']).toBe('aidlc/i1');
+    expect(input.ExpressionAttributeValues[':baseBranch']).toBeUndefined();
+    expect(input.UpdateExpression).toContain('prompt = :prompt');
+  });
+});
+
+describe('buildExecutionMeta intent-config + DRAFT', () => {
+  it('carries prompt/branch/baseBranch/repos and supports DRAFT status', () => {
+    const meta = buildExecutionMeta({
+      executionId: 'e1',
+      projectId: 'p1',
+      intentId: 'i1',
+      status: 'DRAFT',
+      workflowId: 'aidlc-v2',
+      workflowVersion: 3,
+      scope: 'feature',
+      startedAt: 'T',
+      title: 'My intent',
+      prompt: 'Build X',
+      branch: 'aidlc/i1',
+      baseBranch: 'main',
+      repos: ['owner/repo'],
+    });
+    expect(meta).toMatchObject({
+      status: 'DRAFT',
+      title: 'My intent',
+      prompt: 'Build X',
+      branch: 'aidlc/i1',
+      baseBranch: 'main',
+      repos: ['owner/repo'],
+    });
+    expect(meta.GSI1SK).toBe('STATUS#DRAFT#STARTED#T#EXEC#e1');
+  });
+
+  it('defaults the config fields to null when omitted', () => {
+    const meta = buildExecutionMeta({
+      executionId: 'e1',
+      projectId: 'p1',
+      intentId: 'i1',
+      workflowId: 'w',
+      workflowVersion: 1,
+      startedAt: 'T',
+    });
+    expect(meta).toMatchObject({
+      title: null,
+      prompt: null,
+      branch: null,
+      baseBranch: null,
+      repos: null,
+    });
+  });
 });

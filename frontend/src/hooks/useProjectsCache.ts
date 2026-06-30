@@ -59,6 +59,11 @@ async function fetchProjects(): Promise<ProjectWithSprint[]> {
   const projs = await projectsService.list();
   const results = await Promise.allSettled(
     projs.map(async (project): Promise<ProjectWithSprint> => {
+      // v2 projects have intents, not sprints — there is no /sprints data to
+      // fetch, and consumers must not assume a latestSprint for them.
+      if (project.kind === 'v2') {
+        return { project, latestSprint: null };
+      }
       const cached = sprintsCache.get(project.id);
       if (cached && !isStale(cached, SPRINTS_TTL)) {
         return { project, latestSprint: latestOf(cached.data) };

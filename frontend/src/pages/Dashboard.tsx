@@ -221,17 +221,21 @@ export default function Dashboard() {
                       </div>
                       <div className="min-w-0">
                         <h3 className="font-semibold text-sm truncate">{project.name}</h3>
-                        {project.userRole && (
-                          <Badge
-                            variant="outline"
-                            className={cn(
-                              'h-4 px-1.5 text-[9px] mt-0.5',
-                              roleColors[project.userRole],
-                            )}
-                          >
-                            {project.userRole}
-                          </Badge>
-                        )}
+                        <div className="flex items-center gap-1 mt-0.5">
+                          {project.userRole && (
+                            <Badge
+                              variant="outline"
+                              className={cn('h-4 px-1.5 text-[9px]', roleColors[project.userRole])}
+                            >
+                              {project.userRole}
+                            </Badge>
+                          )}
+                          {project.kind === 'v2' && (
+                            <Badge variant="outline" className="h-4 px-1.5 text-[9px]">
+                              v2
+                            </Badge>
+                          )}
+                        </div>
                       </div>
                     </div>
                     {project.userRole === 'owner' && (
@@ -331,8 +335,8 @@ export default function Dashboard() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Project</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete this project? This action cannot be undone. All
-              sprints and artifacts will be permanently removed.
+              Are you sure you want to delete this project? This action cannot be undone. All work
+              and artifacts will be permanently removed.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

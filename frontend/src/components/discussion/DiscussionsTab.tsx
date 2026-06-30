@@ -37,8 +37,9 @@ const timeAgo = (iso: string): string => {
 
 type StatusFilter = 'all' | 'open' | 'resolved';
 
-export function DiscussionsTab({ sprintId }: { sprintId: string }) {
+export function DiscussionsTab() {
   const ctx = useDiscussions();
+  const scope = ctx?.scope ?? null;
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [searchResults, setSearchResults] = useState<SearchResult[] | null>(null);
@@ -48,7 +49,7 @@ export function DiscussionsTab({ sprintId }: { sprintId: string }) {
   // shorter queries fall back to the local list.
   useEffect(() => {
     const q = query.trim();
-    if (q.length < 3) {
+    if (q.length < 3 || !scope) {
       setSearchResults(null);
       setSearching(false);
       return;
@@ -56,7 +57,7 @@ export function DiscussionsTab({ sprintId }: { sprintId: string }) {
     setSearching(true);
     const timer = setTimeout(() => {
       discussionsService
-        .search(sprintId, {
+        .search(scope, {
           q,
           status: statusFilter === 'all' ? undefined : statusFilter,
         })
@@ -65,7 +66,7 @@ export function DiscussionsTab({ sprintId }: { sprintId: string }) {
         .finally(() => setSearching(false));
     }, 350);
     return () => clearTimeout(timer);
-  }, [query, statusFilter, sprintId]);
+  }, [query, statusFilter, scope]);
 
   const discussions = ctx?.discussions ?? EMPTY_DISCUSSIONS;
   const filtered = useMemo(

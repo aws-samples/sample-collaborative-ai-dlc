@@ -15,7 +15,25 @@ export type DiscussionEntityType =
   | 'userstory'
   | 'task'
   | 'review'
-  | 'generalinfo';
+  | 'generalinfo'
+  // v2 intent-scoped anchors.
+  | 'intent'
+  | 'artifact';
+
+// A discussion lives under a scope root: a v1 sprint or a v2 intent. The scope
+// decides the REST base path; the intent path is project-scoped.
+export type DiscussionScope =
+  | { kind: 'sprint'; sprintId: string }
+  | { kind: 'intent'; projectId: string; intentId: string };
+
+export const discussionBasePath = (scope: DiscussionScope): string =>
+  scope.kind === 'intent'
+    ? `/projects/${scope.projectId}/intents/${scope.intentId}`
+    : `/sprints/${scope.sprintId}`;
+
+// The scope root id (sprintId | intentId) — used as the realtime/channel key.
+export const discussionScopeId = (scope: DiscussionScope): string =>
+  scope.kind === 'intent' ? scope.intentId : scope.sprintId;
 
 export interface Discussion {
   id: string;
@@ -100,15 +118,19 @@ async function withTransparentRetry<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 export const discussionsService = {
-  list: (sprintId: string) => api.get<Discussion[]>(`/sprints/${sprintId}/discussions`),
+  list: (scope: DiscussionScope) =>
+    api.get<Discussion[]>(`${discussionBasePath(scope)}/discussions`),
 
   getOrCreate: (
-    sprintId: string,
+    scope: DiscussionScope,
     input: { entityType: DiscussionEntityType; entityId?: string; entityTitle?: string },
-  ) => withTransparentRetry(() => api.post<Discussion>(`/sprints/${sprintId}/discussions`, input)),
+  ) =>
+    withTransparentRetry(() =>
+      api.post<Discussion>(`${discussionBasePath(scope)}/discussions`, input),
+    ),
 
   listMessages: (
-    sprintId: string,
+    scope: DiscussionScope,
     discussionId: string,
     opts: { before?: string; after?: string; limit?: number } = {},
   ) => {
@@ -118,46 +140,46 @@ export const discussionsService = {
     if (opts.limit) params.set('limit', String(opts.limit));
     const qs = params.toString();
     return api.get<MessagePage>(
-      `/sprints/${sprintId}/discussions/${discussionId}/messages${qs ? `?${qs}` : ''}`,
+      `${discussionBasePath(scope)}/discussions/${discussionId}/messages${qs ? `?${qs}` : ''}`,
     );
   },
 
   postMessage: (
-    sprintId: string,
+    scope: DiscussionScope,
     discussionId: string,
     input: { id: string; content: string; mentions?: string[] },
   ) =>
     withTransparentRetry(() =>
       api.post<DiscussionMessage>(
-        `/sprints/${sprintId}/discussions/${discussionId}/messages`,
+        `${discussionBasePath(scope)}/discussions/${discussionId}/messages`,
         input,
       ),
     ),
 
   update: (
-    sprintId: string,
+    scope: DiscussionScope,
     discussionId: string,
     input: { status: 'open' | 'resolved'; resolutionSummary?: string; outcomeMessageId?: string },
-  ) => api.put<Discussion>(`/sprints/${sprintId}/discussions/${discussionId}`, input),
+  ) => api.put<Discussion>(`${discussionBasePath(scope)}/discussions/${discussionId}`, input),
 
-  redact: (sprintId: string, discussionId: string, messageId: string) =>
+  redact: (scope: DiscussionScope, discussionId: string, messageId: string) =>
     api.post<DiscussionMessage>(
-      `/sprints/${sprintId}/discussions/${discussionId}/messages/${messageId}/redact`,
+      `${discussionBasePath(scope)}/discussions/${discussionId}/messages/${messageId}/redact`,
       {},
     ),
 
   markRead: (
-    sprintId: string,
+    scope: DiscussionScope,
     discussionId: string,
     input: { lastReadAt: string; lastReadMessageId: string },
   ) =>
     api.put<{ lastReadAt: string; lastReadMessageId: string }>(
-      `/sprints/${sprintId}/discussions/${discussionId}/read`,
+      `${discussionBasePath(scope)}/discussions/${discussionId}/read`,
       input,
     ),
 
   search: (
-    sprintId: string,
+    scope: DiscussionScope,
     opts: { q: string; author?: string; status?: string; entityType?: string; limit?: number },
   ) => {
     const params = new URLSearchParams({ q: opts.q });
@@ -166,7 +188,7 @@ export const discussionsService = {
     if (opts.entityType) params.set('entityType', opts.entityType);
     if (opts.limit) params.set('limit', String(opts.limit));
     return api.get<{ results: SearchResult[] }>(
-      `/sprints/${sprintId}/discussions/search?${params.toString()}`,
+      `${discussionBasePath(scope)}/discussions/search?${params.toString()}`,
     );
   },
 
@@ -174,14 +196,15 @@ export const discussionsService = {
    * Invoke an in-thread agent assist. Returns the executionId
    * used to correlate the agent.* stream. 409 {reason:'assist_in_progress'}
    * and 400 cli_unavailable are NOT retried — the UI surfaces them.
+   * Sprint scope only (the backend 400s for intents).
    */
   assist: (
-    sprintId: string,
+    scope: DiscussionScope,
     discussionId: string,
     input: { command: AssistCommand; instruction?: string },
   ) =>
     api.post<{ assistId: string }>(
-      `/sprints/${sprintId}/discussions/${discussionId}/assist`,
+      `${discussionBasePath(scope)}/discussions/${discussionId}/assist`,
       input,
     ),
 };

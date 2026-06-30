@@ -245,6 +245,22 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return item;
   };
 
+  // Stamp the durable-execution callback id on a gate (the orchestrator does
+  // this right after it parks, so the answer path knows which suspended
+  // callback to resume). Not a CAS — the orchestrator owns this write.
+  const setGateCallbackId = async ({ executionId, humanTaskId, callbackId }) => {
+    const { Attributes } = await ddb.send(
+      new UpdateCommand({
+        TableName: table(),
+        Key: humanTaskKey(executionId, humanTaskId),
+        UpdateExpression: 'SET callbackId = :cb',
+        ExpressionAttributeValues: { ':cb': callbackId },
+        ReturnValues: 'ALL_NEW',
+      }),
+    );
+    return Attributes;
+  };
+
   const getHumanTask = async (executionId, humanTaskId) => {
     const { Item } = await ddb.send(
       new GetCommand({ TableName: table(), Key: humanTaskKey(executionId, humanTaskId) }),
@@ -359,6 +375,66 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return Items ?? [];
   };
 
+  // List a project's executions (intents) newest-first via GSI1. Optionally
+  // filter to a single status. Returns the META rows only — the intents list
+  // view doesn't need the full per-execution record set.
+  const listProjectExecutions = async ({ projectId, status = null, limit = 100 } = {}) => {
+    const values = { ':pk': projectPk(projectId) };
+    let keyCond = 'GSI1PK = :pk';
+    if (status) {
+      keyCond += ' AND begins_with(GSI1SK, :sk)';
+      values[':sk'] = `STATUS#${status}#`;
+    }
+    const { Items } = await ddb.send(
+      new QueryCommand({
+        TableName: table(),
+        IndexName: 'GSI1',
+        KeyConditionExpression: keyCond,
+        ExpressionAttributeValues: values,
+        ScanIndexForward: false, // newest first
+        Limit: limit,
+      }),
+    );
+    return Items ?? [];
+  };
+
+  // Patch the intent-config fields on an existing META row (prompt/branch/etc.)
+  // while it is still a DRAFT. Independent of updateExecution (which owns the
+  // lifecycle/status + GSI re-stamp). Used by the intents CRUD edit path.
+  const patchExecutionConfig = async ({
+    executionId,
+    title,
+    prompt,
+    branch,
+    baseBranch,
+    repos,
+  }) => {
+    const ts = now();
+    const sets = ['updatedAt = :ts'];
+    const values = { ':ts': ts };
+    const maybe = (field, key, val) => {
+      if (val !== undefined) {
+        sets.push(`${field} = ${key}`);
+        values[key] = val;
+      }
+    };
+    maybe('title', ':title', title);
+    maybe('prompt', ':prompt', prompt);
+    maybe('branch', ':branch', branch);
+    maybe('baseBranch', ':baseBranch', baseBranch);
+    maybe('repos', ':repos', repos);
+    const { Attributes } = await ddb.send(
+      new UpdateCommand({
+        TableName: table(),
+        Key: executionMetaKey(executionId),
+        UpdateExpression: `SET ${sets.join(', ')}`,
+        ExpressionAttributeValues: values,
+        ReturnValues: 'ALL_NEW',
+      }),
+    );
+    return Attributes;
+  };
+
   // Read every record for an execution, grouped by type (for the resume lambda /
   // admin / restore-on-reload).
   const getExecutionRecords = async (executionId) => {
@@ -391,11 +467,14 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     appendEvent,
     createHumanTask,
     getHumanTask,
+    setGateCallbackId,
     answerHumanTask,
     recordMetric,
     recordSensorRun,
     appendOutput,
     getOutputs,
+    listProjectExecutions,
+    patchExecutionConfig,
     getExecutionRecords,
   };
 };

@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -38,7 +37,9 @@ const ENTITY_LABELS: Record<string, string> = {
 
 export function DiscussionPanel() {
   const ctx = useDiscussions();
-  const { sprintId = '' } = useParams<{ sprintId: string }>();
+  // The discussion scope (sprint or intent) comes from the provider, derived
+  // from the route. A null scope (off a scoped route) disables the hook's I/O.
+  const scope = ctx?.scope ?? null;
   const { user } = useAuth();
   const currentUser = {
     id: user?.username || '',
@@ -68,7 +69,7 @@ export function DiscussionPanel() {
     assistError,
     clearAssistError,
   } = useDiscussion({
-    sprintId,
+    scope,
     discussionId: discussion?.id || null,
     open: !!ctx?.isOpen,
     user: currentUser,
@@ -103,14 +104,14 @@ export function DiscussionPanel() {
   // lastReadAt + lastReadMessageId) ──
   const lastMarkedRef = useRef<string>('');
   const markRead = () => {
-    if (!ctx || !discussion || document.visibilityState !== 'visible') return;
+    if (!ctx || !discussion || !scope || document.visibilityState !== 'visible') return;
     const newest = messages[messages.length - 1];
     if (!newest) return;
     const cursor = `${newest.createdAt},${newest.id}`;
     if (cursor === lastMarkedRef.current) return;
     lastMarkedRef.current = cursor;
     discussionsService
-      .markRead(sprintId, discussion.id, {
+      .markRead(scope, discussion.id, {
         lastReadAt: newest.createdAt,
         lastReadMessageId: newest.id,
       })
@@ -125,10 +126,10 @@ export function DiscussionPanel() {
     resolutionSummary?: string;
     outcomeMessageId?: string;
   }) => {
-    if (!ctx || !discussion) return;
+    if (!ctx || !discussion || !scope) return;
     setStatusBusy(true);
     try {
-      const updated = await discussionsService.update(sprintId, discussion.id, input);
+      const updated = await discussionsService.update(scope, discussion.id, input);
       ctx.setActiveDiscussion(updated);
     } finally {
       setStatusBusy(false);
@@ -136,10 +137,10 @@ export function DiscussionPanel() {
   };
 
   const redact = async (messageId: string) => {
-    if (!discussion) return;
+    if (!discussion || !scope) return;
     setRedactError(null);
     try {
-      const redacted = await discussionsService.redact(sprintId, discussion.id, messageId);
+      const redacted = await discussionsService.redact(scope, discussion.id, messageId);
       applyMessages([redacted]);
     } catch (err) {
       console.error('Redact failed:', err);

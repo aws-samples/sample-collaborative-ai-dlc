@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useYjsDocument } from './useYjsDocument';
 import { realtimeService } from '../services/realtime';
 import { discussionsService } from '../services/discussions';
-import type { AssistCommand, DiscussionMessage } from '../services/discussions';
+import type { AssistCommand, DiscussionMessage, DiscussionScope } from '../services/discussions';
 import {
   changeCursorOf,
   displayCursorOf,
@@ -34,7 +34,8 @@ export interface PendingMessage {
 }
 
 interface UseDiscussionArgs {
-  sprintId: string;
+  /** Null off a scoped route — the hook then performs no I/O. */
+  scope: DiscussionScope | null;
   discussionId: string | null;
   /** Connect only while the sheet is open. */
   open: boolean;
@@ -45,12 +46,27 @@ const SEED_PAGE_SIZE = 100;
 
 const toPlain = (m: DiscussionMessage): DiscussionMessage => ({ ...m });
 
-export function useDiscussion({ sprintId, discussionId, open, user }: UseDiscussionArgs) {
-  const docId = open && discussionId ? `discussion-${sprintId}-${discussionId}` : null;
+// Yjs collaboration doc name for a discussion thread. Intent threads use the
+// `intent-discussion-` prefix (project-scoped token target); sprint threads keep
+// the original `discussion-` prefix. Both keep deny-by-default scope extraction
+// unambiguous (see lambda/shared/realtime-token.js).
+const discussionDocId = (scope: DiscussionScope, discussionId: string): string =>
+  scope.kind === 'intent'
+    ? `intent-discussion-${scope.intentId}-${discussionId}`
+    : `discussion-${scope.sprintId}-${discussionId}`;
+
+export function useDiscussion({ scope, discussionId, open, user }: UseDiscussionArgs) {
+  const docId = open && discussionId && scope ? discussionDocId(scope, discussionId) : null;
+  const scopeTarget = !scope
+    ? undefined
+    : scope.kind === 'intent'
+      ? { intentId: scope.intentId, projectId: scope.projectId }
+      : { sprintId: scope.sprintId };
   const { doc, synced, awareness, remoteUsers } = useYjsDocument(
     docId,
     user.name,
     generateColor(user.id),
+    scopeTarget,
   );
 
   const [messages, setMessages] = useState<DiscussionMessage[]>([]);
@@ -114,10 +130,10 @@ export function useDiscussion({ sprintId, discussionId, open, user }: UseDiscuss
   // last client leaves — Neptune reseeds, key-based merge makes concurrent
   // seeding harmless) ──
   useEffect(() => {
-    if (!docId || !discussionId || !synced || seeded) return;
+    if (!docId || !discussionId || !synced || seeded || !scope) return;
     let cancelled = false;
     discussionsService
-      .listMessages(sprintId, discussionId, { limit: SEED_PAGE_SIZE })
+      .listMessages(scope, discussionId, { limit: SEED_PAGE_SIZE })
       .then((page) => {
         if (cancelled) return;
         upsertMessages(page.messages);
@@ -128,16 +144,16 @@ export function useDiscussion({ sprintId, discussionId, open, user }: UseDiscuss
     return () => {
       cancelled = true;
     };
-  }, [docId, discussionId, synced, seeded, sprintId, upsertMessages]);
+  }, [docId, discussionId, synced, seeded, scope, upsertMessages]);
 
   // ── Older history on demand (?before= display-order keyset) ──
   const loadOlder = useCallback(async () => {
-    if (!discussionId || loadingOlder) return;
+    if (!discussionId || loadingOlder || !scope) return;
     const oldest = sortMessages([...messagesMap.values()])[0];
     if (!oldest) return;
     setLoadingOlder(true);
     try {
-      const page = await discussionsService.listMessages(sprintId, discussionId, {
+      const page = await discussionsService.listMessages(scope, discussionId, {
         before: displayCursorOf(oldest),
         limit: SEED_PAGE_SIZE,
       });
@@ -148,25 +164,25 @@ export function useDiscussion({ sprintId, discussionId, open, user }: UseDiscuss
     } finally {
       setLoadingOlder(false);
     }
-  }, [discussionId, loadingOlder, messagesMap, sprintId, upsertMessages]);
+  }, [discussionId, loadingOlder, messagesMap, scope, upsertMessages]);
 
   // ── Change-delta reconciliation backstop: on focus/visibility
   // regain, fetch everything with (updatedAt, id) past what we saw — new
   // messages AND redactions of older ones ──
   const reconcile = useCallback(async () => {
-    if (!discussionId) return;
+    if (!discussionId || !scope) return;
     const after = changeCursorRef.current;
     try {
       const page = after
-        ? await discussionsService.listMessages(sprintId, discussionId, { after })
-        : await discussionsService.listMessages(sprintId, discussionId, {
+        ? await discussionsService.listMessages(scope, discussionId, { after })
+        : await discussionsService.listMessages(scope, discussionId, {
             limit: SEED_PAGE_SIZE,
           });
       upsertMessages(page.messages);
     } catch (err) {
       console.error('Discussion reconciliation failed:', err);
     }
-  }, [discussionId, sprintId, upsertMessages]);
+  }, [discussionId, scope, upsertMessages]);
 
   useEffect(() => {
     if (!docId) return;
@@ -254,10 +270,10 @@ export function useDiscussion({ sprintId, discussionId, open, user }: UseDiscuss
 
   const invokeAssist = useCallback(
     async (command: AssistCommand, instruction?: string) => {
-      if (!discussionId || assistId) return;
+      if (!discussionId || assistId || !scope) return;
       setAssistError(null);
       try {
-        const { assistId: executionId } = await discussionsService.assist(sprintId, discussionId, {
+        const { assistId: executionId } = await discussionsService.assist(scope, discussionId, {
           command,
           instruction,
         });
@@ -280,19 +296,19 @@ export function useDiscussion({ sprintId, discussionId, open, user }: UseDiscuss
         setAssistError(extractAgentStartError(err));
       }
     },
-    [discussionId, assistId, sprintId],
+    [discussionId, assistId, scope],
   );
 
   // ── Send ──
   const sendMessage = useCallback(
     async (content: string, mentions: string[] = []) => {
-      if (!discussionId) return;
+      if (!discussionId || !scope) return;
       const trimmed = content.trim();
       if (!trimmed) return;
       const id = makeMessageId();
       setPending((prev) => [...prev, { id, content: trimmed, status: 'sending' }]);
       try {
-        const persisted = await discussionsService.postMessage(sprintId, discussionId, {
+        const persisted = await discussionsService.postMessage(scope, discussionId, {
           id,
           content: trimmed,
           mentions,
@@ -307,18 +323,18 @@ export function useDiscussion({ sprintId, discussionId, open, user }: UseDiscuss
         );
       }
     },
-    [discussionId, sprintId, upsertMessages],
+    [discussionId, scope, upsertMessages],
   );
 
   // Failed bubbles retry with the SAME id — idempotent on the server.
   const retryMessage = useCallback(
     async (id: string) => {
-      if (!discussionId) return;
+      if (!discussionId || !scope) return;
       const failed = pending.find((p) => p.id === id);
       if (!failed) return;
       setPending((prev) => prev.map((p) => (p.id === id ? { ...p, status: 'sending' } : p)));
       try {
-        const persisted = await discussionsService.postMessage(sprintId, discussionId, {
+        const persisted = await discussionsService.postMessage(scope, discussionId, {
           id,
           content: failed.content,
         });
@@ -331,7 +347,7 @@ export function useDiscussion({ sprintId, discussionId, open, user }: UseDiscuss
         );
       }
     },
-    [discussionId, pending, sprintId, upsertMessages],
+    [discussionId, pending, scope, upsertMessages],
   );
 
   // ── Typing awareness ──

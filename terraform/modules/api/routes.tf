@@ -1217,6 +1217,247 @@ resource "aws_lambda_permission" "workflows" {
 }
 
 # =============================================================================
+# /projects/{projectId}/intents Resources (AI-DLC v2 intents)
+#
+#   /projects/{projectId}/intents                                  GET, POST
+#   /projects/{projectId}/intents/{intentId}                       GET
+#   /projects/{projectId}/intents/{intentId}/start                 POST
+#   /projects/{projectId}/intents/{intentId}/realtime-token        POST
+#   /projects/{projectId}/intents/{intentId}/gates/{humanTaskId}/answer  POST
+# All routes hit the single intents Lambda, which routes by path + method.
+# =============================================================================
+
+resource "aws_api_gateway_resource" "intents" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.project.id
+  path_part   = "intents"
+}
+
+resource "aws_api_gateway_resource" "intent" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intents.id
+  path_part   = "{intentId}"
+}
+
+resource "aws_api_gateway_resource" "intent_start" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent.id
+  path_part   = "start"
+}
+
+resource "aws_api_gateway_resource" "intent_realtime_token" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent.id
+  path_part   = "realtime-token"
+}
+
+resource "aws_api_gateway_resource" "intent_gates" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent.id
+  path_part   = "gates"
+}
+
+resource "aws_api_gateway_resource" "intent_gate" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent_gates.id
+  path_part   = "{humanTaskId}"
+}
+
+resource "aws_api_gateway_resource" "intent_gate_answer" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent_gate.id
+  path_part   = "answer"
+}
+
+locals {
+  intent_routes = {
+    collection_get  = { resource = aws_api_gateway_resource.intents.id, method = "GET" }
+    collection_post = { resource = aws_api_gateway_resource.intents.id, method = "POST" }
+    item_get        = { resource = aws_api_gateway_resource.intent.id, method = "GET" }
+    start_post      = { resource = aws_api_gateway_resource.intent_start.id, method = "POST" }
+    token_post      = { resource = aws_api_gateway_resource.intent_realtime_token.id, method = "POST" }
+    answer_post     = { resource = aws_api_gateway_resource.intent_gate_answer.id, method = "POST" }
+  }
+}
+
+resource "aws_api_gateway_method" "intent" {
+  for_each      = local.intent_routes
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = each.value.resource
+  http_method   = each.value.method
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "intent" {
+  for_each                = local.intent_routes
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = each.value.resource
+  http_method             = aws_api_gateway_method.intent[each.key].http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.intents_lambda_invoke_arn
+}
+
+module "cors_intents" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intents.id
+}
+
+module "cors_intent" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent.id
+}
+
+module "cors_intent_start" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_start.id
+}
+
+module "cors_intent_realtime_token" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_realtime_token.id
+}
+
+module "cors_intent_gate_answer" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_gate_answer.id
+}
+
+resource "aws_lambda_permission" "intents" {
+  statement_id  = "AllowAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = var.intents_lambda_name
+  principal     = "apigateway.${local.dns_suffix}"
+  source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
+}
+
+# =============================================================================
+# /projects/{projectId}/intents/{intentId}/discussions* — intent-scoped
+# discussion threads, served by the (now scope-neutral) discussions Lambda.
+# Mirrors the sprint discussion routes; the handler resolves the scope from the
+# path params. Assist is sprint-only (the handler 400s for intents).
+# =============================================================================
+
+resource "aws_api_gateway_resource" "intent_discussions" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent.id
+  path_part   = "discussions"
+}
+
+resource "aws_api_gateway_resource" "intent_discussions_search" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent_discussions.id
+  path_part   = "search"
+}
+
+resource "aws_api_gateway_resource" "intent_discussion" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent_discussions.id
+  path_part   = "{discussionId}"
+}
+
+resource "aws_api_gateway_resource" "intent_discussion_messages" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent_discussion.id
+  path_part   = "messages"
+}
+
+resource "aws_api_gateway_resource" "intent_discussion_message" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent_discussion_messages.id
+  path_part   = "{messageId}"
+}
+
+resource "aws_api_gateway_resource" "intent_discussion_message_redact" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent_discussion_message.id
+  path_part   = "redact"
+}
+
+resource "aws_api_gateway_resource" "intent_discussion_read" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent_discussion.id
+  path_part   = "read"
+}
+
+locals {
+  intent_discussion_routes = {
+    list_get      = { resource = aws_api_gateway_resource.intent_discussions.id, method = "GET" }
+    create_post   = { resource = aws_api_gateway_resource.intent_discussions.id, method = "POST" }
+    search_get    = { resource = aws_api_gateway_resource.intent_discussions_search.id, method = "GET" }
+    item_put      = { resource = aws_api_gateway_resource.intent_discussion.id, method = "PUT" }
+    read_put      = { resource = aws_api_gateway_resource.intent_discussion_read.id, method = "PUT" }
+    messages_get  = { resource = aws_api_gateway_resource.intent_discussion_messages.id, method = "GET" }
+    messages_post = { resource = aws_api_gateway_resource.intent_discussion_messages.id, method = "POST" }
+    redact_post   = { resource = aws_api_gateway_resource.intent_discussion_message_redact.id, method = "POST" }
+  }
+}
+
+resource "aws_api_gateway_method" "intent_discussion" {
+  for_each      = local.intent_discussion_routes
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = each.value.resource
+  http_method   = each.value.method
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "intent_discussion" {
+  for_each                = local.intent_discussion_routes
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = each.value.resource
+  http_method             = aws_api_gateway_method.intent_discussion[each.key].http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.discussions_lambda_invoke_arn
+}
+
+module "cors_intent_discussions" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_discussions.id
+}
+
+module "cors_intent_discussions_search" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_discussions_search.id
+}
+
+module "cors_intent_discussion" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_discussion.id
+}
+
+module "cors_intent_discussion_messages" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_discussion_messages.id
+}
+
+module "cors_intent_discussion_message_redact" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_discussion_message_redact.id
+}
+
+module "cors_intent_discussion_read" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_discussion_read.id
+}
+
+# The discussions Lambda already holds a broad ($API/*/*) invoke permission for
+# its sprint routes — it covers these intent routes too. No new permission.
+
+# =============================================================================
 # Helper locals for sprint-scoped CRUD pattern
 # =============================================================================
 locals {

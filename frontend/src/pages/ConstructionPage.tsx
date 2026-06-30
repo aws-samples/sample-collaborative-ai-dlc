@@ -361,7 +361,7 @@ export default function ConstructionPage() {
               <CardContent>
                 <QuestionEditor
                   question={pq}
-                  sprintId={sprintId}
+                  scope={{ kind: 'sprint', id: sprintId }}
                   userName={user?.displayName || user?.email || ''}
                   onAnswer={(answer) => handleAnswerQuestion(pq.id, answer)}
                   onAutoSave={async (draft) => {

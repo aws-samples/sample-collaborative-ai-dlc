@@ -1,7 +1,10 @@
 import { useEffect, useState, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { useCollaborativeStructuredAnswer } from '../hooks/useCollaborativeStructuredAnswer';
+import {
+  useCollaborativeStructuredAnswer,
+  type CollabScope,
+} from '../hooks/useCollaborativeStructuredAnswer';
 import { CollaborativeTextarea } from './CollaborativeTextarea';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -11,7 +14,7 @@ import type { Question, StructuredQuestion, StructuredAnswer } from '../services
 
 interface Props {
   question: Question;
-  sprintId: string;
+  scope: CollabScope;
   userName: string;
   onAnswer: (structuredAnswer: StructuredAnswer) => Promise<void>;
   onAutoSave?: (draftAnswer: StructuredAnswer) => Promise<void>;
@@ -21,7 +24,7 @@ interface Props {
 
 export default function QuestionEditor({
   question,
-  sprintId,
+  scope,
   userName,
   onAnswer,
   onAutoSave,
@@ -39,7 +42,7 @@ export default function QuestionEditor({
     initFromDraft,
     toStructuredAnswer,
   } = useCollaborativeStructuredAnswer(
-    sprintId,
+    scope,
     question.id,
     question.questions.length,
     userName,

@@ -1422,3 +1422,141 @@ describe('POST .../assist', () => {
     ).toBe(404);
   });
 });
+
+// =============================================================================
+// V2 intent-scoped discussions (anchor on Intent + its artifacts)
+// =============================================================================
+
+describe('intent-scoped discussions', () => {
+  // Seed a Project + member + an Intent vertex (carrying project_id, as init-ws
+  // stamps it) + one produced Artifact (Intent --CONTAINS--> Artifact).
+  const seedIntent = async () => {
+    const projectId = randomUUID();
+    const intentId = randomUUID();
+    const artifactId = `art-${randomUUID()}`;
+    await seedProject({ projectId, members: [{ sub: MEMBER_SUB, role: 'member' }] });
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .addV('Intent')
+      .property('id', intentId)
+      .property('project_id', projectId)
+      .property('title', 'Test intent')
+      .next();
+    await g
+      .V()
+      .has('Intent', 'id', intentId)
+      .as('i')
+      .addV('Artifact')
+      .property('id', artifactId)
+      .property('artifact_type', 'requirements')
+      .property('title', 'Requirements')
+      .as('a')
+      .addE('CONTAINS')
+      .from_('i')
+      .to('a')
+      .next();
+    return { projectId, intentId, artifactId };
+  };
+
+  const intentPath = (suffix) => `/api/projects/{projectId}/intents/{intentId}${suffix}`;
+
+  it('creates + lists an intent-level thread and a per-artifact thread', async () => {
+    const { projectId, intentId, artifactId } = await seedIntent();
+
+    const created = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'intent' },
+    });
+    expect(created.statusCode).toBe(200);
+    expect(json(created).entityType).toBe('intent');
+    expect(json(created).entityId).toBe(intentId);
+
+    const artifactThread = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'artifact', entityId: artifactId },
+    });
+    expect(artifactThread.statusCode).toBe(200);
+    expect(json(artifactThread).entityId).toBe(artifactId);
+
+    const list = await call('GET', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+    });
+    expect(list.statusCode).toBe(200);
+    expect(json(list)).toHaveLength(2);
+  });
+
+  it('rejects an artifact not contained by the intent', async () => {
+    const { projectId, intentId } = await seedIntent();
+    const res = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'artifact', entityId: 'art-not-here' },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('rejects a sprint entityType under an intent scope', async () => {
+    const { projectId, intentId } = await seedIntent();
+    const res = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'sprint' },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('posts + reads messages on an intent thread', async () => {
+    const { projectId, intentId } = await seedIntent();
+    const created = json(
+      await call('POST', intentPath('/discussions'), {
+        pathParameters: { projectId, intentId },
+        body: { entityType: 'intent' },
+      }),
+    );
+    const msgId = `dm-${Date.now()}-aaaa`;
+    const posted = await call('POST', intentPath(`/discussions/{discussionId}/messages`), {
+      pathParameters: { projectId, intentId, discussionId: created.id },
+      body: { id: msgId, content: 'hello intent' },
+    });
+    expect(posted.statusCode).toBe(201);
+
+    const msgs = await call('GET', intentPath(`/discussions/{discussionId}/messages`), {
+      pathParameters: { projectId, intentId, discussionId: created.id },
+    });
+    expect(json(msgs).messages.map((m) => m.content)).toContain('hello intent');
+  });
+
+  it('issues an intent + project scope realtime token for a member', async () => {
+    const { projectId, intentId } = await seedIntent();
+    const res = await call('POST', intentPath('/realtime-token'), {
+      pathParameters: { projectId, intentId },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(json(res).scopes).toEqual(
+      expect.arrayContaining([`intent:${intentId}`, `project:${projectId}`]),
+    );
+  });
+
+  it('denies a non-member', async () => {
+    const { projectId, intentId } = await seedIntent();
+    const res = await call('GET', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      sub: OUTSIDER_SUB,
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('refuses assist on an intent discussion', async () => {
+    const { projectId, intentId } = await seedIntent();
+    const created = json(
+      await call('POST', intentPath('/discussions'), {
+        pathParameters: { projectId, intentId },
+        body: { entityType: 'intent' },
+      }),
+    );
+    const res = await call('POST', intentPath(`/discussions/{discussionId}/assist`), {
+      pathParameters: { projectId, intentId, discussionId: created.id },
+      body: { command: 'summarize' },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+});

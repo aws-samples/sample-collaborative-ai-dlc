@@ -298,7 +298,7 @@ export function ActivityPanel({ sprintId, onClose }: ActivityPanelProps) {
               agentStatus={agentStatus}
             />
           ) : activeTab === 'discussions' ? (
-            <DiscussionsTab sprintId={sprintId || ''} />
+            <DiscussionsTab />
           ) : (
             <TimelineTab events={timelineEvents} loading={timelineLoading} />
           )}

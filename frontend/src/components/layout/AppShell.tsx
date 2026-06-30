@@ -32,9 +32,16 @@ function loadActivityWidth(): number {
 }
 
 export function AppShell() {
-  const { sprintId, projectId } = useParams<{ sprintId: string; projectId: string }>();
+  const { sprintId, projectId, intentId } = useParams<{
+    sprintId: string;
+    projectId: string;
+    intentId: string;
+  }>();
   const inSprint = !!sprintId;
-  const onProjectPage = !!projectId && !inSprint;
+  // v2 intent pages host their own discussion panel inline, so the shared
+  // sprint-oriented ActivityPanel must not also render there.
+  const inIntent = !!intentId;
+  const onProjectPage = !!projectId && !inSprint && !inIntent;
 
   // Breakpoint (Tailwind lg): below it BOTH side panels render as NON-modal
   // overlays above the content instead of grid columns, so they stay usable

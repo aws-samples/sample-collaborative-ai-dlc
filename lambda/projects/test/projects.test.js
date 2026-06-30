@@ -103,6 +103,7 @@ describe('POST /projects', () => {
       cliModels: {},
       issueIntegrationEnabled: false,
       repos: [],
+      kind: 'v1',
       createdAt: NOW.toISOString(),
     });
   });
@@ -143,6 +144,7 @@ describe('POST /projects', () => {
           addedAt: NOW.toISOString(),
         },
       ],
+      kind: 'v1',
       createdAt: NOW.toISOString(),
     });
 
@@ -164,6 +166,52 @@ describe('POST /projects', () => {
     });
     expect(res.statusCode).toBe(401);
     expect(JSON.parse(res.body)).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('persists v2 kind + workflow/scope/park settings', async () => {
+    const sub = `u-${randomUUID()}`;
+    const created = await createProject(sub, {
+      name: 'V2',
+      kind: 'v2',
+      workflowId: 'aidlc-v2',
+      scope: 'feature',
+      parkReleaseSeconds: 120,
+    });
+    expect(created.kind).toBe('v2');
+    expect(created.workflowId).toBe('aidlc-v2');
+    expect(created.defaultScope).toBe('feature');
+    expect(created.parkReleaseSeconds).toBe(120);
+    // workflowVersion left unpinned (resolved at intent create).
+    expect(created.workflowVersion).toBeNull();
+
+    const fetched = await handler({
+      httpMethod: 'GET',
+      pathParameters: { projectId: created.id },
+      ...claims(sub),
+    });
+    const body = JSON.parse(fetched.body);
+    expect(body.kind).toBe('v2');
+    expect(body.workflowId).toBe('aidlc-v2');
+    expect(body.defaultScope).toBe('feature');
+    expect(body.parkReleaseSeconds).toBe(120);
+  });
+
+  it('rejects an out-of-range parkReleaseSeconds', async () => {
+    const sub = `u-${randomUUID()}`;
+    const res = await handler({
+      httpMethod: 'POST',
+      body: JSON.stringify({ name: 'Bad', kind: 'v2', parkReleaseSeconds: 5000 }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('defaults kind to v1 when omitted and omits v2 settings', async () => {
+    const sub = `u-${randomUUID()}`;
+    const created = await createProject(sub, { name: 'Classic' });
+    expect(created.kind).toBe('v1');
+    expect(created.workflowId).toBeUndefined();
+    expect(created.parkReleaseSeconds).toBeUndefined();
   });
 });
 

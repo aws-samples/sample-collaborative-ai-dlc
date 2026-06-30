@@ -11,6 +11,7 @@ import {
   invalidateRealtimeToken,
   msUntilRefresh,
   scopeTargetForYjsDoc,
+  type RealtimeScopeTarget,
 } from '../lib/realtimeToken';
 
 export interface AwarenessUser {
@@ -21,7 +22,16 @@ export interface AwarenessUser {
   typing?: boolean;
 }
 
-export function useYjsDocument(documentId: string | null, userName?: string, userColor?: string) {
+export function useYjsDocument(
+  documentId: string | null,
+  userName?: string,
+  userColor?: string,
+  // Explicit scope target for doc names whose token target can't be derived from
+  // the name alone — e.g. intent docs (`intent-sq-…`), whose realtime-token
+  // endpoint is project-scoped. When omitted, the target is derived from the doc
+  // name via scopeTargetForYjsDoc (the v1 sprint/project path).
+  scopeTarget?: RealtimeScopeTarget,
+) {
   const doc = useMemo(() => new Y.Doc(), [documentId]);
   const [synced, setSynced] = useState(false);
   const [awareness, setAwareness] = useState<awarenessProtocol.Awareness | null>(null);
@@ -52,7 +62,7 @@ export function useYjsDocument(documentId: string | null, userName?: string, use
     // scope coverage for this doc name, and sub binding at upgrade. Resolved
     // once per effect run (it depends only on documentId) and shared by both
     // connect() and the visibility/focus backstop.
-    const target = scopeTargetForYjsDoc(documentId);
+    const target = scopeTarget ?? scopeTargetForYjsDoc(documentId);
     if (!target) {
       console.error('Yjs: unknown doc-name format, cannot authorize:', documentId);
       return;
@@ -273,6 +283,10 @@ export function useYjsDocument(documentId: string | null, userName?: string, use
       wsRef.current?.close();
       wsRef.current = null;
     };
+    // scopeTarget is intentionally not a dep: it is derived from documentId
+    // (same identity across renders for a given doc) and re-running on a new
+    // object reference would needlessly recycle the socket.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [documentId, doc, userName, userColor]);
 
   const setCursor = useCallback(

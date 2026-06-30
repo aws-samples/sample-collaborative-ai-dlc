@@ -4,6 +4,7 @@ import {
   invalidateRealtimeToken,
   msUntilRefresh,
   scopeTargetForChannel,
+  type RealtimeScopeTarget,
 } from '../lib/realtimeToken';
 
 const WS_URL = import.meta.env.VITE_WEBSOCKET_URL;
@@ -22,8 +23,18 @@ class RealtimeService {
   private documentId: string | null = null;
   private connectingPromise: Promise<void> | null = null;
   private tokenRefreshTimer: number | null = null;
+  // Explicit scope target for channels whose documentId can't yield the full
+  // token target on its own (e.g. `intent:<id>`, where the token endpoint is
+  // project-scoped). When set, it overrides scopeTargetForChannel.
+  private scopeTarget: RealtimeScopeTarget | null = null;
 
-  async connect(documentId: string): Promise<void> {
+  // Resolve the token target for the current connection: the explicit override
+  // when set, else derived from the documentId shape.
+  private tokenTarget(documentId: string): RealtimeScopeTarget | null {
+    return this.scopeTarget ?? scopeTargetForChannel(documentId);
+  }
+
+  async connect(documentId: string, scopeTarget?: RealtimeScopeTarget): Promise<void> {
     // Already connected or connecting to this document — skip
     if (this.documentId === documentId) {
       if (
@@ -35,6 +46,7 @@ class RealtimeService {
     }
 
     this.documentId = documentId;
+    this.scopeTarget = scopeTarget ?? null;
     this.disconnect();
     this.reconnectAttempts = 0;
 
@@ -52,7 +64,7 @@ class RealtimeService {
 
     // Realtime scope token: ws-connection verifies signature,
     // expiry, scope coverage for this documentId, and sub binding at $connect.
-    const target = scopeTargetForChannel(documentId);
+    const target = this.tokenTarget(documentId);
     if (!target) throw new Error(`Unknown realtime documentId format: ${documentId}`);
     const docToken = await getRealtimeToken(target);
 
@@ -155,7 +167,7 @@ class RealtimeService {
     this.tokenRefreshTimer = window.setTimeout(() => {
       this.tokenRefreshTimer = null;
       if (this.documentId !== documentId) return;
-      const target = scopeTargetForChannel(documentId);
+      const target = this.tokenTarget(documentId);
       if (target) invalidateRealtimeToken(target);
       console.log('[WebSocket] Scope token expiring — reconnecting:', documentId);
       this.disconnect();
@@ -176,7 +188,7 @@ class RealtimeService {
     if (this.reconnectAttempts >= this.maxReconnectAttempts || !this.documentId) return;
     // The close may be an authorization rejection (e.g. expired scope token) —
     // drop the cached token so the retry fetches a fresh one.
-    const target = scopeTargetForChannel(this.documentId);
+    const target = this.tokenTarget(this.documentId);
     if (target) invalidateRealtimeToken(target);
     const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
     this.reconnectAttempts++;

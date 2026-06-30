@@ -269,3 +269,20 @@ variable "websocket_execution_arn" {
   description = "Execution ARN of the WebSocket API (ManageConnections IAM scope)"
   type        = string
 }
+
+# ── v2 intents + orchestrator ──
+
+variable "v2_executions_table_name" {
+  description = "DynamoDB table name for the v2 process/execution state"
+  type        = string
+}
+
+variable "v2_executions_table_arn" {
+  description = "DynamoDB table ARN for the v2 process/execution state"
+  type        = string
+}
+
+variable "agentcore_runtime_arn" {
+  description = "AgentCore stage-executor runtime ARN the orchestrator invokes"
+  type        = string
+}

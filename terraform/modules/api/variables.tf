@@ -120,6 +120,15 @@ variable "workflows_lambda_name" {
   type        = string
 }
 
+variable "intents_lambda_invoke_arn" {
+  description = "Invoke ARN of the v2 intents Lambda"
+  type        = string
+}
+variable "intents_lambda_name" {
+  description = "Name of the v2 intents Lambda"
+  type        = string
+}
+
 variable "state_machine_arn" {
   description = "ARN of the agent workflow state machine"
   type        = string

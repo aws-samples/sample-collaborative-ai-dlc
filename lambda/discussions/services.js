@@ -10,25 +10,40 @@ import { GetParameterCommand } from '@aws-sdk/client-ssm';
 import { isTokenLive } from '../shared/realtime-token.js';
 import { fetchMembershipRole } from '../shared/trackers.js';
 import { ddb, ssm, query } from './clients.js';
-import { fetchProjectIdForSprint } from './data-access.js';
+import { fetchProjectIdForSprint, fetchProjectIdForIntent } from './data-access.js';
 
 // ─── Authorization ───
 
-// Every route resolves the caller's role once.
-// Returns { res } with an error response, or { projectId, role }.
-export const authorizeSprint = async (sprintId, sub, res) => {
+// Every route resolves the caller's role once, generically over the scope's root
+// (Sprint or Intent). Returns { res } with an error response, or { projectId, role }.
+export const authorizeScope = async (scope, sub, res) => {
   if (!sub) return { res: res(401, { error: 'Unauthorized' }) };
-  if (!sprintId) return { res: res(404, { error: 'Sprint not found' }) };
-  const projectId = await query((g) => fetchProjectIdForSprint(g, sprintId));
-  if (!projectId) return { res: res(404, { error: 'Sprint not found' }) };
+  if (!scope) return { res: res(404, { error: 'Not found' }) };
+  const projectId =
+    scope.kind === 'intent'
+      ? // The intent path carries projectId from the route, but verify the Intent
+        // actually belongs to it (defends against scope confusion); fall back to
+        // the graph when the intent vertex exists.
+        (await query((g) => fetchProjectIdForIntent(g, scope.rootId))) || scope.projectId
+      : await query((g) => fetchProjectIdForSprint(g, scope.rootId));
+  if (!projectId) return { res: res(404, { error: scope.notFoundError }) };
   const role = await query((g) => fetchMembershipRole(g, projectId, sub));
   if (!role) return { res: res(403, { error: 'Not a project member' }) };
   return { projectId, role };
 };
 
+// Back-compat shim: the sprint-scoped callers still pass a bare sprintId.
+export const authorizeSprint = async (sprintId, sub, res) => {
+  if (!sprintId) return { res: res(404, { error: 'Sprint not found' }) };
+  const { sprintScope } = await import('./scope.js');
+  return authorizeScope(sprintScope(sprintId), sub, res);
+};
+
 // ─── WebSocket fanout (server-driven) ───
 
-export const broadcastToSprint = async (sprintId, payload) => {
+// Fan a payload out to every live connection subscribed to the scope's channel
+// (`sprint:<id>` or `intent:<id>`).
+export const broadcastToScope = async (scope, payload) => {
   const connectionsTable = process.env.CONNECTIONS_TABLE;
   const websocketEndpoint = process.env.WEBSOCKET_ENDPOINT;
   if (!connectionsTable || !websocketEndpoint) return;
@@ -38,7 +53,7 @@ export const broadcastToSprint = async (sprintId, payload) => {
         TableName: connectionsTable,
         IndexName: 'DocumentIdIndex',
         KeyConditionExpression: 'documentId = :docId',
-        ExpressionAttributeValues: { ':docId': `sprint:${sprintId}` },
+        ExpressionAttributeValues: { ':docId': scope.channel },
       }),
     );
     const api = new ApiGatewayManagementApiClient({ endpoint: websocketEndpoint });
