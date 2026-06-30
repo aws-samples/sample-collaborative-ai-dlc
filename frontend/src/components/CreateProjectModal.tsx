@@ -9,8 +9,6 @@ import { GitRepoSelect } from './GitRepoSelect';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { trackerIdForGitProvider, type GitProvider, type GitRepo } from '../services/gitProvider';
 
-const DEFAULT_PARK_RELEASE_SECONDS = 300;
-
 interface Props {
   onClose: () => void;
   onCreated: () => void;
@@ -49,7 +47,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
   const [error, setError] = useState<string | null>(null);
 
   // v2 project options. `kind` defaults to v1; choosing v2 reveals the workflow
-  // + scope + park-release settings in step 3.
+  // + scope settings in step 3. Park release is tuned later in project settings.
   const [kind, setKind] = useState<ProjectKind>('v1');
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
   const [workflowId, setWorkflowId] = useState<string>('');
@@ -57,9 +55,6 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
   // a free-typed scope would be rejected by buildExecutionPlan at run time.
   const [scopeOptions, setScopeOptions] = useState<string[]>([]);
   const [scope, setScope] = useState<string>('');
-  const [parkReleaseSeconds, setParkReleaseSeconds] = useState<number>(
-    DEFAULT_PARK_RELEASE_SECONDS,
-  );
   const [v2Loading, setV2Loading] = useState(false);
   const [v2Error, setV2Error] = useState<string | null>(null);
 
@@ -171,9 +166,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
           url,
           role: url === primaryRepo ? ('primary' as const) : ('secondary' as const),
         })),
-        ...(kind === 'v2'
-          ? { kind: 'v2' as const, workflowId, scope, parkReleaseSeconds }
-          : { kind: 'v1' as const }),
+        ...(kind === 'v2' ? { kind: 'v2' as const, workflowId, scope } : { kind: 'v1' as const }),
       };
       const project = await projectsService.create(input);
       if (formData.issueIntegrationEnabled && formData.gitRepo) {
@@ -505,23 +498,9 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                     Decides which stages execute. Comes from the workflow's compiled scopes.
                   </p>
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    Park release (seconds)
-                  </label>
-                  <input
-                    type="number"
-                    min={0}
-                    max={900}
-                    value={parkReleaseSeconds}
-                    onChange={(e) => setParkReleaseSeconds(Number(e.target.value))}
-                    className="w-full border dark:border-gray-600 rounded px-3 py-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-                    disabled={submitting}
-                  />
-                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                    How long a stage waiting for a human keeps its compute before release (0–900).
-                  </p>
-                </div>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Park release and other runtime settings can be tuned later in project settings.
+                </p>
               </div>
             )}
             <div className="flex justify-end gap-2 mt-6">

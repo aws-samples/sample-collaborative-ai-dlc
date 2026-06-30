@@ -226,6 +226,12 @@ const buildDefaultWorkflow = (stages, rules) => {
     scopeMembership: Object.fromEntries((s.scopes ?? []).map((scope) => [scope, 'EXECUTE'])),
   }));
   const ruleRefs = rules.map((r) => ({ layer: r.layer, ruleId: r.id }));
+  // The workflow's available scope vocabulary is the union of every scope named
+  // in a placement's membership. The `compiled` view derives its scopeGrid from
+  // these SCOPEREF rows, so without them the scope picker is empty.
+  const scopeRefs = [...new Set(placements.flatMap((p) => Object.keys(p.scopeMembership)))]
+    .toSorted()
+    .map((scopeId) => ({ scopeId }));
   return {
     id: 'aidlc-v2',
     name: 'AI-DLC v2 (default)',
@@ -234,6 +240,7 @@ const buildDefaultWorkflow = (stages, rules) => {
     phases,
     placements,
     ruleRefs,
+    scopeRefs,
   };
 };
 

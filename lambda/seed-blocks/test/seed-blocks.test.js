@@ -208,6 +208,11 @@ describe('seed-blocks handler', () => {
     expect(tableStore.has(`${pk}|PLACEMENT#intent-capture`)).toBe(true);
     const snapshot = tableStore.get(`${pk}|V#1#PLACEMENT#intent-capture`);
     expect(snapshot.pinnedVersion).toBe(1);
+    // SCOPEREF rows — the compiled scopeGrid (create-project scope picker) is
+    // empty without them.
+    expect(tableStore.has(`${pk}|SCOPEREF#feature`)).toBe(true);
+    expect(tableStore.has(`${pk}|SCOPEREF#mvp`)).toBe(true);
+    expect(tableStore.has(`${pk}|V#1#SCOPEREF#feature`)).toBe(true);
   });
 });
 

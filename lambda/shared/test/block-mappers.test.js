@@ -112,6 +112,9 @@ describe('buildFromFiles', () => {
     // The placement's scopeMembership transposes the stage's scopes list.
     const p = workflow.placements.find((x) => x.stageId === 'intent-capture');
     expect(p.scopeMembership).toEqual({ feature: 'EXECUTE', mvp: 'EXECUTE' });
+    // Scope refs are the deduped union of every scope named in a placement — the
+    // compiled scopeGrid (hence the create-project scope picker) is built from them.
+    expect(workflow.scopeRefs.map((s) => s.scopeId)).toEqual(['feature', 'mvp']);
     // Rule refs cover every rule.
     expect(workflow.ruleRefs.map((r) => r.ruleId).sort()).toEqual([
       'aidlc-org',

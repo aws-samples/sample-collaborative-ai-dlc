@@ -70,6 +70,7 @@ import {
   phaseSk,
   placementSk,
   ruleRefSk,
+  scopeRefSk,
   workflowVersionSk,
   workflowGsi1Pk,
 } from '../shared/workflows.js';
@@ -175,9 +176,19 @@ const buildWorkflowItems = (wf, now) => {
     layer: rr.layer,
     ruleTenant: rr.ruleTenant ?? SYSTEM_TENANT,
   }));
-  const liveItems = [meta, ...phases, ...placements, ...ruleRefs];
+  const scopeRefs = (wf.scopeRefs ?? []).map((sr) => ({
+    pk,
+    sk: scopeRefSk(sr.scopeId),
+    type: 'ScopeRef',
+    scopeId: sr.scopeId,
+    scopeTenant: sr.scopeTenant ?? SYSTEM_TENANT,
+  }));
+  const liveItems = [meta, ...phases, ...placements, ...ruleRefs, ...scopeRefs];
   const snapshots = liveItems.map((item) => workflowSnapshotItem(item, 1));
-  return { meta, children: [...phases, ...placements, ...ruleRefs, ...snapshots] };
+  return {
+    meta,
+    children: [...phases, ...placements, ...ruleRefs, ...scopeRefs, ...snapshots],
+  };
 };
 
 // Deletes every SYSTEM-owned partition (BLOCK#SYSTEM#* and WF#SYSTEM#*) so the
