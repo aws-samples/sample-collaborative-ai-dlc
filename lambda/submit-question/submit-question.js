@@ -81,6 +81,7 @@ exports.handler = async (event) => {
           .property('user_name', '')
           .property('timestamp', timestamp)
           .property('sprint_id', sprintId)
+          .property('question_id', questionId)
           .as('e')
           .addE('HAS_TIMELINE_EVENT')
           .from_('s')
@@ -131,5 +132,15 @@ async function getSprintConnections(sprintId) {
       ExpressionAttributeValues: { ':docId': `sprint:${sprintId}` },
     }),
   );
-  return (result.Items || []).map((item) => item.connectionId);
+  // Never target connections whose scope token has expired.
+  // Inline copy of shared/realtime-token.js#isTokenLive — this lambda is
+  // zip-packaged without bundling, so it cannot import lambda/shared.
+  // Rows without tokenExp are pre-enforcement legacy rows (TTL ≤1h) — allow.
+  const nowMs = Date.now();
+  return (result.Items || [])
+    .filter((item) => {
+      const exp = Number(item.tokenExp);
+      return !item.tokenExp || !Number.isFinite(exp) || exp * 1000 > nowMs;
+    })
+    .map((item) => item.connectionId);
 }

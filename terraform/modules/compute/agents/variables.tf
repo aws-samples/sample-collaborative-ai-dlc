@@ -87,18 +87,6 @@ variable "agent_outputs_table_arn" {
   default     = ""
 }
 
-variable "git_connections_table_name" {
-  description = "DynamoDB git connections table name"
-  type        = string
-  default     = ""
-}
-
-variable "git_connections_table_arn" {
-  description = "DynamoDB git connections table ARN"
-  type        = string
-  default     = ""
-}
-
 variable "agent_questions_table_name" {
   description = "DynamoDB agent questions table name"
   type        = string
@@ -199,4 +187,28 @@ variable "bedrock_small_fast_model" {
   description = "Bedrock inference profile ID for the small/fast model (used by claude driver). E.g. us.anthropic.claude-haiku-4-5-20251001-v1:0"
   type        = string
   default     = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+}
+
+variable "git_author_name" {
+  description = "Git author name used by agents for commits they create (pool-worker reads GIT_AUTHOR_NAME)"
+  type        = string
+  default     = "AI-DLC Agent"
+}
+
+variable "git_author_email" {
+  description = "Git author email used by agents for commits they create (pool-worker reads GIT_AUTHOR_EMAIL)"
+  type        = string
+  default     = "ai-dlc@example.com"
+}
+
+variable "discussion_locks_table_name" {
+  description = "DynamoDB table name for discussion assist locks (heartbeat + release from the pool worker)"
+  type        = string
+  default     = ""
+}
+
+variable "discussion_locks_table_arn" {
+  description = "DynamoDB table ARN for discussion locks"
+  type        = string
+  default     = ""
 }

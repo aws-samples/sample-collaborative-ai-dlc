@@ -7,6 +7,7 @@ const { buildResponse } = require('./shared/response');
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const { cardinality } = gremlin.process;
+const { order: Order } = gremlin.process;
 
 const getConnection = async () => {
   const host = process.env.NEPTUNE_ENDPOINT;
@@ -16,7 +17,13 @@ const getConnection = async () => {
   return new DriverRemoteConnection(connInfo.url, { headers: connInfo.headers });
 };
 
-const VALID_STATUSES = ['PENDING', 'PASSED', 'FAILED', 'PARTIAL'];
+// NOTE (known design constraint, tracked): the review verdict is sprint-wide —
+// exactly one active Review per Sprint — so a single `status` aggregates quality
+// across ALL repos in a multi-repo sprint. Per-repo verdicts ("infra PASSED, ui
+// FAILED") cannot be expressed in the machine status; the human-readable per-repo
+// breakdown lives in `full_review` (see pool-worker.js buildFullReviewPrompt).
+// Splitting the model into per-repo Review nodes is deferred.
+const { VALID_REVIEW_STATUSES: VALID_STATUSES } = require('./shared/review-statuses');
 
 const mapReview = (v) => ({
   id: v.get('id')?.[0] || '',
@@ -48,17 +55,31 @@ exports.handler = async (event) => {
 
     switch (httpMethod) {
       case 'GET': {
-        // Return the active (non-stale) review. If all are stale, return the most recent one.
+        // Return the active (non-stale) review. If all are stale, return the most
+        // recent one. valueMap().toList() order is NOT guaranteed by the graph
+        // engine, so order by stale_at desc. The active review has no stale_at, so
+        // coalesce to '' keeps it in the list (order().by(missingKey) would
+        // otherwise drop it); it is selected by the .find() below regardless.
         const allReviews = await g
           .V()
           .has('Sprint', 'id', sprintId)
           .out('HAS_REVIEW')
           .hasLabel('Review')
+          .order()
+          .by(
+            gremlin.process.statics.coalesce(
+              gremlin.process.statics.values('stale_at'),
+              gremlin.process.statics.constant(''),
+            ),
+            Order.desc,
+          )
           .valueMap()
           .toList();
         if (allReviews.length === 0) return res(200, null);
         const activeReview = allReviews.find((v) => v.get('stale')?.[0] !== 'true');
-        return res(200, mapReview(activeReview || allReviews[allReviews.length - 1]));
+        // All stale: return the most recent. With Order.desc on stale_at the newest
+        // is at index 0 (allReviews[length-1] would be the oldest).
+        return res(200, mapReview(activeReview || allReviews[0]));
       }
 
       case 'POST': {

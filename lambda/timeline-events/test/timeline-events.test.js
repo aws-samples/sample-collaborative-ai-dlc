@@ -119,6 +119,7 @@ describe('GET /sprints/:sprintId/timeline', () => {
       userId: 'u-1',
       userName: 'Alice',
       timestamp: '2026-02-02T00:00:00.000Z',
+      questionId: 'q-42',
     });
 
     const res = await get(sprintId);
@@ -132,6 +133,7 @@ describe('GET /sprints/:sprintId/timeline', () => {
       userName: 'Alice',
       timestamp: '2026-02-02T00:00:00.000Z',
       sprintId,
+      questionId: 'q-42',
     });
   });
 
@@ -170,6 +172,7 @@ describe('POST /sprints/:sprintId/timeline', () => {
       userName: 'Bob',
       timestamp: '2026-03-03T00:00:00.000Z',
       sprintId,
+      questionId: '',
     });
 
     // Follow-up GET confirms the edge from the sprint was created.
@@ -193,7 +196,26 @@ describe('POST /sprints/:sprintId/timeline', () => {
       userName: '',
       timestamp: NOW.toISOString(),
       sprintId,
+      questionId: '',
     });
+  });
+
+  it('persists questionId so question events can deep-link to the question', async () => {
+    const sprintId = `s-${randomUUID()}`;
+    await addSprint(sprintId);
+
+    const res = await post(sprintId, {
+      type: 'question_answered',
+      title: 'Answered agent question',
+      userName: 'Alice',
+      questionId: 'q-123',
+    });
+    expect(res.statusCode).toBe(201);
+    expect(JSON.parse(res.body).questionId).toBe('q-123');
+
+    const fetched = await get(sprintId);
+    const [event] = JSON.parse(fetched.body);
+    expect(event.questionId).toBe('q-123');
   });
 });
 

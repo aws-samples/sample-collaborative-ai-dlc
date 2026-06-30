@@ -1,8 +1,8 @@
-import { GetCommand } from '@aws-sdk/lib-dynamodb';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
 import { ProviderError } from './errors.js';
+import { getGitConnection } from '../../shared/git-connection-store.js';
 
-const GIT_TOKEN_PARAM_PATTERN = /^\/[\w-]+\/[\w-]+\/[\w-]+\/[\w-]+$/;
+const GIT_TOKEN_PARAM_PATTERN = /^\/[\w-]+\/[\w-]+\/[\w-]+\/[\w-]+(\/[\w-]+)?$/;
 
 const ETAG_CACHE_MAX = 200;
 const etagCache = new Map();
@@ -27,12 +27,10 @@ const cacheSet = (key, value) => {
 export const __resetCache = () => etagCache.clear();
 
 const resolveGithubToken = async (ddb, ssm, userId) => {
-  const { Item } = await ddb.send(
-    new GetCommand({
-      TableName: process.env.GIT_CONNECTIONS_TABLE,
-      Key: { userId },
-    }),
-  );
+  // GitHub issues reuse the GitHub git connection (one OAuth token backs both
+  // repo and issue operations). The store returns null unless the user has a
+  // GitHub connection (and lazily migrates legacy rows on read).
+  const Item = await getGitConnection(ddb, userId, 'github');
   if (!Item) {
     const err = new Error('GitHub not connected');
     err.code = 'NOT_CONNECTED';

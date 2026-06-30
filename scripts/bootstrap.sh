@@ -4,7 +4,7 @@ set -e
 # Bootstrap script: creates Terraform state backend and generates a .s3.tfbackend file.
 # Run this ONCE before the first terraform init.
 #
-# Usage: ./scripts/bootstrap.sh [dev|prod]
+# Usage: ./scripts/bootstrap.sh <environment>   (e.g. dev, prod, staging)
 # Requires: AWS CLI v2 with a configured profile (set AWS_PROFILE)
 
 ENVIRONMENT=${1:-dev}
@@ -13,8 +13,8 @@ ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 PROJECT_NAME="collaborative-ai-dlc"
 REGION="us-east-1"
 
-if [[ "$ENVIRONMENT" != "dev" && "$ENVIRONMENT" != "prod" ]]; then
-    echo "Usage: $0 [dev|prod]"
+if [[ -z "$ENVIRONMENT" ]]; then
+    echo "Usage: $0 <environment>"
     exit 1
 fi
 

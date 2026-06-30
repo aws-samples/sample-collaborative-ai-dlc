@@ -31,7 +31,6 @@ const {
   DynamoDBDocumentClient,
   GetCommand,
   UpdateCommand,
-  PutCommand,
   DeleteCommand,
 } = require('@aws-sdk/lib-dynamodb');
 const { LambdaClient, InvokeCommand } = require('@aws-sdk/client-lambda');
@@ -41,16 +40,18 @@ const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
 const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
 const { cleanupMergedTaskBranch } = require('./branch-cleanup');
 const { buildConstructionOrchestratorPrompt } = require('./construction-orchestrator-prompt');
+const { buildCloneUrl } = require('../shared/git-providers');
+const { refreshGitToken } = require('../shared/git-token-refresh');
 
 // ---------------------------------------------------------------------------
 // Driver — pluggable agent CLI abstraction
 // At startup, discoverInstalledDrivers() probes which CLI binaries are present
 // on PATH. Only installed CLIs are attempted — no env var or deploy-time config.
-// _availableClis is populated with whichever ones authenticate successfully.
+// availableClis is populated with whichever ones authenticate successfully.
 // ---------------------------------------------------------------------------
 const { getDriver, discoverInstalledDrivers } = require('./drivers');
-let _availableClis = []; // populated by main() at startup
-let _cliAuthErrors = {}; // populated by main() at startup
+let availableClis = []; // populated by main() at startup
+let cliAuthErrors = {}; // populated by main() at startup
 
 // Prevent unhandled exceptions/rejections from killing the ECS task.
 // Each pool worker is a long-lived ECS task; a crash wastes the entire container.
@@ -76,6 +77,17 @@ const env = {
 const POLL_INTERVAL = 3000;
 const HEARTBEAT_INTERVAL = 30000;
 
+function toNeptuneSignerCredentials(credentials, region) {
+  return {
+    accessKeyId: credentials.accessKeyId,
+    accessKey: credentials.accessKeyId,
+    secretAccessKey: credentials.secretAccessKey,
+    secretKey: credentials.secretAccessKey,
+    sessionToken: credentials.sessionToken,
+    region,
+  };
+}
+
 // Mark this worker as idle, advertising which CLIs it has authenticated.
 async function setIdle() {
   await ddb.send(
@@ -89,8 +101,8 @@ async function setIdle() {
         ':s': 'idle',
         ':t': Date.now(),
         ':v': env.version,
-        ':clis': _availableClis,
-        ':errs': _cliAuthErrors,
+        ':clis': availableClis,
+        ':errs': cliAuthErrors,
       },
     }),
   );
@@ -115,18 +127,21 @@ async function saveStatus(executionId, agentType, projectId, status) {
   if (!env.agentOutputsTable) return;
   await ddb
     .send(
-      new PutCommand({
+      new UpdateCommand({
         TableName: env.agentOutputsTable,
-        Item: {
-          executionId,
-          agentType,
-          projectId,
-          status,
-          expiresAt: Math.floor(Date.now() / 1000) + 86400,
+        Key: { executionId },
+        UpdateExpression:
+          'SET agentType = if_not_exists(agentType, :agentType), projectId = if_not_exists(projectId, :projectId), #status = :status, expiresAt = if_not_exists(expiresAt, :expiresAt)',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: {
+          ':agentType': agentType,
+          ':projectId': projectId,
+          ':status': status,
+          ':expiresAt': Math.floor(Date.now() / 1000) + 86400,
         },
       }),
     )
-    .catch((e) => console.error('Failed to save status:', e.message));
+    .catch((e) => console.error('[pool-worker] Failed to write AgentOutputs status:', e.message));
 }
 
 // Update the AgentRun node in Neptune on job completion/failure.
@@ -137,8 +152,8 @@ async function updateAgentRunStatus(job, status) {
   if (!neptuneEndpoint) return;
   try {
     const creds = await fromNodeProviderChain()();
-    creds.region = env.region;
-    const info = getUrlAndHeaders(neptuneEndpoint, '8182', creds, '/gremlin', 'wss');
+    const signerCreds = toNeptuneSignerCredentials(creds, env.region);
+    const info = getUrlAndHeaders(neptuneEndpoint, '8182', signerCreds, '/gremlin', 'wss');
     const conn = new gremlin.driver.DriverRemoteConnection(info.url, { headers: info.headers });
     const g = gremlin.process.AnonymousTraversalSource.traversal().withRemote(conn);
     const { cardinality } = gremlin.process;
@@ -161,7 +176,7 @@ const RULES_DIR = '/opt/aidlc-rules';
 
 // Fetch Neptune property value(s) from a vertex valueMap result.
 // Neptune returns each property as an array; this helper unwraps the first element.
-function _neptuneVal(valueMap, key) {
+function neptuneVal(valueMap, key) {
   if (!valueMap) return '';
   const raw = valueMap instanceof Map ? valueMap.get(key) : valueMap[key];
   if (Array.isArray(raw)) return raw[0] ?? '';
@@ -194,7 +209,7 @@ function renderRuleFile(srcPath, destPath, rulesDirRel) {
 // `.md` extension, and verifies the resolved path stays under `rulesDir`
 // (defence in depth against future path.basename quirks). Returns null if
 // the filename is unsafe or empty.
-function _safeRulesDest(rulesDir, filename, prefix) {
+function safeRulesDest(rulesDir, filename, prefix) {
   if (!filename || typeof filename !== 'string') return null;
   const base = path.basename(filename);
   if (!base || base === '.' || base === '..') return null;
@@ -235,7 +250,7 @@ async function writeScopedRules(rulesDir, projectId, taskId) {
         .valueMap('steering_docs')
         .next();
       if (projectResult.value) {
-        const raw = _neptuneVal(projectResult.value, 'steering_docs');
+        const raw = neptuneVal(projectResult.value, 'steering_docs');
         if (raw) {
           try {
             projectDocs = JSON.parse(raw);
@@ -249,7 +264,7 @@ async function writeScopedRules(rulesDir, projectId, taskId) {
       if (taskId) {
         const taskResult = await g.V().has('Task', 'id', taskId).valueMap('steering_docs').next();
         if (taskResult.value) {
-          const raw = _neptuneVal(taskResult.value, 'steering_docs');
+          const raw = neptuneVal(taskResult.value, 'steering_docs');
           if (raw) {
             try {
               taskDocs = JSON.parse(raw);
@@ -270,7 +285,7 @@ async function writeScopedRules(rulesDir, projectId, taskId) {
     for (const doc of projectDocs) {
       if (!doc.s3Key) continue;
       const filename = doc.filename || path.basename(doc.s3Key);
-      const dest = _safeRulesDest(rulesDir, filename, 'project--');
+      const dest = safeRulesDest(rulesDir, filename, 'project--');
       if (!dest) {
         console.warn(
           `[pool-worker] Skipping project steering doc with unsafe filename: ${filename}`,
@@ -298,7 +313,7 @@ async function writeScopedRules(rulesDir, projectId, taskId) {
     for (const doc of taskDocs) {
       if (!doc.s3Key) continue;
       const filename = doc.filename || path.basename(doc.s3Key);
-      const dest = _safeRulesDest(rulesDir, filename, 'task--');
+      const dest = safeRulesDest(rulesDir, filename, 'task--');
       if (!dest) {
         console.warn(`[pool-worker] Skipping task steering doc with unsafe filename: ${filename}`);
         continue;
@@ -380,7 +395,7 @@ async function fetchSteeringFiles(phase, agentCli, projectId, taskId) {
   // Copy common rules into the rules directory (with logical-path rendering)
   const commonDir = `${RULES_DIR}/aws-aidlc-rule-details/common`;
   try {
-    for (const f of fs.readdirSync(commonDir).filter((f) => f.endsWith('.md'))) {
+    for (const f of fs.readdirSync(commonDir).filter((name) => name.endsWith('.md'))) {
       renderRuleFile(path.join(commonDir, f), path.join(rulesDir, `common-${f}`), rulesDirRel);
     }
   } catch {
@@ -391,7 +406,7 @@ async function fetchSteeringFiles(phase, agentCli, projectId, taskId) {
   const phaseDir = effectivePhase === 'review' ? 'operations' : effectivePhase;
   const phasePath = `${RULES_DIR}/aws-aidlc-rule-details/${phaseDir}`;
   try {
-    for (const f of fs.readdirSync(phasePath).filter((f) => f.endsWith('.md'))) {
+    for (const f of fs.readdirSync(phasePath).filter((name) => name.endsWith('.md'))) {
       renderRuleFile(path.join(phasePath, f), path.join(rulesDir, `${phaseDir}-${f}`), rulesDirRel);
     }
   } catch {
@@ -410,117 +425,20 @@ async function setupWorkspace(job) {
   execSync('rm -rf /workspace/* /workspace/.* 2>/dev/null || true', { stdio: 'ignore' });
   execSync('mkdir -p /workspace', { stdio: 'ignore' });
 
-  if (job.gitRepo) {
-    try {
-      const auth = job.gitToken ? `x-access-token:${job.gitToken}@` : '';
+  // Determine workspace layout: multi-repo (N>1) vs single-repo (N≤1, backward compat)
+  const repos = job.gitRepos && job.gitRepos.length > 1 ? job.gitRepos : null;
+  const isMultiRepo = !!repos;
 
-      // Try to clone - may fail if repo is empty
-      try {
-        execSync(`git clone "https://${auth}github.com/${job.gitRepo}.git" /workspace`, {
-          stdio: 'inherit',
-        });
-      } catch {
-        // If clone fails (empty repo), initialize new repo
-        console.log('[pool-worker] Clone failed (likely empty repo), initializing...');
-        execSync(`git init /workspace`, { stdio: 'inherit' });
-        execSync(
-          `cd /workspace && git remote add origin "https://${auth}github.com/${job.gitRepo}.git"`,
-          { stdio: 'inherit' },
-        );
-      }
-
-      // Configure git
-      execSync(`cd /workspace && git config user.email "ai-dlc@example.com"`, { stdio: 'inherit' });
-      execSync(`cd /workspace && git config user.name "AI-DLC Agent"`, { stdio: 'inherit' });
-
-      // For construction (sub-agents + orchestrator) and review phases, checkout/create the working branch
-      const needsBranch = [
-        'construction',
-        'construction-orchestrator',
-        'review-blind',
-        'review-full',
-        'review-modify',
-        'bugfix',
-      ].includes(job.agentType);
-      if (needsBranch && job.branch) {
-        try {
-          // Check if we have any commits
-          const hasCommits =
-            execSync(`cd /workspace && git rev-parse HEAD 2>/dev/null || echo "no"`, {
-              encoding: 'utf8',
-            }).trim() !== 'no';
-
-          if (!hasCommits) {
-            // Empty repo - create initial commit on the repo's default branch (typically main)
-            const defaultBranch = 'main';
-            execSync(`cd /workspace && git checkout -b ${defaultBranch}`, { stdio: 'inherit' });
-            execSync(`cd /workspace && echo "# ${job.gitRepo}" > README.md`, { stdio: 'inherit' });
-            execSync(`cd /workspace && git add README.md`, { stdio: 'inherit' });
-            execSync(`cd /workspace && git commit -m "Initial commit"`, { stdio: 'inherit' });
-            try {
-              execSync(`cd /workspace && git push -u origin ${defaultBranch}`, {
-                stdio: 'inherit',
-              });
-            } catch (pushErr) {
-              console.error(
-                `[pool-worker] Failed to push initial commit to ${defaultBranch}: ${pushErr.message}`,
-              );
-            }
-          }
-
-          // Determine which base to branch from.
-          // For construction sub-agents, baseBranch is the sprint branch.
-          // We need to verify it exists on the remote; if not, fall back to main.
-          const desiredBase = job.baseBranch || 'main';
-          const baseExistsOnRemote = execSync(
-            `cd /workspace && git ls-remote --heads origin ${desiredBase}`,
-            { encoding: 'utf8' },
-          ).trim();
-          const effectiveBase = baseExistsOnRemote ? desiredBase : 'main';
-          if (!baseExistsOnRemote && desiredBase !== 'main') {
-            console.log(
-              `[pool-worker] Base branch "${desiredBase}" not found on remote, falling back to "main"`,
-            );
-          }
-
-          // Now create/checkout working branch
-          const branchExists = execSync(
-            `cd /workspace && git ls-remote --heads origin ${job.branch}`,
-            { encoding: 'utf8' },
-          ).trim();
-
-          if (branchExists) {
-            // Branch exists on remote — fetch and check it out
-            execSync(`cd /workspace && git fetch origin ${job.branch}`, { stdio: 'inherit' });
-            execSync(`cd /workspace && git checkout ${job.branch}`, { stdio: 'inherit' });
-          } else {
-            // Branch does not exist on remote — create it from the effective base
-            console.log(
-              `[pool-worker] Creating new branch ${job.branch} from origin/${effectiveBase}`,
-            );
-            execSync(`cd /workspace && git fetch origin ${effectiveBase}`, { stdio: 'inherit' });
-            execSync(`cd /workspace && git checkout -b ${job.branch} origin/${effectiveBase}`, {
-              stdio: 'inherit',
-            });
-          }
-
-          // Verify we're on the right branch
-          const currentBranch = execSync('cd /workspace && git branch --show-current', {
-            encoding: 'utf8',
-          }).trim();
-          console.log(`[pool-worker] Workspace ready on branch: ${currentBranch}`);
-          if (currentBranch !== job.branch) {
-            console.error(
-              `[pool-worker] WARNING: Expected branch ${job.branch} but on ${currentBranch}`,
-            );
-          }
-        } catch (err) {
-          console.error(`[pool-worker] Git branch setup failed for ${job.branch}: ${err.message}`);
-        }
-      }
-    } catch (gitErr) {
-      console.error('[pool-worker] Git setup failed:', gitErr.message);
+  if (isMultiRepo) {
+    // Multi-repo: clone each into /workspace/{owner}/{repo}/
+    for (const repo of repos) {
+      const repoName = repo.url; // "owner/repo" → nested dir /workspace/owner/repo
+      const repoDir = `/workspace/${repoName}`;
+      cloneAndSetupBranch(job, repo.url, repoDir);
     }
+  } else if (job.gitRepo) {
+    // Single-repo: clone into /workspace/ (backward compatible)
+    cloneAndSetupBranch(job, job.gitRepo, '/workspace');
   }
 
   const phase = (job.agentType || 'inception').toLowerCase();
@@ -531,7 +449,153 @@ async function setupWorkspace(job) {
   // This must run AFTER cloning so it overwrites whatever the repo ships.
   const activeDriver = getDriver(job.agentCli);
   if (typeof activeDriver.writeProjectConfig === 'function') {
-    activeDriver.writeProjectConfig('/workspace', process.env);
+    activeDriver.writeProjectConfig('/workspace', {
+      ...process.env,
+      AGENT_MODEL: job.agentModel || '',
+    });
+  }
+
+  // Multi-repo: symlink steering/config dirs into each repo so CLIs that search
+  // relative to the git root (not cwd) still find them when the agent cd's in.
+  if (isMultiRepo) {
+    const steeringDirs = ['.kiro', '.claude', '.opencode'].filter((d) =>
+      fs.existsSync(`/workspace/${d}`),
+    );
+    for (const repo of repos) {
+      const repoDir = `/workspace/${repo.url}`;
+      for (const dir of steeringDirs) {
+        const target = `${repoDir}/${dir}`;
+        if (!fs.existsSync(target)) {
+          try {
+            fs.symlinkSync(`/workspace/${dir}`, target, 'dir');
+          } catch {
+            // Fallback: copy if symlink fails (some filesystems)
+            execSync(`cp -r "/workspace/${dir}" "${target}"`, { stdio: 'ignore' });
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Clone a single repository into targetDir and set up the working branch.
+ * Extracted from the original setupWorkspace to enable multi-repo reuse.
+ */
+function cloneAndSetupBranch(job, repoUrl, targetDir) {
+  try {
+    const cloneUrl = buildCloneUrl(job.gitProvider, repoUrl, job.gitToken);
+
+    // Try to clone - may fail if repo is empty
+    try {
+      execSync(`git clone "${cloneUrl}" "${targetDir}"`, {
+        stdio: 'inherit',
+      });
+    } catch {
+      // If clone fails (empty repo), initialize new repo
+      console.log(`[pool-worker] Clone failed for ${repoUrl} (likely empty repo), initializing...`);
+      execSync(`mkdir -p "${targetDir}" && git init "${targetDir}"`, { stdio: 'inherit' });
+      execSync(`cd "${targetDir}" && git remote add origin "${cloneUrl}"`, { stdio: 'inherit' });
+    }
+
+    // Configure git. Identity is overridable via env (set by the task def);
+    // falls back to a neutral default so commits always have an author.
+    const gitEmail = process.env.GIT_AUTHOR_EMAIL || 'ai-dlc@example.com';
+    const gitName = process.env.GIT_AUTHOR_NAME || 'AI-DLC Agent';
+    execSync(`cd "${targetDir}" && git config user.email "${gitEmail}"`, {
+      stdio: 'inherit',
+    });
+    execSync(`cd "${targetDir}" && git config user.name "${gitName}"`, { stdio: 'inherit' });
+
+    // For construction (sub-agents + orchestrator) and review phases, checkout/create the working branch
+    const needsBranch = [
+      'construction',
+      'construction-orchestrator',
+      'review-blind',
+      'review-full',
+      'review-modify',
+      'bugfix',
+    ].includes(job.agentType);
+    if (needsBranch && job.branch) {
+      try {
+        // Check if we have any commits
+        const hasCommits =
+          execSync(`cd "${targetDir}" && git rev-parse HEAD 2>/dev/null || echo "no"`, {
+            encoding: 'utf8',
+          }).trim() !== 'no';
+
+        if (!hasCommits) {
+          // Empty repo - create initial commit on the repo's default branch (typically main)
+          const defaultBranch = 'main';
+          execSync(`cd "${targetDir}" && git checkout -b ${defaultBranch}`, { stdio: 'inherit' });
+          execSync(`cd "${targetDir}" && echo "# ${repoUrl}" > README.md`, { stdio: 'inherit' });
+          execSync(`cd "${targetDir}" && git add README.md`, { stdio: 'inherit' });
+          execSync(`cd "${targetDir}" && git commit -m "Initial commit"`, { stdio: 'inherit' });
+          try {
+            execSync(`cd "${targetDir}" && git push -u origin ${defaultBranch}`, {
+              stdio: 'inherit',
+            });
+          } catch (pushErr) {
+            console.error(
+              `[pool-worker] Failed to push initial commit to ${defaultBranch}: ${pushErr.message}`,
+            );
+          }
+        }
+
+        // Determine which base to branch from.
+        // For construction sub-agents, baseBranch is the sprint branch.
+        // We need to verify it exists on the remote; if not, fall back to main.
+        const desiredBase = job.baseBranch || 'main';
+        const baseExistsOnRemote = execSync(
+          `cd "${targetDir}" && git ls-remote --heads origin ${desiredBase}`,
+          { encoding: 'utf8' },
+        ).trim();
+        const effectiveBase = baseExistsOnRemote ? desiredBase : 'main';
+        if (!baseExistsOnRemote && desiredBase !== 'main') {
+          console.log(
+            `[pool-worker] Base branch "${desiredBase}" not found on remote for ${repoUrl}, falling back to "main"`,
+          );
+        }
+
+        // Now create/checkout working branch
+        const branchExists = execSync(
+          `cd "${targetDir}" && git ls-remote --heads origin ${job.branch}`,
+          { encoding: 'utf8' },
+        ).trim();
+
+        if (branchExists) {
+          // Branch exists on remote — fetch and check it out
+          execSync(`cd "${targetDir}" && git fetch origin ${job.branch}`, { stdio: 'inherit' });
+          execSync(`cd "${targetDir}" && git checkout ${job.branch}`, { stdio: 'inherit' });
+        } else {
+          // Branch does not exist on remote — create it from the effective base
+          console.log(
+            `[pool-worker] Creating new branch ${job.branch} from origin/${effectiveBase} in ${repoUrl}`,
+          );
+          execSync(`cd "${targetDir}" && git fetch origin ${effectiveBase}`, { stdio: 'inherit' });
+          execSync(`cd "${targetDir}" && git checkout -b ${job.branch} origin/${effectiveBase}`, {
+            stdio: 'inherit',
+          });
+        }
+
+        // Verify we're on the right branch
+        const currentBranch = execSync(`cd "${targetDir}" && git branch --show-current`, {
+          encoding: 'utf8',
+        }).trim();
+        console.log(`[pool-worker] ${repoUrl} ready on branch: ${currentBranch}`);
+        if (currentBranch !== job.branch) {
+          console.error(
+            `[pool-worker] WARNING: Expected branch ${job.branch} but on ${currentBranch} in ${repoUrl}`,
+          );
+        }
+      } catch (err) {
+        console.error(
+          `[pool-worker] Git branch setup failed for ${job.branch} in ${repoUrl}: ${err.message}`,
+        );
+      }
+    }
+  } catch (gitErr) {
+    console.error(`[pool-worker] Git setup failed for ${repoUrl}:`, gitErr.message);
   }
 }
 
@@ -541,21 +605,86 @@ async function setupWorkspace(job) {
 // driver — e.g. ".kiro/steering" for Kiro, ".claude/rules" for Claude,
 // ".opencode/rules" for OpenCode. The agent's CLI auto-loads them; we cite
 // the directory in prompts so the agent knows where to find named rule files.
+// Appended to every non-discussion phase prompt: discussions are
+// durable, queryable collaboration context — not chat history.
+const DISCUSSIONS_NUDGE = `
+
+## TEAM DISCUSSIONS
+
+Check \`get_discussions\` for team context on the entities you work on — open threads show unresolved positions, and resolution summaries represent TEAM DECISIONS you must respect.`;
+
 function buildPrompt(job, rulesDir) {
   const phase = (job.agentType || 'inception').toLowerCase();
-  if (phase === 'inception') return buildInceptionPrompt(job, rulesDir);
-  if (phase === 'construction') return buildConstructionPrompt(job, rulesDir);
-  if (phase === 'construction-orchestrator') return buildConstructionOrchestratorPrompt(job);
-  if (phase === 'review-blind') return buildBlindReviewPrompt(job);
-  if (phase === 'review-full') return buildFullReviewPrompt(job);
-  if (phase === 'review-modify') return buildReviewModifyPrompt(job);
-  if (phase === 'bugfix') return buildBugfixPrompt(job);
-  // Default prompt for other phases
-  return (
-    `You are an AI-DLC agent running the "${phase}" phase. Your master workflow is preloaded as AGENTS.md; detailed rule files for this phase are in \`${rulesDir}/\`.\n\n` +
-    (job.description ? `PROJECT DESCRIPTION:\n${job.description}\n\n` : '') +
-    `Begin the ${phase} phase. Use the graph MCP tools to read and write all artifacts to Neptune. Do NOT create or modify markdown files as output.`
-  );
+  if (phase === 'discussion') return buildDiscussionPrompt(job);
+  let prompt;
+  if (phase === 'inception') prompt = buildInceptionPrompt(job, rulesDir);
+  else if (phase === 'construction') prompt = buildConstructionPrompt(job, rulesDir);
+  else if (phase === 'construction-orchestrator') prompt = buildConstructionOrchestratorPrompt(job);
+  else if (phase === 'review-blind') prompt = buildBlindReviewPrompt(job);
+  else if (phase === 'review-full') prompt = buildFullReviewPrompt(job);
+  else if (phase === 'review-modify') prompt = buildReviewModifyPrompt(job);
+  else if (phase === 'bugfix') prompt = buildBugfixPrompt(job);
+  else {
+    // Default prompt for other phases
+    prompt =
+      `You are an AI-DLC agent running the "${phase}" phase. Your master workflow is preloaded as AGENTS.md; detailed rule files for this phase are in \`${rulesDir}/\`.\n\n` +
+      (job.description ? `PROJECT DESCRIPTION:\n${job.description}\n\n` : '') +
+      `Begin the ${phase} phase. Use the graph MCP tools to read and write all artifacts to Neptune. Do NOT create or modify markdown files as output.`;
+  }
+  return prompt + DISCUSSIONS_NUDGE;
+}
+
+// Discussion-assist prompt. The agent SELF-SERVES context via MCP —
+// no Lambda-side prompt assembly. It must finish by calling
+// `post_discussion_message` exactly once (acp-client posts the output buffer
+// as a fallback if it forgets).
+function buildDiscussionPrompt(job) {
+  const command = (job.command || 'custom').toLowerCase();
+
+  const COMMAND_TEMPLATES = {
+    'suggest-answer': `## YOUR COMMAND: suggest-answer
+
+The discussion is anchored on an agent Question. Recommend how the team should answer it:
+1. Find the thread with id "${job.discussionId}" via \`get_discussions\` to read the conversation, then \`get_node\` on the anchored Question (label "Question", id = the thread's entityId) to read the structured question and its options.
+2. Recommend specific option selections and/or free-text answers for each sub-question.
+3. Quote the supporting arguments from the discussion (who said what) and flag any unresolved disagreement explicitly.
+4. **ADVICE ONLY**: you must NOT modify the question, its draft answer, or any artifact. The humans answer the question themselves.`,
+    summarize: `## YOUR COMMAND: summarize
+
+Summarize this discussion for the team:
+1. Decisions that were reached (and by whom).
+2. Open points and unanswered questions.
+3. The distinct positions taken, attributed by participant.
+Keep it tight — a team member should grasp the state of the thread in 30 seconds.`,
+    explain: `## YOUR COMMAND: explain
+
+Explain the entity this discussion is anchored on, in the context of the sprint:
+1. Use \`get_node\` / \`get_neighbors\` / \`get_sprint_graph\` to understand the anchored entity and how it relates to other artifacts.
+2. Explain what it is, why it exists, and what depends on it — written for a team member who just joined the discussion.`,
+    custom: `## YOUR COMMAND: custom instruction from ${job.requestedByName || 'a team member'}
+
+${job.instruction || '(no instruction provided — summarize the discussion instead)'}
+
+**GUARDRAIL**: stay scoped to this discussion and this sprint. You are advising humans — do NOT create, modify, or delete any artifact, question, or code.`,
+  };
+
+  return `You are a discussion assistant for the AI-DLC platform. A team member asked you to help inside a discussion thread.
+
+## CONTEXT (self-serve via MCP tools)
+
+- Discussion id: ${job.discussionId}
+- Requested by: ${job.requestedByName || job.requestedBy || 'a team member'}
+
+1. Call \`get_discussions\` and locate the thread with id "${job.discussionId}" — read its messages, the anchored entity (entityType/entityId/entityTitle), and any resolution summary. Resolution summaries represent TEAM DECISIONS.
+2. Use \`get_node\`, \`get_neighbors\`, and \`get_sprint_graph\` for deeper sprint context where useful.
+
+${COMMAND_TEMPLATES[command] || COMMAND_TEMPLATES.custom}
+
+## OUTPUT CONTRACT (CRITICAL)
+
+- You MUST finish by calling \`post_discussion_message\` EXACTLY ONCE with your final answer as markdown. That is how your reply reaches the team.
+- Do NOT create, modify, or delete graph artifacts, questions, or files. There is no repository in this workspace.
+- Keep the reply focused and readable in a chat thread (markdown, no preamble).`;
 }
 
 function buildInceptionPrompt(job, rulesDir) {
@@ -652,9 +781,14 @@ ${job.description || '(No description provided — ask the team what they want t
 
 function buildConstructionPrompt(job, rulesDir) {
   const taskId = job.taskId;
+  const isMultiRepo = job.gitRepos && job.gitRepos.length > 1;
   const taskSection = taskId
     ? `## YOUR TASK\n\nTask ID: ${taskId}\nBranch: ${job.branch || 'main'}\n\nCall \`get_node\` with label "Task" and id="${taskId}" to read the task details, then implement it.`
     : `## YOUR TASKS\n\nBranch: ${job.branch || 'main'}\n\nNo specific task ID was assigned. You must discover tasks yourself:\n1. Call \`get_sprint_graph\` to see all nodes.\n2. Find all Task nodes with status "todo".\n3. Implement them one by one in a logical order (respect dependencies).`;
+
+  const workspaceSection = isMultiRepo
+    ? `## WORKSPACE LAYOUT (MULTI-REPO)\n\nThis project uses multiple repositories. Each is cloned into its own subdirectory:\n\n${job.gitRepos.map((r) => `- /workspace/${r.url}/ (${r.role || 'unknown'})`).join('\n')}\n\n**CRITICAL RULES for multi-repo**:\n1. ALWAYS \`cd\` into the correct repo directory before running git or file operations.\n2. Each repo has its own git history and branch — do NOT confuse them.\n3. When creating CodeFile nodes, ALWAYS set the \`repository\` property to the "owner/repo" value.\n4. Commit changes in each repo independently: \`cd /workspace/<owner>/<repo> && git add -A && git commit ...\`\n5. The system pushes ALL repos after you exit — you just need to commit in each.\n`
+    : '';
 
   return `You are the Construction Agent for the AI-DLC platform.
 
@@ -678,6 +812,7 @@ YOUR GOAL: Implement tasks by writing code to the git workspace, updating Neptun
 
 ${taskSection}
 
+${workspaceSection}
 ## WORKFLOW
 
 1. Read your AGENTS.md and the construction rule files in \`${rulesDir}/\` to understand the construction workflow
@@ -851,12 +986,19 @@ Perform a BUSINESS CODE REVIEW cross-referencing the implementation against requ
 \`\`\`
 ## Business Review
 
-**Verdict**: PASS | FAIL | PARTIAL
+**Verdict**: PASSED | FAILED | PARTIAL
 
 **Requirements Coverage**:
-| Requirement | Status | Notes |
-|---|---|---|
-| <req title> | ✅ Met / ⚠️ Partial / ❌ Missing | <brief note> |
+| Requirement | Repository | Status | Notes |
+|---|---|---|---|
+| <req title> | <owner/repo, or "all"> | ✅ Met / ⚠️ Partial / ❌ Missing | <brief note> |
+
+**Per-Repo Status** (multi-repo sprints — one line per repository):
+- <owner/repo>: ✅ PASSED / ⚠️ PARTIAL / ❌ FAILED — <brief note>
+
+NOTE: the machine **Verdict**/\`status\` above is sprint-wide (one aggregate verdict
+per sprint). When repos diverge (e.g. infra PASSED but ui FAILED), reflect that here
+in the per-repo breakdown and set the aggregate Verdict to PARTIAL.
 
 **Key Issues**:
 - 🔴 CRITICAL: …
@@ -888,10 +1030,10 @@ Risk score guidance:
 
 > Reviewed by the AI-DLC Business Review Agent (with requirements context)
 
-**Verdict**: PASS | FAIL | PARTIAL
+**Verdict**: PASSED | FAILED | PARTIAL
 
 **Requirements Coverage**:
-<requirements table>
+<requirements table (include the Repository column)>
 
 **Key Issues**:
 <bullet list of critical/warning items only, or "None found">
@@ -1022,13 +1164,37 @@ Begin by examining the codebase and implementing the requested fixes.
 
 // Push a branch to remote with retry and verification.
 // Returns true if push succeeded and was verified on remote, false otherwise.
-function pushBranchWithRetry(job, branch, maxRetries = 3) {
+/**
+ * Resolve the repo URL (owner/repo) for a given workspace directory.
+ * In single-repo mode, returns job.gitRepo.
+ * In multi-repo mode, derives owner/repo from the path relative to /workspace.
+ */
+function getRepoUrlForDir(job, workDir) {
+  if (!job.gitRepos || job.gitRepos.length <= 1) return job.gitRepo || '';
+  const relative = path.relative('/workspace', workDir); // "owner/repo"
+  const match = job.gitRepos.find((r) => r.url === relative);
+  return match ? match.url : job.gitRepo || '';
+}
+
+// GitLab access tokens expire (~2h); a long construction run can outlive the
+// dispatch-time token before the push phase. Refresh just-in-time via the
+// agents Lambda (which holds the git-connections row + refresh token + OAuth
+// secret) and update job.gitToken in place. No-op for GitHub (OAuth-App tokens
+// never expire) and when we lack the inputs to refresh. Best-effort: on any
+// failure we keep the existing token and let the push surface the real error.
+async function refreshGitTokenIfNeeded(job) {
+  const token = await refreshGitToken(lambda, { userId: job.userId, gitProvider: job.gitProvider });
+  if (token) job.gitToken = token;
+}
+
+function pushBranchWithRetry(job, branch, maxRetries = 3, workDir = '/workspace') {
+  // Returns: true (pushed OK) | false (real push failure after retries) | 'empty' (no commits — expected no-op)
   // Re-inject token into remote URL for push authentication.
-  const auth = job.gitToken ? `x-access-token:${job.gitToken}@` : '';
-  if (auth) {
+  const repoUrl = getRepoUrlForDir(job, workDir);
+  if (job.gitToken && repoUrl) {
     try {
       execSync(
-        `cd /workspace && git remote set-url origin "https://${auth}github.com/${job.gitRepo}.git"`,
+        `cd "${workDir}" && git remote set-url origin "${buildCloneUrl(job.gitProvider, repoUrl, job.gitToken)}"`,
         { stdio: 'inherit' },
       );
     } catch (urlErr) {
@@ -1039,26 +1205,30 @@ function pushBranchWithRetry(job, branch, maxRetries = 3) {
 
   // Check if the branch has any commits at all
   try {
-    execSync('cd /workspace && git log -1 --format=%H', {
+    execSync(`cd "${workDir}" && git log -1 --format=%H`, {
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
     });
   } catch {
     console.log(
-      `[pool-worker] Branch ${branch} has no commits — nothing to push. This is normal for orchestrator first-run.`,
+      `[pool-worker] Branch ${branch} has no commits in ${workDir} — nothing to push. This is normal for orchestrator first-run or an untouched repo in multi-repo mode.`,
     );
-    return false;
+    // Distinct from a push FAILURE: an empty repo is an expected no-op, not an error.
+    // Callers must not treat 'empty' as a failed push (see multi-repo aggregation).
+    return 'empty';
   }
 
   // Auto-commit any leftover uncommitted changes the agent forgot
   try {
-    const status = execSync('cd /workspace && git status --porcelain', { encoding: 'utf8' }).trim();
+    const status = execSync(`cd "${workDir}" && git status --porcelain`, {
+      encoding: 'utf8',
+    }).trim();
     if (status) {
       console.log(
-        `[pool-worker] WARNING: Agent left uncommitted changes. Auto-committing to prevent data loss:\n${status}`,
+        `[pool-worker] WARNING: Agent left uncommitted changes in ${workDir}. Auto-committing to prevent data loss:\n${status}`,
       );
       execSync(
-        'cd /workspace && git add -A && git commit -m "auto-commit: uncommitted changes from agent"',
+        `cd "${workDir}" && git add -A && git commit -m "auto-commit: uncommitted changes from agent"`,
         { stdio: 'inherit' },
       );
     }
@@ -1066,16 +1236,16 @@ function pushBranchWithRetry(job, branch, maxRetries = 3) {
     console.error(`[pool-worker] Auto-commit failed: ${commitErr.message}`);
   }
 
-  const log = execSync('cd /workspace && git log --oneline -3', { encoding: 'utf8' }).trim();
+  const log = execSync(`cd "${workDir}" && git log --oneline -3`, { encoding: 'utf8' }).trim();
   console.log(`[pool-worker] Recent commits on ${branch}:\n${log}`);
 
-  const localHead = execSync('cd /workspace && git rev-parse HEAD', { encoding: 'utf8' }).trim();
+  const localHead = execSync(`cd "${workDir}" && git rev-parse HEAD`, { encoding: 'utf8' }).trim();
   console.log(`[pool-worker] Local HEAD for ${branch}: ${localHead}`);
 
   // Log actual current branch for debugging — if this differs from the expected branch,
   // the agent or setupWorkspace failed to check out the correct branch.
   const currentBranch = execSync(
-    'cd /workspace && git branch --show-current 2>/dev/null || echo "detached"',
+    `cd "${workDir}" && git branch --show-current 2>/dev/null || echo "detached"`,
     { encoding: 'utf8' },
   ).trim();
   console.log(`[pool-worker] Current local branch: ${currentBranch} (expected: ${branch})`);
@@ -1084,12 +1254,14 @@ function pushBranchWithRetry(job, branch, maxRetries = 3) {
     try {
       // Push HEAD to the remote branch name explicitly. This works even if the local branch
       // name doesn't match (e.g. agent is on 'main' but we need to push to the task branch).
-      execSync(`cd /workspace && git push origin HEAD:refs/heads/${branch}`, { stdio: 'inherit' });
+      execSync(`cd "${workDir}" && git push origin HEAD:refs/heads/${branch}`, {
+        stdio: 'inherit',
+      });
       console.log(`[pool-worker] Push succeeded for ${branch} (attempt ${attempt})`);
 
       // Verify the push landed by checking remote HEAD matches local HEAD
       try {
-        const remoteHead = execSync(`cd /workspace && git ls-remote origin ${branch}`, {
+        const remoteHead = execSync(`cd "${workDir}" && git ls-remote origin ${branch}`, {
           encoding: 'utf8',
         })
           .trim()
@@ -1130,6 +1302,65 @@ function pushBranchWithRetry(job, branch, maxRetries = 3) {
 }
 
 // Run the ACP client for a single job
+// ---------------------------------------------------------------------------
+// Assist-lock heartbeat
+//
+// The discussions lambda acquires `assist:{discussionId}` (15 min) before
+// dispatch; the worker renews it every 60 s while the session runs —
+// conditional on the lock still carrying THIS executionId (a post-crash
+// recovery may have stolen it) — and releases it on completion/error.
+// Renewal failure is logged but never aborts the job: message append is
+// idempotent, so a stolen lock at worst allows a concurrent assist.
+// ---------------------------------------------------------------------------
+const ASSIST_LOCK_RENEW_INTERVAL_MS = 60_000;
+const ASSIST_LOCK_TTL_SECONDS = 900;
+
+function startAssistLockHeartbeat(job) {
+  if ((job.agentType || '').toLowerCase() !== 'discussion' || !job.discussionId) return null;
+  const locksTable = process.env.LOCKS_TABLE;
+  if (!locksTable) return null;
+  const lockId = `assist:${job.discussionId}`;
+
+  const renew = async () => {
+    try {
+      await ddb.send(
+        new UpdateCommand({
+          TableName: locksTable,
+          Key: { lockId },
+          UpdateExpression: 'SET expiresAt = :exp',
+          ConditionExpression: 'executionId = :eid',
+          ExpressionAttributeValues: {
+            ':exp': Math.floor(Date.now() / 1000) + ASSIST_LOCK_TTL_SECONDS,
+            ':eid': job.executionId,
+          },
+        }),
+      );
+    } catch (err) {
+      console.warn(`[pool-worker] Assist-lock renewal failed for ${lockId}: ${err.message}`);
+    }
+  };
+
+  const timer = setInterval(renew, ASSIST_LOCK_RENEW_INTERVAL_MS);
+  return {
+    stop: async () => {
+      clearInterval(timer);
+      try {
+        await ddb.send(
+          new DeleteCommand({
+            TableName: locksTable,
+            Key: { lockId },
+            ConditionExpression: 'executionId = :eid',
+            ExpressionAttributeValues: { ':eid': job.executionId },
+          }),
+        );
+        console.log(`[pool-worker] Released assist lock ${lockId}`);
+      } catch (err) {
+        console.warn(`[pool-worker] Assist-lock release skipped for ${lockId}: ${err.message}`);
+      }
+    },
+  };
+}
+
 // Returns { exitCode, pushSucceeded } — pushSucceeded is only relevant for construction phases
 function runAcpSession(job) {
   return new Promise((resolve) => {
@@ -1151,8 +1382,21 @@ function runAcpSession(job) {
       BRANCH: job.branch || '',
       GIT_TOKEN: job.gitToken || '',
       GIT_REPO: job.gitRepo || '',
+      GIT_PROVIDER: job.gitProvider || 'github',
+      GIT_USER_ID: job.userId || '',
+      GIT_REPOS: JSON.stringify(job.gitRepos || []),
       RUN_NUMBER: String(job.runNumber || 1),
+      AGENT_MODEL: job.agentModel || '',
+      // Discussion-assist context — empty for other phases.
+      DISCUSSION_ID: job.discussionId || '',
+      DISCUSSION_COMMAND: job.command || '',
+      DISCUSSION_REQUESTED_BY: job.requestedBy || '',
+      DISCUSSION_REQUESTED_BY_NAME: job.requestedByName || '',
     };
+
+    console.log(
+      `[pool-worker] Starting ACP child execution=${job.executionId} cli=${job.agentCli} model=${childEnv.AGENT_MODEL || 'driver-default'}`,
+    );
 
     const child = spawn('node', ['/opt/acp-client/acp-client.js'], {
       cwd: '/workspace',
@@ -1162,46 +1406,91 @@ function runAcpSession(job) {
 
     child.on('exit', (code) => {
       let pushSucceeded = false;
+      let pushResults = []; // per-repo results for multi-repo mode
 
       // For construction and review-modify phases, push changes to remote.
       // CRITICAL: Wrapped in try/catch so no git error can crash the pool-worker process.
       // An uncaught exception here would kill the ECS task, wasting the worker permanently.
-      if (
-        (phase === 'construction' ||
-          phase === 'construction-orchestrator' ||
-          phase === 'review-modify' ||
-          phase === 'bugfix') &&
-        code === 0 &&
-        job.gitRepo &&
-        job.branch
-      ) {
-        try {
-          pushSucceeded = pushBranchWithRetry(job, job.branch);
-        } catch (pushErr) {
-          console.error(
-            `[pool-worker] FATAL-PREVENTED: pushBranchWithRetry threw unexpectedly: ${pushErr.message}`,
-          );
-          console.error(pushErr.stack);
-          pushSucceeded = false;
-        }
-
-        if (phase === 'construction-orchestrator' && pushSucceeded) {
+      //
+      // The push needs a possibly-refreshed GitLab token (the agent may have run
+      // long enough for the dispatch-time token to expire), so the post-exit work
+      // runs in an async IIFE; `resolve` is captured from the Promise executor.
+      void (async () => {
+        if (
+          (phase === 'construction' ||
+            phase === 'construction-orchestrator' ||
+            phase === 'review-modify' ||
+            phase === 'bugfix') &&
+          code === 0 &&
+          (job.gitRepo || (job.gitRepos && job.gitRepos.length > 0)) &&
+          job.branch
+        ) {
           try {
-            cleanupMergedTaskBranch(job);
-          } catch (cleanupErr) {
+            // Refresh an expired GitLab token before pushing — the agent may have
+            // run long enough for the dispatch-time access token to expire.
+            await refreshGitTokenIfNeeded(job);
+            const isMultiRepo = job.gitRepos && job.gitRepos.length > 1;
+            if (isMultiRepo) {
+              // Multi-repo: push each repo from its subdirectory.
+              // A repo with no commits for this task is normal (the agent only touched
+              // some repos) — it must NOT mark the whole push as failed, otherwise the
+              // orchestrator would skip merging the repos that DID change.
+              let anyPushed = false;
+              let anyRealFailure = false;
+              for (const repo of job.gitRepos) {
+                const repoDir = `/workspace/${repo.url}`;
+                if (!fs.existsSync(repoDir)) {
+                  pushResults.push({
+                    repository: repo.url,
+                    pushed: false,
+                    reason: 'dir_not_found',
+                  });
+                  anyRealFailure = true;
+                  continue;
+                }
+                const res = pushBranchWithRetry(job, job.branch, 3, repoDir);
+                if (res === 'empty') {
+                  pushResults.push({ repository: repo.url, pushed: false, reason: 'no_commits' });
+                } else if (res === true) {
+                  pushResults.push({ repository: repo.url, pushed: true });
+                  anyPushed = true;
+                } else {
+                  pushResults.push({ repository: repo.url, pushed: false, reason: 'push_failed' });
+                  anyRealFailure = true;
+                }
+              }
+              // Success = at least one repo's changes landed AND no repo that had changes
+              // failed to push. Untouched ('no_commits') repos are neutral.
+              pushSucceeded = anyPushed && !anyRealFailure;
+            } else {
+              pushSucceeded = pushBranchWithRetry(job, job.branch) === true;
+            }
+          } catch (pushErr) {
             console.error(
-              `[pool-worker] FATAL-PREVENTED: cleanupMergedTaskBranch threw unexpectedly: ${cleanupErr.message}`,
+              `[pool-worker] FATAL-PREVENTED: pushBranchWithRetry threw unexpectedly: ${pushErr.message}`,
             );
-            console.error(cleanupErr.stack);
+            console.error(pushErr.stack);
+            pushSucceeded = false;
+          }
+
+          if (phase === 'construction-orchestrator' && pushSucceeded) {
+            try {
+              cleanupMergedTaskBranch(job);
+            } catch (cleanupErr) {
+              console.error(
+                `[pool-worker] FATAL-PREVENTED: cleanupMergedTaskBranch threw unexpectedly: ${cleanupErr.message}`,
+              );
+              console.error(cleanupErr.stack);
+            }
           }
         }
-      }
 
-      resolve({ exitCode: code || 0, pushSucceeded });
+        resolve({ exitCode: code || 0, pushSucceeded, pushResults });
+      })();
     });
     child.on('error', (err) => {
       console.error('ACP child error:', err);
-      resolve({ exitCode: 1, pushSucceeded: false });
+      resolve({ exitCode: 1, pushSucceeded: false, pushResults: [] });
     });
   });
 }
@@ -1214,28 +1503,28 @@ async function main() {
   console.log(`[pool-worker] Installed CLIs: [${installedClis.join(', ')}]`);
 
   // Attempt authentication for every installed CLI.
-  // CLIs that succeed are added to _availableClis and advertised to the pool.
-  // Failures are captured in _cliAuthErrors so the dispatch Lambda and Admin
+  // CLIs that succeed are added to availableClis and advertised to the pool.
+  // Failures are captured in cliAuthErrors so the dispatch Lambda and Admin
   // UI can show the user why a particular CLI isn't available.
   for (const cli of installedClis) {
     try {
       await getDriver(cli).authenticate(process.env);
-      _availableClis.push(cli);
+      availableClis.push(cli);
       console.log(`[pool-worker] CLI "${cli}" authenticated and available`);
     } catch (err) {
       const msg = err && err.message ? err.message : String(err);
-      _cliAuthErrors[cli] = msg;
+      cliAuthErrors[cli] = msg;
       console.warn(`[pool-worker] CLI "${cli}" not available: ${msg}`);
     }
   }
 
-  if (_availableClis.length === 0) {
+  if (availableClis.length === 0) {
     console.error('[pool-worker] No CLIs authenticated — exiting');
     process.exit(1);
   }
 
   console.log(
-    `[pool-worker] Worker ${env.workerId} ready. Available CLIs: [${_availableClis.join(', ')}]`,
+    `[pool-worker] Worker ${env.workerId} ready. Available CLIs: [${availableClis.join(', ')}]`,
   );
 
   // If the dispatcher pre-assigned a job to this worker (cold-start path where
@@ -1262,8 +1551,8 @@ async function main() {
         ExpressionAttributeValues: {
           ':t': Date.now(),
           ':v': env.version,
-          ':clis': _availableClis,
-          ':errs': _cliAuthErrors,
+          ':clis': availableClis,
+          ':errs': cliAuthErrors,
         },
       }),
     );
@@ -1301,11 +1590,19 @@ async function main() {
         const job = poll.job;
         const jobCli = job.agentCli;
         console.log(
-          `[pool-worker] Got job: ${job.executionId} for project ${job.projectId} (cli=${jobCli})`,
+          `[pool-worker] Got job: ${job.executionId} project=${job.projectId} cli=${jobCli} model=${job.agentModel || 'driver-default'}`,
         );
 
         await setupWorkspace(job);
-        const { exitCode, pushSucceeded } = await runAcpSession(job);
+        // Discussion assists hold a per-thread lock — heartbeat it while the
+        // session runs, release on completion/error.
+        const assistLock = startAssistLockHeartbeat(job);
+        let exitCode, pushSucceeded, pushResults;
+        try {
+          ({ exitCode, pushSucceeded, pushResults } = await runAcpSession(job));
+        } finally {
+          if (assistLock) await assistLock.stop();
+        }
 
         const status = exitCode === 0 ? 'completed' : 'failed';
         await saveStatus(job.executionId, job.agentType || 'inception', job.projectId, status);
@@ -1349,6 +1646,7 @@ async function main() {
                         taskId: job.taskId,
                         status: triggerStatus,
                         pushSucceeded,
+                        pushResults: pushResults.length > 0 ? pushResults : undefined,
                       },
                     }),
                     requestContext: { authorizer: { claims: { sub: 'system' } } },

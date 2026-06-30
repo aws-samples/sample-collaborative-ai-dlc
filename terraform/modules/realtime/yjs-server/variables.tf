@@ -33,3 +33,26 @@ variable "cognito_client_id" {
   type        = string
 }
 
+
+variable "realtime_doc_secret_param_arn" {
+  description = "SSM parameter ARN of the realtime doc-token secret (injected as ECS secret)"
+  type        = string
+}
+
+variable "doc_token_enforce" {
+  description = "Enforce realtime scope tokens on the Yjs upgrade path (operational kill switch)"
+  type        = bool
+  default     = true
+}
+
+variable "build_after" {
+  description = <<-EOT
+    Opaque value used ONLY to serialize this module's docker build after
+    another image build (pass that build's image URI). Concurrent builds
+    from separate kreuzwerker/docker provider instances deadlock at build
+    context transfer (both hang at 0/0 steps). The value never influences
+    the image content or tag.
+  EOT
+  type        = string
+  default     = ""
+}

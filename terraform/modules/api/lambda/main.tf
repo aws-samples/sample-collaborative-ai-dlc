@@ -6,6 +6,19 @@ locals {
   partition  = data.aws_partition.current.partition
   dns_suffix = data.aws_partition.current.dns_suffix
 
+  # Lambdas that bundle code from lambda/shared/** via esbuild (gitlab, github,
+  # projects, trackers) are packaged by the terraform-aws-modules/lambda module,
+  # which only hashes each Lambda's OWN source_path directory. A change in a
+  # bundled shared file therefore does NOT change the package hash and the Lambda
+  # is silently NOT redeployed. To fix this, we fold a hash of the entire shared
+  # tree into each affected module's `hash_extra`, so any shared-file edit forces
+  # a rebuild. Covers nested dirs (e.g. git-providers/) via the "**" glob.
+  shared_dir = "${path.module}/../../../../lambda/shared"
+  shared_sources_hash = sha256(join("", [
+    for f in sort(fileset(local.shared_dir, "**/*.{js,mjs,cjs,json}")) :
+    filesha256("${local.shared_dir}/${f}")
+  ]))
+
   # Neptune IAM resource ARN (scoped to the specific cluster only)
   neptune_resource_arn = "arn:${local.partition}:neptune-db:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:${var.neptune_cluster_resource_id}/*"
 
@@ -35,7 +48,7 @@ locals {
 # =============================================================================
 # Least-privilege IAM roles — one per Lambda responsibility domain.
 #
-# Threat model reference: §7.1 Pattern 2 (over-privileged shared role).
+# Threat model: avoids an over-privileged shared role.
 # Prior to this split, all 16 REST-API Lambdas shared a single role with
 # permissions for SecretsManager, SSM git-token/*, ECS RunTask, IAM PassRole,
 # Cognito ListUsers — a compromise of any Lambda exposed all of them.
@@ -70,8 +83,15 @@ resource "aws_iam_role_policy" "neptune_reader" {
   name = "neptune-access"
   role = aws_iam_role.neptune_reader.id
   policy = jsonencode({
-    Version   = "2012-10-17"
-    Statement = [local.neptune_statement]
+    Version = "2012-10-17"
+    Statement = [
+      local.neptune_statement,
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem"]
+        Resource = compact([var.git_connections_table_arn, var.git_provider_connections_table_arn])
+      }
+    ]
   })
 }
 
@@ -135,6 +155,7 @@ resource "aws_iam_role_policy" "github_connector" {
         Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Query"]
         Resource = compact([
           var.git_connections_table_arn,
+          var.git_provider_connections_table_arn,
           var.tracker_connections_table_arn,
         ])
       },
@@ -187,12 +208,13 @@ resource "aws_iam_role_policy" "trackers" {
           Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:Scan"]
           Resource = compact([
             var.git_connections_table_arn,
+            var.git_provider_connections_table_arn,
             var.tracker_connections_table_arn,
           ])
         },
         {
           Effect   = "Allow"
-          Action   = ["ssm:GetParameter", "ssm:DeleteParameter"]
+          Action   = ["ssm:GetParameter", "ssm:PutParameter", "ssm:DeleteParameter"]
           Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
         },
         # Jira Cloud (Phase 3 / #197): the trackers lambda owns the Jira OAuth
@@ -206,7 +228,7 @@ resource "aws_iam_role_policy" "trackers" {
         },
       ],
       # Tracker OAuth secrets — read for OAuth flows, write from the
-      # Admin "Tracker OAuth Apps" panel. Both Jira and GitHub now flow
+      # Admin "Tracker OAuth Apps" panel. Jira, GitHub and GitLab all flow
       # through the trackers Lambda's admin endpoints.
       var.jira_oauth_secret_arn != "" ? [
         {
@@ -220,6 +242,13 @@ resource "aws_iam_role_policy" "trackers" {
           Effect   = "Allow"
           Action   = ["secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue"]
           Resource = [var.github_oauth_secret_arn]
+        }
+      ] : [],
+      var.gitlab_oauth_secret_arn != "" ? [
+        {
+          Effect   = "Allow"
+          Action   = ["secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue"]
+          Resource = [var.gitlab_oauth_secret_arn]
         }
       ] : [],
     )
@@ -295,7 +324,9 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
           [for arn in var.dynamodb_table_arns : "${arn}/index/*"],
           compact([
             var.git_connections_table_arn,
-            var.git_connections_table_arn != "" ? "${var.git_connections_table_arn}/index/*" : ""
+            var.git_connections_table_arn != "" ? "${var.git_connections_table_arn}/index/*" : "",
+            var.git_provider_connections_table_arn,
+            var.git_provider_connections_table_arn != "" ? "${var.git_provider_connections_table_arn}/index/*" : ""
           ])
         )
       },
@@ -306,6 +337,7 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
         Resource = [
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/bedrock-bearer-token",
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/mcp-servers",
+          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/cli-models",
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/kiro-api-key",
         ]
       },
@@ -313,6 +345,23 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
         Effect   = "Allow"
         Action   = ["ssm:GetParameter"]
         Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
+      },
+      # Just-in-time GitLab token refresh (POST /git/refresh-token): rotate the
+      # stored access token using the refresh token + GitLab OAuth secret so
+      # long-running construction jobs don't push/MR with an expired token.
+      # PutParameter writes the rotated token back; GetSecretValue reads the
+      # GitLab OAuth client credentials. GitHub needs neither (tokens don't
+      # expire). The gitlab secret ARN is empty when GitLab OAuth isn't
+      # provisioned, so the statement is dropped via compact().
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:PutParameter"]
+        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = var.gitlab_oauth_secret_arn != "" ? [var.gitlab_oauth_secret_arn] : ["arn:${local.partition}:secretsmanager:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:secret:nonexistent-gitlab-oauth-*"]
       },
       {
         Effect   = "Allow"
@@ -419,6 +468,9 @@ module "projects_lambda" {
     }
   ]
 
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
+
   create_role = false
   lambda_role = aws_iam_role.neptune_artifacts.arn
 
@@ -426,10 +478,12 @@ module "projects_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT     = var.neptune_endpoint
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
-    ARTIFACTS_BUCKET     = var.artifacts_bucket_name
+    NEPTUNE_ENDPOINT               = var.neptune_endpoint
+    ENVIRONMENT                    = var.environment
+    CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
+    GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
+    GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
+    ARTIFACTS_BUCKET               = var.artifacts_bucket_name
   }
 }
 
@@ -497,6 +551,10 @@ module "sprints_lambda" {
     NEPTUNE_ENDPOINT     = var.neptune_endpoint
     ENVIRONMENT          = var.environment
     CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    # Server-origin sprint.phaseChanged fanout: the sprints lambda pushes the
+    # event to sprint-channel WS connections.
+    CONNECTIONS_TABLE  = var.connections_table_name
+    WEBSOCKET_ENDPOINT = var.websocket_api_endpoint_https
   }
 }
 
@@ -598,7 +656,6 @@ module "tasks_lambda" {
     NEPTUNE_ENDPOINT     = var.neptune_endpoint
     ENVIRONMENT          = var.environment
     CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
-    ARTIFACTS_BUCKET     = var.artifacts_bucket_name
   }
 }
 
@@ -677,17 +734,18 @@ module "questions_lambda" {
 
   function_name = "${var.project_name}-questions-${var.environment}"
   handler       = "index.handler"
-  runtime       = "nodejs18.x"
+  runtime       = "nodejs24.x"
   timeout       = 30
 
   source_path = [
     {
-      path             = "${path.module}/../../../../lambda/questions"
-      npm_requirements = true
-    },
-    {
-      path          = "${path.module}/../../../../lambda/shared"
-      prefix_in_zip = "shared"
+      path = "${path.module}/../../../../lambda/questions"
+      commands = [
+        # Anchor on the module path (absolute) instead of a relative `cd ../..`
+        # so the build does not depend on the command's working directory.
+        "cd ${abspath("${path.module}/../../../..")} && npm run build -w questions",
+        ":zip lambda/questions/.build",
+      ]
     }
   ]
 
@@ -702,6 +760,10 @@ module "questions_lambda" {
     ENVIRONMENT           = var.environment
     AGENT_QUESTIONS_TABLE = var.agent_questions_table_name
     CORS_ALLOWED_ORIGINS  = var.cors_allowed_origins
+    # Server-origin question.answered fanout: the questions lambda pushes the
+    # event to sprint-channel WS connections.
+    CONNECTIONS_TABLE  = var.connections_table_name
+    WEBSOCKET_ENDPOINT = var.websocket_api_endpoint_https
   }
 }
 
@@ -792,16 +854,96 @@ module "github_lambda" {
     }
   ]
 
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
+
   create_role = false
   lambda_role = aws_iam_role.github_connector.arn
 
   environment_variables = {
-    GITHUB_OAUTH_SECRET_NAME = var.github_oauth_secret_name
-    GIT_CONNECTIONS_TABLE    = var.git_connections_table_name
-    GIT_TOKEN_SSM_PREFIX     = "${var.project_name}/${var.environment}/git-token"
-    GITHUB_REDIRECT_URI      = var.github_redirect_uri
-    ENVIRONMENT              = var.environment
-    CORS_ALLOWED_ORIGINS     = var.cors_allowed_origins
+    GITHUB_OAUTH_SECRET_NAME       = var.github_oauth_secret_name
+    GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
+    GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
+    GIT_TOKEN_SSM_PREFIX           = "${var.project_name}/${var.environment}/git-token"
+    GITHUB_REDIRECT_URI            = var.github_redirect_uri
+    ENVIRONMENT                    = var.environment
+    CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Role 3c: gitlab-connector (1 Lambda — gitlab)
+# OAuth callback + token storage for GitLab; mirrors github-connector.
+# -----------------------------------------------------------------------------
+resource "aws_iam_role" "gitlab_connector" {
+  name               = "${var.project_name}-gitlab-connector-${var.environment}"
+  assume_role_policy = local.lambda_assume_role_policy
+}
+
+resource "aws_iam_role_policy_attachment" "gitlab_connector_basic" {
+  role       = aws_iam_role.gitlab_connector.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy" "gitlab_connector" {
+  name = "gitlab-oauth-and-token-storage"
+  role = aws_iam_role.gitlab_connector.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"]
+        Resource = compact([var.git_connections_table_arn, var.git_provider_connections_table_arn])
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = [var.gitlab_oauth_secret_arn]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:PutParameter", "ssm:GetParameter", "ssm:DeleteParameter"]
+        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
+      }
+    ]
+  })
+}
+
+# GitLab Lambda
+module "gitlab_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-gitlab-${var.environment}"
+  handler       = "index.handler"
+  runtime       = "nodejs24.x"
+  timeout       = 30
+
+  source_path = [
+    {
+      path = "${path.module}/../../../../lambda/gitlab"
+      commands = [
+        "cd ../.. && npm run build -w gitlab-lambda",
+        ":zip lambda/gitlab/.build",
+      ]
+    }
+  ]
+
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
+
+  create_role = false
+  lambda_role = aws_iam_role.gitlab_connector.arn
+
+  environment_variables = {
+    GITLAB_OAUTH_SECRET_NAME       = var.gitlab_oauth_secret_name
+    GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
+    GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
+    GIT_TOKEN_SSM_PREFIX           = "${var.project_name}/${var.environment}/git-token"
+    GITLAB_REDIRECT_URI            = var.gitlab_redirect_uri
+    ENVIRONMENT                    = var.environment
+    CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
   }
 }
 
@@ -829,6 +971,9 @@ module "trackers_lambda" {
     }
   ]
 
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
+
   create_role = false
   lambda_role = aws_iam_role.trackers.arn
 
@@ -836,16 +981,19 @@ module "trackers_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT          = var.neptune_endpoint
-    GIT_CONNECTIONS_TABLE     = var.git_connections_table_name
-    TRACKER_CONNECTIONS_TABLE = var.tracker_connections_table_name
-    GIT_TOKEN_SSM_PREFIX      = "${var.project_name}/${var.environment}/git-token"
-    JIRA_OAUTH_SECRET_NAME    = var.jira_oauth_secret_name
-    JIRA_REDIRECT_URI         = var.jira_redirect_uri
-    JIRA_TOKEN_SSM_PREFIX     = "${var.project_name}/${var.environment}/jira-token"
-    GITHUB_OAUTH_SECRET_NAME  = var.github_oauth_secret_name
-    ENVIRONMENT               = var.environment
-    CORS_ALLOWED_ORIGINS      = var.cors_allowed_origins
+    NEPTUNE_ENDPOINT               = var.neptune_endpoint
+    GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
+    GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
+    TRACKER_CONNECTIONS_TABLE      = var.tracker_connections_table_name
+    GIT_TOKEN_SSM_PREFIX           = "${var.project_name}/${var.environment}/git-token"
+    JIRA_OAUTH_SECRET_NAME         = var.jira_oauth_secret_name
+    JIRA_REDIRECT_URI              = var.jira_redirect_uri
+    JIRA_TOKEN_SSM_PREFIX          = "${var.project_name}/${var.environment}/jira-token"
+    GITHUB_OAUTH_SECRET_NAME       = var.github_oauth_secret_name
+    GITLAB_OAUTH_SECRET_NAME       = var.gitlab_oauth_secret_name
+    GITLAB_REDIRECT_URI            = var.gitlab_redirect_uri
+    ENVIRONMENT                    = var.environment
+    CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
   }
 }
 
@@ -879,6 +1027,112 @@ module "timeline_events_lambda" {
     NEPTUNE_ENDPOINT     = var.neptune_endpoint
     ENVIRONMENT          = var.environment
     CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Role: discussions (1 Lambda — discussions)
+# Neptune CRUD + read access to the realtime doc-token secret (issues HMAC
+# scope tokens after a membership check) + the discussion-locks / read-state
+# tables (creation + message guards) + connections-table fan-out
+# (server-driven discussion.message broadcasts) + a synchronous invoke of the
+# agents lambda for assist dispatch.
+# -----------------------------------------------------------------------------
+resource "aws_iam_role" "discussions" {
+  name               = "${var.project_name}-discussions-${var.environment}"
+  assume_role_policy = local.lambda_assume_role_policy
+}
+
+resource "aws_iam_role_policy_attachment" "discussions_basic" {
+  role       = aws_iam_role.discussions.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "discussions_vpc" {
+  role       = aws_iam_role.discussions.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+resource "aws_iam_role_policy" "discussions" {
+  name = "neptune-doc-secret-locks-fanout"
+  role = aws_iam_role.discussions.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      local.neptune_statement,
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter"]
+        Resource = var.realtime_doc_secret_param_arn
+      },
+      {
+        Effect = "Allow"
+        Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem"]
+        Resource = [
+          var.discussion_locks_table_arn,
+          var.discussion_read_state_table_arn,
+        ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:Query"]
+        Resource = ["${var.discussion_read_state_table_arn}", "${var.connections_table_arn}/index/*"]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["execute-api:ManageConnections"]
+        Resource = "${var.websocket_execution_arn}/*"
+      },
+      {
+        # Assist dispatch: synchronous invoke of the agents lambda with
+        # phase:'discussion' (assist runs as a pool-worker 'discussion' phase).
+        Effect   = "Allow"
+        Action   = ["lambda:InvokeFunction"]
+        Resource = "arn:${local.partition}:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-agents-${var.environment}"
+      }
+    ]
+  })
+}
+
+# Discussions Lambda
+module "discussions_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-discussions-${var.environment}"
+  handler       = "index.handler"
+  runtime       = "nodejs24.x"
+  timeout       = 30
+
+  source_path = [
+    {
+      path = "${path.module}/../../../../lambda/discussions"
+      commands = [
+        "cd ../.. && npm run build -w discussions",
+        ":zip lambda/discussions/.build",
+      ]
+    }
+  ]
+
+  create_role = false
+  lambda_role = aws_iam_role.discussions.arn
+
+  vpc_subnet_ids         = var.private_subnet_ids
+  vpc_security_group_ids = [aws_security_group.lambda.id]
+
+  environment_variables = {
+    NEPTUNE_ENDPOINT      = var.neptune_endpoint
+    ENVIRONMENT           = var.environment
+    CORS_ALLOWED_ORIGINS  = var.cors_allowed_origins
+    REALTIME_SECRET_PARAM = var.realtime_doc_secret_param_name
+    LOCKS_TABLE           = var.discussion_locks_table_name
+    READ_STATE_TABLE      = var.discussion_read_state_table_name
+    CONNECTIONS_TABLE     = var.connections_table_name
+    WEBSOCKET_ENDPOINT    = var.websocket_api_endpoint_https
+    AGENTS_LAMBDA         = "${var.project_name}-agents-${var.environment}"
+    # Takeover-safety invariant: must match `timeout` above; the
+    # lambda asserts message-guard pending window (120 s) > this at init.
+    LAMBDA_TIMEOUT_SECONDS = "30"
   }
 }
 
@@ -981,4 +1235,37 @@ module "migrate_tracker_fields_lambda" {
     NEPTUNE_ENDPOINT = var.neptune_endpoint
     ENVIRONMENT      = var.environment
   }
+}
+
+# -----------------------------------------------------------------------------
+# Server-origin realtime fanout.
+#
+# question.answered (questions + agents lambdas) and sprint.phaseChanged
+# (sprints lambda) are emitted server-side via lambda/shared/ws-fanout.js —
+# the ws-message client allowlist is EMPTY. These roles gain only the
+# narrow fan-out permissions (connections-index query + PostToConnection).
+# -----------------------------------------------------------------------------
+resource "aws_iam_role_policy" "realtime_fanout" {
+  for_each = {
+    neptune_reader      = aws_iam_role.neptune_reader.id    # sprints lambda
+    neptune_questions   = aws_iam_role.neptune_questions.id # questions lambda
+    agents_orchestrator = aws_iam_role.agents_orchestrator.id
+  }
+  name = "realtime-fanout"
+  role = each.value
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:Query"]
+        Resource = ["${var.connections_table_arn}/index/*"]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["execute-api:ManageConnections"]
+        Resource = "${var.websocket_execution_arn}/*"
+      }
+    ]
+  })
 }

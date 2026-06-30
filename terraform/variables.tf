@@ -21,3 +21,15 @@ variable "bedrock_model" {
   type        = string
   default     = "us.anthropic.claude-sonnet-4-6"
 }
+
+variable "git_author_name" {
+  description = "Git author name used by agents for commits they create"
+  type        = string
+  default     = "AI-DLC Agent"
+}
+
+variable "git_author_email" {
+  description = "Git author email used by agents for commits they create"
+  type        = string
+  default     = "ai-dlc@example.com"
+}

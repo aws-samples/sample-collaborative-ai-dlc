@@ -1,13 +1,48 @@
 const { getTaskBranchName } = require('./branch-cleanup');
+const { getProvider } = require('../shared/git-providers');
 
 function buildConstructionOrchestratorPrompt(job) {
   const event = job.event || { event: 'start' };
+  // Provider-aware clone hint for the conflict-recovery instructions below:
+  // GitHub uses x-access-token:<token>@github.com, GitLab uses oauth2:<token>@gitlab.com.
+  const provider = getProvider(job.gitProvider);
+  const cloneAuthScheme = provider.id === 'gitlab' ? 'oauth2' : 'x-access-token';
+  const cloneHost = provider.gitHost;
   const isRerun = (job.runNumber || 1) > 1 && job.changeRequest;
+  const isMultiRepo = job.gitRepos && job.gitRepos.length > 1;
   const changeRequestBlock = isRerun
     ? `\n## RE-RUN INSTRUCTIONS (from the team)\n\n${job.changeRequest}\n\nThis is a re-run of the construction phase. All previous tasks are already done. Your job is to CREATE NEW TASKS for the work described above, then dispatch sub-agents to implement them.\n`
     : job.changeRequest
       ? `\n## ADDITIONAL CONTEXT FROM TEAM\n\n${job.changeRequest}\n\nConsider this context when dispatching sub-agents.\n`
       : '';
+  const multiRepoBlock = isMultiRepo
+    ? `
+## MULTI-REPO WORKSPACE
+
+This project has multiple repositories. Each is cloned into its own subdirectory:
+
+${job.gitRepos.map((r) => `- /workspace/${r.url}/ (${r.role || 'unknown'})`).join('\n')}
+
+**CRITICAL: /workspace is NOT a git repo.** All git commands MUST be run inside a repo subdirectory.
+
+For merge operations, you must merge in EACH repo that has changes:
+\`\`\`
+# For each repo directory (use the FULL owner/repo path shown above):
+cd /workspace/<owner>/<repo>
+git fetch origin
+git merge origin/${job.branch}--task-<taskId> --no-edit
+cd /workspace
+\`\`\`
+
+For pushing the sprint branch (when all tasks done):
+\`\`\`
+# Push each repo independently:
+cd /workspace/<owner>/<repo> && git push origin HEAD:refs/heads/${job.branch}
+\`\`\`
+
+If a task branch doesn't exist on a particular repo's remote, that repo had no changes for that task — skip it silently.
+`
+    : '';
   return `You are the Construction Orchestrator for the AI-DLC platform.
 
 ## IDENTITY
@@ -20,7 +55,7 @@ YOU ARE SHORT-LIVED. Read the graph, take action, exit. Do NOT wait or poll for 
 ## EVENT
 
 ${JSON.stringify(event)}
-${changeRequestBlock}
+${changeRequestBlock}${multiRepoBlock}
 ## GIT CONTRACT — HOW PUSH/MERGE WORKS (READ CAREFULLY)
 
 The construction phase uses a strict push/merge chain. Understanding this prevents lost work:
@@ -112,8 +147,16 @@ ${isRerun ? '7.' : '6.'} **If no tasks remain** (all are "done" or "failed"):
       \`git push origin HEAD:refs/heads/${job.branch}\`
    c. Call \`trigger_pr_creation\` with branch="${job.branch}" and baseBranch="${job.baseBranch || 'main'}"
       - If a PR already exists but has been merged or closed, \`trigger_pr_creation\` will automatically mark it stale and open a new PR.
-      - If \`trigger_pr_creation\` reports unmerged construction branches, fetch and merge those branches, push again, then retry PR creation.
-      - You will always get a valid, open PR URL back. Do NOT skip this call assuming a prior PR is sufficient.
+      - In multi-repo projects, \`trigger_pr_creation\` auto-merges any unmerged construction task branches into each repo's sprint branch (server-side) before opening that repo's PR, so you do NOT need to merge non-primary repos yourself. It also fills in PRs for repos that failed on a previous run, so re-calling it after fixing a failure is always safe.
+      - If the response contains \`partialFailure: true\`, each \`failedRepos\` entry describes ONE repository. Handle it by shape:
+        * Entry has \`conflicts\`: the server-side auto-merge hit a real merge conflict in that repository. That repo is usually NOT your working directory — clone it into a scratch dir first:
+          \`git clone https://${cloneAuthScheme}:\${GIT_TOKEN}@${cloneHost}/<repository>.git /tmp/fix-repo && cd /tmp/fix-repo\`
+          \`git checkout ${job.branch}\`, then for each branch listed in \`conflicts\`: \`git merge origin/<task-branch> --no-edit\`, resolve the conflicts, commit, and \`git push origin HEAD:refs/heads/${job.branch}\` (plain push — never force-push; the remote sprint branch may already contain server-side merge commits). Then call \`trigger_pr_creation\` again.
+        * Entry has \`unmergedBranches\` but no \`conflicts\`: new task branches appeared while PRs were being created. Call \`trigger_pr_creation\` once more.
+        * Entry has only \`mergeErrors\` or \`error\` (e.g. protected branch, deleted branch, permission or infrastructure failure): you CANNOT fix this with git. Do not retry more than once.
+      - If the response contains \`skippedRepos\`, each entry (\`{ repository, reason: "no_changes" }\`) is a repository the sprint did NOT change — there is nothing to open a PR for. This is normal in multi-repo projects: do NOT retry, do NOT escalate via \`ask_question\`, and do NOT treat it as a failure. A skipped repo is re-checked (and re-skipped) automatically on any later \`trigger_pr_creation\` call.
+      - Retry budget: call \`trigger_pr_creation\` at most 3 times in total. If the same repository still appears in \`failedRepos\` after your remediation, STOP retrying — escalate with \`ask_question\`, quoting the full \`failedRepos\` detail (repository, error, conflicts/mergeErrors), and include it in your final output so a human can intervene. Exiting with a reported failure is correct; looping forever is not.
+      - Successful repos are never blocked by failed ones: every repo in \`pullRequests\` already has a valid open PR.
    d. You're done.
 
 ${isRerun ? '8.' : '7.'} **Exit immediately** after dispatching. Do not wait for sub-agents.

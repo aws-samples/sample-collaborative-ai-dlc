@@ -143,6 +143,21 @@ output "github_lambda_name" {
   value       = module.github_lambda.lambda_function_name
 }
 
+output "gitlab_lambda_arn" {
+  description = "ARN of the gitlab Lambda function"
+  value       = module.gitlab_lambda.lambda_function_arn
+}
+
+output "gitlab_lambda_invoke_arn" {
+  description = "Invoke ARN of the gitlab Lambda function"
+  value       = module.gitlab_lambda.lambda_function_invoke_arn
+}
+
+output "gitlab_lambda_name" {
+  description = "Name of the gitlab Lambda function"
+  value       = module.gitlab_lambda.lambda_function_name
+}
+
 output "trackers_lambda_arn" {
   description = "ARN of the trackers Lambda function"
   value       = module.trackers_lambda.lambda_function_arn
@@ -190,4 +205,13 @@ output "cognito_users_lambda_invoke_arn" {
 output "cognito_users_lambda_name" {
   description = "Name of the cognito-users Lambda function"
   value       = module.cognito_users_lambda.lambda_function_name
+}
+output "discussions_lambda_invoke_arn" {
+  description = "Invoke ARN of the discussions Lambda"
+  value       = module.discussions_lambda.lambda_function_invoke_arn
+}
+
+output "discussions_lambda_name" {
+  description = "Name of the discussions Lambda"
+  value       = module.discussions_lambda.lambda_function_name
 }

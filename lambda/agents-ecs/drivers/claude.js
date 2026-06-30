@@ -28,6 +28,29 @@ const CLI_DISPLAY = 'Claude';
 // Module-level cache for the bearer token (populated by authenticate())
 let _cachedBearerToken = null;
 
+// Bedrock models are addressed by a bare cross-region inference profile ID
+// (e.g. "us.anthropic.claude-sonnet-4-6"). The "amazon-bedrock/" prefix is an
+// OpenCode-specific provider qualifier and is NOT valid for Claude Code's
+// ANTHROPIC_MODEL — strip it defensively if a prefixed value reaches us.
+const BEDROCK_PROVIDER_PREFIX = 'amazon-bedrock/';
+const DEFAULT_BEDROCK_MODEL = 'us.anthropic.claude-sonnet-4-6';
+
+/**
+ * Resolve the model for this invocation, mirroring the opencode driver's
+ * precedence: per-job AGENT_MODEL wins, then the static task-definition env
+ * vars (ANTHROPIC_MODEL / BEDROCK_MODEL), then a bare default.
+ *
+ * Returns { model, source } where source is one of AGENT_MODEL, ANTHROPIC_MODEL,
+ * BEDROCK_MODEL, or hardcoded-default. Empty strings are falsy and fall through
+ * (pool-worker sets AGENT_MODEL to '' when no override exists).
+ */
+function resolveModel(env) {
+  if (env?.AGENT_MODEL) return { model: env.AGENT_MODEL, source: 'AGENT_MODEL' };
+  if (env?.ANTHROPIC_MODEL) return { model: env.ANTHROPIC_MODEL, source: 'ANTHROPIC_MODEL' };
+  if (env?.BEDROCK_MODEL) return { model: env.BEDROCK_MODEL, source: 'BEDROCK_MODEL' };
+  return { model: DEFAULT_BEDROCK_MODEL, source: 'hardcoded-default' };
+}
+
 // ---------------------------------------------------------------------------
 // Authentication
 // ---------------------------------------------------------------------------
@@ -158,8 +181,17 @@ function getAcpCommand() {
  * AWS_REGION                   — required; claude does not read ~/.aws/config.
  * AWS_BEARER_TOKEN_BEDROCK     — injected when set via Admin UI; takes priority
  *                                over the IAM role credential chain.
- * ANTHROPIC_MODEL              — pinned primary model inference profile ID.
- * ANTHROPIC_SMALL_FAST_MODEL   — pinned small/fast model inference profile ID.
+ * ANTHROPIC_MODEL              — bare Bedrock cross-region inference profile ID
+ *                                (e.g. us.anthropic.claude-sonnet-4-6). Resolved
+ *                                per-job from AGENT_MODEL (falling back to the
+ *                                static ANTHROPIC_MODEL/BEDROCK_MODEL env, then a
+ *                                bare default) and always emitted here so it wins
+ *                                over the inherited task-definition value. Any
+ *                                "amazon-bedrock/" prefix is stripped.
+ * ANTHROPIC_SMALL_FAST_MODEL   — NOT managed per-job. Deprecated upstream in favor
+ *                                of ANTHROPIC_DEFAULT_HAIKU_MODEL; on Bedrock the
+ *                                small/fast model defaults to the primary. The
+ *                                static task-definition value flows through as-is.
  * IS_SANDBOX=1                 — tells claude-agent-acp that it is running in a
  *                                non-interactive sandbox (ECS runs as root, which
  *                                normally disables bypassPermissions; IS_SANDBOX
@@ -213,11 +245,21 @@ function getEnvForAcpProcess(baseEnv) {
     extra.AWS_BEARER_TOKEN_BEDROCK = _cachedBearerToken;
   }
 
-  // Do NOT forward ANTHROPIC_MODEL or ANTHROPIC_SMALL_FAST_MODEL here.
-  // Those are Bedrock inference profile IDs intended for the claude CLI driver.
-  // claude-agent-acp uses the Claude Agent SDK, which selects the model from
-  // its own list. Passing a Bedrock profile ID (e.g. "us.anthropic.claude-sonnet-4-6")
-  // as ANTHROPIC_MODEL causes the SDK to attempt an invalid model and hang.
+  // Inject the resolved model as ANTHROPIC_MODEL. Claude Code on Bedrock reads
+  // this as a bare cross-region inference profile ID. We resolve the per-job
+  // model (AGENT_MODEL) with a fallback chain and ALWAYS set it here — the ACP
+  // spawn merges `...process.env` before `...driverEnv`, so this overwrites the
+  // static value inherited from the task definition. Strip any "amazon-bedrock/"
+  // prefix (the OpenCode provider qualifier, invalid for Claude Code).
+  // ANTHROPIC_SMALL_FAST_MODEL is intentionally left alone — see header.
+  const { model, source } = resolveModel(baseEnv);
+  const stripped = model.startsWith(BEDROCK_PROVIDER_PREFIX);
+  const normalized = stripped ? model.slice(BEDROCK_PROVIDER_PREFIX.length) : model;
+  extra.ANTHROPIC_MODEL = normalized;
+  console.log(
+    `[driver:claude] model=${normalized} source=${source}` +
+      (stripped ? ' (stripped amazon-bedrock/ prefix)' : ''),
+  );
 
   return extra;
 }

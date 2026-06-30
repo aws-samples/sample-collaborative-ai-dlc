@@ -163,24 +163,41 @@ module "lambda" {
     module.dynamodb.agent_pool_table_arn,
     module.dynamodb.agent_outputs_table_arn
   ]
-  artifacts_bucket_name          = module.s3.artifacts_bucket_name
-  artifacts_bucket_arn           = module.s3.artifacts_bucket_arn
-  github_oauth_secret_name       = module.git.github_oauth_secret_name
-  github_oauth_secret_arn        = module.git.github_oauth_secret_arn
-  git_connections_table_name     = module.git.git_connections_table_name
-  git_connections_table_arn      = module.git.git_connections_table_arn
-  tracker_connections_table_name = module.git.tracker_connections_table_name
-  tracker_connections_table_arn  = module.git.tracker_connections_table_arn
-  github_redirect_uri            = "https://${module.frontend.cloudfront_domain_name}/github/callback"
-  jira_oauth_secret_name         = module.git.jira_oauth_secret_name
-  jira_oauth_secret_arn          = module.git.jira_oauth_secret_arn
-  jira_redirect_uri              = "https://${module.frontend.cloudfront_domain_name}/trackers/callback/jira-cloud"
-  state_machine_arn              = "arn:${local.partition}:states:${var.aws_region}:${data.aws_caller_identity.current.account_id}:stateMachine:${var.project_name}-agent-workflow-${var.environment}"
-  agent_questions_table_name     = module.dynamodb.agent_questions_table_name
-  agent_questions_table_arn      = module.dynamodb.agent_questions_table_arn
-  cognito_user_pool_id           = module.auth.user_pool_id
-  cognito_user_pool_arn          = module.auth.user_pool_arn
-  cors_allowed_origins           = "https://${module.frontend.cloudfront_domain_name},http://localhost:5173"
+  artifacts_bucket_name               = module.s3.artifacts_bucket_name
+  artifacts_bucket_arn                = module.s3.artifacts_bucket_arn
+  github_oauth_secret_name            = module.git.github_oauth_secret_name
+  github_oauth_secret_arn             = module.git.github_oauth_secret_arn
+  gitlab_oauth_secret_name            = module.git.gitlab_oauth_secret_name
+  gitlab_oauth_secret_arn             = module.git.gitlab_oauth_secret_arn
+  git_connections_table_name          = module.git.git_connections_table_name
+  git_connections_table_arn           = module.git.git_connections_table_arn
+  git_provider_connections_table_name = module.git.git_provider_connections_table_name
+  git_provider_connections_table_arn  = module.git.git_provider_connections_table_arn
+  tracker_connections_table_name      = module.git.tracker_connections_table_name
+  tracker_connections_table_arn       = module.git.tracker_connections_table_arn
+  github_redirect_uri                 = "https://${module.frontend.cloudfront_domain_name}/github/callback"
+  gitlab_redirect_uri                 = "https://${module.frontend.cloudfront_domain_name}/gitlab/callback"
+  jira_oauth_secret_name              = module.git.jira_oauth_secret_name
+  jira_oauth_secret_arn               = module.git.jira_oauth_secret_arn
+  jira_redirect_uri                   = "https://${module.frontend.cloudfront_domain_name}/trackers/callback/jira-cloud"
+  state_machine_arn                   = "arn:${local.partition}:states:${var.aws_region}:${data.aws_caller_identity.current.account_id}:stateMachine:${var.project_name}-agent-workflow-${var.environment}"
+  agent_questions_table_name          = module.dynamodb.agent_questions_table_name
+  agent_questions_table_arn           = module.dynamodb.agent_questions_table_arn
+  cognito_user_pool_id                = module.auth.user_pool_id
+  cognito_user_pool_arn               = module.auth.user_pool_arn
+  cors_allowed_origins                = "https://${module.frontend.cloudfront_domain_name},http://localhost:5173"
+  realtime_doc_secret_param_arn       = module.realtime.realtime_doc_secret_param_arn
+  realtime_doc_secret_param_name      = module.realtime.realtime_doc_secret_param_name
+
+  # Discussions feature
+  discussion_locks_table_name      = module.dynamodb.discussion_locks_table_name
+  discussion_locks_table_arn       = module.dynamodb.discussion_locks_table_arn
+  discussion_read_state_table_name = module.dynamodb.discussion_read_state_table_name
+  discussion_read_state_table_arn  = module.dynamodb.discussion_read_state_table_arn
+  connections_table_name           = module.dynamodb.connections_table_name
+  connections_table_arn            = module.dynamodb.connections_table_arn
+  websocket_api_endpoint_https     = replace(module.realtime.websocket_api_endpoint, "wss://", "https://")
+  websocket_execution_arn          = module.realtime.websocket_execution_arn
 
   # IAM scoping inputs for the agents-orchestrator role (ECS RunTask / PassRole).
   ecs_cluster_arn                  = module.compute.cluster_arn
@@ -193,57 +210,69 @@ module "lambda" {
 module "api" {
   source = "./modules/api"
 
-  project_name                      = var.project_name
-  environment                       = var.environment
-  cognito_user_pool_arn             = module.auth.user_pool_arn
-  projects_lambda_invoke_arn        = module.lambda.projects_lambda_invoke_arn
-  projects_lambda_name              = module.lambda.projects_lambda_name
-  users_lambda_invoke_arn           = module.lambda.users_lambda_invoke_arn
-  users_lambda_name                 = module.lambda.users_lambda_name
-  sprints_lambda_invoke_arn         = module.lambda.sprints_lambda_invoke_arn
-  sprints_lambda_name               = module.lambda.sprints_lambda_name
-  requirements_lambda_invoke_arn    = module.lambda.requirements_lambda_invoke_arn
-  requirements_lambda_name          = module.lambda.requirements_lambda_name
-  user_stories_lambda_invoke_arn    = module.lambda.user_stories_lambda_invoke_arn
-  user_stories_lambda_name          = module.lambda.user_stories_lambda_name
-  tasks_lambda_invoke_arn           = module.lambda.tasks_lambda_invoke_arn
-  tasks_lambda_name                 = module.lambda.tasks_lambda_name
-  general_info_lambda_invoke_arn    = module.lambda.general_info_lambda_invoke_arn
-  general_info_lambda_name          = module.lambda.general_info_lambda_name
-  code_files_lambda_invoke_arn      = module.lambda.code_files_lambda_invoke_arn
-  code_files_lambda_name            = module.lambda.code_files_lambda_name
-  reviews_lambda_invoke_arn         = module.lambda.reviews_lambda_invoke_arn
-  reviews_lambda_name               = module.lambda.reviews_lambda_name
-  questions_lambda_invoke_arn       = module.lambda.questions_lambda_invoke_arn
-  questions_lambda_name             = module.lambda.questions_lambda_name
-  sprint_graph_lambda_invoke_arn    = module.lambda.sprint_graph_lambda_invoke_arn
-  sprint_graph_lambda_name          = module.lambda.sprint_graph_lambda_name
-  timeline_events_lambda_invoke_arn = module.lambda.timeline_events_lambda_invoke_arn
-  timeline_events_lambda_name       = module.lambda.timeline_events_lambda_name
-  github_lambda_invoke_arn          = module.lambda.github_lambda_invoke_arn
-  github_lambda_name                = module.lambda.github_lambda_name
-  trackers_lambda_invoke_arn        = module.lambda.trackers_lambda_invoke_arn
-  trackers_lambda_name              = module.lambda.trackers_lambda_name
-  cognito_users_lambda_invoke_arn   = module.lambda.cognito_users_lambda_invoke_arn
-  cognito_users_lambda_name         = module.lambda.cognito_users_lambda_name
-  state_machine_arn                 = module.orchestration.state_machine_arn
-  agent_questions_table_name        = module.dynamodb.agent_questions_table_name
-  agent_outputs_table_name          = module.dynamodb.agent_outputs_table_name
-  agents_lambda_role_arn            = module.lambda.agents_orchestrator_role_arn
-  private_subnet_ids                = module.networking.private_subnet_ids
-  lambda_security_group_ids         = [module.lambda.lambda_security_group_id]
-  neptune_endpoint                  = module.neptune.cluster_endpoint
-  ecs_cluster_arn                   = module.compute.cluster_arn
-  agent_task_definition_arn         = module.agents.agent_task_definition_arn
-  agent_security_group_id           = module.agents.agent_security_group_id
-  agent_pool_table_name             = module.dynamodb.agent_pool_table_name
-  ecr_repository_name               = module.agents.ecr_repository_name
-  agent_image_tag                   = module.agents.agent_image_tag
-  git_connections_table_name        = module.git.git_connections_table_name
-  cors_allowed_origins              = "https://${module.frontend.cloudfront_domain_name},http://localhost:5173"
-  cloudfront_origin_secret          = module.frontend.cloudfront_origin_secret
-  enable_cloudfront_origin_policy   = false
-  api_gateway_account_id            = aws_api_gateway_account.main.id
+  project_name                        = var.project_name
+  environment                         = var.environment
+  cognito_user_pool_arn               = module.auth.user_pool_arn
+  projects_lambda_invoke_arn          = module.lambda.projects_lambda_invoke_arn
+  projects_lambda_name                = module.lambda.projects_lambda_name
+  users_lambda_invoke_arn             = module.lambda.users_lambda_invoke_arn
+  users_lambda_name                   = module.lambda.users_lambda_name
+  sprints_lambda_invoke_arn           = module.lambda.sprints_lambda_invoke_arn
+  sprints_lambda_name                 = module.lambda.sprints_lambda_name
+  requirements_lambda_invoke_arn      = module.lambda.requirements_lambda_invoke_arn
+  requirements_lambda_name            = module.lambda.requirements_lambda_name
+  user_stories_lambda_invoke_arn      = module.lambda.user_stories_lambda_invoke_arn
+  user_stories_lambda_name            = module.lambda.user_stories_lambda_name
+  tasks_lambda_invoke_arn             = module.lambda.tasks_lambda_invoke_arn
+  tasks_lambda_name                   = module.lambda.tasks_lambda_name
+  general_info_lambda_invoke_arn      = module.lambda.general_info_lambda_invoke_arn
+  general_info_lambda_name            = module.lambda.general_info_lambda_name
+  code_files_lambda_invoke_arn        = module.lambda.code_files_lambda_invoke_arn
+  code_files_lambda_name              = module.lambda.code_files_lambda_name
+  reviews_lambda_invoke_arn           = module.lambda.reviews_lambda_invoke_arn
+  reviews_lambda_name                 = module.lambda.reviews_lambda_name
+  questions_lambda_invoke_arn         = module.lambda.questions_lambda_invoke_arn
+  questions_lambda_name               = module.lambda.questions_lambda_name
+  sprint_graph_lambda_invoke_arn      = module.lambda.sprint_graph_lambda_invoke_arn
+  sprint_graph_lambda_name            = module.lambda.sprint_graph_lambda_name
+  timeline_events_lambda_invoke_arn   = module.lambda.timeline_events_lambda_invoke_arn
+  timeline_events_lambda_name         = module.lambda.timeline_events_lambda_name
+  discussions_lambda_invoke_arn       = module.lambda.discussions_lambda_invoke_arn
+  discussions_lambda_name             = module.lambda.discussions_lambda_name
+  github_lambda_invoke_arn            = module.lambda.github_lambda_invoke_arn
+  github_lambda_name                  = module.lambda.github_lambda_name
+  gitlab_lambda_invoke_arn            = module.lambda.gitlab_lambda_invoke_arn
+  gitlab_lambda_name                  = module.lambda.gitlab_lambda_name
+  gitlab_oauth_secret_name            = module.git.gitlab_oauth_secret_name
+  gitlab_redirect_uri                 = "https://${module.frontend.cloudfront_domain_name}/gitlab/callback"
+  trackers_lambda_invoke_arn          = module.lambda.trackers_lambda_invoke_arn
+  trackers_lambda_name                = module.lambda.trackers_lambda_name
+  cognito_users_lambda_invoke_arn     = module.lambda.cognito_users_lambda_invoke_arn
+  cognito_users_lambda_name           = module.lambda.cognito_users_lambda_name
+  state_machine_arn                   = module.orchestration.state_machine_arn
+  agent_questions_table_name          = module.dynamodb.agent_questions_table_name
+  agent_outputs_table_name            = module.dynamodb.agent_outputs_table_name
+  agents_lambda_role_arn              = module.lambda.agents_orchestrator_role_arn
+  private_subnet_ids                  = module.networking.private_subnet_ids
+  lambda_security_group_ids           = [module.lambda.lambda_security_group_id]
+  neptune_endpoint                    = module.neptune.cluster_endpoint
+  ecs_cluster_arn                     = module.compute.cluster_arn
+  agent_task_definition_arn           = module.agents.agent_task_definition_arn
+  agent_security_group_id             = module.agents.agent_security_group_id
+  agent_pool_table_name               = module.dynamodb.agent_pool_table_name
+  ecr_repository_name                 = module.agents.ecr_repository_name
+  agent_image_tag                     = module.agents.agent_image_tag
+  git_connections_table_name          = module.git.git_connections_table_name
+  git_provider_connections_table_name = module.git.git_provider_connections_table_name
+  git_provider_connections_table_arn  = module.git.git_provider_connections_table_arn
+  cors_allowed_origins                = "https://${module.frontend.cloudfront_domain_name},http://localhost:5173"
+  cloudfront_origin_secret            = module.frontend.cloudfront_origin_secret
+  enable_cloudfront_origin_policy     = false
+  api_gateway_account_id              = aws_api_gateway_account.main.id
+  # Server-origin event fanout: all realtime events originate server-side
+  # (the client-event allowlist is empty).
+  connections_table_name       = module.dynamodb.connections_table_name
+  websocket_api_endpoint_https = replace(module.realtime.websocket_api_endpoint, "wss://", "https://")
 }
 
 # Real-time (WebSocket)
@@ -266,13 +295,18 @@ module "realtime" {
 module "yjs_server" {
   source = "./modules/realtime/yjs-server"
 
-  project_name         = var.project_name
-  environment          = var.environment
-  aws_region           = var.aws_region
-  vpc_id               = module.networking.vpc_id
-  private_subnet_ids   = module.networking.private_subnet_ids
-  cognito_user_pool_id = module.auth.user_pool_id
-  cognito_client_id    = module.auth.user_pool_client_id
+  project_name                  = var.project_name
+  environment                   = var.environment
+  aws_region                    = var.aws_region
+  vpc_id                        = module.networking.vpc_id
+  private_subnet_ids            = module.networking.private_subnet_ids
+  cognito_user_pool_id          = module.auth.user_pool_id
+  cognito_client_id             = module.auth.user_pool_client_id
+  realtime_doc_secret_param_arn = module.realtime.realtime_doc_secret_param_arn
+  # Serialize the yjs image build after the agents image build — concurrent
+  # builds from the two docker provider instances deadlock at context
+  # transfer. Value-neutral: only creates a dependency edge (see variable).
+  build_after = module.agents.agent_image_uri
 }
 
 # ECS Cluster for Agents
@@ -328,8 +362,6 @@ module "agents" {
   agent_outputs_table_arn     = module.dynamodb.agent_outputs_table_arn
   submit_question_lambda_name = module.agent_questions.submit_question_lambda_name
   submit_question_lambda_arn  = module.agent_questions.submit_question_lambda_arn
-  git_connections_table_name  = module.git.git_connections_table_name
-  git_connections_table_arn   = module.git.git_connections_table_arn
   agent_questions_table_name  = module.dynamodb.agent_questions_table_name
   connections_table_name      = module.dynamodb.connections_table_name
   connections_table_arn       = module.dynamodb.connections_table_arn
@@ -338,6 +370,9 @@ module "agents" {
   ecs_cluster_arn             = module.compute.cluster_arn
   agent_pool_table_name       = module.dynamodb.agent_pool_table_name
   agent_pool_table_arn        = module.dynamodb.agent_pool_table_arn
+  # Discussion assist locks
+  discussion_locks_table_name = module.dynamodb.discussion_locks_table_name
+  discussion_locks_table_arn  = module.dynamodb.discussion_locks_table_arn
   agents_lambda_name          = "${var.project_name}-agents-${var.environment}"
   agents_lambda_arn           = "arn:${local.partition}:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-agents-${var.environment}"
   create_pr_lambda_name       = module.orchestration.create_pr_lambda_name
@@ -346,6 +381,10 @@ module "agents" {
 
   # Bedrock model pinning for claude and opencode drivers.
   bedrock_model = var.bedrock_model
+
+  # Git identity for agent-created commits (overridable per deployment).
+  git_author_name  = var.git_author_name
+  git_author_email = var.git_author_email
 
   tags = {
     Environment = var.environment

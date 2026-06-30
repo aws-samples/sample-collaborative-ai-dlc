@@ -19,6 +19,7 @@ const getConnection = async () => {
 const mapCodeFile = (v) => ({
   id: v.get('id')?.[0] || '',
   filePath: v.get('file_path')?.[0] || '',
+  repository: v.get('repository')?.[0] || '',
   commitRef: v.get('commit_ref')?.[0] || '',
   summary: v.get('summary')?.[0] || '',
   sprintId: v.get('sprint_id')?.[0] || '',
@@ -63,6 +64,7 @@ exports.handler = async (event) => {
           .addV('CodeFile')
           .property('id', id)
           .property('file_path', data.filePath)
+          .property('repository', data.repository || '')
           .property('commit_ref', data.commitRef || '')
           .property('summary', data.summary || '')
           .property('sprint_id', sprintId)
@@ -104,6 +106,7 @@ exports.handler = async (event) => {
         return res(201, {
           id,
           filePath: data.filePath,
+          repository: data.repository || '',
           commitRef: data.commitRef || '',
           summary: data.summary || '',
           sprintId,
@@ -111,12 +114,19 @@ exports.handler = async (event) => {
       }
 
       case 'PUT': {
+        // Update individual properties on existing CodeFile
         const data = JSON.parse(body);
         if (data.filePath)
           await g
             .V()
             .has('CodeFile', 'id', codeFileId)
             .property(cardinality.single, 'file_path', data.filePath)
+            .next();
+        if (data.repository !== undefined)
+          await g
+            .V()
+            .has('CodeFile', 'id', codeFileId)
+            .property(cardinality.single, 'repository', data.repository)
             .next();
         if (data.commitRef !== undefined)
           await g

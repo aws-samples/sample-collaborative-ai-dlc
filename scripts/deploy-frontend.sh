@@ -6,9 +6,17 @@ ENVIRONMENT=${1:-dev}
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TF_DIR="$SCRIPT_DIR/../terraform"
 
-if [[ "$ENVIRONMENT" != "dev" && "$ENVIRONMENT" != "prod" ]]; then
-    echo "Usage: $0 [dev|prod]"
-    echo "Environment must be 'dev' or 'prod'"
+# Discover available environments from terraform/environments/*.tfvars.
+# The *.tfvars glob never matches *.tfvars.example, so no grep -v needed.
+# Fall back to "dev prod" so a fresh public clone (no .tfvars yet) still works.
+AVAILABLE_ENVS=$(ls "$TF_DIR/environments/"*.tfvars 2>/dev/null | xargs -n1 basename | sed 's/\.tfvars$//' | tr '\n' ' ')
+if [[ -z "${AVAILABLE_ENVS// }" ]]; then
+    AVAILABLE_ENVS="dev prod"
+fi
+
+if ! echo " $AVAILABLE_ENVS " | grep -q " $ENVIRONMENT "; then
+    echo "Usage: $0 <environment>"
+    echo "Available environments: $AVAILABLE_ENVS"
     exit 1
 fi
 
@@ -19,6 +27,18 @@ echo "Deploying frontend for environment: $ENVIRONMENT"
 
 # Get S3 bucket name from Terraform output
 cd "$TF_DIR"
+
+# Safety: the initialized backend MUST match the requested environment before we
+# read the bucket/distribution — otherwise the `s3 sync --delete` below could
+# wipe the wrong environment's bucket.
+INIT_ENV=$(terraform output -raw environment 2>/dev/null || echo "")
+if [[ -n "$INIT_ENV" && "$INIT_ENV" != "$ENVIRONMENT" ]]; then
+    echo "Error: terraform is initialized for '$INIT_ENV' but you requested '$ENVIRONMENT'."
+    echo "Re-init the correct backend first:"
+    echo "  terraform init -backend-config=environments/$ENVIRONMENT.s3.tfbackend -reconfigure"
+    exit 1
+fi
+
 BUCKET_NAME=$(terraform output -raw s3_bucket_name 2>/dev/null || echo "")
 CLOUDFRONT_ID=$(terraform output -raw cloudfront_distribution_id 2>/dev/null || echo "")
 

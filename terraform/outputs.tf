@@ -218,6 +218,11 @@ output "aws_region" {
   value       = var.aws_region
 }
 
+output "environment" {
+  description = "Environment this state is deployed to. Used by deploy scripts to guard against running against the wrong backend."
+  value       = var.environment
+}
+
 # Step Functions
 output "agent_workflow_state_machine_arn" {
   description = "Step Functions state machine ARN for agent workflow"
@@ -234,6 +239,12 @@ output "agent_event_bus_name" {
 output "github_oauth_secret_name" {
   description = "Name of the Secrets Manager secret holding the GitHub OAuth client_id/client_secret"
   value       = module.git.github_oauth_secret_name
+}
+
+# GitLab OAuth
+output "gitlab_oauth_secret_name" {
+  description = "Name of the Secrets Manager secret holding the GitLab OAuth client_id/client_secret"
+  value       = module.git.gitlab_oauth_secret_name
 }
 
 # Jira Cloud OAuth

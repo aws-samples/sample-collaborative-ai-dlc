@@ -5,16 +5,18 @@ import { usePresence } from '@/hooks/usePresence';
 import { useCollaborativeInception } from '@/hooks/useCollaborativeInception';
 import { useAgentStatus } from '@/hooks/useAgentStatus';
 import { useSprintEvents } from '@/hooks/useSprintEvents';
+import { useQuestionAnchor } from '@/hooks/useQuestionAnchor';
+import { useAnswerQuestion } from '@/hooks/useAnswerQuestion';
+import { questionAnchorId } from '@/lib/questionAnchor';
 import { sprintsService } from '@/services/sprints';
 import { agentsService } from '@/services/agents';
 import { requirementsService } from '@/services/requirements';
 import { userStoriesService } from '@/services/userStories';
 import { tasksService } from '@/services/tasks';
 import { generalInfoService } from '@/services/generalInfo';
-import type { StructuredAnswer } from '@/services/questions';
 import { questionsService } from '@/services/questions';
-import { realtimeService } from '@/services/realtime';
 import { timelineEventsService } from '@/services/timelineEvents';
+import { refreshProjectSprints } from '@/hooks/useProjectsCache';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -66,6 +68,7 @@ import {
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { DiscussButton } from '@/components/discussion';
 
 export default function InceptionPage() {
   const { user } = useAuth();
@@ -179,6 +182,7 @@ export default function InceptionPage() {
       agentStatus.status?.status === 'TIMED_OUT'
     ) {
       setHasLaunchedAgent(false);
+      reload();
       timelineEventsService
         .create(sprintId, {
           type: 'agent_failed',
@@ -187,28 +191,7 @@ export default function InceptionPage() {
         })
         .catch(() => {});
     }
-    // Auto-dismiss stale pending questions when agent is no longer running
-    const terminal =
-      agentStatus.status?.status === 'SUCCEEDED' ||
-      agentStatus.status?.status === 'FAILED' ||
-      agentStatus.status?.status === 'ABORTED' ||
-      agentStatus.status?.status === 'TIMED_OUT';
-    if (terminal && pendingQuestions.length > 0) {
-      const dismissed: StructuredAnswer = {
-        answers: [
-          {
-            selectedOptions: [],
-            freeText: '(auto-dismissed — agent finished)',
-          },
-        ],
-      };
-      Promise.all(
-        pendingQuestions.map((q) =>
-          questionsService.update(sprintId, q.id, { structuredAnswer: dismissed }).catch(() => {}),
-        ),
-      ).then(() => reload());
-    }
-  }, [agentStatus.status?.status, reload, sprintId, userName]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [agentStatus.status?.status, reload, sprintId, userName]);
 
   useEffect(() => {
     if (agentStatus.artifactsUpdated > 0) reload();
@@ -229,6 +212,18 @@ export default function InceptionPage() {
     .filter((q) => !q.structuredAnswer)
     .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   const answeredQuestions = questions.filter((q) => q.structuredAnswer);
+
+  // Scroll to a question referenced by a #question-{id} URL hash (timeline links)
+  useQuestionAnchor(questions.length > 0);
+  const agentNoLongerRunning =
+    pendingQuestions.length > 0 &&
+    (agentStatus.status?.status === 'SUCCEEDED' ||
+      agentStatus.status?.status === 'FAILED' ||
+      agentStatus.status?.status === 'ABORTED' ||
+      agentStatus.status?.status === 'TIMED_OUT' ||
+      sprint?.currentAgentStatus === 'completed' ||
+      sprint?.currentAgentStatus === 'failed' ||
+      sprint?.currentAgentStatus === 'cancelled');
 
   const handleStartAgent = async () => {
     if (!description.trim()) return;
@@ -323,11 +318,9 @@ export default function InceptionPage() {
     setApprovingPhase(true);
     try {
       await sprintsService.update(projectId, sprintId, { phase: 'CONSTRUCTION' });
-      realtimeService.send('broadcastToDocument', {
-        documentId: `sprint:${sprintId}`,
-        action: 'sprint.phaseChanged',
-        data: { phase: 'CONSTRUCTION', sprintId },
-      });
+      // sprint.phaseChanged is a server-origin event emitted by the sprints
+      // lambda on the phase update — clients never broadcast it.
+      refreshProjectSprints(projectId);
       timelineEventsService
         .create(sprintId, {
           type: 'phase_changed',
@@ -343,41 +336,8 @@ export default function InceptionPage() {
     }
   };
 
-  const handleAnswerQuestion = async (questionId: string, answer: StructuredAnswer) => {
-    try {
-      await questionsService.update(sprintId, questionId, { structuredAnswer: answer });
-      realtimeService.send('broadcastToDocument', {
-        data: { action: 'question.answered', sprintId, questionId },
-      });
-      timelineEventsService
-        .create(sprintId, {
-          type: 'question_answered',
-          title: 'Answered agent question',
-          userName,
-        })
-        .catch(() => {});
-      await reload();
-    } catch (err) {
-      console.error('Failed to answer question:', err);
-    }
-  };
-
-  const handleDismissQuestion = async (questionId: string) => {
-    const dismissed: StructuredAnswer = {
-      answers: [
-        {
-          selectedOptions: [],
-          freeText: '(dismissed — agent no longer running)',
-        },
-      ],
-    };
-    try {
-      await questionsService.update(sprintId, questionId, { structuredAnswer: dismissed });
-      await reload();
-    } catch (err) {
-      console.error('Failed to dismiss question:', err);
-    }
-  };
+  const { answerQuestion: handleAnswerQuestion, dismissQuestion: handleDismissQuestion } =
+    useAnswerQuestion({ sprintId, reload });
 
   return (
     <div className="flex flex-col h-full">
@@ -391,8 +351,24 @@ export default function InceptionPage() {
           </div>
 
           {/* Pending questions */}
+          {agentNoLongerRunning && (
+            <div className="flex items-start gap-2 rounded-md border border-muted bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <div>
+                <p className="font-medium text-foreground">The agent is no longer running.</p>
+                <p>
+                  These questions were left unanswered by a previous run. Dismiss them or re-run the
+                  Inception agent if more input is needed.
+                </p>
+              </div>
+            </div>
+          )}
           {pendingQuestions.map((pq) => (
-            <Card key={pq.id} className="border-agent-waiting bg-agent-waiting/5">
+            <Card
+              key={pq.id}
+              id={questionAnchorId(pq.id)}
+              className="border-agent-waiting bg-agent-waiting/5"
+            >
               <CardHeader className="pb-2">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
@@ -458,6 +434,7 @@ export default function InceptionPage() {
                     {remoteUsers.size} collaborator{remoteUsers.size > 1 ? 's' : ''}
                   </span>
                 )}
+                <DiscussButton entityType="inception" entityTitle="Project Description" />
               </div>
             </CardHeader>
             <CardContent>
@@ -767,8 +744,15 @@ export default function InceptionPage() {
               <CardContent>
                 <div className="space-y-3">
                   {answeredQuestions.map((q) => (
-                    <div key={q.id} className="border rounded-lg p-3">
-                      <p className="text-xs font-medium mb-1">Agent: {q.agent}</p>
+                    <div key={q.id} id={questionAnchorId(q.id)} className="border rounded-lg p-3">
+                      <div className="flex items-center justify-between mb-1">
+                        <p className="text-xs font-medium">Agent: {q.agent}</p>
+                        <DiscussButton
+                          entityType="question"
+                          entityId={q.id}
+                          entityTitle={q.questions[0]?.text || `${q.agent} agent question`}
+                        />
+                      </div>
                       {q.questions.map((sq, i) => (
                         <div key={i} className="mb-2">
                           <p className="text-xs text-muted-foreground">{sq.text}</p>
@@ -792,6 +776,13 @@ export default function InceptionPage() {
                           )}
                         </div>
                       ))}
+                      {(q.answeredByName || q.answeredAt) && (
+                        <p className="text-[10px] text-muted-foreground border-t pt-2 mt-2">
+                          Answered
+                          {q.answeredByName ? ` by ${q.answeredByName}` : ''}
+                          {q.answeredAt ? ` · ${new Date(q.answeredAt).toLocaleString()}` : ''}
+                        </p>
+                      )}
                     </div>
                   ))}
                 </div>

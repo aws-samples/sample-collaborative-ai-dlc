@@ -57,13 +57,15 @@ This builds all Lambda packages and provisions the full AWS stack (VPC, Neptune,
 
 After deployment, agent workers authenticate with Kiro CLI via device flow. Check the agent pool DynamoDB table or ECS logs for the auth URL and device code.
 
-### 4. Configure Tracker OAuth Apps
+### 4. Configure Provider OAuth Apps
 
-The platform integrates with external trackers so a sprint can be started from a tracker issue (GitHub Issue, Jira issue). For each tracker you want to enable, register an OAuth app with the provider, then paste the credentials into the **Admin → Tracker OAuth Apps** panel in the deployed app.
+The platform integrates with external providers as **code hosts** (GitHub, GitLab) and **issue trackers** (GitHub Issues, GitLab Issues, Jira Cloud) so a sprint can be started from a tracker issue. For each provider you want to enable, register an OAuth app with it, then paste the credentials into the **Admin → Tracker OAuth Apps** panel in the deployed app.
 
-Both providers are optional. Skip a section if you don't need that tracker; the corresponding **Connect** buttons in the UI will stay disabled.
+For GitHub and GitLab a single OAuth app serves both the code host and that provider's issue tracker — you register it once. Jira Cloud is a tracker only.
 
-#### GitHub Issues
+All providers are optional. Skip a section if you don't need that provider; the corresponding **Connect** buttons in the UI will stay disabled.
+
+#### GitHub (code host + GitHub Issues)
 
 1. Open [GitHub Developer Settings → OAuth Apps → New OAuth App](https://github.com/settings/developers).
    (Choose an **OAuth App**, _not_ a GitHub App — the flow here expects OAuth App semantics.)
@@ -72,6 +74,16 @@ Both providers are optional. Skip a section if you don't need that tracker; the 
    - **Authorization callback URL**: `https://<your-cloudfront-domain>/github/callback`
 3. Copy the **Client ID** and generate a **Client Secret**.
 4. In the deployed app, sign in and open **Admin → Tracker OAuth Apps → GitHub Issues**. Paste both values and click **Save**.
+
+#### GitLab (code host + GitLab Issues)
+
+1. Open [GitLab → User Settings → Applications](https://gitlab.com/-/user_settings/applications) → **Add new application**.
+2. Use:
+   - **Redirect URI**: `https://<your-cloudfront-domain>/gitlab/callback`
+   - **Scopes**: `api` and `read_user`
+   - Leave **Confidential** enabled.
+3. Save, then copy the **Application ID** (Client ID) and **Secret**.
+4. In the deployed app, sign in and open **Admin → Tracker OAuth Apps → GitLab Issues**. Paste both values and click **Save**.
 
 #### Jira Cloud
 
@@ -84,7 +96,7 @@ Both providers are optional. Skip a section if you don't need that tracker; the 
 4. Open the **Settings** tab of your app and copy the **Client ID** and **Client Secret**.
 5. In the deployed app, sign in and open **Admin → Tracker OAuth Apps → Jira Cloud**. Paste both values and click **Save**.
 
-Users then connect their personal accounts from **Project Settings → Trackers** for any project that needs the integration. The Jira Cloud integration is read-only — no comments or status changes are pushed back to Jira.
+Users then connect their personal accounts from the project-creation flow (GitHub/GitLab) or **Project Settings → Trackers** (Jira) for any project that needs the integration. The Jira Cloud and GitLab Issues tracker integrations are read-only — no issue comments or status changes are pushed back.
 
 You can rotate credentials later by entering new values into the same form; clicking **Save** overwrites the previously stored secret.
 
@@ -96,6 +108,10 @@ The Admin UI is a wrapper around AWS Secrets Manager. If you'd rather populate t
 ```bash
 aws secretsmanager put-secret-value \
   --secret-id $(terraform -chdir=terraform output -raw github_oauth_secret_name) \
+  --secret-string '{"client_id":"...","client_secret":"..."}'
+
+aws secretsmanager put-secret-value \
+  --secret-id $(terraform -chdir=terraform output -raw gitlab_oauth_secret_name) \
   --secret-string '{"client_id":"...","client_secret":"..."}'
 
 aws secretsmanager put-secret-value \
@@ -123,7 +139,7 @@ cd terraform && terraform output cloudfront_domain_name
 
 ## Documentation
 
-Documentation is built with [Zensical](https://zensical.org/) and deployed to GitHub Pages.
+Documentation is built with [Zensical](https://zensical.org/) and deployed to GitHub Pages. The [architecture overview](docs/concepts/architecture.md) is a good starting point for a system-level view of the components.
 
 To serve locally:
 

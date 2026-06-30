@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import * as Y from 'yjs';
 import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
@@ -6,21 +6,34 @@ import * as syncProtocol from 'y-protocols/sync';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import { realtimeService } from '../services/realtime';
 import { authService } from '../services/auth';
+import {
+  getRealtimeToken,
+  invalidateRealtimeToken,
+  msUntilRefresh,
+  scopeTargetForYjsDoc,
+} from '../lib/realtimeToken';
 
 export interface AwarenessUser {
   name: string;
   color: string;
   cursor?: { index: number; length: number };
+  /** Set by discussion inputs — typing indicator. */
+  typing?: boolean;
 }
 
 export function useYjsDocument(documentId: string | null, userName?: string, userColor?: string) {
-  const [doc] = useState(() => new Y.Doc());
+  const doc = useMemo(() => new Y.Doc(), [documentId]);
   const [synced, setSynced] = useState(false);
   const [awareness, setAwareness] = useState<awarenessProtocol.Awareness | null>(null);
   const [remoteUsers, setRemoteUsers] = useState<Map<number, AwarenessUser>>(new Map());
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
   const pingIntervalRef = useRef<number | null>(null);
+  const tokenRefreshRef = useRef<number | null>(null);
+  // Epoch seconds of the scope token backing the current socket. Used by the
+  // visibility/focus backstop to tell whether the proactive refresh timer
+  // (below) was throttled while the tab was hidden.
+  const tokenExpRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!documentId) {
@@ -34,6 +47,16 @@ export function useYjsDocument(documentId: string | null, userName?: string, use
     const maxReconnectAttempts = 10;
     const awarenessProt = new awarenessProtocol.Awareness(doc);
     setAwareness(awarenessProt);
+
+    // Realtime scope token target: the Yjs server verifies signature, expiry,
+    // scope coverage for this doc name, and sub binding at upgrade. Resolved
+    // once per effect run (it depends only on documentId) and shared by both
+    // connect() and the visibility/focus backstop.
+    const target = scopeTargetForYjsDoc(documentId);
+    if (!target) {
+      console.error('Yjs: unknown doc-name format, cannot authorize:', documentId);
+      return;
+    }
 
     const connect = async () => {
       if (cancelled) return;
@@ -49,7 +72,16 @@ export function useYjsDocument(documentId: string | null, userName?: string, use
         return;
       }
 
-      const yjsUrl = realtimeService.getYjsUrl(documentId, session.idToken);
+      let docToken;
+      try {
+        docToken = await getRealtimeToken(target);
+      } catch (e) {
+        console.error('Yjs: failed to fetch realtime token:', e);
+        return;
+      }
+      if (cancelled) return;
+
+      const yjsUrl = realtimeService.getYjsUrl(documentId, session.idToken, docToken.token);
       const ws = new WebSocket(yjsUrl);
       wsRef.current = ws;
       ws.binaryType = 'arraybuffer';
@@ -63,6 +95,26 @@ export function useYjsDocument(documentId: string | null, userName?: string, use
       ws.onopen = () => {
         console.log('Yjs WebSocket connected');
         reconnectAttempts = 0;
+
+        // Proactively reconnect shortly before the scope token expires — the
+        // server force-closes the socket at expiry (close code 4401), so
+        // beating it keeps the session seamless.
+        //
+        // The timer alone is fragile: browsers throttle/suspend setTimeout in
+        // backgrounded tabs and across machine sleep, so it can fire late or
+        // not at all. Two backstops cover that: (1) the server's 4401 close +
+        // backoff reconnect below, and (2) the visibility/focus handler, which
+        // cycles a stale-but-still-open socket the moment the user returns. The
+        // recorded expiry lets that handler decide whether a refresh is due.
+        tokenExpRef.current = docToken.exp;
+        if (tokenRefreshRef.current) clearTimeout(tokenRefreshRef.current);
+        tokenRefreshRef.current = window.setTimeout(() => {
+          tokenRefreshRef.current = null;
+          if (cancelled || wsRef.current !== ws) return;
+          invalidateRealtimeToken(target);
+          console.log('Yjs: scope token expiring — reconnecting');
+          ws.close();
+        }, msUntilRefresh(docToken.exp));
 
         // Send sync step 1 immediately to request document state
         const encoder = encoding.createEncoder();
@@ -118,6 +170,15 @@ export function useYjsDocument(documentId: string | null, userName?: string, use
         console.log('Yjs WebSocket closed:', event.code, event.reason);
         setSynced(false);
         if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
+        if (tokenRefreshRef.current) {
+          clearTimeout(tokenRefreshRef.current);
+          tokenRefreshRef.current = null;
+        }
+
+        // 4401 = scope token expired (server-side close at token exp) or
+        // an authorization rejection — make sure the reconnect fetches a
+        // fresh token instead of replaying the cached one.
+        if (event.code === 4401) invalidateRealtimeToken(target);
 
         // Reconnect with exponential backoff
         if (reconnectAttempts < maxReconnectAttempts) {
@@ -166,23 +227,49 @@ export function useYjsDocument(documentId: string | null, userName?: string, use
       const users = new Map<number, AwarenessUser>();
       awarenessProt.getStates().forEach((state, clientId) => {
         if (clientId !== doc.clientID && state.user) {
-          users.set(clientId, { ...state.user, cursor: state.cursor });
+          users.set(clientId, { ...state.user, cursor: state.cursor, typing: state.typing });
         }
       });
       setRemoteUsers(users);
     };
 
+    // Backstop for the proactive-refresh timer above: timers are throttled in
+    // hidden tabs and frozen across machine sleep, so a tab that was backgrounded
+    // past the token's expiry can wake holding a socket whose refresh never fired.
+    // When the user returns, if the socket is still open on a token at/near
+    // expiry, cycle it now with a fresh token rather than waiting for the
+    // server's 4401. `msUntilRefresh` returning 0 means we're inside the refresh
+    // lead window (or past it) — the same threshold the timer uses.
+    const refreshIfStale = () => {
+      if (cancelled || document.visibilityState !== 'visible') return;
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      if (tokenExpRef.current === null || msUntilRefresh(tokenExpRef.current) > 0) return;
+      if (tokenRefreshRef.current) {
+        clearTimeout(tokenRefreshRef.current);
+        tokenRefreshRef.current = null;
+      }
+      invalidateRealtimeToken(target);
+      console.log('Yjs: scope token stale on resume — reconnecting');
+      ws.close();
+    };
+
     doc.on('update', updateHandler);
     awarenessProt.on('change', awarenessHandler);
+    window.addEventListener('focus', refreshIfStale);
+    document.addEventListener('visibilitychange', refreshIfStale);
     connect().catch((e) => console.error('Yjs initial connect failed:', e));
 
     return () => {
       cancelled = true;
       doc.off('update', updateHandler);
       awarenessProt.off('change', awarenessHandler);
+      window.removeEventListener('focus', refreshIfStale);
+      document.removeEventListener('visibilitychange', refreshIfStale);
       awarenessProtocol.removeAwarenessStates(awarenessProt, [doc.clientID], 'disconnect');
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
+      if (tokenRefreshRef.current) clearTimeout(tokenRefreshRef.current);
       wsRef.current?.close();
       wsRef.current = null;
     };

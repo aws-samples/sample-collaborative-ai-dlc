@@ -13,7 +13,7 @@ interface State {
 
 // Fetches `GET /trackers/providers` once and exposes the result. Centralizes
 // the cancellation-flag dance used to live in three components (Admin,
-// ProjectSettings, GitHubConnectButton) and gives them a refresh hook for
+// ProjectSettings, GitConnectButton) and gives them a refresh hook for
 // post-save reloads.
 export function useTrackerProviders(): State {
   const [providers, setProviders] = useState<TrackerProviderStatus[]>([]);

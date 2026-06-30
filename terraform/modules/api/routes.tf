@@ -770,6 +770,63 @@ resource "aws_api_gateway_resource" "timeline_events" {
   path_part   = "timeline-events"
 }
 
+# /sprints/{sprintId}/realtime-token
+resource "aws_api_gateway_resource" "sprint_realtime_token" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.sprint_root.id
+  path_part   = "realtime-token"
+}
+
+# /projects/{projectId}/realtime-token
+resource "aws_api_gateway_resource" "project_realtime_token" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.project.id
+  path_part   = "realtime-token"
+}
+
+# /sprints/{sprintId}/discussions
+resource "aws_api_gateway_resource" "discussions" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.sprint_root.id
+  path_part   = "discussions"
+}
+resource "aws_api_gateway_resource" "discussion" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.discussions.id
+  path_part   = "{discussionId}"
+}
+resource "aws_api_gateway_resource" "discussion_messages" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.discussion.id
+  path_part   = "messages"
+}
+resource "aws_api_gateway_resource" "discussion_message" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.discussion_messages.id
+  path_part   = "{messageId}"
+}
+resource "aws_api_gateway_resource" "discussion_message_redact" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.discussion_message.id
+  path_part   = "redact"
+}
+resource "aws_api_gateway_resource" "discussion_read" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.discussion.id
+  path_part   = "read"
+}
+resource "aws_api_gateway_resource" "discussion_assist" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.discussion.id
+  path_part   = "assist"
+}
+# Static sibling of {discussionId} — API Gateway resolves static parts first.
+resource "aws_api_gateway_resource" "discussions_search" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.discussions.id
+  path_part   = "search"
+}
+
 # =============================================================================
 # Helper locals for sprint-scoped CRUD pattern
 # =============================================================================
@@ -1037,6 +1094,131 @@ resource "aws_api_gateway_integration" "timeline_events_post" {
 }
 
 # =============================================================================
+# Realtime-token Methods (POST sprint + project variants)
+# =============================================================================
+resource "aws_api_gateway_method" "sprint_realtime_token_post" {
+  rest_api_id        = aws_api_gateway_rest_api.main.id
+  resource_id        = aws_api_gateway_resource.sprint_realtime_token.id
+  http_method        = "POST"
+  authorization      = "COGNITO_USER_POOLS"
+  authorizer_id      = aws_api_gateway_authorizer.cognito.id
+  request_parameters = { "method.request.path.sprintId" = true }
+}
+resource "aws_api_gateway_method" "project_realtime_token_post" {
+  rest_api_id        = aws_api_gateway_rest_api.main.id
+  resource_id        = aws_api_gateway_resource.project_realtime_token.id
+  http_method        = "POST"
+  authorization      = "COGNITO_USER_POOLS"
+  authorizer_id      = aws_api_gateway_authorizer.cognito.id
+  request_parameters = { "method.request.path.projectId" = true }
+}
+
+resource "aws_api_gateway_integration" "sprint_realtime_token_post" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.sprint_realtime_token.id
+  http_method             = aws_api_gateway_method.sprint_realtime_token_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.discussions_lambda_invoke_arn
+}
+resource "aws_api_gateway_integration" "project_realtime_token_post" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.project_realtime_token.id
+  http_method             = aws_api_gateway_method.project_realtime_token_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.discussions_lambda_invoke_arn
+}
+
+# =============================================================================
+# Discussions Methods
+#   GET/POST /sprints/{sprintId}/discussions
+#   GET/POST /sprints/{sprintId}/discussions/{discussionId}/messages
+# =============================================================================
+locals {
+  discussion_routes = {
+    discussions_get = {
+      resource = "discussions"
+      method   = "GET"
+      params   = { "method.request.path.sprintId" = true }
+    }
+    discussions_post = {
+      resource = "discussions"
+      method   = "POST"
+      params   = { "method.request.path.sprintId" = true }
+    }
+    discussions_search_get = {
+      resource = "discussions_search"
+      method   = "GET"
+      params   = { "method.request.path.sprintId" = true }
+    }
+    discussion_put = {
+      resource = "discussion"
+      method   = "PUT"
+      params   = { "method.request.path.sprintId" = true, "method.request.path.discussionId" = true }
+    }
+    discussion_read_put = {
+      resource = "discussion_read"
+      method   = "PUT"
+      params   = { "method.request.path.sprintId" = true, "method.request.path.discussionId" = true }
+    }
+    discussion_assist_post = {
+      resource = "discussion_assist"
+      method   = "POST"
+      params   = { "method.request.path.sprintId" = true, "method.request.path.discussionId" = true }
+    }
+    discussion_messages_get = {
+      resource = "discussion_messages"
+      method   = "GET"
+      params   = { "method.request.path.sprintId" = true, "method.request.path.discussionId" = true }
+    }
+    discussion_messages_post = {
+      resource = "discussion_messages"
+      method   = "POST"
+      params   = { "method.request.path.sprintId" = true, "method.request.path.discussionId" = true }
+    }
+    discussion_message_redact_post = {
+      resource = "discussion_message_redact"
+      method   = "POST"
+      params = {
+        "method.request.path.sprintId"     = true,
+        "method.request.path.discussionId" = true,
+        "method.request.path.messageId"    = true,
+      }
+    }
+  }
+  discussion_resource_ids = {
+    discussions               = aws_api_gateway_resource.discussions.id
+    discussions_search        = aws_api_gateway_resource.discussions_search.id
+    discussion                = aws_api_gateway_resource.discussion.id
+    discussion_read           = aws_api_gateway_resource.discussion_read.id
+    discussion_assist         = aws_api_gateway_resource.discussion_assist.id
+    discussion_messages       = aws_api_gateway_resource.discussion_messages.id
+    discussion_message_redact = aws_api_gateway_resource.discussion_message_redact.id
+  }
+}
+
+resource "aws_api_gateway_method" "discussion_routes" {
+  for_each           = local.discussion_routes
+  rest_api_id        = aws_api_gateway_rest_api.main.id
+  resource_id        = local.discussion_resource_ids[each.value.resource]
+  http_method        = each.value.method
+  authorization      = "COGNITO_USER_POOLS"
+  authorizer_id      = aws_api_gateway_authorizer.cognito.id
+  request_parameters = each.value.params
+}
+
+resource "aws_api_gateway_integration" "discussion_routes" {
+  for_each                = local.discussion_routes
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = local.discussion_resource_ids[each.value.resource]
+  http_method             = aws_api_gateway_method.discussion_routes[each.key].http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.discussions_lambda_invoke_arn
+}
+
+# =============================================================================
 # CORS OPTIONS Methods for all resources
 # =============================================================================
 module "cors_projects" {
@@ -1191,6 +1373,60 @@ module "cors_timeline_events" {
   resource_id = aws_api_gateway_resource.timeline_events.id
 }
 
+module "cors_sprint_realtime_token" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.sprint_realtime_token.id
+}
+
+module "cors_project_realtime_token" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.project_realtime_token.id
+}
+
+module "cors_discussions" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.discussions.id
+}
+
+module "cors_discussion" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.discussion.id
+}
+
+module "cors_discussion_messages" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.discussion_messages.id
+}
+
+module "cors_discussion_message_redact" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.discussion_message_redact.id
+}
+
+module "cors_discussion_read" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.discussion_read.id
+}
+
+module "cors_discussion_assist" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.discussion_assist.id
+}
+
+module "cors_discussions_search" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.discussions_search.id
+}
+
 # =============================================================================
 # Lambda Permissions
 # =============================================================================
@@ -1247,6 +1483,14 @@ resource "aws_lambda_permission" "timeline_events" {
   statement_id  = "AllowAPIGatewayInvoke"
   action        = "lambda:InvokeFunction"
   function_name = var.timeline_events_lambda_name
+  principal     = "apigateway.${local.dns_suffix}"
+  source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
+}
+
+resource "aws_lambda_permission" "discussions" {
+  statement_id  = "AllowAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = var.discussions_lambda_name
   principal     = "apigateway.${local.dns_suffix}"
   source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
 }
@@ -1598,6 +1842,358 @@ resource "aws_lambda_permission" "github" {
   statement_id  = "AllowAPIGatewayInvoke"
   action        = "lambda:InvokeFunction"
   function_name = var.github_lambda_name
+  principal     = "apigateway.${local.dns_suffix}"
+  source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
+}
+
+# =============================================================================
+# GitLab OAuth Routes
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# /gitlab Resource
+# -----------------------------------------------------------------------------
+resource "aws_api_gateway_resource" "gitlab" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.api.id
+  path_part   = "gitlab"
+}
+
+resource "aws_api_gateway_resource" "gitlab_auth" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.gitlab.id
+  path_part   = "auth"
+}
+
+resource "aws_api_gateway_resource" "gitlab_callback" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.gitlab.id
+  path_part   = "callback"
+}
+
+resource "aws_api_gateway_resource" "gitlab_repos" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.gitlab.id
+  path_part   = "repos"
+}
+
+resource "aws_api_gateway_resource" "gitlab_status" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.gitlab.id
+  path_part   = "status"
+}
+
+resource "aws_api_gateway_resource" "gitlab_disconnect" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.gitlab.id
+  path_part   = "disconnect"
+}
+
+# /gitlab/projects
+resource "aws_api_gateway_resource" "gitlab_projects" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.gitlab.id
+  path_part   = "projects"
+}
+
+# GitLab project paths are namespaced (group/project, often group/subgroup/
+# project). Encoded slashes (%2F) in a REST API Gateway path segment are
+# fragile — API Gateway / CloudFront may reject or normalize them. So the
+# project reference travels as a `?project=<url-encoded path>` QUERY STRING
+# (passed through verbatim by API Gateway) rather than a path segment. The
+# Lambda then URL-encodes it into the GitLab API path, which is the format
+# GitLab requires on the server-to-server hop (no API Gateway in between).
+
+# /gitlab/projects/branches  (GET ?project=)
+resource "aws_api_gateway_resource" "gitlab_projects_branches" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.gitlab_projects.id
+  path_part   = "branches"
+}
+
+# /gitlab/projects/tree  (GET ?project=&branch=)
+resource "aws_api_gateway_resource" "gitlab_projects_tree" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.gitlab_projects.id
+  path_part   = "tree"
+}
+
+# /gitlab/projects/contents  (GET ?project=&path=&branch=)
+resource "aws_api_gateway_resource" "gitlab_projects_contents" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.gitlab_projects.id
+  path_part   = "contents"
+}
+
+# /gitlab/projects/merge_requests  (mrIid is numeric, so it is slash-free and
+# safe as a path segment; the project still travels as ?project=)
+resource "aws_api_gateway_resource" "gitlab_projects_merge_requests" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.gitlab_projects.id
+  path_part   = "merge_requests"
+}
+
+# /gitlab/projects/merge_requests/{mrIid}
+resource "aws_api_gateway_resource" "gitlab_projects_mr_iid" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.gitlab_projects_merge_requests.id
+  path_part   = "{mrIid}"
+}
+
+# /gitlab/projects/merge_requests/{mrIid}/notes
+resource "aws_api_gateway_resource" "gitlab_projects_mr_notes" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.gitlab_projects_mr_iid.id
+  path_part   = "notes"
+}
+
+# -----------------------------------------------------------------------------
+# GitLab Methods
+# -----------------------------------------------------------------------------
+
+# GET /gitlab/auth (authenticated)
+resource "aws_api_gateway_method" "gitlab_auth_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.gitlab_auth.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "gitlab_auth_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.gitlab_auth.id
+  http_method             = aws_api_gateway_method.gitlab_auth_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.gitlab_lambda_invoke_arn
+}
+
+# GET /gitlab/callback (no auth - OAuth redirect)
+resource "aws_api_gateway_method" "gitlab_callback_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.gitlab_callback.id
+  http_method   = "GET"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "gitlab_callback_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.gitlab_callback.id
+  http_method             = aws_api_gateway_method.gitlab_callback_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.gitlab_lambda_invoke_arn
+}
+
+# GET /gitlab/repos (authenticated)
+resource "aws_api_gateway_method" "gitlab_repos_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.gitlab_repos.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "gitlab_repos_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.gitlab_repos.id
+  http_method             = aws_api_gateway_method.gitlab_repos_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.gitlab_lambda_invoke_arn
+}
+
+# GET /gitlab/status (authenticated)
+resource "aws_api_gateway_method" "gitlab_status_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.gitlab_status.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "gitlab_status_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.gitlab_status.id
+  http_method             = aws_api_gateway_method.gitlab_status_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.gitlab_lambda_invoke_arn
+}
+
+# DELETE /gitlab/disconnect (authenticated)
+resource "aws_api_gateway_method" "gitlab_disconnect_delete" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.gitlab_disconnect.id
+  http_method   = "DELETE"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "gitlab_disconnect_delete" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.gitlab_disconnect.id
+  http_method             = aws_api_gateway_method.gitlab_disconnect_delete.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.gitlab_lambda_invoke_arn
+}
+
+# GET /gitlab/projects/branches?project= (authenticated)
+resource "aws_api_gateway_method" "gitlab_projects_branches_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.gitlab_projects_branches.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "gitlab_projects_branches_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.gitlab_projects_branches.id
+  http_method             = aws_api_gateway_method.gitlab_projects_branches_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.gitlab_lambda_invoke_arn
+}
+
+# GET /gitlab/projects/tree?project=&branch= (authenticated)
+resource "aws_api_gateway_method" "gitlab_projects_tree_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.gitlab_projects_tree.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "gitlab_projects_tree_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.gitlab_projects_tree.id
+  http_method             = aws_api_gateway_method.gitlab_projects_tree_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.gitlab_lambda_invoke_arn
+}
+
+# GET /gitlab/projects/contents?project=&path=&branch= (authenticated)
+resource "aws_api_gateway_method" "gitlab_projects_contents_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.gitlab_projects_contents.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "gitlab_projects_contents_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.gitlab_projects_contents.id
+  http_method             = aws_api_gateway_method.gitlab_projects_contents_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.gitlab_lambda_invoke_arn
+}
+
+# GET /gitlab/projects/merge_requests/{mrIid}/notes?project= (authenticated)
+resource "aws_api_gateway_method" "gitlab_mr_notes_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.gitlab_projects_mr_notes.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "gitlab_mr_notes_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.gitlab_projects_mr_notes.id
+  http_method             = aws_api_gateway_method.gitlab_mr_notes_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.gitlab_lambda_invoke_arn
+}
+
+# POST /gitlab/projects/merge_requests/{mrIid}/notes?project= (authenticated)
+resource "aws_api_gateway_method" "gitlab_mr_notes_post" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.gitlab_projects_mr_notes.id
+  http_method   = "POST"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "gitlab_mr_notes_post" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.gitlab_projects_mr_notes.id
+  http_method             = aws_api_gateway_method.gitlab_mr_notes_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.gitlab_lambda_invoke_arn
+}
+
+# -----------------------------------------------------------------------------
+# GitLab CORS
+# -----------------------------------------------------------------------------
+module "cors_gitlab_auth" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.gitlab_auth.id
+}
+
+module "cors_gitlab_callback" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.gitlab_callback.id
+}
+
+module "cors_gitlab_repos" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.gitlab_repos.id
+}
+
+module "cors_gitlab_status" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.gitlab_status.id
+}
+
+module "cors_gitlab_disconnect" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.gitlab_disconnect.id
+}
+
+module "cors_gitlab_projects_branches" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.gitlab_projects_branches.id
+}
+
+module "cors_gitlab_projects_tree" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.gitlab_projects_tree.id
+}
+
+module "cors_gitlab_projects_contents" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.gitlab_projects_contents.id
+}
+
+module "cors_gitlab_mr_notes" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.gitlab_projects_mr_notes.id
+}
+
+# -----------------------------------------------------------------------------
+# GitLab Lambda Permission
+# -----------------------------------------------------------------------------
+resource "aws_lambda_permission" "gitlab" {
+  statement_id  = "AllowAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = var.gitlab_lambda_name
   principal     = "apigateway.${local.dns_suffix}"
   source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
 }
@@ -2171,4 +2767,90 @@ resource "aws_lambda_permission" "cognito_users" {
   function_name = var.cognito_users_lambda_name
   principal     = "apigateway.${local.dns_suffix}"
   source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
+}
+
+# ===========================================================================
+# Multi-repo project /repos routes (projects lambda, PR #183)
+# ===========================================================================
+# -----------------------------------------------------------------------------
+# /projects/{projectId}/repos Resource (multi-repo support, projects lambda)
+# -----------------------------------------------------------------------------
+resource "aws_api_gateway_resource" "repos" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.project.id
+  path_part   = "repos"
+}
+
+# =============================================================================
+# Repos Methods (GET list, POST add, DELETE remove — projects lambda)
+# DELETE takes the repo url as a ?url= query param, so it lives on the same
+# resource (no child resource needed).
+# =============================================================================
+resource "aws_api_gateway_method" "repos_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.repos.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+
+  request_parameters = {
+    "method.request.path.projectId" = true
+  }
+}
+
+resource "aws_api_gateway_method" "repos_post" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.repos.id
+  http_method   = "POST"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+
+  request_parameters = {
+    "method.request.path.projectId" = true
+  }
+}
+
+resource "aws_api_gateway_method" "repos_delete" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.repos.id
+  http_method   = "DELETE"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+
+  request_parameters = {
+    "method.request.path.projectId" = true
+  }
+}
+
+resource "aws_api_gateway_integration" "repos_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.repos.id
+  http_method             = aws_api_gateway_method.repos_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.projects_lambda_invoke_arn
+}
+
+resource "aws_api_gateway_integration" "repos_post" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.repos.id
+  http_method             = aws_api_gateway_method.repos_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.projects_lambda_invoke_arn
+}
+
+resource "aws_api_gateway_integration" "repos_delete" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.repos.id
+  http_method             = aws_api_gateway_method.repos_delete.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.projects_lambda_invoke_arn
+}
+
+module "cors_repos" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.repos.id
 }

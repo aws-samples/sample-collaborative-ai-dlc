@@ -13,11 +13,11 @@ import ConstructionPage from './pages/ConstructionPage';
 import ReviewPage from './pages/ReviewPage';
 import AgentPage from './pages/AgentPage';
 import SprintGraph from './pages/SprintGraph';
-import GitHubCallback from './pages/GitHubCallback';
+import { GitOAuthCallback } from './pages/GitOAuthCallback';
 import JiraCallback from './pages/JiraCallback';
 import Admin from './pages/Admin';
 import { TRACKER_PROVIDERS } from './lib/trackerProviders';
-import ObservabilityPage from './pages/ObservabilityPage';
+import ObservabilityLayout from './pages/ObservabilityLayout';
 
 function App() {
   return (
@@ -27,7 +27,16 @@ function App() {
           <Routes>
             {/* Public routes (no shell) */}
             <Route path="/login" element={<Login />} />
-            <Route path="/github/callback" element={<GitHubCallback />} />
+            {/* Git provider OAuth callbacks (GitHub, GitLab) — same shape,
+                driven from the tracker registry. Jira differs (auth-gated +
+                its own component) so it stays a separate route below. */}
+            {(['github-issues', 'gitlab-issues'] as const).map((id) => (
+              <Route
+                key={id}
+                path={TRACKER_PROVIDERS[id].callbackPath}
+                element={<GitOAuthCallback trackerProviderId={id} />}
+              />
+            ))}
             <Route
               path={TRACKER_PROVIDERS['jira-cloud'].callbackPath}
               element={
@@ -47,7 +56,7 @@ function App() {
             >
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/admin" element={<Admin />} />
-              <Route path="/observability" element={<ObservabilityPage />} />
+              <Route path="/observability" element={<ObservabilityLayout />} />
               <Route path="/project/:projectId" element={<Project />} />
               <Route path="/project/:projectId/settings" element={<ProjectSettings />} />
 
@@ -59,6 +68,8 @@ function App() {
                 <Route path="agent" element={<AgentPage />} />
                 <Route path="graph" element={<SprintGraph />} />
               </Route>
+
+              <Route path="*" element={<Navigate to="/dashboard" replace />} />
             </Route>
 
             <Route path="/" element={<Navigate to="/dashboard" replace />} />

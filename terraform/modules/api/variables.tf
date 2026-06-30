@@ -95,6 +95,13 @@ variable "timeline_events_lambda_name" {
   type = string
 }
 
+variable "discussions_lambda_invoke_arn" {
+  type = string
+}
+variable "discussions_lambda_name" {
+  type = string
+}
+
 variable "state_machine_arn" {
   description = "ARN of the agent workflow state machine"
   type        = string
@@ -119,6 +126,18 @@ variable "agents_lambda_role_arn" {
   default     = ""
 }
 
+variable "gitlab_oauth_secret_name" {
+  description = "Secrets Manager secret name holding the GitLab OAuth client credentials. Used by the agents Lambda's POST /git/refresh-token to refresh expired GitLab access tokens for long-running construction jobs."
+  type        = string
+  default     = ""
+}
+
+variable "gitlab_redirect_uri" {
+  description = "GitLab OAuth redirect URI. Required on the refresh_token grant (must match the original authorization request) — without it GitLab rejects refresh with invalid_grant. Used by the agents Lambda's POST /git/refresh-token."
+  type        = string
+  default     = ""
+}
+
 variable "github_lambda_invoke_arn" {
   description = "Invoke ARN of the github Lambda"
   type        = string
@@ -127,6 +146,18 @@ variable "github_lambda_invoke_arn" {
 
 variable "github_lambda_name" {
   description = "Name of the github Lambda function"
+  type        = string
+  default     = ""
+}
+
+variable "gitlab_lambda_invoke_arn" {
+  description = "Invoke ARN of the gitlab Lambda"
+  type        = string
+  default     = ""
+}
+
+variable "gitlab_lambda_name" {
+  description = "Name of the gitlab Lambda function"
   type        = string
   default     = ""
 }
@@ -201,6 +232,18 @@ variable "git_connections_table_name" {
   default     = ""
 }
 
+variable "git_provider_connections_table_name" {
+  description = "DynamoDB table name for per-provider git connections (composite key userId+provider)"
+  type        = string
+  default     = ""
+}
+
+variable "git_provider_connections_table_arn" {
+  description = "DynamoDB table ARN for per-provider git connections"
+  type        = string
+  default     = ""
+}
+
 variable "agent_outputs_table_name" {
   description = "DynamoDB agent outputs table name"
   type        = string
@@ -247,4 +290,16 @@ variable "enable_cloudfront_origin_policy" {
 variable "api_gateway_account_id" {
   description = "ID of the aws_api_gateway_account resource. Passed through to create a depends_on edge so the REST API stage waits for account-level CloudWatch logging to be configured."
   type        = string
+}
+
+variable "connections_table_name" {
+  description = "DynamoDB table name for WebSocket connections (server-origin event fanout)"
+  type        = string
+  default     = ""
+}
+
+variable "websocket_api_endpoint_https" {
+  description = "WebSocket API management endpoint (https:// form) for PostToConnection fanout"
+  type        = string
+  default     = ""
 }

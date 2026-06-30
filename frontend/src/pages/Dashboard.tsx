@@ -1,7 +1,9 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { projectsService, type Project } from '@/services/projects';
+import { projectsService } from '@/services/projects';
+import { useProjectsCache } from '@/hooks/useProjectsCache';
 import { CreateProjectModal } from '@/components/CreateProjectModal';
+import type { GitProvider } from '@/services/gitProvider';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -17,37 +19,37 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Plus, GitBranch, Trash2, FolderGit2, Search, LayoutGrid, List } from 'lucide-react';
+import {
+  Plus,
+  GitBranch,
+  Trash2,
+  FolderGit2,
+  Search,
+  LayoutGrid,
+  List,
+  RefreshCw,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export default function Dashboard() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { projects: projectsWithSprints, loading, error, refresh, invalidate } = useProjectsCache();
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [createInitialProvider, setCreateInitialProvider] = useState<GitProvider | ''>('');
   const [deleting, setDeleting] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
 
-  const loadProjects = useCallback(async () => {
-    try {
-      const data = await projectsService.list();
-      setProjects(data);
-    } catch (error) {
-      console.error('Failed to load projects:', error);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadProjects();
-  }, [loadProjects]);
+  const projects = useMemo(() => projectsWithSprints.map((p) => p.project), [projectsWithSprints]);
 
   useEffect(() => {
     if (searchParams.get('reopenCreateProject') === '1') {
+      const provider = searchParams.get('gitProvider');
+      if (provider === 'gitlab' || provider === 'github') {
+        setCreateInitialProvider(provider);
+      }
       setShowCreateModal(true);
       setSearchParams({}, { replace: true });
     }
@@ -58,7 +60,7 @@ export default function Dashboard() {
     setDeleting(confirmDelete);
     try {
       await projectsService.delete(confirmDelete);
-      setProjects(projects.filter((p) => p.id !== confirmDelete));
+      invalidate();
     } catch (error) {
       console.error('Failed to delete project:', error);
     } finally {
@@ -93,7 +95,13 @@ export default function Dashboard() {
               </p>
             </div>
           </div>
-          <Button onClick={() => setShowCreateModal(true)} className="gap-2">
+          <Button
+            onClick={() => {
+              setCreateInitialProvider('');
+              setShowCreateModal(true);
+            }}
+            className="gap-2"
+          >
             <Plus className="h-4 w-4" />
             New Project
           </Button>
@@ -157,6 +165,17 @@ export default function Dashboard() {
               </Card>
             ))}
           </div>
+        ) : error && projects.length === 0 ? (
+          <Card className="border-destructive/40 bg-destructive/5">
+            <CardContent className="flex flex-col items-center justify-center py-16">
+              <h3 className="text-lg font-semibold mb-1">Couldn't load projects</h3>
+              <p className="text-sm text-muted-foreground mb-6 text-center max-w-sm">{error}</p>
+              <Button variant="outline" onClick={() => refresh()} className="gap-2">
+                <RefreshCw className="h-4 w-4" />
+                Retry
+              </Button>
+            </CardContent>
+          </Card>
         ) : filteredProjects.length === 0 && projects.length === 0 ? (
           /* Empty state */
           <Card className="border-dashed">
@@ -169,7 +188,13 @@ export default function Dashboard() {
                 Create your first project to start building with AI-powered collaborative
                 development.
               </p>
-              <Button onClick={() => setShowCreateModal(true)} className="gap-2">
+              <Button
+                onClick={() => {
+                  setCreateInitialProvider('');
+                  setShowCreateModal(true);
+                }}
+                className="gap-2"
+              >
                 <Plus className="h-4 w-4" />
                 Create Your First Project
               </Button>
@@ -293,7 +318,11 @@ export default function Dashboard() {
 
       {/* Create modal */}
       {showCreateModal && (
-        <CreateProjectModal onClose={() => setShowCreateModal(false)} onCreated={loadProjects} />
+        <CreateProjectModal
+          initialProvider={createInitialProvider}
+          onClose={() => setShowCreateModal(false)}
+          onCreated={refresh}
+        />
       )}
 
       {/* Delete confirmation */}

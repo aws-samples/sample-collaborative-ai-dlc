@@ -41,6 +41,40 @@ resource "aws_cloudfront_origin_access_control" "frontend" {
   signing_protocol                  = "sigv4"
 }
 
+# CloudFront Function: SPA URI rewrite for the S3 origin only.
+#
+# Rewrites requests that look like SPA routes (no file extension, or trailing
+# slash) to /index.html so the React app can handle client-side routing on
+# hard reloads (e.g. /dashboard, /project/123).
+#
+# This replaces the previous distribution-level custom_error_response that
+# mapped 403/404 -> /index.html. That config applied globally and rewrote
+# legitimate API Gateway errors (e.g. expired Cognito token -> 403) to HTML,
+# breaking fetch().json() on the client. See issue #186.
+#
+# Attached only to the default (S3) cache behavior, so /api/*, /yjs/*, and
+# /ws behaviors are unaffected.
+resource "aws_cloudfront_function" "spa_rewrite" {
+  name    = "${var.project_name}-${var.environment}-spa-rewrite"
+  runtime = "cloudfront-js-2.0"
+  comment = "Rewrite SPA routes to /index.html for the S3 origin"
+  publish = true
+  code    = <<-EOT
+    function handler(event) {
+      var request = event.request;
+      var uri = request.uri;
+
+      if (uri.endsWith('/')) {
+        request.uri = '/index.html';
+      } else if (!uri.includes('.')) {
+        request.uri = '/index.html';
+      }
+
+      return request;
+    }
+  EOT
+}
+
 # CloudFront VPC Origin for internal Yjs ALB
 resource "aws_cloudfront_vpc_origin" "yjs_alb" {
   count = var.yjs_enabled ? 1 : 0
@@ -138,6 +172,13 @@ resource "aws_cloudfront_distribution" "frontend" {
     compress               = true
     viewer_protocol_policy = "redirect-to-https"
 
+    # SPA URI rewrite — only applied to the S3 origin so API Gateway errors
+    # (e.g. 403 on expired Cognito token) are not rewritten to HTML.
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.spa_rewrite.arn
+    }
+
     forwarded_values {
       query_string = false
       cookies {
@@ -224,18 +265,10 @@ resource "aws_cloudfront_distribution" "frontend" {
     }
   }
 
-  # SPA routing - redirect 404s to index.html
-  custom_error_response {
-    error_code         = 404
-    response_code      = 200
-    response_page_path = "/index.html"
-  }
-
-  custom_error_response {
-    error_code         = 403
-    response_code      = 200
-    response_page_path = "/index.html"
-  }
+  # SPA routing is handled by the aws_cloudfront_function.spa_rewrite
+  # function attached to the default cache behavior. We intentionally do NOT
+  # set custom_error_response here: it applies distribution-wide and would
+  # rewrite API Gateway 403/404 responses to /index.html (issue #186).
 
   logging_config {
     bucket          = var.access_logs_bucket_domain_name

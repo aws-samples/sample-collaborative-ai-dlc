@@ -7,11 +7,22 @@ import {
   type ProjectRole,
   type CognitoUser,
   type AgentCli,
+  type CliModels,
+  type RuntimeModelCli,
   type TrackerBinding,
   type SteeringDoc,
+  type ProjectRepo,
 } from '../services/projects';
 import { trackersService, type TrackerConnection } from '../services/trackers';
 import { agentsService } from '../services/agents';
+import { GitRepoSelect } from '../components/GitRepoSelect';
+import {
+  trackerIdForGitProvider,
+  getGitProviderService,
+  gitProviderTerminology,
+  type GitRepo,
+  type GitTrackerProviderId,
+} from '../services/gitProvider';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -37,8 +48,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { ArrowLeft, Trash2, X, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { ArrowLeft, Trash2, X, AlertCircle, CheckCircle2, ExternalLink } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { invalidateProjects } from '@/hooks/useProjectsCache';
 import { MigrateTrackerCard } from '@/components/MigrateTrackerCard';
 import { JiraConnectButton } from '@/components/JiraConnectButton';
 import { JiraProjectPickerDialog } from '@/components/JiraProjectPickerDialog';
@@ -53,7 +65,7 @@ const ROLE_LABELS: Record<ProjectRole, string> = {
 
 const ROLE_DESCRIPTIONS: Record<ProjectRole, string> = {
   owner: 'Full control: manage project, members, and settings',
-  admin: 'Manage members and update GitHub repository',
+  admin: 'Manage members and update the project repository',
   member: 'Collaborate on sprints and trigger agents',
 };
 
@@ -66,7 +78,7 @@ const ROLE_BADGE: Record<ProjectRole, string> = {
 const AGENT_CLI_CONFIG: Record<AgentCli, { label: string; description: string }> = {
   kiro: {
     label: 'Kiro',
-    description: 'AWS Kiro CLI — API key authentication',
+    description: 'AWS Kiro CLI — device-flow SSO authentication',
   },
   claude: {
     label: 'Claude Code',
@@ -76,6 +88,41 @@ const AGENT_CLI_CONFIG: Record<AgentCli, { label: string; description: string }>
     label: 'OpenCode',
     description: 'OpenCode CLI — AWS Bedrock authentication',
   },
+};
+
+const MODEL_CLI_LABELS: Record<RuntimeModelCli, string> = {
+  kiro: 'Kiro',
+  claude: 'Claude',
+  opencode: 'OpenCode',
+};
+
+const MODEL_CLI_KEYS = Object.keys(MODEL_CLI_LABELS) as RuntimeModelCli[];
+
+const MODEL_ID_HELP: Record<RuntimeModelCli, { label: string; url: string }> = {
+  kiro: {
+    label: 'Kiro model IDs',
+    url: 'https://kiro.dev/docs/',
+  },
+  claude: {
+    label: 'Bedrock model IDs',
+    url: 'https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html',
+  },
+  opencode: {
+    label: 'Bedrock model IDs',
+    url: 'https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html',
+  },
+};
+
+const REPO_ROLE_COLORS: Record<string, string> = {
+  primary: 'bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300',
+  secondary: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
+  frontend: 'bg-cyan-100 text-cyan-800 dark:bg-cyan-900/40 dark:text-cyan-300',
+  backend: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
+  api: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300',
+  infra: 'bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300',
+  shared: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300',
+  docs: 'bg-gray-100 text-gray-600 dark:bg-gray-800/60 dark:text-gray-400',
+  unknown: 'bg-gray-100 text-gray-500 dark:bg-gray-800/60 dark:text-gray-400',
 };
 
 export default function ProjectSettings() {
@@ -88,6 +135,7 @@ export default function ProjectSettings() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
+  // Edit state
   const [editName, setEditName] = useState('');
   const [editGitRepo, setEditGitRepo] = useState('');
   const [saving, setSaving] = useState(false);
@@ -105,9 +153,18 @@ export default function ProjectSettings() {
   const [connectingJira, setConnectingJira] = useState(false);
   const [showJiraProjectPicker, setShowJiraProjectPicker] = useState(false);
 
+  // Agent CLI state
   const [editAgentCli, setEditAgentCli] = useState<AgentCli>('kiro');
   const [savingAgentCli, setSavingAgentCli] = useState(false);
   const [availableCliNames, setAvailableCliNames] = useState<AgentCli[]>(['kiro']);
+  const [runtimeModelOverride, setRuntimeModelOverride] = useState<Record<AgentCli, boolean>>({
+    kiro: true,
+    claude: true,
+    opencode: true,
+  });
+  const [editCliModels, setEditCliModels] = useState<CliModels>({});
+  const [globalCliModels, setGlobalCliModels] = useState<CliModels>({});
+  const [savingCliModels, setSavingCliModels] = useState(false);
 
   // Tracker-abstraction migration (#194 Phase 1). The card shows when the
   // project still uses the legacy issue_integration boolean and has no
@@ -119,6 +176,16 @@ export default function ProjectSettings() {
     projectsApplied: number;
   } | null>(null);
 
+  // Repositories state
+  const [repos, setRepos] = useState<ProjectRepo[]>([]);
+  const [showAddRepo, setShowAddRepo] = useState(false);
+  const [selectedNewRepos, setSelectedNewRepos] = useState<string[]>([]);
+  const [addingRepo, setAddingRepo] = useState(false);
+  const [removingRepo, setRemovingRepo] = useState<string | null>(null);
+  const [settingPrimary, setSettingPrimary] = useState<string | null>(null);
+  const [confirmRemoveRepo, setConfirmRemoveRepo] = useState<string | null>(null);
+
+  // Add member state
   const [showAddMember, setShowAddMember] = useState(false);
   const [newMemberUserId, setNewMemberUserId] = useState('');
   const [newMemberEmail, setNewMemberEmail] = useState('');
@@ -131,6 +198,7 @@ export default function ProjectSettings() {
   const [showUserDropdown, setShowUserDropdown] = useState(false);
   const userDropdownRef = useRef<HTMLDivElement>(null);
 
+  // Role change confirmation
   const [confirmRoleChange, setConfirmRoleChange] = useState<{
     userId: string;
     newRole: ProjectRole;
@@ -159,6 +227,8 @@ export default function ProjectSettings() {
       setEditName(proj.name);
       setEditGitRepo(proj.gitRepo);
       setEditAgentCli(proj.agentCli ?? 'kiro');
+      setEditCliModels(proj.cliModels || {});
+      setRepos(proj.repos ?? []);
       setMembers(Array.isArray(mems) ? mems : []);
       setTrackerConnections(Array.isArray(conns) ? conns : []);
 
@@ -177,12 +247,25 @@ export default function ProjectSettings() {
     }
   }, [projectId]);
 
+  // Load available CLI capabilities separately (non-blocking)
   useEffect(() => {
     agentsService
       .getCapabilities()
-      .then((c) => setAvailableCliNames(c.available))
+      .then((c) => {
+        setAvailableCliNames(c.available);
+        if (c.runtimeModelOverride) setRuntimeModelOverride(c.runtimeModelOverride);
+      })
       .catch(() => {
         /* non-fatal — keep default ['kiro'] */
+      });
+  }, []);
+
+  useEffect(() => {
+    agentsService
+      .getSettings()
+      .then((settings) => setGlobalCliModels(settings.cliModels || {}))
+      .catch(() => {
+        /* non-fatal — placeholders fall back to generic defaults */
       });
   }, []);
 
@@ -209,6 +292,7 @@ export default function ProjectSettings() {
     setLoadingUsers(true);
     try {
       const users = await projectsService.listCognitoUsers();
+      // Filter out users who are already members
       const memberIds = new Set(members.map((m) => m.userId));
       setCognitoUsers(
         users.filter((u) => u.enabled && u.status === 'CONFIRMED' && !memberIds.has(u.userId)),
@@ -251,20 +335,22 @@ export default function ProjectSettings() {
     return u.email.toLowerCase().includes(q) || u.displayName.toLowerCase().includes(q);
   });
 
-  const handleAddGithubTracker = async () => {
+  // Add the git-issues tracker matching the project's git provider
+  // (github-issues / gitlab-issues). Both reuse the project's git connection.
+  const handleAddGitTracker = async (providerId: GitTrackerProviderId) => {
     if (!projectId || !project || !project.gitRepo) return;
     clearMessages();
     setTogglingTracker(true);
     try {
-      const gh = TRACKER_PROVIDERS['github-issues'];
+      const meta = TRACKER_PROVIDERS[providerId];
       await trackersService.addToProject(projectId, {
-        provider: gh.id,
-        instance: gh.instance,
+        provider: meta.id,
+        instance: meta.instance,
         externalProjectKey: project.gitRepo,
         displayName: project.gitRepo,
       });
       await loadData();
-      setSuccess('GitHub issue integration enabled.');
+      setSuccess(`${meta.displayName} integration enabled.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to enable tracker');
     } finally {
@@ -314,6 +400,28 @@ export default function ProjectSettings() {
     }
   };
 
+  const handleReconnectTracker = async (binding: TrackerBinding) => {
+    clearMessages();
+    try {
+      // Store the return path so the OAuth callback redirects back here instead
+      // of the create-project flow.
+      sessionStorage.setItem('oauth_return_to', `/project/${projectId}/settings`);
+      // Git-based trackers (github-issues / gitlab-issues) share the git
+      // provider's OAuth connection — reconnect via the git auth flow.
+      if (binding.provider === 'github-issues' || binding.provider === 'gitlab-issues') {
+        const gitProvider = binding.provider === 'gitlab-issues' ? 'gitlab' : 'github';
+        const { url } = await getGitProviderService(gitProvider).getAuthUrl();
+        window.location.href = url;
+        return;
+      }
+      // Standalone tracker providers (Jira) use the trackers auth endpoint.
+      const { url } = await trackersService.getAuthUrl(binding.provider);
+      window.location.href = url;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start reconnection');
+    }
+  };
+
   const handleMigrateTracker = async () => {
     if (!projectId) return;
     clearMessages();
@@ -343,16 +451,15 @@ export default function ProjectSettings() {
     try {
       const updates: {
         name?: string;
-        gitRepo?: string;
       } = {};
       if (editName !== project.name) updates.name = editName;
-      if (editGitRepo !== project.gitRepo) updates.gitRepo = editGitRepo;
       if (Object.keys(updates).length === 0) {
         setSaving(false);
         return;
       }
       await projectsService.update(projectId, updates);
       setProject({ ...project, ...updates });
+      invalidateProjects();
       setSuccess('Project settings saved');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save');
@@ -370,11 +477,99 @@ export default function ProjectSettings() {
     try {
       await projectsService.update(projectId, { agentCli: editAgentCli });
       setProject({ ...project, agentCli: editAgentCli });
+      invalidateProjects();
       setSuccess('Agent CLI updated');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update agent CLI');
     } finally {
       setSavingAgentCli(false);
+    }
+  };
+
+  const updateCliModel = (cli: RuntimeModelCli, value: string) => {
+    setEditCliModels((current) => ({ ...current, [cli]: value }));
+  };
+
+  const handleSaveCliModels = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!projectId || !project) return;
+    clearMessages();
+    setSavingCliModels(true);
+    try {
+      const saved = await projectsService.update(projectId, { cliModels: editCliModels });
+      const nextModels = saved.cliModels || editCliModels;
+      setEditCliModels(nextModels);
+      setProject({ ...project, cliModels: nextModels });
+      setSuccess('Model override updated');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update model override');
+    } finally {
+      setSavingCliModels(false);
+    }
+  };
+
+  const handleAddRepos = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!projectId || selectedNewRepos.length === 0) return;
+    clearMessages();
+    setAddingRepo(true);
+    const results = await Promise.allSettled(
+      selectedNewRepos.map((url) =>
+        projectsService.addRepo(projectId, { url, provider: project?.gitProvider }),
+      ),
+    );
+    const succeeded = results.filter((r) => r.status === 'fulfilled').length;
+    const failedRepos = results
+      .map((r, i) => (r.status === 'rejected' ? selectedNewRepos[i] : null))
+      .filter((n): n is string => n !== null);
+    await loadData();
+    setAddingRepo(false);
+    if (failedRepos.length === 0) {
+      setSelectedNewRepos([]);
+      setShowAddRepo(false);
+      setSuccess(`${succeeded} repositor${succeeded === 1 ? 'y' : 'ies'} added`);
+    } else {
+      // Keep the dialog open with only the failed repos still selected so the
+      // user can retry or deselect them; the error also renders in-dialog.
+      setSelectedNewRepos(failedRepos);
+      setError(
+        succeeded > 0
+          ? `${succeeded} added. Failed to add: ${failedRepos.join(', ')}`
+          : `Failed to add: ${failedRepos.join(', ')}`,
+      );
+    }
+  };
+
+  const handleRemoveRepo = async (repoUrl: string) => {
+    if (!projectId) return;
+    setConfirmRemoveRepo(null);
+    clearMessages();
+    setRemovingRepo(repoUrl);
+    try {
+      await projectsService.removeRepo(projectId, repoUrl);
+      setSuccess('Repository removed');
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to remove repository');
+    } finally {
+      setRemovingRepo(null);
+    }
+  };
+
+  const handleSetPrimaryRepo = async (repoUrl: string) => {
+    if (!projectId) return;
+    clearMessages();
+    setSettingPrimary(repoUrl);
+    try {
+      await projectsService.update(projectId, { gitRepo: repoUrl });
+      setEditGitRepo(repoUrl);
+      setProject((prev) => (prev ? { ...prev, gitRepo: repoUrl } : prev));
+      setSuccess('Primary repository updated');
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to set primary repository');
+    } finally {
+      setSettingPrimary(null);
     }
   };
 
@@ -545,20 +740,20 @@ export default function ProjectSettings() {
                     />
                   </div>
                   <div className="space-y-1.5">
-                    <Label htmlFor="proj-repo">GitHub Repository</Label>
+                    <Label htmlFor="proj-repo">
+                      {gitProviderTerminology(project?.gitProvider ?? 'github').label} Repository
+                    </Label>
                     <Input
                       id="proj-repo"
                       value={editGitRepo}
-                      onChange={(e) => setEditGitRepo(e.target.value)}
                       placeholder="owner/repo"
                       className="font-mono text-sm"
-                      disabled={!canEditProject || saving}
+                      disabled
+                      readOnly
                     />
-                    {!canEditProject && (
-                      <p className="text-xs text-muted-foreground">
-                        Only owners and admins can change the repository
-                      </p>
-                    )}
+                    <p className="text-xs text-muted-foreground">
+                      Primary repository — managed in the Repositories section below
+                    </p>
                   </div>
                   {canEditProject && (
                     <div className="flex justify-end pt-2">
@@ -572,8 +767,8 @@ export default function ProjectSettings() {
             </Card>
 
             {/* Trackers — provider-agnostic issue trackers wired to this
-                project. Phase 2 (#196) only manages github-issues here;
-                Phase 3 adds Jira via the same surface. */}
+                project. Manages the git-issues tracker matching the project's
+                git provider (github-issues / gitlab-issues) plus Jira Cloud. */}
             <Card className="mb-6">
               <CardHeader className="pb-3">
                 <CardTitle className="text-base">Trackers</CardTitle>
@@ -609,14 +804,24 @@ export default function ProjectSettings() {
                             </p>
                           </div>
                           {canEditProject && !isLegacy && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => handleRemoveTracker(b)}
-                              disabled={togglingTracker}
-                            >
-                              Remove
-                            </Button>
+                            <div className="flex items-center gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleReconnectTracker(b)}
+                                disabled={togglingTracker}
+                              >
+                                Reconnect
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleRemoveTracker(b)}
+                                disabled={togglingTracker}
+                              >
+                                Remove
+                              </Button>
+                            </div>
                           )}
                         </div>
                       );
@@ -624,20 +829,34 @@ export default function ProjectSettings() {
                   </div>
                 )}
 
-                {canEditProject &&
-                  project?.gitProvider === 'github' &&
-                  project.gitRepo &&
-                  !(project.trackers ?? []).some(
-                    (b) =>
-                      b.provider === TRACKER_PROVIDERS['github-issues'].id &&
-                      b.externalProjectKey === project.gitRepo,
-                  ) && (
+                {/* Add the git-issues tracker matching the project's git
+                    provider (github-issues / gitlab-issues). One block — the
+                    provider selects the tracker id + label. */}
+                {(() => {
+                  if (!canEditProject || !project?.gitRepo) return null;
+                  if (project.gitProvider !== 'github' && project.gitProvider !== 'gitlab') {
+                    return null;
+                  }
+                  const trackerId = trackerIdForGitProvider(project.gitProvider);
+                  const meta = TRACKER_PROVIDERS[trackerId];
+                  const alreadyBound = (project.trackers ?? []).some(
+                    (b) => b.provider === meta.id && b.externalProjectKey === project.gitRepo,
+                  );
+                  if (alreadyBound) return null;
+                  return (
                     <div className="flex justify-end pt-2">
-                      <Button size="sm" onClick={handleAddGithubTracker} disabled={togglingTracker}>
-                        {togglingTracker ? 'Saving…' : `Add GitHub Issues for ${project.gitRepo}`}
+                      <Button
+                        size="sm"
+                        onClick={() => handleAddGitTracker(trackerId)}
+                        disabled={togglingTracker}
+                      >
+                        {togglingTracker
+                          ? 'Saving…'
+                          : `Add ${meta.displayName} for ${project.gitRepo}`}
                       </Button>
                     </div>
-                  )}
+                  );
+                })()}
 
                 {canEditProject && (
                   <JiraConnectButton
@@ -656,6 +875,84 @@ export default function ProjectSettings() {
                       setShowJiraProjectPicker(true);
                     }}
                   />
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Repositories */}
+            <Card className="mb-6">
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-base">Repositories ({repos.length})</CardTitle>
+                  {canEditProject && (
+                    <Button size="sm" onClick={() => setShowAddRepo(true)}>
+                      + Add
+                    </Button>
+                  )}
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  Additional repositories linked to this project. Role and tech stack are detected
+                  automatically.
+                </p>
+              </CardHeader>
+              <CardContent>
+                {repos.length === 0 ? (
+                  <p className="text-sm text-muted-foreground text-center py-3">
+                    No repositories linked yet.
+                  </p>
+                ) : (
+                  <div className="divide-y divide-border">
+                    {repos.map((repo) => (
+                      <div key={repo.url} className="py-2.5 flex items-center gap-2">
+                        <div className="flex-1 min-w-0 flex items-center gap-2">
+                          <span className="text-sm font-mono truncate">{repo.url}</span>
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              'text-[10px] h-4 shrink-0',
+                              REPO_ROLE_COLORS[repo.role] || REPO_ROLE_COLORS.unknown,
+                            )}
+                          >
+                            {repo.role}
+                          </Badge>
+                          {repo.detectedStack && (
+                            <span className="shrink-0 text-[10px] text-muted-foreground">
+                              {repo.detectedStack}
+                            </span>
+                          )}
+                        </div>
+                        {canEditProject && (
+                          <div className="flex items-center gap-1 shrink-0">
+                            {repo.role !== 'primary' && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-7 text-[11px] px-2"
+                                onClick={() => handleSetPrimaryRepo(repo.url)}
+                                disabled={removingRepo === repo.url || settingPrimary === repo.url}
+                              >
+                                {settingPrimary === repo.url ? '...' : 'Set as primary'}
+                              </Button>
+                            )}
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                              onClick={() => setConfirmRemoveRepo(repo.url)}
+                              disabled={removingRepo === repo.url || settingPrimary === repo.url}
+                              title="Remove repository"
+                            >
+                              {removingRepo === repo.url ? (
+                                <span className="text-[10px]">...</span>
+                              ) : (
+                                <Trash2 className="h-3.5 w-3.5" />
+                              )}
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 )}
               </CardContent>
             </Card>
@@ -749,6 +1046,76 @@ export default function ProjectSettings() {
                         disabled={savingAgentCli || editAgentCli === project?.agentCli}
                       >
                         {savingAgentCli ? 'Saving...' : 'Save Changes'}
+                      </Button>
+                    </div>
+                  )}
+                </form>
+              </CardContent>
+            </Card>
+
+            {/* Model Override */}
+            <Card className="mb-6">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Model Override</CardTitle>
+                <p className="text-sm text-muted-foreground">
+                  Optional project-specific model for the selected agent CLI. Empty uses the Admin
+                  default.
+                </p>
+              </CardHeader>
+              <CardContent>
+                <form onSubmit={handleSaveCliModels} className="space-y-3">
+                  {MODEL_CLI_KEYS.map((cli) => {
+                    const isSelected = editAgentCli === cli;
+                    const isEditable = canEditProject && isSelected && runtimeModelOverride[cli];
+                    return (
+                      <div key={cli} className="space-y-1.5">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-2">
+                            <Label htmlFor={`model-${cli}`}>{MODEL_CLI_LABELS[cli]}</Label>
+                            {isSelected && (
+                              <Badge variant="outline" className="text-[10px] h-4">
+                                selected
+                              </Badge>
+                            )}
+                          </div>
+                          <a
+                            href={MODEL_ID_HELP[cli].url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                          >
+                            {MODEL_ID_HELP[cli].label}
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
+                        </div>
+                        <Input
+                          id={`model-${cli}`}
+                          value={editCliModels[cli] || ''}
+                          onChange={(e) => updateCliModel(cli, e.target.value)}
+                          placeholder={
+                            globalCliModels[cli]
+                              ? `Default: ${globalCliModels[cli]}`
+                              : cli === 'opencode'
+                                ? 'Default: amazon-bedrock/us.anthropic.claude-sonnet-4-6'
+                                : cli === 'claude'
+                                  ? 'Default: us.anthropic.claude-sonnet-4-6'
+                                  : 'Default model'
+                          }
+                          className="font-mono text-sm"
+                          disabled={!isEditable || savingCliModels}
+                        />
+                      </div>
+                    );
+                  })}
+                  {!canEditProject && (
+                    <p className="text-xs text-muted-foreground">
+                      Only owners and admins can change model overrides
+                    </p>
+                  )}
+                  {canEditProject && (
+                    <div className="flex justify-end pt-2">
+                      <Button type="submit" size="sm" disabled={savingCliModels}>
+                        {savingCliModels ? 'Saving...' : 'Save Model'}
                       </Button>
                     </div>
                   )}
@@ -896,6 +1263,61 @@ export default function ProjectSettings() {
         onOpenChange={setShowJiraProjectPicker}
         onConfirm={handleAddJiraBinding}
       />
+
+      {/* Add Repos Dialog */}
+      <Dialog
+        open={showAddRepo}
+        onOpenChange={(open) => {
+          if (!addingRepo) {
+            setShowAddRepo(open);
+            if (!open) setSelectedNewRepos([]);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <form onSubmit={handleAddRepos}>
+            <DialogHeader>
+              <DialogTitle>Add Repositories</DialogTitle>
+              <DialogDescription>
+                Select repositories to link to this project. Role and tech stack are detected
+                automatically.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="py-4 space-y-3">
+              <GitRepoSelect
+                provider={project?.gitProvider ?? 'github'}
+                multiple
+                value={selectedNewRepos}
+                onChange={(selected: GitRepo[]) => {
+                  setSelectedNewRepos(selected.map((r) => r.fullName));
+                }}
+                exclude={repos.map((r) => r.url)}
+              />
+              {error && <p className="text-sm text-destructive">{error}</p>}
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setShowAddRepo(false);
+                  setSelectedNewRepos([]);
+                }}
+                disabled={addingRepo}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={addingRepo || selectedNewRepos.length === 0}>
+                {addingRepo
+                  ? 'Adding...'
+                  : selectedNewRepos.length > 0
+                    ? `Add ${selectedNewRepos.length} Repositor${selectedNewRepos.length === 1 ? 'y' : 'ies'}`
+                    : 'Add Repositories'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       {/* Add Member Dialog */}
       <Dialog open={showAddMember} onOpenChange={setShowAddMember}>
@@ -1060,6 +1482,31 @@ export default function ProjectSettings() {
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => confirmRemove && handleRemoveMember(confirmRemove)}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!confirmRemoveRepo} onOpenChange={() => setConfirmRemoveRepo(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove Repository</AlertDialogTitle>
+            <AlertDialogDescription>
+              Remove <span className="font-mono">{confirmRemoveRepo}</span> from this project?
+              {repos.find((r) => r.url === confirmRemoveRepo)?.role === 'primary' &&
+                repos.length > 1 &&
+                ' This is the primary repository — the oldest remaining repository will be promoted to primary.'}
+              {repos.length === 1 &&
+                ' This is the last repository — the project will have no linked repository and sprints cannot run until one is added.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => confirmRemoveRepo && handleRemoveRepo(confirmRemoveRepo)}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               Remove

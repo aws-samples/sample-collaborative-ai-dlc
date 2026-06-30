@@ -1,0 +1,20 @@
+# Keep Lambda Docker build contexts small and stable.
+node_modules
+**/node_modules
+package-lock.json
+**/package-lock.json
+.git
+.gitignore
+test
+**/test
+*.test.js
+.dockerignore
+# Lambda packaging outputs — written DURING terraform apply by the
+# terraform-aws-modules/lambda build commands. Tarring them while they are
+# rewritten corrupts the docker build context (archive/tar: invalid tar
+# header) and stalls parallel image builds. The agents image copies only
+# agents-ecs/** and shared/mcp-validator.js — never .build artifacts.
+.build
+**/.build
+builds
+**/builds

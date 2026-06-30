@@ -16,20 +16,26 @@ const {
   ScanCommand,
 } = require('@aws-sdk/lib-dynamodb');
 const { SSMClient, GetParametersCommand, PutParameterCommand } = require('@aws-sdk/client-ssm');
+const { SecretsManagerClient } = require('@aws-sdk/client-secrets-manager');
 const gremlin = require('gremlin');
 const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
 const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
 const { buildResponse } = require('./shared/response');
-const { resolveGitToken } = require('./shared/git-token');
+const { resolveGitToken, ensureFreshGitToken } = require('./shared/git-token');
+const { getGitConnection } = require('./shared/git-connection-store');
 const { validateMcpServersJson } = require('./shared/mcp-validator');
+const { broadcastToSprintChannel } = require('./shared/ws-fanout');
+const { normalizeCliModels, parseCliModels } = require('./shared/cli-models');
 
 const ecs = new ECSClient({});
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({ region: process.env.AWS_REGION || 'us-east-1' });
+const secrets = new SecretsManagerClient({ region: process.env.AWS_REGION || 'us-east-1' });
 
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const { cardinality } = gremlin.process;
+const __ = gremlin.process.statics;
 
 const POOL_TABLE = process.env.POOL_TABLE || '';
 const POOL_SIZE = parseInt(process.env.POOL_SIZE || '5', 10);
@@ -39,6 +45,24 @@ const POOL_VERSION = process.env.POOL_VERSION || 'unknown';
 const STALE_STARTING_MS = 5 * 60 * 1000; // 5 minutes
 const STALE_IDLE_MS = 3 * 60 * 1000; // 3 minutes
 const STALE_BUSY_MS = 30 * 60 * 1000; // 30 minutes — sub-agents should not run this long
+const RUNTIME_MODEL_OVERRIDE = {
+  kiro: true,
+  // Claude honors a runtime model override: the driver injects the resolved
+  // model as ANTHROPIC_MODEL (a bare Bedrock cross-region inference profile ID)
+  // into the claude-agent-acp subprocess. See lambda/agents-ecs/drivers/claude.js.
+  claude: true,
+  opencode: true,
+};
+
+// ---------------------------------------------------------------------------
+// Repo / branch validation — authoritative gate before values reach the
+// pool-worker, which interpolates them into shell `git` commands. The projects
+// lambda validates on write, but legacy/pre-existing `git_repo` values were
+// stored without validation, so we MUST re-validate here on the read path.
+// Validators live in shared/ so the agents and projects lambdas can't drift.
+// ---------------------------------------------------------------------------
+
+const { isSafeRepo, isSafeRef } = require('./shared/repo-validation');
 
 const getConnection = async () => {
   const host = process.env.NEPTUNE_ENDPOINT;
@@ -105,6 +129,36 @@ function humanCliName(cliName) {
       : cliName === 'opencode'
         ? 'OpenCode'
         : cliName;
+}
+
+function modelSettingsPath() {
+  const prefix = process.env.AGENT_SETTINGS_SSM_PREFIX || '';
+  return prefix ? `${prefix}/cli-models` : '';
+}
+
+function resolveAgentModel(projectCliModels, globalCliModels, cliName) {
+  const projectModel = projectCliModels?.[cliName];
+  if (projectModel) return { model: projectModel, source: 'project' };
+  const globalModel = globalCliModels?.[cliName];
+  if (globalModel) return { model: globalModel, source: 'global' };
+  return { model: '', source: 'fallback' };
+}
+
+async function loadGlobalCliModels() {
+  const path = modelSettingsPath();
+  if (!path) return {};
+  try {
+    const result = await ssm.send(
+      new GetParametersCommand({
+        Names: [path],
+        WithDecryption: false,
+      }),
+    );
+    return parseCliModels(result.Parameters?.[0]?.Value || '{}');
+  } catch (err) {
+    console.warn('[settings] Failed to load global CLI models:', err.message);
+    return {};
+  }
 }
 
 /**
@@ -247,17 +301,21 @@ async function cleanupStaleWorkers() {
         console.log(
           `Cleaning up stale ${status} worker ${w.workerId} (last heartbeat ${now - w.lastHeartbeat}ms ago)`,
         );
-        // When cleaning up a stale busy worker with a sprint job, mark Sprint and AgentRun as failed
+        // When cleaning up a stale busy worker with a sprint job, mark Sprint and AgentRun as failed.
+        // Discussion assists never own the Sprint status — only their AgentRun is failed.
         if (status === 'busy' && w.job?.sprintId) {
+          const isDiscussionJob = (w.job.agentType || '').toLowerCase() === 'discussion';
           try {
             await withNeptune(async (g) => {
               const completedAt = new Date().toISOString();
-              await g
-                .V()
-                .has('Sprint', 'id', w.job.sprintId)
-                .property(cardinality.single, 'current_agent_status', 'failed')
-                .property(cardinality.single, 'agent_completed_at', completedAt)
-                .next();
+              if (!isDiscussionJob) {
+                await g
+                  .V()
+                  .has('Sprint', 'id', w.job.sprintId)
+                  .property(cardinality.single, 'current_agent_status', 'failed')
+                  .property(cardinality.single, 'agent_completed_at', completedAt)
+                  .next();
+              }
               if (w.job.executionId) {
                 await g
                   .V()
@@ -372,6 +430,49 @@ exports.handler = async (event) => {
   const storyId = pathParameters?.storyId;
 
   try {
+    // ===== INTERNAL: just-in-time git token refresh =====
+    // POST /git/refresh-token — used by the construction runtime (pool-worker
+    // before push, mcp-server-graph before create-pr / PR-state / comments) to
+    // obtain a non-stale GitLab access token. GitLab OAuth tokens expire (~2h)
+    // and a long-running construction job bakes only the dispatch-time token;
+    // this endpoint refreshes via the stored refresh token + GitLab OAuth
+    // secret and persists the rotation. GitHub OAuth-App tokens never expire,
+    // so this is a passthrough for GitHub. Internal only — restricted to the
+    // 'system' caller (the worker/MCP invoke this Lambda directly, never via
+    // API Gateway / Cognito).
+    if (httpMethod === 'POST' && path.endsWith('/git/refresh-token')) {
+      const callerSub = event.requestContext?.authorizer?.claims?.sub;
+      if (callerSub !== 'system' && callerSub !== 'orchestrator') {
+        return response(403, { error: 'Forbidden' });
+      }
+      let input = {};
+      try {
+        input = body ? JSON.parse(body) : {};
+      } catch {
+        return response(400, { error: 'Invalid JSON body' });
+      }
+      const refreshUserId = input.userId;
+      const refreshProvider = input.gitProvider || 'github';
+      if (!refreshUserId) return response(400, { error: 'userId is required' });
+      try {
+        const Item = await getGitConnection(ddb, refreshUserId, refreshProvider);
+        if (!Item?.parameterName) {
+          return response(400, { error: `${refreshProvider} not connected` });
+        }
+        const accessToken = await ensureFreshGitToken({
+          ssm,
+          secrets,
+          ddb,
+          item: Item,
+          gitProvider: refreshProvider,
+        });
+        return response(200, { accessToken });
+      } catch (e) {
+        console.error('[agents] git token refresh failed:', e.message);
+        return response(502, { error: 'Token refresh failed' });
+      }
+    }
+
     // ===== AGENT SETTINGS (SSM-backed, editable via Admin UI) =====
 
     // GET /agents/settings — read bearer token, Kiro API key, and MCP servers from SSM
@@ -380,10 +481,11 @@ exports.handler = async (event) => {
       const bearerPath = `${prefix}/bedrock-bearer-token`;
       const mcpPath = `${prefix}/mcp-servers`;
       const kiroApiKeyPath = `${prefix}/kiro-api-key`;
+      const cliModelsPath = `${prefix}/cli-models`;
       try {
         const result = await ssm.send(
           new GetParametersCommand({
-            Names: [bearerPath, mcpPath, kiroApiKeyPath],
+            Names: [bearerPath, mcpPath, kiroApiKeyPath, cliModelsPath],
             WithDecryption: true,
           }),
         );
@@ -392,11 +494,13 @@ exports.handler = async (event) => {
         const bearerToken = byName[bearerPath] || '';
         const kiroApiKey = byName[kiroApiKeyPath] || '';
         const mcpServersRaw = byName[mcpPath] || '[]';
+        const cliModels = parseCliModels(byName[cliModelsPath] || '{}');
         // Return secrets as masked flags (never send the raw values to the browser)
         return response(200, {
           bedrockBearerTokenSet: bearerToken !== '' && bearerToken !== 'placeholder',
           kiroApiKeySet: kiroApiKey !== '' && kiroApiKey !== 'placeholder',
           mcpServers: mcpServersRaw,
+          cliModels,
         });
       } catch (err) {
         console.error('[settings] GET failed:', err.message);
@@ -468,6 +572,29 @@ exports.handler = async (event) => {
         }
       }
 
+      if (input.cliModels !== undefined) {
+        const validation = normalizeCliModels(input.cliModels);
+        if (!validation.valid) {
+          return response(400, {
+            error: 'Invalid CLI model configuration',
+            issues: validation.issues,
+          });
+        }
+        try {
+          await ssm.send(
+            new PutParameterCommand({
+              Name: `${prefix}/cli-models`,
+              Value: JSON.stringify(validation.value),
+              Type: 'String',
+              Overwrite: true,
+            }),
+          );
+        } catch (err) {
+          console.error('[settings] Failed to write CLI models:', err.message);
+          errors.push('cliModels: ' + err.message);
+        }
+      }
+
       if (errors.length > 0) return response(500, { error: errors.join('; ') });
       return response(200, { saved: true });
     }
@@ -491,7 +618,10 @@ exports.handler = async (event) => {
           console.error('[capabilities] pool scan failed:', e.message);
         }
       }
-      return response(200, { available: [...cliSet] });
+      return response(200, {
+        available: [...cliSet],
+        runtimeModelOverride: RUNTIME_MODEL_OVERRIDE,
+      });
     }
 
     // GET /agents/pool - List all pool workers
@@ -612,16 +742,54 @@ exports.handler = async (event) => {
       const input = JSON.parse(body || '{}');
       const executionId = `exec-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+      // Discussion assists run as a pool-worker phase with NO workspace —
+      // no git clone/branch/push, no repo validation, no git token, and most
+      // importantly NO Sprint current_* writes (assists must never hijack the
+      // sprint status shown on phase pages). The AgentRun vertex is the
+      // assist's only run-tracking record.
+      const isDiscussion = (input.phase || '').toLowerCase() === 'discussion';
+      if (isDiscussion && (!input.sprintId || !input.discussionId)) {
+        return response(400, {
+          error: 'Invalid discussion job',
+          message: 'phase=discussion requires sprintId and discussionId',
+        });
+      }
+
       let gitRepo = '',
         description = input.description || '',
         sprintPhase = '',
         projectAgentCli = 'kiro';
+      let projectCliModels = {};
+      let gitRepos = [];
+      let gitProvider = 'github';
+      let projectCreatedBy = '';
       let isMember = false;
       await withNeptune(async (g) => {
         const result = await g.V().has('Project', 'id', projectId).valueMap().next();
         if (result.value?.get) {
           gitRepo = result.value.get('git_repo')?.[0] || '';
           projectAgentCli = result.value.get('agent_cli')?.[0] || 'kiro';
+          projectCliModels = parseCliModels(result.value.get('cli_models')?.[0] || '{}');
+          gitProvider = result.value.get('git_provider')?.[0] || 'github';
+          projectCreatedBy = result.value.get('created_by')?.[0] || '';
+        }
+        // Fetch all Repository vertices linked to the project (multi-repo support)
+        const repoVertices = await g
+          .V()
+          .has('Project', 'id', projectId)
+          .out('HAS_REPO')
+          .hasLabel('Repository')
+          .valueMap()
+          .toList();
+        if (repoVertices.length > 0) {
+          gitRepos = repoVertices.map((r) => ({
+            url: (r.get('url') || [''])[0],
+            role: (r.get('role') || ['unknown'])[0],
+            detectedStack: (r.get('detected_stack') || [''])[0],
+          }));
+          // Ensure gitRepo (primary) is derived from repos list for backward compat
+          const primary = gitRepos.find((r) => r.role === 'primary') || gitRepos[0];
+          if (primary && !gitRepo) gitRepo = primary.url;
         }
         if (input.sprintId) {
           const sr = await g.V().has('Sprint', 'id', input.sprintId).valueMap().next();
@@ -650,6 +818,17 @@ exports.handler = async (event) => {
         });
       }
 
+      // Resolve the GIT identity, which is distinct from the AUTH identity
+      // (`userId` / claims.sub). Orchestrator-launched sub-agents and system
+      // re-triggers authenticate as the synthetic 'orchestrator'/'system'
+      // principals (so they bypass the membership/preflight gates above), but
+      // those principals own no git connection. The git token + its just-in-time
+      // refresh must key off a REAL user — the project owner (`created_by`) — so
+      // long-running GitLab jobs can renew the expiring access token rather than
+      // re-using a stale one. For genuine human callers the two are identical.
+      const isSyntheticCaller = userId === 'system' || userId === 'orchestrator';
+      const gitIdentityUserId = isSyntheticCaller ? projectCreatedBy : userId;
+
       // Pre-flight: verify the project's selected CLI has credentials configured.
       // Without this check, a misconfigured CLI (missing/invalid SSM key) would
       // cause the pool worker's authenticate() to silently fail, the CLI would
@@ -673,17 +852,25 @@ exports.handler = async (event) => {
         }
       }
 
-      // Look up user's GitHub token from git connections table
+      // Look up the git token for the resolved git identity (the project owner
+      // for synthetic callers, otherwise the requesting user). The connection
+      // store confirms the stored connection is for THIS project's provider —
+      // otherwise a GitHub token could be handed to a GitLab clone (or vice
+      // versa) — and lazily migrates legacy rows.
+      // Discussion assists have no repository — skip the git plumbing entirely.
       let gitToken = '';
-      if (userId && process.env.GIT_CONNECTIONS_TABLE) {
+      if (isDiscussion) {
+        gitRepo = '';
+        gitRepos = [];
+      }
+      if (!isDiscussion && gitIdentityUserId) {
         try {
-          const { Item } = await ddb.send(
-            new GetCommand({
-              TableName: process.env.GIT_CONNECTIONS_TABLE,
-              Key: { userId },
-            }),
-          );
-          if (Item?.parameterName || Item?.accessToken) {
+          // Resolve the owner's connection for the project's git provider. A
+          // non-matching/absent provider yields null, leaving gitToken empty →
+          // the "not connected" guard below fires (or we fall back to the
+          // token passed in the re-trigger body).
+          const Item = await getGitConnection(ddb, gitIdentityUserId, gitProvider);
+          if (Item?.parameterName) {
             gitToken = await resolveGitToken(ssm, Item);
           }
         } catch (e) {
@@ -696,14 +883,43 @@ exports.handler = async (event) => {
         gitToken = input.gitToken;
       }
 
-      // Require GitHub connection for projects with a git repo
+      // Require a matching provider connection for projects with a git repo
       if (gitRepo && !gitToken) {
+        const providerLabel = gitProvider === 'gitlab' ? 'GitLab' : 'GitHub';
         return response(400, {
-          error: 'GitHub not connected',
-          message:
-            'You must connect your GitHub account before running agents on this project. Go to project settings to connect GitHub.',
+          error: `${providerLabel} not connected`,
+          message: `You must connect your ${providerLabel} account before running agents on this project. Go to project settings to connect ${providerLabel}.`,
         });
       }
+
+      // SECURITY: re-validate every repo URL and git ref before they reach the
+      // pool-worker, which interpolates them into shell `git` commands. Legacy
+      // `git_repo` values may predate the projects-lambda write-time validation,
+      // so this read-path gate is authoritative against command injection.
+      for (const url of [gitRepo, ...gitRepos.map((r) => r.url)].filter(Boolean)) {
+        if (!isSafeRepo(url)) {
+          console.error(`[agents] Rejecting job: unsafe repository url ${JSON.stringify(url)}`);
+          return response(400, {
+            error: 'Invalid repository',
+            message: 'A linked repository URL contains unsafe characters and cannot be cloned.',
+          });
+        }
+      }
+      for (const ref of [input.branch, input.baseBranch].filter(Boolean)) {
+        if (!isSafeRef(ref)) {
+          console.error(`[agents] Rejecting job: unsafe git ref ${JSON.stringify(ref)}`);
+          return response(400, {
+            error: 'Invalid branch',
+            message: 'The branch name contains characters that are not allowed.',
+          });
+        }
+      }
+
+      const globalCliModels = await loadGlobalCliModels();
+      const resolvedModel = resolveAgentModel(projectCliModels, globalCliModels, projectAgentCli);
+      console.log(
+        `[agents] resolved model execution=${executionId} project=${projectId} cli=${projectAgentCli} source=${resolvedModel.source} model=${resolvedModel.model || 'driver-default'}`,
+      );
 
       const job = {
         executionId,
@@ -711,7 +927,14 @@ exports.handler = async (event) => {
         agentType: input.phase || sprintPhase || 'inception',
         description,
         gitRepo,
-        userId: userId || '',
+        gitRepos,
+        gitProvider,
+        // The worker uses job.userId solely as the GIT identity: it becomes
+        // GIT_USER_ID and keys the just-in-time GitLab token refresh. Carry the
+        // resolved git identity (project owner for synthetic callers) so the
+        // worker/MCP can refresh the owner's expiring token instead of failing
+        // the lookup for 'system'/'orchestrator'.
+        userId: gitIdentityUserId || '',
         sprintId: input.sprintId || '',
         taskId: input.taskId || '',
         branch: input.branch || '',
@@ -721,6 +944,13 @@ exports.handler = async (event) => {
         runNumber: 1,
         changeRequest: input.changeRequest || '',
         agentCli: projectAgentCli,
+        agentModel: resolvedModel.model,
+        // Discussion-assist job fields — empty for other phases.
+        discussionId: input.discussionId || '',
+        command: input.command || '',
+        instruction: input.instruction || '',
+        requestedBy: input.requestedBy || userId || '',
+        requestedByName: input.requestedByName || '',
       };
 
       // Cleanup stale workers before looking for idle ones
@@ -817,7 +1047,32 @@ exports.handler = async (event) => {
           }
 
           // Store execution info on Sprint node (NEW: replaces Project storage)
-          if (input.sprintId) {
+          if (isDiscussion) {
+            // Discussion assist: AgentRun only, keyed run-{executionId} —
+            // per-sprint {n} counters race across concurrent assists in
+            // different threads (locks are per discussion, not per sprint).
+            // NEVER touch Sprint current_* properties.
+            await g
+              .addV('AgentRun')
+              .property('id', `run-${executionId}`)
+              .property('phase', 'DISCUSSION')
+              .property('agent_type', 'discussion')
+              .property('run_number', 1)
+              .property('execution_id', executionId)
+              .property('status', 'running')
+              .property('started_at', new Date().toISOString())
+              .property('sprint_id', input.sprintId)
+              .property('discussion_id', input.discussionId)
+              .property('command', input.command || '')
+              .property('requested_by', input.requestedBy || userId || '')
+              .property('requested_by_name', input.requestedByName || '')
+              .as('run')
+              .V()
+              .has('Sprint', 'id', input.sprintId)
+              .addE('HAS_AGENT_RUN')
+              .to('run')
+              .next();
+          } else if (input.sprintId) {
             const updateQuery = g
               .V()
               .has('Sprint', 'id', input.sprintId)
@@ -852,7 +1107,13 @@ exports.handler = async (event) => {
                   .property(cardinality.single, 'stale_at', new Date().toISOString())
                   .toList();
               } catch (staleErr) {
-                console.error('Failed to mark Review nodes as stale:', staleErr.message);
+                // Non-fatal: construction proceeds even if stale-marking fails, but
+                // log distinctly so a silent regression (e.g. a missing `__` import)
+                // surfaces in CloudWatch instead of leaving reviews permanently un-stale.
+                console.error(
+                  `[stale-review] Failed to mark Review nodes stale for sprint ${input.sprintId}:`,
+                  staleErr,
+                );
               }
             }
 
@@ -1112,7 +1373,9 @@ exports.handler = async (event) => {
     // POST /agents/{taskId}/questions/{questionId}/answer
     if (httpMethod === 'POST' && questionId) {
       const { structuredAnswer } = JSON.parse(body);
-      const userId = event.requestContext.authorizer.claims.sub;
+      const claims = event.requestContext.authorizer.claims;
+      const userId = claims.sub;
+      const userName = claims['custom:display_name'] || claims.email || '';
       const question = await ddb.send(
         new GetCommand({ TableName: process.env.QUESTIONS_TABLE, Key: { questionId } }),
       );
@@ -1123,16 +1386,72 @@ exports.handler = async (event) => {
         new UpdateCommand({
           TableName: process.env.QUESTIONS_TABLE,
           Key: { questionId },
-          UpdateExpression: 'SET #s = :s, structuredAnswer = :a, answeredBy = :u, answeredAt = :t',
+          UpdateExpression:
+            'SET #s = :s, structuredAnswer = :a, answeredBy = :u, answeredByName = :n, answeredAt = :t',
           ExpressionAttributeNames: { '#s': 'status' },
           ExpressionAttributeValues: {
             ':s': 'answered',
             ':a': structuredAnswerJson,
             ':u': userId,
+            ':n': userName,
+            // Epoch millis: the agent-questions DynamoDB table stores all
+            // timestamps as Date.now() (createdAt in submit-question, the
+            // answer-question lambda) and the frontend types them as number.
+            // The Neptune graph uses ISO-8601 strings throughout — the sync
+            // below follows that convention instead.
             ':t': Date.now(),
           },
         }),
       );
+      // Best-effort sync to the Neptune Question vertex: the sprint pages and
+      // Q&A history render questions from Neptune, so without this the question
+      // would stay "pending" there and the responder would not be traceable.
+      try {
+        await withNeptune(async (g) => {
+          await g
+            .V()
+            .has('Question', 'id', questionId)
+            .property(cardinality.single, 'structured_answer', structuredAnswerJson)
+            .property(cardinality.single, 'answered_by', userId)
+            .property(cardinality.single, 'answered_by_name', userName)
+            .property(cardinality.single, 'answered_at', new Date().toISOString())
+            .next();
+        });
+      } catch (e) {
+        // The DynamoDB write above already succeeded, so the agent will see the
+        // answer; only the sprint pages would lag (question stays pending there
+        // until re-answered). Emit a CloudWatch metric (Embedded Metric Format)
+        // so the failure rate can be alarmed on, rather than failing the request.
+        console.error('Neptune question sync failed:', e.message);
+        console.log(
+          JSON.stringify({
+            _aws: {
+              Timestamp: Date.now(),
+              CloudWatchMetrics: [
+                {
+                  Namespace: 'collaborative-ai-dlc',
+                  Dimensions: [['Lambda']],
+                  Metrics: [{ Name: 'NeptuneQuestionSyncFailure', Unit: 'Count' }],
+                },
+              ],
+            },
+            Lambda: 'agents',
+            NeptuneQuestionSyncFailure: 1,
+            questionId,
+          }),
+        );
+      }
+
+      // Server-origin reload hint: peers re-fetch the answered question.
+      // Replaces the client broadcast.
+      if (question.Item.sprintId) {
+        await broadcastToSprintChannel(question.Item.sprintId, {
+          action: 'question.answered',
+          sprintId: question.Item.sprintId,
+          questionId,
+        });
+      }
+
       return response(200, { success: true });
     }
 
@@ -1165,7 +1484,12 @@ exports.handler = async (event) => {
         if (outputItem) {
           const s = outputItem.status;
           const mapped = s === 'completed' ? 'SUCCEEDED' : s === 'failed' ? 'FAILED' : 'RUNNING';
-          return response(200, { status: mapped, executionArn: taskId });
+          return response(200, {
+            status: mapped,
+            executionArn: taskId,
+            outputText: outputItem.outputText,
+            errorMessage: outputItem.errorMessage,
+          });
         }
       }
       const taskStatus = await getTaskStatus(taskId);

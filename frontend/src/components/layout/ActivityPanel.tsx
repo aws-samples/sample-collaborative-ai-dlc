@@ -11,6 +11,10 @@ import { realtimeService } from '@/services/realtime';
 import { agentsService } from '@/services/agents';
 import { timelineEventsService, type TimelineEvent } from '@/services/timelineEvents';
 import { useAuth } from '@/contexts/AuthContext';
+import { useQuestionLink } from '@/hooks/useQuestionAnchor';
+import { DiscussionsTab } from '@/components/discussion/DiscussionsTab';
+import { DiscussionPanel, useDiscussions } from '@/components/discussion';
+import { MessageSquare } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -68,6 +72,19 @@ export function ActivityPanel({ sprintId, onClose }: ActivityPanelProps) {
   const { user } = useAuth();
   const userName = user?.displayName || user?.email || '';
   const [activeTab, setActiveTab] = useState('agent');
+  const discussionsCtx = useDiscussions();
+  const totalUnread = (discussionsCtx?.discussions ?? []).reduce(
+    (sum, d) => sum + (d.unreadCount ?? 0),
+    0,
+  );
+
+  // Opening a thread (from any entry point) jumps to the Discuss tab, where
+  // it swaps in for the list. Other tabs stay reachable while it's open.
+  const discussionOpen = !!discussionsCtx?.isOpen;
+  const activeDiscussionId = discussionsCtx?.activeDiscussion?.id ?? null;
+  useEffect(() => {
+    if (discussionOpen) setActiveTab('discussions');
+  }, [discussionOpen, activeDiscussionId]);
 
   // -- Agent state --
   const [streamingText, setStreamingText] = useState('');
@@ -173,16 +190,13 @@ export function ActivityPanel({ sprintId, onClose }: ActivityPanelProps) {
           ]);
         } else {
           setToolCalls((prev) => {
-            const idx = [...prev]
-              .reverse()
-              .findIndex(
-                (t) => t.name === toolName && (t.status === 'pending' || t.status === 'running'),
-              );
+            const idx = prev.findLastIndex(
+              (t) => t.name === toolName && (t.status === 'pending' || t.status === 'running'),
+            );
             if (idx === -1) return prev;
-            const realIdx = prev.length - 1 - idx;
             const updated = [...prev];
-            updated[realIdx] = {
-              ...updated[realIdx],
+            updated[idx] = {
+              ...updated[idx],
               status: data.status === 'error' || data.status === 'failed' ? 'failed' : 'completed',
               completedAt: Date.now(),
             };
@@ -252,6 +266,15 @@ export function ActivityPanel({ sprintId, onClose }: ActivityPanelProps) {
                 </Badge>
               )}
             </TabsTrigger>
+            <TabsTrigger value="discussions" className="h-6 px-2.5 text-xs gap-1.5">
+              <MessageSquare className="h-3 w-3" />
+              Discuss
+              {totalUnread > 0 && (
+                <Badge className="h-4 px-1 text-[9px] ml-0.5">
+                  {totalUnread > 99 ? '99+' : totalUnread}
+                </Badge>
+              )}
+            </TabsTrigger>
           </TabsList>
         </Tabs>
         <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onClose}>
@@ -259,19 +282,28 @@ export function ActivityPanel({ sprintId, onClose }: ActivityPanelProps) {
         </Button>
       </div>
 
-      {/* Content */}
-      <ScrollArea className="flex-1">
-        {activeTab === 'agent' ? (
-          <AgentTab
-            streamingText={streamingText}
-            toolCalls={toolCalls}
-            agentRunning={agentRunning}
-            agentStatus={agentStatus}
-          />
-        ) : (
-          <TimelineTab events={timelineEvents} loading={timelineLoading} />
-        )}
-      </ScrollArea>
+      {/* Content. The Discuss tab swaps between the thread list and the open
+          thread (non-modal — the rest of the app stays interactive). The
+          thread manages its own scrolling + input footer, so it renders
+          outside the shared ScrollArea. */}
+      {activeTab === 'discussions' && discussionsCtx?.isOpen ? (
+        <DiscussionPanel />
+      ) : (
+        <ScrollArea className="flex-1">
+          {activeTab === 'agent' ? (
+            <AgentTab
+              streamingText={streamingText}
+              toolCalls={toolCalls}
+              agentRunning={agentRunning}
+              agentStatus={agentStatus}
+            />
+          ) : activeTab === 'discussions' ? (
+            <DiscussionsTab sprintId={sprintId || ''} />
+          ) : (
+            <TimelineTab events={timelineEvents} loading={timelineLoading} />
+          )}
+        </ScrollArea>
+      )}
     </div>
   );
 }
@@ -353,9 +385,7 @@ export function AgentStreamView({
     }
   }, [streamingText, toolCalls.length]);
 
-  const activeTool = [...toolCalls]
-    .reverse()
-    .find((tc) => tc.status === 'pending' || tc.status === 'running');
+  const activeTool = toolCalls.findLast((tc) => tc.status === 'pending' || tc.status === 'running');
   const completedTools = toolCalls.filter(
     (tc) => tc.status === 'completed' || tc.status === 'failed',
   );
@@ -534,6 +564,8 @@ function TimelineEmptyState() {
 export function TimelineEventItem({ event }: { event: TimelineEvent }) {
   const timeAgo = getTimeAgo(event.timestamp);
   const { color } = getEventStyle(event.type);
+  const openQuestion = useQuestionLink();
+  const linkable = !!event.questionId;
 
   return (
     <div className="flex gap-3 py-2">
@@ -542,7 +574,18 @@ export function TimelineEventItem({ event }: { event: TimelineEvent }) {
         <div className="w-px flex-1 bg-border mt-1" />
       </div>
       <div className="flex-1 min-w-0 pb-2">
-        <p className="text-xs font-medium leading-tight">{event.title}</p>
+        {linkable ? (
+          <button
+            type="button"
+            onClick={() => openQuestion(event.questionId!)}
+            title="Go to question"
+            className="text-xs font-medium leading-tight text-left hover:underline cursor-pointer"
+          >
+            {event.title}
+          </button>
+        ) : (
+          <p className="text-xs font-medium leading-tight">{event.title}</p>
+        )}
         <div className="flex items-center gap-2 mt-0.5">
           {event.userName && (
             <span className="text-[10px] text-muted-foreground">{event.userName}</span>

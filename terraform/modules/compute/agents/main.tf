@@ -56,9 +56,9 @@ resource "aws_ecr_lifecycle_policy" "agents" {
 
 # Calculate hash of all source files for change detection
 locals {
-  agents_source_path = abspath("${path.module}/../../../../lambda/agents-ecs")
+  agents_source_path = abspath("${path.module}/../../../../lambda")
 
-  path_include = ["**"]
+  path_include = ["agents-ecs/**", "shared/mcp-validator.js"]
   path_exclude = ["**/node_modules/**", "**/.git/**"]
 
   agents_files_include = setunion([for f in local.path_include : fileset(local.agents_source_path, f)]...)
@@ -84,8 +84,15 @@ module "agents_docker_build" {
   use_image_tag    = true
   image_tag        = local.agents_image_tag
   source_path      = local.agents_source_path
-  docker_file_path = "${local.agents_source_path}/Dockerfile"
+  docker_file_path = "${local.agents_source_path}/agents-ecs/Dockerfile"
   platform         = "linux/amd64"
+  # Use the buildx "default" builder (BuildKit session) instead of the
+  # provider's legacy /build path. The legacy path streams the whole context
+  # as a single tar.gz and corrupts it on large contexts (unpigz: invalid
+  # deflate data); the BuildKit session transfers files incrementally and
+  # applies .dockerignore client-side. "default" exists on every Docker
+  # Desktop and docker-engine install.
+  builder = "default"
 
   build_args = {
     IMAGE_TAG = local.agents_image_tag
@@ -123,6 +130,25 @@ resource "aws_ssm_parameter" "mcp_servers" {
   description = "Additional MCP server definitions for agent sessions (JSON array)"
   type        = "String"
   value       = "[]"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+
+  tags = var.tags
+}
+
+# Default agent models by CLI — JSON object managed by the Admin UI at runtime.
+resource "aws_ssm_parameter" "cli_models" {
+  name        = "/${var.project_name}/${var.environment}/cli-models"
+  description = "Default agent model IDs by CLI (JSON object)"
+  type        = "String"
+  value = jsonencode(merge(
+    var.kiro_model != "" ? { kiro = var.kiro_model } : {},
+    var.bedrock_model != "" ? {
+      opencode = can(regex("^amazon-bedrock/", var.bedrock_model)) ? var.bedrock_model : "amazon-bedrock/${var.bedrock_model}"
+    } : {}
+  ))
 
   lifecycle {
     ignore_changes = [value]
@@ -208,12 +234,20 @@ resource "aws_iam_role_policy" "agent_task" {
       {
         Effect   = "Allow"
         Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]
-        Resource = compact([var.agent_questions_table_arn, var.agent_outputs_table_arn, var.git_connections_table_arn, var.connections_table_arn, var.agent_pool_table_arn])
+        Resource = compact([var.agent_questions_table_arn, var.agent_outputs_table_arn, var.connections_table_arn, var.agent_pool_table_arn])
       },
       {
         Effect   = "Allow"
         Action   = ["dynamodb:Scan", "dynamodb:DeleteItem"]
         Resource = compact([var.agent_pool_table_arn])
+      },
+      {
+        # Assist-lock heartbeat + release: the pool
+        # worker renews `assist:{discussionId}` while a discussion session
+        # runs and deletes it on completion.
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem"]
+        Resource = compact([var.discussion_locks_table_arn])
       },
       {
         Effect = "Allow"
@@ -248,6 +282,7 @@ resource "aws_iam_role_policy" "agent_task" {
         Resource = [
           aws_ssm_parameter.bedrock_bearer_token.arn,
           aws_ssm_parameter.mcp_servers.arn,
+          aws_ssm_parameter.cli_models.arn,
           aws_ssm_parameter.kiro_api_key.arn,
         ]
       },
@@ -326,10 +361,10 @@ resource "aws_ecs_task_definition" "agent" {
       { name = "CODE_SNAPSHOTS_BUCKET", value = var.code_snapshots_bucket_name },
       { name = "SUBMIT_QUESTION_LAMBDA", value = var.submit_question_lambda_name },
       { name = "AGENT_OUTPUTS_TABLE", value = var.agent_outputs_table_name },
-      { name = "GIT_CONNECTIONS_TABLE", value = var.git_connections_table_name },
       { name = "QUESTIONS_TABLE", value = var.agent_questions_table_name },
       { name = "CONNECTIONS_TABLE", value = var.connections_table_name },
       { name = "WEBSOCKET_ENDPOINT", value = var.websocket_endpoint },
+      { name = "LOCKS_TABLE", value = var.discussion_locks_table_name },
       { name = "AGENTS_LAMBDA_NAME", value = var.agents_lambda_name },
       { name = "CREATE_PR_LAMBDA_NAME", value = var.create_pr_lambda_name },
       { name = "AWS_REGION", value = var.aws_region },
@@ -342,6 +377,9 @@ resource "aws_ecs_task_definition" "agent" {
       { name = "BEDROCK_BEARER_TOKEN_SSM_PATH", value = aws_ssm_parameter.bedrock_bearer_token.name },
       { name = "MCP_SERVERS_SSM_PATH", value = aws_ssm_parameter.mcp_servers.name },
       { name = "KIRO_API_KEY_SSM_PATH", value = aws_ssm_parameter.kiro_api_key.name },
+      # Git identity for commits the agents create (overridable per deployment).
+      { name = "GIT_AUTHOR_NAME", value = var.git_author_name },
+      { name = "GIT_AUTHOR_EMAIL", value = var.git_author_email },
     ]
     logConfiguration = {
       logDriver = "awslogs"

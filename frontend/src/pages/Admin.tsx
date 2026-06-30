@@ -5,6 +5,7 @@ import {
   type PoolStatus,
   type AgentSettings,
 } from '@/services/agents';
+import type { CliModels, RuntimeModelCli } from '@/services/projects';
 import { trackersService, type TrackerProviderStatus } from '@/services/trackers';
 import { OAuthProviderCard } from '@/components/admin/OAuthProviderCard';
 import { TrackerMigrationCard } from '@/components/admin/TrackerMigrationCard';
@@ -30,6 +31,7 @@ import {
   XCircle,
   Settings,
   Plug,
+  ExternalLink,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -79,10 +81,50 @@ const STATUS_CONFIG: Record<
 
 // Per-CLI badge styles shown next to the job type in the worker table
 const CLI_BADGE_CONFIG: Record<string, { label: string; className: string }> = {
-  kiro: { label: 'kiro', className: 'bg-amber-100 text-amber-700 border-amber-200' },
-  claude: { label: 'claude', className: 'bg-violet-100 text-violet-700 border-violet-200' },
-  opencode: { label: 'opencode', className: 'bg-teal-100 text-teal-700 border-teal-200' },
+  kiro: {
+    label: 'kiro',
+    className: 'bg-amber-100 text-amber-700 border-amber-200',
+  },
+  claude: {
+    label: 'claude',
+    className: 'bg-violet-100 text-violet-700 border-violet-200',
+  },
+  opencode: {
+    label: 'opencode',
+    className: 'bg-teal-100 text-teal-700 border-teal-200',
+  },
 };
+
+const MODEL_CLI_LABELS: Record<RuntimeModelCli, string> = {
+  kiro: 'Kiro',
+  claude: 'Claude',
+  opencode: 'OpenCode',
+};
+
+const MODEL_CLI_KEYS = Object.keys(MODEL_CLI_LABELS) as RuntimeModelCli[];
+
+const MODEL_ID_HELP: Record<RuntimeModelCli, { label: string; url: string }> = {
+  kiro: {
+    label: 'Kiro model IDs',
+    url: 'https://kiro.dev/docs/',
+  },
+  claude: {
+    label: 'Bedrock model IDs',
+    url: 'https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html',
+  },
+  opencode: {
+    label: 'Bedrock model IDs',
+    url: 'https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html',
+  },
+};
+
+function canonicalCliModels(models: CliModels = {}) {
+  return MODEL_CLI_KEYS.reduce<CliModels>((acc, cli) => {
+    const value = models[cli]?.trim();
+    if (value) acc[cli] = value;
+    return acc;
+  }, {});
+}
 
 function timeAgo(ts?: number) {
   if (!ts) return '\u2014';
@@ -112,8 +154,16 @@ export default function Admin() {
   const [bearerToken, setBearerToken] = useState('');
   const [kiroApiKey, setKiroApiKey] = useState('');
   const [mcpServers, setMcpServers] = useState('[]');
+  const [cliModels, setCliModels] = useState<CliModels>({});
   const [settingsSaving, setSettingsSaving] = useState(false);
+  const [clearingSecret, setClearingSecret] = useState<'bedrockBearerToken' | 'kiroApiKey' | null>(
+    null,
+  );
   const [settingsSaveResult, setSettingsSaveResult] = useState<'saved' | 'error' | null>(null);
+  const cliModelsChanged =
+    JSON.stringify(canonicalCliModels(cliModels)) !==
+    JSON.stringify(canonicalCliModels(settings?.cliModels || {}));
+  const hasSettingsChanges = bearerToken !== '' || kiroApiKey !== '' || cliModelsChanged;
 
   const refresh = useCallback(async () => {
     try {
@@ -137,6 +187,7 @@ export default function Admin() {
       .then((s) => {
         setSettings(s);
         setMcpServers(s.mcpServers);
+        setCliModels(s.cliModels || {});
       })
       .catch((e) => console.error('Failed to load settings:', e))
       .finally(() => setSettingsLoading(false));
@@ -161,7 +212,13 @@ export default function Admin() {
     setSettingsSaving(true);
     setSettingsSaveResult(null);
     try {
-      const update: { bedrockBearerToken?: string; kiroApiKey?: string } = {};
+      const update: {
+        bedrockBearerToken?: string;
+        kiroApiKey?: string;
+        cliModels: CliModels;
+      } = {
+        cliModels,
+      };
       // Only send secret fields if the user typed something
       if (bearerToken !== '') update.bedrockBearerToken = bearerToken;
       if (kiroApiKey !== '') update.kiroApiKey = kiroApiKey;
@@ -170,6 +227,7 @@ export default function Admin() {
       // Reload to get fresh flags; clear the secret inputs
       const fresh = await agentsService.getSettings();
       setSettings(fresh);
+      setCliModels(fresh.cliModels || {});
       setBearerToken('');
       setKiroApiKey('');
     } catch (e) {
@@ -181,12 +239,39 @@ export default function Admin() {
     }
   };
 
+  // Clear a stored secret by sending an empty string; the backend resets the
+  // SSM parameter to its "placeholder" sentinel (treated as not configured).
+  const clearSecret = async (field: 'bedrockBearerToken' | 'kiroApiKey') => {
+    setClearingSecret(field);
+    setSettingsSaveResult(null);
+    try {
+      await agentsService.updateSettings({ [field]: '' });
+      const fresh = await agentsService.getSettings();
+      setSettings(fresh);
+      setCliModels(fresh.cliModels || {});
+      if (field === 'bedrockBearerToken') setBearerToken('');
+      else setKiroApiKey('');
+      setSettingsSaveResult('saved');
+    } catch (e) {
+      console.error('Failed to clear secret:', e);
+      setSettingsSaveResult('error');
+    } finally {
+      setClearingSecret(null);
+      setTimeout(() => setSettingsSaveResult(null), 4000);
+    }
+  };
+
   const saveMcpServers = async (value: string) => {
     await agentsService.updateSettings({ mcpServers: value });
     // Refresh local state from server so we display the canonical stored value
     const fresh = await agentsService.getSettings();
     setSettings(fresh);
     setMcpServers(fresh.mcpServers);
+    setCliModels(fresh.cliModels || {});
+  };
+
+  const updateCliModel = (cli: RuntimeModelCli, value: string) => {
+    setCliModels((current) => ({ ...current, [cli]: value }));
   };
 
   const act = async (label: string, fn: () => Promise<unknown>) => {
@@ -410,18 +495,36 @@ export default function Admin() {
               <>
                 {/* Bedrock Bearer Token */}
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-foreground flex items-center gap-2">
-                    Bedrock Bearer Token
-                    {settings?.bedrockBearerTokenSet ? (
-                      <span className="inline-flex items-center gap-1 text-[10px] text-agent-success font-normal">
-                        <CheckCircle2 className="h-3 w-3" /> Set
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground font-normal">
-                        <XCircle className="h-3 w-3" /> Not set — using IAM role
-                      </span>
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-medium text-foreground flex items-center gap-2">
+                      Bedrock Bearer Token
+                      {settings?.bedrockBearerTokenSet ? (
+                        <span className="inline-flex items-center gap-1 text-[10px] text-agent-success font-normal">
+                          <CheckCircle2 className="h-3 w-3" /> Set
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground font-normal">
+                          <XCircle className="h-3 w-3" /> Not set — Claude/OpenCode agents won't
+                          start
+                        </span>
+                      )}
+                    </label>
+                    {settings?.bedrockBearerTokenSet && (
+                      <button
+                        type="button"
+                        onClick={() => clearSecret('bedrockBearerToken')}
+                        disabled={clearingSecret !== null || settingsSaving}
+                        className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-destructive disabled:opacity-50"
+                      >
+                        {clearingSecret === 'bedrockBearerToken' ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <XCircle className="h-3 w-3" />
+                        )}
+                        Clear
+                      </button>
                     )}
-                  </label>
+                  </div>
                   <Input
                     type="password"
                     placeholder={
@@ -435,28 +538,45 @@ export default function Admin() {
                     autoComplete="off"
                   />
                   <p className="text-[11px] text-muted-foreground">
-                    Optional. When set, agents use this as{' '}
+                    Required for Claude Code and OpenCode agents. Agents use this as{' '}
                     <code className="bg-muted px-1 rounded text-[10px]">
                       AWS_BEARER_TOKEN_BEDROCK
                     </code>{' '}
-                    instead of the ECS task IAM role. Clear by saving an empty value.
+                    to authenticate to Bedrock. Use Clear to remove a stored token.
                   </p>
                 </div>
 
                 {/* Kiro API Key */}
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-foreground flex items-center gap-2">
-                    Kiro API Key
-                    {settings?.kiroApiKeySet ? (
-                      <span className="inline-flex items-center gap-1 text-[10px] text-agent-success font-normal">
-                        <CheckCircle2 className="h-3 w-3" /> Set
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground font-normal">
-                        <XCircle className="h-3 w-3" /> Not set
-                      </span>
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-medium text-foreground flex items-center gap-2">
+                      Kiro API Key
+                      {settings?.kiroApiKeySet ? (
+                        <span className="inline-flex items-center gap-1 text-[10px] text-agent-success font-normal">
+                          <CheckCircle2 className="h-3 w-3" /> Set
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground font-normal">
+                          <XCircle className="h-3 w-3" /> Not set
+                        </span>
+                      )}
+                    </label>
+                    {settings?.kiroApiKeySet && (
+                      <button
+                        type="button"
+                        onClick={() => clearSecret('kiroApiKey')}
+                        disabled={clearingSecret !== null || settingsSaving}
+                        className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-destructive disabled:opacity-50"
+                      >
+                        {clearingSecret === 'kiroApiKey' ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <XCircle className="h-3 w-3" />
+                        )}
+                        Clear
+                      </button>
                     )}
-                  </label>
+                  </div>
                   <Input
                     type="password"
                     placeholder={
@@ -470,9 +590,52 @@ export default function Admin() {
                     autoComplete="off"
                   />
                   <p className="text-[11px] text-muted-foreground">
-                    Required for Kiro CLI. Obtain from your Kiro account settings. Clear by saving
-                    an empty value.
+                    Required for Kiro CLI. Obtain from your Kiro account settings. Use Clear to
+                    remove a stored key.
                   </p>
+                </div>
+
+                {/* Default Models */}
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-xs font-medium text-foreground">Default Models</label>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">
+                      Used when a project does not set its own model override. Changes apply to new
+                      agent runs.
+                    </p>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {MODEL_CLI_KEYS.map((cli) => (
+                      <div key={cli} className="space-y-1.5">
+                        <div className="flex items-center justify-between gap-3">
+                          <label className="text-xs font-medium text-muted-foreground">
+                            {MODEL_CLI_LABELS[cli]}
+                          </label>
+                          <a
+                            href={MODEL_ID_HELP[cli].url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+                          >
+                            {MODEL_ID_HELP[cli].label}
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
+                        </div>
+                        <Input
+                          value={cliModels[cli] || ''}
+                          onChange={(e) => updateCliModel(cli, e.target.value)}
+                          placeholder={
+                            cli === 'opencode'
+                              ? 'amazon-bedrock/us.anthropic.claude-sonnet-4-6'
+                              : cli === 'claude'
+                                ? 'us.anthropic.claude-sonnet-4-6'
+                                : 'Model ID'
+                          }
+                          className="font-mono text-sm h-9"
+                        />
+                      </div>
+                    ))}
+                  </div>
                 </div>
 
                 {/* Extra MCP Servers */}
@@ -490,7 +653,7 @@ export default function Admin() {
                   <Button
                     size="sm"
                     onClick={saveSettings}
-                    disabled={settingsSaving || (bearerToken === '' && kiroApiKey === '')}
+                    disabled={settingsSaving || !hasSettingsChanges}
                     className="gap-1.5"
                   >
                     {settingsSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
@@ -525,9 +688,9 @@ export default function Admin() {
               Tracker OAuth Apps
             </CardTitle>
             <p className="text-xs text-muted-foreground">
-              Connect external tracker providers (Jira Cloud, GitHub Issues) by registering an OAuth
-              app with each provider and pasting its credentials below. Users then connect their
-              personal accounts from Project Settings → Trackers.
+              Connect external tracker providers (Jira Cloud, GitHub Issues, GitLab Issues) by
+              registering an OAuth app with each provider and pasting its credentials below. Users
+              then connect their personal accounts from Project Settings → Trackers.
             </p>
           </CardHeader>
           <CardContent className="px-5 pb-5 space-y-4">

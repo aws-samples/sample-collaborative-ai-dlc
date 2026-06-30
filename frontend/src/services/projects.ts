@@ -1,7 +1,28 @@
 import { api } from './api';
+import type { GitProvider } from './gitProvider';
 
 export type ProjectRole = 'owner' | 'admin' | 'member';
 export type AgentCli = 'kiro' | 'claude' | 'opencode';
+export type RuntimeModelCli = 'kiro' | 'claude' | 'opencode';
+export type CliModels = Partial<Record<RuntimeModelCli, string>>;
+export type RepoRole =
+  | 'primary'
+  | 'secondary'
+  | 'frontend'
+  | 'backend'
+  | 'api'
+  | 'infra'
+  | 'shared'
+  | 'docs'
+  | 'unknown';
+
+export interface ProjectRepo {
+  url: string;
+  provider: GitProvider;
+  role: RepoRole;
+  detectedStack: string;
+  addedAt: string;
+}
 
 // One project ↔ tracker (Jira / GitHub Issues / …) binding. Phase 1 of #194
 // only writes synthetic GitHub-issues bindings via the migration; Phase 3
@@ -19,13 +40,15 @@ export interface TrackerBinding {
 export interface Project {
   id: string;
   name: string;
-  gitProvider: 'github' | 'gitlab';
+  gitProvider: GitProvider;
   gitRepo: string;
   agentCli: AgentCli;
+  cliModels?: CliModels;
   issueIntegrationEnabled?: boolean;
   createdAt: string;
   userRole?: ProjectRole;
   trackers: TrackerBinding[];
+  repos?: ProjectRepo[];
 }
 
 export interface TrackerMigrationResult {
@@ -41,18 +64,28 @@ export type TrackerMigrationStatus = TrackerMigrationResult;
 
 export interface CreateProjectInput {
   name: string;
-  gitProvider: 'github' | 'gitlab';
+  gitProvider: GitProvider;
   gitRepo: string;
   agentCli?: AgentCli;
+  cliModels?: CliModels;
   issueIntegrationEnabled?: boolean;
+  repos?: { url: string; provider?: string; role?: RepoRole }[];
 }
 
 export interface UpdateProjectInput {
   name?: string;
   gitRepo?: string;
-  gitProvider?: 'github' | 'gitlab';
+  gitProvider?: GitProvider;
   agentCli?: AgentCli;
+  cliModels?: CliModels;
   issueIntegrationEnabled?: boolean;
+}
+
+export interface AddRepoInput {
+  url: string;
+  provider?: GitProvider;
+  role?: RepoRole;
+  detectedStack?: string;
 }
 
 export interface Member {
@@ -88,6 +121,13 @@ export const projectsService = {
   create: (input: CreateProjectInput) => api.post<Project>('/projects', input),
   update: (id: string, input: UpdateProjectInput) => api.put<Project>(`/projects/${id}`, input),
   delete: (id: string) => api.delete(`/projects/${id}`),
+
+  // Repos
+  listRepos: (projectId: string) => api.get<ProjectRepo[]>(`/projects/${projectId}/repos`),
+  addRepo: (projectId: string, input: AddRepoInput) =>
+    api.post<ProjectRepo>(`/projects/${projectId}/repos`, input),
+  removeRepo: (projectId: string, repoUrl: string) =>
+    api.delete(`/projects/${projectId}/repos?url=${encodeURIComponent(repoUrl)}`),
 
   // Members
   listMembers: (projectId: string) => api.get<Member[]>(`/projects/${projectId}/members`),

@@ -59,6 +59,8 @@ The platform is not locked into any single technology. We integrate what works b
 
 The important thing is the _concept_ at each layer — structured data, traceability, collaboration, observability — not the specific implementation. Tools evolve fast; these principles don't.
 
+For a visual overview of how these layers fit together in the current implementation, see the [architecture diagram](architecture.md).
+
 ## The lifecycle
 
 The platform implements a three-phase lifecycle organized around **sprints**:

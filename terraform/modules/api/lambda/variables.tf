@@ -72,6 +72,18 @@ variable "git_connections_table_arn" {
   default     = ""
 }
 
+variable "git_provider_connections_table_name" {
+  description = "DynamoDB table name for per-provider git connections (composite key userId+provider)"
+  type        = string
+  default     = ""
+}
+
+variable "git_provider_connections_table_arn" {
+  description = "DynamoDB table ARN for per-provider git connections"
+  type        = string
+  default     = ""
+}
+
 variable "tracker_connections_table_name" {
   description = "DynamoDB table name for tracker connections (Jira / GitHub Issues / …)"
   type        = string
@@ -86,6 +98,24 @@ variable "tracker_connections_table_arn" {
 
 variable "github_redirect_uri" {
   description = "OAuth redirect URI for GitHub callback"
+  type        = string
+  default     = ""
+}
+
+variable "gitlab_oauth_secret_name" {
+  description = "Secrets Manager secret name for GitLab OAuth credentials"
+  type        = string
+  default     = ""
+}
+
+variable "gitlab_oauth_secret_arn" {
+  description = "Secrets Manager secret ARN for GitLab OAuth credentials"
+  type        = string
+  default     = ""
+}
+
+variable "gitlab_redirect_uri" {
+  description = "OAuth redirect URI for GitLab callback"
   type        = string
   default     = ""
 }
@@ -173,4 +203,53 @@ variable "agent_execution_role_arn" {
   description = "ARN of the ECS execution role used by Fargate to pull images and write logs. Used to scope iam:PassRole."
   type        = string
   default     = ""
+}
+variable "realtime_doc_secret_param_arn" {
+  description = "SSM parameter ARN of the realtime doc-token secret (discussions lambda reads it to sign scope tokens)"
+  type        = string
+}
+
+variable "realtime_doc_secret_param_name" {
+  description = "SSM parameter name of the realtime doc-token secret"
+  type        = string
+}
+
+variable "discussion_locks_table_name" {
+  description = "DynamoDB table name for discussion creation guards / message guards / assist locks"
+  type        = string
+}
+
+variable "discussion_locks_table_arn" {
+  description = "DynamoDB table ARN for discussion locks"
+  type        = string
+}
+
+variable "discussion_read_state_table_name" {
+  description = "DynamoDB table name for per-user discussion read cursors"
+  type        = string
+}
+
+variable "discussion_read_state_table_arn" {
+  description = "DynamoDB table ARN for discussion read state"
+  type        = string
+}
+
+variable "connections_table_name" {
+  description = "DynamoDB table name for WebSocket connections (discussions fan-out)"
+  type        = string
+}
+
+variable "connections_table_arn" {
+  description = "DynamoDB table ARN for WebSocket connections"
+  type        = string
+}
+
+variable "websocket_api_endpoint_https" {
+  description = "WebSocket API management endpoint (https:// form) for PostToConnection fan-out"
+  type        = string
+}
+
+variable "websocket_execution_arn" {
+  description = "Execution ARN of the WebSocket API (ManageConnections IAM scope)"
+  type        = string
 }

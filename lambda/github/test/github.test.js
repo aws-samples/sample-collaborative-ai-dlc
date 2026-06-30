@@ -20,6 +20,7 @@ const secretsMock = mockClient(SecretsManagerClient);
 const ssmMock = mockClient(SSMClient);
 
 const CONNECTIONS_TABLE = 'test-git-connections';
+const PROVIDER_CONNECTIONS_TABLE = 'test-git-provider-connections';
 const OAUTH_SECRET_NAME = 'test/github-oauth';
 const REDIRECT_URI = 'https://app.example.com/github/callback';
 const SSM_PREFIX = 'test/git/tokens';
@@ -88,6 +89,7 @@ describe('github handler', () => {
     secretsMock.reset();
     ssmMock.reset();
     vi.stubEnv('GIT_CONNECTIONS_TABLE', CONNECTIONS_TABLE);
+    vi.stubEnv('GIT_PROVIDER_CONNECTIONS_TABLE', PROVIDER_CONNECTIONS_TABLE);
     vi.stubEnv('GITHUB_OAUTH_SECRET_NAME', OAUTH_SECRET_NAME);
     vi.stubEnv('GITHUB_REDIRECT_URI', REDIRECT_URI);
     vi.stubEnv('GIT_TOKEN_SSM_PREFIX', SSM_PREFIX);
@@ -360,18 +362,18 @@ describe('github handler', () => {
       expect(JSON.parse(res.body)).toEqual({ success: true });
 
       expect(ssmMock).toHaveReceivedCommandWith(PutParameterCommand, {
-        Name: `/${SSM_PREFIX}/${USER_ID}`,
+        Name: `/${SSM_PREFIX}/${USER_ID}/github`,
         Value: JSON.stringify({ accessToken: 'ghp_new', tokenType: 'bearer' }),
         Type: 'SecureString',
         Overwrite: true,
       });
 
       expect(ddbMock).toHaveReceivedCommandWith(PutCommand, {
-        TableName: CONNECTIONS_TABLE,
+        TableName: PROVIDER_CONNECTIONS_TABLE,
         Item: expect.objectContaining({
           userId: USER_ID,
           provider: 'github',
-          parameterName: `/${SSM_PREFIX}/${USER_ID}`,
+          parameterName: `/${SSM_PREFIX}/${USER_ID}/github`,
           scope: 'repo',
         }),
       });
@@ -1019,7 +1021,7 @@ describe('github handler', () => {
       expect(res.statusCode).toBe(401);
     });
 
-    it('still deletes DynamoDB row when no item found (no SSM to clean)', async () => {
+    it('is a successful no-op when no connection row exists for this provider', async () => {
       ddbMock.on(GetCommand).resolves({});
       ddbMock.on(DeleteCommand).resolves({});
 
@@ -1028,10 +1030,9 @@ describe('github handler', () => {
 
       expect(res.statusCode).toBe(200);
       expect(ssmMock).toHaveReceivedCommandTimes(DeleteParameterCommand, 0);
-      expect(ddbMock).toHaveReceivedCommandWith(DeleteCommand, {
-        TableName: CONNECTIONS_TABLE,
-        Key: { userId: USER_ID },
-      });
+      // git-connections is keyed by userId alone; with no GitHub row present we
+      // must NOT delete (it could be another provider's row).
+      expect(ddbMock).toHaveReceivedCommandTimes(DeleteCommand, 0);
     });
   });
 
