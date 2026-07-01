@@ -95,6 +95,18 @@ export const fetchKnowledgeGraph = async (g, { projectId, intentId }) => {
       .toList()
   ).map(flatten);
 
+  // Steering vertices — human course corrections (docs/v2-steering.md): the
+  // WHY behind a direction change, with REVISES/INFLUENCES provenance edges.
+  const steering = (
+    await g
+      .V()
+      .has('Intent', 'id', intentId)
+      .out('CONTAINS')
+      .hasLabel('Steering')
+      .valueMap(true)
+      .toList()
+  ).map(flatten);
+
   const discussions = (
     await g
       .V()
@@ -144,6 +156,10 @@ export const fetchKnowledgeGraph = async (g, { projectId, intentId }) => {
       createdByStageInstanceId: a.created_by_stage_instance_id ?? null,
       createdAt: a.created_at ?? null,
       updatedAt: a.updated_at ?? null,
+      // Rewind lineage: a superseded artifact came from a rewound stage attempt
+      // and has not (yet) been rehabilitated by the re-run. UI dims it.
+      superseded: Boolean(a.superseded_at),
+      supersededAt: a.superseded_at ?? null,
       contentPreview: preview(a.content),
       contentLength: String(a.content ?? '').length,
     })),
@@ -157,6 +173,17 @@ export const fetchKnowledgeGraph = async (g, { projectId, intentId }) => {
       answeredByName: q.answered_by_name ?? null,
       answeredAt: q.answered_at ?? null,
       createdAt: q.created_at ?? null,
+    })),
+    ...steering.map((s) => ({
+      id: s.id,
+      type: 'Steering',
+      label: preview(s.message) || 'Course correction',
+      kind: s.kind ?? null,
+      targetGateId: s.target_gate_id || null,
+      targetStageId: s.target_stage_id || null,
+      createdBy: s.created_by || null,
+      createdByName: s.created_by_name || null,
+      createdAt: s.created_at ?? null,
     })),
     ...discussions.map((d) => ({
       id: d.id,
@@ -243,12 +270,33 @@ export const fetchKnowledgeGraph = async (g, { projectId, intentId }) => {
     influenceEdges = mapEdgeRows(rows, nodeIds);
   }
 
+  // Steering provenance: REVISES (correction → the question it corrects) and
+  // INFLUENCES (correction → the artifacts the redirected stage produced).
+  let steeringEdges = [];
+  if (steering.length > 0) {
+    const rows = await g
+      .V()
+      .has('Intent', 'id', intentId)
+      .out('CONTAINS')
+      .hasLabel('Steering')
+      .outE('REVISES', 'INFLUENCES')
+      .project('source', 'target', 'label')
+      .by(__.outV().values('id'))
+      .by(__.inV().values('id'))
+      .by(T.label)
+      .dedup()
+      .toList();
+    steeringEdges = mapEdgeRows(rows, nodeIds);
+  }
+
   const edges = [
     // Scope membership (real CONTAINS edges — re-derived from the node sets).
     ...artifacts.map((a) => ({ source: intentId, target: a.id, label: 'CONTAINS' })),
     ...questions.map((q) => ({ source: intentId, target: q.id, label: 'CONTAINS' })),
+    ...steering.map((s) => ({ source: intentId, target: s.id, label: 'CONTAINS' })),
     ...businessEdges,
     ...influenceEdges,
+    ...steeringEdges,
     ...discussEdges,
     // Synthesized: the prompt-injection relation (see module header).
     ...knowledge.map((k) => ({ source: k.id, target: intentId, label: 'INFORMS' })),

@@ -11,10 +11,15 @@ import {
   executionMetaKey,
   stageKey,
   humanTaskKey,
+  steeringKey,
   buildExecutionMeta,
   buildStageRow,
   buildHumanTaskRow,
+  buildSteeringRow,
   executionTypeStateIndex,
+  HUMAN_TASK_STATUSES,
+  STEERING_KINDS,
+  STEERING_STATUSES,
 } from '../v2-process-keys.js';
 import { createProcessStore } from '../v2-process-store.js';
 
@@ -339,5 +344,183 @@ describe('buildExecutionMeta intent-config + DRAFT', () => {
       source,
     });
     expect(meta.source).toEqual(source);
+  });
+});
+
+// ── Steering (docs/v2-steering.md) ──
+
+describe('steering keys + builders', () => {
+  it('exposes the steering vocabularies and the superseded gate status', () => {
+    expect(STEERING_KINDS).toEqual(['gate-steer', 'revision', 'rewind']);
+    expect(STEERING_STATUSES).toEqual(['pending', 'consumed', 'superseded']);
+    expect(HUMAN_TASK_STATUSES).toContain('superseded');
+  });
+
+  it('sorts STEER rows by creation time under the execution partition', () => {
+    expect(steeringKey('e1', 'T', 'st-1')).toEqual({ pk: 'EXEC#e1', sk: 'STEER#T#st-1' });
+  });
+
+  it('builds a pending steering row with GSI2 keyed by status', () => {
+    const row = buildSteeringRow({
+      executionId: 'e1',
+      steerId: 'st-1',
+      kind: 'gate-steer',
+      message: 'stop building REST — use the event bus',
+      targetGateId: 'q-1',
+      createdBy: 'user-1',
+      createdByName: 'Ada',
+      now: 'T',
+    });
+    expect(row).toMatchObject({
+      type: 'Steering',
+      status: 'pending',
+      kind: 'gate-steer',
+      targetGateId: 'q-1',
+      targetStageId: null,
+      consumedAt: null,
+      supersededAt: null,
+    });
+    expect(row.GSI2SK).toBe('TYPE#STEER#STATE#pending#st-1');
+  });
+
+  it('META carries the orchestrator ownership token + rewind marker (null by default)', () => {
+    const meta = buildExecutionMeta({
+      executionId: 'e1',
+      projectId: 'p1',
+      intentId: 'i1',
+      workflowId: 'w',
+      workflowVersion: 1,
+      startedAt: 'T',
+    });
+    expect(meta.orchestratorRunId).toBeNull();
+    expect(meta.rewindFromStageId).toBeNull();
+  });
+});
+
+describe('steering store methods', () => {
+  const ddb = mockClient(DynamoDBDocumentClient);
+  let store;
+  beforeEach(() => {
+    ddb.reset();
+    let n = 0;
+    store = createProcessStore({
+      ddb,
+      tableName: 'v2-proc',
+      clock: () => 'T',
+      ids: () => `id-${++n}`,
+    });
+  });
+
+  it('createSteering writes an immutable pending row (guarded against overwrite)', async () => {
+    ddb.on(PutCommand).resolves({});
+    const row = await store.createSteering({
+      executionId: 'e1',
+      kind: 'rewind',
+      message: 'redo the design event-driven',
+      targetStageId: 'design',
+    });
+    expect(row.steerId).toBe('st-id-1');
+    const input = ddb.commandCalls(PutCommand)[0].args[0].input;
+    expect(input.Item.sk).toBe('STEER#T#st-id-1');
+    expect(input.ConditionExpression).toContain('attribute_not_exists(pk)');
+  });
+
+  it('listPendingSteering queries GSI2 by TYPE#STEER#STATE#pending', async () => {
+    ddb.on(QueryCommand).resolves({ Items: [{ sk: 'STEER#T#st-1', steerId: 'st-1' }] });
+    const rows = await store.listPendingSteering('e1');
+    expect(rows).toHaveLength(1);
+    const input = ddb.commandCalls(QueryCommand)[0].args[0].input;
+    expect(input.IndexName).toBe('GSI2');
+    expect(input.ExpressionAttributeValues[':p']).toBe('TYPE#STEER#STATE#pending#');
+  });
+
+  it('markSteeringConsumed is a CAS on pending; a lost race returns null', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: { status: 'consumed' } });
+    await store.markSteeringConsumed({
+      executionId: 'e1',
+      steerId: 'st-1',
+      createdAt: 'T',
+      stageInstanceId: 'si-1',
+    });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.Key).toEqual(steeringKey('e1', 'T', 'st-1'));
+    expect(input.ConditionExpression).toBe('#status = :pending');
+    expect(input.ExpressionAttributeValues[':sid']).toBe('si-1');
+    expect(input.ExpressionAttributeValues[':g2sk']).toBe('TYPE#STEER#STATE#consumed#st-1');
+
+    ddb.reset();
+    ddb
+      .on(UpdateCommand)
+      .rejects(Object.assign(new Error('cas'), { name: 'ConditionalCheckFailedException' }));
+    const res = await store.markSteeringConsumed({
+      executionId: 'e1',
+      steerId: 'st-1',
+      createdAt: 'T',
+    });
+    expect(res).toBeNull();
+  });
+
+  it('supersedeHumanTask retires ONLY a pending gate (CAS)', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: { status: 'superseded' } });
+    await store.supersedeHumanTask({ executionId: 'e1', humanTaskId: 'h1', supersededBy: 'st-1' });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ConditionExpression).toBe('#status = :pending');
+    expect(input.ExpressionAttributeValues[':status']).toBe('superseded');
+    expect(input.ExpressionAttributeValues[':g2sk']).toBe('TYPE#HUMAN#STATE#superseded#h1');
+
+    ddb.reset();
+    ddb
+      .on(UpdateCommand)
+      .rejects(Object.assign(new Error('cas'), { name: 'ConditionalCheckFailedException' }));
+    const res = await store.supersedeHumanTask({ executionId: 'e1', humanTaskId: 'h1' });
+    expect(res).toBeNull();
+  });
+
+  it('markGateRevised stamps the revision marker on a NON-pending gate only', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: { revisedAt: 'T' } });
+    await store.markGateRevised({ executionId: 'e1', humanTaskId: 'h1', steerId: 'st-1' });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ConditionExpression).toContain('#status <> :pending');
+    expect(input.ExpressionAttributeValues[':sid']).toBe('st-1');
+    expect(input.UpdateExpression).toContain('revisedAt = :ts');
+  });
+
+  it('resetStageRow flips a stage back to PENDING with attempt+1 and a cleared session', async () => {
+    ddb.on(GetCommand).resolves({ Item: { stageInstanceId: 'si-1', attempt: 1, cli: 'claude' } });
+    ddb.on(UpdateCommand).resolves({ Attributes: { state: 'PENDING', attempt: 2 } });
+    const reset = await store.resetStageRow({ executionId: 'e1', stageInstanceId: 'si-1' });
+    expect(reset).toMatchObject({ state: 'PENDING', attempt: 2 });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ExpressionAttributeValues[':state']).toBe('PENDING');
+    expect(input.ExpressionAttributeValues[':attempt']).toBe(2);
+    expect(input.UpdateExpression).toContain('cliSessionId = :null');
+    expect(input.ExpressionAttributeValues[':g2sk']).toBe('TYPE#STAGE#STATE#PENDING#si-1');
+  });
+
+  it('resetStageRow is a no-op (null) for a stage that never ran', async () => {
+    ddb.on(GetCommand).resolves({});
+    const reset = await store.resetStageRow({ executionId: 'e1', stageInstanceId: 'si-x' });
+    expect(reset).toBeNull();
+    expect(ddb.commandCalls(UpdateCommand)).toHaveLength(0);
+  });
+
+  it('updateExecution supports the orchestrator ownership CAS (ifOrchestratorRunId)', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: { status: 'SUCCEEDED' } });
+    await store.updateExecution({
+      executionId: 'e1',
+      projectId: 'p1',
+      status: 'SUCCEEDED',
+      startedAt: 'T',
+      ifOrchestratorRunId: 'run-1',
+    });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ConditionExpression).toBe('orchestratorRunId = :ifOrid');
+    expect(input.ExpressionAttributeValues[':ifOrid']).toBe('run-1');
+  });
+
+  it('getExecutionRecords groups STEER rows', async () => {
+    ddb.on(QueryCommand).resolves({ Items: [{ sk: 'META' }, { sk: 'STEER#T#st-1' }] });
+    const grouped = await store.getExecutionRecords('e1');
+    expect(grouped.steering).toHaveLength(1);
   });
 });

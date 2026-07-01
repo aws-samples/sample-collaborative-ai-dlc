@@ -5,6 +5,7 @@ import {
   type GateAnswer,
   type IntentDetail,
   type IntentGate,
+  type IntentSteering,
 } from '@/services/intents';
 import { useIntent } from '@/contexts/IntentContext';
 import { useAuth } from '@/contexts/AuthContext';
@@ -21,6 +22,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Textarea } from '@/components/ui/textarea';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import {
   Accordion,
@@ -31,7 +33,7 @@ import {
 import { cn } from '@/lib/utils';
 import { aggregateMetrics } from '@/lib/metricAggregation';
 import { UsageMetrics } from '@/components/intent/UsageMetrics';
-import { List, Loader2, Play, Workflow, XCircle } from 'lucide-react';
+import { Compass, List, Loader2, Play, Workflow, XCircle } from 'lucide-react';
 
 // The v2 intent page — main-pane content only. All fetch/realtime/output state
 // lives in IntentProvider (mounted by AppShell, shared with the right-hand
@@ -47,12 +49,14 @@ export default function IntentView() {
     pendingGates,
     reload,
     answerGate,
+    cancelIntent,
   } = useIntent();
   const navigate = useNavigate();
   const { user } = useAuth();
   const userName = user?.displayName || user?.email || '';
 
   const [starting, setStarting] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [view, setView] = useState<'list' | 'graph'>('list');
 
@@ -72,6 +76,24 @@ export default function IntentView() {
     }
   };
 
+  // Cancel (steering): retire a parked (WAITING), stranded (CREATED) or FAILED
+  // run — supersedes pending gates and flips the run to CANCELLED. RUNNING
+  // cannot be cancelled mid-turn (the API 409s); the button hides for it.
+  const handleCancel = async () => {
+    if (!window.confirm('Cancel this run? Pending questions are retired and the run stops.')) {
+      return;
+    }
+    setCancelling(true);
+    setActionError(null);
+    try {
+      await cancelIntent();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to cancel intent');
+    } finally {
+      setCancelling(false);
+    }
+  };
+
   if (!projectId || !intentId) return <div className="p-6">Intent not found</div>;
   if (loading && !detail) {
     return (
@@ -88,6 +110,8 @@ export default function IntentView() {
   const isDraft = intent.status === 'DRAFT';
   const isActive = intent.status === 'RUNNING' || intent.status === 'WAITING';
   const isFailed = intent.status === 'FAILED';
+  // Cancellable (steering): parked, stranded, or failed — never mid-RUNNING.
+  const isCancellable = ['WAITING', 'CREATED', 'FAILED'].includes(intent.status);
   // Pre-stage progress: before any stage row exists, init-ws lifecycle events
   // are the only signal the run is doing something (they stream into the
   // sidebar Timeline); this strip keeps the main pane from looking dead.
@@ -124,6 +148,22 @@ export default function IntentView() {
           )}
           {/* Intent-level discussion thread. */}
           <DiscussButton entityType="intent" entityTitle={intent.title || 'Intent'} />
+          {isCancellable && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-6 gap-1 px-2 text-[11px] text-muted-foreground hover:text-destructive"
+              disabled={cancelling}
+              onClick={handleCancel}
+            >
+              {cancelling ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <XCircle className="h-3 w-3" />
+              )}
+              {cancelling ? 'Cancelling…' : 'Cancel run'}
+            </Button>
+          )}
         </div>
         <div className="text-xs text-muted-foreground">
           {intent.workflowId} · v{intent.workflowVersion} · {intent.scope}
@@ -331,7 +371,10 @@ export default function IntentView() {
 
 function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: IntentGate[] }) {
   const questionGates = gates.filter((g) => g.kind === 'question');
-  if (detail.artifacts.length === 0 && questionGates.length === 0) return null;
+  const steering = detail.steering ?? [];
+  if (detail.artifacts.length === 0 && questionGates.length === 0 && steering.length === 0) {
+    return null;
+  }
 
   const influencedArtifactsByQuestion = new Map(
     detail.events
@@ -348,7 +391,7 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
       <CardHeader className="pb-3">
         <CardTitle className="text-sm">Work products</CardTitle>
         <p className="text-xs text-muted-foreground">
-          Artifacts and human questions captured during this intent.
+          Artifacts, human questions and course corrections captured during this intent.
         </p>
       </CardHeader>
       <CardContent>
@@ -382,9 +425,69 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
               </AccordionContent>
             </AccordionItem>
           )}
+
+          {/* Steering audit trail (docs/v2-steering.md): every human course
+              correction — answer-riders, revisions, rewind guidance — with its
+              delivery state (pending = queued for the next injection point). */}
+          {steering.length > 0 && (
+            <AccordionItem value="steering" className="rounded-md border px-3">
+              <AccordionTrigger className="py-3 hover:no-underline">
+                <span className="text-sm font-medium">Course corrections ({steering.length})</span>
+              </AccordionTrigger>
+              <AccordionContent className="space-y-3 pb-3">
+                {steering.map((s) => (
+                  <SteeringCard key={s.steerId} steer={s} />
+                ))}
+              </AccordionContent>
+            </AccordionItem>
+          )}
         </Accordion>
       </CardContent>
     </Card>
+  );
+}
+
+const STEERING_KIND_LABEL: Record<IntentSteering['kind'], string> = {
+  'gate-steer': 'with an answer',
+  revision: 'revised answer',
+  rewind: 'rewind guidance',
+};
+
+function SteeringCard({ steer }: { steer: IntentSteering }) {
+  return (
+    <div className="rounded-md border bg-card px-3 py-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Compass className="h-3.5 w-3.5 text-agent-waiting" />
+        <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
+          {STEERING_KIND_LABEL[steer.kind] ?? steer.kind}
+        </Badge>
+        <Badge
+          variant="outline"
+          className={cn(
+            'px-1.5 py-0 text-[10px]',
+            steer.status === 'consumed'
+              ? 'bg-agent-success/10 text-agent-success border-agent-success/30'
+              : steer.status === 'pending'
+                ? 'bg-agent-waiting/10 text-agent-waiting border-agent-waiting/30'
+                : 'bg-muted text-muted-foreground',
+          )}
+        >
+          {steer.status === 'consumed'
+            ? 'delivered'
+            : steer.status === 'pending'
+              ? 'queued'
+              : 'superseded'}
+        </Badge>
+        {steer.targetStageId && (
+          <span className="text-[11px] text-muted-foreground">→ {steer.targetStageId}</span>
+        )}
+        <span className="ml-auto text-[11px] text-muted-foreground">
+          {steer.createdByName ? `${steer.createdByName} · ` : ''}
+          {steer.createdAt ? new Date(steer.createdAt).toLocaleString() : ''}
+        </span>
+      </div>
+      <p className="mt-2 whitespace-pre-wrap text-sm">{steer.message}</p>
+    </div>
   );
 }
 
@@ -408,6 +511,10 @@ function GateCard({
   userName: string;
   onAnswer: (gate: IntentGate, input: GateAnswer) => Promise<void>;
 }) {
+  // Steering (docs/v2-steering.md): an optional course correction riding the
+  // answer — injected into the resumed agent conversation right after it, so
+  // the human can redirect the agent's direction while answering.
+  const [steering, setSteering] = useState('');
   const question = useMemo<Question | null>(() => {
     let parsed: Question['questions'] = [];
     try {
@@ -497,8 +604,27 @@ function GateCard({
         question={question}
         scope={{ kind: 'intent', id: intentId, projectId }}
         userName={userName}
-        onAnswer={(structuredAnswer) => onAnswer(gate, { answer: structuredAnswer })}
+        onAnswer={(structuredAnswer) =>
+          onAnswer(gate, {
+            answer: structuredAnswer,
+            ...(steering.trim() ? { steering: steering.trim() } : {}),
+          })
+        }
       />
+      {/* Optional course correction delivered WITH the answer. */}
+      <div className="mt-1.5 space-y-1 rounded-md border border-dashed px-3 py-2">
+        <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+          <Compass className="h-3 w-3" />
+          Course correction (optional)
+        </div>
+        <Textarea
+          value={steering}
+          onChange={(e) => setSteering(e.target.value)}
+          placeholder="Redirect the agent if it is heading the wrong way — e.g. 'Stop building the REST layer; integrate with the existing event bus instead.' Sent with your answer and overrides the agent's current plan."
+          rows={2}
+          className="text-xs"
+        />
+      </div>
     </div>
   );
 }
@@ -510,9 +636,38 @@ function QuestionHistoryCard({
   gate: IntentGate;
   influencedArtifacts: { id: string; title: string }[];
 }) {
+  const { detail, steering, reviseGate } = useIntent();
   const questions = parseGateQuestions(gate.questions);
   const answer = formatGateAnswer(gate.answer, questions);
-  const answered = gate.status !== 'pending' || Boolean(gate.answeredAt);
+  const superseded = gate.status === 'superseded';
+  const answered = !superseded && (gate.status !== 'pending' || Boolean(gate.answeredAt));
+
+  // Steering revision (docs/v2-steering.md): correct an already-given answer.
+  // The original stays; the correction is delivered at the next injection point.
+  const [reviseOpen, setReviseOpen] = useState(false);
+  const [revision, setRevision] = useState('');
+  const [revising, setRevising] = useState(false);
+  const [reviseError, setReviseError] = useState<string | null>(null);
+  const revisionSteer = gate.revisionSteerId
+    ? (steering.find((s) => s.steerId === gate.revisionSteerId) ?? null)
+    : null;
+  const intentStatus = detail?.intent.status ?? '';
+  const canRevise = answered && !['SUCCEEDED', 'CANCELLED'].includes(intentStatus);
+
+  const handleRevise = async () => {
+    if (!revision.trim()) return;
+    setRevising(true);
+    setReviseError(null);
+    try {
+      await reviseGate(gate, revision.trim());
+      setReviseOpen(false);
+      setRevision('');
+    } catch (err) {
+      setReviseError(err instanceof Error ? err.message : 'Failed to revise the answer');
+    } finally {
+      setRevising(false);
+    }
+  };
 
   return (
     <div
@@ -526,13 +681,23 @@ function QuestionHistoryCard({
               variant="outline"
               className={cn(
                 'px-1.5 py-0 text-[10px]',
-                answered
-                  ? 'bg-agent-success/10 text-agent-success border-agent-success/30'
-                  : 'bg-agent-waiting/10 text-agent-waiting border-agent-waiting/30',
+                superseded
+                  ? 'bg-muted text-muted-foreground'
+                  : answered
+                    ? 'bg-agent-success/10 text-agent-success border-agent-success/30'
+                    : 'bg-agent-waiting/10 text-agent-waiting border-agent-waiting/30',
               )}
             >
-              {answered ? 'answered' : 'pending'}
+              {superseded ? 'superseded' : answered ? 'answered' : 'pending'}
             </Badge>
+            {gate.revisedAt && (
+              <Badge
+                variant="outline"
+                className="border-agent-waiting/30 bg-agent-waiting/10 px-1.5 py-0 text-[10px] text-agent-waiting"
+              >
+                revised
+              </Badge>
+            )}
             <span className="text-[11px] text-muted-foreground">
               {gate.stageInstanceId || 'agent question'}
             </span>
@@ -581,10 +746,77 @@ function QuestionHistoryCard({
             </p>
             <p className="mt-1 whitespace-pre-wrap text-sm">{answer || 'Answered'}</p>
           </div>
+        ) : superseded ? (
+          <p className="text-xs text-muted-foreground">
+            Retired unanswered when the run was cancelled or rewound.
+          </p>
         ) : (
           <p className="text-xs text-muted-foreground">
             This question is still open. Use the Open questions section above to answer it.
           </p>
+        )}
+
+        {/* An existing revision: the correction layered on the original answer. */}
+        {revisionSteer && (
+          <div className="rounded border border-agent-waiting/30 bg-agent-waiting/[0.05] px-2 py-2">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              Correction{' '}
+              {revisionSteer.status === 'consumed'
+                ? '(delivered to the agent)'
+                : '(queued — delivered at the next stage boundary)'}
+            </p>
+            <p className="mt-1 whitespace-pre-wrap text-sm">{revisionSteer.message}</p>
+          </div>
+        )}
+
+        {canRevise && !reviseOpen && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 gap-1 px-2 text-[11px]"
+            onClick={() => setReviseOpen(true)}
+          >
+            <Compass className="h-3 w-3" />
+            Revise answer
+          </Button>
+        )}
+        {canRevise && reviseOpen && (
+          <div className="space-y-2 rounded-md border border-agent-waiting/40 bg-agent-waiting/[0.04] p-2">
+            <p className="text-[11px] text-muted-foreground">
+              The original answer stays on record; your correction reaches the agent at its next
+              deterministic point (question resume or stage start) and overrides the old answer.
+            </p>
+            <Textarea
+              value={revision}
+              onChange={(e) => setRevision(e.target.value)}
+              placeholder="What should the agent do differently?"
+              rows={2}
+              className="text-xs"
+            />
+            {reviseError && <p className="text-[11px] text-agent-error">{reviseError}</p>}
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                className="h-6 px-2 text-[11px]"
+                disabled={!revision.trim() || revising}
+                onClick={handleRevise}
+              >
+                {revising ? 'Sending…' : 'Send correction'}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 px-2 text-[11px]"
+                disabled={revising}
+                onClick={() => {
+                  setReviseOpen(false);
+                  setReviseError(null);
+                }}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
         )}
 
         {influencedArtifacts.length > 0 && (

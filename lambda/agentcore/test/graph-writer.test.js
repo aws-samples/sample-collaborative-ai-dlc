@@ -367,3 +367,104 @@ describe('recordQuestion', () => {
     ).toBe(true);
   });
 });
+
+// ── Steering (docs/v2-steering.md) ──
+
+describe('rewind supersede lifecycle', () => {
+  const markSuperseded = (id) =>
+    g
+      .V()
+      .has('Artifact', 'id', id)
+      .property('superseded_at', '2026-01-01T00:00:00.000Z')
+      .property('superseded_by', 'st-1')
+      .next();
+
+  it('update_artifact rehabilitates a superseded artifact (marker cleared)', async () => {
+    await seedIntent();
+    await writer.createArtifact({ artifactType: 'design', id: 'a1', title: 'Design' });
+    await markSuperseded('a1');
+    await writer.updateArtifact({ id: 'a1', props: { note: 'redone' } });
+    const fetched = await writer.getArtifact({ id: 'a1' });
+    expect(fetched.superseded_at).toBeUndefined();
+    expect(fetched.superseded_by).toBeUndefined();
+    expect(fetched.note).toBe('redone');
+  });
+
+  it('re-creating a superseded artifact rehabilitates it too', async () => {
+    await seedIntent();
+    await writer.createArtifact({ artifactType: 'design', id: 'a1' });
+    await markSuperseded('a1');
+    await writer.createArtifact({ artifactType: 'design', id: 'a1', content: 'v2' });
+    const fetched = await writer.getArtifact({ id: 'a1' });
+    expect(fetched.superseded_at).toBeUndefined();
+    expect(fetched.content).toBe('v2');
+  });
+
+  it('agents cannot spoof the supersede marker via props', async () => {
+    await seedIntent();
+    await writer.createArtifact({
+      artifactType: 'design',
+      id: 'a1',
+      props: { superseded_at: 'EVIL', superseded_by: 'EVIL' },
+    });
+    const fetched = await writer.getArtifact({ id: 'a1' });
+    expect(fetched.superseded_at).toBeUndefined();
+    expect(fetched.superseded_by).toBeUndefined();
+  });
+});
+
+describe('linkSteeringInfluences', () => {
+  const seedSteering = (id = 'st-1') =>
+    g
+      .addV('Steering')
+      .property('id', id)
+      .property('intent_id', SCOPE.intentId)
+      .property('kind', 'rewind')
+      .property('message', 'redo it')
+      .next();
+
+  it("links consumed steering to the stage's artifacts (idempotent)", async () => {
+    await seedIntent();
+    await seedSteering();
+    await writer.createArtifact({ artifactType: 'design', id: 'a1' });
+    const first = await writer.linkSteeringInfluences({
+      steerIds: ['st-1'],
+      stageInstanceId: SCOPE.stageInstanceId,
+    });
+    expect(first.linked).toBe(1);
+    // Idempotent re-link: the edge exists, no duplicate.
+    await writer.linkSteeringInfluences({
+      steerIds: ['st-1'],
+      stageInstanceId: SCOPE.stageInstanceId,
+    });
+    const edges = await g.V().has('Steering', 'id', 'st-1').outE('INFLUENCES').toList();
+    expect(edges).toHaveLength(1);
+  });
+
+  it("skips unknown steer ids and other stages' artifacts", async () => {
+    await seedIntent();
+    await seedSteering();
+    // Artifact created by a DIFFERENT stage instance.
+    const otherWriter = createGraphWriter({
+      g,
+      scope: { ...SCOPE, stageInstanceId: 'si-other' },
+      clock: () => '2026-01-01T00:00:00.000Z',
+    });
+    await otherWriter.createArtifact({ artifactType: 'design', id: 'a-other' });
+    const res = await writer.linkSteeringInfluences({
+      steerIds: ['st-1', 'st-missing'],
+      stageInstanceId: SCOPE.stageInstanceId,
+    });
+    expect(res.linked).toBe(0);
+  });
+
+  it('is a no-op without steer ids or a stage instance', async () => {
+    await seedIntent();
+    expect(
+      await writer.linkSteeringInfluences({ steerIds: [], stageInstanceId: 'si-req' }),
+    ).toEqual({ linked: 0 });
+    expect(
+      await writer.linkSteeringInfluences({ steerIds: ['st-1'], stageInstanceId: null }),
+    ).toEqual({ linked: 0 });
+  });
+});

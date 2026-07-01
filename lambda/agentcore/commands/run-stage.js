@@ -66,6 +66,59 @@ const resolveStage = ({ workflow, library, scope, stageId }) => {
   return { plan, stage };
 };
 
+const textFromClaudeStreamEvent = (event) => {
+  if (!event || typeof event !== 'object') return '';
+  if (event.type === 'content_block_delta') return event.delta?.text ?? '';
+  if (event.type === 'content_block_start') return event.content_block?.text ?? '';
+  if (event.type === 'text') return event.text ?? '';
+  if (event.type === 'assistant' && Array.isArray(event.message?.content)) {
+    return event.message.content
+      .filter((part) => part?.type === 'text' && typeof part.text === 'string')
+      .map((part) => part.text)
+      .join('');
+  }
+  return '';
+};
+
+const createCliOutputSink = ({ cli, emit }) => {
+  let pending = '';
+
+  if (cli !== 'claude') {
+    return {
+      write(chunk) {
+        emit(chunk);
+      },
+      flush() {},
+    };
+  }
+
+  // Claude's stream-json is JSONL. Forward only human-readable assistant text,
+  // not the transport/tool metadata lines.
+  const consumeLine = (line) => {
+    if (!line.trim()) return;
+    try {
+      const text = textFromClaudeStreamEvent(JSON.parse(line));
+      if (text) emit(text);
+    } catch {
+      // If the CLI ever prints non-JSON diagnostics on stdout, keep them visible.
+      emit(`${line}\n`);
+    }
+  };
+
+  return {
+    write(chunk) {
+      pending += chunk;
+      const lines = pending.split(/\r?\n/);
+      pending = lines.pop() ?? '';
+      for (const line of lines) consumeLine(line);
+    },
+    flush() {
+      if (pending) consumeLine(pending);
+      pending = '';
+    },
+  };
+};
+
 // Concatenate the methodology knowledge bodies for an agent (best-effort). This
 // is the authored, baseline-shipped tier (KNOWLEDGE blocks from the library).
 const loadMethodologyKnowledge = async ({ agentRef, library, loadBlockBody }) => {
@@ -272,6 +325,71 @@ const formatResumeAnswer = (gate) => {
   }
   const text = typeof a === 'string' ? a : (a?.freeText ?? JSON.stringify(a ?? {}));
   return `The human answered your question(s): ${text}\n\nContinue the stage with this answer.`;
+};
+
+// Render pending human steering (course corrections) into the block that enters
+// the agent conversation at this deterministic injection point — appended to a
+// resume answer or prepended to a fresh stage prompt (docs/v2-steering.md).
+// Steering OVERRIDES the agent's current plan, so the framing is imperative.
+const steeringLabel = (r) => {
+  if (r.kind === 'rewind') return 'rewind guidance — this stage is re-running from scratch';
+  if (r.kind === 'revision') return 'a previously given answer was CORRECTED';
+  return 'course correction';
+};
+
+const renderSteering = (rows = []) => {
+  if (!rows.length) return '';
+  const items = rows.map(
+    (r) =>
+      `- (${steeringLabel(r)}, from ${r.createdByName || 'the human team'}) ${r.message ?? ''}`,
+  );
+  return (
+    `## COURSE CORRECTION from the human team\n\n` +
+    `The human team has redirected this work. The following OVERRIDES your current plan ` +
+    `and any conflicting earlier instruction or answer:\n${items.join('\n')}\n\n` +
+    `Re-evaluate your approach in light of the above before doing anything else. ` +
+    `Update or revert any artifacts, commits, or decisions that conflict with this direction. ` +
+    `If prior work on the branch contradicts it, correct that work (revert/redo the commits) as part of this stage.`
+  );
+};
+
+// Deliver pending steering at this injection point: CAS each row pending →
+// consumed (a row another entry consumed concurrently is skipped), record the
+// delivery in the audit trail, and return the consumed rows for rendering.
+// Tolerant of stores without steering support (older mocks) — returns [].
+const consumePendingSteering = async ({ store, executionId, stageInstanceId, publish }) => {
+  if (typeof store.listPendingSteering !== 'function') return [];
+  const pending = await store.listPendingSteering(executionId).catch(() => []);
+  const consumed = [];
+  for (const row of pending) {
+    const ok = await store
+      .markSteeringConsumed({
+        executionId,
+        steerId: row.steerId,
+        createdAt: row.createdAt,
+        stageInstanceId,
+      })
+      .catch(() => null);
+    if (ok) consumed.push(row);
+  }
+  if (consumed.length) {
+    await store
+      .appendEvent({
+        executionId,
+        type: 'v2.steering.consumed',
+        stageInstanceId,
+        actor: 'agentcore',
+        summary: `Delivered ${consumed.length} course correction(s) to the agent`,
+      })
+      .catch(() => {});
+    await publish({
+      action: 'agent.steering',
+      stageInstanceId,
+      state: 'consumed',
+      steerIds: consumed.map((r) => r.steerId),
+    });
+  }
+  return consumed;
 };
 
 // Managed session storage idle-expires after 14 days (docs/v2-resume.md). Past that
@@ -649,6 +767,19 @@ export const runStage = async (
     currentStage: stageId,
   });
 
+  // Steering (docs/v2-steering.md): every run-stage entry — fresh, resume, or
+  // demoted resume — is a deterministic injection point for pending human course
+  // corrections (gate-steer riding an answer, a revision of a past answer, or
+  // rewind guidance). Consume them NOW (CAS) and render them into whatever
+  // enters the conversation below.
+  const consumedSteering = await consumePendingSteering({
+    store,
+    executionId,
+    stageInstanceId,
+    publish,
+  });
+  const steeringMessage = renderSteering(consumedSteering);
+
   // 3. Build the invocation. A fresh run materializes the full workspace (prompt +
   // rules + knowledge); a resume only re-attaches the MCP config (the parked
   // conversation already holds the prompt) and feeds the human's answer.
@@ -680,9 +811,11 @@ export const runStage = async (
   let prompt = null;
   if (!freshRun) {
     const mcpKwargs = await materializeCliMcp();
+    // The resume message = the human's answer, plus any pending steering (a
+    // course correction riding the answer, or revisions queued while parked).
     invocation = driver.buildResumeInvocation({
       sessionId: cliSessionId,
-      answerMessage: resumeAnswer,
+      answerMessage: [resumeAnswer, steeringMessage].filter(Boolean).join('\n\n'),
       model,
       ...mcpKwargs,
     });
@@ -739,6 +872,12 @@ export const runStage = async (
     if (demotedResume && resumeAnswer) {
       prompt = `## Previously answered\n${resumeAnswer}\n\n---\n\n${prompt}`;
     }
+    // Steering: prepend pending human course corrections (rewind guidance /
+    // revisions) so they lead the fresh conversation — they override anything
+    // the stage body would otherwise have the agent do first.
+    if (steeringMessage) {
+      prompt = `${steeringMessage}\n\n---\n\n${prompt}`;
+    }
     // materializeStage wrote the Claude --mcp-config; for Kiro we additionally
     // need its --agent config. materializeCliMcp returns the right driver kwargs.
     const mcpKwargs = await materializeCliMcp();
@@ -766,6 +905,28 @@ export const runStage = async (
   // 4. Spawn the headless CLI.
   const childEnv = { ...invocation.env, ...driver.envForAuth(env) };
   let result;
+  let outputQueue = Promise.resolve();
+  const emitCliOutput = (content) => {
+    if (!content) return;
+    outputQueue = outputQueue
+      .then(async () => {
+        const row = await store.appendOutput({
+          executionId,
+          stageInstanceId,
+          kind: 'stdout',
+          content,
+        });
+        await publish({
+          action: 'agent.output',
+          stageInstanceId,
+          seq: row.seq,
+          kind: 'stdout',
+          content,
+        });
+      })
+      .catch(() => {});
+  };
+  const cliOutput = createCliOutputSink({ cli, emit: emitCliOutput });
   try {
     result = await runChild({
       command: invocation.command,
@@ -778,9 +939,14 @@ export const runStage = async (
       // empty-final-completion crash (see isBenignKiroEmptyCompletion). Claude
       // needs no such inspection, so we leave its stderr purely inherited.
       captureStderrTail: cli === 'kiro' ? 16_384 : 0,
+      onStdout: (chunk) => cliOutput.write(chunk),
       spawnFn,
     });
+    cliOutput.flush();
+    await outputQueue;
   } catch (e) {
+    cliOutput.flush();
+    await outputQueue;
     return fail(stageInstanceId, 'cli_error', e.message);
   }
 
@@ -909,6 +1075,24 @@ export const runStage = async (
     cli,
     cliSessionId,
   });
+  // Steering provenance: link the corrections this stage consumed to the
+  // artifacts it produced (Steering --INFLUENCES--> Artifact), mirroring the
+  // answered-question linking. Best-effort — provenance never fails a stage.
+  if (consumedSteering.length && openGraph) {
+    try {
+      const gLink = await openGraph();
+      const writer = createGraphWriter({
+        g: gLink,
+        scope: { projectId, intentId, executionId, stageInstanceId },
+      });
+      await writer.linkSteeringInfluences({
+        steerIds: consumedSteering.map((r) => r.steerId),
+        stageInstanceId,
+      });
+    } catch {
+      /* provenance linking is best-effort */
+    }
+  }
   await store.appendEvent({
     executionId,
     type: 'v2.stage.succeeded',
@@ -927,5 +1111,7 @@ export const __test = {
   composeKnowledge,
   renderTeamKnowledge,
   formatResumeAnswer,
+  renderSteering,
+  consumePendingSteering,
   isBenignKiroEmptyCompletion,
 };

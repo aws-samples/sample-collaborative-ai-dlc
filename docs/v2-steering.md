@@ -131,12 +131,12 @@ stage body.
 
 ## API summary
 
-| Endpoint | Purpose |
-|---|---|
+| Endpoint                                 | Purpose                                    |
+| ---------------------------------------- | ------------------------------------------ |
 | `POST …/gates/{id}/answer` (+`steering`) | answer + ride a correction into the resume |
-| `POST …/gates/{id}/revise` | correct an already-given answer |
-| `POST …/intents/{id}/cancel` | retire a parked/stranded/failed run |
-| `POST …/intents/{id}/rewind` | restart from a stage with guidance |
+| `POST …/gates/{id}/revise`               | correct an already-given answer            |
+| `POST …/intents/{id}/cancel`             | retire a parked/stranded/failed run        |
+| `POST …/intents/{id}/rewind`             | restart from a stage with guidance         |
 
 The detail DTO gains `steering[]`; gates carry `revisedAt`/`revisionSteerId`/
 `supersededAt`; artifacts carry `supersededAt`/`supersededBy`; the intent

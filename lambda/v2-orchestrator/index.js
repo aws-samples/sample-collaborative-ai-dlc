@@ -144,6 +144,13 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
 
   const { projectId, workflowId, workflowVersion, scope } = meta;
   const gitProvider = meta.gitProvider || 'github';
+  // Rewind relaunch (docs/v2-steering.md): start the stage loop at this stage
+  // instead of the beginning (upstream stages keep their SUCCEEDED rows).
+  const startAtStageId = event.startAtStageId ?? null;
+  // Ownership token: minted per orchestrator run and stamped on META (see
+  // claim-run below). Terminal META writes CAS on it, so a run retired by a
+  // cancel/rewind relaunch can never clobber the new run's state.
+  let runId = null;
 
   // Map a stored lifecycle event type to the live realtime payload the UI already
   // Append a timeline event AND fan it out live. Both are best-effort telemetry
@@ -168,23 +175,47 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
   // Record FAILED + a human-readable reason + a timeline event, all in idempotent
   // durable steps, so a failure surfaces in the UI (status badge + failureReason
   // banner + activity feed) instead of silently dying at the durable boundary.
+  // Guarded by the ownership token: a retired run (cancel/rewind relaunched the
+  // intent under a new runId) fails the CAS and exits quietly instead of
+  // clobbering the new run's META.
   const fail = async (reason, detail) => {
     const message = detail ? `${reason}: ${detail}` : reason;
-    await ctx.step(`fail-${reason}`, () =>
-      store.updateExecution({
-        executionId,
-        projectId,
-        status: 'FAILED',
-        startedAt: meta.startedAt,
-        completedAt: nowIso(),
-        failureReason: message,
-      }),
-    );
+    // The ownership verdict is the STEP RESULT (not a closure flag) so a durable
+    // replay — which skips the memoized step body — still sees it.
+    const owned = await ctx.step(`fail-${reason}`, async () => {
+      try {
+        await store.updateExecution({
+          executionId,
+          projectId,
+          status: 'FAILED',
+          startedAt: meta.startedAt,
+          completedAt: nowIso(),
+          failureReason: message,
+          ...(runId ? { ifOrchestratorRunId: runId } : {}),
+        });
+        return true;
+      } catch (e) {
+        if (e?.name === 'ConditionalCheckFailedException') return false;
+        throw e;
+      }
+    });
+    if (!owned) {
+      ctx.logger?.info?.('retired run skipped terminal write', { intentId, reason });
+      return { ok: false, reason: 'retired', supersededBy: 'relaunch' };
+    }
     await emitEvent(`fail-event-${reason}`, 'v2.execution.failed', message);
     return { ok: false, reason, detail };
   };
 
   try {
+    // Claim the run: stamp this run's ownership token on META before any other
+    // write. A later relaunch (rewind/cancel+start) overwrites it; this run's
+    // terminal writes then fail their CAS and exit quietly.
+    runId = await ctx.step('mint-run-id', async () => {
+      const token = `run-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      const updated = await store.updateExecution({ executionId, orchestratorRunId: token });
+      return updated?.orchestratorRunId ?? token;
+    });
     // init-ws — clone repos, create the Neptune Intent anchor, seed RUNNING state.
     // Idempotent in the runtime (ConditionalCheckFailed → already initialized), so
     // a replay of this step is safe.
@@ -261,6 +292,28 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     }
 
     const stages = planResult.plan.stages;
+    // Rewind relaunch: slice the loop to start at the rewound stage. Upstream
+    // stages must hold SUCCEEDED rows from the prior run — a rewind past a
+    // never-completed stage would run against missing upstream artifacts.
+    let runStages = stages;
+    if (startAtStageId) {
+      const idx = stages.findIndex((s) => s.stageId === startAtStageId);
+      if (idx < 0) {
+        const out = await fail('rewind_stage_not_found', startAtStageId);
+        return out;
+      }
+      const upstreamOk = await ctx.step('rewind-upstream-check', async () => {
+        for (const s of stages.slice(0, idx)) {
+          const row = await store.getStage(executionId, s.stageInstanceId).catch(() => null);
+          if (!row || row.state !== 'SUCCEEDED') return s.stageId;
+        }
+        return null;
+      });
+      if (upstreamOk) {
+        return await fail('rewind_upstream_incomplete', upstreamOk);
+      }
+      runStages = stages.slice(idx);
+    }
     // Per-CLI model selection was snapshotted onto META at create (intents lambda
     // reads the project vertex; the orchestrator is not VPC-attached for Neptune).
     // run-stage applies cliModels[cli] as the authoritative model knob.
@@ -283,7 +336,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       gitProvider,
     };
 
-    for (const stage of stages) {
+    for (const stage of runStages) {
       let result = await runStage(ctx, invokeRuntime, {
         stage,
         ids: { projectId, intentId, executionId },
@@ -340,6 +393,17 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           await callbackPromise; // resolved by SendDurableExecutionCallbackSuccess
         }
 
+        // Retired while parked? Cancel/rewind supersedes the pending gate and
+        // wakes this callback with a cancel sentinel. The cancel/rewind path owns
+        // META from here — exit WITHOUT any further write (docs/v2-steering.md).
+        const gateAfter = await ctx.step(`gate-after-${humanTaskId}`, () =>
+          store.getHumanTask(executionId, humanTaskId),
+        );
+        if (gateAfter?.status === 'superseded') {
+          ctx.logger?.info?.('run retired while parked', { intentId, humanTaskId });
+          return { ok: false, reason: 'retired', intentId, humanTaskId };
+        }
+
         result = await runStage(ctx, invokeRuntime, {
           stage,
           ids: { projectId, intentId, executionId },
@@ -360,17 +424,31 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       }
     }
 
-    await ctx.step('finish-succeeded', () =>
-      store.updateExecution({
-        executionId,
-        projectId,
-        status: 'SUCCEEDED',
-        startedAt: meta.startedAt,
-        completedAt: nowIso(),
-      }),
-    );
+    // Terminal success — CAS on the ownership token: a retired run (relaunched
+    // under a new runId while this one was still unwinding) exits quietly. The
+    // verdict is the step result so a durable replay sees it too.
+    const ownedFinish = await ctx.step('finish-succeeded', async () => {
+      try {
+        await store.updateExecution({
+          executionId,
+          projectId,
+          status: 'SUCCEEDED',
+          startedAt: meta.startedAt,
+          completedAt: nowIso(),
+          ...(runId ? { ifOrchestratorRunId: runId } : {}),
+        });
+        return true;
+      } catch (e) {
+        if (e?.name === 'ConditionalCheckFailedException') return false;
+        throw e;
+      }
+    });
+    if (!ownedFinish) {
+      ctx.logger?.info?.('retired run skipped terminal success write', { intentId });
+      return { ok: false, reason: 'retired', intentId };
+    }
     await emitEvent('succeeded-event', 'v2.execution.succeeded', 'All stages completed');
-    return { ok: true, intentId, stages: stages.length };
+    return { ok: true, intentId, stages: runStages.length };
   } catch (err) {
     // Any unexpected throw (runtime transport error, store write failure) — record
     // it so the UI shows FAILED + the message rather than the run silently dying

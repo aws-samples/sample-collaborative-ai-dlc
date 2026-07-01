@@ -17,6 +17,7 @@ const {
   executionMetaKey,
   stageKey,
   humanTaskKey,
+  steeringKey,
   executionPk,
   projectPk,
   projectStatusIndex,
@@ -27,6 +28,7 @@ const {
   buildHumanTaskRow,
   buildMetricRow,
   buildSensorRow,
+  buildSteeringRow,
   buildOutputRow,
 } = require('./v2-process-keys.js');
 
@@ -62,11 +64,17 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
 
   // Update the execution-level status + current phase/stage + pending gate, and
   // re-stamp the GSI projections. `fromStatus` (optional) makes it a CAS.
+  // `ifOrchestratorRunId` (optional) additionally requires META to still carry
+  // that ownership token — a retired orchestrator run (cancel/rewind relaunch)
+  // fails the condition instead of clobbering the new run's state.
   const updateExecution = async ({
     executionId,
     projectId,
     status,
     fromStatus = null,
+    ifOrchestratorRunId = null,
+    orchestratorRunId,
+    rewindFromStageId,
     currentPhase,
     currentStage,
     pendingHumanTaskId,
@@ -129,6 +137,14 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       sets.push('failureReason = :fr');
       values[':fr'] = failureReason;
     }
+    if (orchestratorRunId !== undefined) {
+      sets.push('orchestratorRunId = :orid');
+      values[':orid'] = orchestratorRunId;
+    }
+    if (rewindFromStageId !== undefined) {
+      sets.push('rewindFromStageId = :rwf');
+      values[':rwf'] = rewindFromStageId;
+    }
     const params = {
       TableName: table(),
       Key: executionMetaKey(executionId),
@@ -137,11 +153,17 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       ReturnValues: 'ALL_NEW',
     };
     if (Object.keys(names).length) params.ExpressionAttributeNames = names;
+    const conditions = [];
     if (fromStatus) {
-      params.ConditionExpression = '#status = :fromStatus';
+      conditions.push('#status = :fromStatus');
       params.ExpressionAttributeNames = { ...params.ExpressionAttributeNames, '#status': 'status' };
       params.ExpressionAttributeValues[':fromStatus'] = fromStatus;
     }
+    if (ifOrchestratorRunId) {
+      conditions.push('orchestratorRunId = :ifOrid');
+      params.ExpressionAttributeValues[':ifOrid'] = ifOrchestratorRunId;
+    }
+    if (conditions.length) params.ConditionExpression = conditions.join(' AND ');
     const { Attributes } = await ddb.send(new UpdateCommand(params));
     return Attributes;
   };
@@ -340,6 +362,239 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     }
   };
 
+  // Retire a still-pending gate whose run is being cancelled/rewound (CAS on
+  // pending — an already-answered gate is left alone). The gate stays as the
+  // audit record; `supersededBy` names the steering row / action that retired it.
+  const supersedeHumanTask = async ({ executionId, humanTaskId, supersededBy = null }) => {
+    const ts = now();
+    try {
+      const { Attributes } = await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: humanTaskKey(executionId, humanTaskId),
+          ConditionExpression: '#status = :pending',
+          UpdateExpression:
+            'SET #status = :status, supersededAt = :ts, supersededBy = :by, GSI2SK = :g2sk',
+          ExpressionAttributeNames: { '#status': 'status' },
+          ExpressionAttributeValues: {
+            ':pending': 'pending',
+            ':status': 'superseded',
+            ':ts': ts,
+            ':by': supersededBy,
+            ':g2sk': executionTypeStateIndex({
+              executionId,
+              type: 'HUMAN',
+              state: 'superseded',
+              id: humanTaskId,
+            }).GSI2SK,
+          },
+          ReturnValues: 'ALL_NEW',
+        }),
+      );
+      return Attributes;
+    } catch (e) {
+      if (e?.name === 'ConditionalCheckFailedException') return null;
+      throw e;
+    }
+  };
+
+  // Stamp a revision marker on an already-answered gate. The original answer is
+  // immutable — the correction lives in the referenced STEER row; this marker
+  // just lets readers render "this answer was revised". CAS on NOT pending (a
+  // pending gate is answered, not revised).
+  const markGateRevised = async ({ executionId, humanTaskId, steerId }) => {
+    const ts = now();
+    try {
+      const { Attributes } = await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: humanTaskKey(executionId, humanTaskId),
+          ConditionExpression: 'attribute_exists(pk) AND #status <> :pending',
+          UpdateExpression: 'SET revisedAt = :ts, revisionSteerId = :sid',
+          ExpressionAttributeNames: { '#status': 'status' },
+          ExpressionAttributeValues: { ':pending': 'pending', ':ts': ts, ':sid': steerId },
+          ReturnValues: 'ALL_NEW',
+        }),
+      );
+      return Attributes;
+    } catch (e) {
+      if (e?.name === 'ConditionalCheckFailedException') return null;
+      throw e;
+    }
+  };
+
+  // Record a human steering / course-correction message (docs/v2-steering.md).
+  // Immutable once written; delivery flips pending → consumed at a deterministic
+  // injection point (gate resume / fresh stage start).
+  const createSteering = async ({
+    executionId,
+    kind,
+    message,
+    targetGateId = null,
+    targetStageId = null,
+    createdBy = null,
+    createdByName = null,
+    steerId,
+  }) => {
+    const id = steerId ?? `st-${nextId()}`;
+    const item = buildSteeringRow({
+      executionId,
+      steerId: id,
+      kind,
+      message,
+      targetGateId,
+      targetStageId,
+      createdBy,
+      createdByName,
+      now: now(),
+    });
+    await ddb.send(
+      new PutCommand({
+        TableName: table(),
+        Item: item,
+        ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
+      }),
+    );
+    return item;
+  };
+
+  // All steering rows for an execution, oldest first (SK sorts by createdAt).
+  const listSteering = async (executionId) => {
+    const { Items } = await ddb.send(
+      new QueryCommand({
+        TableName: table(),
+        KeyConditionExpression: 'pk = :pk AND begins_with(sk, :p)',
+        ExpressionAttributeValues: { ':pk': executionPk(executionId), ':p': 'STEER#' },
+      }),
+    );
+    return Items ?? [];
+  };
+
+  // Only the not-yet-delivered steering rows, oldest first — what run-stage
+  // injects at its next entry. Uses GSI2 (TYPE#STEER#STATE#pending#).
+  const listPendingSteering = async (executionId) => {
+    const { Items } = await ddb.send(
+      new QueryCommand({
+        TableName: table(),
+        IndexName: 'GSI2',
+        KeyConditionExpression: 'GSI2PK = :pk AND begins_with(GSI2SK, :p)',
+        ExpressionAttributeValues: {
+          ':pk': executionPk(executionId),
+          ':p': 'TYPE#STEER#STATE#pending#',
+        },
+      }),
+    );
+    return (Items ?? []).toSorted(bySk);
+  };
+
+  // Flip a steering row pending → consumed (CAS) as it enters an agent
+  // conversation. `createdAt` locates the row (part of the SK).
+  const markSteeringConsumed = async ({
+    executionId,
+    steerId,
+    createdAt,
+    stageInstanceId = null,
+  }) => {
+    const ts = now();
+    try {
+      const { Attributes } = await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: steeringKey(executionId, createdAt, steerId),
+          ConditionExpression: '#status = :pending',
+          UpdateExpression:
+            'SET #status = :status, consumedAt = :ts, consumedByStageInstanceId = :sid, GSI2SK = :g2sk',
+          ExpressionAttributeNames: { '#status': 'status' },
+          ExpressionAttributeValues: {
+            ':pending': 'pending',
+            ':status': 'consumed',
+            ':ts': ts,
+            ':sid': stageInstanceId,
+            ':g2sk': executionTypeStateIndex({
+              executionId,
+              type: 'STEER',
+              state: 'consumed',
+              id: steerId,
+            }).GSI2SK,
+          },
+          ReturnValues: 'ALL_NEW',
+        }),
+      );
+      return Attributes;
+    } catch (e) {
+      if (e?.name === 'ConditionalCheckFailedException') return null;
+      throw e;
+    }
+  };
+
+  // Retire a pending steering row that a newer correction replaces (CAS on
+  // pending — a consumed row is history and stays as-is).
+  const supersedeSteering = async ({ executionId, steerId, createdAt, supersededBy = null }) => {
+    const ts = now();
+    try {
+      const { Attributes } = await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: steeringKey(executionId, createdAt, steerId),
+          ConditionExpression: '#status = :pending',
+          UpdateExpression:
+            'SET #status = :status, supersededAt = :ts, supersededBy = :by, GSI2SK = :g2sk',
+          ExpressionAttributeNames: { '#status': 'status' },
+          ExpressionAttributeValues: {
+            ':pending': 'pending',
+            ':status': 'superseded',
+            ':ts': ts,
+            ':by': supersededBy,
+            ':g2sk': executionTypeStateIndex({
+              executionId,
+              type: 'STEER',
+              state: 'superseded',
+              id: steerId,
+            }).GSI2SK,
+          },
+          ReturnValues: 'ALL_NEW',
+        }),
+      );
+      return Attributes;
+    } catch (e) {
+      if (e?.name === 'ConditionalCheckFailedException') return null;
+      throw e;
+    }
+  };
+
+  // Reset a stage row for a rewind: back to PENDING with attempt+1, conversation
+  // handle + terminal fields cleared. A stage that never ran (no row yet) needs
+  // no reset — returns null. The prior attempt's history stays in EVENT#/OUTPUT#.
+  const resetStageRow = async ({ executionId, stageInstanceId }) => {
+    const existing = await getStage(executionId, stageInstanceId);
+    if (!existing) return null;
+    const ts = now();
+    const { Attributes } = await ddb.send(
+      new UpdateCommand({
+        TableName: table(),
+        Key: stageKey(executionId, stageInstanceId),
+        UpdateExpression:
+          'SET #state = :state, attempt = :attempt, cli = :null, cliSessionId = :null, ' +
+          'runtimeError = :null, startedAt = :null, completedAt = :null, updatedAt = :ts, GSI2SK = :g2sk',
+        ExpressionAttributeNames: { '#state': 'state' },
+        ExpressionAttributeValues: {
+          ':state': 'PENDING',
+          ':attempt': Number(existing.attempt ?? 0) + 1,
+          ':null': null,
+          ':ts': ts,
+          ':g2sk': executionTypeStateIndex({
+            executionId,
+            type: 'STAGE',
+            state: 'PENDING',
+            id: stageInstanceId,
+          }).GSI2SK,
+        },
+        ReturnValues: 'ALL_NEW',
+      }),
+    );
+    return Attributes;
+  };
+
   const recordMetric = async ({ executionId, stageInstanceId, metrics, resolvedModel = null }) => {
     const item = buildMetricRow({
       executionId,
@@ -490,6 +745,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       humanTasks: records.filter((r) => r.sk.startsWith('HUMAN#')),
       metrics: records.filter((r) => r.sk.startsWith('METRIC#')),
       sensorRuns: records.filter((r) => r.sk.startsWith('SENSOR#')),
+      steering: records.filter((r) => r.sk.startsWith('STEER#')),
       outputs: records.filter((r) => r.sk.startsWith('OUTPUT#')),
     };
   };
@@ -506,6 +762,14 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     getHumanTask,
     setGateCallbackId,
     answerHumanTask,
+    supersedeHumanTask,
+    markGateRevised,
+    createSteering,
+    listSteering,
+    listPendingSteering,
+    markSteeringConsumed,
+    supersedeSteering,
+    resetStageRow,
     recordMetric,
     recordSensorRun,
     appendOutput,

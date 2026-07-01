@@ -15,6 +15,7 @@ import {
 } from '@/services/intents';
 import {
   BookOpen,
+  Compass,
   FileText,
   HelpCircle,
   MessageSquare,
@@ -122,6 +123,12 @@ const NODE_TYPES: Record<
     Icon: HelpCircle,
     chip: 'border-agent-waiting/50 bg-agent-waiting/[0.07]',
     dot: 'bg-agent-waiting',
+  },
+  Steering: {
+    label: 'Course correction',
+    Icon: Compass,
+    chip: 'border-amber-500/50 bg-amber-500/[0.07]',
+    dot: 'bg-amber-500',
   },
   Discussion: {
     label: 'Discussion',
@@ -295,6 +302,9 @@ export function KnowledgeGraph() {
             const accent =
               n.type === 'Artifact' ? artifactAccent(n.artifactType as string | null) : null;
             const isSelected = n.id === selectedId;
+            // Rewind lineage: superseded artifacts came from a rewound stage
+            // attempt and are dimmed until the re-run rehabilitates them.
+            const isSuperseded = n.type === 'Artifact' && Boolean(n.superseded);
             return (
               <button
                 key={n.id}
@@ -311,6 +321,7 @@ export function KnowledgeGraph() {
                   'absolute flex items-center gap-2 rounded-md border px-2 py-1 text-left shadow-sm transition-colors hover:bg-muted/40',
                   cfg.chip,
                   accent?.border,
+                  isSuperseded && 'opacity-50',
                   isSelected && 'ring-2 ring-primary',
                 )}
               >
@@ -443,6 +454,16 @@ function NodeDetail({
             )}
           >
             {questionAnswered ? 'answered' : 'pending'}
+          </Badge>
+        )}
+        {node.type === 'Artifact' && Boolean(node.superseded) && (
+          <Badge variant="outline" className="bg-muted px-1 py-0 text-[9px] text-muted-foreground">
+            superseded
+          </Badge>
+        )}
+        {node.type === 'Steering' && !!node.kind && (
+          <Badge variant="outline" className="px-1 py-0 text-[9px]">
+            {String(node.kind)}
           </Badge>
         )}
         {node.type === 'Discussion' && !!node.status && (

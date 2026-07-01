@@ -12,10 +12,12 @@ import { useParams } from 'react-router-dom';
 import {
   intentsService,
   type GateAnswer,
+  type Intent,
   type IntentArtifact,
   type IntentDetail,
   type IntentGate,
   type IntentSensorRun,
+  type IntentSteering,
   type StageState,
 } from '@/services/intents';
 import { workflowsService, type CompiledWorkflow } from '@/services/workflows';
@@ -74,6 +76,7 @@ interface IntentContextValue {
   stageEdges: StageEdge[];
   gates: IntentGate[];
   pendingGates: IntentGate[];
+  steering: IntentSteering[];
   sensorsByStage: Map<string, IntentSensorRun[]>;
   artifactsByStage: Map<string, IntentArtifact[]>;
 
@@ -94,6 +97,12 @@ interface IntentContextValue {
 
   reload: () => Promise<void>;
   answerGate: (gate: IntentGate, input: GateAnswer) => Promise<void>;
+  /** Steering: correct an already-given answer (delivered at the next injection point). */
+  reviseGate: (gate: IntentGate, message: string) => Promise<void>;
+  /** Steering: retire a parked/stranded/failed run (409 while RUNNING). */
+  cancelIntent: () => Promise<Intent>;
+  /** Steering: restart the run from an earlier stage with corrective guidance. */
+  rewindIntent: (fromStageId: string, guidance: string) => Promise<void>;
 }
 
 const IntentContext = createContext<IntentContextValue | undefined>(undefined);
@@ -228,12 +237,13 @@ export function IntentProvider({
         setOutputVersion((n) => n + 1);
         return;
       }
-      // Stage/execution/metric/note transitions → refetch the assembled DTO.
+      // Stage/execution/metric/note/steering transitions → refetch the assembled DTO.
       if (
         evt.action === 'agent.stage' ||
         evt.action === 'agent.execution' ||
         evt.action === 'agent.workspace' ||
         evt.action === 'agent.metric' ||
+        evt.action === 'agent.steering' ||
         evt.action === 'agent.note'
       ) {
         load();
@@ -247,6 +257,30 @@ export function IntentProvider({
     async (gate: IntentGate, input: GateAnswer) => {
       if (!projectId || !intentId) return;
       await intentsService.answerGate(projectId, intentId, gate.humanTaskId, input);
+      await load();
+    },
+    [projectId, intentId, load],
+  );
+
+  const reviseGate = useCallback(
+    async (gate: IntentGate, message: string) => {
+      if (!projectId || !intentId) return;
+      await intentsService.reviseGate(projectId, intentId, gate.humanTaskId, message);
+      await load();
+    },
+    [projectId, intentId, load],
+  );
+
+  const cancelIntent = useCallback(async () => {
+    const updated = await intentsService.cancel(projectId, intentId);
+    await load();
+    return updated;
+  }, [projectId, intentId, load]);
+
+  const rewindIntent = useCallback(
+    async (fromStageId: string, guidance: string) => {
+      if (!projectId || !intentId) return;
+      await intentsService.rewind(projectId, intentId, { fromStageId, guidance });
       await load();
     },
     [projectId, intentId, load],
@@ -321,6 +355,7 @@ export function IntentProvider({
 
   const gates = useMemo(() => [...liveGates.values()], [liveGates]);
   const pendingGates = useMemo(() => gates.filter((g) => g.status === 'pending'), [gates]);
+  const steering = useMemo(() => detail?.steering ?? [], [detail]);
 
   const sensorsByStage = useMemo(() => {
     const map = new Map<string, IntentSensorRun[]>();
@@ -366,6 +401,7 @@ export function IntentProvider({
         stageEdges,
         gates,
         pendingGates,
+        steering,
         sensorsByStage,
         artifactsByStage,
         outputBuffers: outputBufRef.current,
@@ -377,6 +413,9 @@ export function IntentProvider({
         focusOutput,
         reload: load,
         answerGate,
+        reviseGate,
+        cancelIntent,
+        rewindIntent,
       }}
     >
       {children}

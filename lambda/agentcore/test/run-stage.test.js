@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createRequire } from 'node:module';
+import { EventEmitter } from 'node:events';
 import { runStage, __test } from '../commands/run-stage.js';
 import { renderRulesDoc } from '../stage-materializer.js';
 
@@ -60,6 +61,10 @@ const spyStore = (seed = {}) => {
     updateExecution: rec('updateExecution'),
     updateStageState: rec('updateStageState'),
     appendEvent: rec('appendEvent'),
+    async appendOutput(args) {
+      calls.push(['appendOutput', args]);
+      return { seq: calls.filter((c) => c[0] === 'appendOutput').length };
+    },
     recordSensorRun: rec('recordSensorRun'),
     async getHumanTask(_e, id) {
       calls.push(['getHumanTask', id]);
@@ -254,6 +259,41 @@ describe('runStage — realtime broadcasts (state mirrors DynamoDB writes)', () 
     });
     // Terminal success is broadcast last.
     expect(sent.at(-1)).toMatchObject({ action: 'agent.stage', state: 'SUCCEEDED' });
+  });
+
+  it('persists and broadcasts live Claude stdout as agent.output', async () => {
+    const sent = [];
+    const store = spyStore();
+    await runStage(
+      baseArgs,
+      baseDeps({
+        store,
+        broadcast: async (p) => sent.push(p),
+        spawnFn: () => {
+          const child = new EventEmitter();
+          child.stdin = { end() {} };
+          child.stdout = new EventEmitter();
+          setImmediate(() => {
+            child.stdout.emit(
+              'data',
+              Buffer.from(
+                `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'live text' }] } })}\n`,
+              ),
+            );
+            child.emit('close', 0);
+          });
+          return child;
+        },
+      }),
+    );
+
+    expect(store.calls).toContainEqual([
+      'appendOutput',
+      expect.objectContaining({ kind: 'stdout', content: 'live text' }),
+    ]);
+    expect(sent).toContainEqual(
+      expect.objectContaining({ action: 'agent.output', kind: 'stdout', content: 'live text' }),
+    );
   });
 
   it('publishes stage FAILED on a non-zero CLI exit', async () => {
@@ -1082,5 +1122,211 @@ describe('runStage — source self-heal (wiped /mnt/workspace)', () => {
     expect(
       deps.store.calls.some((c) => c[0] === 'appendEvent' && c[1].type === 'v2.stage.recovered'),
     ).toBe(true);
+  });
+});
+
+// ── Steering injection (docs/v2-steering.md) ──
+
+describe('renderSteering — the course-correction block', () => {
+  const { renderSteering } = __test;
+
+  it('renders nothing for no rows', () => {
+    expect(renderSteering([])).toBe('');
+    expect(renderSteering()).toBe('');
+  });
+
+  it('renders an imperative override block with per-kind labels + attribution', () => {
+    const block = renderSteering([
+      { kind: 'gate-steer', message: 'use the event bus', createdByName: 'Ada' },
+      { kind: 'revision', message: 'answer was wrong', createdByName: null },
+      { kind: 'rewind', message: 'redo event-driven', targetStageId: 'design' },
+    ]);
+    expect(block).toContain('COURSE CORRECTION from the human team');
+    expect(block).toContain('OVERRIDES your current plan');
+    expect(block).toContain('use the event bus');
+    expect(block).toContain('from Ada');
+    expect(block).toContain('a previously given answer was CORRECTED');
+    expect(block).toContain('rewind guidance — this stage is re-running from scratch');
+    // The agent is told to fix conflicting prior work (agent-led git revert).
+    expect(block).toContain('revert/redo the commits');
+  });
+});
+
+describe('consumePendingSteering — CAS delivery at the injection point', () => {
+  const { consumePendingSteering } = __test;
+
+  it('consumes pending rows in order, records the event + broadcast', async () => {
+    const events = [];
+    const published = [];
+    const consumed = [];
+    const store = {
+      listPendingSteering: async () => [
+        { steerId: 'st-1', createdAt: 'T1', message: 'a' },
+        { steerId: 'st-2', createdAt: 'T2', message: 'b' },
+      ],
+      markSteeringConsumed: async (args) => {
+        consumed.push(args);
+        return { status: 'consumed' };
+      },
+      appendEvent: async (e) => events.push(e),
+    };
+    const rows = await consumePendingSteering({
+      store,
+      executionId: 'e1',
+      stageInstanceId: 'si-1',
+      publish: async (p) => published.push(p),
+    });
+    expect(rows.map((r) => r.steerId)).toEqual(['st-1', 'st-2']);
+    expect(consumed[0]).toMatchObject({
+      steerId: 'st-1',
+      createdAt: 'T1',
+      stageInstanceId: 'si-1',
+    });
+    expect(events[0].type).toBe('v2.steering.consumed');
+    expect(published[0]).toMatchObject({ action: 'agent.steering', steerIds: ['st-1', 'st-2'] });
+  });
+
+  it('skips a row another entry consumed concurrently (CAS lost)', async () => {
+    const store = {
+      listPendingSteering: async () => [
+        { steerId: 'st-1', createdAt: 'T1' },
+        { steerId: 'st-2', createdAt: 'T2' },
+      ],
+      markSteeringConsumed: async ({ steerId }) =>
+        steerId === 'st-2' ? { status: 'consumed' } : null,
+      appendEvent: async () => ({}),
+    };
+    const rows = await consumePendingSteering({
+      store,
+      executionId: 'e1',
+      stageInstanceId: 'si-1',
+      publish: async () => {},
+    });
+    expect(rows.map((r) => r.steerId)).toEqual(['st-2']);
+  });
+
+  it('tolerates a store without steering support (returns [])', async () => {
+    const rows = await consumePendingSteering({
+      store: {},
+      executionId: 'e1',
+      stageInstanceId: 'si-1',
+      publish: async () => {},
+    });
+    expect(rows).toEqual([]);
+  });
+});
+
+describe('runStage — steering reaches the agent conversation', () => {
+  const okSpawn = () => ({
+    on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
+    stdin: { end() {} },
+  });
+
+  // spyStore + the steering surface: pending rows are handed out once, then
+  // consumed (mirrors the CAS).
+  const steeringStore = (seed = {}, pending = []) => {
+    const store = spyStore(seed);
+    let rows = [...pending];
+    store.listPendingSteering = async () => {
+      store.calls.push(['listPendingSteering']);
+      return rows;
+    };
+    store.markSteeringConsumed = async (args) => {
+      store.calls.push(['markSteeringConsumed', args]);
+      rows = rows.filter((r) => r.steerId !== args.steerId);
+      return { status: 'consumed' };
+    };
+    return store;
+  };
+
+  it('prepends the correction block to a FRESH stage prompt and marks it consumed', async () => {
+    let argv = null;
+    const store = steeringStore({}, [
+      {
+        steerId: 'st-1',
+        createdAt: 'T1',
+        kind: 'rewind',
+        message: 'redo event-driven',
+        targetStageId: 'requirements-analysis',
+        createdByName: 'Ada',
+      },
+    ]);
+    const deps = baseDeps({
+      store,
+      spawnFn: (command, args) => {
+        argv = args;
+        return okSpawn();
+      },
+    });
+    const res = await runStage(baseArgs, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    const prompt = argv[argv.indexOf('-p') + 1];
+    // The correction LEADS the prompt, ahead of the materialized stage body.
+    expect(prompt.indexOf('COURSE CORRECTION')).toBeGreaterThanOrEqual(0);
+    expect(prompt.indexOf('COURSE CORRECTION')).toBeLessThan(
+      prompt.indexOf('PROMPT requirements-analysis'),
+    );
+    expect(prompt).toContain('redo event-driven');
+    // Consumed exactly once, attributed to this stage instance.
+    const consumed = store.calls.filter((c) => c[0] === 'markSteeringConsumed');
+    expect(consumed).toHaveLength(1);
+    expect(consumed[0][1]).toMatchObject({ steerId: 'st-1' });
+    expect(
+      store.calls.some((c) => c[0] === 'appendEvent' && c[1].type === 'v2.steering.consumed'),
+    ).toBe(true);
+  });
+
+  it('appends the correction to the RESUME answer message', async () => {
+    let argv = null;
+    const store = steeringStore(
+      {
+        humanTask: {
+          humanTaskId: 'q-1',
+          status: 'answered',
+          answer: { perQuestion: [{ text: 'Scope?', answer: 'MVP' }] },
+        },
+        stage: { cli: 'claude', cliSessionId: 'sess-7' },
+      },
+      [
+        {
+          steerId: 'st-9',
+          createdAt: 'T1',
+          kind: 'gate-steer',
+          message: 'also drop the REST layer',
+          createdByName: 'Ada',
+        },
+      ],
+    );
+    const deps = baseDeps({
+      store,
+      spawnFn: (command, args) => {
+        argv = args;
+        return okSpawn();
+      },
+    });
+    const res = await runStage({ ...baseArgs, resumeFrom: 'q-1' }, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    const message = argv[argv.indexOf('-p') + 1];
+    // Answer first, then the override block.
+    expect(message).toMatch(/MVP/);
+    expect(message).toContain('COURSE CORRECTION');
+    expect(message).toContain('also drop the REST layer');
+    expect(message.indexOf('MVP')).toBeLessThan(message.indexOf('COURSE CORRECTION'));
+  });
+
+  it('a run with no pending steering injects nothing', async () => {
+    let argv = null;
+    const store = steeringStore({}, []);
+    const deps = baseDeps({
+      store,
+      spawnFn: (command, args) => {
+        argv = args;
+        return okSpawn();
+      },
+    });
+    await runStage(baseArgs, deps);
+    const prompt = argv[argv.indexOf('-p') + 1];
+    expect(prompt).not.toContain('COURSE CORRECTION');
+    expect(store.calls.filter((c) => c[0] === 'markSteeringConsumed')).toHaveLength(0);
   });
 });

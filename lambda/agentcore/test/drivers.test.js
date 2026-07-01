@@ -243,6 +243,22 @@ describe('runChild — exit contract', () => {
     expect(await p).toEqual({ exitCode: 0, stderrTail: '6789' });
   });
 
+  it('tees stdout to an onStdout handler when provided', async () => {
+    const child = fakeChild();
+    child.stdout = new EventEmitter();
+    const chunks = [];
+    const p = runChild({
+      command: 'x',
+      args: [],
+      onStdout: (chunk) => chunks.push(chunk),
+      spawnFn: () => child,
+    });
+    child.stdout.emit('data', Buffer.from('live'));
+    child.emit('close', 0);
+    expect(await p).toEqual({ exitCode: 0, stderrTail: '' });
+    expect(chunks).toEqual(['live']);
+  });
+
   it('pipes the prompt to stdin when promptViaStdin', async () => {
     const child = fakeChild();
     let piped = null;

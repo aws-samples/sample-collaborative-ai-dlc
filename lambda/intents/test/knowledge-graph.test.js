@@ -219,3 +219,52 @@ describe('fetchKnowledgeGraph', () => {
     expect(edges).toEqual([]);
   });
 });
+
+// ── Steering (docs/v2-steering.md) ──
+
+describe('fetchKnowledgeGraph — steering + supersede lineage', () => {
+  it('renders Steering nodes with REVISES/INFLUENCES edges and flags superseded artifacts', async () => {
+    await seedFullGraph();
+    await addV('Steering', {
+      id: 'st-1',
+      intent_id: INTENT,
+      kind: 'revision',
+      message: 'Actually use the event bus, not REST.',
+      target_gate_id: 'q-1',
+      created_by_name: 'Ada',
+      created_at: '2026-01-01T02:00:00Z',
+    });
+    await addE('Intent', INTENT, 'CONTAINS', 'Steering', 'st-1');
+    await addE('Steering', 'st-1', 'REVISES', 'Question', 'q-1');
+    await addE('Steering', 'st-1', 'INFLUENCES', 'Artifact', 'design-1');
+    // A rewind superseded the design artifact (marker props, not `status`).
+    await g
+      .V()
+      .has('Artifact', 'id', 'design-1')
+      .property('superseded_at', '2026-01-01T02:00:00Z')
+      .property('superseded_by', 'st-1')
+      .next();
+
+    const graph = await fetchKnowledgeGraph(g, { projectId: PROJECT, intentId: INTENT });
+
+    const steering = graph.nodes.find((n) => n.type === 'Steering');
+    expect(steering).toMatchObject({
+      id: 'st-1',
+      kind: 'revision',
+      targetGateId: 'q-1',
+      createdByName: 'Ada',
+    });
+    expect(steering.label).toContain('event bus');
+
+    // Membership + provenance edges all present.
+    expect(graph.edges).toContainEqual({ source: INTENT, target: 'st-1', label: 'CONTAINS' });
+    expect(graph.edges).toContainEqual({ source: 'st-1', target: 'q-1', label: 'REVISES' });
+    expect(graph.edges).toContainEqual({ source: 'st-1', target: 'design-1', label: 'INFLUENCES' });
+
+    // Supersede lineage flags surface on artifact nodes.
+    const design = graph.nodes.find((n) => n.id === 'design-1');
+    expect(design.superseded).toBe(true);
+    const reqs = graph.nodes.find((n) => n.id === 'reqs-1');
+    expect(reqs.superseded).toBe(false);
+  });
+});

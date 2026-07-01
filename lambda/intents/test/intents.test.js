@@ -16,6 +16,11 @@ import {
   SendDurableExecutionCallbackSuccessCommand,
 } from '@aws-sdk/client-lambda';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
+// CJS shared module — default-import then destructure. Used to compute the
+// deterministic stage-instance ids the rewind flow resets/supersedes.
+import executionPlanPkg from '../../shared/v2-execution-plan.js';
+
+const { stageInstanceId: planStageInstanceId } = executionPlanPkg;
 
 const PARTITION = `t-${randomUUID()}`;
 
@@ -64,28 +69,39 @@ const installDdbFakes = () => {
     const k = keyOf(input.Key.pk, input.Key.sk);
     const existing = procStore.get(k);
     const values = input.ExpressionAttributeValues || {};
-    if (input.ConditionExpression?.includes(':fromStatus')) {
-      if (!existing || existing.status !== values[':fromStatus']) {
-        const e = new Error('cas');
-        e.name = 'ConditionalCheckFailedException';
-        throw e;
-      }
+    const names = input.ExpressionAttributeNames || {};
+    const cond = input.ConditionExpression || '';
+    const casFail = () => {
+      const e = new Error('cas');
+      e.name = 'ConditionalCheckFailedException';
+      throw e;
+    };
+    if (cond.includes(':fromStatus') && (!existing || existing.status !== values[':fromStatus'])) {
+      casFail();
     }
-    if (input.ConditionExpression?.includes(':pending')) {
-      if (!existing || existing.status !== 'pending') {
-        const e = new Error('cas');
-        e.name = 'ConditionalCheckFailedException';
-        throw e;
-      }
+    if (cond.includes('#status = :pending') && (!existing || existing.status !== 'pending')) {
+      casFail();
+    }
+    if (cond.includes('#status <> :pending') && (!existing || existing.status === 'pending')) {
+      casFail();
+    }
+    if (cond.includes('attribute_exists(pk)') && !existing) casFail();
+    if (
+      cond.includes(':ifOrid') &&
+      (!existing || existing.orchestratorRunId !== values[':ifOrid'])
+    ) {
+      casFail();
     }
     const next = { ...(existing || { pk: input.Key.pk, sk: input.Key.sk }) };
-    // Apply a minimal subset of SET assignments we exercise.
-    if (values[':status']) next.status = values[':status'];
-    if (values[':answer'] !== undefined) next.answer = values[':answer'];
-    if (values[':status'] && input.ConditionExpression?.includes(':pending')) {
-      next.answeredBy = values[':by'] ?? null;
-      next.answeredByName = values[':byName'] ?? null;
-      next.answeredAt = values[':ts'] ?? null;
+    // Generic SET applier: "SET a = :x, b = :y, #n = :z" (names resolved).
+    const setMatch = /SET (.+)$/.exec(input.UpdateExpression || '');
+    if (setMatch) {
+      for (const clause of setMatch[1].split(',')) {
+        const [lhs, rhs] = clause.split('=').map((s) => s.trim());
+        if (!lhs || !rhs) continue;
+        const field = names[lhs] ?? lhs;
+        if (rhs in values) next[field] = values[rhs];
+      }
     }
     procStore.set(k, next);
     return { Attributes: { ...next } };
@@ -951,5 +967,413 @@ describe('realtime-token — denial paths', () => {
       ...claims(sub),
     });
     expect(res.statusCode).toBe(404);
+  });
+});
+
+// ── Steering (docs/v2-steering.md) ──
+
+const setStatus = (intentId, patch) => {
+  const k = keyOf(`EXEC#${intentId}`, 'META');
+  procStore.set(k, { ...procStore.get(k), ...patch });
+};
+
+const seedIntentAnchor = (intentId) =>
+  g.addV('Intent').property('id', intentId).property('title', 'Intent').next();
+
+describe('POST /gates/{id}/answer with steering', () => {
+  it('records a gate-steer STEER row + Steering vertex and still resumes the callback', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    await seedIntentAnchor(intent.id);
+    seedGate(intent.id, 'h1', { status: 'pending', callbackId: 'cb-h1' });
+
+    const res = await answerGate(sub, projectId, intent.id, 'h1', {
+      answer: { ok: 1 },
+      steering: 'Stop building REST — integrate with the event bus instead.',
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.status).toBe('answered');
+    expect(body.steering).toMatchObject({
+      kind: 'gate-steer',
+      status: 'pending',
+      targetGateId: 'h1',
+      message: 'Stop building REST — integrate with the event bus instead.',
+    });
+    // The callback resume still fires (answer + steering ride together).
+    expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(1);
+    // STEER row surfaces on the detail DTO; the recorded event is in the feed.
+    const detail = JSON.parse(
+      (
+        await handler({
+          httpMethod: 'GET',
+          path: `/projects/${projectId}/intents/${intent.id}`,
+          pathParameters: { projectId, intentId: intent.id },
+          ...claims(sub),
+        })
+      ).body,
+    );
+    expect(detail.steering).toHaveLength(1);
+    expect(detail.steering[0]).toMatchObject({ kind: 'gate-steer', status: 'pending' });
+    expect(detail.events.some((e) => e.type === 'v2.steering.recorded')).toBe(true);
+    // Neptune mirror: Steering vertex anchored to the Intent.
+    expect(
+      await g
+        .V()
+        .has('Intent', 'id', intent.id)
+        .out('CONTAINS')
+        .hasLabel('Steering')
+        .has('kind', 'gate-steer')
+        .hasNext(),
+    ).toBe(true);
+  });
+
+  it('a plain answer records NO steering row', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    seedGate(intent.id, 'h1', { status: 'pending' });
+    const res = await answerGate(sub, projectId, intent.id, 'h1');
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).steering).toBeNull();
+    const steerRows = [...procStore.keys()].filter((k) => k.includes('|STEER#'));
+    expect(steerRows).toHaveLength(0);
+  });
+});
+
+describe('POST /gates/{id}/revise', () => {
+  const revise = (sub, projectId, intentId, humanTaskId, message) =>
+    handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intentId}/gates/${humanTaskId}/revise`,
+      pathParameters: { projectId, intentId, humanTaskId },
+      body: JSON.stringify({ message }),
+      ...claims(sub),
+    });
+
+  it('layers a revision STEER row on an answered gate (original answer immutable)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    await seedIntentAnchor(intent.id);
+    await g
+      .addV('Question')
+      .property('id', 'h1')
+      .property('intent_id', intent.id)
+      .property('questions', '[{"text":"?"}]')
+      .as('q')
+      .V()
+      .has('Intent', 'id', intent.id)
+      .addE('CONTAINS')
+      .to('q')
+      .next();
+    seedGate(intent.id, 'h1', { status: 'pending' });
+    await answerGate(sub, projectId, intent.id, 'h1', { answer: { freeText: 'use REST' } });
+    setStatus(intent.id, { status: 'RUNNING' });
+
+    const res = await revise(sub, projectId, intent.id, 'h1', 'Actually: use the event bus.');
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body);
+    expect(body).toMatchObject({
+      kind: 'revision',
+      status: 'pending',
+      targetGateId: 'h1',
+      delivery: 'next-stage-start',
+    });
+    // The gate carries the revision marker; the original answer is untouched.
+    const gateRow = procStore.get(keyOf(`EXEC#${intent.id}`, 'HUMAN#h1'));
+    expect(gateRow.revisionSteerId).toBe(body.steerId);
+    expect(gateRow.answer).toEqual({ freeText: 'use REST' });
+    // Graph: Steering --REVISES--> Question.
+    expect(
+      await g
+        .V()
+        .has('Steering', 'id', body.steerId)
+        .out('REVISES')
+        .has('Question', 'id', 'h1')
+        .hasNext(),
+    ).toBe(true);
+  });
+
+  it('reports next-resume delivery for a WAITING run', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    seedGate(intent.id, 'h1', { status: 'pending' });
+    await answerGate(sub, projectId, intent.id, 'h1');
+    setStatus(intent.id, { status: 'WAITING' });
+    const res = await revise(sub, projectId, intent.id, 'h1', 'correction');
+    expect(res.statusCode).toBe(201);
+    expect(JSON.parse(res.body).delivery).toBe('next-resume');
+  });
+
+  it('409s revising a still-pending gate (answer it instead)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    seedGate(intent.id, 'h1', { status: 'pending' });
+    const res = await revise(sub, projectId, intent.id, 'h1', 'correction');
+    expect(res.statusCode).toBe(409);
+  });
+
+  it('409s revising after the intent SUCCEEDED (nothing left to steer)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    seedGate(intent.id, 'h1', { status: 'pending' });
+    await answerGate(sub, projectId, intent.id, 'h1');
+    setStatus(intent.id, { status: 'SUCCEEDED' });
+    const res = await revise(sub, projectId, intent.id, 'h1', 'correction');
+    expect(res.statusCode).toBe(409);
+  });
+
+  it('400s an empty message', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    seedGate(intent.id, 'h1', { status: 'answered' });
+    const res = await revise(sub, projectId, intent.id, 'h1', '   ');
+    expect(res.statusCode).toBe(400);
+  });
+});
+
+describe('POST /cancel', () => {
+  const cancel = (sub, projectId, intentId) =>
+    handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intentId}/cancel`,
+      pathParameters: { projectId, intentId },
+      ...claims(sub),
+    });
+
+  it('retires a WAITING run: supersedes pending gates, wakes the callback, flips CANCELLED', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    seedGate(intent.id, 'h1', { status: 'pending', callbackId: 'cb-h1' });
+    setStatus(intent.id, { status: 'WAITING', pendingHumanTaskId: 'h1' });
+
+    const res = await cancel(sub, projectId, intent.id);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).status).toBe('CANCELLED');
+    // The gate is superseded (never answered) and the suspended orchestrator was
+    // woken with the cancel sentinel so it can exit quietly.
+    const gateRow = procStore.get(keyOf(`EXEC#${intent.id}`, 'HUMAN#h1'));
+    expect(gateRow.status).toBe('superseded');
+    const cb = lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand);
+    expect(cb).toHaveLength(1);
+    expect(JSON.parse(Buffer.from(cb[0].args[0].input.Result).toString())).toMatchObject({
+      cancelled: true,
+    });
+  });
+
+  it.each(['RUNNING', 'DRAFT', 'SUCCEEDED', 'CANCELLED'])(
+    '409s cancelling a %s run',
+    async (status) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const intent = JSON.parse((await createIntent(sub, projectId)).body);
+      setStatus(intent.id, { status });
+      const res = await cancel(sub, projectId, intent.id);
+      expect(res.statusCode).toBe(409);
+    },
+  );
+});
+
+describe('POST /rewind', () => {
+  // Two-stage plan for the pinned workflow (version 4, scope 'feature'):
+  // design → implement, both led by the reserved 'orchestrator' ref so no AGENT
+  // blocks are needed. Placement rows + catalog STAGE blocks feed the same
+  // loadExecutionPlan the orchestrator uses.
+  const seedPlan = () => {
+    const placement = (stageId, order) =>
+      procStore.set(keyOf('WF#default#aidlc-v2', `V#4#PLACEMENT#${stageId}`), {
+        pk: 'WF#default#aidlc-v2',
+        sk: `V#4#PLACEMENT#${stageId}`,
+        stageId,
+        order,
+        scopeMembership: { feature: 'EXECUTE' },
+      });
+    placement('design', 1);
+    placement('implement', 2);
+    const stageBlock = (stageId) =>
+      procStore.set(keyOf(`BLOCK#${stageId}`, 'META'), {
+        pk: `BLOCK#${stageId}`,
+        sk: 'META',
+        GSI1PK: 'TENANT#default#STAGE',
+        GSI1SK: `NAME#${stageId}`,
+        id: stageId,
+        blockId: stageId,
+        type: 'STAGE',
+        version: 1,
+        mode: 'inline',
+        leadAgent: 'orchestrator',
+        produces: [],
+        consumes: [],
+      });
+    stageBlock('design');
+    stageBlock('implement');
+  };
+
+  const siOf = (stageId) => planStageInstanceId('aidlc-v2@4', stageId);
+
+  const seedStageRow = (intentId, stageId, state = 'SUCCEEDED') =>
+    procStore.set(keyOf(`EXEC#${intentId}`, `STAGE#${siOf(stageId)}`), {
+      pk: `EXEC#${intentId}`,
+      sk: `STAGE#${siOf(stageId)}`,
+      type: 'Stage',
+      executionId: intentId,
+      stageInstanceId: siOf(stageId),
+      stageId,
+      state,
+      attempt: 0,
+      cli: 'claude',
+      cliSessionId: 'sess-1',
+    });
+
+  const rewind = (sub, projectId, intentId, body) =>
+    handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intentId}/rewind`,
+      pathParameters: { projectId, intentId },
+      body: JSON.stringify(body),
+      ...claims(sub),
+    });
+
+  it('resets the target stage + downstream, supersedes their artifacts, relaunches at the stage', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    setStatus(intent.id, { status: 'SUCCEEDED' });
+    seedStageRow(intent.id, 'design');
+    seedStageRow(intent.id, 'implement');
+    await seedIntentAnchor(intent.id);
+    const seedArtifact = async (id, stageId) => {
+      await g
+        .addV('Artifact')
+        .property('id', id)
+        .property('artifact_type', 'doc')
+        .property('title', id)
+        .property('created_by_stage_instance_id', siOf(stageId))
+        .as('a')
+        .V()
+        .has('Intent', 'id', intent.id)
+        .addE('CONTAINS')
+        .to('a')
+        .next();
+    };
+    await seedArtifact('a-design', 'design');
+    await seedArtifact('a-impl', 'implement');
+
+    const res = await rewind(sub, projectId, intent.id, {
+      fromStageId: 'implement',
+      guidance:
+        'The implementation used REST; redo it against the event bus and revert the REST commits.',
+    });
+    expect(res.statusCode).toBe(202);
+    const body = JSON.parse(res.body);
+    expect(body.intent.status).toBe('CREATED');
+    expect(body.intent.rewindFromStageId).toBe('implement');
+    expect(body.steering).toMatchObject({ kind: 'rewind', targetStageId: 'implement' });
+
+    // The target stage is reset (attempt+1, session cleared); upstream is untouched.
+    const implRow = procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('implement')}`));
+    expect(implRow).toMatchObject({ state: 'PENDING', attempt: 1, cliSessionId: null });
+    const designRow = procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('design')}`));
+    expect(designRow.state).toBe('SUCCEEDED');
+
+    // Only the reset stage's artifact is superseded (lineage kept, not deleted).
+    const impl = await g.V().has('Artifact', 'id', 'a-impl').valueMap().next();
+    expect(impl.value.get('superseded_at')).toBeDefined();
+    const design = await g.V().has('Artifact', 'id', 'a-design').valueMap().next();
+    expect(design.value.get('superseded_at')).toBeUndefined();
+
+    // Relaunched at the rewind point.
+    const calls = lambdaMock.commandCalls(InvokeCommand);
+    expect(calls).toHaveLength(1);
+    const payload = JSON.parse(Buffer.from(calls[0].args[0].input.Payload).toString());
+    expect(payload).toMatchObject({ action: 'start', startAtStageId: 'implement' });
+  });
+
+  it('retires a parked WAITING run before relaunching (gate superseded + sentinel)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    seedStageRow(intent.id, 'design');
+    seedStageRow(intent.id, 'implement', 'WAITING_FOR_HUMAN');
+    seedGate(intent.id, 'h1', { status: 'pending', callbackId: 'cb-h1' });
+    setStatus(intent.id, { status: 'WAITING', pendingHumanTaskId: 'h1' });
+
+    const res = await rewind(sub, projectId, intent.id, {
+      fromStageId: 'implement',
+      guidance: 'wrong direction',
+    });
+    expect(res.statusCode).toBe(202);
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'HUMAN#h1')).status).toBe('superseded');
+    const cb = lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand);
+    expect(cb).toHaveLength(1);
+    expect(JSON.parse(Buffer.from(cb[0].args[0].input.Result).toString())).toMatchObject({
+      cancelled: true,
+    });
+    // META cleared of the pending gate pointer.
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).pendingHumanTaskId).toBeNull();
+  });
+
+  it('409s a rewind while RUNNING (steering is deterministic — wait for the stage)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    setStatus(intent.id, { status: 'RUNNING' });
+    const res = await rewind(sub, projectId, intent.id, {
+      fromStageId: 'implement',
+      guidance: 'nope',
+    });
+    expect(res.statusCode).toBe(409);
+    expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(0);
+  });
+
+  it('400s an unknown stage, listing the plan stages', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    setStatus(intent.id, { status: 'FAILED' });
+    const res = await rewind(sub, projectId, intent.id, {
+      fromStageId: 'nonsense',
+      guidance: 'x',
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).stages).toEqual(['design', 'implement']);
+  });
+
+  it('400s a rewind without guidance (the correction is the point)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    setStatus(intent.id, { status: 'FAILED' });
+    const res = await rewind(sub, projectId, intent.id, { fromStageId: 'implement' });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toMatch(/guidance is required/);
+  });
+
+  it('rolls back to the prior status when the relaunch invoke fails', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    setStatus(intent.id, { status: 'FAILED' });
+    seedStageRow(intent.id, 'implement');
+    lambdaMock.on(InvokeCommand).rejectsOnce(new Error('invoke failed'));
+    const res = await rewind(sub, projectId, intent.id, {
+      fromStageId: 'implement',
+      guidance: 'x',
+    });
+    expect(res.statusCode).toBe(500);
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).status).toBe('FAILED');
   });
 });

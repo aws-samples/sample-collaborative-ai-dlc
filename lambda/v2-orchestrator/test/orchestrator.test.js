@@ -460,3 +460,123 @@ describe('orchestrator durable handler', () => {
     expect(res.ok).toBe(true); // completed without any assertInStep throw
   });
 });
+
+// ── Steering (docs/v2-steering.md) ──
+
+describe('rewind relaunch (startAtStageId)', () => {
+  it('slices the stage loop to start at the rewound stage when upstream is SUCCEEDED', async () => {
+    deps.loadPlan.mockResolvedValue({
+      valid: true,
+      plan: {
+        stages: [
+          { stageId: 'a', stageInstanceId: 'si-a' },
+          { stageId: 'b', stageInstanceId: 'si-b' },
+          { stageId: 'c', stageInstanceId: 'si-c' },
+        ],
+      },
+    });
+    deps.store.getStage = vi.fn(async () => ({ state: 'SUCCEEDED' }));
+    const res = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1', startAtStageId: 'b' },
+      makeCtx(),
+      deps,
+    );
+    expect(res).toEqual({ ok: true, intentId: 'i1', stages: 2 });
+    // init-ws still runs (idempotent workspace heal); the loop starts at 'b'.
+    expect(invokes.map((p) => p.command)).toEqual(['init-ws', 'run-stage', 'run-stage']);
+    expect(invokes.filter((p) => p.command === 'run-stage').map((p) => p.stageId)).toEqual([
+      'b',
+      'c',
+    ]);
+    // Only the upstream stage 'a' was verified.
+    expect(deps.store.getStage).toHaveBeenCalledTimes(1);
+    expect(deps.store.getStage).toHaveBeenCalledWith('i1', 'si-a');
+  });
+
+  it('fails rewind_stage_not_found for a stage outside the plan', async () => {
+    const res = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1', startAtStageId: 'nope' },
+      makeCtx(),
+      deps,
+    );
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('rewind_stage_not_found');
+  });
+
+  it('fails rewind_upstream_incomplete when a stage before the rewind point never succeeded', async () => {
+    deps.loadPlan.mockResolvedValue({
+      valid: true,
+      plan: {
+        stages: [
+          { stageId: 'a', stageInstanceId: 'si-a' },
+          { stageId: 'b', stageInstanceId: 'si-b' },
+        ],
+      },
+    });
+    deps.store.getStage = vi.fn(async () => null); // 'a' never ran
+    const res = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1', startAtStageId: 'b' },
+      makeCtx(),
+      deps,
+    );
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('rewind_upstream_incomplete');
+    expect(invokes.filter((p) => p.command === 'run-stage')).toHaveLength(0);
+  });
+});
+
+describe('retired-run ownership', () => {
+  it('exits quietly (no META write) when the parked gate was superseded by cancel/rewind', async () => {
+    deps.store.getExecution
+      .mockResolvedValueOnce(META) // load-meta
+      .mockResolvedValue({ ...META, pendingHumanTaskId: 'h1' });
+    deps.loadPlan.mockResolvedValue({ valid: true, plan: { stages: [{ stageId: 'a' }] } });
+    // After the callback resolves (cancel sentinel), the gate reads superseded.
+    deps.store.getHumanTask = vi.fn(async () => ({ status: 'superseded' }));
+    let n = 0;
+    deps.invokeRuntime = vi.fn(async (payload) => {
+      invokes.push(payload);
+      n += 1;
+      if (n === 1) return { ok: true }; // init-ws
+      return { ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'h1' };
+    });
+    const res = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1' },
+      makeCtx(),
+      deps,
+    );
+    expect(res).toMatchObject({ ok: false, reason: 'retired', humanTaskId: 'h1' });
+    // No resume was issued and NO terminal status was written — the cancel/
+    // rewind path owns META from here.
+    expect(invokes.filter((p) => p.resumeFrom)).toHaveLength(0);
+    const statuses = deps.store.updateExecution.mock.calls.map((c) => c[0].status);
+    expect(statuses).not.toContain('SUCCEEDED');
+    expect(statuses).not.toContain('FAILED');
+    expect(statuses).not.toContain('CANCELLED');
+  });
+
+  it('claims the run with an ownership token and CASes terminal writes on it', async () => {
+    await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, makeCtx(), deps);
+    const calls = deps.store.updateExecution.mock.calls.map((c) => c[0]);
+    const claim = calls.find((c) => c.orchestratorRunId);
+    expect(claim).toBeTruthy();
+    const finish = calls.find((c) => c.status === 'SUCCEEDED');
+    expect(finish.ifOrchestratorRunId).toBe(claim.orchestratorRunId);
+  });
+
+  it('a terminal write losing the ownership CAS returns retired without an event', async () => {
+    const cas = Object.assign(new Error('cas'), { name: 'ConditionalCheckFailedException' });
+    deps.store.updateExecution = vi.fn(async (input) => {
+      if (input.ifOrchestratorRunId) throw cas; // a relaunch re-stamped the token
+      return { orchestratorRunId: input.orchestratorRunId ?? null };
+    });
+    const res = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1' },
+      makeCtx(),
+      deps,
+    );
+    expect(res).toMatchObject({ ok: false, reason: 'retired' });
+    const evTypes = deps.store.appendEvent.mock.calls.map((c) => c[0].type);
+    expect(evTypes).not.toContain('v2.execution.succeeded');
+  });
+});

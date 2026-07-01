@@ -51,6 +51,8 @@ export interface Intent {
   currentStage: string | null;
   pendingHumanTaskId: string | null;
   failureReason: string | null;
+  // Set when the run was relaunched from a mid-plan stage (steering rewind).
+  rewindFromStageId?: string | null;
   cliModels: Record<string, string> | null;
   parkReleaseSeconds: number | null;
   source: IntentSource | null;
@@ -79,7 +81,8 @@ export interface IntentGate {
   humanTaskId: string;
   stageInstanceId: string | null;
   kind: 'approval' | 'question' | 'review-verdict';
-  status: 'pending' | 'answered' | 'approved' | 'rejected';
+  // `superseded` = the gate was retired unanswered by a cancel/rewind.
+  status: 'pending' | 'answered' | 'approved' | 'rejected' | 'superseded';
   prompt: string | null;
   options: unknown;
   questions: string | null;
@@ -88,6 +91,29 @@ export interface IntentGate {
   answeredByName?: string | null;
   answeredAt: string | null;
   createdAt: string | null;
+  // Steering: set when a later correction revised this gate's answer. The
+  // original answer stays; the correction is the referenced STEER row.
+  revisedAt?: string | null;
+  revisionSteerId?: string | null;
+  supersededAt?: string | null;
+  supersededBy?: string | null;
+}
+
+// A human steering / course-correction message (docs/v2-steering.md).
+// Human-initiated (the inverse of a gate); delivered to the agent only at a
+// deterministic injection point (gate resume / fresh stage start).
+export interface IntentSteering {
+  steerId: string;
+  kind: 'gate-steer' | 'revision' | 'rewind';
+  status: 'pending' | 'consumed' | 'superseded';
+  message: string | null;
+  targetGateId: string | null;
+  targetStageId: string | null;
+  createdBy: string | null;
+  createdByName: string | null;
+  createdAt: string | null;
+  consumedAt: string | null;
+  consumedByStageInstanceId: string | null;
 }
 
 // Cost attributed to one metric sample, computed server-side (pricing lives on
@@ -155,6 +181,10 @@ export interface IntentArtifact {
   createdByExecutionId: string | null;
   createdByStageInstanceId: string | null;
   createdAt: string | null;
+  // Rewind lineage: set while a rewind's supersede has not been rehabilitated
+  // by the re-run (dimmed in the UI).
+  supersededAt?: string | null;
+  supersededBy?: string | null;
   content: string | null;
 }
 
@@ -182,6 +212,7 @@ export interface IntentDetail {
   stages: IntentStage[];
   events: IntentActivityEvent[];
   gates: IntentGate[];
+  steering: IntentSteering[];
   metrics: IntentMetric[];
   outputs: IntentOutput[];
   sensorRuns: IntentSensorRun[];
@@ -204,10 +235,12 @@ export interface CreateIntentInput {
 }
 
 // The structured answer the QuestionEditor produces, matching what the runtime's
-// formatResumeAnswer parses.
+// formatResumeAnswer parses. `steering` optionally rides a course correction on
+// the answer — injected into the resumed conversation right after it.
 export interface GateAnswer {
   status?: 'answered' | 'approved' | 'rejected';
   answer?: unknown;
+  steering?: string;
 }
 
 // The intent's Neptune knowledge subgraph (GET .../graph): what the run
@@ -268,9 +301,25 @@ export const intentsService = {
     api.post<Intent>(`/projects/${projectId}/intents`, input),
   start: (projectId: string, intentId: string) =>
     api.post<Intent>(`/projects/${projectId}/intents/${intentId}/start`, {}),
+  cancel: (projectId: string, intentId: string) =>
+    api.post<Intent>(`/projects/${projectId}/intents/${intentId}/cancel`, {}),
+  // Steering rewind: restart the run from `fromStageId` with corrective
+  // guidance (409 while RUNNING — wait for the stage to park or finish).
+  rewind: (projectId: string, intentId: string, input: { fromStageId: string; guidance: string }) =>
+    api.post<{ intent: Intent; steering: IntentSteering }>(
+      `/projects/${projectId}/intents/${intentId}/rewind`,
+      input,
+    ),
   answerGate: (projectId: string, intentId: string, humanTaskId: string, input: GateAnswer) =>
     api.post<IntentGate>(
       `/projects/${projectId}/intents/${intentId}/gates/${humanTaskId}/answer`,
       input,
+    ),
+  // Steering revision: correct an already-given answer. Delivered at the next
+  // deterministic injection point (`delivery` says which).
+  reviseGate: (projectId: string, intentId: string, humanTaskId: string, message: string) =>
+    api.post<IntentSteering & { delivery: 'next-resume' | 'next-stage-start' }>(
+      `/projects/${projectId}/intents/${intentId}/gates/${humanTaskId}/revise`,
+      { message },
     ),
 };

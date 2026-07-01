@@ -1224,8 +1224,11 @@ resource "aws_lambda_permission" "workflows" {
 #   /projects/{projectId}/intents/{intentId}                       GET
 #   /projects/{projectId}/intents/{intentId}/graph                 GET
 #   /projects/{projectId}/intents/{intentId}/start                 POST
+#   /projects/{projectId}/intents/{intentId}/cancel                POST
+#   /projects/{projectId}/intents/{intentId}/rewind                POST
 #   /projects/{projectId}/intents/{intentId}/realtime-token        POST
 #   /projects/{projectId}/intents/{intentId}/gates/{humanTaskId}/answer  POST
+#   /projects/{projectId}/intents/{intentId}/gates/{humanTaskId}/revise  POST
 # All routes hit the single intents Lambda, which routes by path + method.
 # =============================================================================
 
@@ -1262,6 +1265,20 @@ resource "aws_api_gateway_resource" "intent_start" {
   path_part   = "start"
 }
 
+# Steering (docs/v2-steering.md): cancel a parked/stranded/failed run; rewind
+# the run to an earlier stage with corrective guidance.
+resource "aws_api_gateway_resource" "intent_cancel" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent.id
+  path_part   = "cancel"
+}
+
+resource "aws_api_gateway_resource" "intent_rewind" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent.id
+  path_part   = "rewind"
+}
+
 resource "aws_api_gateway_resource" "intent_realtime_token" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.intent.id
@@ -1286,6 +1303,14 @@ resource "aws_api_gateway_resource" "intent_gate_answer" {
   path_part   = "answer"
 }
 
+# Steering: revise an already-answered gate (the correction is a STEER row
+# delivered at the next deterministic injection point).
+resource "aws_api_gateway_resource" "intent_gate_revise" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent_gate.id
+  path_part   = "revise"
+}
+
 locals {
   intent_routes = {
     collection_get  = { resource = aws_api_gateway_resource.intents.id, method = "GET" }
@@ -1294,8 +1319,11 @@ locals {
     item_get        = { resource = aws_api_gateway_resource.intent.id, method = "GET" }
     graph_get       = { resource = aws_api_gateway_resource.intent_graph.id, method = "GET" }
     start_post      = { resource = aws_api_gateway_resource.intent_start.id, method = "POST" }
+    cancel_post     = { resource = aws_api_gateway_resource.intent_cancel.id, method = "POST" }
+    rewind_post     = { resource = aws_api_gateway_resource.intent_rewind.id, method = "POST" }
     token_post      = { resource = aws_api_gateway_resource.intent_realtime_token.id, method = "POST" }
     answer_post     = { resource = aws_api_gateway_resource.intent_gate_answer.id, method = "POST" }
+    revise_post     = { resource = aws_api_gateway_resource.intent_gate_revise.id, method = "POST" }
   }
 }
 
@@ -1348,6 +1376,18 @@ module "cors_intent_start" {
   resource_id = aws_api_gateway_resource.intent_start.id
 }
 
+module "cors_intent_cancel" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_cancel.id
+}
+
+module "cors_intent_rewind" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_rewind.id
+}
+
 module "cors_intent_realtime_token" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
@@ -1358,6 +1398,12 @@ module "cors_intent_gate_answer" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.intent_gate_answer.id
+}
+
+module "cors_intent_gate_revise" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_gate_revise.id
 }
 
 resource "aws_lambda_permission" "intents" {

@@ -1,6 +1,7 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
 import { useIntent, type IntentStageRow } from '@/contexts/IntentContext';
 import { formatDuration, useTick } from '@/components/intent/stageStyle';
@@ -10,9 +11,13 @@ import {
   sensorNeedsAttention,
   summarizeSensorDetail,
 } from '@/components/intent/SensorChips';
-import { FileText, ScrollText } from 'lucide-react';
+import { FileText, Loader2, RotateCcw, ScrollText } from 'lucide-react';
 import { aggregateMetrics } from '@/lib/metricAggregation';
 import { UsageMetrics } from '@/components/intent/UsageMetrics';
+
+// Steering (docs/v2-steering.md): the run states a rewind may start from. A
+// RUNNING stage cannot be interrupted — the API 409s; the button hides.
+const REWINDABLE_STATUSES = new Set(['SUCCEEDED', 'FAILED', 'WAITING', 'CANCELLED']);
 
 // Drill-down for one stage, shared by the list (inline expansion) and the
 // graph (below-canvas panel): timing, dependencies (derived from the compiled
@@ -28,8 +33,36 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
     outputBuffers,
     setSelectedStageId,
     focusOutput,
+    rewindIntent,
   } = useIntent();
   useTick(row.state === 'RUNNING');
+
+  // Rewind form state: guidance is REQUIRED — the whole point of a rewind is
+  // telling the agent what went wrong and what to do instead.
+  const [rewindOpen, setRewindOpen] = useState(false);
+  const [guidance, setGuidance] = useState('');
+  const [rewinding, setRewinding] = useState(false);
+  const [rewindError, setRewindError] = useState<string | null>(null);
+  const canRewind =
+    row.planned &&
+    REWINDABLE_STATUSES.has(detail?.intent.status ?? '') &&
+    row.state !== 'PENDING' &&
+    row.state !== 'SKIPPED';
+
+  const handleRewind = async () => {
+    if (!guidance.trim()) return;
+    setRewinding(true);
+    setRewindError(null);
+    try {
+      await rewindIntent(row.stageId, guidance.trim());
+      setRewindOpen(false);
+      setGuidance('');
+    } catch (err) {
+      setRewindError(err instanceof Error ? err.message : 'Failed to rewind');
+    } finally {
+      setRewinding(false);
+    }
+  };
 
   const dependsOn = useMemo(
     () => stageEdges.filter((e) => e.to === row.stageId),
@@ -223,7 +256,65 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
             {a.title || a.artifactType || a.id}
           </Button>
         ))}
+        {canRewind && !rewindOpen && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 gap-1 px-2 text-[11px]"
+            onClick={() => setRewindOpen(true)}
+          >
+            <RotateCcw className="h-3 w-3" />
+            Restart from this stage
+          </Button>
+        )}
       </div>
+
+      {/* Rewind (steering): re-run this stage + everything after it with
+          corrective guidance. Prior artifacts are kept as superseded lineage;
+          the agent reverts/redoes conflicting commits on the branch. */}
+      {canRewind && rewindOpen && (
+        <div className="space-y-2 rounded-md border border-agent-waiting/40 bg-agent-waiting/[0.04] p-2">
+          <p className="text-[11px] font-medium">
+            Restart from <span className="font-mono">{row.stageId}</span> — this stage and every
+            stage after it will re-run. Tell the agent what went wrong and what to do instead:
+          </p>
+          <Textarea
+            value={guidance}
+            onChange={(e) => setGuidance(e.target.value)}
+            placeholder="e.g. The design took a REST approach but we need event-driven messaging. Redo the design around the existing SQS queues and revert the REST scaffolding commits."
+            rows={3}
+            className="text-xs"
+          />
+          {rewindError && <p className="text-[11px] text-agent-error">{rewindError}</p>}
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              className="h-6 gap-1 px-2 text-[11px]"
+              disabled={!guidance.trim() || rewinding}
+              onClick={handleRewind}
+            >
+              {rewinding ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <RotateCcw className="h-3 w-3" />
+              )}
+              {rewinding ? 'Rewinding…' : 'Rewind & restart'}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-6 px-2 text-[11px]"
+              disabled={rewinding}
+              onClick={() => {
+                setRewindOpen(false);
+                setRewindError(null);
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

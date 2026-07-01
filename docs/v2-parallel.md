@@ -27,15 +27,15 @@ system as the **internal runtime snapshot** at S3 `aidlc-runtime/<ref>/<repo-pat
 (classification in `lambda/shared/block-mappers.js` `isRuntimeFile`, writes in
 `lambda/seed-blocks/index.js`) — present but unused by the execution layer today.
 
-| Upstream file | What it defines |
-| --- | --- |
-| `core/aidlc-common/protocols/stage-definition.md` (§ `for_each`) | The normative fan-out marker: _"artifact slug; stage runs once per instance of that artifact. Omit for once-per-workflow stages. Doctor validates the artifact is produced by an upstream stage."_ |
-| `core/aidlc-common/stages/construction/*.md` | `functional-design`, `nfr-requirements`, `nfr-design`, `infrastructure-design`, `code-generation` all carry `for_each: unit-of-work`. `build-and-test` is the fan-in: _"Always executes once after all per-unit stages are finished"_, inputs _"ALL code generation outputs across all units"_. |
-| `core/aidlc-common/stages/inception/units-generation.md` | Produces `unit-of-work`, `unit-of-work-dependency`, `unit-of-work-story-map`. Its condition text: _"Produces the dependency DAG that … Delivery Planning consumes for Bolt sequencing"_. |
-| `core/aidlc-common/stages/inception/delivery-planning.md` | Consumes the unit DAG, produces `bolt-plan` (prose iteration grouping, team allocation, risk rationale). |
-| `core/aidlc-common/protocols/stage-protocol.md` (§ Construction Bolt gates) | Walking-skeleton gate, autonomy ladder, batch-level gates ("single gate per batch, not one per Bolt"), halt-and-ask failure semantics ("wait for all parallel Tasks, preserve successful Bolts' artifacts, retry / skip / abort", retry inside the existing worktree). |
-| `core/tools/aidlc-bolt.ts` | _"A bolt is one execution of stages 3.1–3.5 for a Unit (or small group of dependency-linked Units)"_ + per-Bolt worktree lifecycle (`start --worktree`, `complete --merge`, `abort --discard`). |
-| `core/tools/aidlc-swarm.ts`, `core/tools/aidlc-worktree.ts` | The parallel split: _"the conductor owns the fan-out (N parallel Task calls) … fork an isolated git worktree per unit … the serialised merge-back"_; determinism (merge, verdict, audit) in tools, judgement with the human. |
+| Upstream file                                                               | What it defines                                                                                                                                                                                                                                                                                 |
+| --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `core/aidlc-common/protocols/stage-definition.md` (§ `for_each`)            | The normative fan-out marker: _"artifact slug; stage runs once per instance of that artifact. Omit for once-per-workflow stages. Doctor validates the artifact is produced by an upstream stage."_                                                                                              |
+| `core/aidlc-common/stages/construction/*.md`                                | `functional-design`, `nfr-requirements`, `nfr-design`, `infrastructure-design`, `code-generation` all carry `for_each: unit-of-work`. `build-and-test` is the fan-in: _"Always executes once after all per-unit stages are finished"_, inputs _"ALL code generation outputs across all units"_. |
+| `core/aidlc-common/stages/inception/units-generation.md`                    | Produces `unit-of-work`, `unit-of-work-dependency`, `unit-of-work-story-map`. Its condition text: _"Produces the dependency DAG that … Delivery Planning consumes for Bolt sequencing"_.                                                                                                        |
+| `core/aidlc-common/stages/inception/delivery-planning.md`                   | Consumes the unit DAG, produces `bolt-plan` (prose iteration grouping, team allocation, risk rationale).                                                                                                                                                                                        |
+| `core/aidlc-common/protocols/stage-protocol.md` (§ Construction Bolt gates) | Walking-skeleton gate, autonomy ladder, batch-level gates ("single gate per batch, not one per Bolt"), halt-and-ask failure semantics ("wait for all parallel Tasks, preserve successful Bolts' artifacts, retry / skip / abort", retry inside the existing worktree).                          |
+| `core/tools/aidlc-bolt.ts`                                                  | _"A bolt is one execution of stages 3.1–3.5 for a Unit (or small group of dependency-linked Units)"_ + per-Bolt worktree lifecycle (`start --worktree`, `complete --merge`, `abort --discard`).                                                                                                 |
+| `core/tools/aidlc-swarm.ts`, `core/tools/aidlc-worktree.ts`                 | The parallel split: _"the conductor owns the fan-out (N parallel Task calls) … fork an isolated git worktree per unit … the serialised merge-back"_; determinism (merge, verdict, audit) in tools, judgement with the human.                                                                    |
 
 Our engine already ports one piece: `parseBoltDag` / `computeBatches` in
 `lambda/shared/v2-sensor-contract.js` ("faithful JS port of the upstream lib")
@@ -46,13 +46,13 @@ likewise ignored by the plan resolver and orchestrator.
 
 The upstream model maps 1:1 onto our runtime primitives:
 
-| Upstream (local CLI harness) | Our v2 engine |
-| --- | --- |
-| git worktree per unit (`aidlc-worktree.ts`) | AgentCore session + unit branch per lane |
-| conductor issues N parallel Task calls | durable orchestrator `ctx.map` lanes |
-| serialized deterministic merge-back (`aidlc-swarm.ts`) | engine-owned serialized `--no-ff` merges |
-| check-cmd exit 0 authoritative; "a worker's own success claim is never trusted" | blocking sensors as the verdict |
-| batch partial failure: preserve successes, retry / skip / abort | lane FAILED → dependents BLOCKED, others finish, human decision |
+| Upstream (local CLI harness)                                                    | Our v2 engine                                                   |
+| ------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| git worktree per unit (`aidlc-worktree.ts`)                                     | AgentCore session + unit branch per lane                        |
+| conductor issues N parallel Task calls                                          | durable orchestrator `ctx.map` lanes                            |
+| serialized deterministic merge-back (`aidlc-swarm.ts`)                          | engine-owned serialized `--no-ff` merges                        |
+| check-cmd exit 0 authoritative; "a worker's own success claim is never trusted" | blocking sensors as the verdict                                 |
+| batch partial failure: preserve successes, retry / skip / abort                 | lane FAILED → dependents BLOCKED, others finish, human decision |
 
 ### A2. Structural rules
 
@@ -149,10 +149,10 @@ execution SUCCEEDED         → PR(s) per project prStrategy:
                               intent-pr (default) | pr-per-unit | stacked
 ```
 
-Merging into the *intent branch* (not base) preserves the methodology's shape:
+Merging into the _intent branch_ (not base) preserves the methodology's shape:
 one intent = one integrated increment, reviewed as a whole; dependent units
 genuinely build on their dependencies' merged code because their lanes branch
-off *after* the merge.
+off _after_ the merge.
 
 ---
 
@@ -170,13 +170,13 @@ off *after* the merge.
    or true wavefront (lanes await their dependency lanes' DurablePromises);
    PoC proves the latter, the former is the fallback.
 2. **CRITICAL prerequisite — async stage invocation.** Today `run-stage` is a
-   *synchronous* durable step (`lambda/v2-orchestrator/index.js` `runStage`),
+   _synchronous_ durable step (`lambda/v2-orchestrator/index.js` `runStage`),
    but the orchestrator Lambda timeout is 900s
    (`terraform/modules/api/lambda/main.tf`: "one step (a stage) must fit the
    function timeout") **and** AgentCore's synchronous request timeout is a
    hard 15 minutes. Interrupted steps re-execute on re-drive
    (`RETRY_INTERRUPTED_STEP`). Any stage > ~15 min is already at risk
-   *sequentially*; N parallel lanes in a hot handler make timeout certain.
+   _sequentially_; N parallel lanes in a hot handler make timeout certain.
    Fix: short `run-stage-start` invoke → container runs the CLI as a
    **background job** (AgentCore async jobs: 8 h max; the `HealthyBusy` ping
    tracker already exists in `lambda/agentcore/http-server.js`) → container
@@ -203,7 +203,7 @@ off *after* the merge.
    codebase; staying hand-rolled matches two prior deliberate decisions.
 5. **Local PoC without AWS**: `@aws/durable-execution-sdk-js-testing@1.1.1`
    (in-process local runner with real replay/suspend semantics — the existing
-   orchestrator tests use a fake ctx that does *not* exercise replay).
+   orchestrator tests use a fake ctx that does _not_ exercise replay).
 6. **Residual unknown**: durable execution operation-count / payload quotas
    under N lanes × stages checkpoints — verify via the quotas console / cloud
    runner early in WP0/WP1.
@@ -268,16 +268,16 @@ before any concurrency lands.
 
 ## Decisions log
 
-| Decision | Choice |
-| --- | --- |
-| What parallelizes | Units of work from the `unit-of-work-dependency` bolt DAG (per-unit construction lanes) |
-| Blocking granularity | Lane-level: a unit starts only when all `depends_on` lanes are fully MERGED |
-| Scheduling source | The unit DAG only; `bolt-plan` stays prose (never parsed for execution) |
-| Custom workflows | N parallel sections handled generically (structural `forEach` rule) |
-| Per-unit conditionals | Skippable per unit via human-approved matrix at the fan-out gate |
+| Decision                     | Choice                                                                                                       |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| What parallelizes            | Units of work from the `unit-of-work-dependency` bolt DAG (per-unit construction lanes)                      |
+| Blocking granularity         | Lane-level: a unit starts only when all `depends_on` lanes are fully MERGED                                  |
+| Scheduling source            | The unit DAG only; `bolt-plan` stays prose (never parsed for execution)                                      |
+| Custom workflows             | N parallel sections handled generically (structural `forEach` rule)                                          |
+| Per-unit conditionals        | Skippable per unit via human-approved matrix at the fan-out gate                                             |
 | Human gating in construction | Methodology model: walking-skeleton gate + autonomy ladder + per-batch gates — replaces per-stage lane gates |
-| Merge conflicts | Deterministic merge; conflict → scoped agent stage + sensor verification; human on repeat failure |
-| Branch/PR model | Per-project `prStrategy`: intent-pr (default) / pr-per-unit / stacked |
-| Git ownership | Engine-only (branch, commit, push, merge); agents hold no credentials |
-| Sequencing | Git layer + parallelization as one combined effort (async invocation first) |
-| Concurrency cap | Per-project `maxParallelUnits`; 0 = unbounded (DAG-limited) |
+| Merge conflicts              | Deterministic merge; conflict → scoped agent stage + sensor verification; human on repeat failure            |
+| Branch/PR model              | Per-project `prStrategy`: intent-pr (default) / pr-per-unit / stacked                                        |
+| Git ownership                | Engine-only (branch, commit, push, merge); agents hold no credentials                                        |
+| Sequencing                   | Git layer + parallelization as one combined effort (async invocation first)                                  |
+| Concurrency cap              | Per-project `maxParallelUnits`; 0 = unbounded (DAG-limited)                                                  |

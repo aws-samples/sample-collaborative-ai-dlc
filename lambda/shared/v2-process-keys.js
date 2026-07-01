@@ -22,6 +22,7 @@
 //     SK = METRIC#<ts>#<metricId>     — token usage / context-window samples
 //     SK = OUTPUT#<seq>               — agent output chunks (restore-on-reload)
 //     SK = SENSOR#<ts>#<sensorRunId>  — a deterministic sensor verdict for a stage
+//     SK = STEER#<ts>#<steerId>       — a human steering/course-correction message
 //   GSI1PK = PROJECT#<projectId>      GSI1SK = STATUS#<status>#STARTED#<ts>#EXEC#<id>
 //     (list a project's executions by status, newest first)
 //   GSI2PK = EXEC#<executionId>       GSI2SK = TYPE#<type>#STATE#<state>#<id>
@@ -54,6 +55,12 @@ const metricKey = (executionId, timestamp, metricId) => ({
 const sensorRunKey = (executionId, timestamp, sensorRunId) => ({
   pk: executionPk(executionId),
   sk: `SENSOR#${timestamp}#${sensorRunId}`,
+});
+// Steering rows sort by creation time (like EVENT#) so pending course
+// corrections are injected in the order the humans gave them.
+const steeringKey = (executionId, timestamp, steerId) => ({
+  pk: executionPk(executionId),
+  sk: `STEER#${timestamp}#${steerId}`,
 });
 // Output chunks use a zero-padded monotonic sequence so SK sort == emit order
 // (a timestamp can collide for rapid chunks; a sequence can't).
@@ -93,9 +100,19 @@ const EXECUTION_STATUS = [
 // Per-stage runtime status. The container drives a stage RUNNING → terminal; a
 // stage that opens a human gate parks on WAITING_FOR_HUMAN.
 const STAGE_STATE = ['PENDING', 'RUNNING', 'WAITING_FOR_HUMAN', 'SUCCEEDED', 'FAILED', 'SKIPPED'];
-// Human gate kinds + lifecycle.
+// Human gate kinds + lifecycle. `superseded` retires a still-pending gate whose
+// run was cancelled/rewound — never answered, kept as the audit record.
 const HUMAN_TASK_KINDS = ['approval', 'question', 'review-verdict'];
-const HUMAN_TASK_STATUSES = ['pending', 'answered', 'approved', 'rejected'];
+const HUMAN_TASK_STATUSES = ['pending', 'answered', 'approved', 'rejected', 'superseded'];
+// Human steering (course-correction) messages. Immutable once written; a
+// correction of a correction supersedes the old row. Delivery ("consumed") only
+// happens at a deterministic injection point: a gate resume or a fresh stage
+// start (docs/v2-steering.md).
+//   gate-steer — attached to a gate answer; injected on that gate's resume.
+//   revision   — corrects an already-answered gate; injected at the next point.
+//   rewind     — guidance for a restart-from-stage; injected into that stage.
+const STEERING_KINDS = ['gate-steer', 'revision', 'rewind'];
+const STEERING_STATUSES = ['pending', 'consumed', 'superseded'];
 
 // ── Pure record builders ──
 // Every builder takes injected `now`/ids so callers/tests stay deterministic
@@ -140,6 +157,13 @@ const buildExecutionMeta = ({
   // Sprint.tracker shape: { provider, instance, bindingId, resourceType,
   // resourceId, resourceUrl }.
   source = null,
+  // The live orchestrator run's ownership token (v2-steering.md): minted by the
+  // durable orchestrator at mark-running and CAS-checked on its terminal writes,
+  // so a retired run (cancel/rewind relaunch) can never clobber META.
+  orchestratorRunId = null,
+  // Set when this run was relaunched from a mid-plan stage (rewind). Purely
+  // informational — explains why upstream stages show SUCCEEDED from a prior run.
+  rewindFromStageId = null,
 }) => ({
   ...executionMetaKey(executionId),
   ...projectStatusIndex({ projectId, status, startedAt, executionId }),
@@ -166,6 +190,8 @@ const buildExecutionMeta = ({
   cliModels,
   parkReleaseSeconds,
   source,
+  orchestratorRunId,
+  rewindFromStageId,
   updatedAt: startedAt,
   completedAt: null,
 });
@@ -344,6 +370,45 @@ const buildSensorRow = ({
   timestamp: now,
 });
 
+// A human steering / course-correction message (docs/v2-steering.md). Human-
+// initiated (the inverse of a HUMAN# gate), immutable, and delivered to the
+// agent only at a deterministic injection point — a gate resume or a fresh
+// stage start — where it flips pending → consumed (CAS). `targetGateId` links a
+// gate-steer/revision to its gate; `targetStageId` names a rewind's restart
+// stage. GSI2 state = status so "all pending steering" is one query.
+const buildSteeringRow = ({
+  executionId,
+  steerId,
+  kind,
+  message,
+  targetGateId = null,
+  targetStageId = null,
+  status = 'pending',
+  createdBy = null,
+  createdByName = null,
+  now,
+}) => ({
+  ...steeringKey(executionId, now, steerId),
+  ...executionTypeStateIndex({ executionId, type: 'STEER', state: status, id: steerId }),
+  type: 'Steering',
+  executionId,
+  steerId,
+  kind,
+  status,
+  message,
+  targetGateId,
+  targetStageId,
+  createdBy,
+  createdByName,
+  createdAt: now,
+  // Set when the message enters an agent conversation (pending → consumed).
+  consumedAt: null,
+  consumedByStageInstanceId: null,
+  // Set when a newer correction retires this one (pending → superseded).
+  supersededAt: null,
+  supersededBy: null,
+});
+
 module.exports = {
   META,
   executionPk,
@@ -354,6 +419,7 @@ module.exports = {
   humanTaskKey,
   metricKey,
   sensorRunKey,
+  steeringKey,
   outputKey,
   outputSeq,
   projectStatusIndex,
@@ -362,11 +428,14 @@ module.exports = {
   STAGE_STATE,
   HUMAN_TASK_KINDS,
   HUMAN_TASK_STATUSES,
+  STEERING_KINDS,
+  STEERING_STATUSES,
   buildExecutionMeta,
   buildStageRow,
   buildEventRow,
   buildHumanTaskRow,
   buildMetricRow,
   buildSensorRow,
+  buildSteeringRow,
   buildOutputRow,
 };

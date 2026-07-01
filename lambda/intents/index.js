@@ -23,14 +23,14 @@ import { fetchKnowledgeGraph } from './knowledge-graph.js';
 
 const { createProcessStore } = pkg;
 const { parseCliModels, mergeCliModels } = cliModelsPkg;
-const { loadWorkflowScopes } = workflowPlanPkg;
+const { loadWorkflowScopes, loadExecutionPlan } = workflowPlanPkg;
 const { makePriceResolver, costForMetrics } = pricingPkg;
 const { aggregateMetrics, rollupAggregates } = metricClassificationPkg;
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const __ = gremlin.process.statics;
-const { cardinality } = gremlin.process;
+const { cardinality, P } = gremlin.process;
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
@@ -245,6 +245,10 @@ const fetchArtifacts = async (g, intentId) => {
     createdByExecutionId: getVal(vm, 'created_by_execution_id') ?? null,
     createdByStageInstanceId: getVal(vm, 'created_by_stage_instance_id') ?? null,
     createdAt: getVal(vm, 'created_at') ?? null,
+    // Rewind lineage (docs/v2-steering.md): set when a rewind superseded this
+    // artifact and the re-run has not yet rehabilitated it. UI dims it.
+    supersededAt: getVal(vm, 'superseded_at') ?? null,
+    supersededBy: getVal(vm, 'superseded_by') ?? null,
     content: getVal(vm, 'content') ?? null,
   }));
 };
@@ -303,6 +307,84 @@ const linkQuestionToStageArtifacts = async (g, intentId, gate) => {
         .next();
     }
   }
+};
+
+// Mirror a steering (course-correction) row as a Steering vertex hanging off the
+// Intent anchor, so the knowledge graph shows WHY the run changed direction. A
+// revision additionally gets a REVISES edge to the Question it corrects.
+// Best-effort by design: the STEER row is the source of truth; a DRAFT-era
+// intent (no Neptune anchor yet) simply skips the mirror.
+const mirrorSteeringVertex = async ({ g, intentId, steer }) => {
+  const anchored = await g.V().has('Intent', 'id', intentId).hasNext();
+  if (!anchored) return;
+  const exists = await g.V().has('Steering', 'id', steer.steerId).hasNext();
+  if (!exists) {
+    await g
+      .addV('Steering')
+      .property('id', steer.steerId)
+      .property('intent_id', intentId)
+      .property('kind', steer.kind)
+      .property('message', steer.message ?? '')
+      .property('target_gate_id', steer.targetGateId ?? '')
+      .property('target_stage_id', steer.targetStageId ?? '')
+      .property('created_by', steer.createdBy ?? '')
+      .property('created_by_name', steer.createdByName ?? '')
+      .property('created_at', steer.createdAt)
+      .next();
+    await g
+      .V()
+      .has('Intent', 'id', intentId)
+      .addE('CONTAINS')
+      .to(__.V().has('Steering', 'id', steer.steerId))
+      .next();
+  }
+  if (steer.kind === 'revision' && steer.targetGateId) {
+    const question = await g.V().has('Question', 'id', steer.targetGateId).hasNext();
+    if (question) {
+      const linked = await g
+        .V()
+        .has('Steering', 'id', steer.steerId)
+        .outE('REVISES')
+        .where(__.inV().has('Question', 'id', steer.targetGateId))
+        .hasNext();
+      if (!linked) {
+        await g
+          .V()
+          .has('Steering', 'id', steer.steerId)
+          .addE('REVISES')
+          .to(__.V().has('Question', 'id', steer.targetGateId))
+          .next();
+      }
+    }
+  }
+};
+
+// Rewind graph cleanup: mark every artifact produced by the reset stages as
+// superseded (kept for lineage, dimmed in the UI). The marker is the dedicated
+// `superseded_at`/`superseded_by` prop pair — NOT the free-form `status` prop
+// agents may set. The re-run's create/update_artifact clears the marker; a
+// replacement artifact links DERIVED_FROM instead. Returns the superseded
+// artifact ids (for the audit event).
+const supersedeArtifactsForStages = async (g, intentId, stageInstanceIds, steerId) => {
+  if (!stageInstanceIds.length) return [];
+  const ts = new Date().toISOString();
+  const ids = await g
+    .V()
+    .has('Intent', 'id', intentId)
+    .out('CONTAINS')
+    .hasLabel('Artifact')
+    .has('created_by_stage_instance_id', P.within(...stageInstanceIds))
+    .values('id')
+    .toList();
+  for (const id of ids) {
+    await g
+      .V()
+      .has('Artifact', 'id', id)
+      .property(cardinality.single, 'superseded_at', ts)
+      .property(cardinality.single, 'superseded_by', steerId)
+      .next();
+  }
+  return ids;
 };
 
 const buildGateAnswerEvents = async (g, gates) => {
@@ -372,6 +454,7 @@ const mapIntent = (meta) => ({
   currentStage: meta.currentStage ?? null,
   pendingHumanTaskId: meta.pendingHumanTaskId ?? null,
   failureReason: meta.failureReason ?? null,
+  rewindFromStageId: meta.rewindFromStageId ?? null,
   agentCli: meta.agentCli ?? null,
   cliModels: meta.cliModels ?? null,
   parkReleaseSeconds: meta.parkReleaseSeconds ?? null,
@@ -454,6 +537,34 @@ export const handler = async (event) => {
       if (!answered) {
         return response(409, { error: 'Gate already answered or not pending' });
       }
+      // Optional course correction riding on the answer (docs/v2-steering.md):
+      // record it BEFORE resuming the callback so the resume run-stage — which
+      // reads pending steering at entry — is guaranteed to inject it into the
+      // parked conversation alongside the answer.
+      let steer = null;
+      const steeringMessage = typeof data.steering === 'string' ? data.steering.trim() : '';
+      if (steeringMessage) {
+        steer = await store.createSteering({
+          executionId: intentId,
+          kind: 'gate-steer',
+          message: steeringMessage,
+          targetGateId: humanTaskId,
+          createdBy: responder.sub,
+          createdByName: responder.displayName,
+        });
+        await store
+          .appendEvent({
+            executionId: intentId,
+            type: 'v2.steering.recorded',
+            stageInstanceId: gate.stageInstanceId ?? null,
+            actor: responder.displayName || responder.sub,
+            summary: `${responder.displayName || 'Someone'} added a course correction with their answer`,
+          })
+          .catch((err) => console.error('Steering event append failed:', err.message));
+        await mirrorSteeringVertex({ g, intentId, steer }).catch((err) =>
+          console.error('Steering graph mirror failed:', err.message),
+        );
+      }
       await syncAnsweredQuestionVertex({
         g,
         intentId,
@@ -473,7 +584,58 @@ export const handler = async (event) => {
       if (gate.callbackId) {
         await resumeDurableCallback(gate.callbackId, answered.answer);
       }
-      return response(200, mapHumanTask(answered));
+      return response(200, {
+        ...mapHumanTask(answered),
+        steering: steer ? mapSteering(steer) : null,
+      });
+    }
+
+    // POST /projects/{projectId}/intents/{intentId}/gates/{humanTaskId}/revise
+    // Correct an already-given answer (docs/v2-steering.md). The original answer
+    // is immutable — the correction is a STEER row delivered at the next
+    // deterministic injection point (gate resume or fresh stage start).
+    if (intentId && humanTaskId && httpMethod === 'POST' && path?.endsWith('/revise')) {
+      const data = body ? JSON.parse(body) : {};
+      const message = typeof data.message === 'string' ? data.message.trim() : '';
+      if (!message) return response(400, { error: 'message is required' });
+      const gate = await store.getHumanTask(intentId, humanTaskId);
+      if (!gate) return response(404, { error: 'Gate not found' });
+      const meta = await store.getExecution(intentId);
+      if (!meta || meta.projectId !== projectId) {
+        return response(404, { error: 'Intent not found' });
+      }
+      if (gate.status === 'pending') {
+        return response(409, { error: 'Gate is still pending — answer it instead of revising' });
+      }
+      if (['SUCCEEDED', 'CANCELLED'].includes(meta.status)) {
+        return response(409, { error: `Intent is ${meta.status}; nothing left to steer` });
+      }
+      const responder = getResponder(event);
+      const steer = await store.createSteering({
+        executionId: intentId,
+        kind: 'revision',
+        message,
+        targetGateId: humanTaskId,
+        createdBy: responder.sub,
+        createdByName: responder.displayName,
+      });
+      await store.markGateRevised({ executionId: intentId, humanTaskId, steerId: steer.steerId });
+      await store
+        .appendEvent({
+          executionId: intentId,
+          type: 'v2.gate.revised',
+          stageInstanceId: gate.stageInstanceId ?? null,
+          actor: responder.displayName || responder.sub,
+          summary: `${responder.displayName || 'Someone'} revised their answer to "${questionText(gate.questions)}"`,
+        })
+        .catch((err) => console.error('Revise event append failed:', err.message));
+      await mirrorSteeringVertex({ g, intentId, steer }).catch((err) =>
+        console.error('Steering graph mirror failed:', err.message),
+      );
+      // Tell the caller when the correction will reach the agent: a WAITING run
+      // delivers on the pending gate's resume; otherwise at the next stage start.
+      const delivery = meta.status === 'WAITING' ? 'next-resume' : 'next-stage-start';
+      return response(201, { ...mapSteering(steer), delivery });
     }
 
     // POST /projects/{projectId}/intents/{intentId}/start
@@ -522,6 +684,179 @@ export const handler = async (event) => {
       return response(202, mapIntent(updated));
     }
 
+    // POST /projects/{projectId}/intents/{intentId}/cancel
+    // Retire a run that is parked (WAITING), stranded (CREATED) or FAILED. A
+    // RUNNING stage cannot be cancelled mid-turn (steering is deterministic —
+    // docs/v2-steering.md); wait for it to park or finish. Supersedes every
+    // pending gate, wakes the suspended orchestrator with a cancel sentinel
+    // (it sees the superseded gate and exits without touching META), then
+    // flips META → CANCELLED.
+    if (intentId && httpMethod === 'POST' && path?.endsWith('/cancel')) {
+      const meta = await store.getExecution(intentId);
+      if (!meta || meta.projectId !== projectId) {
+        return response(404, { error: 'Intent not found' });
+      }
+      const CANCELLABLE = new Set(['WAITING', 'CREATED', 'FAILED']);
+      if (!CANCELLABLE.has(meta.status)) {
+        return response(409, { error: `Intent is ${meta.status}, cannot cancel` });
+      }
+      const responder = getResponder(event);
+      await retireParkedRun(intentId, `cancelled by ${responder.displayName || responder.sub}`);
+      const updated = await store.updateExecution({
+        executionId: intentId,
+        projectId,
+        status: 'CANCELLED',
+        fromStatus: meta.status,
+        startedAt: meta.startedAt,
+        pendingHumanTaskId: null,
+        completedAt: new Date().toISOString(),
+      });
+      await store
+        .appendEvent({
+          executionId: intentId,
+          type: 'v2.execution.cancelled',
+          actor: responder.displayName || responder.sub,
+          summary: `Run cancelled by ${responder.displayName || 'a project member'}`,
+        })
+        .catch((err) => console.error('Cancel event append failed:', err.message));
+      return response(200, mapIntent(updated));
+    }
+
+    // POST /projects/{projectId}/intents/{intentId}/rewind
+    // Restart the run from an earlier stage with corrective guidance
+    // (docs/v2-steering.md). Rejected while RUNNING (409) — steering is only
+    // applied at deterministic points, so wait for the stage to park or finish.
+    // Resets the target stage + everything after it in run order (attempt+1),
+    // supersedes the artifacts those stages produced (kept for lineage), records
+    // the guidance as a rewind STEER row (injected into the restarted stage's
+    // prompt), and relaunches the orchestrator at that stage.
+    if (intentId && httpMethod === 'POST' && path?.endsWith('/rewind')) {
+      const data = body ? JSON.parse(body) : {};
+      const fromStageId = typeof data.fromStageId === 'string' ? data.fromStageId : '';
+      const guidance = typeof data.guidance === 'string' ? data.guidance.trim() : '';
+      if (!fromStageId) return response(400, { error: 'fromStageId is required' });
+      if (!guidance) {
+        return response(400, {
+          error: 'guidance is required — tell the agent what went wrong and what to do instead',
+        });
+      }
+      const meta = await store.getExecution(intentId);
+      if (!meta || meta.projectId !== projectId) {
+        return response(404, { error: 'Intent not found' });
+      }
+      const REWINDABLE = new Set(['SUCCEEDED', 'FAILED', 'WAITING', 'CANCELLED']);
+      if (!REWINDABLE.has(meta.status)) {
+        return response(409, {
+          error: `Intent is ${meta.status}, cannot rewind — wait for the stage to park or finish`,
+        });
+      }
+      // Resolve the pinned plan to find the rewind point + the downstream set.
+      const planResult = await loadExecutionPlan({
+        ddb,
+        tableName: BLOCKS_TABLE(),
+        workflowId: meta.workflowId,
+        workflowVersion: meta.workflowVersion,
+        scope: meta.scope,
+      });
+      if (!planResult.valid || !planResult.plan) {
+        return response(409, {
+          error: 'Execution plan cannot be resolved',
+          errors: planResult.errors,
+        });
+      }
+      const stages = planResult.plan.stages;
+      const idx = stages.findIndex((s) => s.stageId === fromStageId);
+      if (idx < 0) {
+        return response(400, {
+          error: `Unknown stage "${fromStageId}"`,
+          stages: stages.map((s) => s.stageId),
+        });
+      }
+      const resetStages = stages.slice(idx);
+      const responder = getResponder(event);
+      // Retire a parked run first so the woken orchestrator exits quietly (its
+      // gate is superseded) instead of racing the relaunch.
+      await retireParkedRun(intentId, `rewound to ${fromStageId}`);
+      // Record the guidance BEFORE resetting/relaunching: the restarted stage
+      // reads pending steering at entry, so the correction can never be missed.
+      const steer = await store.createSteering({
+        executionId: intentId,
+        kind: 'rewind',
+        message: guidance,
+        targetStageId: fromStageId,
+        createdBy: responder.sub,
+        createdByName: responder.displayName,
+      });
+      for (const stage of resetStages) {
+        const reset = await store.resetStageRow({
+          executionId: intentId,
+          stageInstanceId: stage.stageInstanceId,
+        });
+        if (reset) {
+          await store
+            .appendEvent({
+              executionId: intentId,
+              type: 'v2.stage.reset',
+              stageInstanceId: stage.stageInstanceId,
+              actor: responder.displayName || responder.sub,
+              summary: `Stage ${stage.stageId} reset for rewind (attempt ${reset.attempt + 1})`,
+            })
+            .catch(() => {});
+        }
+      }
+      const supersededArtifacts = await supersedeArtifactsForStages(
+        g,
+        intentId,
+        resetStages.map((s) => s.stageInstanceId),
+        steer.steerId,
+      ).catch((err) => {
+        console.error('Artifact supersede failed:', err.message);
+        return [];
+      });
+      await mirrorSteeringVertex({ g, intentId, steer }).catch((err) =>
+        console.error('Steering graph mirror failed:', err.message),
+      );
+      await store
+        .appendEvent({
+          executionId: intentId,
+          type: 'v2.execution.rewound',
+          actor: responder.displayName || responder.sub,
+          summary: `${responder.displayName || 'Someone'} rewound the run to ${fromStageId} (${resetStages.length} stage(s) reset, ${supersededArtifacts.length} artifact(s) superseded)`,
+        })
+        .catch((err) => console.error('Rewind event append failed:', err.message));
+      // Relaunch at the rewind point. Same CAS + rollback discipline as /start.
+      const priorStatus = meta.status;
+      const updated = await store.updateExecution({
+        executionId: intentId,
+        projectId,
+        status: 'CREATED',
+        fromStatus: priorStatus,
+        startedAt: meta.startedAt,
+        pendingHumanTaskId: null,
+        failureReason: null,
+        completedAt: null,
+        rewindFromStageId: fromStageId,
+      });
+      try {
+        await invokeOrchestrator({
+          action: 'start',
+          intentId,
+          executionId: intentId,
+          startAtStageId: fromStageId,
+        });
+      } catch (err) {
+        await store.updateExecution({
+          executionId: intentId,
+          projectId,
+          status: priorStatus,
+          fromStatus: 'CREATED',
+          startedAt: meta.startedAt,
+        });
+        throw err;
+      }
+      return response(202, { intent: mapIntent(updated), steering: mapSteering(steer) });
+    }
+
     if (intentId && httpMethod === 'GET') {
       // GET /projects/{projectId}/intents/{intentId}/graph — the intent's
       // Neptune knowledge subgraph (artifacts + typed relations + questions +
@@ -562,6 +897,7 @@ export const handler = async (event) => {
           ...answerEvents,
         ].toSorted((a, b) => String(a.timestamp).localeCompare(String(b.timestamp))),
         gates,
+        steering: (records.steering ?? []).map(mapSteering),
         metrics: mapMetricsWithCost(records.metrics, records.stages, priceFor),
         outputs: records.outputs.map((o) => ({
           seq: o.seq,
@@ -734,6 +1070,39 @@ const resumeDurableCallback = async (callbackId, answer) => {
   );
 };
 
+// Retire a parked run for cancel/rewind: supersede every still-pending gate
+// (CAS — answered gates stay as the Q&A record), then wake any suspended
+// callback with a cancel sentinel. The woken orchestrator re-reads its gate,
+// sees `superseded`, and exits WITHOUT touching META (docs/v2-steering.md), so
+// the retire can never race the relaunch. Best-effort per gate: a gate answered
+// concurrently is simply left alone.
+const retireParkedRun = async (executionId, reason) => {
+  const records = await store.getExecutionRecords(executionId);
+  const pending = (records.humanTasks ?? []).filter((h) => h.status === 'pending');
+  for (const gate of pending) {
+    const superseded = await store
+      .supersedeHumanTask({
+        executionId,
+        humanTaskId: gate.humanTaskId,
+        supersededBy: reason,
+      })
+      .catch((err) => {
+        console.error('Gate supersede failed:', err.message);
+        return null;
+      });
+    if (superseded && gate.callbackId) {
+      await lambdaClient
+        .send(
+          new SendDurableExecutionCallbackSuccessCommand({
+            CallbackId: gate.callbackId,
+            Result: Buffer.from(JSON.stringify({ cancelled: true, reason })),
+          }),
+        )
+        .catch((err) => console.error('Cancel callback send failed:', err.message));
+    }
+  }
+};
+
 const mapStage = (s) => ({
   stageInstanceId: s.stageInstanceId,
   stageId: s.stageId ?? null,
@@ -802,4 +1171,25 @@ const mapHumanTask = (h) => ({
   answeredByName: h.answeredByName ?? null,
   answeredAt: h.answeredAt ?? null,
   createdAt: h.createdAt ?? null,
+  // Steering (docs/v2-steering.md): a revised answer keeps its original payload
+  // and points at the correction; a superseded gate was retired by cancel/rewind.
+  revisedAt: h.revisedAt ?? null,
+  revisionSteerId: h.revisionSteerId ?? null,
+  supersededAt: h.supersededAt ?? null,
+  supersededBy: h.supersededBy ?? null,
+});
+
+// Map a STEER row to the wire shape (docs/v2-steering.md).
+const mapSteering = (s) => ({
+  steerId: s.steerId,
+  kind: s.kind,
+  status: s.status,
+  message: s.message ?? null,
+  targetGateId: s.targetGateId ?? null,
+  targetStageId: s.targetStageId ?? null,
+  createdBy: s.createdBy ?? null,
+  createdByName: s.createdByName ?? null,
+  createdAt: s.createdAt ?? null,
+  consumedAt: s.consumedAt ?? null,
+  consumedByStageInstanceId: s.consumedByStageInstanceId ?? null,
 });

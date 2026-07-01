@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
@@ -32,10 +33,19 @@ export function ArtifactViewer({ artifact }: { artifact: IntentArtifact }) {
     ? (detail?.stages.find((s) => s.stageInstanceId === artifact.createdByStageInstanceId) ?? null)
     : null;
 
+  // Rewind lineage (docs/v2-steering.md): a superseded artifact came from a
+  // rewound stage attempt; it is kept (dimmed) until the re-run rehabilitates
+  // or replaces it.
+  const superseded = Boolean(artifact.supersededAt);
+
   return (
     <Card
       id={`artifact-${artifact.id}`}
-      className={cn('border-l-[3px] scroll-mt-4', artifactAccent(artifact.artifactType).borderL)}
+      className={cn(
+        'border-l-[3px] scroll-mt-4',
+        artifactAccent(artifact.artifactType).borderL,
+        superseded && 'opacity-60',
+      )}
     >
       <CardContent className="p-3">
         <div className="flex items-start gap-2">
@@ -49,6 +59,15 @@ export function ArtifactViewer({ artifact }: { artifact: IntentArtifact }) {
               <h4 className="min-w-0 truncate text-sm font-medium">
                 {artifact.title || artifact.id}
               </h4>
+              {superseded && (
+                <Badge
+                  variant="outline"
+                  className="bg-muted px-1.5 py-0 text-[10px] text-muted-foreground"
+                  title="Superseded by a rewind — the re-run will update or replace it"
+                >
+                  superseded
+                </Badge>
+              )}
             </div>
             <p className="mt-0.5 text-[11px] text-muted-foreground">
               {producedBy?.stageId ? (

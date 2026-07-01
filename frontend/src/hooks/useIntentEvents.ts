@@ -10,6 +10,7 @@ export type IntentEventAction =
   | 'agent.output'
   | 'agent.question'
   | 'agent.metric'
+  | 'agent.steering'
   | 'agent.note';
 
 export interface IntentEvent {
@@ -34,6 +35,8 @@ export interface IntentEvent {
   // agent.metric
   metricId?: string;
   metrics?: Record<string, number>;
+  // agent.steering (course corrections delivered to the agent)
+  steerIds?: string[];
   // agent.note
   eventId?: string;
   noteType?: string;
@@ -48,6 +51,7 @@ const INTENT_EVENTS: IntentEventAction[] = [
   'agent.output',
   'agent.question',
   'agent.metric',
+  'agent.steering',
   'agent.note',
 ];
 

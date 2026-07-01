@@ -28,6 +28,10 @@ export const ARTIFACT_LABEL = 'Artifact';
 export const INTENT_LABEL = 'Intent';
 // Question vertex so the Intent page can render agent questions (parity with v1).
 export const QUESTION_LABEL = 'Question';
+// Steering vertex — a human course correction (docs/v2-steering.md). Created by
+// the intents lambda (human-initiated, the inverse of a Question); referenced
+// here so a consuming stage can link Steering --INFLUENCES--> Artifact.
+export const STEERING_LABEL = 'Steering';
 
 // Team knowledge: durable learnings an agent accrues while working an intent,
 // but which are reusable across EVERY intent in the project — so they hang off
@@ -104,6 +108,11 @@ const RESERVED_PROPS = new Set([
   'created_by_stage_instance_id',
   'created_at',
   'updated_at',
+  // Supersede bookkeeping is owned by the rewind flow (intents lambda) + the
+  // un-supersede below — never settable from agent tool args. (`status` stays
+  // agent-settable: it is an existing free-form prop, e.g. 'draft'.)
+  'superseded_at',
+  'superseded_by',
 ]);
 
 export const sanitizeProps = (properties = {}) => {
@@ -197,6 +206,58 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     }
   };
 
+  // Un-supersede: a rewound stage re-creating/updating an artifact the rewind
+  // marked superseded rehabilitates it — the re-run's version is current again
+  // (docs/v2-steering.md). The marker is the dedicated `superseded_at`/
+  // `superseded_by` prop pair (NOT the free-form `status` prop agents may set).
+  // Best-effort; a vertex without the marker is a no-op.
+  const clearSuperseded = async (artifactId) => {
+    try {
+      await g
+        .V()
+        .has(ARTIFACT_LABEL, 'id', artifactId)
+        .has('superseded_at')
+        .properties('superseded_at', 'superseded_by')
+        .drop()
+        .next();
+    } catch {
+      /* lineage marker cleanup is best-effort */
+    }
+  };
+
+  // Provenance for steering: link every Steering vertex consumed by this stage
+  // to the artifacts the stage produced (Steering --INFLUENCES--> Artifact),
+  // mirroring the answered-question linking. Called by run-stage on stage
+  // success with the steer ids it injected. Best-effort per steer id.
+  const linkSteeringInfluences = async ({ steerIds = [], stageInstanceId }) => {
+    const sid = stageInstanceId ?? scope.stageInstanceId ?? '';
+    if (!steerIds.length || !sid) return { linked: 0 };
+    const artifactIds = await g
+      .V()
+      .has(INTENT_LABEL, 'id', scope.intentId)
+      .out(ANCHOR_EDGE)
+      .hasLabel(ARTIFACT_LABEL)
+      .has('created_by_stage_instance_id', sid)
+      .values('id')
+      .toList();
+    let linked = 0;
+    for (const steerId of steerIds) {
+      const exists = await g.V().has(STEERING_LABEL, 'id', steerId).hasNext();
+      if (!exists) continue;
+      for (const artifactId of artifactIds) {
+        await ensureEdge({
+          fromLabel: STEERING_LABEL,
+          fromId: steerId,
+          toLabel: ARTIFACT_LABEL,
+          toId: artifactId,
+          edge: INFLUENCES_EDGE,
+        });
+        linked += 1;
+      }
+    }
+    return { linked };
+  };
+
   // Create (or upsert) a business Artifact vertex and anchor it to the Intent.
   // `links` optionally wires it to existing artifacts in the same call.
   const createArtifact = async ({
@@ -237,6 +298,9 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       edge: ANCHOR_EDGE,
     });
 
+    // A re-created artifact is current again (rewind rehabilitation).
+    await clearSuperseded(id);
+
     await linkAnsweredQuestionsToArtifact(id);
 
     for (const l of links) await linkArtifacts({ fromId: id, toId: l.toId, edge: l.edge });
@@ -258,6 +322,8 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     let q = g.V().has(ARTIFACT_LABEL, 'id', id).property(cardinality.single, 'updated_at', now());
     for (const [k, v] of Object.entries(clean)) q = q.property(cardinality.single, k, v);
     await q.next();
+    // An updated artifact is current again (rewind rehabilitation).
+    await clearSuperseded(id);
     await linkAnsweredQuestionsToArtifact(id);
     return { id, updated: Object.keys(clean) };
   };
@@ -518,5 +584,6 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     recordLearningRule,
     getLearningRules,
     recordQuestion,
+    linkSteeringInfluences,
   };
 };

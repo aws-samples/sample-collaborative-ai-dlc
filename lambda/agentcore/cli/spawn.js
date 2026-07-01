@@ -2,10 +2,10 @@
 // resolves the exit contract the runner cares about: { exitCode, stderrTail }.
 //
 // shell:false (argv comes from the driver, never concatenated). The prompt is
-// either on argv (default) or piped on stdin (promptViaStdin). stdout is always
-// inherited to the container log; the agent's human-facing output goes through
-// the MCP send_output tool, not stdout parsing. `spawnFn` is injectable so the
-// runner is fully testable with the child mocked.
+// either on argv (default) or piped on stdin (promptViaStdin). stdout is normally
+// inherited to the container log, but callers can tee it with `onStdout` when they
+// need live process output. `spawnFn` is injectable so the runner is fully
+// testable with the child mocked.
 //
 // stderr: when `captureStderrTail` is set, stderr is TEE'd — still written to
 // the container log AND buffered (last N bytes) so the runner can inspect the
@@ -26,6 +26,7 @@ export const runChild = ({
   prompt,
   promptViaStdin = false,
   captureStderrTail = 0,
+  onStdout = null,
   spawnFn = spawn,
 }) =>
   new Promise((resolve) => {
@@ -34,9 +35,19 @@ export const runChild = ({
       cwd,
       env: { ...process.env, ...env },
       shell: false,
-      stdio: [promptViaStdin ? 'pipe' : 'ignore', 'inherit', capture ? 'pipe' : 'inherit'],
+      stdio: [
+        promptViaStdin ? 'pipe' : 'ignore',
+        onStdout ? 'pipe' : 'inherit',
+        capture ? 'pipe' : 'inherit',
+      ],
     });
     let stderrTail = '';
+    if (onStdout) {
+      child.stdout?.on('data', (c) => {
+        process.stdout.write(c);
+        onStdout(c.toString());
+      });
+    }
     if (capture) {
       child.stderr?.on('data', (c) => {
         // Tee: preserve the container-log behaviour, then buffer the tail.
