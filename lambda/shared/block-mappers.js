@@ -205,14 +205,82 @@ const buildArtifacts = (stages) => {
 const PHASE_ORDER = ['initialization', 'ideation', 'inception', 'construction', 'operation'];
 const phasePath = (phase) => String(PHASE_ORDER.indexOf(phase) + 1).padStart(2, '0');
 
-const buildDefaultWorkflow = (stages, rules) => {
-  // Stages in a stable order: by phase order, then by id, so placements are
-  // deterministic regardless of file iteration order.
-  const ordered = stages.toSorted((a, b) => {
+// Linearize the stages into a runnable order that RESPECTS their declared
+// dependencies. The orchestrator runs placements strictly by `order` (it does
+// not re-sort by the dependency graph at run time), so `order` must already be a
+// topological linearization — otherwise a consumer can be placed before its
+// producer (e.g. `approval-handoff`, a phase-boundary gate, sorts alphabetically
+// ahead of the `intent-capture`/`scope-definition` stages whose artifacts it
+// requires, then parks the run asking a human to supply them by hand).
+//
+// A stage's predecessors are the union of: the producers of every artifact it
+// consumes (data edges), its `requires` (ordering edges), and its `blocksOn`
+// (completion-only ordering edges) — the same three edge kinds compile.js's
+// stage-graph builds. We run Kahn's algorithm with a deterministic tiebreaker:
+// among the ready stages, always take the one with the lowest (phase-order, id).
+// That keeps the flow phase-major and file-iteration-independent while never
+// emitting a stage before one it depends on. A dependency cycle (which the plan
+// resolver rejects at run time) leaves stages unprocessed; we append those in
+// the same (phase, id) tiebreak order so the builder degrades gracefully instead
+// of dropping stages.
+const topologicalStageOrder = (stages) => {
+  const tiebreak = (a, b) => {
     const pa = PHASE_ORDER.indexOf(a.phase);
     const pb = PHASE_ORDER.indexOf(b.phase);
     return pa !== pb ? pa - pb : a.id.localeCompare(b.id);
-  });
+  };
+  const byId = new Map(stages.map((s) => [s.id, s]));
+
+  // Producer map: artifact → [stageId], for the produces→consumes data edges.
+  const producers = new Map();
+  for (const s of stages) {
+    for (const artifact of s.produces ?? []) {
+      if (!producers.has(artifact)) producers.set(artifact, []);
+      producers.get(artifact).push(s.id);
+    }
+  }
+
+  // Predecessors of each stage (dedup): data producers + requires + blocksOn,
+  // limited to stages that are actually present.
+  const predecessors = new Map(stages.map((s) => [s.id, new Set()]));
+  for (const s of stages) {
+    const preds = predecessors.get(s.id);
+    for (const c of s.consumes ?? []) {
+      for (const producer of producers.get(c.artifact) ?? []) {
+        if (producer !== s.id) preds.add(producer);
+      }
+    }
+    for (const dep of [...(s.requires ?? []), ...(s.blocksOn ?? [])]) {
+      if (dep !== s.id && byId.has(dep)) preds.add(dep);
+    }
+  }
+
+  // Kahn's algorithm: repeatedly emit the ready stage (all predecessors already
+  // emitted) with the lowest (phase, id) tiebreak.
+  const remaining = new Set(stages.map((s) => s.id));
+  const emitted = new Set();
+  const ordered = [];
+  while (remaining.size > 0) {
+    const ready = [...remaining]
+      .filter((id) => [...predecessors.get(id)].every((p) => emitted.has(p)))
+      .map((id) => byId.get(id))
+      .toSorted(tiebreak);
+    if (ready.length === 0) break; // cycle — append the rest below
+    const next = ready[0];
+    ordered.push(next);
+    emitted.add(next.id);
+    remaining.delete(next.id);
+  }
+  // Cyclic remainder (if any): deterministic tiebreak order.
+  const leftover = [...remaining].map((id) => byId.get(id)).toSorted(tiebreak);
+  return [...ordered, ...leftover];
+};
+
+const buildDefaultWorkflow = (stages, rules) => {
+  // Placements run in `order`, so `order` must be a dependency-respecting
+  // linearization (topological, with a phase-then-id tiebreak) — not raw
+  // alphabetical, which would place gate stages ahead of their inputs.
+  const ordered = topologicalStageOrder(stages);
   const phases = PHASE_ORDER.map((phase) => ({
     phaseId: phase,
     name: titleCase(phase),

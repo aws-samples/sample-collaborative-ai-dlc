@@ -154,6 +154,44 @@ describe('buildExecutionPlan — plan shape', () => {
     expect(producer.outputArtifacts[0]).toEqual({ artifact: 'spec', terminal: false });
   });
 
+  it('reorders a mis-authored `order` so a stage never precedes its dependency', () => {
+    // The real `approval-handoff` bug shape: the gate carries a LOWER authored
+    // `order` than the stages producing/requiring its inputs (alphabetical seed
+    // sort put "approval-handoff" first). The resolver must linearize by the
+    // dependency edges, not the authored order, since the orchestrator runs the
+    // sequence verbatim.
+    const lib = baseLibrary({
+      stagesById: {
+        gate: stage('gate', {
+          consumes: [{ artifact: 'spec', required: true }],
+          requires: ['producer'],
+        }),
+        producer: stage('producer', { produces: ['spec'] }),
+      },
+      artifactsById: { spec: { id: 'spec', terminal: false } },
+    });
+    // gate authored FIRST (order 0), producer SECOND (order 1) — the bug.
+    const wf = workflow([placement('gate', 'feature', 0), placement('producer', 'feature', 1)]);
+    const { valid, plan } = buildExecutionPlan({ workflow: wf, scope: 'feature', library: lib });
+    expect(valid).toBe(true);
+    expect(plan.stages.map((s) => s.stageId)).toEqual(['producer', 'gate']);
+  });
+
+  it('keeps authored order as the tiebreak among independent stages', () => {
+    const lib = baseLibrary({
+      stagesById: { a: stage('a'), b: stage('b'), c: stage('c') },
+    });
+    // No dependencies between them → authored order is preserved.
+    const wf = workflow([
+      placement('b', 'feature', 0),
+      placement('a', 'feature', 1),
+      placement('c', 'feature', 2),
+    ]);
+    const { valid, plan } = buildExecutionPlan({ workflow: wf, scope: 'feature', library: lib });
+    expect(valid).toBe(true);
+    expect(plan.stages.map((s) => s.stageId)).toEqual(['b', 'a', 'c']);
+  });
+
   it('resolves the reviewer axis as its own field (not a sensor)', () => {
     const lib = baseLibrary({
       stagesById: { a: stage('a', { reviewer: 'reviewer', reviewerMaxIterations: 3 }) },

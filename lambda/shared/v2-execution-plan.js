@@ -138,6 +138,40 @@ const resolveReviewer = (stage, stageId, agentsById, errors) => {
   return { reviewerAgent: stage.reviewer, maxIterations: max ?? 1 };
 };
 
+// Linearize resolved plan stages so every stage follows the ones it depends on.
+// Kahn's algorithm over `dependencyStageIds` (the union of data/requires/blocksOn
+// edges resolved for the in-scope subset), with the authored `order` (then
+// stageId) as a deterministic tiebreak among ready stages — keeping the sequence
+// as close to the authored order as the dependencies permit. Dependencies on
+// stages outside this set (e.g. filtered out of scope) are ignored so they can't
+// stall the sort. A cycle leaves stages unemitted; they are appended in tiebreak
+// order (the resolver has already flagged the cycle as invalid).
+const runOrderTiebreak = (a, b) => a.order - b.order || a.stageId.localeCompare(b.stageId);
+const topologicalRunOrder = (stages) => {
+  const tiebreak = runOrderTiebreak;
+  const present = new Set(stages.map((s) => s.stageId));
+  const deps = new Map(
+    stages.map((s) => [s.stageId, (s.dependencyStageIds ?? []).filter((d) => present.has(d))]),
+  );
+  const remaining = new Set(stages.map((s) => s.stageId));
+  const emitted = new Set();
+  const byId = new Map(stages.map((s) => [s.stageId, s]));
+  const ordered = [];
+  while (remaining.size > 0) {
+    const ready = [...remaining]
+      .filter((id) => deps.get(id).every((d) => emitted.has(d)))
+      .map((id) => byId.get(id))
+      .toSorted(tiebreak);
+    if (ready.length === 0) break; // cycle — append remainder below
+    const next = ready[0];
+    ordered.push(next);
+    emitted.add(next.stageId);
+    remaining.delete(next.stageId);
+  }
+  const leftover = [...remaining].map((id) => byId.get(id)).toSorted(tiebreak);
+  return [...ordered, ...leftover];
+};
+
 // `library` is the resolved block bag: { stagesById, agentsById, sensorsById,
 // rulesById, artifactsById }. `compiled` (optional) is a prior compileWorkflow
 // output whose per-stage rules we can reuse; the dependency graph is always
@@ -327,11 +361,23 @@ const buildExecutionPlan = ({
       }
       return instance;
     })
-    .filter(Boolean)
-    // Stable order for a reproducible plan document.
-    .toSorted((a, b) => a.order - b.order || a.stageId.localeCompare(b.stageId));
+    .filter(Boolean);
 
-  const plan = { workflowId, workflowVersion, scope, stages };
+  // Final run order is a dependency-respecting linearization, NOT raw `order`.
+  // The orchestrator executes stages in this exact sequence with no run-time
+  // re-sort, so a stage must never precede one it depends on. The seed builds a
+  // topological `order` for the default workflow, but a forked/edited workflow
+  // can carry a hand-authored `order` that violates its dependency edges — this
+  // is the last gate before execution, so we enforce the invariant here for
+  // EVERY workflow. `dependencyStageIds` (already resolved above from the
+  // in-scope graph: data producers + requires + blocksOn) are the edges; the
+  // authored `order` (then stageId) is the tiebreak among ready stages, so the
+  // linearization stays as close to the authored intent as the dependencies
+  // allow. A cycle (already flagged `graph_cycle` above) leaves stages stuck;
+  // we append them in tiebreak order so the plan document is still complete.
+  const orderedStages = topologicalRunOrder(stages);
+
+  const plan = { workflowId, workflowVersion, scope, stages: orderedStages };
   return { valid: errors.length === 0, errors, plan };
 };
 

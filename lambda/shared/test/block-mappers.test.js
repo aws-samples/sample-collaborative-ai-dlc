@@ -161,3 +161,42 @@ describe('sensorScriptPath', () => {
     expect(sensorScriptPath('linter')).toBe('core/tools/aidlc-sensor-linter.ts');
   });
 });
+
+describe('default-workflow placement order (topological)', () => {
+  // A minimal core/ tree where the ALPHABETICAL order contradicts the DEPENDENCY
+  // order — the exact shape of the real `approval-handoff` bug: a phase-boundary
+  // gate ("approval-handoff") that consumes/requires artifacts produced by later-
+  // named stages ("intent-capture", "scope-definition"). Naive phase+id sorting
+  // placed the gate FIRST (a < i,s), so it ran before its inputs existed and
+  // parked the run. `order` must be a dependency-respecting linearization.
+  const stageFile = (slug, fm) =>
+    `---\nslug: ${slug}\nphase: ideation\nexecution: ALWAYS\nmode: inline\nscopes:\n  - feature\n${fm}\n---\n\n# ${slug}\n`;
+  const files = new Map(
+    Object.entries({
+      'core/aidlc-common/stages/ideation/intent-capture.md': stageFile(
+        'intent-capture',
+        'produces:\n  - intent-statement\nconsumes: []\nrequires_stage: []',
+      ),
+      'core/aidlc-common/stages/ideation/scope-definition.md': stageFile(
+        'scope-definition',
+        'produces:\n  - scope-document\nconsumes:\n  - artifact: intent-statement\n    required: true\nrequires_stage: []',
+      ),
+      'core/aidlc-common/stages/ideation/approval-handoff.md': stageFile(
+        'approval-handoff',
+        'produces:\n  - initiative-brief\nconsumes:\n  - artifact: intent-statement\n    required: true\n  - artifact: scope-document\n    required: true\nrequires_stage:\n  - intent-capture\n  - scope-definition',
+      ),
+    }),
+  );
+  const { workflow } = buildFromFiles(files);
+  const placementOrder = workflow.placements
+    .toSorted((a, b) => a.order - b.order)
+    .map((p) => p.stageId);
+
+  it('places a gate stage AFTER the stages producing/requiring its inputs', () => {
+    expect(placementOrder).toEqual(['intent-capture', 'scope-definition', 'approval-handoff']);
+  });
+
+  it('assigns dense 0..n-1 order values in the linearized sequence', () => {
+    expect(workflow.placements.map((p) => p.order).toSorted((a, b) => a - b)).toEqual([0, 1, 2]);
+  });
+});
