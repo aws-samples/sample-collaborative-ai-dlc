@@ -19,7 +19,7 @@ import cliModelsPkg from '../shared/cli-models.js';
 import workflowPlanPkg from '../shared/v2-workflow-plan.js';
 
 const { createProcessStore } = pkg;
-const { parseCliModels } = cliModelsPkg;
+const { parseCliModels, mergeCliModels } = cliModelsPkg;
 const { loadWorkflowScopes } = workflowPlanPkg;
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
@@ -33,6 +33,11 @@ const store = createProcessStore({ ddb });
 
 const BLOCKS_TABLE = () => process.env.BLOCKS_TABLE;
 const ORCHESTRATOR_FN = () => process.env.V2_ORCHESTRATOR_FUNCTION;
+// SSM path of the Admin GLOBAL per-CLI model defaults (written by the agents
+// lambda's PUT /agents/settings). Merged UNDER the project selection at create so
+// the model precedence is project > global(admin) > agentBlock > env, matching
+// what the project-settings UI advertises. Empty prefix disables the merge.
+const AGENT_SETTINGS_SSM_PREFIX = () => process.env.AGENT_SETTINGS_SSM_PREFIX || '';
 const DEFAULT_WORKFLOW_ID = 'aidlc-v2';
 // Branch a started intent runs on. Mirrors v1 (aidlc/<id>) so PRs are predictable.
 const branchForIntent = (intentId) => `aidlc/${intentId}`;
@@ -67,6 +72,22 @@ const getVal = (vertexMap, key) => {
 
 // ── Project / repo reads (mirror lambda/projects shapes) ──
 
+// Read the Admin GLOBAL per-CLI model defaults from SSM (written by the agents
+// lambda). Best-effort: a missing prefix / param / parse error yields {} so an
+// intent still starts (the agent-block override + env default still steer it).
+const fetchGlobalCliModels = async () => {
+  const prefix = AGENT_SETTINGS_SSM_PREFIX();
+  if (!prefix) return {};
+  try {
+    const res = await ssm.send(
+      new GetParameterCommand({ Name: `${prefix}/cli-models`, WithDecryption: true }),
+    );
+    return parseCliModels(res.Parameter?.Value || '{}');
+  } catch {
+    return {};
+  }
+};
+
 // Read the v2 project's run config (workflow pin, repos, park-release). Scope is
 // NOT a project property — it is chosen per-intent at create time.
 // Returns null when the project doesn't exist or isn't a v2 project.
@@ -99,9 +120,13 @@ const fetchProjectConfig = async (g, projectId) => {
     .next();
   const trackers = (trackerRes.value ?? []).map(mapBinding);
   const rawVersion = getVal(v, 'workflow_version');
-  // Snapshot the project's per-CLI model selection onto the intent so the run is
-  // reproducible even if the project setting later changes. {} when unset.
-  const cliModels = parseCliModels(getVal(v, 'cli_models'));
+  // Snapshot the EFFECTIVE per-CLI model selection onto the intent so the run is
+  // reproducible: the project's choice wins per CLI, the Admin global default
+  // fills the gaps (project > global). run-stage's resolver then applies
+  // cliModels[cli] first, so the runtime precedence is project > global >
+  // agentBlock override > env default — matching what the settings UI advertises.
+  const globalCliModels = await fetchGlobalCliModels();
+  const cliModels = mergeCliModels(getVal(v, 'cli_models'), globalCliModels);
   return {
     workflowId: getVal(v, 'workflow_id') || DEFAULT_WORKFLOW_ID,
     workflowVersion: rawVersion ? Number(rawVersion) : null,

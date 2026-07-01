@@ -15,6 +15,7 @@ import {
   InvokeCommand,
   SendDurableExecutionCallbackSuccessCommand,
 } from '@aws-sdk/client-lambda';
+import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 
 const PARTITION = `t-${randomUUID()}`;
 
@@ -23,6 +24,7 @@ let conn;
 let g;
 const ddbMock = mockClient(DynamoDBDocumentClient);
 const lambdaMock = mockClient(LambdaClient);
+const ssmMock = mockClient(SSMClient);
 
 // In-memory single-table fake for the v2 process table + blocks table.
 const procStore = new Map();
@@ -147,6 +149,7 @@ afterAll(async () => {
 
 beforeEach(() => {
   installDdbFakes();
+  ssmMock.reset();
 });
 
 const claims = (sub) => ({
@@ -257,6 +260,34 @@ describe('POST /projects/{id}/intents', () => {
     expect(intent.agentCli).toBe('kiro');
     expect(intent.cliModels).toEqual({ claude: 'us.anthropic.claude-opus-4-8' });
     expect(intent.parkReleaseSeconds).toBe(120);
+  });
+
+  it('merges the Admin global model under the project selection at create', async () => {
+    // Global default sets kiro (which the project leaves unset) and claude (which
+    // the project overrides). Effective snapshot = project wins for claude, global
+    // fills kiro — i.e. project > global.
+    vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', '/collab/dev');
+    ssmMock.on(GetParameterCommand, { Name: '/collab/dev/cli-models' }).resolves({
+      Parameter: {
+        Value: JSON.stringify({
+          kiro: 'claude-sonnet-4.6',
+          claude: 'us.anthropic.claude-sonnet-4-6',
+        }),
+      },
+    });
+    try {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const res = await createIntent(sub, projectId);
+      expect(res.statusCode).toBe(201);
+      const intent = JSON.parse(res.body);
+      expect(intent.cliModels).toEqual({
+        claude: 'us.anthropic.claude-opus-4-8', // project override wins
+        kiro: 'claude-sonnet-4.6', // global fills the gap
+      });
+    } finally {
+      vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', undefined);
+    }
   });
 
   it('records a tracker source when seeded from a bound issue', async () => {

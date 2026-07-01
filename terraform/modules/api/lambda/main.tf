@@ -1488,10 +1488,15 @@ resource "aws_iam_role_policy" "intents" {
         Resource = [var.blocks_table_arn, "${var.blocks_table_arn}/index/*"]
       },
       {
-        # Realtime scope-token signing secret.
-        Effect   = "Allow"
-        Action   = ["ssm:GetParameter"]
-        Resource = var.realtime_doc_secret_param_arn
+        # Realtime scope-token signing secret + the Admin global cli-models
+        # default (merged under the project selection at intent create, so the
+        # runtime model precedence is project > global > agentBlock > env).
+        Effect = "Allow"
+        Action = ["ssm:GetParameter"]
+        Resource = [
+          var.realtime_doc_secret_param_arn,
+          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/cli-models",
+        ]
       },
       {
         # Start the orchestrator (Event invoke) + complete a parked durable
@@ -1542,6 +1547,9 @@ module "intents_lambda" {
     V2_PROCESS_TABLE      = var.v2_executions_table_name
     BLOCKS_TABLE          = var.blocks_table_name
     REALTIME_SECRET_PARAM = var.realtime_doc_secret_param_name
+    # Admin global cli-models default lives under this SSM prefix; the intents
+    # lambda merges it under the project selection at intent create.
+    AGENT_SETTINGS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
     # Qualified name (function:alias) — durable functions reject $LATEST invokes.
     V2_ORCHESTRATOR_FUNCTION = "${module.v2_orchestrator_lambda.lambda_function_name}:${module.v2_orchestrator_alias.lambda_alias_name}"
   }
