@@ -84,6 +84,7 @@ const installDdbFakes = () => {
     if (values[':answer'] !== undefined) next.answer = values[':answer'];
     if (values[':status'] && input.ConditionExpression?.includes(':pending')) {
       next.answeredBy = values[':by'] ?? null;
+      next.answeredByName = values[':byName'] ?? null;
       next.answeredAt = values[':ts'] ?? null;
     }
     procStore.set(k, next);
@@ -96,13 +97,18 @@ const installDdbFakes = () => {
 
 // Seed a HUMAN# gate row straight into the fake table (the runtime writes these;
 // the intents lambda only reads/answers them).
-const seedGate = (intentId, humanTaskId, { status = 'pending', callbackId = null } = {}) => {
+const seedGate = (
+  intentId,
+  humanTaskId,
+  { status = 'pending', callbackId = null, stageInstanceId = 'si-req' } = {},
+) => {
   procStore.set(keyOf(`EXEC#${intentId}`, `HUMAN#${humanTaskId}`), {
     pk: `EXEC#${intentId}`,
     sk: `HUMAN#${humanTaskId}`,
     type: 'HumanTask',
     executionId: intentId,
     humanTaskId,
+    stageInstanceId,
     kind: 'question',
     status,
     questions: '[{"text":"?","type":"single","options":[{"label":"Yes"}]}]',
@@ -697,11 +703,66 @@ describe('POST /gates/{humanTaskId}/answer', () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
     const intent = JSON.parse((await createIntent(sub, projectId)).body);
-    seedGate(intent.id, 'h1', { status: 'pending', callbackId: 'cb-h1' });
+    const humanTaskId = `h-${randomUUID()}`;
+    const artifactId = `a-${randomUUID()}`;
+    seedGate(intent.id, humanTaskId, { status: 'pending', callbackId: 'cb-h1' });
+    await g
+      .addV('Intent')
+      .property('id', intent.id)
+      .property('project_id', projectId)
+      .property('title', 'Intent')
+      .next();
+    await g
+      .addV('Question')
+      .property('id', humanTaskId)
+      .property('intent_id', intent.id)
+      .property('stage_instance_id', 'si-req')
+      .property('questions', '[{"text":"?"}]')
+      .as('q')
+      .V()
+      .has('Intent', 'id', intent.id)
+      .addE('CONTAINS')
+      .to('q')
+      .next();
+    await g
+      .addV('Artifact')
+      .property('id', artifactId)
+      .property('artifact_type', 'requirements-analysis')
+      .property('title', 'Requirements')
+      .property('created_by_stage_instance_id', 'si-req')
+      .as('a')
+      .V()
+      .has('Intent', 'id', intent.id)
+      .addE('CONTAINS')
+      .to('a')
+      .next();
 
-    const res = await answerGate(sub, projectId, intent.id, 'h1');
+    const res = await answerGate(sub, projectId, intent.id, humanTaskId);
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body).status).toBe('answered');
+    expect(
+      await g
+        .V()
+        .has('Question', 'id', humanTaskId)
+        .out('INFLUENCES')
+        .has('id', artifactId)
+        .hasNext(),
+    ).toBe(true);
+    const question = await g.V().has('Question', 'id', humanTaskId).valueMap().next();
+    expect(question.value.get('answered_by_name')[0]).toBe(`${sub}@x`);
+
+    const detail = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+    const event = JSON.parse(detail.body).events.find((e) => e.type === 'v2.question.answered');
+    expect(event).toMatchObject({
+      humanTaskId,
+      answeredByName: `${sub}@x`,
+      artifacts: [{ id: artifactId, title: 'Requirements' }],
+    });
     // The gate carries a callbackId → the suspended orchestrator is resumed via
     // SendDurableExecutionCallbackSuccess (NOT a fresh Invoke).
     const cbCalls = lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand);

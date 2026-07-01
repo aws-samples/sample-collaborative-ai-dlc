@@ -57,6 +57,8 @@ export const ANCHOR_EDGE = 'CONTAINS';
 export const KNOWLEDGE_EDGE = 'HAS_KNOWLEDGE';
 // Anchor edge: Project --HAS_LEARNING--> LearningRule (project-scoped guardrails).
 export const LEARNING_EDGE = 'HAS_LEARNING';
+// Question answer provenance: answered human input that steered an artifact.
+export const INFLUENCES_EDGE = 'INFLUENCES';
 
 // Business edges the tools may create between artifacts. PRODUCES/CONSUMES wire
 // the stage data flow; the rest are durable semantic relations. Kept explicit so
@@ -176,6 +178,25 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     }
   };
 
+  const linkAnsweredQuestionsToArtifact = async (artifactId) => {
+    const questionIds = await g
+      .V()
+      .has(QUESTION_LABEL, 'intent_id', scope.intentId)
+      .has('stage_instance_id', scope.stageInstanceId ?? '')
+      .has('answered_at')
+      .values('id')
+      .toList();
+    for (const questionId of questionIds) {
+      await ensureEdge({
+        fromLabel: QUESTION_LABEL,
+        fromId: questionId,
+        toLabel: ARTIFACT_LABEL,
+        toId: artifactId,
+        edge: INFLUENCES_EDGE,
+      });
+    }
+  };
+
   // Create (or upsert) a business Artifact vertex and anchor it to the Intent.
   // `links` optionally wires it to existing artifacts in the same call.
   const createArtifact = async ({
@@ -216,6 +237,8 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       edge: ANCHOR_EDGE,
     });
 
+    await linkAnsweredQuestionsToArtifact(id);
+
     for (const l of links) await linkArtifacts({ fromId: id, toId: l.toId, edge: l.edge });
     // Return a COMPACT ack, not the full stamped record. The agent just sent
     // `content` (potentially many KB) — echoing it back into the tool_result
@@ -235,6 +258,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     let q = g.V().has(ARTIFACT_LABEL, 'id', id).property(cardinality.single, 'updated_at', now());
     for (const [k, v] of Object.entries(clean)) q = q.property(cardinality.single, k, v);
     await q.next();
+    await linkAnsweredQuestionsToArtifact(id);
     return { id, updated: Object.keys(clean) };
   };
 
@@ -465,6 +489,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       .addV(QUESTION_LABEL)
       .property(cardinality.single, 'id', questionId)
       .property(cardinality.single, 'intent_id', scope.intentId)
+      .property(cardinality.single, 'stage_instance_id', scope.stageInstanceId ?? '')
       .property(cardinality.single, 'questions', questionsJson)
       .property(cardinality.single, 'structured_answer', '')
       .property(cardinality.single, 'created_at', now())

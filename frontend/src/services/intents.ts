@@ -85,6 +85,7 @@ export interface IntentGate {
   questions: string | null;
   answer: unknown;
   answeredBy: string | null;
+  answeredByName?: string | null;
   answeredAt: string | null;
   createdAt: string | null;
 }
@@ -150,6 +151,12 @@ export interface IntentActivityEvent {
   actor: string | null;
   summary: string | null;
   timestamp: string;
+  humanTaskId?: string;
+  questions?: string | null;
+  answer?: unknown;
+  answeredBy?: string | null;
+  answeredByName?: string | null;
+  artifacts?: { id: string; title: string }[];
 }
 
 // The assembled detail returned by GET /projects/{id}/intents/{intentId}.
@@ -202,7 +209,7 @@ export interface IntentGraphEdge {
   source: string;
   target: string;
   // CONTAINS | PRODUCES | CONSUMES | DERIVED_FROM | RELATES_TO | DEPENDS_ON |
-  // DISCUSSES | INFORMS (synthesized: project knowledge → this run).
+  // INFLUENCES | DISCUSSES | INFORMS (synthesized: project knowledge → this run).
   label: string;
 }
 

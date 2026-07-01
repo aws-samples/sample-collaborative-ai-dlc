@@ -346,5 +346,24 @@ describe('recordQuestion', () => {
       .has('Question', 'id', 'q1')
       .hasNext();
     expect(anchored).toBe(true);
+    const question = await g.V().has('Question', 'id', 'q1').valueMap().next();
+    expect(question.value.get('stage_instance_id')[0]).toBe('si-req');
+  });
+
+  it('links answered same-stage questions to created and updated artifacts', async () => {
+    await seedIntent();
+    await writer.recordQuestion({ questionId: 'q1', questionsJson: '[{"text":"?"}]' });
+    await g.V().has('Question', 'id', 'q1').property('answered_at', '2026-01-01T00:00:00Z').next();
+
+    await writer.createArtifact({ artifactType: 'requirements-analysis', id: 'a1' });
+    expect(
+      await g.V().has('Question', 'id', 'q1').out('INFLUENCES').has('id', 'a1').hasNext(),
+    ).toBe(true);
+
+    await writer.createArtifact({ artifactType: 'requirements-analysis', id: 'a2' });
+    await writer.updateArtifact({ id: 'a2', props: { status: 'revised' } });
+    expect(
+      await g.V().has('Question', 'id', 'q1').out('INFLUENCES').has('id', 'a2').hasNext(),
+    ).toBe(true);
   });
 });

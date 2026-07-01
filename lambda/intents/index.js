@@ -26,6 +26,7 @@ const { loadWorkflowScopes } = workflowPlanPkg;
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const __ = gremlin.process.statics;
+const { cardinality } = gremlin.process;
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
@@ -69,6 +70,38 @@ const getSecret = async () => {
 const getVal = (vertexMap, key) => {
   const v = vertexMap?.get?.(key) ?? vertexMap?.[key];
   return Array.isArray(v) ? v[0] : v;
+};
+
+const getResponder = (event) => {
+  const claims = event?.requestContext?.authorizer?.claims || {};
+  return {
+    sub: claims.sub || '',
+    displayName: claims['custom:display_name'] || claims.email || claims.sub || '',
+  };
+};
+
+const answerText = (answer) => {
+  if (answer == null) return 'answered';
+  if (typeof answer === 'string') return answer;
+  if (Array.isArray(answer?.answers)) {
+    const parts = answer.answers
+      .map(
+        (a) => a.freeText || (Array.isArray(a.selectedOptions) ? a.selectedOptions.join(', ') : ''),
+      )
+      .filter(Boolean);
+    return parts.join('; ') || 'answered';
+  }
+  return 'answered';
+};
+
+const questionText = (questionsJson) => {
+  try {
+    const parsed = JSON.parse(questionsJson ?? '[]');
+    const first = Array.isArray(parsed) ? parsed[0]?.text : null;
+    return first ? String(first) : 'question';
+  } catch {
+    return 'question';
+  }
 };
 
 // ── Project / repo reads (mirror lambda/projects shapes) ──
@@ -177,6 +210,88 @@ const fetchArtifacts = async (g, intentId) => {
     createdAt: getVal(vm, 'created_at') ?? null,
     content: getVal(vm, 'content') ?? null,
   }));
+};
+
+const fetchInfluencedArtifacts = async (g, questionId) => {
+  const rows = await g
+    .V()
+    .has('Question', 'id', questionId)
+    .out('INFLUENCES')
+    .hasLabel('Artifact')
+    .project('id', 'title')
+    .by('id')
+    .by(__.coalesce(__.values('title'), __.constant('')))
+    .toList();
+  return rows.map((r) => ({ id: r.get('id'), title: r.get('title') || r.get('id') }));
+};
+
+const syncAnsweredQuestionVertex = async ({ g, intentId, gate, answer, responder, answeredAt }) => {
+  const exists = await g.V().has('Question', 'id', gate.humanTaskId).hasNext();
+  if (!exists) return;
+  await g
+    .V()
+    .has('Question', 'id', gate.humanTaskId)
+    .property(cardinality.single, 'intent_id', intentId)
+    .property(cardinality.single, 'stage_instance_id', gate.stageInstanceId ?? '')
+    .property(cardinality.single, 'structured_answer', JSON.stringify(answer ?? null))
+    .property(cardinality.single, 'answered_by', responder.sub)
+    .property(cardinality.single, 'answered_by_name', responder.displayName)
+    .property(cardinality.single, 'answered_at', answeredAt)
+    .next();
+};
+
+const linkQuestionToStageArtifacts = async (g, intentId, gate) => {
+  if (!gate.stageInstanceId) return;
+  const artifactIds = await g
+    .V()
+    .has('Intent', 'id', intentId)
+    .out('CONTAINS')
+    .hasLabel('Artifact')
+    .has('created_by_stage_instance_id', gate.stageInstanceId)
+    .values('id')
+    .toList();
+  for (const artifactId of artifactIds) {
+    const exists = await g
+      .V()
+      .has('Question', 'id', gate.humanTaskId)
+      .outE('INFLUENCES')
+      .where(__.inV().has('Artifact', 'id', artifactId))
+      .hasNext();
+    if (!exists) {
+      await g
+        .V()
+        .has('Question', 'id', gate.humanTaskId)
+        .addE('INFLUENCES')
+        .to(__.V().has('Artifact', 'id', artifactId))
+        .next();
+    }
+  }
+};
+
+const buildGateAnswerEvents = async (g, gates) => {
+  const answered = gates.filter((gate) => gate.kind === 'question' && gate.answeredAt);
+  const events = [];
+  for (const gate of answered) {
+    const artifacts = await fetchInfluencedArtifacts(g, gate.humanTaskId).catch(() => []);
+    const who = gate.answeredByName || gate.answeredBy || 'Someone';
+    const q = questionText(gate.questions);
+    const a = answerText(gate.answer);
+    events.push({
+      eventId: `human-answer-${gate.humanTaskId}`,
+      type: 'v2.question.answered',
+      stageInstanceId: gate.stageInstanceId ?? null,
+      actor: gate.answeredByName || gate.answeredBy || null,
+      summary: `${who} answered "${q}" with "${a}"`,
+      timestamp: gate.answeredAt,
+      humanTaskId: gate.humanTaskId,
+      questions: gate.questions ?? null,
+      answer: gate.answer ?? null,
+      answeredBy: gate.answeredBy ?? null,
+      answeredByName: gate.answeredByName ?? null,
+      artifacts,
+    });
+  }
+  return events;
 };
 
 // Normalize the optional tracker source the intent was kicked off from. Keeps
@@ -290,16 +405,29 @@ export const handler = async (event) => {
       // Answer THIS specific gate (CAS on pending). D3: a stage can leave more
       // than one pending gate; answer the one addressed by the URL, never blindly
       // META.pendingHumanTaskId.
+      const responder = getResponder(event);
       const answered = await store.answerHumanTask({
         executionId: intentId,
         humanTaskId,
         status: data.status || 'answered',
         answer: data.answer ?? null,
-        answeredBy: sub,
+        answeredBy: responder.sub,
+        answeredByName: responder.displayName,
       });
       if (!answered) {
         return response(409, { error: 'Gate already answered or not pending' });
       }
+      await syncAnsweredQuestionVertex({
+        g,
+        intentId,
+        gate,
+        answer: answered.answer,
+        responder,
+        answeredAt: answered.answeredAt,
+      }).catch((err) => console.error('Question graph sync failed:', err.message));
+      await linkQuestionToStageArtifacts(g, intentId, gate).catch((err) =>
+        console.error('Question artifact link sync failed:', err.message),
+      );
       // Resume the suspended orchestrator ONLY if this gate is the one the
       // durable run actually parked on (it carries the callbackId). Answering an
       // older sibling gate just records the durable Q&A — the run is parked on a
@@ -376,21 +504,26 @@ export const handler = async (event) => {
         return response(404, { error: 'Intent not found' });
       }
       const artifacts = await fetchArtifacts(g, intentId);
+      const gates = records.humanTasks.map(mapHumanTask);
+      const answerEvents = await buildGateAnswerEvents(g, gates);
       return response(200, {
         intent: mapIntent(records.meta),
         stages: records.stages.map(mapStage),
         // Activity feed: lifecycle events (workspace init, failures, completion)
         // newest-last in emit order, so the UI can show what's happening — init-ws
         // is otherwise invisible (it creates no stage row).
-        events: (records.events ?? []).map((e) => ({
-          eventId: e.eventId,
-          type: e.eventType,
-          stageInstanceId: e.stageInstanceId ?? null,
-          actor: e.actor ?? null,
-          summary: e.summary ?? null,
-          timestamp: e.timestamp,
-        })),
-        gates: records.humanTasks.map(mapHumanTask),
+        events: [
+          ...(records.events ?? []).map((e) => ({
+            eventId: e.eventId,
+            type: e.eventType,
+            stageInstanceId: e.stageInstanceId ?? null,
+            actor: e.actor ?? null,
+            summary: e.summary ?? null,
+            timestamp: e.timestamp,
+          })),
+          ...answerEvents,
+        ].toSorted((a, b) => String(a.timestamp).localeCompare(String(b.timestamp))),
+        gates,
         metrics: records.metrics.map((m) => ({
           metricId: m.metricId,
           stageInstanceId: m.stageInstanceId ?? null,
@@ -558,6 +691,7 @@ const mapHumanTask = (h) => ({
   questions: h.questions ?? null,
   answer: h.answer ?? null,
   answeredBy: h.answeredBy ?? null,
+  answeredByName: h.answeredByName ?? null,
   answeredAt: h.answeredAt ?? null,
   createdAt: h.createdAt ?? null,
 });

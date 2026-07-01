@@ -145,12 +145,14 @@ function AgentTab({
   for (const k of withContent) if (!orderedKeys.includes(k)) orderedKeys.push(k);
 
   // Follow mode: the RUNNING stage's buffer, else the last buffer that has
-  // content (the most recently active stage).
-  const runningRow = stageRows.find((s) => s.state === 'RUNNING' && s.stageInstanceId);
-  const followKey =
-    runningRow?.stageInstanceId && outputBuffers.has(runningRow.stageInstanceId)
-      ? runningRow.stageInstanceId
-      : (orderedKeys[orderedKeys.length - 1] ?? null);
+  // content (the most recently active stage). Follow the running stage even
+  // before its buffer has content — otherwise, during the gap between a stage
+  // going RUNNING and its first streamed token, we'd fall back to the previous
+  // stage's output and never advance to the live one. `findLast` picks the
+  // most-advanced running row when a prior stage's terminal transition hasn't
+  // landed yet (both briefly read RUNNING).
+  const runningRow = stageRows.findLast((s) => s.state === 'RUNNING' && s.stageInstanceId);
+  const followKey = runningRow?.stageInstanceId ?? orderedKeys[orderedKeys.length - 1] ?? null;
 
   const displayKey = selectedKey === FOLLOW_KEY ? followKey : selectedKey;
   const content = displayKey ? (outputBuffers.get(displayKey) ?? '') : '';
@@ -253,6 +255,7 @@ function eventDotColor(type: string): string {
   if (type === 'v2.execution.succeeded' || type === 'v2.stage.succeeded') {
     return 'bg-agent-success';
   }
+  if (type === 'v2.question.answered') return 'bg-agent-success';
   // Artifact create/update notes (broadcast by the MCP layer so artifacts
   // appear in realtime) — green like v1's artifact_created events.
   if (type.startsWith('v2.artifact.')) return 'bg-agent-success';
@@ -265,6 +268,47 @@ function eventDotColor(type: string): string {
   return 'bg-muted-foreground';
 }
 
+function parseQuestions(
+  raw: string | null | undefined,
+): { text?: string; options?: { label?: string }[] }[] {
+  try {
+    const parsed = JSON.parse(raw ?? '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function answerSummary(
+  answer: unknown,
+  questions: { text?: string; options?: { label?: string }[] }[],
+): string {
+  if (answer == null) return '';
+  if (typeof answer === 'string') return answer;
+  if (typeof answer !== 'object') return String(answer);
+  const structured = answer as { answers?: { selectedOptions?: unknown[]; freeText?: string }[] };
+  if (Array.isArray(structured.answers)) {
+    return structured.answers
+      .map((a, idx) => {
+        const selected = Array.isArray(a.selectedOptions)
+          ? a.selectedOptions
+              .map((opt) => {
+                const optionIndex = typeof opt === 'number' ? opt : Number(opt);
+                return Number.isInteger(optionIndex)
+                  ? (questions[idx]?.options?.[optionIndex]?.label ?? String(opt))
+                  : String(opt);
+              })
+              .join(', ')
+          : '';
+        const free = a.freeText?.trim() ?? '';
+        return [selected, free].filter(Boolean).join(' · ') || `Answer ${idx + 1}`;
+      })
+      .filter(Boolean)
+      .join('\n');
+  }
+  return JSON.stringify(answer);
+}
+
 function getTimeAgo(timestamp: string): string {
   const diff = Date.now() - new Date(timestamp).getTime();
   if (!Number.isFinite(diff) || diff < 60000) return 'just now';
@@ -275,6 +319,10 @@ function getTimeAgo(timestamp: string): string {
 
 function IntentTimelineItem({ event }: { event: IntentActivityEvent }) {
   const { stageNameOf } = useIntent();
+  const isAnswer = event.type === 'v2.question.answered';
+  const questions = isAnswer ? parseQuestions(event.questions) : [];
+  const questionTexts = questions.map((q) => String(q.text ?? '')).filter(Boolean);
+  const answer = isAnswer ? answerSummary(event.answer, questions) : '';
   return (
     <div className="flex gap-3 py-2">
       <div className="flex flex-col items-center">
@@ -283,6 +331,34 @@ function IntentTimelineItem({ event }: { event: IntentActivityEvent }) {
       </div>
       <div className="flex-1 min-w-0 pb-2">
         <p className="text-xs font-medium leading-tight">{event.summary || event.type}</p>
+        {isAnswer && (
+          <div className="mt-1 space-y-1 rounded border bg-muted/20 px-2 py-1.5 text-[11px]">
+            {questionTexts.length > 0 && (
+              <p className="line-clamp-3 whitespace-pre-wrap text-muted-foreground">
+                {questionTexts.join('\n')}
+              </p>
+            )}
+            {answer && <p className="whitespace-pre-wrap font-medium">{answer}</p>}
+            {event.artifacts && event.artifacts.length > 0 && (
+              <div className="flex flex-wrap gap-1 pt-0.5">
+                {event.artifacts.map((artifact) => (
+                  <button
+                    key={artifact.id}
+                    type="button"
+                    className="rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+                    onClick={() =>
+                      document
+                        .getElementById(`artifact-${artifact.id}`)
+                        ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                    }
+                  >
+                    {artifact.title || artifact.id}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         <div className="flex items-center gap-2 mt-0.5">
           {event.stageInstanceId && (
             <span className="text-[10px] text-muted-foreground">

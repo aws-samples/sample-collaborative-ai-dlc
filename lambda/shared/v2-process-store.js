@@ -293,7 +293,14 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
 
   // Resolve a pending human gate (CAS on status=pending so it can't be answered
   // twice). `answer` is the structured answer payload.
-  const answerHumanTask = async ({ executionId, humanTaskId, status, answer, answeredBy }) => {
+  const answerHumanTask = async ({
+    executionId,
+    humanTaskId,
+    status,
+    answer,
+    answeredBy,
+    answeredByName,
+  }) => {
     const ts = now();
     try {
       const { Attributes } = await ddb.send(
@@ -302,13 +309,14 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
           Key: humanTaskKey(executionId, humanTaskId),
           ConditionExpression: '#status = :pending',
           UpdateExpression:
-            'SET #status = :status, answer = :answer, answeredBy = :by, answeredAt = :ts, GSI2SK = :g2sk',
+            'SET #status = :status, answer = :answer, answeredBy = :by, answeredByName = :byName, answeredAt = :ts, GSI2SK = :g2sk',
           ExpressionAttributeNames: { '#status': 'status' },
           ExpressionAttributeValues: {
             ':pending': 'pending',
             ':status': status,
             ':answer': answer ?? null,
             ':by': answeredBy ?? null,
+            ':byName': answeredByName ?? null,
             ':ts': ts,
             ':g2sk': executionTypeStateIndex({
               executionId,

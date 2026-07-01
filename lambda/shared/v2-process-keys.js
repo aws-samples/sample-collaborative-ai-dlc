@@ -252,6 +252,7 @@ const buildHumanTaskRow = ({
   questions,
   answer: null,
   answeredBy: null,
+  answeredByName: null,
   answeredAt: null,
   // The durable-execution callback id the orchestrator is suspended on for this
   // gate (set only on the gate the run actually parked on — see v2-open.md D3).

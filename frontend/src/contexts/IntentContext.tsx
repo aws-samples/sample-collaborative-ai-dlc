@@ -214,6 +214,7 @@ export function IntentProvider({
                 : JSON.stringify(evt.questions ?? null),
             answer: null,
             answeredBy: null,
+            answeredByName: null,
             answeredAt: null,
             createdAt: existing?.createdAt ?? null,
           });

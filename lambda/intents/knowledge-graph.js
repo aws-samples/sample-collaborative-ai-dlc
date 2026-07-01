@@ -4,6 +4,7 @@
 //     (PRODUCES/CONSUMES/DERIVED_FROM/RELATES_TO/DEPENDS_ON, written by the
 //     agent's link tools)
 //   - Question vertices it CONTAINS (the graph mirror of agent questions)
+//     and INFLUENCES edges to artifacts that changed after the answer
 //   - Discussion threads (Intent --HAS_DISCUSSION--> Discussion --DISCUSSES-->
 //     its anchor: the Intent itself or an Artifact)
 //   - the PROJECT's TeamKnowledge + LearningRule corpus — these are injected
@@ -151,6 +152,10 @@ export const fetchKnowledgeGraph = async (g, { projectId, intentId }) => {
       type: 'Question',
       label: questionLabel(q.questions),
       questions: q.questions ?? null,
+      answer: q.structured_answer ?? null,
+      answeredBy: q.answered_by ?? null,
+      answeredByName: q.answered_by_name ?? null,
+      answeredAt: q.answered_at ?? null,
       createdAt: q.created_at ?? null,
     })),
     ...discussions.map((d) => ({
@@ -221,11 +226,29 @@ export const fetchKnowledgeGraph = async (g, { projectId, intentId }) => {
     discussEdges = mapEdgeRows(rows, nodeIds);
   }
 
+  let influenceEdges = [];
+  if (questions.length > 0) {
+    const rows = await g
+      .V()
+      .has('Intent', 'id', intentId)
+      .out('CONTAINS')
+      .hasLabel('Question')
+      .outE('INFLUENCES')
+      .project('source', 'target', 'label')
+      .by(__.outV().values('id'))
+      .by(__.inV().values('id'))
+      .by(T.label)
+      .dedup()
+      .toList();
+    influenceEdges = mapEdgeRows(rows, nodeIds);
+  }
+
   const edges = [
     // Scope membership (real CONTAINS edges — re-derived from the node sets).
     ...artifacts.map((a) => ({ source: intentId, target: a.id, label: 'CONTAINS' })),
     ...questions.map((q) => ({ source: intentId, target: q.id, label: 'CONTAINS' })),
     ...businessEdges,
+    ...influenceEdges,
     ...discussEdges,
     // Synthesized: the prompt-injection relation (see module header).
     ...knowledge.map((k) => ({ source: k.id, target: intentId, label: 'INFORMS' })),

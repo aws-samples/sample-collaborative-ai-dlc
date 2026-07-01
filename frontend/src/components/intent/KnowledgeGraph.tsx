@@ -420,6 +420,9 @@ function NodeDetail({
       return [];
     }
   }, [node]);
+  const questionAnswered =
+    node.type === 'Question' &&
+    ((answeredGate && answeredGate.status !== 'pending') || Boolean(node.answeredAt));
 
   return (
     <div className="space-y-2 rounded-md border bg-muted/20 px-3 py-3 text-sm">
@@ -434,12 +437,12 @@ function NodeDetail({
             variant="outline"
             className={cn(
               'px-1 py-0 text-[9px]',
-              answeredGate && answeredGate.status !== 'pending'
+              questionAnswered
                 ? 'bg-agent-success/15 text-agent-success border-agent-success/30'
                 : 'bg-agent-waiting/15 text-agent-waiting border-agent-waiting/30',
             )}
           >
-            {answeredGate && answeredGate.status !== 'pending' ? 'answered' : 'pending'}
+            {questionAnswered ? 'answered' : 'pending'}
           </Badge>
         )}
         {node.type === 'Discussion' && !!node.status && (

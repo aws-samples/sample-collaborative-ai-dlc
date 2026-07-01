@@ -22,6 +22,12 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from '@/components/ui/accordion';
 import { cn } from '@/lib/utils';
 import { List, Loader2, Play, Workflow, XCircle } from 'lucide-react';
 
@@ -35,6 +41,7 @@ export default function IntentView() {
     detail,
     loading,
     error: loadError,
+    gates,
     pendingGates,
     reload,
     answerGate,
@@ -313,22 +320,69 @@ export default function IntentView() {
           {/* Metrics */}
           {detail.metrics.length > 0 && <MetricsPanel detail={detail} />}
 
-          {/* Artifacts */}
-          {detail.artifacts.length > 0 && (
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm">Artifacts ({detail.artifacts.length})</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                {detail.artifacts.map((a) => (
-                  <ArtifactViewer key={a.id} artifact={a} />
-                ))}
-              </CardContent>
-            </Card>
-          )}
+          <WorkProductsPanel detail={detail} gates={gates} />
         </>
       )}
     </div>
+  );
+}
+
+function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: IntentGate[] }) {
+  const questionGates = gates.filter((g) => g.kind === 'question');
+  if (detail.artifacts.length === 0 && questionGates.length === 0) return null;
+
+  const influencedArtifactsByQuestion = new Map(
+    detail.events
+      .filter((ev) => ev.type === 'v2.question.answered' && ev.humanTaskId)
+      .map((ev) => [ev.humanTaskId as string, ev.artifacts ?? []]),
+  );
+  const defaultValue = [
+    detail.artifacts.length > 0 ? 'artifacts' : null,
+    questionGates.length > 0 ? 'questions' : null,
+  ].filter((v): v is string => Boolean(v));
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-sm">Work products</CardTitle>
+        <p className="text-xs text-muted-foreground">
+          Artifacts and human questions captured during this intent.
+        </p>
+      </CardHeader>
+      <CardContent>
+        <Accordion type="multiple" defaultValue={defaultValue} className="space-y-2">
+          {detail.artifacts.length > 0 && (
+            <AccordionItem value="artifacts" className="rounded-md border px-3">
+              <AccordionTrigger className="py-3 hover:no-underline">
+                <span className="text-sm font-medium">Artifacts ({detail.artifacts.length})</span>
+              </AccordionTrigger>
+              <AccordionContent className="space-y-3 pb-3">
+                {detail.artifacts.map((a) => (
+                  <ArtifactViewer key={a.id} artifact={a} />
+                ))}
+              </AccordionContent>
+            </AccordionItem>
+          )}
+
+          {questionGates.length > 0 && (
+            <AccordionItem value="questions" className="rounded-md border px-3">
+              <AccordionTrigger className="py-3 hover:no-underline">
+                <span className="text-sm font-medium">Questions ({questionGates.length})</span>
+              </AccordionTrigger>
+              <AccordionContent className="space-y-3 pb-3">
+                {questionGates.map((gate) => (
+                  <QuestionHistoryCard
+                    key={gate.humanTaskId}
+                    gate={gate}
+                    influencedArtifacts={influencedArtifactsByQuestion.get(gate.humanTaskId) ?? []}
+                  />
+                ))}
+              </AccordionContent>
+            </AccordionItem>
+          )}
+        </Accordion>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -445,6 +499,151 @@ function GateCard({
       />
     </div>
   );
+}
+
+function QuestionHistoryCard({
+  gate,
+  influencedArtifacts,
+}: {
+  gate: IntentGate;
+  influencedArtifacts: { id: string; title: string }[];
+}) {
+  const questions = parseGateQuestions(gate.questions);
+  const answer = formatGateAnswer(gate.answer, questions);
+  const answered = gate.status !== 'pending' || Boolean(gate.answeredAt);
+
+  return (
+    <div
+      id={`question-${gate.humanTaskId}`}
+      className="scroll-mt-4 rounded-md border bg-card px-3 py-3"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge
+              variant="outline"
+              className={cn(
+                'px-1.5 py-0 text-[10px]',
+                answered
+                  ? 'bg-agent-success/10 text-agent-success border-agent-success/30'
+                  : 'bg-agent-waiting/10 text-agent-waiting border-agent-waiting/30',
+              )}
+            >
+              {answered ? 'answered' : 'pending'}
+            </Badge>
+            <span className="text-[11px] text-muted-foreground">
+              {gate.stageInstanceId || 'agent question'}
+            </span>
+          </div>
+          {(gate.answeredByName || gate.answeredBy || gate.answeredAt) && (
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              {gate.answeredByName || gate.answeredBy
+                ? `answered by ${gate.answeredByName || gate.answeredBy}`
+                : ''}
+              {gate.answeredAt ? ` · ${new Date(gate.answeredAt).toLocaleString()}` : ''}
+            </p>
+          )}
+        </div>
+        <DiscussButton
+          entityType="question"
+          entityId={gate.humanTaskId}
+          entityTitle={questions[0]?.text || 'Question'}
+          className="shrink-0"
+        />
+      </div>
+
+      <div className="mt-3 space-y-2">
+        {questions.length > 0 ? (
+          questions.map((q, idx) => (
+            <div key={idx} className="rounded border bg-muted/20 px-2 py-2">
+              <p className="text-sm font-medium">{q.text || `Question ${idx + 1}`}</p>
+              {Array.isArray(q.options) && q.options.length > 0 && (
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  Options:{' '}
+                  {q.options
+                    .map((o) => o.label)
+                    .filter(Boolean)
+                    .join(', ')}
+                </p>
+              )}
+            </div>
+          ))
+        ) : (
+          <p className="text-sm text-muted-foreground">Question details unavailable.</p>
+        )}
+
+        {answered ? (
+          <div className="rounded border border-agent-success/20 bg-agent-success/[0.04] px-2 py-2">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              Answer
+            </p>
+            <p className="mt-1 whitespace-pre-wrap text-sm">{answer || 'Answered'}</p>
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            This question is still open. Use the Open questions section above to answer it.
+          </p>
+        )}
+
+        {influencedArtifacts.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 pt-1">
+            <span className="text-[11px] text-muted-foreground">Influenced artifacts:</span>
+            {influencedArtifacts.map((artifact) => (
+              <button
+                key={artifact.id}
+                type="button"
+                className="rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+                onClick={() =>
+                  document
+                    .getElementById(`artifact-${artifact.id}`)
+                    ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                }
+              >
+                {artifact.title || artifact.id}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function parseGateQuestions(raw: string | null): Question['questions'] {
+  try {
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function formatGateAnswer(answer: unknown, questions: Question['questions']): string {
+  if (answer == null) return '';
+  if (typeof answer === 'string') return answer;
+  if (typeof answer !== 'object') return String(answer);
+  const structured = answer as { answers?: { selectedOptions?: unknown[]; freeText?: string }[] };
+  if (Array.isArray(structured.answers)) {
+    return structured.answers
+      .map((a, idx) => {
+        const selected = Array.isArray(a.selectedOptions)
+          ? a.selectedOptions
+              .map((opt) => {
+                const optionIndex = typeof opt === 'number' ? opt : Number(opt);
+                return Number.isInteger(optionIndex)
+                  ? (questions[idx]?.options?.[optionIndex]?.label ?? String(opt))
+                  : String(opt);
+              })
+              .join(', ')
+          : '';
+        const free = a.freeText?.trim() ?? '';
+        const response = [selected, free].filter(Boolean).join(' · ');
+        return response ? `Q${idx + 1}: ${response}` : '';
+      })
+      .filter(Boolean)
+      .join('\n');
+  }
+  return JSON.stringify(answer);
 }
 
 function MetricsPanel({ detail }: { detail: IntentDetail }) {

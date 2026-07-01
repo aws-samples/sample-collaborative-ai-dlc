@@ -78,9 +78,13 @@ const seedFullGraph = async () => {
     id: 'q-1',
     intent_id: INTENT,
     questions: JSON.stringify([{ text: 'Which auth provider?', type: 'single', options: [] }]),
+    structured_answer: JSON.stringify({ answers: [{ freeText: 'Cognito' }] }),
+    answered_by_name: 'Ada',
+    answered_at: '2026-01-01T00:35:00Z',
     created_at: '2026-01-01T00:30:00Z',
   });
   await addE('Intent', INTENT, 'CONTAINS', 'Question', 'q-1');
+  await addE('Question', 'q-1', 'INFLUENCES', 'Artifact', 'reqs-1');
 
   await addV('Discussion', {
     id: 'disc-1',
@@ -152,6 +156,8 @@ describe('fetchKnowledgeGraph', () => {
     expect(byId(nodes, 'q-1')).toMatchObject({
       type: 'Question',
       label: 'Which auth provider?',
+      answeredByName: 'Ada',
+      answeredAt: '2026-01-01T00:35:00Z',
     });
     expect(JSON.parse(byId(nodes, 'q-1').questions)[0].text).toBe('Which auth provider?');
 
@@ -175,6 +181,7 @@ describe('fetchKnowledgeGraph', () => {
     // Edges: containment, business relation, discussion anchor, synthesized INFORMS
     expect(edge(edges, INTENT, 'reqs-1', 'CONTAINS')).toBeDefined();
     expect(edge(edges, INTENT, 'q-1', 'CONTAINS')).toBeDefined();
+    expect(edge(edges, 'q-1', 'reqs-1', 'INFLUENCES')).toBeDefined();
     expect(edge(edges, 'design-1', 'reqs-1', 'DERIVED_FROM')).toBeDefined();
     expect(edge(edges, 'disc-1', 'reqs-1', 'DISCUSSES')).toBeDefined();
     expect(edge(edges, 'tk-1', INTENT, 'INFORMS')).toBeDefined();

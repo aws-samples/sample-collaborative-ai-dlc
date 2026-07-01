@@ -242,4 +242,52 @@ describe('IntentView', () => {
     expect(buttons.some((b) => b.getAttribute('data-entity') === 'artifact')).toBe(true);
     expect(buttons.some((b) => b.getAttribute('data-entity') === 'intent')).toBe(true);
   });
+
+  it('groups answered questions with artifacts in work products', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'SUCCEEDED' }),
+      events: [
+        {
+          eventId: 'human-answer-h1',
+          type: 'v2.question.answered',
+          stageInstanceId: 'si-a',
+          actor: 'U',
+          summary: 'U answered',
+          timestamp: '2026-01-01T00:00:00Z',
+          humanTaskId: 'h1',
+          artifacts: [{ id: 'a1', title: 'Reqs' }],
+        },
+      ],
+      gates: [
+        {
+          humanTaskId: 'h1',
+          stageInstanceId: 'si-a',
+          status: 'answered',
+          kind: 'question',
+          questions: '[{"text":"Which provider?","type":"single","options":[{"label":"Cognito"}]}]',
+          answer: { answers: [{ selectedOptions: [0], freeText: '' }] },
+          answeredByName: 'U',
+          answeredAt: '2026-01-01T00:00:00Z',
+        },
+      ],
+      artifacts: [
+        {
+          id: 'a1',
+          artifactType: 'requirements',
+          title: 'Reqs',
+          content: '# hi',
+          createdByStageInstanceId: 'si-a',
+          createdByExecutionId: 'i1',
+          createdAt: null,
+        },
+      ],
+    });
+    renderAt();
+    expect(await screen.findByText('Work products')).toBeInTheDocument();
+    expect(screen.getByText('Artifacts (1)')).toBeInTheDocument();
+    expect(screen.getByText('Questions (1)')).toBeInTheDocument();
+    expect(screen.getByText('Which provider?')).toBeInTheDocument();
+    expect(screen.getByText('Q1: Cognito')).toBeInTheDocument();
+    expect(screen.getByText('Influenced artifacts:')).toBeInTheDocument();
+  });
 });
