@@ -1220,6 +1220,7 @@ resource "aws_lambda_permission" "workflows" {
 # /projects/{projectId}/intents Resources (AI-DLC v2 intents)
 #
 #   /projects/{projectId}/intents                                  GET, POST
+#   /projects/{projectId}/intents/metrics                          GET
 #   /projects/{projectId}/intents/{intentId}                       GET
 #   /projects/{projectId}/intents/{intentId}/graph                 GET
 #   /projects/{projectId}/intents/{intentId}/start                 POST
@@ -1232,6 +1233,15 @@ resource "aws_api_gateway_resource" "intents" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.project.id
   path_part   = "intents"
+}
+
+# Literal /intents/metrics — the project-wide usage+cost rollup. A literal path
+# part outranks the sibling {intentId} greedy param in API Gateway routing, so
+# this resolves to its own resource rather than an intent id named "metrics".
+resource "aws_api_gateway_resource" "intents_metrics" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intents.id
+  path_part   = "metrics"
 }
 
 resource "aws_api_gateway_resource" "intent" {
@@ -1280,6 +1290,7 @@ locals {
   intent_routes = {
     collection_get  = { resource = aws_api_gateway_resource.intents.id, method = "GET" }
     collection_post = { resource = aws_api_gateway_resource.intents.id, method = "POST" }
+    metrics_get     = { resource = aws_api_gateway_resource.intents_metrics.id, method = "GET" }
     item_get        = { resource = aws_api_gateway_resource.intent.id, method = "GET" }
     graph_get       = { resource = aws_api_gateway_resource.intent_graph.id, method = "GET" }
     start_post      = { resource = aws_api_gateway_resource.intent_start.id, method = "POST" }
@@ -1311,6 +1322,12 @@ module "cors_intents" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.intents.id
+}
+
+module "cors_intents_metrics" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intents_metrics.id
 }
 
 module "cors_intent" {

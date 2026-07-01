@@ -90,11 +90,28 @@ export interface IntentGate {
   createdAt: string | null;
 }
 
+// Cost attributed to one metric sample, computed server-side (pricing lives on
+// the backend). `priced: false` means the sample's model has no price entry
+// (a newer model, or a Kiro credit-based run) — the UI shows "cost unavailable"
+// rather than a misleading $0.
+export interface MetricCost {
+  model: string | null;
+  currency: string;
+  inputCost: number;
+  outputCost: number;
+  totalCost: number;
+  priced: boolean;
+}
+
 export interface IntentMetric {
   metricId: string;
   stageInstanceId: string | null;
   metrics: Record<string, number>;
   timestamp: string;
+  // The model attributed to this sample (metric-row stamp, else joined from the
+  // stage row) and its computed cost. Absent on legacy rows without a model.
+  model?: string | null;
+  cost?: MetricCost | null;
 }
 
 export interface IntentOutput {
@@ -218,11 +235,33 @@ export interface IntentKnowledgeGraph {
   edges: IntentGraphEdge[];
 }
 
+// Per-intent usage+cost summary within a project rollup.
+export interface ProjectIntentMetrics {
+  intentId: string;
+  title: string | null;
+  status: IntentStatus | null;
+  metrics: Record<string, number>;
+  cost: { totalCost: number; currency: string; priced: boolean; hasCostedSamples: boolean };
+}
+
+// GET /projects/{id}/intents/metrics — usage + cost rolled up across every
+// intent. `anyUnpriced` warns that a token-spending intent ran on a model we
+// couldn't price (a newer model, or a Kiro credit-based run).
+export interface ProjectMetrics {
+  perIntent: ProjectIntentMetrics[];
+  project: {
+    metrics: Record<string, number>;
+    cost: { totalCost: number; currency: string; anyUnpriced: boolean };
+  };
+}
+
 export const intentsService = {
   list: (projectId: string, status?: IntentStatus) =>
     api.get<Intent[]>(`/projects/${projectId}/intents${status ? `?status=${status}` : ''}`),
   get: (projectId: string, intentId: string) =>
     api.get<IntentDetail>(`/projects/${projectId}/intents/${intentId}`),
+  projectMetrics: (projectId: string) =>
+    api.get<ProjectMetrics>(`/projects/${projectId}/intents/metrics`),
   graph: (projectId: string, intentId: string) =>
     api.get<IntentKnowledgeGraph>(`/projects/${projectId}/intents/${intentId}/graph`),
   create: (projectId: string, input: CreateIntentInput) =>

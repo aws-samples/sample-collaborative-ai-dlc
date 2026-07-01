@@ -556,6 +556,130 @@ describe('GET list + detail', () => {
     expect(detail.intent.parkReleaseSeconds).toBe(120);
   });
 
+  it('attaches per-sample cost to metrics, joining the stage-row model', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const si = 'si-cost';
+    // A stage row carrying the resolved model, and two metric samples: one with
+    // its own model stamp (preferred), one relying on the stage-row join.
+    procStore.set(keyOf(`EXEC#${intent.id}`, `STAGE#${si}`), {
+      pk: `EXEC#${intent.id}`,
+      sk: `STAGE#${si}`,
+      type: 'Stage',
+      executionId: intent.id,
+      stageInstanceId: si,
+      state: 'SUCCEEDED',
+      resolvedModel: 'us.anthropic.claude-sonnet-4-6',
+    });
+    procStore.set(keyOf(`EXEC#${intent.id}`, `METRIC#2026-01-01T00:00:00Z#m1`), {
+      pk: `EXEC#${intent.id}`,
+      sk: `METRIC#2026-01-01T00:00:00Z#m1`,
+      type: 'Metric',
+      executionId: intent.id,
+      stageInstanceId: si,
+      metricId: 'm1',
+      resolvedModel: 'us.anthropic.claude-sonnet-4-6',
+      metrics: { tokensInput: 1_000_000, tokensOutput: 1_000_000, contextWindowPct: 40 },
+      timestamp: '2026-01-01T00:00:00Z',
+    });
+    procStore.set(keyOf(`EXEC#${intent.id}`, `METRIC#2026-01-01T00:00:01Z#m2`), {
+      pk: `EXEC#${intent.id}`,
+      sk: `METRIC#2026-01-01T00:00:01Z#m2`,
+      type: 'Metric',
+      executionId: intent.id,
+      stageInstanceId: si,
+      metricId: 'm2',
+      // No own stamp — model must be joined from the stage row.
+      metrics: { tokensInput: 500_000 },
+      timestamp: '2026-01-01T00:00:01Z',
+    });
+    const dto = JSON.parse(
+      (
+        await handler({
+          httpMethod: 'GET',
+          path: `/projects/${projectId}/intents/${intent.id}`,
+          pathParameters: { projectId, intentId: intent.id },
+          ...claims(sub),
+        })
+      ).body,
+    );
+    const byId = Object.fromEntries(dto.metrics.map((m) => [m.metricId, m]));
+    // Sonnet 4.6 = $3/1M in, $15/1M out → 1M+1M = $18. Priced from the fallback.
+    expect(byId.m1.model).toBe('us.anthropic.claude-sonnet-4-6');
+    expect(byId.m1.cost.priced).toBe(true);
+    expect(byId.m1.cost.totalCost).toBeCloseTo(18);
+    // m2 joined the stage-row model and priced 0.5M input tokens at $3/1M = $1.5.
+    expect(byId.m2.model).toBe('us.anthropic.claude-sonnet-4-6');
+    expect(byId.m2.cost.totalCost).toBeCloseTo(1.5);
+  });
+
+  it('rolls project metrics up across intents (tokens sum, context peaks)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const a = JSON.parse((await createIntent(sub, projectId)).body).id;
+    const b = JSON.parse((await createIntent(sub, projectId)).body).id;
+    const seedMetric = (intentId, id, metrics, model = 'us.anthropic.claude-sonnet-4-6') =>
+      procStore.set(keyOf(`EXEC#${intentId}`, `METRIC#2026-01-01T00:00:0${id}Z#${id}`), {
+        pk: `EXEC#${intentId}`,
+        sk: `METRIC#2026-01-01T00:00:0${id}Z#${id}`,
+        type: 'Metric',
+        executionId: intentId,
+        stageInstanceId: 'si',
+        metricId: id,
+        resolvedModel: model,
+        metrics,
+        timestamp: `2026-01-01T00:00:0${id}Z`,
+      });
+    seedMetric(a, '1', { tokensInput: 1_000_000, tokensOutput: 0, contextWindowPct: 40 });
+    seedMetric(b, '2', { tokensInput: 1_000_000, tokensOutput: 0, contextWindowPct: 80 });
+
+    const res = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/metrics`,
+      pathParameters: { projectId },
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(200);
+    const dto = JSON.parse(res.body);
+    expect(dto.perIntent).toHaveLength(2);
+    // Tokens sum across intents; context window is peaked (NOT summed to 120%).
+    expect(dto.project.metrics.tokensInput).toBe(2_000_000);
+    expect(dto.project.metrics.contextWindowPct).toBe(80);
+    // 2M input tokens of Sonnet at $3/1M = $6.
+    expect(dto.project.cost.totalCost).toBeCloseTo(6);
+    expect(dto.project.cost.anyUnpriced).toBe(false);
+  });
+
+  it('flags anyUnpriced when an intent ran on an unpriceable model', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const a = JSON.parse((await createIntent(sub, projectId)).body).id;
+    // Kiro credit-based model — not token-priceable.
+    procStore.set(keyOf(`EXEC#${a}`, `METRIC#2026-01-01T00:00:01Z#k1`), {
+      pk: `EXEC#${a}`,
+      sk: `METRIC#2026-01-01T00:00:01Z#k1`,
+      type: 'Metric',
+      executionId: a,
+      stageInstanceId: 'si',
+      metricId: 'k1',
+      resolvedModel: 'claude-opus-4.6',
+      metrics: { tokensInput: 500_000 },
+      timestamp: '2026-01-01T00:00:01Z',
+    });
+    const dto = JSON.parse(
+      (
+        await handler({
+          httpMethod: 'GET',
+          path: `/projects/${projectId}/intents/metrics`,
+          pathParameters: { projectId },
+          ...claims(sub),
+        })
+      ).body,
+    );
+    expect(dto.project.cost.anyUnpriced).toBe(true);
+  });
+
   it('404s a cross-project intent on GET detail', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);

@@ -14,8 +14,15 @@ vi.mock('@/hooks/useProjectsCache', () => ({
 }));
 vi.mock('@/hooks/useSprintEvents', () => ({ useSprintEvents: () => {} }));
 const list = vi.fn().mockResolvedValue([]);
+const projectMetrics = vi.fn().mockResolvedValue({
+  perIntent: [],
+  project: { metrics: {}, cost: { totalCost: 0, currency: 'USD', anyUnpriced: false } },
+});
 vi.mock('@/services/intents', () => ({
-  intentsService: { list: (...a: unknown[]) => list(...a) },
+  intentsService: {
+    list: (...a: unknown[]) => list(...a),
+    projectMetrics: (...a: unknown[]) => projectMetrics(...a),
+  },
 }));
 vi.mock('@/services/projects', () => ({ projectsService: {} }));
 const compiled = vi.fn().mockResolvedValue({ scopeGrid: { feature: {} } });

@@ -130,6 +130,7 @@ export const buildMcpConfig = ({ mcpEntry, scope, env = {} }) => ({
         V2_INTENT_ID: scope.intentId,
         V2_PROJECT_ID: scope.projectId ?? '',
         V2_STAGE_INSTANCE_ID: scope.stageInstanceId ?? '',
+        V2_RESOLVED_MODEL: scope.model ?? '',
         V2_MCP_ROLE: scope.role ?? 'author',
         V2_PROCESS_TABLE: env.V2_PROCESS_TABLE ?? '',
         NEPTUNE_ENDPOINT: env.NEPTUNE_ENDPOINT ?? '',

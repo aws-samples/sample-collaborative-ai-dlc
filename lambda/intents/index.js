@@ -17,11 +17,15 @@ import { fetchMembershipRole, projectTrackersFoldStep, mapBinding } from '../sha
 import { signRealtimeToken } from '../shared/realtime-token.js';
 import cliModelsPkg from '../shared/cli-models.js';
 import workflowPlanPkg from '../shared/v2-workflow-plan.js';
+import pricingPkg from '../shared/model-pricing.js';
+import metricClassificationPkg from '../shared/metric-classification.js';
 import { fetchKnowledgeGraph } from './knowledge-graph.js';
 
 const { createProcessStore } = pkg;
 const { parseCliModels, mergeCliModels } = cliModelsPkg;
 const { loadWorkflowScopes } = workflowPlanPkg;
+const { makePriceResolver, costForMetrics } = pricingPkg;
+const { aggregateMetrics, rollupAggregates } = metricClassificationPkg;
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -52,6 +56,39 @@ const getConnection = async () => {
   credentials.region = process.env.AWS_REGION ?? 'us-east-1';
   const { url, headers } = getUrlAndHeaders(host, port, credentials, '/gremlin', protocol);
   return new DriverRemoteConnection(url, { headers });
+};
+
+// Model pricing (READ path). Prices live in SSM (`${prefix}/model-pricing`, a
+// family→{input,output} JSON that the agents lambda refreshes from the AWS Price
+// List API — this lambda never calls Pricing, so it needs no extra SDK client).
+// We cache the built resolver for the container's life. The static fallback baked
+// into model-pricing.js means cost is always computable even before the first
+// refresh has populated SSM. Best-effort: any failure degrades to the seed and
+// never breaks the intent GET.
+const MODEL_PRICING_SSM_PREFIX = () => process.env.AGENT_SETTINGS_SSM_PREFIX || '';
+const PRICING_TTL_MS = 6 * 60 * 60 * 1000; // re-read SSM at most every 6h
+let cachedPricing = null; // { resolver, at }
+
+const loadPricingTable = async () => {
+  const prefix = MODEL_PRICING_SSM_PREFIX();
+  if (!prefix) return {};
+  try {
+    const res = await ssm.send(new GetParameterCommand({ Name: `${prefix}/model-pricing` }));
+    const parsed = JSON.parse(res.Parameter?.Value || '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {}; // not yet populated / unreadable → static fallback prices this run
+  }
+};
+
+const getPriceResolver = async () => {
+  if (cachedPricing && Date.now() - cachedPricing.at < PRICING_TTL_MS) {
+    return cachedPricing.resolver;
+  }
+  const table = await loadPricingTable().catch(() => ({}));
+  const resolver = makePriceResolver(table);
+  cachedPricing = { resolver, at: Date.now() };
+  return resolver;
 };
 
 // Realtime scope-token secret (shared with the discussions lambda + Yjs server).
@@ -506,6 +543,7 @@ export const handler = async (event) => {
       const artifacts = await fetchArtifacts(g, intentId);
       const gates = records.humanTasks.map(mapHumanTask);
       const answerEvents = await buildGateAnswerEvents(g, gates);
+      const priceFor = await getPriceResolver();
       return response(200, {
         intent: mapIntent(records.meta),
         stages: records.stages.map(mapStage),
@@ -524,12 +562,7 @@ export const handler = async (event) => {
           ...answerEvents,
         ].toSorted((a, b) => String(a.timestamp).localeCompare(String(b.timestamp))),
         gates,
-        metrics: records.metrics.map((m) => ({
-          metricId: m.metricId,
-          stageInstanceId: m.stageInstanceId ?? null,
-          metrics: m.metrics ?? {},
-          timestamp: m.timestamp,
-        })),
+        metrics: mapMetricsWithCost(records.metrics, records.stages, priceFor),
         outputs: records.outputs.map((o) => ({
           seq: o.seq,
           stageInstanceId: o.stageInstanceId ?? null,
@@ -552,6 +585,39 @@ export const handler = async (event) => {
           timestamp: s.timestamp,
         })),
         artifacts,
+      });
+    }
+
+    // GET /projects/{projectId}/metrics — usage + cost rolled up across every
+    // intent in the project. Reads each execution's METRIC#/STAGE# rows (bounded,
+    // fanned out concurrently), aggregates per intent, then rolls up: token
+    // counts + cost summed, gauges (context %) peaked. `anyUnpriced` flags that a
+    // model (newer / Kiro) couldn't be priced so the UI can caveat the total.
+    if (httpMethod === 'GET' && !intentId && path?.endsWith('/intents/metrics')) {
+      const metas = await store.listProjectExecutions({ projectId });
+      const priceFor = await getPriceResolver();
+      const perIntent = await Promise.all(
+        metas.map(async (meta) => {
+          const records = await store.getExecutionRecords(meta.executionId ?? meta.intentId);
+          const summary = summarizeExecutionMetrics(records.metrics, records.stages, priceFor);
+          return {
+            intentId: meta.intentId ?? meta.executionId,
+            title: meta.title ?? null,
+            status: meta.status ?? null,
+            metrics: summary.metrics,
+            cost: summary.cost,
+          };
+        }),
+      );
+      const withUsage = perIntent.filter(
+        (p) => Object.keys(p.metrics).length > 0 || p.cost.hasCostedSamples,
+      );
+      const projectMetrics = rollupAggregates(withUsage.map((p) => p.metrics));
+      const totalCost = withUsage.reduce((s, p) => s + p.cost.totalCost, 0);
+      const anyUnpriced = withUsage.some((p) => p.cost.hasCostedSamples && !p.cost.priced);
+      return response(200, {
+        perIntent: withUsage,
+        project: { metrics: projectMetrics, cost: { totalCost, currency: 'USD', anyUnpriced } },
       });
     }
 
@@ -675,11 +741,53 @@ const mapStage = (s) => ({
   state: s.state,
   attempt: s.attempt ?? 0,
   cli: s.cli ?? null,
+  resolvedModel: s.resolvedModel ?? null,
   runtimeError: s.runtimeError ?? null,
   startedAt: s.startedAt ?? null,
   completedAt: s.completedAt ?? null,
   updatedAt: s.updatedAt ?? null,
 });
+
+// Map metric rows to the DTO shape, attaching the model in effect and its cost.
+// The model comes from the metric row's own stamp (trusted, set by the bridge),
+// falling back to the resolvedModel joined from its stage row. Cost is computed
+// server-side so intent + project views agree; an unpriced model (newer / Kiro)
+// yields `cost.priced: false` rather than a misleading $0.
+const mapMetricsWithCost = (metrics = [], stages = [], priceFor) => {
+  const modelByStage = new Map(stages.map((s) => [s.stageInstanceId, s.resolvedModel ?? null]));
+  return metrics.map((m) => {
+    const model = m.resolvedModel ?? modelByStage.get(m.stageInstanceId) ?? null;
+    return {
+      metricId: m.metricId,
+      stageInstanceId: m.stageInstanceId ?? null,
+      metrics: m.metrics ?? {},
+      timestamp: m.timestamp,
+      model,
+      cost: costForMetrics(m.metrics ?? {}, model, priceFor),
+    };
+  });
+};
+
+// Fold one execution's metric samples into an aggregated bag (tokens summed,
+// gauges peaked) + a total cost. Used per-intent for the project rollup.
+// `priced` is true only if every sample that carried tokens was priceable.
+const summarizeExecutionMetrics = (metrics = [], stages = [], priceFor) => {
+  const mapped = mapMetricsWithCost(metrics, stages, priceFor);
+  const aggregated = aggregateMetrics(
+    mapped.map((m) => ({ metrics: m.metrics, timestamp: m.timestamp })),
+  );
+  // Only samples with token spend contribute to the priced/unpriced verdict; a
+  // pure context-window sample has no cost and shouldn't mark the intent unpriced.
+  const costed = mapped.filter(
+    (m) => (m.metrics?.tokensInput ?? 0) + (m.metrics?.tokensOutput ?? 0) > 0,
+  );
+  const totalCost = costed.reduce((s, m) => s + (m.cost?.totalCost ?? 0), 0);
+  const priced = costed.length > 0 && costed.every((m) => m.cost?.priced);
+  return {
+    metrics: aggregated,
+    cost: { totalCost, currency: 'USD', priced, hasCostedSamples: costed.length > 0 },
+  };
+};
 
 const mapHumanTask = (h) => ({
   humanTaskId: h.humanTaskId,

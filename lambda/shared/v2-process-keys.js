@@ -184,6 +184,11 @@ const buildStageRow = ({
   // stage that never spawned a CLI. See docs/v2-resume.md (park/resume).
   cli = null,
   cliSessionId = null,
+  // The concrete model this stage resolved to (region-prefixed Bedrock id, Kiro
+  // namespace id, or null). Persisted so token metrics can be priced at read time
+  // by joining on stageInstanceId — the untrusted agent bag carries no model. See
+  // model-pricing.js and docs/v2-metrics.md.
+  resolvedModel = null,
   now,
 }) => ({
   ...stageKey(executionId, stageInstanceId),
@@ -198,6 +203,7 @@ const buildStageRow = ({
   workerId,
   cli,
   cliSessionId,
+  resolvedModel,
   runtimeError: null,
   startedAt: state === 'RUNNING' ? now : null,
   completedAt: null,
@@ -283,13 +289,24 @@ const buildOutputRow = ({
   timestamp: now,
 });
 
-const buildMetricRow = ({ executionId, stageInstanceId = null, metricId, metrics, now }) => ({
+const buildMetricRow = ({
+  executionId,
+  stageInstanceId = null,
+  metricId,
+  metrics,
+  // The model in effect when this sample was recorded, stamped server-side from
+  // the trusted bridge scope (not the agent bag). Preferred over the stage-row
+  // join for pricing; null when the bridge had no model (e.g. stageless metric).
+  resolvedModel = null,
+  now,
+}) => ({
   ...metricKey(executionId, now, metricId),
   ...executionTypeStateIndex({ executionId, type: 'METRIC', state: 'sample', id: metricId }),
   type: 'Metric',
   executionId,
   stageInstanceId,
   metricId,
+  resolvedModel,
   // Free-form numeric bag: tokensInput, tokensOutput, contextWindowPct, ...
   metrics: metrics ?? {},
   timestamp: now,

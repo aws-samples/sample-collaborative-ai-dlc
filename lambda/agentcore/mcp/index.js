@@ -27,6 +27,9 @@ const scopeFromEnv = (env = process.env) => ({
   intentId: env.V2_INTENT_ID,
   projectId: env.V2_PROJECT_ID,
   stageInstanceId: env.V2_STAGE_INSTANCE_ID ?? null,
+  // The concrete model run-stage resolved for this stage, stamped onto metric
+  // rows so token usage can be priced at read time (empty string → null).
+  model: env.V2_RESOLVED_MODEL || null,
 });
 
 export const startMcpServer = async ({ env = process.env } = {}) => {

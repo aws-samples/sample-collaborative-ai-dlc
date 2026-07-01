@@ -339,6 +339,9 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/mcp-servers",
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/cli-models",
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/kiro-api-key",
+          # Token→USD price table, refreshed from the Price List API on model
+          # discovery and read by the intents lambda to compute cost.
+          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/model-pricing",
         ]
       },
       {
@@ -400,6 +403,14 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
       {
         Effect   = "Allow"
         Action   = ["bedrock:ListInferenceProfiles"]
+        Resource = "*"
+      },
+      # Token→USD pricing: read published Bedrock model prices from the AWS Price
+      # List API on model discovery, to refresh the model-pricing SSM table.
+      # pricing:GetProducts is not resource-scopable.
+      {
+        Effect   = "Allow"
+        Action   = ["pricing:GetProducts"]
         Resource = "*"
       },
       {
@@ -1496,6 +1507,9 @@ resource "aws_iam_role_policy" "intents" {
         Resource = [
           var.realtime_doc_secret_param_arn,
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/cli-models",
+          # Token→USD price table (written by the agents lambda) — read to attach
+          # cost to the intent's metric samples in the detail/rollup DTOs.
+          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/model-pricing",
         ]
       },
       {

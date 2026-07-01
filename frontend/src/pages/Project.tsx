@@ -51,7 +51,8 @@ import { TrackerIssueListPanel } from '@/components/TrackerIssueListPanel';
 import { IntentSourcePicker } from '@/components/IntentSourcePicker';
 import { MigrateTrackerCard } from '@/components/MigrateTrackerCard';
 import { effectiveSprintStatus, isActiveStatus } from '@/lib/sprintStatus';
-import { intentsService, type Intent } from '@/services/intents';
+import { intentsService, type Intent, type ProjectMetrics } from '@/services/intents';
+import { UsageMetrics } from '@/components/intent/UsageMetrics';
 import { trackersService, type TrackerIssue } from '@/services/trackers';
 import type { TrackerBinding } from '@/services/projects';
 import { buildSprintDescription } from '@/lib/buildSprintDescription';
@@ -642,17 +643,28 @@ function IntentsView({
     };
   }, [showCreate, scopeOptions.length, project.workflowId]);
 
+  const [usage, setUsage] = useState<ProjectMetrics | null>(null);
+
   const refresh = useCallback(() => {
     intentsService
       .list(projectId)
       .then(setIntents)
       .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load intents'))
       .finally(() => setLoading(false));
+    // Usage rollup is a best-effort enrichment — a failure just hides the card.
+    intentsService
+      .projectMetrics(projectId)
+      .then(setUsage)
+      .catch(() => setUsage(null));
   }, [projectId]);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // Show the card only once there's real usage to report.
+  const hasUsage =
+    !!usage && (Object.keys(usage.project.metrics).length > 0 || usage.project.cost.totalCost > 0);
 
   const resetCreate = useCallback(() => {
     setTitle('');
@@ -755,6 +767,27 @@ function IntentsView({
           </CardContent>
         </Card>
       </div>
+
+      {hasUsage && usage && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm">Usage &amp; cost</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <UsageMetrics
+              metrics={usage.project.metrics}
+              cost={{
+                totalCost: usage.project.cost.totalCost,
+                currency: usage.project.cost.currency,
+                // A project-wide total is "priced" only if no token-spending
+                // intent ran on an unpriceable model.
+                priced: !usage.project.cost.anyUnpriced,
+              }}
+              contextLabel="Peak context window"
+            />
+          </CardContent>
+        </Card>
+      )}
 
       <Card className="flex flex-col">
         <CardHeader className="pb-3">

@@ -36,7 +36,7 @@ export const createProcessBridge = ({
 } = {}) => {
   if (!store) throw new Error('createProcessBridge requires a process store');
   if (!scope.executionId) throw new Error('createProcessBridge requires scope.executionId');
-  const { executionId, intentId = null, stageInstanceId = null } = scope;
+  const { executionId, intentId = null, stageInstanceId = null, model = null } = scope;
 
   // Ask the human team one or more structured questions. Opens a pending gate,
   // mirrors a Question vertex (so the Intent page renders it), broadcasts, and
@@ -144,7 +144,14 @@ export const createProcessBridge = ({
   // Record a numeric metric sample (token usage, context-window %, etc.) and
   // broadcast it live so the UI can render usage in real time.
   const collectMetric = async ({ metrics }) => {
-    const row = await store.recordMetric({ executionId, stageInstanceId, metrics });
+    // Stamp the trusted resolved model (from the container scope) so read-time
+    // pricing needn't trust the agent bag. Null when the runtime didn't wire it.
+    const row = await store.recordMetric({
+      executionId,
+      stageInstanceId,
+      metrics,
+      resolvedModel: model,
+    });
     await broadcast({
       action: 'agent.metric',
       executionId,

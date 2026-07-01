@@ -11,6 +11,8 @@ import {
   summarizeSensorDetail,
 } from '@/components/intent/SensorChips';
 import { FileText, ScrollText } from 'lucide-react';
+import { aggregateMetrics } from '@/lib/metricAggregation';
+import { UsageMetrics } from '@/components/intent/UsageMetrics';
 
 // Drill-down for one stage, shared by the list (inline expansion) and the
 // graph (below-canvas panel): timing, dependencies (derived from the compiled
@@ -56,16 +58,21 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
   const stageGates = instanceId ? gates.filter((g) => g.stageInstanceId === instanceId) : [];
   const hasOutput = !!instanceId && !!outputBuffers.get(instanceId)?.trim();
 
-  const metrics = useMemo(() => {
-    if (!instanceId) return [];
-    const acc: Record<string, number> = {};
-    for (const m of detail?.metrics ?? []) {
-      if (m.stageInstanceId !== instanceId) continue;
-      for (const [k, v] of Object.entries(m.metrics ?? {})) {
-        if (typeof v === 'number') acc[k] = (acc[k] ?? 0) + v;
-      }
-    }
-    return Object.entries(acc);
+  // Aggregate this stage's samples with correct per-key semantics: tokens sum,
+  // contextWindowPct is a gauge (peak, not a sum) — see metricAggregation. Cost
+  // sums across the stage's samples; unavailable if any sample lacked a price.
+  const { stageMetrics, stageCost } = useMemo(() => {
+    if (!instanceId) return { stageMetrics: {} as Record<string, number>, stageCost: null };
+    const samples = (detail?.metrics ?? []).filter((m) => m.stageInstanceId === instanceId);
+    const priced = samples.filter((m) => m.cost);
+    const cost = priced.length
+      ? {
+          totalCost: priced.reduce((s, m) => s + (m.cost?.totalCost ?? 0), 0),
+          currency: priced[0].cost?.currency ?? 'USD',
+          priced: priced.every((m) => m.cost?.priced),
+        }
+      : null;
+    return { stageMetrics: aggregateMetrics(samples), stageCost: cost };
   }, [detail, instanceId]);
 
   const duration = formatDuration(row.startedAt, row.state === 'RUNNING' ? null : row.completedAt);
@@ -163,15 +170,8 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
       )}
 
       {/* Per-stage metrics */}
-      {metrics.length > 0 && (
-        <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
-          {metrics.map(([k, v]) => (
-            <span key={k}>
-              <span className="text-muted-foreground">{k}</span>{' '}
-              <span className="font-medium">{v.toLocaleString()}</span>
-            </span>
-          ))}
-        </div>
+      {Object.keys(stageMetrics).length > 0 && (
+        <UsageMetrics metrics={stageMetrics} cost={stageCost} />
       )}
 
       {/* Gates raised by this stage */}

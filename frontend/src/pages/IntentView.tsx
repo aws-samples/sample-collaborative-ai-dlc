@@ -29,6 +29,8 @@ import {
   AccordionTrigger,
 } from '@/components/ui/accordion';
 import { cn } from '@/lib/utils';
+import { aggregateMetrics } from '@/lib/metricAggregation';
+import { UsageMetrics } from '@/components/intent/UsageMetrics';
 import { List, Loader2, Play, Workflow, XCircle } from 'lucide-react';
 
 // The v2 intent page — main-pane content only. All fetch/realtime/output state
@@ -647,30 +649,28 @@ function formatGateAnswer(answer: unknown, questions: Question['questions']): st
 }
 
 function MetricsPanel({ detail }: { detail: IntentDetail }) {
-  // Sum the latest known numeric fields across samples (best-effort display).
-  const totals = useMemo(() => {
-    const acc: Record<string, number> = {};
-    for (const m of detail.metrics) {
-      for (const [k, v] of Object.entries(m.metrics ?? {})) {
-        if (typeof v === 'number') acc[k] = (acc[k] ?? 0) + v;
-      }
-    }
-    return acc;
+  // Aggregate across ALL the intent's samples with correct semantics: tokens sum,
+  // contextWindowPct is a gauge (peak across stages, not a sum). Intent cost sums
+  // every priced sample; "unavailable" if any sample lacked a price entry.
+  const { totals, cost } = useMemo(() => {
+    const priced = detail.metrics.filter((m) => m.cost);
+    const c = priced.length
+      ? {
+          totalCost: priced.reduce((s, m) => s + (m.cost?.totalCost ?? 0), 0),
+          currency: priced[0].cost?.currency ?? 'USD',
+          priced: priced.every((m) => m.cost?.priced),
+        }
+      : null;
+    return { totals: aggregateMetrics(detail.metrics), cost: c };
   }, [detail.metrics]);
-  const entries = Object.entries(totals);
-  if (entries.length === 0) return null;
+  if (Object.keys(totals).length === 0 && !cost) return null;
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-sm">Metrics</CardTitle>
+        <CardTitle className="text-sm">Usage &amp; cost</CardTitle>
       </CardHeader>
-      <CardContent className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        {entries.map(([k, v]) => (
-          <div key={k} className="rounded border px-3 py-2">
-            <p className="text-[11px] text-muted-foreground">{k}</p>
-            <p className="text-sm font-medium">{v.toLocaleString()}</p>
-          </div>
-        ))}
+      <CardContent>
+        <UsageMetrics metrics={totals} cost={cost} contextLabel="Peak context window" />
       </CardContent>
     </Card>
   );

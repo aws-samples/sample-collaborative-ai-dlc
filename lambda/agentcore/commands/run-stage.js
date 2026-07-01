@@ -465,7 +465,6 @@ export const runStage = async (
   if (stage.notImplemented) return fail(stageInstanceId, 'not_implemented', `mode ${stage.mode}`);
 
   const agentBlock = library.agentsById[stage.agentRef] ?? null;
-  const stageScope = { executionId, intentId, projectId, stageInstanceId, role: 'author' };
 
   // 2a. Source self-heal (runs for EVERY stage, fresh or resume). The managed
   // /mnt/workspace mount is wiped by any runtime image redeploy and after 14 idle
@@ -594,6 +593,21 @@ export const runStage = async (
   // A fresh conversation is spawned for a plain fresh run OR a demoted resume.
   const freshRun = !resumeFrom || demotedResume;
 
+  // Resolve the model now that `cli` is known: the project's per-CLI Admin
+  // selection wins, then the stage/agent block's modelOverride, then the static
+  // env default; bare tier aliases (opus/sonnet) resolve to full region-prefixed
+  // Bedrock ids. Resolved here (before the RUNNING write) so it's persisted on the
+  // stage row + threaded to the MCP scope for read-time token pricing.
+  const model = resolveStageModel({ cliModels, agentBlock, cli, env });
+  const stageScope = {
+    executionId,
+    intentId,
+    projectId,
+    stageInstanceId,
+    role: 'author',
+    model,
+  };
+
   // Mark RUNNING + advance the execution pointer + persist the conversation
   // handle. A resume flips the parked stage (WAITING_FOR_HUMAN) back to RUNNING.
   await store.putStage({
@@ -604,6 +618,7 @@ export const runStage = async (
     state: 'RUNNING',
     cli,
     cliSessionId,
+    resolvedModel: model,
   });
   await store.updateExecution({
     executionId,
@@ -638,10 +653,6 @@ export const runStage = async (
   // rules + knowledge); a resume only re-attaches the MCP config (the parked
   // conversation already holds the prompt) and feeds the human's answer.
   const driver = getDriver(cli);
-  // Resolve the model: the project's per-CLI Admin selection wins, then the
-  // stage/agent block's modelOverride, then the static env default; bare tier
-  // aliases (opus/sonnet) are resolved to full region-prefixed Bedrock ids.
-  const model = resolveStageModel({ cliModels, agentBlock, cli, env });
 
   // Materialize the MCP wiring the selected CLI expects: Claude loads a
   // --mcp-config file; Kiro discovers an --agent config at .kiro/agents/. Returns

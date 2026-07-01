@@ -173,6 +173,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     completedAt = null,
     cli,
     cliSessionId,
+    resolvedModel,
   }) => {
     const ts = now();
     const sets = ['#state = :state', 'updatedAt = :ts', 'GSI2SK = :g2sk', 'runtimeError = :err'];
@@ -194,6 +195,10 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     if (cliSessionId !== undefined) {
       sets.push('cliSessionId = :csid');
       values[':csid'] = cliSessionId;
+    }
+    if (resolvedModel !== undefined) {
+      sets.push('resolvedModel = :rm');
+      values[':rm'] = resolvedModel;
     }
     const { Attributes } = await ddb.send(
       new UpdateCommand({
@@ -335,12 +340,13 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     }
   };
 
-  const recordMetric = async ({ executionId, stageInstanceId, metrics }) => {
+  const recordMetric = async ({ executionId, stageInstanceId, metrics, resolvedModel = null }) => {
     const item = buildMetricRow({
       executionId,
       stageInstanceId,
       metricId: nextId(),
       metrics,
+      resolvedModel,
       now: now(),
     });
     await ddb.send(new PutCommand({ TableName: table(), Item: item }));

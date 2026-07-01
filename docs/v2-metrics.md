@@ -49,6 +49,7 @@ render what's present.
   "executionId": "e-sensor1",
   "stageInstanceId": "si-649d151f25dad31b",
   "metricId": "<uuid>",
+  "resolvedModel": "us.anthropic.claude-sonnet-4-6",
   "metrics": { "tokensInput": 18500, "tokensOutput": 2200, "contextWindowPct": 28 },
   "timestamp": "2026-06-29T07:24:06.134Z"
 }
@@ -65,11 +66,83 @@ stageInstanceId, metricId, metrics }`.
 | `tokensOutput`     | completion tokens produced           | 2200    |
 | `contextWindowPct` | % of the model's context window used | 28      |
 
-Frontend notes: aggregate `tokensInput + tokensOutput` per stage for a
-cost/usage bar; `contextWindowPct` is a gauge (warn as it approaches 100). A
-stage may emit 0..N samples; key off `metricId` for dedupe, `timestamp` for
+### Aggregation — additive vs gauge (the "context full 629%" fix)
+
+A metric bag is an **open set**, but keys fold differently across samples, and
+getting this wrong is what produced the "context full 629%" bug (summing a
+percentage across a 9-stage run). The single source of truth is the classifier
+in `lambda/shared/metric-classification.js` (mirrored in
+`frontend/src/lib/metricAggregation.ts`; a cross-tree test asserts parity):
+
+| Kind           | Fold across samples        | Keys                                                         |
+| -------------- | -------------------------- | ------------------------------------------------------------ |
+| `additive`     | **sum**                    | `tokensInput`, `tokensOutput`, and any unknown key (default) |
+| `gauge:max`    | **max** (peak)             | `contextWindowPct`                                           |
+| `gauge:latest` | value of the newest sample | (none yet)                                                   |
+
+Unknown keys default to `additive` (counters are the common case). A **new
+gauge must be registered** in both files or it will be summed. The three scopes
+compose from one `aggregateMetrics(samples)` primitive: per-stage (filter by
+`stageInstanceId`), per-intent (all the execution's samples), per-project
+(`rollupAggregates` over the per-intent bags — additive summed, gauge peaked).
+
+A stage may emit 0..N samples; key off `metricId` for dedupe, `timestamp` for
 order. Keys are best-effort — `contextWindowPct` was absent on one of the two
 samples in the validation run.
+
+### Model attribution + cost
+
+Each metric is attributed to a **model** so tokens can be priced. The model is
+resolved server-side (the agent bag is untrusted and carries no model):
+
+- **Stage row** — `run-stage.js` persists `resolvedModel` on the `STAGE#` row at
+  RUNNING (the concrete region-prefixed Bedrock id, Kiro namespace id, or null).
+- **Metric row** — the process bridge stamps the same `resolvedModel` onto each
+  `METRIC#` row from its trusted scope (covers stageless metrics too).
+
+At read time the intents DTO prefers the metric-row model, falling back to the
+stage-row join, and computes `cost` per sample via
+`lambda/shared/model-pricing.js`:
+
+```json
+"cost": { "model": "...", "currency": "USD",
+          "inputCost": 0.0555, "outputCost": 0.033, "totalCost": 0.0885,
+          "priced": true }
+```
+
+Pricing table (family → USD per 1M input/output tokens) lives in SSM
+(`${prefix}/model-pricing`). The **agents lambda** refreshes it from the AWS
+Price List API (`pricing:GetProducts`, `serviceCode=AmazonBedrock`) on model
+discovery (`GET /agents/capabilities?models=1`); the **intents lambda** only
+reads it. A static fallback baked into `model-pricing.js` means cost is always
+computable even before the first refresh. `priceFor` normalizes an inference-
+profile id (`us.anthropic.claude-sonnet-4-6` → `claude-sonnet-4-6`) to a family
+key; **Kiro** is credit-based and its ids don't normalize to a Bedrock family,
+so its samples are `priced: false` (usage shown, no dollar figure — a
+`credits→USD` rate is a future follow-up, not built yet).
+
+`priced: false` (a newer model with no price entry, or Kiro) means the UI shows
+"cost unavailable" rather than a misleading `$0`.
+
+### Project rollup
+
+`GET /projects/{projectId}/intents/metrics` rolls usage + cost up across every
+intent: it reads each execution's `METRIC#`/`STAGE#` rows, aggregates per
+intent, then sums additive keys + cost and peaks gauges. Returns
+`{ perIntent: [...], project: { metrics, cost: { totalCost, currency,
+anyUnpriced } } }`. `anyUnpriced` flags that a token-spending intent ran on an
+unpriceable model, so the UI can caveat the project total.
+
+### Frontend surfaces
+
+The shared `UsageMetrics` component (`frontend/src/components/intent/`) renders
+an aggregated bag identically at all three scopes — token counts, a threshold-
+colored context-window gauge (green <50, amber 50–80, red >80), and cost:
+
+- **Stage** — per-stage totals + gauge + stage cost (`StageDetail`).
+- **Intent** — the `MetricsPanel` "Usage & cost" card, peak context across
+  stages + total intent cost (`IntentView`).
+- **Project** — a "Usage & cost" card fed by the rollup endpoint (`Project`).
 
 ## Sensor verdicts (`SENSOR#`)
 

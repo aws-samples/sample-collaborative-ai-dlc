@@ -18,6 +18,7 @@ const {
 const { SSMClient, GetParametersCommand, PutParameterCommand } = require('@aws-sdk/client-ssm');
 const { SecretsManagerClient } = require('@aws-sdk/client-secrets-manager');
 const { BedrockClient, ListInferenceProfilesCommand } = require('@aws-sdk/client-bedrock');
+const { PricingClient, GetProductsCommand } = require('@aws-sdk/client-pricing');
 const {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
@@ -32,6 +33,7 @@ const { validateMcpServersJson } = require('./shared/mcp-validator');
 const { broadcastToSprintChannel } = require('./shared/ws-fanout');
 const { normalizeCliModels, parseCliModels } = require('./shared/cli-models');
 const { listClaudeModels } = require('./shared/bedrock-models');
+const { refreshPricing } = require('./shared/model-pricing');
 
 const ecs = new ECSClient({});
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -39,6 +41,10 @@ const ssm = new SSMClient({ region: process.env.AWS_REGION || 'us-east-1' });
 const secrets = new SecretsManagerClient({ region: process.env.AWS_REGION || 'us-east-1' });
 const bedrock = new BedrockClient({ region: process.env.AWS_REGION || 'us-east-1' });
 const agentcore = new BedrockAgentCoreClient({ region: process.env.AWS_REGION || 'us-east-1' });
+// The AWS Price List API only serves us-east-1 / ap-south-1 — pin to the nearest.
+const pricing = new PricingClient({
+  region: (process.env.AWS_REGION || '').startsWith('ap-') ? 'ap-south-1' : 'us-east-1',
+});
 
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
@@ -173,6 +179,53 @@ function humanCliName(cliName) {
 function modelSettingsPath() {
   const prefix = process.env.AGENT_SETTINGS_SSM_PREFIX || '';
   return prefix ? `${prefix}/cli-models` : '';
+}
+
+function modelPricingPath() {
+  const prefix = process.env.AGENT_SETTINGS_SSM_PREFIX || '';
+  return prefix ? `${prefix}/model-pricing` : '';
+}
+
+// Fetch all Anthropic-on-Bedrock token SKUs from the AWS Price List API.
+// Paginated; returns the flat PriceList array the shared parser expects.
+async function fetchBedrockProducts() {
+  const products = [];
+  let token;
+  do {
+    const res = await pricing.send(
+      new GetProductsCommand({
+        ServiceCode: 'AmazonBedrock',
+        Filters: [{ Type: 'TERM_MATCH', Field: 'provider', Value: 'Anthropic' }],
+        NextToken: token,
+      }),
+    );
+    products.push(...(res.PriceList ?? []));
+    token = res.NextToken;
+  } while (token);
+  return products;
+}
+
+// Refresh the SSM model-pricing table from the Price List API. Best-effort: the
+// intents lambda reads this table (with a static fallback), so a failed refresh
+// just means cost is priced from the fallback until the next successful refresh.
+// Piggy-backs on the model-discovery call (GET /agents/capabilities?models=1) so
+// prices track whatever models the picker can select, without a separate cron.
+async function refreshModelPricing() {
+  const path = modelPricingPath();
+  if (!path) return;
+  try {
+    const table = await refreshPricing({ getProducts: fetchBedrockProducts });
+    await ssm.send(
+      new PutParameterCommand({
+        Name: path,
+        Value: JSON.stringify(table),
+        Type: 'String',
+        Overwrite: true,
+      }),
+    );
+  } catch (e) {
+    console.error('[pricing] refresh failed:', e.message);
+  }
 }
 
 function resolveAgentModel(projectCliModels, globalCliModels, cliName) {
@@ -670,6 +723,11 @@ exports.handler = async (event) => {
       if (event.queryStringParameters?.models !== '1') {
         return response(200, base);
       }
+
+      // Piggy-back a pricing refresh on model discovery so the SSM price table
+      // tracks the selectable models. Fire-and-forget: never blocks or fails the
+      // models response (the intents read path has a static fallback regardless).
+      refreshModelPricing().catch(() => {});
 
       // Bedrock (claude/opencode) + runtime (kiro + auth state) discovery, in
       // parallel. Both are best-effort — a failure yields empty models, never a 500.
