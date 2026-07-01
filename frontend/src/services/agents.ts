@@ -69,9 +69,30 @@ export interface PoolStatus {
   poolSize: number;
 }
 
+/** One selectable model in the project-settings picker. */
+export interface AgentModel {
+  id: string;
+  name: string;
+  description?: string | null;
+}
+
+/** Per-CLI availability as reported by the v2 AgentCore runtime (not the ECS
+ *  pool): installed in the image AND authed (credentials present). */
+export interface RuntimeCliStatus {
+  cli: AgentCli;
+  installed: boolean;
+  authed: boolean;
+  available: boolean;
+}
+
 export interface AgentCapabilities {
   available: AgentCli[];
   runtimeModelOverride?: Record<AgentCli, boolean>;
+  /** Present only with `?models=1`: per-CLI availability from the v2 runtime. */
+  runtimeClis?: RuntimeCliStatus[] | null;
+  /** Present only with `?models=1`: selectable models per CLI. Claude/OpenCode
+   *  are region-valid Bedrock inference profiles; Kiro uses its own namespace. */
+  models?: Partial<Record<AgentCli, AgentModel[]>>;
 }
 
 export interface AgentSettings {
@@ -125,9 +146,11 @@ export const agentsService = {
     return api.delete(`/agents/pool/${encodeURIComponent(workerId)}`);
   },
 
-  // Agent CLI capabilities — which CLIs are installed in the current image
-  async getCapabilities(): Promise<AgentCapabilities> {
-    return api.get('/agents/capabilities');
+  // Agent CLI capabilities — which CLIs are installed in the current image.
+  // Pass `withModels` to also fetch the per-CLI model lists + v2 runtime CLI
+  // availability (drives the project-settings model/CLI pickers).
+  async getCapabilities(withModels = false): Promise<AgentCapabilities> {
+    return api.get(`/agents/capabilities${withModels ? '?models=1' : ''}`);
   },
 
   // Agent settings — Bedrock bearer token + extra MCP servers (SSM-backed)

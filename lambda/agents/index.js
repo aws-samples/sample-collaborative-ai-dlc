@@ -17,6 +17,11 @@ const {
 } = require('@aws-sdk/lib-dynamodb');
 const { SSMClient, GetParametersCommand, PutParameterCommand } = require('@aws-sdk/client-ssm');
 const { SecretsManagerClient } = require('@aws-sdk/client-secrets-manager');
+const { BedrockClient, ListInferenceProfilesCommand } = require('@aws-sdk/client-bedrock');
+const {
+  BedrockAgentCoreClient,
+  InvokeAgentRuntimeCommand,
+} = require('@aws-sdk/client-bedrock-agentcore');
 const gremlin = require('gremlin');
 const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
 const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
@@ -26,11 +31,14 @@ const { getGitConnection } = require('./shared/git-connection-store');
 const { validateMcpServersJson } = require('./shared/mcp-validator');
 const { broadcastToSprintChannel } = require('./shared/ws-fanout');
 const { normalizeCliModels, parseCliModels } = require('./shared/cli-models');
+const { listClaudeModels } = require('./shared/bedrock-models');
 
 const ecs = new ECSClient({});
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({ region: process.env.AWS_REGION || 'us-east-1' });
 const secrets = new SecretsManagerClient({ region: process.env.AWS_REGION || 'us-east-1' });
+const bedrock = new BedrockClient({ region: process.env.AWS_REGION || 'us-east-1' });
+const agentcore = new BedrockAgentCoreClient({ region: process.env.AWS_REGION || 'us-east-1' });
 
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
@@ -52,6 +60,37 @@ const RUNTIME_MODEL_OVERRIDE = {
   // into the claude-agent-acp subprocess. See lambda/agents-ecs/drivers/claude.js.
   claude: true,
   opencode: true,
+};
+// The v2 AgentCore runtime ARN — set for v2-enabled deployments so the models
+// endpoint can invoke its `capabilities` command (the only source of Kiro's model
+// list, which is CLI-native, not Bedrock). Empty on v1-only stacks.
+const AGENTCORE_RUNTIME_ARN = process.env.AGENTCORE_RUNTIME_ARN || '';
+// A session id >= 33 chars is required by InvokeAgentRuntime; the capabilities
+// command is stateless so any stable id works.
+const CAPABILITIES_SESSION_ID = 'aidlc-capabilities-probe-00000001';
+
+// Fetch the runtime's capabilities (installed + authed CLIs, Kiro model list) by
+// invoking its `capabilities` command. Best-effort: returns null when no v2
+// runtime is configured or the invoke fails, so the endpoint still returns
+// Bedrock models + SSM auth state.
+const fetchRuntimeCapabilities = async () => {
+  if (!AGENTCORE_RUNTIME_ARN) return null;
+  try {
+    const res = await agentcore.send(
+      new InvokeAgentRuntimeCommand({
+        agentRuntimeArn: AGENTCORE_RUNTIME_ARN,
+        runtimeSessionId: CAPABILITIES_SESSION_ID,
+        contentType: 'application/json',
+        accept: 'application/json',
+        payload: Buffer.from(JSON.stringify({ command: 'capabilities' })),
+      }),
+    );
+    const text = res.response ? await res.response.transformToString() : '';
+    return text ? JSON.parse(text) : null;
+  } catch (e) {
+    console.error('[capabilities] runtime invoke failed:', e.message);
+    return null;
+  }
 };
 
 // ---------------------------------------------------------------------------
@@ -604,6 +643,14 @@ exports.handler = async (event) => {
     // GET /agents/capabilities — CLIs available across live pool workers.
     // Always derived from the live pool — no static fallback.
     // Returns an empty list when no workers are running; warm the pool first.
+    //
+    // With `?models=1` the response is ENRICHED for the v2 project-settings model
+    // picker (additive — v1 callers that omit the flag are unaffected):
+    //   models.claude / models.opencode — region-valid Bedrock inference profiles
+    //   models.kiro                     — Kiro-native models (from the runtime)
+    //   runtimeClis                     — per-CLI {installed, authed, available}
+    //                                     from the v2 AgentCore runtime
+    // The v2 runtime (not the ECS pool) is the authority for v2 CLI availability.
     if (httpMethod === 'GET' && path.endsWith('/capabilities')) {
       const cliSet = new Set();
       if (POOL_TABLE) {
@@ -618,9 +665,40 @@ exports.handler = async (event) => {
           console.error('[capabilities] pool scan failed:', e.message);
         }
       }
+      const base = { available: [...cliSet], runtimeModelOverride: RUNTIME_MODEL_OVERRIDE };
+
+      if (event.queryStringParameters?.models !== '1') {
+        return response(200, base);
+      }
+
+      // Bedrock (claude/opencode) + runtime (kiro + auth state) discovery, in
+      // parallel. Both are best-effort — a failure yields empty models, never a 500.
+      const [claudeModels, runtimeCaps] = await Promise.all([
+        listClaudeModels({
+          listInferenceProfiles: async () => {
+            const out = await bedrock.send(new ListInferenceProfilesCommand({ maxResults: 100 }));
+            return out.inferenceProfileSummaries ?? [];
+          },
+        }),
+        fetchRuntimeCapabilities(),
+      ]);
+      const kiroModels = runtimeCaps?.kiroModels?.models ?? [];
+      // OpenCode drives the SAME Bedrock profiles as claude but requires the
+      // `amazon-bedrock/` provider prefix (see cli-models validation).
+      const opencodeModels = claudeModels.map((m) => ({
+        ...m,
+        id: `amazon-bedrock/${m.id}`,
+      }));
       return response(200, {
-        available: [...cliSet],
-        runtimeModelOverride: RUNTIME_MODEL_OVERRIDE,
+        ...base,
+        // Per-CLI availability from the v2 runtime (installed + authed). Falls back
+        // to the pool-derived list when the runtime is unreachable.
+        runtimeClis: runtimeCaps?.clis ?? null,
+        models: {
+          claude: claudeModels,
+          opencode: opencodeModels,
+          kiro: kiroModels,
+        },
       });
     }
 

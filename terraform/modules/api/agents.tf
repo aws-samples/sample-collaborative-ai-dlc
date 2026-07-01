@@ -48,6 +48,9 @@ module "agents_lambda" {
     # event to sprint-channel WS connections.
     CONNECTIONS_TABLE  = var.connections_table_name
     WEBSOCKET_ENDPOINT = var.websocket_api_endpoint_https
+    # v2 model discovery: lets GET /agents/capabilities?models=1 invoke the
+    # runtime's `capabilities` command for Kiro's model list + auth state.
+    AGENTCORE_RUNTIME_ARN = var.agentcore_runtime_arn
   }
 }
 

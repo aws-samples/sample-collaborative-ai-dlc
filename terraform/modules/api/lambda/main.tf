@@ -392,6 +392,20 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
             "iam:PassedToService" = "ecs-tasks.${local.dns_suffix}"
           }
         }
+      },
+      # Model discovery for the project-settings picker (GET /agents/capabilities
+      # ?models=1): list the region's Bedrock inference profiles (claude/opencode
+      # models) and invoke the v2 runtime's `capabilities` command (Kiro's model
+      # list + per-CLI auth state). ListInferenceProfiles is not resource-scopable.
+      {
+        Effect   = "Allow"
+        Action   = ["bedrock:ListInferenceProfiles"]
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["bedrock-agentcore:InvokeAgentRuntime"]
+        Resource = var.agentcore_runtime_arn != "" ? [var.agentcore_runtime_arn, "${var.agentcore_runtime_arn}/*"] : ["*"]
       }
     ]
   })

@@ -153,6 +153,12 @@ variable "agents_lambda_role_arn" {
   default     = ""
 }
 
+variable "agentcore_runtime_arn" {
+  description = "AgentCore v2 stage-executor runtime ARN. The agents Lambda invokes its `capabilities` command (GET /agents/capabilities?models=1) to discover Kiro's model list + per-CLI auth state. Empty on v1-only stacks."
+  type        = string
+  default     = ""
+}
+
 variable "gitlab_oauth_secret_name" {
   description = "Secrets Manager secret name holding the GitLab OAuth client credentials. Used by the agents Lambda's POST /git/refresh-token to refresh expired GitLab access tokens for long-running construction jobs."
   type        = string

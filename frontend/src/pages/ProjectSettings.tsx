@@ -14,7 +14,7 @@ import {
   type ProjectRepo,
 } from '../services/projects';
 import { trackersService, type TrackerConnection } from '../services/trackers';
-import { agentsService } from '../services/agents';
+import { agentsService, type AgentModel, type RuntimeCliStatus } from '../services/agents';
 import { GitRepoSelect } from '../components/GitRepoSelect';
 import {
   trackerIdForGitProvider,
@@ -28,6 +28,13 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { McpServersSection } from '../components/settings/McpServersSection';
 import { SteeringDocsSection } from '../components/settings/SteeringDocsSection';
 import {
@@ -98,6 +105,10 @@ const MODEL_CLI_LABELS: Record<RuntimeModelCli, string> = {
 
 const MODEL_CLI_KEYS = Object.keys(MODEL_CLI_LABELS) as RuntimeModelCli[];
 
+// Radix Select can't hold an empty-string value, so the "use the default" choice
+// carries this sentinel; it maps back to '' (cleared override) on change.
+const MODEL_DEFAULT_SENTINEL = '__default__';
+
 const MODEL_ID_HELP: Record<RuntimeModelCli, { label: string; url: string }> = {
   kiro: {
     label: 'Kiro model IDs',
@@ -165,6 +176,12 @@ export default function ProjectSettings() {
   const [editCliModels, setEditCliModels] = useState<CliModels>({});
   const [globalCliModels, setGlobalCliModels] = useState<CliModels>({});
   const [savingCliModels, setSavingCliModels] = useState(false);
+  // Per-CLI selectable models (Bedrock inference profiles for claude/opencode,
+  // Kiro-native ids for kiro), discovered from GET /agents/capabilities?models=1.
+  const [modelOptions, setModelOptions] = useState<Partial<Record<AgentCli, AgentModel[]>>>({});
+  // Per-CLI availability as reported by the v2 runtime (installed + authed).
+  // Preferred over the pool-derived `availableCliNames` for v2 projects.
+  const [runtimeClis, setRuntimeClis] = useState<RuntimeCliStatus[] | null>(null);
 
   // Tracker-abstraction migration (#194 Phase 1). The card shows when the
   // project still uses the legacy issue_integration boolean and has no
@@ -219,6 +236,29 @@ export default function ProjectSettings() {
   const canManageMembers = userRole === 'owner' || userRole === 'admin';
   const canEditProject = userRole === 'owner' || userRole === 'admin';
 
+  // Is a CLI usable for a run? Prefer the v2 runtime's truth (installed + authed);
+  // fall back to the ECS-pool-derived list when the runtime hasn't reported.
+  const isCliAvailable = (cli: AgentCli): boolean => {
+    if (runtimeClis) return runtimeClis.find((c) => c.cli === cli)?.available ?? false;
+    return availableCliNames.includes(cli);
+  };
+  // Why a CLI isn't selectable, for the UI hint (null when it IS available).
+  const cliUnavailableReason = (cli: AgentCli): string | null => {
+    const rt = runtimeClis?.find((c) => c.cli === cli);
+    if (!rt) return isCliAvailable(cli) ? null : 'not available';
+    if (rt.available) return null;
+    if (!rt.installed) return 'not installed';
+    if (!rt.authed) return 'no credentials';
+    return 'not available';
+  };
+  // The model that will actually run for the SELECTED CLI: the project override,
+  // else the Admin global default, else the CLI's own default. Mirrors the
+  // runtime's resolveStageModel precedence for display.
+  const effectiveModelFor = (cli: AgentCli): string =>
+    editCliModels[cli] ||
+    globalCliModels[cli] ||
+    (cli === 'kiro' ? 'auto (Kiro default)' : 'Admin/runtime default');
+
   const loadData = useCallback(async () => {
     if (!projectId) return;
     try {
@@ -252,16 +292,20 @@ export default function ProjectSettings() {
     }
   }, [projectId]);
 
-  // Load available CLI capabilities separately (non-blocking)
+  // Load available CLI capabilities + per-CLI model lists (non-blocking). The
+  // `withModels` variant also returns the v2 runtime's CLI availability and the
+  // selectable models that drive the pickers below.
   useEffect(() => {
     agentsService
-      .getCapabilities()
+      .getCapabilities(true)
       .then((c) => {
         setAvailableCliNames(c.available);
         if (c.runtimeModelOverride) setRuntimeModelOverride(c.runtimeModelOverride);
+        if (c.runtimeClis) setRuntimeClis(c.runtimeClis);
+        if (c.models) setModelOptions(c.models);
       })
       .catch(() => {
-        /* non-fatal — keep default ['kiro'] */
+        /* non-fatal — keep default ['kiro'] and empty model options */
       });
   }, []);
 
@@ -1000,7 +1044,8 @@ export default function ProjectSettings() {
                         { label: string; description: string },
                       ][]
                     ).map(([key, cfg]) => {
-                      const isAvailable = availableCliNames.includes(key);
+                      const isAvailable = isCliAvailable(key);
+                      const unavailableReason = cliUnavailableReason(key);
                       const isSelected = editAgentCli === key;
                       const isCurrent = project?.agentCli === key;
                       const isSelectable = isAvailable || isCurrent;
@@ -1030,7 +1075,7 @@ export default function ProjectSettings() {
                               <span className="text-sm font-medium">{cfg.label}</span>
                               {!isAvailable && !isCurrent && (
                                 <Badge variant="outline" className="text-[10px] h-4">
-                                  not available
+                                  {unavailableReason ?? 'not available'}
                                 </Badge>
                               )}
                               {!isAvailable && isCurrent && (
@@ -1038,7 +1083,7 @@ export default function ProjectSettings() {
                                   variant="outline"
                                   className="text-[10px] h-4 bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20"
                                 >
-                                  no workers
+                                  {unavailableReason ?? 'unavailable'}
                                 </Badge>
                               )}
                               {isAvailable && isSelected && (
@@ -1083,8 +1128,8 @@ export default function ProjectSettings() {
               <CardHeader className="pb-3">
                 <CardTitle className="text-base">Model Override</CardTitle>
                 <p className="text-sm text-muted-foreground">
-                  Optional project-specific model for the selected agent CLI. Empty uses the Admin
-                  default.
+                  Optional project-specific model for the selected agent CLI. "Default" uses the
+                  Admin global model, then the CLI's own default.
                 </p>
               </CardHeader>
               <CardContent>
@@ -1092,6 +1137,20 @@ export default function ProjectSettings() {
                   {MODEL_CLI_KEYS.map((cli) => {
                     const isSelected = editAgentCli === cli;
                     const isEditable = canEditProject && isSelected && runtimeModelOverride[cli];
+                    const options = modelOptions[cli] ?? [];
+                    const current = editCliModels[cli] || '';
+                    // The discovered list may not include a previously-saved custom
+                    // id; surface it so the dropdown can still show + keep it.
+                    const optionIds = new Set(options.map((o) => o.id));
+                    const extraOption: AgentModel[] =
+                      current && !optionIds.has(current)
+                        ? [{ id: current, name: `${current} (custom)` }]
+                        : [];
+                    const defaultLabel = globalCliModels[cli]
+                      ? `Default — global (${globalCliModels[cli]})`
+                      : cli === 'kiro'
+                        ? 'Default — Kiro auto'
+                        : 'Default — runtime';
                     return (
                       <div key={cli} className="space-y-1.5">
                         <div className="flex items-center justify-between gap-3">
@@ -1113,25 +1172,52 @@ export default function ProjectSettings() {
                             <ExternalLink className="h-3 w-3" />
                           </a>
                         </div>
-                        <Input
-                          id={`model-${cli}`}
-                          value={editCliModels[cli] || ''}
-                          onChange={(e) => updateCliModel(cli, e.target.value)}
-                          placeholder={
-                            globalCliModels[cli]
-                              ? `Default: ${globalCliModels[cli]}`
-                              : cli === 'opencode'
-                                ? 'Default: amazon-bedrock/us.anthropic.claude-sonnet-4-6'
-                                : cli === 'claude'
-                                  ? 'Default: us.anthropic.claude-sonnet-4-6'
-                                  : 'Default model'
-                          }
-                          className="font-mono text-sm"
-                          disabled={!isEditable || savingCliModels}
-                        />
+                        {options.length > 0 ? (
+                          <Select
+                            value={current || MODEL_DEFAULT_SENTINEL}
+                            onValueChange={(v) =>
+                              updateCliModel(cli, v === MODEL_DEFAULT_SENTINEL ? '' : v)
+                            }
+                            disabled={!isEditable || savingCliModels}
+                          >
+                            <SelectTrigger id={`model-${cli}`} className="text-sm">
+                              <SelectValue placeholder={defaultLabel} />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value={MODEL_DEFAULT_SENTINEL}>{defaultLabel}</SelectItem>
+                              {[...extraOption, ...options].map((m) => (
+                                <SelectItem key={m.id} value={m.id}>
+                                  <span className="font-mono text-xs">{m.name}</span>
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          // Fallback to free-text when the model list couldn't be
+                          // discovered (runtime unreachable / no Bedrock access).
+                          <Input
+                            id={`model-${cli}`}
+                            value={current}
+                            onChange={(e) => updateCliModel(cli, e.target.value)}
+                            placeholder={
+                              globalCliModels[cli] ? `Default: ${globalCliModels[cli]}` : 'Default'
+                            }
+                            className="font-mono text-sm"
+                            disabled={!isEditable || savingCliModels}
+                          />
+                        )}
                       </div>
                     );
                   })}
+                  {/* Effective readout — what will actually run for the selected CLI. */}
+                  <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs">
+                    <span className="text-muted-foreground">Effective for this project: </span>
+                    <span className="font-mono">
+                      {AGENT_CLI_CONFIG[editAgentCli]?.label ?? editAgentCli}
+                    </span>
+                    <span className="text-muted-foreground"> · </span>
+                    <span className="font-mono">{effectiveModelFor(editAgentCli)}</span>
+                  </div>
                   {!canEditProject && (
                     <p className="text-xs text-muted-foreground">
                       Only owners and admins can change model overrides
