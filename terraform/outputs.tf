@@ -223,12 +223,6 @@ output "environment" {
   value       = var.environment
 }
 
-# Step Functions
-output "agent_workflow_state_machine_arn" {
-  description = "Step Functions state machine ARN for agent workflow"
-  value       = module.orchestration.state_machine_arn
-}
-
 # EventBridge
 output "agent_event_bus_name" {
   description = "EventBridge event bus name for agent events"

@@ -180,7 +180,6 @@ module "lambda" {
   jira_oauth_secret_name              = module.git.jira_oauth_secret_name
   jira_oauth_secret_arn               = module.git.jira_oauth_secret_arn
   jira_redirect_uri                   = "https://${module.frontend.cloudfront_domain_name}/trackers/callback/jira-cloud"
-  state_machine_arn                   = "arn:${local.partition}:states:${var.aws_region}:${data.aws_caller_identity.current.account_id}:stateMachine:${var.project_name}-agent-workflow-${var.environment}"
   agent_questions_table_name          = module.dynamodb.agent_questions_table_name
   agent_questions_table_arn           = module.dynamodb.agent_questions_table_arn
   cognito_user_pool_id                = module.auth.user_pool_id
@@ -249,7 +248,6 @@ module "api" {
   trackers_lambda_name                = module.lambda.trackers_lambda_name
   cognito_users_lambda_invoke_arn     = module.lambda.cognito_users_lambda_invoke_arn
   cognito_users_lambda_name           = module.lambda.cognito_users_lambda_name
-  state_machine_arn                   = module.orchestration.state_machine_arn
   agent_questions_table_name          = module.dynamodb.agent_questions_table_name
   agent_outputs_table_name            = module.dynamodb.agent_outputs_table_name
   agents_lambda_role_arn              = module.lambda.agents_orchestrator_role_arn
@@ -375,8 +373,8 @@ module "agents" {
   discussion_locks_table_arn  = module.dynamodb.discussion_locks_table_arn
   agents_lambda_name          = "${var.project_name}-agents-${var.environment}"
   agents_lambda_arn           = "arn:${local.partition}:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-agents-${var.environment}"
-  create_pr_lambda_name       = module.orchestration.create_pr_lambda_name
-  create_pr_lambda_arn        = module.orchestration.create_pr_lambda_arn
+  create_pr_lambda_name       = module.lambda.create_pr_lambda_name
+  create_pr_lambda_arn        = module.lambda.create_pr_lambda_arn
   kiro_model                  = "claude-opus-4.6"
 
   # Bedrock model pinning for claude and opencode drivers.
@@ -385,35 +383,6 @@ module "agents" {
   # Git identity for agent-created commits (overridable per deployment).
   git_author_name  = var.git_author_name
   git_author_email = var.git_author_email
-
-  tags = {
-    Environment = var.environment
-    Project     = var.project_name
-  }
-}
-
-# Step Functions Orchestration
-module "orchestration" {
-  source = "./modules/orchestration"
-
-  project_name                     = var.project_name
-  environment                      = var.environment
-  aws_region                       = var.aws_region
-  ecs_cluster_arn                  = module.compute.cluster_arn
-  private_subnet_ids               = module.networking.private_subnet_ids
-  agent_security_group_id          = module.agents.agent_security_group_id
-  agent_execution_role_arn         = module.agents.agent_execution_role_arn
-  agent_task_role_arn              = module.agents.agent_task_role_arn
-  agent_task_definition_arn        = module.agents.agent_task_definition_arn
-  agent_task_definition_family_arn = module.agents.agent_task_definition_family_arn
-  agent_questions_table_name       = module.dynamodb.agent_questions_table_name
-  agent_questions_table_arn        = module.dynamodb.agent_questions_table_arn
-  agent_outputs_table_name         = module.dynamodb.agent_outputs_table_name
-  agent_outputs_table_arn          = module.dynamodb.agent_outputs_table_arn
-  connections_table_name           = module.dynamodb.connections_table_name
-  connections_table_arn            = module.dynamodb.connections_table_arn
-  websocket_api_endpoint           = module.realtime.websocket_api_endpoint
-  websocket_execution_arn          = module.realtime.websocket_execution_arn
 
   tags = {
     Environment = var.environment
