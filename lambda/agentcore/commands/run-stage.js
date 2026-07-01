@@ -1,19 +1,27 @@
 // run-stage — execute ONE workflow stage inside the AgentCore session.
 //
 // The AgentCore Runtime routes the same session to the same microVM, so the git
-// checkout from init-ws (and prior stages) is already on disk. This command:
+// checkout from init-ws (and prior stages) is USUALLY already on disk. This command:
 //   1. resolves the pinned plan + finds the requested stage,
-//   2. marks the stage RUNNING in the v2 process table (+ current phase/stage),
-//   3. materializes the stage workspace (prompt + rules + mcp-config),
-//   4. selects + spawns the headless CLI with our MCP server wired in,
-//   5. records the terminal stage state (SUCCEEDED/FAILED/WAITING_FOR_HUMAN) and
+//   2. self-heals the source checkout if the mount was wiped (ensureWorkspaceSource),
+//   3. marks the stage RUNNING in the v2 process table (+ current phase/stage),
+//   4. materializes the stage workspace (prompt + rules + mcp-config),
+//   5. selects + spawns the headless CLI with our MCP server wired in,
+//   6. records the terminal stage state (SUCCEEDED/FAILED/WAITING_FOR_HUMAN) and
 //      an event — ALWAYS, so the control plane never sees a stuck stage.
 //
+// SOURCE SELF-HEAL (docs/v2-resume.md D2): the /mnt/workspace mount is wiped on any
+// runtime image redeploy and after 14 idle days, so a stage running after a deploy
+// could otherwise spawn against an EMPTY tree and run blind. Step 2 re-clones any
+// missing repo first; a genuine re-clone failure fails the stage rather than degrading.
+//
 // RESUME (docs/v2-resume.md): when `resumeFrom` (an answered humanTaskId) is set,
-// the command re-invokes the SAME parked CLI conversation (recovered from the
-// stage row's persisted cli/cliSessionId) with the human's answer instead of
-// running fresh. At exit it re-checks for a still-pending question gate: if one
-// exists the stage PARKS (WAITING_FOR_HUMAN) rather than completing.
+// the command normally re-invokes the SAME parked CLI conversation (recovered from
+// the stage row's persisted cli/cliSessionId) with the human's answer. If the wiped
+// mount also lost that conversation, a recent gate is RECOVERED by re-running the
+// stage fresh with the answer injected; a gate ≥14d old hard-fails (resume_store_expired).
+// At exit it re-checks for a still-pending question gate: if one exists the stage
+// PARKS (WAITING_FOR_HUMAN) rather than completing.
 //
 // Business artifacts are written by the agent through the MCP tools during the
 // run; this command owns ONLY process state. Every effect is injected so the
@@ -37,6 +45,7 @@ import {
   persistKiroStore as defaultPersistKiroStore,
   resolveKiroStore,
 } from '../cli/kiro-store.js';
+import { ensureWorkspaceSource as defaultEnsureWorkspaceSource } from '../workspace.js';
 import { resolveStageModel } from '../model-resolver.js';
 import { createGraphWriter } from '../mcp/graph-writer.js';
 import { createSensorRunner } from '../sensor-runner.js';
@@ -265,6 +274,23 @@ const formatResumeAnswer = (gate) => {
   return `The human answered your question(s): ${text}\n\nContinue the stage with this answer.`;
 };
 
+// Managed session storage idle-expires after 14 days (docs/v2-resume.md). Past that
+// a lost parked conversation is unrecoverable; inside it, a wipe is a routine
+// redeploy we can recover from by re-running fresh with the answer injected.
+const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
+
+// Age of a gate in ms from its createdAt (the "asked at" time). Null if unparseable
+// — an unknown age is treated as recent (recoverable) so a bad timestamp never
+// strands a routine wipe on the hard-fail path.
+const gateAgeMs = (gate, nowIso) => {
+  const asked = gate?.createdAt;
+  if (!asked) return null;
+  const askedMs = Date.parse(asked);
+  const nowMs = Date.parse(nowIso);
+  if (Number.isNaN(askedMs) || Number.isNaN(nowMs)) return null;
+  return nowMs - askedMs;
+};
+
 // Capture the Kiro session id created by a just-finished fresh run (Kiro can't be
 // told the id up front). Lists sessions as JSON and returns the newest for the
 // cwd; null when nothing parseable. The list spawn captures stdout (runChild
@@ -331,6 +357,14 @@ export const runStage = async (
     requestedCli,
     cliModels = {},
     workspaceDir,
+    // Clone inputs, forwarded by the orchestrator so a stage can self-heal a wiped
+    // source checkout (see ensureWorkspaceSource). Same values init-ws used; empty
+    // repos means a repo-less project (nothing to restore).
+    repos = [],
+    branch,
+    baseBranch,
+    gitToken,
+    gitProvider,
     // Resume mode: when set, re-invoke the SAME parked stage conversation with the
     // human's answer to `resumeFrom` (a humanTaskId) instead of running fresh. The
     // session's persistent /mnt/workspace mount restores the checkout + CLI store.
@@ -360,6 +394,8 @@ export const runStage = async (
     // when the store env is unset. Injected for tests.
     restoreKiroStore = defaultRestoreKiroStore,
     persistKiroStore = defaultPersistKiroStore,
+    // Re-clone a wiped source checkout before the CLI spawns. Injected for tests.
+    ensureWorkspaceSource = defaultEnsureWorkspaceSource,
   } = deps;
 
   const now = () => clock();
@@ -431,25 +467,116 @@ export const runStage = async (
   const agentBlock = library.agentsById[stage.agentRef] ?? null;
   const stageScope = { executionId, intentId, projectId, stageInstanceId, role: 'author' };
 
-  // 2. Pick the CLI + recover (resume) or mint (fresh) the conversation handle.
+  // 2a. Source self-heal (runs for EVERY stage, fresh or resume). The managed
+  // /mnt/workspace mount is wiped by any runtime image redeploy and after 14 idle
+  // days, so a stage running after a deploy would otherwise spawn its CLI against
+  // an EMPTY tree and run blind (the reverse-engineering "source not present"
+  // incident). Re-clone any repo whose checkout is missing before doing anything
+  // else. A repo-less project (empty repos) is a no-op; a genuine clone failure
+  // (unreachable/auth) fails the stage rather than letting it proceed on nothing.
+  let sourceRestored = false;
+  {
+    const heal = await ensureWorkspaceSource({
+      repos,
+      branch,
+      baseBranch,
+      gitToken,
+      gitProvider,
+      workspaceDir,
+    }).catch((e) => ({ error: e?.message ?? String(e) }));
+    if (heal?.error) return fail(stageInstanceId, 'workspace_restore_failed', heal.error);
+    if (heal?.failed?.length)
+      return fail(
+        stageInstanceId,
+        'workspace_restore_failed',
+        `could not re-clone: ${heal.failed.join(', ')}`,
+      );
+    sourceRestored = Boolean(heal?.restored);
+    if (sourceRestored) {
+      await store
+        .appendEvent({
+          executionId,
+          type: 'v2.workspace.restored',
+          stageInstanceId,
+          actor: 'agentcore',
+          summary: `Source checkout re-cloned after a wiped workspace (${heal.repos.join(', ')})`,
+        })
+        .catch(() => {});
+      await publish({
+        action: 'agent.workspace',
+        state: 'RESTORED',
+        stageInstanceId,
+        repos: heal.repos,
+      });
+    }
+  }
+
+  // 2b. Pick the CLI + recover (resume) or mint (fresh) the conversation handle.
   // On resume the gate MUST be answered and the parked stage MUST carry a CLI
   // session id (same conversation continues). On a fresh run Claude's id is forced
   // up front; Kiro's is captured after the run (it has no start-time id flag).
   let cli;
   let cliSessionId = null;
   let resumeAnswer = null;
+  // A resume we had to demote to a fresh run because the parked conversation was
+  // lost with the wiped mount (D2 recoverable path): re-runs fresh with the human's
+  // answer injected into the prompt so the agent does not re-ask.
+  let demotedResume = false;
   if (resumeFrom) {
     const gate = await store.getHumanTask(executionId, resumeFrom).catch(() => null);
     if (!gate) return fail(stageInstanceId, 'gate_not_found', resumeFrom);
     if (gate.status === 'pending') return fail(stageInstanceId, 'gate_not_answered', resumeFrom);
     const row = await store.getStage(executionId, stageInstanceId).catch(() => null);
     cli = row?.cli ?? null;
-    cliSessionId = row?.cliSessionId ?? null;
-    if (!cli || !cliSessionId)
+    const priorSessionId = row?.cliSessionId ?? null;
+    if (!cli || !priorSessionId)
       return fail(stageInstanceId, 'resume_no_session', `stage has no persisted CLI session`);
     if (!availableClis.includes(cli))
       return fail(stageInstanceId, 'no_cli', `resume CLI "${cli}" not installed`);
     resumeAnswer = formatResumeAnswer(gate);
+
+    // Did the parked conversation survive the mount? Both CLIs keep it on
+    // /mnt/workspace (Claude JSONL under CLAUDE_CONFIG_DIR, Kiro SQLite under
+    // V2_KIRO_STORE_DIR), so a re-cloned source means the conversation is gone too.
+    // Kiro additionally copies its store mount→local each run; a failed restore is
+    // the same signal even if the source happened to survive.
+    let conversationLost = sourceRestored;
+    if (cli === 'kiro') {
+      const kiroRestored = await restoreKiroStore({ env }).catch(() => false);
+      if (!kiroRestored && resolveKiroStore(env)) conversationLost = true;
+      else if (!kiroRestored)
+        console.error(`[run-stage] kiro store not restored for resume ${stageInstanceId}`);
+    }
+
+    if (conversationLost) {
+      // D2 (docs/v2-resume.md): a lost parked conversation is recoverable only
+      // inside managed session storage's 14-day window. Past it, hard-fail so the
+      // UI can flag a stale project. Inside it — a routine redeploy wipe — re-run
+      // the stage FRESH with the answered Q&A injected, so no work is stranded and
+      // the agent does not re-ask. (Was a blind resume_store_lost hard-fail before.)
+      const age = gateAgeMs(gate, now());
+      if (age !== null && age >= FOURTEEN_DAYS_MS) {
+        return fail(
+          stageInstanceId,
+          'resume_store_expired',
+          'the parked conversation was lost (managed session storage expired) and the ' +
+            'question is over 14 days old — the run cannot be resumed',
+        );
+      }
+      demotedResume = true;
+      cliSessionId = cli === 'claude' ? ids() : null;
+      await store
+        .appendEvent({
+          executionId,
+          type: 'v2.stage.recovered',
+          stageInstanceId,
+          actor: 'agentcore',
+          summary: `Parked conversation lost with the wiped workspace; re-running ${stageId} fresh with the answer injected`,
+        })
+        .catch(() => {});
+    } else {
+      cliSessionId = priorSessionId;
+    }
   } else {
     cli = selectCli({ requested: requestedCli, availableClis });
     if (!cli) {
@@ -463,6 +590,9 @@ export const runStage = async (
     }
     if (cli === 'claude') cliSessionId = ids();
   }
+
+  // A fresh conversation is spawned for a plain fresh run OR a demoted resume.
+  const freshRun = !resumeFrom || demotedResume;
 
   // Mark RUNNING + advance the execution pointer + persist the conversation
   // handle. A resume flips the parked stage (WAITING_FOR_HUMAN) back to RUNNING.
@@ -483,10 +613,10 @@ export const runStage = async (
   });
   await store.appendEvent({
     executionId,
-    type: resumeFrom ? 'v2.stage.resumed' : 'v2.stage.running',
+    type: resumeFrom && !demotedResume ? 'v2.stage.resumed' : 'v2.stage.running',
     stageInstanceId,
     actor: 'agentcore',
-    summary: resumeFrom ? `Stage ${stageId} resumed` : `Stage ${stageId} running`,
+    summary: resumeFrom && !demotedResume ? `Stage ${stageId} resumed` : `Stage ${stageId} running`,
   });
   // Broadcast the stage start + the execution's new phase/stage pointer so the
   // UI reflects the advance in real time.
@@ -537,7 +667,7 @@ export const runStage = async (
 
   let invocation;
   let prompt = null;
-  if (resumeFrom) {
+  if (!freshRun) {
     const mcpKwargs = await materializeCliMcp();
     invocation = driver.buildResumeInvocation({
       sessionId: cliSessionId,
@@ -592,6 +722,12 @@ export const runStage = async (
       env,
     });
     prompt = materialized.prompt;
+    // Demoted resume (D2): the parked conversation was lost with the wiped mount,
+    // so we re-run the stage fresh — but prepend the human's already-given answer
+    // so the agent applies it instead of re-asking the same question.
+    if (demotedResume && resumeAnswer) {
+      prompt = `## Previously answered\n${resumeAnswer}\n\n---\n\n${prompt}`;
+    }
     // materializeStage wrote the Claude --mcp-config; for Kiro we additionally
     // need its --agent config. materializeCliMcp returns the right driver kwargs.
     const mcpKwargs = await materializeCliMcp();
@@ -604,32 +740,16 @@ export const runStage = async (
     });
   }
 
-  // Kiro only: restore the durable SQLite store (mount → ephemeral local XDG)
-  // before spawning so a resume recalls the parked conversation. Kiro's DB can't
-  // live on the managed mount (no fcntl locking), so it runs locally and we sync.
-  // A missing/unreadable store is not fatal on a FRESH run — Kiro just starts a
-  // new conversation. On a RESUME it IS fatal: without the parked conversation the
-  // CLI restarts blank (no prompt, no prior Q&A, empty workspace view) yet is fed
-  // only the terse answer message — so it "succeeds" having lost the stage's whole
-  // context and produces none of its artifacts (see the intent-capture amnesia
-  // incident). The managed mount is wiped by any runtime image redeploy and expires
-  // after 14 idle days, so a long human wait can genuinely lose it. Fail cleanly so
-  // the orchestrator can retry from a known state rather than pass silent garbage.
-  // Only enforce this when a store mount is actually configured (resolveKiroStore
-  // non-null) — a local/test run with no mount legitimately has nothing to restore.
-  if (cli === 'kiro') {
+  // Kiro store handling for a RESUME is done in step 2b (restore + the D2 wiped-
+  // mount decision) so a lost parked conversation is recovered, not run blind. For
+  // a plain FRESH Kiro run we still restore the durable store here: Kiro keeps ALL
+  // conversations in one SQLite DB and persistKiroStore does rm+cp at exit, so
+  // without a prior restore this run would clobber sibling stages' conversations on
+  // the mount. A missing store is fine (Kiro just starts new). Skip for a demoted
+  // resume — its mount was wiped, so there is nothing to restore.
+  if (freshRun && !demotedResume && cli === 'kiro') {
     const restored = await restoreKiroStore({ env }).catch(() => false);
-    if (resumeFrom && !restored && resolveKiroStore(env)) {
-      return fail(
-        stageInstanceId,
-        'resume_store_lost',
-        'kiro conversation store could not be restored on resume (mount wiped by a ' +
-          'runtime redeploy or expired) — the parked conversation is gone',
-      );
-    }
-    if (resumeFrom && !restored) {
-      console.error(`[run-stage] kiro store not restored for resume ${stageInstanceId}`);
-    }
+    if (!restored) console.error(`[run-stage] kiro store not restored (fresh) ${stageInstanceId}`);
   }
 
   // 4. Spawn the headless CLI.
@@ -673,8 +793,9 @@ export const runStage = async (
   // resume can target the SAME conversation. Runs on ANY exit: a Kiro run can park
   // a question and THEN exit non-zero (e.g. a transient model error on the turn
   // after ask_question), and a parked stage still needs its session linked or
-  // resume can't find it. Best-effort — a failed capture leaves cliSessionId null.
-  if (!resumeFrom && cli === 'kiro') {
+  // resume can't find it. A demoted resume is a fresh Kiro conversation, so it also
+  // needs capture. Best-effort — a failed capture leaves cliSessionId null.
+  if (freshRun && cli === 'kiro') {
     const captured = await captureKiroSession({ env, driver, workspaceDir, spawnFn }).catch(
       () => null,
     );

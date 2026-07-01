@@ -271,6 +271,17 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // Seconds a parked stage's warm microVM lingers before release (D1).
     const parkReleaseSeconds = meta.parkReleaseSeconds ?? null;
 
+    // Clone inputs so run-stage can self-heal a wiped source checkout (the mount is
+    // wiped on every runtime redeploy). Same values init-ws used; forwarded on every
+    // run-stage invoke (fresh + resume). The token read is already a durable step.
+    const cloneInputs = {
+      repos: meta.repos ?? [],
+      branch: meta.branch,
+      baseBranch: meta.baseBranch,
+      gitToken: token,
+      gitProvider,
+    };
+
     for (const stage of stages) {
       let result = await runStage(ctx, invokeRuntime, {
         stage,
@@ -281,6 +292,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         cliModels,
         requestedCli,
         sessionId,
+        cloneInputs,
         resumeFrom: null,
       });
 
@@ -336,6 +348,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           cliModels,
           requestedCli,
           sessionId,
+          cloneInputs,
           resumeFrom: humanTaskId,
         });
       }
@@ -381,6 +394,7 @@ const runStage = (
     cliModels,
     requestedCli,
     sessionId,
+    cloneInputs,
     resumeFrom,
   },
 ) =>
@@ -395,6 +409,8 @@ const runStage = (
         scope,
         ...(cliModels ? { cliModels } : {}),
         ...(requestedCli ? { requestedCli } : {}),
+        // repos/branch/baseBranch/gitToken/gitProvider — for source self-heal.
+        ...(cloneInputs ?? {}),
         resumeFrom: resumeFrom ?? null,
       },
       sessionId,

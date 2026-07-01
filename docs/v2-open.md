@@ -42,26 +42,40 @@ Work items:
 - [ ] Lambda: read it from DynamoDB; schedule `StopRuntimeSession` after a park.
 - [ ] IAM: grant the lambda `bedrock-agentcore:StopRuntimeSession`.
 
-### D2 — Resume with a missing/wiped session store
+### D2 — Resume with a missing/wiped session store — **DONE (runtime-side)**
 
 Managed session storage is wiped on **runtime version update** (every image redeploy)
 and after **14 days** idle. A parked session's compute is already terminated, so it
 does **not** get the old-version stickiness that protects live sessions — its next
 invoke after a redeploy gets a fresh, empty file system. The durable
 artifacts/answers live in DynamoDB/Neptune; only the in-progress CLI conversation +
-uncommitted working-tree edits are lost. On resume, branch on the gate's `askedAt`:
+uncommitted working-tree edits are lost.
 
-- **gate < 14 days old** (assume a redeploy wipe) → re-run `init-ws` (re-clone at the
-  branch) + re-run the stage fresh, **injecting the answered Q&A into the prompt** so
-  the agent does not re-ask. Routine deploys never strand work.
-- **gate ≥ 14 days old** (storage idle-expiry) → **hard-fail** the resume
-  (`resume_store_expired`) and show a **stale-project warning** in the UI.
+Implemented in `run-stage` (self-heals **inside the runtime**, so it needs no
+trigger/resume lambda and covers a plain restart too):
+
+- **Source self-heal on EVERY stage** (fresh + resume): `ensureWorkspaceSource`
+  (`lambda/agentcore/workspace.js`) re-clones any repo whose checkout is missing
+  before the CLI spawns. This is the fix for the reverse-engineering "source not
+  present in working tree" incident (a stage ran after a redeploy against an empty
+  tree). A genuine re-clone failure → `workspace_restore_failed` (stage fails rather
+  than running blind); a repo-less project is a no-op. The orchestrator forwards the
+  clone inputs (`repos/branch/baseBranch/gitToken/gitProvider`) on every run-stage.
+- **Lost parked conversation** (source was re-cloned on a resume, or the Kiro store
+  could not be restored), branched on the gate's `createdAt`:
+  - **gate < 14 days old** (redeploy wipe) → re-run the stage **fresh** with the
+    answered Q&A injected into the prompt (`v2.stage.recovered`) so the agent does not
+    re-ask. Routine deploys never strand work.
+  - **gate ≥ 14 days old** (storage idle-expiry) → **hard-fail** with
+    `resume_store_expired`; UI should show a stale-project warning.
 
 Work items:
 
-- [ ] Lambda/`run-stage`: detect a missing store on resume; branch on `askedAt`.
-- [ ] Recent path: re-`init-ws` + re-run stage fresh with the answered Q&A injected.
-- [ ] Expired path: surface `resume_store_expired`; UI stale-project warning.
+- [x] `run-stage`: source self-heal on every stage; `workspace_restore_failed` on failure.
+- [x] `run-stage`: lost-conversation recovery on resume, branched on gate `createdAt`.
+- [x] Recent path: re-run stage fresh with the answered Q&A injected (`v2.stage.recovered`).
+- [x] Expired path: surface `resume_store_expired`.
+- [ ] UI: render `resume_store_expired` as a stale-project warning (still TODO).
 
 ### D3 — Multiple pending gates per stage
 

@@ -127,6 +127,21 @@ describe('orchestrator durable handler', () => {
     }
   });
 
+  it('forwards the clone inputs to run-stage so it can self-heal a wiped checkout', async () => {
+    await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, makeCtx(), deps);
+    const runStages = invokes.filter((p) => p.command === 'run-stage');
+    expect(runStages.length).toBeGreaterThan(0);
+    for (const rs of runStages) {
+      expect(rs).toMatchObject({
+        repos: ['owner/repo'],
+        branch: 'aidlc/i1',
+        baseBranch: 'main',
+        gitToken: 'tok',
+        gitProvider: 'github',
+      });
+    }
+  });
+
   it('forwards the project agentCli to run-stage as requestedCli', async () => {
     await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, makeCtx(), deps);
     const runStages = invokes.filter((p) => p.command === 'run-stage');

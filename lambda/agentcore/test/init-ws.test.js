@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { initWs, ensureIntentVertex } from '../commands/init-ws.js';
-import { checkoutRepos, checkoutRepo } from '../workspace.js';
+import { checkoutRepos, checkoutRepo, ensureWorkspaceSource } from '../workspace.js';
 
 const PARTITION = 'agentcore-init-ws';
 let conn;
@@ -246,5 +246,91 @@ describe('workspace checkout (mocked git runner)', () => {
       'https://oauth2:t@gitlab.com/group/api.git',
       'https://oauth2:t@gitlab.com/group/web.git',
     ]);
+  });
+});
+
+describe('ensureWorkspaceSource (self-heal a wiped checkout)', () => {
+  const noMkdir = async () => {};
+  // A stat that reports `.git` present for the given set of target dirs.
+  const statFor = (presentDirs) => async (p) => {
+    const dir = p.replace(/\/\.git$/, '');
+    if (presentDirs.includes(dir)) return { isDirectory: () => true, isFile: () => false };
+    throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+  };
+  const cloneRunner = () => {
+    const targets = [];
+    const runner = async (command, args) => {
+      if (args[0] === 'clone') targets.push(args[2]);
+      return { code: 0 };
+    };
+    return { targets, runner };
+  };
+
+  it('re-clones when the single-repo checkout is missing', async () => {
+    const { targets, runner } = cloneRunner();
+    const res = await ensureWorkspaceSource({
+      repos: ['acme/api'],
+      branch: 'b',
+      gitToken: 't',
+      workspaceDir: '/ws',
+      runner,
+      ensureDir: noMkdir,
+      statFn: statFor([]), // nothing present → wiped
+    });
+    expect(res).toMatchObject({ restored: true, repos: ['acme/api'], failed: [] });
+    expect(targets).toEqual(['/ws']);
+  });
+
+  it('is a no-op when the checkout is already present', async () => {
+    const { targets, runner } = cloneRunner();
+    const res = await ensureWorkspaceSource({
+      repos: ['acme/api'],
+      workspaceDir: '/ws',
+      runner,
+      ensureDir: noMkdir,
+      statFn: statFor(['/ws']), // .git present
+    });
+    expect(res.restored).toBe(false);
+    expect(targets).toEqual([]);
+  });
+
+  it('is a no-op for a repo-less project (empty repos)', async () => {
+    const { targets, runner } = cloneRunner();
+    const res = await ensureWorkspaceSource({
+      repos: [],
+      workspaceDir: '/ws',
+      runner,
+      ensureDir: noMkdir,
+      statFn: statFor([]),
+    });
+    expect(res).toMatchObject({ restored: false, repos: [], failed: [] });
+    expect(targets).toEqual([]);
+  });
+
+  it('only re-clones the missing repo in a multi-repo layout', async () => {
+    const { targets, runner } = cloneRunner();
+    const res = await ensureWorkspaceSource({
+      repos: ['acme/api', 'acme/web'],
+      workspaceDir: '/ws',
+      runner,
+      ensureDir: noMkdir,
+      statFn: statFor(['/ws/acme/api']), // api present, web wiped
+    });
+    expect(res.restored).toBe(true);
+    expect(res.repos).toEqual(['acme/web']);
+    expect(targets).toEqual(['/ws/acme/web']);
+  });
+
+  it('reports a repo that could not be re-cloned as failed', async () => {
+    // clone exits non-zero → checkoutRepo falls back to `git init` (cloned:false).
+    const runner = async (command, args) => ({ code: args[0] === 'clone' ? 1 : 0 });
+    const res = await ensureWorkspaceSource({
+      repos: ['acme/api'],
+      workspaceDir: '/ws',
+      runner,
+      ensureDir: noMkdir,
+      statFn: statFor([]),
+    });
+    expect(res).toMatchObject({ restored: true, repos: ['acme/api'], failed: ['acme/api'] });
   });
 });

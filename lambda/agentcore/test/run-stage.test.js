@@ -904,20 +904,67 @@ describe('runStage — Kiro SQLite store sync (restore before spawn, persist aft
     V2_KIRO_STORE_DIR: '/mnt/workspace/.kiro-data',
   };
 
-  it('fails resume_store_lost when a resume cannot restore the Kiro store (mount configured)', async () => {
+  it('recovers a resume with a lost Kiro store by re-running fresh (recent gate)', async () => {
+    // D2 recoverable path: mount wiped (restore fails, mount configured) but the
+    // gate is recent → re-run the stage FRESH with the answer injected, not a blind
+    // fail. A fresh Kiro run captures a new session id via --list-sessions.
+    const deps = baseDeps({
+      availableClis: ['kiro'],
+      env: kiroStoreEnv,
+      spawnFn: (command, args) =>
+        args.includes('--list-sessions')
+          ? {
+              on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
+              stdout: {
+                on: (ev, cb) =>
+                  ev === 'data' &&
+                  cb(
+                    Buffer.from(
+                      JSON.stringify([
+                        { cwd: '/ws', sessions: [{ sessionId: 'kiro-new', updatedAt: 'T' }] },
+                      ]),
+                    ),
+                  ),
+              },
+              stdin: { end() {} },
+            }
+          : okSpawn(),
+      restoreKiroStore: async () => false, // mount wiped
+      store: spyStore({
+        // No createdAt → age unknown → treated as recent → recoverable.
+        humanTask: { humanTaskId: 'q-1', status: 'answered', answer: { freeText: 'go' } },
+        stage: { cli: 'kiro', cliSessionId: 'kiro-7' },
+      }),
+    });
+    const res = await runStage({ ...baseArgs, requestedCli: 'kiro', resumeFrom: 'q-1' }, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED', cli: 'kiro' });
+    // A recovery note is recorded and a NEW session id is captured (fresh run).
+    expect(
+      deps.store.calls.some((c) => c[0] === 'appendEvent' && c[1].type === 'v2.stage.recovered'),
+    ).toBe(true);
+  });
+
+  it('fails resume_store_expired when the lost conversation is over 14 days old', async () => {
     let spawned = false;
     const deps = baseDeps({
       availableClis: ['kiro'],
       env: kiroStoreEnv,
       spawnFn: () => ((spawned = true), okSpawn()),
       restoreKiroStore: async () => false, // mount wiped / expired
+      clock: () => '2026-07-01T00:00:00Z',
       store: spyStore({
-        humanTask: { humanTaskId: 'q-1', status: 'answered', answer: { freeText: 'go' } },
+        // Gate asked 15 days before the clock → past the 14-day storage window.
+        humanTask: {
+          humanTaskId: 'q-1',
+          status: 'answered',
+          answer: { freeText: 'go' },
+          createdAt: '2026-06-16T00:00:00Z',
+        },
         stage: { cli: 'kiro', cliSessionId: 'kiro-7' },
       }),
     });
     const res = await runStage({ ...baseArgs, requestedCli: 'kiro', resumeFrom: 'q-1' }, deps);
-    expect(res).toMatchObject({ ok: false, reason: 'resume_store_lost' });
+    expect(res).toMatchObject({ ok: false, reason: 'resume_store_expired' });
     // Must fail BEFORE spawning a blank conversation.
     expect(spawned).toBe(false);
     expect(
@@ -925,9 +972,9 @@ describe('runStage — Kiro SQLite store sync (restore before spawn, persist aft
     ).toBe(true);
   });
 
-  it('does NOT fail resume when no store mount is configured (local/test run)', async () => {
-    // resolveKiroStore() is null without the store env — the guard must stay off
-    // so a local run keeps its best-effort start-fresh behavior.
+  it('resumes normally when no store mount is configured (local/test run)', async () => {
+    // resolveKiroStore() is null without the store env — a local run keeps its
+    // best-effort resume behavior (no wiped-mount recovery kicks in).
     const deps = baseDeps({
       availableClis: ['kiro'],
       env: { BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6' },
@@ -939,7 +986,11 @@ describe('runStage — Kiro SQLite store sync (restore before spawn, persist aft
       }),
     });
     const res = await runStage({ ...baseArgs, requestedCli: 'kiro', resumeFrom: 'q-1' }, deps);
-    expect(res.reason).not.toBe('resume_store_lost');
+    expect(res.ok).toBe(true);
+    // Not demoted → resumes the SAME conversation, no recovery note.
+    expect(
+      deps.store.calls.some((c) => c[0] === 'appendEvent' && c[1].type === 'v2.stage.recovered'),
+    ).toBe(false);
   });
 
   it('does NOT fail a FRESH kiro run when the store is absent (mount configured)', async () => {
@@ -960,5 +1011,76 @@ describe('runStage — Kiro SQLite store sync (restore before spawn, persist aft
     const res = await runStage({ ...baseArgs, requestedCli: 'kiro' }, deps);
     expect(res.reason).not.toBe('resume_store_lost');
     expect(res.ok).toBe(true);
+  });
+});
+
+describe('runStage — source self-heal (wiped /mnt/workspace)', () => {
+  const okSpawn = () => ({
+    on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
+    stdin: { end() {} },
+  });
+
+  it('re-clones a wiped checkout, emits v2.workspace.restored, then runs', async () => {
+    let spawned = false;
+    const deps = baseDeps({
+      spawnFn: () => ((spawned = true), okSpawn()),
+      ensureWorkspaceSource: async ({ repos }) => ({ restored: true, repos, failed: [] }),
+    });
+    const res = await runStage({ ...baseArgs, repos: ['acme/api'] }, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(spawned).toBe(true);
+    expect(
+      deps.store.calls.some((c) => c[0] === 'appendEvent' && c[1].type === 'v2.workspace.restored'),
+    ).toBe(true);
+  });
+
+  it('fails workspace_restore_failed and does NOT spawn when a repo cannot be re-cloned', async () => {
+    let spawned = false;
+    const deps = baseDeps({
+      spawnFn: () => ((spawned = true), okSpawn()),
+      ensureWorkspaceSource: async () => ({ restored: true, repos: [], failed: ['acme/api'] }),
+    });
+    const res = await runStage({ ...baseArgs, repos: ['acme/api'] }, deps);
+    expect(res).toMatchObject({ ok: false, reason: 'workspace_restore_failed' });
+    expect(spawned).toBe(false);
+  });
+
+  it('does not emit a restored event for a repo-less project (no-op heal)', async () => {
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      ensureWorkspaceSource: async () => ({ restored: false, repos: [], failed: [] }),
+    });
+    const res = await runStage({ ...baseArgs, repos: [] }, deps);
+    expect(res.ok).toBe(true);
+    expect(
+      deps.store.calls.some((c) => c[0] === 'appendEvent' && c[1].type === 'v2.workspace.restored'),
+    ).toBe(false);
+  });
+
+  it('demotes a Claude resume to a fresh run when the wiped mount lost the conversation', async () => {
+    // Source re-cloned on a resume ⇒ the co-located Claude JSONL store is gone too.
+    // Recent gate ⇒ re-run fresh with the answer injected (not resume_store_expired).
+    let promptSeen = null;
+    const deps = baseDeps({
+      availableClis: ['claude'],
+      ensureWorkspaceSource: async ({ repos }) => ({ restored: true, repos, failed: [] }),
+      spawnFn: (command, args) => {
+        promptSeen = args.join(' ');
+        return okSpawn();
+      },
+      ids: () => 'fresh-uuid',
+      store: spyStore({
+        humanTask: { humanTaskId: 'q-1', status: 'answered', answer: { freeText: 'blue' } },
+        stage: { cli: 'claude', cliSessionId: 'old-uuid' },
+      }),
+    });
+    const res = await runStage({ ...baseArgs, repos: ['acme/api'], resumeFrom: 'q-1' }, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED', cli: 'claude' });
+    // Fresh invocation (new --session-id), not a --resume of the lost conversation.
+    expect(promptSeen).toContain('--session-id fresh-uuid');
+    expect(promptSeen).not.toContain('--resume');
+    expect(
+      deps.store.calls.some((c) => c[0] === 'appendEvent' && c[1].type === 'v2.stage.recovered'),
+    ).toBe(true);
   });
 });

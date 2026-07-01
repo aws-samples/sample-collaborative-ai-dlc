@@ -308,21 +308,31 @@ These were the original plan's risks; each was checked empirically and is now se
   **not-yet-built** trigger/resume lambda — captured as a requirement in
   [`v2-open.md`](./v2-open.md); no runtime-side code in this change.
 
-- **D2 — Wipe/expiry handling = split by cause (re-init for redeploy, hard-fail for
-  expiry).** Managed session storage is wiped both on **runtime version update** (every
-  image redeploy) and after **14 days** idle. The durable artifacts/answers live in
-  DynamoDB/Neptune; only the in-progress CLI conversation + uncommitted working-tree edits
-  are on the mount. **Redeploy is not survivable for parked sessions** — version
-  stickiness keeps only _live_ compute on the old version; a parked session's compute is
-  already terminated, so its next invoke after a version update gets a fresh (wiped) file
-  system (AWS-documented; not locally verifiable). So resume handles a missing store by
-  the age of the gate (`askedAt` in DynamoDB):
-  - **gate asked < 14 days ago** → treat as a redeploy wipe → **graceful re-init**: typed
-    `resume_store_missing` → re-run `init-ws` (re-clone at branch) + re-run the stage
-    fresh, **injecting the answered gate's Q&A into the prompt** so the agent does not
-    re-ask. Routine deploys never strand work.
-  - **gate asked ≥ 14 days ago** → storage idle-expiry → **hard fail** the resume and
-    surface a **UI warning** on the stale/old project.
+- **D2 — Wipe/expiry handling = split by cause (self-heal for redeploy, hard-fail for
+  expiry). IMPLEMENTED in `run-stage`.** Managed session storage is wiped both on
+  **runtime version update** (every image redeploy) and after **14 days** idle. The
+  durable artifacts/answers live in DynamoDB/Neptune; only the in-progress CLI
+  conversation + uncommitted working-tree edits are on the mount. **Redeploy is not
+  survivable for parked sessions** — version stickiness keeps only _live_ compute on the
+  old version; a parked session's compute is already terminated, so its next invoke after
+  a version update gets a fresh (wiped) file system (AWS-documented; not locally
+  verifiable). Handled entirely inside the runtime (no trigger/resume lambda needed, so a
+  plain restart is covered too):
+  - **Source is self-healed on EVERY stage run** (fresh + resume) by
+    `ensureWorkspaceSource` (`lambda/agentcore/workspace.js`): any repo whose checkout is
+    missing is re-cloned before the CLI spawns, emitting `v2.workspace.restored`. This is
+    the fix for the "source not present in working tree" incident — a stage that runs
+    after a redeploy no longer runs against an empty tree. A genuine re-clone failure →
+    `workspace_restore_failed` (fail, don't run blind); a repo-less project is a no-op.
+    The orchestrator forwards `repos/branch/baseBranch/gitToken/gitProvider` on every
+    run-stage invoke.
+  - **Lost parked conversation** (source re-cloned on a resume, or the Kiro store could
+    not be restored), branched on the gate's `createdAt`:
+    - **gate < 14 days ago** → redeploy wipe → re-run the stage **fresh** with the
+      answered Q&A injected into the prompt (`v2.stage.recovered`) so the agent does not
+      re-ask. Routine deploys never strand work.
+    - **gate ≥ 14 days ago** → storage idle-expiry → **hard fail** with
+      `resume_store_expired`; surface a UI stale-project warning (UI still TODO).
 
 - **D3 — Support both CLIs now.** Implement park/resume for **both** Claude (forced
   `--session-id`) and Kiro (post-run `--list-sessions --format json` id capture). Both are
