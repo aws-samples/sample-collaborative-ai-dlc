@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import {
   DynamoDBDocumentClient,
+  GetCommand,
   PutCommand,
   QueryCommand,
   UpdateCommand,
@@ -130,6 +131,23 @@ describe('createProcessStore', () => {
     expect(input.ExpressionAttributeValues[':status']).toBe('RUNNING');
     expect(input.ExpressionAttributeValues[':g1pk']).toBe('PROJECT#p1');
     expect(input.ExpressionAttributeValues[':cs']).toBe('req');
+  });
+
+  it('updateExecution back-fills GSI1 from META when a runtime caller omits projectId/startedAt', async () => {
+    // process-bridge (park→WAITING) and run-stage only have executionId in scope.
+    // The GSI1 re-stamp must still resolve projectId/startedAt (both immutable) from
+    // the existing META row — otherwise the row lands at PROJECT#undefined /
+    // STARTED#undefined and vanishes from listProjectExecutions.
+    ddb
+      .on(GetCommand)
+      .resolves({ Item: { projectId: 'p1', startedAt: '2026-01-01T00:00:00.000Z' } });
+    ddb.on(UpdateCommand).resolves({ Attributes: { status: 'WAITING' } });
+    await store.updateExecution({ executionId: 'e1', status: 'WAITING' });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ExpressionAttributeValues[':g1pk']).toBe('PROJECT#p1');
+    expect(input.ExpressionAttributeValues[':g1sk']).toBe(
+      'STATUS#WAITING#STARTED#2026-01-01T00:00:00.000Z#EXEC#e1',
+    );
   });
 
   it('updateStageState patches state + GSI2 + terminal completedAt', async () => {

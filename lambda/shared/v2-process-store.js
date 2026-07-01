@@ -79,11 +79,29 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     const names = {};
     const values = { ':ts': ts };
     if (status !== undefined) {
+      // The GSI1 projection (a project's executions by status) must be re-stamped
+      // whenever status changes. It is built from projectId + startedAt, both of
+      // which are IMMUTABLE on the META row. Runtime callers (run-stage,
+      // process-bridge park/un-park) only have executionId in scope and omit them —
+      // so back-fill from the existing row rather than writing PROJECT#undefined /
+      // STARTED#undefined, which would orphan the intent from the list query.
+      let projId = projectId;
+      let started = startedAt;
+      if (projId === undefined || started === undefined) {
+        const existing = await getExecution(executionId);
+        projId = projId ?? existing?.projectId;
+        started = started ?? existing?.startedAt;
+      }
       sets.push('#status = :status', 'GSI1PK = :g1pk', 'GSI1SK = :g1sk', 'GSI2SK = :g2sk');
       names['#status'] = 'status';
       values[':status'] = status;
-      values[':g1pk'] = projectPk(projectId);
-      values[':g1sk'] = projectStatusIndex({ projectId, status, startedAt, executionId }).GSI1SK;
+      values[':g1pk'] = projectPk(projId);
+      values[':g1sk'] = projectStatusIndex({
+        projectId: projId,
+        status,
+        startedAt: started,
+        executionId,
+      }).GSI1SK;
       values[':g2sk'] = executionTypeStateIndex({
         executionId,
         type: 'EXECUTION',
