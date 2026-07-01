@@ -22,6 +22,18 @@ export type StageState =
   | 'FAILED'
   | 'SKIPPED';
 
+// The tracker issue/artifact an intent was kicked off from. The imported text
+// lives in `prompt`; this is the provenance back-link surfaced in the UI. null
+// when the prompt was typed by hand.
+export interface IntentSource {
+  bindingId: string;
+  provider: string;
+  instance: string | null;
+  resourceType: string;
+  resourceId: string;
+  resourceUrl: string | null;
+}
+
 export interface Intent {
   id: string;
   executionId: string;
@@ -38,8 +50,10 @@ export interface Intent {
   currentPhase: string | null;
   currentStage: string | null;
   pendingHumanTaskId: string | null;
+  failureReason: string | null;
   cliModels: Record<string, string> | null;
   parkReleaseSeconds: number | null;
+  source: IntentSource | null;
   createdAt: string | null;
   updatedAt: string | null;
   completedAt: string | null;
@@ -110,10 +124,23 @@ export interface IntentArtifact {
   content: string | null;
 }
 
+// A lifecycle event in the intent's activity feed (workspace init, failure,
+// completion). Emitted by the orchestrator; init-ws progress is otherwise
+// invisible because it creates no stage row.
+export interface IntentActivityEvent {
+  eventId: string;
+  type: string;
+  stageInstanceId: string | null;
+  actor: string | null;
+  summary: string | null;
+  timestamp: string;
+}
+
 // The assembled detail returned by GET /projects/{id}/intents/{intentId}.
 export interface IntentDetail {
   intent: Intent;
   stages: IntentStage[];
+  events: IntentActivityEvent[];
   gates: IntentGate[];
   metrics: IntentMetric[];
   outputs: IntentOutput[];
@@ -127,6 +154,13 @@ export interface CreateIntentInput {
   branch?: string;
   baseBranch?: string;
   scope?: string;
+  // Optional tracker provenance when seeded from a GitHub issue / Jira artifact.
+  source?: {
+    bindingId: string;
+    resourceType?: string;
+    resourceId: string;
+    resourceUrl?: string;
+  };
 }
 
 // The structured answer the QuestionEditor produces, matching what the runtime's

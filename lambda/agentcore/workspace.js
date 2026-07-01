@@ -8,7 +8,15 @@
 
 import { spawn } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import path from 'node:path';
+
+// Provider-aware clone-URL builder — the single source of truth for the per-
+// provider auth scheme (GitHub `x-access-token:`, GitLab `oauth2:`) and host.
+// Reusing it keeps v2 checkout at parity with the v1 pool-worker rather than
+// re-deriving the GitHub-only scheme here. Defaults to github for legacy/blank.
+const require = createRequire(import.meta.url);
+const { buildCloneUrl } = require('../shared/git-providers.js');
 
 const run = (command, args, { cwd, spawnFn = spawn } = {}) =>
   new Promise((resolve) => {
@@ -21,10 +29,7 @@ const run = (command, args, { cwd, spawnFn = spawn } = {}) =>
     child.on('close', (code) => resolve({ code }));
   });
 
-const cloneUrl = (repo, gitToken) => {
-  const auth = gitToken ? `x-access-token:${gitToken}@` : '';
-  return `https://${auth}github.com/${repo}.git`;
-};
+const cloneUrl = (repo, gitToken, gitProvider) => buildCloneUrl(gitProvider, repo, gitToken);
 
 // Clone one repo and check out (creating if needed) the working branch off the
 // base branch. Best-effort init for an empty repo. `runner`/`ensureDir`
@@ -34,12 +39,13 @@ export const checkoutRepo = async ({
   branch,
   baseBranch = 'main',
   gitToken,
+  gitProvider,
   targetDir,
   runner = run,
   ensureDir = (d) => mkdir(d, { recursive: true }),
 }) => {
   await ensureDir(targetDir);
-  const clone = await runner('git', ['clone', cloneUrl(repo, gitToken), targetDir]);
+  const clone = await runner('git', ['clone', cloneUrl(repo, gitToken, gitProvider), targetDir]);
   if (clone.code !== 0) {
     // Empty/new repo: initialize so later stages have a working tree.
     await runner('git', ['init', targetDir]);
@@ -59,6 +65,7 @@ export const checkoutRepos = async ({
   branch,
   baseBranch,
   gitToken,
+  gitProvider,
   workspaceDir,
   runner = run,
   ensureDir,
@@ -69,7 +76,16 @@ export const checkoutRepos = async ({
     const url = typeof repo === 'string' ? repo : repo.url;
     const targetDir = multi ? path.join(workspaceDir, url) : workspaceDir;
     out.push(
-      await checkoutRepo({ repo: url, branch, baseBranch, gitToken, targetDir, runner, ensureDir }),
+      await checkoutRepo({
+        repo: url,
+        branch,
+        baseBranch,
+        gitToken,
+        gitProvider,
+        targetDir,
+        runner,
+        ensureDir,
+      }),
     );
   }
   return out;

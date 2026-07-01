@@ -386,8 +386,15 @@ export const runStage = async (
     resumeAnswer = formatResumeAnswer(gate);
   } else {
     cli = selectCli({ requested: requestedCli, availableClis });
-    if (!cli)
-      return fail(stageInstanceId, 'no_cli', `available: ${availableClis.join(', ') || 'none'}`);
+    if (!cli) {
+      // An explicit request that didn't match a usable CLI is a config problem
+      // (the selected CLI isn't installed/authed) — say so rather than just
+      // listing what's available.
+      const detail = requestedCli
+        ? `requested CLI "${requestedCli}" not available (have: ${availableClis.join(', ') || 'none'})`
+        : `available: ${availableClis.join(', ') || 'none'}`;
+      return fail(stageInstanceId, 'no_cli', detail);
+    }
     if (cli === 'claude') cliSessionId = ids();
   }
 

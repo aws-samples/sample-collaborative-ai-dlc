@@ -41,6 +41,7 @@ export const initWs = async (
     branch,
     baseBranch,
     gitToken,
+    gitProvider,
     title,
     workflowId,
     workflowVersion,
@@ -62,7 +63,14 @@ export const initWs = async (
   // 1. Checkout repos into the session workspace.
   let checkedOut = [];
   try {
-    checkedOut = await checkoutRepos({ repos, branch, baseBranch, gitToken, workspaceDir });
+    checkedOut = await checkoutRepos({
+      repos,
+      branch,
+      baseBranch,
+      gitToken,
+      gitProvider,
+      workspaceDir,
+    });
   } catch (e) {
     return { ok: false, reason: 'checkout_failed', detail: e.message };
   }

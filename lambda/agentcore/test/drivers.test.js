@@ -12,12 +12,17 @@ import {
 import { runChild } from '../cli/spawn.js';
 
 describe('selectCli', () => {
-  it('prefers the requested CLI when installed', () => {
+  it('uses the requested CLI when installed', () => {
     expect(selectCli({ requested: 'kiro', availableClis: ['claude', 'kiro'] })).toBe('kiro');
   });
-  it('falls back to preference order when the request is absent', () => {
-    expect(selectCli({ requested: 'kiro', availableClis: ['claude'] })).toBe('claude');
+  it('returns null for an explicit request that is NOT installed (no silent fallback)', () => {
+    // The project's choice depends on which CLI is authed — running a different
+    // CLI than requested would run the wrong agent, so this fails closed.
+    expect(selectCli({ requested: 'kiro', availableClis: ['claude'] })).toBeNull();
+  });
+  it('falls back to preference order only when NO CLI is requested', () => {
     expect(selectCli({ availableClis: ['kiro'] })).toBe('kiro');
+    expect(selectCli({ availableClis: ['claude', 'kiro'] })).toBe('claude');
   });
   it('returns null when nothing is installed', () => {
     expect(selectCli({ availableClis: [] })).toBeNull();

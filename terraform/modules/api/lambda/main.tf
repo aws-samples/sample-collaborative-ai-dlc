@@ -1402,6 +1402,7 @@ resource "aws_iam_role_policy" "realtime_fanout" {
     neptune_reader      = aws_iam_role.neptune_reader.id    # sprints lambda
     neptune_questions   = aws_iam_role.neptune_questions.id # questions lambda
     agents_orchestrator = aws_iam_role.agents_orchestrator.id
+    v2_orchestrator     = aws_iam_role.v2_orchestrator.id # durable orchestrator live fan-out
   }
   name = "realtime-fanout"
   role = each.value
@@ -1465,10 +1466,12 @@ resource "aws_iam_role_policy" "intents" {
         ]
       },
       {
-        # Blocks table: resolve a workflow's latest version to pin at create.
+        # Blocks table: resolve a workflow's latest version to pin at create
+        # (GetItem on the META row) and validate the intent's scope against the
+        # pinned workflow snapshot (Query on the base table + GSI1).
         Effect   = "Allow"
-        Action   = ["dynamodb:GetItem"]
-        Resource = [var.blocks_table_arn]
+        Action   = ["dynamodb:GetItem", "dynamodb:Query"]
+        Resource = [var.blocks_table_arn, "${var.blocks_table_arn}/index/*"]
       },
       {
         # Realtime scope-token signing secret.
@@ -1481,8 +1484,11 @@ resource "aws_iam_role_policy" "intents" {
         # callback to resume a suspended run.
         Effect = "Allow"
         Action = ["lambda:InvokeFunction", "lambda:SendDurableExecutionCallbackSuccess"]
+        # Both the bare function ARN and its qualified (alias/version) forms —
+        # durable invokes target the `live` alias, which is a qualified ARN.
         Resource = [
           "arn:${local.partition}:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}",
+          "arn:${local.partition}:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}:*",
         ]
       }
     ]
@@ -1516,13 +1522,14 @@ module "intents_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT         = var.neptune_endpoint
-    ENVIRONMENT              = var.environment
-    CORS_ALLOWED_ORIGINS     = var.cors_allowed_origins
-    V2_PROCESS_TABLE         = var.v2_executions_table_name
-    BLOCKS_TABLE             = var.blocks_table_name
-    REALTIME_SECRET_PARAM    = var.realtime_doc_secret_param_name
-    V2_ORCHESTRATOR_FUNCTION = "${var.project_name}-v2-orchestrator-${var.environment}"
+    NEPTUNE_ENDPOINT      = var.neptune_endpoint
+    ENVIRONMENT           = var.environment
+    CORS_ALLOWED_ORIGINS  = var.cors_allowed_origins
+    V2_PROCESS_TABLE      = var.v2_executions_table_name
+    BLOCKS_TABLE          = var.blocks_table_name
+    REALTIME_SECRET_PARAM = var.realtime_doc_secret_param_name
+    # Qualified name (function:alias) — durable functions reject $LATEST invokes.
+    V2_ORCHESTRATOR_FUNCTION = "${module.v2_orchestrator_lambda.lambda_function_name}:${module.v2_orchestrator_alias.lambda_alias_name}"
   }
 }
 
@@ -1612,6 +1619,11 @@ module "v2_orchestrator_lambda" {
   durable_config_execution_timeout = 86400
   durable_config_retention_period  = 7
 
+  # Durable functions reject invokes against the unqualified ($LATEST) ARN —
+  # the caller MUST target a published version or alias. Publish a version on
+  # every deploy; the `live` alias below pins the invocable qualified name.
+  publish = true
+
   # Durable functions only support structured (JSON) CloudWatch logs.
   logging_log_format = "JSON"
 
@@ -1635,5 +1647,28 @@ module "v2_orchestrator_lambda" {
     BLOCKS_TABLE          = var.blocks_table_name
     AGENTCORE_RUNTIME_ARN = var.agentcore_runtime_arn
     GIT_TOKEN_SSM_PREFIX  = "${var.project_name}/${var.environment}/git-token"
+    # Live realtime fan-out (lambda/shared/ws-fanout.js) — the orchestrator emits
+    # execution/workspace lifecycle events on the intent:<id> channel itself, since
+    # it is the only component that owns those transitions (the runtime broadcasts
+    # stage-level events). Reaches the connections table over the public DDB
+    # endpoint (the orchestrator is not VPC-attached).
+    CONNECTIONS_TABLE  = var.connections_table_name
+    WEBSOCKET_ENDPOINT = var.websocket_api_endpoint_https
   }
+}
+
+# `live` alias for the orchestrator — durable functions are invocable only via a
+# qualified name (version or alias). lambda/intents targets this alias so the
+# version it invokes tracks each deploy without the caller hardcoding a number.
+module "v2_orchestrator_alias" {
+  source  = "terraform-aws-modules/lambda/aws//modules/alias"
+  version = "~> 8.0"
+
+  name             = "live"
+  function_name    = module.v2_orchestrator_lambda.lambda_function_name
+  function_version = module.v2_orchestrator_lambda.lambda_function_version
+
+  # The function's own resource policy already grants the intents role invoke;
+  # no extra alias-scoped triggers needed.
+  create_async_event_config = false
 }

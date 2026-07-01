@@ -123,6 +123,18 @@ export default function IntentView() {
     load();
   }, [load]);
 
+  // Polling backstop. Lifecycle/failure transitions are now broadcast live by the
+  // orchestrator (agent.workspace / agent.execution → refetch), but WS frames can
+  // be dropped, so while a run is mid-flight (CREATED during init-ws, RUNNING, or
+  // WAITING) we also poll on a slow interval to guarantee init-ws progress and a
+  // FAILED transition reach the UI even if a broadcast is missed.
+  const pollStatus = detail?.intent.status;
+  useEffect(() => {
+    if (!pollStatus || !['CREATED', 'RUNNING', 'WAITING'].includes(pollStatus)) return;
+    const id = setInterval(load, 8000);
+    return () => clearInterval(id);
+  }, [pollStatus, load]);
+
   // Realtime: refetch on lifecycle transitions; accumulate questions + output live.
   const onEvent = useCallback(
     (evt: IntentEvent) => {
@@ -187,6 +199,22 @@ export default function IntentView() {
     }
   };
 
+  // Restart a FAILED (or stranded CREATED) run — same /start endpoint, which now
+  // re-enters the pipeline and clears the prior failureReason.
+  const handleRestart = async () => {
+    if (!projectId || !intentId) return;
+    setStarting(true);
+    setError(null);
+    try {
+      await intentsService.start(projectId, intentId);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to restart intent');
+    } finally {
+      setStarting(false);
+    }
+  };
+
   const handleAnswerGate = useCallback(
     async (gate: IntentGate, answer: unknown) => {
       if (!projectId || !intentId) return;
@@ -236,6 +264,19 @@ export default function IntentView() {
   const intent = detail.intent;
   const isDraft = intent.status === 'DRAFT';
   const isActive = intent.status === 'RUNNING' || intent.status === 'WAITING';
+  const isFailed = intent.status === 'FAILED';
+  // Pre-stage progress: before any stage row exists, init-ws lifecycle events are
+  // the only signal the run is doing something. Show them so it isn't a dead screen.
+  const noStageRowsYet = detail.stages.length === 0;
+  // Stalled detection: a CREATED run whose hand-off never reached a live
+  // orchestrator strands here (init-ws should flip it to RUNNING within seconds).
+  // If it's been CREATED and untouched for >2 min, treat it as stuck and offer a
+  // restart rather than spinning forever with no affordance.
+  const lastTouch = intent.updatedAt ?? intent.createdAt;
+  const isStalled =
+    intent.status === 'CREATED' &&
+    !!lastTouch &&
+    Date.now() - new Date(lastTouch).getTime() > 120_000;
 
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-6">
@@ -263,12 +304,68 @@ export default function IntentView() {
         </div>
         <div className="text-xs text-muted-foreground">
           {intent.workflowId} · v{intent.workflowVersion} · {intent.scope}
+          {intent.source && (
+            <>
+              {' · '}
+              {intent.source.resourceUrl ? (
+                <a
+                  href={intent.source.resourceUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline hover:no-underline"
+                >
+                  from {intent.source.resourceId}
+                </a>
+              ) : (
+                <span>from {intent.source.resourceId}</span>
+              )}
+            </>
+          )}
         </div>
       </div>
 
       {error && (
         <div className="rounded border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {error}
+        </div>
+      )}
+
+      {/* FAILED (or a stalled CREATED hand-off): show the reason + offer a restart
+          (re-runs init-ws + the plan; the /start endpoint accepts both states). */}
+      {(isFailed || isStalled) && (
+        <div className="rounded border border-agent-error/30 bg-agent-error/10 px-3 py-3 text-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 font-medium text-agent-error">
+                <XCircle className="h-4 w-4" />
+                {isFailed ? 'Run failed' : 'Run stalled — never started'}
+              </div>
+              {isFailed && intent.failureReason && (
+                <p className="mt-1 break-words font-mono text-[12px] text-agent-error/90">
+                  {intent.failureReason}
+                </p>
+              )}
+              {isStalled && (
+                <p className="mt-1 text-[12px] text-agent-error/90">
+                  Workspace setup never completed. Restart to re-run it.
+                </p>
+              )}
+            </div>
+            <Button
+              onClick={handleRestart}
+              disabled={starting}
+              size="sm"
+              variant="outline"
+              className="shrink-0 gap-1.5"
+            >
+              {starting ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Play className="h-3.5 w-3.5" />
+              )}
+              {starting ? 'Restarting…' : 'Restart'}
+            </Button>
+          </div>
         </div>
       )}
 
@@ -340,6 +437,43 @@ export default function IntentView() {
                 />
               ))}
             </div>
+          )}
+
+          {/* Workspace setup indicator — init-ws creates no stage row, so without
+              this the screen looks idle while repos clone + the anchor is created. */}
+          {noStageRowsYet && isActive && (
+            <div className="flex items-center gap-2 rounded-md border border-agent-running/30 bg-agent-running/[0.06] px-3 py-2 text-sm text-agent-running">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              Setting up workspace (cloning repositories, preparing the run)…
+            </div>
+          )}
+
+          {/* Activity feed — lifecycle events (workspace init, completion, failure).
+              The only window into init-ws and other non-stage progress. */}
+          {(detail.events?.length ?? 0) > 0 && (
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm">Activity</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-1.5">
+                {detail.events.map((ev) => (
+                  <div key={ev.eventId} className="flex items-start gap-2 text-[12px]">
+                    <span className="mt-0.5 shrink-0 font-mono text-muted-foreground">
+                      {ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : ''}
+                    </span>
+                    <span
+                      className={cn(
+                        'min-w-0',
+                        ev.type === 'v2.execution.failed' && 'text-agent-error',
+                        ev.type === 'v2.execution.succeeded' && 'text-agent-success',
+                      )}
+                    >
+                      {ev.summary || ev.type}
+                    </span>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
           )}
 
           {/* Phase / stage tree */}

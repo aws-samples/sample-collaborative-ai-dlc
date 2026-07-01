@@ -13,7 +13,7 @@ import {
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import pkg from '../shared/v2-process-store.js';
 import { buildResponse } from '../shared/response.js';
-import { fetchMembershipRole } from '../shared/trackers.js';
+import { fetchMembershipRole, projectTrackersFoldStep, mapBinding } from '../shared/trackers.js';
 import { signRealtimeToken } from '../shared/realtime-token.js';
 import cliModelsPkg from '../shared/cli-models.js';
 import workflowPlanPkg from '../shared/v2-workflow-plan.js';
@@ -90,6 +90,14 @@ const fetchProjectConfig = async (g, projectId) => {
   // Primary first so init-ws clones it as the working repo.
   const primary = repoRows.find((r) => r.get('role') === 'primary')?.get('url');
   const ordered = primary ? [primary, ...repos.filter((u) => u !== primary)] : repos;
+  // Tracker bindings — used to validate an optional kick-off source (the intent
+  // can only cite a tracker the project is actually bound to).
+  const trackerRes = await g
+    .V()
+    .has('Project', 'id', projectId)
+    .flatMap(projectTrackersFoldStep())
+    .next();
+  const trackers = (trackerRes.value ?? []).map(mapBinding);
   const rawVersion = getVal(v, 'workflow_version');
   // Snapshot the project's per-CLI model selection onto the intent so the run is
   // reproducible even if the project setting later changes. {} when unset.
@@ -98,8 +106,12 @@ const fetchProjectConfig = async (g, projectId) => {
     workflowId: getVal(v, 'workflow_id') || DEFAULT_WORKFLOW_ID,
     workflowVersion: rawVersion ? Number(rawVersion) : null,
     parkReleaseSeconds: Number(getVal(v, 'park_release_seconds') || 300),
+    // The project's selected agent CLI (defaults to kiro on the project vertex);
+    // snapshotted onto the intent so the run honours the explicit choice.
+    agentCli: getVal(v, 'agent_cli') || null,
     cliModels: Object.keys(cliModels).length ? cliModels : null,
     repos: ordered,
+    trackers,
     gitProvider: getVal(v, 'git_provider') || 'github',
     baseBranch: 'main',
   };
@@ -141,6 +153,27 @@ const fetchArtifacts = async (g, intentId) => {
   }));
 };
 
+// Normalize the optional tracker source the intent was kicked off from. Keeps
+// only the provenance fields (the imported text already lives in `prompt`) and
+// validates the binding against the project's actual tracker bindings so a
+// client can't pin a fabricated source. Returns null when absent/invalid-shaped.
+const normalizeSource = (raw, trackers) => {
+  if (!raw || typeof raw !== 'object') return null;
+  const bindingId = raw.bindingId;
+  const resourceId = raw.resourceId;
+  if (!bindingId || !resourceId) return null;
+  const binding = (trackers ?? []).find((t) => t.id === bindingId);
+  if (!binding) return null;
+  return {
+    bindingId,
+    provider: binding.provider,
+    instance: binding.instance ?? null,
+    resourceType: raw.resourceType || 'issue',
+    resourceId: String(resourceId),
+    resourceUrl: raw.resourceUrl || null,
+  };
+};
+
 // ── DTO assembly ──
 
 // Map a process-store META row to the wire shape the frontend consumes.
@@ -160,8 +193,11 @@ const mapIntent = (meta) => ({
   currentPhase: meta.currentPhase ?? null,
   currentStage: meta.currentStage ?? null,
   pendingHumanTaskId: meta.pendingHumanTaskId ?? null,
+  failureReason: meta.failureReason ?? null,
+  agentCli: meta.agentCli ?? null,
   cliModels: meta.cliModels ?? null,
   parkReleaseSeconds: meta.parkReleaseSeconds ?? null,
+  source: meta.source ?? null,
   createdAt: meta.startedAt ?? null,
   updatedAt: meta.updatedAt ?? null,
   completedAt: meta.completedAt ?? null,
@@ -255,22 +291,43 @@ export const handler = async (event) => {
       if (!meta || meta.projectId !== projectId) {
         return response(404, { error: 'Intent not found' });
       }
-      if (meta.status !== 'DRAFT') {
+      // Startable states: a fresh DRAFT, a FAILED run the user wants to retry, or
+      // a CREATED run whose hand-off never reached a live orchestrator (stranded —
+      // see the rollback below). init-ws is idempotent in the runtime, so a restart
+      // re-runs cleanly. RUNNING/WAITING/SUCCEEDED are rejected (already live/done).
+      const STARTABLE = new Set(['DRAFT', 'FAILED', 'CREATED']);
+      if (!STARTABLE.has(meta.status)) {
         return response(409, { error: `Intent is ${meta.status}, cannot start` });
       }
       if (!meta.prompt) {
         return response(400, { error: 'Intent has no prompt; define it before starting' });
       }
-      // Flip DRAFT → CREATED (CAS) so a double-start can't launch two runs, then
-      // hand off to the orchestrator (init-ws + run the plan).
+      // Flip <current> → CREATED (CAS on the observed status) so a double-start
+      // can't launch two runs, then hand off to the orchestrator (init-ws + run the
+      // plan). If the hand-off throws, roll back to the prior status — otherwise the
+      // intent strands in CREATED (the orchestrator never ran) and never retries.
+      const priorStatus = meta.status;
       const updated = await store.updateExecution({
         executionId: intentId,
         projectId,
         status: 'CREATED',
-        fromStatus: 'DRAFT',
+        fromStatus: priorStatus,
         startedAt: meta.startedAt,
+        // Clear any stale failure from a prior attempt as we re-enter the pipeline.
+        failureReason: null,
       });
-      await invokeOrchestrator({ action: 'start', intentId, executionId: intentId });
+      try {
+        await invokeOrchestrator({ action: 'start', intentId, executionId: intentId });
+      } catch (err) {
+        await store.updateExecution({
+          executionId: intentId,
+          projectId,
+          status: priorStatus,
+          fromStatus: 'CREATED',
+          startedAt: meta.startedAt,
+        });
+        throw err;
+      }
       return response(202, mapIntent(updated));
     }
 
@@ -284,6 +341,17 @@ export const handler = async (event) => {
       return response(200, {
         intent: mapIntent(records.meta),
         stages: records.stages.map(mapStage),
+        // Activity feed: lifecycle events (workspace init, failures, completion)
+        // newest-last in emit order, so the UI can show what's happening — init-ws
+        // is otherwise invisible (it creates no stage row).
+        events: (records.events ?? []).map((e) => ({
+          eventId: e.eventId,
+          type: e.eventType,
+          stageInstanceId: e.stageInstanceId ?? null,
+          actor: e.actor ?? null,
+          summary: e.summary ?? null,
+          timestamp: e.timestamp,
+        })),
         gates: records.humanTasks.map(mapHumanTask),
         metrics: records.metrics.map((m) => ({
           metricId: m.metricId,
@@ -355,6 +423,10 @@ export const handler = async (event) => {
           scopes,
         });
       }
+      // Optional provenance — when the intent is kicked off from a tracker
+      // issue, record which one. The imported text rides in `prompt`; this is
+      // only the back-link. Validated against the project's actual bindings.
+      const source = normalizeSource(data.source, cfg.trackers);
       const meta = await store.createExecution({
         executionId: newIntentId,
         projectId,
@@ -369,8 +441,10 @@ export const handler = async (event) => {
         branch: data.branch || branchForIntent(newIntentId),
         baseBranch: data.baseBranch || cfg.baseBranch,
         repos: cfg.repos,
+        agentCli: cfg.agentCli,
         cliModels: cfg.cliModels,
         parkReleaseSeconds: cfg.parkReleaseSeconds,
+        source,
       });
       return response(201, mapIntent(meta));
     }

@@ -34,6 +34,7 @@ const stageBlocks = [
     blockId: 'stage-a',
     version: 1,
     phase: 'inception',
+    leadAgent: 'agent-x',
   },
   {
     GSI1PK: 'TENANT#SYSTEM#STAGE',
@@ -41,8 +42,14 @@ const stageBlocks = [
     blockId: 'stage-b',
     version: 1,
     phase: 'construction',
+    leadAgent: 'agent-x',
+    reviewer: 'agent-x',
   },
 ];
+
+// The AGENT blocks the stages above reference. loadExecutionPlan must load these
+// into agentsById or every agent-bearing stage fails `unresolved_agent`.
+const agentBlocks = [{ GSI1PK: 'TENANT#SYSTEM#AGENT', id: 'agent-x', blockId: 'agent-x' }];
 
 beforeEach(() => {
   ddbMock.reset();
@@ -51,6 +58,7 @@ beforeEach(() => {
     if (input.IndexName === 'GSI1') {
       const pk = values[':pk'];
       if (pk === 'TENANT#SYSTEM#STAGE') return { Items: stageBlocks };
+      if (pk === 'TENANT#SYSTEM#AGENT') return { Items: agentBlocks };
       return { Items: [] }; // sensors/rules/artifacts empty
     }
     // Workflow partition query: default tenant empty, SYSTEM has the items.
@@ -70,6 +78,18 @@ describe('loadExecutionPlan', () => {
     });
     expect(result.valid).toBe(true);
     expect(result.plan.stages.map((s) => s.stageId)).toEqual(['stage-a', 'stage-b']);
+  });
+
+  it('resolves stage agents (lead + reviewer) so the plan does not fail unresolved_agent', async () => {
+    const result = await loadExecutionPlan({
+      ddb: ddbMock,
+      tableName: TABLE,
+      workflowId: 'aidlc-v2',
+      workflowVersion: 1,
+      scope: 'feature',
+    });
+    expect(result.valid).toBe(true);
+    expect((result.errors ?? []).map((e) => e.code)).not.toContain('unresolved_agent');
   });
 
   it('fails closed when the workflow version is not found', async () => {
@@ -135,7 +155,9 @@ describe('loadExecutionPlan', () => {
     ddbMock.on(QueryCommand).callsFake((input) => {
       const values = input.ExpressionAttributeValues || {};
       if (input.IndexName === 'GSI1') {
-        return { Items: values[':pk'] === 'TENANT#SYSTEM#STAGE' ? stageBlocks : [] };
+        if (values[':pk'] === 'TENANT#SYSTEM#STAGE') return { Items: stageBlocks };
+        if (values[':pk'] === 'TENANT#SYSTEM#AGENT') return { Items: agentBlocks };
+        return { Items: [] };
       }
       if (values[':pk'] === 'WF#default#aidlc-v2') return { Items: defaultWfItems };
       if (values[':pk'] === 'WF#SYSTEM#aidlc-v2') return { Items: wfItems };

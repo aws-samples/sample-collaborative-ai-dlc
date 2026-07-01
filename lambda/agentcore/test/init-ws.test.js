@@ -160,6 +160,40 @@ describe('workspace checkout (mocked git runner)', () => {
     expect(cmds[1]).toBe('git checkout feat/x');
   });
 
+  it('uses the GitLab oauth2 clone scheme when gitProvider is gitlab', async () => {
+    const cmds = [];
+    const runner = async (command, args) => {
+      cmds.push([command, ...args].join(' '));
+      return { code: 0 };
+    };
+    await checkoutRepo({
+      repo: 'group/proj',
+      branch: 'feat/x',
+      gitToken: 'tok',
+      gitProvider: 'gitlab',
+      targetDir: '/ws',
+      runner,
+      ensureDir: noMkdir,
+    });
+    expect(cmds[0]).toContain('git clone https://oauth2:tok@gitlab.com/group/proj.git /ws');
+  });
+
+  it('defaults to the GitHub scheme when gitProvider is omitted', async () => {
+    const cmds = [];
+    const runner = async (command, args) => {
+      cmds.push([command, ...args].join(' '));
+      return { code: 0 };
+    };
+    await checkoutRepo({
+      repo: 'acme/api',
+      gitToken: 'tok',
+      targetDir: '/ws',
+      runner,
+      ensureDir: noMkdir,
+    });
+    expect(cmds[0]).toContain('git clone https://x-access-token:tok@github.com/acme/api.git /ws');
+  });
+
   it('creates the branch when checkout fails', async () => {
     const cmds = [];
     const runner = async (command, args) => {
@@ -191,5 +225,26 @@ describe('workspace checkout (mocked git runner)', () => {
       ensureDir: noMkdir,
     });
     expect(targets).toEqual(['/ws/acme/api', '/ws/acme/web']);
+  });
+
+  it('threads gitProvider through to each repo clone URL', async () => {
+    const cloneUrls = [];
+    const runner = async (command, args) => {
+      if (args[0] === 'clone') cloneUrls.push(args[1]);
+      return { code: 0 };
+    };
+    await checkoutRepos({
+      repos: ['group/api', 'group/web'],
+      branch: 'b',
+      gitToken: 't',
+      gitProvider: 'gitlab',
+      workspaceDir: '/ws',
+      runner,
+      ensureDir: noMkdir,
+    });
+    expect(cloneUrls).toEqual([
+      'https://oauth2:t@gitlab.com/group/api.git',
+      'https://oauth2:t@gitlab.com/group/web.git',
+    ]);
   });
 });

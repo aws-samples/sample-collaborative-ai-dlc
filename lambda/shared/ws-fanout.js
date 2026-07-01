@@ -57,4 +57,43 @@ const broadcastToSprintChannel = async (sprintId, payload) => {
   }
 };
 
-module.exports = { broadcastToSprintChannel };
+/**
+ * Broadcast `payload` to every live connection of `intent:{intentId}` — the v2
+ * realtime channel (the AgentCore runtime fans out the same channel from
+ * lambda/agentcore/clients.js; this lets server-side callers like the durable
+ * orchestrator emit live too). Best-effort, never throws.
+ *
+ * @param {string} intentId
+ * @param {object} payload — must carry `action` (the client routing key)
+ */
+const broadcastToIntentChannel = async (intentId, payload) => {
+  const connectionsTable = process.env.CONNECTIONS_TABLE;
+  const websocketEndpoint = process.env.WEBSOCKET_ENDPOINT;
+  if (!connectionsTable || !websocketEndpoint || !intentId) return;
+  try {
+    const result = await ddb.send(
+      new QueryCommand({
+        TableName: connectionsTable,
+        IndexName: 'DocumentIdIndex',
+        KeyConditionExpression: 'documentId = :docId',
+        ExpressionAttributeValues: { ':docId': `intent:${intentId}` },
+      }),
+    );
+    const api = new ApiGatewayManagementApiClient({ endpoint: websocketEndpoint });
+    const data = JSON.stringify(payload);
+    await Promise.all(
+      (result.Items || [])
+        // Never target connections whose scope token has expired.
+        .filter((item) => isTokenLive(item.tokenExp))
+        .map((item) =>
+          api
+            .send(new PostToConnectionCommand({ ConnectionId: item.connectionId, Data: data }))
+            .catch(() => {}),
+        ),
+    );
+  } catch (err) {
+    console.error('Intent-channel fanout failed:', err.message);
+  }
+};
+
+module.exports = { broadcastToSprintChannel, broadcastToIntentChannel };

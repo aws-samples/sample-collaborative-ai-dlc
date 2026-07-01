@@ -51,6 +51,7 @@ export const dispatchInvocation = async ({
     'init-ws': handlers.initWs,
     'run-stage': handlers.runStage,
     inspect: handlers.inspect,
+    capabilities: handlers.capabilities,
   }[command];
   if (!handler) return { statusCode: 400, body: { error: `unknown command "${command}"` } };
 
@@ -124,6 +125,7 @@ const main = async () => {
   const { initWs } = await import('./commands/init-ws.js');
   const { runStage } = await import('./commands/run-stage.js');
   const { inspect } = await import('./commands/inspect.js');
+  const { capabilities } = await import('./commands/capabilities.js');
   const { loadLibrary, loadBlockBody, loadBlockScript, loadConductor } =
     await import('./block-loader.js');
   const { materializeStage, renderRulesDoc } = await import('./stage-materializer.js');
@@ -168,6 +170,7 @@ const main = async () => {
         },
       ),
     inspect: (p) => inspect(p, { openGraph }),
+    capabilities: (p) => capabilities(p, { env: process.env }),
   };
 
   const server = createServer({ handlers });

@@ -271,9 +271,11 @@ describe('buildExecutionMeta intent-config + DRAFT', () => {
       workflowId: 'w',
       workflowVersion: 1,
       startedAt: 'T',
+      agentCli: 'kiro',
       cliModels: { claude: 'us.anthropic.claude-opus-4-8' },
       parkReleaseSeconds: 120,
     });
+    expect(meta.agentCli).toBe('kiro');
     expect(meta.cliModels).toEqual({ claude: 'us.anthropic.claude-opus-4-8' });
     expect(meta.parkReleaseSeconds).toBe(120);
   });
@@ -293,8 +295,31 @@ describe('buildExecutionMeta intent-config + DRAFT', () => {
       branch: null,
       baseBranch: null,
       repos: null,
+      agentCli: null,
       cliModels: null,
       parkReleaseSeconds: null,
+      source: null,
     });
+  });
+
+  it('carries an optional tracker source (kick-off provenance)', () => {
+    const source = {
+      bindingId: 'tb-1',
+      provider: 'github-issues',
+      instance: 'public',
+      resourceType: 'issue',
+      resourceId: '42',
+      resourceUrl: 'https://github.com/owner/repo/issues/42',
+    };
+    const meta = buildExecutionMeta({
+      executionId: 'e1',
+      projectId: 'p1',
+      intentId: 'i1',
+      workflowId: 'w',
+      workflowVersion: 1,
+      startedAt: 'T',
+      source,
+    });
+    expect(meta.source).toEqual(source);
   });
 });

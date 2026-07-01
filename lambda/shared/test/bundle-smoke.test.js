@@ -27,6 +27,11 @@ const bundles = [
   ['seed-blocks', 'lambda/seed-blocks/.build/index.mjs'],
   ['github-lambda', 'lambda/github/.build/index.mjs'],
   ['gitlab-lambda', 'lambda/gitlab/.build/index.mjs'],
+  // v2-orchestrator bundles CommonJS shared modules (process-store, workflow-plan,
+  // git-connection-store, git-token) — needs the createRequire banner, and must
+  // NOT also declare its own `createRequire`/`require` (that collides with the
+  // banner: "Identifier 'createRequire' has already been declared" at INIT).
+  ['v2-orchestrator', 'lambda/v2-orchestrator/.build/index.mjs'],
 ];
 
 describe.each(bundles)('%s bundle', (name, bundlePath) => {

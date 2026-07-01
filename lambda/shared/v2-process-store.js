@@ -72,6 +72,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     pendingHumanTaskId,
     startedAt,
     completedAt,
+    failureReason,
   }) => {
     const ts = now();
     const sets = ['updatedAt = :ts'];
@@ -105,6 +106,10 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     if (completedAt !== undefined) {
       sets.push('completedAt = :ca');
       values[':ca'] = completedAt;
+    }
+    if (failureReason !== undefined) {
+      sets.push('failureReason = :fr');
+      values[':fr'] = failureReason;
     }
     const params = {
       TableName: table(),

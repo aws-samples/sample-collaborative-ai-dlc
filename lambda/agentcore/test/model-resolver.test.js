@@ -70,3 +70,30 @@ describe('resolveStageModel — precedence (project cliModels wins)', () => {
     );
   });
 });
+
+describe('resolveStageModel — Kiro uses its OWN model namespace (not Bedrock)', () => {
+  // BEDROCK_MODEL is a Bedrock inference profile the kiro CLI rejects; it must not
+  // leak into a kiro run.
+  const env = { AWS_REGION: 'us-east-1', BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6' };
+
+  it('passes a kiro-native model through verbatim (no alias/region resolution)', () => {
+    expect(resolveStageModel({ cliModels: { kiro: 'claude-sonnet-4.6' }, cli: 'kiro', env })).toBe(
+      'claude-sonnet-4.6',
+    );
+    expect(resolveStageModel({ cliModels: { kiro: 'auto' }, cli: 'kiro', env })).toBe('auto');
+  });
+
+  it('returns undefined when no kiro model is selected (driver omits --model → kiro default)', () => {
+    // The Bedrock BEDROCK_MODEL env + a bare-alias agent override must NOT apply.
+    expect(
+      resolveStageModel({ cliModels: {}, agentBlock: { modelOverride: 'opus' }, cli: 'kiro', env }),
+    ).toBeUndefined();
+    expect(
+      resolveStageModel({
+        cliModels: { claude: 'us.anthropic.claude-sonnet-4-6' },
+        cli: 'kiro',
+        env,
+      }),
+    ).toBeUndefined();
+  });
+});

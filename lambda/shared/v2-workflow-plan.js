@@ -115,14 +115,20 @@ const loadExecutionPlan = async ({ ddb, tableName, workflowId, workflowVersion, 
     };
   }
   const workflow = assembleWorkflow(items, { workflowId, workflowVersion });
-  const [stages, sensors, rules, artifacts] = await Promise.all([
+  // AGENT blocks are loaded here too: buildExecutionPlan resolves each stage's
+  // leadAgent / supportAgents / reviewer against agentsById, so omitting them
+  // makes EVERY agent-bearing stage fail `unresolved_agent` and rejects the plan
+  // before any stage runs (the bodies still load lazily in the runtime container).
+  const [stages, agents, sensors, rules, artifacts] = await Promise.all([
     listMergedBlocks(ddb, tableName, 'STAGE'),
+    listMergedBlocks(ddb, tableName, 'AGENT'),
     listMergedBlocks(ddb, tableName, 'SENSOR'),
     listMergedBlocks(ddb, tableName, 'RULE'),
     listMergedBlocks(ddb, tableName, 'ARTIFACT'),
   ]);
   const library = {
     stagesById: keyById(stages),
+    agentsById: keyById(agents),
     sensorsById: keyById(sensors),
     rulesById: keyById(rules),
     artifactsById: keyById(artifacts),

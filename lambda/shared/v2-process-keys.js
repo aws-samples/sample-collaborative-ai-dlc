@@ -122,6 +122,11 @@ const buildExecutionMeta = ({
   branch = null,
   baseBranch = null,
   repos = null,
+  // The project's selected agent CLI (claude|kiro|…) snapshotted at create; the
+  // orchestrator forwards it to run-stage as `requestedCli` so the run honours the
+  // project's explicit choice (selection depends on which CLI is authed). null =
+  // let run-stage pick the first installed CLI (the test-harness path).
+  agentCli = null,
   // Per-CLI model selection ({ claude, kiro }) snapshotted from the project at
   // create; the orchestrator forwards it to run-stage (cliModels[cli] is the
   // authoritative model knob — see v2-agent.md). null = use run-stage defaults.
@@ -129,6 +134,12 @@ const buildExecutionMeta = ({
   // Seconds a parked stage's warm microVM lingers before the orchestrator frees
   // it via StopRuntimeSession (v2-open.md D1). null = use the runtime default.
   parkReleaseSeconds = null,
+  // Optional tracker reference the intent was kicked off from (GitHub issue,
+  // Jira artifact, …). The imported text lives in `prompt`; this is just the
+  // provenance link surfaced in the UI. null when typed by hand. Mirrors the v1
+  // Sprint.tracker shape: { provider, instance, bindingId, resourceType,
+  // resourceId, resourceUrl }.
+  source = null,
 }) => ({
   ...executionMetaKey(executionId),
   ...projectStatusIndex({ projectId, status, startedAt, executionId }),
@@ -151,8 +162,10 @@ const buildExecutionMeta = ({
   branch,
   baseBranch,
   repos,
+  agentCli,
   cliModels,
   parkReleaseSeconds,
+  source,
   updatedAt: startedAt,
   completedAt: null,
 });

@@ -164,6 +164,7 @@ const seedV2Project = async (sub) => {
     .property('workflow_id', 'aidlc-v2')
     .property('workflow_version', '')
     .property('park_release_seconds', '120')
+    .property('agent_cli', 'kiro')
     .property('cli_models', JSON.stringify({ claude: 'us.anthropic.claude-opus-4-8' }))
     .property('git_provider', 'github')
     .next();
@@ -203,6 +204,26 @@ const seedV2Project = async (sub) => {
   return projectId;
 };
 
+// Attach a TrackerBinding vertex to a project via HAS_TRACKER (mirrors the
+// tracker abstraction's projection shape). Returns the binding id.
+const seedTrackerBinding = async (projectId, { provider = 'github-issues' } = {}) => {
+  const bindingId = `tb-${randomUUID()}`;
+  await g
+    .addV('TrackerBinding')
+    .property('id', bindingId)
+    .property('provider', provider)
+    .property('instance', 'public')
+    .property('external_project_key', 'owner/repo')
+    .property('display_name', 'owner/repo')
+    .as('t')
+    .V()
+    .has('Project', 'id', projectId)
+    .addE('HAS_TRACKER')
+    .to('t')
+    .next();
+  return bindingId;
+};
+
 const createIntent = async (
   sub,
   projectId,
@@ -233,8 +254,49 @@ describe('POST /projects/{id}/intents', () => {
     expect(intent.repos).toEqual(['owner/repo']);
     expect(intent.branch).toBe(`aidlc/${intent.id}`);
     // Project run-config snapshotted onto the intent at create.
+    expect(intent.agentCli).toBe('kiro');
     expect(intent.cliModels).toEqual({ claude: 'us.anthropic.claude-opus-4-8' });
     expect(intent.parkReleaseSeconds).toBe(120);
+  });
+
+  it('records a tracker source when seeded from a bound issue', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const bindingId = await seedTrackerBinding(projectId);
+    const res = await createIntent(sub, projectId, {
+      title: 'From issue #42',
+      prompt: '# Bug\n\nFix the thing',
+      scope: 'feature',
+      source: {
+        bindingId,
+        resourceType: 'issue',
+        resourceId: '42',
+        resourceUrl: 'https://github.com/owner/repo/issues/42',
+      },
+    });
+    expect(res.statusCode).toBe(201);
+    const intent = JSON.parse(res.body);
+    expect(intent.source).toEqual({
+      bindingId,
+      provider: 'github-issues',
+      instance: 'public',
+      resourceType: 'issue',
+      resourceId: '42',
+      resourceUrl: 'https://github.com/owner/repo/issues/42',
+    });
+  });
+
+  it('drops a source whose binding is not on the project', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      scope: 'feature',
+      source: { bindingId: 'tb-fabricated', resourceId: '7' },
+    });
+    expect(res.statusCode).toBe(201);
+    expect(JSON.parse(res.body).source).toBeNull();
   });
 
   it('rejects a non-member', async () => {
@@ -307,26 +369,85 @@ describe('POST /start', () => {
     expect(payload).toMatchObject({ action: 'start', intentId: intent.id });
   });
 
-  it('refuses to start a non-DRAFT intent', async () => {
+  it('rolls back to DRAFT when the orchestrator invoke fails, so start can be retried', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
     const intent = JSON.parse((await createIntent(sub, projectId)).body);
-    // First start succeeds.
-    await handler({
+    // Hand-off throws (e.g. unqualified-ARN / transient invoke error).
+    lambdaMock.on(InvokeCommand).rejectsOnce(new Error('invoke failed'));
+    const failed = await handler({
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intent.id}/start`,
       pathParameters: { projectId, intentId: intent.id },
       ...claims(sub),
     });
-    // Second start sees CREATED, not DRAFT.
-    const res = await handler({
+    expect(failed.statusCode).toBe(500);
+    // Intent must be back to DRAFT, not stranded in CREATED.
+    const after = JSON.parse(
+      (
+        await handler({
+          httpMethod: 'GET',
+          path: `/projects/${projectId}/intents/${intent.id}`,
+          pathParameters: { projectId, intentId: intent.id },
+          ...claims(sub),
+        })
+      ).body,
+    );
+    expect(after.intent.status).toBe('DRAFT');
+    // Retry now succeeds (invoke mock is back to resolving).
+    const retry = await handler({
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intent.id}/start`,
       pathParameters: { projectId, intentId: intent.id },
       ...claims(sub),
     });
-    expect(res.statusCode).toBe(409);
+    expect(retry.statusCode).toBe(202);
+    expect(JSON.parse(retry.body).status).toBe('CREATED');
   });
+
+  const setStatus = (intentId, status) => {
+    const k = keyOf(`EXEC#${intentId}`, 'META');
+    procStore.set(k, { ...procStore.get(k), status });
+  };
+
+  it.each(['RUNNING', 'WAITING', 'SUCCEEDED', 'CANCELLED'])(
+    'refuses to start an intent that is %s',
+    async (status) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const intent = JSON.parse((await createIntent(sub, projectId)).body);
+      setStatus(intent.id, status);
+      const res = await handler({
+        httpMethod: 'POST',
+        path: `/projects/${projectId}/intents/${intent.id}/start`,
+        pathParameters: { projectId, intentId: intent.id },
+        ...claims(sub),
+      });
+      expect(res.statusCode).toBe(409);
+    },
+  );
+
+  it.each(['FAILED', 'CREATED'])(
+    'restarts a %s intent (re-enters the pipeline, clears failureReason)',
+    async (status) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const intent = JSON.parse((await createIntent(sub, projectId)).body);
+      // Simulate a stranded/failed prior run.
+      const k = keyOf(`EXEC#${intent.id}`, 'META');
+      procStore.set(k, { ...procStore.get(k), status, failureReason: 'boom' });
+      const res = await handler({
+        httpMethod: 'POST',
+        path: `/projects/${projectId}/intents/${intent.id}/start`,
+        pathParameters: { projectId, intentId: intent.id },
+        ...claims(sub),
+      });
+      expect(res.statusCode).toBe(202);
+      expect(JSON.parse(res.body).status).toBe('CREATED');
+      // Orchestrator was (re-)invoked.
+      expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(1);
+    },
+  );
 });
 
 describe('realtime-token', () => {

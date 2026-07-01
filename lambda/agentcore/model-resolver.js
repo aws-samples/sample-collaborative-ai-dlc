@@ -58,14 +58,33 @@ export const resolveModelId = (raw, { env = process.env } = {}) => {
     : `${regionPrefix(env.AWS_REGION || env.BEDROCK_REGION)}.${target}`;
 };
 
-// Pick the model for a stage run, then resolve aliases. `cli` is the selected CLI
-// (the cliModels key). Precedence: cliModels[cli] > agent override > env defaults.
+// CLIs whose `--model` value is a Bedrock id (inference profile / provider-
+// prefixed). For these the alias table, region geo-prefixing, and the
+// BEDROCK_MODEL/AGENT_MODEL env defaults all apply. Kiro is deliberately absent:
+// it has its OWN model namespace (e.g. "auto", "claude-sonnet-4.6"), so a Bedrock
+// id like "us.anthropic.claude-sonnet-4-6" is rejected by the kiro CLI.
+const BEDROCK_CLIS = new Set(['claude', 'opencode']);
+
+// Pick the model for a stage run. `cli` is the selected CLI (the cliModels key).
+//
+// Bedrock CLIs (claude/opencode): precedence cliModels[cli] > agent override > env
+// defaults, then alias/region resolution — these are all Bedrock concepts.
+//
+// Kiro: ONLY an explicit project selection (cliModels.kiro) applies, passed through
+// verbatim (no Bedrock alias/region resolution). The bare-alias agent override and
+// the BEDROCK_MODEL/AGENT_MODEL env are Bedrock-shaped and must NOT leak into Kiro.
+// When unset, return undefined so the driver omits --model and Kiro uses its own
+// default (`auto`).
 export const resolveStageModel = ({
   cliModels = {},
   agentBlock = null,
   cli,
   env = process.env,
 }) => {
+  if (!BEDROCK_CLIS.has(cli)) {
+    const selected = cliModels?.[cli];
+    return selected ? String(selected).trim() : undefined;
+  }
   const raw =
     cliModels?.[cli] || agentBlock?.modelOverride || env.AGENT_MODEL || env.BEDROCK_MODEL || '';
   return resolveModelId(raw, { env });

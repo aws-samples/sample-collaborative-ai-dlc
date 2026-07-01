@@ -34,6 +34,7 @@ const META = {
   branch: 'aidlc/i1',
   baseBranch: 'main',
   gitProvider: 'github',
+  agentCli: 'kiro',
   cliModels: { claude: 'us.anthropic.claude-opus-4-8' },
   parkReleaseSeconds: 300,
 };
@@ -49,6 +50,7 @@ beforeEach(() => {
       setGateCallbackId: vi.fn(async () => ({})),
       // Default: gate is answered (not pending) by the time we re-read it.
       getHumanTask: vi.fn(async () => ({ status: 'answered' })),
+      appendEvent: vi.fn(async () => ({})),
     },
     loadPlan: vi.fn(async () => ({
       valid: true,
@@ -60,6 +62,7 @@ beforeEach(() => {
     }),
     resolveToken: vi.fn(async () => 'tok'),
     stopSession: vi.fn(async () => ({ stopped: true })),
+    broadcast: vi.fn(async () => {}),
   };
 });
 
@@ -77,6 +80,9 @@ describe('orchestrator durable handler', () => {
     );
     expect(res).toEqual({ ok: true, intentId: 'i1', stages: 2 });
     expect(invokes.map((p) => p.command)).toEqual(['init-ws', 'run-stage', 'run-stage']);
+    // init-ws carries the provider so the runtime picks the right clone scheme.
+    const initWs = invokes.find((p) => p.command === 'init-ws');
+    expect(initWs).toMatchObject({ gitProvider: 'github', gitToken: 'tok', repos: ['owner/repo'] });
     const statuses = deps.store.updateExecution.mock.calls.map((c) => c[0].status);
     expect(statuses).toContain('RUNNING');
     expect(statuses).toContain('SUCCEEDED');
@@ -118,6 +124,25 @@ describe('orchestrator durable handler', () => {
     expect(runStages.length).toBeGreaterThan(0);
     for (const rs of runStages) {
       expect(rs.cliModels).toEqual({ claude: 'us.anthropic.claude-opus-4-8' });
+    }
+  });
+
+  it('forwards the project agentCli to run-stage as requestedCli', async () => {
+    await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, makeCtx(), deps);
+    const runStages = invokes.filter((p) => p.command === 'run-stage');
+    expect(runStages.length).toBeGreaterThan(0);
+    for (const rs of runStages) {
+      expect(rs.requestedCli).toBe('kiro');
+    }
+  });
+
+  it('omits requestedCli when the project has no selected CLI', async () => {
+    deps.store.getExecution = vi.fn(async () => ({ ...META, agentCli: null }));
+    await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, makeCtx(), deps);
+    const runStages = invokes.filter((p) => p.command === 'run-stage');
+    expect(runStages.length).toBeGreaterThan(0);
+    for (const rs of runStages) {
+      expect(rs.requestedCli).toBeUndefined();
     }
   });
 
@@ -192,6 +217,90 @@ describe('orchestrator durable handler', () => {
     expect(res.ok).toBe(false);
     expect(res.reason).toBe('stage_failed');
     expect(deps.store.updateExecution.mock.calls.map((c) => c[0].status)).toContain('FAILED');
+  });
+
+  it('fails (with reason + event) when init-ws returns ok:false instead of marching on', async () => {
+    deps.invokeRuntime = vi.fn(async (payload) => {
+      invokes.push(payload);
+      // init-ws reports a checkout failure (the runtime returns, does not throw).
+      return { ok: false, reason: 'checkout_failed', detail: 'auth' };
+    });
+    const res = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1' },
+      makeCtx(),
+      deps,
+    );
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('init_ws_failed');
+    // Never advanced past init-ws into the stage loop.
+    expect(invokes.map((p) => p.command)).toEqual(['init-ws']);
+    // Status FAILED with a human-readable reason was persisted...
+    const failCall = deps.store.updateExecution.mock.calls.find((c) => c[0].status === 'FAILED');
+    expect(failCall).toBeTruthy();
+    expect(failCall[0].failureReason).toContain('init_ws_failed');
+    // ...and a failure event was emitted for the activity feed.
+    const evTypes = deps.store.appendEvent.mock.calls.map((c) => c[0].type);
+    expect(evTypes).toContain('v2.execution.failed');
+  });
+
+  it('records FAILED + reason when a durable step throws (no silent death)', async () => {
+    // A run-stage transport error throws out of the step.
+    let n = 0;
+    deps.invokeRuntime = vi.fn(async (payload) => {
+      invokes.push(payload);
+      n += 1;
+      if (n === 1) return { ok: true }; // init-ws
+      throw new Error('AgentCore 500');
+    });
+    deps.loadPlan.mockResolvedValue({ valid: true, plan: { stages: [{ stageId: 'a' }] } });
+    const res = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1' },
+      makeCtx(),
+      deps,
+    );
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('orchestrator_error');
+    const failCall = deps.store.updateExecution.mock.calls.find((c) => c[0].status === 'FAILED');
+    expect(failCall[0].failureReason).toContain('AgentCore 500');
+  });
+
+  it('emits workspace lifecycle events so init-ws is visible in the feed', async () => {
+    await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, makeCtx(), deps);
+    const evTypes = deps.store.appendEvent.mock.calls.map((c) => c[0].type);
+    expect(evTypes).toContain('v2.workspace.initializing');
+    expect(evTypes).toContain('v2.workspace.initialized');
+    expect(evTypes).toContain('v2.execution.succeeded');
+  });
+
+  it('fans out live realtime payloads the UI routes on (workspace + execution)', async () => {
+    await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, makeCtx(), deps);
+    // Every broadcast targets the intent channel and carries a UI routing action.
+    for (const call of deps.broadcast.mock.calls) {
+      expect(call[0]).toBe('i1'); // intentId (channel key)
+      expect(call[1]).toMatchObject({ intentId: 'i1', projectId: 'p1' });
+      expect(call[1].action).toMatch(/^agent\.(workspace|execution|note)$/);
+    }
+    const actions = deps.broadcast.mock.calls.map((c) => c[1].action);
+    expect(actions).toContain('agent.workspace'); // init-ws lifecycle
+    expect(actions).toContain('agent.execution'); // RUNNING + SUCCEEDED status flips
+    // The RUNNING + SUCCEEDED execution transitions both went live.
+    const execStatuses = deps.broadcast.mock.calls
+      .filter((c) => c[1].action === 'agent.execution')
+      .map((c) => c[1].status);
+    expect(execStatuses).toContain('RUNNING');
+    expect(execStatuses).toContain('SUCCEEDED');
+  });
+
+  it('broadcasts FAILED live so the UI flips without a manual refresh', async () => {
+    deps.invokeRuntime = vi.fn(async (payload) => {
+      invokes.push(payload);
+      return { ok: false, reason: 'checkout_failed' }; // init-ws fails
+    });
+    await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, makeCtx(), deps);
+    const failed = deps.broadcast.mock.calls.find(
+      (c) => c[1].action === 'agent.execution' && c[1].status === 'FAILED',
+    );
+    expect(failed).toBeTruthy();
   });
 
   it('fails closed when the plan is invalid', async () => {
@@ -324,6 +433,9 @@ describe('orchestrator durable handler', () => {
     deps.stopSession = vi.fn(async () => {
       assertInStep('stopSession');
       return { stopped: true };
+    });
+    deps.broadcast = vi.fn(async () => {
+      assertInStep('broadcast');
     });
     const res = await __durableHandler(
       { action: 'start', intentId: 'i1', executionId: 'i1' },
