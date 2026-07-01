@@ -170,11 +170,38 @@ export interface GateAnswer {
   answer?: unknown;
 }
 
+// The intent's Neptune knowledge subgraph (GET .../graph): what the run
+// produced and drew on. Generic node bags (same shape family as the v1 sprint
+// graph) — `type` is the vertex label: Intent | Artifact | Question |
+// Discussion | TeamKnowledge | LearningRule. Artifact/knowledge nodes carry a
+// bounded `contentPreview` (+ `contentLength`), never the full content.
+export interface IntentGraphNode {
+  id: string;
+  type: string;
+  label: string;
+  [key: string]: unknown;
+}
+
+export interface IntentGraphEdge {
+  source: string;
+  target: string;
+  // CONTAINS | PRODUCES | CONSUMES | DERIVED_FROM | RELATES_TO | DEPENDS_ON |
+  // DISCUSSES | INFORMS (synthesized: project knowledge → this run).
+  label: string;
+}
+
+export interface IntentKnowledgeGraph {
+  nodes: IntentGraphNode[];
+  edges: IntentGraphEdge[];
+}
+
 export const intentsService = {
   list: (projectId: string, status?: IntentStatus) =>
     api.get<Intent[]>(`/projects/${projectId}/intents${status ? `?status=${status}` : ''}`),
   get: (projectId: string, intentId: string) =>
     api.get<IntentDetail>(`/projects/${projectId}/intents/${intentId}`),
+  graph: (projectId: string, intentId: string) =>
+    api.get<IntentKnowledgeGraph>(`/projects/${projectId}/intents/${intentId}/graph`),
   create: (projectId: string, input: CreateIntentInput) =>
     api.post<Intent>(`/projects/${projectId}/intents`, input),
   start: (projectId: string, intentId: string) =>

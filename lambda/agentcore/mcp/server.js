@@ -34,6 +34,24 @@ const guard = async (fn) => {
   }
 };
 
+// Business writes land in Neptune only — invisible to the intent page's
+// realtime channel, which carries PROCESS events. After a successful artifact
+// create/update, drop a best-effort stage note through the bridge: it appends
+// a timeline EVENT# row AND broadcasts `agent.note`, which the UI refetches
+// on — so new artifacts appear live instead of waiting for the 8s poll
+// backstop. Never let the note fail the tool call: the artifact IS written,
+// and a retried create would collide with it.
+const notifyArtifact = async (bridge, { id, title, action }) => {
+  try {
+    await bridge?.emitStageNote?.({
+      summary: `Artifact ${action}: ${title || id}`,
+      type: `v2.artifact.${action}`,
+    });
+  } catch {
+    /* best-effort — the poll backstop still covers the UI */
+  }
+};
+
 // The full author tool surface (a main stage agent). Reviewer runs get the
 // READ_TOOLS subset only (see reviewerHandlers).
 export const buildToolHandlers = ({ writer, bridge }) => ({
@@ -53,11 +71,24 @@ export const buildToolHandlers = ({ writer, bridge }) => ({
 
   // ── Business writes ──
   create_artifact: ({ artifactType, id, title, content, props, links }) =>
-    guard(() =>
-      writer.createArtifact({ artifactType, id, title, content, props, links: links ?? [] }),
-    ),
+    guard(async () => {
+      const res = await writer.createArtifact({
+        artifactType,
+        id,
+        title,
+        content,
+        props,
+        links: links ?? [],
+      });
+      await notifyArtifact(bridge, { id, title, action: 'created' });
+      return res;
+    }),
   update_artifact: ({ id, props }) =>
-    guard(() => writer.updateArtifact({ id, props: props ?? {} })),
+    guard(async () => {
+      const res = await writer.updateArtifact({ id, props: props ?? {} });
+      await notifyArtifact(bridge, { id, title: props?.title, action: 'updated' });
+      return res;
+    }),
   link_artifacts: ({ fromId, toId, edge }) =>
     guard(() => writer.linkArtifacts({ fromId, toId, edge })),
   record_team_knowledge: ({ id, title, content, agentRef, props }) =>
@@ -243,14 +274,46 @@ export const toolSchemas = (z) => ({
   },
 });
 
+// Byte length of an MCP result envelope's text payload — this is what the CLI
+// feeds back into the model turn as a tool_result, so it is the number that
+// matters for context pressure. Sums all text parts; 0 for an empty envelope.
+const envelopeTextBytes = (env) =>
+  (env?.content ?? []).reduce((n, part) => n + Buffer.byteLength(part?.text ?? '', 'utf8'), 0);
+
+// Wrap a tool handler with a one-line stderr trace (stderr flows to the
+// container log). Records the call, its arg keys, latency, error flag, and —
+// critically — the RESULT envelope size, so an oversized tool_result that
+// wedges the CLI's next model turn is visible without guessing. Tracing is on
+// by default; set V2_MCP_TRACE=off to silence. Never throws (best-effort).
+const traceHandler = (name, fn, { enabled }) => {
+  if (!enabled) return fn;
+  return async (args) => {
+    const startedAt = Date.now();
+    try {
+      const env = await fn(args);
+      const bytes = envelopeTextBytes(env);
+      console.error(
+        `[mcp-trace] ${name} ok=${!env?.isError} bytes=${bytes} ms=${Date.now() - startedAt} args=${Object.keys(args ?? {}).join(',')}`,
+      );
+      return env;
+    } catch (e) {
+      console.error(`[mcp-trace] ${name} threw ms=${Date.now() - startedAt} err=${e?.message}`);
+      throw e;
+    }
+  };
+};
+
 // Register the role-appropriate tools on an McpServer. Pure of transport so it
-// is unit-testable with a fake server that records registrations.
-export const registerTools = ({ server, handlers, role, z }) => {
+// is unit-testable with a fake server that records registrations. Each handler
+// is wrapped in a stderr trace (see traceHandler) unless env disables it.
+export const registerTools = ({ server, handlers, role, z, env = process.env }) => {
   const schemas = toolSchemas(z);
   const names = role === 'reviewer' ? READ_TOOLS : AUTHOR_TOOLS;
+  const enabled = env.V2_MCP_TRACE !== 'off';
   for (const name of names) {
     const { description, shape } = schemas[name];
-    server.tool(name, description, shape, (args) => handlers[name](args ?? {}));
+    const handler = traceHandler(name, (args) => handlers[name](args ?? {}), { enabled });
+    server.tool(name, description, shape, (args) => handler(args ?? {}));
   }
   return names;
 };

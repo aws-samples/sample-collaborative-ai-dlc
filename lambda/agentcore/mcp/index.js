@@ -46,7 +46,7 @@ export const startMcpServer = async ({ env = process.env } = {}) => {
 
   const handlers = buildToolHandlers({ writer, bridge });
   const server = new McpServer({ name: 'aidlc-v2-mcp', version: '1.0.0' });
-  const registered = registerTools({ server, handlers, role, z });
+  const registered = registerTools({ server, handlers, role, z, env });
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

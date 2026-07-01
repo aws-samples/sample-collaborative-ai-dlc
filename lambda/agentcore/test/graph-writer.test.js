@@ -67,9 +67,14 @@ describe('createArtifact', () => {
       content: '# reqs',
       props: { status: 'draft' },
     });
-    expect(created.artifact_type).toBe('requirements-analysis');
-    expect(created.project_id).toBe('proj-1');
-    expect(created.created_by_stage_instance_id).toBe('si-req');
+    // Compact ack only — never echoes `content` back into the model turn.
+    expect(created).toEqual({
+      id: 'a1',
+      artifactType: 'requirements-analysis',
+      created_at: expect.any(String),
+      links: 0,
+    });
+    expect(created.content).toBeUndefined();
 
     const fetched = await writer.getArtifact({ id: 'a1' });
     expect(fetched).toMatchObject({
@@ -77,6 +82,8 @@ describe('createArtifact', () => {
       artifact_type: 'requirements-analysis',
       title: 'Requirements',
       status: 'draft',
+      project_id: 'proj-1',
+      created_by_stage_instance_id: 'si-req',
     });
 
     // Anchored Intent --CONTAINS--> Artifact.
@@ -91,14 +98,15 @@ describe('createArtifact', () => {
 
   it('drops caller-supplied reserved/provenance props (spoof-proof)', async () => {
     await seedIntent();
-    const created = await writer.createArtifact({
+    await writer.createArtifact({
       artifactType: 'design',
       id: 'a2',
       props: { project_id: 'EVIL', created_by_execution_id: 'EVIL', legit: 'ok' },
     });
-    expect(created.project_id).toBe('proj-1');
-    expect(created.created_by_execution_id).toBe('exec-1');
-    expect(created.legit).toBe('ok');
+    const fetched = await writer.getArtifact({ id: 'a2' });
+    expect(fetched.project_id).toBe('proj-1');
+    expect(fetched.created_by_execution_id).toBe('exec-1');
+    expect(fetched.legit).toBe('ok');
   });
 
   it('is idempotent on re-create (upsert by id), not duplicated', async () => {
@@ -207,8 +215,16 @@ describe('team knowledge (project-scoped, cross-intent)', () => {
       content: 'kebab-case ids',
       agentRef: 'aidlc-product-agent',
     });
-    expect(created).toMatchObject({
+    // Compact ack only — never echoes `content` back into the model turn.
+    expect(created).toEqual({
       id: 'naming-conv',
+      agentRef: 'aidlc-product-agent',
+      created_at: expect.any(String),
+    });
+    expect(created.content).toBeUndefined();
+    // The full provenance is persisted (read it back to verify).
+    const persisted = (await writer.getTeamKnowledge()).find((r) => r.id === 'naming-conv');
+    expect(persisted).toMatchObject({
       tier: 'team',
       agent_ref: 'aidlc-product-agent',
       project_id: 'proj-1',
@@ -237,14 +253,15 @@ describe('team knowledge (project-scoped, cross-intent)', () => {
   });
 
   it('drops caller-supplied provenance props (spoof-proof)', async () => {
-    const created = await writer.recordTeamKnowledge({
+    await writer.recordTeamKnowledge({
       id: 'k2',
       content: 'x',
       props: { project_id: 'EVIL', created_by_intent_id: 'EVIL', legit: 'ok' },
     });
-    expect(created.project_id).toBe('proj-1');
-    expect(created.created_by_intent_id).toBe('intent-1');
-    expect(created.legit).toBe('ok');
+    const persisted = (await writer.getTeamKnowledge()).find((r) => r.id === 'k2');
+    expect(persisted.project_id).toBe('proj-1');
+    expect(persisted.created_by_intent_id).toBe('intent-1');
+    expect(persisted.legit).toBe('ok');
   });
 
   it('getTeamKnowledge filters to one agent plus the shared corpus', async () => {
@@ -272,9 +289,15 @@ describe('learning rules (project-scoped guardrails)', () => {
       content: 'NEVER store secrets in plaintext config',
       layer: 'project-learnings',
     });
-    expect(created).toMatchObject({
+    // Compact ack only — never echoes `content` back into the model turn.
+    expect(created).toEqual({
       id: 'no-secrets',
       layer: 'project-learnings',
+      created_at: expect.any(String),
+    });
+    expect(created.content).toBeUndefined();
+    const persisted = (await writer.getLearningRules()).find((r) => r.id === 'no-secrets');
+    expect(persisted).toMatchObject({
       pairing: 'feedforward-only',
       project_id: 'proj-1',
       created_by_intent_id: 'intent-1',

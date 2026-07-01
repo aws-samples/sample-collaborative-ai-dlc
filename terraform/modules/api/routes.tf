@@ -1221,6 +1221,7 @@ resource "aws_lambda_permission" "workflows" {
 #
 #   /projects/{projectId}/intents                                  GET, POST
 #   /projects/{projectId}/intents/{intentId}                       GET
+#   /projects/{projectId}/intents/{intentId}/graph                 GET
 #   /projects/{projectId}/intents/{intentId}/start                 POST
 #   /projects/{projectId}/intents/{intentId}/realtime-token        POST
 #   /projects/{projectId}/intents/{intentId}/gates/{humanTaskId}/answer  POST
@@ -1237,6 +1238,12 @@ resource "aws_api_gateway_resource" "intent" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.intents.id
   path_part   = "{intentId}"
+}
+
+resource "aws_api_gateway_resource" "intent_graph" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent.id
+  path_part   = "graph"
 }
 
 resource "aws_api_gateway_resource" "intent_start" {
@@ -1274,6 +1281,7 @@ locals {
     collection_get  = { resource = aws_api_gateway_resource.intents.id, method = "GET" }
     collection_post = { resource = aws_api_gateway_resource.intents.id, method = "POST" }
     item_get        = { resource = aws_api_gateway_resource.intent.id, method = "GET" }
+    graph_get       = { resource = aws_api_gateway_resource.intent_graph.id, method = "GET" }
     start_post      = { resource = aws_api_gateway_resource.intent_start.id, method = "POST" }
     token_post      = { resource = aws_api_gateway_resource.intent_realtime_token.id, method = "POST" }
     answer_post     = { resource = aws_api_gateway_resource.intent_gate_answer.id, method = "POST" }
@@ -1309,6 +1317,12 @@ module "cors_intent" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.intent.id
+}
+
+module "cors_intent_graph" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_graph.id
 }
 
 module "cors_intent_start" {

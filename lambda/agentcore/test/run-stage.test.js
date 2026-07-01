@@ -630,6 +630,104 @@ describe('runStage — fresh run persists the CLI session + parks on a pending g
     const res = await runStage(baseArgs, deps);
     expect(res).toMatchObject({ ok: false, reason: 'cli_nonzero_exit', detail: '2' });
   });
+
+  it('treats a Kiro empty-final-completion crash as success (work already done)', async () => {
+    // kiro-cli exits non-zero after the turn's work because it ended with an
+    // empty final message; its ACP reports "Kiro failed to generate a response".
+    // A kiro run emits that on stderr; runChild tees it into stderrTail.
+    const kiroCrash = () => ({
+      on: (ev, cb) => ev === 'close' && setImmediate(() => cb(1)),
+      stderr: {
+        on: (ev, cb) => {
+          if (ev === 'data') {
+            cb(
+              Buffer.from(
+                'Kiro is having trouble responding right now:\n  0: Failed to receive the next message: request_id: abc, error: Kiro failed to generate a response\n',
+              ),
+            );
+          }
+        },
+      },
+      stdin: { end() {} },
+    });
+    const deps = baseDeps({
+      spawnFn: kiroCrash,
+      availableClis: ['kiro'],
+      env: { BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6' },
+    });
+    const res = await runStage({ ...baseArgs, cliModels: { kiro: 'claude-opus-4.6' } }, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED', cli: 'kiro' });
+    // Recorded a note explaining the benign exit.
+    expect(
+      deps.store.calls.some(
+        (c) => c[0] === 'appendEvent' && /empty final message/.test(c[1].summary ?? ''),
+      ),
+    ).toBe(true);
+  });
+
+  it('does NOT swallow a Kiro backend transport error (dispatch failure) — still fails', async () => {
+    const kiroTransport = () => ({
+      on: (ev, cb) => ev === 'close' && setImmediate(() => cb(1)),
+      stderr: {
+        on: (ev, cb) => {
+          if (ev === 'data') {
+            cb(
+              Buffer.from(
+                'Failed to receive the next message: request_id: abc, error: dispatch failure (io error): request or response body error\n',
+              ),
+            );
+          }
+        },
+      },
+      stdin: { end() {} },
+    });
+    const deps = baseDeps({
+      spawnFn: kiroTransport,
+      availableClis: ['kiro'],
+      env: { BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6' },
+    });
+    const res = await runStage({ ...baseArgs, cliModels: { kiro: 'claude-opus-4.6' } }, deps);
+    expect(res).toMatchObject({ ok: false, reason: 'cli_nonzero_exit' });
+  });
+});
+
+describe('isBenignKiroEmptyCompletion', () => {
+  const { isBenignKiroEmptyCompletion } = __test;
+
+  it('matches the empty-completion ACP signature', () => {
+    expect(
+      isBenignKiroEmptyCompletion(
+        '0: Failed to receive the next message: request_id: x, error: Kiro failed to generate a response',
+      ),
+    ).toBe(true);
+  });
+
+  it('does not match real transport/backend errors', () => {
+    for (const cause of [
+      'error: dispatch failure (io error): request or response body error',
+      'error: InternalServerError: Encountered an unexpected error',
+      'error: ThrottlingException: slow down',
+      'error: EOF while parsing a string at line 1 column 5214',
+    ]) {
+      expect(isBenignKiroEmptyCompletion(`Failed to receive the next message: ${cause}`)).toBe(
+        false,
+      );
+    }
+  });
+
+  it('does not match when the signature phrase is absent', () => {
+    expect(isBenignKiroEmptyCompletion('')).toBe(false);
+    expect(isBenignKiroEmptyCompletion('some unrelated stderr noise')).toBe(false);
+  });
+
+  it('a transport cause alongside the phrase still fails closed (does not swallow)', () => {
+    // Defensive: if both strings appear, prefer NOT to swallow.
+    expect(
+      isBenignKiroEmptyCompletion(
+        'Kiro failed to generate a response ... dispatch failure (io error)',
+      ),
+    ).toBe(false);
+  });
 });
 
 describe('runStage — resume mode', () => {

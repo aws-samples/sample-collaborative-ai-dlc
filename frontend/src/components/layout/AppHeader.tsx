@@ -178,7 +178,8 @@ export function AppHeader({
         <TooltipContent>Workflows</TooltipContent>
       </Tooltip>
 
-      {params.sprintId && (
+      {/* Activity panel toggle — sprint AND v2 intent routes host a panel. */}
+      {(params.sprintId || params.intentId) && (
         <Tooltip>
           <TooltipTrigger asChild>
             <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onToggleActivity}>

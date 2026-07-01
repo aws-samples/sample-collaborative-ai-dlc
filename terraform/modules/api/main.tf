@@ -257,6 +257,7 @@ resource "aws_api_gateway_deployment" "main" {
       aws_api_gateway_resource.workflow_compiled.id,
       aws_api_gateway_resource.intents.id,
       aws_api_gateway_resource.intent.id,
+      aws_api_gateway_resource.intent_graph.id,
       aws_api_gateway_resource.intent_start.id,
       aws_api_gateway_resource.intent_realtime_token.id,
       aws_api_gateway_resource.intent_gates.id,

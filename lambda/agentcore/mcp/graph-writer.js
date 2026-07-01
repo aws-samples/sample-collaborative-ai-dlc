@@ -217,7 +217,12 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     });
 
     for (const l of links) await linkArtifacts({ fromId: id, toId: l.toId, edge: l.edge });
-    return { id, artifactType, ...stamped };
+    // Return a COMPACT ack, not the full stamped record. The agent just sent
+    // `content` (potentially many KB) — echoing it back into the tool_result
+    // bloats the CLI's next request with a duplicate of what it already holds,
+    // which on large artifacts can wedge the model turn. Confirm id/type/links
+    // only; provenance lives in the graph, re-readable via get_artifact.
+    return { id, artifactType, created_at: stamped.created_at, links: links.length };
   };
 
   // Update mutable props on an existing artifact. Never touches the provenance
@@ -359,7 +364,8 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       toId: id,
       edge: KNOWLEDGE_EDGE,
     });
-    return { id, agentRef: stamped.agent_ref, ...stamped };
+    // Compact ack (see createArtifact) — never echo `content` back into the turn.
+    return { id, agentRef: stamped.agent_ref, created_at: stamped.created_at };
   };
 
   // Read the project's accrued team knowledge, optionally narrowed to one agent
@@ -428,7 +434,8 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       toId: id,
       edge: LEARNING_EDGE,
     });
-    return { id, ...stamped };
+    // Compact ack (see createArtifact) — never echo `content` back into the turn.
+    return { id, layer: stamped.layer, created_at: stamped.created_at };
   };
 
   // Read the project's accrued learning rules (both learnings layers). Returns

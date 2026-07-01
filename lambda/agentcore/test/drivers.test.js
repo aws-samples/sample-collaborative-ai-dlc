@@ -215,14 +215,32 @@ describe('runChild — exit contract', () => {
     const child = fakeChild();
     const p = runChild({ command: 'x', args: [], spawnFn: () => child });
     child.emit('close', 0);
-    expect(await p).toEqual({ exitCode: 0 });
+    expect(await p).toEqual({ exitCode: 0, stderrTail: '' });
   });
 
   it('maps a spawn error to a null exit code', async () => {
     const child = fakeChild();
     const p = runChild({ command: 'x', args: [], spawnFn: () => child });
     child.emit('error', new Error('ENOENT'));
-    expect(await p).toEqual({ exitCode: null });
+    expect(await p).toEqual({ exitCode: null, stderrTail: '' });
+  });
+
+  it('tees + buffers the stderr tail when captureStderrTail is set', async () => {
+    const child = fakeChild();
+    child.stderr = new EventEmitter();
+    const p = runChild({ command: 'x', args: [], captureStderrTail: 1024, spawnFn: () => child });
+    child.stderr.emit('data', Buffer.from('boom'));
+    child.emit('close', 1);
+    expect(await p).toEqual({ exitCode: 1, stderrTail: 'boom' });
+  });
+
+  it('clamps the buffered stderr tail to the last N bytes', async () => {
+    const child = fakeChild();
+    child.stderr = new EventEmitter();
+    const p = runChild({ command: 'x', args: [], captureStderrTail: 4, spawnFn: () => child });
+    child.stderr.emit('data', Buffer.from('0123456789'));
+    child.emit('close', 0);
+    expect(await p).toEqual({ exitCode: 0, stderrTail: '6789' });
   });
 
   it('pipes the prompt to stdin when promptViaStdin', async () => {

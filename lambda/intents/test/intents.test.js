@@ -565,6 +565,63 @@ describe('GET list + detail', () => {
     expect(res.statusCode).toBe(404);
   });
 
+  it('GET /graph returns the knowledge subgraph (empty pre-start, populated after)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+
+    // Before init-ws there is no Intent vertex — an empty graph, not an error.
+    const pre = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}/graph`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+    expect(pre.statusCode).toBe(200);
+    expect(JSON.parse(pre.body)).toEqual({ nodes: [], edges: [] });
+
+    // Seed the anchor + one artifact (what init-ws + a stage would write).
+    await g.addV('Intent').property('id', intent.id).property('title', 'T').next();
+    await g
+      .addV('Artifact')
+      .property('id', 'a1')
+      .property('artifact_type', 'requirements-analysis')
+      .property('title', 'Reqs')
+      .property('content', '# hi')
+      .next();
+    await g
+      .V()
+      .has('Intent', 'id', intent.id)
+      .addE('CONTAINS')
+      .to(gremlin.process.statics.V().has('Artifact', 'id', 'a1'))
+      .next();
+
+    const res = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}/graph`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(200);
+    const graph = JSON.parse(res.body);
+    expect(graph.nodes.map((n) => n.type).toSorted()).toEqual(['Artifact', 'Intent']);
+    expect(graph.edges).toContainEqual({ source: intent.id, target: 'a1', label: 'CONTAINS' });
+  });
+
+  it('404s GET /graph for a cross-project intent', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const otherProjectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const res = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${otherProjectId}/intents/${intent.id}/graph`,
+      pathParameters: { projectId: otherProjectId, intentId: intent.id },
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
   it('list filters by status and returns newest-first', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);

@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   buildToolHandlers,
   handlersForRole,
   registerTools,
   READ_TOOLS,
   AUTHOR_TOOLS,
+  ok,
 } from '../mcp/server.js';
 import { GraphWriteError } from '../mcp/graph-writer.js';
 
@@ -97,6 +98,40 @@ describe('buildToolHandlers — routing + envelopes', () => {
     expect(parse(env)).toEqual({ id: 'd1' });
     expect(writer.calls[0][0]).toBe('createArtifact');
     expect(writer.calls[0][1]).toMatchObject({ artifactType: 'design', id: 'd1', links: [] });
+  });
+
+  it('create_artifact emits a v2.artifact.created note so the UI updates live', async () => {
+    await h.create_artifact({ artifactType: 'design', id: 'd1', title: 'Auth design' });
+    expect(bridge.calls).toContainEqual([
+      'emitStageNote',
+      { summary: 'Artifact created: Auth design', type: 'v2.artifact.created' },
+    ]);
+  });
+
+  it('update_artifact emits a v2.artifact.updated note (falls back to the id)', async () => {
+    await h.update_artifact({ id: 'd1', props: { status: 'done' } });
+    expect(bridge.calls).toContainEqual([
+      'emitStageNote',
+      { summary: 'Artifact updated: d1', type: 'v2.artifact.updated' },
+    ]);
+  });
+
+  it('a failed artifact note never fails the tool call (the write succeeded)', async () => {
+    bridge.emitStageNote = () => {
+      throw new Error('ws down');
+    };
+    const env = await h.create_artifact({ artifactType: 'design', id: 'd1' });
+    expect(env.isError).toBeUndefined();
+    expect(parse(env)).toEqual({ id: 'd1' });
+  });
+
+  it('a failed artifact WRITE emits no note (nothing was created)', async () => {
+    writer.createArtifact = () => {
+      throw new GraphWriteError('duplicate id');
+    };
+    const env = await h.create_artifact({ artifactType: 'design', id: 'd1' });
+    expect(env.isError).toBe(true);
+    expect(bridge.calls).toEqual([]);
   });
 
   it('routes ask_question through the bridge (blocking handled there)', async () => {
@@ -221,5 +256,46 @@ describe('registerTools', () => {
     const server = { tool: (name) => registered.push(name) };
     registerTools({ server, handlers: {}, role: 'author', z: fakeZod });
     expect(registered.toSorted()).toEqual([...AUTHOR_TOOLS].toSorted());
+  });
+
+  it('traces each call with the result-envelope byte size, and passes the envelope through', async () => {
+    const captured = [];
+    const bound = {};
+    const server = { tool: (name, _d, _s, fn) => (bound[name] = fn) };
+    const handlers = { get_learning_rules: async () => ok({ hello: 'world' }) };
+    const errSpy = vi.spyOn(console, 'error').mockImplementation((m) => captured.push(m));
+    try {
+      registerTools({ server, handlers, role: 'reviewer', z: fakeZod, env: {} });
+      const env = await bound.get_learning_rules({});
+      // Envelope is returned unchanged (tracing is transparent).
+      expect(JSON.parse(env.content[0].text)).toEqual({ hello: 'world' });
+      const line = captured.find((l) => l.startsWith('[mcp-trace] get_learning_rules'));
+      expect(line).toBeDefined();
+      expect(line).toContain(`bytes=${Buffer.byteLength(env.content[0].text, 'utf8')}`);
+      expect(line).toContain('ok=true');
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it('V2_MCP_TRACE=off silences the trace (no stderr line)', async () => {
+    const captured = [];
+    const bound = {};
+    const server = { tool: (name, _d, _s, fn) => (bound[name] = fn) };
+    const handlers = { get_learning_rules: async () => ok({ ok: true }) };
+    const errSpy = vi.spyOn(console, 'error').mockImplementation((m) => captured.push(m));
+    try {
+      registerTools({
+        server,
+        handlers,
+        role: 'reviewer',
+        z: fakeZod,
+        env: { V2_MCP_TRACE: 'off' },
+      });
+      await bound.get_learning_rules({});
+      expect(captured.some((l) => String(l).startsWith('[mcp-trace]'))).toBe(false);
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 });

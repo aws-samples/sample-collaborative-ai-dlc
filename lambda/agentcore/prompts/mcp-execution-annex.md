@@ -76,6 +76,15 @@ this order; do not skip step 1:
    create through the tool. If `create_artifact` was not called, the stage
    produced nothing and you must say so, not paper over it.
 3. **THEN report usage** with `collect_metric`.
+4. **FINALLY, end with a plain-text line — NOT a tool call.** After the tool
+   calls above, your turn's LAST output MUST be a short, non-empty plain-text
+   message (one sentence stating the stage is complete, e.g. "Stage complete —
+   recorded the workspace-detection artifact."). Do **NOT** let a tool call be
+   the last thing you do: end the turn with actual assistant text. A turn that
+   ends immediately after a tool result with no closing text is rejected by the
+   runtime as an empty response and fails the stage — even though your work was
+   done correctly. This one closing sentence is mandatory on EVERY stage,
+   including deterministic setup stages that produce no artifacts.
 
 Do exactly THIS stage. Do not start other stages or invent status.
 

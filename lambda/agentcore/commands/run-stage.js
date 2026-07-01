@@ -242,6 +242,33 @@ const captureKiroSession = async ({ env, driver, workspaceDir, spawnFn }) => {
   return parseLatestKiroSession(stdout ?? '', workspaceDir);
 };
 
+// Recognise Kiro's BENIGN empty-final-completion crash. kiro-cli's ACP layer
+// (its stdio JSON-RPC protocol) rejects a turn that ends with an empty final
+// assistant message, exiting non-zero with a JSON-RPC -32603 whose data is
+// "Kiro failed to generate a response" (rendered as `Failed to receive the next
+// message: … error: Kiro failed to generate a response`). This fires AFTER the
+// turn's tool work is already done — the agent completed the stage, then had no
+// closing text to emit — so it is not a real stage failure.
+//
+// We gate narrowly on BOTH the ACP data string AND the empty-completion phrasing
+// so we do NOT swallow genuine backend transport errors (`dispatch failure`,
+// `InternalServerError`, `ThrottlingException`, `EOF while parsing`), which carry
+// their own distinct error text and CAN fail mid-turn. The prompt annex already
+// instructs the agent to end every stage with a non-empty line to avoid tripping
+// this at all; this guard is the belt-and-braces for when the model still ends
+// on a tool call.
+export const isBenignKiroEmptyCompletion = (stderrTail = '') => {
+  const s = String(stderrTail);
+  if (!s.includes('Kiro failed to generate a response')) return false;
+  // The empty-completion path always reports the failed final message fetch.
+  // Transport errors name a concrete cause after `error:` instead; those must
+  // still fail. So require the generic phrasing AND the absence of a transport
+  // cause on the same signal.
+  const transportCause =
+    /dispatch failure|InternalServerError|ServiceUnavailable|ThrottlingException|EOF while parsing|invalid escape|request or response body error/i;
+  return !transportCause.test(s);
+};
+
 // Return the execution's still-pending HUMAN gate (if any). The meta row's
 // `pendingHumanTaskId` is the source of truth ask_question sets when it parks; we
 // confirm the gate is still pending before treating the stage as parked.
@@ -560,6 +587,10 @@ export const runStage = async (
       cwd: workspaceDir,
       prompt,
       promptViaStdin: invocation.promptViaStdin,
+      // Kiro only: tee the stderr tail so we can recognise its benign
+      // empty-final-completion crash (see isBenignKiroEmptyCompletion). Claude
+      // needs no such inspection, so we leave its stderr purely inherited.
+      captureStderrTail: cli === 'kiro' ? 16_384 : 0,
       spawnFn,
     });
   } catch (e) {
@@ -567,6 +598,9 @@ export const runStage = async (
   }
 
   const exitCode = result?.exitCode ?? 0;
+  console.error(
+    `[run-stage] cli=${cli} stage=${stageId} exitCode=${exitCode} model=${model ?? '(default)'}`,
+  );
 
   // Kiro only: persist the live local store back to the durable mount after the
   // run. Runs on ANY exit (success, park, or crash) so a parked conversation is
@@ -604,7 +638,26 @@ export const runStage = async (
   // so a Kiro run that parks then errors on its next turn parks rather than fails.
   const parked = await pendingGate({ store, executionId });
   if (!parked && exitCode !== 0) {
-    return fail(stageInstanceId, 'cli_nonzero_exit', String(exitCode));
+    // Kiro's benign empty-final-completion crash: the turn's work completed, the
+    // agent just ended without closing text and kiro-cli's ACP rejected the empty
+    // message. Treat as success (not a stage failure) but record a note so the
+    // signature stays visible. Sensors below still run and can hold the stage.
+    if (cli === 'kiro' && isBenignKiroEmptyCompletion(result?.stderrTail)) {
+      console.error(
+        `[run-stage] kiro empty-completion (benign) on ${stageId}; exitCode=${exitCode} — treating as success`,
+      );
+      await store
+        .appendEvent({
+          executionId,
+          type: 'v2.stage.note',
+          stageInstanceId,
+          actor: 'agentcore',
+          summary: `Kiro exited ${exitCode} with an empty final message after completing work; treated as success (ACP empty-completion).`,
+        })
+        .catch(() => {});
+    } else {
+      return fail(stageInstanceId, 'cli_nonzero_exit', String(exitCode));
+    }
   }
   if (parked) {
     await store
@@ -686,4 +739,5 @@ export const __test = {
   composeKnowledge,
   renderTeamKnowledge,
   formatResumeAnswer,
+  isBenignKiroEmptyCompletion,
 };

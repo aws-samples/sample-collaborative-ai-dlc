@@ -1,254 +1,67 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   intentsService,
+  type GateAnswer,
   type IntentDetail,
   type IntentGate,
-  type StageState,
 } from '@/services/intents';
-import { workflowsService, type CompiledWorkflow } from '@/services/workflows';
-import { useIntentEvents, type IntentEvent } from '@/hooks/useIntentEvents';
+import { useIntent } from '@/contexts/IntentContext';
 import { useAuth } from '@/contexts/AuthContext';
 import QuestionEditor from '@/components/QuestionEditor';
 import type { Question } from '@/services/questions';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
-import { DiscussionPanel } from '@/components/discussion/DiscussionPanel';
-import { useDiscussions } from '@/components/discussion/DiscussionProvider';
+import { IntentStageList } from '@/components/intent/IntentStageList';
+import { IntentGraph } from '@/components/intent/IntentGraph';
+import { KnowledgeGraph } from '@/components/intent/KnowledgeGraph';
+import { ArtifactViewer } from '@/components/intent/ArtifactViewer';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Textarea } from '@/components/ui/textarea';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { cn } from '@/lib/utils';
-import { Loader2, CheckCircle2, XCircle, MessageCircleQuestion, Circle, Play } from 'lucide-react';
+import { List, Loader2, Play, Workflow, XCircle } from 'lucide-react';
 
-// Stage-state visual config, mirroring the agent-status color tokens.
-const STAGE_STYLE: Record<StageState, { label: string; cls: string; Icon: typeof Circle }> = {
-  PENDING: { label: 'Pending', cls: 'bg-muted text-muted-foreground', Icon: Circle },
-  RUNNING: {
-    label: 'Running',
-    cls: 'bg-agent-running/15 text-agent-running border-agent-running/30',
-    Icon: Loader2,
-  },
-  WAITING_FOR_HUMAN: {
-    label: 'Waiting',
-    cls: 'bg-agent-waiting/15 text-agent-waiting border-agent-waiting/30',
-    Icon: MessageCircleQuestion,
-  },
-  SUCCEEDED: {
-    label: 'Succeeded',
-    cls: 'bg-agent-success/15 text-agent-success border-agent-success/30',
-    Icon: CheckCircle2,
-  },
-  FAILED: {
-    label: 'Failed',
-    cls: 'bg-agent-error/15 text-agent-error border-agent-error/30',
-    Icon: XCircle,
-  },
-  SKIPPED: { label: 'Skipped', cls: 'bg-muted/50 text-muted-foreground opacity-60', Icon: Circle },
-};
-
-function StageBadge({ state }: { state: StageState }) {
-  const { label, cls, Icon } = STAGE_STYLE[state] ?? STAGE_STYLE.PENDING;
-  return (
-    <Badge variant="outline" className={cn('gap-1 text-[10px]', cls)}>
-      <Icon className={cn('h-3 w-3', state === 'RUNNING' && 'animate-spin')} />
-      {label}
-    </Badge>
-  );
-}
-
+// The v2 intent page — main-pane content only. All fetch/realtime/output state
+// lives in IntentProvider (mounted by AppShell, shared with the right-hand
+// IntentActivityPanel where output/timeline/discussions render).
 export default function IntentView() {
-  const { projectId, intentId } = useParams<{ projectId: string; intentId: string }>();
+  const {
+    projectId,
+    intentId,
+    detail,
+    loading,
+    error: loadError,
+    pendingGates,
+    reload,
+    answerGate,
+  } = useIntent();
   const navigate = useNavigate();
   const { user } = useAuth();
   const userName = user?.displayName || user?.email || '';
-  // Discussions are provided by AppShell's DiscussionProvider; on this route it
-  // resolves an intent scope. `isOpen` drives the inline thread panel below.
-  const discussions = useDiscussions();
 
-  const [detail, setDetail] = useState<IntentDetail | null>(null);
-  const [compiled, setCompiled] = useState<CompiledWorkflow | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [view, setView] = useState<'list' | 'graph'>('list');
 
-  // DRAFT define-form state.
-  const [prompt, setPrompt] = useState('');
-  const [branch, setBranch] = useState('');
-
-  // Live agent.question gates accumulated by humanTaskId (D3 multi-gate). Seeded
-  // from the assembled detail, then upserted on each agent.question event.
-  const [liveGates, setLiveGates] = useState<Map<string, IntentGate>>(new Map());
-  // Live streamed output appended per stage instance (replayed from detail first).
-  const outputBufRef = useRef<Map<string, string>>(new Map());
-  const [, forceRender] = useState(0);
-
-  const load = useCallback(async () => {
-    if (!projectId || !intentId) return;
-    try {
-      const dto = await intentsService.get(projectId, intentId);
-      setDetail(dto);
-      if (dto.intent.status === 'DRAFT') {
-        setPrompt(dto.intent.prompt ?? '');
-        setBranch(dto.intent.branch ?? '');
-      }
-      // Seed the gate map + output buffers from durable state.
-      setLiveGates(new Map(dto.gates.map((g) => [g.humanTaskId, g])));
-      const buf = new Map<string, string>();
-      for (const o of dto.outputs) {
-        const key = o.stageInstanceId ?? 'intent';
-        buf.set(key, (buf.get(key) ?? '') + o.content);
-      }
-      outputBufRef.current = buf;
-      // Compiled workflow drives the phase/stage tree (best-effort).
-      if (dto.intent.workflowId) {
-        workflowsService
-          .compiled(dto.intent.workflowId, dto.intent.workflowVersion ?? undefined)
-          .then(setCompiled)
-          .catch(() => {});
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load intent');
-    } finally {
-      setLoading(false);
-    }
-  }, [projectId, intentId]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  // Polling backstop. Lifecycle/failure transitions are now broadcast live by the
-  // orchestrator (agent.workspace / agent.execution → refetch), but WS frames can
-  // be dropped, so while a run is mid-flight (CREATED during init-ws, RUNNING, or
-  // WAITING) we also poll on a slow interval to guarantee init-ws progress and a
-  // FAILED transition reach the UI even if a broadcast is missed.
-  const pollStatus = detail?.intent.status;
-  useEffect(() => {
-    if (!pollStatus || !['CREATED', 'RUNNING', 'WAITING'].includes(pollStatus)) return;
-    const id = setInterval(load, 8000);
-    return () => clearInterval(id);
-  }, [pollStatus, load]);
-
-  // Realtime: refetch on lifecycle transitions; accumulate questions + output live.
-  const onEvent = useCallback(
-    (evt: IntentEvent) => {
-      if (evt.action === 'agent.question' && evt.humanTaskId) {
-        setLiveGates((prev) => {
-          const next = new Map(prev);
-          const existing = next.get(evt.humanTaskId!);
-          next.set(evt.humanTaskId!, {
-            humanTaskId: evt.humanTaskId!,
-            stageInstanceId: evt.stageInstanceId ?? null,
-            kind: 'question',
-            status: 'pending',
-            prompt: null,
-            options: null,
-            questions:
-              typeof evt.questions === 'string'
-                ? evt.questions
-                : JSON.stringify(evt.questions ?? null),
-            answer: null,
-            answeredBy: null,
-            answeredAt: null,
-            createdAt: existing?.createdAt ?? null,
-          });
-          return next;
-        });
-        return;
-      }
-      if (evt.action === 'agent.output' && evt.content) {
-        const key = evt.stageInstanceId ?? 'intent';
-        outputBufRef.current.set(key, (outputBufRef.current.get(key) ?? '') + evt.content);
-        forceRender((n) => n + 1);
-        return;
-      }
-      // Stage/execution/metric/note transitions → refetch the assembled DTO.
-      if (
-        evt.action === 'agent.stage' ||
-        evt.action === 'agent.execution' ||
-        evt.action === 'agent.workspace' ||
-        evt.action === 'agent.metric' ||
-        evt.action === 'agent.note'
-      ) {
-        load();
-      }
-    },
-    [load],
-  );
-  useIntentEvents(projectId ?? '', intentId ?? '', onEvent);
-
+  // Start (DRAFT) and restart (FAILED / stranded CREATED) share the /start
+  // endpoint, which re-enters the pipeline and clears a prior failureReason.
   const handleStart = async () => {
     if (!projectId || !intentId) return;
     setStarting(true);
-    setError(null);
+    setActionError(null);
     try {
-      // Persist any prompt edit before starting is out of scope here — the
-      // create flow captured it; Start just kicks the run.
       await intentsService.start(projectId, intentId);
-      await load();
+      await reload();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to start intent');
+      setActionError(err instanceof Error ? err.message : 'Failed to start intent');
     } finally {
       setStarting(false);
     }
   };
-
-  // Restart a FAILED (or stranded CREATED) run — same /start endpoint, which now
-  // re-enters the pipeline and clears the prior failureReason.
-  const handleRestart = async () => {
-    if (!projectId || !intentId) return;
-    setStarting(true);
-    setError(null);
-    try {
-      await intentsService.start(projectId, intentId);
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to restart intent');
-    } finally {
-      setStarting(false);
-    }
-  };
-
-  const handleAnswerGate = useCallback(
-    async (gate: IntentGate, answer: unknown) => {
-      if (!projectId || !intentId) return;
-      await intentsService.answerGate(projectId, intentId, gate.humanTaskId, { answer });
-      await load();
-    },
-    [projectId, intentId, load],
-  );
-
-  // Merge the compiled plan's stages with the live STAGE# rows so plan stages
-  // with no row yet render as PENDING (keyed by stageId).
-  const stageRows = useMemo(() => {
-    const byStageId = new Map(detail?.stages.map((s) => [s.stageId, s]) ?? []);
-    const planStageIds = compiled?.graph.nodes.map((n) => n.stageId) ?? [];
-    const ordered = planStageIds.length
-      ? planStageIds
-      : (detail?.stages.map((s) => s.stageId ?? '') ?? []);
-    return ordered.map((stageId) => {
-      const row = byStageId.get(stageId);
-      return {
-        stageId,
-        phase:
-          row?.phase ?? compiled?.graph.nodes.find((n) => n.stageId === stageId)?.phasePath ?? null,
-        state: (row?.state ?? 'PENDING') as StageState,
-        stageInstanceId: row?.stageInstanceId ?? null,
-        runtimeError: row?.runtimeError ?? null,
-      };
-    });
-  }, [detail, compiled]);
-
-  const pendingGates = useMemo(
-    () => [...liveGates.values()].filter((g) => g.status === 'pending'),
-    [liveGates],
-  );
 
   if (!projectId || !intentId) return <div className="p-6">Intent not found</div>;
   if (loading && !detail) {
@@ -262,16 +75,17 @@ export default function IntentView() {
   if (!detail) return <div className="p-6">Intent not found</div>;
 
   const intent = detail.intent;
+  const error = actionError ?? loadError;
   const isDraft = intent.status === 'DRAFT';
   const isActive = intent.status === 'RUNNING' || intent.status === 'WAITING';
   const isFailed = intent.status === 'FAILED';
-  // Pre-stage progress: before any stage row exists, init-ws lifecycle events are
-  // the only signal the run is doing something. Show them so it isn't a dead screen.
+  // Pre-stage progress: before any stage row exists, init-ws lifecycle events
+  // are the only signal the run is doing something (they stream into the
+  // sidebar Timeline); this strip keeps the main pane from looking dead.
   const noStageRowsYet = detail.stages.length === 0;
   // Stalled detection: a CREATED run whose hand-off never reached a live
-  // orchestrator strands here (init-ws should flip it to RUNNING within seconds).
-  // If it's been CREATED and untouched for >2 min, treat it as stuck and offer a
-  // restart rather than spinning forever with no affordance.
+  // orchestrator strands here (init-ws should flip it to RUNNING within
+  // seconds). After >2 min untouched, offer a restart instead of spinning.
   const lastTouch = intent.updatedAt ?? intent.createdAt;
   const isStalled =
     intent.status === 'CREATED' &&
@@ -304,6 +118,12 @@ export default function IntentView() {
         </div>
         <div className="text-xs text-muted-foreground">
           {intent.workflowId} · v{intent.workflowVersion} · {intent.scope}
+          {isActive && intent.currentStage && (
+            <>
+              {' · '}
+              <span className="text-foreground">{intent.currentStage}</span>
+            </>
+          )}
           {intent.source && (
             <>
               {' · '}
@@ -352,7 +172,7 @@ export default function IntentView() {
               )}
             </div>
             <Button
-              onClick={handleRestart}
+              onClick={handleStart}
               disabled={starting}
               size="sm"
               variant="outline"
@@ -369,33 +189,32 @@ export default function IntentView() {
         </div>
       )}
 
-      {/* DRAFT: define + Start */}
+      {/* DRAFT: review + Start. The prompt is read-only — there is no update
+          endpoint, so an editable field would silently discard changes. */}
       {isDraft ? (
         <Card>
           <CardHeader className="pb-3">
-            <CardTitle className="text-base">Define & start</CardTitle>
+            <CardTitle className="text-base">Review & start</CardTitle>
             <p className="text-sm text-muted-foreground">
               Review the prompt and kick off the run. Stages execute per the workflow's plan.
             </p>
           </CardHeader>
           <CardContent className="space-y-4">
             <div>
-              <Label htmlFor="intent-prompt">Prompt</Label>
-              <Textarea
-                id="intent-prompt"
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                rows={5}
-                className="mt-1.5"
-                placeholder="Describe the intent for the agents to work on…"
-              />
+              <Label>Prompt</Label>
+              <div className="mt-1.5 max-h-64 overflow-y-auto whitespace-pre-wrap rounded-md border bg-muted/30 px-3 py-2 text-sm">
+                {intent.prompt || '—'}
+              </div>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Set when the intent was created — create a new intent to change it.
+              </p>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <Label htmlFor="intent-branch">Branch</Label>
                 <Input
                   id="intent-branch"
-                  value={branch}
+                  value={intent.branch ?? ''}
                   disabled
                   className="mt-1.5 font-mono text-sm"
                 />
@@ -433,7 +252,7 @@ export default function IntentView() {
                   projectId={projectId}
                   intentId={intentId}
                   userName={userName}
-                  onAnswer={handleAnswerGate}
+                  onAnswer={answerGate}
                 />
               ))}
             </div>
@@ -448,71 +267,51 @@ export default function IntentView() {
             </div>
           )}
 
-          {/* Activity feed — lifecycle events (workspace init, completion, failure).
-              The only window into init-ws and other non-stage progress. */}
-          {(detail.events?.length ?? 0) > 0 && (
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm">Activity</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-1.5">
-                {detail.events.map((ev) => (
-                  <div key={ev.eventId} className="flex items-start gap-2 text-[12px]">
-                    <span className="mt-0.5 shrink-0 font-mono text-muted-foreground">
-                      {ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : ''}
-                    </span>
-                    <span
-                      className={cn(
-                        'min-w-0',
-                        ev.type === 'v2.execution.failed' && 'text-agent-error',
-                        ev.type === 'v2.execution.succeeded' && 'text-agent-success',
-                      )}
-                    >
-                      {ev.summary || ev.type}
-                    </span>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-          )}
+          {/* Stage pipeline — list (default) or topological graph, one shared
+              drill-down selection. `id` anchors artifact→stage jump links. */}
+          <Card id="intent-stages" className="scroll-mt-4">
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between gap-2">
+                <CardTitle className="text-sm">Stages</CardTitle>
+                <ToggleGroup
+                  type="single"
+                  value={view}
+                  onValueChange={(v) => v && setView(v as 'list' | 'graph')}
+                  className="h-7"
+                >
+                  <ToggleGroupItem value="list" aria-label="List view" className="h-7 gap-1 px-2">
+                    <List className="h-3.5 w-3.5" />
+                    <span className="text-xs">List</span>
+                  </ToggleGroupItem>
+                  <ToggleGroupItem value="graph" aria-label="Graph view" className="h-7 gap-1 px-2">
+                    <Workflow className="h-3.5 w-3.5" />
+                    <span className="text-xs">Graph</span>
+                  </ToggleGroupItem>
+                </ToggleGroup>
+              </div>
+            </CardHeader>
+            <CardContent>{view === 'list' ? <IntentStageList /> : <IntentGraph />}</CardContent>
+          </Card>
 
-          {/* Phase / stage tree */}
+          {/* Knowledge graph — the Neptune subgraph the agents traverse:
+              artifacts + typed relations, questions, discussions, and the
+              project knowledge injected into every stage. Process lives above
+              (stages); this is the OUTPUT view. */}
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-sm">Stages</CardTitle>
+              <CardTitle className="text-sm">Knowledge graph</CardTitle>
+              <p className="text-xs text-muted-foreground">
+                What the agents produced and drew on — artifacts and their relations, questions,
+                discussions, and project knowledge.
+              </p>
             </CardHeader>
-            <CardContent className="space-y-1.5">
-              {stageRows.map((s) => (
-                <div
-                  key={s.stageId}
-                  className={cn(
-                    'flex items-center gap-3 rounded-md border px-3 py-2 text-sm',
-                    s.stageId === intent.currentStage && 'border-primary/40 bg-primary/[0.03]',
-                  )}
-                >
-                  <span className="min-w-0 flex-1">
-                    <span className="font-medium">{s.stageId}</span>
-                    {s.phase && (
-                      <span className="ml-2 text-[11px] text-muted-foreground">{s.phase}</span>
-                    )}
-                    {s.runtimeError && (
-                      <span className="block text-[11px] text-agent-error">{s.runtimeError}</span>
-                    )}
-                  </span>
-                  <StageBadge state={s.state} />
-                </div>
-              ))}
-              {stageRows.length === 0 && (
-                <p className="text-sm text-muted-foreground">No stages resolved yet.</p>
-              )}
+            <CardContent>
+              <KnowledgeGraph />
             </CardContent>
           </Card>
 
           {/* Metrics */}
           {detail.metrics.length > 0 && <MetricsPanel detail={detail} />}
-
-          {/* Streamed output */}
-          <OutputPanel buffers={outputBufRef.current} />
 
           {/* Artifacts */}
           {detail.artifacts.length > 0 && (
@@ -522,48 +321,22 @@ export default function IntentView() {
               </CardHeader>
               <CardContent className="space-y-3">
                 {detail.artifacts.map((a) => (
-                  <details key={a.id} className="rounded border px-3 py-2">
-                    <summary className="cursor-pointer text-sm font-medium">
-                      {a.title || a.id}
-                      {a.artifactType && (
-                        <Badge variant="secondary" className="ml-2 text-[10px]">
-                          {a.artifactType}
-                        </Badge>
-                      )}
-                      {/* Per-artifact discussion thread. */}
-                      <DiscussButton
-                        entityType="artifact"
-                        entityId={a.id}
-                        entityTitle={a.title || a.id}
-                        className="ml-1 align-middle"
-                      />
-                    </summary>
-                    {a.content && (
-                      <div className="prose prose-sm dark:prose-invert max-w-none mt-2">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{a.content}</ReactMarkdown>
-                      </div>
-                    )}
-                  </details>
+                  <ArtifactViewer key={a.id} artifact={a} />
                 ))}
               </CardContent>
             </Card>
           )}
         </>
       )}
-
-      {/* Discussion thread — opened by any DiscussButton (intent or artifact).
-          Renders as a right-side sheet hosting the shared DiscussionPanel. */}
-      {discussions?.isOpen && (
-        <div className="fixed inset-y-0 right-0 z-40 flex w-full max-w-md flex-col border-l bg-background shadow-xl">
-          <DiscussionPanel />
-        </div>
-      )}
     </div>
   );
 }
 
-// Map a v2 HUMAN# gate to the QuestionEditor's Question shape, keyed by the
-// intent collaboration scope.
+// Map a v2 HUMAN# gate to the right editor, keyed by the intent collaboration
+// scope. `question` gates render the structured QuestionEditor; approval and
+// review-verdict gates render prompt + options. NOTE: the runtime currently
+// only emits `question` gates — the other branches are forward-compat for the
+// schema-valid kinds (lambda/shared/v2-process-keys.js HUMAN_TASK_KINDS).
 function GateCard({
   gate,
   isActiveGate,
@@ -577,7 +350,7 @@ function GateCard({
   projectId: string;
   intentId: string;
   userName: string;
-  onAnswer: (gate: IntentGate, answer: unknown) => Promise<void>;
+  onAnswer: (gate: IntentGate, input: GateAnswer) => Promise<void>;
 }) {
   const question = useMemo<Question | null>(() => {
     let parsed: Question['questions'] = [];
@@ -596,13 +369,65 @@ function GateCard({
     };
   }, [gate]);
 
+  if (gate.kind === 'review-verdict') {
+    const options = Array.isArray(gate.options)
+      ? gate.options.filter((o): o is string => typeof o === 'string')
+      : [];
+    return (
+      <Card className={cn(isActiveGate && 'border-agent-waiting/40')}>
+        <CardContent className="space-y-2 py-3">
+          <p className="text-sm font-medium">{gate.prompt || 'Review verdict required'}</p>
+          <div className="flex flex-wrap gap-2">
+            {options.length > 0 ? (
+              options.map((opt) => (
+                <Button
+                  key={opt}
+                  size="sm"
+                  variant="outline"
+                  onClick={() =>
+                    onAnswer(gate, {
+                      answer: opt,
+                      status: /reject/i.test(opt) ? 'rejected' : 'answered',
+                    })
+                  }
+                >
+                  {opt}
+                </Button>
+              ))
+            ) : (
+              <>
+                <Button
+                  size="sm"
+                  onClick={() => onAnswer(gate, { answer: 'approve', status: 'approved' })}
+                >
+                  Approve
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => onAnswer(gate, { answer: 'reject', status: 'rejected' })}
+                >
+                  Reject
+                </Button>
+              </>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
   if (!question) {
     // A non-structured gate (approval): fall back to a simple prompt.
     return (
       <Card className={cn(isActiveGate && 'border-agent-waiting/40')}>
         <CardContent className="py-3">
           <p className="text-sm">{gate.prompt || 'Approval required'}</p>
-          <Button size="sm" className="mt-2" onClick={() => onAnswer(gate, { approved: true })}>
+          <Button
+            size="sm"
+            className="mt-2"
+            onClick={() => onAnswer(gate, { answer: { approved: true }, status: 'approved' })}
+          >
             Approve
           </Button>
         </CardContent>
@@ -616,7 +441,7 @@ function GateCard({
         question={question}
         scope={{ kind: 'intent', id: intentId, projectId }}
         userName={userName}
-        onAnswer={(structuredAnswer) => onAnswer(gate, structuredAnswer)}
+        onAnswer={(structuredAnswer) => onAnswer(gate, { answer: structuredAnswer })}
       />
     </div>
   );
@@ -645,28 +470,6 @@ function MetricsPanel({ detail }: { detail: IntentDetail }) {
           <div key={k} className="rounded border px-3 py-2">
             <p className="text-[11px] text-muted-foreground">{k}</p>
             <p className="text-sm font-medium">{v.toLocaleString()}</p>
-          </div>
-        ))}
-      </CardContent>
-    </Card>
-  );
-}
-
-function OutputPanel({ buffers }: { buffers: Map<string, string> }) {
-  const all = [...buffers.entries()].filter(([, v]) => v.trim().length > 0);
-  if (all.length === 0) return null;
-  return (
-    <Card>
-      <CardHeader className="pb-3">
-        <CardTitle className="text-sm">Agent output</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {all.map(([key, content]) => (
-          <div key={key}>
-            <p className="text-[11px] text-muted-foreground mb-1">{key}</p>
-            <pre className="max-h-80 overflow-auto rounded bg-muted/50 p-3 text-xs whitespace-pre-wrap break-words">
-              {content}
-            </pre>
           </div>
         ))}
       </CardContent>

@@ -17,6 +17,7 @@ import { fetchMembershipRole, projectTrackersFoldStep, mapBinding } from '../sha
 import { signRealtimeToken } from '../shared/realtime-token.js';
 import cliModelsPkg from '../shared/cli-models.js';
 import workflowPlanPkg from '../shared/v2-workflow-plan.js';
+import { fetchKnowledgeGraph } from './knowledge-graph.js';
 
 const { createProcessStore } = pkg;
 const { parseCliModels, mergeCliModels } = cliModelsPkg;
@@ -357,6 +358,18 @@ export const handler = async (event) => {
     }
 
     if (intentId && httpMethod === 'GET') {
+      // GET /projects/{projectId}/intents/{intentId}/graph — the intent's
+      // Neptune knowledge subgraph (artifacts + typed relations + questions +
+      // discussions + the project knowledge corpus) for the KnowledgeGraph
+      // view. Same membership check as the detail DTO.
+      if (path?.endsWith('/graph')) {
+        const meta = await store.getExecution(intentId);
+        if (!meta || meta.projectId !== projectId) {
+          return response(404, { error: 'Intent not found' });
+        }
+        return response(200, await fetchKnowledgeGraph(g, { projectId, intentId }));
+      }
+
       // GET single — assembled detail DTO.
       const records = await store.getExecutionRecords(intentId);
       if (!records.meta || records.meta.projectId !== projectId) {

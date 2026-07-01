@@ -1,0 +1,198 @@
+import { useMemo } from 'react';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
+import { useIntent, type IntentStageRow } from '@/contexts/IntentContext';
+import { formatDuration, useTick } from '@/components/intent/stageStyle';
+import { SensorChips } from '@/components/intent/SensorChips';
+import { FileText, ScrollText } from 'lucide-react';
+
+// Drill-down for one stage, shared by the list (inline expansion) and the
+// graph (below-canvas panel): timing, dependencies (derived from the compiled
+// edges — the DTO has no dependencyStageIds), sensors, metrics, artifacts
+// produced and the jump to its streamed output in the sidebar.
+export function StageDetail({ row }: { row: IntentStageRow }) {
+  const {
+    detail,
+    stageEdges,
+    gates,
+    sensorsByStage,
+    artifactsByStage,
+    outputBuffers,
+    setSelectedStageId,
+    focusOutput,
+  } = useIntent();
+  useTick(row.state === 'RUNNING');
+
+  const dependsOn = useMemo(
+    () => stageEdges.filter((e) => e.to === row.stageId),
+    [stageEdges, row.stageId],
+  );
+  const produces = useMemo(
+    () => [
+      ...new Set(
+        stageEdges
+          .filter((e) => e.from === row.stageId && e.kind === 'data' && e.artifact)
+          .map((e) => e.artifact as string),
+      ),
+    ],
+    [stageEdges, row.stageId],
+  );
+
+  const instanceId = row.stageInstanceId;
+  const sensors = instanceId ? (sensorsByStage.get(instanceId) ?? []) : [];
+  const artifacts = instanceId ? (artifactsByStage.get(instanceId) ?? []) : [];
+  const stageGates = instanceId ? gates.filter((g) => g.stageInstanceId === instanceId) : [];
+  const hasOutput = !!instanceId && !!outputBuffers.get(instanceId)?.trim();
+
+  const metrics = useMemo(() => {
+    if (!instanceId) return [];
+    const acc: Record<string, number> = {};
+    for (const m of detail?.metrics ?? []) {
+      if (m.stageInstanceId !== instanceId) continue;
+      for (const [k, v] of Object.entries(m.metrics ?? {})) {
+        if (typeof v === 'number') acc[k] = (acc[k] ?? 0) + v;
+      }
+    }
+    return Object.entries(acc);
+  }, [detail, instanceId]);
+
+  const duration = formatDuration(row.startedAt, row.state === 'RUNNING' ? null : row.completedAt);
+
+  return (
+    <div className="space-y-3 rounded-b-md border border-t-0 bg-muted/20 px-3 py-3 text-sm">
+      {/* Meta line */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+        {row.phase && <span>Phase {row.phase}</span>}
+        {duration && (
+          <span>
+            {row.state === 'RUNNING' ? 'Running for ' : 'Took '}
+            <span className="font-medium text-foreground">{duration}</span>
+          </span>
+        )}
+        {row.attempt > 1 && <span>Attempt {row.attempt}</span>}
+        {row.cli && (
+          <Badge variant="secondary" className="px-1 py-0 text-[9px]">
+            {row.cli}
+          </Badge>
+        )}
+        {!row.planned && <span className="italic">not in the compiled plan</span>}
+      </div>
+
+      {row.runtimeError && (
+        <p className="break-words rounded border border-agent-error/30 bg-agent-error/10 px-2 py-1.5 font-mono text-[11px] text-agent-error">
+          {row.runtimeError}
+        </p>
+      )}
+
+      {/* Wiring */}
+      {(dependsOn.length > 0 || produces.length > 0) && (
+        <div className="space-y-1.5">
+          {dependsOn.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1 text-[11px]">
+              <span className="text-muted-foreground">Depends on</span>
+              {dependsOn.map((e, i) => (
+                <button
+                  key={`${e.from}-${i}`}
+                  type="button"
+                  onClick={() => setSelectedStageId(e.from)}
+                  title={e.kind === 'data' ? `reads ${e.artifact}` : e.kind}
+                  className={cn(
+                    'rounded border px-1.5 py-0.5 font-medium hover:bg-muted',
+                    e.kind !== 'data' && 'border-dashed',
+                  )}
+                >
+                  {e.from}
+                  {e.kind === 'data' && e.artifact && (
+                    <span className="ml-1 font-normal text-muted-foreground">{e.artifact}</span>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+          {produces.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1 text-[11px]">
+              <span className="text-muted-foreground">Produces</span>
+              {produces.map((a) => (
+                <span key={a} className="rounded border px-1.5 py-0.5">
+                  {a}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Sensor runs (full history, incl. superseded attempts) */}
+      {sensors.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-[11px] text-muted-foreground">Sensors</p>
+          <SensorChips runs={sensors} />
+        </div>
+      )}
+
+      {/* Per-stage metrics */}
+      {metrics.length > 0 && (
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
+          {metrics.map(([k, v]) => (
+            <span key={k}>
+              <span className="text-muted-foreground">{k}</span>{' '}
+              <span className="font-medium">{v.toLocaleString()}</span>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Gates raised by this stage */}
+      {stageGates.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1 text-[11px]">
+          <span className="text-muted-foreground">Gates</span>
+          {stageGates.map((g) => (
+            <Badge
+              key={g.humanTaskId}
+              variant="outline"
+              className={cn(
+                'px-1 py-0 text-[9px]',
+                g.status === 'pending' &&
+                  'bg-agent-waiting/15 text-agent-waiting border-agent-waiting/30',
+              )}
+            >
+              {g.kind} · {g.status}
+            </Badge>
+          ))}
+        </div>
+      )}
+
+      {/* Jumps */}
+      <div className="flex flex-wrap items-center gap-2">
+        {hasOutput && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 gap-1 px-2 text-[11px]"
+            onClick={() => focusOutput(instanceId)}
+          >
+            <ScrollText className="h-3 w-3" />
+            View output
+          </Button>
+        )}
+        {artifacts.map((a) => (
+          <Button
+            key={a.id}
+            size="sm"
+            variant="outline"
+            className="h-6 gap-1 px-2 text-[11px]"
+            onClick={() =>
+              document
+                .getElementById(`artifact-${a.id}`)
+                ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+            }
+          >
+            <FileText className="h-3 w-3" />
+            {a.title || a.artifactType || a.id}
+          </Button>
+        ))}
+      </div>
+    </div>
+  );
+}
