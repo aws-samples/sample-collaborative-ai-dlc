@@ -74,23 +74,27 @@ export const runChild = ({
 
 // Run a short command and CAPTURE its stdout — used for the Kiro post-run session
 // id capture (`--list-sessions --format json`), which the long-lived runChild
-// can't do (it inherits stdout to the log). Resolves { exitCode, stdout }; a
-// spawn error yields { exitCode: null, stdout: '' } so the caller degrades.
-export const captureChild = ({ command, args, env, cwd, spawnFn = spawn }) =>
+// can't do (it inherits stdout to the log). `captureStderr` additionally buffers
+// stderr (kiro-cli prints its `/usage` report there). Resolves { exitCode,
+// stdout, stderr }; a spawn error yields { exitCode: null, stdout: '', stderr: '' }
+// so the caller degrades.
+export const captureChild = ({ command, args, env, cwd, captureStderr = false, spawnFn = spawn }) =>
   new Promise((resolve) => {
     const child = spawnFn(command, args, {
       cwd,
       env: { ...process.env, ...env },
       shell: false,
-      stdio: ['ignore', 'pipe', 'inherit'],
+      stdio: ['ignore', 'pipe', captureStderr ? 'pipe' : 'inherit'],
     });
     let stdout = '';
     child.stdout?.on('data', (c) => (stdout += c.toString()));
+    let stderr = '';
+    if (captureStderr) child.stderr?.on('data', (c) => (stderr += c.toString()));
     let settled = false;
     const finish = (exitCode) => {
       if (settled) return;
       settled = true;
-      resolve({ exitCode, stdout });
+      resolve({ exitCode, stdout, stderr });
     };
     child.on('error', () => finish(null));
     child.on('close', (code) => finish(code));

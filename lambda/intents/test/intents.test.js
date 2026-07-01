@@ -696,6 +696,105 @@ describe('GET list + detail', () => {
     expect(dto.project.cost.anyUnpriced).toBe(true);
   });
 
+  it('prices a Kiro credits sample at its stamped rate and covers the token sample', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const si = 'si-kiro';
+    // The agent's self-reported token sample (Kiro id — not token-priceable) …
+    procStore.set(keyOf(`EXEC#${intent.id}`, `METRIC#2026-01-01T00:00:01Z#t1`), {
+      pk: `EXEC#${intent.id}`,
+      sk: `METRIC#2026-01-01T00:00:01Z#t1`,
+      type: 'Metric',
+      executionId: intent.id,
+      stageInstanceId: si,
+      metricId: 't1',
+      resolvedModel: 'claude-opus-4.6',
+      metrics: { tokensInput: 500_000, tokensOutput: 20_000 },
+      timestamp: '2026-01-01T00:00:01Z',
+    });
+    // … plus the runner's credits sample, stamped with the $/credit rate.
+    procStore.set(keyOf(`EXEC#${intent.id}`, `METRIC#2026-01-01T00:00:02Z#c1`), {
+      pk: `EXEC#${intent.id}`,
+      sk: `METRIC#2026-01-01T00:00:02Z#c1`,
+      type: 'Metric',
+      executionId: intent.id,
+      stageInstanceId: si,
+      metricId: 'c1',
+      resolvedModel: 'claude-opus-4.6',
+      creditRate: 0.04,
+      metrics: { credits: 12.5 },
+      timestamp: '2026-01-01T00:00:02Z',
+    });
+    const detail = JSON.parse(
+      (
+        await handler({
+          httpMethod: 'GET',
+          path: `/projects/${projectId}/intents/${intent.id}`,
+          pathParameters: { projectId, intentId: intent.id },
+          ...claims(sub),
+        })
+      ).body,
+    );
+    const byId = Object.fromEntries(detail.metrics.map((m) => [m.metricId, m]));
+    // Credits price as an estimate: 12.5 × $0.04 = $0.50.
+    expect(byId.c1.cost.priced).toBe(true);
+    expect(byId.c1.cost.estimated).toBe(true);
+    expect(byId.c1.cost.totalCost).toBeCloseTo(0.5);
+    // The Kiro token sample itself is still unpriced (credits are the spend).
+    expect(byId.t1.cost.priced).toBe(false);
+
+    // Rollup: the credit-priced sample covers the same stage's token sample, so
+    // the intent is priced (estimated) — not flagged anyUnpriced.
+    const dto = JSON.parse(
+      (
+        await handler({
+          httpMethod: 'GET',
+          path: `/projects/${projectId}/intents/metrics`,
+          pathParameters: { projectId },
+          ...claims(sub),
+        })
+      ).body,
+    );
+    const mine = dto.perIntent.find((p) => p.intentId === intent.id);
+    expect(mine.cost.priced).toBe(true);
+    expect(mine.cost.estimated).toBe(true);
+    expect(mine.cost.totalCost).toBeCloseTo(0.5);
+    expect(mine.metrics.credits).toBeCloseTo(12.5);
+    expect(dto.project.cost.anyUnpriced).toBe(false);
+    expect(dto.project.cost.anyEstimated).toBe(true);
+  });
+
+  it('leaves a rate-less credits sample unpriced (anyUnpriced stays true)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    procStore.set(keyOf(`EXEC#${intent.id}`, `METRIC#2026-01-01T00:00:01Z#c1`), {
+      pk: `EXEC#${intent.id}`,
+      sk: `METRIC#2026-01-01T00:00:01Z#c1`,
+      type: 'Metric',
+      executionId: intent.id,
+      stageInstanceId: 'si',
+      metricId: 'c1',
+      resolvedModel: 'claude-opus-4.6',
+      // No creditRate — /usage rate could not be captured.
+      metrics: { credits: 3 },
+      timestamp: '2026-01-01T00:00:01Z',
+    });
+    const dto = JSON.parse(
+      (
+        await handler({
+          httpMethod: 'GET',
+          path: `/projects/${projectId}/intents/metrics`,
+          pathParameters: { projectId },
+          ...claims(sub),
+        })
+      ).body,
+    );
+    expect(dto.project.cost.anyUnpriced).toBe(true);
+    expect(dto.project.cost.anyEstimated).toBe(false);
+  });
+
   it('404s a cross-project intent on GET detail', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);

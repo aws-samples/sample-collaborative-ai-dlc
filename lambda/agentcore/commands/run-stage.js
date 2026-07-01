@@ -34,6 +34,9 @@ import {
   getDriver,
   buildKiroListSessions,
   parseLatestKiroSession,
+  buildKiroUsage,
+  parseKiroCredits,
+  parseKiroCreditRate,
 } from '../cli/drivers.js';
 import { runChild, captureChild } from '../cli/spawn.js';
 import {
@@ -479,6 +482,32 @@ const captureKiroSession = async ({ env, driver, workspaceDir, spawnFn }) => {
     spawnFn,
   });
   return parseLatestKiroSession(stdout ?? '', workspaceDir);
+};
+
+// Capture Kiro's $/credit overage rate by running the `/usage` slash command
+// headless and parsing "billed at $X.XX per credit" (printed on STDERR). The
+// rate changes at most with the plan, so it's cached for the container's life —
+// one extra kiro-cli spawn per container, not per stage. `/usage` only calls
+// Kiro's usage API; it does not itself spend credits. Null (and cached null on
+// hard failure only) when the rate can't be read — the credits metric is then
+// recorded unpriced rather than priced at a guess.
+let cachedKiroCreditRate; // undefined = not fetched; null/number = fetched
+export const resetKiroCreditRateCache = () => {
+  cachedKiroCreditRate = undefined;
+};
+const captureKiroCreditRate = async ({ env, driver, workspaceDir, spawnFn }) => {
+  if (cachedKiroCreditRate !== undefined) return cachedKiroCreditRate;
+  const usage = buildKiroUsage();
+  const { stdout, stderr } = await captureChild({
+    command: usage.command,
+    args: usage.args,
+    env: driver.envForAuth(env),
+    cwd: workspaceDir,
+    captureStderr: true,
+    spawnFn,
+  });
+  cachedKiroCreditRate = parseKiroCreditRate(`${stderr ?? ''}\n${stdout ?? ''}`);
+  return cachedKiroCreditRate;
 };
 
 // Recognise Kiro's BENIGN empty-final-completion crash. kiro-cli's ACP layer
@@ -1019,6 +1048,45 @@ export const runStage = async (
     const persisted = await persistKiroStore({ env }).catch(() => false);
     if (!persisted) {
       console.error(`[run-stage] kiro store not persisted for ${stageInstanceId}`);
+    }
+  }
+
+  // Kiro only: record the run's credit spend. kiro-cli prints a per-turn footer
+  // on stderr (`▸ Credits: 0.03 • Time: 2s`) which runChild already tees into
+  // stderrTail for the benign-crash check — scrape it and record a `credits`
+  // metric sample, stamped with the trusted model AND the $/credit overage rate
+  // (from `/usage`, cached per container) so the read path can price it as an
+  // ESTIMATE (Kiro is credit-based; in-plan credits are covered by the plan).
+  // Runs on ANY exit — a parked or crashed turn still spent its credits. Best-
+  // effort: no credits footer / no rate never affects the stage outcome.
+  if (cli === 'kiro') {
+    try {
+      const credits = parseKiroCredits(result?.stderrTail);
+      if (credits != null && credits > 0) {
+        const creditRate = await captureKiroCreditRate({
+          env,
+          driver,
+          workspaceDir,
+          spawnFn,
+        }).catch(() => null);
+        const row = await store.recordMetric({
+          executionId,
+          stageInstanceId,
+          metrics: { credits },
+          resolvedModel: model ?? null,
+          creditRate,
+        });
+        // Live-parity with the bridge's collect_metric broadcast so the UI can
+        // refresh usage without waiting for the next full DTO fetch.
+        await publish({
+          action: 'agent.metric',
+          stageInstanceId,
+          metricId: row.metricId,
+          metrics: { credits },
+        });
+      }
+    } catch (e) {
+      console.error(`[run-stage] kiro credits not recorded for ${stageInstanceId}: ${e.message}`);
     }
   }
 

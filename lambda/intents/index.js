@@ -951,9 +951,15 @@ export const handler = async (event) => {
       const projectMetrics = rollupAggregates(withUsage.map((p) => p.metrics));
       const totalCost = withUsage.reduce((s, p) => s + p.cost.totalCost, 0);
       const anyUnpriced = withUsage.some((p) => p.cost.hasCostedSamples && !p.cost.priced);
+      // Kiro credit-priced dollars are estimates (overage rate) — flag them so
+      // the UI can caveat the project total instead of presenting it as billing.
+      const anyEstimated = withUsage.some((p) => p.cost.estimated);
       return response(200, {
         perIntent: withUsage,
-        project: { metrics: projectMetrics, cost: { totalCost, currency: 'USD', anyUnpriced } },
+        project: {
+          metrics: projectMetrics,
+          cost: { totalCost, currency: 'USD', anyUnpriced, anyEstimated },
+        },
       });
     }
 
@@ -1121,7 +1127,9 @@ const mapStage = (s) => ({
 // The model comes from the metric row's own stamp (trusted, set by the bridge),
 // falling back to the resolvedModel joined from its stage row. Cost is computed
 // server-side so intent + project views agree; an unpriced model (newer / Kiro)
-// yields `cost.priced: false` rather than a misleading $0.
+// yields `cost.priced: false` rather than a misleading $0. A Kiro `credits`
+// sample carries its own stamped $/credit rate and prices as an ESTIMATE
+// (`cost.estimated: true`).
 const mapMetricsWithCost = (metrics = [], stages = [], priceFor) => {
   const modelByStage = new Map(stages.map((s) => [s.stageInstanceId, s.resolvedModel ?? null]));
   return metrics.map((m) => {
@@ -1132,29 +1140,41 @@ const mapMetricsWithCost = (metrics = [], stages = [], priceFor) => {
       metrics: m.metrics ?? {},
       timestamp: m.timestamp,
       model,
-      cost: costForMetrics(m.metrics ?? {}, model, priceFor),
+      cost: costForMetrics(m.metrics ?? {}, model, priceFor, m.creditRate ?? null),
     };
   });
 };
 
 // Fold one execution's metric samples into an aggregated bag (tokens summed,
 // gauges peaked) + a total cost. Used per-intent for the project rollup.
-// `priced` is true only if every sample that carried tokens was priceable.
+// `priced` is true only if every sample that carried spend (tokens or credits)
+// was priceable — EXCEPT that an unpriced Kiro token sample counts as covered
+// when the same stage also has a credit-priced sample (the credits ARE that
+// stage's spend; its token counts are usage detail). `estimated` marks that
+// credit-priced (Kiro overage-rate) dollars contributed to the total.
 const summarizeExecutionMetrics = (metrics = [], stages = [], priceFor) => {
   const mapped = mapMetricsWithCost(metrics, stages, priceFor);
   const aggregated = aggregateMetrics(
     mapped.map((m) => ({ metrics: m.metrics, timestamp: m.timestamp })),
   );
-  // Only samples with token spend contribute to the priced/unpriced verdict; a
-  // pure context-window sample has no cost and shouldn't mark the intent unpriced.
+  // Only samples with spend contribute to the priced/unpriced verdict; a pure
+  // context-window sample has no cost and shouldn't mark the intent unpriced.
   const costed = mapped.filter(
-    (m) => (m.metrics?.tokensInput ?? 0) + (m.metrics?.tokensOutput ?? 0) > 0,
+    (m) =>
+      (m.metrics?.tokensInput ?? 0) + (m.metrics?.tokensOutput ?? 0) > 0 ||
+      (m.metrics?.credits ?? 0) > 0,
+  );
+  const creditPricedStages = new Set(
+    costed.filter((m) => m.cost?.priced && m.cost?.estimated).map((m) => m.stageInstanceId),
   );
   const totalCost = costed.reduce((s, m) => s + (m.cost?.totalCost ?? 0), 0);
-  const priced = costed.length > 0 && costed.every((m) => m.cost?.priced);
+  const priced =
+    costed.length > 0 &&
+    costed.every((m) => m.cost?.priced || creditPricedStages.has(m.stageInstanceId));
+  const estimated = costed.some((m) => m.cost?.estimated);
   return {
     metrics: aggregated,
-    cost: { totalCost, currency: 'USD', priced, hasCostedSamples: costed.length > 0 },
+    cost: { totalCost, currency: 'USD', priced, estimated, hasCostedSamples: costed.length > 0 },
   };
 };
 

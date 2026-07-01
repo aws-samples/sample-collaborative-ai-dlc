@@ -118,15 +118,19 @@ export interface IntentSteering {
 
 // Cost attributed to one metric sample, computed server-side (pricing lives on
 // the backend). `priced: false` means the sample's model has no price entry
-// (a newer model, or a Kiro credit-based run) — the UI shows "cost unavailable"
-// rather than a misleading $0.
+// (a newer model, or a Kiro credit-based run without a captured rate) — the UI
+// shows "cost unavailable" rather than a misleading $0. `estimated: true` means
+// the dollars come from Kiro credits priced at the plan's $/credit overage rate
+// (an estimate, not billing truth) — the UI caveats it.
 export interface MetricCost {
   model: string | null;
   currency: string;
   inputCost: number;
   outputCost: number;
+  creditCost?: number;
   totalCost: number;
   priced: boolean;
+  estimated?: boolean;
 }
 
 export interface IntentMetric {
@@ -274,17 +278,24 @@ export interface ProjectIntentMetrics {
   title: string | null;
   status: IntentStatus | null;
   metrics: Record<string, number>;
-  cost: { totalCost: number; currency: string; priced: boolean; hasCostedSamples: boolean };
+  cost: {
+    totalCost: number;
+    currency: string;
+    priced: boolean;
+    estimated?: boolean;
+    hasCostedSamples: boolean;
+  };
 }
 
 // GET /projects/{id}/intents/metrics — usage + cost rolled up across every
 // intent. `anyUnpriced` warns that a token-spending intent ran on a model we
-// couldn't price (a newer model, or a Kiro credit-based run).
+// couldn't price (a newer model, or a Kiro run without a captured credit rate);
+// `anyEstimated` warns that Kiro credit-estimated dollars are in the total.
 export interface ProjectMetrics {
   perIntent: ProjectIntentMetrics[];
   project: {
     metrics: Record<string, number>;
-    cost: { totalCost: number; currency: string; anyUnpriced: boolean };
+    cost: { totalCost: number; currency: string; anyUnpriced: boolean; anyEstimated?: boolean };
   };
 }
 

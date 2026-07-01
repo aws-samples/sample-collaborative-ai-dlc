@@ -60,6 +60,7 @@ describe('registry parity with the frontend', () => {
     expect(KNOWN_METRIC_KEYS).toEqual({
       tokensInput: 'additive',
       tokensOutput: 'additive',
+      credits: 'additive',
       contextWindowPct: 'gauge:max',
     });
   });

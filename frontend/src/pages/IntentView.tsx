@@ -31,7 +31,7 @@ import {
   AccordionTrigger,
 } from '@/components/ui/accordion';
 import { cn } from '@/lib/utils';
-import { aggregateMetrics } from '@/lib/metricAggregation';
+import { aggregateMetrics, summarizeCost } from '@/lib/metricAggregation';
 import { UsageMetrics } from '@/components/intent/UsageMetrics';
 import { Compass, List, Loader2, Play, Workflow, XCircle } from 'lucide-react';
 
@@ -883,18 +883,12 @@ function formatGateAnswer(answer: unknown, questions: Question['questions']): st
 function MetricsPanel({ detail }: { detail: IntentDetail }) {
   // Aggregate across ALL the intent's samples with correct semantics: tokens sum,
   // contextWindowPct is a gauge (peak across stages, not a sum). Intent cost sums
-  // every priced sample; "unavailable" if any sample lacked a price entry.
-  const { totals, cost } = useMemo(() => {
-    const priced = detail.metrics.filter((m) => m.cost);
-    const c = priced.length
-      ? {
-          totalCost: priced.reduce((s, m) => s + (m.cost?.totalCost ?? 0), 0),
-          currency: priced[0].cost?.currency ?? 'USD',
-          priced: priced.every((m) => m.cost?.priced),
-        }
-      : null;
-    return { totals: aggregateMetrics(detail.metrics), cost: c };
-  }, [detail.metrics]);
+  // every sample via summarizeCost (the shared verdict: "unavailable" if a spend
+  // lacked a price, "~" when Kiro credit-estimated dollars are in the total).
+  const { totals, cost } = useMemo(
+    () => ({ totals: aggregateMetrics(detail.metrics), cost: summarizeCost(detail.metrics) }),
+    [detail.metrics],
+  );
   if (Object.keys(totals).length === 0 && !cost) return null;
   return (
     <Card>

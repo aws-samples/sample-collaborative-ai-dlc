@@ -8,6 +8,9 @@ import {
   SUPPORTED_CLIS,
   buildKiroListSessions,
   parseLatestKiroSession,
+  buildKiroUsage,
+  parseKiroCredits,
+  parseKiroCreditRate,
 } from '../cli/drivers.js';
 import { runChild } from '../cli/spawn.js';
 
@@ -194,6 +197,42 @@ describe('Kiro session capture', () => {
     expect(
       parseLatestKiroSession(JSON.stringify([{ cwd: '/x', sessions: [] }]), '/mnt/workspace'),
     ).toBeNull();
+  });
+});
+
+describe('Kiro credit capture', () => {
+  it('builds the headless /usage invocation', () => {
+    expect(buildKiroUsage()).toEqual({
+      command: 'kiro-cli',
+      args: ['chat', '--no-interactive', '/usage'],
+    });
+  });
+
+  it('parses the per-turn credits footer from a raw (ANSI-laden) stderr tail', () => {
+    // Real footer shape: dim ANSI wrapping, but the label+number are contiguous.
+    const tail = '\u001b[38;5;8m\n ▸ Credits: 0.03 • Time: 2s\n\n\u001b[0m';
+    expect(parseKiroCredits(tail)).toBeCloseTo(0.03);
+  });
+
+  it('takes the LAST credits footer (final turn) and returns null when absent', () => {
+    expect(parseKiroCredits('▸ Credits: 0.03 …\n▸ Credits: 0.11 …')).toBeCloseTo(0.11);
+    expect(parseKiroCredits('no footer here')).toBeNull();
+    expect(parseKiroCredits('')).toBeNull();
+    expect(parseKiroCredits(undefined)).toBeNull();
+  });
+
+  it('parses the $/credit overage rate out of /usage output', () => {
+    const usage =
+      '\u001b[1mEstimated Usage\u001b[0m | resets on 2026-08-01 | KIRO POWER\n' +
+      '\u001b[1mCredits\u001b[0m (0.07 of 10000 covered in plan)\n' +
+      'Overages: \u001b[1mEnabled\u001b[0m  \u001b[38;5;244mbilled at $0.04 per credit\u001b[0m\n';
+    expect(parseKiroCreditRate(usage)).toBeCloseTo(0.04);
+  });
+
+  it('returns null when the rate line is missing or malformed (never guesses)', () => {
+    expect(parseKiroCreditRate('Credits (0.00 of 50 covered in plan)')).toBeNull();
+    expect(parseKiroCreditRate('billed at $0 per credit')).toBeNull();
+    expect(parseKiroCreditRate('')).toBeNull();
   });
 });
 

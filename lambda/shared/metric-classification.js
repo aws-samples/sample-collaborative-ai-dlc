@@ -13,6 +13,7 @@
 const REGISTRY = {
   tokensInput: 'additive',
   tokensOutput: 'additive',
+  credits: 'additive',
   contextWindowPct: 'gauge:max',
 };
 

@@ -94,23 +94,42 @@ const makePriceResolver = (table = {}) => {
 };
 
 // Compute the cost of one metric bag given a price resolver. Reads tokensInput /
-// tokensOutput; other keys are ignored (context % has no cost). Always returns a
-// cost object so the DTO shape is stable; `priced: false` means "usage known,
-// price unavailable" (newer model or Kiro) — the UI must not render this as $0.
-const costForMetrics = (metrics = {}, modelId, resolver) => {
+// tokensOutput (token-billed models) and `credits` (Kiro); other keys are
+// ignored (context % has no cost). Always returns a cost object so the DTO shape
+// is stable; `priced: false` means "usage known, price unavailable" (newer model,
+// or Kiro without a captured credit rate) — the UI must not render this as $0.
+//
+// Credits: Kiro is credit-based, so a `credits` sample is priced as
+// `credits × creditRate` (the $/credit overage rate the runtime scraped from
+// `kiro-cli /usage` at run time — see run-stage.js). That is an ESTIMATE (in-plan
+// credits are covered by the subscription), so the cost is flagged
+// `estimated: true` and the UI caveats it rather than presenting it as billing
+// truth.
+const costForMetrics = (metrics = {}, modelId, resolver, creditRate = null) => {
   const priceFor = resolver ?? makePriceResolver();
   const price = priceFor(modelId);
   const tin = typeof metrics.tokensInput === 'number' ? metrics.tokensInput : 0;
   const tout = typeof metrics.tokensOutput === 'number' ? metrics.tokensOutput : 0;
+  const credits = typeof metrics.credits === 'number' ? metrics.credits : 0;
+  const rate = typeof creditRate === 'number' && creditRate > 0 ? creditRate : null;
   const inputCost = tin * price.inputPerToken;
   const outputCost = tout * price.outputPerToken;
+  const creditCost = credits > 0 && rate ? credits * rate : 0;
+  // Priced iff every spend the sample carries has a price: token spend needs a
+  // model price entry; credit spend needs a captured rate. A no-spend sample
+  // (context % only) inherits the model's priceability as before.
+  const tokenSpendPriced = tin + tout === 0 || price.priced;
+  const creditSpendPriced = credits === 0 || rate != null;
+  const priced = credits > 0 ? tokenSpendPriced && creditSpendPriced : price.priced;
   return {
     model: price.model,
     currency: price.currency,
     inputCost,
     outputCost,
-    totalCost: inputCost + outputCost,
-    priced: price.priced,
+    creditCost,
+    totalCost: inputCost + outputCost + creditCost,
+    priced,
+    estimated: creditCost > 0,
   };
 };
 

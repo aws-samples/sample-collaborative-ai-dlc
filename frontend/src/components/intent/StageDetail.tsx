@@ -12,7 +12,7 @@ import {
   summarizeSensorDetail,
 } from '@/components/intent/SensorChips';
 import { FileText, Loader2, RotateCcw, ScrollText } from 'lucide-react';
-import { aggregateMetrics } from '@/lib/metricAggregation';
+import { aggregateMetrics, summarizeCost } from '@/lib/metricAggregation';
 import { UsageMetrics } from '@/components/intent/UsageMetrics';
 
 // Steering (docs/v2-steering.md): the run states a rewind may start from. A
@@ -93,19 +93,12 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
 
   // Aggregate this stage's samples with correct per-key semantics: tokens sum,
   // contextWindowPct is a gauge (peak, not a sum) — see metricAggregation. Cost
-  // sums across the stage's samples; unavailable if any sample lacked a price.
+  // sums across the stage's samples via summarizeCost (the shared verdict:
+  // unavailable if a spend lacked a price, "~" when Kiro credit-estimated).
   const { stageMetrics, stageCost } = useMemo(() => {
     if (!instanceId) return { stageMetrics: {} as Record<string, number>, stageCost: null };
     const samples = (detail?.metrics ?? []).filter((m) => m.stageInstanceId === instanceId);
-    const priced = samples.filter((m) => m.cost);
-    const cost = priced.length
-      ? {
-          totalCost: priced.reduce((s, m) => s + (m.cost?.totalCost ?? 0), 0),
-          currency: priced[0].cost?.currency ?? 'USD',
-          priced: priced.every((m) => m.cost?.priced),
-        }
-      : null;
-    return { stageMetrics: aggregateMetrics(samples), stageCost: cost };
+    return { stageMetrics: aggregateMetrics(samples), stageCost: summarizeCost(samples) };
   }, [detail, instanceId]);
 
   const duration = formatDuration(row.startedAt, row.state === 'RUNNING' ? null : row.completedAt);

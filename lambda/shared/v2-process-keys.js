@@ -324,6 +324,10 @@ const buildMetricRow = ({
   // the trusted bridge scope (not the agent bag). Preferred over the stage-row
   // join for pricing; null when the bridge had no model (e.g. stageless metric).
   resolvedModel = null,
+  // Kiro only: the $/credit overage rate in effect when a `credits` sample was
+  // recorded (scraped from `kiro-cli /usage` by the runner). Stamped per sample
+  // so a later plan/rate change never reprices history. Null for token samples.
+  creditRate = null,
   now,
 }) => ({
   ...metricKey(executionId, now, metricId),
@@ -333,6 +337,7 @@ const buildMetricRow = ({
   stageInstanceId,
   metricId,
   resolvedModel,
+  creditRate,
   // Free-form numeric bag: tokensInput, tokensOutput, contextWindowPct, ...
   metrics: metrics ?? {},
   timestamp: now,

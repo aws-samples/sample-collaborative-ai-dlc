@@ -7,6 +7,7 @@ import {
   formatTokens,
   formatCost,
   contextGaugeTone,
+  summarizeCost,
   KNOWN_METRIC_KEYS,
 } from './metricAggregation';
 
@@ -98,5 +99,62 @@ describe('registry parity with lambda/shared/metric-classification.js', () => {
     const require = createRequire(import.meta.url);
     const lambda = require('../../../lambda/shared/metric-classification.js');
     expect(KNOWN_METRIC_KEYS).toEqual(lambda.KNOWN_METRIC_KEYS);
+  });
+});
+
+describe('summarizeCost', () => {
+  const cs = (
+    stageInstanceId: string,
+    metrics: Record<string, number>,
+    cost: { totalCost: number; priced: boolean; estimated?: boolean } | null,
+  ) => ({
+    stageInstanceId,
+    metrics,
+    cost: cost ? { currency: 'USD', ...cost } : null,
+  });
+
+  it('returns null when no sample carries a cost', () => {
+    expect(summarizeCost([])).toBeNull();
+    expect(summarizeCost([cs('s1', { tokensInput: 10 }, null)])).toBeNull();
+  });
+
+  it('sums priced token samples', () => {
+    const out = summarizeCost([
+      cs('s1', { tokensInput: 1000 }, { totalCost: 1.5, priced: true }),
+      cs('s1', { tokensOutput: 500 }, { totalCost: 0.5, priced: true }),
+    ]);
+    expect(out).toMatchObject({ totalCost: 2, priced: true, estimated: false });
+  });
+
+  it('is unpriced when a spending sample lacks a price', () => {
+    const out = summarizeCost([
+      cs('s1', { tokensInput: 1000 }, { totalCost: 0, priced: false }),
+      cs('s2', { tokensInput: 1000 }, { totalCost: 3, priced: true }),
+    ]);
+    expect(out?.priced).toBe(false);
+  });
+
+  it('covers an unpriced Kiro token sample with the same stage credit estimate', () => {
+    const out = summarizeCost([
+      // Agent-reported tokens on a Kiro model — unpriced on their own …
+      cs('s1', { tokensInput: 500_000 }, { totalCost: 0, priced: false }),
+      // … but the runner's credits sample IS that stage's spend.
+      cs('s1', { credits: 12.5 }, { totalCost: 0.5, priced: true, estimated: true }),
+    ]);
+    expect(out).toMatchObject({ totalCost: 0.5, priced: true, estimated: true });
+  });
+
+  it('does NOT cover an unpriced token sample from a DIFFERENT stage', () => {
+    const out = summarizeCost([
+      cs('s1', { credits: 12.5 }, { totalCost: 0.5, priced: true, estimated: true }),
+      cs('s2', { tokensInput: 500_000 }, { totalCost: 0, priced: false }),
+    ]);
+    expect(out?.priced).toBe(false);
+    expect(out?.estimated).toBe(true);
+  });
+
+  it('a rate-less credits sample stays unpriced', () => {
+    const out = summarizeCost([cs('s1', { credits: 3 }, { totalCost: 0, priced: false })]);
+    expect(out).toMatchObject({ priced: false, estimated: false });
   });
 });

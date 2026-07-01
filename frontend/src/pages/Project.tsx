@@ -782,6 +782,8 @@ function IntentsView({
                 // A project-wide total is "priced" only if no token-spending
                 // intent ran on an unpriceable model.
                 priced: !usage.project.cost.anyUnpriced,
+                // Kiro credit-estimated dollars in the total → show "~" + est.
+                estimated: !!usage.project.cost.anyEstimated,
               }}
               contextLabel="Peak context window"
             />

@@ -595,13 +595,20 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return Attributes;
   };
 
-  const recordMetric = async ({ executionId, stageInstanceId, metrics, resolvedModel = null }) => {
+  const recordMetric = async ({
+    executionId,
+    stageInstanceId,
+    metrics,
+    resolvedModel = null,
+    creditRate = null,
+  }) => {
     const item = buildMetricRow({
       executionId,
       stageInstanceId,
       metricId: nextId(),
       metrics,
       resolvedModel,
+      creditRate,
       now: now(),
     });
     await ddb.send(new PutCommand({ TableName: table(), Item: item }));

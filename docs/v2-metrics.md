@@ -118,11 +118,38 @@ reads it. A static fallback baked into `model-pricing.js` means cost is always
 computable even before the first refresh. `priceFor` normalizes an inference-
 profile id (`us.anthropic.claude-sonnet-4-6` → `claude-sonnet-4-6`) to a family
 key; **Kiro** is credit-based and its ids don't normalize to a Bedrock family,
-so its samples are `priced: false` (usage shown, no dollar figure — a
-`credits→USD` rate is a future follow-up, not built yet).
+so its token samples are `priced: false` — Kiro cost comes from **credits**
+instead (below).
 
-`priced: false` (a newer model with no price entry, or Kiro) means the UI shows
-"cost unavailable" rather than a misleading `$0`.
+`priced: false` (a newer model with no price entry, or Kiro credits without a
+captured rate) means the UI shows "cost unavailable" rather than a misleading
+`$0`.
+
+### Kiro credits (estimated cost)
+
+Kiro is credit-based — tokens have no dollar price. Instead, the runner scrapes
+two things straight out of `kiro-cli`:
+
+- **Credits per run** — kiro-cli prints a per-turn footer on stderr
+  (`▸ Credits: 0.03 • Time: 2s`); `run-stage.js` already tees Kiro's stderr
+  tail (for the benign-crash check), parses the footer post-run
+  (`parseKiroCredits`, drivers.js) and records a `credits` metric sample
+  (additive). Runs on ANY exit — a parked/crashed turn still spent its credits.
+- **$/credit rate** — the runner runs `kiro-cli chat --no-interactive "/usage"`
+  (once per container, cached) and parses "billed at `$0.04` per credit"
+  (`parseKiroCreditRate`). The rate is **stamped on the metric row**
+  (`creditRate`) so a later plan change never reprices history.
+
+At read time `costForMetrics` prices a credits sample as `credits × creditRate`
+with `priced: true, estimated: true` — **estimated** because in-plan credits
+are covered by the subscription; the overage rate is an honest upper-bound
+estimate, not billing truth. The UI renders it as `~$0.50` labelled
+"Cost (est.)". No rate captured → the sample stays `priced: false`.
+
+Verdict rule (server `summarizeExecutionMetrics` + frontend `summarizeCost`,
+kept in sync): an unpriced Kiro **token** sample counts as covered when the
+same stage also has a credit-priced sample — the credits ARE that stage's
+spend; its token counts are usage detail.
 
 ### Project rollup
 
@@ -130,8 +157,10 @@ so its samples are `priced: false` (usage shown, no dollar figure — a
 intent: it reads each execution's `METRIC#`/`STAGE#` rows, aggregates per
 intent, then sums additive keys + cost and peaks gauges. Returns
 `{ perIntent: [...], project: { metrics, cost: { totalCost, currency,
-anyUnpriced } } }`. `anyUnpriced` flags that a token-spending intent ran on an
-unpriceable model, so the UI can caveat the project total.
+anyUnpriced, anyEstimated } } }`. `anyUnpriced` flags that a spending intent
+ran on an unpriceable model (and wasn't covered by credits); `anyEstimated`
+flags that Kiro credit-estimated dollars are in the total, so the UI can caveat
+it.
 
 ### Frontend surfaces
 

@@ -21,6 +21,7 @@ export type MetricKind = 'additive' | 'gauge:max' | 'gauge:latest';
 const REGISTRY: Record<string, MetricKind> = {
   tokensInput: 'additive',
   tokensOutput: 'additive',
+  credits: 'additive',
   contextWindowPct: 'gauge:max',
 };
 
@@ -102,6 +103,55 @@ export function formatCost(amount: number, currency = 'USD'): string {
   if (!Number.isFinite(amount)) return '—';
   if (amount > 0 && amount < 0.01) return `${symbol}${amount.toFixed(4)}`;
   return `${symbol}${amount.toFixed(2)}`;
+}
+
+// A metric sample as summarizeCost needs it: its bag, the stage it belongs to,
+// and the server-computed per-sample cost (see MetricCost in services/intents).
+export interface CostSample {
+  stageInstanceId: string | null;
+  metrics: Record<string, number>;
+  cost?: {
+    totalCost: number;
+    currency: string;
+    priced: boolean;
+    estimated?: boolean;
+  } | null;
+}
+
+export interface CostSummary {
+  totalCost: number;
+  currency: string;
+  priced: boolean;
+  estimated: boolean;
+}
+
+// Fold per-sample server-computed costs into one scope-level cost — the mirror
+// of the lambda's summarizeExecutionMetrics verdict (keep in sync). Rules:
+//   - only spend-bearing samples (tokens or credits) count toward the verdict;
+//   - `priced` requires every spending sample to be priced, EXCEPT an unpriced
+//     Kiro token sample whose stage also has a credit-priced sample — the
+//     credits ARE that stage's spend, the token counts are usage detail;
+//   - `estimated` is true when Kiro credit-estimated dollars are in the total.
+// Returns null when no sample carries a cost (nothing to summarize).
+export function summarizeCost(samples: CostSample[]): CostSummary | null {
+  const withCost = samples.filter((m) => m.cost);
+  if (!withCost.length) return null;
+  const costed = withCost.filter(
+    (m) =>
+      (m.metrics?.tokensInput ?? 0) + (m.metrics?.tokensOutput ?? 0) > 0 ||
+      (m.metrics?.credits ?? 0) > 0,
+  );
+  const creditPricedStages = new Set(
+    costed.filter((m) => m.cost?.priced && m.cost?.estimated).map((m) => m.stageInstanceId),
+  );
+  return {
+    totalCost: costed.reduce((s, m) => s + (m.cost?.totalCost ?? 0), 0),
+    currency: withCost[0].cost?.currency ?? 'USD',
+    priced:
+      costed.length > 0 &&
+      costed.every((m) => m.cost?.priced || creditPricedStages.has(m.stageInstanceId)),
+    estimated: costed.some((m) => m.cost?.estimated),
+  };
 }
 
 // Threshold color for a context-window gauge: green <50, amber 50–80, red >80.

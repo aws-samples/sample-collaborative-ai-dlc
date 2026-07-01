@@ -63,6 +63,34 @@ describe('costForMetrics', () => {
     expect(c.priced).toBe(false);
     expect(c.totalCost).toBe(0);
     expect(c.currency).toBe('USD');
+    expect(c.estimated).toBe(false);
+  });
+
+  it('prices a Kiro credits sample at the stamped $/credit rate as an estimate', () => {
+    const c = costForMetrics({ credits: 12.5 }, 'claude-opus-4.6', undefined, 0.04);
+    expect(c.priced).toBe(true);
+    expect(c.estimated).toBe(true);
+    expect(c.creditCost).toBeCloseTo(0.5);
+    expect(c.totalCost).toBeCloseTo(0.5);
+  });
+
+  it('reports a credits sample without a rate as unpriced (never a guessed $)', () => {
+    const c = costForMetrics({ credits: 12.5 }, 'claude-opus-4.6');
+    expect(c.priced).toBe(false);
+    expect(c.estimated).toBe(false);
+    expect(c.totalCost).toBe(0);
+  });
+
+  it('ignores a rate when the sample has no credits (token pricing unchanged)', () => {
+    const c = costForMetrics(
+      { tokensInput: 1_000_000 },
+      'us.anthropic.claude-sonnet-4-6',
+      undefined,
+      0.04,
+    );
+    expect(c.priced).toBe(true);
+    expect(c.estimated).toBe(false);
+    expect(c.totalCost).toBeCloseTo(3);
   });
 });
 

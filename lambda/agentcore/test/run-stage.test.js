@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createRequire } from 'node:module';
 import { EventEmitter } from 'node:events';
-import { runStage, __test } from '../commands/run-stage.js';
+import { runStage, resetKiroCreditRateCache, __test } from '../commands/run-stage.js';
 import { renderRulesDoc } from '../stage-materializer.js';
 
 const require = createRequire(import.meta.url);
@@ -66,6 +66,10 @@ const spyStore = (seed = {}) => {
       return { seq: calls.filter((c) => c[0] === 'appendOutput').length };
     },
     recordSensorRun: rec('recordSensorRun'),
+    async recordMetric(args) {
+      calls.push(['recordMetric', args]);
+      return { metricId: 'm-test' };
+    },
     async getHumanTask(_e, id) {
       calls.push(['getHumanTask', id]);
       return seed.humanTask ?? null;
@@ -1076,6 +1080,102 @@ describe('runStage — Kiro SQLite store sync (restore before spawn, persist aft
     const res = await runStage({ ...baseArgs, requestedCli: 'kiro' }, deps);
     expect(res.reason).not.toBe('resume_store_lost');
     expect(res.ok).toBe(true);
+  });
+});
+
+describe('runStage — Kiro credit capture (per-turn footer → credits metric)', () => {
+  beforeEach(() => resetKiroCreditRateCache());
+
+  // A spawn dispatcher covering the three Kiro child processes of a fresh run:
+  // the run itself (emits the credits footer on stderr — runChild tees it into
+  // stderrTail), the post-run --list-sessions capture, and the /usage rate
+  // capture (its report is on stderr too).
+  const kiroSpawn =
+    ({ footer = ' ▸ Credits: 0.42 • Time: 2s\n', usage = 'billed at $0.04 per credit\n' } = {}) =>
+    (command, args) => {
+      if (args.includes('--list-sessions')) {
+        return {
+          on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
+          stdout: { on: (ev, cb) => ev === 'data' && cb(Buffer.from('[]')) },
+          stdin: { end() {} },
+        };
+      }
+      if (args.includes('/usage')) {
+        return {
+          on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
+          stdout: { on: () => {} },
+          stderr: { on: (ev, cb) => ev === 'data' && cb(Buffer.from(usage)) },
+          stdin: { end() {} },
+        };
+      }
+      return {
+        on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
+        stderr: { on: (ev, cb) => ev === 'data' && footer && cb(Buffer.from(footer)) },
+        stdin: { end() {} },
+      };
+    };
+
+  it('records a credits metric stamped with the model and the $/credit rate', async () => {
+    const sent = [];
+    const deps = baseDeps({
+      availableClis: ['kiro'],
+      env: { BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6' },
+      spawnFn: kiroSpawn(),
+      broadcast: async (p) => sent.push(p),
+    });
+    const res = await runStage({ ...baseArgs, cliModels: { kiro: 'claude-opus-4.6' } }, deps);
+    expect(res).toMatchObject({ ok: true, cli: 'kiro' });
+    const metric = deps.store.calls.find((c) => c[0] === 'recordMetric');
+    expect(metric).toBeTruthy();
+    expect(metric[1]).toMatchObject({
+      executionId: 'e1',
+      metrics: { credits: 0.42 },
+      resolvedModel: 'claude-opus-4.6',
+      creditRate: 0.04,
+    });
+    // Live-parity broadcast so the UI refreshes usage without a full refetch.
+    expect(sent.some((p) => p.action === 'agent.metric' && p.metrics?.credits === 0.42)).toBe(true);
+  });
+
+  it('records credits unpriced (rate null) when /usage yields no rate', async () => {
+    const deps = baseDeps({
+      availableClis: ['kiro'],
+      env: { BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6' },
+      spawnFn: kiroSpawn({ usage: 'Credits (0.00 of 50 covered in plan)\n' }),
+    });
+    const res = await runStage({ ...baseArgs, cliModels: { kiro: 'claude-opus-4.6' } }, deps);
+    expect(res.ok).toBe(true);
+    const metric = deps.store.calls.find((c) => c[0] === 'recordMetric');
+    expect(metric[1]).toMatchObject({ metrics: { credits: 0.42 }, creditRate: null });
+  });
+
+  it('records no credits metric when the footer is absent', async () => {
+    const deps = baseDeps({
+      availableClis: ['kiro'],
+      env: { BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6' },
+      spawnFn: kiroSpawn({ footer: '' }),
+    });
+    const res = await runStage({ ...baseArgs, cliModels: { kiro: 'claude-opus-4.6' } }, deps);
+    expect(res.ok).toBe(true);
+    expect(deps.store.calls.some((c) => c[0] === 'recordMetric')).toBe(false);
+  });
+
+  it('caches the /usage rate for the container life (one capture, many stages)', async () => {
+    let usageSpawns = 0;
+    const spawn = kiroSpawn();
+    const counting = (command, args) => {
+      if (args.includes('/usage')) usageSpawns += 1;
+      return spawn(command, args);
+    };
+    const mkDeps = () =>
+      baseDeps({
+        availableClis: ['kiro'],
+        env: { BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6' },
+        spawnFn: counting,
+      });
+    await runStage({ ...baseArgs, cliModels: { kiro: 'claude-opus-4.6' } }, mkDeps());
+    await runStage({ ...baseArgs, cliModels: { kiro: 'claude-opus-4.6' } }, mkDeps());
+    expect(usageSpawns).toBe(1);
   });
 });
 

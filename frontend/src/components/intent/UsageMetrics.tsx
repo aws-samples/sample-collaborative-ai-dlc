@@ -9,9 +9,13 @@ import { formatTokens, formatCost, contextGaugeTone } from '@/lib/metricAggregat
 interface UsageMetricsProps {
   metrics: Record<string, number>;
   // Total cost across the scope, if computable. `priced === false` means at
-  // least one sample's model had no price entry (newer model / Kiro credits) —
-  // we show "cost unavailable" instead of a misleading number.
-  cost?: { totalCost: number; currency: string; priced: boolean } | null;
+  // least one sample's model had no price entry (newer model / Kiro credits
+  // without a captured rate) — we show "cost unavailable" instead of a
+  // misleading number. `estimated === true` means Kiro credit-estimated dollars
+  // (priced at the plan's $/credit overage rate) are in the total — shown as
+  // "~$X.XX" and labelled an estimate, since in-plan credits are covered by the
+  // subscription and this is not billing truth.
+  cost?: { totalCost: number; currency: string; priced: boolean; estimated?: boolean } | null;
   // 'peak' relabels the context gauge when rolled up across intents/stages.
   contextLabel?: string;
   className?: string;
@@ -74,8 +78,12 @@ export function UsageMetrics({
         {hasTokens && <Stat label="Total tokens" value={formatTokens(tokensIn + tokensOut)} />}
         {cost && (
           <Stat
-            label="Cost"
-            value={cost.priced ? formatCost(cost.totalCost, cost.currency) : 'unavailable'}
+            label={cost.priced && cost.estimated ? 'Cost (est.)' : 'Cost'}
+            value={
+              cost.priced
+                ? `${cost.estimated ? '~' : ''}${formatCost(cost.totalCost, cost.currency)}`
+                : 'unavailable'
+            }
           />
         )}
         {extras.map(([k, v]) => (

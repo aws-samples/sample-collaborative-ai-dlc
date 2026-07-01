@@ -117,6 +117,38 @@ export const buildKiroListModels = () => ({
   args: ['chat', '--list-models', '--format', 'json'],
 });
 
+// The argv that prints Kiro's plan usage summary — the `/usage` slash command
+// run headless. Its report (plan, credits used/limit, and the overage rate
+// "billed at $X.XX per credit") goes to STDERR, so run it with captureStderr.
+// It only calls Kiro's GetUsageLimits API — it does not spend credits itself.
+export const buildKiroUsage = () => ({
+  command: 'kiro-cli',
+  args: ['chat', '--no-interactive', '/usage'],
+});
+
+// Parse the per-request credit footer kiro-cli prints on STDERR after each
+// headless chat turn: ` ▸ Credits: 0.03 • Time: 2s`. The label and number are
+// plain text (ANSI color codes never split them), so a regex on the raw tail is
+// safe. Returns the LAST match (the footer of the final turn) as a number, or
+// null when absent/unparseable — callers treat null as "credits unknown".
+export const parseKiroCredits = (stderrTail = '') => {
+  const matches = [...String(stderrTail).matchAll(/Credits:\s*([\d.]+)/g)];
+  if (!matches.length) return null;
+  const n = Number(matches[matches.length - 1][1]);
+  return Number.isFinite(n) ? n : null;
+};
+
+// Parse the $/credit overage rate out of `/usage` output ("Overages: Enabled
+// billed at $0.04 per credit"). Returns a positive number or null — a missing
+// rate (plan without overages, or a wording change) degrades to "credits
+// recorded, cost unpriced", never a guessed dollar figure.
+export const parseKiroCreditRate = (usageText = '') => {
+  const m = String(usageText).match(/\$\s*([\d.]+)\s+per\s+credit/i);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+
 // Parse `kiro-cli chat --list-models --format json` into a compact, UI-friendly
 // list plus the CLI's default. Returns { models: [{ id, name, description }],
 // default } — empty list when the stdout is unparseable.
