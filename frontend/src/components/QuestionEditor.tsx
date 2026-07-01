@@ -52,10 +52,13 @@ export default function QuestionEditor({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Seed from the saved draft ONCE, when the editor syncs — not when the draft
+  // prop changes, which would clobber the user's in-progress answer.
   useEffect(() => {
     if (synced && question.draftAnswer) {
       initFromDraft(question.draftAnswer);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [synced]);
 
   const handleSubmit = async () => {

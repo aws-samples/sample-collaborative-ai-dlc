@@ -150,7 +150,7 @@ export function useConstructionStatus({
           }
           // Mark latest matching pending tool as completed
           const idx = [...prev]
-            .reverse()
+            .toReversed()
             .findIndex(
               (t) => t.name === toolName && (t.status === 'pending' || t.status === 'running'),
             );

@@ -279,7 +279,7 @@ export function useReviewAgents({ projectId, sprintId }: UseReviewAgentsOptions)
             ];
           } else {
             const idx = [...prev.toolCalls]
-              .reverse()
+              .toReversed()
               .findIndex(
                 (t) => t.name === toolName && (t.status === 'pending' || t.status === 'running'),
               );

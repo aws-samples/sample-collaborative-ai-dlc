@@ -9,6 +9,9 @@ const __ = gremlin.process.statics;
 
 const VALID_ROLES = ['owner', 'admin', 'member'];
 
+// Permission check: owner or admin can manage members.
+const canManageMembers = (role) => role === 'owner' || role === 'admin';
+
 const getVal = (obj, key) => {
   if (!obj) return '';
   const raw = obj instanceof Map ? obj.get(key) : obj[key];
@@ -61,9 +64,6 @@ exports.handler = async (event) => {
       if (edges.length === 0) return null;
       return getVal(edges[0], 'role') || null;
     };
-
-    // Permission check: owner or admin can manage members
-    const canManageMembers = (role) => role === 'owner' || role === 'admin';
 
     switch (httpMethod) {
       case 'GET': {

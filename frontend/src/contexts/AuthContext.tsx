@@ -75,10 +75,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const completeNewPassword = async (newPassword: string) => {
     setIsLoading(true);
     try {
-      const user = await authService.completeNewPassword(newPassword);
+      const authedUser = await authService.completeNewPassword(newPassword);
       setNeedsNewPassword(false);
-      setUser(user);
-      setNeedsDisplayName(!user.displayName);
+      setUser(authedUser);
+      setNeedsDisplayName(!authedUser.displayName);
     } catch (error) {
       console.error('Password change failed:', error);
       throw error;

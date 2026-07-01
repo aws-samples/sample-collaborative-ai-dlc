@@ -32,6 +32,9 @@ export function useYjsDocument(
   // name via scopeTargetForYjsDoc (the v1 sprint/project path).
   scopeTarget?: RealtimeScopeTarget,
 ) {
+  // Intentionally keyed on documentId: a new document must get a FRESH Y.Doc even
+  // though the factory doesn't read documentId (the rule flags it as unnecessary).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   const doc = useMemo(() => new Y.Doc(), [documentId]);
   const [synced, setSynced] = useState(false);
   const [awareness, setAwareness] = useState<awarenessProtocol.Awareness | null>(null);
@@ -102,6 +105,10 @@ export function useYjsDocument(
 
       let initialSyncDone = false;
 
+      // NOTE: on* handler ASSIGNMENT (not addEventListener) is intentional — one
+      // handler per event, replaced/nulled across reconnects and on teardown.
+      // unicorn/prefer-add-event-listener is disabled for this file in
+      // .oxlintrc.json for that reason.
       ws.onopen = () => {
         console.log('Yjs WebSocket connected');
         reconnectAttempts = 0;
@@ -137,10 +144,10 @@ export function useYjsDocument(
         // Start ping interval to keep connection alive
         pingIntervalRef.current = window.setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) {
-            const encoder = encoding.createEncoder();
-            encoding.writeVarUint(encoder, 0);
-            syncProtocol.writeSyncStep1(encoder, doc);
-            ws.send(encoding.toUint8Array(encoder));
+            const pingEncoder = encoding.createEncoder();
+            encoding.writeVarUint(pingEncoder, 0);
+            syncProtocol.writeSyncStep1(pingEncoder, doc);
+            ws.send(encoding.toUint8Array(pingEncoder));
           }
         }, 30000);
       };

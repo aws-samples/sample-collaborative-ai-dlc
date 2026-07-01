@@ -31,8 +31,12 @@ export function BranchSelector({
   const [useExisting, setUseExisting] = useState(defaultUseExisting);
   const [selectedExisting, setSelectedExisting] = useState('');
 
+  // Reload branches when the repo/provider changes. loadBranches closes over
+  // exactly those two, so the dep array is complete; it is intentionally omitted
+  // (defined below, single call site).
   useEffect(() => {
     loadBranches();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gitRepo, provider]);
 
   const loadBranches = async () => {

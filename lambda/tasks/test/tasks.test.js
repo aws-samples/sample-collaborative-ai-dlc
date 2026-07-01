@@ -150,7 +150,7 @@ describe('GET /sprints/:sprintId/tasks', () => {
     expect(res.statusCode).toBe(200);
     const tasks = JSON.parse(res.body);
     expect(tasks).toHaveLength(2);
-    expect(tasks.map((t) => t.title).sort()).toEqual(['A', 'B']);
+    expect(tasks.map((t) => t.title).toSorted()).toEqual(['A', 'B']);
   });
 
   it('returns a single task by id', async () => {

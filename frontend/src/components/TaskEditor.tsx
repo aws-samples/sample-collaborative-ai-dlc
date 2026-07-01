@@ -47,9 +47,12 @@ export default function TaskEditor({
       },
     );
 
+  // Seed the collaborative fields ONCE, when the editor syncs/opens — not when
+  // the task props change, which would clobber live edits with stale props.
   useEffect(() => {
     if (synced && editing)
       initFields({ title: task.title, description: task.description, status: task.status });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [synced, editing]);
 
   const remoteCount = remoteUsers.size;

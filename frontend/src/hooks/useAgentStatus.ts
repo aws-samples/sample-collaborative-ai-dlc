@@ -89,6 +89,10 @@ export function useAgentStatus({
         })
         .catch((err) => console.error('Failed to get current execution:', err));
     }
+    // executionArn appears only in the debug log above; re-fetch is keyed on
+    // project/sprint/status. The arn is synced by the separate effect above, so
+    // it is intentionally omitted here to avoid a redundant re-fetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, sprintId, sprintAgentStatus]); // Re-fetch when sprint status changes
 
   const refresh = useCallback(async () => {
@@ -263,7 +267,7 @@ export function useAgentStatus({
           // Mark the latest pending/running tool with this name as completed
           setToolCalls((prev) => {
             const idx = [...prev]
-              .reverse()
+              .toReversed()
               .findIndex(
                 (t) => t.name === toolName && (t.status === 'pending' || t.status === 'running'),
               );

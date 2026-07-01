@@ -284,7 +284,7 @@ export function useProjectSprintsCache(projectId: string | null) {
 
   const cached = projectId ? sprintsCache.get(projectId) : null;
   const sorted: Sprint[] = cached?.data
-    ? [...cached.data].sort(
+    ? [...cached.data].toSorted(
         (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
       )
     : [];

@@ -61,8 +61,8 @@ export default function Dashboard() {
     try {
       await projectsService.delete(confirmDelete);
       invalidate();
-    } catch (error) {
-      console.error('Failed to delete project:', error);
+    } catch (err) {
+      console.error('Failed to delete project:', err);
     } finally {
       setDeleting(null);
       setConfirmDelete(null);

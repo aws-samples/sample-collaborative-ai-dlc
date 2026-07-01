@@ -37,7 +37,7 @@ const { broadcastToIntentChannel } = wsFanoutPkg;
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
 const agentcore = new BedrockAgentCoreClient({});
-const store = createProcessStore({ ddb });
+const defaultStore = createProcessStore({ ddb });
 
 const RUNTIME_ARN = () => process.env.AGENTCORE_RUNTIME_ARN;
 const BLOCKS_TABLE = () => process.env.BLOCKS_TABLE;
@@ -48,7 +48,7 @@ const sessionIdFor = (intentId) => `aidlc-intent-${intentId}`.padEnd(33, '0');
 
 // One AgentCore /invocations call. Returns the parsed JSON body the command
 // handler returned (init-ws / run-stage). Throws on a non-2xx transport.
-const invokeRuntime = async (payload, sessionId) => {
+const defaultInvokeRuntime = async (payload, sessionId) => {
   const res = await agentcore.send(
     new InvokeAgentRuntimeCommand({
       agentRuntimeArn: RUNTIME_ARN(),
@@ -87,7 +87,7 @@ const streamToString = async (body) => {
 };
 
 // Resolve the git token for the intent's run (from the starter's connection).
-const resolveToken = async ({ startedBy, gitProvider }) => {
+const defaultResolveToken = async ({ startedBy, gitProvider }) => {
   if (!startedBy || !gitProvider) return '';
   try {
     const item = await getGitConnection(ddb, startedBy, gitProvider);
@@ -98,13 +98,33 @@ const resolveToken = async ({ startedBy, gitProvider }) => {
   }
 };
 
+// Map a timeline event type to the live broadcast payload the UI routes on
+// (useIntentEvents → refetch on agent.workspace / agent.execution). The
+// orchestrator is NOT VPC-attached and reaches the connections table over the
+// public DDB endpoint, so it can fan out directly (unlike its Neptune access
+// which must tunnel through the runtime).
+const livePayloadFor = (type, summary) => {
+  if (type.startsWith('v2.workspace.')) {
+    return {
+      action: 'agent.workspace',
+      state: type === 'v2.workspace.initialized' ? 'INITIALIZED' : 'INITIALIZING',
+      summary,
+    };
+  }
+  if (type === 'v2.execution.failed')
+    return { action: 'agent.execution', status: 'FAILED', summary };
+  if (type === 'v2.execution.succeeded')
+    return { action: 'agent.execution', status: 'SUCCEEDED', summary };
+  return { action: 'agent.note', noteType: type, summary };
+};
+
 // The orchestrator's collaborators, injectable for tests. Defaults bind the real
 // store / plan loader / runtime invoke / git-token resolver.
 const defaultDeps = () => ({
-  store,
+  store: defaultStore,
   loadPlan: (args) => loadExecutionPlan({ ddb, tableName: BLOCKS_TABLE(), ...args }),
-  invokeRuntime,
-  resolveToken,
+  invokeRuntime: defaultInvokeRuntime,
+  resolveToken: defaultResolveToken,
   stopSession: stopRuntimeSession,
   broadcast: broadcastToIntentChannel,
 });
@@ -126,25 +146,6 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
   const gitProvider = meta.gitProvider || 'github';
 
   // Map a stored lifecycle event type to the live realtime payload the UI already
-  // routes on (useIntentEvents → refetch on agent.workspace / agent.execution).
-  // The orchestrator is NOT VPC-attached and reaches the connections table over
-  // the public DDB endpoint, so it can fan out directly (unlike its Neptune access
-  // which must tunnel through the runtime).
-  const livePayloadFor = (type, summary) => {
-    if (type.startsWith('v2.workspace.')) {
-      return {
-        action: 'agent.workspace',
-        state: type === 'v2.workspace.initialized' ? 'INITIALIZED' : 'INITIALIZING',
-        summary,
-      };
-    }
-    if (type === 'v2.execution.failed')
-      return { action: 'agent.execution', status: 'FAILED', summary };
-    if (type === 'v2.execution.succeeded')
-      return { action: 'agent.execution', status: 'SUCCEEDED', summary };
-    return { action: 'agent.note', noteType: type, summary };
-  };
-
   // Append a timeline event AND fan it out live. Both are best-effort telemetry
   // (never break the run; tolerate a store/broadcast mock). Wrapped in a durable
   // step so a replay doesn't re-append — a replayed broadcast is harmless (the UI
@@ -410,7 +411,7 @@ const runStage = (
         ...(cliModels ? { cliModels } : {}),
         ...(requestedCli ? { requestedCli } : {}),
         // repos/branch/baseBranch/gitToken/gitProvider — for source self-heal.
-        ...(cloneInputs ?? {}),
+        ...cloneInputs,
         resumeFrom: resumeFrom ?? null,
       },
       sessionId,

@@ -85,7 +85,7 @@ export const compareBy = (tsKey) => (a, b) => {
 // Canonical idempotency hash over the NORMALIZED full append payload —
 // not content alone, because mentions affect persisted data and
 // notifications.
-export const canonicalMentions = (mentions) => [...new Set(mentions)].sort();
+export const canonicalMentions = (mentions) => [...new Set(mentions)].toSorted();
 export const payloadHashOf = (content, mentions) =>
   createHash('sha256')
     .update(JSON.stringify({ content, mentions: canonicalMentions(mentions) }))

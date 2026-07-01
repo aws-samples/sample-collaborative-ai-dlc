@@ -106,7 +106,9 @@ async function authenticate(env) {
       `[driver:opencode] Wrote config to ${OPENCODE_CONFIG_FILE} (region=${region}, model=${model}, source=${source})`,
     );
   } catch (err) {
-    throw new Error(`[driver:opencode] Failed to write opencode.json: ${err.message}`);
+    throw new Error(`[driver:opencode] Failed to write opencode.json: ${err.message}`, {
+      cause: err,
+    });
   }
 
   // Verify `opencode` CLI is present and executable

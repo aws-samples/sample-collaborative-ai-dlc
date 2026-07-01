@@ -65,6 +65,20 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { DiscussButton } from '@/components/discussion';
 
+// Last path segment of a repo ref (owner/repo → repo).
+const repoShort = (repo: string) => repo.split('/').pop() || repo || '';
+
+// PR state → status-dot color: open = emerald, merged = violet, closed = red,
+// unknown = zinc.
+const stateDotClass = (state: string) =>
+  state === 'merged'
+    ? 'bg-violet-500'
+    : state === 'closed'
+      ? 'bg-red-500'
+      : state === 'open'
+        ? 'bg-emerald-500'
+        : 'bg-zinc-400';
+
 function RiskBadge({ score, reasoning }: { score: string; reasoning: string }) {
   const n = parseInt(score);
   const color =
@@ -243,17 +257,7 @@ export default function ReviewPage() {
       ? 'https://gitlab.com/group/project/-/merge_requests/42'
       : 'https://github.com/owner/repo/pull/42';
 
-  const repoShort = (repo: string) => repo.split('/').pop() || repo || '';
   const prTabLabel = (p: PrInfo) => `${repoShort(p.repository) || 'repo'} #${p.prNumber}`;
-  // open = emerald, merged = violet, closed = red, unknown = zinc
-  const stateDotClass = (state: string) =>
-    state === 'merged'
-      ? 'bg-violet-500'
-      : state === 'closed'
-        ? 'bg-red-500'
-        : state === 'open'
-          ? 'bg-emerald-500'
-          : 'bg-zinc-400';
   const repoCount = new Set(prs.map((p) => p.repository)).size;
   const prCount = prs.length || (sprint?.prUrl ? 1 : 0);
   const viewPrLabel = selectedPr
@@ -287,7 +291,7 @@ export default function ReviewPage() {
 
   const pendingQuestions = questions
     .filter((q) => !q.structuredAnswer)
-    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    .toSorted((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
   // Scroll to a question referenced by a #question-{id} URL hash (timeline links)
   useQuestionAnchor(questions.length > 0);

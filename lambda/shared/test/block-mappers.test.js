@@ -116,7 +116,7 @@ describe('buildFromFiles', () => {
     // compiled scopeGrid (hence the create-project scope picker) is built from them.
     expect(workflow.scopeRefs.map((s) => s.scopeId)).toEqual(['feature', 'mvp']);
     // Rule refs cover every rule.
-    expect(workflow.ruleRefs.map((r) => r.ruleId).sort()).toEqual([
+    expect(workflow.ruleRefs.map((r) => r.ruleId).toSorted()).toEqual([
       'aidlc-org',
       'aidlc-phase-ideation',
     ]);

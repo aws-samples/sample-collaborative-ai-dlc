@@ -293,7 +293,7 @@ const seedMessage = async (
 
 const payloadHashOf = (content, mentions = []) =>
   createHash('sha256')
-    .update(JSON.stringify({ content, mentions: [...new Set(mentions)].sort() }))
+    .update(JSON.stringify({ content, mentions: [...new Set(mentions)].toSorted() }))
     .digest('hex');
 
 // ─── Request helpers ───
@@ -426,7 +426,7 @@ describe('POST /sprints/{sprintId}/discussions', () => {
     expect(d.messageCount).toBe(0);
 
     const edges = await g.V().has('Discussion', 'id', d.id).bothE().label().toList();
-    expect(edges.sort()).toEqual(['DISCUSSES', 'HAS_DISCUSSION']);
+    expect(edges.toSorted()).toEqual(['DISCUSSES', 'HAS_DISCUSSION']);
 
     const events = await g
       .V()
@@ -674,7 +674,7 @@ describe('POST .../messages — append + guard state matrix', () => {
       postMessage(sprintId, DISC, { id: MSG_ID, content: CONTENT }),
     ]);
 
-    const statuses = [a.statusCode, b.statusCode].sort();
+    const statuses = [a.statusCode, b.statusCode].toSorted();
     // One 201 (winner); the other 200 (echo) or 409 message_in_progress
     // (transparent client retry) depending on interleaving.
     expect(statuses[1]).toBeLessThanOrEqual(409);
@@ -797,10 +797,10 @@ describe('POST .../messages — append + guard state matrix', () => {
       mentions: [OUTSIDER_SUB, ADMIN_SUB, ADMIN_SUB, MEMBER_SUB],
     });
     expect(res.statusCode).toBe(201);
-    expect(json(res).mentions).toEqual([ADMIN_SUB, MEMBER_SUB].sort());
+    expect(json(res).mentions).toEqual([ADMIN_SUB, MEMBER_SUB].toSorted());
 
     const stored = await g.V().has('DiscussionMessage', 'id', MSG_ID).values('mentions').next();
-    expect(JSON.parse(stored.value)).toEqual([ADMIN_SUB, MEMBER_SUB].sort());
+    expect(JSON.parse(stored.value)).toEqual([ADMIN_SUB, MEMBER_SUB].toSorted());
   });
 
   it('returns 404 for a discussion outside the sprint and 403 for non-members', async () => {
@@ -926,7 +926,7 @@ describe('discussion.message fanout', () => {
     const recipients = apiMock
       .commandCalls(PostToConnectionCommand)
       .map((c) => c.args[0].input.ConnectionId)
-      .sort();
+      .toSorted();
     expect(recipients).toEqual(['conn-legacy', 'conn-live']);
 
     const payload = JSON.parse(apiMock.commandCalls(PostToConnectionCommand)[0].args[0].input.Data);

@@ -1,6 +1,6 @@
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
-import path from 'node:path';
+import nodePath from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
@@ -1327,7 +1327,7 @@ async function handleProjectSteeringDocs(g, response, httpMethod, projectId, use
     const savedDocs = [];
     for (const doc of incomingDocs) {
       const filename = doc.filename || '';
-      const safeBase = path.basename(filename);
+      const safeBase = nodePath.basename(filename);
       if (!safeBase || safeBase !== filename || !safeBase.toLowerCase().endsWith('.md')) {
         return response(400, {
           error: `Invalid filename "${filename}". Must end in .md and contain no path separators.`,

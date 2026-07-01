@@ -122,7 +122,7 @@ export const listDiscussions = async (event, res) => {
       d.unreadCount = countUnread(keys, cursors.get(d.id));
       return d;
     })
-    .sort((a, b) => {
+    .toSorted((a, b) => {
       if (a.lastMessageAt !== b.lastMessageAt) return a.lastMessageAt < b.lastMessageAt ? 1 : -1;
       return a.id < b.id ? 1 : -1;
     });
@@ -291,7 +291,7 @@ export const listMessages = async (event, res) => {
   if (after) {
     // Change delta: keyed on (updatedAt, id) ascending so missed REDACTIONS
     // of older messages arrive too, not just new messages.
-    const sorted = all.sort(compareBy('updatedAt'));
+    const sorted = all.toSorted(compareBy('updatedAt'));
     const newer = sorted.filter(
       (m) => m.updatedAt > after.ts || (m.updatedAt === after.ts && m.id > after.id),
     );
@@ -300,7 +300,7 @@ export const listMessages = async (event, res) => {
   } else if (before) {
     // Older history: display order (createdAt, id), latest `limit` strictly
     // before the cursor, returned ascending.
-    const sorted = all.sort(compareBy('createdAt'));
+    const sorted = all.toSorted(compareBy('createdAt'));
     const older = sorted.filter(
       (m) => m.createdAt < before.ts || (m.createdAt === before.ts && m.id < before.id),
     );
@@ -308,7 +308,7 @@ export const listMessages = async (event, res) => {
     hasMore = older.length > limit;
   } else {
     // Seeding: the latest page in display order, returned ascending.
-    const sorted = all.sort(compareBy('createdAt'));
+    const sorted = all.toSorted(compareBy('createdAt'));
     messages = sorted.slice(-limit);
     hasMore = sorted.length > limit;
   }

@@ -273,7 +273,7 @@ describe('GET /projects', () => {
 
     const res = await handler({ httpMethod: 'GET', ...claims(sub) });
     expect(res.statusCode).toBe(200);
-    const list = JSON.parse(res.body).sort((x, y) => x.name.localeCompare(y.name));
+    const list = JSON.parse(res.body).toSorted((x, y) => x.name.localeCompare(y.name));
     expect(list).toEqual([
       expect.objectContaining({ id: a.id, name: 'A', userRole: 'owner' }),
       expect.objectContaining({ id: b.id, name: 'B', userRole: 'owner' }),
@@ -1570,7 +1570,7 @@ describe('POST /projects with repos[] array', () => {
       ...claims(sub),
     });
     const repos = JSON.parse(listRes.body);
-    expect(repos.map((r) => r.url).sort()).toEqual(['org/api', 'org/core', 'org/web']);
+    expect(repos.map((r) => r.url).toSorted()).toEqual(['org/api', 'org/core', 'org/web']);
   });
 
   it('rejects the whole create when any repos[] url is invalid (400)', async () => {

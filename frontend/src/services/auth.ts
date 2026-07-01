@@ -68,13 +68,13 @@ export const authService = {
     } catch (error: any) {
       console.error('Login error:', error);
       if (error.name === 'NotAuthorizedException') {
-        throw new Error('Incorrect username or password');
+        throw new Error('Incorrect username or password', { cause: error });
       }
       if (error.name === 'UserNotFoundException') {
-        throw new Error('User does not exist');
+        throw new Error('User does not exist', { cause: error });
       }
       if (error.name === 'UserNotConfirmedException') {
-        throw new Error('User is not confirmed');
+        throw new Error('User is not confirmed', { cause: error });
       }
       throw error;
     }
@@ -90,7 +90,7 @@ export const authService = {
     } catch (error: any) {
       console.error('Complete new password error:', error);
       if (error.name === 'InvalidPasswordException') {
-        throw new Error('Password does not meet requirements');
+        throw new Error('Password does not meet requirements', { cause: error });
       }
       throw error;
     }

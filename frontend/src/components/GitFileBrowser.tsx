@@ -10,6 +10,34 @@ import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { TreeView, type TreeDataItem } from './ui/tree-view';
 import { Folder, File } from 'lucide-react';
 
+// Map a file extension to a syntax-highlighter language id.
+const getLanguage = (path: string) => {
+  const ext = path.split('.').pop()?.toLowerCase();
+  const langMap: Record<string, string> = {
+    js: 'javascript',
+    jsx: 'jsx',
+    ts: 'typescript',
+    tsx: 'tsx',
+    py: 'python',
+    rb: 'ruby',
+    java: 'java',
+    go: 'go',
+    rs: 'rust',
+    cpp: 'cpp',
+    c: 'c',
+    cs: 'csharp',
+    php: 'php',
+    html: 'html',
+    css: 'css',
+    json: 'json',
+    yaml: 'yaml',
+    yml: 'yaml',
+    md: 'markdown',
+    sh: 'bash',
+  };
+  return langMap[ext || ''] || 'text';
+};
+
 interface GitFileBrowserProps {
   provider: GitProvider;
   // Canonical repo reference (owner/repo for GitHub, group/project for GitLab).
@@ -25,8 +53,12 @@ export function GitFileBrowser({ provider, repoId, branch = 'main' }: GitFileBro
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
 
+  // Reload the file list when the provider/repo/branch changes. loadFiles closes
+  // over exactly those, so the dep array is complete; the function itself is
+  // intentionally omitted (defined below, single call site).
   useEffect(() => {
     loadFiles();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [provider, repoId, branch]);
 
   const loadFiles = async () => {
@@ -52,33 +84,6 @@ export function GitFileBrowser({ provider, repoId, branch = 'main' }: GitFileBro
     } finally {
       setLoadingContent(false);
     }
-  };
-
-  const getLanguage = (path: string) => {
-    const ext = path.split('.').pop()?.toLowerCase();
-    const langMap: Record<string, string> = {
-      js: 'javascript',
-      jsx: 'jsx',
-      ts: 'typescript',
-      tsx: 'tsx',
-      py: 'python',
-      rb: 'ruby',
-      java: 'java',
-      go: 'go',
-      rs: 'rust',
-      cpp: 'cpp',
-      c: 'c',
-      cs: 'csharp',
-      php: 'php',
-      html: 'html',
-      css: 'css',
-      json: 'json',
-      yaml: 'yaml',
-      yml: 'yaml',
-      md: 'markdown',
-      sh: 'bash',
-    };
-    return langMap[ext || ''] || 'text';
   };
 
   const filteredFiles = files.filter((f) => f.path.toLowerCase().includes(filter.toLowerCase()));
@@ -124,6 +129,9 @@ export function GitFileBrowser({ provider, repoId, branch = 'main' }: GitFileBro
       }
     }
     return root;
+    // loadFileContent is only referenced inside an onClick closure; it need not
+    // retrigger the tree rebuild, so it is intentionally omitted from the deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [files, filter, filteredFiles]);
 
   if (loading) {

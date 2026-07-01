@@ -85,7 +85,7 @@ describe('notify handler', () => {
     const conns = apiMock
       .commandCalls(PostToConnectionCommand)
       .map((c) => c.args[0].input.ConnectionId)
-      .sort();
+      .toSorted();
     expect(conns).toEqual(['proj-conn', 'sprint-conn']);
   });
 

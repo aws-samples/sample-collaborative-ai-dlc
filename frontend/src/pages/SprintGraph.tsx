@@ -218,14 +218,16 @@ type LayoutMode = 'force' | 'hierarchical';
 // Utility: Convex hull (Andrew's monotone chain)
 // ---------------------------------------------------------------------------
 
+// 2D cross product of OA × OB — sign gives the turn direction for the hull scan.
+const cross = (
+  O: { x: number; y: number },
+  A: { x: number; y: number },
+  B: { x: number; y: number },
+) => (A.x - O.x) * (B.y - O.y) - (A.y - O.y) * (B.x - O.x);
+
 function convexHull(points: { x: number; y: number }[]): { x: number; y: number }[] {
   if (points.length < 3) return points;
-  const pts = [...points].sort((a, b) => a.x - b.x || a.y - b.y);
-  const cross = (
-    O: { x: number; y: number },
-    A: { x: number; y: number },
-    B: { x: number; y: number },
-  ) => (A.x - O.x) * (B.y - O.y) - (A.y - O.y) * (B.x - O.x);
+  const pts = [...points].toSorted((a, b) => a.x - b.x || a.y - b.y);
 
   const lower: { x: number; y: number }[] = [];
   for (const p of pts) {
@@ -951,7 +953,7 @@ export default function SprintGraph() {
     const degrees = Object.values(degreeMap);
     const maxDegree = Math.max(...degrees, 0);
     const avgDegree = degrees.length > 0 ? degrees.reduce((s, d) => s + d, 0) / degrees.length : 0;
-    const hubNode = Object.entries(degreeMap).sort((a, b) => b[1] - a[1])[0];
+    const hubNode = Object.entries(degreeMap).toSorted((a, b) => b[1] - a[1])[0];
     const edgeLabelCounts: Record<string, number> = {};
     edges.forEach((e) => {
       edgeLabelCounts[e.label] = (edgeLabelCounts[e.label] || 0) + 1;
@@ -1795,7 +1797,7 @@ export default function SprintGraph() {
                         </span>
                         <div className="mt-1 space-y-0.5">
                           {Object.entries(graphStats.edgeLabelCounts)
-                            .sort((a, b) => b[1] - a[1])
+                            .toSorted((a, b) => b[1] - a[1])
                             .map(([label, count]) => (
                               <div key={label} className="flex items-center justify-between">
                                 <span className="text-[10px] text-muted-foreground">

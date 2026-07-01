@@ -77,6 +77,11 @@ class RealtimeService {
 
     this.ws = new WebSocket(url);
 
+    // NOTE: on* handler ASSIGNMENT (not addEventListener) is intentional here —
+    // exactly one handler per event, and disconnect() nulls them to detach so an
+    // intentional close can't trigger scheduleReconnect() via onclose. The
+    // unicorn/prefer-add-event-listener rule is disabled for this file in
+    // .oxlintrc.json for that reason.
     this.ws.onopen = () => {
       console.log('[WebSocket] Connected to:', documentId);
       this.setStatus('connected');

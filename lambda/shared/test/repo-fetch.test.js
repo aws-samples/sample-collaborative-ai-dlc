@@ -44,7 +44,7 @@ describe('fetchCoreFiles', () => {
     mockFetchReturning(tarball);
 
     const files = await fetchCoreFiles('abc123');
-    expect([...files.keys()].sort()).toEqual([
+    expect([...files.keys()].toSorted()).toEqual([
       'core/agents/aidlc-product-agent.md',
       'core/tools/aidlc-orchestrate.ts',
     ]);

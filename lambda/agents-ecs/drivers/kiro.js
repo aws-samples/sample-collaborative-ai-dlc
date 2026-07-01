@@ -75,6 +75,7 @@ async function authenticate(env) {
     throw new Error(
       'kiro-cli whoami failed — the configured KIRO_API_KEY is invalid or expired. ' +
         (err.message || ''),
+      { cause: err },
     );
   }
 

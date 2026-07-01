@@ -173,6 +173,9 @@ function propsToObj(props) {
   return o;
 }
 
+// Stable message ordering key (created_at, then id as a tiebreaker).
+const msgSortKey = (m) => `${m.created_at}|${m.id}`;
+
 function ok(data) {
   return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
 }
@@ -370,7 +373,6 @@ The message is persisted to the graph and broadcast live to the team.`,
       };
 
       return await withGraph(async (g) => {
-        const { cardinality } = gremlin.process;
         const exists = await g.V().has('Discussion', 'id', discussionId).hasNext();
         if (!exists) return err(`Discussion "${discussionId}" not found`);
         await g
@@ -460,12 +462,11 @@ Optionally filter to the thread(s) anchored on one entity via entityId.`,
           .by(__.out('HAS_MESSAGE').valueMap().fold())
           .toList();
 
-        const sortKey = (m) => `${m.created_at}|${m.id}`;
         const discussions = rows.map((row) => {
           const d = propsToObj(row.get('props'));
           const messages = (row.get('messages') || [])
             .map(propsToObj)
-            .sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : 1));
+            .toSorted((a, b) => (msgSortKey(a) < msgSortKey(b) ? -1 : 1));
           // Most recent `limit` messages, returned oldest-first. Redacted
           // messages already carry replacement content only — the original
           // is purged at redact time.
@@ -1052,7 +1053,6 @@ Each question has predefined options the user can select from. Users can always 
       // Also create a Question node in Neptune so the Sprint page can display it
       try {
         await withGraph(async (g) => {
-          const __ = gremlin.process.statics;
           await g
             .addV('Question')
             .property(cardinality.single, 'id', questionId)
@@ -2136,7 +2136,7 @@ Results are ordered by creation date (newest first). Use this at sprint start to
             .hasLabel('Task')
             .values('status')
             .toList();
-          const tasksDone = tasks.filter((s) => s === 'done').length;
+          const tasksDone = tasks.filter((status) => status === 'done').length;
 
           // Get review status
           const reviews = await g

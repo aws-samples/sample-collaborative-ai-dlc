@@ -45,6 +45,8 @@ export default function RequirementEditor({
       },
     );
 
+  // Seed the collaborative fields ONCE, when the editor syncs/opens — not when
+  // the requirement props change, which would clobber live edits with stale props.
   useEffect(() => {
     if (synced && editing)
       initFields({
@@ -52,6 +54,7 @@ export default function RequirementEditor({
         description: requirement.description,
         acceptanceCriteria: requirement.acceptanceCriteria,
       });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [synced, editing]);
 
   const remoteCount = remoteUsers.size;

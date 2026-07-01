@@ -270,7 +270,7 @@ export default function Project() {
                 const lastActive = sprints
                   .map((s) => s.agentCompletedAt ?? s.agentStartedAt)
                   .filter(Boolean)
-                  .sort()
+                  .toSorted()
                   .pop();
                 return lastActive ? ` · Last activity ${formatRelativeTime(lastActive)}` : '';
               })()}
