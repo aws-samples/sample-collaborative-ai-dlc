@@ -27,19 +27,40 @@ system as the **internal runtime snapshot** at S3 `aidlc-runtime/<ref>/<repo-pat
 (classification in `lambda/shared/block-mappers.js` `isRuntimeFile`, writes in
 `lambda/seed-blocks/index.js`) — present but unused by the execution layer today.
 
-| Upstream file                                                               | What it defines                                                                                                                                                                                                                                                                                 |
-| --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `core/aidlc-common/protocols/stage-definition.md` (§ `for_each`)            | The normative fan-out marker: _"artifact slug; stage runs once per instance of that artifact. Omit for once-per-workflow stages. Doctor validates the artifact is produced by an upstream stage."_                                                                                              |
-| `core/aidlc-common/stages/construction/*.md`                                | `functional-design`, `nfr-requirements`, `nfr-design`, `infrastructure-design`, `code-generation` all carry `for_each: unit-of-work`. `build-and-test` is the fan-in: _"Always executes once after all per-unit stages are finished"_, inputs _"ALL code generation outputs across all units"_. |
-| `core/aidlc-common/stages/inception/units-generation.md`                    | Produces `unit-of-work`, `unit-of-work-dependency`, `unit-of-work-story-map`. Its condition text: _"Produces the dependency DAG that … Delivery Planning consumes for Bolt sequencing"_.                                                                                                        |
-| `core/aidlc-common/stages/inception/delivery-planning.md`                   | Consumes the unit DAG, produces `bolt-plan` (prose iteration grouping, team allocation, risk rationale).                                                                                                                                                                                        |
-| `core/aidlc-common/protocols/stage-protocol.md` (§ Construction Bolt gates) | Walking-skeleton gate, autonomy ladder, batch-level gates ("single gate per batch, not one per Bolt"), halt-and-ask failure semantics ("wait for all parallel Tasks, preserve successful Bolts' artifacts, retry / skip / abort", retry inside the existing worktree).                          |
-| `core/tools/aidlc-bolt.ts`                                                  | _"A bolt is one execution of stages 3.1–3.5 for a Unit (or small group of dependency-linked Units)"_ + per-Bolt worktree lifecycle (`start --worktree`, `complete --merge`, `abort --discard`).                                                                                                 |
-| `core/tools/aidlc-swarm.ts`, `core/tools/aidlc-worktree.ts`                 | The parallel split: _"the conductor owns the fan-out (N parallel Task calls) … fork an isolated git worktree per unit … the serialised merge-back"_; determinism (merge, verdict, audit) in tools, judgement with the human.                                                                    |
+Key upstream files and definitions:
+
+- `core/aidlc-common/protocols/stage-definition.md` (§ `for_each`): the
+  normative fan-out marker: _"artifact slug; stage runs once per instance of
+  that artifact. Omit for once-per-workflow stages. Doctor validates the
+  artifact is produced by an upstream stage."_
+- `core/aidlc-common/stages/construction/*.md`: `functional-design`,
+  `nfr-requirements`, `nfr-design`, `infrastructure-design`, and
+  `code-generation` all carry `for_each: unit-of-work`. `build-and-test` is the
+  fan-in: _"Always executes once after all per-unit stages are finished"_, with
+  inputs _"ALL code generation outputs across all units"_.
+- `core/aidlc-common/stages/inception/units-generation.md`: produces
+  `unit-of-work`, `unit-of-work-dependency`, `unit-of-work-story-map`. Its
+  condition text: _"Produces the dependency DAG that … Delivery Planning
+  consumes for Bolt sequencing"_.
+- `core/aidlc-common/stages/inception/delivery-planning.md`: consumes the unit
+  DAG and produces `bolt-plan` (prose iteration grouping, team allocation, risk
+  rationale).
+- `core/aidlc-common/protocols/stage-protocol.md` (§ Construction Bolt gates):
+  walking-skeleton gate, autonomy ladder, batch-level gates ("single gate per
+  batch, not one per Bolt"), halt-and-ask failure semantics ("wait for all
+  parallel Tasks, preserve successful Bolts' artifacts, retry / skip / abort",
+  retry inside the existing worktree).
+- `core/tools/aidlc-bolt.ts`: _"A bolt is one execution of stages 3.1–3.5 for a
+  Unit (or small group of dependency-linked Units)"_ + per-Bolt worktree
+  lifecycle (`start --worktree`, `complete --merge`, `abort --discard`).
+- `core/tools/aidlc-swarm.ts`, `core/tools/aidlc-worktree.ts`: the parallel
+  split: _"the conductor owns the fan-out (N parallel Task calls) … fork an
+  isolated git worktree per unit … the serialised merge-back"_; determinism
+  (merge, verdict, audit) in tools, judgement with the human.
 
 Our engine already ports one piece: `parseBoltDag` / `computeBatches` in
 `lambda/shared/v2-sensor-contract.js` ("faithful JS port of the upstream lib")
-validates the ` ```yaml units: ` block of the `unit-of-work-dependency`
+validates the fenced YAML `units:` block of the `unit-of-work-dependency`
 artifact at the sensor gate — but nothing schedules from it yet. Stage
 `for_each` is mapped to `forEach` (`lambda/shared/block-mappers.js`) and
 likewise ignored by the plan resolver and orchestrator.
@@ -213,7 +234,21 @@ off _after_ the merge.
 ## Part C — Work packages
 
 Each step leaves the system shippable; sequential flow benefits from WP1+WP2
-before any concurrency lands.
+before any concurrency lands. **Hard ordering gates** (review-identified
+failure points — these are preconditions, not preferences):
+
+- **WP5 must not start until WP1 is deployed** and a stage **longer than
+  15 minutes** has completed through the async callback path in the
+  _sequential_ flow (proves the timeout fix before any concurrency).
+- **WP5 must not start until the unit dimension is threaded through the data
+  model** (WP3/WP4 deliverable below) — otherwise gates/events from parallel
+  lanes are unattributable.
+- **WP6b (extra PR strategies) must not start until WP8's merge fixtures pass**
+  on `intent-pr`.
+- **WP7's lane board must not start until the frontend is re-keyed on
+  `stageInstanceId`** (WP7 step 1).
+
+Work packages:
 
 - **WP0 — PoCs (local)**: this document; then four PoCs on the local test
   runner: (a) wavefront with cross-branch dependency awaits vs batch barriers,
@@ -222,62 +257,97 @@ before any concurrency lands.
   lifecycle (start step → background → callback → merge step) across replays.
 - **WP1 — Async stage invocation**: callback-based `run-stage` (finding B2);
   container-side background job + callback completion + IAM; per-stage
-  `callbackId` persisted on the STAGE row.
+  `callbackId` persisted on the STAGE row. Exit criterion: a >15-min stage
+  completes through the callback path in the sequential flow (gate for WP5).
 - **WP2 — Deterministic git layer**: `lambda/agentcore/git-engine.js` —
   engine-owned branch/commit/push on every stage exit, credential scrubbing,
   port of v1 `pushBranchWithRetry` semantics (retry + backoff + remote-HEAD
-  verification); prompts/annex lose all git responsibility. Closes the
-  documented v2 working-tree loss mode for the sequential flow immediately.
+  verification); prompts/annex lose all git responsibility. **All branch
+  creation and merging is local `git` (argv-based, `shell:false`) in the
+  runtime workspace, pushed and verified — never provider merge APIs** (v1's
+  server-side `merge-task-branches.js` path is explicitly not the model here;
+  provider APIs are used only to open PRs in WP6). Closes the documented v2
+  working-tree loss mode for the sequential flow immediately.
 - **WP3 — Unit DAG promotion**: on fan-out gate approval, engine re-parses the
   artifact (`parseBoltDag`), writes UNITPLAN + `UNIT#<slug>` rows to the DDB
   process table (scheduling truth), mirrors to Neptune (`UnitOfWork`,
   `DEPENDS_ON` — already allowlisted); captures skip matrix (rule 7), skeleton
   pick (rule 8), autonomy mode (rule 9). Lane states:
   `PENDING → READY → RUNNING → MERGING → MERGED | FAILED | BLOCKED`.
-- **WP4 — Plan fan-out**: section detection over `forEach` in
-  `v2-execution-plan.js`, per-unit stage instances with unit-dimension ids,
-  `no_unit_dag_producer` validation, N sections generically;
-  `run-stage` accepts `unitSlug` + lane workspace; stage-materializer injects
-  the unit's scope (its stories/sections from the DAG artifact).
-- **WP5 — Parallel lane orchestration**: skeleton-solo → skeleton gate →
-  autonomy ladder → wavefront over the UNITPLAN (deterministic replacement for
-  v1's LLM construction orchestrator); `maxParallelUnits` project setting
+- **WP4 — Plan fan-out + unit dimension through the data model**: section
+  detection over `forEach` in `v2-execution-plan.js`, per-unit stage instances
+  with unit-dimension ids, `no_unit_dag_producer` validation, N sections
+  generically; `run-stage` accepts `unitSlug` + lane workspace;
+  stage-materializer injects the unit's scope (its stories/sections from the
+  DAG artifact). **Named deliverable — `unitSlug` threaded end-to-end, as a
+  precondition of WP5**: `STAGE#` rows, `EVENT#` rows, `HUMAN#` gate rows,
+  `SENSOR#`/`METRIC#`/`OUTPUT#` rows where stage-scoped, WS broadcast payloads
+  (`agent.stage`, `agent.question`, new `agent.unit` / `v2.unit.*`), and the
+  REST `IntentDetail` DTO (stages, gates, events). Fan-out lands here running
+  **sequentially** (lanes executed one at a time) — a safe intermediate state
+  that already exercises the whole unit data model before concurrency.
+- **WP5 — Parallel lane orchestration** _(gated on WP1 exit criterion + WP4
+  unit-dimension deliverable)_: skeleton-solo → skeleton gate → autonomy
+  ladder → wavefront over the UNITPLAN (deterministic replacement for v1's LLM
+  construction orchestrator); `maxParallelUnits` project setting
   (0 = unbounded → omit `maxConcurrency`); batch-level approval gates in
   `gated` mode; halt-and-ask retry/skip/abort on lane failure (dependents →
   BLOCKED, independents finish, pushed work preserved); per-lane park/resume +
   release-on-park; lane transitions as durable steps + `EVENT#` rows +
   broadcasts.
-- **WP6 — Fan-in**: serialized `--no-ff` merges in completion order, engine
-  merge lock; conflict-resolution stage (fresh lane, conflicted merge state,
-  sensors must pass, engine commits) with human-gate escalation;
-  `prStrategy` project setting: `intent-pr` (default) | `pr-per-unit` |
-  `stacked`, reusing `lambda/shared/git-providers*` + the v1 unmerged-branch
-  guard.
-- **WP7 — UI**: lane board (rows = units via `layerStages`, embedded stage
-  strips, DAG edges; skeleton lane visually distinct), `unitId` across
-  DTOs/WS (`agent.unit`, `v2.unit.*` events), gate lane-attribution, batch
-  gates, refetch debouncing, settings (`maxParallelUnits`, `prStrategy`,
-  autonomy default) in the v2 ProjectSettings card.
+- **WP6 — Fan-in (intent-pr only)**: serialized `--no-ff` merges in completion
+  order (local git in the runtime workspace, engine merge lock; provider APIs
+  only to open the PR); conflict-resolution stage (fresh lane, conflicted
+  merge state, sensors must pass, engine commits) with human-gate escalation;
+  `prStrategy` project setting ships with **`intent-pr` (default) as the only
+  enabled value**, reusing `lambda/shared/git-providers*` + the v1
+  unmerged-branch guard.
+- **WP6b — Extra PR strategies** _(gated on WP8 merge fixtures passing)_:
+  enable `pr-per-unit` and `stacked` in `prStrategy`. Until then the two
+  options are visible but disabled in settings (design unchanged, timing
+  staged).
+- **WP7 — UI**: **step 1 (precondition for the rest): re-key all frontend
+  stage aggregation from `stageId` to `stageInstanceId`** (which carries the
+  unit dimension after WP4) — today's 1:1 `stageId` merge in
+  `IntentContext.stageRows` collides on fan-out instances — and land the
+  DTO/WS type changes. Then: lane board (rows = units via `layerStages`,
+  embedded stage strips, DAG edges; skeleton lane visually distinct), gate
+  lane-attribution, batch gates, refetch debouncing, settings
+  (`maxParallelUnits`, `prStrategy`, autonomy default) in the v2
+  ProjectSettings card.
 - **WP8 — Hardening**: integration fixtures — 3-unit DAG (A,B ∥ → C: A∥B run,
   C waits and sees merged A+B code), forced merge conflict (exercises the
   conflict stage), kill-a-lane mid-stage (pushed park-commits survive a mount
   wipe); `disjoint-files` advisory sensor on the unit DAG (warn on overlapping
-  file ownership).
+  file ownership). Passing merge fixtures unlock WP6b.
 
 ---
 
 ## Decisions log
 
-| Decision                     | Choice                                                                                                       |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| What parallelizes            | Units of work from the `unit-of-work-dependency` bolt DAG (per-unit construction lanes)                      |
-| Blocking granularity         | Lane-level: a unit starts only when all `depends_on` lanes are fully MERGED                                  |
-| Scheduling source            | The unit DAG only; `bolt-plan` stays prose (never parsed for execution)                                      |
-| Custom workflows             | N parallel sections handled generically (structural `forEach` rule)                                          |
-| Per-unit conditionals        | Skippable per unit via human-approved matrix at the fan-out gate                                             |
-| Human gating in construction | Methodology model: walking-skeleton gate + autonomy ladder + per-batch gates — replaces per-stage lane gates |
-| Merge conflicts              | Deterministic merge; conflict → scoped agent stage + sensor verification; human on repeat failure            |
-| Branch/PR model              | Per-project `prStrategy`: intent-pr (default) / pr-per-unit / stacked                                        |
-| Git ownership                | Engine-only (branch, commit, push, merge); agents hold no credentials                                        |
-| Sequencing                   | Git layer + parallelization as one combined effort (async invocation first)                                  |
-| Concurrency cap              | Per-project `maxParallelUnits`; 0 = unbounded (DAG-limited)                                                  |
+- **What parallelizes**: units of work from the `unit-of-work-dependency` bolt
+  DAG (per-unit construction lanes).
+- **Blocking granularity**: lane-level. A unit starts only when all
+  `depends_on` lanes are fully MERGED.
+- **Scheduling source**: the unit DAG only. `bolt-plan` stays prose and is never
+  parsed for execution.
+- **Custom workflows**: N parallel sections handled generically (structural
+  `forEach` rule).
+- **Per-unit conditionals**: skippable per unit via human-approved matrix at the
+  fan-out gate.
+- **Human gating in construction**: methodology model: walking-skeleton gate +
+  autonomy ladder + per-batch gates — replaces per-stage lane gates.
+- **Merge conflicts**: deterministic merge; conflict → scoped agent stage +
+  sensor verification; human on repeat failure.
+- **Branch/PR model**: per-project `prStrategy`: intent-pr (default) /
+  pr-per-unit / stacked — **staged**: intent-pr ships in WP6; the other two
+  unlock in WP6b after WP8 merge fixtures pass.
+- **Git ownership**: engine-only (branch, commit, push, merge); agents hold no
+  credentials.
+- **Merge mechanics**: local git in the runtime workspace (never provider merge
+  APIs); provider APIs open PRs only.
+- **Sequencing**: git layer + parallelization as one combined effort (async
+  invocation first); hard gates: WP1 >15-min proof and WP4 unit-dimension
+  deliverable before WP5.
+- **Concurrency cap**: per-project `maxParallelUnits`; 0 = unbounded
+  (DAG-limited).

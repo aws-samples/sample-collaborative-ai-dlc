@@ -80,15 +80,71 @@ const textFromClaudeStreamEvent = (event) => {
   return '';
 };
 
+const stripTerminalControls = (text = '') => {
+  const s = String(text);
+  let out = '';
+  for (let i = 0; i < s.length; i += 1) {
+    const code = s.charCodeAt(i);
+    const next = s[i + 1];
+
+    if (code === 27 && next === ']') {
+      i += 2;
+      for (; i < s.length; i += 1) {
+        if (s.charCodeAt(i) === 7) break;
+        if (s.charCodeAt(i) === 27 && s[i + 1] === '\\') {
+          i += 1;
+          break;
+        }
+      }
+      continue;
+    }
+
+    if ((code === 27 && next === '[') || code === 155) {
+      if (code === 27) i += 1;
+      for (i += 1; i < s.length; i += 1) {
+        const final = s.charCodeAt(i);
+        if (final >= 64 && final <= 126) break;
+      }
+      continue;
+    }
+
+    if ((code < 32 && code !== 9 && code !== 10 && code !== 13) || code === 127) continue;
+    out += s[i];
+  }
+
+  // Some CLIs print ANSI CSI fragments through layers that drop ESC but leave
+  // `[38;5;141m` / `[0m` behind. Remove those orphaned color fragments too.
+  return out.replace(/\[(?:\d{1,3}(?:;\d{1,3})*)?m/g, '');
+};
+
 const createCliOutputSink = ({ cli, emit }) => {
   let pending = '';
 
   if (cli !== 'claude') {
+    let suppressSendOutputBlock = false;
+    const consumeLine = (line, newline = true) => {
+      const text = stripTerminalControls(`${line}${newline ? '\n' : ''}`);
+      if (/^\s*Running tool\s+send_output\b/.test(text)) {
+        suppressSendOutputBlock = true;
+        return;
+      }
+      if (suppressSendOutputBlock) {
+        if (/Completed in/.test(text)) suppressSendOutputBlock = false;
+        return;
+      }
+      if (text) emit(text);
+    };
     return {
       write(chunk) {
-        emit(chunk);
+        pending += chunk;
+        const lines = pending.split(/\r?\n/);
+        pending = lines.pop() ?? '';
+        for (const line of lines) consumeLine(line);
       },
-      flush() {},
+      flush() {
+        if (pending) consumeLine(pending, false);
+        pending = '';
+      },
     };
   }
 
@@ -97,11 +153,11 @@ const createCliOutputSink = ({ cli, emit }) => {
   const consumeLine = (line) => {
     if (!line.trim()) return;
     try {
-      const text = textFromClaudeStreamEvent(JSON.parse(line));
+      const text = stripTerminalControls(textFromClaudeStreamEvent(JSON.parse(line)));
       if (text) emit(text);
     } catch {
       // If the CLI ever prints non-JSON diagnostics on stdout, keep them visible.
-      emit(`${line}\n`);
+      emit(stripTerminalControls(`${line}\n`));
     }
   };
 
@@ -1111,6 +1167,8 @@ export const __test = {
   composeKnowledge,
   renderTeamKnowledge,
   formatResumeAnswer,
+  stripTerminalControls,
+  createCliOutputSink,
   renderSteering,
   consumePendingSteering,
   isBenignKiroEmptyCompletion,

@@ -403,6 +403,31 @@ describe('mergeLearningRules — feeds the existing resolver at the right preced
   });
 });
 
+describe('CLI output sink — UI-safe stdout', () => {
+  const { createCliOutputSink, stripTerminalControls } = __test;
+  const esc = String.fromCharCode(27);
+
+  it('strips ANSI and orphaned color fragments before emitting UI output', () => {
+    expect(stripTerminalControls(`${esc}[38;5;141mtool${esc}[0m [38;5;244mmeta[0m`)).toBe(
+      'tool meta',
+    );
+  });
+
+  it('suppresses raw Kiro send_output terminal blocks to avoid duplicate final output', () => {
+    const emitted = [];
+    const sink = createCliOutputSink({ cli: 'kiro', emit: (text) => emitted.push(text) });
+    sink.write('Before\n');
+    sink.write(`Running tool  ${esc}[38;5;141msend_output${esc}[0m with the param\n`);
+    sink.write(' ⋮  { "content": "Clean final" }\n');
+    sink.write(`${esc}[0m# Clean final\n`);
+    sink.write(` ${esc}[38;5;244m - Completed in 0.45s${esc}[0m\n`);
+    sink.write('After\n');
+    sink.flush();
+
+    expect(emitted.join('')).toBe('Before\nAfter\n');
+  });
+});
+
 describe('runStage — model resolution precedence', () => {
   // Capture the --model value the selected driver was invoked with.
   const captureModel = () => {
