@@ -42,9 +42,11 @@ const exists = async (p, fsImpl) => {
 };
 
 // Restore the durable store (mount → local) before a Kiro spawn. Missing or
-// unreadable source is NOT an error: Kiro just starts a fresh conversation (a
-// resume then can't recall — surfaced by the caller as a logged warning). Returns
-// true when a store was restored, false when there was nothing/failed to copy.
+// unreadable source is NOT an error here: Kiro just starts a fresh conversation.
+// On a FRESH run that is correct; on a RESUME the caller (run-stage) treats a
+// false return as fatal (`resume_store_lost`) when a mount is configured, because
+// a blank resume silently loses the parked stage's whole context. Returns true
+// when a store was restored, false when there was nothing/failed to copy.
 export const restoreKiroStore = async ({
   env = process.env,
   fs = { cp, mkdir, rm, stat },

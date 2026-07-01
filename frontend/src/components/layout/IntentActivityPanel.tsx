@@ -257,6 +257,9 @@ function eventDotColor(type: string): string {
   // appear in realtime) — green like v1's artifact_created events.
   if (type.startsWith('v2.artifact.')) return 'bg-agent-success';
   if (type === 'v2.question.asked' || type === 'v2.stage.parked') return 'bg-agent-waiting';
+  // A non-PASS sensor verdict (advisory or blocking) — flag it like a wait so a
+  // gap (e.g. a required artifact "missing") is scannable in the feed.
+  if (type === 'v2.sensor.flagged') return 'bg-agent-waiting';
   if (type === 'v2.stage.resumed') return 'bg-agent-running';
   if (type.startsWith('v2.workspace.')) return 'bg-phase-inception';
   return 'bg-muted-foreground';

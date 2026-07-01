@@ -111,7 +111,23 @@ export interface IntentSensorRun {
   result: string;
   severity: string;
   held: boolean;
+  // The sensor's structured verdict (e.g. { artifacts: [{ artifact, reason }] },
+  // { unreferenced: [...] }, { reason }, { error }). Shape varies per sensor
+  // kind; rendered best-effort into a human explanation in the UI.
+  detail: SensorDetail | null;
   timestamp: string;
+}
+
+// Loosely-typed sensor verdict detail — the fields any evaluator may emit. All
+// optional; the UI reads whichever are present.
+export interface SensorDetail {
+  artifacts?: { artifact: string; reason?: string; id?: string | null }[];
+  unreferenced?: string[];
+  consumes?: string[];
+  reason?: string;
+  error?: string;
+  findings_count?: number;
+  [key: string]: unknown;
 }
 
 export interface IntentArtifact {

@@ -35,6 +35,7 @@ import {
 import {
   restoreKiroStore as defaultRestoreKiroStore,
   persistKiroStore as defaultPersistKiroStore,
+  resolveKiroStore,
 } from '../cli/kiro-store.js';
 import { resolveStageModel } from '../model-resolver.js';
 import { createGraphWriter } from '../mcp/graph-writer.js';
@@ -138,6 +139,25 @@ const composeKnowledge = (methodology, teamRows) => {
   return parts.join('\n\n---\n\n');
 };
 
+// Condense a sensor's structured `detail` into a short human suffix for the
+// activity-feed note (the full structured detail is on the SensorRun row for the
+// drill-down). Handles the shapes the evaluators emit: missing artifacts
+// (`artifacts[].reason`), unreferenced upstreams (`unreferenced[]`), a bare
+// `reason`, or an `error`. Returns '' when there is nothing terse worth adding.
+const summarizeSensorDetail = (detail) => {
+  if (!detail || typeof detail !== 'object') return '';
+  const missing = Array.isArray(detail.artifacts)
+    ? detail.artifacts.filter((a) => a?.reason === 'not found in graph').map((a) => a.artifact)
+    : [];
+  if (missing.length) return ` — missing: ${missing.join(', ')}`;
+  if (Array.isArray(detail.unreferenced) && detail.unreferenced.length) {
+    return ` — unreferenced: ${detail.unreferenced.join(', ')}`;
+  }
+  if (detail.error) return ` — ${detail.error}`;
+  if (detail.reason) return ` — ${detail.reason}`;
+  return '';
+};
+
 // Run the stage's deterministic sensors after the agent finishes. Records a
 // SensorRun verdict + broadcasts an `agent.note` per sensor. Returns a
 // human-readable reason string when a BLOCKING sensor held the stage, else null.
@@ -207,6 +227,25 @@ const runStageSensors = async ({
       note: `sensor ${v.sensorId}: ${v.result}${v.held ? ' (blocking)' : ''}`,
       kind: 'sensor',
     });
+    // Surface a NON-PASS verdict in the durable activity feed too. A PASS stays
+    // quiet (the SensorRun row already records it, and a note per passing sensor
+    // is pure noise); anything else — FAIL / INCONCLUSIVE / BLOCKED — is worth a
+    // persisted note so an advisory miss (e.g. an artifact "not found in graph")
+    // is visible on reload even though it did not hold the stage. `held` blocking
+    // failures already fail the stage below; this is the record for the rest.
+    if (v.result !== 'PASS') {
+      await store
+        .appendEvent({
+          executionId,
+          type: 'v2.sensor.flagged',
+          stageInstanceId,
+          actor: 'agentcore',
+          summary: `Sensor ${v.sensorId} (${v.severity}) → ${v.result}${
+            v.held ? ' — blocking' : ''
+          }${summarizeSensorDetail(v.detail)}`,
+        })
+        .catch(() => {});
+    }
     if (v.held) heldReasons.push(`${v.sensorId}=${v.result}`);
   }
   return heldReasons.length ? heldReasons.join(', ') : null;
@@ -568,9 +607,26 @@ export const runStage = async (
   // Kiro only: restore the durable SQLite store (mount → ephemeral local XDG)
   // before spawning so a resume recalls the parked conversation. Kiro's DB can't
   // live on the managed mount (no fcntl locking), so it runs locally and we sync.
-  // A missing/unreadable store is not fatal — Kiro just starts fresh (logged).
+  // A missing/unreadable store is not fatal on a FRESH run — Kiro just starts a
+  // new conversation. On a RESUME it IS fatal: without the parked conversation the
+  // CLI restarts blank (no prompt, no prior Q&A, empty workspace view) yet is fed
+  // only the terse answer message — so it "succeeds" having lost the stage's whole
+  // context and produces none of its artifacts (see the intent-capture amnesia
+  // incident). The managed mount is wiped by any runtime image redeploy and expires
+  // after 14 idle days, so a long human wait can genuinely lose it. Fail cleanly so
+  // the orchestrator can retry from a known state rather than pass silent garbage.
+  // Only enforce this when a store mount is actually configured (resolveKiroStore
+  // non-null) — a local/test run with no mount legitimately has nothing to restore.
   if (cli === 'kiro') {
     const restored = await restoreKiroStore({ env }).catch(() => false);
+    if (resumeFrom && !restored && resolveKiroStore(env)) {
+      return fail(
+        stageInstanceId,
+        'resume_store_lost',
+        'kiro conversation store could not be restored on resume (mount wiped by a ' +
+          'runtime redeploy or expired) — the parked conversation is gone',
+      );
+    }
     if (resumeFrom && !restored) {
       console.error(`[run-stage] kiro store not restored for resume ${stageInstanceId}`);
     }

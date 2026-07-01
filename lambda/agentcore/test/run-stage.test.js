@@ -526,6 +526,33 @@ describe('runStage — deterministic sensors', () => {
     expect(deps.store.calls.some((c) => c[0] === 'recordSensorRun')).toBe(true);
   });
 
+  it('surfaces a NON-PASS advisory verdict as a v2.sensor.flagged event (does not hold)', async () => {
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      loadLibrary: async () => ({ workflow: workflow(), library: libWithSensor('advisory') }),
+      // Graph returns content missing the required artifact → non-PASS verdict.
+      openGraph: graphReturning('## only one heading\n\nbody'),
+    });
+    const res = await runStage(baseArgs, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(
+      deps.store.calls.some((c) => c[0] === 'appendEvent' && c[1].type === 'v2.sensor.flagged'),
+    ).toBe(true);
+  });
+
+  it('does NOT emit a v2.sensor.flagged event when the sensor PASSES', async () => {
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      loadLibrary: async () => ({ workflow: workflow(), library: libWithSensor('advisory') }),
+      openGraph: graphReturning('## A\n\nx\n\n## B\n\ny'),
+    });
+    const res = await runStage(baseArgs, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(
+      deps.store.calls.some((c) => c[0] === 'appendEvent' && c[1].type === 'v2.sensor.flagged'),
+    ).toBe(false);
+  });
+
   it('a blocking sensor that FAILS holds the stage (sensor_blocked, FAILED)', async () => {
     const deps = baseDeps({
       spawnFn: okSpawn,
@@ -867,5 +894,71 @@ describe('runStage — Kiro SQLite store sync (restore before spawn, persist aft
     const res = await runStage(baseArgs, deps); // claude (default)
     expect(res).toMatchObject({ ok: true, cli: 'claude' });
     expect(touched).toBe(false);
+  });
+
+  // Env that makes resolveKiroStore() non-null (a real managed mount is
+  // configured), so the resume amnesia guard is armed.
+  const kiroStoreEnv = {
+    BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6',
+    XDG_DATA_HOME: '/home/node/.kiro-data',
+    V2_KIRO_STORE_DIR: '/mnt/workspace/.kiro-data',
+  };
+
+  it('fails resume_store_lost when a resume cannot restore the Kiro store (mount configured)', async () => {
+    let spawned = false;
+    const deps = baseDeps({
+      availableClis: ['kiro'],
+      env: kiroStoreEnv,
+      spawnFn: () => ((spawned = true), okSpawn()),
+      restoreKiroStore: async () => false, // mount wiped / expired
+      store: spyStore({
+        humanTask: { humanTaskId: 'q-1', status: 'answered', answer: { freeText: 'go' } },
+        stage: { cli: 'kiro', cliSessionId: 'kiro-7' },
+      }),
+    });
+    const res = await runStage({ ...baseArgs, requestedCli: 'kiro', resumeFrom: 'q-1' }, deps);
+    expect(res).toMatchObject({ ok: false, reason: 'resume_store_lost' });
+    // Must fail BEFORE spawning a blank conversation.
+    expect(spawned).toBe(false);
+    expect(
+      deps.store.calls.some((c) => c[0] === 'updateStageState' && c[1].state === 'FAILED'),
+    ).toBe(true);
+  });
+
+  it('does NOT fail resume when no store mount is configured (local/test run)', async () => {
+    // resolveKiroStore() is null without the store env — the guard must stay off
+    // so a local run keeps its best-effort start-fresh behavior.
+    const deps = baseDeps({
+      availableClis: ['kiro'],
+      env: { BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6' },
+      spawnFn: okSpawn,
+      restoreKiroStore: async () => false,
+      store: spyStore({
+        humanTask: { humanTaskId: 'q-1', status: 'answered', answer: { freeText: 'go' } },
+        stage: { cli: 'kiro', cliSessionId: 'kiro-7' },
+      }),
+    });
+    const res = await runStage({ ...baseArgs, requestedCli: 'kiro', resumeFrom: 'q-1' }, deps);
+    expect(res.reason).not.toBe('resume_store_lost');
+  });
+
+  it('does NOT fail a FRESH kiro run when the store is absent (mount configured)', async () => {
+    // A fresh run legitimately has no store to restore — start-fresh is correct.
+    const deps = baseDeps({
+      availableClis: ['kiro'],
+      env: kiroStoreEnv,
+      spawnFn: (command, args) =>
+        args.includes('--list-sessions')
+          ? {
+              on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
+              stdout: { on: (ev, cb) => ev === 'data' && cb(Buffer.from('[]')) },
+              stdin: { end() {} },
+            }
+          : okSpawn(),
+      restoreKiroStore: async () => false,
+    });
+    const res = await runStage({ ...baseArgs, requestedCli: 'kiro' }, deps);
+    expect(res.reason).not.toBe('resume_store_lost');
+    expect(res.ok).toBe(true);
   });
 });

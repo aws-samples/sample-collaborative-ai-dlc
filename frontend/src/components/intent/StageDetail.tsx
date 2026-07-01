@@ -4,7 +4,12 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { useIntent, type IntentStageRow } from '@/contexts/IntentContext';
 import { formatDuration, useTick } from '@/components/intent/stageStyle';
-import { SensorChips } from '@/components/intent/SensorChips';
+import {
+  SensorChips,
+  latestSensorRuns,
+  sensorNeedsAttention,
+  summarizeSensorDetail,
+} from '@/components/intent/SensorChips';
 import { FileText, ScrollText } from 'lucide-react';
 
 // Drill-down for one stage, shared by the list (inline expansion) and the
@@ -41,6 +46,12 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
 
   const instanceId = row.stageInstanceId;
   const sensors = instanceId ? (sensorsByStage.get(instanceId) ?? []) : [];
+  // Non-PASS latest verdicts with a terse explanation — surfaced inline (not
+  // just in the chip tooltip) so an advisory miss like an intent-statement
+  // "missing" is visible without hovering.
+  const sensorFlags = latestSensorRuns(sensors)
+    .filter(sensorNeedsAttention)
+    .map((r) => ({ run: r, explain: summarizeSensorDetail(r.detail) }));
   const artifacts = instanceId ? (artifactsByStage.get(instanceId) ?? []) : [];
   const stageGates = instanceId ? gates.filter((g) => g.stageInstanceId === instanceId) : [];
   const hasOutput = !!instanceId && !!outputBuffers.get(instanceId)?.trim();
@@ -128,6 +139,26 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
         <div className="space-y-1">
           <p className="text-[11px] text-muted-foreground">Sensors</p>
           <SensorChips runs={sensors} />
+          {/* Explain each non-PASS verdict inline. Advisory misses (INCONCLUSIVE)
+              don't hold the stage but still signal a gap worth seeing. */}
+          {sensorFlags.length > 0 && (
+            <ul className="space-y-0.5 pt-0.5">
+              {sensorFlags.map(({ run, explain }) => (
+                <li
+                  key={run.sensorRunId}
+                  className={cn(
+                    'text-[11px]',
+                    run.held ? 'text-agent-error' : 'text-muted-foreground',
+                  )}
+                >
+                  <span className="font-medium">{run.sensorId}</span>{' '}
+                  <span className="uppercase">{run.result}</span>
+                  {run.held && <span className="font-semibold"> · blocking</span>}
+                  {explain && <span> — {explain}</span>}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
 

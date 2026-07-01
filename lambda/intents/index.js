@@ -411,6 +411,11 @@ export const handler = async (event) => {
           result: s.result,
           severity: s.severity,
           held: s.held,
+          // The sensor's structured verdict (missing artifacts, unreferenced
+          // upstreams, violations …). Surfaced so the UI can explain WHY a
+          // non-PASS verdict fired — an advisory INCONCLUSIVE still matters even
+          // though it did not hold the stage.
+          detail: s.detail ?? null,
           timestamp: s.timestamp,
         })),
         artifacts,
