@@ -59,7 +59,13 @@ locals {
   agents_source_path = abspath("${path.module}/../../../../lambda")
 
   path_include = ["agents-ecs/**", "shared/mcp-validator.js"]
-  path_exclude = ["**/node_modules/**", "**/.git/**"]
+  # Anchor excludes to the included scope (agents-ecs/**). Unanchored "**/..."
+  # patterns make fileset walk the entire lambda/ tree — all sibling packages'
+  # large, volatile node_modules dirs — which both wastes work (setsubtract only
+  # removes elements already in the include set) and widens the window for
+  # fileset's "inconsistent result" error when any of those trees mutates
+  # (npm/editor/tooling) mid-plan.
+  path_exclude = ["agents-ecs/**/node_modules/**", "agents-ecs/**/.git/**"]
 
   agents_files_include = setunion([for f in local.path_include : fileset(local.agents_source_path, f)]...)
   agents_files_exclude = setunion([for f in local.path_exclude : fileset(local.agents_source_path, f)]...)
