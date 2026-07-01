@@ -47,7 +47,7 @@
     "@vitest/coverage-v8": "^4.1.7",
     "aws-sdk-client-mock": "^4.1.0",
     "aws-sdk-client-mock-vitest": "^7.0.1",
-    "esbuild": "^0.28.0",
+    "esbuild": "^0.28.1",
     "gremlin": "^3.8.1",
     "gremlin-aws-sigv4": "^3.6.1",
     "husky": "9.1.7",
