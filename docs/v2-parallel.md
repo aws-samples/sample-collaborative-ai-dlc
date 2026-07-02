@@ -554,6 +554,19 @@ MERGED | FAILED | BLOCKED`; `updateUnitState` is CAS'd on `fromStates`
   conflict stage), kill-a-lane mid-stage (pushed park-commits survive a mount
   wipe); `disjoint-files` advisory sensor on the unit DAG (warn on overlapping
   file ownership). Passing merge fixtures unlock WP6b.
+  **Pulled forward (passing)**: the two merge fixtures landed with WP5 as
+  `lambda/v2-orchestrator/test/section-integration.test.js` — the REAL
+  orchestrator on the REAL durable runner dispatching the REAL
+  init-lane/merge-lane commands against REAL git bare remotes (the only fakes:
+  in-memory store + the agent CLI, replaced by real file writes + the real
+  engine commit/push hook). Fixture 1 proves C's lane workspace genuinely
+  contains merged A+B code, per-lane sessions, three `--no-ff` merge commits,
+  and preserved unit branches; fixture 2 proves a real add/add conflict fails
+  the lane with repo-qualified conflicted paths, halt-and-ask SKIP completes
+  the run honestly (fan-in reports 2/3), and the intent branch/tree stay
+  pristine with the conflicted lane's work preserved on its unit branch.
+  Remaining for WP8: kill-a-lane mid-stage (cloud-flavored) + the
+  `disjoint-files` sensor.
 
 ---
 
