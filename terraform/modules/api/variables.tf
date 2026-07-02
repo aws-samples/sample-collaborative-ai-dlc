@@ -129,12 +129,6 @@ variable "intents_lambda_name" {
   type        = string
 }
 
-variable "state_machine_arn" {
-  description = "ARN of the agent workflow state machine"
-  type        = string
-  default     = ""
-}
-
 variable "enable_agents" {
   description = "Whether to enable agent API endpoints"
   type        = bool

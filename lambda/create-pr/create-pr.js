@@ -4,7 +4,7 @@
 // construction-task-branch guard, existing-PR lookup, no-change skip, and task
 // branch cleanup) lives in shared/git-providers. This handler is a thin
 // adapter: it validates input, picks the provider by `gitProvider`, and maps
-// the provider's normalized result back to the Step Functions response shape.
+// the provider's normalized result back to the caller.
 
 const { getProvider } = require('../shared/git-providers');
 
