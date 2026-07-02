@@ -105,9 +105,8 @@ const streamToString = async (body) => {
 // Resolve the git token for the intent's run (from the starter's connection).
 // Returns { token, reason } — the reason names WHY the token is empty
 // (no_connection / resolve_failed with the error), so a repo-ful run can
-// surface it instead of silently degrading to unauthenticated git (cloud
-// finding #3: the silent '' here masked a missing env var for a full failure
-// chain — empty token → private clone "succeeded" as git init → blind stage).
+// surface it instead of silently degrading to unauthenticated git. An empty
+// token can turn a private clone failure into a blind run against an empty repo.
 const defaultResolveToken = async ({ startedBy, gitProvider }) => {
   if (!startedBy || !gitProvider) return { token: '', reason: 'no_starter_or_provider' };
   try {

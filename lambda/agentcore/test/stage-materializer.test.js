@@ -273,7 +273,7 @@ describe('buildMcpConfig — unit lane scope', () => {
   });
 });
 
-// ── Cloud finding #5: the intent must reach the agent ────────────────────────
+// ── The intent must reach the agent ──────────────────────────────────────────
 
 import { renderIntentBlock } from '../stage-materializer.js';
 

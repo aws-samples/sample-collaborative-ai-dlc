@@ -61,9 +61,7 @@ const renderInputs = (inputArtifacts = []) => {
 const renderOutputs = (outputArtifacts = []) =>
   outputArtifacts.length ? outputArtifacts.map((o) => `- ${o.artifact}`).join('\n') : '- none';
 
-// Render the intent block — the run's north star (cloud finding #5: the
-// intent title/prompt rode the init-ws payload but were NEVER delivered to
-// the agent; intent-capture then had to ask the human what the intent was).
+// Render the intent block — the run's north star.
 // PURE. Injected near the top of every fresh stage prompt: early stages work
 // FROM it; later stages get it as originating context with refined artifacts
 // taking precedence.
@@ -113,7 +111,7 @@ export const renderUnitScope = (unit) => {
 export const buildStagePrompt = ({
   stage = {},
   unit = null,
-  intent = null, // { title, prompt, scope } — the originating request (finding #5)
+  intent = null, // { title, prompt, scope } — the originating request
   stageBody = '',
   agentPersona = '',
   knowledge = '',
@@ -129,9 +127,9 @@ export const buildStagePrompt = ({
   // The harness binding goes FIRST — it must be read before the filesystem-laden
   // stage prose so the agent translates rather than obeys it literally.
   sections.push('', MCP_EXECUTION_ANNEX);
-  // The intent — what the human actually asked for (finding #5). Right after
-  // the harness binding so every stage knows the run's north star without
-  // interviewing the human for it.
+  // The intent — what the human actually asked for. Right after the harness
+  // binding so every stage knows the run's north star without interviewing the
+  // human for it.
   const intentBlock = renderIntentBlock(intent ?? {});
   if (intentBlock) sections.push('', intentBlock);
   // The conductor persona (upstream execution-quality doctrine) — loaded from the

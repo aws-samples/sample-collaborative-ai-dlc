@@ -803,12 +803,12 @@ describe('findRemainingConflictMarkers', () => {
   });
 });
 
-// ── WP8 finding #1: runtime files must never enter the user's repo ───────────
+// ── Runtime files must never enter the user's repo ───────────────────────────
 // The workspace mount doubles as the repo checkout (single-repo projects), and
 // it holds engine + CLI runtime state: .aidlc/ (MCP config with infra
 // endpoints), .kiro/, .claude/ and .kiro-data/ (conversation stores). The
-// stage-exit `git add -A` committed ALL of that into the user's repo — caught
-// live on workspace-scaffold (a stage that produces no repo work at all).
+// stage-exit `git add -A` must leave that runtime state out of user commits,
+// including stages that produce no repo work at all.
 
 import { ensureRuntimeExcludes, RUNTIME_EXCLUDES } from '../git-engine.js';
 import { mkdir } from 'node:fs/promises';
@@ -828,7 +828,7 @@ const seedRuntimeFiles = async (work) => {
   await writeFile(path.join(work, '.kiro', 'agents', 'aidlc.json'), '{}');
 };
 
-describe('runtime excludes (WP8 finding #1)', () => {
+describe('runtime excludes', () => {
   it('a tree with ONLY runtime files is CLEAN — no commit, no push, no network', async () => {
     const { work } = await initRemoteAndClone();
     await seedRuntimeFiles(work);

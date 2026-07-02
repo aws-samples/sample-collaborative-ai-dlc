@@ -9,10 +9,10 @@ import {
 // WP0 PoC (c) — docs/v2-parallel.md Part C.
 //
 // Documents WHY the synchronous run-stage step must be replaced (WP1) before
-// any parallelization: a durable step's body is not exactly-once. The plan's
-// finding B2: the orchestrator Lambda times out at 900s and AgentCore's
-// synchronous request timeout is a hard 15 minutes, while a stage regularly
-// exceeds both; an interrupted step is re-executed on re-drive
+// any parallelization: a durable step's body is not exactly-once. The
+// orchestrator Lambda times out at 900s and AgentCore's synchronous
+// request timeout is a hard 15 minutes, while a stage regularly exceeds both;
+// an interrupted step is re-executed on re-drive
 // (RETRY_INTERRUPTED_STEP), i.e. the whole agent stage would run twice.
 //
 // What is provable on the local runner (in-process, so a genuinely "killed"

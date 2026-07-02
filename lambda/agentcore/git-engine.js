@@ -43,8 +43,7 @@ const GIT_IDENTITY = [
 
 // Runtime files that live INSIDE the workspace mount — which, for a
 // single-repo project, IS the repo checkout — but are NEVER the user's work
-// (WP8 finding #1: without this, `git add -A` committed the MCP config with
-// infra endpoints AND the CLI conversation stores into the user's repo):
+// and must never be captured by `git add -A`:
 //   .aidlc/       engine-materialized rules.md + mcp-config.json (infra env)
 //   .kiro/        engine-materialized Kiro agent config (same env)
 //   .claude/      Claude's conversation store (CLAUDE_CONFIG_DIR)
@@ -141,7 +140,7 @@ export const scrubRemote = async ({ dir, repo, gitProvider, urls = {}, git = run
 //   { committed: false, reason: 'add_failed' | 'commit_failed', detail }
 export const commitAll = async ({ dir, message, git = runGit }) => {
   // Runtime files (.aidlc/.claude/…) must never enter the user's history —
-  // ensure the repo-local excludes BEFORE the add (WP8 finding #1).
+  // ensure the repo-local excludes before staging the tree.
   await ensureRuntimeExcludes({ dir });
   const add = await git(['add', '-A'], { cwd: dir });
   if (add.exitCode !== 0) {

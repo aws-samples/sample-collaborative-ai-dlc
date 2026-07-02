@@ -1830,9 +1830,9 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
   });
 });
 
-// ── Cloud finding #5: run-stage delivers the intent from META to the prompt ──
+// ── run-stage delivers the intent from META to the prompt ────────────────────
 
-describe('runStage — intent delivery (cloud finding #5)', () => {
+describe('runStage — intent delivery', () => {
   const okSpawn = () => ({
     on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
     stdin: { end() {} },

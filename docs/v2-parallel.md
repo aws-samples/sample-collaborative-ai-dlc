@@ -305,7 +305,8 @@ Work packages:
   step) across replays, exactly-once dispatch per attempt, out-of-order job
   completion, container-reported failure → fresh-callback retry, heartbeats.
 - **WP1 — Async stage invocation** 🔨 **code-complete** (cloud exit criterion
-  pending): callback-based run-stage (finding B2), implemented as:
+  pending): callback-based run-stage for stages that outlast synchronous
+  Lambda and AgentCore request limits, implemented as:
   - orchestrator (`lambda/v2-orchestrator/index.js` `runStage`): per stage
     attempt `ctx.createCallback('stage-cb-<stageId>[-resume-<gate>]', {
 timeout: 8h, heartbeatTimeout: 15m })` → short `run-stage-start` dispatch
@@ -632,9 +633,9 @@ MERGED | FAILED | BLOCKED`; `updateUnitState` is CAS'd on `fromStates`
   the lane with repo-qualified conflicted paths, halt-and-ask SKIP completes
   the run honestly (fan-in reports 2/3), and the intent branch/tree stay
   pristine with the conflicted lane's work preserved on its unit branch.
-  Remaining for WP8: kill-a-lane mid-stage (cloud-flavored) + the
+  Remaining for WP8: kill-a-lane mid-stage in the deployed environment + the
   `disjoint-files` sensor.
-  **Cloud finding #1 (fixed)**: on the first deployed run, `workspace-scaffold`
+  **Deployed workspace-scaffold fix**: on the first deployed run, `workspace-scaffold`
   — a stage that produces no repo work — failed `push_failed`. Root cause was
   TWO stacked issues: (a) the starting user had no git connection (empty
   token; the public repo let the clone succeed, so auth only surfaced at the
@@ -649,13 +650,13 @@ MERGED | FAILED | BLOCKED`; `updateUnitState` is CAS'd on `fromStates`
   `concludeConflictMerge`). A tree with only runtime files is now CLEAN → no
   commit → no push → no network, which is exactly what an artifact-only stage
   should do — and what makes token-less runs on artifact-only stages work.
-  **Cloud findings #2–#4 (fixed, one failure chain)**: the deployed
+  **Deployed git-token failure chain fix**: the deployed
   orchestrator was missing the `GIT_CONNECTIONS_TABLE` /
-  `GIT_PROVIDER_CONNECTIONS_TABLE` env vars (#2 — the IAM statements existed;
+  `GIT_PROVIDER_CONNECTIONS_TABLE` env vars (the IAM statements existed;
   the env block didn't), so `getGitConnection` threw and `resolveToken`'s
-  silent catch (#3) degraded every run to an EMPTY token despite a valid user
+  silent catch degraded every run to an EMPTY token despite a valid user
   connection. A public repo masked it (tokenless clone works; only the push
-  failed); a private repo hit #4 — `checkoutRepo`'s `git init` fallback
+  failed); for a private repo, `checkoutRepo`'s `git init` fallback
   turned the failed clone into a "successful" init against an EMPTY
   workspace, and the whole run executed blind (the agent "classified" an
   empty directory). Fixes: env vars wired in terraform; `resolveToken` now
@@ -664,7 +665,7 @@ MERGED | FAILED | BLOCKED`; `updateUnitState` is CAS'd on `fromStates`
   (`checkout_failed`) when any repo reports `cloned:false` — that fallback
   can only ever mask real breakage, since `git clone` of a genuinely empty
   repository exits 0.
-  **Cloud finding #5 (fixed — NOT a parallel-work regression)**: the intent
+  **Intent delivery fix**: the intent
   title/prompt were NEVER delivered to the agent — they rode the init-ws
   payload since day one but no revision of init-ws ever consumed them, the
   Intent vertex stores only the title (and `get_intent_graph` returns
