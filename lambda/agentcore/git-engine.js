@@ -25,6 +25,7 @@
 // reach the remote (new work at risk = the documented v2 loss mode).
 
 import { spawn } from 'node:child_process';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 
@@ -39,6 +40,39 @@ const GIT_IDENTITY = [
   '-c',
   'user.name=AI-DLC Engine',
 ];
+
+// Runtime files that live INSIDE the workspace mount — which, for a
+// single-repo project, IS the repo checkout — but are NEVER the user's work
+// (WP8 finding #1: without this, `git add -A` committed the MCP config with
+// infra endpoints AND the CLI conversation stores into the user's repo):
+//   .aidlc/       engine-materialized rules.md + mcp-config.json (infra env)
+//   .kiro/        engine-materialized Kiro agent config (same env)
+//   .claude/      Claude's conversation store (CLAUDE_CONFIG_DIR)
+//   .kiro-data/   Kiro's durable SQLite store (V2_KIRO_STORE_DIR)
+// Enforced via `.git/info/exclude` — repo-LOCAL (never pushed, never touches
+// the user's .gitignore) and honored by `git add -A` and status. Excludes do
+// not untrack: a repo that ALREADY tracks such a path keeps it (the user's
+// explicit choice wins over our hygiene default).
+export const RUNTIME_EXCLUDES = ['.aidlc/', '.kiro/', '.claude/', '.kiro-data/'];
+const EXCLUDE_MARKER = '# aidlc-engine runtime excludes (managed; do not edit this block)';
+
+export const ensureRuntimeExcludes = async ({ dir }) => {
+  try {
+    const infoDir = path.join(dir, '.git', 'info');
+    await mkdir(infoDir, { recursive: true });
+    const excludePath = path.join(infoDir, 'exclude');
+    const existing = await readFile(excludePath, 'utf8').catch(() => '');
+    if (existing.includes(EXCLUDE_MARKER)) return { ensured: true };
+    const block = [EXCLUDE_MARKER, ...RUNTIME_EXCLUDES].join('\n');
+    await writeFile(excludePath, `${existing.replace(/\n?$/, '\n')}${block}\n`, 'utf8');
+    return { ensured: true };
+  } catch (e) {
+    // Never let hygiene bookkeeping break a commit — but a failure here means
+    // runtime files could leak into the repo, so it must be visible.
+    console.error('[git-engine] runtime-exclude write failed:', e?.message);
+    return { ensured: false, error: e?.message };
+  }
+};
 
 // Ambient GIT_* environment variables redirect git to a DIFFERENT repository
 // (GIT_DIR/GIT_INDEX_FILE/GIT_WORK_TREE) or override the engine identity
@@ -106,6 +140,9 @@ export const scrubRemote = async ({ dir, repo, gitProvider, urls = {}, git = run
 //                                           stages that only write graph artifacts)
 //   { committed: false, reason: 'add_failed' | 'commit_failed', detail }
 export const commitAll = async ({ dir, message, git = runGit }) => {
+  // Runtime files (.aidlc/.claude/…) must never enter the user's history —
+  // ensure the repo-local excludes BEFORE the add (WP8 finding #1).
+  await ensureRuntimeExcludes({ dir });
   const add = await git(['add', '-A'], { cwd: dir });
   if (add.exitCode !== 0) {
     return { committed: false, reason: 'add_failed', detail: add.stderr.trim() };
@@ -479,11 +516,11 @@ export const beginConflictMerge = async ({
 // scanning the named files for marker lines is exact and content-based.
 const MARKER_RE = /^(<{7}(\s|$)|={7}$|>{7}(\s|$)|\|{7}(\s|$))/m;
 export const findRemainingConflictMarkers = async ({ dir, files, readFileImpl }) => {
-  const { readFile } = readFileImpl ? { readFile: readFileImpl } : await import('node:fs/promises');
+  const readFileFn = readFileImpl ?? readFile;
   const remaining = [];
   for (const file of files) {
     try {
-      const text = await readFile(path.join(dir, file), 'utf8');
+      const text = await readFileFn(path.join(dir, file), 'utf8');
       if (MARKER_RE.test(text)) remaining.push(file);
     } catch {
       // A conflicted file the agent DELETED counts as resolved-by-deletion;
@@ -525,6 +562,7 @@ export const concludeConflictMerge = async ({
   const inProgress =
     (await git(['rev-parse', '--verify', 'MERGE_HEAD'], { cwd: dir })).exitCode === 0;
   if (inProgress) {
+    await ensureRuntimeExcludes({ dir });
     const add = await git(['add', '-A'], { cwd: dir });
     if (add.exitCode !== 0) {
       await abort();

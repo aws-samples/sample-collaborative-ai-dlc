@@ -802,3 +802,95 @@ describe('findRemainingConflictMarkers', () => {
     expect(remaining).toEqual(['bad.txt']);
   });
 });
+
+// ── WP8 finding #1: runtime files must never enter the user's repo ───────────
+// The workspace mount doubles as the repo checkout (single-repo projects), and
+// it holds engine + CLI runtime state: .aidlc/ (MCP config with infra
+// endpoints), .kiro/, .claude/ and .kiro-data/ (conversation stores). The
+// stage-exit `git add -A` committed ALL of that into the user's repo — caught
+// live on workspace-scaffold (a stage that produces no repo work at all).
+
+import { ensureRuntimeExcludes, RUNTIME_EXCLUDES } from '../git-engine.js';
+import { mkdir } from 'node:fs/promises';
+
+const seedRuntimeFiles = async (work) => {
+  await mkdir(path.join(work, '.aidlc'), { recursive: true });
+  await writeFile(
+    path.join(work, '.aidlc', 'mcp-config.json'),
+    '{"env":{"NEPTUNE_ENDPOINT":"internal"}}',
+  );
+  await writeFile(path.join(work, '.aidlc', 'rules.md'), 'rules');
+  await mkdir(path.join(work, '.claude'), { recursive: true });
+  await writeFile(path.join(work, '.claude', 'session.jsonl'), '{"conversation":"private"}');
+  await mkdir(path.join(work, '.kiro-data'), { recursive: true });
+  await writeFile(path.join(work, '.kiro-data', 'data.sqlite3'), 'db');
+  await mkdir(path.join(work, '.kiro', 'agents'), { recursive: true });
+  await writeFile(path.join(work, '.kiro', 'agents', 'aidlc.json'), '{}');
+};
+
+describe('runtime excludes (WP8 finding #1)', () => {
+  it('a tree with ONLY runtime files is CLEAN — no commit, no push, no network', async () => {
+    const { work } = await initRemoteAndClone();
+    await seedRuntimeFiles(work);
+    const res = await commitAll({ dir: work, message: 'aidlc(workspace-scaffold): e1' });
+    expect(res).toEqual({ committed: false, reason: 'clean' });
+    // The stage-exit hook then skips the network entirely (up_to_date).
+    const hook = await commitAndPushAll({
+      repos: ['o/r'],
+      workspaceDir: work,
+      branch: 'main',
+      message: 'aidlc(workspace-scaffold): e1',
+      urlsFor: () => ({ auth: 'unused', clean: 'https://github.com/o/r.git' }),
+    });
+    expect(hook.ok).toBe(true);
+    expect(hook.committed).toBe(false);
+    expect(hook.results[0].pushed).toBe('up_to_date');
+  });
+
+  it('real work commits WITHOUT the runtime files riding along', async () => {
+    const { work } = await initRemoteAndClone();
+    await seedRuntimeFiles(work);
+    await writeFile(path.join(work, 'src.js'), 'export const x = 1;\n');
+    const res = await commitAll({ dir: work, message: 'aidlc(code-generation): e1' });
+    expect(res.committed).toBe(true);
+    const tree = await git(['ls-tree', '-r', '--name-only', 'HEAD'], work);
+    expect(tree.stdout).toContain('src.js');
+    for (const bad of ['.aidlc', '.claude', '.kiro-data', '.kiro/']) {
+      expect(tree.stdout).not.toContain(bad);
+    }
+  });
+
+  it('writes the managed block into .git/info/exclude exactly once (idempotent, repo-local)', async () => {
+    const { work } = await initRemoteAndClone();
+    await ensureRuntimeExcludes({ dir: work });
+    await ensureRuntimeExcludes({ dir: work });
+    const exclude = await readFile(path.join(work, '.git', 'info', 'exclude'), 'utf8');
+    expect(exclude.match(/aidlc-engine runtime excludes/g)).toHaveLength(1);
+    for (const p of RUNTIME_EXCLUDES) expect(exclude).toContain(p);
+    // Repo-local: nothing exclude-related is committable.
+    await commitAll({ dir: work, message: 'x' });
+    const status = await git(['status', '--porcelain'], work);
+    expect(status.stdout.trim()).toBe('');
+  });
+
+  it('preserves user-supplied exclude content and does NOT untrack already-tracked paths', async () => {
+    const { work } = await initRemoteAndClone();
+    // User's own exclude content must survive.
+    await writeFile(path.join(work, '.git', 'info', 'exclude'), '# mine\nmy-scratch/\n');
+    // The repo ALREADY tracks a .claude file (the user's explicit choice).
+    await mkdir(path.join(work, '.claude'), { recursive: true });
+    await writeFile(path.join(work, '.claude', 'settings.json'), '{"user":"tracked"}');
+    await git(['add', '-f', '.claude/settings.json'], work);
+    await git(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'track it'], work);
+
+    await writeFile(path.join(work, '.claude', 'settings.json'), '{"user":"updated"}');
+    const res = await commitAll({ dir: work, message: 'aidlc(x): e1' });
+    // The tracked file's change still commits (excludes only hide UNTRACKED files).
+    expect(res.committed).toBe(true);
+    const show = await git(['show', 'HEAD:.claude/settings.json'], work);
+    expect(show.stdout).toContain('updated');
+    const exclude = await readFile(path.join(work, '.git', 'info', 'exclude'), 'utf8');
+    expect(exclude).toContain('my-scratch/');
+    expect(exclude).toContain('aidlc-engine runtime excludes');
+  });
+});

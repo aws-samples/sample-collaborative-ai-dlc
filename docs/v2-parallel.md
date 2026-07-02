@@ -634,6 +634,21 @@ MERGED | FAILED | BLOCKED`; `updateUnitState` is CAS'd on `fromStates`
   pristine with the conflicted lane's work preserved on its unit branch.
   Remaining for WP8: kill-a-lane mid-stage (cloud-flavored) + the
   `disjoint-files` sensor.
+  **Cloud finding #1 (fixed)**: on the first deployed run, `workspace-scaffold`
+  — a stage that produces no repo work — failed `push_failed`. Root cause was
+  TWO stacked issues: (a) the starting user had no git connection (empty
+  token; the public repo let the clone succeed, so auth only surfaced at the
+  first push), and (b) the stage-exit `git add -A` was committing the
+  ENGINE'S OWN runtime files into the user's repo — `.aidlc/mcp-config.json`
+  (infra endpoints), `.kiro/`, and the CLI conversation stores `.claude/` +
+  `.kiro-data/`, all of which live inside the workspace mount that doubles as
+  the single-repo checkout. Fix: `RUNTIME_EXCLUDES` written to the repo-LOCAL
+  `.git/info/exclude` (managed marker block, idempotent, never pushed, never
+  touches the user's .gitignore, never untracks a path the user already
+  tracks) before every engine `add -A` (`commitAll`,
+  `concludeConflictMerge`). A tree with only runtime files is now CLEAN → no
+  commit → no push → no network, which is exactly what an artifact-only stage
+  should do — and what makes token-less runs on artifact-only stages work.
 
 ---
 
