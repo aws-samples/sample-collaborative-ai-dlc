@@ -22,6 +22,11 @@
 //   { "command": "promote-units", projectId, intentId, executionId, stageInstanceId? }
 //     → WP3: re-parse the approved unit-of-work-dependency artifact into the
 //       UNITPLAN/UNIT scheduling rows + the Neptune traceability mirror.
+//   { "command": "init-lane",  ...initLane args }   → WP5: prepare a unit
+//       lane's session workspace (clone + unit branch off intent HEAD + push).
+//   { "command": "merge-lane", ...mergeLane args }  → WP5: serialized --no-ff
+//       merge of a finished lane's branch into the intent branch (runs in the
+//       INTENT session; the orchestrator holds the merge lock).
 //
 // The dispatcher is pure (handlers injected) so it is unit-tested without a
 // socket; createServer wires the real commands + clients.
@@ -60,6 +65,8 @@ export const dispatchInvocation = async ({
     'run-stage': handlers.runStage,
     'run-stage-start': handlers.runStageStart,
     'promote-units': handlers.promoteUnits,
+    'init-lane': handlers.initLane,
+    'merge-lane': handlers.mergeLane,
     inspect: handlers.inspect,
     capabilities: handlers.capabilities,
   }[command];
@@ -142,6 +149,7 @@ const main = async () => {
   const { runStage } = await import('./commands/run-stage.js');
   const { createRunStageStart } = await import('./commands/run-stage-start.js');
   const { promoteUnits } = await import('./commands/promote-units.js');
+  const { initLane, mergeLane } = await import('./commands/lane.js');
   const { inspect } = await import('./commands/inspect.js');
   const { capabilities } = await import('./commands/capabilities.js');
   const { loadLibrary, loadBlockBody, loadBlockScript, loadConductor } =
@@ -193,6 +201,10 @@ const main = async () => {
     // mirror. Dispatched by the orchestrator after the producing stage
     // succeeds (docs/v2-parallel.md).
     promoteUnits: (p) => promoteUnits(p, { store, openGraph, broadcast }),
+    // WP5 unit lanes: engine-owned lane git (docs/v2-parallel.md A3). init-lane
+    // runs in the lane's own session; merge-lane in the intent session.
+    initLane: (p) => initLane({ ...p, workspaceDir }, { store, broadcast }),
+    mergeLane: (p) => mergeLane({ ...p, workspaceDir }, { store, broadcast }),
   };
   // Async stage invocation (WP1): shares the sync handler's whole deps bag; the
   // background job holds the SAME busy tracker the server uses for /ping, so

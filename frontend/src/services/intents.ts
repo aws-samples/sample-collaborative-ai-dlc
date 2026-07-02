@@ -55,6 +55,10 @@ export interface Intent {
   rewindFromStageId?: string | null;
   cliModels: Record<string, string> | null;
   parkReleaseSeconds: number | null;
+  // WP5 (docs/v2-parallel.md): lane concurrency cap snapshotted at create
+  // (0/null = unbounded) and the human's autonomy-ladder decision.
+  maxParallelUnits?: number | null;
+  constructionAutonomyMode?: 'gated' | 'autonomous' | null;
   source: IntentSource | null;
   createdAt: string | null;
   updatedAt: string | null;

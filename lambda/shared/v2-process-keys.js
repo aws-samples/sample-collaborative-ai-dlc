@@ -177,6 +177,14 @@ const buildExecutionMeta = ({
   // Seconds a parked stage's warm microVM lingers before the orchestrator frees
   // it via StopRuntimeSession (v2-open.md D1). null = use the runtime default.
   parkReleaseSeconds = null,
+  // Concurrency cap for parallel unit lanes (docs/v2-parallel.md WP5),
+  // snapshotted from the project at create. 0/null = unbounded (DAG-limited).
+  maxParallelUnits = null,
+  // The human's autonomy-ladder decision for construction (docs/v2-parallel.md
+  // A2 rule 9): 'autonomous' (remaining lanes run without approval gates) or
+  // 'gated' (one approval gate per parallel batch). null until the ladder
+  // prompt after the walking-skeleton gate is answered.
+  constructionAutonomyMode = null,
   // Optional tracker reference the intent was kicked off from (GitHub issue,
   // Jira artifact, …). The imported text lives in `prompt`; this is just the
   // provenance link surfaced in the UI. null when typed by hand. Mirrors the v1
@@ -215,6 +223,8 @@ const buildExecutionMeta = ({
   agentCli,
   cliModels,
   parkReleaseSeconds,
+  maxParallelUnits,
+  constructionAutonomyMode,
   source,
   orchestratorRunId,
   rewindFromStageId,

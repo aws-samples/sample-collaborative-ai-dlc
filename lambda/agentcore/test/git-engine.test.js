@@ -416,3 +416,259 @@ describe('commitAndPushAll — the stage-exit hook', () => {
     expect(res.results[0]).toMatchObject({ reason: 'engine_crashed', detail: 'spawn exploded' });
   });
 });
+
+// ── WP5: lane primitives (docs/v2-parallel.md A3 — lane start / lane end) ────
+
+import { fetchOrigin, ensureLaneBranch, mergeBranchNoFf } from '../git-engine.js';
+
+// Commit a file onto a branch of the bare remote via a throwaway clone —
+// simulates another session (a lane / the pre-section stages) pushing work.
+const commitOnRemote = async (remote, branch, file, content, msg = `add ${file}`) => {
+  const dir = await mkdtemp(path.join(root, 'peer-'));
+  await git(['clone', remote, dir], root);
+  const co = await git(['checkout', branch], dir);
+  if (co.exitCode !== 0) await git(['checkout', '-b', branch], dir);
+  await writeFile(path.join(dir, file), content);
+  await git(['add', '-A'], dir);
+  await git(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', msg], dir);
+  await git(['push', 'origin', `HEAD:refs/heads/${branch}`], dir);
+};
+
+const laneUrls = (remote) => ({ auth: remote, clean: 'https://github.com/o/r.git' });
+const quiet = { sleep: async () => {}, log: () => {} };
+
+describe('fetchOrigin', () => {
+  it('fetches remote refs inside the token window and scrubs after', async () => {
+    const { remote, work } = await initRemoteAndClone();
+    await commitOnRemote(remote, 'feat/x', 'x.txt', 'x\n');
+    const res = await fetchOrigin({ dir: work, repo: 'o/r', urls: laneUrls(remote) });
+    expect(res).toEqual({ fetched: true });
+    const ref = await git(['rev-parse', '--verify', 'refs/remotes/origin/feat/x'], work);
+    expect(ref.exitCode).toBe(0);
+    const { stdout } = await git(['remote', 'get-url', 'origin'], work);
+    expect(stdout.trim()).toBe('https://github.com/o/r.git'); // scrubbed even on success
+  });
+
+  it('reports a fetch failure as a value and still scrubs', async () => {
+    const { work } = await initRemoteAndClone();
+    const res = await fetchOrigin({
+      dir: work,
+      repo: 'o/r',
+      urls: { auth: path.join(root, 'nonexistent.git'), clean: 'https://github.com/o/r.git' },
+    });
+    expect(res.fetched).toBe(false);
+    expect(res.reason).toBe('fetch_failed');
+    const { stdout } = await git(['remote', 'get-url', 'origin'], work);
+    expect(stdout.trim()).toBe('https://github.com/o/r.git');
+  });
+});
+
+describe('ensureLaneBranch', () => {
+  it('creates the unit branch from the intent branch remote HEAD and pushes it', async () => {
+    const { remote, work } = await initRemoteAndClone();
+    // The intent branch exists remotely (pre-section stages pushed it).
+    await commitOnRemote(remote, 'aidlc/i1', 'intent.txt', 'intent work\n');
+    const res = await ensureLaneBranch({
+      dir: work,
+      repo: 'o/r',
+      unitBranch: 'aidlc/i1--s1-unit-auth',
+      intentBranch: 'aidlc/i1',
+      urls: laneUrls(remote),
+      ...quiet,
+    });
+    expect(res.ready).toBe(true);
+    expect(res.created).toBe(true);
+    // Checked out on the unit branch, containing the intent branch's work.
+    const branch = await git(['rev-parse', '--abbrev-ref', 'HEAD'], work);
+    expect(branch.stdout.trim()).toBe('aidlc/i1--s1-unit-auth');
+    const ls = await git(['ls-remote', remote, 'aidlc/i1--s1-unit-auth'], root);
+    expect(ls.stdout.trim()).not.toBe(''); // registered on the remote
+    const file = await readFile(path.join(work, 'intent.txt'), 'utf8');
+    expect(file).toBe('intent work\n');
+  });
+
+  it('re-checks out an EXISTING remote unit branch (lane retry / wiped mount)', async () => {
+    const { remote, work } = await initRemoteAndClone();
+    await commitOnRemote(remote, 'aidlc/i1', 'intent.txt', 'intent work\n');
+    await commitOnRemote(remote, 'aidlc/i1--s1-unit-auth', 'auth.txt', 'lane work\n');
+    const res = await ensureLaneBranch({
+      dir: work,
+      repo: 'o/r',
+      unitBranch: 'aidlc/i1--s1-unit-auth',
+      intentBranch: 'aidlc/i1',
+      urls: laneUrls(remote),
+      ...quiet,
+    });
+    expect(res.ready).toBe(true);
+    expect(res.created).toBe(false);
+    // The lane's prior pushed work is present — never recreated from scratch.
+    const file = await readFile(path.join(work, 'auth.txt'), 'utf8');
+    expect(file).toBe('lane work\n');
+  });
+
+  it('fails with intent_branch_missing when the fork point does not exist remotely', async () => {
+    const { remote, work } = await initRemoteAndClone();
+    const res = await ensureLaneBranch({
+      dir: work,
+      repo: 'o/r',
+      unitBranch: 'aidlc/i1--s1-unit-auth',
+      intentBranch: 'aidlc/ghost',
+      urls: laneUrls(remote),
+      ...quiet,
+    });
+    expect(res).toMatchObject({ ready: false, reason: 'intent_branch_missing' });
+  });
+
+  it('fails as a value when the remote is unreachable', async () => {
+    const { work } = await initRemoteAndClone();
+    const res = await ensureLaneBranch({
+      dir: work,
+      repo: 'o/r',
+      unitBranch: 'u',
+      intentBranch: 'i',
+      urls: { auth: path.join(root, 'nonexistent.git'), clean: 'https://github.com/o/r.git' },
+      ...quiet,
+    });
+    expect(res.ready).toBe(false);
+    expect(res.reason).toBe('fetch_failed');
+  });
+});
+
+describe('mergeBranchNoFf', () => {
+  const setup = async () => {
+    const { remote, work } = await initRemoteAndClone();
+    await commitOnRemote(remote, 'aidlc/i1', 'base.txt', 'base\n');
+    // The intent workspace sits on the intent branch (like the intent session).
+    await fetchOrigin({ dir: work, repo: 'o/r', urls: laneUrls(remote) });
+    await git(['checkout', '-B', 'aidlc/i1', 'refs/remotes/origin/aidlc/i1'], work);
+    return { remote, work };
+  };
+
+  it('merges the unit branch with --no-ff, engine identity, and pushes the intent branch', async () => {
+    const { remote, work } = await setup();
+    await commitOnRemote(remote, 'aidlc/i1--s1-unit-auth', 'auth.txt', 'auth code\n');
+    const res = await mergeBranchNoFf({
+      dir: work,
+      repo: 'o/r',
+      intentBranch: 'aidlc/i1',
+      unitBranch: 'aidlc/i1--s1-unit-auth',
+      message: 'aidlc(merge): auth — e1',
+      urls: laneUrls(remote),
+      ...quiet,
+    });
+    expect(res.merged).toBe(true);
+    expect(res.sha).toMatch(/^[0-9a-f]{40}$/);
+    // A true merge commit (two parents) with the engine identity, on the remote.
+    const parents = await git(['log', '-1', '--format=%P'], work);
+    expect(parents.stdout.trim().split(' ')).toHaveLength(2);
+    const who = await git(['log', '-1', '--format=%an|%s'], work);
+    expect(who.stdout.trim()).toBe('AI-DLC Engine|aidlc(merge): auth — e1');
+    const ls = await git(['ls-remote', remote, 'aidlc/i1'], root);
+    expect(ls.stdout.trim().split(/\s/)[0]).toBe(res.sha);
+    // The merged file is in the intent branch's tree.
+    const file = await readFile(path.join(work, 'auth.txt'), 'utf8');
+    expect(file).toBe('auth code\n');
+  });
+
+  it('is idempotent: a re-dispatched merge of an already-merged lane is up_to_date', async () => {
+    const { remote, work } = await setup();
+    await commitOnRemote(remote, 'aidlc/i1--s1-unit-auth', 'auth.txt', 'auth code\n');
+    const args = {
+      dir: work,
+      repo: 'o/r',
+      intentBranch: 'aidlc/i1',
+      unitBranch: 'aidlc/i1--s1-unit-auth',
+      message: 'aidlc(merge): auth — e1',
+      urls: laneUrls(remote),
+      ...quiet,
+    };
+    const first = await mergeBranchNoFf(args);
+    expect(first.merged).toBe(true);
+    const second = await mergeBranchNoFf(args);
+    expect(second.merged).toBe('up_to_date');
+  });
+
+  it('serialized merges: a second lane merges on top of the first (deps see merged code)', async () => {
+    const { remote, work } = await setup();
+    await commitOnRemote(remote, 'aidlc/i1--s1-unit-auth', 'auth.txt', 'auth code\n');
+    await commitOnRemote(remote, 'aidlc/i1--s1-unit-billing', 'billing.txt', 'billing code\n');
+    const merge = (unit) =>
+      mergeBranchNoFf({
+        dir: work,
+        repo: 'o/r',
+        intentBranch: 'aidlc/i1',
+        unitBranch: `aidlc/i1--s1-unit-${unit}`,
+        message: `aidlc(merge): ${unit} — e1`,
+        urls: laneUrls(remote),
+        ...quiet,
+      });
+    expect((await merge('auth')).merged).toBe(true);
+    expect((await merge('billing')).merged).toBe(true);
+    // Both files present on the merged intent branch.
+    expect(await readFile(path.join(work, 'auth.txt'), 'utf8')).toBe('auth code\n');
+    expect(await readFile(path.join(work, 'billing.txt'), 'utf8')).toBe('billing code\n');
+  });
+
+  it('a conflict aborts cleanly, reports the conflicted paths, and leaves the tree pristine', async () => {
+    const { remote, work } = await setup();
+    // Both the intent branch and the unit branch edit the same file.
+    await commitOnRemote(remote, 'aidlc/i1', 'shared.txt', 'intent version\n');
+    await commitOnRemote(remote, 'aidlc/i1--s1-unit-auth', 'shared.txt', 'lane version\n');
+    const res = await mergeBranchNoFf({
+      dir: work,
+      repo: 'o/r',
+      intentBranch: 'aidlc/i1',
+      unitBranch: 'aidlc/i1--s1-unit-auth',
+      message: 'aidlc(merge): auth — e1',
+      urls: laneUrls(remote),
+      ...quiet,
+    });
+    expect(res.merged).toBe(false);
+    expect(res.reason).toBe('merge_conflict');
+    expect(res.conflicts).toEqual(['shared.txt']);
+    // Tree pristine: no in-progress merge, no dirty files.
+    const status = await git(['status', '--porcelain'], work);
+    expect(status.stdout.trim()).toBe('');
+    const mergeHead = await git(['rev-parse', '--verify', 'MERGE_HEAD'], work);
+    expect(mergeHead.exitCode).not.toBe(0);
+    // The remote intent branch did NOT move.
+    const file = await readFile(path.join(work, 'shared.txt'), 'utf8');
+    expect(file).toBe('intent version\n');
+  });
+
+  it('resets a stale local intent branch onto the remote before merging', async () => {
+    const { remote, work } = await setup();
+    // The local intent branch diverges (stale workspace state).
+    await writeFile(path.join(work, 'stale.txt'), 'stale local work\n');
+    await git(['add', '-A'], work);
+    await git(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'stale'], work);
+    await commitOnRemote(remote, 'aidlc/i1--s1-unit-auth', 'auth.txt', 'auth code\n');
+    const res = await mergeBranchNoFf({
+      dir: work,
+      repo: 'o/r',
+      intentBranch: 'aidlc/i1',
+      unitBranch: 'aidlc/i1--s1-unit-auth',
+      message: 'aidlc(merge): auth — e1',
+      urls: laneUrls(remote),
+      ...quiet,
+    });
+    expect(res.merged).toBe(true);
+    // The stale local-only commit is NOT in the pushed merge (remote was the base).
+    const log = await git(['log', '--format=%s', 'aidlc/i1'], work);
+    expect(log.stdout).not.toContain('stale');
+  });
+
+  it('fails as a value when the unit branch does not exist remotely', async () => {
+    const { remote, work } = await setup();
+    const res = await mergeBranchNoFf({
+      dir: work,
+      repo: 'o/r',
+      intentBranch: 'aidlc/i1',
+      unitBranch: 'aidlc/i1--s1-unit-ghost',
+      message: 'm',
+      urls: laneUrls(remote),
+      ...quiet,
+    });
+    expect(res).toMatchObject({ merged: false, reason: 'unit_branch_missing' });
+  });
+});

@@ -15,12 +15,17 @@ execution slice in [`v2-agent.md`](./v2-agent.md), park/resume design in
 
 Status: **in progress** — WP0 complete (PoCs verified on the local durable
 test runner, see `lambda/v2-orchestrator/test/poc/`); WP1 code-complete
-(async run-stage via durable callback — its >15-min cloud exit criterion is
-still to be proven on a deployed stack before WP5); WP2 complete (engine-owned
-git layer, `lambda/agentcore/git-engine.js`); WP3 complete (unit DAG
-promotion — UNITPLAN/UNIT scheduling rows + Neptune mirror); WP4 complete
-(plan fan-out + unit dimension end-to-end; sections run as SEQUENTIAL lanes);
-WP5+ not yet started.
+(async run-stage via durable callback); WP2 complete (engine-owned git layer,
+`lambda/agentcore/git-engine.js`); WP3 complete (unit DAG promotion —
+UNITPLAN/UNIT scheduling rows + Neptune mirror); WP4 complete (plan fan-out +
+unit dimension end-to-end); WP5 **code-complete** (parallel lane
+orchestration — skeleton/ladder/wavefront/halt-and-ask, per-lane
+sessions/branches, engine merge-back; proven on the local durable runner).
+⚠️ **Deployment checklist before enabling parallel construction in
+production**: WP1's exit criterion — a stage **longer than 15 minutes**
+completed through the async callback path on a DEPLOYED stack — is still
+unproven (requires a cloud deployment; every local proof passes). WP6+ not
+yet started.
 
 ---
 
@@ -453,15 +458,77 @@ MERGED | FAILED | BLOCKED`; `updateUnitState` is CAS'd on `fromStates`
     blocking, unit_plan_missing, lane park/resume, rewind) **and a real
     durable-runner replay test** (mid-lane park → resume with exactly-once
     lane bookkeeping), intents DTO + rewind-expansion suites.
-- **WP5 — Parallel lane orchestration** _(gated on WP1 exit criterion + WP4
-  unit-dimension deliverable)_: skeleton-solo → skeleton gate → autonomy
-  ladder → wavefront over the UNITPLAN (deterministic replacement for v1's LLM
-  construction orchestrator); `maxParallelUnits` project setting
-  (0 = unbounded → omit `maxConcurrency`); batch-level approval gates in
-  `gated` mode; halt-and-ask retry/skip/abort on lane failure (dependents →
-  BLOCKED, independents finish, pushed work preserved); per-lane park/resume +
-  release-on-park; lane transitions as durable steps + `EVENT#` rows +
-  broadcasts.
+- **WP5 — Parallel lane orchestration** 🔨 **code-complete** _(the WP1 >15-min
+  cloud proof remains a deployment-time checklist item — see Status)_: the
+  deterministic replacement for v1's LLM construction orchestrator, as
+  `lambda/v2-orchestrator/section.js` + the lane git/commands layer:
+  - **engine gates**: approval HUMAN# rows the ORCHESTRATOR opens (same row +
+    callback + cancel/supersede discipline as agent question gates, so the
+    existing answer endpoint and UI apply unchanged). Deterministic ids
+    `eg-<name>-<runId>`; META parks WAITING while pending (engine gates are
+    barriers — cancel works); a superseded gate retires the run with no
+    writes; answers are parsed defensively (`parseChoice`) with SAFE
+    deterministic fallbacks (ladder → `gated`, halt → `abort`), and every
+    interpretation is audited.
+  - **fan-out gate** (rules 2/7/8): opens before any lane with the frozen
+    defaults (units, waves, skip matrix, skeleton pick); the structured answer
+    may override `walkingSkeleton` / `skipMatrix` — validated against the plan
+    (only CONDITIONAL section stages skippable; the skeleton must be
+    DEPENDENCY-FREE since it runs solo first); invalid entries are rejected
+    into a `v2.units.decisions_invalid` audit event; the effective decisions
+    are frozen as a durable step result + `updateUnitPlanDecisions`.
+  - **walking skeleton** (rule 8): the picked lane runs SOLO → merges → a
+    mandatory Bolt-level approval gate (design + code as one increment),
+    regardless of autonomy mode; rejection stops the run (work preserved).
+  - **autonomy ladder** (rule 9): one prompt after the skeleton gate —
+    `autonomous` vs `gated`; recorded on META (`constructionAutonomyMode`,
+    validated in the store) + UNITPLAN (`autonomyMode`); a pre-set
+    UNITPLAN.autonomyMode (resume/re-promotion) skips the prompt.
+  - **lanes**: own AgentCore session (`aidlc-intent-<id>-s<k>-<slug>`), own
+    workspace, own branch (`<intentBranch>--s<k>-unit-<slug>`); `init-lane`
+    (container command, lane session) clones the intent branch, creates/checks
+    out the unit branch from intent HEAD and PUSHES it (self-heal can re-clone
+    it); the lane's stages run through the WP4 executeStage with lane-scoped
+    sessions/cloneInputs (`branch=unitBranch, baseBranch=intentBranch`),
+    per-lane park/resume + release-on-park (the LANE session is stopped, never
+    a sibling's); lane end = `merge-lane` (container command, INTENT session):
+    fetch → reset local intent branch onto the remote → `--no-ff` merge with
+    the engine identity → push, idempotent (`up_to_date` on re-dispatch),
+    conflicts abort cleanly and report the conflicted paths (the WP6
+    conflict-resolution stage consumes them; until then the lane FAILS into
+    halt-and-ask). Merges are serialized by an in-process merge lock;
+    topo-safety holds because dependents only start after their deps MERGED.
+  - **scheduling**: `autonomous` = TRUE WAVEFRONT (one `runInChildContext` per
+    lane, dependents await their dependency lanes' DurablePromises — poc-a's
+    replay-safe shape; failures convert to lane states, never throws) with an
+    app-level semaphore honoring `maxParallelUnits` (new project setting,
+    0 = unbounded; snapshotted onto META at intent create; acquired AFTER the
+    dependency wait so blocked lanes hold no capacity). `gated` = batch
+    barriers over the topological waves with ONE approval gate per batch.
+  - **halt-and-ask** (stage-protocol.md): a failed lane BLOCKS its direct
+    dependents; independents finish (allSettled join); then one gate —
+    `retry` (same branch/worktree, fresh durable round `-r<n>` identities,
+    revives FAILED/BLOCKED lanes via CAS) / `skip` (audited
+    `v2.units.lanes_skipped`; blocked lanes stay blocked; fan-in proceeds
+    without them and says so) / `abort` (`section_aborted`; pushed work +
+    merged lanes preserved). Unbounded retry rounds by design — each is one
+    explicit human decision.
+  - **git layer** (`git-engine.js`): `fetchOrigin` (the authenticated READ
+    window — token injected only between set-url and the finally-scrub, like
+    pushBranch), `ensureLaneBranch` (remote-truth idempotent branch
+    creation/checkout + push), `mergeBranchNoFf` (remote-based merge base,
+    ancestor short-circuit, conflict collection + clean abort, engine
+    identity, push with retry/verify).
+  - tests: real-git suites for the three new engine helpers + the two lane
+    commands (conflicts, idempotency, wiped-mount self-heal, token scrubbing);
+    fake-ctx orchestrator suites (full lifecycle order, lane sessions,
+    RUNNING→MERGING→MERGED, retry/skip/abort, autonomous blocking, fan-out
+    overrides + rejections, ladder default, pre-set autonomy); section-helper
+    unit suites (semaphore, merge lock, choice parsing, override validation,
+    naming); and REAL durable-runner replay proofs — full section through
+    three engine gates with a mid-lane park, exactly-once lane bookkeeping,
+    CONCURRENT independent lanes completing out of order, and
+    halt-and-ask abort preserving the merged skeleton.
 - **WP6 — Fan-in (intent-pr only)**: serialized `--no-ff` merges in completion
   order (local git in the runtime workspace, engine merge lock; provider APIs
   only to open the PR); conflict-resolution stage (fresh lane, conflicted
@@ -523,3 +590,21 @@ MERGED | FAILED | BLOCKED`; `updateUnitState` is CAS'd on `fromStates`
   deliverable before WP5.
 - **Concurrency cap**: per-project `maxParallelUnits`; 0 = unbounded
   (DAG-limited).
+- **Skeleton eligibility** (WP5): the walking skeleton must be a
+  DEPENDENCY-FREE unit — it runs solo first, so a dependent pick would block
+  on its unmerged deps immediately. The fan-out gate rejects such overrides
+  (audited), keeping the promotion default.
+- **Engine-gate fallbacks** (WP5): unparseable gate answers resolve to the
+  SAFE deterministic choice — autonomy ladder → `gated` (more human
+  checkpoints, never silent autonomy), halt-and-ask → `abort` (never silent
+  continuation). Every interpretation is recorded as an event.
+- **Halt-and-ask `skip`** (WP5): the failed lane stays FAILED and its blocked
+  dependents stay BLOCKED; fan-in proceeds WITHOUT them and the fan-in event
+  says so — honest partial delivery (upstream: "preserve successful Bolts'
+  artifacts"), never a fabricated MERGED state.
+- **Merge-back timing** (WP5/WP6 split): the engine `--no-ff` merge-back
+  (fetch → remote-based merge → push, serialized, idempotent) landed WITH WP5
+  — parallel lanes are meaningless without it (dependents must see merged
+  code). WP6 keeps the conflict-resolution STAGE (a conflict currently fails
+  the lane into halt-and-ask, with the conflicted paths recorded) + the PR
+  strategies.

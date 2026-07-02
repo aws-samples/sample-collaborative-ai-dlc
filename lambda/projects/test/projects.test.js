@@ -175,12 +175,14 @@ describe('POST /projects', () => {
       kind: 'v2',
       workflowId: 'aidlc-v2',
       parkReleaseSeconds: 120,
+      maxParallelUnits: 3,
     });
     expect(created.kind).toBe('v2');
     expect(created.workflowId).toBe('aidlc-v2');
     // Scope is chosen per-intent, never stored on the project.
     expect(created.defaultScope).toBeUndefined();
     expect(created.parkReleaseSeconds).toBe(120);
+    expect(created.maxParallelUnits).toBe(3);
     // workflowVersion left unpinned (resolved at intent create).
     expect(created.workflowVersion).toBeNull();
 
@@ -194,6 +196,20 @@ describe('POST /projects', () => {
     expect(body.workflowId).toBe('aidlc-v2');
     expect(body.defaultScope).toBeUndefined();
     expect(body.parkReleaseSeconds).toBe(120);
+    expect(body.maxParallelUnits).toBe(3);
+  });
+
+  it('defaults maxParallelUnits to 0 (unbounded) and round-trips an explicit 0', async () => {
+    const sub = `u-${randomUUID()}`;
+    const created = await createProject(sub, { name: 'V2', kind: 'v2' });
+    expect(created.maxParallelUnits).toBe(0);
+    const fetched = await handler({
+      httpMethod: 'GET',
+      pathParameters: { projectId: created.id },
+      ...claims(sub),
+    });
+    // A stored "0" must NOT be coerced back to a different default.
+    expect(JSON.parse(fetched.body).maxParallelUnits).toBe(0);
   });
 
   it('rejects an out-of-range parkReleaseSeconds', async () => {
@@ -204,6 +220,18 @@ describe('POST /projects', () => {
       ...claims(sub),
     });
     expect(res.statusCode).toBe(400);
+  });
+
+  it('rejects an out-of-range or non-integer maxParallelUnits', async () => {
+    const sub = `u-${randomUUID()}`;
+    for (const bad of [999, -1, 2.5]) {
+      const res = await handler({
+        httpMethod: 'POST',
+        body: JSON.stringify({ name: 'Bad', kind: 'v2', maxParallelUnits: bad }),
+        ...claims(sub),
+      });
+      expect(res.statusCode).toBe(400);
+    }
   });
 
   it('defaults kind to v1 when omitted and omits v2 settings', async () => {

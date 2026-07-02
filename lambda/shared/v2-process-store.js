@@ -35,6 +35,7 @@ const {
   buildUnitPlanRow,
   buildUnitRow,
   UNIT_STATES,
+  CONSTRUCTION_AUTONOMY_MODES,
 } = require('./v2-process-keys.js');
 
 const bySk = (a, b) => a.sk.localeCompare(b.sk);
@@ -86,6 +87,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     startedAt,
     completedAt,
     failureReason,
+    constructionAutonomyMode,
   }) => {
     const ts = now();
     const sets = ['updatedAt = :ts'];
@@ -149,6 +151,19 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     if (rewindFromStageId !== undefined) {
       sets.push('rewindFromStageId = :rwf');
       values[':rwf'] = rewindFromStageId;
+    }
+    // The autonomy-ladder decision (docs/v2-parallel.md A2 rule 9), stamped by
+    // the orchestrator when the human answers the ladder prompt. Validated at
+    // the write so a malformed answer can never poison the scheduling mode.
+    if (constructionAutonomyMode !== undefined) {
+      if (
+        constructionAutonomyMode !== null &&
+        !CONSTRUCTION_AUTONOMY_MODES.includes(constructionAutonomyMode)
+      ) {
+        throw new Error(`invalid constructionAutonomyMode: ${constructionAutonomyMode}`);
+      }
+      sets.push('constructionAutonomyMode = :cam');
+      values[':cam'] = constructionAutonomyMode;
     }
     const params = {
       TableName: table(),

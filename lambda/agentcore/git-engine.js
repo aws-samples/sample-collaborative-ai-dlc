@@ -203,9 +203,216 @@ export const pushBranch = async ({
 };
 
 // The on-disk target dir for a repo — MUST match workspace.js#repoTargetDir
-// (single repo → workspaceDir; multi → workspaceDir/<owner>/<repo>).
-const repoTargetDir = ({ url, workspaceDir, multi }) =>
+// (single repo → workspaceDir; multi → workspaceDir/<owner>/<repo>). Exported
+// for the lane commands (init-lane / merge-lane) that loop repos themselves.
+export const repoTargetDir = ({ url, workspaceDir, multi }) =>
   multi ? path.join(workspaceDir, url) : workspaceDir;
+
+// Authenticated fetch — the READ counterpart of pushBranch's token window.
+// Clone is the only authenticated read the engine had; lane branching and
+// merge-back both need current remote refs first. The tokenized URL exists
+// only between the set-url and the finally-scrub. Never throws.
+//   { fetched: true }                    — remote refs are current
+//   { fetched: false, reason, detail }   — set-url or fetch failure
+export const fetchOrigin = async ({
+  dir,
+  repo,
+  gitToken,
+  gitProvider,
+  urls = {},
+  git = runGit,
+}) => {
+  const authUrl = urls.auth ?? buildCloneUrl(gitProvider, repo, gitToken);
+  const setAuth = await git(['remote', 'set-url', 'origin', authUrl], { cwd: dir });
+  if (setAuth.exitCode !== 0) {
+    return { fetched: false, reason: 'remote_set_url_failed', detail: setAuth.stderr.trim() };
+  }
+  try {
+    const fetch = await git(['fetch', 'origin', '--prune'], { cwd: dir });
+    if (fetch.exitCode !== 0) {
+      return { fetched: false, reason: 'fetch_failed', detail: fetch.stderr.trim().slice(-500) };
+    }
+    return { fetched: true };
+  } finally {
+    await scrubRemote({ dir, repo, gitProvider, urls, git });
+  }
+};
+
+// Ensure the unit-lane branch exists locally AND remotely, branched from the
+// intent branch's remote HEAD (docs/v2-parallel.md A3: lane start). Remote
+// state is the truth: an existing remote unit branch (lane retry / relaunch /
+// re-init after a wiped mount) is checked out as-is; otherwise the branch is
+// created from origin/<intentBranch> and pushed so every later self-heal can
+// re-clone it. `checkout -B` resets any stale local ref deterministically —
+// init-lane runs only at lane START, when the remote is current (stage-exit
+// pushes keep it so). Never throws.
+//   { ready: true,  created, sha }       — checkout on the unit branch
+//   { ready: false, reason, detail? }    — fetch / missing intent branch / git failure
+export const ensureLaneBranch = async ({
+  dir,
+  repo,
+  unitBranch,
+  intentBranch,
+  gitToken,
+  gitProvider,
+  urls = {},
+  git = runGit,
+  sleep,
+  log = (...a) => console.error('[git-engine]', ...a),
+}) => {
+  if (!unitBranch || !intentBranch) return { ready: false, reason: 'missing_branch' };
+  const fetch = await fetchOrigin({ dir, repo, gitToken, gitProvider, urls, git });
+  if (!fetch.fetched) return { ready: false, ...fetch };
+
+  const remoteUnit = await git(['rev-parse', '--verify', `refs/remotes/origin/${unitBranch}`], {
+    cwd: dir,
+  });
+  if (remoteUnit.exitCode === 0) {
+    const checkout = await git(
+      ['checkout', '-B', unitBranch, `refs/remotes/origin/${unitBranch}`],
+      { cwd: dir },
+    );
+    if (checkout.exitCode !== 0) {
+      return { ready: false, reason: 'checkout_failed', detail: checkout.stderr.trim() };
+    }
+    return { ready: true, created: false, sha: remoteUnit.stdout.trim() };
+  }
+
+  const remoteIntent = await git(['rev-parse', '--verify', `refs/remotes/origin/${intentBranch}`], {
+    cwd: dir,
+  });
+  if (remoteIntent.exitCode !== 0) {
+    // The intent branch must exist remotely before any lane can fork it (the
+    // pre-section stages pushed it). Its absence is a hard, actionable error.
+    return { ready: false, reason: 'intent_branch_missing', detail: intentBranch };
+  }
+  const create = await git(['checkout', '-B', unitBranch, `refs/remotes/origin/${intentBranch}`], {
+    cwd: dir,
+  });
+  if (create.exitCode !== 0) {
+    return { ready: false, reason: 'checkout_failed', detail: create.stderr.trim() };
+  }
+  // Register the branch remotely NOW: a later wiped-mount self-heal re-clones
+  // and checks the branch out from the remote — it must already be there.
+  const push = await pushBranch({
+    dir,
+    repo,
+    branch: unitBranch,
+    gitToken,
+    gitProvider,
+    urls,
+    git,
+    sleep,
+    log,
+  });
+  if (push.pushed !== true && push.pushed !== 'empty') {
+    return { ready: false, reason: push.reason ?? 'push_failed', detail: push.detail };
+  }
+  return { ready: true, created: true, sha: remoteIntent.stdout.trim() };
+};
+
+// Serialized fan-in merge (docs/v2-parallel.md A3: lane end): merge the unit
+// branch into the intent branch with --no-ff and push. Runs in the INTENT
+// session's workspace; the caller (orchestrator) serializes calls via its
+// merge lock — this function additionally makes each call IDEMPOTENT so a
+// re-dispatched merge step (durable retry) is safe:
+//   - the local intent branch is reset to the remote (`checkout -B` onto
+//     origin/<intentBranch>) so remote state is always the merge base,
+//   - an already-merged unit branch short-circuits (`up_to_date`).
+// A conflict aborts cleanly (tree left pristine) and reports the conflicted
+// paths — the WP6 conflict-resolution stage consumes them; until then the
+// lane fails halt-and-ask style. Never throws.
+//   { merged: true,  sha, pushed }             — merge commit on the remote
+//   { merged: 'up_to_date', sha }              — nothing to do (replay/retry)
+//   { merged: false, reason, detail?, conflicts? }
+export const mergeBranchNoFf = async ({
+  dir,
+  repo,
+  intentBranch,
+  unitBranch,
+  message,
+  gitToken,
+  gitProvider,
+  urls = {},
+  git = runGit,
+  sleep,
+  log = (...a) => console.error('[git-engine]', ...a),
+}) => {
+  if (!unitBranch || !intentBranch) return { merged: false, reason: 'missing_branch' };
+  const fetch = await fetchOrigin({ dir, repo, gitToken, gitProvider, urls, git });
+  if (!fetch.fetched) return { merged: false, ...fetch };
+
+  const remoteUnit = await git(['rev-parse', '--verify', `refs/remotes/origin/${unitBranch}`], {
+    cwd: dir,
+  });
+  if (remoteUnit.exitCode !== 0) {
+    return { merged: false, reason: 'unit_branch_missing', detail: unitBranch };
+  }
+  const remoteIntent = await git(['rev-parse', '--verify', `refs/remotes/origin/${intentBranch}`], {
+    cwd: dir,
+  });
+  if (remoteIntent.exitCode !== 0) {
+    return { merged: false, reason: 'intent_branch_missing', detail: intentBranch };
+  }
+
+  // Remote is the merge base: reset the local intent branch onto it so a
+  // stale local ref (parallel merges landed since this workspace last moved)
+  // can never produce a divergent merge.
+  const checkout = await git(
+    ['checkout', '-B', intentBranch, `refs/remotes/origin/${intentBranch}`],
+    { cwd: dir },
+  );
+  if (checkout.exitCode !== 0) {
+    return { merged: false, reason: 'checkout_failed', detail: checkout.stderr.trim() };
+  }
+
+  // Idempotency: a re-dispatched merge step after the merge already landed.
+  const ancestor = await git(
+    ['merge-base', '--is-ancestor', `refs/remotes/origin/${unitBranch}`, 'HEAD'],
+    { cwd: dir },
+  );
+  if (ancestor.exitCode === 0) {
+    return { merged: 'up_to_date', sha: remoteIntent.stdout.trim() };
+  }
+
+  const merge = await git(
+    [...GIT_IDENTITY, 'merge', '--no-ff', '-m', message, `refs/remotes/origin/${unitBranch}`],
+    { cwd: dir },
+  );
+  if (merge.exitCode !== 0) {
+    // Conflict → collect the conflicted paths, then leave the tree PRISTINE.
+    const conflicted = await git(['diff', '--name-only', '--diff-filter=U'], { cwd: dir });
+    const conflicts = conflicted.stdout
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    await git(['merge', '--abort'], { cwd: dir }); // best-effort; no-op when the merge never started
+    return {
+      merged: false,
+      reason: conflicts.length ? 'merge_conflict' : 'merge_failed',
+      detail: merge.stderr.trim().slice(-500),
+      conflicts,
+    };
+  }
+  const head = await git(['rev-parse', 'HEAD'], { cwd: dir });
+  const push = await pushBranch({
+    dir,
+    repo,
+    branch: intentBranch,
+    gitToken,
+    gitProvider,
+    urls,
+    git,
+    sleep,
+    log,
+  });
+  if (push.pushed !== true) {
+    // Merged locally but not on the remote — the retry path resets onto the
+    // remote and redoes the merge, so report this as a plain failure value.
+    return { merged: false, reason: push.reason ?? 'push_failed', detail: push.detail };
+  }
+  return { merged: true, sha: head.stdout.trim() || null, pushed: true };
+};
 
 // The deterministic stage-exit hook: commit + (when needed) push every repo of
 // the intent. One call after EVERY stage exit (success, park, fail). Never

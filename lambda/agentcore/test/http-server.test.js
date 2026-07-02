@@ -70,6 +70,30 @@ describe('dispatchInvocation', () => {
     });
   });
 
+  it('routes init-lane and merge-lane (WP5 unit lanes)', async () => {
+    const laneHandlers = {
+      initLane: async (p) => ({ ok: true, unitSlug: p.unitSlug }),
+      mergeLane: async (p) => ({ ok: false, reason: 'merge_conflict', unitSlug: p.unitSlug }),
+    };
+    const a = await dispatchInvocation({
+      payload: { command: 'init-lane', unitSlug: 'auth' },
+      handlers: laneHandlers,
+    });
+    expect(a).toMatchObject({
+      statusCode: 200,
+      body: { ok: true, unitSlug: 'auth', command: 'init-lane' },
+    });
+    // A merge conflict is an ok:false VALUE → 422, never a 500.
+    const b = await dispatchInvocation({
+      payload: { command: 'merge-lane', unitSlug: 'auth' },
+      handlers: laneHandlers,
+    });
+    expect(b).toMatchObject({
+      statusCode: 422,
+      body: { ok: false, reason: 'merge_conflict', command: 'merge-lane' },
+    });
+  });
+
   it('maps a handler ok:false to 422', async () => {
     const r = await dispatchInvocation({
       payload: { command: 'run-stage' },

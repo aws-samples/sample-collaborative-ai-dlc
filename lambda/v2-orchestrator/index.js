@@ -39,6 +39,7 @@ import executionPlanPkg from '../shared/v2-execution-plan.js';
 import gitConnectionStorePkg from '../shared/git-connection-store.js';
 import gitTokenPkg from '../shared/git-token.js';
 import wsFanoutPkg from '../shared/ws-fanout.js';
+import { runParallelSection } from './section.js';
 
 const { createProcessStore } = processStorePkg;
 const { loadExecutionPlan } = workflowPlanPkg;
@@ -176,8 +177,10 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
   // just refetches). These back the activity feed + drive the live UI: they are
   // how init-ws / failure progress becomes visible to the user. `extra` carries
   // structured attribution (unitSlug, lane state) onto the event row + payload.
-  const emitEvent = (stepName, type, summary, extra = {}) =>
-    ctx.step(stepName, async () => {
+  // Parameterized on the durable context so lane child contexts (WP5) emit
+  // under their own checkpoint identity.
+  const emitEvent = (ctxArg, stepName, type, summary, extra = {}) =>
+    ctxArg.step(stepName, async () => {
       try {
         await store.appendEvent?.({
           executionId,
@@ -232,7 +235,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       ctx.logger?.info?.('retired run skipped terminal write', { intentId, reason });
       return { ok: false, reason: 'retired', supersededBy: 'relaunch' };
     }
-    await emitEvent(`fail-event-${reason}`, 'v2.execution.failed', message);
+    await emitEvent(ctx, `fail-event-${reason}`, 'v2.execution.failed', message);
     return { ok: false, reason, detail };
   };
 
@@ -253,6 +256,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     );
     const sessionId = sessionIdFor(intentId);
     await emitEvent(
+      ctx,
       'init-ws-start',
       'v2.workspace.initializing',
       `Initializing workspace (${(meta.repos ?? []).length} repo(s))…`,
@@ -285,7 +289,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     if (initResult && initResult.ok === false) {
       return await fail('init_ws_failed', initResult.reason ?? initResult.detail);
     }
-    await emitEvent('init-ws-done', 'v2.workspace.initialized', 'Workspace ready');
+    await emitEvent(ctx, 'init-ws-done', 'v2.workspace.initialized', 'Workspace ready');
 
     await ctx.step('mark-running', () =>
       store.updateExecution({
@@ -388,52 +392,68 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     };
 
     // ── One stage instance through its park loop (D3) ─────────────────────
-    // `unitSlug` null = a once-per-workflow stage; set = one unit lane's
-    // instance of a `forEach: unit-of-work` stage (docs/v2-parallel.md WP4).
+    // Parameterized for unit lanes (docs/v2-parallel.md WP4/WP5):
+    //   ctxArg       — the durable context to run under (a lane's child
+    //                  context, or the root ctx for once-per-workflow stages)
+    //   unitSlug     — null = once-per-workflow; set = one lane's instance
+    //   sessionId    — the AgentCore session the stage dispatches to (a lane's
+    //                  own session, or the intent session)
+    //   cloneInputs  — branch inputs (a lane's unit branch, or the intent's)
+    //   suffix       — durable-identity suffix for halt-and-ask retry rounds
     // Every durable identity (callback names, step names) carries the unit
-    // dimension so lanes never collide. Outcomes (the caller owns terminal
-    // META writes + lane bookkeeping — ONE failure path per call site):
+    // dimension + suffix so lanes and rounds never collide. Outcomes (the
+    // caller owns terminal META writes + lane bookkeeping):
     //   { state:'SUCCEEDED' }
     //   { state:'FAILED', reason }        — stage verdict was FAILED
     //   { state:'TERMINAL', value }       — already-handled terminal handler
     //                                       return (retired / parked_without_gate)
-    const executeStage = async (stage, unitSlug = null) => {
-      const label = unitSlug ? `${stage.stageId}-u-${unitSlug}` : stage.stageId;
+    const executeStage = async (ctxArg, stage, opts = {}) => {
+      const {
+        unitSlug = null,
+        sessionId: stageSessionId = sessionId,
+        cloneInputs: stageCloneInputs = cloneInputs,
+        suffix = '',
+      } = opts;
+      const label = `${unitSlug ? `${stage.stageId}-u-${unitSlug}` : stage.stageId}${suffix}`;
       const stageOpts = {
         stage,
         unitSlug,
+        suffix,
         ids: { projectId, intentId, executionId },
         workflowId,
         workflowVersion,
         scope,
         cliModels,
         requestedCli,
-        sessionId,
-        cloneInputs,
+        sessionId: stageSessionId,
+        cloneInputs: stageCloneInputs,
       };
-      let result = await runStage(ctx, invokeRuntime, { ...stageOpts, resumeFrom: null });
+      let result = await runStage(ctxArg, invokeRuntime, { ...stageOpts, resumeFrom: null });
 
       // Park loop (D3): the stage may open more than one gate across resumes. Each
       // WAITING_FOR_HUMAN suspends on a durable callback until the gate is answered.
       while (result?.state === 'WAITING_FOR_HUMAN') {
-        const fresh = await ctx.step(`gate-${label}-${result.humanTaskId ?? 'pending'}`, () =>
+        const fresh = await ctxArg.step(`gate-${label}-${result.humanTaskId ?? 'pending'}`, () =>
           store.getExecution(executionId),
         );
-        const humanTaskId = fresh?.pendingHumanTaskId ?? result.humanTaskId;
+        // Parallel lanes (WP5): META's single pendingHumanTaskId pointer can
+        // belong to ANOTHER lane — trust the stage's own verdict first.
+        const humanTaskId = result.humanTaskId ?? fresh?.pendingHumanTaskId;
         if (!humanTaskId) {
           return { state: 'TERMINAL', value: await fail('parked_without_gate', label) };
         }
 
         // Create a durable callback and stamp it on the gate so the answer path
         // can resume THIS execution. Then suspend (zero compute) until answered.
-        const [callbackPromise, callbackId] = await ctx.createCallback(`await-${humanTaskId}`);
-        await ctx.step(`bind-callback-${humanTaskId}`, () =>
+        const [callbackPromise, callbackId] = await ctxArg.createCallback(`await-${humanTaskId}`);
+        await ctxArg.step(`bind-callback-${humanTaskId}`, () =>
           store.setGateCallbackId({ executionId, humanTaskId, callbackId }),
         );
 
         // D1 release-on-park: if no human answers within parkReleaseSeconds, free
-        // the warm microVM compute (StopRuntimeSession) while we keep waiting.
-        // Resume re-mounts the persistent session storage, so the parked CLI
+        // the warm microVM compute (StopRuntimeSession) while we keep waiting —
+        // for a lane, ITS OWN session is released, never a sibling's. Resume
+        // re-mounts the persistent session storage, so the parked CLI
         // conversation is not lost. parkReleaseSeconds <= 0 stops immediately;
         // null skips release (wait on the callback alone).
         if (Number.isFinite(parkReleaseSeconds) && parkReleaseSeconds >= 0) {
@@ -441,16 +461,16 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           // (a durable wait). Both are DurablePromises so race is replay-safe. The
           // wait resolves to void; if the callback hasn't resolved by then the gate
           // is still pending — re-read to disambiguate the winner deterministically.
-          await ctx.promise.race(`park-${humanTaskId}`, [
+          await ctxArg.promise.race(`park-${humanTaskId}`, [
             callbackPromise,
-            ctx.wait(`release-timer-${humanTaskId}`, { seconds: parkReleaseSeconds }),
+            ctxArg.wait(`release-timer-${humanTaskId}`, { seconds: parkReleaseSeconds }),
           ]);
-          const stillPending = await ctx.step(`gate-status-${humanTaskId}`, async () => {
+          const stillPending = await ctxArg.step(`gate-status-${humanTaskId}`, async () => {
             const gate = await store.getHumanTask(executionId, humanTaskId);
             return gate?.status === 'pending';
           });
           if (stillPending) {
-            await ctx.step(`release-${humanTaskId}`, () => stopSession(sessionId));
+            await ctxArg.step(`release-${humanTaskId}`, () => stopSession(stageSessionId));
             await callbackPromise; // keep waiting; resume re-mounts persistent storage
           }
         } else {
@@ -460,7 +480,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         // Retired while parked? Cancel/rewind supersedes the pending gate and
         // wakes this callback with a cancel sentinel. The cancel/rewind path owns
         // META from here — exit WITHOUT any further write (docs/v2-steering.md).
-        const gateAfter = await ctx.step(`gate-after-${humanTaskId}`, () =>
+        const gateAfter = await ctxArg.step(`gate-after-${humanTaskId}`, () =>
           store.getHumanTask(executionId, humanTaskId),
         );
         if (gateAfter?.status === 'superseded') {
@@ -471,173 +491,51 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           };
         }
 
-        result = await runStage(ctx, invokeRuntime, { ...stageOpts, resumeFrom: humanTaskId });
+        result = await runStage(ctxArg, invokeRuntime, { ...stageOpts, resumeFrom: humanTaskId });
       }
 
       if (result?.state === 'FAILED') return { state: 'FAILED', reason: result?.reason ?? '' };
       return { state: 'SUCCEEDED' };
     };
 
-    // ── Parallel section: sequential lanes over the UNITPLAN (WP4) ────────
-    // Fan-out lands here with lanes executed ONE AT A TIME, in deterministic
-    // batch order — a safe intermediate that exercises the whole unit data
-    // model (per-unit instances, lane states, attribution) before concurrency
-    // (WP5) and unit branches/merges (WP5/WP6) exist. Lanes therefore run in
-    // the intent session ON the intent branch: lane completion IS the merge
-    // (an identity merge). Returns null to continue, or a terminal value.
-    const runSection = async (segment) => {
-      const sk = `s${segment.index}`;
-      const unitPlan = await ctx.step(`load-unit-plan-${sk}`, () => store.getUnitPlan(executionId));
-      if (!unitPlan || (unitPlan.units ?? []).length === 0) {
-        // Deterministic guard: WP3's promotion hook should make this
-        // impossible; a missing plan here means the DAG producer never ran or
-        // promotion was skipped — fail loudly, never fan out over nothing.
-        return await fail(
-          'unit_plan_missing',
-          `section ${segment.index} (${segment.stages.map((s) => s.stageId).join(', ')})`,
-        );
-      }
-      const bySlug = new Map(unitPlan.units.map((u) => [u.slug, u]));
-      // Deterministic lane order: topological waves (batches — alphabetical
-      // within a wave by construction), tolerating a snapshot without batches.
-      const laneOrder = (
-        unitPlan.batches?.length ? unitPlan.batches.flat() : unitPlan.units.map((u) => u.slug)
-      ).filter((slug) => bySlug.has(slug));
-      const skipMatrix = unitPlan.skipMatrix ?? {};
-
-      for (const slug of laneOrder) {
-        // Lane start: PENDING/READY → RUNNING (CAS). A lost CAS is tolerated:
-        // a relaunch re-walks lanes whose UNIT row already holds a later state
-        // — the per-instance STAGE rows are the execution truth, the lane row
-        // is the lane-level view (never a scheduling blocker in WP4).
-        await ctx.step(`unit-start-${sk}-${slug}`, async () => {
-          try {
-            await store.updateUnitState({
-              executionId,
-              slug,
-              state: 'RUNNING',
-              fromStates: ['PENDING', 'READY'],
-              fields: { branch: meta.branch ?? null, sessionId, startedAt: true },
-            });
-          } catch {
-            /* lane bookkeeping must never break the run */
-          }
-        });
-        await emitEvent(
-          `unit-started-${sk}-${slug}`,
-          'v2.unit.started',
-          `Unit ${slug} started (section ${segment.index})`,
-          { unitSlug: slug, state: 'RUNNING' },
-        );
-
-        for (const stage of segment.stages) {
-          // Frozen skip matrix (A2 rule 7): only `execution: CONDITIONAL`
-          // stages are skippable per unit; a matrix entry naming an ALWAYS
-          // stage is ignored (deterministically — never a runtime judgement).
-          const skipped =
-            (skipMatrix[slug] ?? []).includes(stage.stageId) && stage.execution === 'CONDITIONAL';
-          if (skipped) {
-            await ctx.step(`skip-${stage.stageId}-u-${slug}`, async () => {
-              try {
-                await store.putStage({
-                  executionId,
-                  stageInstanceId: planStageInstanceId(namespace, stage.stageId, slug),
-                  stageId: stage.stageId,
-                  unitSlug: slug,
-                  phase: stage.phase ?? null,
-                  state: 'SKIPPED',
-                });
-              } catch {
-                /* the SKIPPED row is audit; never break the lane over it */
-              }
-            });
-            await emitEvent(
-              `skip-event-${stage.stageId}-u-${slug}`,
-              'v2.stage.skipped',
-              `Stage ${stage.stageId} skipped for unit ${slug} (approved skip matrix)`,
-              { unitSlug: slug },
-            );
-            continue;
-          }
-
-          const outcome = await executeStage(stage, slug);
-          if (outcome.state === 'TERMINAL') return outcome.value;
-          if (outcome.state === 'FAILED') {
-            // Lane failed: record it and BLOCK direct dependents (the audit
-            // trail a relaunch/WP5 halt-and-ask builds on), then fail the run
-            // — the sequential engine has no retry/skip/abort UX yet.
-            await ctx.step(`unit-failed-${sk}-${slug}`, async () => {
-              try {
-                await store.updateUnitState({
-                  executionId,
-                  slug,
-                  state: 'FAILED',
-                  fields: { failureReason: `${stage.stageId}: ${outcome.reason}` },
-                });
-                for (const u of unitPlan.units) {
-                  if ((u.dependsOn ?? []).includes(slug)) {
-                    await store.updateUnitState({
-                      executionId,
-                      slug: u.slug,
-                      state: 'BLOCKED',
-                      fromStates: ['PENDING', 'READY'],
-                      fields: { blockedOn: slug },
-                    });
-                  }
-                }
-              } catch {
-                /* lane bookkeeping must never mask the stage failure */
-              }
-            });
-            await emitEvent(
-              `unit-failed-event-${sk}-${slug}`,
-              'v2.unit.failed',
-              `Unit ${slug} failed at ${stage.stageId}: ${outcome.reason}`,
-              { unitSlug: slug, state: 'FAILED' },
-            );
-            const out = await fail(
-              'stage_failed',
-              `${stage.stageId} [unit ${slug}]: ${outcome.reason}`,
-            );
-            return { ...out, stageId: stage.stageId, unitSlug: slug };
-          }
-        }
-
-        // Lane complete — WP4's identity merge (work is already on the intent
-        // branch). Real unit branches + serialized --no-ff merges are WP5/WP6.
-        await ctx.step(`unit-merged-${sk}-${slug}`, async () => {
-          try {
-            await store.updateUnitState({
-              executionId,
-              slug,
-              state: 'MERGED',
-              fromStates: ['RUNNING', 'MERGING'],
-              fields: { mergedAt: true },
-            });
-          } catch {
-            /* lane bookkeeping must never break the run */
-          }
-        });
-        await emitEvent(
-          `unit-merged-event-${sk}-${slug}`,
-          'v2.unit.merged',
-          `Unit ${slug} completed (section ${segment.index})`,
-          { unitSlug: slug, state: 'MERGED' },
-        );
-      }
-      return null;
+    // ── Parallel sections (docs/v2-parallel.md WP5) ────────────────────────
+    // Skeleton-solo → skeleton gate → autonomy ladder → wavefront (or gated
+    // batch barriers) over the promoted UNITPLAN, per-lane sessions/branches,
+    // serialized merge-back, halt-and-ask on failure. See section.js.
+    const sectionToolkit = {
+      ctx,
+      store,
+      invokeRuntime,
+      stopSession,
+      broadcast,
+      emitEvent,
+      fail,
+      executeStage,
+      ids: { projectId, intentId, executionId },
+      runId: null, // stamped below once minted
+      intentBranch: meta.branch,
+      cloneBase: {
+        repos: meta.repos ?? [],
+        baseBranch: meta.baseBranch,
+        gitToken: token,
+        gitProvider,
+      },
+      intentSessionId: sessionId,
+      maxParallelUnits: meta.maxParallelUnits ?? 0,
+      stageInstanceIdFor: (stageId, slug) => planStageInstanceId(namespace, stageId, slug),
     };
+    sectionToolkit.runId = runId;
 
     // ── The plan walk: alternating once-per-workflow segments and parallel
     // sections (docs/v2-parallel.md A2; detection is structural via forEach).
     for (const segment of planSegments(runStages)) {
       if (segment.kind === 'section') {
-        const sectionOut = await runSection(segment);
+        const sectionOut = await runParallelSection(segment, sectionToolkit);
         if (sectionOut) return sectionOut;
         continue;
       }
       for (const stage of segment.stages) {
-        const outcome = await executeStage(stage, null);
+        const outcome = await executeStage(ctx, stage);
         if (outcome.state === 'TERMINAL') return outcome.value;
         if (outcome.state === 'FAILED') {
           const out = await fail('stage_failed', `${stage.stageId}: ${outcome.reason}`);
@@ -680,6 +578,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             return { ...out, stageId: stage.stageId };
           }
           await emitEvent(
+            ctx,
             `units-promoted-${stage.stageId}`,
             'v2.units.plan_ready',
             `Unit plan ready: ${promotion.unitCount} unit(s), ${promotion.batchCount} wave(s), skeleton ${promotion.walkingSkeleton ?? 'n/a'}`,
@@ -711,7 +610,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       ctx.logger?.info?.('retired run skipped terminal success write', { intentId });
       return { ok: false, reason: 'retired', intentId };
     }
-    await emitEvent('succeeded-event', 'v2.execution.succeeded', 'All stages completed');
+    await emitEvent(ctx, 'succeeded-event', 'v2.execution.succeeded', 'All stages completed');
     return { ok: true, intentId, stages: runStages.length };
   } catch (err) {
     // Any unexpected throw (runtime transport error, store write failure) — record
@@ -748,6 +647,7 @@ const runStage = async (
   {
     stage,
     unitSlug = null,
+    suffix = '',
     ids,
     workflowId,
     workflowVersion,
@@ -760,10 +660,11 @@ const runStage = async (
   },
 ) => {
   // The attempt key names every durable identity for this stage attempt. It
-  // carries the unit dimension (docs/v2-parallel.md WP4) so N lanes' instances
-  // of the same stage are distinct callbacks/steps — a collision would make
-  // the durable engine memoize one lane's verdict as another's.
-  const attemptKey = `${stage.stageId}${unitSlug ? `-u-${unitSlug}` : ''}${
+  // carries the unit dimension (docs/v2-parallel.md WP4) and the halt-and-ask
+  // round suffix (WP5) so N lanes' instances — and a lane's retry rounds —
+  // are distinct callbacks/steps: a collision would make the durable engine
+  // memoize one attempt's verdict as another's.
+  const attemptKey = `${stage.stageId}${unitSlug ? `-u-${unitSlug}` : ''}${suffix}${
     resumeFrom ? `-resume-${resumeFrom}` : ''
   }`;
   const [stageDone, stageCallbackId] = await ctx.createCallback(`stage-cb-${attemptKey}`, {

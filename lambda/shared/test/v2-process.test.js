@@ -860,3 +860,47 @@ describe('unit dimension through the store', () => {
     expect(item.unitSlug).toBeNull();
   });
 });
+
+// ── WP5: lane concurrency + autonomy-ladder fields on META ──────────────────
+
+describe('WP5 META fields', () => {
+  it('buildExecutionMeta carries maxParallelUnits + constructionAutonomyMode (null defaults)', () => {
+    const meta = buildExecutionMeta({
+      executionId: 'e1',
+      projectId: 'p1',
+      intentId: 'i1',
+      workflowId: 'w',
+      workflowVersion: 1,
+      startedAt: 'T',
+    });
+    expect(meta.maxParallelUnits).toBeNull();
+    expect(meta.constructionAutonomyMode).toBeNull();
+    const configured = buildExecutionMeta({
+      executionId: 'e1',
+      projectId: 'p1',
+      intentId: 'i1',
+      workflowId: 'w',
+      workflowVersion: 1,
+      startedAt: 'T',
+      maxParallelUnits: 3,
+      constructionAutonomyMode: 'gated',
+    });
+    expect(configured.maxParallelUnits).toBe(3);
+    expect(configured.constructionAutonomyMode).toBe('gated');
+  });
+
+  it('updateExecution stamps a VALID constructionAutonomyMode and rejects garbage', async () => {
+    const ddb = mockClient(DynamoDBDocumentClient);
+    ddb.on(UpdateCommand).resolves({ Attributes: { constructionAutonomyMode: 'autonomous' } });
+    const store = createProcessStore({ ddb, tableName: 't', clock: () => 'T' });
+    await store.updateExecution({ executionId: 'e1', constructionAutonomyMode: 'autonomous' });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.UpdateExpression).toContain('constructionAutonomyMode = :cam');
+    expect(input.ExpressionAttributeValues[':cam']).toBe('autonomous');
+    // A malformed ladder answer must never poison the scheduling mode.
+    await expect(
+      store.updateExecution({ executionId: 'e1', constructionAutonomyMode: 'yolo' }),
+    ).rejects.toThrow('invalid constructionAutonomyMode');
+    ddb.restore();
+  });
+});

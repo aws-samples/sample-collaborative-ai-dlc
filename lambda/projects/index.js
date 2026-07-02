@@ -45,6 +45,12 @@ const DEFAULT_V2_WORKFLOW_ID = 'aidlc-v2';
 // Default 5 min; bounded by the runtime idle backstop (900s) — see v2-open.md D1.
 const DEFAULT_PARK_RELEASE_SECONDS = 300;
 const MAX_PARK_RELEASE_SECONDS = 900;
+// Concurrency cap for parallel unit lanes (docs/v2-parallel.md WP5).
+// 0 = unbounded (the unit DAG is the only limit). Bounded well below the
+// AgentCore session quotas (2.5k+ active sessions) — a workflow fan-out past
+// this is a smell, not a need.
+const DEFAULT_MAX_PARALLEL_UNITS = 0;
+const MAX_MAX_PARALLEL_UNITS = 64;
 
 // Validate + normalize park_release_seconds. Returns { valid, value?, error? }.
 const normalizeParkReleaseSeconds = (raw) => {
@@ -56,6 +62,21 @@ const normalizeParkReleaseSeconds = (raw) => {
     return {
       valid: false,
       error: `parkReleaseSeconds must be an integer between 0 and ${MAX_PARK_RELEASE_SECONDS}`,
+    };
+  }
+  return { valid: true, value: n };
+};
+
+// Validate + normalize max_parallel_units. Returns { valid, value?, error? }.
+const normalizeMaxParallelUnits = (raw) => {
+  if (raw === undefined || raw === null || raw === '') {
+    return { valid: true, value: DEFAULT_MAX_PARALLEL_UNITS };
+  }
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0 || n > MAX_MAX_PARALLEL_UNITS) {
+    return {
+      valid: false,
+      error: `maxParallelUnits must be an integer between 0 (unbounded) and ${MAX_MAX_PARALLEL_UNITS}`,
     };
   }
   return { valid: true, value: n };
@@ -73,6 +94,12 @@ const readV2Settings = (v) => {
     workflowId: getVal(v, 'workflow_id') || DEFAULT_V2_WORKFLOW_ID,
     workflowVersion: rawVersion ? Number(rawVersion) : null,
     parkReleaseSeconds: Number(getVal(v, 'park_release_seconds') || DEFAULT_PARK_RELEASE_SECONDS),
+    // `|| default` would coerce a stored "0" back to the default — 0 is a
+    // meaningful value here (unbounded), so read it explicitly.
+    maxParallelUnits:
+      getVal(v, 'max_parallel_units') === undefined || getVal(v, 'max_parallel_units') === ''
+        ? DEFAULT_MAX_PARALLEL_UNITS
+        : Number(getVal(v, 'max_parallel_units')),
   };
 };
 
@@ -916,6 +943,8 @@ export const handler = async (event) => {
         if (kind === 'v2') {
           const parkValidation = normalizeParkReleaseSeconds(data.parkReleaseSeconds);
           if (!parkValidation.valid) return response(400, { error: parkValidation.error });
+          const parallelValidation = normalizeMaxParallelUnits(data.maxParallelUnits);
+          if (!parallelValidation.valid) return response(400, { error: parallelValidation.error });
           v2Settings = {
             kind,
             workflowId: data.workflowId || DEFAULT_V2_WORKFLOW_ID,
@@ -923,6 +952,7 @@ export const handler = async (event) => {
             workflowVersion: Number.isInteger(data.workflowVersion) ? data.workflowVersion : null,
             // Scope is NOT a project property — it is chosen per-intent.
             parkReleaseSeconds: parkValidation.value,
+            maxParallelUnits: parallelValidation.value,
           };
         }
 
@@ -946,7 +976,8 @@ export const handler = async (event) => {
               'workflow_version',
               v2Settings.workflowVersion == null ? '' : String(v2Settings.workflowVersion),
             )
-            .property('park_release_seconds', String(v2Settings.parkReleaseSeconds));
+            .property('park_release_seconds', String(v2Settings.parkReleaseSeconds))
+            .property('max_parallel_units', String(v2Settings.maxParallelUnits));
         }
         await createV.next();
 
@@ -1119,6 +1150,18 @@ export const handler = async (event) => {
             )
             .next();
         }
+        // Concurrency cap for parallel unit lanes (docs/v2-parallel.md WP5).
+        let normalizedMaxParallelUnits;
+        if (data.maxParallelUnits !== undefined) {
+          const parallelValidation = normalizeMaxParallelUnits(data.maxParallelUnits);
+          if (!parallelValidation.valid) return response(400, { error: parallelValidation.error });
+          normalizedMaxParallelUnits = parallelValidation.value;
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .property(cardinality.single, 'max_parallel_units', String(normalizedMaxParallelUnits))
+            .next();
+        }
         if (data.workflowId !== undefined) {
           await g
             .V()
@@ -1143,6 +1186,9 @@ export const handler = async (event) => {
           ...(normalizedCliModels !== undefined ? { cliModels: normalizedCliModels } : {}),
           ...(normalizedParkReleaseSeconds !== undefined
             ? { parkReleaseSeconds: normalizedParkReleaseSeconds }
+            : {}),
+          ...(normalizedMaxParallelUnits !== undefined
+            ? { maxParallelUnits: normalizedMaxParallelUnits }
             : {}),
         });
       }

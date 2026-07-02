@@ -189,6 +189,7 @@ const seedV2Project = async (sub) => {
     .property('workflow_id', 'aidlc-v2')
     .property('workflow_version', '')
     .property('park_release_seconds', '120')
+    .property('max_parallel_units', '3')
     .property('agent_cli', 'kiro')
     .property('cli_models', JSON.stringify({ claude: 'us.anthropic.claude-opus-4-8' }))
     .property('git_provider', 'github')
@@ -282,6 +283,9 @@ describe('POST /projects/{id}/intents', () => {
     expect(intent.agentCli).toBe('kiro');
     expect(intent.cliModels).toEqual({ claude: 'us.anthropic.claude-opus-4-8' });
     expect(intent.parkReleaseSeconds).toBe(120);
+    // WP5: lane concurrency cap snapshotted; the ladder decision starts unset.
+    expect(intent.maxParallelUnits).toBe(3);
+    expect(intent.constructionAutonomyMode).toBeNull();
   });
 
   it('merges the Admin global model under the project selection at create', async () => {

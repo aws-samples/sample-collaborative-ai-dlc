@@ -20,7 +20,7 @@ const makeCtx = (over = {}) => {
   // callbackId -> resolve, registered by createCallback, resolved by the fake
   // runtime when it "completes" the stage job.
   const stageCallbacks = new Map();
-  return {
+  const ctx = {
     logger: { info() {}, debug() {}, error() {} },
     step: async (_name, fn) => fn(),
     createCallback: async (name) => {
@@ -39,10 +39,16 @@ const makeCtx = (over = {}) => {
     wait: async () => undefined,
     promise: {
       race: async (_name, promises) => Promise.race(promises),
+      allSettled: async (_name, promises) => Promise.allSettled(promises),
     },
+    // WP5 lanes: a child context shares the fake's behavior (steps run,
+    // callbacks resolve through the same registry) — the real SDK gives each
+    // lane its own checkpoint namespace, which the replay suite covers.
+    runInChildContext: (_name, fn) => Promise.resolve().then(() => fn(ctx)),
     stageCallbackResolvers: stageCallbacks,
     ...over,
   };
+  return ctx;
 };
 
 // Build the deps.invokeRuntime fake: `script(payload, n)` returns the verdict
@@ -856,7 +862,7 @@ const sectionScript = (payload) => {
   return { ok: true, state: 'SUCCEEDED' };
 };
 
-describe('WP4 — parallel sections run as sequential unit lanes', () => {
+describe('WP5 — parallel sections: lanes, skeleton, ladder, halt-and-ask', () => {
   let unitStates;
   let stagePuts;
   beforeEach(() => {
@@ -879,39 +885,74 @@ describe('WP4 — parallel sections run as sequential unit lanes', () => {
   const start = () =>
     __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
 
-  it('fans out lanes sequentially in batch order, threading unitSlug through every dispatch', async () => {
+  it('runs the full section lifecycle: skeleton lane solo, then remaining lanes, each with init-lane → stages → merge-lane', async () => {
     const res = await start();
     expect(res.ok).toBe(true);
-    // units-gen → promote → auth lane (fd,cg) → billing lane (fd,cg) → bt.
-    expect(invokes.map((p) => `${p.command}:${p.stageId ?? '-'}:${p.unitSlug ?? '-'}`)).toEqual([
-      'init-ws:-:-',
-      'run-stage-start:units-gen:-',
-      'promote-units:-:-',
-      'run-stage-start:fd:auth',
-      'run-stage-start:cg:auth',
-      'run-stage-start:fd:billing',
-      'run-stage-start:cg:billing',
-      'run-stage-start:bt:-',
+    // auth is the skeleton (first slug of the first wave): its whole lane
+    // (init → fd → cg → merge) completes before billing's lane opens; bt runs
+    // after fan-in.
+    expect(invokes.map((p) => `${p.command}:${p.stageId ?? p.unitSlug ?? '-'}`)).toEqual([
+      'init-ws:-',
+      'run-stage-start:units-gen',
+      'promote-units:-',
+      'init-lane:auth',
+      'run-stage-start:fd',
+      'run-stage-start:cg',
+      'merge-lane:auth',
+      'init-lane:billing',
+      'run-stage-start:fd',
+      'run-stage-start:cg',
+      'merge-lane:billing',
+      'run-stage-start:bt',
     ]);
+    // Lane dispatches run in the LANE's own session; merge-lane in the intent
+    // session (A2 rule 3 / A3 merge-back).
+    const bySession = invokes.map((p, i) => `${p.command}:${p.unitSlug ?? '-'}:${sessions[i]}`);
+    expect(bySession).toContain(`init-lane:auth:${'aidlc-intent-i1-s1-auth'.padEnd(33, '0')}`);
+    expect(bySession).toContain(
+      `run-stage-start:billing:${'aidlc-intent-i1-s1-billing'.padEnd(33, '0')}`,
+    );
+    const mergeIdx = invokes.findIndex((p) => p.command === 'merge-lane');
+    expect(sessions[mergeIdx]).toBe('aidlc-intent-i1'.padEnd(33, '0'));
+    // Lane clone inputs point at the unit branch, based on the intent branch.
+    const laneStart = stageStarts().find((p) => p.stageId === 'fd' && p.unitSlug === 'auth');
+    expect(laneStart.branch).toBe('aidlc/i1--s1-unit-auth');
+    expect(laneStart.baseBranch).toBe('aidlc/i1');
+    const init = invokes.find((p) => p.command === 'init-lane');
+    expect(init).toMatchObject({
+      unitSlug: 'auth',
+      unitBranch: 'aidlc/i1--s1-unit-auth',
+      intentBranch: 'aidlc/i1',
+      sectionIndex: 1,
+    });
+    // The lane sessions were released after their merges.
+    const stopped = deps.stopSession.mock.calls.map((c) => c[0]);
+    expect(stopped).toContain('aidlc-intent-i1-s1-auth'.padEnd(33, '0'));
+    expect(stopped).toContain('aidlc-intent-i1-s1-billing'.padEnd(33, '0'));
     // Non-lane dispatches carry unitSlug null explicitly (uniform contract).
-    const btStart = stageStarts().find((p) => p.stageId === 'bt');
-    expect(btStart.unitSlug).toBeNull();
+    expect(stageStarts().find((p) => p.stageId === 'bt').unitSlug).toBeNull();
   });
 
-  it('tracks lane states RUNNING → MERGED per unit with lifecycle events + agent.unit broadcasts', async () => {
+  it('tracks lane states RUNNING → MERGING → MERGED per unit with lifecycle events + agent.unit broadcasts', async () => {
     await start();
     expect(unitStates.map((u) => `${u.slug}:${u.state}`)).toEqual([
       'auth:RUNNING',
+      'auth:MERGING',
       'auth:MERGED',
       'billing:RUNNING',
+      'billing:MERGING',
       'billing:MERGED',
     ]);
-    // Lane start stamps the branch + session; merge stamps mergedAt.
+    // Lane start stamps the UNIT branch + LANE session; merge stamps mergedAt.
     expect(unitStates[0]).toMatchObject({
       fromStates: ['PENDING', 'READY'],
-      fields: { branch: 'aidlc/i1', startedAt: true },
+      fields: {
+        branch: 'aidlc/i1--s1-unit-auth',
+        sessionId: 'aidlc-intent-i1-s1-auth'.padEnd(33, '0'),
+        startedAt: true,
+      },
     });
-    expect(unitStates[1].fields).toMatchObject({ mergedAt: true });
+    expect(unitStates[2].fields).toMatchObject({ mergedAt: true });
     // Durable events carry the lane.
     const eventCalls = deps.store.appendEvent.mock.calls.map((c) => c[0]);
     const unitEvents = eventCalls.filter((e) => e.type?.startsWith('v2.unit.'));
@@ -921,6 +962,19 @@ describe('WP4 — parallel sections run as sequential unit lanes', () => {
       'v2.unit.started:billing',
       'v2.unit.merged:billing',
     ]);
+    // Section lifecycle is auditable: fan-out approval, skeleton approval,
+    // autonomy decision (default GATED on an unparseable answer), batch
+    // approval, fan-in.
+    const types = eventCalls.map((e) => e.type);
+    for (const t of [
+      'v2.units.fanout_approved',
+      'v2.units.skeleton_approved',
+      'v2.units.autonomy_set',
+      'v2.units.batch_approved',
+      'v2.units.fan_in',
+    ]) {
+      expect(types).toContain(t);
+    }
     // Live broadcasts route on their own action with lane attribution.
     const unitBroadcasts = deps.broadcast.mock.calls
       .map((c) => c[1])
@@ -960,7 +1014,7 @@ describe('WP4 — parallel sections run as sequential unit lanes', () => {
     );
   });
 
-  it('a lane failure marks the unit FAILED, blocks direct dependents, and fails the run attributably', async () => {
+  it('a lane failure halts-and-asks; an unanswered/abort decision fails the run with work preserved', async () => {
     deps.invokeRuntime = makeRuntime(ctx, (payload) => {
       if (payload.command === 'init-ws') return { ok: true };
       if (payload.command === 'promote-units')
@@ -970,28 +1024,18 @@ describe('WP4 — parallel sections run as sequential unit lanes', () => {
       return { ok: true, state: 'SUCCEEDED' };
     });
     const res = await start();
-    expect(res).toMatchObject({
-      ok: false,
-      reason: 'stage_failed',
-      stageId: 'cg',
-      unitSlug: 'auth',
-    });
-    expect(res.detail).toContain('[unit auth]');
-    // Lane bookkeeping: auth FAILED (with the failing stage), billing BLOCKED on auth.
-    expect(unitStates.map((u) => `${u.slug}:${u.state}`)).toEqual([
-      'auth:RUNNING',
-      'auth:FAILED',
-      'billing:BLOCKED',
-    ]);
+    // Halt gate auto-answers with NO parseable choice → deterministic
+    // fallback is ABORT (never silent continuation).
+    expect(res).toMatchObject({ ok: false, reason: 'section_aborted' });
+    expect(res.detail).toContain('auth');
+    // Lane bookkeeping: auth FAILED with the failing stage recorded.
+    expect(unitStates.map((u) => `${u.slug}:${u.state}`)).toEqual(['auth:RUNNING', 'auth:FAILED']);
     expect(unitStates[1].fields.failureReason).toContain('cg');
-    expect(unitStates[2]).toMatchObject({
-      fromStates: ['PENDING', 'READY'],
-      fields: { blockedOn: 'auth' },
-    });
-    // billing's lane never started.
+    // billing's lane never started (skeleton failed before fan-out widened).
     expect(stageStarts().some((p) => p.unitSlug === 'billing')).toBe(false);
     const eventCalls = deps.store.appendEvent.mock.calls.map((c) => c[0]);
     expect(eventCalls.some((e) => e.type === 'v2.unit.failed' && e.unitSlug === 'auth')).toBe(true);
+    expect(eventCalls.some((e) => e.type === 'v2.units.halt_decision')).toBe(true);
   });
 
   it('fails deterministically (unit_plan_missing) when a section starts without a promoted plan', async () => {
@@ -1061,5 +1105,222 @@ describe('WP4 — parallel sections run as sequential unit lanes', () => {
     );
     expect(res2.ok).toBe(true);
     expect(stageStarts().map((p) => p.stageId)).toEqual(['bt']);
+  });
+});
+
+// ── WP5: gate-driven decisions (retry / skip / overrides / autonomy) ─────────
+
+describe('WP5 — engine-gate decisions', () => {
+  let unitStates;
+  // Route engine-gate reads (eg-*) by prefix; everything else stays 'answered'
+  // (stage question gates in the park loop).
+  const gateReads = (byPrefix) =>
+    vi.fn(async (_e, id) => {
+      for (const [prefix, val] of Object.entries(byPrefix)) {
+        if (String(id).startsWith(prefix)) return { status: 'answered', ...val };
+      }
+      return { status: 'answered' };
+    });
+
+  beforeEach(() => {
+    unitStates = [];
+    deps.loadPlan = vi.fn(async () => SECTION_PLAN());
+    deps.store.getUnitPlan = vi.fn(async () => UNIT_PLAN());
+    deps.store.createHumanTask = vi.fn(async (args) => args);
+    deps.store.updateUnitPlanDecisions = vi.fn(async () => ({}));
+    deps.store.updateUnitState = vi.fn(async (args) => {
+      unitStates.push(args);
+      return { slug: args.slug, state: args.state };
+    });
+    deps.store.putStage = vi.fn(async (args) => args);
+    deps.store.getStage = vi.fn(async () => null);
+    deps.invokeRuntime = makeRuntime(ctx, sectionScript);
+  });
+
+  const start = () =>
+    __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
+
+  it('halt-and-ask RETRY re-runs the failed lane under fresh round identities and completes the run', async () => {
+    let cgBillingAttempts = 0;
+    deps.store.getHumanTask = gateReads({ 'eg-halt': { answer: { decision: 'retry' } } });
+    deps.invokeRuntime = makeRuntime(ctx, (payload) => {
+      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'promote-units') return { ok: true, unitCount: 2, batchCount: 2 };
+      if (payload.stageId === 'cg' && payload.unitSlug === 'billing') {
+        cgBillingAttempts += 1;
+        if (cgBillingAttempts === 1)
+          return { ok: false, state: 'FAILED', reason: 'sensor_blocked' };
+      }
+      return { ok: true, state: 'SUCCEEDED' };
+    });
+    const res = await start();
+    expect(res.ok).toBe(true);
+    // billing's cg ran twice: the failed round-0 attempt and the round-1 retry
+    // under a DISTINCT durable callback identity.
+    const cgBilling = stageStarts().filter((p) => p.stageId === 'cg' && p.unitSlug === 'billing');
+    expect(cgBilling.map((p) => p.stageCallbackId)).toEqual([
+      'cb-stage-cb-cg-u-billing',
+      'cb-stage-cb-cg-u-billing-r1',
+    ]);
+    // Lane states: billing FAILED (round 0) then revived RUNNING → MERGED.
+    const billing = unitStates.filter((u) => u.slug === 'billing').map((u) => u.state);
+    expect(billing).toEqual(['RUNNING', 'FAILED', 'RUNNING', 'MERGING', 'MERGED']);
+    // The retry-round revive CAS accepts FAILED/BLOCKED lanes.
+    const revive = unitStates.filter((u) => u.slug === 'billing' && u.state === 'RUNNING')[1];
+    expect(revive.fromStates).toContain('FAILED');
+    const eventCalls = deps.store.appendEvent.mock.calls.map((c) => c[0]);
+    expect(eventCalls.find((e) => e.type === 'v2.units.halt_decision')?.summary).toContain('retry');
+  });
+
+  it('halt-and-ask SKIP preserves merged lanes and lets the run continue without the failed unit', async () => {
+    deps.store.getHumanTask = gateReads({ 'eg-halt': { answer: { decision: 'skip' } } });
+    deps.invokeRuntime = makeRuntime(ctx, (payload) => {
+      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'promote-units') return { ok: true, unitCount: 2, batchCount: 2 };
+      if (payload.stageId === 'cg' && payload.unitSlug === 'billing')
+        return { ok: false, state: 'FAILED', reason: 'sensor_blocked' };
+      return { ok: true, state: 'SUCCEEDED' };
+    });
+    const res = await start();
+    // The run reaches SUCCEEDED: auth merged, billing failed-and-skipped, bt ran.
+    expect(res.ok).toBe(true);
+    expect(stageStarts().map((p) => `${p.stageId}:${p.unitSlug ?? '-'}`)).toContain('bt:-');
+    const eventCalls = deps.store.appendEvent.mock.calls.map((c) => c[0]);
+    expect(eventCalls.some((e) => e.type === 'v2.units.lanes_skipped')).toBe(true);
+    expect(eventCalls.find((e) => e.type === 'v2.units.fan_in')?.summary).toContain('1/2');
+  });
+
+  it('AUTONOMOUS wavefront: a failed lane BLOCKS its dependents while independents finish', async () => {
+    // 3 units: auth (skeleton), b, c (depends on b). Ladder → autonomous.
+    deps.store.getUnitPlan = vi.fn(async () => ({
+      units: [
+        { slug: 'auth', dependsOn: [] },
+        { slug: 'b', dependsOn: [] },
+        { slug: 'c', dependsOn: ['b'] },
+      ],
+      batches: [['auth', 'b'], ['c']],
+      skipMatrix: {},
+      walkingSkeleton: 'auth',
+    }));
+    deps.store.getHumanTask = gateReads({
+      'eg-ladder': { answer: { mode: 'autonomous' } },
+      'eg-halt': { answer: { decision: 'skip' } },
+    });
+    deps.invokeRuntime = makeRuntime(ctx, (payload) => {
+      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'promote-units') return { ok: true, unitCount: 3, batchCount: 2 };
+      if (payload.stageId === 'cg' && payload.unitSlug === 'b')
+        return { ok: false, state: 'FAILED', reason: 'sensor_blocked' };
+      return { ok: true, state: 'SUCCEEDED' };
+    });
+    const res = await start();
+    expect(res.ok).toBe(true); // human skipped after the failure
+    // c never dispatched a stage — it blocked on b.
+    expect(stageStarts().some((p) => p.unitSlug === 'c')).toBe(false);
+    const cStates = unitStates.filter((u) => u.slug === 'c').map((u) => u.state);
+    expect(cStates).toEqual(['BLOCKED']);
+    expect(unitStates.find((u) => u.slug === 'c' && u.state === 'BLOCKED').fields).toMatchObject({
+      blockedOn: 'b',
+    });
+    // In autonomous mode there is NO batch gate.
+    const eventCalls = deps.store.appendEvent.mock.calls.map((c) => c[0]);
+    expect(eventCalls.some((e) => e.type === 'v2.units.batch_approved')).toBe(false);
+    expect(eventCalls.find((e) => e.type === 'v2.units.autonomy_set')?.summary).toContain(
+      'autonomous',
+    );
+  });
+
+  it('fan-out gate overrides re-pick the skeleton and extend the skip matrix (validated)', async () => {
+    // Independent units: a dependency-free skeleton override is valid.
+    deps.store.getUnitPlan = vi.fn(async () => ({
+      units: [
+        { slug: 'auth', dependsOn: [] },
+        { slug: 'billing', dependsOn: [] },
+      ],
+      batches: [['auth', 'billing']],
+      skipMatrix: {},
+    }));
+    deps.store.getHumanTask = gateReads({
+      'eg-fanout': {
+        answer: {
+          walkingSkeleton: 'billing',
+          // fd is CONDITIONAL (skippable); cg is ALWAYS (must be rejected);
+          // 'ghost' is not a unit (must be rejected).
+          skipMatrix: { auth: ['fd', 'cg'], ghost: ['fd'] },
+        },
+      },
+    });
+    const res = await start();
+    expect(res.ok).toBe(true);
+    // billing ran FIRST (the overridden skeleton), solo.
+    const laneOrder = invokes.filter((p) => p.command === 'init-lane').map((p) => p.unitSlug);
+    expect(laneOrder).toEqual(['billing', 'auth']);
+    // auth's fd was skipped (valid override), its cg still ran (ALWAYS).
+    const authStages = stageStarts()
+      .filter((p) => p.unitSlug === 'auth')
+      .map((p) => p.stageId);
+    expect(authStages).toEqual(['cg']);
+    // The frozen decisions were persisted and invalid entries audited.
+    expect(deps.store.updateUnitPlanDecisions).toHaveBeenCalledWith(
+      expect.objectContaining({ walkingSkeleton: 'billing', skipMatrix: { auth: ['fd'] } }),
+    );
+    const eventCalls = deps.store.appendEvent.mock.calls.map((c) => c[0]);
+    const invalid = eventCalls.find((e) => e.type === 'v2.units.decisions_invalid');
+    expect(invalid?.summary).toContain('cg');
+    expect(invalid?.summary).toContain('ghost');
+  });
+
+  it('rejects a DEPENDENT unit as the skeleton override (it must run solo first)', async () => {
+    // billing depends on auth (the default UNIT_PLAN) → override invalid,
+    // the default (auth) stays the skeleton.
+    deps.store.getHumanTask = gateReads({
+      'eg-fanout': { answer: { walkingSkeleton: 'billing' } },
+    });
+    const res = await start();
+    expect(res.ok).toBe(true);
+    const laneOrder = invokes.filter((p) => p.command === 'init-lane').map((p) => p.unitSlug);
+    expect(laneOrder).toEqual(['auth', 'billing']);
+    const eventCalls = deps.store.appendEvent.mock.calls.map((c) => c[0]);
+    expect(eventCalls.find((e) => e.type === 'v2.units.decisions_invalid')?.summary).toContain(
+      'dependency-free',
+    );
+  });
+
+  it('a rejected fan-out gate fails the run (fanout_rejected) before any lane starts', async () => {
+    deps.store.getHumanTask = gateReads({ 'eg-fanout': { status: 'rejected' } });
+    const res = await start();
+    expect(res).toMatchObject({ ok: false, reason: 'fanout_rejected' });
+    expect(invokes.some((p) => p.command === 'init-lane')).toBe(false);
+  });
+
+  it('a rejected skeleton gate stops the run after the skeleton merged (work preserved)', async () => {
+    deps.store.getHumanTask = gateReads({ 'eg-skeleton': { status: 'rejected' } });
+    const res = await start();
+    expect(res).toMatchObject({ ok: false, reason: 'skeleton_rejected' });
+    // The skeleton lane completed and merged before the gate.
+    expect(invokes.filter((p) => p.command === 'merge-lane')).toHaveLength(1);
+    // No further lanes.
+    expect(invokes.filter((p) => p.command === 'init-lane')).toHaveLength(1);
+  });
+
+  it('a pre-set autonomyMode on the UNITPLAN skips the ladder prompt (deterministic resume)', async () => {
+    deps.store.getUnitPlan = vi.fn(async () => UNIT_PLAN({ autonomyMode: 'autonomous' }));
+    const opened = [];
+    deps.store.createHumanTask = vi.fn(async (args) => {
+      opened.push(args.humanTaskId);
+      return args;
+    });
+    // Engine gates must actually open (pre-read finds nothing) to observe them.
+    deps.store.getHumanTask = vi.fn(async (_e, id) => {
+      if (String(id).startsWith('eg-') && !opened.some((o) => o === id)) return null;
+      return { status: 'answered' };
+    });
+    const res = await start();
+    expect(res.ok).toBe(true);
+    // fanout + skeleton gates opened; NO ladder gate, NO batch gates.
+    expect(opened.some((id) => id.startsWith('eg-fanout'))).toBe(true);
+    expect(opened.some((id) => id.startsWith('eg-skeleton'))).toBe(true);
+    expect(opened.some((id) => id.startsWith('eg-ladder'))).toBe(false);
+    expect(opened.some((id) => id.startsWith('eg-batch'))).toBe(false);
   });
 });

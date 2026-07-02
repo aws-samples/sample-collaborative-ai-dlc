@@ -224,6 +224,7 @@ export default function ProjectSettings() {
 
   // v2 settings state (only meaningful for kind === 'v2')
   const [editParkReleaseSeconds, setEditParkReleaseSeconds] = useState<number>(300);
+  const [editMaxParallelUnits, setEditMaxParallelUnits] = useState<number>(0);
   const [savingV2Settings, setSavingV2Settings] = useState(false);
 
   // MCP servers state (raw JSON string; persistence handled by McpServersSection)
@@ -273,6 +274,7 @@ export default function ProjectSettings() {
       setEditAgentCli(proj.agentCli ?? 'kiro');
       setEditCliModels(proj.cliModels || {});
       setEditParkReleaseSeconds(proj.parkReleaseSeconds ?? 300);
+      setEditMaxParallelUnits(proj.maxParallelUnits ?? 0);
       setRepos(proj.repos ?? []);
       setMembers(Array.isArray(mems) ? mems : []);
       setTrackerConnections(Array.isArray(conns) ? conns : []);
@@ -565,10 +567,13 @@ export default function ProjectSettings() {
     try {
       const saved = await projectsService.update(projectId, {
         parkReleaseSeconds: editParkReleaseSeconds,
+        maxParallelUnits: editMaxParallelUnits,
       });
       const next = saved.parkReleaseSeconds ?? editParkReleaseSeconds;
+      const nextParallel = saved.maxParallelUnits ?? editMaxParallelUnits;
       setEditParkReleaseSeconds(next);
-      setProject({ ...project, parkReleaseSeconds: next });
+      setEditMaxParallelUnits(nextParallel);
+      setProject({ ...project, parkReleaseSeconds: next, maxParallelUnits: nextParallel });
       setSuccess('v2 settings updated');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update v2 settings');
@@ -1271,6 +1276,23 @@ export default function ProjectSettings() {
                         (0–900). Bounded by the runtime idle backstop.
                       </p>
                     </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="max-parallel-units">Max parallel units</Label>
+                      <Input
+                        id="max-parallel-units"
+                        type="number"
+                        min={0}
+                        max={64}
+                        value={editMaxParallelUnits}
+                        onChange={(e) => setEditMaxParallelUnits(Number(e.target.value))}
+                        className="font-mono text-sm"
+                        disabled={!canEditProject || savingV2Settings}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        How many unit-of-work lanes may run concurrently during construction (0 =
+                        unbounded; the unit dependency graph is then the only limit).
+                      </p>
+                    </div>
                     {!canEditProject && (
                       <p className="text-xs text-muted-foreground">
                         Only owners and admins can change v2 settings
@@ -1283,7 +1305,8 @@ export default function ProjectSettings() {
                           size="sm"
                           disabled={
                             savingV2Settings ||
-                            editParkReleaseSeconds === (project.parkReleaseSeconds ?? 300)
+                            (editParkReleaseSeconds === (project.parkReleaseSeconds ?? 300) &&
+                              editMaxParallelUnits === (project.maxParallelUnits ?? 0))
                           }
                         >
                           {savingV2Settings ? 'Saving...' : 'Save v2 Settings'}

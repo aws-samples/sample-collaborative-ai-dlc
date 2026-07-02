@@ -59,6 +59,9 @@ export interface Project {
   workflowId?: string;
   workflowVersion?: number | null;
   parkReleaseSeconds?: number;
+  // Concurrency cap for parallel unit lanes (docs/v2-parallel.md WP5);
+  // 0 = unbounded (the unit DAG is the only limit).
+  maxParallelUnits?: number;
 }
 
 export interface TrackerMigrationResult {
@@ -85,6 +88,7 @@ export interface CreateProjectInput {
   workflowId?: string;
   workflowVersion?: number | null;
   parkReleaseSeconds?: number;
+  maxParallelUnits?: number;
 }
 
 export interface UpdateProjectInput {
@@ -98,6 +102,7 @@ export interface UpdateProjectInput {
   workflowId?: string;
   workflowVersion?: number | null;
   parkReleaseSeconds?: number;
+  maxParallelUnits?: number;
 }
 
 export interface AddRepoInput {
