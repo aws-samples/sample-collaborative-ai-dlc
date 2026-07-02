@@ -61,6 +61,25 @@ const renderInputs = (inputArtifacts = []) => {
 const renderOutputs = (outputArtifacts = []) =>
   outputArtifacts.length ? outputArtifacts.map((o) => `- ${o.artifact}`).join('\n') : '- none';
 
+// Render the intent block — the run's north star (cloud finding #5: the
+// intent title/prompt rode the init-ws payload but were NEVER delivered to
+// the agent; intent-capture then had to ask the human what the intent was).
+// PURE. Injected near the top of every fresh stage prompt: early stages work
+// FROM it; later stages get it as originating context with refined artifacts
+// taking precedence.
+export const renderIntentBlock = ({ title, prompt, scope } = {}) => {
+  if (!title && !prompt) return '';
+  return [
+    '## The intent (originating request)',
+    '',
+    ...(title ? [`**${title}**${scope ? ` (scope: ${scope})` : ''}`, ''] : []),
+    ...(prompt ? [prompt.trim(), ''] : []),
+    'This is what the human asked for — the whole run serves it. Earlier',
+    "stages' recorded artifacts REFINE it; where they exist, they take",
+    'precedence over this raw request.',
+  ].join('\n');
+};
+
 // Render the unit-scope block for a `forEach: unit-of-work` lane run
 // (docs/v2-parallel.md WP4). PURE. `unit` = { slug, dependsOn } from the
 // promoted UNITPLAN — the engine's scheduling truth, never agent-supplied.
@@ -94,6 +113,7 @@ export const renderUnitScope = (unit) => {
 export const buildStagePrompt = ({
   stage = {},
   unit = null,
+  intent = null, // { title, prompt, scope } — the originating request (finding #5)
   stageBody = '',
   agentPersona = '',
   knowledge = '',
@@ -109,6 +129,11 @@ export const buildStagePrompt = ({
   // The harness binding goes FIRST — it must be read before the filesystem-laden
   // stage prose so the agent translates rather than obeys it literally.
   sections.push('', MCP_EXECUTION_ANNEX);
+  // The intent — what the human actually asked for (finding #5). Right after
+  // the harness binding so every stage knows the run's north star without
+  // interviewing the human for it.
+  const intentBlock = renderIntentBlock(intent ?? {});
+  if (intentBlock) sections.push('', intentBlock);
   // The conductor persona (upstream execution-quality doctrine) — loaded from the
   // pinned runtime snapshot so the quality guidance can't drift from upstream.
   // The annex already declared it authoritative for WORK QUALITY (not mechanics);
@@ -253,6 +278,7 @@ export const materializeStage = async ({
   workspaceDir,
   stage,
   unit = null,
+  intent = null,
   stageBody,
   agentPersona,
   knowledge,
@@ -269,6 +295,14 @@ export const materializeStage = async ({
 
   const mcpConfigPath = await materializeMcpConfig({ workspaceDir, mcpEntry, scope, env });
 
-  const prompt = buildStagePrompt({ stage, unit, stageBody, agentPersona, knowledge, conductor });
+  const prompt = buildStagePrompt({
+    stage,
+    unit,
+    intent,
+    stageBody,
+    agentPersona,
+    knowledge,
+    conductor,
+  });
   return { prompt, mcpConfigPath, rulesPath: rulesDoc ? path.join(aidlcDir, 'rules.md') : null };
 };

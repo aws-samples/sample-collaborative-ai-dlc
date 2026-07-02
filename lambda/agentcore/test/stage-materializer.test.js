@@ -272,3 +272,45 @@ describe('buildMcpConfig — unit lane scope', () => {
     expect(plainCfg.mcpServers.aidlc.env.V2_UNIT_SLUG).toBe('');
   });
 });
+
+// ── Cloud finding #5: the intent must reach the agent ────────────────────────
+
+import { renderIntentBlock } from '../stage-materializer.js';
+
+describe('renderIntentBlock + prompt placement', () => {
+  it('renders title, scope, and the originating request with the precedence note', () => {
+    const block = renderIntentBlock({
+      title: 'Bookstore API',
+      prompt: 'Build a REST API for a bookstore with auth and orders.',
+      scope: 'feature',
+    });
+    expect(block).toContain('## The intent (originating request)');
+    expect(block).toContain('**Bookstore API** (scope: feature)');
+    expect(block).toContain('Build a REST API for a bookstore');
+    expect(block).toContain('take');
+    expect(block).toContain('precedence over this raw request');
+  });
+
+  it('tolerates partial/absent intent (no empty section rendered)', () => {
+    expect(renderIntentBlock({})).toBe('');
+    expect(renderIntentBlock()).toBe('');
+    expect(renderIntentBlock({ title: 'T only' })).toContain('**T only**');
+    expect(renderIntentBlock({ prompt: 'P only' })).toContain('P only');
+  });
+
+  it('buildStagePrompt places the intent right after the annex, before the stage prose', () => {
+    const prompt = buildStagePrompt({
+      stage: stage(),
+      intent: { title: 'Bookstore API', prompt: 'Build it.', scope: 'feature' },
+      stageBody: 'Analyze the intent.',
+    });
+    const annexIdx = prompt.indexOf(MCP_EXECUTION_ANNEX);
+    const intentIdx = prompt.indexOf('## The intent (originating request)');
+    const bodyIdx = prompt.indexOf('## Stage instructions');
+    expect(annexIdx).toBeGreaterThan(-1);
+    expect(intentIdx).toBeGreaterThan(annexIdx);
+    expect(intentIdx).toBeLessThan(bodyIdx);
+    // Absent intent → no section (older callers unchanged).
+    expect(buildStagePrompt({ stage: stage(), stageBody: 'x' })).not.toContain('## The intent');
+  });
+});

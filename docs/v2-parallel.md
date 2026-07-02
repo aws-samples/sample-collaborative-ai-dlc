@@ -664,6 +664,17 @@ MERGED | FAILED | BLOCKED`; `updateUnitState` is CAS'd on `fromStates`
   (`checkout_failed`) when any repo reports `cloned:false` — that fallback
   can only ever mask real breakage, since `git clone` of a genuinely empty
   repository exits 0.
+  **Cloud finding #5 (fixed — NOT a parallel-work regression)**: the intent
+  title/prompt were NEVER delivered to the agent — they rode the init-ws
+  payload since day one but no revision of init-ws ever consumed them, the
+  Intent vertex stores only the title (and `get_intent_graph` returns
+  artifacts, not vertex properties), and no prompt section carried them.
+  Earlier runs masked it because intent-capture interviews the human, who
+  re-typed the intent into the gate answer. Fix: `renderIntentBlock` — the
+  originating request (title + scope + prompt, read fresh from META by
+  run-stage) is injected into every fresh stage prompt right after the MCP
+  annex, labeled as the run's north star with refined artifacts taking
+  precedence.
 
 ---
 

@@ -1829,3 +1829,56 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
     expect(put.unitSlug).toBeNull();
   });
 });
+
+// ── Cloud finding #5: run-stage delivers the intent from META to the prompt ──
+
+describe('runStage — intent delivery (cloud finding #5)', () => {
+  const okSpawn = () => ({
+    on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
+    stdin: { end() {} },
+  });
+
+  it('passes the META title/prompt + run scope into the materializer on a fresh run', async () => {
+    let seen = null;
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      store: spyStore({
+        execution: {
+          executionId: 'e1',
+          title: 'Bookstore API',
+          prompt: 'Build a REST API for a bookstore.',
+        },
+      }),
+      materializeStage: async ({ intent }) => {
+        seen = intent;
+        return { prompt: 'P', mcpConfigPath: '/ws/.aidlc/mcp.json' };
+      },
+    });
+    const res = await runStage(baseArgs, deps);
+    expect(res.ok).toBe(true);
+    expect(seen).toEqual({
+      title: 'Bookstore API',
+      prompt: 'Build a REST API for a bookstore.',
+      scope: 'feature',
+    });
+  });
+
+  it('an unreadable META degrades to scope-only (never blocks the stage)', async () => {
+    let seen = 'unset';
+    const store = spyStore();
+    store.getExecution = async () => {
+      throw new Error('ddb down');
+    };
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      store,
+      materializeStage: async ({ intent }) => {
+        seen = intent;
+        return { prompt: 'P', mcpConfigPath: '/ws/.aidlc/mcp.json' };
+      },
+    });
+    const res = await runStage(baseArgs, deps);
+    expect(res.ok).toBe(true);
+    expect(seen).toEqual({ scope: 'feature' });
+  });
+});

@@ -1014,12 +1014,22 @@ export const runStage = async (
     );
     const rulesDoc = renderRulesDoc(stage, Object.fromEntries(ruleBodyEntries));
 
+    // The intent's originating request (cloud finding #5): title + prompt live
+    // on the META row (snapshotted at intent create) but were never delivered
+    // to the agent — intent-capture had to ASK the human what the intent was.
+    // Read them here (one GetItem, always fresh) and inject the intent block
+    // into every fresh stage prompt.
+    const intentMeta = await store.getExecution(executionId).catch(() => null);
+
     const materialized = await materializeStage({
       workspaceDir,
       stage,
       // Unit lane: the unit-scope block restricts the agent to THIS unit's
       // stories/components (null outside a lane — no block rendered).
       unit,
+      intent: intentMeta
+        ? { title: intentMeta.title, prompt: intentMeta.prompt, scope }
+        : { scope },
       stageBody,
       agentPersona,
       knowledge,
