@@ -66,5 +66,10 @@
     "secretlint": "13.0.2",
     "testcontainers": "^11.0.0",
     "vitest": "^4.1.7"
+  },
+  "overrides": {
+    "@aws/durable-execution-sdk-js-testing": {
+      "@aws/durable-execution-sdk-js": "^2.0.0"
+    }
   }
 }

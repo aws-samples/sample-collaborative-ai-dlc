@@ -325,6 +325,23 @@ resource "aws_iam_role_policy" "agentcore" {
         Action   = ["ssm:GetParameter", "ssm:GetParameters"]
         Resource = var.agent_settings_ssm_arns
       },
+      {
+        # Async stage invocation (docs/v2-parallel.md WP1): the run-stage-start
+        # background job completes/heartbeats the durable callback the
+        # orchestrator suspended on. ARN constructed from naming convention
+        # (module dependency direction forbids passing the function ARN in:
+        # api → agentcore would become a cycle). Mirrors the intents policy.
+        Effect = "Allow"
+        Action = [
+          "lambda:SendDurableExecutionCallbackSuccess",
+          "lambda:SendDurableExecutionCallbackFailure",
+          "lambda:SendDurableExecutionCallbackHeartbeat",
+        ]
+        Resource = [
+          "arn:${local.partition}:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}",
+          "arn:${local.partition}:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}:*",
+        ]
+      },
     ]
   })
 }

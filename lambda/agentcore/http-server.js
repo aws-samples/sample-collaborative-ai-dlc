@@ -14,6 +14,11 @@
 // Invocation payloads:
 //   { "command": "init-ws",  ...initWs args }
 //   { "command": "run-stage", ...runStage args }
+//   { "command": "run-stage-start", ...runStage args, stageCallbackId }
+//     → accepts in ms, runs the stage as a background job, completes the
+//       orchestrator's durable callback on exit (docs/v2-parallel.md WP1).
+//       The busy tracker is held for the job's lifetime so /ping reports
+//       HealthyBusy and AgentCore keeps the session alive while it runs.
 //
 // The dispatcher is pure (handlers injected) so it is unit-tested without a
 // socket; createServer wires the real commands + clients.
@@ -50,6 +55,7 @@ export const dispatchInvocation = async ({
   const handler = {
     'init-ws': handlers.initWs,
     'run-stage': handlers.runStage,
+    'run-stage-start': handlers.runStageStart,
     inspect: handlers.inspect,
     capabilities: handlers.capabilities,
   }[command];
@@ -118,12 +124,19 @@ export const createServer = ({
 
 // Container entry: wire the real commands + clients, then listen on 8080.
 const main = async () => {
-  const { ddb, openGraph, broadcastToIntent } = await import('./clients.js');
+  const {
+    ddb,
+    openGraph,
+    broadcastToIntent,
+    sendStageCallbackSuccess,
+    sendStageCallbackHeartbeat,
+  } = await import('./clients.js');
   const { createRequire } = await import('node:module');
   const require = createRequire(import.meta.url);
   const { createProcessStore } = require('../shared/v2-process-store.js');
   const { initWs } = await import('./commands/init-ws.js');
   const { runStage } = await import('./commands/run-stage.js');
+  const { createRunStageStart } = await import('./commands/run-stage-start.js');
   const { inspect } = await import('./commands/inspect.js');
   const { capabilities } = await import('./commands/capabilities.js');
   const { loadLibrary, loadBlockBody, loadBlockScript, loadConductor } =
@@ -172,8 +185,18 @@ const main = async () => {
     inspect: (p) => inspect(p, { openGraph }),
     capabilities: (p) => capabilities(p, { env: process.env }),
   };
+  // Async stage invocation (WP1): shares the sync handler's whole deps bag; the
+  // background job holds the SAME busy tracker the server uses for /ping, so
+  // the session stays HealthyBusy for the job's lifetime.
+  const busy = createBusyTracker();
+  handlers.runStageStart = createRunStageStart({
+    runStage: (p) => handlers.runStage(p),
+    sendCallbackSuccess: sendStageCallbackSuccess,
+    sendCallbackHeartbeat: sendStageCallbackHeartbeat,
+    busy,
+  });
 
-  const server = createServer({ handlers });
+  const server = createServer({ handlers, busy });
   server.listen(8080, '0.0.0.0', () => console.error('[agentcore] listening on 0.0.0.0:8080'));
 };
 

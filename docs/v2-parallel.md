@@ -13,7 +13,10 @@ Related docs: authoring model in [`v2-building-blocks.md`](./v2-building-blocks.
 execution slice in [`v2-agent.md`](./v2-agent.md), park/resume design in
 [`v2-resume.md`](./v2-resume.md), storage split in [`v2-data-model.md`](./v2-data-model.md).
 
-Status: **planned** (feasibility verified, not yet implemented).
+Status: **in progress** — WP0 complete (PoCs verified on the local durable
+test runner, see `lambda/v2-orchestrator/test/poc/`); WP1 code-complete
+(async run-stage via durable callback — its >15-min cloud exit criterion is
+still to be proven on a deployed stack before WP5); WP2+ not yet started.
 
 ---
 
@@ -190,6 +193,18 @@ off _after_ the merge.
    barriers (`for (batch of computeBatches(dag)) await ctx.map(batch, lane)`)
    or true wavefront (lanes await their dependency lanes' DurablePromises);
    PoC proves the latter, the former is the fallback.
+   **WP0 executed finding (PoC a)**: branches/child contexts that COMPLETED
+   before a suspend are **not re-executed on replay** — their DurablePromise
+   resolves from checkpointed history. A wavefront built on plain in-handler
+   deferreds therefore deadlocks after the first suspend/resume cycle; the
+   replay-safe shape is one `ctx.runInChildContext` per lane whose dependents
+   await the lane DurablePromises directly (proved with human-gate callbacks
+   inside lanes, exactly-once stage steps across replays, and FAILED →
+   dependents BLOCKED isolation). Note for WP5: the wavefront shape has no
+   built-in `maxConcurrency` (that belongs to `ctx.map`/`ctx.parallel`);
+   `maxParallelUnits` needs an app-level semaphore or the batch-barrier
+   fallback — replayed lanes never re-execute their bodies, so completed
+   lanes never re-contend for permits.
 2. **CRITICAL prerequisite — async stage invocation.** Today `run-stage` is a
    _synchronous_ durable step (`lambda/v2-orchestrator/index.js` `runStage`),
    but the orchestrator Lambda timeout is 900s
@@ -225,9 +240,21 @@ off _after_ the merge.
 5. **Local PoC without AWS**: `@aws/durable-execution-sdk-js-testing@1.1.1`
    (in-process local runner with real replay/suspend semantics — the existing
    orchestrator tests use a fake ctx that does _not_ exercise replay).
+   **WP0 executed**: installed as a devDependency of `lambda/v2-orchestrator`
+   with a root npm `overrides` entry pinning its peer
+   `@aws/durable-execution-sdk-js` to `^2.0.0` (upstream peer range is stale
+   at `^1.0.1`); compatibility with 2.0.0 is proven by the PoC suites
+   themselves, which run in CI (`lambda/v2-orchestrator/test/poc/`). Two
+   local-runner behaviors found while proving PoC (c)/(d): the runner cannot
+   interrupt an in-flight step (in-process limitation — interruption is
+   demonstrated via the retry path instead), and callback heartbeats are
+   rejected unless the callback was created with a `heartbeatTimeout`
+   (production run-stage callbacks should set
+   `timeout ≈ 8h` + `heartbeatTimeout` for dead-container detection).
 6. **Residual unknown**: durable execution operation-count / payload quotas
-   under N lanes × stages checkpoints — verify via the quotas console / cloud
-   runner early in WP0/WP1.
+   under N lanes × stages checkpoints — not verifiable on the local runner;
+   still open after WP0, verify via the quotas console / cloud runner early
+   in WP1.
 
 ---
 
@@ -250,15 +277,54 @@ failure points — these are preconditions, not preferences):
 
 Work packages:
 
-- **WP0 — PoCs (local)**: this document; then four PoCs on the local test
-  runner: (a) wavefront with cross-branch dependency awaits vs batch barriers,
-  (b) multi-callback park + out-of-order resume, (c) interrupted-step
-  demonstration (documents why sync run-stage must go), (d) async-stage
-  lifecycle (start step → background → callback → merge step) across replays.
-- **WP1 — Async stage invocation**: callback-based `run-stage` (finding B2);
-  container-side background job + callback completion + IAM; per-stage
-  `callbackId` persisted on the STAGE row. Exit criterion: a >15-min stage
-  completes through the callback path in the sequential flow (gate for WP5).
+- **WP0 — PoCs (local)** ✅ **done**: this document; four PoC suites on the
+  local test runner, kept permanently under
+  `lambda/v2-orchestrator/test/poc/` as executable documentation:
+  (a) `poc-a-wavefront.test.js` — batch barriers vs true wavefront over the
+  real `parseBoltDag` output, including the replay-semantics finding (B1) and
+  FAILED → BLOCKED lane isolation; (b) `poc-b-multi-callback.test.js` —
+  N concurrent human-gate callbacks, out-of-order resume, per-lane answer
+  attribution, gate cancellation isolation; (c)
+  `poc-c-interrupted-step.test.js` — why sync run-stage must go (at-least-once
+  step bodies re-run the whole stage; AtMostOncePerRetry fails it instead;
+  the callback shape suspends at zero compute); (d)
+  `poc-d-async-stage.test.js` — full async-stage lifecycle
+  (createCallback → dispatch step → suspend → container callback → finalize
+  step) across replays, exactly-once dispatch per attempt, out-of-order job
+  completion, container-reported failure → fresh-callback retry, heartbeats.
+- **WP1 — Async stage invocation** 🔨 **code-complete** (cloud exit criterion
+  pending): callback-based run-stage (finding B2), implemented as:
+  - orchestrator (`lambda/v2-orchestrator/index.js` `runStage`): per stage
+    attempt `ctx.createCallback('stage-cb-<stageId>[-resume-<gate>]', {
+timeout: 8h, heartbeatTimeout: 15m })` → short `run-stage-start` dispatch
+    step → suspend on the callback for the verdict. **Verified pitfall**:
+    `createCallback`'s default serdes is PASS-THROUGH (steps use JSON) — the
+    orchestrator JSON-decodes the callback body defensively
+    (`stage_bad_callback_result` on garbage). Callback rejection (timeout /
+    heartbeat expiry = dead container) → `stage_callback_failed`; dispatch
+    refusal → accept-time stage failure. One uniform decode path over
+    `result.state` (the container always sends a state).
+  - container (`lambda/agentcore/commands/run-stage-start.js`): validates,
+    guards duplicates (same attempt + same callbackId → idempotent accept for
+    dispatch-step retries; different callbackId → `job_already_running`), runs
+    the untouched `runStage` as a background job holding the /ping busy
+    tracker (HealthyBusy keeps the session alive), heartbeats every 60s,
+    and ALWAYS completes the callback — success, ok:false failures, and
+    crashes (`stage_job_crashed`) — via
+    `lambda/agentcore/clients.js` `sendStageCallbackSuccess` (5-attempt
+    backoff; orchestrator heartbeatTimeout is the final backstop).
+  - `stageCallbackId` persisted on the STAGE row (`buildStageRow` /
+    run-stage putStage) for traceability + manual operator recovery.
+  - IAM: agentcore task role gets `lambda:SendDurableExecutionCallback{Success,
+Failure,Heartbeat}` on the orchestrator function (ARN by naming convention
+    — module dependency direction forbids passing it in).
+  - tests: `lambda/agentcore/test/run-stage-start.test.js` (background-job
+    lifecycle), reworked `orchestrator.test.js` (fake ctx models the callback
+    seam), and `orchestrator-replay.test.js` — the REAL handler on the local
+    durable runner: park → out-of-band gate answer → resume → succeed,
+    FAILED verdict, cancel sentinel; exactly-once side effects across replays.
+  - **Exit criterion (open)**: a stage **longer than 15 minutes** completed
+    through the callback path on a deployed stack — required before WP5.
 - **WP2 — Deterministic git layer**: `lambda/agentcore/git-engine.js` —
   engine-owned branch/commit/push on every stage exit, credential scrubbing,
   port of v1 `pushBranchWithRetry` semantics (retry + backoff + remote-HEAD
@@ -329,6 +395,11 @@ Work packages:
   DAG (per-unit construction lanes).
 - **Blocking granularity**: lane-level. A unit starts only when all
   `depends_on` lanes are fully MERGED.
+- **Wavefront mechanism** (WP0 verified): one `ctx.runInChildContext` per
+  lane; dependents await their dependency lanes' DurablePromises. Plain
+  in-handler deferreds are forbidden — completed lanes do not re-execute on
+  replay, so deferreds never re-resolve (proven in PoC a). Batch barriers
+  via `ctx.map` remain the fallback and the natural `maxParallelUnits` shape.
 - **Scheduling source**: the unit DAG only. `bolt-plan` stays prose and is never
   parsed for execution.
 - **Custom workflows**: N parallel sections handled generically (structural

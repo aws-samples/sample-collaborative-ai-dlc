@@ -1,11 +1,19 @@
 // V2 orchestrator — the durable function that drives one intent end to end.
 //
 // Triggered (async Invoke) by lambda/intents on Start. It runs the intent's
-// stages as a SEQUENTIAL durable execution: init-ws once, then each stage's
-// run-stage in `plan.order`, parking on human gates via durable callbacks. The
-// AWS Durable Execution SDK checkpoints each step (so a replay never re-invokes
-// a completed run-stage) and suspends at `createCallback` at zero compute until
-// the gate is answered (lambda/intents sends SendDurableExecutionCallbackSuccess).
+// stages as a SEQUENTIAL durable execution: init-ws once, then each stage in
+// `plan.order` via ASYNC invocation (docs/v2-parallel.md WP1): a durable
+// callback is created per stage attempt, `run-stage-start` dispatches the stage
+// as a background job in the AgentCore container (returns in ms), and the
+// execution suspends at zero compute until the container completes the callback
+// with the stage verdict. Human gates park the run on their own callbacks
+// (lambda/intents sends SendDurableExecutionCallbackSuccess).
+//
+// The async path exists because a stage regularly outlives both the
+// orchestrator Lambda timeout (900s) and AgentCore's hard 15-minute synchronous
+// request window — a synchronous run-stage step would re-execute the whole
+// agent stage on re-drive (RETRY_INTERRUPTED_STEP). Proven in
+// test/poc/poc-c-interrupted-step.test.js / poc-d-async-stage.test.js.
 //
 // REPLAY DISCIPLINE: every side effect (agent invokes, all store writes, the
 // git-token read) MUST be inside ctx.step(...) or it re-executes on replay.
@@ -459,9 +467,26 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
   }
 };
 
-// One run-stage invoke, wrapped as a durable step keyed by stage + mode so a
-// replay reuses the result rather than re-invoking the agent.
-const runStage = (
+// One async stage attempt (docs/v2-parallel.md WP1):
+//   1. create a durable callback for the stage verdict (named per attempt so a
+//      resume leg is a fresh durable identity),
+//   2. dispatch `run-stage-start` to the container in a short durable step —
+//      the container runs the stage as a background job and holds HealthyBusy,
+//   3. suspend at zero compute until the container completes the callback with
+//      the run-stage return contract (state always present — the container
+//      normalizes), or the callback times out / stops being heartbeaten.
+//
+// Every outcome is returned as a value (never thrown): the stage loop has one
+// decode path over `result.state`.
+//
+// Callback guards: `timeout` matches AgentCore's 8h async-job ceiling — a
+// stage cannot legitimately outlive it. `heartbeatTimeout` is the
+// dead-container detector: the background job beats every ~60s, so a container
+// that dies mid-stage surfaces here in minutes instead of hours.
+const STAGE_CALLBACK_TIMEOUT = { hours: 8 };
+const STAGE_CALLBACK_HEARTBEAT_TIMEOUT = { minutes: 15 };
+
+const runStage = async (
   ctx,
   invokeRuntime,
   {
@@ -476,11 +501,17 @@ const runStage = (
     cloneInputs,
     resumeFrom,
   },
-) =>
-  ctx.step(`run-${stage.stageId}${resumeFrom ? `-resume-${resumeFrom}` : ''}`, () =>
+) => {
+  const attemptKey = `${stage.stageId}${resumeFrom ? `-resume-${resumeFrom}` : ''}`;
+  const [stageDone, stageCallbackId] = await ctx.createCallback(`stage-cb-${attemptKey}`, {
+    timeout: STAGE_CALLBACK_TIMEOUT,
+    heartbeatTimeout: STAGE_CALLBACK_HEARTBEAT_TIMEOUT,
+  });
+
+  const dispatch = await ctx.step(`run-${attemptKey}`, () =>
     invokeRuntime(
       {
-        command: 'run-stage',
+        command: 'run-stage-start',
         ...ids,
         stageId: stage.stageId,
         workflowId,
@@ -491,10 +522,52 @@ const runStage = (
         // repos/branch/baseBranch/gitToken/gitProvider — for source self-heal.
         ...cloneInputs,
         resumeFrom: resumeFrom ?? null,
+        stageCallbackId,
       },
       sessionId,
     ),
   );
+  // The accept response only says "job started" — a refusal (unknown command on
+  // an old container, duplicate job, missing fields) fails the stage HERE; the
+  // verdict for an accepted job always travels through the callback.
+  if (!dispatch || dispatch.ok === false || dispatch.error) {
+    return {
+      ok: false,
+      state: 'FAILED',
+      reason: dispatch?.reason ?? 'stage_dispatch_failed',
+      detail: dispatch?.detail ?? dispatch?.error ?? null,
+    };
+  }
+
+  try {
+    // createCallback's default serdes is PASS-THROUGH (unlike steps): the
+    // container's SendDurableExecutionCallbackSuccess body arrives as the raw
+    // JSON string. Decode defensively — a malformed body is a stage failure,
+    // not an orchestrator crash.
+    const raw = await stageDone;
+    const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (!result || typeof result !== 'object') {
+      return { ok: false, state: 'FAILED', reason: 'stage_bad_callback_result' };
+    }
+    return result;
+  } catch (err) {
+    if (err instanceof SyntaxError) {
+      return {
+        ok: false,
+        state: 'FAILED',
+        reason: 'stage_bad_callback_result',
+        detail: err.message,
+      };
+    }
+    // Callback timeout / heartbeat expiry (dead container) / explicit failure.
+    return {
+      ok: false,
+      state: 'FAILED',
+      reason: 'stage_callback_failed',
+      detail: err?.message ?? String(err),
+    };
+  }
+};
 
 const nowIso = () => new Date().toISOString();
 

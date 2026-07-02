@@ -18,5 +18,8 @@
     "@aws-sdk/client-ssm": "^3.1060.0",
     "@aws-sdk/lib-dynamodb": "^3.1060.0",
     "@aws/durable-execution-sdk-js": "^2.0.0"
+  },
+  "devDependencies": {
+    "@aws/durable-execution-sdk-js-testing": "^1.1.1"
   }
 }

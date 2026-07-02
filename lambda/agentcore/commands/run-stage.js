@@ -572,6 +572,11 @@ export const runStage = async (
     // human's answer to `resumeFrom` (a humanTaskId) instead of running fresh. The
     // session's persistent /mnt/workspace mount restores the checkout + CLI store.
     resumeFrom = null,
+    // Async invocation (run-stage-start): the durable callback id the orchestrator
+    // is suspended on for this stage attempt. Stamped on the STAGE row for
+    // traceability/operator recovery; the callback itself is completed by
+    // run-stage-start's background job, not here. Null on the legacy sync path.
+    stageCallbackId = null,
   },
   deps,
 ) => {
@@ -822,6 +827,7 @@ export const runStage = async (
     cli,
     cliSessionId,
     resolvedModel: model,
+    stageCallbackId,
   });
   await store.updateExecution({
     executionId,

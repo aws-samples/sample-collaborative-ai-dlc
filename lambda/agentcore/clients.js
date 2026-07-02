@@ -11,6 +11,11 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { S3Client } from '@aws-sdk/client-s3';
 import {
+  LambdaClient,
+  SendDurableExecutionCallbackSuccessCommand,
+  SendDurableExecutionCallbackHeartbeatCommand,
+} from '@aws-sdk/client-lambda';
+import {
   ApiGatewayManagementApiClient,
   PostToConnectionCommand,
 } from '@aws-sdk/client-apigatewaymanagementapi';
@@ -21,6 +26,53 @@ const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 
 export const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 export const s3 = new S3Client({});
+const lambda = new LambdaClient({});
+
+// Complete the durable callback the orchestrator suspended on for an async
+// stage (docs/v2-parallel.md WP1). The result object is the run-stage return
+// contract, JSON-serialized to match the SDK's default (JSON) serdes. Retries
+// with backoff: this send is the ONLY thing that un-suspends the orchestrator,
+// so a transient Lambda-API failure must not orphan the run (the orchestrator's
+// callback heartbeatTimeout is the final backstop if we truly cannot deliver).
+export const sendStageCallbackSuccess = async (
+  callbackId,
+  result,
+  { attempts = 5, baseDelayMs = 1000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {},
+) => {
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await lambda.send(
+        new SendDurableExecutionCallbackSuccessCommand({
+          CallbackId: callbackId,
+          Result: Buffer.from(JSON.stringify(result ?? null)),
+        }),
+      );
+      return { delivered: true };
+    } catch (err) {
+      lastErr = err;
+      console.error(
+        `[agentcore] stage callback send failed (attempt ${i + 1}/${attempts}):`,
+        err.message,
+      );
+      if (i < attempts - 1) await sleep(baseDelayMs * 2 ** i);
+    }
+  }
+  return { delivered: false, error: lastErr?.message };
+};
+
+// Heartbeat the stage callback while the background job runs, so the
+// orchestrator's heartbeatTimeout can distinguish "long stage" from "dead
+// container". Best-effort: a missed beat is only fatal if they ALL stop.
+export const sendStageCallbackHeartbeat = async (callbackId) => {
+  try {
+    await lambda.send(new SendDurableExecutionCallbackHeartbeatCommand({ CallbackId: callbackId }));
+    return { delivered: true };
+  } catch (err) {
+    console.error('[agentcore] stage callback heartbeat failed:', err.message);
+    return { delivered: false, error: err.message };
+  }
+};
 
 let _conn = null;
 

@@ -215,6 +215,12 @@ const buildStageRow = ({
   // by joining on stageInstanceId — the untrusted agent bag carries no model. See
   // model-pricing.js and docs/v2-metrics.md.
   resolvedModel = null,
+  // The durable-execution callback id the orchestrator is suspended on for this
+  // stage attempt (async run-stage, docs/v2-parallel.md WP1). The container's
+  // background job completes it via SendDurableExecutionCallbackSuccess when the
+  // stage exits. Persisted for traceability + manual operator recovery of a
+  // stuck stage. Null for rows written outside the async path.
+  stageCallbackId = null,
   now,
 }) => ({
   ...stageKey(executionId, stageInstanceId),
@@ -230,6 +236,7 @@ const buildStageRow = ({
   cli,
   cliSessionId,
   resolvedModel,
+  stageCallbackId,
   runtimeError: null,
   startedAt: state === 'RUNNING' ? now : null,
   completedAt: null,
