@@ -38,7 +38,11 @@ export function GitRepoLink({
   );
 
   if (noLink) {
-    return <span className={cn('inline-flex items-center gap-1', className)}>{content}</span>;
+    return (
+      <span className={cn('inline-flex min-w-0 max-w-full items-center gap-1', className)}>
+        {content}
+      </span>
+    );
   }
 
   return (
@@ -46,7 +50,7 @@ export function GitRepoLink({
       href={href}
       target="_blank"
       rel="noopener noreferrer"
-      className={cn('inline-flex items-center gap-1 hover:underline', className)}
+      className={cn('inline-flex min-w-0 max-w-full items-center gap-1 hover:underline', className)}
       onClick={(e) => e.stopPropagation()}
     >
       {content}
