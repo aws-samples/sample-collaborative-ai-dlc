@@ -142,22 +142,73 @@ describe('IntentContext', () => {
     expect(screen.getByTestId('out')).toHaveTextContent('intent=init-ws log');
   });
 
-  it('refetches the detail on agent.note — the realtime path for artifact creation', async () => {
+  it('refetches the detail on agent.note — debounced (the realtime path for artifact creation)', async () => {
     // create_artifact broadcasts a v2.artifact.created note (agent.note); the
     // provider must refetch so the new artifact renders without waiting for
-    // the 8s poll backstop.
-    get.mockResolvedValue(detail());
-    renderProvider();
-    await screen.findByTestId('rows');
-    const callsAfterMount = get.mock.calls.length;
-
-    await act(async () => {
-      capturedOnEvent?.({
-        action: 'agent.note',
-        noteType: 'v2.artifact.created',
-        summary: 'Artifact created: Auth design',
+    // the 8s poll backstop. WP7: the refetch is DEBOUNCED (250ms trailing) so
+    // lane event bursts coalesce.
+    vi.useFakeTimers();
+    try {
+      get.mockResolvedValue(detail());
+      renderProvider();
+      await act(async () => {
+        await vi.runOnlyPendingTimersAsync();
       });
+      const callsAfterMount = get.mock.calls.length;
+
+      await act(async () => {
+        capturedOnEvent?.({
+          action: 'agent.note',
+          noteType: 'v2.artifact.created',
+          summary: 'Artifact created: Auth design',
+        });
+        await vi.advanceTimersByTimeAsync(300);
+      });
+      expect(get.mock.calls.length).toBe(callsAfterMount + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('coalesces a burst of lane events into ONE refetch (WP7 debounce)', async () => {
+    vi.useFakeTimers();
+    try {
+      get.mockResolvedValue(detail());
+      renderProvider();
+      await act(async () => {
+        await vi.runOnlyPendingTimersAsync();
+      });
+      const callsAfterMount = get.mock.calls.length;
+
+      await act(async () => {
+        // N parallel lanes each emitting stage/unit/metric transitions.
+        for (let i = 0; i < 12; i++) {
+          capturedOnEvent?.({ action: 'agent.stage', stageId: 'cg', unitSlug: `u${i}` });
+          capturedOnEvent?.({ action: 'agent.unit', unitSlug: `u${i}`, state: 'RUNNING' });
+        }
+        await vi.advanceTimersByTimeAsync(300);
+      });
+      expect(get.mock.calls.length).toBe(callsAfterMount + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('renders ONE row PER UNIT INSTANCE of a fan-out stage (WP7 re-key)', async () => {
+    get.mockResolvedValue({
+      ...detail(),
+      stages: [
+        // Two unit instances of the same plan stage — the old stageId-keyed
+        // Map silently dropped one of these.
+        { stageInstanceId: 'si-cg-auth', stageId: 'cg', state: 'SUCCEEDED', unitSlug: 'auth' },
+        { stageInstanceId: 'si-cg-billing', stageId: 'cg', state: 'RUNNING', unitSlug: 'billing' },
+      ],
     });
-    expect(get.mock.calls.length).toBe(callsAfterMount + 1);
+    compiled.mockResolvedValue({
+      scopeGrid: { feature: { cg: 'EXECUTE' } },
+      graph: { nodes: [{ stageId: 'cg', phasePath: 'construction', order: 0 }], edges: [] },
+    });
+    renderProvider();
+    expect(await screen.findByTestId('rows')).toHaveTextContent('cg:SUCCEEDED,cg:RUNNING');
   });
 });

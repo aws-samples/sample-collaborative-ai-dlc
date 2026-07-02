@@ -291,3 +291,171 @@ describe('IntentView', () => {
     expect(screen.getByText('Influenced artifacts:')).toBeInTheDocument();
   });
 });
+
+// ── WP7: engine approval gates + the unit lane board ─────────────────────────
+
+describe('IntentView — WP7 construction UI', () => {
+  beforeEach(() => {
+    get.mockReset();
+    start.mockReset();
+    answerGate.mockReset();
+    compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
+  });
+
+  it('renders an engine approval gate with its options and submits { decision } answers', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'eg-halt-s1-r0-run1' }),
+      gates: [
+        {
+          humanTaskId: 'eg-halt-s1-r0-run1',
+          stageInstanceId: null,
+          unitSlug: 'billing',
+          kind: 'approval',
+          status: 'pending',
+          prompt: 'Lane failure in section 1 (1 unit(s) failed). Choose:',
+          options: ['retry', 'skip', 'abort'],
+          questions: null,
+          answer: null,
+          answeredBy: null,
+          answeredAt: null,
+          createdAt: null,
+        },
+      ],
+    });
+    answerGate.mockResolvedValue({});
+    renderAt();
+    // Prompt + lane attribution + every option rendered.
+    expect(await screen.findByText(/Lane failure in section 1/)).toBeInTheDocument();
+    expect(screen.getByText('unit billing')).toBeInTheDocument();
+    const retry = screen.getByRole('button', { name: 'retry' });
+    expect(screen.getByRole('button', { name: 'skip' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'abort' })).toBeInTheDocument();
+    // Clicking an option submits the { decision } shape the orchestrator parses.
+    await userEvent.click(retry);
+    expect(answerGate).toHaveBeenCalledWith(
+      'p1',
+      'i1',
+      'eg-halt-s1-r0-run1',
+      expect.objectContaining({ answer: { decision: 'retry' }, status: 'answered' }),
+    );
+  });
+
+  it('maps approve/reject options to approved/rejected statuses', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'eg-skeleton-s1-run1' }),
+      gates: [
+        {
+          humanTaskId: 'eg-skeleton-s1-run1',
+          stageInstanceId: null,
+          unitSlug: null,
+          kind: 'approval',
+          status: 'pending',
+          prompt: 'Walking skeleton "auth" completed.',
+          options: ['approve', 'reject'],
+          questions: null,
+          answer: null,
+          answeredBy: null,
+          answeredAt: null,
+          createdAt: null,
+        },
+      ],
+    });
+    answerGate.mockResolvedValue({});
+    renderAt();
+    await userEvent.click(await screen.findByRole('button', { name: 'reject' }));
+    expect(answerGate).toHaveBeenCalledWith(
+      'p1',
+      'i1',
+      'eg-skeleton-s1-run1',
+      expect.objectContaining({ status: 'rejected' }),
+    );
+  });
+
+  it('shows the Lanes view when units exist: waves, skeleton marker, states, stage strips', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'RUNNING' }),
+      stages: [
+        {
+          stageInstanceId: 'si-cg-auth',
+          stageId: 'cg',
+          state: 'SUCCEEDED',
+          unitSlug: 'auth',
+          phase: 'c',
+        },
+        {
+          stageInstanceId: 'si-cg-billing',
+          stageId: 'cg',
+          state: 'RUNNING',
+          unitSlug: 'billing',
+          phase: 'c',
+        },
+      ],
+      unitPlan: {
+        units: [
+          { slug: 'auth', dependsOn: [] },
+          { slug: 'billing', dependsOn: ['auth'] },
+        ],
+        batches: [['auth'], ['billing']],
+        unitCount: 2,
+        skipMatrix: {},
+        walkingSkeleton: 'auth',
+        autonomyMode: 'autonomous',
+        promotedAt: 'T',
+      },
+      units: [
+        {
+          slug: 'auth',
+          dependsOn: [],
+          state: 'MERGED',
+          batchIndex: 0,
+          branch: 'aidlc/i1--s1-unit-auth',
+          startedAt: 'T',
+          mergedAt: 'T2',
+          failureReason: null,
+          blockedOn: null,
+          updatedAt: 'T2',
+        },
+        {
+          slug: 'billing',
+          dependsOn: ['auth'],
+          state: 'RUNNING',
+          batchIndex: 1,
+          branch: 'aidlc/i1--s1-unit-billing',
+          startedAt: 'T2',
+          mergedAt: null,
+          failureReason: null,
+          blockedOn: null,
+          updatedAt: 'T3',
+        },
+      ],
+    });
+    compiled.mockResolvedValue({
+      scopeGrid: { feature: { cg: 'EXECUTE' } },
+      graph: { nodes: [{ stageId: 'cg', phasePath: 'c', order: 0 }], edges: [] },
+    });
+    renderAt();
+    // The Lanes toggle appears only when units exist.
+    const lanesToggle = await screen.findByRole('radio', { name: /unit lanes view/i });
+    await userEvent.click(lanesToggle);
+    // Waves + lane rows + skeleton marker + merged counter + autonomy mode.
+    expect(screen.getByText('Wave 1')).toBeInTheDocument();
+    expect(screen.getByText('Wave 2')).toBeInTheDocument();
+    expect(screen.getByText('auth')).toBeInTheDocument();
+    expect(screen.getByText('billing')).toBeInTheDocument();
+    expect(screen.getByText('skeleton')).toBeInTheDocument();
+    expect(screen.getByText(/1\/2 unit\(s\) merged/)).toBeInTheDocument();
+    expect(screen.getByText(/autonomous mode/)).toBeInTheDocument();
+    // Lane states + dependency chip + per-lane stage strip chips.
+    expect(screen.getByText('Merged')).toBeInTheDocument();
+    expect(screen.getByText('Running')).toBeInTheDocument();
+    expect(screen.getByText('← auth')).toBeInTheDocument();
+    expect(screen.getAllByTitle(/cg — /)).toHaveLength(2);
+  });
+
+  it('does NOT offer the Lanes view before units are promoted', async () => {
+    get.mockResolvedValue(baseDetail({ status: 'RUNNING' }));
+    renderAt();
+    await screen.findByText('Stages');
+    expect(screen.queryByRole('radio', { name: /unit lanes view/i })).not.toBeInTheDocument();
+  });
+});

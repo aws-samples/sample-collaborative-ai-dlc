@@ -32,4 +32,12 @@ describe('projectsService v2 create/update payloads', () => {
     await projectsService.update('p1', { parkReleaseSeconds: 300 });
     expect(put).toHaveBeenCalledWith('/projects/p1', { parkReleaseSeconds: 300 });
   });
+
+  it('update can set maxParallelUnits + prStrategy (WP5/WP6 settings)', async () => {
+    await projectsService.update('p1', { maxParallelUnits: 3, prStrategy: 'intent-pr' });
+    expect(put).toHaveBeenCalledWith('/projects/p1', {
+      maxParallelUnits: 3,
+      prStrategy: 'intent-pr',
+    });
+  });
 });

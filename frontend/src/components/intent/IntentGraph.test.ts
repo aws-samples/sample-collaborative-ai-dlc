@@ -81,3 +81,60 @@ describe('layerStages (topological pipeline layout)', () => {
     expect(ids(layerStages([row('a', 0)], edges))).toEqual([['a']]);
   });
 });
+
+// ── WP7: fan-out instance aggregation (one graph node per plan stage) ────────
+
+import { aggregateStageRows } from './IntentGraph';
+
+const inst = (stageId: string, unitSlug: string | null, state: string, order = 0) => ({
+  stageId,
+  phase: null,
+  state: state as never,
+  stageInstanceId: unitSlug ? `si-${stageId}-${unitSlug}` : `si-${stageId}`,
+  unitSlug,
+  runtimeError: null,
+  startedAt: null,
+  completedAt: null,
+  attempt: 0,
+  cli: null,
+  order,
+  planned: true,
+});
+
+describe('aggregateStageRows', () => {
+  it('passes single-instance stages through with instances=1', () => {
+    const out = aggregateStageRows([inst('a', null, 'SUCCEEDED')]);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ stageId: 'a', state: 'SUCCEEDED', instances: 1 });
+  });
+
+  it('collapses fan-out instances into one node with the most attention-worthy state', () => {
+    // FAILED wins over everything.
+    expect(
+      aggregateStageRows([
+        inst('cg', 'a', 'SUCCEEDED'),
+        inst('cg', 'b', 'FAILED'),
+        inst('cg', 'c', 'RUNNING'),
+      ])[0],
+    ).toMatchObject({ stageId: 'cg', state: 'FAILED', instances: 3, unitSlug: null });
+    // WAITING beats RUNNING.
+    expect(
+      aggregateStageRows([inst('cg', 'a', 'RUNNING'), inst('cg', 'b', 'WAITING_FOR_HUMAN')])[0]
+        .state,
+    ).toBe('WAITING_FOR_HUMAN');
+  });
+
+  it('mixed done/pending with nothing running reads as an in-flight fan-out (RUNNING)', () => {
+    const out = aggregateStageRows([inst('cg', 'a', 'SUCCEEDED'), inst('cg', 'b', 'PENDING')]);
+    expect(out[0].state).toBe('RUNNING');
+  });
+
+  it('all-terminal instances (SUCCEEDED/SKIPPED) read as done; all-pending as pending', () => {
+    expect(
+      aggregateStageRows([inst('cg', 'a', 'SUCCEEDED'), inst('cg', 'b', 'SKIPPED')])[0].state,
+    ).toBe('SUCCEEDED');
+    expect(
+      aggregateStageRows([inst('cg', 'a', 'PENDING'), inst('cg', 'b', 'PENDING')])[0].state,
+    ).toBe('PENDING');
+  });
+});

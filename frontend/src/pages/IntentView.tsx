@@ -14,6 +14,7 @@ import type { Question } from '@/services/questions';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { IntentStageList } from '@/components/intent/IntentStageList';
 import { IntentGraph } from '@/components/intent/IntentGraph';
+import { UnitLaneBoard } from '@/components/intent/UnitLaneBoard';
 import { KnowledgeGraph } from '@/components/intent/KnowledgeGraph';
 import { ArtifactViewer } from '@/components/intent/ArtifactViewer';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -33,7 +34,7 @@ import {
 import { cn } from '@/lib/utils';
 import { aggregateMetrics, summarizeCost } from '@/lib/metricAggregation';
 import { UsageMetrics } from '@/components/intent/UsageMetrics';
-import { Compass, List, Loader2, Play, Workflow, XCircle } from 'lucide-react';
+import { Columns3, Compass, List, Loader2, Play, Workflow, XCircle } from 'lucide-react';
 
 // The v2 intent page — main-pane content only. All fetch/realtime/output state
 // lives in IntentProvider (mounted by AppShell, shared with the right-hand
@@ -47,6 +48,7 @@ export default function IntentView() {
     error: loadError,
     gates,
     pendingGates,
+    units,
     reload,
     answerGate,
     cancelIntent,
@@ -58,7 +60,7 @@ export default function IntentView() {
   const [starting, setStarting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [view, setView] = useState<'list' | 'graph'>('list');
+  const [view, setView] = useState<'list' | 'graph' | 'lanes'>('list');
 
   // Start (DRAFT) and restart (FAILED / stranded CREATED) share the /start
   // endpoint, which re-enters the pipeline and clears a prior failureReason.
@@ -325,7 +327,7 @@ export default function IntentView() {
                 <ToggleGroup
                   type="single"
                   value={view}
-                  onValueChange={(v) => v && setView(v as 'list' | 'graph')}
+                  onValueChange={(v) => v && setView(v as 'list' | 'graph' | 'lanes')}
                   className="h-7"
                 >
                   <ToggleGroupItem value="list" aria-label="List view" className="h-7 gap-1 px-2">
@@ -336,10 +338,24 @@ export default function IntentView() {
                     <Workflow className="h-3.5 w-3.5" />
                     <span className="text-xs">Graph</span>
                   </ToggleGroupItem>
+                  {units.length > 0 && (
+                    <ToggleGroupItem
+                      value="lanes"
+                      aria-label="Unit lanes view"
+                      className="h-7 gap-1 px-2"
+                    >
+                      <Columns3 className="h-3.5 w-3.5" />
+                      <span className="text-xs">Lanes</span>
+                    </ToggleGroupItem>
+                  )}
                 </ToggleGroup>
               </div>
             </CardHeader>
-            <CardContent>{view === 'list' ? <IntentStageList /> : <IntentGraph />}</CardContent>
+            <CardContent>
+              {view === 'list' && <IntentStageList />}
+              {view === 'graph' && <IntentGraph />}
+              {view === 'lanes' && <UnitLaneBoard />}
+            </CardContent>
           </Card>
 
           {/* Knowledge graph — the Neptune subgraph the agents traverse:
@@ -496,6 +512,12 @@ function SteeringCard({ steer }: { steer: IntentSteering }) {
 // review-verdict gates render prompt + options. NOTE: the runtime currently
 // only emits `question` gates — the other branches are forward-compat for the
 // schema-valid kinds (lambda/shared/v2-process-keys.js HUMAN_TASK_KINDS).
+// Engine-gate option → answer status (WP5 construction gates): reject-flavored
+// options retire the gate as 'rejected'; approve-flavored as 'approved'; the
+// rest (retry/skip/abort/autonomous/gated) are plain answers.
+const engineGateStatusFor = (opt: string): GateAnswer['status'] =>
+  /^reject/i.test(opt) ? 'rejected' : /^approve/i.test(opt) ? 'approved' : 'answered';
+
 function GateCard({
   gate,
   isActiveGate,
@@ -581,18 +603,47 @@ function GateCard({
   }
 
   if (!question) {
-    // A non-structured gate (approval): fall back to a simple prompt.
+    // A non-structured gate — the engine's construction gates (fan-out /
+    // walking-skeleton / autonomy ladder / batch / halt-and-ask,
+    // docs/v2-parallel.md WP5) arrive as kind 'approval' with a prompt and an
+    // options array; each option submits `{ decision }` (the shape the
+    // orchestrator's parseChoice consumes). Reject-flavored options retire
+    // the gate as 'rejected'; approve-flavored as 'approved'.
+    const options = Array.isArray(gate.options)
+      ? gate.options.filter((o): o is string => typeof o === 'string')
+      : [];
     return (
       <Card className={cn(isActiveGate && 'border-agent-waiting/40')}>
-        <CardContent className="py-3">
-          <p className="text-sm">{gate.prompt || 'Approval required'}</p>
-          <Button
-            size="sm"
-            className="mt-2"
-            onClick={() => onAnswer(gate, { answer: { approved: true }, status: 'approved' })}
-          >
-            Approve
-          </Button>
+        <CardContent className="space-y-2 py-3">
+          {gate.unitSlug && (
+            <Badge variant="outline" className="px-1.5 py-0 text-[9px] font-normal">
+              unit {gate.unitSlug}
+            </Badge>
+          )}
+          <p className="whitespace-pre-line text-sm">{gate.prompt || 'Approval required'}</p>
+          <div className="flex flex-wrap gap-2">
+            {options.length > 0 ? (
+              options.map((opt) => (
+                <Button
+                  key={opt}
+                  size="sm"
+                  variant={engineGateStatusFor(opt) === 'rejected' ? 'outline' : 'default'}
+                  onClick={() =>
+                    onAnswer(gate, { answer: { decision: opt }, status: engineGateStatusFor(opt) })
+                  }
+                >
+                  {opt}
+                </Button>
+              ))
+            ) : (
+              <Button
+                size="sm"
+                onClick={() => onAnswer(gate, { answer: { approved: true }, status: 'approved' })}
+              >
+                Approve
+              </Button>
+            )}
+          </div>
         </CardContent>
       </Card>
     );
@@ -856,6 +907,9 @@ function formatGateAnswer(answer: unknown, questions: Question['questions']): st
   if (answer == null) return '';
   if (typeof answer === 'string') return answer;
   if (typeof answer !== 'object') return String(answer);
+  // Engine-gate answers (WP5 construction gates): a single decision word.
+  const decision = (answer as { decision?: unknown }).decision;
+  if (typeof decision === 'string') return decision;
   const structured = answer as { answers?: { selectedOptions?: unknown[]; freeText?: string }[] };
   if (Array.isArray(structured.answers)) {
     return structured.answers

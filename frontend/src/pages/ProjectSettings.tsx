@@ -8,6 +8,7 @@ import {
   type CognitoUser,
   type AgentCli,
   type CliModels,
+  type PrStrategy,
   type RuntimeModelCli,
   type TrackerBinding,
   type SteeringDoc,
@@ -225,6 +226,7 @@ export default function ProjectSettings() {
   // v2 settings state (only meaningful for kind === 'v2')
   const [editParkReleaseSeconds, setEditParkReleaseSeconds] = useState<number>(300);
   const [editMaxParallelUnits, setEditMaxParallelUnits] = useState<number>(0);
+  const [editPrStrategy, setEditPrStrategy] = useState<PrStrategy>('intent-pr');
   const [savingV2Settings, setSavingV2Settings] = useState(false);
 
   // MCP servers state (raw JSON string; persistence handled by McpServersSection)
@@ -275,6 +277,7 @@ export default function ProjectSettings() {
       setEditCliModels(proj.cliModels || {});
       setEditParkReleaseSeconds(proj.parkReleaseSeconds ?? 300);
       setEditMaxParallelUnits(proj.maxParallelUnits ?? 0);
+      setEditPrStrategy(proj.prStrategy ?? 'intent-pr');
       setRepos(proj.repos ?? []);
       setMembers(Array.isArray(mems) ? mems : []);
       setTrackerConnections(Array.isArray(conns) ? conns : []);
@@ -568,12 +571,20 @@ export default function ProjectSettings() {
       const saved = await projectsService.update(projectId, {
         parkReleaseSeconds: editParkReleaseSeconds,
         maxParallelUnits: editMaxParallelUnits,
+        prStrategy: editPrStrategy,
       });
       const next = saved.parkReleaseSeconds ?? editParkReleaseSeconds;
       const nextParallel = saved.maxParallelUnits ?? editMaxParallelUnits;
+      const nextPr = saved.prStrategy ?? editPrStrategy;
       setEditParkReleaseSeconds(next);
       setEditMaxParallelUnits(nextParallel);
-      setProject({ ...project, parkReleaseSeconds: next, maxParallelUnits: nextParallel });
+      setEditPrStrategy(nextPr);
+      setProject({
+        ...project,
+        parkReleaseSeconds: next,
+        maxParallelUnits: nextParallel,
+        prStrategy: nextPr,
+      });
       setSuccess('v2 settings updated');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update v2 settings');
@@ -1306,7 +1317,8 @@ export default function ProjectSettings() {
                           disabled={
                             savingV2Settings ||
                             (editParkReleaseSeconds === (project.parkReleaseSeconds ?? 300) &&
-                              editMaxParallelUnits === (project.maxParallelUnits ?? 0))
+                              editMaxParallelUnits === (project.maxParallelUnits ?? 0) &&
+                              editPrStrategy === (project.prStrategy ?? 'intent-pr'))
                           }
                         >
                           {savingV2Settings ? 'Saving...' : 'Save v2 Settings'}

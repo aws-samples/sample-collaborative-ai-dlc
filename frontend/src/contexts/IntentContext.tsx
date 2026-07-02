@@ -17,7 +17,10 @@ import {
   type IntentDetail,
   type IntentGate,
   type IntentSensorRun,
+  type IntentStage,
   type IntentSteering,
+  type IntentUnit,
+  type IntentUnitPlan,
   type StageState,
 } from '@/services/intents';
 import { workflowsService, type CompiledWorkflow } from '@/services/workflows';
@@ -32,13 +35,17 @@ import { useIntentEvents, type IntentEvent } from '@/hooks/useIntentEvents';
 // general run output) accumulate under this key.
 export const INTENT_OUTPUT_KEY = 'intent';
 
-// A plan stage merged with its live STAGE row (if any). Plan stages with no
-// row yet render as PENDING; live rows outside the plan are appended.
+// A plan stage merged with its live STAGE row(s). Plan stages with no row yet
+// render as PENDING; live rows outside the plan are appended. A `forEach:
+// unit-of-work` stage has ONE row PER UNIT INSTANCE (docs/v2-parallel.md WP4)
+// — rows are identified by `rowKey`, never by stageId alone.
 export interface IntentStageRow {
   stageId: string;
   phase: string | null;
   state: StageState;
   stageInstanceId: string | null;
+  /** Unit lane this instance belongs to; null for once-per-workflow stages. */
+  unitSlug: string | null;
   runtimeError: string | null;
   startedAt: string | null;
   completedAt: string | null;
@@ -48,6 +55,12 @@ export interface IntentStageRow {
   /** false when the row exists only in live state (plan missing/diverged). */
   planned: boolean;
 }
+
+// The stable per-row identity: the deterministic stage-instance id when the
+// row exists (unique per unit instance), else the plan stageId (a PENDING
+// plan stage has exactly one row, so stageId is unique among those).
+export const stageRowKey = (row: Pick<IntentStageRow, 'stageId' | 'stageInstanceId'>): string =>
+  row.stageInstanceId ?? row.stageId;
 
 export interface StageEdge {
   from: string;
@@ -79,6 +92,9 @@ interface IntentContextValue {
   steering: IntentSteering[];
   sensorsByStage: Map<string, IntentSensorRun[]>;
   artifactsByStage: Map<string, IntentArtifact[]>;
+  /** Unit lanes (docs/v2-parallel.md WP5/WP7): [] before promotion. */
+  units: IntentUnit[];
+  unitPlan: IntentUnitPlan | null;
 
   // Live streamed output per stage instance (+ INTENT_OUTPUT_KEY). The map is
   // held in a ref for append performance; `outputVersion` bumps on every
@@ -88,9 +104,10 @@ interface IntentContextValue {
   /** Human name for a buffer key (stageInstanceId → stageId). */
   stageNameOf: (key: string) => string;
 
-  // Shared UI state
+  // Shared UI state — selection is keyed by `stageRowKey` (instance-aware:
+  // two unit instances of one stage select independently).
   selectedStageId: string | null;
-  setSelectedStageId: (stageId: string | null) => void;
+  setSelectedStageId: (rowKey: string | null) => void;
   agentFocus: AgentFocusRequest | null;
   /** Focus the sidebar Agent tab on a stage's output (null → run-level). */
   focusOutput: (stageInstanceId: string | null) => void;
@@ -203,6 +220,26 @@ export function IntentProvider({
     return () => clearInterval(id);
   }, [pollStatus, load]);
 
+  // Refetch debouncing (docs/v2-parallel.md WP7): every lifecycle event used
+  // to trigger an immediate full-DTO refetch — N parallel lanes multiply
+  // stage/unit/metric events, so bursts must coalesce. Trailing debounce: the
+  // first event arms a short timer; every event inside the window rides the
+  // same fetch. The 8s poll and post-mutation reloads stay immediate.
+  const loadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleLoad = useCallback(() => {
+    if (loadTimerRef.current) return;
+    loadTimerRef.current = setTimeout(() => {
+      loadTimerRef.current = null;
+      load();
+    }, 250);
+  }, [load]);
+  useEffect(
+    () => () => {
+      if (loadTimerRef.current) clearTimeout(loadTimerRef.current);
+    },
+    [],
+  );
+
   // Realtime: refetch on lifecycle transitions; accumulate questions + output live.
   const onEvent = useCallback(
     (evt: IntentEvent) => {
@@ -238,7 +275,8 @@ export function IntentProvider({
         setOutputVersion((n) => n + 1);
         return;
       }
-      // Stage/execution/metric/note/steering/unit transitions → refetch the assembled DTO.
+      // Stage/execution/metric/note/steering/unit transitions → refetch the
+      // assembled DTO (debounced — lane bursts coalesce into one fetch).
       if (
         evt.action === 'agent.stage' ||
         evt.action === 'agent.execution' ||
@@ -248,10 +286,10 @@ export function IntentProvider({
         evt.action === 'agent.note' ||
         evt.action === 'agent.unit'
       ) {
-        load();
+        scheduleLoad();
       }
     },
-    [load],
+    [scheduleLoad],
   );
   useIntentEvents(projectId, intentId, onEvent);
 
@@ -301,31 +339,63 @@ export function IntentProvider({
   // intent's scope: the compiled graph covers ALL placements, but the run only
   // executes stages whose scopeMembership is EXECUTE — without the filter,
   // out-of-scope stages would sit at PENDING forever.
+  //
+  // WP7 re-key (docs/v2-parallel.md): a `forEach: unit-of-work` stage has ONE
+  // live row PER UNIT — the join is stageId → LIST of instances (a 1:1 Map
+  // would silently drop all but the last lane), and every instance becomes its
+  // own IntentStageRow carrying its unitSlug. Instances of one plan stage sort
+  // by unitSlug for a stable render order.
   const stageRows = useMemo<IntentStageRow[]>(() => {
-    const byStageId = new Map(
-      (detail?.stages ?? []).filter((s) => s.stageId).map((s) => [s.stageId as string, s]),
-    );
+    const byStageId = new Map<string, IntentStage[]>();
+    for (const s of detail?.stages ?? []) {
+      if (!s.stageId) continue;
+      const list = byStageId.get(s.stageId) ?? [];
+      list.push(s);
+      byStageId.set(s.stageId, list);
+    }
+    for (const list of byStageId.values()) {
+      list.sort((a, b) => (a.unitSlug ?? '').localeCompare(b.unitSlug ?? ''));
+    }
     const scope = detail?.intent.scope ?? null;
     const grid = scope ? compiled?.scopeGrid?.[scope] : undefined;
     const planNodes = (compiled?.graph.nodes ?? [])
       .filter((n) => !grid || grid[n.stageId] === 'EXECUTE')
       .toSorted((a, b) => (a.order ?? 0) - (b.order ?? 0));
     const planIds = new Set(planNodes.map((n) => n.stageId));
-    const rows: IntentStageRow[] = planNodes.map((n, i) => {
-      const row = byStageId.get(n.stageId);
-      return {
+    const rows: IntentStageRow[] = planNodes.flatMap((n, i): IntentStageRow[] => {
+      const instances = byStageId.get(n.stageId);
+      if (!instances || instances.length === 0) {
+        return [
+          {
+            stageId: n.stageId,
+            phase: n.phasePath ?? null,
+            state: 'PENDING' as StageState,
+            stageInstanceId: null,
+            unitSlug: null,
+            runtimeError: null,
+            startedAt: null,
+            completedAt: null,
+            attempt: 0,
+            cli: null,
+            order: n.order ?? i,
+            planned: true,
+          },
+        ];
+      }
+      return instances.map((row) => ({
         stageId: n.stageId,
-        phase: row?.phase ?? n.phasePath ?? null,
-        state: (row?.state ?? 'PENDING') as StageState,
-        stageInstanceId: row?.stageInstanceId ?? null,
-        runtimeError: row?.runtimeError ?? null,
-        startedAt: row?.startedAt ?? null,
-        completedAt: row?.completedAt ?? null,
-        attempt: row?.attempt ?? 0,
-        cli: row?.cli ?? null,
+        phase: row.phase ?? n.phasePath ?? null,
+        state: row.state,
+        stageInstanceId: row.stageInstanceId,
+        unitSlug: row.unitSlug ?? null,
+        runtimeError: row.runtimeError ?? null,
+        startedAt: row.startedAt ?? null,
+        completedAt: row.completedAt ?? null,
+        attempt: row.attempt ?? 0,
+        cli: row.cli ?? null,
         order: n.order ?? i,
         planned: true,
-      };
+      }));
     });
     // Live rows outside the plan (plan unavailable or diverged) still render.
     for (const s of detail?.stages ?? []) {
@@ -335,6 +405,7 @@ export function IntentProvider({
         phase: s.phase ?? null,
         state: s.state,
         stageInstanceId: s.stageInstanceId,
+        unitSlug: s.unitSlug ?? null,
         runtimeError: s.runtimeError ?? null,
         startedAt: s.startedAt ?? null,
         completedAt: s.completedAt ?? null,
@@ -358,6 +429,16 @@ export function IntentProvider({
   const gates = useMemo(() => [...liveGates.values()], [liveGates]);
   const pendingGates = useMemo(() => gates.filter((g) => g.status === 'pending'), [gates]);
   const steering = useMemo(() => detail?.steering ?? [], [detail]);
+  // Unit lanes (docs/v2-parallel.md WP7): sorted by wave then slug so the lane
+  // board renders in scheduling order.
+  const units = useMemo<IntentUnit[]>(
+    () =>
+      (detail?.units ?? []).toSorted(
+        (a, b) => (a.batchIndex ?? 0) - (b.batchIndex ?? 0) || a.slug.localeCompare(b.slug),
+      ),
+    [detail],
+  );
+  const unitPlan = useMemo<IntentUnitPlan | null>(() => detail?.unitPlan ?? null, [detail]);
 
   const sensorsByStage = useMemo(() => {
     const map = new Map<string, IntentSensorRun[]>();
@@ -406,6 +487,8 @@ export function IntentProvider({
         steering,
         sensorsByStage,
         artifactsByStage,
+        units,
+        unitPlan,
         outputBuffers: outputBufRef.current,
         outputVersion,
         stageNameOf,

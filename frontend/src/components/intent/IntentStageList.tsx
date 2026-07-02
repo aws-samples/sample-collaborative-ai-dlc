@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
-import { useIntent, type IntentStageRow } from '@/contexts/IntentContext';
+import { useIntent, stageRowKey, type IntentStageRow } from '@/contexts/IntentContext';
 import { StageBadge, formatDuration, useTick } from '@/components/intent/stageStyle';
 import { SensorChips } from '@/components/intent/SensorChips';
 import { StageDetail } from '@/components/intent/StageDetail';
@@ -9,7 +9,9 @@ import type { IntentSensorRun } from '@/services/intents';
 
 // The pipeline list — the default Stages view. Plan stages (scope-filtered in
 // the context) grouped by phase with per-phase progress; each row is a
-// drill-down toggle sharing `selectedStageId` with the graph view.
+// drill-down toggle sharing `selectedStageId` with the graph view. Rows are
+// keyed by stage INSTANCE (docs/v2-parallel.md WP7): a fan-out stage renders
+// one row per unit lane, each independently selectable.
 export function IntentStageList() {
   const { stageRows, detail, selectedStageId, setSelectedStageId, sensorsByStage } = useIntent();
 
@@ -46,20 +48,21 @@ export function IntentStageList() {
               </div>
             )}
             <div className="space-y-1.5">
-              {g.rows.map((row) => (
-                <StageRow
-                  key={row.stageId}
-                  row={row}
-                  current={row.stageId === detail?.intent.currentStage}
-                  selected={selectedStageId === row.stageId}
-                  onToggle={() =>
-                    setSelectedStageId(selectedStageId === row.stageId ? null : row.stageId)
-                  }
-                  sensors={
-                    row.stageInstanceId ? (sensorsByStage.get(row.stageInstanceId) ?? []) : []
-                  }
-                />
-              ))}
+              {g.rows.map((row) => {
+                const key = stageRowKey(row);
+                return (
+                  <StageRow
+                    key={key}
+                    row={row}
+                    current={row.stageId === detail?.intent.currentStage}
+                    selected={selectedStageId === key}
+                    onToggle={() => setSelectedStageId(selectedStageId === key ? null : key)}
+                    sensors={
+                      row.stageInstanceId ? (sensorsByStage.get(row.stageInstanceId) ?? []) : []
+                    }
+                  />
+                );
+              })}
             </div>
           </div>
         );
@@ -97,6 +100,11 @@ function StageRow({
       >
         <span className="min-w-0 flex-1">
           <span className="font-medium">{row.stageId}</span>
+          {row.unitSlug && (
+            <Badge variant="outline" className="ml-2 px-1 py-0 text-[9px] font-normal">
+              {row.unitSlug}
+            </Badge>
+          )}
           {row.runtimeError && !selected && (
             <span className="block truncate text-[11px] text-agent-error">{row.runtimeError}</span>
           )}

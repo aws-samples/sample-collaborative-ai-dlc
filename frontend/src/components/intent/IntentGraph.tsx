@@ -1,6 +1,11 @@
 import { useMemo } from 'react';
 import { cn } from '@/lib/utils';
-import { useIntent, type IntentStageRow, type StageEdge } from '@/contexts/IntentContext';
+import {
+  useIntent,
+  stageRowKey,
+  type IntentStageRow,
+  type StageEdge,
+} from '@/contexts/IntentContext';
 import { StageBadge } from '@/components/intent/stageStyle';
 import { StageDetail } from '@/components/intent/StageDetail';
 
@@ -52,8 +57,55 @@ export function layerStages(rows: IntentStageRow[], edges: StageEdge[]): IntentS
   return dense;
 }
 
+// The pipeline DAG stays ONE node per plan stage — the per-unit view is the
+// lane board (docs/v2-parallel.md WP7). A fan-out stage's instances collapse
+// into a single node whose state is the most attention-worthy across lanes
+// (FAILED > WAITING > RUNNING > mixed-progress > PENDING > all-done) with an
+// instance count. PURE — exported for tests.
+export function aggregateStageRows(rows: IntentStageRow[]): (IntentStageRow & {
+  instances: number;
+})[] {
+  const byStageId = new Map<string, IntentStageRow[]>();
+  for (const r of rows) {
+    const list = byStageId.get(r.stageId) ?? [];
+    list.push(r);
+    byStageId.set(r.stageId, list);
+  }
+  const out: (IntentStageRow & { instances: number })[] = [];
+  for (const list of byStageId.values()) {
+    if (list.length === 1) {
+      out.push({ ...list[0], instances: 1 });
+      continue;
+    }
+    const pick =
+      list.find((r) => r.state === 'FAILED') ??
+      list.find((r) => r.state === 'WAITING_FOR_HUMAN') ??
+      list.find((r) => r.state === 'RUNNING') ??
+      (list.every((r) => r.state === 'SUCCEEDED' || r.state === 'SKIPPED')
+        ? list[0]
+        : (list.find((r) => r.state === 'SUCCEEDED') ?? list[0]));
+    const allDone = list.every((r) => r.state === 'SUCCEEDED' || r.state === 'SKIPPED');
+    const anyStarted = list.some((r) => r.state !== 'PENDING');
+    out.push({
+      ...pick,
+      // Mixed done/pending with nothing actively running still reads as an
+      // in-flight fan-out, not a finished or untouched stage.
+      state: allDone
+        ? pick.state
+        : ['FAILED', 'WAITING_FOR_HUMAN', 'RUNNING'].includes(pick.state)
+          ? pick.state
+          : anyStarted
+            ? 'RUNNING'
+            : 'PENDING',
+      unitSlug: null,
+      instances: list.length,
+    });
+  }
+  return out;
+}
+
 interface NodePos {
-  row: IntentStageRow;
+  row: IntentStageRow & { instances?: number };
   x: number;
   y: number;
 }
@@ -61,8 +113,11 @@ interface NodePos {
 export function IntentGraph() {
   const { stageRows, stageEdges, detail, selectedStageId, setSelectedStageId } = useIntent();
 
+  // One node per plan stage (fan-out instances aggregated — see above).
+  const graphRows = useMemo(() => aggregateStageRows(stageRows), [stageRows]);
+
   const { positions, width, height } = useMemo(() => {
-    const columns = layerStages(stageRows, stageEdges);
+    const columns = layerStages(graphRows, stageEdges);
     const maxRows = Math.max(1, ...columns.map((c) => c.length));
     const maxColH = maxRows * NODE_H + (maxRows - 1) * GAP_Y;
     const pos = new Map<string, NodePos>();
@@ -82,11 +137,16 @@ export function IntentGraph() {
       width: PAD * 2 + columns.length * NODE_W + Math.max(0, columns.length - 1) * GAP_X,
       height: PAD * 2 + maxColH,
     };
-  }, [stageRows, stageEdges]);
+  }, [graphRows, stageEdges]);
 
+  // Graph selection shares `selectedStageId` (a rowKey) with the list: a
+  // node selects its representative row's key, so a single-instance stage
+  // highlights the same row in both views.
   const selectedRow = selectedStageId
-    ? (stageRows.find((r) => r.stageId === selectedStageId) ?? null)
+    ? (graphRows.find((r) => stageRowKey(r) === selectedStageId || r.stageId === selectedStageId) ??
+      null)
     : null;
+  const selectedPlanStageId = selectedRow?.stageId ?? null;
 
   // Parallel edges between one stage pair (several artifacts, or data +
   // requires) collapse into one drawn curve with a combined label.
@@ -139,7 +199,8 @@ export function IntentGraph() {
               const x2 = to.x;
               const y2 = to.y + NODE_H / 2;
               const bend = Math.max(24, (x2 - x1) / 2);
-              const touchesSelected = e.from === selectedStageId || e.to === selectedStageId;
+              const touchesSelected =
+                e.from === selectedPlanStageId || e.to === selectedPlanStageId;
               return (
                 <g
                   key={`${e.from}→${e.to}`}
@@ -173,13 +234,13 @@ export function IntentGraph() {
           {/* Node layer */}
           {[...positions.values()].map(({ row, x, y }) => {
             const current = row.stageId === detail?.intent.currentStage;
-            const selected = row.stageId === selectedStageId;
+            const selected = row.stageId === selectedPlanStageId;
             return (
               <button
                 key={row.stageId}
                 type="button"
                 title={row.stageId}
-                onClick={() => setSelectedStageId(selected ? null : row.stageId)}
+                onClick={() => setSelectedStageId(selected ? null : stageRowKey(row))}
                 style={{ left: x, top: y, width: NODE_W, height: NODE_H }}
                 className={cn(
                   'absolute flex flex-col justify-center gap-1 rounded-md border bg-card px-2.5 py-1.5 text-left shadow-sm transition-colors hover:bg-muted/40',
@@ -187,7 +248,12 @@ export function IntentGraph() {
                   selected && 'ring-2 ring-primary',
                 )}
               >
-                <span className="truncate text-xs font-medium">{row.stageId}</span>
+                <span className="truncate text-xs font-medium">
+                  {row.stageId}
+                  {(row.instances ?? 1) > 1 && (
+                    <span className="ml-1 text-[9px] text-muted-foreground">×{row.instances}</span>
+                  )}
+                </span>
                 <span className="flex items-center">
                   <StageBadge state={row.state} />
                 </span>

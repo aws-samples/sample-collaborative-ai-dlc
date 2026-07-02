@@ -21,13 +21,14 @@ UNITPLAN/UNIT scheduling rows + Neptune mirror); WP4 complete (plan fan-out +
 unit dimension end-to-end); WP5 **code-complete** (parallel lane
 orchestration — skeleton/ladder/wavefront/halt-and-ask, per-lane
 sessions/branches, engine merge-back; proven on the local durable runner);
-WP6 complete (conflict-resolution stage + intent-pr PR at fan-in); WP8's two
-merge fixtures pulled forward and passing.
+WP6 complete (conflict-resolution stage + intent-pr PR at fan-in); WP7
+complete (instance re-key, lane board, engine-gate UI, refetch debounce,
+settings); WP8's two merge fixtures pulled forward and passing.
 ⚠️ **Deployment checklist before enabling parallel construction in
 production**: WP1's exit criterion — a stage **longer than 15 minutes**
 completed through the async callback path on a DEPLOYED stack — is still
-unproven (requires a cloud deployment; every local proof passes). WP7
-(UI) + WP8 remainder + WP6b not yet started.
+unproven (requires a cloud deployment; every local proof passes). WP8
+remainder + WP6b not yet started.
 
 ---
 
@@ -579,15 +580,42 @@ MERGED | FAILED | BLOCKED`; `updateUnitState` is CAS'd on `fromStates`
   enable `pr-per-unit` and `stacked` in `prStrategy`. Until then the two
   options are visible but disabled in settings (design unchanged, timing
   staged).
-- **WP7 — UI**: **step 1 (precondition for the rest): re-key all frontend
-  stage aggregation from `stageId` to `stageInstanceId`** (which carries the
-  unit dimension after WP4) — today's 1:1 `stageId` merge in
-  `IntentContext.stageRows` collides on fan-out instances — and land the
-  DTO/WS type changes. Then: lane board (rows = units via `layerStages`,
-  embedded stage strips, DAG edges; skeleton lane visually distinct), gate
-  lane-attribution, batch gates, refetch debouncing, settings
-  (`maxParallelUnits`, `prStrategy`, autonomy default) in the v2
-  ProjectSettings card.
+- **WP7 — UI** ✅ **done**:
+  - **step 1 (the precondition)** — stage aggregation re-keyed on the
+    INSTANCE: `IntentContext.stageRows` joins the compiled plan to live STAGE
+    rows as stageId → LIST of instances (the old 1:1 Map silently dropped all
+    but the last lane); every row carries `unitSlug`; row identity is
+    `stageRowKey` (`stageInstanceId ?? stageId`) — React keys and the shared
+    drill-down selection are instance-aware. The pipeline LIST renders one row
+    per unit instance (unit chip); the GRAPH stays one node per plan stage via
+    `aggregateStageRows` (FAILED > WAITING > RUNNING > mixed-progress →
+    RUNNING > PENDING > all-done, with an ×N instance count) — the per-unit
+    view is the lane board.
+  - **lane board** (`UnitLaneBoard`, a third "Lanes" view in the Stages card,
+    offered once units are promoted): waves from the frozen UNITPLAN batches
+    (fallback: batchIndex), one row per unit with `UnitState` badge styling,
+    dependency chips, lane branch, failure/blocked reasons, the walking
+    skeleton visually distinct, a merged counter + autonomy mode, and an
+    embedded per-lane stage strip whose chips share the drill-down selection.
+  - **gates**: engine approval gates (fan-out / skeleton / ladder / batch /
+    halt-and-ask) render their prompt + options; each option submits the
+    `{ decision }` shape the orchestrator's `parseChoice` consumes
+    (approve/reject-flavored options map to approved/rejected statuses);
+    gates carry a `unit <slug>` attribution chip; answered decisions render
+    in history via `formatGateAnswer`.
+  - **refetch debouncing**: lifecycle events (stage/unit/metric/note/…) now
+    coalesce through a 250ms trailing debounce — a burst from N parallel
+    lanes triggers ONE full-DTO refetch (the 8s poll backstop and
+    post-mutation reloads stay immediate).
+  - **settings**: `prStrategy` Select in the v2 ProjectSettings card —
+    intent-pr enabled, pr-per-unit/stacked visible but disabled ("coming with
+    WP6b"); maxParallelUnits landed with WP5. The autonomy default remains a
+    runtime decision (the ladder gate), deliberately not a project setting.
+  - tests: context re-key (two instances of one stage both render), debounce
+    (burst → one refetch), `aggregateStageRows` truth table, IntentView
+    approval-gate options + `{decision}` payloads + reject mapping, lane
+    board (waves/skeleton/states/strips) + absence before promotion,
+    projects-service prStrategy update.
 - **WP8 — Hardening**: integration fixtures — 3-unit DAG (A,B ∥ → C: A∥B run,
   C waits and sees merged A+B code), forced merge conflict (exercises the
   conflict stage), kill-a-lane mid-stage (pushed park-commits survive a mount
