@@ -55,7 +55,11 @@ import { createGraphWriter } from '../mcp/graph-writer.js';
 import { createSensorRunner } from '../sensor-runner.js';
 
 const require = createRequire(import.meta.url);
-const { buildExecutionPlan } = require('../../shared/v2-execution-plan.js');
+const {
+  buildExecutionPlan,
+  stageInstanceId: planStageInstanceId,
+  UNIT_FOR_EACH,
+} = require('../../shared/v2-execution-plan.js');
 
 // Resolve the plan and locate the stage instance for `stageId`.
 const resolveStage = ({ workflow, library, scope, stageId }) => {
@@ -289,6 +293,7 @@ const summarizeSensorDetail = (detail) => {
 const runStageSensors = async ({
   stage,
   stageInstanceId,
+  unitSlug = null,
   executionId,
   projectId,
   intentId,
@@ -335,6 +340,7 @@ const runStageSensors = async ({
       .recordSensorRun({
         executionId,
         stageInstanceId,
+        unitSlug,
         sensorId: v.sensorId,
         kind: v.kind,
         severity: v.severity,
@@ -346,6 +352,7 @@ const runStageSensors = async ({
     await publish({
       action: 'agent.note',
       stageInstanceId,
+      unitSlug,
       note: `sensor ${v.sensorId}: ${v.result}${v.held ? ' (blocking)' : ''}`,
       kind: 'sensor',
     });
@@ -361,6 +368,7 @@ const runStageSensors = async ({
           executionId,
           type: 'v2.sensor.flagged',
           stageInstanceId,
+          unitSlug,
           actor: 'agentcore',
           summary: `Sensor ${v.sensorId} (${v.severity}) → ${v.result}${
             v.held ? ' — blocking' : ''
@@ -574,6 +582,12 @@ export const runStage = async (
     // human's answer to `resumeFrom` (a humanTaskId) instead of running fresh. The
     // session's persistent /mnt/workspace mount restores the checkout + CLI store.
     resumeFrom = null,
+    // Unit lane (docs/v2-parallel.md WP4): the unit-of-work slug this stage
+    // instance is scoped to. REQUIRED for `forEach: unit-of-work` stages (the
+    // orchestrator dispatches one instance per unit), FORBIDDEN otherwise. The
+    // slug joins the stage-instance id, every row/event/broadcast this run
+    // writes, the commit message, and the prompt's unit-scope block.
+    unitSlug = null,
     // Async invocation (run-stage-start): the durable callback id the orchestrator
     // is suspended on for this stage attempt. Stamped on the STAGE row for
     // traceability/operator recovery; the callback itself is completed by
@@ -635,11 +649,19 @@ export const runStage = async (
         executionId,
         type: 'v2.stage.failed',
         stageInstanceId,
+        unitSlug,
         actor: 'agentcore',
         summary: `${reason}${detail ? `: ${detail}` : ''}`,
       })
       .catch(() => {});
-    await publish({ action: 'agent.stage', stageInstanceId, stageId, state: 'FAILED', reason });
+    await publish({
+      action: 'agent.stage',
+      stageInstanceId,
+      stageId,
+      unitSlug,
+      state: 'FAILED',
+      reason,
+    });
     return { ok: false, reason, detail };
   };
 
@@ -672,8 +694,43 @@ export const runStage = async (
 
   const resolved = resolveStage({ workflow, library, scope: { scope }, stageId });
   if (resolved.error) return fail(null, resolved.error, JSON.stringify(resolved.detail));
-  const { stage } = resolved;
-  const stageInstanceId = stage.stageInstanceId;
+  const { stage, plan } = resolved;
+
+  // Unit-lane invariants (docs/v2-parallel.md WP4). A `forEach: unit-of-work`
+  // stage exists ONLY as per-unit instances — dispatching it without a unit
+  // would run it once against the whole workflow and break its own contract;
+  // conversely a unit slug on a once-per-workflow stage is a dispatch bug.
+  // Fail loudly on both rather than guessing.
+  if (unitSlug && stage.forEach !== UNIT_FOR_EACH) {
+    return fail(null, 'unit_not_applicable', `stage "${stageId}" is not a per-unit stage`);
+  }
+  if (!unitSlug && stage.forEach === UNIT_FOR_EACH) {
+    return fail(null, 'unit_required', `stage "${stageId}" runs per unit; no unitSlug supplied`);
+  }
+  // The stage-instance id gains the unit dimension on a lane run — one
+  // deterministic instance per (stage, unit), replay-stable across attempts.
+  const stageInstanceId = unitSlug
+    ? planStageInstanceId(plan.namespace, stageId, unitSlug)
+    : stage.stageInstanceId;
+
+  // A lane run must reference a unit the promoted UNITPLAN actually knows —
+  // scheduling truth is the DDB snapshot, never the dispatch payload alone.
+  // The unit's dependsOn edges feed the prompt's unit-scope block below.
+  let unit = null;
+  if (unitSlug) {
+    const unitPlan = await store.getUnitPlan(executionId).catch(() => null);
+    unit = (unitPlan?.units ?? []).find((u) => u.slug === unitSlug) ?? null;
+    if (!unit) {
+      return fail(
+        stageInstanceId,
+        'unit_not_found',
+        `unit "${unitSlug}" is not in the promoted unit plan`,
+      );
+    }
+  }
+  // Human-readable stage label for event summaries — carries the lane so the
+  // activity feed stays attributable when N instances of a stage exist.
+  const stageLabel = unitSlug ? `${stageId} [unit ${unitSlug}]` : stageId;
 
   if (stage.notImplemented) return fail(stageInstanceId, 'not_implemented', `mode ${stage.mode}`);
 
@@ -710,6 +767,7 @@ export const runStage = async (
           executionId,
           type: 'v2.workspace.restored',
           stageInstanceId,
+          unitSlug,
           actor: 'agentcore',
           summary: `Source checkout re-cloned after a wiped workspace (${heal.repos.join(', ')})`,
         })
@@ -718,6 +776,7 @@ export const runStage = async (
         action: 'agent.workspace',
         state: 'RESTORED',
         stageInstanceId,
+        unitSlug,
         repos: heal.repos,
       });
     }
@@ -782,8 +841,9 @@ export const runStage = async (
           executionId,
           type: 'v2.stage.recovered',
           stageInstanceId,
+          unitSlug,
           actor: 'agentcore',
-          summary: `Parked conversation lost with the wiped workspace; re-running ${stageId} fresh with the answer injected`,
+          summary: `Parked conversation lost with the wiped workspace; re-running ${stageLabel} fresh with the answer injected`,
         })
         .catch(() => {});
     } else {
@@ -817,6 +877,7 @@ export const runStage = async (
     intentId,
     projectId,
     stageInstanceId,
+    unitSlug,
     role: 'author',
     model,
   };
@@ -827,6 +888,7 @@ export const runStage = async (
     executionId,
     stageInstanceId,
     stageId,
+    unitSlug,
     phase: stage.phase,
     state: 'RUNNING',
     cli,
@@ -844,8 +906,10 @@ export const runStage = async (
     executionId,
     type: resumeFrom && !demotedResume ? 'v2.stage.resumed' : 'v2.stage.running',
     stageInstanceId,
+    unitSlug,
     actor: 'agentcore',
-    summary: resumeFrom && !demotedResume ? `Stage ${stageId} resumed` : `Stage ${stageId} running`,
+    summary:
+      resumeFrom && !demotedResume ? `Stage ${stageLabel} resumed` : `Stage ${stageLabel} running`,
   });
   // Broadcast the stage start + the execution's new phase/stage pointer so the
   // UI reflects the advance in real time.
@@ -853,6 +917,7 @@ export const runStage = async (
     action: 'agent.stage',
     stageInstanceId,
     stageId,
+    unitSlug,
     phase: stage.phase,
     state: 'RUNNING',
   });
@@ -952,6 +1017,9 @@ export const runStage = async (
     const materialized = await materializeStage({
       workspaceDir,
       stage,
+      // Unit lane: the unit-scope block restricts the agent to THIS unit's
+      // stories/components (null outside a lane — no block rendered).
+      unit,
       stageBody,
       agentPersona,
       knowledge,
@@ -1009,12 +1077,14 @@ export const runStage = async (
         const row = await store.appendOutput({
           executionId,
           stageInstanceId,
+          unitSlug,
           kind: 'stdout',
           content,
         });
         await publish({
           action: 'agent.output',
           stageInstanceId,
+          unitSlug,
           seq: row.seq,
           kind: 'stdout',
           content,
@@ -1083,6 +1153,7 @@ export const runStage = async (
         const row = await store.recordMetric({
           executionId,
           stageInstanceId,
+          unitSlug,
           metrics: { credits },
           resolvedModel: model ?? null,
           creditRate,
@@ -1092,6 +1163,7 @@ export const runStage = async (
         await publish({
           action: 'agent.metric',
           stageInstanceId,
+          unitSlug,
           metricId: row.metricId,
           metrics: { credits },
         });
@@ -1134,7 +1206,11 @@ export const runStage = async (
     branch,
     gitToken,
     gitProvider,
-    message: `aidlc(${stageId}): ${executionId}`,
+    // Commit message carries the unit dimension on lane runs (docs/v2-parallel.md
+    // A3): every commit is attributable to stage + lane + execution from git alone.
+    message: unitSlug
+      ? `aidlc(${stageId}): ${unitSlug} — ${executionId}`
+      : `aidlc(${stageId}): ${executionId}`,
   });
   if (gitResult.committed || !gitResult.ok) {
     const failedRepos = gitResult.results
@@ -1145,13 +1221,14 @@ export const runStage = async (
         executionId,
         type: gitResult.ok ? 'v2.git.pushed' : 'v2.git.push_failed',
         stageInstanceId,
+        unitSlug,
         actor: 'agentcore',
         summary: gitResult.ok
-          ? `Engine committed + pushed work for ${stageId} (${gitResult.results
+          ? `Engine committed + pushed work for ${stageLabel} (${gitResult.results
               .filter((r) => r.committed)
               .map((r) => `${r.repo}@${(r.sha ?? '').slice(0, 8)}`)
               .join(', ')})`
-          : `Engine push failed for ${stageId}: ${failedRepos.join(', ')}`,
+          : `Engine push failed for ${stageLabel}: ${failedRepos.join(', ')}`,
       })
       .catch(() => {});
   }
@@ -1177,6 +1254,7 @@ export const runStage = async (
           executionId,
           type: 'v2.stage.note',
           stageInstanceId,
+          unitSlug,
           actor: 'agentcore',
           summary: `Kiro exited ${exitCode} with an empty final message after completing work; treated as success (ACP empty-completion).`,
         })
@@ -1199,14 +1277,22 @@ export const runStage = async (
       executionId,
       type: 'v2.stage.parked',
       stageInstanceId,
+      unitSlug,
       actor: 'agentcore',
-      summary: `Stage ${stageId} parked on question ${parked.humanTaskId}`,
+      summary: `Stage ${stageLabel} parked on question ${parked.humanTaskId}`,
     });
-    await publish({ action: 'agent.stage', stageInstanceId, stageId, state: 'WAITING_FOR_HUMAN' });
+    await publish({
+      action: 'agent.stage',
+      stageInstanceId,
+      stageId,
+      unitSlug,
+      state: 'WAITING_FOR_HUMAN',
+    });
     return {
       ok: true,
       state: 'WAITING_FOR_HUMAN',
       stageInstanceId,
+      unitSlug,
       humanTaskId: parked.humanTaskId,
       cliSessionId,
       cli,
@@ -1238,6 +1324,7 @@ export const runStage = async (
     const held = await runStageSensors({
       stage,
       stageInstanceId,
+      unitSlug,
       executionId,
       projectId,
       intentId,
@@ -1285,12 +1372,13 @@ export const runStage = async (
     executionId,
     type: 'v2.stage.succeeded',
     stageInstanceId,
+    unitSlug,
     actor: 'agentcore',
-    summary: `Stage ${stageId} succeeded`,
+    summary: `Stage ${stageLabel} succeeded`,
     payloadRef: now(),
   });
-  await publish({ action: 'agent.stage', stageInstanceId, stageId, state: 'SUCCEEDED' });
-  return { ok: true, state: 'SUCCEEDED', stageInstanceId, cli };
+  await publish({ action: 'agent.stage', stageInstanceId, stageId, unitSlug, state: 'SUCCEEDED' });
+  return { ok: true, state: 'SUCCEEDED', stageInstanceId, unitSlug, cli };
 };
 
 // Exposed for unit tests (pure helpers; the runStage flow is integration-tested).

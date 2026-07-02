@@ -61,6 +61,30 @@ const renderInputs = (inputArtifacts = []) => {
 const renderOutputs = (outputArtifacts = []) =>
   outputArtifacts.length ? outputArtifacts.map((o) => `- ${o.artifact}`).join('\n') : '- none';
 
+// Render the unit-scope block for a `forEach: unit-of-work` lane run
+// (docs/v2-parallel.md WP4). PURE. `unit` = { slug, dependsOn } from the
+// promoted UNITPLAN — the engine's scheduling truth, never agent-supplied.
+// Injected right before the stage instructions so the fan-out framing is read
+// before the (once-per-workflow-worded) stage prose.
+export const renderUnitScope = (unit) => {
+  if (!unit?.slug) return '';
+  const deps = (unit.dependsOn ?? []).filter(Boolean);
+  return [
+    '## Unit scope (fan-out)',
+    '',
+    `This stage runs ONCE PER UNIT OF WORK; this run is scoped to the unit`,
+    `**${unit.slug}** only.`,
+    '',
+    `- Unit: ${unit.slug}`,
+    `- Depends on (already completed): ${deps.length ? deps.join(', ') : 'none'}`,
+    '',
+    'Apply the stage instructions to THIS unit alone: only the stories,',
+    `components, and requirements the unit-of-work artifacts assign to "${unit.slug}".`,
+    'Treat dependency units\u2019 outputs as read-only inputs. Do NOT design, modify,',
+    'or generate work for any other unit — their own lanes handle that.',
+  ].join('\n');
+};
+
 // Assemble the full stage prompt. PURE. `ctx`:
 //   stage           — the resolved plan stage (stageId, phase, agentRef, in/out,
 //                      rules refs, humanValidation)
@@ -69,6 +93,7 @@ const renderOutputs = (outputArtifacts = []) =>
 //   knowledge       — concatenated methodology knowledge for the agent (optional)
 export const buildStagePrompt = ({
   stage = {},
+  unit = null,
   stageBody = '',
   agentPersona = '',
   knowledge = '',
@@ -92,6 +117,10 @@ export const buildStagePrompt = ({
   if (conductor)
     sections.push('', '## Execution quality (conductor)', neutralizeHarnessDir(conductor));
   if (agentPersona) sections.push('', '## Your role', neutralizeHarnessDir(agentPersona));
+  // Unit lane: the fan-out scoping must precede the stage prose (which is
+  // worded once-per-workflow) so the agent reads its lane boundary first.
+  const unitScope = renderUnitScope(unit);
+  if (unitScope) sections.push('', unitScope);
   sections.push(
     '',
     '## Stage instructions',
@@ -130,6 +159,9 @@ export const buildMcpConfig = ({ mcpEntry, scope, env = {} }) => ({
         V2_INTENT_ID: scope.intentId,
         V2_PROJECT_ID: scope.projectId ?? '',
         V2_STAGE_INSTANCE_ID: scope.stageInstanceId ?? '',
+        // Unit lane attribution (docs/v2-parallel.md WP4): the bridge stamps
+        // this on every gate/output/metric/event row it writes. Empty → null.
+        V2_UNIT_SLUG: scope.unitSlug ?? '',
         V2_RESOLVED_MODEL: scope.model ?? '',
         V2_MCP_ROLE: scope.role ?? 'author',
         V2_PROCESS_TABLE: env.V2_PROCESS_TABLE ?? '',
@@ -220,6 +252,7 @@ export const materializeKiroAgent = async ({
 export const materializeStage = async ({
   workspaceDir,
   stage,
+  unit = null,
   stageBody,
   agentPersona,
   knowledge,
@@ -236,6 +269,6 @@ export const materializeStage = async ({
 
   const mcpConfigPath = await materializeMcpConfig({ workspaceDir, mcpEntry, scope, env });
 
-  const prompt = buildStagePrompt({ stage, stageBody, agentPersona, knowledge, conductor });
+  const prompt = buildStagePrompt({ stage, unit, stageBody, agentPersona, knowledge, conductor });
   return { prompt, mcpConfigPath, rulesPath: rulesDoc ? path.join(aidlcDir, 'rules.md') : null };
 };

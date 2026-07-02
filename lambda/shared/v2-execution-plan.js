@@ -38,6 +38,15 @@ const RUNNABLE_MODES = ['inline', 'subagent'];
 // no injected persona (the conductor IS the default voice).
 const RESERVED_AGENT_REFS = new Set(['orchestrator']);
 
+// The only fan-out grain the engine schedules (docs/v2-parallel.md A2): a stage
+// marked `forEach: unit-of-work` runs once per unit of the execution's unit DAG,
+// which an upstream in-scope stage must produce as this artifact. Any OTHER
+// forEach value is authorable upstream but not schedulable here — the plan
+// fails loudly (`unsupported_for_each`) instead of silently running the stage
+// once (which would break the stage's own contract).
+const UNIT_FOR_EACH = 'unit-of-work';
+const UNIT_DAG_ARTIFACT = 'unit-of-work-dependency';
+
 // Every validation failure is a plain object (never thrown) so the caller can
 // surface all reasons at once and reject cleanly.
 const err = (code, message, extra = {}) => ({ code, message, ...extra });
@@ -46,8 +55,14 @@ const err = (code, message, extra = {}) => ({ code, message, ...extra });
 // no time/random input, so the same execution re-resolves to identical ids
 // (re-entrancy + reproducible tests). The execution id namespaces instances;
 // absent one (a dry plan), the immutable workflow pin is the namespace.
-const stageInstanceId = (namespace, stageId) =>
-  `si-${createHash('sha256').update(`${namespace}:${stageId}`).digest('hex').slice(0, 16)}`;
+// A `forEach: unit-of-work` stage gains the unit dimension: one instance per
+// unit slug (`namespace:stageId:unit-<slug>`), equally deterministic so lanes
+// re-resolve to identical ids across replays (docs/v2-parallel.md A2 rule 3).
+const stageInstanceId = (namespace, stageId, unitSlug = null) =>
+  `si-${createHash('sha256')
+    .update(unitSlug ? `${namespace}:${stageId}:unit-${unitSlug}` : `${namespace}:${stageId}`)
+    .digest('hex')
+    .slice(0, 16)}`;
 
 // The scopes a workflow offers. Prefer explicit scope refs; fall back to the
 // union of every placement's scopeMembership keys (the seeded default workflow
@@ -352,6 +367,12 @@ const buildExecutionPlan = ({
         // V2 gates every non-initialization stage on human approval; the mapper
         // already encodes this as the flat humanValidation field.
         humanValidation: stage.humanValidation ?? 'none',
+        // Fan-out marker (upstream `for_each`) + execution policy (ALWAYS /
+        // CONDITIONAL — per-unit skippability, docs/v2-parallel.md A2 rule 7).
+        // `parallelSection` is stamped after the topological sort below.
+        forEach: stage.forEach ?? null,
+        execution: stage.execution ?? null,
+        parallelSection: null,
       };
 
       // `agent-team` is a known-but-unrunnable mode. Flag, don't crash.
@@ -377,13 +398,94 @@ const buildExecutionPlan = ({
   // we append them in tiebreak order so the plan document is still complete.
   const orderedStages = topologicalRunOrder(stages);
 
-  const plan = { workflowId, workflowVersion, scope, stages: orderedStages };
+  // ── Parallel sections (docs/v2-parallel.md A2) ────────────────────────────
+  // A section is a maximal contiguous run (w.r.t. the topological run order
+  // above) of `forEach: unit-of-work` stages. Sections are 1-based (`s<k>` in
+  // branch/session naming). Detection is purely structural — no stage names —
+  // so forked workflows get identical semantics. Two validations:
+  //   unsupported_for_each — a forEach value the engine cannot schedule; fail
+  //     loudly rather than run the stage once and break its own contract.
+  //   no_unit_dag_producer — every section needs an in-scope stage EARLIER in
+  //     the run order producing `unit-of-work-dependency` (the scheduling
+  //     truth); mirrors upstream's Doctor rule, same style as dangling_consume.
+  const sections = [];
+  {
+    const producesUnitDag = (s) =>
+      (s.outputArtifacts ?? []).some((o) => (o.artifact ?? o) === UNIT_DAG_ARTIFACT);
+    let dagProducerSeen = false;
+    let current = null;
+    for (const s of orderedStages) {
+      if (s.forEach != null && s.forEach !== UNIT_FOR_EACH) {
+        errors.push(
+          err(
+            'unsupported_for_each',
+            `stage "${s.stageId}" declares forEach "${s.forEach}"; only "${UNIT_FOR_EACH}" is schedulable`,
+            { stageId: s.stageId, ref: s.forEach },
+          ),
+        );
+      }
+      if (s.forEach === UNIT_FOR_EACH) {
+        if (!current) {
+          current = {
+            index: sections.length + 1,
+            stageIds: [],
+            hasUnitDagProducer: dagProducerSeen,
+          };
+          sections.push(current);
+        }
+        s.parallelSection = current.index;
+        current.stageIds.push(s.stageId);
+      } else {
+        current = null;
+      }
+      // A producer inside a section could not gate its own section's fan-out,
+      // so only non-forEach producers count — checked after section membership.
+      if (s.forEach !== UNIT_FOR_EACH && producesUnitDag(s)) dagProducerSeen = true;
+    }
+    for (const section of sections) {
+      if (!section.hasUnitDagProducer) {
+        errors.push(
+          err(
+            'no_unit_dag_producer',
+            `parallel section ${section.index} (${section.stageIds.join(', ')}) has no in-scope upstream stage producing "${UNIT_DAG_ARTIFACT}"`,
+            { ref: section.stageIds },
+          ),
+        );
+      }
+      delete section.hasUnitDagProducer;
+    }
+  }
+
+  const plan = { workflowId, workflowVersion, scope, namespace, stages: orderedStages, sections };
   return { valid: errors.length === 0, errors, plan };
+};
+
+// Split an ordered plan-stage list into an alternating sequence of segments the
+// orchestrator walks: `{ kind: 'stages', stages }` (once-per-workflow, run as
+// today) and `{ kind: 'section', index, stages }` (a parallel section — fan-out
+// over the execution's unit plan; WP4 runs its lanes sequentially, WP5 in
+// parallel). Pure + deterministic; consumes the `parallelSection` stamps.
+const planSegments = (stages) => {
+  const segments = [];
+  for (const s of stages ?? []) {
+    const last = segments[segments.length - 1];
+    if (s.parallelSection != null) {
+      if (last?.kind === 'section' && last.index === s.parallelSection) last.stages.push(s);
+      else segments.push({ kind: 'section', index: s.parallelSection, stages: [s] });
+    } else {
+      if (last?.kind === 'stages') last.stages.push(s);
+      else segments.push({ kind: 'stages', stages: [s] });
+    }
+  }
+  return segments;
 };
 
 module.exports = {
   buildExecutionPlan,
+  planSegments,
   stageInstanceId,
   workflowScopes,
   RUNNABLE_MODES,
+  UNIT_FOR_EACH,
+  UNIT_DAG_ARTIFACT,
 };

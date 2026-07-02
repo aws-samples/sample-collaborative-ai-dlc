@@ -247,6 +247,10 @@ const buildStageRow = ({
   // stage exits. Persisted for traceability + manual operator recovery of a
   // stuck stage. Null for rows written outside the async path.
   stageCallbackId = null,
+  // The unit-of-work lane this stage instance belongs to (docs/v2-parallel.md
+  // WP4). Null for once-per-workflow stages; set on `forEach: unit-of-work`
+  // instances so every stage row is attributable to its lane.
+  unitSlug = null,
   now,
 }) => ({
   ...stageKey(executionId, stageInstanceId),
@@ -255,6 +259,7 @@ const buildStageRow = ({
   executionId,
   stageInstanceId,
   stageId: stageId ?? null,
+  unitSlug,
   phase,
   state,
   attempt,
@@ -273,6 +278,9 @@ const buildEventRow = ({
   executionId,
   type,
   stageInstanceId = null,
+  // Lane attribution (docs/v2-parallel.md WP4): the unit-of-work slug when the
+  // event originates inside a unit lane; null for workflow-level events.
+  unitSlug = null,
   actor,
   summary,
   payloadRef = null,
@@ -286,6 +294,7 @@ const buildEventRow = ({
   executionId,
   eventType: type,
   stageInstanceId,
+  unitSlug,
   actor,
   summary,
   payloadRef,
@@ -296,6 +305,10 @@ const buildHumanTaskRow = ({
   executionId,
   humanTaskId,
   stageInstanceId = null,
+  // Lane attribution (docs/v2-parallel.md WP4): with N parallel lanes parked on
+  // gates at once, a gate must name the unit it belongs to or answers are
+  // unattributable. Null for once-per-workflow stage gates.
+  unitSlug = null,
   kind,
   prompt = null,
   options = null,
@@ -309,6 +322,7 @@ const buildHumanTaskRow = ({
   executionId,
   humanTaskId,
   stageInstanceId,
+  unitSlug,
   kind,
   status,
   prompt,
@@ -332,6 +346,8 @@ const buildHumanTaskRow = ({
 const buildOutputRow = ({
   executionId,
   stageInstanceId = null,
+  // Lane attribution (docs/v2-parallel.md WP4); null outside unit lanes.
+  unitSlug = null,
   seq,
   kind = 'text',
   content,
@@ -342,6 +358,7 @@ const buildOutputRow = ({
   type: 'Output',
   executionId,
   stageInstanceId,
+  unitSlug,
   seq,
   kind,
   content,
@@ -351,6 +368,8 @@ const buildOutputRow = ({
 const buildMetricRow = ({
   executionId,
   stageInstanceId = null,
+  // Lane attribution (docs/v2-parallel.md WP4); null outside unit lanes.
+  unitSlug = null,
   metricId,
   metrics,
   // The model in effect when this sample was recorded, stamped server-side from
@@ -368,6 +387,7 @@ const buildMetricRow = ({
   type: 'Metric',
   executionId,
   stageInstanceId,
+  unitSlug,
   metricId,
   resolvedModel,
   creditRate,
@@ -384,6 +404,8 @@ const buildMetricRow = ({
 const buildSensorRow = ({
   executionId,
   stageInstanceId = null,
+  // Lane attribution (docs/v2-parallel.md WP4); null outside unit lanes.
+  unitSlug = null,
   sensorRunId,
   sensorId,
   kind,
@@ -398,6 +420,7 @@ const buildSensorRow = ({
   type: 'SensorRun',
   executionId,
   stageInstanceId,
+  unitSlug,
   sensorRunId,
   sensorId,
   kind,

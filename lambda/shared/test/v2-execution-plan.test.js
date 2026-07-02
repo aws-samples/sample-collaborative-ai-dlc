@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { buildExecutionPlan, stageInstanceId, workflowScopes } from '../v2-execution-plan.js';
+import {
+  buildExecutionPlan,
+  planSegments,
+  stageInstanceId,
+  workflowScopes,
+} from '../v2-execution-plan.js';
 
 // Minimal flat-frontmatter STAGE block (the current model).
 const stage = (id, extra = {}) => ({
@@ -17,6 +22,8 @@ const stage = (id, extra = {}) => ({
   reviewer: extra.reviewer ?? null,
   reviewerMaxIterations: extra.reviewerMaxIterations,
   humanValidation: extra.humanValidation ?? 'required',
+  forEach: extra.forEach ?? null,
+  execution: extra.execution,
 });
 
 const placement = (stageId, scope = 'feature', order = 0) => ({
@@ -239,5 +246,197 @@ describe('buildExecutionPlan — plan shape', () => {
     ]);
     const { plan } = buildExecutionPlan({ workflow: wf, scope: 'feature', library: lib });
     expect(plan.stages.map((s) => s.stageId)).toEqual(['a']);
+  });
+});
+
+// ── WP4: unit dimension + parallel sections (docs/v2-parallel.md A2) ─────────
+
+describe('stageInstanceId — unit dimension', () => {
+  it('is deterministic per (namespace, stage, unit) and distinct from the unitless id', () => {
+    expect(stageInstanceId('e1', 'code-generation', 'auth')).toBe(
+      stageInstanceId('e1', 'code-generation', 'auth'),
+    );
+    expect(stageInstanceId('e1', 'code-generation', 'auth')).not.toBe(
+      stageInstanceId('e1', 'code-generation'),
+    );
+    expect(stageInstanceId('e1', 'code-generation', 'auth')).not.toBe(
+      stageInstanceId('e1', 'code-generation', 'billing'),
+    );
+  });
+
+  it('a null unit slug is exactly the unitless id (backward compatible)', () => {
+    expect(stageInstanceId('e1', 'a', null)).toBe(stageInstanceId('e1', 'a'));
+  });
+});
+
+// Library fixture for section tests: units-gen produces the DAG artifact;
+// fd/cg are the per-unit construction stages; bt is the fan-in.
+const sectionLibrary = () =>
+  baseLibrary({
+    stagesById: {
+      'units-gen': stage('units-gen', { produces: ['unit-of-work-dependency'] }),
+      fd: stage('fd', {
+        forEach: 'unit-of-work',
+        execution: 'CONDITIONAL',
+        consumes: [{ artifact: 'unit-of-work-dependency', required: true }],
+      }),
+      cg: stage('cg', { forEach: 'unit-of-work', execution: 'ALWAYS', requires: ['fd'] }),
+      bt: stage('bt', { requires: ['cg'] }),
+    },
+    artifactsById: { 'unit-of-work-dependency': { id: 'unit-of-work-dependency' } },
+  });
+
+const sectionWorkflow = () =>
+  workflow([
+    placement('units-gen', 'feature', 0),
+    placement('fd', 'feature', 1),
+    placement('cg', 'feature', 2),
+    placement('bt', 'feature', 3),
+  ]);
+
+describe('buildExecutionPlan — parallel sections', () => {
+  it('detects a contiguous forEach run as one 1-based section and stamps entries', () => {
+    const { valid, plan } = buildExecutionPlan({
+      workflow: sectionWorkflow(),
+      scope: 'feature',
+      library: sectionLibrary(),
+    });
+    expect(valid).toBe(true);
+    expect(plan.sections).toEqual([{ index: 1, stageIds: ['fd', 'cg'] }]);
+    const byId = Object.fromEntries(plan.stages.map((s) => [s.stageId, s]));
+    expect(byId['units-gen'].parallelSection).toBeNull();
+    expect(byId.fd.parallelSection).toBe(1);
+    expect(byId.cg.parallelSection).toBe(1);
+    expect(byId.bt.parallelSection).toBeNull();
+    expect(byId.fd.forEach).toBe('unit-of-work');
+    expect(byId.fd.execution).toBe('CONDITIONAL');
+    expect(byId.cg.execution).toBe('ALWAYS');
+  });
+
+  it('exposes the instance-id namespace on the plan for runtime per-unit ids', () => {
+    const { plan } = buildExecutionPlan({
+      workflow: sectionWorkflow(),
+      scope: 'feature',
+      library: sectionLibrary(),
+    });
+    expect(plan.namespace).toBe('aidlc-v2@1');
+    const fd = plan.stages.find((s) => s.stageId === 'fd');
+    expect(fd.stageInstanceId).toBe(stageInstanceId('aidlc-v2@1', 'fd'));
+  });
+
+  it('splits non-contiguous forEach runs into N sections generically', () => {
+    const lib = baseLibrary({
+      stagesById: {
+        'units-gen': stage('units-gen', { produces: ['unit-of-work-dependency'] }),
+        s1a: stage('s1a', { forEach: 'unit-of-work', requires: ['units-gen'] }),
+        mid: stage('mid', { requires: ['s1a'] }),
+        s2a: stage('s2a', { forEach: 'unit-of-work', requires: ['mid'] }),
+        s2b: stage('s2b', { forEach: 'unit-of-work', requires: ['s2a'] }),
+        end: stage('end', { requires: ['s2b'] }),
+      },
+      artifactsById: { 'unit-of-work-dependency': { id: 'unit-of-work-dependency' } },
+    });
+    const wf = workflow(
+      ['units-gen', 's1a', 'mid', 's2a', 's2b', 'end'].map((id, i) => placement(id, 'feature', i)),
+    );
+    const { valid, plan } = buildExecutionPlan({ workflow: wf, scope: 'feature', library: lib });
+    expect(valid).toBe(true);
+    expect(plan.sections).toEqual([
+      { index: 1, stageIds: ['s1a'] },
+      { index: 2, stageIds: ['s2a', 's2b'] },
+    ]);
+  });
+
+  it('fails no_unit_dag_producer when no in-scope upstream stage produces the DAG', () => {
+    const lib = baseLibrary({
+      stagesById: { cg: stage('cg', { forEach: 'unit-of-work' }) },
+    });
+    const { valid, errors } = buildExecutionPlan({
+      workflow: workflow([placement('cg')]),
+      scope: 'feature',
+      library: lib,
+    });
+    expect(valid).toBe(false);
+    expect(errors.map((e) => e.code)).toContain('no_unit_dag_producer');
+  });
+
+  it('a DAG producer INSIDE the section does not satisfy its own fan-out gate', () => {
+    const lib = baseLibrary({
+      stagesById: {
+        weird: stage('weird', {
+          forEach: 'unit-of-work',
+          produces: ['unit-of-work-dependency'],
+        }),
+      },
+      artifactsById: { 'unit-of-work-dependency': { id: 'unit-of-work-dependency' } },
+    });
+    const { valid, errors } = buildExecutionPlan({
+      workflow: workflow([placement('weird')]),
+      scope: 'feature',
+      library: lib,
+    });
+    expect(valid).toBe(false);
+    expect(errors.map((e) => e.code)).toContain('no_unit_dag_producer');
+  });
+
+  it('fails loudly on a forEach value the engine cannot schedule', () => {
+    const lib = baseLibrary({
+      stagesById: { odd: stage('odd', { forEach: 'user-story' }) },
+    });
+    const { valid, errors } = buildExecutionPlan({
+      workflow: workflow([placement('odd')]),
+      scope: 'feature',
+      library: lib,
+    });
+    expect(valid).toBe(false);
+    const e = errors.find((x) => x.code === 'unsupported_for_each');
+    expect(e).toMatchObject({ stageId: 'odd', ref: 'user-story' });
+  });
+
+  it('a plan without forEach stages has no sections and stays valid', () => {
+    const lib = baseLibrary({ stagesById: { a: stage('a') } });
+    const { valid, plan } = buildExecutionPlan({
+      workflow: workflow([placement('a')]),
+      scope: 'feature',
+      library: lib,
+    });
+    expect(valid).toBe(true);
+    expect(plan.sections).toEqual([]);
+    expect(plan.stages[0].parallelSection).toBeNull();
+  });
+
+  it('an out-of-scope DAG producer does not satisfy the gate', () => {
+    const lib = sectionLibrary();
+    const wf = workflow([
+      { stageId: 'units-gen', order: 0, scopeMembership: { feature: 'SKIP' } },
+      placement('fd', 'feature', 1),
+      placement('cg', 'feature', 2),
+    ]);
+    const { valid, errors } = buildExecutionPlan({ workflow: wf, scope: 'feature', library: lib });
+    expect(valid).toBe(false);
+    expect(errors.map((e) => e.code)).toContain('no_unit_dag_producer');
+  });
+});
+
+describe('planSegments', () => {
+  it('splits the ordered stages into alternating stage/section segments', () => {
+    const { plan } = buildExecutionPlan({
+      workflow: sectionWorkflow(),
+      scope: 'feature',
+      library: sectionLibrary(),
+    });
+    const segments = planSegments(plan.stages);
+    expect(segments.map((s) => s.kind)).toEqual(['stages', 'section', 'stages']);
+    expect(segments[0].stages.map((s) => s.stageId)).toEqual(['units-gen']);
+    expect(segments[1]).toMatchObject({ index: 1 });
+    expect(segments[1].stages.map((s) => s.stageId)).toEqual(['fd', 'cg']);
+    expect(segments[2].stages.map((s) => s.stageId)).toEqual(['bt']);
+  });
+
+  it('handles empty and section-free inputs', () => {
+    expect(planSegments([])).toEqual([]);
+    expect(planSegments(undefined)).toEqual([]);
+    const flat = planSegments([{ stageId: 'a', parallelSection: null }]);
+    expect(flat).toEqual([{ kind: 'stages', stages: [{ stageId: 'a', parallelSection: null }] }]);
   });
 });

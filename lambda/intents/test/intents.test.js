@@ -1476,3 +1476,283 @@ describe('POST /rewind', () => {
     expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).status).toBe('FAILED');
   });
 });
+
+// ── WP4: the unit dimension on the API surface (docs/v2-parallel.md) ─────────
+
+describe('WP4 — unit lanes in the detail DTO', () => {
+  it('surfaces unitPlan + units and lane attribution on stages/gates/events', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'UNITPLAN'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'UNITPLAN',
+      type: 'UnitPlan',
+      executionId: intent.id,
+      units: [
+        { slug: 'auth', dependsOn: [] },
+        { slug: 'billing', dependsOn: ['auth'] },
+      ],
+      batches: [['auth'], ['billing']],
+      unitCount: 2,
+      skipMatrix: { billing: ['functional-design'] },
+      walkingSkeleton: 'auth',
+      autonomyMode: null,
+      promotedAt: 'T',
+    });
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'UNIT#auth'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'UNIT#auth',
+      type: 'Unit',
+      executionId: intent.id,
+      slug: 'auth',
+      dependsOn: [],
+      state: 'MERGED',
+      batchIndex: 0,
+      branch: 'aidlc/i1',
+      mergedAt: 'T2',
+    });
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'STAGE#si-cg-auth'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'STAGE#si-cg-auth',
+      type: 'Stage',
+      executionId: intent.id,
+      stageInstanceId: 'si-cg-auth',
+      stageId: 'code-generation',
+      unitSlug: 'auth',
+      state: 'SUCCEEDED',
+    });
+    seedGate(intent.id, 'q-1', { status: 'pending', stageInstanceId: 'si-cg-auth' });
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'HUMAN#q-1'), {
+      ...procStore.get(keyOf(`EXEC#${intent.id}`, 'HUMAN#q-1')),
+      unitSlug: 'auth',
+    });
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'EVENT#T#e1'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'EVENT#T#e1',
+      type: 'Event',
+      executionId: intent.id,
+      eventId: 'e1',
+      eventType: 'v2.unit.merged',
+      stageInstanceId: null,
+      unitSlug: 'auth',
+      actor: 'orchestrator',
+      summary: 'Unit auth completed',
+      timestamp: 'T2',
+    });
+
+    const detail = JSON.parse(
+      (
+        await handler({
+          httpMethod: 'GET',
+          path: `/projects/${projectId}/intents/${intent.id}`,
+          pathParameters: { projectId, intentId: intent.id },
+          ...claims(sub),
+        })
+      ).body,
+    );
+    expect(detail.unitPlan).toMatchObject({
+      unitCount: 2,
+      walkingSkeleton: 'auth',
+      skipMatrix: { billing: ['functional-design'] },
+      batches: [['auth'], ['billing']],
+    });
+    expect(detail.units).toEqual([
+      expect.objectContaining({ slug: 'auth', state: 'MERGED', mergedAt: 'T2' }),
+    ]);
+    expect(detail.stages).toEqual([
+      expect.objectContaining({ stageId: 'code-generation', unitSlug: 'auth' }),
+    ]);
+    expect(detail.gates).toEqual([
+      expect.objectContaining({ humanTaskId: 'q-1', unitSlug: 'auth' }),
+    ]);
+    expect(detail.events.find((e) => e.type === 'v2.unit.merged')).toMatchObject({
+      unitSlug: 'auth',
+    });
+  });
+
+  it('a pre-promotion intent carries unitPlan null and units []', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const detail = JSON.parse(
+      (
+        await handler({
+          httpMethod: 'GET',
+          path: `/projects/${projectId}/intents/${intent.id}`,
+          pathParameters: { projectId, intentId: intent.id },
+          ...claims(sub),
+        })
+      ).body,
+    );
+    expect(detail.unitPlan).toBeNull();
+    expect(detail.units).toEqual([]);
+  });
+});
+
+describe('WP4 — rewind expands per-unit stage instances', () => {
+  // Plan: units-gen (produces the DAG) → cg (forEach: unit-of-work) → bt.
+  const seedSectionPlan = () => {
+    const placement = (stageId, order) =>
+      procStore.set(keyOf('WF#default#aidlc-v2', `V#4#PLACEMENT#${stageId}`), {
+        pk: 'WF#default#aidlc-v2',
+        sk: `V#4#PLACEMENT#${stageId}`,
+        stageId,
+        order,
+        scopeMembership: { feature: 'EXECUTE' },
+      });
+    placement('units-gen', 1);
+    placement('cg', 2);
+    placement('bt', 3);
+    const stageBlock = (stageId, extra = {}) =>
+      procStore.set(keyOf(`BLOCK#${stageId}`, 'META'), {
+        pk: `BLOCK#${stageId}`,
+        sk: 'META',
+        GSI1PK: 'TENANT#default#STAGE',
+        GSI1SK: `NAME#${stageId}`,
+        id: stageId,
+        blockId: stageId,
+        type: 'STAGE',
+        version: 1,
+        mode: 'inline',
+        leadAgent: 'orchestrator',
+        produces: [],
+        consumes: [],
+        ...extra,
+      });
+    stageBlock('units-gen', { produces: ['unit-of-work-dependency'] });
+    stageBlock('cg', { forEach: 'unit-of-work', requires: ['units-gen'] });
+    stageBlock('bt', { requires: ['cg'] });
+  };
+
+  const siOf = (stageId, unitSlug = null) => planStageInstanceId('aidlc-v2@4', stageId, unitSlug);
+
+  const seedStageRow = (intentId, stageId, unitSlug = null, state = 'SUCCEEDED') =>
+    procStore.set(keyOf(`EXEC#${intentId}`, `STAGE#${siOf(stageId, unitSlug)}`), {
+      pk: `EXEC#${intentId}`,
+      sk: `STAGE#${siOf(stageId, unitSlug)}`,
+      type: 'Stage',
+      executionId: intentId,
+      stageInstanceId: siOf(stageId, unitSlug),
+      stageId,
+      unitSlug,
+      state,
+      attempt: 0,
+      cli: 'claude',
+      cliSessionId: 'sess-1',
+    });
+
+  it('resets every lane instance of a forEach stage and re-opens the touched lanes', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSectionPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    setStatus(intent.id, { status: 'FAILED' });
+    await seedIntentAnchor(intent.id);
+    seedStageRow(intent.id, 'units-gen');
+    seedStageRow(intent.id, 'cg', 'auth');
+    seedStageRow(intent.id, 'cg', 'billing', 'FAILED');
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'UNITPLAN'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'UNITPLAN',
+      executionId: intent.id,
+      units: [
+        { slug: 'auth', dependsOn: [] },
+        { slug: 'billing', dependsOn: ['auth'] },
+      ],
+      batches: [['auth'], ['billing']],
+    });
+    const unitRow = (slug, state, extra = {}) =>
+      procStore.set(keyOf(`EXEC#${intent.id}`, `UNIT#${slug}`), {
+        pk: `EXEC#${intent.id}`,
+        sk: `UNIT#${slug}`,
+        executionId: intent.id,
+        slug,
+        state,
+        ...extra,
+      });
+    unitRow('auth', 'MERGED');
+    unitRow('billing', 'FAILED', { failureReason: 'cg: sensor_blocked' });
+
+    const res = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/rewind`,
+      pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({
+        fromStageId: 'cg',
+        guidance: 'Regenerate both units against the new schema.',
+      }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(202);
+
+    // BOTH lane instances of cg were reset; units-gen upstream untouched.
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('cg', 'auth')}`))).toMatchObject({
+      state: 'PENDING',
+      attempt: 1,
+    });
+    expect(
+      procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('cg', 'billing')}`)),
+    ).toMatchObject({ state: 'PENDING', attempt: 1 });
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('units-gen')}`))).toMatchObject({
+      state: 'SUCCEEDED',
+    });
+
+    // The touched lanes were re-opened (PENDING, verdict fields cleared).
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'UNIT#auth'))).toMatchObject({
+      state: 'PENDING',
+    });
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'UNIT#billing'))).toMatchObject({
+      state: 'PENDING',
+      failureReason: null,
+    });
+
+    // Reset events carry the lane attribution.
+    const events = [...procStore.values()].filter(
+      (i) => i.pk === `EXEC#${intent.id}` && i.eventType === 'v2.stage.reset',
+    );
+    expect(events.some((e) => e.unitSlug === 'auth')).toBe(true);
+    expect(events.some((e) => e.unitSlug === 'billing')).toBe(true);
+  });
+
+  it('rewinding to a post-section stage leaves lanes and lane instances alone', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSectionPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    setStatus(intent.id, { status: 'SUCCEEDED' });
+    await seedIntentAnchor(intent.id);
+    seedStageRow(intent.id, 'units-gen');
+    seedStageRow(intent.id, 'cg', 'auth');
+    seedStageRow(intent.id, 'cg', 'billing');
+    seedStageRow(intent.id, 'bt');
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'UNIT#auth'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'UNIT#auth',
+      executionId: intent.id,
+      slug: 'auth',
+      state: 'MERGED',
+    });
+
+    const res = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/rewind`,
+      pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ fromStageId: 'bt', guidance: 'Re-run the build only.' }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(202);
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('bt')}`))).toMatchObject({
+      state: 'PENDING',
+      attempt: 1,
+    });
+    // Lane instances + lane rows untouched.
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('cg', 'auth')}`))).toMatchObject({
+      state: 'SUCCEEDED',
+      attempt: 0,
+    });
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'UNIT#auth'))).toMatchObject({
+      state: 'MERGED',
+    });
+  });
+});

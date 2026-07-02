@@ -235,3 +235,95 @@ describe('orchestrator on the real durable runner (replay semantics)', () => {
     expect(world.statusWrites).not.toContain('FAILED');
   });
 });
+
+// ── WP4: a parallel section's sequential lane walk under REAL replay ─────────
+// Proves the segment walk + lane bookkeeping are replay-stable: a lane parks
+// mid-section (suspend → out-of-band answer → resume = genuine replays) and
+// every side effect — lane transitions, per-lane dispatches, events — happens
+// exactly once with correct unit attribution.
+
+describe('WP4 sections on the real durable runner', () => {
+  it('walks lanes sequentially through a mid-lane park with exactly-once lane bookkeeping', async () => {
+    const world = makeWorld({
+      stages: [
+        { stageId: 'gen', outputArtifacts: [{ artifact: 'unit-of-work-dependency' }] },
+        { stageId: 'cg', parallelSection: 1, execution: 'ALWAYS', phase: 'construction' },
+        { stageId: 'bt' },
+      ],
+    });
+    world.unitStates = [];
+    world.deps.store.getUnitPlan = async () => ({
+      units: [
+        { slug: 'auth', dependsOn: [] },
+        { slug: 'billing', dependsOn: ['auth'] },
+      ],
+      batches: [['auth'], ['billing']],
+      skipMatrix: {},
+    });
+    world.deps.store.updateUnitState = async (args) => {
+      world.unitStates.push(`${args.slug}:${args.state}`);
+      return { slug: args.slug, state: args.state };
+    };
+    // promote-units is invoked (accept-only fake returns ok) after `gen`.
+    const handler = withDurableExecution((event, ctx) => __durableHandler(event, ctx, world.deps));
+    const runner = new LocalDurableTestRunner({ handlerFunction: handler });
+
+    const executionPromise = runner.run({
+      payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
+    });
+
+    await completeStage(runner, 'stage-cb-gen', { ok: true, state: 'SUCCEEDED' });
+    // auth's lane parks on a gate mid-section.
+    world.pendingHumanTaskId = 'h7';
+    world.gateStatus = 'pending';
+    await completeStage(runner, 'stage-cb-cg-u-auth', {
+      ok: true,
+      state: 'WAITING_FOR_HUMAN',
+      humanTaskId: 'h7',
+      unitSlug: 'auth',
+    });
+    const gateOp = await runner
+      .getOperation('await-h7')
+      .waitForData(WaitingOperationStatus.STARTED);
+    world.gateStatus = 'answered';
+    world.pendingHumanTaskId = null;
+    await gateOp.sendCallbackSuccess(JSON.stringify({ answer: 'approved' }));
+    await completeStage(runner, 'stage-cb-cg-u-auth-resume-h7', { ok: true, state: 'SUCCEEDED' });
+    await completeStage(runner, 'stage-cb-cg-u-billing', { ok: true, state: 'SUCCEEDED' });
+    await completeStage(runner, 'stage-cb-bt', { ok: true, state: 'SUCCEEDED' });
+
+    const execution = await executionPromise;
+    expect(execution.getResult()).toEqual({ ok: true, intentId: 'i1', stages: 3 });
+
+    // Exactly-once dispatches, in lane order, with unit attribution.
+    const starts = world.invokes.filter((p) => p.command === 'run-stage-start');
+    expect(starts.map((p) => `${p.stageId}:${p.unitSlug ?? '-'}:${p.resumeFrom ?? '-'}`)).toEqual([
+      'gen:-:-',
+      'cg:auth:-',
+      'cg:auth:h7',
+      'cg:billing:-',
+      'bt:-:-',
+    ]);
+    // promote-units fired once between gen and the section.
+    expect(world.invokes.map((p) => p.command)).toEqual([
+      'init-ws',
+      'run-stage-start',
+      'promote-units',
+      'run-stage-start',
+      'run-stage-start',
+      'run-stage-start',
+      'run-stage-start',
+    ]);
+    // Lane transitions exactly once each, despite the mid-lane suspend/replay.
+    expect(world.unitStates).toEqual([
+      'auth:RUNNING',
+      'auth:MERGED',
+      'billing:RUNNING',
+      'billing:MERGED',
+    ]);
+    // Lane lifecycle events recorded once each with the terminal write.
+    expect(world.events.filter((t) => t === 'v2.unit.started')).toHaveLength(2);
+    expect(world.events.filter((t) => t === 'v2.unit.merged')).toHaveLength(2);
+    expect(world.statusWrites.filter((s) => s === 'SUCCEEDED')).toHaveLength(1);
+  });
+});

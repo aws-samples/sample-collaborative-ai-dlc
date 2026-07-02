@@ -16,7 +16,11 @@ import {
   unitKey,
   buildExecutionMeta,
   buildStageRow,
+  buildEventRow,
   buildHumanTaskRow,
+  buildOutputRow,
+  buildMetricRow,
+  buildSensorRow,
   buildSteeringRow,
   buildUnitPlanRow,
   buildUnitRow,
@@ -718,5 +722,141 @@ describe('unit store methods', () => {
     expect(grouped.units).toHaveLength(2);
     // UNITPLAN never leaks into the units list.
     expect(grouped.units.map((r) => r.sk)).toEqual(['UNIT#auth', 'UNIT#catalog']);
+  });
+});
+
+// ── WP4: the unit dimension on stage-scoped rows (docs/v2-parallel.md) ───────
+// Every row a unit lane writes must be attributable to its lane; rows written
+// outside a lane default to unitSlug null so existing writers are untouched.
+
+describe('unit dimension on row builders', () => {
+  const base = { executionId: 'e1', now: 'T' };
+
+  it('defaults unitSlug to null on every stage-scoped builder', () => {
+    expect(buildStageRow({ ...base, stageInstanceId: 'si-1' }).unitSlug).toBeNull();
+    expect(
+      buildEventRow({ ...base, type: 'v2.x', actor: 'engine', eventId: 'ev1' }).unitSlug,
+    ).toBeNull();
+    expect(buildHumanTaskRow({ ...base, humanTaskId: 'h1', kind: 'question' }).unitSlug).toBeNull();
+    expect(buildOutputRow({ ...base, seq: 1, content: 'x' }).unitSlug).toBeNull();
+    expect(buildMetricRow({ ...base, metricId: 'm1', metrics: {} }).unitSlug).toBeNull();
+    expect(
+      buildSensorRow({
+        ...base,
+        sensorRunId: 's1',
+        sensorId: 'lint',
+        kind: 'script',
+        severity: 'advisory',
+        result: 'PASS',
+      }).unitSlug,
+    ).toBeNull();
+  });
+
+  it('carries unitSlug when supplied', () => {
+    expect(buildStageRow({ ...base, stageInstanceId: 'si-1', unitSlug: 'auth' }).unitSlug).toBe(
+      'auth',
+    );
+    expect(
+      buildEventRow({ ...base, type: 'v2.x', actor: 'engine', eventId: 'ev1', unitSlug: 'auth' })
+        .unitSlug,
+    ).toBe('auth');
+    expect(
+      buildHumanTaskRow({ ...base, humanTaskId: 'h1', kind: 'question', unitSlug: 'auth' })
+        .unitSlug,
+    ).toBe('auth');
+    expect(buildOutputRow({ ...base, seq: 1, content: 'x', unitSlug: 'auth' }).unitSlug).toBe(
+      'auth',
+    );
+    expect(
+      buildMetricRow({ ...base, metricId: 'm1', metrics: {}, unitSlug: 'auth' }).unitSlug,
+    ).toBe('auth');
+    expect(
+      buildSensorRow({
+        ...base,
+        sensorRunId: 's1',
+        sensorId: 'lint',
+        kind: 'script',
+        severity: 'advisory',
+        result: 'PASS',
+        unitSlug: 'auth',
+      }).unitSlug,
+    ).toBe('auth');
+  });
+});
+
+describe('unit dimension through the store', () => {
+  const ddb = mockClient(DynamoDBDocumentClient);
+  let store;
+  beforeEach(() => {
+    ddb.reset();
+    let n = 0;
+    store = createProcessStore({
+      ddb,
+      tableName: 'v2-proc',
+      clock: () => 'T',
+      ids: () => `id-${++n}`,
+    });
+  });
+
+  it('putStage / appendEvent / createHumanTask persist the lane attribution', async () => {
+    ddb.on(PutCommand).resolves({});
+    await store.putStage({ executionId: 'e1', stageInstanceId: 'si-1', unitSlug: 'auth' });
+    await store.appendEvent({
+      executionId: 'e1',
+      type: 'v2.stage.running',
+      stageInstanceId: 'si-1',
+      unitSlug: 'auth',
+      actor: 'engine',
+      summary: 'x',
+    });
+    await store.createHumanTask({
+      executionId: 'e1',
+      stageInstanceId: 'si-1',
+      unitSlug: 'auth',
+      kind: 'question',
+    });
+    const items = ddb.commandCalls(PutCommand).map((c) => c.args[0].input.Item);
+    expect(items.map((i) => i.unitSlug)).toEqual(['auth', 'auth', 'auth']);
+  });
+
+  it('recordMetric / recordSensorRun / appendOutput persist the lane attribution', async () => {
+    ddb.on(PutCommand).resolves({});
+    ddb.on(UpdateCommand).resolves({ Attributes: { outputSeq: 1 } });
+    await store.recordMetric({
+      executionId: 'e1',
+      stageInstanceId: 'si-1',
+      unitSlug: 'auth',
+      metrics: { tokensInput: 1 },
+    });
+    await store.recordSensorRun({
+      executionId: 'e1',
+      stageInstanceId: 'si-1',
+      unitSlug: 'auth',
+      sensorId: 'lint',
+      kind: 'script',
+      severity: 'advisory',
+      result: 'PASS',
+    });
+    await store.appendOutput({
+      executionId: 'e1',
+      stageInstanceId: 'si-1',
+      unitSlug: 'auth',
+      content: 'hello',
+    });
+    const items = ddb.commandCalls(PutCommand).map((c) => c.args[0].input.Item);
+    expect(items.map((i) => i.unitSlug)).toEqual(['auth', 'auth', 'auth']);
+  });
+
+  it('omitting unitSlug stays null end-to-end (existing writers untouched)', async () => {
+    ddb.on(PutCommand).resolves({});
+    await store.appendEvent({
+      executionId: 'e1',
+      type: 'v2.stage.running',
+      stageInstanceId: 'si-1',
+      actor: 'engine',
+      summary: 'x',
+    });
+    const item = ddb.commandCalls(PutCommand)[0].args[0].input.Item;
+    expect(item.unitSlug).toBeNull();
   });
 });

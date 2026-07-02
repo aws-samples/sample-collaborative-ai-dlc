@@ -27,6 +27,10 @@ const scopeFromEnv = (env = process.env) => ({
   intentId: env.V2_INTENT_ID,
   projectId: env.V2_PROJECT_ID,
   stageInstanceId: env.V2_STAGE_INSTANCE_ID ?? null,
+  // Unit lane attribution (docs/v2-parallel.md WP4): set on `forEach:
+  // unit-of-work` stage instances so gates/outputs/metrics/events the bridge
+  // writes name their lane (empty string → null).
+  unitSlug: env.V2_UNIT_SLUG || null,
   // The concrete model run-stage resolved for this stage, stamped onto metric
   // rows so token usage can be priced at read time (empty string → null).
   model: env.V2_RESOLVED_MODEL || null,

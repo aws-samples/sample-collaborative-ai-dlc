@@ -9,6 +9,7 @@ import {
   MCP_EXECUTION_ANNEX,
   neutralizeHarnessDir,
   buildStagePrompt,
+  renderUnitScope,
   buildMcpConfig,
   buildKiroAgentConfig,
   materializeKiroAgent,
@@ -224,5 +225,50 @@ describe('materializeKiroAgent (workspace write)', () => {
     const cfg = JSON.parse(await readFile(path.join(ws, '.kiro', 'agents', 'aidlc.json'), 'utf8'));
     expect(cfg.name).toBe('aidlc');
     expect(cfg.mcpServers.aidlc.env.V2_EXECUTION_ID).toBe('e1');
+  });
+});
+
+// ── WP4: unit lanes (docs/v2-parallel.md) ────────────────────────────────────
+
+describe('renderUnitScope + the prompt unit-scope block', () => {
+  it('renders the unit, its dependencies, and the lane boundary', () => {
+    const block = renderUnitScope({ slug: 'billing', dependsOn: ['auth', 'catalog'] });
+    expect(block).toContain('## Unit scope (fan-out)');
+    expect(block).toContain('**billing**');
+    expect(block).toContain('Depends on (already completed): auth, catalog');
+  });
+
+  it('renders "none" for an independent unit and empty for no unit', () => {
+    expect(renderUnitScope({ slug: 'auth', dependsOn: [] })).toContain(
+      'Depends on (already completed): none',
+    );
+    expect(renderUnitScope(null)).toBe('');
+    expect(renderUnitScope({})).toBe('');
+  });
+
+  it('buildStagePrompt injects the unit block BEFORE the stage instructions on lane runs only', () => {
+    const withUnit = buildStagePrompt({
+      stage: stage(),
+      unit: { slug: 'billing', dependsOn: ['auth'] },
+      stageBody: 'Generate the code.',
+    });
+    expect(withUnit).toContain('## Unit scope (fan-out)');
+    expect(withUnit.indexOf('## Unit scope (fan-out)')).toBeLessThan(
+      withUnit.indexOf('## Stage instructions'),
+    );
+    const withoutUnit = buildStagePrompt({ stage: stage(), stageBody: 'x' });
+    expect(withoutUnit).not.toContain('## Unit scope');
+  });
+});
+
+describe('buildMcpConfig — unit lane scope', () => {
+  it('passes V2_UNIT_SLUG to the MCP child env (empty outside a lane)', () => {
+    const laneCfg = buildMcpConfig({
+      mcpEntry: 'x',
+      scope: { executionId: 'e', intentId: 'i', unitSlug: 'billing' },
+    });
+    expect(laneCfg.mcpServers.aidlc.env.V2_UNIT_SLUG).toBe('billing');
+    const plainCfg = buildMcpConfig({ mcpEntry: 'x', scope: { executionId: 'e', intentId: 'i' } });
+    expect(plainCfg.mcpServers.aidlc.env.V2_UNIT_SLUG).toBe('');
   });
 });

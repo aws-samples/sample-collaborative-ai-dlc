@@ -213,6 +213,7 @@ export function IntentProvider({
           next.set(evt.humanTaskId!, {
             humanTaskId: evt.humanTaskId!,
             stageInstanceId: evt.stageInstanceId ?? null,
+            unitSlug: evt.unitSlug ?? null,
             kind: 'question',
             status: 'pending',
             prompt: null,
@@ -237,14 +238,15 @@ export function IntentProvider({
         setOutputVersion((n) => n + 1);
         return;
       }
-      // Stage/execution/metric/note/steering transitions → refetch the assembled DTO.
+      // Stage/execution/metric/note/steering/unit transitions → refetch the assembled DTO.
       if (
         evt.action === 'agent.stage' ||
         evt.action === 'agent.execution' ||
         evt.action === 'agent.workspace' ||
         evt.action === 'agent.metric' ||
         evt.action === 'agent.steering' ||
-        evt.action === 'agent.note'
+        evt.action === 'agent.note' ||
+        evt.action === 'agent.unit'
       ) {
         load();
       }

@@ -29,8 +29,11 @@
 
 // Key one in-flight stage attempt. resumeFrom distinguishes park/resume legs —
 // a resume may legitimately start while bookkeeping for the parked leg of the
-// same stage is still clearing.
-const jobKey = (p) => `${p.executionId}:${p.stageId}:${p.resumeFrom ?? 'fresh'}`;
+// same stage is still clearing. unitSlug distinguishes lanes: the same stage
+// runs once per unit under fan-out (docs/v2-parallel.md WP4), and two lanes'
+// instances of one stage are different jobs, never duplicates.
+const jobKey = (p) =>
+  `${p.executionId}:${p.stageId}:${p.unitSlug ?? '-'}:${p.resumeFrom ?? 'fresh'}`;
 
 // Normalize the run-stage return contract for the orchestrator's single decode
 // path: run-stage's failures are `{ok:false, reason, detail}` WITHOUT a state

@@ -244,6 +244,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     executionId,
     type,
     stageInstanceId,
+    unitSlug,
     actor,
     summary,
     payloadRef,
@@ -252,6 +253,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       executionId,
       type,
       stageInstanceId,
+      unitSlug,
       actor,
       summary,
       payloadRef,
@@ -273,6 +275,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   const createHumanTask = async ({
     executionId,
     stageInstanceId,
+    unitSlug,
     kind,
     prompt,
     options,
@@ -284,6 +287,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       executionId,
       humanTaskId: id,
       stageInstanceId,
+      unitSlug,
       kind,
       prompt,
       options,
@@ -603,6 +607,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   const recordMetric = async ({
     executionId,
     stageInstanceId,
+    unitSlug,
     metrics,
     resolvedModel = null,
     creditRate = null,
@@ -610,6 +615,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     const item = buildMetricRow({
       executionId,
       stageInstanceId,
+      unitSlug,
       metricId: nextId(),
       metrics,
       resolvedModel,
@@ -625,6 +631,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   const recordSensorRun = async ({
     executionId,
     stageInstanceId,
+    unitSlug,
     sensorId,
     kind,
     severity,
@@ -635,6 +642,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     const item = buildSensorRow({
       executionId,
       stageInstanceId,
+      unitSlug,
       sensorRunId: nextId(),
       sensorId,
       kind,
@@ -651,7 +659,13 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   // Append an agent output chunk for restore-on-reload. The sequence is an atomic
   // counter on the META row (ADD), so concurrent chunks never collide and SK sort
   // == emit order. The live copy is broadcast over the websocket by the caller.
-  const appendOutput = async ({ executionId, stageInstanceId, kind = 'text', content }) => {
+  const appendOutput = async ({
+    executionId,
+    stageInstanceId,
+    unitSlug,
+    kind = 'text',
+    content,
+  }) => {
     const { Attributes } = await ddb.send(
       new UpdateCommand({
         TableName: table(),
@@ -662,7 +676,15 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       }),
     );
     const seq = Number(Attributes?.outputSeq ?? 1);
-    const item = buildOutputRow({ executionId, stageInstanceId, seq, kind, content, now: now() });
+    const item = buildOutputRow({
+      executionId,
+      stageInstanceId,
+      unitSlug,
+      seq,
+      kind,
+      content,
+      now: now(),
+    });
     await ddb.send(new PutCommand({ TableName: table(), Item: item }));
     return item;
   };

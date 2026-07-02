@@ -17,6 +17,7 @@ import { fetchMembershipRole, projectTrackersFoldStep, mapBinding } from '../sha
 import { signRealtimeToken } from '../shared/realtime-token.js';
 import cliModelsPkg from '../shared/cli-models.js';
 import workflowPlanPkg from '../shared/v2-workflow-plan.js';
+import executionPlanPkg from '../shared/v2-execution-plan.js';
 import pricingPkg from '../shared/model-pricing.js';
 import metricClassificationPkg from '../shared/metric-classification.js';
 import { fetchKnowledgeGraph } from './knowledge-graph.js';
@@ -24,6 +25,7 @@ import { fetchKnowledgeGraph } from './knowledge-graph.js';
 const { createProcessStore } = pkg;
 const { parseCliModels, mergeCliModels } = cliModelsPkg;
 const { loadWorkflowScopes, loadExecutionPlan } = workflowPlanPkg;
+const { stageInstanceId: planStageInstanceId } = executionPlanPkg;
 const { makePriceResolver, costForMetrics } = pricingPkg;
 const { aggregateMetrics, rollupAggregates } = metricClassificationPkg;
 
@@ -773,6 +775,26 @@ export const handler = async (event) => {
         });
       }
       const resetStages = stages.slice(idx);
+      // Per-unit instance expansion (docs/v2-parallel.md WP4): a `forEach:
+      // unit-of-work` stage has one STAGE row (and one artifact provenance id)
+      // PER UNIT — a rewind must reset every lane's instance, and the touched
+      // lanes themselves, or the relaunch would see stale terminal rows.
+      const sectionStages = resetStages.filter((s) => s.parallelSection != null);
+      const unitPlan = sectionStages.length
+        ? await store.getUnitPlan(intentId).catch(() => null)
+        : null;
+      const unitSlugs = (unitPlan?.units ?? []).map((u) => u.slug);
+      const planNamespace =
+        planResult.plan.namespace ?? `${meta.workflowId}@${meta.workflowVersion}`;
+      const resetInstances = resetStages.flatMap((stage) =>
+        stage.parallelSection != null
+          ? unitSlugs.map((unitSlug) => ({
+              stage,
+              unitSlug,
+              stageInstanceId: planStageInstanceId(planNamespace, stage.stageId, unitSlug),
+            }))
+          : [{ stage, unitSlug: null, stageInstanceId: stage.stageInstanceId }],
+      );
       const responder = getResponder(event);
       // Retire a parked run first so the woken orchestrator exits quietly (its
       // gate is superseded) instead of racing the relaunch.
@@ -787,27 +809,44 @@ export const handler = async (event) => {
         createdBy: responder.sub,
         createdByName: responder.displayName,
       });
-      for (const stage of resetStages) {
+      for (const { stage, unitSlug, stageInstanceId } of resetInstances) {
         const reset = await store.resetStageRow({
           executionId: intentId,
-          stageInstanceId: stage.stageInstanceId,
+          stageInstanceId,
         });
         if (reset) {
           await store
             .appendEvent({
               executionId: intentId,
               type: 'v2.stage.reset',
-              stageInstanceId: stage.stageInstanceId,
+              stageInstanceId,
+              unitSlug,
               actor: responder.displayName || responder.sub,
-              summary: `Stage ${stage.stageId} reset for rewind (attempt ${reset.attempt + 1})`,
+              summary: `Stage ${stage.stageId}${unitSlug ? ` [unit ${unitSlug}]` : ''} reset for rewind (attempt ${reset.attempt + 1})`,
             })
             .catch(() => {});
+        }
+      }
+      // Reset the touched lanes so the relaunch re-walks them (state PENDING,
+      // stale verdict fields cleared). Unconditional — a rewind overrides any
+      // lane state; the UNIT rows are the lane-level view, never audit (the
+      // per-instance STAGE rows + EVENT feed keep the history).
+      if (sectionStages.length && unitSlugs.length) {
+        for (const slug of unitSlugs) {
+          await store
+            .updateUnitState({
+              executionId: intentId,
+              slug,
+              state: 'PENDING',
+              fields: { failureReason: null, blockedOn: null },
+            })
+            .catch((err) => console.error(`Unit lane reset failed (${slug}):`, err.message));
         }
       }
       const supersededArtifacts = await supersedeArtifactsForStages(
         g,
         intentId,
-        resetStages.map((s) => s.stageInstanceId),
+        resetInstances.map((i) => i.stageInstanceId),
         steer.steerId,
       ).catch((err) => {
         console.error('Artifact supersede failed:', err.message);
@@ -821,7 +860,7 @@ export const handler = async (event) => {
           executionId: intentId,
           type: 'v2.execution.rewound',
           actor: responder.displayName || responder.sub,
-          summary: `${responder.displayName || 'Someone'} rewound the run to ${fromStageId} (${resetStages.length} stage(s) reset, ${supersededArtifacts.length} artifact(s) superseded)`,
+          summary: `${responder.displayName || 'Someone'} rewound the run to ${fromStageId} (${resetInstances.length} stage instance(s) reset, ${supersededArtifacts.length} artifact(s) superseded)`,
         })
         .catch((err) => console.error('Rewind event append failed:', err.message));
       // Relaunch at the rewind point. Same CAS + rollback discipline as /start.
@@ -890,6 +929,7 @@ export const handler = async (event) => {
             eventId: e.eventId,
             type: e.eventType,
             stageInstanceId: e.stageInstanceId ?? null,
+            unitSlug: e.unitSlug ?? null,
             actor: e.actor ?? null,
             summary: e.summary ?? null,
             timestamp: e.timestamp,
@@ -902,6 +942,7 @@ export const handler = async (event) => {
         outputs: records.outputs.map((o) => ({
           seq: o.seq,
           stageInstanceId: o.stageInstanceId ?? null,
+          unitSlug: o.unitSlug ?? null,
           kind: o.kind,
           content: o.content,
           timestamp: o.timestamp,
@@ -909,6 +950,7 @@ export const handler = async (event) => {
         sensorRuns: records.sensorRuns.map((s) => ({
           sensorRunId: s.sensorRunId,
           stageInstanceId: s.stageInstanceId ?? null,
+          unitSlug: s.unitSlug ?? null,
           sensorId: s.sensorId,
           result: s.result,
           severity: s.severity,
@@ -921,6 +963,11 @@ export const handler = async (event) => {
           timestamp: s.timestamp,
         })),
         artifacts,
+        // Unit lanes (docs/v2-parallel.md WP4): the promoted UNITPLAN snapshot
+        // + the live UNIT lane rows, so the UI can render the lane board and
+        // attribute per-unit stage instances. Both null/empty pre-promotion.
+        unitPlan: mapUnitPlan(records.unitPlan),
+        units: (records.units ?? []).map(mapUnit),
       });
     }
 
@@ -1112,6 +1159,7 @@ const retireParkedRun = async (executionId, reason) => {
 const mapStage = (s) => ({
   stageInstanceId: s.stageInstanceId,
   stageId: s.stageId ?? null,
+  unitSlug: s.unitSlug ?? null,
   phase: s.phase ?? null,
   state: s.state,
   attempt: s.attempt ?? 0,
@@ -1121,6 +1169,34 @@ const mapStage = (s) => ({
   startedAt: s.startedAt ?? null,
   completedAt: s.completedAt ?? null,
   updatedAt: s.updatedAt ?? null,
+});
+
+// Unit lanes (docs/v2-parallel.md WP4): the promoted scheduling snapshot and
+// the per-lane rows, in wire shape. Null/[] before promotion.
+const mapUnitPlan = (p) =>
+  p
+    ? {
+        units: p.units ?? [],
+        batches: p.batches ?? [],
+        unitCount: p.unitCount ?? (p.units ?? []).length,
+        skipMatrix: p.skipMatrix ?? {},
+        walkingSkeleton: p.walkingSkeleton ?? null,
+        autonomyMode: p.autonomyMode ?? null,
+        promotedAt: p.promotedAt ?? null,
+      }
+    : null;
+
+const mapUnit = (u) => ({
+  slug: u.slug,
+  dependsOn: u.dependsOn ?? [],
+  state: u.state,
+  batchIndex: u.batchIndex ?? 0,
+  branch: u.branch ?? null,
+  startedAt: u.startedAt ?? null,
+  mergedAt: u.mergedAt ?? null,
+  failureReason: u.failureReason ?? null,
+  blockedOn: u.blockedOn ?? null,
+  updatedAt: u.updatedAt ?? null,
 });
 
 // Map metric rows to the DTO shape, attaching the model in effect and its cost.
@@ -1181,6 +1257,7 @@ const summarizeExecutionMetrics = (metrics = [], stages = [], priceFor) => {
 const mapHumanTask = (h) => ({
   humanTaskId: h.humanTaskId,
   stageInstanceId: h.stageInstanceId ?? null,
+  unitSlug: h.unitSlug ?? null,
   kind: h.kind,
   status: h.status,
   prompt: h.prompt ?? null,

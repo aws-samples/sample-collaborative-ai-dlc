@@ -36,7 +36,13 @@ export const createProcessBridge = ({
 } = {}) => {
   if (!store) throw new Error('createProcessBridge requires a process store');
   if (!scope.executionId) throw new Error('createProcessBridge requires scope.executionId');
-  const { executionId, intentId = null, stageInstanceId = null, model = null } = scope;
+  const {
+    executionId,
+    intentId = null,
+    stageInstanceId = null,
+    unitSlug = null,
+    model = null,
+  } = scope;
 
   // Ask the human team one or more structured questions. Opens a pending gate,
   // mirrors a Question vertex (so the Intent page renders it), broadcasts, and
@@ -52,6 +58,7 @@ export const createProcessBridge = ({
     await store.createHumanTask({
       executionId,
       stageInstanceId,
+      unitSlug,
       kind: 'question',
       questions: questionsJson,
       humanTaskId,
@@ -80,6 +87,7 @@ export const createProcessBridge = ({
       executionId,
       type: 'v2.question.asked',
       stageInstanceId,
+      unitSlug,
       actor: stageInstanceId ?? 'agent',
       summary: `Agent asked ${questions.length} question(s)`,
     });
@@ -87,6 +95,8 @@ export const createProcessBridge = ({
       action: 'agent.question',
       executionId,
       intentId,
+      stageInstanceId,
+      unitSlug,
       humanTaskId,
       questions,
     });
@@ -128,12 +138,13 @@ export const createProcessBridge = ({
 
   // Stream a unit of agent output to the UI and persist it for reload.
   const sendOutput = async ({ content, kind = 'text' }) => {
-    const row = await store.appendOutput({ executionId, stageInstanceId, kind, content });
+    const row = await store.appendOutput({ executionId, stageInstanceId, unitSlug, kind, content });
     await broadcast({
       action: 'agent.output',
       executionId,
       intentId,
       stageInstanceId,
+      unitSlug,
       seq: row.seq,
       kind,
       content,
@@ -149,6 +160,7 @@ export const createProcessBridge = ({
     const row = await store.recordMetric({
       executionId,
       stageInstanceId,
+      unitSlug,
       metrics,
       resolvedModel: model,
     });
@@ -157,6 +169,7 @@ export const createProcessBridge = ({
       executionId,
       intentId,
       stageInstanceId,
+      unitSlug,
       metricId: row.metricId,
       metrics,
     });
@@ -169,6 +182,7 @@ export const createProcessBridge = ({
       executionId,
       type,
       stageInstanceId,
+      unitSlug,
       actor: stageInstanceId ?? 'agent',
       summary,
     });
@@ -177,6 +191,7 @@ export const createProcessBridge = ({
       executionId,
       intentId,
       stageInstanceId,
+      unitSlug,
       eventId: row.eventId,
       noteType: type,
       summary,

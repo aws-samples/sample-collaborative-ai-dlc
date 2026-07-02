@@ -18,8 +18,9 @@ test runner, see `lambda/v2-orchestrator/test/poc/`); WP1 code-complete
 (async run-stage via durable callback — its >15-min cloud exit criterion is
 still to be proven on a deployed stack before WP5); WP2 complete (engine-owned
 git layer, `lambda/agentcore/git-engine.js`); WP3 complete (unit DAG
-promotion — UNITPLAN/UNIT scheduling rows + Neptune mirror); WP4+ not yet
-started.
+promotion — UNITPLAN/UNIT scheduling rows + Neptune mirror); WP4 complete
+(plan fan-out + unit dimension end-to-end; sections run as SEQUENTIAL lanes);
+WP5+ not yet started.
 
 ---
 
@@ -272,7 +273,7 @@ failure points — these are preconditions, not preferences):
   _sequential_ flow (proves the timeout fix before any concurrency).
 - **WP5 must not start until the unit dimension is threaded through the data
   model** (WP3/WP4 deliverable below) — otherwise gates/events from parallel
-  lanes are unattributable.
+  lanes are unattributable. ✅ met by WP4.
 - **WP6b (extra PR strategies) must not start until WP8's merge fixtures pass**
   on `intent-pr`.
 - **WP7's lane board must not start until the frontend is re-keyed on
@@ -396,18 +397,62 @@ MERGED | FAILED | BLOCKED`; `updateUnitState` is CAS'd on `fromStates`
     promote-units command suite (14), real-gremlin `mirrorUnitDag` suite
     (idempotency, supersede/revive), orchestrator hook ordering suite (also
     proves promotion waits for the park loop to drain).
-- **WP4 — Plan fan-out + unit dimension through the data model**: section
-  detection over `forEach` in `v2-execution-plan.js`, per-unit stage instances
-  with unit-dimension ids, `no_unit_dag_producer` validation, N sections
-  generically; `run-stage` accepts `unitSlug` + lane workspace;
-  stage-materializer injects the unit's scope (its stories/sections from the
-  DAG artifact). **Named deliverable — `unitSlug` threaded end-to-end, as a
-  precondition of WP5**: `STAGE#` rows, `EVENT#` rows, `HUMAN#` gate rows,
-  `SENSOR#`/`METRIC#`/`OUTPUT#` rows where stage-scoped, WS broadcast payloads
-  (`agent.stage`, `agent.question`, new `agent.unit` / `v2.unit.*`), and the
-  REST `IntentDetail` DTO (stages, gates, events). Fan-out lands here running
-  **sequentially** (lanes executed one at a time) — a safe intermediate state
-  that already exercises the whole unit data model before concurrency.
+- **WP4 — Plan fan-out + unit dimension through the data model** ✅ **done**:
+  - **plan layer** (`lambda/shared/v2-execution-plan.js`): plan entries carry
+    `forEach` / `execution` / `parallelSection` (1-based, matching `s<k>`
+    naming); sections detected structurally as maximal contiguous
+    `forEach: unit-of-work` runs w.r.t. the topological run order (N sections
+    generic); plan exposes `namespace` + `sections`; validations
+    `no_unit_dag_producer` (an in-scope NON-forEach producer must precede each
+    section — a producer inside a section cannot gate its own fan-out) and
+    `unsupported_for_each` (any other forEach value fails loudly rather than
+    running once and breaking the stage's own contract).
+    `stageInstanceId(ns, stageId, unitSlug?)` gains the unit dimension
+    (`si-sha256(ns:stageId:unit-<slug>)`, null-slug = legacy id); exported
+    `planSegments` splits the ordered stages into the orchestrator's walk.
+  - **unit dimension end-to-end (the WP5 precondition — MET)**: `unitSlug`
+    (null default) on STAGE/EVENT/HUMAN/SENSOR/METRIC/OUTPUT rows + all store
+    writers; run-stage accepts `unitSlug` (invariants: `unit_required` on a
+    forEach stage without a unit, `unit_not_applicable` on the inverse,
+    `unit_not_found` when the slug is not in the promoted UNITPLAN), computes
+    the per-unit instance id from `plan.namespace`, stamps the slug on every
+    row/event/broadcast, commit message gains the unit
+    (`aidlc(<stage>): <unit> — <executionId>`); `V2_UNIT_SLUG` flows through
+    the MCP config → process-bridge (gates opened by parallel lanes are
+    attributable); the prompt gains a deterministic **unit-scope block**
+    (slug + dependsOn from the UNITPLAN, lane boundary rules) injected before
+    the stage prose; `run-stage-start`'s job key gains the lane dimension
+    (one job per stage attempt PER LANE); WS payloads carry `unitSlug` +
+    new `agent.unit` action for `v2.unit.*` lifecycle events; REST
+    `IntentDetail` carries `unitSlug` on stages/gates/events/outputs/
+    sensorRuns plus new `unitPlan` + `units` arrays (frontend types additive;
+    re-keying the stage merge is WP7 step 1).
+  - **orchestrator sequential fan-out** (`lambda/v2-orchestrator/index.js`):
+    the stage loop is now a `planSegments` walk; a section loads the UNITPLAN
+    (`unit_plan_missing` fails deterministically), iterates lanes ONE AT A
+    TIME in batch order — per lane: CAS PENDING/READY→RUNNING (lost CAS
+    tolerated: STAGE rows are the execution truth, the UNIT row is the lane
+    view), section stages via per-unit durable identities
+    (`stage-cb-<stage>-u-<slug>[-resume-<gate>]`), frozen skip matrix honored
+    for `execution: CONDITIONAL` stages only (SKIPPED stage row + event),
+    lane end → MERGED (WP4's identity merge: lanes run in the intent session
+    ON the intent branch; real branches/merges are WP5/WP6), failure → lane
+    FAILED + direct dependents BLOCKED + attributable `stage_failed`
+    (`<stage> [unit <slug>]`); `v2.unit.started/merged/failed` events +
+    `agent.unit` broadcasts; rewind-upstream-check expands forEach stages per
+    unit (SUCCEEDED or SKIPPED counts); the WP3 promote hook rides only
+    once-per-workflow segments.
+  - **rewind** (`lambda/intents/index.js`): reset expands per-unit instances
+    for forEach stages (STAGE rows + artifact supersede by per-unit instance
+    ids) and re-opens touched lanes (UNIT rows → PENDING, verdict fields
+    cleared); reset events carry `unitSlug`.
+  - tests: plan-layer suite (sections/validations/segments), row-builder +
+    store unit-dimension suites, run-stage unit-lane suite (instance ids,
+    invariants, prompt scope, commit message), materializer/bridge/job-key
+    suites, orchestrator fake-ctx section suite (order, skip matrix, failure
+    blocking, unit_plan_missing, lane park/resume, rewind) **and a real
+    durable-runner replay test** (mid-lane park → resume with exactly-once
+    lane bookkeeping), intents DTO + rewind-expansion suites.
 - **WP5 — Parallel lane orchestration** _(gated on WP1 exit criterion + WP4
   unit-dimension deliverable)_: skeleton-solo → skeleton gate → autonomy
   ladder → wavefront over the UNITPLAN (deterministic replacement for v1's LLM

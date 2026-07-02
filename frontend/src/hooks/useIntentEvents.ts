@@ -11,7 +11,10 @@ export type IntentEventAction =
   | 'agent.question'
   | 'agent.metric'
   | 'agent.steering'
-  | 'agent.note';
+  | 'agent.note'
+  // Unit-lane lifecycle (docs/v2-parallel.md WP4): v2.unit.* transitions
+  // (started / merged / failed) broadcast by the orchestrator.
+  | 'agent.unit';
 
 export interface IntentEvent {
   action: IntentEventAction;
@@ -20,6 +23,9 @@ export interface IntentEvent {
   projectId?: string;
   stageInstanceId?: string;
   stageId?: string;
+  // Unit lane attribution (docs/v2-parallel.md WP4): present on stage/output/
+  // question/metric/note events from a unit lane, and on agent.unit itself.
+  unitSlug?: string | null;
   phase?: string;
   state?: string;
   status?: string;
@@ -53,6 +59,7 @@ const INTENT_EVENTS: IntentEventAction[] = [
   'agent.metric',
   'agent.steering',
   'agent.note',
+  'agent.unit',
 ];
 
 /**

@@ -64,6 +64,9 @@ export interface Intent {
 export interface IntentStage {
   stageInstanceId: string;
   stageId: string | null;
+  // Unit lane (docs/v2-parallel.md WP4): set on per-unit instances of a
+  // `forEach: unit-of-work` stage; null on once-per-workflow stages.
+  unitSlug?: string | null;
   phase: string | null;
   state: StageState;
   attempt: number;
@@ -80,6 +83,8 @@ export interface IntentStage {
 export interface IntentGate {
   humanTaskId: string;
   stageInstanceId: string | null;
+  // Unit lane attribution (docs/v2-parallel.md WP4); null outside lanes.
+  unitSlug?: string | null;
   kind: 'approval' | 'question' | 'review-verdict';
   // `superseded` = the gate was retired unanswered by a cancel/rewind.
   status: 'pending' | 'answered' | 'approved' | 'rejected' | 'superseded';
@@ -147,6 +152,7 @@ export interface IntentMetric {
 export interface IntentOutput {
   seq: number;
   stageInstanceId: string | null;
+  unitSlug?: string | null;
   kind: string;
   content: string;
   timestamp: string;
@@ -155,6 +161,7 @@ export interface IntentOutput {
 export interface IntentSensorRun {
   sensorRunId: string;
   stageInstanceId: string | null;
+  unitSlug?: string | null;
   sensorId: string;
   result: string;
   severity: string;
@@ -199,6 +206,8 @@ export interface IntentActivityEvent {
   eventId: string;
   type: string;
   stageInstanceId: string | null;
+  // Unit lane attribution (docs/v2-parallel.md WP4); null outside lanes.
+  unitSlug?: string | null;
   actor: string | null;
   summary: string | null;
   timestamp: string;
@@ -208,6 +217,40 @@ export interface IntentActivityEvent {
   answeredBy?: string | null;
   answeredByName?: string | null;
   artifacts?: { id: string; title: string }[];
+}
+
+// Unit lanes (docs/v2-parallel.md WP4): the promoted UNITPLAN scheduling
+// snapshot and the live per-lane rows. Both empty pre-promotion.
+export type UnitState =
+  | 'PENDING'
+  | 'READY'
+  | 'RUNNING'
+  | 'MERGING'
+  | 'MERGED'
+  | 'FAILED'
+  | 'BLOCKED';
+
+export interface IntentUnitPlan {
+  units: { slug: string; dependsOn: string[] }[];
+  batches: string[][];
+  unitCount: number;
+  skipMatrix: Record<string, string[]>;
+  walkingSkeleton: string | null;
+  autonomyMode: 'gated' | 'autonomous' | null;
+  promotedAt: string | null;
+}
+
+export interface IntentUnit {
+  slug: string;
+  dependsOn: string[];
+  state: UnitState;
+  batchIndex: number;
+  branch: string | null;
+  startedAt: string | null;
+  mergedAt: string | null;
+  failureReason: string | null;
+  blockedOn: string | null;
+  updatedAt: string | null;
 }
 
 // The assembled detail returned by GET /projects/{id}/intents/{intentId}.
@@ -221,6 +264,8 @@ export interface IntentDetail {
   outputs: IntentOutput[];
   sensorRuns: IntentSensorRun[];
   artifacts: IntentArtifact[];
+  unitPlan?: IntentUnitPlan | null;
+  units?: IntentUnit[];
 }
 
 export interface CreateIntentInput {

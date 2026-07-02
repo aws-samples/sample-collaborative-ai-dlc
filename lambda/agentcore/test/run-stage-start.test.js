@@ -173,6 +173,15 @@ describe('createRunStageStart', () => {
     const resume = await start({ ...basePayload, resumeFrom: 'h1', stageCallbackId: 'cb-456' });
     expect(resume.ok).toBe(true);
 
+    // A DIFFERENT unit lane's instance of the same stage is not a duplicate
+    // (docs/v2-parallel.md WP4: one job per stage attempt PER LANE).
+    const lane = await start({ ...basePayload, unitSlug: 'auth', stageCallbackId: 'cb-789' });
+    expect(lane.ok).toBe(true);
+    expect(lane.jobKey).toContain(':auth:');
+    // …and a duplicate WITHIN that lane is still refused.
+    const laneDup = await start({ ...basePayload, unitSlug: 'auth', stageCallbackId: 'cb-999' });
+    expect(laneDup).toMatchObject({ ok: false, reason: 'job_already_running' });
+
     gate.resolve({ ok: true, state: 'SUCCEEDED' });
     await flush();
     // After completion the slot frees up for a retry.

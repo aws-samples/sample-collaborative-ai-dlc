@@ -5,7 +5,10 @@ import { runStage, resetKiroCreditRateCache, __test } from '../commands/run-stag
 import { renderRulesDoc } from '../stage-materializer.js';
 
 const require = createRequire(import.meta.url);
-const { buildExecutionPlan } = require('../../shared/v2-execution-plan.js');
+const {
+  buildExecutionPlan,
+  stageInstanceId: planStageInstanceId,
+} = require('../../shared/v2-execution-plan.js');
 
 // A flat-frontmatter STAGE block + a minimal library/workflow that resolves to a
 // single in-scope stage.
@@ -47,6 +50,54 @@ const workflow = () => ({
   scopeRefs: [{ scopeId: 'feature' }],
 });
 
+// Fan-out fixture (docs/v2-parallel.md WP4): a DAG producer + a per-unit stage.
+const unitLibrary = () => {
+  const lib = library();
+  lib.stagesById['units-generation'] = {
+    id: 'units-generation',
+    version: 1,
+    phase: 'inception',
+    mode: 'inline',
+    leadAgent: 'aidlc-product-agent',
+    produces: ['unit-of-work-dependency'],
+    consumes: [],
+    sensors: [],
+    humanValidation: 'required',
+    bodyRef: { s3Key: 'blocks/bodies/sha256/units-gen' },
+  };
+  lib.stagesById['code-generation'] = {
+    id: 'code-generation',
+    version: 1,
+    phase: 'construction',
+    mode: 'inline',
+    leadAgent: 'aidlc-product-agent',
+    forEach: 'unit-of-work',
+    execution: 'ALWAYS',
+    produces: [],
+    consumes: [],
+    requires: ['units-generation'],
+    sensors: [],
+    humanValidation: 'none',
+    bodyRef: { s3Key: 'blocks/bodies/sha256/code-gen' },
+  };
+  lib.artifactsById['unit-of-work-dependency'] = {
+    id: 'unit-of-work-dependency',
+    terminal: false,
+  };
+  return lib;
+};
+
+const unitWorkflow = () => ({
+  id: 'aidlc-v2',
+  version: 1,
+  placements: [
+    { stageId: 'units-generation', order: 0, scopeMembership: { feature: 'EXECUTE' } },
+    { stageId: 'code-generation', order: 1, scopeMembership: { feature: 'EXECUTE' } },
+  ],
+  ruleRefs: [],
+  scopeRefs: [{ scopeId: 'feature' }],
+});
+
 // A spy process store recording the calls run-stage makes. `seed` pre-loads the
 // gate / stage / execution rows the resume + park paths read back.
 const spyStore = (seed = {}) => {
@@ -81,6 +132,10 @@ const spyStore = (seed = {}) => {
     async getExecution(_e) {
       calls.push(['getExecution']);
       return seed.execution ?? null;
+    },
+    async getUnitPlan(_e) {
+      calls.push(['getUnitPlan']);
+      return seed.unitPlan ?? null;
     },
   };
 };
@@ -1645,5 +1700,132 @@ describe('runStage — engine git hook (docs/v2-parallel.md WP2)', () => {
     const res = await runStage(gitArgs, deps);
     expect(res).toMatchObject({ ok: false, reason: 'cli_nonzero_exit' });
     expect(calls).toHaveLength(1); // work committed+pushed BEFORE the failure verdict
+  });
+});
+
+describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
+  const okSpawn = () => ({
+    on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
+    stdin: { end() {} },
+  });
+  const UNIT_PLAN = {
+    units: [
+      { slug: 'auth', dependsOn: [] },
+      { slug: 'billing', dependsOn: ['auth'] },
+    ],
+  };
+  const unitDeps = (overrides = {}) =>
+    baseDeps({
+      store: spyStore({ unitPlan: UNIT_PLAN }),
+      loadLibrary: async () => ({ workflow: unitWorkflow(), library: unitLibrary() }),
+      spawnFn: okSpawn,
+      ...overrides,
+    });
+  const unitArgs = { ...baseArgs, stageId: 'code-generation', unitSlug: 'billing' };
+
+  it('runs a per-unit stage under its unit-dimension instance id and stamps unitSlug on every write', async () => {
+    const deps = unitDeps();
+    const sent = [];
+    deps.broadcast = async (p) => sent.push(p);
+    const res = await runStage(unitArgs, deps);
+    const expectedId = planStageInstanceId('aidlc-v2@1', 'code-generation', 'billing');
+    expect(res).toMatchObject({
+      ok: true,
+      state: 'SUCCEEDED',
+      stageInstanceId: expectedId,
+      unitSlug: 'billing',
+    });
+    // The unit instance id differs from the unitless one.
+    expect(expectedId).not.toBe(planStageInstanceId('aidlc-v2@1', 'code-generation'));
+    // STAGE row carries the lane.
+    const put = deps.store.calls.find((c) => c[0] === 'putStage')[1];
+    expect(put).toMatchObject({
+      stageInstanceId: expectedId,
+      stageId: 'code-generation',
+      unitSlug: 'billing',
+    });
+    // Every EVENT row carries the lane.
+    const events = deps.store.calls.filter((c) => c[0] === 'appendEvent').map((c) => c[1]);
+    expect(events.length).toBeGreaterThan(0);
+    for (const e of events) expect(e.unitSlug).toBe('billing');
+    // agent.stage broadcasts carry the lane.
+    const stageBroadcasts = sent.filter((p) => p.action === 'agent.stage');
+    expect(stageBroadcasts.length).toBeGreaterThan(0);
+    for (const b of stageBroadcasts) expect(b.unitSlug).toBe('billing');
+  });
+
+  it('threads the unit (slug + dependsOn from the UNITPLAN) and unitSlug scope into the materializer', async () => {
+    let seen = null;
+    const deps = unitDeps({
+      materializeStage: async ({ stage, unit, scope }) => {
+        seen = { unit, scope, stageId: stage.stageId };
+        return { prompt: 'P', mcpConfigPath: '/ws/.aidlc/mcp.json' };
+      },
+    });
+    await runStage(unitArgs, deps);
+    expect(seen.unit).toEqual({ slug: 'billing', dependsOn: ['auth'] });
+    expect(seen.scope).toMatchObject({ unitSlug: 'billing' });
+  });
+
+  it('carries the unit dimension in the engine commit message', async () => {
+    const messages = [];
+    const deps = unitDeps({
+      ensureWorkspaceSource: async () => ({ restored: false, repos: [], failed: [] }),
+      commitAndPushAll: async ({ message }) => {
+        messages.push(message);
+        return { ok: true, committed: false, results: [] };
+      },
+    });
+    await runStage(
+      { ...unitArgs, repos: [{ cloneUrl: 'https://x/r.git' }], branch: 'aidlc/i1' },
+      deps,
+    );
+    expect(messages).toEqual(['aidlc(code-generation): billing — e1']);
+  });
+
+  it('fails unit_required when a forEach stage is dispatched without a unit', async () => {
+    const deps = unitDeps();
+    const res = await runStage({ ...unitArgs, unitSlug: null }, deps);
+    expect(res).toMatchObject({ ok: false, reason: 'unit_required' });
+  });
+
+  it('fails unit_not_applicable when a once-per-workflow stage gets a unit', async () => {
+    const deps = unitDeps();
+    const res = await runStage(
+      { ...unitArgs, stageId: 'units-generation', unitSlug: 'auth' },
+      deps,
+    );
+    expect(res).toMatchObject({ ok: false, reason: 'unit_not_applicable' });
+  });
+
+  it('fails unit_not_found when the slug is not in the promoted UNITPLAN', async () => {
+    const deps = unitDeps({ store: spyStore({ unitPlan: UNIT_PLAN }) });
+    const res = await runStage({ ...unitArgs, unitSlug: 'ghost' }, deps);
+    expect(res).toMatchObject({ ok: false, reason: 'unit_not_found' });
+    // The failure is attributed to the per-unit instance id.
+    const failedState = deps.store.calls.find((c) => c[0] === 'updateStageState')[1];
+    expect(failedState).toMatchObject({
+      stageInstanceId: planStageInstanceId('aidlc-v2@1', 'code-generation', 'ghost'),
+      state: 'FAILED',
+    });
+  });
+
+  it('fails unit_not_found when no UNITPLAN was promoted at all', async () => {
+    const deps = unitDeps({ store: spyStore({}) });
+    const res = await runStage(unitArgs, deps);
+    expect(res).toMatchObject({ ok: false, reason: 'unit_not_found' });
+  });
+
+  it('a non-forEach stage without a unit still runs with the plain instance id and null unitSlug', async () => {
+    const deps = unitDeps();
+    const res = await runStage({ ...baseArgs, stageId: 'units-generation' }, deps);
+    expect(res).toMatchObject({
+      ok: true,
+      state: 'SUCCEEDED',
+      stageInstanceId: planStageInstanceId('aidlc-v2@1', 'units-generation'),
+      unitSlug: null,
+    });
+    const put = deps.store.calls.find((c) => c[0] === 'putStage')[1];
+    expect(put.unitSlug).toBeNull();
   });
 });

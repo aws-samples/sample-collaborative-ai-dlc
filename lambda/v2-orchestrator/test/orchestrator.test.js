@@ -800,3 +800,266 @@ describe('unit DAG promotion after the producing stage succeeds', () => {
     expect(commands).toEqual(['init-ws', 'run-stage-start', 'run-stage-start', 'promote-units']);
   });
 });
+
+// ── WP4: plan fan-out — sequential unit lanes (docs/v2-parallel.md) ──────────
+
+import { createRequire } from 'node:module';
+const requireCjs = createRequire(import.meta.url);
+const { stageInstanceId: planStageInstanceId } = requireCjs('../../shared/v2-execution-plan.js');
+
+const SECTION_PLAN = () => ({
+  valid: true,
+  plan: {
+    namespace: 'aidlc-v2@1',
+    stages: [
+      {
+        stageId: 'units-gen',
+        stageInstanceId: 'si-units-gen',
+        parallelSection: null,
+        outputArtifacts: [{ artifact: 'unit-of-work-dependency' }],
+      },
+      {
+        stageId: 'fd',
+        stageInstanceId: 'si-fd',
+        parallelSection: 1,
+        execution: 'CONDITIONAL',
+        phase: 'construction',
+        outputArtifacts: [],
+      },
+      {
+        stageId: 'cg',
+        stageInstanceId: 'si-cg',
+        parallelSection: 1,
+        execution: 'ALWAYS',
+        phase: 'construction',
+        outputArtifacts: [],
+      },
+      { stageId: 'bt', stageInstanceId: 'si-bt', parallelSection: null, outputArtifacts: [] },
+    ],
+  },
+});
+
+const UNIT_PLAN = (over = {}) => ({
+  units: [
+    { slug: 'auth', dependsOn: [] },
+    { slug: 'billing', dependsOn: ['auth'] },
+  ],
+  batches: [['auth'], ['billing']],
+  skipMatrix: {},
+  ...over,
+});
+
+const sectionScript = (payload) => {
+  if (payload.command === 'init-ws') return { ok: true };
+  if (payload.command === 'promote-units')
+    return { ok: true, unitCount: 2, batchCount: 2, walkingSkeleton: 'auth' };
+  return { ok: true, state: 'SUCCEEDED' };
+};
+
+describe('WP4 — parallel sections run as sequential unit lanes', () => {
+  let unitStates;
+  let stagePuts;
+  beforeEach(() => {
+    unitStates = [];
+    stagePuts = [];
+    deps.loadPlan = vi.fn(async () => SECTION_PLAN());
+    deps.store.getUnitPlan = vi.fn(async () => UNIT_PLAN());
+    deps.store.updateUnitState = vi.fn(async (args) => {
+      unitStates.push(args);
+      return { slug: args.slug, state: args.state };
+    });
+    deps.store.putStage = vi.fn(async (args) => {
+      stagePuts.push(args);
+      return args;
+    });
+    deps.store.getStage = vi.fn(async () => null);
+    deps.invokeRuntime = makeRuntime(ctx, sectionScript);
+  });
+
+  const start = () =>
+    __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
+
+  it('fans out lanes sequentially in batch order, threading unitSlug through every dispatch', async () => {
+    const res = await start();
+    expect(res.ok).toBe(true);
+    // units-gen → promote → auth lane (fd,cg) → billing lane (fd,cg) → bt.
+    expect(invokes.map((p) => `${p.command}:${p.stageId ?? '-'}:${p.unitSlug ?? '-'}`)).toEqual([
+      'init-ws:-:-',
+      'run-stage-start:units-gen:-',
+      'promote-units:-:-',
+      'run-stage-start:fd:auth',
+      'run-stage-start:cg:auth',
+      'run-stage-start:fd:billing',
+      'run-stage-start:cg:billing',
+      'run-stage-start:bt:-',
+    ]);
+    // Non-lane dispatches carry unitSlug null explicitly (uniform contract).
+    const btStart = stageStarts().find((p) => p.stageId === 'bt');
+    expect(btStart.unitSlug).toBeNull();
+  });
+
+  it('tracks lane states RUNNING → MERGED per unit with lifecycle events + agent.unit broadcasts', async () => {
+    await start();
+    expect(unitStates.map((u) => `${u.slug}:${u.state}`)).toEqual([
+      'auth:RUNNING',
+      'auth:MERGED',
+      'billing:RUNNING',
+      'billing:MERGED',
+    ]);
+    // Lane start stamps the branch + session; merge stamps mergedAt.
+    expect(unitStates[0]).toMatchObject({
+      fromStates: ['PENDING', 'READY'],
+      fields: { branch: 'aidlc/i1', startedAt: true },
+    });
+    expect(unitStates[1].fields).toMatchObject({ mergedAt: true });
+    // Durable events carry the lane.
+    const eventCalls = deps.store.appendEvent.mock.calls.map((c) => c[0]);
+    const unitEvents = eventCalls.filter((e) => e.type?.startsWith('v2.unit.'));
+    expect(unitEvents.map((e) => `${e.type}:${e.unitSlug}`)).toEqual([
+      'v2.unit.started:auth',
+      'v2.unit.merged:auth',
+      'v2.unit.started:billing',
+      'v2.unit.merged:billing',
+    ]);
+    // Live broadcasts route on their own action with lane attribution.
+    const unitBroadcasts = deps.broadcast.mock.calls
+      .map((c) => c[1])
+      .filter((p) => p.action === 'agent.unit');
+    expect(unitBroadcasts.map((p) => `${p.state}:${p.unitSlug}`)).toEqual([
+      'RUNNING:auth',
+      'MERGED:auth',
+      'RUNNING:billing',
+      'MERGED:billing',
+    ]);
+  });
+
+  it('honors the frozen skip matrix for CONDITIONAL stages only (SKIPPED row, no dispatch)', async () => {
+    deps.store.getUnitPlan = vi.fn(async () =>
+      UNIT_PLAN({ skipMatrix: { billing: ['fd'], auth: ['cg'] } }),
+    );
+    const res = await start();
+    expect(res.ok).toBe(true);
+    const lanes = stageStarts().map((p) => `${p.stageId}:${p.unitSlug ?? '-'}`);
+    // billing's fd skipped (CONDITIONAL); auth's cg NOT skipped (ALWAYS is not skippable).
+    expect(lanes).toEqual(['units-gen:-', 'fd:auth', 'cg:auth', 'cg:billing', 'bt:-']);
+    // The skipped instance exists as an auditable SKIPPED row under its
+    // per-unit instance id.
+    expect(stagePuts).toEqual([
+      {
+        executionId: 'i1',
+        stageInstanceId: planStageInstanceId('aidlc-v2@1', 'fd', 'billing'),
+        stageId: 'fd',
+        unitSlug: 'billing',
+        phase: 'construction',
+        state: 'SKIPPED',
+      },
+    ]);
+    const eventCalls = deps.store.appendEvent.mock.calls.map((c) => c[0]);
+    expect(eventCalls.some((e) => e.type === 'v2.stage.skipped' && e.unitSlug === 'billing')).toBe(
+      true,
+    );
+  });
+
+  it('a lane failure marks the unit FAILED, blocks direct dependents, and fails the run attributably', async () => {
+    deps.invokeRuntime = makeRuntime(ctx, (payload) => {
+      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'promote-units')
+        return { ok: true, unitCount: 2, batchCount: 2, walkingSkeleton: 'auth' };
+      if (payload.stageId === 'cg' && payload.unitSlug === 'auth')
+        return { ok: false, state: 'FAILED', reason: 'sensor_blocked' };
+      return { ok: true, state: 'SUCCEEDED' };
+    });
+    const res = await start();
+    expect(res).toMatchObject({
+      ok: false,
+      reason: 'stage_failed',
+      stageId: 'cg',
+      unitSlug: 'auth',
+    });
+    expect(res.detail).toContain('[unit auth]');
+    // Lane bookkeeping: auth FAILED (with the failing stage), billing BLOCKED on auth.
+    expect(unitStates.map((u) => `${u.slug}:${u.state}`)).toEqual([
+      'auth:RUNNING',
+      'auth:FAILED',
+      'billing:BLOCKED',
+    ]);
+    expect(unitStates[1].fields.failureReason).toContain('cg');
+    expect(unitStates[2]).toMatchObject({
+      fromStates: ['PENDING', 'READY'],
+      fields: { blockedOn: 'auth' },
+    });
+    // billing's lane never started.
+    expect(stageStarts().some((p) => p.unitSlug === 'billing')).toBe(false);
+    const eventCalls = deps.store.appendEvent.mock.calls.map((c) => c[0]);
+    expect(eventCalls.some((e) => e.type === 'v2.unit.failed' && e.unitSlug === 'auth')).toBe(true);
+  });
+
+  it('fails deterministically (unit_plan_missing) when a section starts without a promoted plan', async () => {
+    deps.store.getUnitPlan = vi.fn(async () => null);
+    // Drop the promote hook trigger so the missing plan is what's under test.
+    const plan = SECTION_PLAN();
+    plan.plan.stages[0].outputArtifacts = [];
+    deps.loadPlan = vi.fn(async () => plan);
+    const res = await start();
+    expect(res).toMatchObject({ ok: false, reason: 'unit_plan_missing' });
+    expect(res.detail).toContain('section 1');
+    // No lane was ever dispatched.
+    expect(stageStarts().map((p) => p.stageId)).toEqual(['units-gen']);
+  });
+
+  it('a lane park suspends on a lane-scoped callback and resumes the SAME lane', async () => {
+    deps.store.getExecution = vi.fn(async () => ({ ...META, pendingHumanTaskId: 'h9' }));
+    deps.store.getHumanTask = vi.fn(async () => ({ status: 'answered' }));
+    let parked = false;
+    deps.invokeRuntime = makeRuntime(ctx, (payload) => {
+      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'promote-units') return { ok: true, unitCount: 2, batchCount: 2 };
+      if (payload.stageId === 'fd' && payload.unitSlug === 'auth' && !parked) {
+        parked = true;
+        return { ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'h9', unitSlug: 'auth' };
+      }
+      return { ok: true, state: 'SUCCEEDED' };
+    });
+    const res = await start();
+    expect(res.ok).toBe(true);
+    const fdAuth = stageStarts().filter((p) => p.stageId === 'fd' && p.unitSlug === 'auth');
+    expect(fdAuth.map((p) => p.resumeFrom)).toEqual([null, 'h9']);
+    // The resume leg's callback identity carries the unit dimension.
+    expect(fdAuth.map((p) => p.stageCallbackId)).toEqual([
+      'cb-stage-cb-fd-u-auth',
+      'cb-stage-cb-fd-u-auth-resume-h9',
+    ]);
+  });
+
+  it('rewind past a section verifies every unit instance (SUCCEEDED or SKIPPED)', async () => {
+    const doneRow = { state: 'SUCCEEDED' };
+    const rows = {
+      'si-units-gen': doneRow,
+      [planStageInstanceId('aidlc-v2@1', 'fd', 'auth')]: doneRow,
+      [planStageInstanceId('aidlc-v2@1', 'fd', 'billing')]: { state: 'SKIPPED' },
+      [planStageInstanceId('aidlc-v2@1', 'cg', 'auth')]: doneRow,
+      // cg/billing missing → incomplete
+    };
+    deps.store.getStage = vi.fn(async (_e, id) => rows[id] ?? null);
+    const res = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1', startAtStageId: 'bt' },
+      ctx,
+      deps,
+    );
+    expect(res).toMatchObject({ ok: false, reason: 'rewind_upstream_incomplete' });
+    expect(res.detail).toBe('cg [unit billing]');
+
+    // Complete the missing lane instance → rewind proceeds straight to bt.
+    rows[planStageInstanceId('aidlc-v2@1', 'cg', 'billing')] = doneRow;
+    invokes.length = 0;
+    ctx = makeCtx();
+    deps.invokeRuntime = makeRuntime(ctx, sectionScript);
+    const res2 = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1', startAtStageId: 'bt' },
+      ctx,
+      deps,
+    );
+    expect(res2.ok).toBe(true);
+    expect(stageStarts().map((p) => p.stageId)).toEqual(['bt']);
+  });
+});

@@ -1,13 +1,16 @@
 // V2 orchestrator — the durable function that drives one intent end to end.
 //
-// Triggered (async Invoke) by lambda/intents on Start. It runs the intent's
-// stages as a SEQUENTIAL durable execution: init-ws once, then each stage in
-// `plan.order` via ASYNC invocation (docs/v2-parallel.md WP1): a durable
-// callback is created per stage attempt, `run-stage-start` dispatches the stage
-// as a background job in the AgentCore container (returns in ms), and the
-// execution suspends at zero compute until the container completes the callback
-// with the stage verdict. Human gates park the run on their own callbacks
-// (lambda/intents sends SendDurableExecutionCallbackSuccess).
+// Triggered (async Invoke) by lambda/intents on Start. It walks the intent's
+// plan as a durable execution: init-ws once, then the plan SEGMENTS
+// (docs/v2-parallel.md WP4) — once-per-workflow stages in run order, and
+// parallel sections (`forEach: unit-of-work`) as unit LANES over the promoted
+// UNITPLAN (sequential in WP4; wavefront concurrency arrives with WP5). Every
+// stage runs via ASYNC invocation (WP1): a durable callback is created per
+// stage attempt, `run-stage-start` dispatches the stage as a background job in
+// the AgentCore container (returns in ms), and the execution suspends at zero
+// compute until the container completes the callback with the stage verdict.
+// Human gates park the run on their own callbacks (lambda/intents sends
+// SendDurableExecutionCallbackSuccess).
 //
 // The async path exists because a stage regularly outlives both the
 // orchestrator Lambda timeout (900s) and AgentCore's hard 15-minute synchronous
@@ -32,12 +35,14 @@ import {
 // own `createRequire`/`require` or it collides with the banner at runtime).
 import processStorePkg from '../shared/v2-process-store.js';
 import workflowPlanPkg from '../shared/v2-workflow-plan.js';
+import executionPlanPkg from '../shared/v2-execution-plan.js';
 import gitConnectionStorePkg from '../shared/git-connection-store.js';
 import gitTokenPkg from '../shared/git-token.js';
 import wsFanoutPkg from '../shared/ws-fanout.js';
 
 const { createProcessStore } = processStorePkg;
 const { loadExecutionPlan } = workflowPlanPkg;
+const { planSegments, stageInstanceId: planStageInstanceId } = executionPlanPkg;
 const { getGitConnection } = gitConnectionStorePkg;
 const { resolveGitToken } = gitTokenPkg;
 const { broadcastToIntentChannel } = wsFanoutPkg;
@@ -123,6 +128,10 @@ const livePayloadFor = (type, summary) => {
     return { action: 'agent.execution', status: 'FAILED', summary };
   if (type === 'v2.execution.succeeded')
     return { action: 'agent.execution', status: 'SUCCEEDED', summary };
+  // Unit-lane lifecycle (docs/v2-parallel.md WP4): its own action so the UI can
+  // route lane transitions without string-matching note types. The caller's
+  // `extra` merges unitSlug + the lane state into the payload.
+  if (type.startsWith('v2.unit.')) return { action: 'agent.unit', noteType: type, summary };
   return { action: 'agent.note', noteType: type, summary };
 };
 
@@ -165,16 +174,28 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
   // (never break the run; tolerate a store/broadcast mock). Wrapped in a durable
   // step so a replay doesn't re-append — a replayed broadcast is harmless (the UI
   // just refetches). These back the activity feed + drive the live UI: they are
-  // how init-ws / failure progress becomes visible to the user.
-  const emitEvent = (stepName, type, summary) =>
+  // how init-ws / failure progress becomes visible to the user. `extra` carries
+  // structured attribution (unitSlug, lane state) onto the event row + payload.
+  const emitEvent = (stepName, type, summary, extra = {}) =>
     ctx.step(stepName, async () => {
       try {
-        await store.appendEvent?.({ executionId, type, actor: 'orchestrator', summary });
+        await store.appendEvent?.({
+          executionId,
+          type,
+          actor: 'orchestrator',
+          summary,
+          ...(extra.unitSlug !== undefined ? { unitSlug: extra.unitSlug } : {}),
+        });
       } catch {
         /* events are best-effort telemetry */
       }
       try {
-        await broadcast?.(intentId, { intentId, projectId, ...livePayloadFor(type, summary) });
+        await broadcast?.(intentId, {
+          intentId,
+          projectId,
+          ...livePayloadFor(type, summary),
+          ...extra,
+        });
       } catch {
         /* live fan-out is best-effort; the stored event + REST refetch are truth */
       }
@@ -300,6 +321,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     }
 
     const stages = planResult.plan.stages;
+    // Instance-id namespace: exposed by the plan so per-unit instance ids here
+    // match the ones run-stage computes (defensive fallback for stubbed plans).
+    const namespace = planResult.plan.namespace ?? `${workflowId}@${workflowVersion}`;
     // Rewind relaunch: slice the loop to start at the rewound stage. Upstream
     // stages must hold SUCCEEDED rows from the prior run — a rewind past a
     // never-completed stage would run against missing upstream artifacts.
@@ -311,7 +335,26 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         return out;
       }
       const upstreamOk = await ctx.step('rewind-upstream-check', async () => {
+        // A `forEach: unit-of-work` upstream stage has one instance PER UNIT
+        // (docs/v2-parallel.md WP4) — every lane's instance must be terminal
+        // (SUCCEEDED, or SKIPPED per the approved skip matrix).
+        let unitSlugs = null; // lazy — only needed when a section precedes the rewind point
         for (const s of stages.slice(0, idx)) {
+          if (s.parallelSection != null) {
+            if (unitSlugs === null) {
+              const up = await store.getUnitPlan?.(executionId).catch(() => null);
+              unitSlugs = (up?.units ?? []).map((u) => u.slug);
+              if (unitSlugs.length === 0) return s.stageId; // section ran without a promoted plan → incomplete
+            }
+            for (const slug of unitSlugs) {
+              const row = await store
+                .getStage(executionId, planStageInstanceId(namespace, s.stageId, slug))
+                .catch(() => null);
+              if (!row || (row.state !== 'SUCCEEDED' && row.state !== 'SKIPPED'))
+                return `${s.stageId} [unit ${slug}]`;
+            }
+            continue;
+          }
           const row = await store.getStage(executionId, s.stageInstanceId).catch(() => null);
           if (!row || row.state !== 'SUCCEEDED') return s.stageId;
         }
@@ -344,9 +387,21 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       gitProvider,
     };
 
-    for (const stage of runStages) {
-      let result = await runStage(ctx, invokeRuntime, {
+    // ── One stage instance through its park loop (D3) ─────────────────────
+    // `unitSlug` null = a once-per-workflow stage; set = one unit lane's
+    // instance of a `forEach: unit-of-work` stage (docs/v2-parallel.md WP4).
+    // Every durable identity (callback names, step names) carries the unit
+    // dimension so lanes never collide. Outcomes (the caller owns terminal
+    // META writes + lane bookkeeping — ONE failure path per call site):
+    //   { state:'SUCCEEDED' }
+    //   { state:'FAILED', reason }        — stage verdict was FAILED
+    //   { state:'TERMINAL', value }       — already-handled terminal handler
+    //                                       return (retired / parked_without_gate)
+    const executeStage = async (stage, unitSlug = null) => {
+      const label = unitSlug ? `${stage.stageId}-u-${unitSlug}` : stage.stageId;
+      const stageOpts = {
         stage,
+        unitSlug,
         ids: { projectId, intentId, executionId },
         workflowId,
         workflowVersion,
@@ -355,18 +410,19 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         requestedCli,
         sessionId,
         cloneInputs,
-        resumeFrom: null,
-      });
+      };
+      let result = await runStage(ctx, invokeRuntime, { ...stageOpts, resumeFrom: null });
 
       // Park loop (D3): the stage may open more than one gate across resumes. Each
       // WAITING_FOR_HUMAN suspends on a durable callback until the gate is answered.
       while (result?.state === 'WAITING_FOR_HUMAN') {
-        const fresh = await ctx.step(
-          `gate-${stage.stageId}-${result.humanTaskId ?? 'pending'}`,
-          () => store.getExecution(executionId),
+        const fresh = await ctx.step(`gate-${label}-${result.humanTaskId ?? 'pending'}`, () =>
+          store.getExecution(executionId),
         );
         const humanTaskId = fresh?.pendingHumanTaskId ?? result.humanTaskId;
-        if (!humanTaskId) return await fail('parked_without_gate', stage.stageId);
+        if (!humanTaskId) {
+          return { state: 'TERMINAL', value: await fail('parked_without_gate', label) };
+        }
 
         // Create a durable callback and stamp it on the gate so the answer path
         // can resume THIS execution. Then suspend (zero compute) until answered.
@@ -409,65 +465,226 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         );
         if (gateAfter?.status === 'superseded') {
           ctx.logger?.info?.('run retired while parked', { intentId, humanTaskId });
-          return { ok: false, reason: 'retired', intentId, humanTaskId };
+          return {
+            state: 'TERMINAL',
+            value: { ok: false, reason: 'retired', intentId, humanTaskId },
+          };
         }
 
-        result = await runStage(ctx, invokeRuntime, {
-          stage,
-          ids: { projectId, intentId, executionId },
-          workflowId,
-          workflowVersion,
-          scope,
-          cliModels,
-          requestedCli,
-          sessionId,
-          cloneInputs,
-          resumeFrom: humanTaskId,
-        });
+        result = await runStage(ctx, invokeRuntime, { ...stageOpts, resumeFrom: humanTaskId });
       }
 
-      if (result?.state === 'FAILED') {
-        const out = await fail('stage_failed', `${stage.stageId}: ${result?.reason ?? ''}`);
-        return { ...out, stageId: stage.stageId };
-      }
+      if (result?.state === 'FAILED') return { state: 'FAILED', reason: result?.reason ?? '' };
+      return { state: 'SUCCEEDED' };
+    };
 
-      // Unit DAG promotion (docs/v2-parallel.md WP3): the stage that produces
-      // `unit-of-work-dependency` just SUCCEEDED — its blocking sensors passed
-      // and every question gate it opened was answered. Freeze the approved
-      // DAG into the UNITPLAN/UNIT scheduling rows (+ Neptune mirror) via the
-      // VPC-attached container (the orchestrator has no Neptune access). A
-      // promotion failure fails the run HERE, deterministically — discovering
-      // a missing UNITPLAN at fan-out time (WP5) would be far worse.
-      const producesUnitDag = (stage.outputArtifacts ?? []).some(
-        (o) => (o.artifact ?? o) === 'unit-of-work-dependency',
-      );
-      if (producesUnitDag) {
-        const promotion = await ctx.step(`promote-units-${stage.stageId}`, () =>
-          invokeRuntime(
-            {
-              command: 'promote-units',
-              projectId,
-              intentId,
-              executionId,
-              stageInstanceId: stage.stageInstanceId ?? null,
-            },
-            sessionId,
-          ),
+    // ── Parallel section: sequential lanes over the UNITPLAN (WP4) ────────
+    // Fan-out lands here with lanes executed ONE AT A TIME, in deterministic
+    // batch order — a safe intermediate that exercises the whole unit data
+    // model (per-unit instances, lane states, attribution) before concurrency
+    // (WP5) and unit branches/merges (WP5/WP6) exist. Lanes therefore run in
+    // the intent session ON the intent branch: lane completion IS the merge
+    // (an identity merge). Returns null to continue, or a terminal value.
+    const runSection = async (segment) => {
+      const sk = `s${segment.index}`;
+      const unitPlan = await ctx.step(`load-unit-plan-${sk}`, () => store.getUnitPlan(executionId));
+      if (!unitPlan || (unitPlan.units ?? []).length === 0) {
+        // Deterministic guard: WP3's promotion hook should make this
+        // impossible; a missing plan here means the DAG producer never ran or
+        // promotion was skipped — fail loudly, never fan out over nothing.
+        return await fail(
+          'unit_plan_missing',
+          `section ${segment.index} (${segment.stages.map((s) => s.stageId).join(', ')})`,
         );
-        if (!promotion || promotion.ok === false) {
-          const out = await fail(
-            'units_promotion_failed',
-            `${stage.stageId}: ${promotion?.reason ?? 'no_response'}${
-              promotion?.detail ? ` (${promotion.detail})` : ''
-            }`,
-          );
+      }
+      const bySlug = new Map(unitPlan.units.map((u) => [u.slug, u]));
+      // Deterministic lane order: topological waves (batches — alphabetical
+      // within a wave by construction), tolerating a snapshot without batches.
+      const laneOrder = (
+        unitPlan.batches?.length ? unitPlan.batches.flat() : unitPlan.units.map((u) => u.slug)
+      ).filter((slug) => bySlug.has(slug));
+      const skipMatrix = unitPlan.skipMatrix ?? {};
+
+      for (const slug of laneOrder) {
+        // Lane start: PENDING/READY → RUNNING (CAS). A lost CAS is tolerated:
+        // a relaunch re-walks lanes whose UNIT row already holds a later state
+        // — the per-instance STAGE rows are the execution truth, the lane row
+        // is the lane-level view (never a scheduling blocker in WP4).
+        await ctx.step(`unit-start-${sk}-${slug}`, async () => {
+          try {
+            await store.updateUnitState({
+              executionId,
+              slug,
+              state: 'RUNNING',
+              fromStates: ['PENDING', 'READY'],
+              fields: { branch: meta.branch ?? null, sessionId, startedAt: true },
+            });
+          } catch {
+            /* lane bookkeeping must never break the run */
+          }
+        });
+        await emitEvent(
+          `unit-started-${sk}-${slug}`,
+          'v2.unit.started',
+          `Unit ${slug} started (section ${segment.index})`,
+          { unitSlug: slug, state: 'RUNNING' },
+        );
+
+        for (const stage of segment.stages) {
+          // Frozen skip matrix (A2 rule 7): only `execution: CONDITIONAL`
+          // stages are skippable per unit; a matrix entry naming an ALWAYS
+          // stage is ignored (deterministically — never a runtime judgement).
+          const skipped =
+            (skipMatrix[slug] ?? []).includes(stage.stageId) && stage.execution === 'CONDITIONAL';
+          if (skipped) {
+            await ctx.step(`skip-${stage.stageId}-u-${slug}`, async () => {
+              try {
+                await store.putStage({
+                  executionId,
+                  stageInstanceId: planStageInstanceId(namespace, stage.stageId, slug),
+                  stageId: stage.stageId,
+                  unitSlug: slug,
+                  phase: stage.phase ?? null,
+                  state: 'SKIPPED',
+                });
+              } catch {
+                /* the SKIPPED row is audit; never break the lane over it */
+              }
+            });
+            await emitEvent(
+              `skip-event-${stage.stageId}-u-${slug}`,
+              'v2.stage.skipped',
+              `Stage ${stage.stageId} skipped for unit ${slug} (approved skip matrix)`,
+              { unitSlug: slug },
+            );
+            continue;
+          }
+
+          const outcome = await executeStage(stage, slug);
+          if (outcome.state === 'TERMINAL') return outcome.value;
+          if (outcome.state === 'FAILED') {
+            // Lane failed: record it and BLOCK direct dependents (the audit
+            // trail a relaunch/WP5 halt-and-ask builds on), then fail the run
+            // — the sequential engine has no retry/skip/abort UX yet.
+            await ctx.step(`unit-failed-${sk}-${slug}`, async () => {
+              try {
+                await store.updateUnitState({
+                  executionId,
+                  slug,
+                  state: 'FAILED',
+                  fields: { failureReason: `${stage.stageId}: ${outcome.reason}` },
+                });
+                for (const u of unitPlan.units) {
+                  if ((u.dependsOn ?? []).includes(slug)) {
+                    await store.updateUnitState({
+                      executionId,
+                      slug: u.slug,
+                      state: 'BLOCKED',
+                      fromStates: ['PENDING', 'READY'],
+                      fields: { blockedOn: slug },
+                    });
+                  }
+                }
+              } catch {
+                /* lane bookkeeping must never mask the stage failure */
+              }
+            });
+            await emitEvent(
+              `unit-failed-event-${sk}-${slug}`,
+              'v2.unit.failed',
+              `Unit ${slug} failed at ${stage.stageId}: ${outcome.reason}`,
+              { unitSlug: slug, state: 'FAILED' },
+            );
+            const out = await fail(
+              'stage_failed',
+              `${stage.stageId} [unit ${slug}]: ${outcome.reason}`,
+            );
+            return { ...out, stageId: stage.stageId, unitSlug: slug };
+          }
+        }
+
+        // Lane complete — WP4's identity merge (work is already on the intent
+        // branch). Real unit branches + serialized --no-ff merges are WP5/WP6.
+        await ctx.step(`unit-merged-${sk}-${slug}`, async () => {
+          try {
+            await store.updateUnitState({
+              executionId,
+              slug,
+              state: 'MERGED',
+              fromStates: ['RUNNING', 'MERGING'],
+              fields: { mergedAt: true },
+            });
+          } catch {
+            /* lane bookkeeping must never break the run */
+          }
+        });
+        await emitEvent(
+          `unit-merged-event-${sk}-${slug}`,
+          'v2.unit.merged',
+          `Unit ${slug} completed (section ${segment.index})`,
+          { unitSlug: slug, state: 'MERGED' },
+        );
+      }
+      return null;
+    };
+
+    // ── The plan walk: alternating once-per-workflow segments and parallel
+    // sections (docs/v2-parallel.md A2; detection is structural via forEach).
+    for (const segment of planSegments(runStages)) {
+      if (segment.kind === 'section') {
+        const sectionOut = await runSection(segment);
+        if (sectionOut) return sectionOut;
+        continue;
+      }
+      for (const stage of segment.stages) {
+        const outcome = await executeStage(stage, null);
+        if (outcome.state === 'TERMINAL') return outcome.value;
+        if (outcome.state === 'FAILED') {
+          const out = await fail('stage_failed', `${stage.stageId}: ${outcome.reason}`);
           return { ...out, stageId: stage.stageId };
         }
-        await emitEvent(
-          `units-promoted-${stage.stageId}`,
-          'v2.units.plan_ready',
-          `Unit plan ready: ${promotion.unitCount} unit(s), ${promotion.batchCount} wave(s), skeleton ${promotion.walkingSkeleton ?? 'n/a'}`,
+
+        // Unit DAG promotion (docs/v2-parallel.md WP3): the stage that produces
+        // `unit-of-work-dependency` just SUCCEEDED — its blocking sensors passed
+        // and every question gate it opened was answered. Freeze the approved
+        // DAG into the UNITPLAN/UNIT scheduling rows (+ Neptune mirror) via the
+        // VPC-attached container (the orchestrator has no Neptune access). A
+        // promotion failure fails the run HERE, deterministically — discovering
+        // a missing UNITPLAN at fan-out time would be far worse. (The hook only
+        // fires for once-per-workflow stages; a per-unit DAG producer would be
+        // a pathological workflow the plan validator already rejects for its
+        // own section.)
+        const producesUnitDag = (stage.outputArtifacts ?? []).some(
+          (o) => (o.artifact ?? o) === 'unit-of-work-dependency',
         );
+        if (producesUnitDag) {
+          const promotion = await ctx.step(`promote-units-${stage.stageId}`, () =>
+            invokeRuntime(
+              {
+                command: 'promote-units',
+                projectId,
+                intentId,
+                executionId,
+                stageInstanceId: stage.stageInstanceId ?? null,
+              },
+              sessionId,
+            ),
+          );
+          if (!promotion || promotion.ok === false) {
+            const out = await fail(
+              'units_promotion_failed',
+              `${stage.stageId}: ${promotion?.reason ?? 'no_response'}${
+                promotion?.detail ? ` (${promotion.detail})` : ''
+              }`,
+            );
+            return { ...out, stageId: stage.stageId };
+          }
+          await emitEvent(
+            `units-promoted-${stage.stageId}`,
+            'v2.units.plan_ready',
+            `Unit plan ready: ${promotion.unitCount} unit(s), ${promotion.batchCount} wave(s), skeleton ${promotion.walkingSkeleton ?? 'n/a'}`,
+          );
+        }
       }
     }
 
@@ -530,6 +747,7 @@ const runStage = async (
   invokeRuntime,
   {
     stage,
+    unitSlug = null,
     ids,
     workflowId,
     workflowVersion,
@@ -541,7 +759,13 @@ const runStage = async (
     resumeFrom,
   },
 ) => {
-  const attemptKey = `${stage.stageId}${resumeFrom ? `-resume-${resumeFrom}` : ''}`;
+  // The attempt key names every durable identity for this stage attempt. It
+  // carries the unit dimension (docs/v2-parallel.md WP4) so N lanes' instances
+  // of the same stage are distinct callbacks/steps — a collision would make
+  // the durable engine memoize one lane's verdict as another's.
+  const attemptKey = `${stage.stageId}${unitSlug ? `-u-${unitSlug}` : ''}${
+    resumeFrom ? `-resume-${resumeFrom}` : ''
+  }`;
   const [stageDone, stageCallbackId] = await ctx.createCallback(`stage-cb-${attemptKey}`, {
     timeout: STAGE_CALLBACK_TIMEOUT,
     heartbeatTimeout: STAGE_CALLBACK_HEARTBEAT_TIMEOUT,
@@ -553,6 +777,9 @@ const runStage = async (
         command: 'run-stage-start',
         ...ids,
         stageId: stage.stageId,
+        // Unit lane (WP4): run-stage derives the per-unit instance id, stamps
+        // the slug on every row/event/broadcast, and scopes the prompt.
+        unitSlug,
         workflowId,
         workflowVersion,
         scope,

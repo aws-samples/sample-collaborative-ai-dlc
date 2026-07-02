@@ -15,15 +15,13 @@ const fakeStore = () => {
     outputs,
     metrics,
     execPatches,
-    async createHumanTask({ humanTaskId, kind, questions }) {
-      humanTasks.set(humanTaskId, {
-        humanTaskId,
-        kind,
-        questions,
+    async createHumanTask(args) {
+      humanTasks.set(args.humanTaskId, {
+        ...args,
         status: 'pending',
         answer: null,
       });
-      return humanTasks.get(humanTaskId);
+      return humanTasks.get(args.humanTaskId);
     },
     async getHumanTask(_executionId, humanTaskId) {
       return humanTasks.get(humanTaskId) ?? null;
@@ -200,5 +198,66 @@ describe('askQuestion — parks when unanswered within the grace window', () => 
     expect(store.stagePatches.at(-1)).toMatchObject({ state: 'WAITING_FOR_HUMAN' });
     // The gate is still pending (resume answers it later).
     expect([...store.humanTasks.values()][0].status).toBe('pending');
+  });
+});
+
+// ── WP4: unit-lane attribution (docs/v2-parallel.md) ─────────────────────────
+// With N parallel lanes parked on gates at once, every gate/output/metric/event
+// the bridge writes must name its lane — otherwise answers are unattributable.
+
+describe('unit-lane scope (V2_UNIT_SLUG)', () => {
+  const LANE_SCOPE = { ...SCOPE, unitSlug: 'billing' };
+
+  it('askQuestion stamps unitSlug on the gate row, the event, and the broadcast', async () => {
+    const store = fakeStore();
+    const sent = [];
+    const bridge = createProcessBridge({
+      store,
+      scope: LANE_SCOPE,
+      broadcast: (p) => sent.push(p),
+      sleep: async () => {},
+      pollIntervalMs: 1000,
+      parkGraceMs: 0, // park immediately — the attribution is what's under test
+    });
+    const res = await bridge.askQuestion({ questions: [{ text: '?', type: 'text' }] });
+    expect(res.parked).toBe(true);
+    expect([...store.humanTasks.values()][0]).toMatchObject({
+      unitSlug: 'billing',
+      stageInstanceId: 'si-1',
+    });
+    expect(store.events.find((e) => e.type === 'v2.question.asked')).toMatchObject({
+      unitSlug: 'billing',
+    });
+    expect(sent.find((p) => p.action === 'agent.question')).toMatchObject({
+      unitSlug: 'billing',
+      stageInstanceId: 'si-1',
+    });
+  });
+
+  it('sendOutput / collectMetric / emitStageNote broadcasts carry the lane', async () => {
+    const store = fakeStore();
+    const sent = [];
+    const bridge = createProcessBridge({
+      store,
+      scope: LANE_SCOPE,
+      broadcast: (p) => sent.push(p),
+    });
+    await bridge.sendOutput({ content: 'hi' });
+    await bridge.collectMetric({ metrics: { tokensInput: 1 } });
+    await bridge.emitStageNote({ summary: 'note' });
+    for (const action of ['agent.output', 'agent.metric', 'agent.note']) {
+      expect(sent.find((p) => p.action === action)).toMatchObject({ unitSlug: 'billing' });
+    }
+    expect(store.events.find((e) => e.type === 'v2.stage.note')).toMatchObject({
+      unitSlug: 'billing',
+    });
+  });
+
+  it('outside a lane the attribution stays null (existing behavior untouched)', async () => {
+    const store = fakeStore();
+    const sent = [];
+    const bridge = createProcessBridge({ store, scope: SCOPE, broadcast: (p) => sent.push(p) });
+    await bridge.sendOutput({ content: 'hi' });
+    expect(sent[0].unitSlug).toBeNull();
   });
 });
