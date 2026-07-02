@@ -103,14 +103,21 @@ const streamToString = async (body) => {
 };
 
 // Resolve the git token for the intent's run (from the starter's connection).
+// Returns { token, reason } — the reason names WHY the token is empty
+// (no_connection / resolve_failed with the error), so a repo-ful run can
+// surface it instead of silently degrading to unauthenticated git (cloud
+// finding #3: the silent '' here masked a missing env var for a full failure
+// chain — empty token → private clone "succeeded" as git init → blind stage).
 const defaultResolveToken = async ({ startedBy, gitProvider }) => {
-  if (!startedBy || !gitProvider) return '';
+  if (!startedBy || !gitProvider) return { token: '', reason: 'no_starter_or_provider' };
   try {
     const item = await getGitConnection(ddb, startedBy, gitProvider);
-    if (!item?.parameterName) return '';
-    return (await resolveGitToken(ssm, item)) || '';
-  } catch {
-    return '';
+    if (!item?.parameterName) return { token: '', reason: 'no_connection' };
+    const token = (await resolveGitToken(ssm, item)) || '';
+    return token ? { token } : { token: '', reason: 'empty_ssm_token' };
+  } catch (e) {
+    console.error('[v2-orchestrator] git token resolution failed:', e?.message);
+    return { token: '', reason: `resolve_failed: ${e?.message ?? 'unknown'}` };
   }
 };
 
@@ -262,9 +269,23 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // init-ws — clone repos, create the Neptune Intent anchor, seed RUNNING state.
     // Idempotent in the runtime (ConditionalCheckFailed → already initialized), so
     // a replay of this step is safe.
-    const token = await ctx.step('git-token', () =>
-      resolveToken({ startedBy: meta.startedBy, gitProvider }),
-    );
+    // Token resolution returns { token, reason } (a legacy string stub is
+    // normalized). A repo-ful run with NO token is loudly recorded — the run
+    // proceeds (init-ws now fails a private clone honestly; public/read-only
+    // flows still work) but the reason is on the timeline, not swallowed.
+    const tokenResult = await ctx.step('git-token', async () => {
+      const res = await resolveToken({ startedBy: meta.startedBy, gitProvider });
+      return typeof res === 'string' ? { token: res } : res;
+    });
+    const token = tokenResult?.token ?? '';
+    if (!token && (meta.repos ?? []).length > 0) {
+      await emitEvent(
+        ctx,
+        'git-token-missing',
+        'v2.git.token_unavailable',
+        `No usable git credentials for this run (${tokenResult?.reason ?? 'unknown'}) — private clones and pushes will fail; connect ${gitProvider} for the starting user`,
+      );
+    }
     const sessionId = sessionIdFor(intentId);
     await emitEvent(
       ctx,

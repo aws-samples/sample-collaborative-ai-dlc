@@ -1683,6 +1683,13 @@ module "v2_orchestrator_lambda" {
     BLOCKS_TABLE          = var.blocks_table_name
     AGENTCORE_RUNTIME_ARN = var.agentcore_runtime_arn
     GIT_TOKEN_SSM_PREFIX  = "${var.project_name}/${var.environment}/git-token"
+    # Git-token resolution: resolveToken reads the starter's
+    # connection row from these tables, then the SSM token. The IAM statements
+    # were wired from day one but these env vars were MISSING — getGitConnection
+    # threw on TableName undefined, resolveToken degraded to an empty token, and
+    # a private-repo clone silently fell back to `git init` (see init-ws).
+    GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
+    GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
     # Live realtime fan-out (lambda/shared/ws-fanout.js) — the orchestrator emits
     # execution/workspace lifecycle events on the intent:<id> channel itself, since
     # it is the only component that owns those transitions (the runtime broadcasts

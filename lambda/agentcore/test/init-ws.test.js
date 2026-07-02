@@ -136,6 +136,34 @@ describe('initWs', () => {
     );
     expect(res).toMatchObject({ ok: false, reason: 'checkout_failed' });
   });
+  it('FAILS loudly when a clone degraded to git init', async () => {
+    // checkoutRepo falls back to `git init` on clone failure and reports
+    // cloned:false. A genuinely empty repo clones fine (exit 0), so
+    // cloned:false ALWAYS means unreachable/unauthorized — the run must not
+    // proceed blind against an empty tree.
+    const d = deps({
+      checkoutRepos: async ({ repos }) =>
+        repos.map((r) => ({ repo: typeof r === 'string' ? r : r.url, cloned: false })),
+    });
+    const res = await initWs(
+      {
+        projectId: 'p1',
+        intentId: 'i1',
+        executionId: 'e1',
+        repos: ['owner/private-repo'],
+        branch: 'aidlc/i1',
+        baseBranch: 'main',
+        workflowId: 'aidlc-v2',
+        workflowVersion: 1,
+        scope: 'feature',
+      },
+      d,
+    );
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('checkout_failed');
+    expect(res.detail).toContain('owner/private-repo');
+    expect(res.detail).toContain('credentials');
+  });
 });
 
 describe('workspace checkout (mocked git runner)', () => {

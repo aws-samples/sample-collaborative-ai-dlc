@@ -74,6 +74,18 @@ export const initWs = async (
   } catch (e) {
     return { ok: false, reason: 'checkout_failed', detail: e.message };
   }
+  // checkoutRepo degrades a FAILED clone to `git init` (cloned:false). That
+  // fallback can only ever mask real breakage — `git clone` of a genuinely
+  // empty repo exits 0 — so a repo that "checked out" without cloning means
+  // the remote was unreachable or unauthorized. Fail the init loudly instead.
+  const notCloned = checkedOut.filter((r) => r.cloned === false).map((r) => r.repo);
+  if (notCloned.length > 0) {
+    return {
+      ok: false,
+      reason: 'checkout_failed',
+      detail: `clone failed for ${notCloned.join(', ')} — repository unreachable or credentials missing/insufficient (check the git connection for the starting user)`,
+    };
+  }
 
   // 2. Create the Intent anchor in Neptune.
   const g = await openGraph();

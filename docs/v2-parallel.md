@@ -649,6 +649,21 @@ MERGED | FAILED | BLOCKED`; `updateUnitState` is CAS'd on `fromStates`
   `concludeConflictMerge`). A tree with only runtime files is now CLEAN → no
   commit → no push → no network, which is exactly what an artifact-only stage
   should do — and what makes token-less runs on artifact-only stages work.
+  **Cloud findings #2–#4 (fixed, one failure chain)**: the deployed
+  orchestrator was missing the `GIT_CONNECTIONS_TABLE` /
+  `GIT_PROVIDER_CONNECTIONS_TABLE` env vars (#2 — the IAM statements existed;
+  the env block didn't), so `getGitConnection` threw and `resolveToken`'s
+  silent catch (#3) degraded every run to an EMPTY token despite a valid user
+  connection. A public repo masked it (tokenless clone works; only the push
+  failed); a private repo hit #4 — `checkoutRepo`'s `git init` fallback
+  turned the failed clone into a "successful" init against an EMPTY
+  workspace, and the whole run executed blind (the agent "classified" an
+  empty directory). Fixes: env vars wired in terraform; `resolveToken` now
+  returns `{ token, reason }` and a repo-ful run without a token records a
+  loud `v2.git.token_unavailable` event naming the reason; init-ws now FAILS
+  (`checkout_failed`) when any repo reports `cloned:false` — that fallback
+  can only ever mask real breakage, since `git clone` of a genuinely empty
+  repository exits 0.
 
 ---
 

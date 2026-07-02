@@ -1532,3 +1532,42 @@ describe('WP6 — PR opened on SUCCEEDED (intent-pr)', () => {
     expect(events().some((e) => e.type === 'v2.pr.skipped')).toBe(true);
   });
 });
+
+// ── git-token resolution must be LOUD, never silent ────
+
+describe('git token resolution', () => {
+  const start = () =>
+    __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
+  const events = () => deps.store.appendEvent.mock.calls.map((c) => c[0]);
+
+  it('a repo-ful run with NO resolvable token records v2.git.token_unavailable with the reason', async () => {
+    deps.resolveToken = vi.fn(async () => ({
+      token: '',
+      reason: 'resolve_failed: Missing required key TableName',
+    }));
+    deps.openPr = vi.fn();
+    const res = await start();
+    expect(res.ok).toBe(true); // public-repo flows still work; the warning is the point
+    const warn = events().find((e) => e.type === 'v2.git.token_unavailable');
+    expect(warn?.summary).toContain('resolve_failed: Missing required key TableName');
+    expect(warn?.summary).toContain('connect github');
+    // The empty token still flows to init-ws/run-stage (no fabricated auth).
+    expect(invokes.find((p) => p.command === 'init-ws').gitToken).toBe('');
+  });
+
+  it('tolerates a legacy string-returning resolveToken and emits NO warning when a token exists', async () => {
+    deps.resolveToken = vi.fn(async () => 'legacy-token');
+    const res = await start();
+    expect(res.ok).toBe(true);
+    expect(events().some((e) => e.type === 'v2.git.token_unavailable')).toBe(false);
+    expect(invokes.find((p) => p.command === 'init-ws').gitToken).toBe('legacy-token');
+  });
+
+  it('a repo-LESS intent with no token stays quiet (nothing to clone or push)', async () => {
+    deps.store.getExecution = vi.fn(async () => ({ ...META, repos: [] }));
+    deps.resolveToken = vi.fn(async () => ({ token: '', reason: 'no_connection' }));
+    const res = await start();
+    expect(res.ok).toBe(true);
+    expect(events().some((e) => e.type === 'v2.git.token_unavailable')).toBe(false);
+  });
+});
