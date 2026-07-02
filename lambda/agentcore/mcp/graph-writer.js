@@ -50,6 +50,13 @@ export const TEAM_KNOWLEDGE_LABEL = 'TeamKnowledge';
 // in one intent steers every later intent in the project.
 export const LEARNING_RULE_LABEL = 'LearningRule';
 
+// Unit-of-work lane mirror (docs/v2-parallel.md WP3). The DDB UNITPLAN/UNIT#
+// rows are the SCHEDULING TRUTH; these vertices exist for traceability/UI
+// only (the intent graph can render the unit DAG next to the artifacts).
+// Anchored Intent --CONTAINS--> UnitOfWork; dependencies as DEPENDS_ON edges
+// between UnitOfWork vertices (already an allowlisted business edge).
+export const UNIT_OF_WORK_LABEL = 'UnitOfWork';
+
 // The two runtime learnings layers V2's resolver interleaves. Mirrors the
 // learnings half of shared/blocks.js RULE_LAYERS.
 export const LEARNING_LAYERS = ['team-learnings', 'project-learnings'];
@@ -570,6 +577,93 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     return { questionId };
   };
 
+  // Mirror the promoted unit DAG to the business graph (docs/v2-parallel.md
+  // WP3). Traceability/UI ONLY — the DDB UNITPLAN/UNIT# rows are the
+  // scheduling truth; nothing schedules off these vertices. Idempotent:
+  // vertices upsert by deterministic id (unit:<intentId>:<slug>), edges via
+  // ensureEdge, and units dropped by a re-promotion are marked superseded
+  // rather than deleted (audit history). `sourceArtifactId` optionally wires
+  // each unit DERIVED_FROM the unit-of-work-dependency artifact it came from.
+  const mirrorUnitDag = async ({ units = [], sourceArtifactId = null }) => {
+    const intentExists = await g.V().has(INTENT_LABEL, 'id', scope.intentId).hasNext();
+    if (!intentExists)
+      throw new GraphWriteError(`Intent "${scope.intentId}" not found — run init-ws first`);
+
+    const unitId = (slug) => `unit:${scope.intentId}:${slug}`;
+    const slugs = units.map((u) => u.slug ?? u.name);
+
+    for (const u of units) {
+      const slug = u.slug ?? u.name;
+      const id = unitId(slug);
+      await upsertVertex(UNIT_OF_WORK_LABEL, id);
+      const props = {
+        slug,
+        depends_on: JSON.stringify(u.dependsOn ?? u.depends_on ?? []),
+        ...stamp(),
+        id,
+        updated_at: now(),
+        // A re-promoted unit is current again (rewind rehabilitation).
+        superseded_at: '',
+      };
+      let q = g.V().has(UNIT_OF_WORK_LABEL, 'id', id);
+      for (const [k, v] of Object.entries(props)) q = q.property(cardinality.single, k, v);
+      await q.next();
+      await ensureEdge({
+        fromLabel: INTENT_LABEL,
+        fromId: scope.intentId,
+        toLabel: UNIT_OF_WORK_LABEL,
+        toId: id,
+        edge: ANCHOR_EDGE,
+      });
+      if (sourceArtifactId) {
+        const artifactExists = await g.V().has(ARTIFACT_LABEL, 'id', sourceArtifactId).hasNext();
+        if (artifactExists) {
+          await ensureEdge({
+            fromLabel: UNIT_OF_WORK_LABEL,
+            fromId: id,
+            toLabel: ARTIFACT_LABEL,
+            toId: sourceArtifactId,
+            edge: 'DERIVED_FROM',
+          });
+        }
+      }
+    }
+    // Dependency edges AFTER all vertices exist.
+    for (const u of units) {
+      const slug = u.slug ?? u.name;
+      for (const dep of u.dependsOn ?? u.depends_on ?? []) {
+        await ensureEdge({
+          fromLabel: UNIT_OF_WORK_LABEL,
+          fromId: unitId(slug),
+          toLabel: UNIT_OF_WORK_LABEL,
+          toId: unitId(dep),
+          edge: 'DEPENDS_ON',
+        });
+      }
+    }
+    // Units that existed from a prior promotion but are gone from this DAG:
+    // mark superseded (never delete — audit history).
+    const existingIds = await g
+      .V()
+      .has(INTENT_LABEL, 'id', scope.intentId)
+      .out(ANCHOR_EDGE)
+      .hasLabel(UNIT_OF_WORK_LABEL)
+      .values('id')
+      .toList();
+    const currentIds = new Set(slugs.map(unitId));
+    let superseded = 0;
+    for (const id of existingIds) {
+      if (currentIds.has(id)) continue;
+      await g
+        .V()
+        .has(UNIT_OF_WORK_LABEL, 'id', id)
+        .property(cardinality.single, 'superseded_at', now())
+        .next();
+      superseded += 1;
+    }
+    return { mirrored: units.length, superseded };
+  };
+
   return {
     createArtifact,
     updateArtifact,
@@ -585,5 +679,6 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     getLearningRules,
     recordQuestion,
     linkSteeringInfluences,
+    mirrorUnitDag,
   };
 };

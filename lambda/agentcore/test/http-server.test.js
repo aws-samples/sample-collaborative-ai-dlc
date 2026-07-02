@@ -57,6 +57,19 @@ describe('dispatchInvocation', () => {
     });
   });
 
+  it('routes promote-units (WP3 unit DAG promotion)', async () => {
+    const r = await dispatchInvocation({
+      payload: { command: 'promote-units', intentId: 'i1', executionId: 'e1' },
+      handlers: {
+        promoteUnits: async (p) => ({ ok: true, unitCount: 3, executionId: p.executionId }),
+      },
+    });
+    expect(r).toMatchObject({
+      statusCode: 200,
+      body: { ok: true, unitCount: 3, executionId: 'e1', command: 'promote-units' },
+    });
+  });
+
   it('maps a handler ok:false to 422', async () => {
     const r = await dispatchInvocation({
       payload: { command: 'run-stage' },

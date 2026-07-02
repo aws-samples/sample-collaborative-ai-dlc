@@ -19,6 +19,9 @@
 //       orchestrator's durable callback on exit (docs/v2-parallel.md WP1).
 //       The busy tracker is held for the job's lifetime so /ping reports
 //       HealthyBusy and AgentCore keeps the session alive while it runs.
+//   { "command": "promote-units", projectId, intentId, executionId, stageInstanceId? }
+//     → WP3: re-parse the approved unit-of-work-dependency artifact into the
+//       UNITPLAN/UNIT scheduling rows + the Neptune traceability mirror.
 //
 // The dispatcher is pure (handlers injected) so it is unit-tested without a
 // socket; createServer wires the real commands + clients.
@@ -56,6 +59,7 @@ export const dispatchInvocation = async ({
     'init-ws': handlers.initWs,
     'run-stage': handlers.runStage,
     'run-stage-start': handlers.runStageStart,
+    'promote-units': handlers.promoteUnits,
     inspect: handlers.inspect,
     capabilities: handlers.capabilities,
   }[command];
@@ -137,6 +141,7 @@ const main = async () => {
   const { initWs } = await import('./commands/init-ws.js');
   const { runStage } = await import('./commands/run-stage.js');
   const { createRunStageStart } = await import('./commands/run-stage-start.js');
+  const { promoteUnits } = await import('./commands/promote-units.js');
   const { inspect } = await import('./commands/inspect.js');
   const { capabilities } = await import('./commands/capabilities.js');
   const { loadLibrary, loadBlockBody, loadBlockScript, loadConductor } =
@@ -184,6 +189,10 @@ const main = async () => {
       ),
     inspect: (p) => inspect(p, { openGraph }),
     capabilities: (p) => capabilities(p, { env: process.env }),
+    // WP3: freeze the approved unit DAG into UNITPLAN/UNIT rows + the graph
+    // mirror. Dispatched by the orchestrator after the producing stage
+    // succeeds (docs/v2-parallel.md).
+    promoteUnits: (p) => promoteUnits(p, { store, openGraph, broadcast }),
   };
   // Async stage invocation (WP1): shares the sync handler's whole deps bag; the
   // background job holds the SAME busy tracker the server uses for /ping, so

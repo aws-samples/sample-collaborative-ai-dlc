@@ -17,7 +17,9 @@ Status: **in progress** — WP0 complete (PoCs verified on the local durable
 test runner, see `lambda/v2-orchestrator/test/poc/`); WP1 code-complete
 (async run-stage via durable callback — its >15-min cloud exit criterion is
 still to be proven on a deployed stack before WP5); WP2 complete (engine-owned
-git layer, `lambda/agentcore/git-engine.js`); WP3+ not yet started.
+git layer, `lambda/agentcore/git-engine.js`); WP3 complete (unit DAG
+promotion — UNITPLAN/UNIT scheduling rows + Neptune mirror); WP4+ not yet
+started.
 
 ---
 
@@ -358,12 +360,42 @@ Failure,Heartbeat}` on the orchestrator function (ARN by naming convention
     run-stage hook wiring + failure-policy suite; workspace scrub suite.
   - Closes the documented v2 working-tree loss mode for the sequential flow:
     pushed commits survive the mount wipe that self-heal re-clones from.
-- **WP3 — Unit DAG promotion**: on fan-out gate approval, engine re-parses the
-  artifact (`parseBoltDag`), writes UNITPLAN + `UNIT#<slug>` rows to the DDB
-  process table (scheduling truth), mirrors to Neptune (`UnitOfWork`,
-  `DEPENDS_ON` — already allowlisted); captures skip matrix (rule 7), skeleton
-  pick (rule 8), autonomy mode (rule 9). Lane states:
-  `PENDING → READY → RUNNING → MERGING → MERGED | FAILED | BLOCKED`.
+- **WP3 — Unit DAG promotion** ✅ **done**:
+  - **data model** (`lambda/shared/v2-process-keys.js` / `v2-process-store.js`):
+    `UNITPLAN` singleton snapshot (units, batches, skipMatrix, walkingSkeleton,
+    autonomyMode, source artifact + producing stage provenance) and
+    `UNIT#<slug>` lane rows (dependsOn, state, batchIndex, branch/session +
+    terminal fields) with GSI2 `TYPE#UNIT#STATE#<laneState>` so "all READY
+    lanes" is one query. Lane states `PENDING → READY → RUNNING → MERGING →
+MERGED | FAILED | BLOCKED`; `updateUnitState` is CAS'd on `fromStates`
+    (WP5 concurrency-safe), `syncUnitRows` protects active lanes on
+    re-promotion (creates missing, refreshes PENDING/READY, preserves
+    started, reports orphans — never deletes audit history).
+  - **promotion command** (`lambda/agentcore/commands/promote-units.js`,
+    dispatched by the orchestrator right after the stage producing
+    `unit-of-work-dependency` succeeds — sensors passed, gates answered):
+    re-reads the current (non-superseded, newest) artifact from the graph,
+    re-parses with the SAME `parseBoltDag` the sensor used, writes the DDB
+    scheduling truth, then mirrors `UnitOfWork` vertices (+ `DEPENDS_ON`,
+    `DERIVED_FROM` source-artifact edge, Intent `CONTAINS` anchor) — the
+    mirror never blocks promotion (`v2.units.mirror_failed` recorded).
+    Note: the `UnitOfWork` vertex label was NOT previously allowlisted (the
+    plan text assumed it was) — added to the graph writer as `mirrorUnitDag`
+    following the TeamKnowledge pattern; re-promotion supersedes dropped
+    units and revives re-added ones.
+  - **decision fields** (rules 7–9): frozen with deterministic defaults —
+    skipMatrix `{}` (all EXECUTE), walkingSkeleton = first slug of the first
+    topological wave, autonomyMode `null`; preserved across re-promotion;
+    `updateUnitPlanDecisions` is the WP5 fan-out-gate patch point.
+  - **orchestrator hook**: `promote-units-<stageId>` durable step, fires only
+    when the plan stage's `outputArtifacts` include `unit-of-work-dependency`
+    (structural, no hard-coded stage names); a refused/failed promotion fails
+    the run (`units_promotion_failed`) — deterministic, instead of a missing
+    UNITPLAN surfacing at fan-out; `v2.units.plan_ready` event on success.
+  - tests: keys/builders + store methods (CAS, sync protection, GSI2),
+    promote-units command suite (14), real-gremlin `mirrorUnitDag` suite
+    (idempotency, supersede/revive), orchestrator hook ordering suite (also
+    proves promotion waits for the park loop to drain).
 - **WP4 — Plan fan-out + unit dimension through the data model**: section
   detection over `forEach` in `v2-execution-plan.js`, per-unit stage instances
   with unit-dimension ids, `no_unit_dag_producer` validation, N sections

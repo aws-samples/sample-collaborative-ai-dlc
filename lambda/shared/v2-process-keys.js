@@ -69,6 +69,19 @@ const outputKey = (executionId, seq) => ({
   pk: executionPk(executionId),
   sk: `OUTPUT#${outputSeq(seq)}`,
 });
+// Unit-of-work promotion (docs/v2-parallel.md WP3): UNITPLAN is the singleton
+// scheduling snapshot (like META); UNIT#<slug> is one lane's state row. The
+// DDB rows are the SCHEDULING TRUTH — the Neptune mirror is traceability only.
+// NOTE: SK prefix filters must use exact 'UNITPLAN' and 'UNIT#' — a bare
+// begins_with 'UNIT' would match both.
+const unitPlanKey = (executionId) => ({
+  pk: executionPk(executionId),
+  sk: 'UNITPLAN',
+});
+const unitKey = (executionId, slug) => ({
+  pk: executionPk(executionId),
+  sk: `UNIT#${slug}`,
+});
 
 // ── Index projections ──
 // GSI1: a project's executions by status, newest first (status board / resume).
@@ -113,6 +126,19 @@ const HUMAN_TASK_STATUSES = ['pending', 'answered', 'approved', 'rejected', 'sup
 //   rewind     — guidance for a restart-from-stage; injected into that stage.
 const STEERING_KINDS = ['gate-steer', 'revision', 'rewind'];
 const STEERING_STATUSES = ['pending', 'consumed', 'superseded'];
+// Per-unit construction lane states (docs/v2-parallel.md rule 4 / WP3).
+//   PENDING  — promoted, dependencies not yet satisfied
+//   READY    — every depends_on lane MERGED; eligible to start
+//   RUNNING  — lane executing its per-unit stages
+//   MERGING  — lane finished; engine merge into the intent branch in flight
+//   MERGED   — lane's work is on the intent branch (terminal success)
+//   FAILED   — a lane stage failed terminally (halt-and-ask)
+//   BLOCKED  — a depends_on lane FAILED/BLOCKED; never started
+const UNIT_STATES = ['PENDING', 'READY', 'RUNNING', 'MERGING', 'MERGED', 'FAILED', 'BLOCKED'];
+// Construction autonomy ladder (rule 9): chosen once after the walking-skeleton
+// gate approves. `gated` = one approval gate per parallel batch; `autonomous` =
+// remaining lanes run without approval gates (failures still halt-and-ask).
+const CONSTRUCTION_AUTONOMY_MODES = ['gated', 'autonomous'];
 
 // ── Pure record builders ──
 // Every builder takes injected `now`/ids so callers/tests stay deterministic
@@ -421,6 +447,78 @@ const buildSteeringRow = ({
   supersededBy: null,
 });
 
+// The UNITPLAN snapshot (docs/v2-parallel.md WP3): frozen on promotion of the
+// approved unit-of-work-dependency artifact. Everything the scheduler needs is
+// HERE (DDB = scheduling truth; bolt-plan prose is never parsed for execution):
+//   units          — [{ slug, dependsOn: [slug] }] from parseBoltDag
+//   batches        — [[slug]] topological waves (the batch-barrier fallback)
+//   skipMatrix     — { [slug]: [stageId] } per-unit CONDITIONAL stages to skip;
+//                    {} (default) = every unit executes every per-unit stage.
+//                    Frozen from the human-approved matrix at the fan-out gate.
+//   walkingSkeleton— slug of the lane that runs SOLO first (rule 8)
+//   autonomyMode   — 'gated' | 'autonomous' (rule 9); null until the ladder
+//                    prompt after the skeleton gate
+// Re-promotion (rewind of units-generation) overwrites the snapshot; UNIT rows
+// are synced separately with active-lane protection (see the store).
+const buildUnitPlanRow = ({
+  executionId,
+  units,
+  batches,
+  sourceArtifactId = null,
+  producedByStageInstanceId = null,
+  skipMatrix = {},
+  walkingSkeleton = null,
+  autonomyMode = null,
+  promotedBy = 'engine',
+  now,
+}) => ({
+  ...unitPlanKey(executionId),
+  ...executionTypeStateIndex({ executionId, type: 'UNITPLAN', state: 'ACTIVE', id: 'UNITPLAN' }),
+  type: 'UnitPlan',
+  executionId,
+  units,
+  batches,
+  unitCount: units.length,
+  sourceArtifactId,
+  producedByStageInstanceId,
+  skipMatrix,
+  walkingSkeleton,
+  autonomyMode,
+  promotedBy,
+  promotedAt: now,
+  updatedAt: now,
+});
+
+// One unit lane's scheduling row. GSI2 state = lane state so "all READY lanes"
+// is one query. `batchIndex` is the unit's topological wave (informational —
+// the wavefront schedules off dependsOn, not batches). Branch/session fields
+// are stamped when the lane starts (WP5); terminal fields on merge/fail.
+const buildUnitRow = ({
+  executionId,
+  slug,
+  dependsOn = [],
+  state = 'PENDING',
+  batchIndex = 0,
+  now,
+}) => ({
+  ...unitKey(executionId, slug),
+  ...executionTypeStateIndex({ executionId, type: 'UNIT', state, id: slug }),
+  type: 'Unit',
+  executionId,
+  slug,
+  dependsOn,
+  state,
+  batchIndex,
+  branch: null,
+  sessionId: null,
+  startedAt: null,
+  mergedAt: null,
+  failureReason: null,
+  blockedOn: null,
+  createdAt: now,
+  updatedAt: now,
+});
+
 module.exports = {
   META,
   executionPk,
@@ -434,6 +532,8 @@ module.exports = {
   steeringKey,
   outputKey,
   outputSeq,
+  unitPlanKey,
+  unitKey,
   projectStatusIndex,
   executionTypeStateIndex,
   EXECUTION_STATUS,
@@ -442,6 +542,8 @@ module.exports = {
   HUMAN_TASK_STATUSES,
   STEERING_KINDS,
   STEERING_STATUSES,
+  UNIT_STATES,
+  CONSTRUCTION_AUTONOMY_MODES,
   buildExecutionMeta,
   buildStageRow,
   buildEventRow,
@@ -450,4 +552,6 @@ module.exports = {
   buildSensorRow,
   buildSteeringRow,
   buildOutputRow,
+  buildUnitPlanRow,
+  buildUnitRow,
 };

@@ -430,6 +430,45 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         const out = await fail('stage_failed', `${stage.stageId}: ${result?.reason ?? ''}`);
         return { ...out, stageId: stage.stageId };
       }
+
+      // Unit DAG promotion (docs/v2-parallel.md WP3): the stage that produces
+      // `unit-of-work-dependency` just SUCCEEDED — its blocking sensors passed
+      // and every question gate it opened was answered. Freeze the approved
+      // DAG into the UNITPLAN/UNIT scheduling rows (+ Neptune mirror) via the
+      // VPC-attached container (the orchestrator has no Neptune access). A
+      // promotion failure fails the run HERE, deterministically — discovering
+      // a missing UNITPLAN at fan-out time (WP5) would be far worse.
+      const producesUnitDag = (stage.outputArtifacts ?? []).some(
+        (o) => (o.artifact ?? o) === 'unit-of-work-dependency',
+      );
+      if (producesUnitDag) {
+        const promotion = await ctx.step(`promote-units-${stage.stageId}`, () =>
+          invokeRuntime(
+            {
+              command: 'promote-units',
+              projectId,
+              intentId,
+              executionId,
+              stageInstanceId: stage.stageInstanceId ?? null,
+            },
+            sessionId,
+          ),
+        );
+        if (!promotion || promotion.ok === false) {
+          const out = await fail(
+            'units_promotion_failed',
+            `${stage.stageId}: ${promotion?.reason ?? 'no_response'}${
+              promotion?.detail ? ` (${promotion.detail})` : ''
+            }`,
+          );
+          return { ...out, stageId: stage.stageId };
+        }
+        await emitEvent(
+          `units-promoted-${stage.stageId}`,
+          'v2.units.plan_ready',
+          `Unit plan ready: ${promotion.unitCount} unit(s), ${promotion.batchCount} wave(s), skeleton ${promotion.walkingSkeleton ?? 'n/a'}`,
+        );
+      }
     }
 
     // Terminal success — CAS on the ownership token: a retired run (relaunched

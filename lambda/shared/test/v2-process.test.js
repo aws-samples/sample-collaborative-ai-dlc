@@ -12,14 +12,20 @@ import {
   stageKey,
   humanTaskKey,
   steeringKey,
+  unitPlanKey,
+  unitKey,
   buildExecutionMeta,
   buildStageRow,
   buildHumanTaskRow,
   buildSteeringRow,
+  buildUnitPlanRow,
+  buildUnitRow,
   executionTypeStateIndex,
   HUMAN_TASK_STATUSES,
   STEERING_KINDS,
   STEERING_STATUSES,
+  UNIT_STATES,
+  CONSTRUCTION_AUTONOMY_MODES,
 } from '../v2-process-keys.js';
 import { createProcessStore } from '../v2-process-store.js';
 
@@ -522,5 +528,195 @@ describe('steering store methods', () => {
     ddb.on(QueryCommand).resolves({ Items: [{ sk: 'META' }, { sk: 'STEER#T#st-1' }] });
     const grouped = await store.getExecutionRecords('e1');
     expect(grouped.steering).toHaveLength(1);
+  });
+});
+
+// ── WP3: unit-of-work promotion data model (docs/v2-parallel.md) ──
+
+describe('unit keys + builders', () => {
+  it('UNITPLAN is a singleton SK; UNIT#<slug> per lane (no prefix collision)', () => {
+    expect(unitPlanKey('e1')).toEqual({ pk: 'EXEC#e1', sk: 'UNITPLAN' });
+    expect(unitKey('e1', 'auth')).toEqual({ pk: 'EXEC#e1', sk: 'UNIT#auth' });
+  });
+
+  it('buildUnitPlanRow freezes the scheduling snapshot with decision defaults', () => {
+    const row = buildUnitPlanRow({
+      executionId: 'e1',
+      units: [
+        { slug: 'auth', dependsOn: [] },
+        { slug: 'checkout', dependsOn: ['auth'] },
+      ],
+      batches: [['auth'], ['checkout']],
+      sourceArtifactId: 'art-1',
+      producedByStageInstanceId: 'si-units',
+      walkingSkeleton: 'auth',
+      now: 'T',
+    });
+    expect(row.sk).toBe('UNITPLAN');
+    expect(row.type).toBe('UnitPlan');
+    expect(row.unitCount).toBe(2);
+    expect(row.skipMatrix).toEqual({});
+    expect(row.walkingSkeleton).toBe('auth');
+    expect(row.autonomyMode).toBeNull();
+    expect(row.GSI2SK).toBe('TYPE#UNITPLAN#STATE#ACTIVE#UNITPLAN');
+    expect(row.promotedAt).toBe('T');
+  });
+
+  it('buildUnitRow starts a lane PENDING with GSI2 keyed on the lane state', () => {
+    const row = buildUnitRow({
+      executionId: 'e1',
+      slug: 'checkout',
+      dependsOn: ['auth', 'catalog'],
+      batchIndex: 1,
+      now: 'T',
+    });
+    expect(row.sk).toBe('UNIT#checkout');
+    expect(row.type).toBe('Unit');
+    expect(row.state).toBe('PENDING');
+    expect(row.dependsOn).toEqual(['auth', 'catalog']);
+    expect(row.GSI2SK).toBe('TYPE#UNIT#STATE#PENDING#checkout');
+    expect(row.branch).toBeNull();
+    expect(row.mergedAt).toBeNull();
+  });
+
+  it('exports the lane-state and autonomy vocabularies', () => {
+    expect(UNIT_STATES).toEqual([
+      'PENDING',
+      'READY',
+      'RUNNING',
+      'MERGING',
+      'MERGED',
+      'FAILED',
+      'BLOCKED',
+    ]);
+    expect(CONSTRUCTION_AUTONOMY_MODES).toEqual(['gated', 'autonomous']);
+  });
+});
+
+describe('unit store methods', () => {
+  const ddb = mockClient(DynamoDBDocumentClient);
+  let store;
+  beforeEach(() => {
+    ddb.reset();
+    store = createProcessStore({ ddb, tableName: 'v2-proc', clock: () => 'T' });
+  });
+
+  it('putUnitPlan is a plain snapshot put (re-promotion replaces it)', async () => {
+    ddb.on(PutCommand).resolves({});
+    const row = await store.putUnitPlan({
+      executionId: 'e1',
+      units: [{ slug: 'auth', dependsOn: [] }],
+      batches: [['auth']],
+    });
+    expect(row.sk).toBe('UNITPLAN');
+    const input = ddb.commandCalls(PutCommand)[0].args[0].input;
+    expect(input.ConditionExpression).toBeUndefined();
+  });
+
+  it('listUnits queries the exact UNIT# prefix (never matches UNITPLAN)', async () => {
+    ddb.on(QueryCommand).resolves({ Items: [{ sk: 'UNIT#auth', slug: 'auth' }] });
+    const rows = await store.listUnits('e1');
+    expect(rows).toHaveLength(1);
+    const input = ddb.commandCalls(QueryCommand)[0].args[0].input;
+    expect(input.ExpressionAttributeValues[':p']).toBe('UNIT#');
+  });
+
+  it('syncUnitRows creates missing lanes, refreshes PENDING/READY, preserves active, reports orphans', async () => {
+    // Existing: auth (RUNNING — must be preserved), catalog (PENDING — updated),
+    // legacy (PENDING — orphaned: not in the new DAG).
+    ddb.on(QueryCommand).resolves({
+      Items: [
+        { sk: 'UNIT#auth', slug: 'auth', state: 'RUNNING' },
+        { sk: 'UNIT#catalog', slug: 'catalog', state: 'PENDING' },
+        { sk: 'UNIT#legacy', slug: 'legacy', state: 'PENDING' },
+      ],
+    });
+    ddb.on(PutCommand).resolves({});
+    ddb.on(UpdateCommand).resolves({ Attributes: {} });
+    const res = await store.syncUnitRows({
+      executionId: 'e1',
+      units: [
+        { slug: 'auth', dependsOn: [] },
+        { slug: 'catalog', dependsOn: ['auth'] },
+        { slug: 'payments', dependsOn: [] },
+      ],
+      batches: [['auth', 'payments'], ['catalog']],
+    });
+    expect(res).toEqual({
+      created: ['payments'],
+      updated: ['catalog'],
+      preserved: ['auth'],
+      orphaned: ['legacy'],
+    });
+    // The created row is a fresh PENDING lane in wave 0.
+    const put = ddb.commandCalls(PutCommand)[0].args[0].input;
+    expect(put.Item).toMatchObject({ sk: 'UNIT#payments', state: 'PENDING', batchIndex: 0 });
+    // The refreshed row re-derives deps + resets to PENDING.
+    const upd = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(upd.Key).toEqual(unitKey('e1', 'catalog'));
+    expect(upd.ExpressionAttributeValues[':deps']).toEqual(['auth']);
+    expect(upd.ExpressionAttributeValues[':state']).toBe('PENDING');
+    // The RUNNING lane was never written.
+    const touched = [
+      ...ddb.commandCalls(PutCommand).map((c) => c.args[0].input.Item?.sk),
+      ...ddb.commandCalls(UpdateCommand).map((c) => c.args[0].input.Key?.sk),
+    ];
+    expect(touched).not.toContain('UNIT#auth');
+  });
+
+  it('updateUnitState CASes on fromStates and re-stamps GSI2; a lost race returns null', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: { state: 'RUNNING' } });
+    await store.updateUnitState({
+      executionId: 'e1',
+      slug: 'auth',
+      state: 'RUNNING',
+      fromStates: ['READY'],
+      fields: { startedAt: true, sessionId: 's-1', branch: 'ai-dlc/i1--unit-auth' },
+    });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ConditionExpression).toBe('#state IN (:from0)');
+    expect(input.ExpressionAttributeValues[':from0']).toBe('READY');
+    expect(input.ExpressionAttributeValues[':g2sk']).toBe('TYPE#UNIT#STATE#RUNNING#auth');
+    expect(input.ExpressionAttributeValues[':f_startedAt']).toBe('T'); // true → now
+    expect(input.ExpressionAttributeValues[':f_branch']).toBe('ai-dlc/i1--unit-auth');
+
+    ddb.reset();
+    ddb
+      .on(UpdateCommand)
+      .rejects(Object.assign(new Error('cas'), { name: 'ConditionalCheckFailedException' }));
+    const lost = await store.updateUnitState({
+      executionId: 'e1',
+      slug: 'auth',
+      state: 'RUNNING',
+      fromStates: ['READY'],
+    });
+    expect(lost).toBeNull();
+  });
+
+  it('updateUnitState refuses an unknown lane state', async () => {
+    await expect(
+      store.updateUnitState({ executionId: 'e1', slug: 'auth', state: 'DONE' }),
+    ).rejects.toThrow('invalid unit state');
+  });
+
+  it('updateUnitPlanDecisions patches only the supplied decision fields on an existing plan', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: { autonomyMode: 'autonomous' } });
+    await store.updateUnitPlanDecisions({ executionId: 'e1', autonomyMode: 'autonomous' });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.Key).toEqual(unitPlanKey('e1'));
+    expect(input.UpdateExpression).toContain('autonomyMode = :am');
+    expect(input.UpdateExpression).not.toContain('skipMatrix');
+    expect(input.ConditionExpression).toBe('attribute_exists(pk)');
+  });
+
+  it('getExecutionRecords groups UNITPLAN + UNIT rows', async () => {
+    ddb.on(QueryCommand).resolves({
+      Items: [{ sk: 'META' }, { sk: 'UNITPLAN' }, { sk: 'UNIT#auth' }, { sk: 'UNIT#catalog' }],
+    });
+    const grouped = await store.getExecutionRecords('e1');
+    expect(grouped.unitPlan).toEqual({ sk: 'UNITPLAN' });
+    expect(grouped.units).toHaveLength(2);
+    // UNITPLAN never leaks into the units list.
+    expect(grouped.units.map((r) => r.sk)).toEqual(['UNIT#auth', 'UNIT#catalog']);
   });
 });

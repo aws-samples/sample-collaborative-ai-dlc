@@ -688,3 +688,115 @@ describe('retired-run ownership', () => {
     expect(evTypes).not.toContain('v2.execution.succeeded');
   });
 });
+
+// ── WP3: unit DAG promotion (docs/v2-parallel.md) ──
+
+describe('unit DAG promotion after the producing stage succeeds', () => {
+  const PLAN_WITH_DAG_PRODUCER = {
+    valid: true,
+    plan: {
+      stages: [
+        {
+          stageId: 'units-generation',
+          stageInstanceId: 'si-units',
+          outputArtifacts: [
+            { artifact: 'unit-of-work', terminal: false },
+            { artifact: 'unit-of-work-dependency', terminal: false },
+          ],
+        },
+        {
+          stageId: 'delivery-planning',
+          stageInstanceId: 'si-dp',
+          outputArtifacts: [{ artifact: 'bolt-plan', terminal: false }],
+        },
+      ],
+    },
+  };
+
+  it('dispatches promote-units exactly once, after the producing stage, before the next stage', async () => {
+    deps.loadPlan.mockResolvedValue(PLAN_WITH_DAG_PRODUCER);
+    deps.invokeRuntime = makeRuntime(ctx, (payload) => {
+      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'promote-units')
+        return { ok: true, unitCount: 3, batchCount: 2, walkingSkeleton: 'auth' };
+      return { ok: true, state: 'SUCCEEDED' };
+    });
+    const res = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1' },
+      ctx,
+      deps,
+    );
+    expect(res.ok).toBe(true);
+    const commands = invokes.map((p) => p.command);
+    expect(commands).toEqual([
+      'init-ws',
+      'run-stage-start', // units-generation
+      'promote-units', // right after the producer succeeded
+      'run-stage-start', // delivery-planning
+    ]);
+    const promote = invokes.find((p) => p.command === 'promote-units');
+    expect(promote).toMatchObject({
+      projectId: 'p1',
+      intentId: 'i1',
+      executionId: 'i1',
+      stageInstanceId: 'si-units',
+    });
+    // The plan-ready event landed for the activity feed.
+    const evTypes = deps.store.appendEvent.mock.calls.map((c) => c[0].type);
+    expect(evTypes).toContain('v2.units.plan_ready');
+  });
+
+  it('never dispatches promote-units when no stage produces the DAG artifact', async () => {
+    // Default plan (stages a, b — no outputArtifacts).
+    await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
+    expect(invokes.map((p) => p.command)).not.toContain('promote-units');
+  });
+
+  it('fails the run (units_promotion_failed) when promotion is refused', async () => {
+    deps.loadPlan.mockResolvedValue(PLAN_WITH_DAG_PRODUCER);
+    deps.invokeRuntime = makeRuntime(ctx, (payload) => {
+      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'promote-units')
+        return { ok: false, reason: 'dag_malformed', detail: 'duplicate: auth' };
+      return { ok: true, state: 'SUCCEEDED' };
+    });
+    const res = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1' },
+      ctx,
+      deps,
+    );
+    expect(res).toMatchObject({ ok: false, reason: 'units_promotion_failed' });
+    // The run stopped before the next stage.
+    expect(invokes.filter((p) => p.command === 'run-stage-start')).toHaveLength(1);
+    const failCall = deps.store.updateExecution.mock.calls.find((c) => c[0].status === 'FAILED');
+    expect(failCall[0].failureReason).toContain('dag_malformed');
+    expect(failCall[0].failureReason).toContain('duplicate: auth');
+  });
+
+  it('promotion runs after the park loop drains (gate answered first)', async () => {
+    deps.store.getExecution
+      .mockResolvedValueOnce(META)
+      .mockResolvedValue({ ...META, pendingHumanTaskId: 'h1' });
+    deps.loadPlan.mockResolvedValue({
+      valid: true,
+      plan: { stages: [PLAN_WITH_DAG_PRODUCER.plan.stages[0]] },
+    });
+    deps.invokeRuntime = makeRuntime(ctx, (payload, n) => {
+      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'promote-units')
+        return { ok: true, unitCount: 1, batchCount: 1, walkingSkeleton: 'auth' };
+      // First stage leg parks (approval question), resume leg succeeds.
+      if (n === 2) return { ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'h1' };
+      return { ok: true, state: 'SUCCEEDED' };
+    });
+    const res = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1' },
+      ctx,
+      deps,
+    );
+    expect(res.ok).toBe(true);
+    const commands = invokes.map((p) => p.command);
+    // fresh leg → resume leg → THEN promotion.
+    expect(commands).toEqual(['init-ws', 'run-stage-start', 'run-stage-start', 'promote-units']);
+  });
+});

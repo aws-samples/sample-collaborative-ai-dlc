@@ -468,3 +468,111 @@ describe('linkSteeringInfluences', () => {
     ).toEqual({ linked: 0 });
   });
 });
+
+// ── WP3: unit DAG mirror (docs/v2-parallel.md) ──
+
+describe('mirrorUnitDag (traceability mirror of the promoted unit DAG)', () => {
+  const UNITS = [
+    { slug: 'auth', dependsOn: [] },
+    { slug: 'catalog', dependsOn: [] },
+    { slug: 'checkout', dependsOn: ['auth', 'catalog'] },
+  ];
+
+  it('fails when the Intent anchor does not exist', async () => {
+    await expect(writer.mirrorUnitDag({ units: UNITS })).rejects.toBeInstanceOf(GraphWriteError);
+  });
+
+  it('creates UnitOfWork vertices anchored to the Intent with DEPENDS_ON edges', async () => {
+    await seedIntent();
+    const res = await writer.mirrorUnitDag({ units: UNITS });
+    expect(res).toEqual({ mirrored: 3, superseded: 0 });
+
+    // Anchored under the intent.
+    const ids = await g
+      .V()
+      .has('Intent', 'id', SCOPE.intentId)
+      .out('CONTAINS')
+      .hasLabel('UnitOfWork')
+      .values('id')
+      .toList();
+    expect(ids.toSorted()).toEqual([
+      'unit:intent-1:auth',
+      'unit:intent-1:catalog',
+      'unit:intent-1:checkout',
+    ]);
+
+    // Dependency edges: checkout DEPENDS_ON auth + catalog.
+    const deps = await g
+      .V()
+      .has('UnitOfWork', 'id', 'unit:intent-1:checkout')
+      .out('DEPENDS_ON')
+      .values('id')
+      .toList();
+    expect(deps.toSorted()).toEqual(['unit:intent-1:auth', 'unit:intent-1:catalog']);
+
+    // Provenance stamped from trusted scope.
+    const auth = await g.V().has('UnitOfWork', 'id', 'unit:intent-1:auth').valueMap().next();
+    expect(auth.value.get('intent_id')[0]).toBe(SCOPE.intentId);
+    expect(auth.value.get('slug')[0]).toBe('auth');
+  });
+
+  it('wires DERIVED_FROM to the source artifact when present', async () => {
+    await seedIntent();
+    await writer.createArtifact({
+      artifactType: 'unit-of-work-dependency',
+      id: 'art-dag',
+      content: 'body',
+    });
+    await writer.mirrorUnitDag({ units: UNITS, sourceArtifactId: 'art-dag' });
+    const derived = await g
+      .V()
+      .has('UnitOfWork', 'id', 'unit:intent-1:auth')
+      .out('DERIVED_FROM')
+      .values('id')
+      .toList();
+    expect(derived).toEqual(['art-dag']);
+  });
+
+  it('is idempotent — re-mirroring never duplicates vertices or edges', async () => {
+    await seedIntent();
+    await writer.mirrorUnitDag({ units: UNITS });
+    await writer.mirrorUnitDag({ units: UNITS });
+    const count = await g.V().hasLabel('UnitOfWork').count().next();
+    expect(count.value).toBe(3);
+    const edgeCount = await g
+      .V()
+      .has('UnitOfWork', 'id', 'unit:intent-1:checkout')
+      .outE('DEPENDS_ON')
+      .count()
+      .next();
+    expect(edgeCount.value).toBe(2);
+  });
+
+  it('a re-promotion with a changed DAG supersedes dropped units (audit kept) and revives re-added ones', async () => {
+    await seedIntent();
+    await writer.mirrorUnitDag({ units: UNITS });
+    // catalog is gone in the new DAG.
+    const res = await writer.mirrorUnitDag({
+      units: [
+        { slug: 'auth', dependsOn: [] },
+        { slug: 'checkout', dependsOn: ['auth'] },
+      ],
+    });
+    expect(res).toEqual({ mirrored: 2, superseded: 1 });
+    const catalog = await g
+      .V()
+      .has('UnitOfWork', 'id', 'unit:intent-1:catalog')
+      .values('superseded_at')
+      .next();
+    expect(catalog.value).toBeTruthy(); // marked, not deleted
+
+    // Re-adding catalog revives it (superseded_at cleared).
+    await writer.mirrorUnitDag({ units: UNITS });
+    const revived = await g
+      .V()
+      .has('UnitOfWork', 'id', 'unit:intent-1:catalog')
+      .values('superseded_at')
+      .next();
+    expect(revived.value).toBe('');
+  });
+});
