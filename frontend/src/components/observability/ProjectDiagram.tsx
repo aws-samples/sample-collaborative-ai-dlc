@@ -1,8 +1,9 @@
 import { cn } from '@/lib/utils';
 import { effectiveSprintStatus } from '@/lib/sprintStatus';
-import { FolderGit2, GitBranch } from 'lucide-react';
+import { FolderGit2 } from 'lucide-react';
 import { PhaseBlock } from './PhaseBlock';
 import { AgentFocusCard } from './AgentFocusCard';
+import { GitRepoLink } from '@/components/GitRepoLink';
 import { PHASE_CONFIGS, PHASE_ORDER, type PhaseKey } from './phaseConfig';
 import type { ProjectAgentInfo, SprintProgress, VelocityMetrics } from '@/hooks/useObservability';
 import type { Sprint } from '@/services/sprints';
@@ -113,10 +114,12 @@ export function ProjectDiagram({
           <FolderGit2 className="h-4 w-4 text-primary" />
           <span className="font-semibold text-sm">{project.name}</span>
           {project.gitRepo && (
-            <span className="text-[11px] text-muted-foreground/60 flex items-center gap-1">
-              <GitBranch className="h-3 w-3" />
-              {project.gitRepo}
-            </span>
+            <GitRepoLink
+              gitRepo={project.gitRepo}
+              gitProvider={project.gitProvider}
+              className="text-[11px] text-muted-foreground/60"
+              noLink
+            />
           )}
         </div>
         <AgentFocusCard

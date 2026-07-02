@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { projectsService } from '@/services/projects';
 import { useProjectsCache } from '@/hooks/useProjectsCache';
 import { CreateProjectModal } from '@/components/CreateProjectModal';
+import { GitRepoLink } from '@/components/GitRepoLink';
 import type { GitProvider } from '@/services/gitProvider';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -19,16 +20,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import {
-  Plus,
-  GitBranch,
-  Trash2,
-  FolderGit2,
-  Search,
-  LayoutGrid,
-  List,
-  RefreshCw,
-} from 'lucide-react';
+import { Plus, Trash2, FolderGit2, Search, LayoutGrid, List, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export default function Dashboard() {
@@ -250,9 +242,12 @@ export default function Dashboard() {
                   </div>
 
                   {project.gitRepo && (
-                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-2">
-                      <GitBranch className="h-3 w-3" />
-                      <span className="truncate">{project.gitRepo}</span>
+                    <div className="text-xs text-muted-foreground mb-2">
+                      <GitRepoLink
+                        gitRepo={project.gitRepo}
+                        gitProvider={project.gitProvider}
+                        noLink
+                      />
                     </div>
                   )}
 
@@ -280,10 +275,12 @@ export default function Dashboard() {
                     <span className="font-medium text-sm">{project.name}</span>
                   </div>
                   {project.gitRepo && (
-                    <span className="text-xs text-muted-foreground flex items-center gap-1">
-                      <GitBranch className="h-3 w-3" />
-                      {project.gitRepo}
-                    </span>
+                    <GitRepoLink
+                      gitRepo={project.gitRepo}
+                      gitProvider={project.gitProvider}
+                      className="text-xs text-muted-foreground"
+                      noLink
+                    />
                   )}
                   {project.userRole && (
                     <Badge

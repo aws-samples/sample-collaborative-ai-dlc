@@ -49,6 +49,7 @@ import {
 } from 'lucide-react';
 import { TrackerIssueListPanel } from '@/components/TrackerIssueListPanel';
 import { MigrateTrackerCard } from '@/components/MigrateTrackerCard';
+import { GitRepoLink } from '@/components/GitRepoLink';
 import { effectiveSprintStatus, isActiveStatus } from '@/lib/sprintStatus';
 
 const STATUS_ICON: Record<string, typeof Loader2> = {
@@ -222,7 +223,11 @@ export default function Project() {
             </div>
             {project.gitRepo ? (
               <>
-                <p className="text-sm font-medium truncate">{project.gitRepo}</p>
+                <GitRepoLink
+                  gitRepo={project.gitRepo}
+                  gitProvider={project.gitProvider}
+                  className="text-sm font-medium"
+                />
                 {latestSprint?.branch && (
                   <p className="text-[11px] text-muted-foreground mt-1 truncate">
                     Branch: {latestSprint.branch}
