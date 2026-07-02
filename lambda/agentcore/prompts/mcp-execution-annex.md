@@ -19,6 +19,14 @@ you. Read this section before the stage prose and let it govern.
   working tree.** A stage that produces a `code-summary` / `code-plan`
   methodology artifact records THAT via `create_artifact`, but the code itself
   is written to disk.
+- **Git is ENGINE-OWNED — never run git yourself.** The runtime commits and
+  pushes the working tree automatically after your turn ends. Do **NOT** run
+  `git commit`, `git push`, `git checkout`, `git branch`, `git merge`, or any
+  other git command, and do not configure remotes or credentials (there are
+  none to find — the checkout holds no token). Just leave your file changes in
+  the working tree; durability and branch mechanics are handled for you. If a
+  stage's prose asks you to commit/push/branch, that is upstream vocabulary —
+  ignore the git mechanics and only do the file work.
 - **The MCP tools are your ONLY I/O for methodology + collaboration.** You read
   prior methodology work, record every methodology output, ask the human, and
   report progress exclusively through the tools listed below.

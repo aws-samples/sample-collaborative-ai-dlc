@@ -141,7 +141,7 @@ describe('initWs', () => {
 describe('workspace checkout (mocked git runner)', () => {
   const noMkdir = async () => {};
 
-  it('clones then checks out the branch for a single repo', async () => {
+  it('clones, scrubs the token from origin, then checks out the branch', async () => {
     const cmds = [];
     const runner = async (command, args) => {
       cmds.push([command, ...args].join(' '));
@@ -157,7 +157,51 @@ describe('workspace checkout (mocked git runner)', () => {
       ensureDir: noMkdir,
     });
     expect(cmds[0]).toContain('git clone https://x-access-token:tok@github.com/acme/api.git /ws');
-    expect(cmds[1]).toBe('git checkout feat/x');
+    // WP2 credential scrubbing: origin is reset to the token-FREE URL right
+    // after the clone, BEFORE anything else runs in the checkout.
+    expect(cmds[1]).toBe('git remote set-url origin https://github.com/acme/api.git');
+    expect(cmds[2]).toBe('git checkout feat/x');
+    // No command after the clone ever carries the token again.
+    for (const c of cmds.slice(1)) expect(c).not.toContain('tok@');
+  });
+
+  it('adds a token-free origin after the git-init fallback (empty repo has no remote)', async () => {
+    const cmds = [];
+    const runner = async (command, args) => {
+      cmds.push([command, ...args].join(' '));
+      // clone fails (empty repo) and set-url fails (no origin yet).
+      if (args[0] === 'clone') return { code: 128 };
+      if (args[0] === 'remote' && args[1] === 'set-url') return { code: 2 };
+      return { code: 0 };
+    };
+    await checkoutRepo({
+      repo: 'acme/new',
+      branch: 'feat/x',
+      gitToken: 'tok',
+      targetDir: '/ws',
+      runner,
+      ensureDir: noMkdir,
+    });
+    expect(cmds).toContain('git init /ws');
+    expect(cmds).toContain('git remote add origin https://github.com/acme/new.git');
+  });
+
+  it('scrubs with the provider-correct clean URL for gitlab', async () => {
+    const cmds = [];
+    const runner = async (command, args) => {
+      cmds.push([command, ...args].join(' '));
+      return { code: 0 };
+    };
+    await checkoutRepo({
+      repo: 'group/proj',
+      branch: 'b',
+      gitToken: 'tok',
+      gitProvider: 'gitlab',
+      targetDir: '/ws',
+      runner,
+      ensureDir: noMkdir,
+    });
+    expect(cmds[1]).toBe('git remote set-url origin https://gitlab.com/group/proj.git');
   });
 
   it('uses the GitLab oauth2 clone scheme when gitProvider is gitlab', async () => {

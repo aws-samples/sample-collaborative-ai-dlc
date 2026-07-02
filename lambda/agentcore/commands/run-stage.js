@@ -49,6 +49,7 @@ import {
   resolveKiroStore,
 } from '../cli/kiro-store.js';
 import { ensureWorkspaceSource as defaultEnsureWorkspaceSource } from '../workspace.js';
+import { commitAndPushAll as defaultCommitAndPushAll } from '../git-engine.js';
 import { resolveStageModel } from '../model-resolver.js';
 import { createGraphWriter } from '../mcp/graph-writer.js';
 import { createSensorRunner } from '../sensor-runner.js';
@@ -407,8 +408,9 @@ const renderSteering = (rows = []) => {
     `The human team has redirected this work. The following OVERRIDES your current plan ` +
     `and any conflicting earlier instruction or answer:\n${items.join('\n')}\n\n` +
     `Re-evaluate your approach in light of the above before doing anything else. ` +
-    `Update or revert any artifacts, commits, or decisions that conflict with this direction. ` +
-    `If prior work on the branch contradicts it, correct that work (revert/redo the commits) as part of this stage.`
+    `Update or revert any artifacts, files, or decisions that conflict with this direction. ` +
+    `If prior work in the working tree contradicts it, correct those files as part of this stage ` +
+    `(edit or rewrite them — do NOT run git; the engine owns commits).`
   );
 };
 
@@ -604,6 +606,9 @@ export const runStage = async (
     persistKiroStore = defaultPersistKiroStore,
     // Re-clone a wiped source checkout before the CLI spawns. Injected for tests.
     ensureWorkspaceSource = defaultEnsureWorkspaceSource,
+    // Engine-owned git (docs/v2-parallel.md WP2): commit + push after every CLI
+    // exit. Injected for tests.
+    commitAndPushAll = defaultCommitAndPushAll,
   } = deps;
 
   const now = () => clock();
@@ -1114,6 +1119,43 @@ export const runStage = async (
     }
   }
 
+  // Engine-owned git (docs/v2-parallel.md WP2): commit + push the working tree
+  // after EVERY CLI exit — success, park, or failure — so no work ever exists
+  // only on the wipeable session mount (the documented v2 loss mode: the mount
+  // is wiped on redeploy/idle and self-heal re-clones the pristine remote).
+  // The agent holds no credentials and never commits; this is the single place
+  // tree state becomes durable. Sensors below inspect the same tree, so a
+  // sensor hold AFTER the push is fine — the pushed commit preserves the work
+  // for the retry. Artifact-only stages leave the tree clean (no commit, no
+  // network). NEVER throws — failures are values recorded below.
+  const gitResult = await commitAndPushAll({
+    repos,
+    workspaceDir,
+    branch,
+    gitToken,
+    gitProvider,
+    message: `aidlc(${stageId}): ${executionId}`,
+  });
+  if (gitResult.committed || !gitResult.ok) {
+    const failedRepos = gitResult.results
+      .filter((r) => r.pushed !== true && r.pushed !== 'empty' && r.pushed !== 'up_to_date')
+      .map((r) => `${r.repo} (${r.reason ?? 'unknown'})`);
+    await store
+      .appendEvent({
+        executionId,
+        type: gitResult.ok ? 'v2.git.pushed' : 'v2.git.push_failed',
+        stageInstanceId,
+        actor: 'agentcore',
+        summary: gitResult.ok
+          ? `Engine committed + pushed work for ${stageId} (${gitResult.results
+              .filter((r) => r.committed)
+              .map((r) => `${r.repo}@${(r.sha ?? '').slice(0, 8)}`)
+              .join(', ')})`
+          : `Engine push failed for ${stageId}: ${failedRepos.join(', ')}`,
+      })
+      .catch(() => {});
+  }
+
   // 5. Park check — did the agent leave a pending question? ask_question parks
   // (returns a sentinel) instead of blocking, so the agent is told to stop. The
   // durable pending gate — NOT the CLI exit code — is the source of truth for a
@@ -1169,6 +1211,22 @@ export const runStage = async (
       cliSessionId,
       cli,
     };
+  }
+
+  // WP2 policy: a push failure fails the stage ONLY when THIS run created
+  // commits that never reached the remote — new work at risk is exactly the
+  // loss mode the engine exists to close (the commit stays in the local tree
+  // for the retry). Pre-existing unpushed state without new work (e.g. a
+  // token-less project whose stages only write graph artifacts) was recorded
+  // as a v2.git.push_failed event above but does not change stage behavior.
+  // A parked stage (above) parks regardless — the human loop must not be
+  // blocked by a push outage; the resume leg retries the push.
+  if (!gitResult.ok && gitResult.committed) {
+    const detail = gitResult.results
+      .filter((r) => r.pushed !== true && r.pushed !== 'empty' && r.pushed !== 'up_to_date')
+      .map((r) => `${r.repo}: ${r.detail ?? r.reason ?? 'unknown'}`)
+      .join('; ');
+    return fail(stageInstanceId, 'push_failed', detail);
   }
 
   // 6. Deterministic sensors — the verification axis that runs AFTER the agent.

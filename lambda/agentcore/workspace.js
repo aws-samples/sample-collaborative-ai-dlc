@@ -5,6 +5,11 @@
 // Safety: argv-based spawn (shell:false) — the token is injected via the URL but
 // never interpolated into a shell string. Multi-repo lays out under
 // <workspaceDir>/<owner>/<repo>; single-repo clones into <workspaceDir> directly.
+//
+// Credential scrubbing (docs/v2-parallel.md WP2): the tokenized URL is used for
+// the one-shot `git clone` argv only; immediately after, origin is reset to the
+// token-FREE URL so `.git/config` never holds a credential at rest. The engine
+// (git-engine.js) re-injects the token only inside its own push/fetch window.
 
 import { spawn } from 'node:child_process';
 import { mkdir, stat } from 'node:fs/promises';
@@ -33,7 +38,7 @@ const cloneUrl = (repo, gitToken, gitProvider) => buildCloneUrl(gitProvider, rep
 
 // Clone one repo and check out (creating if needed) the working branch off the
 // base branch. Best-effort init for an empty repo. `runner`/`ensureDir`
-// injectable for tests.
+// injectable for tests. The origin remote is left TOKEN-FREE in both outcomes.
 export const checkoutRepo = async ({
   repo,
   branch,
@@ -52,6 +57,18 @@ export const checkoutRepo = async ({
     // working tree. `cloned:false` is surfaced so a self-heal can tell a genuine
     // clone failure apart from a legitimately empty repo.
     await runner('git', ['init', targetDir]);
+  }
+  // Scrub the credential from the checkout: clone embeds the token in
+  // .git/config's origin URL; the git-init fallback has no origin at all.
+  // Either way origin ends up as the token-FREE URL (added if missing) so the
+  // agent CLI can never read a token; git-engine re-injects it only inside its
+  // own push window.
+  const cleanUrl = cloneUrl(repo, '', gitProvider);
+  const setUrl = await runner('git', ['remote', 'set-url', 'origin', cleanUrl], {
+    cwd: targetDir,
+  });
+  if (setUrl.code !== 0) {
+    await runner('git', ['remote', 'add', 'origin', cleanUrl], { cwd: targetDir });
   }
   if (branch) {
     const checkout = await runner('git', ['checkout', branch], { cwd: targetDir });

@@ -115,6 +115,9 @@ const baseDeps = (overrides = {}) => ({
     throw new Error('spawn should be stubbed via runChild path');
   },
   clock: () => 'T',
+  // WP2 engine git: hermetic default — no repos in the fake payload means the
+  // real hook would no-op anyway, but keep tests off real git entirely.
+  commitAndPushAll: async () => ({ ok: true, committed: false, results: [] }),
   ...overrides,
 });
 
@@ -1272,8 +1275,10 @@ describe('renderSteering — the course-correction block', () => {
     expect(block).toContain('from Ada');
     expect(block).toContain('a previously given answer was CORRECTED');
     expect(block).toContain('rewind guidance — this stage is re-running from scratch');
-    // The agent is told to fix conflicting prior work (agent-led git revert).
-    expect(block).toContain('revert/redo the commits');
+    // The agent is told to fix conflicting prior work by editing FILES — git
+    // is engine-owned (WP2), so the steering block must not ask for git ops.
+    expect(block).toContain('do NOT run git');
+    expect(block).not.toContain('revert/redo the commits');
   });
 });
 
@@ -1453,5 +1458,192 @@ describe('runStage — steering reaches the agent conversation', () => {
     const prompt = argv[argv.indexOf('-p') + 1];
     expect(prompt).not.toContain('COURSE CORRECTION');
     expect(store.calls.filter((c) => c[0] === 'markSteeringConsumed')).toHaveLength(0);
+  });
+});
+
+// ── WP2: engine-owned git — commit + push on every stage exit ──
+
+describe('runStage — engine git hook (docs/v2-parallel.md WP2)', () => {
+  const okSpawn = () => ({
+    on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
+    stdin: { end() {} },
+  });
+  const gitArgs = {
+    ...baseArgs,
+    repos: ['owner/repo'],
+    branch: 'ai-dlc/i1',
+    baseBranch: 'main',
+    gitToken: 'tok',
+    gitProvider: 'github',
+  };
+  // With repos present the real source self-heal would try to git-clone the
+  // fake repo; stub it as "checkout present".
+  const sourcePresent = {
+    ensureWorkspaceSource: async () => ({ restored: false, repos: [], failed: [] }),
+  };
+
+  it('invokes the hook once after the CLI exits, with the clone inputs and a deterministic message', async () => {
+    const calls = [];
+    const deps = baseDeps({
+      ...sourcePresent,
+      spawnFn: okSpawn,
+      commitAndPushAll: async (input) => {
+        calls.push(input);
+        return { ok: true, committed: false, results: [] };
+      },
+    });
+    const res = await runStage(gitArgs, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      repos: ['owner/repo'],
+      workspaceDir: '/ws',
+      branch: 'ai-dlc/i1',
+      gitToken: 'tok',
+      gitProvider: 'github',
+      message: 'aidlc(requirements-analysis): e1',
+    });
+  });
+
+  it('records a v2.git.pushed event when the engine committed work', async () => {
+    const deps = baseDeps({
+      ...sourcePresent,
+      spawnFn: okSpawn,
+      commitAndPushAll: async () => ({
+        ok: true,
+        committed: true,
+        results: [{ repo: 'owner/repo', committed: true, sha: 'abc1234567890', pushed: true }],
+      }),
+    });
+    const res = await runStage(gitArgs, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    const ev = deps.store.calls.find(
+      (c) => c[0] === 'appendEvent' && c[1].type === 'v2.git.pushed',
+    );
+    expect(ev).toBeTruthy();
+    expect(ev[1].summary).toContain('owner/repo@abc12345');
+  });
+
+  it('no event when nothing was committed and pushes were clean (quiet feed)', async () => {
+    const deps = baseDeps({
+      ...sourcePresent,
+      spawnFn: okSpawn,
+      commitAndPushAll: async () => ({
+        ok: true,
+        committed: false,
+        results: [{ repo: 'owner/repo', committed: false, reason: 'clean', pushed: 'up_to_date' }],
+      }),
+    });
+    await runStage(gitArgs, deps);
+    const gitEvents = deps.store.calls.filter(
+      (c) => c[0] === 'appendEvent' && String(c[1].type).startsWith('v2.git.'),
+    );
+    expect(gitEvents).toHaveLength(0);
+  });
+
+  it('FAILS the stage (push_failed) when THIS run committed work that did not reach the remote', async () => {
+    const deps = baseDeps({
+      ...sourcePresent,
+      spawnFn: okSpawn,
+      commitAndPushAll: async () => ({
+        ok: false,
+        committed: true,
+        results: [
+          {
+            repo: 'owner/repo',
+            committed: true,
+            sha: 'abc',
+            pushed: false,
+            reason: 'push_failed',
+            detail: 'remote rejected',
+          },
+        ],
+      }),
+    });
+    const res = await runStage(gitArgs, deps);
+    expect(res).toMatchObject({ ok: false, reason: 'push_failed' });
+    expect(res.detail).toContain('owner/repo');
+    expect(res.detail).toContain('remote rejected');
+    // Both the failure event and the push_failed git event are recorded.
+    const evTypes = deps.store.calls.filter((c) => c[0] === 'appendEvent').map((c) => c[1].type);
+    expect(evTypes).toContain('v2.git.push_failed');
+    expect(evTypes).toContain('v2.stage.failed');
+    // Stage row FAILED.
+    const states = deps.store.calls
+      .filter((c) => c[0] === 'updateStageState')
+      .map((c) => c[1].state);
+    expect(states).toContain('FAILED');
+    expect(states).not.toContain('SUCCEEDED');
+  });
+
+  it('does NOT fail the stage on a push failure without new commits (records the event only)', async () => {
+    const deps = baseDeps({
+      ...sourcePresent,
+      spawnFn: okSpawn,
+      commitAndPushAll: async () => ({
+        ok: false,
+        committed: false,
+        results: [
+          {
+            repo: 'owner/repo',
+            committed: false,
+            reason: 'clean',
+            pushed: false,
+            detail: 'no auth',
+          },
+        ],
+      }),
+    });
+    const res = await runStage(gitArgs, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    const evTypes = deps.store.calls.filter((c) => c[0] === 'appendEvent').map((c) => c[1].type);
+    expect(evTypes).toContain('v2.git.push_failed');
+  });
+
+  it('a parked stage still parks when the push failed — the human loop is never blocked', async () => {
+    const deps = baseDeps({
+      ...sourcePresent,
+      spawnFn: okSpawn,
+      ids: () => 'sid-1',
+      store: spyStore({
+        execution: { pendingHumanTaskId: 'q-1' },
+        humanTask: { humanTaskId: 'q-1', status: 'pending' },
+      }),
+      commitAndPushAll: async () => ({
+        ok: false,
+        committed: true,
+        results: [
+          { repo: 'owner/repo', committed: true, sha: 'abc', pushed: false, reason: 'push_failed' },
+        ],
+      }),
+    });
+    const res = await runStage(gitArgs, deps);
+    expect(res).toMatchObject({ ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'q-1' });
+    // The failed push is still visible in the feed for ops.
+    const evTypes = deps.store.calls.filter((c) => c[0] === 'appendEvent').map((c) => c[1].type);
+    expect(evTypes).toContain('v2.git.push_failed');
+  });
+
+  it('the hook runs (and pushes) even when the CLI exits non-zero — failed work is preserved', async () => {
+    const crash = () => ({
+      on: (ev, cb) => ev === 'close' && setImmediate(() => cb(1)),
+      stdin: { end() {} },
+    });
+    const calls = [];
+    const deps = baseDeps({
+      ...sourcePresent,
+      spawnFn: crash,
+      commitAndPushAll: async (input) => {
+        calls.push(input);
+        return {
+          ok: true,
+          committed: true,
+          results: [{ repo: 'owner/repo', committed: true, sha: 'abc', pushed: true }],
+        };
+      },
+    });
+    const res = await runStage(gitArgs, deps);
+    expect(res).toMatchObject({ ok: false, reason: 'cli_nonzero_exit' });
+    expect(calls).toHaveLength(1); // work committed+pushed BEFORE the failure verdict
   });
 });

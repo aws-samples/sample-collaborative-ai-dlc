@@ -16,7 +16,8 @@ execution slice in [`v2-agent.md`](./v2-agent.md), park/resume design in
 Status: **in progress** — WP0 complete (PoCs verified on the local durable
 test runner, see `lambda/v2-orchestrator/test/poc/`); WP1 code-complete
 (async run-stage via durable callback — its >15-min cloud exit criterion is
-still to be proven on a deployed stack before WP5); WP2+ not yet started.
+still to be proven on a deployed stack before WP5); WP2 complete (engine-owned
+git layer, `lambda/agentcore/git-engine.js`); WP3+ not yet started.
 
 ---
 
@@ -325,15 +326,38 @@ Failure,Heartbeat}` on the orchestrator function (ARN by naming convention
     FAILED verdict, cancel sentinel; exactly-once side effects across replays.
   - **Exit criterion (open)**: a stage **longer than 15 minutes** completed
     through the callback path on a deployed stack — required before WP5.
-- **WP2 — Deterministic git layer**: `lambda/agentcore/git-engine.js` —
-  engine-owned branch/commit/push on every stage exit, credential scrubbing,
-  port of v1 `pushBranchWithRetry` semantics (retry + backoff + remote-HEAD
-  verification); prompts/annex lose all git responsibility. **All branch
-  creation and merging is local `git` (argv-based, `shell:false`) in the
-  runtime workspace, pushed and verified — never provider merge APIs** (v1's
-  server-side `merge-task-branches.js` path is explicitly not the model here;
-  provider APIs are used only to open PRs in WP6). Closes the documented v2
-  working-tree loss mode for the sequential flow immediately.
+- **WP2 — Deterministic git layer** ✅ **done**: `lambda/agentcore/git-engine.js`
+  (argv-based `git`, `shell:false`, never throws — failures are values):
+  - **stage-exit hook**: `commitAndPushAll` runs in run-stage after EVERY CLI
+    exit (success, park, fail) — commit message `aidlc(<stageId>): <executionId>`
+    (unit dimension joins in WP4), engine identity via per-command `-c` flags
+    (repo config never mutated). Sensors run after the hook on the same tree;
+    a sensor hold happens with the work already pushed (retry-safe).
+  - **v1 `pushBranchWithRetry` semantics ported**: retry + linear backoff
+    (2s/4s), push `HEAD:refs/heads/<branch>` refspec, remote-HEAD verification
+    via ls-remote (mismatch = race → still pushed; unreadable → trust exit
+    code), `'empty'` neutral sentinel for commit-less repos.
+  - **credential scrubbing**: workspace.js resets origin to the token-free URL
+    immediately after every clone (and adds it after the `git init` fallback);
+    the tokenized URL exists only inside the engine's push window and is
+    restored in a `finally`. The agent's checkout never holds a token.
+  - **no-network fast path**: push is skipped when there is no new commit AND
+    the remote-tracking ref matches HEAD (`isAheadOfRemote`), so artifact-only
+    stages on token-less projects behave exactly as before; a clean tree that
+    is ahead still pushes (retries a previously failed push).
+  - **failure policy**: `push_failed` fails the stage ONLY when THIS run
+    committed work that did not reach the remote (new work at risk — the loss
+    mode); a parked stage parks regardless (human loop never blocked, resume
+    retries); failures are always visible as `v2.git.push_failed` events,
+    successes as `v2.git.pushed`.
+  - **prompts lose git**: the annex now forbids the agent from running any git
+    command (engine-owned; the steering block asks for file fixes, not
+    `revert/redo the commits`).
+  - tests: `test/git-engine.test.js` — REAL git against local bare remotes
+    (commit/push/retry/verify/scrub, multi-repo, up-to-date skip, ahead-retry);
+    run-stage hook wiring + failure-policy suite; workspace scrub suite.
+  - Closes the documented v2 working-tree loss mode for the sequential flow:
+    pushed commits survive the mount wipe that self-heal re-clones from.
 - **WP3 — Unit DAG promotion**: on fan-out gate approval, engine re-parses the
   artifact (`parseBoltDag`), writes UNITPLAN + `UNIT#<slug>` rows to the DDB
   process table (scheduling truth), mirrors to Neptune (`UnitOfWork`,
