@@ -38,6 +38,7 @@ import workflowPlanPkg from '../shared/v2-workflow-plan.js';
 import executionPlanPkg from '../shared/v2-execution-plan.js';
 import gitConnectionStorePkg from '../shared/git-connection-store.js';
 import gitTokenPkg from '../shared/git-token.js';
+import gitProvidersPkg from '../shared/git-providers.js';
 import wsFanoutPkg from '../shared/ws-fanout.js';
 import { runParallelSection } from './section.js';
 
@@ -46,6 +47,7 @@ const { loadExecutionPlan } = workflowPlanPkg;
 const { planSegments, stageInstanceId: planStageInstanceId } = executionPlanPkg;
 const { getGitConnection } = gitConnectionStorePkg;
 const { resolveGitToken } = gitTokenPkg;
+const { getProvider } = gitProvidersPkg;
 const { broadcastToIntentChannel } = wsFanoutPkg;
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -145,10 +147,19 @@ const defaultDeps = () => ({
   resolveToken: defaultResolveToken,
   stopSession: stopRuntimeSession,
   broadcast: broadcastToIntentChannel,
+  // WP6: open the fan-in PR through the shared provider layer. Injectable so
+  // tests never touch provider APIs.
+  openPr: ({ gitProvider, token, repoId, branch, baseBranch, title, body }) =>
+    getProvider(gitProvider).createPullRequest({ token }, repoId, {
+      branch,
+      baseBranch,
+      title,
+      body,
+    }),
 });
 
 const handler = async (event, ctx, deps = defaultDeps()) => {
-  const { store, loadPlan, invokeRuntime, resolveToken, stopSession, broadcast } = deps;
+  const { store, loadPlan, invokeRuntime, resolveToken, stopSession, broadcast, openPr } = deps;
   const { intentId, executionId } = event;
   if (event.action !== 'start') {
     // Resume is handled out-of-band via SendDurableExecutionCallbackSuccess
@@ -522,6 +533,8 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       },
       intentSessionId: sessionId,
       maxParallelUnits: meta.maxParallelUnits ?? 0,
+      requestedCli,
+      cliModels,
       stageInstanceIdFor: (stageId, slug) => planStageInstanceId(namespace, stageId, slug),
     };
     sectionToolkit.runId = runId;
@@ -611,6 +624,28 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       return { ok: false, reason: 'retired', intentId };
     }
     await emitEvent(ctx, 'succeeded-event', 'v2.execution.succeeded', 'All stages completed');
+
+    // ── PR at fan-in (docs/v2-parallel.md WP6, A3: "execution SUCCEEDED →
+    // PR(s) per project prStrategy"). intent-pr: ONE PR per repo from the
+    // intent branch onto the base branch, via the shared provider layer (the
+    // v1 unmerged-branch guard lives inside createPullRequest). PR problems
+    // never un-succeed the run — every outcome is a loud timeline event. A
+    // token-less project records a skip instead of failing silently.
+    const prResults = await ctx.step('open-pr', () =>
+      openIntentPrs({
+        openPr,
+        store,
+        meta,
+        executionId,
+        token,
+        gitProvider,
+        log: (m) => ctx.logger?.info?.(m, { intentId }),
+      }),
+    );
+    for (let i = 0; i < prResults.length; i++) {
+      const r = prResults[i];
+      await emitEvent(ctx, `pr-event-${i}`, r.eventType, r.summary);
+    }
     return { ok: true, intentId, stages: runStages.length };
   } catch (err) {
     // Any unexpected throw (runtime transport error, store write failure) — record
@@ -737,6 +772,108 @@ const runStage = async (
 };
 
 const nowIso = () => new Date().toISOString();
+
+// ── WP6: open the fan-in PR(s) (intent-pr strategy) ─────────────────────────
+// One PR per repo from the intent branch onto the base branch. NEVER throws —
+// every outcome (opened / already-open / no-changes / guard-conflict / error /
+// no-token) becomes a timeline event the caller records. The PR body carries
+// the execution id and an HONEST unit summary: lanes that were skipped after
+// failure are named, so the reviewer knows what the increment does NOT
+// contain (the human explicitly chose to continue without them — the fan-in
+// gate is the decision record, the PR body is its mirror).
+const openIntentPrs = async ({ openPr, store, meta, executionId, token, gitProvider, log }) => {
+  const repos = meta.repos ?? [];
+  const branch = meta.branch;
+  const strategy = meta.prStrategy ?? 'intent-pr';
+  if (repos.length === 0) {
+    return [
+      { eventType: 'v2.pr.skipped', summary: 'No repositories on this intent — no PR to open' },
+    ];
+  }
+  if (!token) {
+    return [
+      {
+        eventType: 'v2.pr.skipped',
+        summary: `No git credentials — open the PR manually from ${branch} onto ${meta.baseBranch ?? 'main'}`,
+      },
+    ];
+  }
+
+  // Unit transparency for the PR body (best-effort — a store without unit
+  // rows, or a pre-WP3 run, just omits the section).
+  let unitLines = [];
+  try {
+    const units = (await store.listUnits?.(executionId)) ?? [];
+    const unmerged = units.filter((u) => u.state && u.state !== 'MERGED');
+    if (units.length) {
+      unitLines = [
+        '',
+        `Units: ${units.length} total, ${units.length - unmerged.length} merged.`,
+        ...unmerged.map(
+          (u) =>
+            `- ⚠️ unit \`${u.slug}\` NOT merged (${u.state}${u.failureReason ? `: ${u.failureReason}` : ''}) — its branch is preserved`,
+        ),
+      ];
+    }
+  } catch {
+    /* transparency section is best-effort */
+  }
+
+  const title = meta.title || `AI-DLC: ${branch}`;
+  const body = [
+    `Automated ${gitProvider === 'gitlab' ? 'MR' : 'PR'} created by AI-DLC (strategy: ${strategy})`,
+    '',
+    `Execution ID: ${executionId}`,
+    `Project: ${meta.projectId}`,
+    ...unitLines,
+  ].join('\n');
+
+  const results = [];
+  for (const repo of repos) {
+    const repoId = typeof repo === 'string' ? repo : repo.url;
+    try {
+      const res = await openPr({
+        gitProvider,
+        token,
+        repoId,
+        branch,
+        baseBranch: meta.baseBranch ?? 'main',
+        title,
+        body,
+      });
+      if (res?.prUrl) {
+        results.push({
+          eventType: 'v2.pr.opened',
+          summary: `${res.existing ? 'PR already open' : 'PR opened'} for ${repoId}: ${res.prUrl}`,
+        });
+      } else if (res?.skipped) {
+        results.push({
+          eventType: 'v2.pr.skipped',
+          summary: `No PR for ${repoId}: ${res.reason ?? 'no changes between the branches'}`,
+        });
+      } else if (res?.conflict) {
+        results.push({
+          eventType: 'v2.pr.failed',
+          summary: `PR blocked for ${repoId}: ${res.error ?? 'unmerged branches'}${
+            res.unmergedBranches?.length ? ` (${res.unmergedBranches.join(', ')})` : ''
+          }`,
+        });
+      } else {
+        results.push({
+          eventType: 'v2.pr.failed',
+          summary: `PR for ${repoId} returned an unexpected result: ${JSON.stringify(res).slice(0, 300)}`,
+        });
+      }
+    } catch (e) {
+      log?.(`PR open failed for ${repoId}: ${e?.message}`);
+      results.push({
+        eventType: 'v2.pr.failed',
+        summary: `PR open failed for ${repoId}: ${e?.message ?? String(e)}`,
+      });
+    }
+  }
+  return results;
+};
 
 export const lambdaHandler = withDurableExecution(handler);
 // Exported for unit tests that drive the control flow with a fake DurableContext.

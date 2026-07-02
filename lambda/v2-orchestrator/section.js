@@ -286,6 +286,9 @@ export const runParallelSection = async (segment, toolkit) => {
     cloneBase, // { repos, baseBranch, gitToken, gitProvider }
     intentSessionId,
     maxParallelUnits,
+    // Forwarded to the conflict-resolution stage's CLI run (WP6).
+    requestedCli = null,
+    cliModels = null,
   } = toolkit;
   const { executionId, intentId, projectId } = ids;
   const sk = `s${segment.index}`;
@@ -533,26 +536,75 @@ export const runParallelSection = async (segment, toolkit) => {
           /* tolerated */
         }
       });
-      const merge = await laneCtx.step(`merge-lane-${sk}-${slug}${rTag}`, () =>
-        withMergeLock(() =>
+      const dispatchMerge = (stepName) =>
+        laneCtx.step(stepName, () =>
+          withMergeLock(() =>
+            invokeRuntime(
+              {
+                command: 'merge-lane',
+                projectId,
+                intentId,
+                executionId,
+                unitSlug: slug,
+                repos: cloneBase.repos,
+                unitBranch,
+                intentBranch,
+                baseBranch: cloneBase.baseBranch,
+                gitToken: cloneBase.gitToken,
+                gitProvider: cloneBase.gitProvider,
+              },
+              intentSessionId,
+            ),
+          ),
+        );
+      let merge = await dispatchMerge(`merge-lane-${sk}-${slug}${rTag}`);
+
+      // Conflict → the scoped conflict-resolution stage (WP6, A3): ONE
+      // automated attempt in the LANE session — the engine reverse-merges the
+      // intent branch into the unit branch, the agent resolves ONLY the
+      // conflicted files, the engine verifies (no markers), concludes the
+      // merge commit, and pushes the unit branch — then the merge-back is
+      // retried (clean by construction unless a sibling merged meanwhile).
+      // Any failure here falls through to laneFailed → halt-and-ask: the
+      // "human gate on repeat failure".
+      if (merge?.ok === false && merge.reason === 'merge_conflict') {
+        await emitEvent(
+          laneCtx,
+          `unit-conflict-${sk}-${slug}${rTag}`,
+          'v2.unit.conflict',
+          `Unit ${slug} merge conflicts with ${intentBranch}: ${(merge.conflicts ?? []).join(', ')} — running the conflict-resolution stage`,
+          { unitSlug: slug },
+        );
+        const resolution = await laneCtx.step(`resolve-conflict-${sk}-${slug}${rTag}`, () =>
           invokeRuntime(
             {
-              command: 'merge-lane',
+              command: 'resolve-conflict',
               projectId,
               intentId,
               executionId,
               unitSlug: slug,
+              sectionIndex: segment.index,
               repos: cloneBase.repos,
               unitBranch,
               intentBranch,
-              baseBranch: cloneBase.baseBranch,
               gitToken: cloneBase.gitToken,
               gitProvider: cloneBase.gitProvider,
+              requestedCli,
+              ...(cliModels ? { cliModels } : {}),
             },
-            intentSessionId,
+            laneSession,
           ),
-        ),
-      );
+        );
+        if (resolution?.ok) {
+          merge = await dispatchMerge(`merge-lane-retry-${sk}-${slug}${rTag}`);
+        } else {
+          merge = {
+            ok: false,
+            reason: resolution?.reason ?? 'conflict_unresolved',
+            detail: resolution?.detail ?? null,
+          };
+        }
+      }
       if (!merge || merge.ok === false) {
         return await laneFailed(laneCtx, slug, round, {
           stageId: 'merge-lane',

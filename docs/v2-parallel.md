@@ -20,12 +20,14 @@ test runner, see `lambda/v2-orchestrator/test/poc/`); WP1 code-complete
 UNITPLAN/UNIT scheduling rows + Neptune mirror); WP4 complete (plan fan-out +
 unit dimension end-to-end); WP5 **code-complete** (parallel lane
 orchestration — skeleton/ladder/wavefront/halt-and-ask, per-lane
-sessions/branches, engine merge-back; proven on the local durable runner).
+sessions/branches, engine merge-back; proven on the local durable runner);
+WP6 complete (conflict-resolution stage + intent-pr PR at fan-in); WP8's two
+merge fixtures pulled forward and passing.
 ⚠️ **Deployment checklist before enabling parallel construction in
 production**: WP1's exit criterion — a stage **longer than 15 minutes**
 completed through the async callback path on a DEPLOYED stack — is still
-unproven (requires a cloud deployment; every local proof passes). WP6+ not
-yet started.
+unproven (requires a cloud deployment; every local proof passes). WP7
+(UI) + WP8 remainder + WP6b not yet started.
 
 ---
 
@@ -529,13 +531,50 @@ MERGED | FAILED | BLOCKED`; `updateUnitState` is CAS'd on `fromStates`
     three engine gates with a mid-lane park, exactly-once lane bookkeeping,
     CONCURRENT independent lanes completing out of order, and
     halt-and-ask abort preserving the merged skeleton.
-- **WP6 — Fan-in (intent-pr only)**: serialized `--no-ff` merges in completion
-  order (local git in the runtime workspace, engine merge lock; provider APIs
-  only to open the PR); conflict-resolution stage (fresh lane, conflicted
-  merge state, sensors must pass, engine commits) with human-gate escalation;
-  `prStrategy` project setting ships with **`intent-pr` (default) as the only
-  enabled value**, reusing `lambda/shared/git-providers*` + the v1
-  unmerged-branch guard.
+- **WP6 — Fan-in (intent-pr only)** ✅ **done** (merge mechanics landed with
+  WP5; this package added the conflict-resolution stage + the PR):
+  - **conflict-resolution stage** (`lambda/agentcore/commands/resolve-conflict.js`
+    - git-engine primitives `beginConflictMerge` / `findRemainingConflictMarkers`
+      / `concludeConflictMerge`): runs in the LANE session — the engine
+      REVERSE-merges origin/<intentBranch> INTO the unit branch (real conflict
+      markers in the lane's tree; the intent branch never holds an in-progress
+      merge), the agent gets ONE focused CLI run (exact conflicted paths, hard
+      boundaries: edit only those files, no git, no scope creep; MCP role
+      `reviewer` so it can never park), then the ENGINE verifies — no markers
+      in the previously conflicted files, no unmerged index paths (this stage's
+      "sensors must pass" gate) — concludes the merge commit with the engine
+      identity and pushes the unit branch. The merge-back retry is then clean
+      by construction. Verification failure ABORTS to a pristine tree.
+      A clean reverse merge needs no agent at all (concluded + pushed directly).
+  - **orchestrator wiring** (`section.js`): merge_conflict → `v2.unit.conflict`
+    event → ONE resolution attempt → merge-lane retry (through the merge
+    lock); a failed resolution or a failed retry falls into laneFailed →
+    halt-and-ask — the "human gate on repeat failure". Audit chain:
+    `v2.unit.conflict` → `v2.conflict.resolving` → `v2.conflict.resolved` /
+    `v2.conflict.unresolved`.
+  - **`prStrategy` project setting**: `intent-pr` (default) enabled;
+    `pr-per-unit` / `stacked` DEFINED but rejected with a distinct
+    "not enabled yet" error until WP8's remaining fixtures unlock WP6b;
+    snapshotted onto intent META at create.
+  - **PR at fan-in** (orchestrator `open-pr` step after the SUCCEEDED terminal
+    write): one PR per repo from the intent branch onto the base branch via
+    the shared provider layer (`getProvider(...).createPullRequest` — the v1
+    unmerged-branch guard and no-changes/existing-PR semantics live there).
+    The PR body carries execution provenance and an HONEST unit summary
+    (skipped/failed lanes named with their preserved branches). Every outcome
+    is a timeline event (`v2.pr.opened` / `v2.pr.skipped` / `v2.pr.failed`);
+    a PR problem never un-succeeds the run; a token-less project records a
+    skip with manual instructions.
+  - tests: real-git suites for the conflict primitives and the
+    resolve-conflict command (resolution, lazy-agent refusal + pristine
+    abort, CLI crash, clean reverse merge, no_cli); orchestrator wiring
+    suites (conflict → resolve → retry → MERGED; failed resolution →
+    halt-and-ask with exactly one attempt); PR suites (per-repo open,
+    provenance + unit transparency body, token-less skip, provider
+    failure/guard-conflict events, no-changes skip); and integration
+    fixture 3 — the REAL command resolving a REAL add/add conflict end to
+    end (resolution merge commit on the unit branch, resolved content on the
+    intent branch, no halt gate).
 - **WP6b — Extra PR strategies** _(gated on WP8 merge fixtures passing)_:
   enable `pr-per-unit` and `stacked` in `prStrategy`. Until then the two
   options are visible but disabled in settings (design unchanged, timing

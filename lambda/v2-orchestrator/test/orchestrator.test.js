@@ -1324,3 +1324,211 @@ describe('WP5 — engine-gate decisions', () => {
     expect(opened.some((id) => id.startsWith('eg-batch'))).toBe(false);
   });
 });
+
+// ── WP6: conflict-resolution stage wiring (docs/v2-parallel.md) ──────────────
+
+describe('WP6 — merge conflict → resolution stage → retry → halt on repeat failure', () => {
+  let unitStates;
+  beforeEach(() => {
+    unitStates = [];
+    deps.loadPlan = vi.fn(async () => SECTION_PLAN());
+    deps.store.getUnitPlan = vi.fn(async () => UNIT_PLAN());
+    deps.store.createHumanTask = vi.fn(async (args) => args);
+    deps.store.updateUnitPlanDecisions = vi.fn(async () => ({}));
+    deps.store.updateUnitState = vi.fn(async (args) => {
+      unitStates.push(`${args.slug}:${args.state}`);
+      return { slug: args.slug, state: args.state };
+    });
+    deps.store.putStage = vi.fn(async (args) => args);
+    deps.store.getStage = vi.fn(async () => null);
+  });
+
+  const start = () =>
+    __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
+
+  it('one conflicted lane: resolve-conflict runs in the LANE session, the merge retry lands, lane MERGED', async () => {
+    let authMerges = 0;
+    deps.invokeRuntime = makeRuntime(ctx, (payload) => {
+      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'promote-units') return { ok: true, unitCount: 2, batchCount: 2 };
+      if (payload.command === 'merge-lane' && payload.unitSlug === 'auth') {
+        authMerges += 1;
+        if (authMerges === 1)
+          return {
+            ok: false,
+            reason: 'merge_conflict',
+            conflicts: ['o/r:shared.txt'],
+            detail: 'o/r: conflict',
+          };
+        return { ok: true };
+      }
+      if (payload.command === 'resolve-conflict')
+        return { ok: true, unitSlug: payload.unitSlug, resolvedFiles: ['o/r:shared.txt'] };
+      return { ok: true, state: 'SUCCEEDED' };
+    });
+    const res = await start();
+    expect(res.ok).toBe(true);
+    // Dispatch order for auth: merge (conflict) → resolve → merge retry.
+    const authOps = invokes
+      .map((p, i) => ({ p, s: sessions[i] }))
+      .filter(
+        ({ p }) => ['merge-lane', 'resolve-conflict'].includes(p.command) && p.unitSlug === 'auth',
+      );
+    expect(authOps.map(({ p }) => p.command)).toEqual([
+      'merge-lane',
+      'resolve-conflict',
+      'merge-lane',
+    ]);
+    // The resolution runs in the LANE session; merges in the intent session.
+    expect(authOps[1].s).toBe('aidlc-intent-i1-s1-auth'.padEnd(33, '0'));
+    expect(authOps[0].s).toBe('aidlc-intent-i1'.padEnd(33, '0'));
+    // The resolution payload carries everything the command needs.
+    expect(authOps[1].p).toMatchObject({
+      unitSlug: 'auth',
+      unitBranch: 'aidlc/i1--s1-unit-auth',
+      intentBranch: 'aidlc/i1',
+      sectionIndex: 1,
+      requestedCli: 'kiro',
+    });
+    // Lane still ended MERGED; the conflict is on the audit trail.
+    expect(unitStates.filter((s) => s.startsWith('auth:'))).toEqual([
+      'auth:RUNNING',
+      'auth:MERGING',
+      'auth:MERGED',
+    ]);
+    const eventCalls = deps.store.appendEvent.mock.calls.map((c) => c[0]);
+    expect(
+      eventCalls.find((e) => e.type === 'v2.unit.conflict' && e.unitSlug === 'auth')?.summary,
+    ).toContain('shared.txt');
+  });
+
+  it('a failed resolution does NOT retry the merge — it escalates to halt-and-ask (human gate on repeat failure)', async () => {
+    deps.store.getHumanTask = vi.fn(async (_e, id) =>
+      String(id).startsWith('eg-halt')
+        ? { status: 'answered', answer: { decision: 'abort' } }
+        : { status: 'answered' },
+    );
+    deps.invokeRuntime = makeRuntime(ctx, (payload) => {
+      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'promote-units') return { ok: true, unitCount: 2, batchCount: 2 };
+      if (payload.command === 'merge-lane' && payload.unitSlug === 'auth')
+        return { ok: false, reason: 'merge_conflict', conflicts: ['o/r:shared.txt'] };
+      if (payload.command === 'resolve-conflict')
+        return { ok: false, reason: 'markers_remain', remaining: ['shared.txt'] };
+      return { ok: true, state: 'SUCCEEDED' };
+    });
+    const res = await start();
+    expect(res).toMatchObject({ ok: false, reason: 'section_aborted' });
+    // Exactly ONE merge attempt + ONE resolution attempt — no blind retries.
+    const authCmds = invokes
+      .filter(
+        (p) => p.unitSlug === 'auth' && ['merge-lane', 'resolve-conflict'].includes(p.command),
+      )
+      .map((p) => p.command);
+    expect(authCmds).toEqual(['merge-lane', 'resolve-conflict']);
+    // The lane failure carries the RESOLUTION verdict (full traceability).
+    expect(unitStates.filter((s) => s.startsWith('auth:'))).toEqual([
+      'auth:RUNNING',
+      'auth:MERGING',
+      'auth:FAILED',
+    ]);
+    const eventCalls = deps.store.appendEvent.mock.calls.map((c) => c[0]);
+    expect(
+      eventCalls.find((e) => e.type === 'v2.unit.failed' && e.unitSlug === 'auth')?.summary,
+    ).toContain('markers_remain');
+    expect(eventCalls.some((e) => e.type === 'v2.units.halt_decision')).toBe(true);
+  });
+});
+
+// ── WP6: PR at fan-in (intent-pr strategy) ───────────────────────────────────
+
+describe('WP6 — PR opened on SUCCEEDED (intent-pr)', () => {
+  const start = () =>
+    __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
+  const events = () => deps.store.appendEvent.mock.calls.map((c) => c[0]);
+
+  it('opens one PR per repo from the intent branch with execution provenance in the body', async () => {
+    deps.store.getExecution = vi.fn(async () => ({
+      ...META,
+      title: 'Bookstore API',
+      prStrategy: 'intent-pr',
+      repos: ['o/r', 'o/web'],
+    }));
+    deps.store.listUnits = vi.fn(async () => [
+      { slug: 'auth', state: 'MERGED' },
+      { slug: 'billing', state: 'MERGED' },
+    ]);
+    deps.openPr = vi.fn(async ({ repoId }) => ({
+      prUrl: `https://github.com/${repoId}/pull/7`,
+      prNumber: 7,
+    }));
+    const res = await start();
+    expect(res.ok).toBe(true);
+    // One provider call per repo, with the intent branch + base + provenance.
+    expect(deps.openPr).toHaveBeenCalledTimes(2);
+    expect(deps.openPr.mock.calls[0][0]).toMatchObject({
+      gitProvider: 'github',
+      token: 'tok',
+      repoId: 'o/r',
+      branch: 'aidlc/i1',
+      baseBranch: 'main',
+      title: 'Bookstore API',
+    });
+    expect(deps.openPr.mock.calls[0][0].body).toContain('Execution ID: i1');
+    expect(deps.openPr.mock.calls[0][0].body).toContain('strategy: intent-pr');
+    expect(deps.openPr.mock.calls[0][0].body).toContain('2 total, 2 merged');
+    const opened = events().filter((e) => e.type === 'v2.pr.opened');
+    expect(opened).toHaveLength(2);
+    expect(opened[0].summary).toContain('https://github.com/o/r/pull/7');
+  });
+
+  it('names skipped/unmerged units in the PR body (honest partial delivery)', async () => {
+    deps.store.listUnits = vi.fn(async () => [
+      { slug: 'auth', state: 'MERGED' },
+      { slug: 'billing', state: 'FAILED', failureReason: 'merge-lane: markers_remain' },
+      { slug: 'checkout', state: 'BLOCKED' },
+    ]);
+    deps.openPr = vi.fn(async () => ({ prUrl: 'https://x/pr/1', prNumber: 1 }));
+    await start();
+    const body = deps.openPr.mock.calls[0][0].body;
+    expect(body).toContain('3 total, 1 merged');
+    expect(body).toContain('unit `billing` NOT merged (FAILED: merge-lane: markers_remain)');
+    expect(body).toContain('unit `checkout` NOT merged (BLOCKED)');
+  });
+
+  it('a token-less project records v2.pr.skipped with manual instructions', async () => {
+    deps.resolveToken = vi.fn(async () => '');
+    deps.openPr = vi.fn();
+    const res = await start();
+    expect(res.ok).toBe(true);
+    expect(deps.openPr).not.toHaveBeenCalled();
+    const skipped = events().find((e) => e.type === 'v2.pr.skipped');
+    expect(skipped?.summary).toContain('aidlc/i1');
+    expect(skipped?.summary).toContain('manually');
+  });
+
+  it('a provider failure / guard conflict never un-succeeds the run — loud events only', async () => {
+    deps.store.getExecution = vi.fn(async () => ({ ...META, repos: ['o/r', 'o/web'] }));
+    deps.openPr = vi
+      .fn()
+      .mockResolvedValueOnce({
+        conflict: true,
+        error: 'unmerged branches',
+        unmergedBranches: ['x'],
+      })
+      .mockRejectedValueOnce(new Error('provider 500'));
+    const res = await start();
+    expect(res).toEqual({ ok: true, intentId: 'i1', stages: 2 });
+    const failed = events().filter((e) => e.type === 'v2.pr.failed');
+    expect(failed).toHaveLength(2);
+    expect(failed[0].summary).toContain('unmerged branches');
+    expect(failed[1].summary).toContain('provider 500');
+  });
+
+  it('a no-changes result records v2.pr.skipped (v1 semantics preserved)', async () => {
+    deps.openPr = vi.fn(async () => ({ skipped: true, reason: 'no_changes' }));
+    const res = await start();
+    expect(res.ok).toBe(true);
+    expect(events().some((e) => e.type === 'v2.pr.skipped')).toBe(true);
+  });
+});

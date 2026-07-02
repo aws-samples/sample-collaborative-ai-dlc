@@ -414,6 +414,161 @@ export const mergeBranchNoFf = async ({
   return { merged: true, sha: head.stdout.trim() || null, pushed: true };
 };
 
+// ── Conflict-resolution primitives (docs/v2-parallel.md WP6) ────────────────
+// The conflict-resolution stage runs in the LANE session: the intent branch is
+// merged INTO the unit branch (reverse direction), leaving real conflict
+// markers for the agent to resolve; the ENGINE then validates + concludes the
+// merge commit and pushes the unit branch. merge-lane's retry is then clean —
+// the intent branch never holds an in-progress merge.
+
+// Start the reverse merge and LEAVE the conflicts in the tree. Never throws.
+//   { conflicted: true,  conflicts: [paths] }  — markers in the tree, MERGE_HEAD set
+//   { conflicted: false, merged: true, sha }   — merged cleanly (nothing to resolve)
+//   { conflicted: false, merged: 'up_to_date' }— intent already contained
+//   { conflicted: false, error, detail }       — fetch/checkout/merge machinery failure
+export const beginConflictMerge = async ({
+  dir,
+  repo,
+  unitBranch,
+  intentBranch,
+  message,
+  gitToken,
+  gitProvider,
+  urls = {},
+  git = runGit,
+}) => {
+  if (!unitBranch || !intentBranch) return { conflicted: false, error: 'missing_branch' };
+  const fetch = await fetchOrigin({ dir, repo, gitToken, gitProvider, urls, git });
+  if (!fetch.fetched) return { conflicted: false, error: fetch.reason, detail: fetch.detail };
+
+  const checkout = await git(['checkout', '-B', unitBranch, `refs/remotes/origin/${unitBranch}`], {
+    cwd: dir,
+  });
+  if (checkout.exitCode !== 0) {
+    return { conflicted: false, error: 'checkout_failed', detail: checkout.stderr.trim() };
+  }
+  const ancestor = await git(
+    ['merge-base', '--is-ancestor', `refs/remotes/origin/${intentBranch}`, 'HEAD'],
+    { cwd: dir },
+  );
+  if (ancestor.exitCode === 0) return { conflicted: false, merged: 'up_to_date' };
+
+  const merge = await git(
+    [...GIT_IDENTITY, 'merge', '--no-ff', '-m', message, `refs/remotes/origin/${intentBranch}`],
+    { cwd: dir },
+  );
+  if (merge.exitCode === 0) {
+    const head = await git(['rev-parse', 'HEAD'], { cwd: dir });
+    return { conflicted: false, merged: true, sha: head.stdout.trim() || null };
+  }
+  const conflicted = await git(['diff', '--name-only', '--diff-filter=U'], { cwd: dir });
+  const conflicts = conflicted.stdout
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (conflicts.length === 0) {
+    // Merge failed for a NON-conflict reason — leave nothing half-done.
+    await git(['merge', '--abort'], { cwd: dir });
+    return { conflicted: false, error: 'merge_failed', detail: merge.stderr.trim().slice(-500) };
+  }
+  return { conflicted: true, conflicts };
+};
+
+// Conflict-marker scan — the deterministic verification gate after the agent
+// edited the conflicted files. `git diff --check` is unreliable post-`add`;
+// scanning the named files for marker lines is exact and content-based.
+const MARKER_RE = /^(<{7}(\s|$)|={7}$|>{7}(\s|$)|\|{7}(\s|$))/m;
+export const findRemainingConflictMarkers = async ({ dir, files, readFileImpl }) => {
+  const { readFile } = readFileImpl ? { readFile: readFileImpl } : await import('node:fs/promises');
+  const remaining = [];
+  for (const file of files) {
+    try {
+      const text = await readFile(path.join(dir, file), 'utf8');
+      if (MARKER_RE.test(text)) remaining.push(file);
+    } catch {
+      // A conflicted file the agent DELETED counts as resolved-by-deletion;
+      // `git add -A` below records the deletion.
+    }
+  }
+  return remaining;
+};
+
+// Conclude the resolved merge: verify no markers remain in the previously
+// conflicted files, stage everything, commit (completing MERGE_HEAD with the
+// engine identity), and push the unit branch. On validation failure the
+// in-progress merge is ABORTED (pristine tree for the halt-and-ask retry).
+//   { concluded: true, sha, pushed }
+//   { concluded: false, reason: 'markers_remain', remaining } — aborted
+//   { concluded: false, reason, detail }                      — aborted
+export const concludeConflictMerge = async ({
+  dir,
+  repo,
+  unitBranch,
+  conflicts = [],
+  gitToken,
+  gitProvider,
+  urls = {},
+  git = runGit,
+  sleep,
+  log = (...a) => console.error('[git-engine]', ...a),
+}) => {
+  const abort = async () => {
+    await git(['merge', '--abort'], { cwd: dir });
+  };
+  const remaining = await findRemainingConflictMarkers({ dir, files: conflicts });
+  if (remaining.length) {
+    await abort();
+    return { concluded: false, reason: 'markers_remain', remaining };
+  }
+  // A CLEAN reverse merge was auto-committed by beginConflictMerge (no
+  // MERGE_HEAD) — nothing to stage or commit; only the push remains.
+  const inProgress =
+    (await git(['rev-parse', '--verify', 'MERGE_HEAD'], { cwd: dir })).exitCode === 0;
+  if (inProgress) {
+    const add = await git(['add', '-A'], { cwd: dir });
+    if (add.exitCode !== 0) {
+      await abort();
+      return { concluded: false, reason: 'add_failed', detail: add.stderr.trim() };
+    }
+    // Anything still unmerged in the INDEX (a path the scan couldn't see, e.g.
+    // a rename/rename conflict) blocks the commit — verify the index is clean.
+    const unmerged = await git(['diff', '--name-only', '--diff-filter=U'], { cwd: dir });
+    if (unmerged.stdout.trim() !== '') {
+      await abort();
+      return {
+        concluded: false,
+        reason: 'markers_remain',
+        remaining: unmerged.stdout.trim().split('\n'),
+      };
+    }
+    // `git commit` with no -m completes the merge using MERGE_MSG (the message
+    // beginConflictMerge supplied via -m).
+    const commit = await git([...GIT_IDENTITY, 'commit', '--no-edit'], { cwd: dir });
+    if (commit.exitCode !== 0) {
+      await abort();
+      return { concluded: false, reason: 'commit_failed', detail: commit.stderr.trim() };
+    }
+  }
+  const head = await git(['rev-parse', 'HEAD'], { cwd: dir });
+  const push = await pushBranch({
+    dir,
+    repo,
+    branch: unitBranch,
+    gitToken,
+    gitProvider,
+    urls,
+    git,
+    sleep,
+    log,
+  });
+  if (push.pushed !== true) {
+    // The resolution commit exists locally; the retry path re-begins from the
+    // remote, so report a plain failure value (no state to unwind).
+    return { concluded: false, reason: push.reason ?? 'push_failed', detail: push.detail };
+  }
+  return { concluded: true, sha: head.stdout.trim() || null, pushed: true };
+};
+
 // The deterministic stage-exit hook: commit + (when needed) push every repo of
 // the intent. One call after EVERY stage exit (success, park, fail). Never
 // throws.

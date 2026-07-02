@@ -207,6 +207,8 @@ const fetchProjectConfig = async (g, projectId) => {
     // Concurrency cap for parallel unit lanes (docs/v2-parallel.md WP5);
     // 0 = unbounded. `|| 0` is safe: 0 IS the default.
     maxParallelUnits: Number(getVal(v, 'max_parallel_units') || 0),
+    // PR strategy at fan-in (docs/v2-parallel.md WP6; only intent-pr enabled).
+    prStrategy: getVal(v, 'pr_strategy') || 'intent-pr',
     // The project's selected agent CLI (defaults to kiro on the project vertex);
     // snapshotted onto the intent so the run honours the explicit choice.
     agentCli: getVal(v, 'agent_cli') || null,
@@ -465,6 +467,7 @@ const mapIntent = (meta) => ({
   parkReleaseSeconds: meta.parkReleaseSeconds ?? null,
   maxParallelUnits: meta.maxParallelUnits ?? null,
   constructionAutonomyMode: meta.constructionAutonomyMode ?? null,
+  prStrategy: meta.prStrategy ?? null,
   source: meta.source ?? null,
   createdAt: meta.startedAt ?? null,
   updatedAt: meta.updatedAt ?? null,
@@ -1081,6 +1084,7 @@ export const handler = async (event) => {
         cliModels: cfg.cliModels,
         parkReleaseSeconds: cfg.parkReleaseSeconds,
         maxParallelUnits: cfg.maxParallelUnits,
+        prStrategy: cfg.prStrategy,
         source,
       });
       return response(201, mapIntent(meta));

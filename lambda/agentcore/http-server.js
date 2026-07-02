@@ -27,6 +27,9 @@
 //   { "command": "merge-lane", ...mergeLane args }  → WP5: serialized --no-ff
 //       merge of a finished lane's branch into the intent branch (runs in the
 //       INTENT session; the orchestrator holds the merge lock).
+//   { "command": "resolve-conflict", ...resolveConflict args } → WP6: the
+//       scoped conflict-resolution stage (lane session; engine merges +
+//       verifies + concludes, the agent only edits the conflicted files).
 //
 // The dispatcher is pure (handlers injected) so it is unit-tested without a
 // socket; createServer wires the real commands + clients.
@@ -67,6 +70,7 @@ export const dispatchInvocation = async ({
     'promote-units': handlers.promoteUnits,
     'init-lane': handlers.initLane,
     'merge-lane': handlers.mergeLane,
+    'resolve-conflict': handlers.resolveConflict,
     inspect: handlers.inspect,
     capabilities: handlers.capabilities,
   }[command];
@@ -150,6 +154,7 @@ const main = async () => {
   const { createRunStageStart } = await import('./commands/run-stage-start.js');
   const { promoteUnits } = await import('./commands/promote-units.js');
   const { initLane, mergeLane } = await import('./commands/lane.js');
+  const { resolveConflict } = await import('./commands/resolve-conflict.js');
   const { inspect } = await import('./commands/inspect.js');
   const { capabilities } = await import('./commands/capabilities.js');
   const { loadLibrary, loadBlockBody, loadBlockScript, loadConductor } =
@@ -205,6 +210,13 @@ const main = async () => {
     // runs in the lane's own session; merge-lane in the intent session.
     initLane: (p) => initLane({ ...p, workspaceDir }, { store, broadcast }),
     mergeLane: (p) => mergeLane({ ...p, workspaceDir }, { store, broadcast }),
+    // WP6: the scoped conflict-resolution stage (lane session). The engine
+    // merges/verifies/concludes; the agent CLI only edits conflicted files.
+    resolveConflict: (p) =>
+      resolveConflict(
+        { ...p, workspaceDir },
+        { store, availableClis, mcpEntry, broadcast, env: process.env },
+      ),
   };
   // Async stage invocation (WP1): shares the sync handler's whole deps bag; the
   // background job holds the SAME busy tracker the server uses for /ping, so

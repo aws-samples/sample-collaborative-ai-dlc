@@ -62,7 +62,12 @@ export interface Project {
   // Concurrency cap for parallel unit lanes (docs/v2-parallel.md WP5);
   // 0 = unbounded (the unit DAG is the only limit).
   maxParallelUnits?: number;
+  // PR strategy at fan-in (docs/v2-parallel.md WP6). Only 'intent-pr' is
+  // enabled; the other two are visible-but-disabled until WP6b.
+  prStrategy?: PrStrategy;
 }
+
+export type PrStrategy = 'intent-pr' | 'pr-per-unit' | 'stacked';
 
 export interface TrackerMigrationResult {
   dryRun: boolean;
@@ -89,6 +94,7 @@ export interface CreateProjectInput {
   workflowVersion?: number | null;
   parkReleaseSeconds?: number;
   maxParallelUnits?: number;
+  prStrategy?: PrStrategy;
 }
 
 export interface UpdateProjectInput {
@@ -103,6 +109,7 @@ export interface UpdateProjectInput {
   workflowVersion?: number | null;
   parkReleaseSeconds?: number;
   maxParallelUnits?: number;
+  prStrategy?: PrStrategy;
 }
 
 export interface AddRepoInput {

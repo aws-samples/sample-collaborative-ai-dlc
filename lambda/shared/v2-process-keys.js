@@ -180,6 +180,9 @@ const buildExecutionMeta = ({
   // Concurrency cap for parallel unit lanes (docs/v2-parallel.md WP5),
   // snapshotted from the project at create. 0/null = unbounded (DAG-limited).
   maxParallelUnits = null,
+  // PR strategy at fan-in (docs/v2-parallel.md WP6), snapshotted from the
+  // project at create. Only 'intent-pr' is enabled until WP6b.
+  prStrategy = null,
   // The human's autonomy-ladder decision for construction (docs/v2-parallel.md
   // A2 rule 9): 'autonomous' (remaining lanes run without approval gates) or
   // 'gated' (one approval gate per parallel batch). null until the ladder
@@ -224,6 +227,7 @@ const buildExecutionMeta = ({
   cliModels,
   parkReleaseSeconds,
   maxParallelUnits,
+  prStrategy,
   constructionAutonomyMode,
   source,
   orchestratorRunId,

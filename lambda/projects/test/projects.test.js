@@ -234,6 +234,37 @@ describe('POST /projects', () => {
     }
   });
 
+  it('defaults prStrategy to intent-pr and round-trips it', async () => {
+    const sub = `u-${randomUUID()}`;
+    const created = await createProject(sub, { name: 'V2', kind: 'v2' });
+    expect(created.prStrategy).toBe('intent-pr');
+    const fetched = await handler({
+      httpMethod: 'GET',
+      pathParameters: { projectId: created.id },
+      ...claims(sub),
+    });
+    expect(JSON.parse(fetched.body).prStrategy).toBe('intent-pr');
+  });
+
+  it('rejects unknown AND known-but-disabled prStrategy values with distinct errors', async () => {
+    const sub = `u-${randomUUID()}`;
+    const unknown = await handler({
+      httpMethod: 'POST',
+      body: JSON.stringify({ name: 'Bad', kind: 'v2', prStrategy: 'yolo' }),
+      ...claims(sub),
+    });
+    expect(unknown.statusCode).toBe(400);
+    expect(JSON.parse(unknown.body).error).toContain('must be one of');
+    // pr-per-unit / stacked are DEFINED but staged behind WP6b.
+    const disabled = await handler({
+      httpMethod: 'POST',
+      body: JSON.stringify({ name: 'Bad', kind: 'v2', prStrategy: 'pr-per-unit' }),
+      ...claims(sub),
+    });
+    expect(disabled.statusCode).toBe(400);
+    expect(JSON.parse(disabled.body).error).toContain('not enabled yet');
+  });
+
   it('defaults kind to v1 when omitted and omits v2 settings', async () => {
     const sub = `u-${randomUUID()}`;
     const created = await createProject(sub, { name: 'Classic' });

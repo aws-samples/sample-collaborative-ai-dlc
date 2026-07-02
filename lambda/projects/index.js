@@ -51,6 +51,12 @@ const MAX_PARK_RELEASE_SECONDS = 900;
 // this is a smell, not a need.
 const DEFAULT_MAX_PARALLEL_UNITS = 0;
 const MAX_MAX_PARALLEL_UNITS = 64;
+// PR strategy at fan-in (docs/v2-parallel.md WP6). Staged rollout: intent-pr
+// ships first; pr-per-unit / stacked are DEFINED (the UI shows them disabled)
+// but rejected here until WP8's merge fixtures unlock WP6b.
+const PR_STRATEGIES = ['intent-pr', 'pr-per-unit', 'stacked'];
+const ENABLED_PR_STRATEGIES = ['intent-pr'];
+const DEFAULT_PR_STRATEGY = 'intent-pr';
 
 // Validate + normalize park_release_seconds. Returns { valid, value?, error? }.
 const normalizeParkReleaseSeconds = (raw) => {
@@ -82,6 +88,25 @@ const normalizeMaxParallelUnits = (raw) => {
   return { valid: true, value: n };
 };
 
+// Validate + normalize pr_strategy. Returns { valid, value?, error? }.
+// A KNOWN-but-disabled strategy gets a distinct error so the UI can explain
+// "coming with WP6b" instead of "unknown value".
+const normalizePrStrategy = (raw) => {
+  if (raw === undefined || raw === null || raw === '') {
+    return { valid: true, value: DEFAULT_PR_STRATEGY };
+  }
+  if (!PR_STRATEGIES.includes(raw)) {
+    return { valid: false, error: `prStrategy must be one of: ${PR_STRATEGIES.join(', ')}` };
+  }
+  if (!ENABLED_PR_STRATEGIES.includes(raw)) {
+    return {
+      valid: false,
+      error: `prStrategy "${raw}" is not enabled yet (currently available: ${ENABLED_PR_STRATEGIES.join(', ')})`,
+    };
+  }
+  return { valid: true, value: raw };
+};
+
 // Assemble the v2 settings block returned on a project DTO. Reads are
 // defaulted so a v1 project (no v2 properties) still produces a coherent shape
 // without these fields surfacing.
@@ -100,6 +125,7 @@ const readV2Settings = (v) => {
       getVal(v, 'max_parallel_units') === undefined || getVal(v, 'max_parallel_units') === ''
         ? DEFAULT_MAX_PARALLEL_UNITS
         : Number(getVal(v, 'max_parallel_units')),
+    prStrategy: getVal(v, 'pr_strategy') || DEFAULT_PR_STRATEGY,
   };
 };
 
@@ -945,6 +971,8 @@ export const handler = async (event) => {
           if (!parkValidation.valid) return response(400, { error: parkValidation.error });
           const parallelValidation = normalizeMaxParallelUnits(data.maxParallelUnits);
           if (!parallelValidation.valid) return response(400, { error: parallelValidation.error });
+          const prValidation = normalizePrStrategy(data.prStrategy);
+          if (!prValidation.valid) return response(400, { error: prValidation.error });
           v2Settings = {
             kind,
             workflowId: data.workflowId || DEFAULT_V2_WORKFLOW_ID,
@@ -953,6 +981,7 @@ export const handler = async (event) => {
             // Scope is NOT a project property — it is chosen per-intent.
             parkReleaseSeconds: parkValidation.value,
             maxParallelUnits: parallelValidation.value,
+            prStrategy: prValidation.value,
           };
         }
 
@@ -977,7 +1006,8 @@ export const handler = async (event) => {
               v2Settings.workflowVersion == null ? '' : String(v2Settings.workflowVersion),
             )
             .property('park_release_seconds', String(v2Settings.parkReleaseSeconds))
-            .property('max_parallel_units', String(v2Settings.maxParallelUnits));
+            .property('max_parallel_units', String(v2Settings.maxParallelUnits))
+            .property('pr_strategy', v2Settings.prStrategy);
         }
         await createV.next();
 
@@ -1162,6 +1192,18 @@ export const handler = async (event) => {
             .property(cardinality.single, 'max_parallel_units', String(normalizedMaxParallelUnits))
             .next();
         }
+        // PR strategy at fan-in (docs/v2-parallel.md WP6; only intent-pr enabled).
+        let normalizedPrStrategy;
+        if (data.prStrategy !== undefined) {
+          const prValidation = normalizePrStrategy(data.prStrategy);
+          if (!prValidation.valid) return response(400, { error: prValidation.error });
+          normalizedPrStrategy = prValidation.value;
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .property(cardinality.single, 'pr_strategy', normalizedPrStrategy)
+            .next();
+        }
         if (data.workflowId !== undefined) {
           await g
             .V()
@@ -1190,6 +1232,7 @@ export const handler = async (event) => {
           ...(normalizedMaxParallelUnits !== undefined
             ? { maxParallelUnits: normalizedMaxParallelUnits }
             : {}),
+          ...(normalizedPrStrategy !== undefined ? { prStrategy: normalizedPrStrategy } : {}),
         });
       }
 

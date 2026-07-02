@@ -672,3 +672,133 @@ describe('mergeBranchNoFf', () => {
     expect(res).toMatchObject({ merged: false, reason: 'unit_branch_missing' });
   });
 });
+
+// ── WP6: conflict-resolution primitives (docs/v2-parallel.md) ────────────────
+
+import {
+  beginConflictMerge,
+  findRemainingConflictMarkers,
+  concludeConflictMerge,
+} from '../git-engine.js';
+
+describe('beginConflictMerge / concludeConflictMerge', () => {
+  // Remote with: intent branch (shared.txt = intent version) and a unit
+  // branch that forked BEFORE that commit and adds its own shared.txt.
+  const conflictSetup = async () => {
+    const { remote, work } = await initRemoteAndClone();
+    await commitOnRemote(remote, 'aidlc/i1', 'base.txt', 'base\n');
+    // Unit branch forks from the CURRENT intent HEAD…
+    await commitOnRemote(remote, 'aidlc/i1--s1-unit-u', 'unit.txt', 'unit work\n');
+    // …then BOTH sides add shared.txt with different content.
+    await commitOnRemote(remote, 'aidlc/i1', 'shared.txt', 'intent version\n');
+    await commitOnRemote(remote, 'aidlc/i1--s1-unit-u', 'shared.txt', 'unit version\n');
+    return { remote, work };
+  };
+  const args = (remote, work) => ({
+    dir: work,
+    repo: 'o/r',
+    unitBranch: 'aidlc/i1--s1-unit-u',
+    intentBranch: 'aidlc/i1',
+    message: 'aidlc(conflict-resolution): u — e1',
+    urls: laneUrls(remote),
+  });
+
+  it('begins the reverse merge leaving REAL markers, then concludes after resolution and pushes', async () => {
+    const { remote, work } = await conflictSetup();
+    const begin = await beginConflictMerge(args(remote, work));
+    expect(begin).toMatchObject({ conflicted: true, conflicts: ['shared.txt'] });
+    // Genuine markers in the tree, merge in progress.
+    const conflicted = await readFile(path.join(work, 'shared.txt'), 'utf8');
+    expect(conflicted).toContain('<<<<<<<');
+    expect((await git(['rev-parse', '--verify', 'MERGE_HEAD'], work)).exitCode).toBe(0);
+
+    // "The agent" resolves the file (markers gone, both intents kept).
+    await writeFile(path.join(work, 'shared.txt'), 'intent version + unit version\n');
+
+    const conclude = await concludeConflictMerge({
+      dir: work,
+      repo: 'o/r',
+      unitBranch: 'aidlc/i1--s1-unit-u',
+      conflicts: begin.conflicts,
+      urls: laneUrls(remote),
+      ...quiet,
+    });
+    expect(conclude.concluded).toBe(true);
+    expect(conclude.sha).toMatch(/^[0-9a-f]{40}$/);
+    // A true merge commit with the ENGINE identity, pushed to the unit branch.
+    const who = await git(['log', '-1', '--format=%an|%P'], work);
+    expect(who.stdout.trim().startsWith('AI-DLC Engine|')).toBe(true);
+    expect(who.stdout.trim().split('|')[1].split(' ')).toHaveLength(2);
+    const ls = await git(['ls-remote', remote, 'aidlc/i1--s1-unit-u'], root);
+    expect(ls.stdout.trim().split(/\s/)[0]).toBe(conclude.sha);
+    // The unit branch now CONTAINS the intent branch → the merge-back retry
+    // is conflict-free by construction.
+    const ancestor = await git(
+      ['merge-base', '--is-ancestor', 'refs/remotes/origin/aidlc/i1', 'HEAD'],
+      work,
+    );
+    expect(ancestor.exitCode).toBe(0);
+  });
+
+  it('conclude REFUSES when markers remain and aborts back to a pristine tree', async () => {
+    const { remote, work } = await conflictSetup();
+    const begin = await beginConflictMerge(args(remote, work));
+    expect(begin.conflicted).toBe(true);
+    // The "agent" did nothing — markers still present.
+    const conclude = await concludeConflictMerge({
+      dir: work,
+      repo: 'o/r',
+      unitBranch: 'aidlc/i1--s1-unit-u',
+      conflicts: begin.conflicts,
+      urls: laneUrls(remote),
+      ...quiet,
+    });
+    expect(conclude).toMatchObject({ concluded: false, reason: 'markers_remain' });
+    expect(conclude.remaining).toEqual(['shared.txt']);
+    // Aborted: no MERGE_HEAD, clean status, unit content restored.
+    expect((await git(['rev-parse', '--verify', 'MERGE_HEAD'], work)).exitCode).not.toBe(0);
+    expect((await git(['status', '--porcelain'], work)).stdout.trim()).toBe('');
+    expect(await readFile(path.join(work, 'shared.txt'), 'utf8')).toBe('unit version\n');
+  });
+
+  it('a clean reverse merge needs no agent (merged: true) and up_to_date short-circuits', async () => {
+    const { remote, work } = await initRemoteAndClone();
+    await commitOnRemote(remote, 'aidlc/i1', 'base.txt', 'base\n');
+    await commitOnRemote(remote, 'aidlc/i1--s1-unit-u', 'unit.txt', 'unit work\n');
+    // Non-overlapping change on the intent branch → clean reverse merge.
+    await commitOnRemote(remote, 'aidlc/i1', 'other.txt', 'other\n');
+    const first = await beginConflictMerge(args(remote, work));
+    expect(first.conflicted).toBe(false);
+    expect(first.merged).toBe(true);
+    // Second begin: the intent branch is already an ancestor (local HEAD has
+    // the merge; the remote unit branch does not — begin resets to remote, so
+    // push the merge first via conclude with no conflicts).
+    const conclude = await concludeConflictMerge({
+      dir: work,
+      repo: 'o/r',
+      unitBranch: 'aidlc/i1--s1-unit-u',
+      conflicts: [],
+      urls: laneUrls(remote),
+      ...quiet,
+    });
+    expect(conclude.concluded).toBe(true);
+    const second = await beginConflictMerge(args(remote, work));
+    expect(second).toMatchObject({ conflicted: false, merged: 'up_to_date' });
+  });
+});
+
+describe('findRemainingConflictMarkers', () => {
+  it('detects real marker lines, tolerates deleted files, ignores marker-free text', async () => {
+    const { work } = await initRemoteAndClone();
+    await writeFile(
+      path.join(work, 'bad.txt'),
+      '<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n',
+    );
+    await writeFile(path.join(work, 'ok.txt'), 'clean content\nno markers here\n');
+    const remaining = await findRemainingConflictMarkers({
+      dir: work,
+      files: ['bad.txt', 'ok.txt', 'deleted.txt'],
+    });
+    expect(remaining).toEqual(['bad.txt']);
+  });
+});

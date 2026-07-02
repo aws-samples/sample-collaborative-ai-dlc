@@ -286,6 +286,8 @@ describe('POST /projects/{id}/intents', () => {
     // WP5: lane concurrency cap snapshotted; the ladder decision starts unset.
     expect(intent.maxParallelUnits).toBe(3);
     expect(intent.constructionAutonomyMode).toBeNull();
+    // WP6: PR strategy snapshotted (project default = intent-pr).
+    expect(intent.prStrategy).toBe('intent-pr');
   });
 
   it('merges the Admin global model under the project selection at create', async () => {
