@@ -32,7 +32,7 @@
 //   { ok: false, reason: 'promotion_failed', detail } — infra error
 
 import { createRequire } from 'node:module';
-import { createGraphWriter } from '../mcp/graph-writer.js';
+import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
 
 const require = createRequire(import.meta.url);
 const { parseBoltDag } = require('../../shared/v2-sensor-contract.js');
@@ -69,18 +69,22 @@ export const promoteUnits = async (payload, deps) => {
       .catch(() => {});
 
   let graph;
+  let g;
   try {
-    const g = await openGraph();
+    g = await openGraph();
     graph = createWriter({
       g,
       scope: { projectId, intentId, executionId, stageInstanceId },
       ...(clock ? { clock } : {}),
     });
   } catch (e) {
+    await closeGraphSource(g);
     await event('v2.units.promotion_failed', `graph unavailable: ${e.message}`);
     return { ok: false, reason: 'promotion_failed', detail: `graph unavailable: ${e.message}` };
   }
 
+  // Close the graph connection on every exit (release its fd — see
+  // closeGraphSource). The long-lived session process reuses this command.
   try {
     // 1+2. Read + re-parse the DAG artifact.
     const rows = await graph.lookupArtifacts({ artifactType: DAG_ARTIFACT_TYPE });
@@ -146,5 +150,7 @@ export const promoteUnits = async (payload, deps) => {
   } catch (e) {
     await event('v2.units.promotion_failed', e.message);
     return { ok: false, reason: 'promotion_failed', detail: e.message };
+  } finally {
+    await closeGraphSource(g);
   }
 };

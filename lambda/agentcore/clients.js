@@ -74,16 +74,23 @@ export const sendStageCallbackHeartbeat = async (callbackId) => {
   }
 };
 
-let _conn = null;
-
 // Open a Neptune (or local gremlin-server) traversal source. wss+SigV4 in prod;
 // plain ws for the test container.
+//
+// Each call returns an INDEPENDENT connection the caller OWNS and MUST close
+// (via closeGraphSource in mcp/graph-writer.js). There is deliberately no module
+// singleton: the container's session process is long-lived and runs many
+// sequential stages, each opening the graph 2–3 times — a shared/overwritten
+// singleton silently orphaned every prior WebSocket (one socket fd apiece) until
+// the process hit EMFILE ("too many open files") and the next stage crashed.
+// Ownership + closeGraphSource is the fix.
 export const openGraph = async () => {
   const endpoint = process.env.NEPTUNE_ENDPOINT;
   const port = process.env.GREMLIN_PORT ?? '8182';
   const protocol = process.env.GREMLIN_PROTOCOL ?? 'wss';
+  let conn;
   if (protocol === 'ws') {
-    _conn = new DriverRemoteConnection(`ws://${endpoint}:${port}/gremlin`);
+    conn = new DriverRemoteConnection(`ws://${endpoint}:${port}/gremlin`);
   } else {
     const region = process.env.AWS_REGION || 'us-east-1';
     const creds = await fromNodeProviderChain()();
@@ -94,36 +101,54 @@ export const openGraph = async () => {
       region,
     };
     const info = getUrlAndHeaders(endpoint, port, signerCreds, '/gremlin', 'wss');
-    _conn = new DriverRemoteConnection(info.url, { headers: info.headers });
+    conn = new DriverRemoteConnection(info.url, { headers: info.headers });
   }
-  return traversal().withRemote(_conn);
+  return traversal().withRemote(conn);
 };
 
-export const closeGraph = async () => {
-  await _conn?.close();
-  _conn = null;
+// One API Gateway management client per endpoint, reused across broadcasts. The
+// session process is long-lived and broadcasts on every note/output/metric; a
+// fresh client per call would leak a socket pool each time (a sibling of the
+// graph-connection EMFILE leak). Keyed by endpoint (only ever one in practice).
+const _apiClients = new Map();
+const apiClientFor = (endpoint) => {
+  let api = _apiClients.get(endpoint);
+  if (!api) {
+    api = new ApiGatewayManagementApiClient({ endpoint });
+    _apiClients.set(endpoint, api);
+  }
+  return api;
 };
 
 // Broadcast a payload to every live connection on the intent's realtime channel.
 // Best-effort; never throws. Mirrors the v1 sprint-channel fanout but keyed on
-// `intent:<intentId>` (the v2 realtime channel).
+// `intent:<intentId>` (the v2 realtime channel). The connection query drains
+// LastEvaluatedKey — a Query page caps at 1MB and truncation would silently
+// stop broadcasting to the connections past the first page.
 export const broadcastToIntent = async (intentId, payload) => {
   const connectionsTable = process.env.CONNECTIONS_TABLE;
   const websocketEndpoint = process.env.WEBSOCKET_ENDPOINT;
   if (!connectionsTable || !websocketEndpoint || !intentId) return;
   try {
-    const { Items } = await ddb.send(
-      new QueryCommand({
-        TableName: connectionsTable,
-        IndexName: 'DocumentIdIndex',
-        KeyConditionExpression: 'documentId = :doc',
-        ExpressionAttributeValues: { ':doc': `intent:${intentId}` },
-      }),
-    );
-    const api = new ApiGatewayManagementApiClient({ endpoint: websocketEndpoint });
+    const items = [];
+    let ExclusiveStartKey;
+    do {
+      const page = await ddb.send(
+        new QueryCommand({
+          TableName: connectionsTable,
+          IndexName: 'DocumentIdIndex',
+          KeyConditionExpression: 'documentId = :doc',
+          ExpressionAttributeValues: { ':doc': `intent:${intentId}` },
+          ExclusiveStartKey,
+        }),
+      );
+      items.push(...(page.Items ?? []));
+      ExclusiveStartKey = page.LastEvaluatedKey;
+    } while (ExclusiveStartKey);
+    const api = apiClientFor(websocketEndpoint);
     const data = JSON.stringify(payload);
     await Promise.all(
-      (Items ?? []).map((item) =>
+      items.map((item) =>
         api
           .send(new PostToConnectionCommand({ ConnectionId: item.connectionId, Data: data }))
           .catch(() => {}),

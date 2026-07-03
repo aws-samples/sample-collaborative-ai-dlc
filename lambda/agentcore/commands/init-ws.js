@@ -9,6 +9,7 @@
 // effect is injected for testing.
 
 import gremlin from 'gremlin';
+import { closeGraphSource } from '../mcp/graph-writer.js';
 
 const { cardinality } = gremlin.process;
 
@@ -87,12 +88,16 @@ export const initWs = async (
     };
   }
 
-  // 2. Create the Intent anchor in Neptune.
+  // 2. Create the Intent anchor in Neptune. Close the connection once done —
+  // the graph is only needed here, and the long-lived session process would
+  // otherwise leak this fd (see closeGraphSource / the EMFILE fix).
   const g = await openGraph();
   try {
     await ensureIntentVertex({ g, projectId, intentId, title: title ?? '', now });
   } catch (e) {
     return { ok: false, reason: 'intent_vertex_failed', detail: e.message };
+  } finally {
+    await closeGraphSource(g);
   }
 
   // 3. Seed the execution state (idempotent — a re-init keeps the existing row).
