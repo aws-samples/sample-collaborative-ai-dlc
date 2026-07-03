@@ -499,32 +499,27 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   };
 
   // All steering rows for an execution, oldest first (SK sorts by createdAt).
-  const listSteering = async (executionId) => {
-    const { Items } = await ddb.send(
-      new QueryCommand({
-        TableName: table(),
-        KeyConditionExpression: 'pk = :pk AND begins_with(sk, :p)',
-        ExpressionAttributeValues: { ':pk': executionPk(executionId), ':p': 'STEER#' },
-      }),
-    );
-    return Items ?? [];
-  };
+  const listSteering = async (executionId) =>
+    queryAll(ddb, {
+      TableName: table(),
+      KeyConditionExpression: 'pk = :pk AND begins_with(sk, :p)',
+      ExpressionAttributeValues: { ':pk': executionPk(executionId), ':p': 'STEER#' },
+    });
 
   // Only the not-yet-delivered steering rows, oldest first — what run-stage
-  // injects at its next entry. Uses GSI2 (TYPE#STEER#STATE#pending#).
+  // injects at its next entry. Uses GSI2 (TYPE#STEER#STATE#pending#). Paginated:
+  // a dropped page here would silently swallow a user's correction.
   const listPendingSteering = async (executionId) => {
-    const { Items } = await ddb.send(
-      new QueryCommand({
-        TableName: table(),
-        IndexName: 'GSI2',
-        KeyConditionExpression: 'GSI2PK = :pk AND begins_with(GSI2SK, :p)',
-        ExpressionAttributeValues: {
-          ':pk': executionPk(executionId),
-          ':p': 'TYPE#STEER#STATE#pending#',
-        },
-      }),
-    );
-    return (Items ?? []).toSorted(bySk);
+    const items = await queryAll(ddb, {
+      TableName: table(),
+      IndexName: 'GSI2',
+      KeyConditionExpression: 'GSI2PK = :pk AND begins_with(GSI2SK, :p)',
+      ExpressionAttributeValues: {
+        ':pk': executionPk(executionId),
+        ':p': 'TYPE#STEER#STATE#pending#',
+      },
+    });
+    return items.toSorted(bySk);
   };
 
   // Flip a steering row pending → consumed (CAS) as it enters an agent
@@ -757,7 +752,10 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
 
   // List a project's executions (intents) newest-first via GSI1. Optionally
   // filter to a single status. Returns the META rows only — the intents list
-  // view doesn't need the full per-execution record set.
+  // view doesn't need the full per-execution record set. Paginated up to
+  // `limit`: DynamoDB stops a page at min(Limit, 1MB), and META rows carry the
+  // unbounded user prompt — without the drain, a project with large prompts
+  // would silently list fewer intents than exist.
   const listProjectExecutions = async ({ projectId, status = null, limit = 100 } = {}) => {
     const values = { ':pk': projectPk(projectId) };
     let keyCond = 'GSI1PK = :pk';
@@ -765,17 +763,24 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       keyCond += ' AND begins_with(GSI1SK, :sk)';
       values[':sk'] = `STATUS#${status}#`;
     }
-    const { Items } = await ddb.send(
-      new QueryCommand({
-        TableName: table(),
-        IndexName: 'GSI1',
-        KeyConditionExpression: keyCond,
-        ExpressionAttributeValues: values,
-        ScanIndexForward: false, // newest first
-        Limit: limit,
-      }),
-    );
-    return Items ?? [];
+    const items = [];
+    let ExclusiveStartKey;
+    do {
+      const page = await ddb.send(
+        new QueryCommand({
+          TableName: table(),
+          IndexName: 'GSI1',
+          KeyConditionExpression: keyCond,
+          ExpressionAttributeValues: values,
+          ScanIndexForward: false, // newest first
+          Limit: limit - items.length,
+          ExclusiveStartKey,
+        }),
+      );
+      items.push(...(page.Items ?? []));
+      ExclusiveStartKey = page.LastEvaluatedKey;
+    } while (ExclusiveStartKey && items.length < limit);
+    return items;
   };
 
   // Patch the intent-config fields on an existing META row (prompt/branch/etc.)
@@ -840,16 +845,15 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   };
 
   // All unit lane rows for an execution. SK prefix 'UNIT#' (exact — a bare
-  // 'UNIT' would also match UNITPLAN).
+  // 'UNIT' would also match UNITPLAN). Paginated: the orchestrator's lane
+  // scheduler reads this — a dropped page would make lanes invisible.
   const listUnits = async (executionId) => {
-    const { Items } = await ddb.send(
-      new QueryCommand({
-        TableName: table(),
-        KeyConditionExpression: 'pk = :pk AND begins_with(sk, :p)',
-        ExpressionAttributeValues: { ':pk': executionPk(executionId), ':p': 'UNIT#' },
-      }),
-    );
-    return (Items ?? []).toSorted(bySk);
+    const items = await queryAll(ddb, {
+      TableName: table(),
+      KeyConditionExpression: 'pk = :pk AND begins_with(sk, :p)',
+      ExpressionAttributeValues: { ':pk': executionPk(executionId), ':p': 'UNIT#' },
+    });
+    return items.toSorted(bySk);
   };
 
   // Bring the UNIT# rows in line with a (re-)promoted DAG, without ever

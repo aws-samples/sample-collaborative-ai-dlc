@@ -323,6 +323,49 @@ describe('createProcessStore', () => {
     expect(byStatus.ExpressionAttributeValues[':sk']).toBe('STATUS#DRAFT#');
   });
 
+  it('listProjectExecutions drains 1MB-truncated pages up to `limit` (META rows carry unbounded prompts)', async () => {
+    // DynamoDB stops a page at min(Limit, 1MB) — a page can come back with
+    // FEWER than `limit` items AND a LastEvaluatedKey. The old single-shot read
+    // returned that short page as if it were the whole project.
+    ddb
+      .on(QueryCommand)
+      .resolvesOnce({
+        Items: [{ sk: 'META', executionId: 'e1' }],
+        LastEvaluatedKey: { pk: 'x', sk: 'y' },
+      })
+      .resolvesOnce({ Items: [{ sk: 'META', executionId: 'e2' }] });
+    const all = await store.listProjectExecutions({ projectId: 'p1', limit: 5 });
+    expect(all.map((i) => i.executionId)).toEqual(['e1', 'e2']);
+    const calls = ddb.commandCalls(QueryCommand);
+    expect(calls).toHaveLength(2);
+    // The second page only asks for what is still missing.
+    expect(calls[1].args[0].input.Limit).toBe(4);
+    expect(calls[1].args[0].input.ExclusiveStartKey).toEqual({ pk: 'x', sk: 'y' });
+  });
+
+  it('listProjectExecutions stops paging once `limit` rows have arrived', async () => {
+    ddb.on(QueryCommand).resolves({
+      Items: [{ sk: 'META', executionId: 'e1' }],
+      LastEvaluatedKey: { pk: 'x', sk: 'y' },
+    });
+    const all = await store.listProjectExecutions({ projectId: 'p1', limit: 1 });
+    expect(all).toHaveLength(1);
+    expect(ddb.commandCalls(QueryCommand)).toHaveLength(1);
+  });
+
+  it('listUnits drains every Query page (lanes must never be invisible to the scheduler)', async () => {
+    ddb
+      .on(QueryCommand)
+      .resolvesOnce({
+        Items: [{ sk: 'UNIT#auth', slug: 'auth' }],
+        LastEvaluatedKey: { pk: 'x', sk: 'y' },
+      })
+      .resolvesOnce({ Items: [{ sk: 'UNIT#billing', slug: 'billing' }] });
+    const units = await store.listUnits('e1');
+    expect(units.map((u) => u.slug)).toEqual(['auth', 'billing']);
+    expect(ddb.commandCalls(QueryCommand)).toHaveLength(2);
+  });
+
   it('patchExecutionConfig only sets supplied intent-config fields', async () => {
     ddb.on(UpdateCommand).resolves({ Attributes: {} });
     await store.patchExecutionConfig({

@@ -35,18 +35,28 @@ const getObjectText = async (s3Key) => {
   return streamToString(res.Body);
 };
 
-// List every block of a type for a tenant (catalog browse via GSI1).
-const listBlocks = async (tenant, type) => {
-  const { Items } = await ddb.send(
-    new QueryCommand({
-      TableName: blocksTable(),
-      IndexName: 'GSI1',
-      KeyConditionExpression: 'GSI1PK = :pk',
-      ExpressionAttributeValues: { ':pk': catalogGsi1Pk(tenant, type) },
-    }),
-  );
-  return Items ?? [];
+// Drain every 1MB Query page. A truncated read here is silently WRONG: a
+// dropped placement row narrows the plan (stages skipped without error), and a
+// dropped library block fails resolution for a stage that exists.
+const queryAll = async (input) => {
+  const items = [];
+  let ExclusiveStartKey;
+  do {
+    const page = await ddb.send(new QueryCommand({ ...input, ExclusiveStartKey }));
+    items.push(...(page.Items ?? []));
+    ExclusiveStartKey = page.LastEvaluatedKey;
+  } while (ExclusiveStartKey);
+  return items;
 };
+
+// List every block of a type for a tenant (catalog browse via GSI1).
+const listBlocks = async (tenant, type) =>
+  queryAll({
+    TableName: blocksTable(),
+    IndexName: 'GSI1',
+    KeyConditionExpression: 'GSI1PK = :pk',
+    ExpressionAttributeValues: { ':pk': catalogGsi1Pk(tenant, type) },
+  });
 
 // Merge SYSTEM + default catalogs for a type, default shadowing SYSTEM by id.
 const listMergedBlocks = async (type) => {
@@ -65,17 +75,15 @@ const listMergedBlocks = async (type) => {
 const loadWorkflow = async ({ workflowId, workflowVersion }) => {
   const version = Number(workflowVersion);
   for (const tenant of [DEFAULT_TENANT, SYSTEM_TENANT]) {
-    const { Items } = await ddb.send(
-      new QueryCommand({
-        TableName: blocksTable(),
-        KeyConditionExpression: 'pk = :pk AND begins_with(sk, :vp)',
-        ExpressionAttributeValues: {
-          ':pk': workflowPk(tenant, workflowId),
-          ':vp': workflowVersionPrefix(version),
-        },
-      }),
-    );
-    if ((Items ?? []).length > 0) return { tenant, items: Items };
+    const items = await queryAll({
+      TableName: blocksTable(),
+      KeyConditionExpression: 'pk = :pk AND begins_with(sk, :vp)',
+      ExpressionAttributeValues: {
+        ':pk': workflowPk(tenant, workflowId),
+        ':vp': workflowVersionPrefix(version),
+      },
+    });
+    if (items.length > 0) return { tenant, items };
   }
   return null;
 };
