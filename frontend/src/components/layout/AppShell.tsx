@@ -12,26 +12,27 @@ import { IntentProvider } from '@/contexts/IntentContext';
 import { useProjectSprintsCache } from '@/hooks/useProjectsCache';
 import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
+import { useResizablePanel } from '@/hooks/useResizablePanel';
 
-// Activity panel sizing: user-resizable on large screens (drag the left edge,
+// Side panel sizing: user-resizable on large screens (drag the inner edge,
 // double-click to reset), persisted across sessions.
-const ACTIVITY_WIDTH_KEY = 'aidlc-activity-panel-width';
-const ACTIVITY_WIDTH_DEFAULT = 380;
-const ACTIVITY_WIDTH_MIN = 300;
-const ACTIVITY_WIDTH_MAX = 640;
+const ACTIVITY_PANEL_SIZING = {
+  storageKey: 'aidlc-activity-panel-width',
+  defaultWidth: 380,
+  minWidth: 300,
+  maxWidth: 640,
+  viewportFraction: 0.45,
+  anchor: 'right',
+} as const;
 
-function clampActivityWidth(width: number): number {
-  // Never let the panel eat more than ~45% of the viewport.
-  const max = Math.min(ACTIVITY_WIDTH_MAX, Math.round(window.innerWidth * 0.45));
-  return Math.min(Math.max(width, ACTIVITY_WIDTH_MIN), Math.max(max, ACTIVITY_WIDTH_MIN));
-}
-
-function loadActivityWidth(): number {
-  const stored = Number(localStorage.getItem(ACTIVITY_WIDTH_KEY));
-  return Number.isFinite(stored) && stored > 0
-    ? clampActivityWidth(stored)
-    : ACTIVITY_WIDTH_DEFAULT;
-}
+const SIDEBAR_SIZING = {
+  storageKey: 'aidlc-sidebar-width',
+  defaultWidth: 260,
+  minWidth: 200,
+  maxWidth: 420,
+  viewportFraction: 0.3,
+  anchor: 'left',
+} as const;
 
 export function AppShell() {
   const { sprintId, projectId, intentId } = useParams<{
@@ -71,14 +72,8 @@ export function AppShell() {
     () => !window.matchMedia('(min-width: 1024px)').matches,
   );
   const [commandOpen, setCommandOpen] = useState(false);
-  const [activityWidth, setActivityWidth] = useState(loadActivityWidth);
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      localStorage.setItem(ACTIVITY_WIDTH_KEY, String(activityWidth));
-    }, 250);
-    return () => clearTimeout(timer);
-  }, [activityWidth]);
+  const activityPanel = useResizablePanel(ACTIVITY_PANEL_SIZING);
+  const sidebarPanel = useResizablePanel(SIDEBAR_SIZING);
 
   useEffect(() => {
     setActivityPanelOpen(inSprint || inIntent);
@@ -92,40 +87,12 @@ export function AppShell() {
   // Opening a discussion pops the activity panel (the thread renders there).
   const showActivityPanel = useCallback(() => setActivityPanelOpen(true), []);
 
-  // Drag-to-resize (large screens): pointer capture on the panel's left edge.
-  const handleResizeStart = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    const handle = e.currentTarget;
-    handle.setPointerCapture(e.pointerId);
-    const onMove = (ev: PointerEvent) => {
-      setActivityWidth(clampActivityWidth(document.documentElement.clientWidth - ev.clientX));
-    };
-    const onEnd = () => {
-      handle.removeEventListener('pointermove', onMove);
-      handle.removeEventListener('pointerup', onEnd);
-      handle.removeEventListener('pointercancel', onEnd);
-    };
-    handle.addEventListener('pointermove', onMove);
-    handle.addEventListener('pointerup', onEnd);
-    handle.addEventListener('pointercancel', onEnd);
-  }, []);
-
-  const handleResizeKey = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-      e.preventDefault();
-      const delta = e.key === 'ArrowLeft' ? 16 : -16;
-      setActivityWidth((w) => clampActivityWidth(w + delta));
-    }
-  }, []);
-
-  const resetActivityWidth = useCallback(() => setActivityWidth(ACTIVITY_WIDTH_DEFAULT), []);
-
   // Grid columns only contain panels that render INLINE at the current
   // breakpoint — overlay panels must not reserve track space.
   const gridColumns = [
-    showSidebar && panelsInline ? 'minmax(240px, 280px)' : null,
+    showSidebar && panelsInline ? `min(${sidebarPanel.width}px, 30vw)` : null,
     'minmax(0, 1fr)',
-    showActivity && panelsInline ? `min(${activityWidth}px, 45vw)` : null,
+    showActivity && panelsInline ? `min(${activityPanel.width}px, 45vw)` : null,
   ]
     .filter(Boolean)
     .join(' ');
@@ -157,10 +124,20 @@ export function AppShell() {
               className="relative flex-1 overflow-hidden grid"
               style={{ gridTemplateColumns: gridColumns }}
             >
-              {/* Sidebar - inline column on lg+ */}
+              {/* Sidebar - inline column on lg+, with a resize handle */}
               {showSidebar && panelsInline && (
-                <aside className="flex border-r overflow-hidden">
+                <aside className="relative flex border-r overflow-hidden">
                   <AppSidebar />
+                  <div
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label="Resize sidebar"
+                    tabIndex={0}
+                    onPointerDown={sidebarPanel.handleResizeStart}
+                    onKeyDown={sidebarPanel.handleResizeKey}
+                    onDoubleClick={sidebarPanel.resetWidth}
+                    className="absolute inset-y-0 right-0 z-10 w-1.5 cursor-col-resize touch-none hover:bg-primary/30 active:bg-primary/40 focus-visible:bg-primary/40 focus-visible:outline-none"
+                  />
                 </aside>
               )}
 
@@ -180,9 +157,9 @@ export function AppShell() {
                     aria-orientation="vertical"
                     aria-label="Resize activity panel"
                     tabIndex={0}
-                    onPointerDown={handleResizeStart}
-                    onKeyDown={handleResizeKey}
-                    onDoubleClick={resetActivityWidth}
+                    onPointerDown={activityPanel.handleResizeStart}
+                    onKeyDown={activityPanel.handleResizeKey}
+                    onDoubleClick={activityPanel.resetWidth}
                     className="absolute inset-y-0 left-0 z-10 w-1.5 cursor-col-resize touch-none hover:bg-primary/30 active:bg-primary/40 focus-visible:bg-primary/40 focus-visible:outline-none"
                   />
                   {inIntent ? (
