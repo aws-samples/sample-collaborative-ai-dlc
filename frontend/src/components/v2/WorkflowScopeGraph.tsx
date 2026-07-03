@@ -308,35 +308,37 @@ export function WorkflowScopeGraph({
                 <text x={34} y={32} fill={textFill} className="text-[13px]">
                   {displayName}
                 </text>
-                <g
-                  transform={`translate(${NODE_W - 50}, ${NODE_H / 2 - 9})`}
-                  style={editable && activeScope ? { cursor: 'pointer' } : undefined}
-                  onClick={
-                    editable && activeScope
-                      ? (e) => {
-                          e.stopPropagation();
-                          onToggleScope(node.stageId, activeScope, inScope ? 'SKIP' : 'EXECUTE');
-                        }
-                      : undefined
-                  }
-                >
-                  <rect
-                    width={42}
-                    height={18}
-                    rx={9}
-                    fill={inScope ? '#10b981' : '#94a3b8'}
-                    opacity={inScope ? 0.9 : 0.7}
-                  />
-                  <text
-                    x={21}
-                    y={13}
-                    textAnchor="middle"
-                    fill={inScope ? '#ffffff' : '#e2e8f0'}
-                    className="text-[8px] font-semibold"
+                {!stageStatus && (
+                  <g
+                    transform={`translate(${NODE_W - 50}, ${NODE_H / 2 - 9})`}
+                    style={editable && activeScope ? { cursor: 'pointer' } : undefined}
+                    onClick={
+                      editable && activeScope
+                        ? (e) => {
+                            e.stopPropagation();
+                            onToggleScope(node.stageId, activeScope, inScope ? 'SKIP' : 'EXECUTE');
+                          }
+                        : undefined
+                    }
                   >
-                    {inScope ? 'EXEC' : 'SKIP'}
-                  </text>
-                </g>
+                    <rect
+                      width={42}
+                      height={18}
+                      rx={9}
+                      fill={inScope ? '#10b981' : '#94a3b8'}
+                      opacity={inScope ? 0.9 : 0.7}
+                    />
+                    <text
+                      x={21}
+                      y={13}
+                      textAnchor="middle"
+                      fill={inScope ? '#ffffff' : '#e2e8f0'}
+                      className="text-[8px] font-semibold"
+                    >
+                      {inScope ? 'EXEC' : 'SKIP'}
+                    </text>
+                  </g>
+                )}
               </g>
             );
           })}

@@ -7,13 +7,45 @@ import { aggregateMetrics, summarizeCost } from '@/lib/metricAggregation';
 import { groupByPhase, derivePhaseState } from '@/lib/intentPhases';
 import { WorkflowScopeGraph } from '@/components/v2';
 import { UsageMetrics } from '@/components/intent/UsageMetrics';
+import { useProjectCache } from '@/hooks/useProjectsCache';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { Skeleton } from '@/components/ui/skeleton';
-import { ArrowLeft, CheckCircle2 } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, ExternalLink } from 'lucide-react';
 import { cn } from '@/lib/utils';
+
+const V1_PHASE_PALETTE = [
+  {
+    headerBg: 'bg-blue-100 dark:bg-blue-950/60',
+    headerText: 'text-blue-800 dark:text-blue-200',
+    blockBg: 'bg-blue-50 dark:bg-blue-950/30',
+    blockBorder: 'border-blue-200 dark:border-blue-800',
+  },
+  {
+    headerBg: 'bg-green-100 dark:bg-green-950/60',
+    headerText: 'text-green-800 dark:text-green-200',
+    blockBg: 'bg-green-50 dark:bg-green-950/30',
+    blockBorder: 'border-green-200 dark:border-green-800',
+  },
+  {
+    headerBg: 'bg-purple-100 dark:bg-purple-950/60',
+    headerText: 'text-purple-800 dark:text-purple-200',
+    blockBg: 'bg-purple-50 dark:bg-purple-950/30',
+    blockBorder: 'border-purple-200 dark:border-purple-800',
+  },
+  {
+    headerBg: 'bg-orange-100 dark:bg-orange-950/60',
+    headerText: 'text-orange-800 dark:text-orange-200',
+    blockBg: 'bg-orange-50 dark:bg-orange-950/30',
+    blockBorder: 'border-orange-200 dark:border-orange-800',
+  },
+] as const;
+
+function phaseColorAt(index: number) {
+  return V1_PHASE_PALETTE[index % V1_PHASE_PALETTE.length];
+}
 
 function aggregateStageStatus(rows: IntentStageRow[]): Record<string, StageState> {
   const byStage = new Map<string, StageState[]>();
@@ -42,14 +74,23 @@ function aggregateStageStatus(rows: IntentStageRow[]): Record<string, StageState
 function filterCompiledToScope(
   compiled: CompiledWorkflow,
   stageRows: IntentStageRow[],
+  initPaths: Set<string>,
 ): CompiledWorkflow {
   const ids = new Set(stageRows.map((r) => r.stageId));
+  const initNodeIds = new Set(
+    compiled.graph.nodes
+      .filter((n) => n.phasePath && initPaths.has(n.phasePath))
+      .map((n) => n.stageId),
+  );
   return {
     ...compiled,
     graph: {
       ...compiled.graph,
-      nodes: compiled.graph.nodes.filter((n) => ids.has(n.stageId)),
-      edges: compiled.graph.edges.filter((e) => ids.has(e.from) && ids.has(e.to)),
+      nodes: compiled.graph.nodes.filter((n) => ids.has(n.stageId) && !initNodeIds.has(n.stageId)),
+      edges: compiled.graph.edges.filter(
+        (e) =>
+          ids.has(e.from) && ids.has(e.to) && !initNodeIds.has(e.from) && !initNodeIds.has(e.to),
+      ),
     },
   };
 }
@@ -63,10 +104,12 @@ export default function IntentObservabilityPage() {
     stageRows,
     loading,
     error,
+    workflowPhases,
     phaseNameOf,
     initializationPhasePaths,
   } = useIntent();
   const navigate = useNavigate();
+  const { project } = useProjectCache(projectId);
 
   const phases = useMemo(
     () => groupByPhase(stageRows).filter((g) => !initializationPhasePaths.has(g.phase)),
@@ -75,15 +118,41 @@ export default function IntentObservabilityPage() {
 
   const stageStatus = useMemo(() => aggregateStageStatus(stageRows), [stageRows]);
 
+  const filteredStageStatus = useMemo(() => {
+    if (!compiled) return stageStatus;
+    const initNodeIds = new Set(
+      compiled.graph.nodes
+        .filter((n) => n.phasePath && initializationPhasePaths.has(n.phasePath))
+        .map((n) => n.stageId),
+    );
+    const result: Record<string, StageState> = {};
+    for (const [id, state] of Object.entries(stageStatus)) {
+      if (!initNodeIds.has(id)) result[id] = state;
+    }
+    return result;
+  }, [stageStatus, compiled, initializationPhasePaths]);
+
   const scopeCompiled = useMemo(() => {
     if (!compiled) return null;
-    return filterCompiledToScope(compiled, stageRows);
-  }, [compiled, stageRows]);
+    return filterCompiledToScope(compiled, stageRows, initializationPhasePaths);
+  }, [compiled, stageRows, initializationPhasePaths]);
+
+  const graphPhases = useMemo(() => {
+    if (!workflowPhases) return undefined;
+    return workflowPhases
+      .filter((p) => !initializationPhasePaths.has(p.path))
+      .map((p) => ({ path: p.path, name: phaseNameOf(p.path) }));
+  }, [workflowPhases, initializationPhasePaths, phaseNameOf]);
 
   const { totals, cost } = useMemo(() => {
     if (!detail || detail.metrics.length === 0) return { totals: {}, cost: null };
     return { totals: aggregateMetrics(detail.metrics), cost: summarizeCost(detail.metrics) };
   }, [detail]);
+
+  const runningCount = useMemo(
+    () => stageRows.filter((r) => r.state === 'RUNNING').length,
+    [stageRows],
+  );
 
   if (loading && !detail) {
     return (
@@ -110,64 +179,104 @@ export default function IntentObservabilityPage() {
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto w-full max-w-[1600px] px-6 py-6 space-y-6">
-        {/* Header */}
-        <div className="flex items-center gap-3 min-w-0">
+        {/* ── HEADER (v1 drill-down mirror) ──────────────────────────── */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3 min-w-0">
+            <button
+              onClick={() => navigate('/observability')}
+              className="text-muted-foreground hover:text-foreground transition-colors"
+              aria-label="Back to observability"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </button>
+            <h1 className="text-lg font-bold tracking-tight truncate">
+              {project?.name ?? 'Project'}
+            </h1>
+            <span className="text-xs text-muted-foreground truncate max-w-[200px]">
+              {intent.title}
+            </span>
+            <Badge variant="outline" className="text-[10px] h-5 bg-muted/40">
+              {intent.currentPhase ? phaseNameOf(intent.currentPhase) : intent.status}
+            </Badge>
+            {isActive && (
+              <Badge
+                variant="outline"
+                className="gap-1 text-[10px] bg-agent-running/10 text-agent-running border-agent-running/30"
+              >
+                <span className="h-1.5 w-1.5 rounded-full bg-agent-running animate-pulse" />
+                Live
+              </Badge>
+            )}
+          </div>
           <Button
-            variant="ghost"
+            variant="outline"
             size="sm"
-            className="gap-1.5 shrink-0"
+            className="gap-1.5 h-7"
             onClick={() => navigate(`/project/${projectId}/intent/${intentId}`)}
           >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            Workbench
+            <ExternalLink className="h-3 w-3" />
+            Open in workbench
           </Button>
-          <div className="h-5 w-px bg-border shrink-0" />
-          <h1 className="text-lg font-bold tracking-tight truncate">{intent.title || 'Intent'}</h1>
-          <Badge variant="outline" className="text-[10px] shrink-0">
-            {intent.status}
-          </Badge>
-          {isActive && (
-            <span
-              className="h-1.5 w-1.5 rounded-full bg-agent-running animate-pulse"
-              aria-label="live"
-            />
-          )}
-          {intent.scope && (
-            <Badge variant="secondary" className="text-[10px] shrink-0">
-              {intent.scope}
-            </Badge>
-          )}
         </div>
 
-        {/* Phase progress strip */}
+        {/* ── USAGE & COST + RUNNING AGENTS ──────────────────────────── */}
+        <Card>
+          <CardContent className="py-4 px-5">
+            <div className="flex items-center gap-4 flex-wrap">
+              {runningCount > 0 ? (
+                <Badge
+                  variant="outline"
+                  className="gap-1 text-[10px] bg-agent-running/10 text-agent-running border-agent-running/30"
+                >
+                  <span className="h-1.5 w-1.5 rounded-full bg-agent-running animate-pulse" />
+                  {runningCount} active
+                </Badge>
+              ) : (
+                <Badge variant="outline" className="gap-1 text-[10px] text-muted-foreground">
+                  0 active
+                </Badge>
+              )}
+              <div className="h-4 w-px bg-border" />
+              {Object.keys(totals).length > 0 ? (
+                <UsageMetrics metrics={totals} cost={cost} contextLabel="Peak context window" />
+              ) : (
+                <span className="text-xs text-muted-foreground">No usage yet</span>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* ── PHASE PROGRESS STRIP ───────────────────────────────────── */}
         {phases.length > 0 && (
           <Card>
             <CardContent className="py-4 px-5">
               <div className="flex items-stretch gap-3 overflow-x-auto">
-                {phases.map((group) => {
-                  const icon = derivePhaseState(group);
+                {phases.map((group, idx) => {
+                  const state = derivePhaseState(group);
+                  const palette = phaseColorAt(idx);
                   const pct = group.total > 0 ? Math.round((group.done / group.total) * 100) : 0;
                   return (
                     <div
                       key={group.phase}
                       className={cn(
-                        'flex flex-col gap-1.5 min-w-[120px] flex-1 rounded-md px-3 py-2',
-                        icon === 'done' && 'bg-agent-success/10',
-                        icon === 'active' && 'bg-agent-running/10',
-                        icon === 'pending' && 'bg-muted/50',
+                        'flex flex-col gap-1.5 min-w-[120px] flex-1 rounded-md px-3 py-2 border',
+                        palette.blockBg,
+                        palette.blockBorder,
                       )}
                     >
                       <div className="flex items-center gap-1.5">
-                        {icon === 'done' && (
-                          <CheckCircle2 className="h-3.5 w-3.5 text-agent-success shrink-0" />
+                        {state === 'done' && (
+                          <CheckCircle2
+                            className={cn('h-3.5 w-3.5 shrink-0', palette.headerText)}
+                          />
                         )}
-                        {icon === 'active' && (
+                        {state === 'active' && (
                           <span className="h-2 w-2 rounded-full bg-agent-running animate-pulse shrink-0" />
                         )}
-                        {icon === 'pending' && (
+                        {state === 'pending' && (
                           <span className="h-2 w-2 rounded-full bg-muted-foreground/40 shrink-0" />
                         )}
-                        <span className="text-xs font-medium truncate">
+                        <span className={cn('text-xs font-medium truncate', palette.headerText)}>
                           {phaseNameOf(group.phase)}
                         </span>
                       </div>
@@ -178,8 +287,8 @@ export default function IntentObservabilityPage() {
                         value={pct}
                         className={cn(
                           'h-1',
-                          icon === 'done' && '[&>div]:bg-agent-success',
-                          icon === 'active' && '[&>div]:bg-agent-running',
+                          state === 'done' && '[&>div]:bg-agent-success',
+                          state === 'active' && '[&>div]:bg-agent-running',
                         )}
                       />
                     </div>
@@ -190,7 +299,7 @@ export default function IntentObservabilityPage() {
           </Card>
         )}
 
-        {/* Scope graph */}
+        {/* ── EXECUTION GRAPH ────────────────────────────────────────── */}
         {scopeCompiled && scopeCompiled.graph.nodes.length > 0 && (
           <Card>
             <CardHeader className="pb-3">
@@ -200,22 +309,11 @@ export default function IntentObservabilityPage() {
               <WorkflowScopeGraph
                 compiled={scopeCompiled}
                 activeScope={intent.scope}
+                phases={graphPhases}
                 hideScopeSelector
                 readOnly
-                stageStatus={stageStatus}
+                stageStatus={filteredStageStatus}
               />
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Usage & cost */}
-        {detail.metrics.length > 0 && Object.keys(totals).length > 0 && (
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm">Usage &amp; cost</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <UsageMetrics metrics={totals} cost={cost} contextLabel="Peak context window" />
             </CardContent>
           </Card>
         )}

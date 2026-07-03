@@ -96,6 +96,34 @@ describe('WorkflowScopeGraph', () => {
     expect(allStatusNodes).toHaveLength(1);
   });
 
+  it('hides EXEC/SKIP pill when stageStatus is provided', () => {
+    const stageStatus: Record<string, StageState> = { s1: 'SUCCEEDED', s2: 'RUNNING' };
+    const { container } = render(
+      <WorkflowScopeGraph
+        compiled={compiled}
+        scopes={['feature']}
+        stageStatus={stageStatus}
+        readOnly
+      />,
+    );
+    const pills = container.querySelectorAll('text');
+    const execSkipTexts = Array.from(pills).filter(
+      (t) => t.textContent === 'EXEC' || t.textContent === 'SKIP',
+    );
+    expect(execSkipTexts).toHaveLength(0);
+  });
+
+  it('shows EXEC/SKIP pill when stageStatus is not provided', () => {
+    const { container } = render(
+      <WorkflowScopeGraph compiled={compiled} scopes={['feature', 'lite']} readOnly />,
+    );
+    const pills = container.querySelectorAll('text');
+    const execSkipTexts = Array.from(pills).filter(
+      (t) => t.textContent === 'EXEC' || t.textContent === 'SKIP',
+    );
+    expect(execSkipTexts.length).toBeGreaterThan(0);
+  });
+
   it('SKIPPED status renders dashed stroke and reduced opacity', () => {
     const stageStatus: Record<string, StageState> = { s2: 'SKIPPED' };
     const { container } = render(
