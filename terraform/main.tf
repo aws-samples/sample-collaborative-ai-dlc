@@ -9,6 +9,10 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.0"
     }
+    awscc = {
+      source  = "hashicorp/awscc"
+      version = "~> 1.0"
+    }
   }
   backend "s3" {}
 }
@@ -22,6 +26,14 @@ provider "aws" {
       Project     = var.project_name
     }
   }
+}
+
+# Cloud Control provider (used only for the Bedrock AgentCore Runtime). Pin it to
+# the deployment region so the AgentCore application region matches the ECR image
+# region — otherwise awscc falls back to the profile/AWS_REGION default and a
+# cross-region ECR URI is rejected.
+provider "awscc" {
+  region = var.aws_region
 }
 
 data "aws_caller_identity" "current" {}
