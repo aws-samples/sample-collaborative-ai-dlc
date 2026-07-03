@@ -41,11 +41,13 @@ export default function NewIntentPage() {
 
   const hasTrackers = (project?.trackers.length ?? 0) > 0;
 
+  const workflowId = project ? (project.workflowId ?? 'aidlc-v2') : null;
+
   useEffect(() => {
-    if (!project) return;
+    if (!workflowId) return;
     let cancelled = false;
     workflowsService
-      .compiled(project.workflowId ?? 'aidlc-v2')
+      .compiled(workflowId)
       .then((compiled) => {
         if (cancelled) return;
         const scopes = Object.keys(compiled.scopeGrid ?? {});
@@ -58,7 +60,7 @@ export default function NewIntentPage() {
     return () => {
       cancelled = true;
     };
-  }, [project]);
+  }, [workflowId]);
 
   const handleSelectIssue = useCallback(
     async (issue: TrackerIssue, binding: TrackerBinding) => {

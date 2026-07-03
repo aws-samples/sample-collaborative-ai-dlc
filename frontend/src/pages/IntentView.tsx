@@ -13,10 +13,6 @@ import { useProjectCache } from '@/hooks/useProjectsCache';
 import QuestionEditor from '@/components/QuestionEditor';
 import type { Question } from '@/services/questions';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
-import { IntentStageList } from '@/components/intent/IntentStageList';
-import { IntentGraph } from '@/components/intent/IntentGraph';
-import { UnitLaneBoard } from '@/components/intent/UnitLaneBoard';
-import { KnowledgeGraph } from '@/components/intent/KnowledgeGraph';
 import { ArtifactViewer } from '@/components/intent/ArtifactViewer';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -25,7 +21,6 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import {
   Accordion,
   AccordionContent,
@@ -45,17 +40,7 @@ import {
 import { cn } from '@/lib/utils';
 import { aggregateMetrics, summarizeCost } from '@/lib/metricAggregation';
 import { UsageMetrics } from '@/components/intent/UsageMetrics';
-import {
-  AlertTriangle,
-  Columns3,
-  Compass,
-  List,
-  Loader2,
-  Play,
-  Trash2,
-  Workflow,
-  XCircle,
-} from 'lucide-react';
+import { AlertTriangle, Compass, Loader2, Play, Trash2, XCircle } from 'lucide-react';
 
 // The v2 intent page — main-pane content only. All fetch/realtime/output state
 // lives in IntentProvider (mounted by AppShell, shared with the right-hand
@@ -69,7 +54,6 @@ export default function IntentView() {
     error: loadError,
     gates,
     pendingGates,
-    units,
     reload,
     answerGate,
     cancelIntent,
@@ -88,7 +72,6 @@ export default function IntentView() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [view, setView] = useState<'list' | 'graph' | 'lanes'>('list');
 
   // Start (DRAFT) and restart (FAILED / stranded CREATED) share the /start
   // endpoint, which re-enters the pipeline and clears a prior failureReason.
@@ -400,63 +383,6 @@ export default function IntentView() {
               Setting up workspace (cloning repositories, preparing the run)…
             </div>
           )}
-
-          {/* Stage pipeline — list (default) or topological graph, one shared
-              drill-down selection. `id` anchors artifact→stage jump links. */}
-          <Card id="intent-stages" className="scroll-mt-4">
-            <CardHeader className="pb-3">
-              <div className="flex items-center justify-between gap-2">
-                <CardTitle className="text-sm">Stages</CardTitle>
-                <ToggleGroup
-                  type="single"
-                  value={view}
-                  onValueChange={(v) => v && setView(v as 'list' | 'graph' | 'lanes')}
-                  className="h-7"
-                >
-                  <ToggleGroupItem value="list" aria-label="List view" className="h-7 gap-1 px-2">
-                    <List className="h-3.5 w-3.5" />
-                    <span className="text-xs">List</span>
-                  </ToggleGroupItem>
-                  <ToggleGroupItem value="graph" aria-label="Graph view" className="h-7 gap-1 px-2">
-                    <Workflow className="h-3.5 w-3.5" />
-                    <span className="text-xs">Graph</span>
-                  </ToggleGroupItem>
-                  {units.length > 0 && (
-                    <ToggleGroupItem
-                      value="lanes"
-                      aria-label="Unit lanes view"
-                      className="h-7 gap-1 px-2"
-                    >
-                      <Columns3 className="h-3.5 w-3.5" />
-                      <span className="text-xs">Lanes</span>
-                    </ToggleGroupItem>
-                  )}
-                </ToggleGroup>
-              </div>
-            </CardHeader>
-            <CardContent>
-              {view === 'list' && <IntentStageList />}
-              {view === 'graph' && <IntentGraph />}
-              {view === 'lanes' && <UnitLaneBoard />}
-            </CardContent>
-          </Card>
-
-          {/* Knowledge graph — the Neptune subgraph the agents traverse:
-              artifacts + typed relations, questions, discussions, and the
-              project knowledge injected into every stage. Process lives above
-              (stages); this is the OUTPUT view. */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm">Knowledge graph</CardTitle>
-              <p className="text-xs text-muted-foreground">
-                What the agents produced and drew on — artifacts and their relations, questions,
-                discussions, and project knowledge.
-              </p>
-            </CardHeader>
-            <CardContent>
-              <KnowledgeGraph />
-            </CardContent>
-          </Card>
 
           {/* Metrics */}
           {detail.metrics.length > 0 && <MetricsPanel detail={detail} />}

@@ -1,4 +1,5 @@
 import type { Sprint } from '@/services/sprints';
+import type { Intent } from '@/services/intents';
 
 export type EffectiveSprintStatus =
   | 'passed'
@@ -26,4 +27,20 @@ export function isAttentionStatus(status: EffectiveSprintStatus): boolean {
 
 export function isActiveStatus(status: EffectiveSprintStatus): boolean {
   return status === 'running' || status === 'waiting';
+}
+
+export function effectiveIntentStatus(intent: Intent | null): EffectiveSprintStatus {
+  if (!intent) return 'idle';
+  switch (intent.status) {
+    case 'RUNNING':
+      return 'running';
+    case 'WAITING':
+      return 'waiting';
+    case 'FAILED':
+      return 'failed';
+    case 'SUCCEEDED':
+      return 'completed';
+    default:
+      return 'idle';
+  }
 }

@@ -18,6 +18,7 @@ import { CreateProjectModal } from '@/components/CreateProjectModal';
 import { useProjectsCache } from '@/hooks/useProjectsCache';
 import {
   effectiveSprintStatus,
+  effectiveIntentStatus,
   isAttentionStatus,
   isActiveStatus,
   type EffectiveSprintStatus,
@@ -100,8 +101,11 @@ export function AppSidebar() {
     localStorage.setItem(STORAGE_KEY, filter);
   };
 
-  const runningCount = projects.filter((p) => {
-    const status = effectiveSprintStatus(p.latestSprint);
+  const runningCount = projects.filter(({ project, latestSprint, latestIntent }) => {
+    const status =
+      project.kind === 'v2'
+        ? effectiveIntentStatus(latestIntent)
+        : effectiveSprintStatus(latestSprint);
     return status === 'running' || status === 'waiting';
   }).length;
 
@@ -110,13 +114,45 @@ export function AppSidebar() {
   const isOnAdmin = location.pathname === '/admin';
   const isOnWorkflows = location.pathname.startsWith('/workflows');
 
-  const filteredIterations = projects.filter(({ project, latestSprint }) => {
-    // v2 projects have no sprints — the iterations rail is sprint-only. Exclude
-    // them so the `latestSprint!` reads below are always safe.
-    if (project.kind === 'v2' || !latestSprint) return false;
-    const status = effectiveSprintStatus(latestSprint);
-    return matchesFilter(status, iterationFilter);
-  });
+  interface IterationItem {
+    key: string;
+    title: string;
+    subtitle: string;
+    status: EffectiveSprintStatus;
+    onClick: () => void;
+  }
+
+  const filteredIterations: IterationItem[] = projects.flatMap(
+    ({ project, latestSprint, latestIntent }) => {
+      if (project.kind === 'v2') {
+        if (!latestIntent) return [];
+        const status = effectiveIntentStatus(latestIntent);
+        if (!matchesFilter(status, iterationFilter)) return [];
+        return [
+          {
+            key: `intent-${latestIntent.id}`,
+            title: latestIntent.title ?? 'Intent',
+            subtitle: project.name,
+            status,
+            onClick: () =>
+              navigate(`/project/${project.id}/intent/${latestIntent.id}/observability`),
+          },
+        ];
+      }
+      if (!latestSprint) return [];
+      const status = effectiveSprintStatus(latestSprint);
+      if (!matchesFilter(status, iterationFilter)) return [];
+      return [
+        {
+          key: `sprint-${project.id}`,
+          title: latestSprint.name,
+          subtitle: project.name,
+          status,
+          onClick: () => navigate(`/observability?project=${project.id}&sprint=${latestSprint.id}`),
+        },
+      ];
+    },
+  );
 
   return (
     <div className="flex h-full w-full flex-col bg-sidebar text-sidebar-foreground">
@@ -252,29 +288,23 @@ export function AppSidebar() {
                 {FILTER_EMPTY[iterationFilter]}
               </span>
             )}
-            {filteredIterations.map(({ project, latestSprint }) => {
-              const status = effectiveSprintStatus(latestSprint);
-
-              return (
-                <button
-                  key={project.id}
-                  onClick={() =>
-                    navigate(`/observability?project=${project.id}&sprint=${latestSprint!.id}`)
-                  }
-                  className="flex items-center gap-2 px-3 py-1.5 rounded-md text-left w-full min-w-0 hover:bg-sidebar-accent/50 transition-colors"
-                >
-                  <IterationStatusIcon status={status} />
-                  <div className="flex-1 min-w-0">
-                    <span className="block text-[11px] font-medium text-sidebar-foreground/80 truncate">
-                      {latestSprint!.name}
-                    </span>
-                    <span className="block text-[10px] text-sidebar-foreground/40 truncate">
-                      {project.name}
-                    </span>
-                  </div>
-                </button>
-              );
-            })}
+            {filteredIterations.map((item) => (
+              <button
+                key={item.key}
+                onClick={item.onClick}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-md text-left w-full min-w-0 hover:bg-sidebar-accent/50 transition-colors"
+              >
+                <IterationStatusIcon status={item.status} />
+                <div className="flex-1 min-w-0">
+                  <span className="block text-[11px] font-medium text-sidebar-foreground/80 truncate">
+                    {item.title}
+                  </span>
+                  <span className="block text-[10px] text-sidebar-foreground/40 truncate">
+                    {item.subtitle}
+                  </span>
+                </div>
+              </button>
+            ))}
           </div>
         </div>
       </ScrollArea>

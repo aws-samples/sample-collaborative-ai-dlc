@@ -4,7 +4,7 @@ import { useIntent, type IntentStageRow } from '@/contexts/IntentContext';
 import type { StageState } from '@/services/intents';
 import type { CompiledWorkflow } from '@/services/workflows';
 import { aggregateMetrics, summarizeCost } from '@/lib/metricAggregation';
-import { groupByPhase, type PhaseGroup } from '@/lib/intentPhases';
+import { groupByPhase, derivePhaseState } from '@/lib/intentPhases';
 import { WorkflowScopeGraph } from '@/components/v2';
 import { UsageMetrics } from '@/components/intent/UsageMetrics';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -14,14 +14,6 @@ import { Progress } from '@/components/ui/progress';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ArrowLeft, CheckCircle2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-
-function phaseIcon(group: PhaseGroup): 'done' | 'active' | 'pending' {
-  if (group.done === group.total) return 'done';
-  if (group.rows.some((r) => r.state === 'RUNNING' || r.state === 'WAITING_FOR_HUMAN')) {
-    return 'active';
-  }
-  return 'pending';
-}
 
 function aggregateStageStatus(rows: IntentStageRow[]): Record<string, StageState> {
   const byStage = new Map<string, StageState[]>();
@@ -63,10 +55,23 @@ function filterCompiledToScope(
 }
 
 export default function IntentObservabilityPage() {
-  const { projectId, intentId, detail, compiled, stageRows, loading, error } = useIntent();
+  const {
+    projectId,
+    intentId,
+    detail,
+    compiled,
+    stageRows,
+    loading,
+    error,
+    phaseNameOf,
+    initializationPhasePaths,
+  } = useIntent();
   const navigate = useNavigate();
 
-  const phases = useMemo(() => groupByPhase(stageRows), [stageRows]);
+  const phases = useMemo(
+    () => groupByPhase(stageRows).filter((g) => !initializationPhasePaths.has(g.phase)),
+    [stageRows, initializationPhasePaths],
+  );
 
   const stageStatus = useMemo(() => aggregateStageStatus(stageRows), [stageRows]);
 
@@ -140,7 +145,7 @@ export default function IntentObservabilityPage() {
             <CardContent className="py-4 px-5">
               <div className="flex items-stretch gap-3 overflow-x-auto">
                 {phases.map((group) => {
-                  const icon = phaseIcon(group);
+                  const icon = derivePhaseState(group);
                   const pct = group.total > 0 ? Math.round((group.done / group.total) * 100) : 0;
                   return (
                     <div
@@ -162,7 +167,9 @@ export default function IntentObservabilityPage() {
                         {icon === 'pending' && (
                           <span className="h-2 w-2 rounded-full bg-muted-foreground/40 shrink-0" />
                         )}
-                        <span className="text-xs font-medium truncate">{group.phase}</span>
+                        <span className="text-xs font-medium truncate">
+                          {phaseNameOf(group.phase)}
+                        </span>
                       </div>
                       <span className="text-[10px] text-muted-foreground">
                         {group.done}/{group.total} done

@@ -22,3 +22,16 @@ export function groupByPhase(rows: IntentStageRow[]): PhaseGroup[] {
   }
   return groups;
 }
+
+export type PhaseState = 'done' | 'active' | 'pending';
+
+export function derivePhaseState(group: PhaseGroup, currentPhase?: string | null): PhaseState {
+  if (group.done === group.total && group.total > 0) return 'done';
+  if (
+    group.rows.some((r) => r.state === 'RUNNING' || r.state === 'WAITING_FOR_HUMAN') ||
+    (currentPhase != null && group.phase === currentPhase)
+  ) {
+    return 'active';
+  }
+  return 'pending';
+}

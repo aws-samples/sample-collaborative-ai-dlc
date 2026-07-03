@@ -13,6 +13,7 @@ vi.mock('@/hooks/useIntentEvents', () => ({
 const get = vi.fn();
 const answerGate = vi.fn();
 const compiled = vi.fn();
+const workflowGet = vi.fn();
 const outputs = vi.fn();
 vi.mock('@/services/intents', () => ({
   intentsService: {
@@ -22,7 +23,10 @@ vi.mock('@/services/intents', () => ({
   },
 }));
 vi.mock('@/services/workflows', () => ({
-  workflowsService: { compiled: (...a: unknown[]) => compiled(...a) },
+  workflowsService: {
+    compiled: (...a: unknown[]) => compiled(...a),
+    get: (...a: unknown[]) => workflowGet(...a),
+  },
 }));
 
 import { IntentProvider, useIntent } from './IntentContext';
@@ -91,6 +95,7 @@ describe('IntentContext', () => {
     answerGate.mockReset();
     outputs.mockReset().mockResolvedValue({ outputs: [] });
     compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
+    workflowGet.mockReset().mockResolvedValue({ phases: [] });
   });
 
   it('stageRows: scope-filters the plan and appends live rows outside it', async () => {

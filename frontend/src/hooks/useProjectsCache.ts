@@ -1,6 +1,7 @@
 import { useEffect, useCallback, useSyncExternalStore } from 'react';
 import { projectsService, type Project } from '@/services/projects';
 import { sprintsService, type Sprint } from '@/services/sprints';
+import { intentsService, type Intent } from '@/services/intents';
 
 const PROJECTS_TTL = 120_000;
 const SPRINTS_TTL = 60_000;
@@ -8,6 +9,7 @@ const SPRINTS_TTL = 60_000;
 export interface ProjectWithSprint {
   project: Project;
   latestSprint: Sprint | null;
+  latestIntent: Intent | null;
 }
 
 interface CacheEntry<T> {
@@ -55,26 +57,42 @@ function latestOf(sprints: Sprint[]): Sprint | null {
   );
 }
 
+function pickIntent(intents: Intent[]): Intent | null {
+  if (intents.length === 0) return null;
+  const running = intents.find((i) => i.status === 'RUNNING');
+  if (running) return running;
+  const waiting = intents.find((i) => i.status === 'WAITING');
+  if (waiting) return waiting;
+  return intents.reduce((latest, i) => {
+    const lTime = latest.createdAt ? new Date(latest.createdAt).getTime() : 0;
+    const iTime = i.createdAt ? new Date(i.createdAt).getTime() : 0;
+    return iTime > lTime ? i : latest;
+  });
+}
+
 async function fetchProjects(): Promise<ProjectWithSprint[]> {
   const projs = await projectsService.list();
   const results = await Promise.allSettled(
     projs.map(async (project): Promise<ProjectWithSprint> => {
-      // v2 projects have intents, not sprints — there is no /sprints data to
-      // fetch, and consumers must not assume a latestSprint for them.
       if (project.kind === 'v2') {
-        return { project, latestSprint: null };
+        try {
+          const intents = await intentsService.list(project.id);
+          return { project, latestSprint: null, latestIntent: pickIntent(intents) };
+        } catch {
+          return { project, latestSprint: null, latestIntent: null };
+        }
       }
       const cached = sprintsCache.get(project.id);
       if (cached && !isStale(cached, SPRINTS_TTL)) {
-        return { project, latestSprint: latestOf(cached.data) };
+        return { project, latestSprint: latestOf(cached.data), latestIntent: null };
       }
       try {
         const sprints = await sprintsService.list(project.id);
         sprintsCache.set(project.id, { data: sprints, fetchedAt: Date.now() });
         notifySprintListeners(project.id);
-        return { project, latestSprint: latestOf(sprints) };
+        return { project, latestSprint: latestOf(sprints), latestIntent: null };
       } catch {
-        return { project, latestSprint: cached ? latestOf(cached.data) : null };
+        return { project, latestSprint: cached ? latestOf(cached.data) : null, latestIntent: null };
       }
     }),
   );

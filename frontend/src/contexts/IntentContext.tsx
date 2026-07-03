@@ -23,7 +23,7 @@ import {
   type IntentUnitPlan,
   type StageState,
 } from '@/services/intents';
-import { workflowsService, type CompiledWorkflow } from '@/services/workflows';
+import { workflowsService, type CompiledWorkflow, type PhaseNode } from '@/services/workflows';
 import { useIntentEvents, type IntentEvent } from '@/hooks/useIntentEvents';
 
 // Shared state for the v2 intent experience (the SprintContext analog). The
@@ -103,6 +103,11 @@ interface IntentContextValue {
   loading: boolean;
   error: string | null;
 
+  // Workflow phase metadata (from the full Workflow object, not compiled DTO).
+  workflowPhases: PhaseNode[] | null;
+  phaseNameOf: (phasePath: string) => string;
+  initializationPhasePaths: Set<string>;
+
   // Derived views
   stageRows: IntentStageRow[];
   stageEdges: StageEdge[];
@@ -166,6 +171,7 @@ export function IntentProvider({
 
   const [detail, setDetail] = useState<IntentDetail | null>(null);
   const [compiled, setCompiled] = useState<CompiledWorkflow | null>(null);
+  const [workflowPhases, setWorkflowPhases] = useState<PhaseNode[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -206,6 +212,12 @@ export function IntentProvider({
             if (activeIntentRef.current === intentId) setCompiled(c);
           })
           .catch(() => {});
+        workflowsService
+          .get(dto.intent.workflowId, dto.intent.workflowVersion ?? undefined)
+          .then((wf) => {
+            if (activeIntentRef.current === intentId) setWorkflowPhases(wf.phases);
+          })
+          .catch(() => {});
       }
     } catch (err) {
       if (activeIntentRef.current !== intentId) return;
@@ -222,6 +234,7 @@ export function IntentProvider({
     setOutputVersion(0);
     setDetail(null);
     setCompiled(null);
+    setWorkflowPhases(null);
     setLiveGates(new Map());
     setSelectedStageId(null);
     setAgentFocus(null);
@@ -583,6 +596,21 @@ export function IntentProvider({
     [detail],
   );
 
+  const initializationPhasePaths = useMemo<Set<string>>(() => {
+    if (!workflowPhases) return new Set();
+    return new Set(workflowPhases.filter((p) => p.phaseId === 'initialization').map((p) => p.path));
+  }, [workflowPhases]);
+
+  const phaseNameOf = useCallback(
+    (phasePath: string): string => {
+      if (!workflowPhases) return phasePath;
+      const node = workflowPhases.find((p) => p.path === phasePath);
+      if (!node) return phasePath;
+      return node.name.charAt(0).toUpperCase() + node.name.slice(1);
+    },
+    [workflowPhases],
+  );
+
   return (
     <IntentContext.Provider
       value={{
@@ -592,6 +620,9 @@ export function IntentProvider({
         compiled,
         loading,
         error,
+        workflowPhases,
+        phaseNameOf,
+        initializationPhasePaths,
         stageRows,
         stageEdges,
         gates,

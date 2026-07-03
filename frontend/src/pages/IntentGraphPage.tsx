@@ -3,13 +3,21 @@ import { KnowledgeGraph } from '@/components/intent/KnowledgeGraph';
 import { Skeleton } from '@/components/ui/skeleton';
 
 export default function IntentGraphPage() {
-  const { detail, loading } = useIntent();
+  const { detail, loading, error } = useIntent();
 
   if (loading && !detail) {
     return (
       <div className="mx-auto w-full max-w-[1600px] px-6 py-6 space-y-4">
         <Skeleton className="h-8 w-64" />
         <Skeleton className="h-[400px] rounded-lg" />
+      </div>
+    );
+  }
+
+  if (error || !detail) {
+    return (
+      <div className="mx-auto w-full max-w-[1600px] px-6 py-6 text-sm text-destructive">
+        {error ?? 'Intent not found'}
       </div>
     );
   }

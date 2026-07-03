@@ -6,31 +6,22 @@ import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useIntent } from '@/contexts/IntentContext';
-import { groupByPhase, type PhaseGroup } from '@/lib/intentPhases';
-
-type PhaseState = 'done' | 'active' | 'pending';
-
-function derivePhaseState(group: PhaseGroup, currentPhase: string | null): PhaseState {
-  if (group.done === group.total && group.total > 0) return 'done';
-  if (
-    group.rows.some((r) => r.state === 'RUNNING' || r.state === 'WAITING_FOR_HUMAN') ||
-    group.phase === currentPhase
-  ) {
-    return 'active';
-  }
-  return 'pending';
-}
+import { groupByPhase, derivePhaseState } from '@/lib/intentPhases';
 
 export function IntentPipelineBar() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { projectId, intentId, detail, stageRows, loading } = useIntent();
+  const { projectId, intentId, detail, stageRows, loading, phaseNameOf, initializationPhasePaths } =
+    useIntent();
 
-  const phases = useMemo(() => groupByPhase(stageRows), [stageRows]);
+  const phases = useMemo(
+    () => groupByPhase(stageRows).filter((g) => !initializationPhasePaths.has(g.phase)),
+    [stageRows, initializationPhasePaths],
+  );
 
-  const currentRoute: 'graph' | 'observability' | 'workbench' = location.pathname.includes('/graph')
+  const currentRoute: 'graph' | 'observability' | 'workbench' = location.pathname.endsWith('/graph')
     ? 'graph'
-    : location.pathname.includes('/observability')
+    : location.pathname.endsWith('/observability')
       ? 'observability'
       : 'workbench';
 
@@ -43,6 +34,7 @@ export function IntentPipelineBar() {
         variant="ghost"
         size="sm"
         className="shrink-0 gap-1.5 h-7 text-xs text-muted-foreground hover:text-foreground"
+        aria-label="Back to project"
         onClick={() => navigate(`/project/${projectId}`)}
       >
         <ArrowLeft className="h-3 w-3" />
@@ -77,7 +69,7 @@ export function IntentPipelineBar() {
                   ) : (
                     <span className="h-2 w-2 rounded-full bg-muted-foreground/40 shrink-0" />
                   )}
-                  <span>{group.phase}</span>
+                  <span>{phaseNameOf(group.phase)}</span>
                   <span className="hidden xl:inline text-[10px] text-muted-foreground font-normal">
                     {group.done}/{group.total}
                   </span>
@@ -106,11 +98,12 @@ export function IntentPipelineBar() {
             <Button
               variant={currentRoute === 'graph' ? 'secondary' : 'ghost'}
               size="sm"
-              className="h-7 w-7 p-0"
+              className="h-7 gap-1.5 px-2 text-xs"
               aria-label="Knowledge graph"
               onClick={() => navigate(`/project/${projectId}/intent/${intentId}/graph`)}
             >
               <Network className="h-3.5 w-3.5" />
+              Graph
             </Button>
           </TooltipTrigger>
           <TooltipContent>Knowledge graph</TooltipContent>
@@ -121,11 +114,12 @@ export function IntentPipelineBar() {
             <Button
               variant={currentRoute === 'observability' ? 'secondary' : 'ghost'}
               size="sm"
-              className="h-7 w-7 p-0"
+              className="h-7 gap-1.5 px-2 text-xs"
               aria-label="Observability"
               onClick={() => navigate(`/project/${projectId}/intent/${intentId}/observability`)}
             >
               <Activity className="h-3.5 w-3.5" />
+              Observability
             </Button>
           </TooltipTrigger>
           <TooltipContent>Observability</TooltipContent>
