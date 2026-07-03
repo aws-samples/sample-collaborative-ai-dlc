@@ -28,7 +28,7 @@ const git = (args, cwd) => runGit(args, { cwd });
 const initRemoteAndClone = async ({ withInitialCommit = true } = {}) => {
   const remote = path.join(root, 'remote.git');
   const work = path.join(root, 'work');
-  await git(['init', '--bare', remote], root);
+  await git(['init', '--bare', '-b', 'main', remote], root);
   if (withInitialCommit) {
     const seed = path.join(root, 'seed');
     await git(['init', '-b', 'main', seed], root);
@@ -373,7 +373,7 @@ describe('commitAndPushAll — the stage-exit hook', () => {
     // repo A under <ws>/o/a (healthy), repo B under <ws>/o/b (push fails).
     const ws = path.join(root, 'ws');
     const remoteA = path.join(root, 'a.git');
-    await git(['init', '--bare', remoteA], root);
+    await git(['init', '--bare', '-b', 'main', remoteA], root);
     for (const sub of ['o/a', 'o/b']) {
       const dir = path.join(ws, sub);
       await git(['init', '-b', 'main', dir], root);

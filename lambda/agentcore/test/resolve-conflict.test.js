@@ -30,7 +30,7 @@ const commitOnRemote = async (remote, branch, file, content) => {
 // plus the LANE workspace checked out on the unit branch.
 const conflictWorld = async () => {
   const remote = path.join(root, 'remote.git');
-  await git(['init', '--bare', remote], root);
+  await git(['init', '--bare', '-b', 'main', remote], root);
   const seed = path.join(root, 'seed');
   await git(['init', '-b', 'main', seed], root);
   await writeFile(path.join(seed, 'README.md'), 'seed\n');
@@ -191,7 +191,7 @@ describe('resolveConflict', () => {
 
   it('a clean reverse merge needs NO agent: concludes + pushes without spawning', async () => {
     const remote = path.join(root, 'remote.git');
-    await git(['init', '--bare', remote], root);
+    await git(['init', '--bare', '-b', 'main', remote], root);
     const seed = path.join(root, 'seed');
     await git(['init', '-b', 'main', seed], root);
     await writeFile(path.join(seed, 'README.md'), 'seed\n');

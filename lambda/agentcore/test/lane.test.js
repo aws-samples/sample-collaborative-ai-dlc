@@ -18,7 +18,7 @@ const git = (args, cwd) => runGit(args, { cwd });
 // Bare remote seeded with main + an intent branch carrying work.
 const initRemote = async () => {
   const remote = path.join(root, 'remote.git');
-  await git(['init', '--bare', remote], root);
+  await git(['init', '--bare', '-b', 'main', remote], root);
   const seed = path.join(root, 'seed');
   await git(['init', '-b', 'main', seed], root);
   await writeFile(path.join(seed, 'README.md'), 'seed\n');
