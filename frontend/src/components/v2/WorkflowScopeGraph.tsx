@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import type { CompiledWorkflow } from '@/services/workflows';
+import type { StageState } from '@/services/intents';
 import {
   computeLayout,
   cubicEdgePath,
@@ -13,6 +14,23 @@ import {
 } from './scope-graph-utils';
 import { Button } from '@/components/ui/button';
 
+const STATUS_NODE_STYLE: Record<
+  StageState,
+  { fill: string; textFill: string; stroke?: string; strokeDash?: string; pulse?: boolean }
+> = {
+  SUCCEEDED: { fill: 'var(--agent-success)', textFill: '#ffffff' },
+  FAILED: { fill: 'var(--agent-error)', textFill: '#ffffff' },
+  RUNNING: { fill: 'var(--agent-running)', textFill: '#ffffff', pulse: true },
+  WAITING_FOR_HUMAN: { fill: 'var(--agent-waiting)', textFill: '#1c1917' },
+  PENDING: { fill: 'var(--muted)', textFill: 'var(--muted-foreground)' },
+  SKIPPED: {
+    fill: 'var(--muted)',
+    textFill: 'var(--muted-foreground)',
+    stroke: 'var(--muted-foreground)',
+    strokeDash: '4 3',
+  },
+};
+
 export interface WorkflowScopeGraphProps {
   compiled: CompiledWorkflow;
   scopes?: string[];
@@ -25,6 +43,7 @@ export interface WorkflowScopeGraphProps {
   scopeDescriptions?: Record<string, string>;
   readOnly?: boolean;
   onToggleScope?: (stageId: string, scopeId: string, next: 'EXECUTE' | 'SKIP') => void;
+  stageStatus?: Record<string, StageState>;
 }
 
 const EDGE_STYLES: Record<
@@ -102,6 +121,7 @@ export function WorkflowScopeGraph({
   scopeDescriptions: scopeDescProp,
   readOnly,
   onToggleScope,
+  stageStatus,
 }: WorkflowScopeGraphProps) {
   const graphNodeIds = useMemo(
     () => new Set(compiled.graph.nodes.map((n) => n.stageId)),
@@ -241,8 +261,21 @@ export function WorkflowScopeGraph({
             const pos = layout.positions.get(node.stageId);
             if (!pos) return null;
             const inScope = executeSet.has(node.stageId);
-            const fill = inScope ? (colorByPath[pos.phasePath] ?? '#94a3b8') : '#cbd5e1';
-            const textFill = inScope ? '#ffffff' : '#475569';
+            const statusEntry = stageStatus?.[node.stageId];
+            const statusStyle = statusEntry ? STATUS_NODE_STYLE[statusEntry] : undefined;
+            const fill = statusStyle
+              ? statusStyle.fill
+              : inScope
+                ? (colorByPath[pos.phasePath] ?? '#94a3b8')
+                : '#cbd5e1';
+            const textFill = statusStyle ? statusStyle.textFill : inScope ? '#ffffff' : '#475569';
+            const nodeOpacity = statusStyle
+              ? statusEntry === 'SKIPPED'
+                ? 0.55
+                : 1
+              : inScope
+                ? 1
+                : 0.6;
             const stageInfo = meta[node.stageId];
             const displayNum = stageInfo?.number ?? '';
             const displayName = truncateName(stageInfo?.name ?? node.stageId, 30);
@@ -250,15 +283,18 @@ export function WorkflowScopeGraph({
               <g
                 key={node.stageId}
                 transform={`translate(${pos.x},${pos.y})`}
-                opacity={inScope ? 1 : 0.6}
+                opacity={nodeOpacity}
+                className={statusStyle?.pulse ? 'animate-pulse-subtle' : undefined}
+                data-stage-status={statusEntry ?? undefined}
               >
                 <rect
                   width={NODE_W}
                   height={NODE_H}
                   rx={6}
                   fill={fill}
-                  stroke="none"
-                  strokeWidth={0}
+                  stroke={statusStyle?.stroke ?? 'none'}
+                  strokeWidth={statusStyle?.stroke ? 1.5 : 0}
+                  strokeDasharray={statusStyle?.strokeDash ?? undefined}
                 />
                 <text
                   x={10}
