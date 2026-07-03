@@ -128,6 +128,41 @@ describe('github provider — repo browse + PR + comments', () => {
     expect(out.unmergedBranches).toEqual(['feat--task-1']);
   });
 
+  it('createPullRequest retargets the repo default branch on a base-invalid 422', async () => {
+    // Repo has no `main` (default is `master`); the first POST 422s on base,
+    // no existing PR is found, and the retry against the resolved default wins.
+    let posts = 0;
+    const fetchImpl = makeFetch([
+      ['/git/matching-refs/', { json: [] }],
+      // Bare repo GET — must be listed before /pulls so the substring match is
+      // unambiguous (this URL does not contain `/pulls`).
+      [
+        '/repos/o/r/pulls',
+        (url, opts) => {
+          if (opts.method !== 'POST') return { json: [] }; // findPRByBranch → none
+          posts += 1;
+          return posts === 1
+            ? {
+                status: 422,
+                text: JSON.stringify({
+                  errors: [{ resource: 'PullRequest', field: 'base', code: 'invalid' }],
+                }),
+              }
+            : { status: 201, json: { html_url: 'https://gh/pr/9', number: 9 } };
+        },
+      ],
+      ['/repos/o/r', { json: { default_branch: 'master' } }],
+    ]);
+    const out = await gh.createPullRequest({ token: 't', fetchImpl }, 'o/r', {
+      branch: 'feat',
+      baseBranch: 'main',
+      title: 'T',
+      body: 'B',
+    });
+    expect(out).toEqual({ prUrl: 'https://gh/pr/9', prNumber: 9, retargetedBase: 'master' });
+    expect(posts).toBe(2);
+  });
+
   it('getPullRequestState classifies merged vs closed vs open', async () => {
     const open = makeFetch([['/pulls/1', { json: { state: 'open' } }]]);
     const merged = makeFetch([['/pulls/2', { json: { state: 'closed', merged_at: 'x' } }]]);

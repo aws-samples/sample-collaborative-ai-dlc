@@ -198,6 +198,18 @@ const listBranches = async (ctx, repoId) => {
   return data.map((b) => b.name);
 };
 
+// The project's real default branch. Needed because init-ws `git clone` checks
+// out the repo's actual default HEAD regardless of the intent's configured
+// `baseBranch`, so a project whose default is not `main` still clones — but an
+// MR targeting `main` then fails. Returns null if the project can't be read.
+const getDefaultBranch = async (ctx, repoId) => {
+  const project = encodeProject(repoId);
+  const res = await glFetch(ctx, `${API_BASE}/projects/${project}`);
+  if (!res.ok) return null;
+  const data = await res.json();
+  return data?.default_branch ?? null;
+};
+
 const getTree = async (ctx, repoId, branch = 'main') => {
   const project = encodeProject(repoId);
   const res = await glFetch(
@@ -493,18 +505,21 @@ const createPullRequest = async (ctx, repoId, { branch, baseBranch, title, body 
     return { prUrl: existing.web_url, prNumber: existing.iid, existing: true };
   }
 
-  const res = await glFetch(ctx, `${API_BASE}/projects/${project}/merge_requests`, {
-    method: 'POST',
-    body: JSON.stringify({
-      title,
-      description: body,
-      source_branch: branch,
-      target_branch: baseBranch || 'main',
-    }),
-  });
+  const postMr = (target) =>
+    glFetch(ctx, `${API_BASE}/projects/${project}/merge_requests`, {
+      method: 'POST',
+      body: JSON.stringify({
+        title,
+        description: body,
+        source_branch: branch,
+        target_branch: target,
+      }),
+    });
+
+  let res = await postMr(baseBranch || 'main');
 
   if (!res.ok) {
-    const errorText = await res.text();
+    let errorText = await res.text();
     if (res.status === 409) {
       if (errorText.toLowerCase().includes('already exists')) {
         const any = await findAnyMR(ctx, project, branch);
@@ -512,7 +527,7 @@ const createPullRequest = async (ctx, repoId, { branch, baseBranch, title, body 
       }
       return { skipped: true, reason: 'no_changes' };
     }
-    if (res.status === 422) {
+    if (res.status === 422 || res.status === 400) {
       const text = (errorText || '').toLowerCase();
       if (
         text.includes('source branch') ||
@@ -520,6 +535,25 @@ const createPullRequest = async (ctx, repoId, { branch, baseBranch, title, body 
         text.includes('does not exist')
       ) {
         return { skipped: true, reason: 'no_changes' };
+      }
+      // Target branch does not exist (project default is not `main`). Retry once
+      // against the project's real default branch — the source branch was cut
+      // from that HEAD at clone time, so it is the correct merge target.
+      if (text.includes('target branch')) {
+        const defaultBranch = await getDefaultBranch(ctx, repoId);
+        if (defaultBranch && defaultBranch !== (baseBranch || 'main')) {
+          res = await postMr(defaultBranch);
+          if (res.ok) {
+            await cleanupConstructionTaskBranches(ctx, repoId, branch);
+            const mr = await res.json();
+            return {
+              prUrl: mr.web_url,
+              prNumber: mr.iid,
+              retargetedBase: defaultBranch,
+            };
+          }
+          errorText = await res.text();
+        }
       }
     }
     throw new Error(`Failed to create MR: ${res.status} ${errorText}`);
@@ -595,6 +629,7 @@ module.exports = {
   mapRepo,
   listRepos,
   listBranches,
+  getDefaultBranch,
   getTree,
   getFileContents,
   listPRComments,

@@ -51,6 +51,16 @@ you. Read this section before the stage prose and let it govern.
 | A `<runtime-managed>` path (or any harness/tooling directory)                                                                                         | A runtime-managed location you cannot access. Ignore it unless the reference maps to a row above.                                                                                                                                                                                                                                                                                                                                                                                   |
 | "Follow `stage-protocol.md` / `conductor.md`" for mechanics                                                                                           | Superseded by this section. Follow them only for work quality (questioning rigor, depth, persona).                                                                                                                                                                                                                                                                                                                                                                                  |
 
+**Cite the upstream artifacts you build on — by their exact slug.** Every
+artifact you consume as input has a stable kebab-case slug (its `artifactType`,
+e.g. `business-overview`, `code-structure`, `code-generation-plan`). When your
+output relies on one of those inputs, reference it by that literal slug —
+either inline (`… per the business-overview …`) or as a `[[business-overview]]`
+wikilink. A deterministic sensor checks that each consumed artifact's slug
+actually appears in your output prose; writing only the human title ("Business
+Overview") does NOT satisfy it. This keeps the artifact graph traceable — do it
+for each input the stage declares as `consumes:`.
+
 Use `emit_stage_note` for a short progress/audit note and `collect_metric` to
 report token/context usage when you finish.
 

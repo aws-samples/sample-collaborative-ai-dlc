@@ -121,6 +121,19 @@ const listBranches = async (ctx, repoId) => {
   return data.map((b) => b.name);
 };
 
+// The repo's real default branch (`main`, `master`, or whatever HEAD points at).
+// Needed because init-ws `git clone` checks out the repo's actual default HEAD
+// regardless of the intent's configured `baseBranch`, so a repo without a `main`
+// branch still clones fine — but a PR targeting `base: 'main'` then 422s. Returns
+// null if the repo can't be read (caller falls back to its configured base).
+const getDefaultBranch = async (ctx, repoId) => {
+  const { owner, repo } = splitOwnerRepo(repoId);
+  const res = await ghFetch(ctx, `${API_BASE}/repos/${owner}/${repo}`);
+  if (!res.ok) return null;
+  const data = await res.json();
+  return data?.default_branch ?? null;
+};
+
 const getTree = async (ctx, repoId, branch = 'main') => {
   const { owner, repo } = splitOwnerRepo(repoId);
   const res = await ghFetch(
@@ -352,6 +365,20 @@ const isNoChanges422 = (errorText) => {
   }
 };
 
+// A 422 with `field: base, code: invalid` means the base branch we asked to
+// merge into does not exist in the repo (e.g. the repo's default is `master`, or
+// some `ai-dlc/...` scaffold branch, and we defaulted to `main`). Distinct from
+// the benign no-changes 422 — this one is recoverable by retargeting the PR at
+// the repo's real default branch.
+const isBaseInvalid422 = (errorText) => {
+  try {
+    const errors = Array.isArray(JSON.parse(errorText)?.errors) ? JSON.parse(errorText).errors : [];
+    return errors.some((e) => e?.field === 'base' && e?.code === 'invalid');
+  } catch {
+    return false;
+  }
+};
+
 // Find an existing PR for a branch. Tries the owner-qualified head filter first,
 // then falls back to listing PRs and matching on head.ref (fork/org mismatch).
 const findPRByBranch = async (ctx, repoId, branch, state) => {
@@ -391,14 +418,17 @@ const createPullRequest = async (ctx, repoId, { branch, baseBranch, title, body 
     };
   }
 
-  const res = await ghFetch(ctx, `${API_BASE}/repos/${owner}/${repo}/pulls`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title, body, head: branch, base: baseBranch || 'main' }),
-  });
+  const postPr = (base) =>
+    ghFetch(ctx, `${API_BASE}/repos/${owner}/${repo}/pulls`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, body, head: branch, base }),
+    });
+
+  let res = await postPr(baseBranch || 'main');
 
   if (!res.ok) {
-    const errorText = await res.text();
+    let errorText = await res.text();
     if (res.status === 422) {
       const openPr = await findPRByBranch(ctx, repoId, branch, 'open');
       if (openPr) {
@@ -412,6 +442,22 @@ const createPullRequest = async (ctx, repoId, { branch, baseBranch, title, body 
       }
       if (isNoChanges422(errorText)) {
         return { skipped: true, reason: 'no_changes' };
+      }
+      // The base branch we asked for does not exist (repo default is not `main`).
+      // Resolve the repo's real default branch and retry once against it — the
+      // intent branch was cut from that HEAD at clone time, so it is the correct
+      // merge target.
+      if (isBaseInvalid422(errorText)) {
+        const defaultBranch = await getDefaultBranch(ctx, repoId);
+        if (defaultBranch && defaultBranch !== (baseBranch || 'main')) {
+          res = await postPr(defaultBranch);
+          if (res.ok) {
+            const pr = await res.json();
+            await cleanupConstructionTaskBranches(ctx, repoId, branch);
+            return { prUrl: pr.html_url, prNumber: pr.number, retargetedBase: defaultBranch };
+          }
+          errorText = await res.text();
+        }
       }
     }
     throw new Error(`Failed to create PR: ${res.status} ${errorText}`); // nosemgrep: tainted-sql-string
@@ -470,6 +516,7 @@ module.exports = {
   mapRepo,
   listRepos,
   listBranches,
+  getDefaultBranch,
   getTree,
   getFileContents,
   listPRComments,
