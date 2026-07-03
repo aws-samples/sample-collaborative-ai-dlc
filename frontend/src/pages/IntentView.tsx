@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   intentsService,
@@ -8,7 +8,7 @@ import {
   type IntentGate,
   type IntentSteering,
 } from '@/services/intents';
-import { useIntent } from '@/contexts/IntentContext';
+import { INTENT_OUTPUT_KEY, useIntent } from '@/contexts/IntentContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProjectCache } from '@/hooks/useProjectsCache';
 import QuestionEditor from '@/components/QuestionEditor';
@@ -16,6 +16,7 @@ import type { Question } from '@/services/questions';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { ArtifactViewer } from '@/components/intent/ArtifactViewer';
 import { artifactAccent } from '@/components/intent/artifactAccent';
+import { formatDuration, useTick } from '@/components/intent/stageStyle';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -178,12 +179,6 @@ export default function IntentView() {
       {/* Header */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-3 min-w-0">
-          <button
-            onClick={() => navigate(`/project/${projectId}`)}
-            className="text-sm text-muted-foreground hover:text-foreground"
-          >
-            ← Project
-          </button>
           <h1 className="text-lg font-bold tracking-tight truncate">{intent.title || 'Intent'}</h1>
           <Badge variant="outline" className="text-[10px]">
             {intent.status}
@@ -381,6 +376,8 @@ export default function IntentView() {
             </div>
           )}
 
+          {pendingGates.length === 0 && !noStageRowsYet && isActive && <AgentProgressCard />}
+
           {/* Workspace setup indicator — init-ws creates no stage row, so without
               this the screen looks idle while repos clone + the anchor is created. */}
           {noStageRowsYet && isActive && (
@@ -420,6 +417,101 @@ export default function IntentView() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Live progress card — calm "agent working" presence while running with no
+// pending questions. Replaces itself when questions arrive (mutually exclusive).
+// ---------------------------------------------------------------------------
+
+function AgentProgressCard() {
+  const {
+    detail,
+    stageRows,
+    stageNameOf,
+    phaseNameOf,
+    outputBuffers,
+    outputVersion,
+    ensureOutputs,
+    focusOutput,
+  } = useIntent();
+  const intent = detail?.intent;
+  const isRunning = intent?.status === 'RUNNING';
+  const isWaiting = intent?.status === 'WAITING';
+
+  const runningRow = stageRows.findLast((s) => s.state === 'RUNNING' && s.stageInstanceId);
+  const bufferKey = runningRow?.stageInstanceId ?? INTENT_OUTPUT_KEY;
+
+  useTick(isRunning ?? false);
+
+  useEffect(() => {
+    if (isRunning) ensureOutputs(bufferKey);
+  }, [isRunning, bufferKey, ensureOutputs]);
+
+  void outputVersion;
+
+  const content = outputBuffers.get(bufferKey) ?? '';
+  const lastLines = content
+    .trim()
+    .split('\n')
+    .filter((l) => l.trim())
+    .slice(-2)
+    .join('\n');
+
+  const elapsed = runningRow?.startedAt ? formatDuration(runningRow.startedAt) : null;
+  const stageName = runningRow?.stageInstanceId ? stageNameOf(runningRow.stageInstanceId) : null;
+  const phaseName = runningRow?.phase ? phaseNameOf(runningRow.phase) : null;
+
+  if (isWaiting) {
+    return (
+      <div className="rounded-lg border border-agent-waiting/30 bg-agent-waiting/[0.05] px-4 py-3">
+        <div className="flex items-center gap-2">
+          <span className="h-2 w-2 rounded-full bg-agent-waiting animate-pulse-subtle" />
+          <span className="text-sm font-medium text-agent-waiting">Waiting</span>
+          {stageName && <span className="text-xs text-muted-foreground">{stageName}</span>}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative overflow-hidden rounded-lg border border-agent-running/30 bg-agent-running/[0.04]">
+      <div className="absolute inset-x-0 top-0 h-0.5 overflow-hidden">
+        <div className="h-full w-1/2 bg-gradient-to-r from-transparent via-agent-running/60 to-transparent animate-shimmer" />
+      </div>
+      <div className="flex items-start gap-3 border-l-2 border-agent-running px-4 py-3">
+        <span className="relative mt-1 flex h-2 w-2 shrink-0">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-agent-running opacity-75" />
+          <span className="relative inline-flex h-2 w-2 rounded-full bg-agent-running" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-medium">Agent working</span>
+            {stageName && <span className="text-xs text-muted-foreground">{stageName}</span>}
+            {phaseName && (
+              <Badge variant="outline" className="h-4 text-[10px]">
+                {phaseName}
+              </Badge>
+            )}
+            {elapsed && <span className="text-xs text-muted-foreground/70">{elapsed}</span>}
+          </div>
+          {lastLines && (
+            <pre className="mt-2 line-clamp-2 whitespace-pre-wrap break-words font-mono text-[11px] text-muted-foreground">
+              {lastLines}
+            </pre>
+          )}
+        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 shrink-0 text-xs"
+          onClick={() => focusOutput(runningRow?.stageInstanceId ?? null)}
+        >
+          View live output
+        </Button>
+      </div>
     </div>
   );
 }
@@ -560,6 +652,12 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
                         {getTimeAgo(a.createdAt)}
                       </span>
                     )}
+                    <DiscussButton
+                      entityType="artifact"
+                      entityId={a.id}
+                      entityTitle={a.title || a.id}
+                      className="opacity-0 group-hover/doc:opacity-100 transition-opacity"
+                    />
                     <ChevronRight
                       aria-hidden="true"
                       className="h-3 w-3 shrink-0 text-muted-foreground/40 opacity-0 group-hover/doc:opacity-100 transition-opacity"

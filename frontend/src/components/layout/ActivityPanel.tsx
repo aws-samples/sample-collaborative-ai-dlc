@@ -243,7 +243,7 @@ export function ActivityPanel({ sprintId, onClose }: ActivityPanelProps) {
   }, [sprintId]);
 
   return (
-    <div className="flex h-full w-full flex-col bg-background border-l">
+    <div className="flex h-full w-full flex-col bg-muted/30 border-l">
       {/* Header */}
       <div className="flex h-10 items-center justify-between px-3 border-b shrink-0">
         <Tabs value={activeTab} onValueChange={setActiveTab}>

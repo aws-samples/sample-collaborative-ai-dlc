@@ -1,10 +1,13 @@
+import { useMemo } from 'react';
 import { useObservabilityContext } from './ObservabilityLayout';
-import { effectiveSprintStatus } from '@/lib/sprintStatus';
+import { effectiveSprintStatus, effectiveIntentStatus } from '@/lib/sprintStatus';
+import { useProjectsCache } from '@/hooks/useProjectsCache';
 import {
   AgentStatusCards,
   ActivityFeed,
   StuckAlert,
   BusinessView,
+  IntentStatusCards,
 } from '@/components/observability';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -46,10 +49,28 @@ export default function ObservabilityDashboard() {
     selectSprint,
   } = useObservabilityContext();
 
-  const activeCount = filtered.filter((p) => {
+  const { projects: cachedProjects } = useProjectsCache();
+
+  const v2Items = useMemo(
+    () => cachedProjects.filter((p) => p.project.kind === 'v2' && p.latestIntent),
+    [cachedProjects],
+  );
+
+  const v2ActiveCount = useMemo(
+    () =>
+      v2Items.filter((p) => {
+        const s = effectiveIntentStatus(p.latestIntent);
+        return s === 'running' || s === 'waiting';
+      }).length,
+    [v2Items],
+  );
+
+  const v1ActiveCount = filtered.filter((p) => {
     const s = effectiveSprintStatus(p.sprint);
     return s === 'running' || s === 'waiting';
   }).length;
+
+  const activeCount = v1ActiveCount + v2ActiveCount;
 
   const projectNames = Object.fromEntries(
     filtered.filter((p) => p.sprint).map((p) => [p.sprint!.id, p.project.name]),
@@ -131,6 +152,8 @@ export default function ObservabilityDashboard() {
             velocityMap={velocityMap}
             onSelectSprint={selectSprint}
           />
+
+          <IntentStatusCards items={v2Items} />
         </>
       )}
     </div>

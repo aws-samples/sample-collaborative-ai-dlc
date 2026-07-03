@@ -31,7 +31,7 @@ const FOLLOW_KEY = 'auto';
 
 export function IntentActivityPanel({ onClose }: { onClose: () => void }) {
   const { detail, stageRows, agentFocus, previewSeq } = useIntent();
-  const [activeTab, setActiveTab] = useState('agent');
+  const [activeTab, setActiveTab] = useState('timeline');
   const discussionsCtx = useDiscussions();
   const totalUnread = (discussionsCtx?.discussions ?? []).reduce(
     (sum, d) => sum + (d.unreadCount ?? 0),
@@ -68,7 +68,7 @@ export function IntentActivityPanel({ onClose }: { onClose: () => void }) {
   const events = detail?.events ?? [];
 
   return (
-    <div className="flex h-full w-full flex-col bg-background border-l">
+    <div className="flex h-full w-full flex-col bg-muted/30 border-l">
       {/* Header */}
       <div className="flex h-10 items-center justify-between px-3 border-b shrink-0">
         <Tabs value={activeTab} onValueChange={setActiveTab}>
@@ -402,6 +402,7 @@ function IntentTimelineItem({ event }: { event: IntentActivityEvent }) {
 
 function PreviewTab() {
   const { detail, previewArtifactId } = useIntent();
+  const discussions = useDiscussions();
   const artifact = detail?.artifacts.find((a) => a.id === previewArtifactId) ?? null;
 
   if (!artifact) {
@@ -428,7 +429,25 @@ function PreviewTab() {
             </span>
           )}
         </div>
-        <h3 className="text-sm font-semibold mb-3">{artifact.title || artifact.id}</h3>
+        <div className="flex items-center gap-2 mb-3">
+          <h3 className="text-sm font-semibold min-w-0 flex-1">{artifact.title || artifact.id}</h3>
+          {discussions && (
+            <Button
+              variant="ghost"
+              className="h-7 px-2 gap-1.5 shrink-0 text-xs"
+              onClick={() =>
+                discussions.openDiscussion({
+                  entityType: 'artifact',
+                  entityId: artifact.id,
+                  entityTitle: artifact.title || artifact.id,
+                })
+              }
+            >
+              <MessageSquare className="h-3 w-3" />
+              Discuss
+            </Button>
+          )}
+        </div>
         {artifact.content && (
           <div className="prose prose-sm dark:prose-invert max-w-none">
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{artifact.content}</ReactMarkdown>

@@ -8,4 +8,5 @@ export { StuckAlert } from './StuckAlert';
 export { BusinessView } from './BusinessView';
 export { AgentTeamSummary } from './AgentTeamSummary';
 export { AgentStatusCards } from './AgentStatusCards';
+export { IntentStatusCards } from './IntentStatusCards';
 export { IterationDetailView } from './IterationDetailView';
