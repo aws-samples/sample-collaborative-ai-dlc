@@ -16,6 +16,10 @@ const badgeVariants = cva(
         inception: 'border-transparent bg-phase-inception text-phase-inception-foreground',
         construction: 'border-transparent bg-phase-construction text-phase-construction-foreground',
         review: 'border-transparent bg-phase-review text-phase-review-foreground',
+        initialization:
+          'border-transparent bg-phase-initialization text-phase-initialization-foreground',
+        ideation: 'border-transparent bg-phase-ideation text-phase-ideation-foreground',
+        operation: 'border-transparent bg-phase-operation text-phase-operation-foreground',
         warning: 'border-transparent bg-yellow-500 text-white shadow hover:bg-yellow-600',
       },
     },
