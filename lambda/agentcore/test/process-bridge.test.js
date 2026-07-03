@@ -33,6 +33,9 @@ const fakeStore = () => {
     async updateStageState(patch) {
       this.stagePatches.push(patch);
     },
+    async resumeStageRow(patch) {
+      this.stagePatches.push({ ...patch, state: 'RUNNING', resumed: true });
+    },
     async appendEvent(e) {
       const row = { ...e, eventId: `e${events.length + 1}` };
       events.push(row);

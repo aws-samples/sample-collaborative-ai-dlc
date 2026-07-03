@@ -744,6 +744,11 @@ const runStage = async (
     invokeRuntime(
       {
         command: 'run-stage-start',
+        // Launch-latency anchor (cold start metric): stamped at dispatch,
+        // INSIDE the step so a memoized replay never re-stamps it. The
+        // container computes agentLaunchMs = accept − dispatchedAt, covering
+        // the InvokeAgentRuntime hop + any microVM cold start.
+        dispatchedAt: nowIso(),
         ...ids,
         stageId: stage.stageId,
         // Unit lane (WP4): run-stage derives the per-unit instance id, stamps

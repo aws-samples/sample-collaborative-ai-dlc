@@ -223,12 +223,15 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   // Patch a stage's state + terminal fields, re-stamping GSI2. `cli`/`cliSessionId`
   // are set only when supplied (a Kiro session id is captured post-exit, so the
   // terminal/park write back-fills it; an undefined value leaves the field intact).
+  // `parkedAt: true` stamps the park moment (WAITING_FOR_HUMAN) for human-wait
+  // accounting — resumeStageRow folds it into waitMs and clears it.
   const updateStageState = async ({
     executionId,
     stageInstanceId,
     state,
     runtimeError = null,
     completedAt = null,
+    parkedAt,
     cli,
     cliSessionId,
     resolvedModel,
@@ -246,6 +249,10 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       sets.push('completedAt = :ca');
       values[':ca'] = completedAt === true ? ts : completedAt;
     }
+    if (parkedAt !== undefined) {
+      sets.push('parkedAt = :pa');
+      values[':pa'] = parkedAt === true ? ts : parkedAt;
+    }
     if (cli !== undefined) {
       sets.push('cli = :cli');
       values[':cli'] = cli;
@@ -257,6 +264,80 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     if (resolvedModel !== undefined) {
       sets.push('resolvedModel = :rm');
       values[':rm'] = resolvedModel;
+    }
+    const { Attributes } = await ddb.send(
+      new UpdateCommand({
+        TableName: table(),
+        Key: stageKey(executionId, stageInstanceId),
+        UpdateExpression: `SET ${sets.join(', ')}`,
+        ExpressionAttributeNames: { '#state': 'state' },
+        ExpressionAttributeValues: values,
+        ReturnValues: 'ALL_NEW',
+      }),
+    );
+    return Attributes;
+  };
+
+  // Flip a parked stage (WAITING_FOR_HUMAN) back to RUNNING on resume WITHOUT
+  // rebuilding the row: startedAt and attempt are preserved (the wall-clock
+  // duration spans the whole stage including waits), the open park window
+  // (now − parkedAt) is folded into the waitMs accumulator and parkedAt is
+  // cleared. The conversation handle + callback id are refreshed for the new
+  // container leg. Contrast putStage, which is a full-row replace for FRESH
+  // runs only — using it on a resume was the "duration resets on answer" bug.
+  const resumeStageRow = async ({
+    executionId,
+    stageInstanceId,
+    cli,
+    cliSessionId,
+    resolvedModel,
+    stageCallbackId,
+  }) => {
+    const existing = await getStage(executionId, stageInstanceId);
+    const ts = now();
+    // Fold the open park window into the accumulator. Guarded parses: an
+    // unparsable timestamp contributes 0 rather than poisoning waitMs with NaN.
+    const parsedNow = Date.parse(ts);
+    const parsedParked = existing?.parkedAt ? Date.parse(existing.parkedAt) : NaN;
+    const parkedMs =
+      Number.isFinite(parsedNow) && Number.isFinite(parsedParked)
+        ? Math.max(0, parsedNow - parsedParked)
+        : 0;
+    const sets = [
+      '#state = :state',
+      'updatedAt = :ts',
+      'GSI2SK = :g2sk',
+      'runtimeError = :null',
+      'parkedAt = :null',
+      'waitMs = :wait',
+    ];
+    const values = {
+      ':state': 'RUNNING',
+      ':ts': ts,
+      ':g2sk': executionTypeStateIndex({
+        executionId,
+        type: 'STAGE',
+        state: 'RUNNING',
+        id: stageInstanceId,
+      }).GSI2SK,
+      ':null': null,
+      ':wait': (Number.isFinite(Number(existing?.waitMs)) ? Number(existing.waitMs) : 0) + parkedMs,
+    };
+    if (cli !== undefined) {
+      sets.push('cli = :cli');
+      values[':cli'] = cli;
+    }
+    if (cliSessionId !== undefined) {
+      sets.push('cliSessionId = :csid');
+      values[':csid'] = cliSessionId;
+    }
+    if (resolvedModel !== undefined) {
+      sets.push('resolvedModel = :rm');
+      values[':rm'] = resolvedModel;
+    }
+    if (stageCallbackId !== undefined) {
+      sets.push('stageCallbackId = :scb');
+      values[':scb'] = stageCallbackId;
     }
     const { Attributes } = await ddb.send(
       new UpdateCommand({
@@ -610,12 +691,14 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
         Key: stageKey(executionId, stageInstanceId),
         UpdateExpression:
           'SET #state = :state, attempt = :attempt, cli = :null, cliSessionId = :null, ' +
-          'runtimeError = :null, startedAt = :null, completedAt = :null, updatedAt = :ts, GSI2SK = :g2sk',
+          'runtimeError = :null, startedAt = :null, completedAt = :null, ' +
+          'parkedAt = :null, waitMs = :zero, updatedAt = :ts, GSI2SK = :g2sk',
         ExpressionAttributeNames: { '#state': 'state' },
         ExpressionAttributeValues: {
           ':state': 'PENDING',
           ':attempt': Number(existing.attempt ?? 0) + 1,
           ':null': null,
+          ':zero': 0,
           ':ts': ts,
           ':g2sk': executionTypeStateIndex({
             executionId,
@@ -1054,6 +1137,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     putStage,
     getStage,
     updateStageState,
+    resumeStageRow,
     appendEvent,
     createHumanTask,
     getHumanTask,

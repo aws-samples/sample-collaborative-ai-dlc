@@ -294,6 +294,13 @@ const buildStageRow = ({
   runtimeError: null,
   startedAt: state === 'RUNNING' ? now : null,
   completedAt: null,
+  // Human-wait accounting: `parkedAt` is stamped when the stage parks
+  // WAITING_FOR_HUMAN and cleared on resume; `waitMs` accumulates the total
+  // parked milliseconds across all park/resume cycles. Together with
+  // startedAt/completedAt they yield both wall-clock and agent-active
+  // durations (active = total − waitMs − any open park window).
+  parkedAt: null,
+  waitMs: 0,
   updatedAt: now,
 });
 

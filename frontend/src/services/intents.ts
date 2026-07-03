@@ -92,6 +92,11 @@ export interface IntentStage {
   startedAt: string | null;
   completedAt: string | null;
   updatedAt: string | null;
+  // Human-wait accounting: accumulated parked milliseconds across park/resume
+  // cycles, and the open park's start (null unless WAITING_FOR_HUMAN). Active
+  // duration = (completedAt ?? now) − startedAt − waitMs − open park window.
+  waitMs?: number;
+  parkedAt?: string | null;
 }
 
 // A human gate (HUMAN# row). `questions` is the v1-shaped structured-questions
@@ -392,10 +397,16 @@ export const intentsService = {
     api.post<Intent>(`/projects/${projectId}/intents/${intentId}/start`, {}),
   cancel: (projectId: string, intentId: string) =>
     api.post<Intent>(`/projects/${projectId}/intents/${intentId}/cancel`, {}),
-  // Steering rewind: restart the run from `fromStageId` with corrective
-  // guidance (409 while RUNNING — wait for the stage to park or finish).
-  rewind: (projectId: string, intentId: string, input: { fromStageId: string; guidance: string }) =>
-    api.post<{ intent: Intent; steering: IntentSteering }>(
+  // Steering rewind: restart the run from `fromStageId` (409 while RUNNING —
+  // wait for the stage to park or finish). Guidance is optional: with it this
+  // is a corrective rewind (a steering row the restarted stage consumes);
+  // without it, a plain retry of the stage + everything after it.
+  rewind: (
+    projectId: string,
+    intentId: string,
+    input: { fromStageId: string; guidance?: string },
+  ) =>
+    api.post<{ intent: Intent; steering: IntentSteering | null }>(
       `/projects/${projectId}/intents/${intentId}/rewind`,
       input,
     ),

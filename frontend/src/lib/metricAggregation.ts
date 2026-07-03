@@ -23,6 +23,10 @@ const REGISTRY: Record<string, MetricKind> = {
   tokensOutput: 'additive',
   credits: 'additive',
   contextWindowPct: 'gauge:max',
+  // Agent launching time (cold start): orchestrator dispatch → container job
+  // accept, one sample per dispatch leg. The peak — not the sum — is the
+  // meaningful aggregate.
+  agentLaunchMs: 'gauge:max',
 };
 
 export function classify(key: string): MetricKind {
@@ -103,6 +107,16 @@ export function formatCost(amount: number, currency = 'USD'): string {
   if (!Number.isFinite(amount)) return '—';
   if (amount > 0 && amount < 0.01) return `${symbol}${amount.toFixed(4)}`;
   return `${symbol}${amount.toFixed(2)}`;
+}
+
+// Milliseconds as a human latency: 850 → "850ms", 2400 → "2.4s", 95000 → "1m 35s".
+export function formatMillis(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '—';
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const m = Math.floor(s / 60);
+  return `${m}m ${Math.round(s % 60)}s`;
 }
 
 // A metric sample as summarizeCost needs it: its bag, the stage it belongs to,

@@ -1,10 +1,11 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { useIntent, stageRowKey, type IntentStageRow } from '@/contexts/IntentContext';
 import { StageBadge, formatDuration, useTick } from '@/components/intent/stageStyle';
 import { SensorChips } from '@/components/intent/SensorChips';
 import { StageDetail } from '@/components/intent/StageDetail';
+import { Loader2, RotateCcw } from 'lucide-react';
 import type { IntentSensorRun } from '@/services/intents';
 
 // The pipeline list — the default Stages view. Plan stages (scope-filtered in
@@ -71,6 +72,10 @@ export function IntentStageList() {
   );
 }
 
+// The run states a retry may start from — mirrors StageDetail's rewind gate
+// (the API 409s while RUNNING).
+const RETRYABLE_STATUSES = new Set(['SUCCEEDED', 'FAILED', 'WAITING', 'CANCELLED']);
+
 function StageRow({
   row,
   current,
@@ -84,8 +89,26 @@ function StageRow({
   onToggle: () => void;
   sensors: IntentSensorRun[];
 }) {
+  const { detail, rewindIntent } = useIntent();
   useTick(row.state === 'RUNNING');
   const duration = formatDuration(row.startedAt, row.state === 'RUNNING' ? null : row.completedAt);
+  // One-click retry on a failed stage, right in the list: same reset+relaunch
+  // as a guidance-less rewind (this stage and everything after re-run).
+  const canRetry =
+    row.planned && row.state === 'FAILED' && RETRYABLE_STATUSES.has(detail?.intent.status ?? '');
+  const [retrying, setRetrying] = useState(false);
+  const handleRetry = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (retrying) return;
+    setRetrying(true);
+    try {
+      await rewindIntent(row.stageId);
+    } catch {
+      /* the detail panel surfaces retry errors; the row stays FAILED */
+    } finally {
+      setRetrying(false);
+    }
+  };
   return (
     <div>
       <button
@@ -118,6 +141,29 @@ function StageRow({
         {duration && (
           <span className="shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground">
             {duration}
+          </span>
+        )}
+        {canRetry && (
+          /* span, not <button>: the row itself is a button and buttons can't nest */
+          <span
+            role="button"
+            tabIndex={0}
+            title="Retry this stage (re-runs it and everything after)"
+            aria-label={`Retry stage ${row.stageId}`}
+            onClick={handleRetry}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                void handleRetry(e as unknown as React.MouseEvent);
+              }
+            }}
+            className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            {retrying ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <RotateCcw className="h-3 w-3" />
+            )}
           </span>
         )}
         <StageBadge state={row.state} />

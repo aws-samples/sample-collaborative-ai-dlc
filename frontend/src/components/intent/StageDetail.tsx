@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
 import { useIntent, type IntentStageRow } from '@/contexts/IntentContext';
-import { formatDuration, useTick } from '@/components/intent/stageStyle';
+import { stageDurations, useTick } from '@/components/intent/stageStyle';
 import {
   SensorChips,
   latestSensorRuns,
@@ -35,10 +35,11 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
     focusOutput,
     rewindIntent,
   } = useIntent();
-  useTick(row.state === 'RUNNING');
+  useTick(row.state === 'RUNNING' || row.state === 'WAITING_FOR_HUMAN');
 
-  // Rewind form state: guidance is REQUIRED — the whole point of a rewind is
-  // telling the agent what went wrong and what to do instead.
+  // Rewind form state: guidance is OPTIONAL — with it this is a corrective
+  // rewind (steering), without it a plain re-run of this stage + everything
+  // after it.
   const [rewindOpen, setRewindOpen] = useState(false);
   const [guidance, setGuidance] = useState('');
   const [rewinding, setRewinding] = useState(false);
@@ -48,19 +49,34 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
     REWINDABLE_STATUSES.has(detail?.intent.status ?? '') &&
     row.state !== 'PENDING' &&
     row.state !== 'SKIPPED';
+  // One-click retry for a FAILED stage: same reset + relaunch as a rewind,
+  // no guidance — the fastest path out of a transient failure.
+  const canRetry = canRewind && row.state === 'FAILED';
+  const [retrying, setRetrying] = useState(false);
 
   const handleRewind = async () => {
-    if (!guidance.trim()) return;
     setRewinding(true);
     setRewindError(null);
     try {
-      await rewindIntent(row.stageId, guidance.trim());
+      await rewindIntent(row.stageId, guidance.trim() || undefined);
       setRewindOpen(false);
       setGuidance('');
     } catch (err) {
       setRewindError(err instanceof Error ? err.message : 'Failed to rewind');
     } finally {
       setRewinding(false);
+    }
+  };
+
+  const handleRetry = async () => {
+    setRetrying(true);
+    setRewindError(null);
+    try {
+      await rewindIntent(row.stageId);
+    } catch (err) {
+      setRewindError(err instanceof Error ? err.message : 'Failed to retry');
+    } finally {
+      setRetrying(false);
     }
   };
 
@@ -101,17 +117,31 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
     return { stageMetrics: aggregateMetrics(samples), stageCost: summarizeCost(samples) };
   }, [detail, instanceId]);
 
-  const duration = formatDuration(row.startedAt, row.state === 'RUNNING' ? null : row.completedAt);
+  // Total wall-clock (incl. human waits — startedAt survives park/resume) plus
+  // the agent-active/waiting breakdown when the stage ever waited on a human.
+  const durations = stageDurations(row);
 
   return (
     <div className="space-y-3 rounded-b-md border border-t-0 bg-muted/20 px-3 py-3 text-sm">
       {/* Meta line */}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
         {row.phase && <span>Phase {row.phase}</span>}
-        {duration && (
+        {durations && (
           <span>
-            {row.state === 'RUNNING' ? 'Running for ' : 'Took '}
-            <span className="font-medium text-foreground">{duration}</span>
+            {row.state === 'RUNNING'
+              ? 'Running for '
+              : row.state === 'WAITING_FOR_HUMAN'
+                ? 'Open for '
+                : 'Took '}
+            <span className="font-medium text-foreground">{durations.total}</span>
+            {durations.waiting && (
+              <>
+                {' '}
+                (<span className="font-medium text-foreground">{durations.active}</span> active,{' '}
+                <span className="font-medium text-foreground">{durations.waiting}</span> waiting on
+                answers)
+              </>
+            )}
           </span>
         )}
         {row.attempt > 1 && <span>Attempt {row.attempt}</span>}
@@ -249,11 +279,28 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
             {a.title || a.artifactType || a.id}
           </Button>
         ))}
+        {canRetry && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 gap-1 px-2 text-[11px]"
+            disabled={retrying || rewinding}
+            onClick={handleRetry}
+          >
+            {retrying ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <RotateCcw className="h-3 w-3" />
+            )}
+            {retrying ? 'Retrying…' : 'Retry stage'}
+          </Button>
+        )}
         {canRewind && !rewindOpen && (
           <Button
             size="sm"
             variant="outline"
             className="h-6 gap-1 px-2 text-[11px]"
+            disabled={retrying}
             onClick={() => setRewindOpen(true)}
           >
             <RotateCcw className="h-3 w-3" />
@@ -262,14 +309,20 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
         )}
       </div>
 
-      {/* Rewind (steering): re-run this stage + everything after it with
-          corrective guidance. Prior artifacts are kept as superseded lineage;
+      {/* Retry error, when the inline retry (no form) failed */}
+      {canRetry && !rewindOpen && rewindError && (
+        <p className="text-[11px] text-agent-error">{rewindError}</p>
+      )}
+
+      {/* Rewind (steering): re-run this stage + everything after it. Optional
+          corrective guidance; prior artifacts are kept as superseded lineage;
           the agent reverts/redoes conflicting commits on the branch. */}
       {canRewind && rewindOpen && (
         <div className="space-y-2 rounded-md border border-agent-waiting/40 bg-agent-waiting/[0.04] p-2">
           <p className="text-[11px] font-medium">
             Restart from <span className="font-mono">{row.stageId}</span> — this stage and every
-            stage after it will re-run. Tell the agent what went wrong and what to do instead:
+            stage after it will re-run. Optionally tell the agent what went wrong and what to do
+            instead:
           </p>
           <Textarea
             value={guidance}
@@ -283,7 +336,7 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
             <Button
               size="sm"
               className="h-6 gap-1 px-2 text-[11px]"
-              disabled={!guidance.trim() || rewinding}
+              disabled={rewinding}
               onClick={handleRewind}
             >
               {rewinding ? (
@@ -291,7 +344,7 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
               ) : (
                 <RotateCcw className="h-3 w-3" />
               )}
-              {rewinding ? 'Rewinding…' : 'Rewind & restart'}
+              {rewinding ? 'Restarting…' : guidance.trim() ? 'Rewind & restart' : 'Restart'}
             </Button>
             <Button
               size="sm"

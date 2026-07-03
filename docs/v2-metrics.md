@@ -60,11 +60,12 @@ stageInstanceId, metricId, metrics }`.
 
 **Observed keys so far** (not a closed set — the agent chooses them):
 
-| Key                | Meaning                              | Example |
-| ------------------ | ------------------------------------ | ------- |
-| `tokensInput`      | prompt tokens consumed by the stage  | 18500   |
-| `tokensOutput`     | completion tokens produced           | 2200    |
-| `contextWindowPct` | % of the model's context window used | 28      |
+| Key                | Meaning                                                                                                                                                                                                                                                                                 | Example |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| `tokensInput`      | prompt tokens consumed by the stage                                                                                                                                                                                                                                                     | 18500   |
+| `tokensOutput`     | completion tokens produced                                                                                                                                                                                                                                                              | 2200    |
+| `contextWindowPct` | % of the model's context window used                                                                                                                                                                                                                                                    | 28      |
+| `agentLaunchMs`    | agent launching time (cold start): orchestrator dispatch → container job accept, one sample per dispatch leg (fresh AND resume — a resume after a park release hits a fresh microVM). Engine-emitted by `run-stage` from `run-stage-start`'s accept-time measurement, not agent-chosen. | 3400    |
 
 ### Aggregation — additive vs gauge (the "context full 629%" fix)
 
@@ -77,7 +78,7 @@ in `lambda/shared/metric-classification.js` (mirrored in
 | Kind           | Fold across samples        | Keys                                                         |
 | -------------- | -------------------------- | ------------------------------------------------------------ |
 | `additive`     | **sum**                    | `tokensInput`, `tokensOutput`, and any unknown key (default) |
-| `gauge:max`    | **max** (peak)             | `contextWindowPct`                                           |
+| `gauge:max`    | **max** (peak)             | `contextWindowPct`, `agentLaunchMs`                          |
 | `gauge:latest` | value of the newest sample | (none yet)                                                   |
 
 Unknown keys default to `additive` (counters are the common case). A **new
@@ -172,6 +173,24 @@ colored context-window gauge (green <50, amber 50–80, red >80), and cost:
 - **Intent** — the `MetricsPanel` "Usage & cost" card, peak context across
   stages + total intent cost (`IntentView`).
 - **Project** — a "Usage & cost" card fed by the rollup endpoint (`Project`).
+
+### Stage durations (wall-clock vs. agent-active)
+
+Durations are derived from STAGE-row timestamps, not metric samples. The row
+carries `startedAt` (first entry into RUNNING — it survives park/resume
+cycles: a resume PATCHES the row via `resumeStageRow`, never rebuilds it),
+`completedAt`, plus the human-wait accounting pair `parkedAt` (stamped at the
+moment the question is asked; cleared on resume) and `waitMs` (accumulated
+parked milliseconds across all park/resume cycles). The UI shows:
+
+- **Total** (stage list): `(completedAt ?? now) − startedAt` — wall clock
+  including waits.
+- **Active/waiting** (`StageDetail`): active = total − `waitMs` − the open
+  park window (`now − parkedAt` while WAITING_FOR_HUMAN); see
+  `stageDurations` in `stageStyle.tsx`.
+
+A rewind/retry reset (`resetStageRow`) clears all four fields — attempt N+1
+starts fresh accounting.
 
 ## Sensor verdicts (`SENSOR#`)
 

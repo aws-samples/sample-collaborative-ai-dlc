@@ -89,13 +89,16 @@ without touching META.
 
 ### 4. Rewind — restart from an earlier stage
 
-`POST …/intents/{id}/rewind` `{ fromStageId, guidance }` for
-`SUCCEEDED | FAILED | WAITING | CANCELLED` (RUNNING → 409; guidance is
-required — the correction is the point). The flow:
+`POST …/intents/{id}/rewind` `{ fromStageId, guidance? }` for
+`SUCCEEDED | FAILED | WAITING | CANCELLED` (RUNNING → 409). Guidance is
+OPTIONAL: with it this is a steering rewind (the correction is recorded and
+injected); without it a plain **retry** — the same reset + relaunch mechanics
+with no STEER row (the UI's one-click "Retry stage" on a failed stage). The
+flow:
 
 1. retire a parked run (supersede gates + cancel sentinel, as in Cancel);
-2. record the guidance as a STEER row (kind `rewind`) BEFORE anything resets,
-   so the restarted stage can never miss it;
+2. record the guidance (when given) as a STEER row (kind `rewind`) BEFORE
+   anything resets, so the restarted stage can never miss it;
 3. reset the target stage + every stage after it in run order
    (`resetStageRow`: state → PENDING, `attempt`+1, CLI session cleared —
    prior attempts' events/outputs stay as history);
@@ -136,7 +139,7 @@ stage body.
 | `POST …/gates/{id}/answer` (+`steering`) | answer + ride a correction into the resume |
 | `POST …/gates/{id}/revise`               | correct an already-given answer            |
 | `POST …/intents/{id}/cancel`             | retire a parked/stranded/failed run        |
-| `POST …/intents/{id}/rewind`             | restart from a stage with guidance         |
+| `POST …/intents/{id}/rewind`             | restart from a stage (guidance optional)   |
 
 The detail DTO gains `steering[]`; gates carry `revisedAt`/`revisionSteerId`/
 `supersededAt`; artifacts carry `supersededAt`/`supersededBy`; the intent

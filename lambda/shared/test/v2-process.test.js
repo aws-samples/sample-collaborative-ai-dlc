@@ -182,6 +182,80 @@ describe('createProcessStore', () => {
     expect(input.ExpressionAttributeValues[':ca']).toBe('T');
   });
 
+  it('updateStageState stamps parkedAt on a park (human-wait accounting)', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: {} });
+    await store.updateStageState({
+      executionId: 'e1',
+      stageInstanceId: 'si-1',
+      state: 'WAITING_FOR_HUMAN',
+      parkedAt: true,
+    });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.UpdateExpression).toContain('parkedAt = :pa');
+    expect(input.ExpressionAttributeValues[':pa']).toBe('T');
+  });
+
+  it('updateStageState leaves parkedAt untouched when not supplied', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: {} });
+    await store.updateStageState({ executionId: 'e1', stageInstanceId: 'si-1', state: 'RUNNING' });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.UpdateExpression).not.toContain('parkedAt');
+  });
+
+  it('resumeStageRow folds the open park window into waitMs, clears parkedAt, preserves startedAt/attempt', async () => {
+    // A resume PATCHES the parked row — rebuilding it (putStage) was the
+    // "stage duration resets when a question is answered" bug.
+    const isoStore = createProcessStore({
+      ddb,
+      tableName: 'v2-proc',
+      clock: () => '2026-01-01T00:10:00.000Z',
+    });
+    ddb.on(GetCommand).resolves({
+      Item: {
+        startedAt: '2026-01-01T00:00:00.000Z',
+        parkedAt: '2026-01-01T00:04:00.000Z', // parked 6 min before the resume
+        waitMs: 30_000, // an earlier park/resume cycle
+        attempt: 2,
+      },
+    });
+    ddb.on(UpdateCommand).resolves({ Attributes: {} });
+    await isoStore.resumeStageRow({
+      executionId: 'e1',
+      stageInstanceId: 'si-1',
+      cli: 'claude',
+      cliSessionId: 'sess-1',
+      stageCallbackId: 'cb-2',
+    });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ExpressionAttributeValues[':state']).toBe('RUNNING');
+    // 30s prior + 6min open window = 390s.
+    expect(input.ExpressionAttributeValues[':wait']).toBe(390_000);
+    expect(input.UpdateExpression).toContain('parkedAt = :null');
+    // The patch never touches first-start or attempt bookkeeping.
+    expect(input.UpdateExpression).not.toContain('startedAt');
+    expect(input.UpdateExpression).not.toContain('attempt');
+    expect(input.ExpressionAttributeValues[':csid']).toBe('sess-1');
+    expect(input.ExpressionAttributeValues[':scb']).toBe('cb-2');
+  });
+
+  it('resumeStageRow tolerates a missing/unparsable park stamp (waitMs unchanged, no NaN)', async () => {
+    ddb.on(GetCommand).resolves({ Item: { waitMs: 12_000, parkedAt: null } });
+    ddb.on(UpdateCommand).resolves({ Attributes: {} });
+    await store.resumeStageRow({ executionId: 'e1', stageInstanceId: 'si-1' });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ExpressionAttributeValues[':wait']).toBe(12_000);
+  });
+
+  it('resetStageRow clears the wait accounting for the next attempt', async () => {
+    ddb.on(GetCommand).resolves({ Item: { attempt: 0, waitMs: 9000, parkedAt: 'T' } });
+    ddb.on(UpdateCommand).resolves({ Attributes: {} });
+    await store.resetStageRow({ executionId: 'e1', stageInstanceId: 'si-1' });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.UpdateExpression).toContain('parkedAt = :null');
+    expect(input.UpdateExpression).toContain('waitMs = :zero');
+    expect(input.ExpressionAttributeValues[':zero']).toBe(0);
+  });
+
   it('answerHumanTask is a CAS on pending and returns null on a lost race', async () => {
     ddb
       .on(UpdateCommand)

@@ -80,7 +80,14 @@ export const createProcessBridge = ({
     });
     if (stageInstanceId) {
       await store
-        .updateStageState({ executionId, stageInstanceId, state: 'WAITING_FOR_HUMAN' })
+        .updateStageState({
+          executionId,
+          stageInstanceId,
+          state: 'WAITING_FOR_HUMAN',
+          // Human-wait accounting starts at the ASK, not the CLI exit: the
+          // human is already waiting while the agent winds down its turn.
+          parkedAt: true,
+        })
         .catch(() => {});
     }
     await store.appendEvent({
@@ -116,9 +123,9 @@ export const createProcessBridge = ({
           pendingHumanTaskId: null,
         });
         if (stageInstanceId) {
-          await store
-            .updateStageState({ executionId, stageInstanceId, state: 'RUNNING' })
-            .catch(() => {});
+          // resumeStageRow folds the parked window into waitMs and clears
+          // parkedAt — the inline answer ends the human wait right here.
+          await store.resumeStageRow({ executionId, stageInstanceId }).catch(() => {});
         }
         return { humanTaskId, status: task.status, answer: task.answer ?? null };
       }

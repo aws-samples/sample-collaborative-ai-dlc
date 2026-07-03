@@ -111,6 +111,7 @@ const spyStore = (seed = {}) => {
     putStage: rec('putStage'),
     updateExecution: rec('updateExecution'),
     updateStageState: rec('updateStageState'),
+    resumeStageRow: rec('resumeStageRow'),
     appendEvent: rec('appendEvent'),
     async appendOutput(args) {
       calls.push(['appendOutput', args]);
@@ -790,9 +791,55 @@ describe('runStage — fresh run persists the CLI session + parks on a pending g
       .map((c) => c[1].state);
     expect(states).toContain('WAITING_FOR_HUMAN');
     expect(states).not.toContain('SUCCEEDED');
+    // The park stamps parkedAt (wait accounting) — `true` when the gate row
+    // carries no createdAt (the store stamps "now").
+    const parkPatch = deps.store.calls.find(
+      (c) => c[0] === 'updateStageState' && c[1].state === 'WAITING_FOR_HUMAN',
+    )[1];
+    expect(parkPatch.parkedAt).toBe(true);
     expect(
       deps.store.calls.some((c) => c[0] === 'appendEvent' && c[1].type === 'v2.stage.parked'),
     ).toBe(true);
+  });
+
+  it('re-stamps parkedAt with the gate ASK time so the exit-time write never shortens the wait', async () => {
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      ids: () => 'forced-uuid',
+      store: spyStore({
+        execution: { pendingHumanTaskId: 'q-1' },
+        humanTask: {
+          humanTaskId: 'q-1',
+          status: 'pending',
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+      }),
+    });
+    await runStage(baseArgs, deps);
+    const parkPatch = deps.store.calls.find(
+      (c) => c[0] === 'updateStageState' && c[1].state === 'WAITING_FOR_HUMAN',
+    )[1];
+    expect(parkPatch.parkedAt).toBe('2026-01-01T00:00:00.000Z');
+  });
+
+  it('records agentLaunchMs (cold start) as a metric sample when the dispatcher measured one', async () => {
+    const deps = baseDeps({ spawnFn: okSpawn });
+    const res = await runStage({ ...baseArgs, agentLaunchMs: 3400 }, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    const metric = deps.store.calls.find(
+      (c) => c[0] === 'recordMetric' && c[1].metrics?.agentLaunchMs !== undefined,
+    );
+    expect(metric[1].metrics.agentLaunchMs).toBe(3400);
+  });
+
+  it('records no launch metric without the measurement (legacy sync path)', async () => {
+    const deps = baseDeps({ spawnFn: okSpawn });
+    await runStage(baseArgs, deps);
+    expect(
+      deps.store.calls.some(
+        (c) => c[0] === 'recordMetric' && c[1].metrics?.agentLaunchMs !== undefined,
+      ),
+    ).toBe(false);
   });
 
   it('parks (not fails) on a NON-ZERO exit when a gate is pending — the gate is the truth', async () => {
@@ -973,6 +1020,21 @@ describe('runStage — resume mode', () => {
     expect(
       deps.store.calls.some((c) => c[0] === 'appendEvent' && c[1].type === 'v2.stage.resumed'),
     ).toBe(true);
+    // The RUNNING flip is a PATCH (resumeStageRow) — never a full-row putStage,
+    // which would re-stamp startedAt (the "duration resets on answer" bug).
+    expect(deps.store.calls.some((c) => c[0] === 'resumeStageRow')).toBe(true);
+    expect(deps.store.calls.some((c) => c[0] === 'putStage')).toBe(false);
+  });
+
+  it('a fresh run carries the existing row attempt forward (rewind reset sets attempt+1)', async () => {
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      store: spyStore({ stage: { state: 'PENDING', attempt: 2 } }),
+    });
+    const res = await runStage(baseArgs, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    const put = deps.store.calls.find((c) => c[0] === 'putStage')[1];
+    expect(put).toMatchObject({ state: 'RUNNING', attempt: 2 });
   });
 
   it('fails gate_not_answered when the gate is still pending', async () => {

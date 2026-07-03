@@ -136,6 +136,31 @@ describe('createRunStageStart', () => {
     });
   });
 
+  it('threads agentLaunchMs (dispatch → accept) into the run-stage payload', async () => {
+    const { deps } = makeDeps();
+    const start = createRunStageStart(deps);
+    await start({ ...basePayload, dispatchedAt: new Date(Date.now() - 1500).toISOString() });
+    await flush();
+    const jobPayload = deps.runStage.mock.calls[0][0];
+    expect(jobPayload.agentLaunchMs).toBeGreaterThanOrEqual(1500);
+    expect(jobPayload.agentLaunchMs).toBeLessThan(60_000);
+  });
+
+  it('omits agentLaunchMs when the dispatcher sent no anchor or it is unparsable', async () => {
+    const { deps } = makeDeps();
+    const start = createRunStageStart(deps);
+    await start(basePayload);
+    await start({
+      ...basePayload,
+      stageId: 's2',
+      stageCallbackId: 'cb-2',
+      dispatchedAt: 'not-a-date',
+    });
+    await flush();
+    expect(deps.runStage.mock.calls[0][0].agentLaunchMs).toBeUndefined();
+    expect(deps.runStage.mock.calls[1][0].agentLaunchMs).toBeUndefined();
+  });
+
   it('a crashing run-stage still completes the callback with stage_job_crashed', async () => {
     const { deps, sent } = makeDeps({
       runStage: vi.fn(async () => {

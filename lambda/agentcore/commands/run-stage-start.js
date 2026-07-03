@@ -80,6 +80,17 @@ export const createRunStageStart = ({
     activeJobs.set(key, { startedAt: Date.now(), stageCallbackId });
     busy?.enter();
 
+    // Agent launching time (cold start): orchestrator dispatch → job accepted
+    // HERE. Computed at accept (before any workspace/CLI work) and threaded
+    // into run-stage, which records it as an `agentLaunchMs` metric sample
+    // once the stage identity (stageInstanceId) exists. Null when the
+    // dispatcher sent no anchor (old orchestrator) or clocks skewed negative.
+    const launchMs = payload.dispatchedAt ? Date.now() - Date.parse(payload.dispatchedAt) : NaN;
+    const jobPayload =
+      Number.isFinite(launchMs) && launchMs >= 0
+        ? { ...payload, agentLaunchMs: launchMs }
+        : payload;
+
     const job = (async () => {
       let heartbeatTimer = null;
       try {
@@ -92,7 +103,7 @@ export const createRunStageStart = ({
 
         let result;
         try {
-          result = normalizeStageResult(await runStage(payload));
+          result = normalizeStageResult(await runStage(jobPayload));
         } catch (err) {
           // run-stage can throw on unwrapped store/S3 failures — the callback
           // must still complete or the orchestrator waits for the heartbeat

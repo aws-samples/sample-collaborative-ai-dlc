@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils';
-import { formatTokens, formatCost, contextGaugeTone } from '@/lib/metricAggregation';
+import { formatTokens, formatCost, formatMillis, contextGaugeTone } from '@/lib/metricAggregation';
 
 // Shared usage/cost renderer for aggregated metric bags — used at stage, intent
 // and project scope so the three surfaces read identically. Callers pass an
@@ -61,13 +61,17 @@ export function UsageMetrics({
   const tokensOut = metrics.tokensOutput ?? 0;
   const hasTokens = 'tokensInput' in metrics || 'tokensOutput' in metrics;
   const ctx = metrics.contextWindowPct;
+  // Agent launching time (cold start), dispatch → job accept. A gauge:max, so
+  // at any rolled-up scope this is the slowest launch leg.
+  const launchMs = metrics.agentLaunchMs;
   // Any numeric key we don't render explicitly, shown generically so an
   // agent-chosen key isn't silently dropped.
   const extras = Object.entries(metrics).filter(
-    ([k]) => !['tokensInput', 'tokensOutput', 'contextWindowPct'].includes(k),
+    ([k]) => !['tokensInput', 'tokensOutput', 'contextWindowPct', 'agentLaunchMs'].includes(k),
   );
 
-  const nothing = !hasTokens && ctx === undefined && extras.length === 0 && !cost;
+  const nothing =
+    !hasTokens && ctx === undefined && launchMs === undefined && extras.length === 0 && !cost;
   if (nothing) return null;
 
   return (
@@ -86,6 +90,7 @@ export function UsageMetrics({
             }
           />
         )}
+        {launchMs !== undefined && <Stat label="Agent launch" value={formatMillis(launchMs)} />}
         {extras.map(([k, v]) => (
           <Stat key={k} label={k} value={v.toLocaleString()} />
         ))}

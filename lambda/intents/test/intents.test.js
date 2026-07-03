@@ -1668,15 +1668,31 @@ describe('POST /rewind', () => {
     expect(JSON.parse(res.body).stages).toEqual(['design', 'implement']);
   });
 
-  it('400s a rewind without guidance (the correction is the point)', async () => {
+  it('accepts a guidance-less rewind as a plain retry (no steering row)', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
     seedPlan();
     const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    seedStageRow(intent.id, 'design');
+    seedStageRow(intent.id, 'implement', 'FAILED');
     setStatus(intent.id, { status: 'FAILED' });
     const res = await rewind(sub, projectId, intent.id, { fromStageId: 'implement' });
-    expect(res.statusCode).toBe(400);
-    expect(JSON.parse(res.body).error).toMatch(/guidance is required/);
+    expect(res.statusCode).toBe(202);
+    const body = JSON.parse(res.body);
+    expect(body.intent.status).toBe('CREATED');
+    expect(body.steering).toBeNull();
+    // No STEER row — a retry injects nothing into the restarted stage.
+    expect([...procStore.keys()].filter((k) => k.includes('|STEER#'))).toHaveLength(0);
+    // The failed stage is reset for attempt 2; upstream is untouched.
+    const implRow = procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('implement')}`));
+    expect(implRow).toMatchObject({ state: 'PENDING', attempt: 1 });
+    const designRow = procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('design')}`));
+    expect(designRow.state).toBe('SUCCEEDED');
+    // Relaunched at the retried stage.
+    const calls = lambdaMock.commandCalls(InvokeCommand);
+    expect(calls).toHaveLength(1);
+    const payload = JSON.parse(Buffer.from(calls[0].args[0].input.Payload).toString());
+    expect(payload).toMatchObject({ action: 'start', startAtStageId: 'implement' });
   });
 
   it('rolls back to the prior status when the relaunch invoke fails', async () => {

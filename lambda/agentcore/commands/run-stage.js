@@ -594,7 +594,11 @@ const pendingGate = async ({ store, executionId }) => {
   const humanTaskId = meta?.pendingHumanTaskId ?? null;
   if (!humanTaskId) return null;
   const gate = await store.getHumanTask(executionId, humanTaskId).catch(() => null);
-  return gate && gate.status === 'pending' ? { humanTaskId } : null;
+  // createdAt rides along for wait accounting: the park's parkedAt is the ASK
+  // moment, not the (later) CLI exit.
+  return gate && gate.status === 'pending'
+    ? { humanTaskId, createdAt: gate.createdAt ?? null }
+    : null;
 };
 
 export const runStage = async (
@@ -632,6 +636,10 @@ export const runStage = async (
     // traceability/operator recovery; the callback itself is completed by
     // run-stage-start's background job, not here. Null on the legacy sync path.
     stageCallbackId = null,
+    // Agent launching time (cold start) in ms — orchestrator dispatch → job
+    // accept, computed by run-stage-start. Recorded below as an `agentLaunchMs`
+    // metric sample (gauge). Null on the legacy sync path / old dispatchers.
+    agentLaunchMs = null,
   },
   deps,
 ) => {
@@ -932,19 +940,37 @@ export const runStage = async (
   };
 
   // Mark RUNNING + advance the execution pointer + persist the conversation
-  // handle. A resume flips the parked stage (WAITING_FOR_HUMAN) back to RUNNING.
-  await store.putStage({
-    executionId,
-    stageInstanceId,
-    stageId,
-    unitSlug,
-    phase: stage.phase,
-    state: 'RUNNING',
-    cli,
-    cliSessionId,
-    resolvedModel: model,
-    stageCallbackId,
-  });
+  // handle. A true resume PATCHES the parked row (WAITING_FOR_HUMAN) back to
+  // RUNNING: startedAt, attempt and the waitMs accumulator survive, and the
+  // open park window is folded into waitMs — rebuilding the row here was the
+  // "stage duration resets when a question is answered" bug. A fresh run (or a
+  // demoted resume, which genuinely re-runs the stage from scratch) rebuilds
+  // the row, carrying forward the attempt counter a rewind reset may have set.
+  if (resumeFrom && !demotedResume) {
+    await store.resumeStageRow({
+      executionId,
+      stageInstanceId,
+      cli,
+      cliSessionId,
+      resolvedModel: model,
+      stageCallbackId,
+    });
+  } else {
+    const priorRow = await store.getStage(executionId, stageInstanceId).catch(() => null);
+    await store.putStage({
+      executionId,
+      stageInstanceId,
+      stageId,
+      unitSlug,
+      phase: stage.phase,
+      state: 'RUNNING',
+      attempt: priorRow?.attempt ?? 0,
+      cli,
+      cliSessionId,
+      resolvedModel: model,
+      stageCallbackId,
+    });
+  }
   await store.updateExecution({
     executionId,
     status: 'RUNNING',
@@ -976,6 +1002,31 @@ export const runStage = async (
     currentPhase: stage.phase,
     currentStage: stageId,
   });
+
+  // Record the agent launching time (cold start): dispatch → job accept,
+  // measured by run-stage-start and recorded here where the stage identity
+  // exists. One sample per dispatch leg (fresh AND resume — a resume after a
+  // park release hits a fresh microVM, exactly the cold start worth seeing).
+  // Classified gauge:max, so aggregation shows the worst leg. Best-effort.
+  if (typeof agentLaunchMs === 'number' && Number.isFinite(agentLaunchMs) && agentLaunchMs >= 0) {
+    try {
+      const row = await store.recordMetric({
+        executionId,
+        stageInstanceId,
+        unitSlug,
+        metrics: { agentLaunchMs },
+      });
+      await publish({
+        action: 'agent.metric',
+        stageInstanceId,
+        unitSlug,
+        metricId: row.metricId,
+        metrics: { agentLaunchMs },
+      });
+    } catch (e) {
+      console.error(`[run-stage] agentLaunchMs not recorded for ${stageInstanceId}: ${e.message}`);
+    }
+  }
 
   // Steering (docs/v2-steering.md): every run-stage entry — fresh, resume, or
   // demoted resume — is a deterministic injection point for pending human course
@@ -1326,6 +1377,11 @@ export const runStage = async (
         executionId,
         stageInstanceId,
         state: 'WAITING_FOR_HUMAN',
+        // Human-wait accounting: the wait started when the question was ASKED
+        // (the bridge stamped it then); re-stamp with the gate's createdAt so
+        // this exit-time write never shortens the window (and covers a failed
+        // bridge stamp). resumeStageRow folds it into waitMs on resume.
+        parkedAt: parked.createdAt ?? true,
         cli,
         cliSessionId,
       })

@@ -744,13 +744,11 @@ export const handler = async (event) => {
     if (intentId && httpMethod === 'POST' && path?.endsWith('/rewind')) {
       const data = body ? JSON.parse(body) : {};
       const fromStageId = typeof data.fromStageId === 'string' ? data.fromStageId : '';
+      // Guidance is OPTIONAL: with guidance this is a steering rewind (a
+      // correction the restarted stage consumes at entry); without it, a plain
+      // retry — same reset + relaunch mechanics, no steering row.
       const guidance = typeof data.guidance === 'string' ? data.guidance.trim() : '';
       if (!fromStageId) return response(400, { error: 'fromStageId is required' });
-      if (!guidance) {
-        return response(400, {
-          error: 'guidance is required — tell the agent what went wrong and what to do instead',
-        });
-      }
       const meta = await store.getExecution(intentId);
       if (!meta || meta.projectId !== projectId) {
         return response(404, { error: 'Intent not found' });
@@ -810,14 +808,18 @@ export const handler = async (event) => {
       await retireParkedRun(intentId, `rewound to ${fromStageId}`);
       // Record the guidance BEFORE resetting/relaunching: the restarted stage
       // reads pending steering at entry, so the correction can never be missed.
-      const steer = await store.createSteering({
-        executionId: intentId,
-        kind: 'rewind',
-        message: guidance,
-        targetStageId: fromStageId,
-        createdBy: responder.sub,
-        createdByName: responder.displayName,
-      });
+      // A guidance-less retry records no steering row — there is nothing to
+      // inject; the stage simply re-runs.
+      const steer = guidance
+        ? await store.createSteering({
+            executionId: intentId,
+            kind: 'rewind',
+            message: guidance,
+            targetStageId: fromStageId,
+            createdBy: responder.sub,
+            createdByName: responder.displayName,
+          })
+        : null;
       for (const { stage, unitSlug, stageInstanceId } of resetInstances) {
         const reset = await store.resetStageRow({
           executionId: intentId,
@@ -856,20 +858,22 @@ export const handler = async (event) => {
         g,
         intentId,
         resetInstances.map((i) => i.stageInstanceId),
-        steer.steerId,
+        steer ? steer.steerId : `retry:${fromStageId}`,
       ).catch((err) => {
         console.error('Artifact supersede failed:', err.message);
         return [];
       });
-      await mirrorSteeringVertex({ g, intentId, steer }).catch((err) =>
-        console.error('Steering graph mirror failed:', err.message),
-      );
+      if (steer) {
+        await mirrorSteeringVertex({ g, intentId, steer }).catch((err) =>
+          console.error('Steering graph mirror failed:', err.message),
+        );
+      }
       await store
         .appendEvent({
           executionId: intentId,
           type: 'v2.execution.rewound',
           actor: responder.displayName || responder.sub,
-          summary: `${responder.displayName || 'Someone'} rewound the run to ${fromStageId} (${resetInstances.length} stage instance(s) reset, ${supersededArtifacts.length} artifact(s) superseded)`,
+          summary: `${responder.displayName || 'Someone'} ${steer ? 'rewound the run to' : 'retried the run from'} ${fromStageId} (${resetInstances.length} stage instance(s) reset, ${supersededArtifacts.length} artifact(s) superseded)`,
         })
         .catch((err) => console.error('Rewind event append failed:', err.message));
       // Relaunch at the rewind point. Same CAS + rollback discipline as /start.
@@ -902,7 +906,10 @@ export const handler = async (event) => {
         });
         throw err;
       }
-      return response(202, { intent: mapIntent(updated), steering: mapSteering(steer) });
+      return response(202, {
+        intent: mapIntent(updated),
+        steering: steer ? mapSteering(steer) : null,
+      });
     }
 
     if (intentId && httpMethod === 'GET') {
@@ -1238,6 +1245,11 @@ const mapStage = (s) => ({
   startedAt: s.startedAt ?? null,
   completedAt: s.completedAt ?? null,
   updatedAt: s.updatedAt ?? null,
+  // Human-wait accounting: accumulated parked ms + the open park's start (null
+  // unless currently WAITING_FOR_HUMAN). The UI derives agent-active duration
+  // as (completedAt ?? now) − startedAt − waitMs − any open park window.
+  waitMs: s.waitMs ?? 0,
+  parkedAt: s.parkedAt ?? null,
 });
 
 // Unit lanes (docs/v2-parallel.md WP4): the promoted scheduling snapshot and

@@ -15,6 +15,10 @@ const REGISTRY = {
   tokensOutput: 'additive',
   credits: 'additive',
   contextWindowPct: 'gauge:max',
+  // Agent launching time (cold start): orchestrator dispatch → container job
+  // accept, one sample per dispatch leg. The peak — not the sum — is the
+  // meaningful aggregate (summing launch latencies is nonsense).
+  agentLaunchMs: 'gauge:max',
 };
 
 const classify = (key) => REGISTRY[key] ?? 'additive';

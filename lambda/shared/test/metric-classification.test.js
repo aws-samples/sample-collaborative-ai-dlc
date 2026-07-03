@@ -62,6 +62,7 @@ describe('registry parity with the frontend', () => {
       tokensOutput: 'additive',
       credits: 'additive',
       contextWindowPct: 'gauge:max',
+      agentLaunchMs: 'gauge:max',
     });
   });
 });

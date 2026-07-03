@@ -49,6 +49,10 @@ export interface IntentStageRow {
   runtimeError: string | null;
   startedAt: string | null;
   completedAt: string | null;
+  /** Accumulated human-wait milliseconds across park/resume cycles. */
+  waitMs: number;
+  /** Open park's start (set while WAITING_FOR_HUMAN), for live wait ticking. */
+  parkedAt: string | null;
   attempt: number;
   cli: string | null;
   order: number;
@@ -137,8 +141,9 @@ interface IntentContextValue {
   reviseGate: (gate: IntentGate, message: string) => Promise<void>;
   /** Steering: retire a parked/stranded/failed run (409 while RUNNING). */
   cancelIntent: () => Promise<Intent>;
-  /** Steering: restart the run from an earlier stage with corrective guidance. */
-  rewindIntent: (fromStageId: string, guidance: string) => Promise<void>;
+  /** Steering: restart the run from an earlier stage. Guidance optional — with
+   *  it a corrective rewind, without it a plain retry of the stage + rest. */
+  rewindIntent: (fromStageId: string, guidance?: string) => Promise<void>;
 }
 
 const IntentContext = createContext<IntentContextValue | undefined>(undefined);
@@ -407,9 +412,12 @@ export function IntentProvider({
   }, [projectId, intentId, load]);
 
   const rewindIntent = useCallback(
-    async (fromStageId: string, guidance: string) => {
+    async (fromStageId: string, guidance?: string) => {
       if (!projectId || !intentId) return;
-      await intentsService.rewind(projectId, intentId, { fromStageId, guidance });
+      await intentsService.rewind(projectId, intentId, {
+        fromStageId,
+        ...(guidance ? { guidance } : {}),
+      });
       await load();
     },
     [projectId, intentId, load],
@@ -464,6 +472,8 @@ export function IntentProvider({
             runtimeError: null,
             startedAt: null,
             completedAt: null,
+            waitMs: 0,
+            parkedAt: null,
             attempt: 0,
             cli: null,
             order: n.order ?? i,
@@ -480,6 +490,8 @@ export function IntentProvider({
         runtimeError: row.runtimeError ?? null,
         startedAt: row.startedAt ?? null,
         completedAt: row.completedAt ?? null,
+        waitMs: row.waitMs ?? 0,
+        parkedAt: row.parkedAt ?? null,
         attempt: row.attempt ?? 0,
         cli: row.cli ?? null,
         order: n.order ?? i,
@@ -498,6 +510,8 @@ export function IntentProvider({
         runtimeError: s.runtimeError ?? null,
         startedAt: s.startedAt ?? null,
         completedAt: s.completedAt ?? null,
+        waitMs: s.waitMs ?? 0,
+        parkedAt: s.parkedAt ?? null,
         attempt: s.attempt ?? 0,
         cli: s.cli ?? null,
         order: Number.MAX_SAFE_INTEGER,
