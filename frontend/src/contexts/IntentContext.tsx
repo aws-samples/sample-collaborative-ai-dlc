@@ -595,7 +595,10 @@ export function IntentProvider({
       }
       return instances.map((row) => ({
         stageId: n.stageId,
-        phase: row.phase ?? n.phasePath ?? null,
+        // Live rows carry the backend phaseId ('ideation'), the plan carries
+        // the phasePath ('01') — mixing them splits one phase into two groups.
+        // The plan's path is canonical.
+        phase: n.phasePath ?? row.phase ?? null,
         state: row.state,
         stageInstanceId: row.stageInstanceId,
         unitSlug: row.unitSlug ?? null,
@@ -611,11 +614,14 @@ export function IntentProvider({
       }));
     });
     // Live rows outside the plan (plan unavailable or diverged) still render.
+    // Their phase field is the backend phaseId — map it to the workflow path
+    // so grouping and the init filter see one vocabulary.
+    const pathByPhaseId = new Map((workflowPhases ?? []).map((p) => [p.phaseId, p.path]));
     for (const s of detail?.stages ?? []) {
       if (!s.stageId || planIds.has(s.stageId)) continue;
       rows.push({
         stageId: s.stageId,
-        phase: s.phase ?? null,
+        phase: (s.phase ? (pathByPhaseId.get(s.phase) ?? s.phase) : null) ?? null,
         state: s.state,
         stageInstanceId: s.stageInstanceId,
         unitSlug: s.unitSlug ?? null,
@@ -631,7 +637,7 @@ export function IntentProvider({
       });
     }
     return rows;
-  }, [detail, compiled]);
+  }, [detail, compiled, workflowPhases]);
 
   // Compiled edges restricted to the rendered (in-scope) stages — the graph
   // AND the per-stage dependency list derive from these (the compiled DTO has

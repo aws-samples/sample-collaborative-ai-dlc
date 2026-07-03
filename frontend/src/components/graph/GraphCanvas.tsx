@@ -423,6 +423,7 @@ export interface GraphCanvasProps {
   loading?: boolean;
   error?: string | null;
   emptyState?: ReactNode;
+  headerLeading?: ReactNode;
 }
 
 // ---------------------------------------------------------------------------
@@ -436,6 +437,7 @@ export function GraphCanvas({
   loading = false,
   error,
   emptyState,
+  headerLeading,
 }: GraphCanvasProps) {
   // Internal layout state
   const [nodes, setNodes] = useState<LayoutNode[]>([]);
@@ -1088,6 +1090,7 @@ export function GraphCanvas({
     <div className="h-full flex flex-col overflow-hidden">
       {/* ==================== TOOLBAR ==================== */}
       <div className="flex items-center gap-2 px-4 py-2 border-b bg-background/95 backdrop-blur-sm shrink-0 z-10">
+        {headerLeading}
         <div className="flex items-center gap-2 mr-2">
           <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary/10">
             <Network className="h-4 w-4 text-primary" />

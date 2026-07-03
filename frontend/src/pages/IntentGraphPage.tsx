@@ -86,27 +86,25 @@ export default function IntentGraphPage() {
   }
 
   return (
-    <div className="h-full overflow-hidden flex flex-col">
-      <div className="flex h-12 shrink-0 items-center border-b px-4">
-        <Button
-          variant="outline"
-          size="sm"
-          className="gap-1.5 h-7"
-          onClick={() => navigate(`/project/${projectId}/intent/${intentId}`)}
-        >
-          <ArrowLeft className="h-3.5 w-3.5" />
-          Back to workbench
-        </Button>
-      </div>
-      <div className="flex-1 overflow-hidden">
-        <GraphCanvas
-          nodes={nodes}
-          edges={edges}
-          title="Knowledge graph"
-          loading={loading}
-          error={error}
-        />
-      </div>
+    <div className="h-full overflow-hidden">
+      <GraphCanvas
+        nodes={nodes}
+        edges={edges}
+        title="Knowledge graph"
+        loading={loading}
+        error={error}
+        headerLeading={
+          <Button
+            variant="ghost"
+            size="sm"
+            className="gap-1.5 h-7 shrink-0 text-muted-foreground hover:text-foreground"
+            onClick={() => navigate(`/project/${projectId}/intent/${intentId}`)}
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            Workbench
+          </Button>
+        }
+      />
     </div>
   );
 }
