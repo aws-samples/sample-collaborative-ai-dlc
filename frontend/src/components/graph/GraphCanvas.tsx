@@ -699,7 +699,8 @@ export function GraphCanvas({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settled, simulate, layoutMode, applyHierarchicalLayout]);
 
-  // ---- Particle animation loop ----
+  // ---- Particle animation loop (paused while the tab is hidden — the loop
+  // re-renders the whole SVG every frame) ----
   useEffect(() => {
     if (nodes.length === 0 || !settled) return;
     let time = 0;
@@ -708,8 +709,23 @@ export function GraphCanvas({
       setAnimationTime(time);
       particleAnimRef.current = requestAnimationFrame(tick);
     };
-    particleAnimRef.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(particleAnimRef.current);
+    const start = () => {
+      cancelAnimationFrame(particleAnimRef.current);
+      particleAnimRef.current = requestAnimationFrame(tick);
+    };
+    const onVisibility = () => {
+      if (document.hidden) {
+        cancelAnimationFrame(particleAnimRef.current);
+      } else {
+        start();
+      }
+    };
+    if (!document.hidden) start();
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      cancelAnimationFrame(particleAnimRef.current);
+    };
   }, [nodes.length, settled]);
 
   // ---- Keyboard shortcuts ----
