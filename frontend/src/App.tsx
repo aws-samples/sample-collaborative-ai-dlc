@@ -32,6 +32,7 @@ const BlockLibrary = lazy(() => import('./pages/BlockLibrary'));
 const BlockEditor = lazy(() => import('./pages/BlockEditor'));
 const WorkflowList = lazy(() => import('./pages/WorkflowList'));
 const WorkflowComposer = lazy(() => import('./pages/WorkflowComposer'));
+const NewIntentPage = lazy(() => import('./pages/NewIntentPage'));
 
 // Minimal route-transition fallback — chunk loads are fast (same-origin,
 // HTTP-cached); a spinner flash would be noisier than a brief blank pane.
@@ -84,6 +85,7 @@ function App() {
                 <Route path="/workflows/:workflowId" element={<WorkflowComposer />} />
                 <Route path="/project/:projectId" element={<Project />} />
                 <Route path="/project/:projectId/settings" element={<ProjectSettings />} />
+                <Route path="/project/:projectId/intent/new" element={<NewIntentPage />} />
                 <Route path="/project/:projectId/intent/:intentId" element={<IntentView />} />
 
                 {/* Sprint routes wrapped in SprintLayout for shared context */}
