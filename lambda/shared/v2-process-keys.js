@@ -194,6 +194,14 @@ const buildExecutionMeta = ({
   // Sprint.tracker shape: { provider, instance, bindingId, resourceType,
   // resourceId, resourceUrl }.
   source = null,
+  // Non-fatal plan-resolution warnings snapshotted at create (the pinned
+  // workflow + scope resolve to a runnable but DEGRADED plan: required inputs
+  // whose producer is out of scope, parallel sections downgraded to
+  // once-per-workflow). Shape mirrors the resolver's error objects
+  // ({ code, message, stageId?, ref? }); null when the plan is clean. Purely
+  // informational — surfaced by the UI so a lean scope's degraded run is
+  // visible, never consulted by the engine.
+  planWarnings = null,
   // The live orchestrator run's ownership token (v2-steering.md): minted by the
   // durable orchestrator at mark-running and CAS-checked on its terminal writes,
   // so a retired run (cancel/rewind relaunch) can never clobber META.
@@ -230,6 +238,7 @@ const buildExecutionMeta = ({
   prStrategy,
   constructionAutonomyMode,
   source,
+  planWarnings,
   orchestratorRunId,
   rewindFromStageId,
   updatedAt: startedAt,

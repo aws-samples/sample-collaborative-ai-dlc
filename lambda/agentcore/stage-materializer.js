@@ -47,14 +47,25 @@ export const OUTPUT_CONTRACT = [
   '- Do exactly THIS stage. Do not start other stages or invent status.',
 ].join('\n');
 
-// Render the resolved input artifacts as a prompt section.
+// Render the resolved input artifacts as a prompt section. An `expectedAbsent`
+// input (its producer exists in the workflow but is out of the selected scope —
+// the plan resolver's scope-shortcut classification) is called out explicitly:
+// the agent must never fabricate the missing artifact's content, and must fall
+// back to whatever in-scope context exists instead of failing a read and
+// improvising differently each run.
 const renderInputs = (inputArtifacts = []) => {
   if (inputArtifacts.length === 0) return '- none';
   return inputArtifacts
-    .map(
-      (i) =>
-        `- ${i.artifact}${i.required ? '' : ' (optional)'}${i.producedBy?.length ? ` — from ${i.producedBy.join(', ')}` : ''}`,
-    )
+    .map((i) => {
+      if (i.expectedAbsent) {
+        return (
+          `- ${i.artifact} — NOT produced in this scope (producer out of scope; absence is by design). ` +
+          'Do NOT fabricate its content and do NOT treat its absence as an error; fall back to the ' +
+          'available in-scope context (the other inputs above, the reverse-engineered code knowledge, the workspace itself).'
+        );
+      }
+      return `- ${i.artifact}${i.required ? '' : ' (optional)'}${i.producedBy?.length ? ` — from ${i.producedBy.join(', ')}` : ''}`;
+    })
     .join('\n');
 };
 
