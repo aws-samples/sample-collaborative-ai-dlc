@@ -28,6 +28,11 @@ export const INTENT_ANCHOR_LABELS = {
   intent: 'Intent',
   // A thread per produced artifact (Intent --CONTAINS--> Artifact).
   artifact: 'Artifact',
+  // A thread per agent question (Intent --CONTAINS--> Question) — the Neptune
+  // mirror of a HUMAN# question gate, written by the graph-writer's
+  // recordQuestion with the gate's humanTaskId as the vertex id. Parity with
+  // v1's question-anchored threads (docs/v2-data-model.md).
+  question: 'Question',
 };
 
 // Build the scope descriptor for a sprint. `rootId` is the sprintId.

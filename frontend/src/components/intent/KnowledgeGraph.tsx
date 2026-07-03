@@ -524,6 +524,13 @@ function NodeDetail({
             <DiscussButton entityType="artifact" entityId={node.id} entityTitle={node.label} />
           </>
         )}
+        {node.type === 'Question' && (
+          <DiscussButton
+            entityType="question"
+            entityId={node.id}
+            entityTitle={questionTexts[0] || node.label}
+          />
+        )}
         {node.type === 'Discussion' && (
           <Button
             size="sm"

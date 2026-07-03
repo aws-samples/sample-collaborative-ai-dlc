@@ -33,6 +33,9 @@ const ENTITY_LABELS: Record<string, string> = {
   task: 'Task',
   review: 'Review',
   generalinfo: 'General Info',
+  // v2 intent-scoped anchors.
+  intent: 'Intent',
+  artifact: 'Artifact',
 };
 
 export function DiscussionPanel() {
@@ -290,7 +293,9 @@ export function DiscussionPanel() {
             onSend={sendMessage}
             onTyping={setTyping}
             members={members}
-            onAssist={invokeAssist}
+            // Assist runs as a v1 sprint pool-worker phase — the backend
+            // rejects it for intent-scoped threads, so hide the menu there.
+            onAssist={scope?.kind === 'sprint' ? invokeAssist : undefined}
             canSuggestAnswer={discussion.entityType === 'question'}
             assistRunning={assistState !== null}
           />

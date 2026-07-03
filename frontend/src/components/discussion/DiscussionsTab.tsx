@@ -22,6 +22,9 @@ const ENTITY_LABELS: Record<string, string> = {
   task: 'Task',
   review: 'Review',
   generalinfo: 'Info',
+  // v2 intent-scoped anchors.
+  intent: 'Intent',
+  artifact: 'Artifact',
 };
 
 const EMPTY_DISCUSSIONS: Discussion[] = [];

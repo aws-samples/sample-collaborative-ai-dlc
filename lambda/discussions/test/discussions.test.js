@@ -1429,11 +1429,14 @@ describe('POST .../assist', () => {
 
 describe('intent-scoped discussions', () => {
   // Seed a Project + member + an Intent vertex (carrying project_id, as init-ws
-  // stamps it) + one produced Artifact (Intent --CONTAINS--> Artifact).
+  // stamps it) + one produced Artifact (Intent --CONTAINS--> Artifact) + one
+  // mirrored question gate (Intent --CONTAINS--> Question, as the graph-writer's
+  // recordQuestion creates it — id is the gate's humanTaskId, no title prop).
   const seedIntent = async () => {
     const projectId = randomUUID();
     const intentId = randomUUID();
     const artifactId = `art-${randomUUID()}`;
+    const questionId = `ht-${randomUUID()}`;
     await seedProject({
       projectId,
       members: [
@@ -1462,7 +1465,21 @@ describe('intent-scoped discussions', () => {
       .from_('i')
       .to('a')
       .next();
-    return { projectId, intentId, artifactId };
+    await g
+      .V()
+      .has('Intent', 'id', intentId)
+      .as('i')
+      .addV('Question')
+      .property('id', questionId)
+      .property('intent_id', intentId)
+      .property('questions', JSON.stringify([{ text: 'Which database?' }]))
+      .property('structured_answer', '')
+      .as('q')
+      .addE('CONTAINS')
+      .from_('i')
+      .to('q')
+      .next();
+    return { projectId, intentId, artifactId, questionId };
   };
 
   const intentPath = (suffix) => `/api/projects/{projectId}/intents/{intentId}${suffix}`;
@@ -1497,6 +1514,37 @@ describe('intent-scoped discussions', () => {
     const res = await call('POST', intentPath('/discussions'), {
       pathParameters: { projectId, intentId },
       body: { entityType: 'artifact', entityId: 'art-not-here' },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('creates a question-anchored thread on a mirrored question gate', async () => {
+    const { projectId, intentId, questionId } = await seedIntent();
+    // The Question vertex carries no title/name — the client-provided
+    // entityTitle (the question text) is the fallback.
+    const created = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'question', entityId: questionId, entityTitle: 'Which database?' },
+    });
+    expect(created.statusCode).toBe(200);
+    expect(json(created).entityType).toBe('question');
+    expect(json(created).entityId).toBe(questionId);
+    expect(json(created).entityTitle).toBe('Which database?');
+
+    // Idempotent get-or-create: same anchor returns the same thread.
+    const again = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'question', entityId: questionId },
+    });
+    expect(again.statusCode).toBe(200);
+    expect(json(again).id).toBe(json(created).id);
+  });
+
+  it('rejects a question not contained by the intent', async () => {
+    const { projectId, intentId } = await seedIntent();
+    const res = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'question', entityId: 'ht-not-here' },
     });
     expect(res.statusCode).toBe(404);
   });

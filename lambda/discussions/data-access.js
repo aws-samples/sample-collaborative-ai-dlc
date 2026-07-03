@@ -87,17 +87,18 @@ export const findDiscussionByAnchor = async (g, anchorLabel, entityId, entityTyp
 // Does the anchor (entityType, entityId) exist under this scope's root vertex?
 // - sprint: `sprint`/`inception` self-anchor on the Sprint; others hang off it
 //   via CONTAINS (or HAS_REVIEW for `review`) — original v1 behaviour verbatim.
-// - intent: `intent` self-anchors on the Intent; `artifact` hangs off it via
-//   CONTAINS (the same edge init-ws/graph-writer use for produced artifacts).
+// - intent: `intent` self-anchors on the Intent; `artifact` and `question`
+//   hang off it via CONTAINS (the same edge init-ws/graph-writer use for
+//   produced artifacts and mirrored question gates).
 export const anchorExistsInScope = async (g, scope, entityType, entityId) => {
   if (scope.kind === 'intent') {
     if (entityType === 'intent') return entityId === scope.rootId;
-    if (entityType === 'artifact') {
+    if (entityType === 'artifact' || entityType === 'question') {
       return g
         .V()
         .has('Intent', 'id', scope.rootId)
         .out('CONTAINS')
-        .hasLabel('Artifact')
+        .hasLabel(scope.anchorLabels[entityType])
         .has('id', entityId)
         .hasNext();
     }

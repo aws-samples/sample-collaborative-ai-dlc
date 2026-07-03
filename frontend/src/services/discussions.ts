@@ -10,6 +10,8 @@ import { api, ApiError } from './api';
 export type DiscussionEntityType =
   | 'sprint'
   | 'inception'
+  // `question` is valid in BOTH scopes: v1 sprint questions and v2 question
+  // gates (the Neptune Question mirror of a HUMAN# gate).
   | 'question'
   | 'requirement'
   | 'userstory'
