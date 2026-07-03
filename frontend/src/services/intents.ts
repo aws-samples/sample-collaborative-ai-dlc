@@ -370,6 +370,22 @@ export const intentsService = {
     api.get<ProjectMetrics>(`/projects/${projectId}/intents/metrics`),
   graph: (projectId: string, intentId: string) =>
     api.get<IntentKnowledgeGraph>(`/projects/${projectId}/intents/${intentId}/graph`),
+  // Lazy agent transcript (the detail DTO carries no outputs). `stageInstanceId`
+  // scopes to one pane — the literal "intent" is the stage-less workspace/init
+  // bucket; `afterSeq` fetches only chunks emitted after a known sequence.
+  outputs: (
+    projectId: string,
+    intentId: string,
+    params: { stageInstanceId?: string; afterSeq?: number } = {},
+  ) => {
+    const qs = new URLSearchParams();
+    if (params.stageInstanceId !== undefined) qs.set('stageInstanceId', params.stageInstanceId);
+    if (params.afterSeq !== undefined) qs.set('afterSeq', String(params.afterSeq));
+    const suffix = qs.size > 0 ? `?${qs.toString()}` : '';
+    return api.get<{ outputs: IntentOutput[] }>(
+      `/projects/${projectId}/intents/${intentId}/outputs${suffix}`,
+    );
+  },
   create: (projectId: string, input: CreateIntentInput) =>
     api.post<Intent>(`/projects/${projectId}/intents`, input),
   start: (projectId: string, intentId: string) =>

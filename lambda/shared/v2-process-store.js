@@ -40,6 +40,22 @@ const {
 
 const bySk = (a, b) => a.sk.localeCompare(b.sk);
 
+// A DynamoDB Query returns at most 1MB per page; a long run's partition (agent
+// output chunks alone can exceed that) silently truncates without this loop.
+// Always drain LastEvaluatedKey so callers see the COMPLETE record set — the
+// detail DTO rendering stages as PENDING because STAGE# rows sorted past the
+// first page was exactly this bug.
+const queryAll = async (ddb, input) => {
+  const items = [];
+  let ExclusiveStartKey;
+  do {
+    const page = await ddb.send(new QueryCommand({ ...input, ExclusiveStartKey }));
+    items.push(...(page.Items ?? []));
+    ExclusiveStartKey = page.LastEvaluatedKey;
+  } while (ExclusiveStartKey);
+  return items;
+};
+
 const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   if (!ddb) throw new Error('createProcessStore requires a DynamoDB DocumentClient');
   const table = () => tableName ?? process.env.V2_PROCESS_TABLE;
@@ -704,16 +720,39 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return item;
   };
 
-  // Read output chunks in emit order (for restore-on-reload).
-  const getOutputs = async (executionId) => {
-    const { Items } = await ddb.send(
-      new QueryCommand({
-        TableName: table(),
-        KeyConditionExpression: 'pk = :pk AND begins_with(sk, :p)',
-        ExpressionAttributeValues: { ':pk': executionPk(executionId), ':p': 'OUTPUT#' },
-      }),
-    );
-    return Items ?? [];
+  // Read output chunks in emit order (for restore-on-reload / the lazy
+  // per-pane transcript endpoint). Optional filters:
+  //   stageInstanceId — only that stage's chunks; pass null EXPLICITLY (via
+  //     `filterByStage: true`) to select the stage-less workspace/init bucket.
+  //   afterSeq — only chunks with seq > afterSeq (incremental catch-up cursor).
+  // Paginated: output partitions routinely exceed one 1MB Query page.
+  const getOutputs = async (
+    executionId,
+    { stageInstanceId, filterByStage = stageInstanceId !== undefined, afterSeq = null } = {},
+  ) => {
+    const values = { ':pk': executionPk(executionId), ':p': 'OUTPUT#' };
+    const filters = [];
+    if (filterByStage) {
+      if (stageInstanceId == null) {
+        filters.push('attribute_not_exists(stageInstanceId) OR stageInstanceId = :null');
+        values[':null'] = null;
+      } else {
+        filters.push('stageInstanceId = :sid');
+        values[':sid'] = stageInstanceId;
+      }
+    }
+    if (afterSeq != null) {
+      filters.push('seq > :after');
+      values[':after'] = Number(afterSeq);
+    }
+    return queryAll(ddb, {
+      TableName: table(),
+      KeyConditionExpression: 'pk = :pk AND begins_with(sk, :p)',
+      ...(filters.length > 0
+        ? { FilterExpression: filters.map((f) => `(${f})`).join(' AND ') }
+        : {}),
+      ExpressionAttributeValues: values,
+    });
   };
 
   // List a project's executions (intents) newest-first via GSI1. Optionally
@@ -962,16 +1001,34 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   };
 
   // Read every record for an execution, grouped by type (for the resume lambda /
-  // admin / restore-on-reload).
-  const getExecutionRecords = async (executionId) => {
-    const { Items } = await ddb.send(
-      new QueryCommand({
-        TableName: table(),
-        KeyConditionExpression: 'pk = :pk',
-        ExpressionAttributeValues: { ':pk': executionPk(executionId) },
-      }),
-    );
-    const records = (Items ?? []).toSorted(bySk);
+  // admin / restore-on-reload). Fully paginated — see queryAll.
+  //
+  // `includeOutputs: false` skips the OUTPUT# rows entirely (two SK range
+  // queries around the OUTPUT# prefix) instead of reading megabytes of
+  // transcript the caller will throw away: the detail DTO polls this every few
+  // seconds and outputs are the bulk of a long run's partition. '#' is 0x23;
+  // '$' (0x24) is the next code point, so sk < 'OUTPUT#' and sk >= 'OUTPUT$'
+  // partition the SK space exactly around the OUTPUT# prefix.
+  const getExecutionRecords = async (executionId, { includeOutputs = true } = {}) => {
+    const base = {
+      TableName: table(),
+      ExpressionAttributeValues: { ':pk': executionPk(executionId) },
+    };
+    const Items = includeOutputs
+      ? await queryAll(ddb, { ...base, KeyConditionExpression: 'pk = :pk' })
+      : [
+          ...(await queryAll(ddb, {
+            ...base,
+            KeyConditionExpression: 'pk = :pk AND sk < :lo',
+            ExpressionAttributeValues: { ':pk': executionPk(executionId), ':lo': 'OUTPUT#' },
+          })),
+          ...(await queryAll(ddb, {
+            ...base,
+            KeyConditionExpression: 'pk = :pk AND sk >= :hi',
+            ExpressionAttributeValues: { ':pk': executionPk(executionId), ':hi': 'OUTPUT$' },
+          })),
+        ];
+    const records = Items.toSorted(bySk);
     return {
       meta: records.find((r) => r.sk === META) ?? null,
       stages: records.filter((r) => r.sk.startsWith('STAGE#')),

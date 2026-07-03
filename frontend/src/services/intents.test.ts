@@ -36,4 +36,18 @@ describe('intentsService request paths', () => {
       answer: { ok: 1 },
     });
   });
+
+  it('outputs — lazy transcript with pane + cursor params', async () => {
+    await intentsService.outputs('p1', 'i1');
+    expect(get).toHaveBeenCalledWith('/projects/p1/intents/i1/outputs');
+
+    await intentsService.outputs('p1', 'i1', { stageInstanceId: 'si-1', afterSeq: 42 });
+    expect(get).toHaveBeenCalledWith(
+      '/projects/p1/intents/i1/outputs?stageInstanceId=si-1&afterSeq=42',
+    );
+
+    // The workspace/init pane key is passed through literally.
+    await intentsService.outputs('p1', 'i1', { stageInstanceId: 'intent' });
+    expect(get).toHaveBeenCalledWith('/projects/p1/intents/i1/outputs?stageInstanceId=intent');
+  });
 });

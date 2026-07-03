@@ -215,6 +215,85 @@ describe('createProcessStore', () => {
     expect(grouped.metrics).toHaveLength(1);
   });
 
+  it('getExecutionRecords drains every 1MB Query page (STAGE rows sort past OUTPUT)', async () => {
+    // The regression: OUTPUT# chunks filled the first 1MB page, LastEvaluatedKey
+    // was ignored, and every STAGE# row (sorting after OUTPUT#) vanished — the
+    // UI rendered a healthy run as all-PENDING.
+    ddb
+      .on(QueryCommand)
+      .resolvesOnce({
+        Items: [{ sk: 'META' }, { sk: 'OUTPUT#000000000001', seq: 1 }],
+        LastEvaluatedKey: { pk: 'EXEC#e1', sk: 'OUTPUT#000000000001' },
+      })
+      .resolvesOnce({
+        Items: [{ sk: 'OUTPUT#000000000002', seq: 2 }, { sk: 'STAGE#si-1' }],
+      });
+    const grouped = await store.getExecutionRecords('e1');
+    expect(grouped.meta).toEqual({ sk: 'META' });
+    expect(grouped.outputs).toHaveLength(2);
+    expect(grouped.stages).toHaveLength(1);
+    const calls = ddb.commandCalls(QueryCommand);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].args[0].input.ExclusiveStartKey).toEqual({
+      pk: 'EXEC#e1',
+      sk: 'OUTPUT#000000000001',
+    });
+  });
+
+  it('getExecutionRecords includeOutputs:false skips the OUTPUT# range entirely', async () => {
+    ddb
+      .on(QueryCommand)
+      .resolvesOnce({ Items: [{ sk: 'META' }, { sk: 'HUMAN#h1' }] })
+      .resolvesOnce({ Items: [{ sk: 'STAGE#si-1' }, { sk: 'UNITPLAN' }] });
+    const grouped = await store.getExecutionRecords('e1', { includeOutputs: false });
+    expect(grouped.meta).toEqual({ sk: 'META' });
+    expect(grouped.stages).toHaveLength(1);
+    expect(grouped.unitPlan).toEqual({ sk: 'UNITPLAN' });
+    expect(grouped.outputs).toHaveLength(0);
+    const [below, above] = ddb.commandCalls(QueryCommand).map((c) => c.args[0].input);
+    expect(below.KeyConditionExpression).toBe('pk = :pk AND sk < :lo');
+    expect(below.ExpressionAttributeValues[':lo']).toBe('OUTPUT#');
+    expect(above.KeyConditionExpression).toBe('pk = :pk AND sk >= :hi');
+    expect(above.ExpressionAttributeValues[':hi']).toBe('OUTPUT$');
+  });
+
+  it('getOutputs filters by stageInstanceId (null → stage-less bucket) and afterSeq', async () => {
+    ddb.on(QueryCommand).resolves({ Items: [] });
+    await store.getOutputs('e1', { stageInstanceId: 'si-1', afterSeq: 7 });
+    let input = ddb.commandCalls(QueryCommand)[0].args[0].input;
+    expect(input.KeyConditionExpression).toBe('pk = :pk AND begins_with(sk, :p)');
+    expect(input.FilterExpression).toBe('(stageInstanceId = :sid) AND (seq > :after)');
+    expect(input.ExpressionAttributeValues[':sid']).toBe('si-1');
+    expect(input.ExpressionAttributeValues[':after']).toBe(7);
+
+    ddb.reset();
+    ddb.on(QueryCommand).resolves({ Items: [] });
+    await store.getOutputs('e1', { stageInstanceId: null });
+    input = ddb.commandCalls(QueryCommand)[0].args[0].input;
+    expect(input.FilterExpression).toBe(
+      '(attribute_not_exists(stageInstanceId) OR stageInstanceId = :null)',
+    );
+
+    ddb.reset();
+    ddb.on(QueryCommand).resolves({ Items: [] });
+    await store.getOutputs('e1');
+    input = ddb.commandCalls(QueryCommand)[0].args[0].input;
+    expect(input.FilterExpression).toBeUndefined();
+  });
+
+  it('getOutputs drains every Query page (transcripts exceed 1MB)', async () => {
+    ddb
+      .on(QueryCommand)
+      .resolvesOnce({
+        Items: [{ sk: 'OUTPUT#000000000001', seq: 1 }],
+        LastEvaluatedKey: { pk: 'EXEC#e1', sk: 'OUTPUT#000000000001' },
+      })
+      .resolvesOnce({ Items: [{ sk: 'OUTPUT#000000000002', seq: 2 }] });
+    const rows = await store.getOutputs('e1');
+    expect(rows.map((r) => r.seq)).toEqual([1, 2]);
+    expect(ddb.commandCalls(QueryCommand)).toHaveLength(2);
+  });
+
   it('recordMetric stores the numeric bag', async () => {
     ddb.on(PutCommand).resolves({});
     await store.recordMetric({

@@ -61,6 +61,27 @@ const installDdbFakes = () => {
       if (values[':sk']) items = items.filter((i) => (i.GSI1SK || '').startsWith(values[':sk']));
     } else {
       items = items.filter((i) => i.pk === values[':pk']);
+      // SK conditions the store actually issues: begins_with prefix reads and
+      // the OUTPUT#-excluding range pair (getExecutionRecords includeOutputs:false).
+      const cond = input.KeyConditionExpression || '';
+      const prefix = /begins_with\(sk,\s*(:\w+)\)/.exec(cond);
+      if (prefix) {
+        items = items.filter((i) => (i.sk || '').startsWith(values[prefix[1]]));
+      }
+      if (cond.includes('sk < :lo')) items = items.filter((i) => i.sk < values[':lo']);
+      if (cond.includes('sk >= :hi')) items = items.filter((i) => i.sk >= values[':hi']);
+      items.sort((a, b) => (a.sk || '').localeCompare(b.sk || ''));
+    }
+    // FilterExpression subset used by getOutputs (stage attribution + seq cursor).
+    const filter = input.FilterExpression || '';
+    if (filter.includes('stageInstanceId = :sid')) {
+      items = items.filter((i) => i.stageInstanceId === values[':sid']);
+    }
+    if (filter.includes('attribute_not_exists(stageInstanceId)')) {
+      items = items.filter((i) => i.stageInstanceId == null);
+    }
+    if (filter.includes('seq > :after')) {
+      items = items.filter((i) => Number(i.seq) > values[':after']);
     }
     if (input.ScanIndexForward === false) items.reverse();
     return { Items: items.map((i) => ({ ...i })) };
@@ -676,6 +697,98 @@ describe('GET list + detail', () => {
     }
     expect(detail.intent.cliModels).toEqual({ claude: 'us.anthropic.claude-opus-4-8' });
     expect(detail.intent.parkReleaseSeconds).toBe(120);
+  });
+
+  const seedOutput = (intentId, seq, { stageInstanceId = null, content = '' } = {}) => {
+    const sk = `OUTPUT#${String(seq).padStart(12, '0')}`;
+    procStore.set(keyOf(`EXEC#${intentId}`, sk), {
+      pk: `EXEC#${intentId}`,
+      sk,
+      type: 'Output',
+      executionId: intentId,
+      stageInstanceId,
+      unitSlug: null,
+      seq,
+      kind: 'stdout',
+      content,
+      timestamp: `2026-01-01T00:00:0${seq}Z`,
+    });
+  };
+
+  it('detail DTO excludes OUTPUT rows (the transcript is served by /outputs)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    seedOutput(intent.id, 1, { stageInstanceId: 'si-req', content: 'hello ' });
+    seedOutput(intent.id, 2, { stageInstanceId: 'si-req', content: 'world' });
+    const dto = JSON.parse(
+      (
+        await handler({
+          httpMethod: 'GET',
+          path: `/projects/${projectId}/intents/${intent.id}`,
+          pathParameters: { projectId, intentId: intent.id },
+          ...claims(sub),
+        })
+      ).body,
+    );
+    expect(dto.outputs).toEqual([]);
+    // The rest of the DTO is unaffected by transcript volume.
+    expect(dto.intent.id).toBe(intent.id);
+  });
+
+  const getOutputs = (sub, projectId, intentId, qs = null) =>
+    handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intentId}/outputs`,
+      pathParameters: { projectId, intentId },
+      queryStringParameters: qs,
+      ...claims(sub),
+    });
+
+  it('GET /outputs returns the transcript, filterable by stage and afterSeq', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    seedOutput(intent.id, 1, { stageInstanceId: null, content: 'init-ws ' });
+    seedOutput(intent.id, 2, { stageInstanceId: 'si-req', content: 'req-a ' });
+    seedOutput(intent.id, 3, { stageInstanceId: 'si-req', content: 'req-b' });
+
+    // Unfiltered: everything in seq order.
+    const all = JSON.parse((await getOutputs(sub, projectId, intent.id)).body);
+    expect(all.outputs.map((o) => o.seq)).toEqual([1, 2, 3]);
+
+    // Per-stage pane.
+    const stage = JSON.parse(
+      (await getOutputs(sub, projectId, intent.id, { stageInstanceId: 'si-req' })).body,
+    );
+    expect(stage.outputs.map((o) => o.content)).toEqual(['req-a ', 'req-b']);
+
+    // "intent" selects the stage-less workspace/init bucket.
+    const ws = JSON.parse(
+      (await getOutputs(sub, projectId, intent.id, { stageInstanceId: 'intent' })).body,
+    );
+    expect(ws.outputs.map((o) => o.seq)).toEqual([1]);
+    expect(ws.outputs[0].stageInstanceId).toBeNull();
+
+    // afterSeq cursor (incremental catch-up).
+    const tail = JSON.parse(
+      (await getOutputs(sub, projectId, intent.id, { stageInstanceId: 'si-req', afterSeq: '2' }))
+        .body,
+    );
+    expect(tail.outputs.map((o) => o.seq)).toEqual([3]);
+
+    // Malformed cursor is a 400, not a scan.
+    const bad = await getOutputs(sub, projectId, intent.id, { afterSeq: 'x' });
+    expect(bad.statusCode).toBe(400);
+  });
+
+  it('GET /outputs 404s across projects (membership enforced)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const otherProject = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const res = await getOutputs(sub, otherProject, intent.id);
+    expect(res.statusCode).toBe(404);
   });
 
   it('attaches per-sample cost to metrics, joining the stage-row model', async () => {
