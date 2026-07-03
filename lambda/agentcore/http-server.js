@@ -79,8 +79,10 @@ export const dispatchInvocation = async ({
   busy?.enter();
   try {
     const result = await handler(payload);
-    const statusCode = result?.ok === false ? 422 : 200;
-    return { statusCode, body: { ...result, command, at: now() } };
+    // Command-level failures are part of the application protocol. Keep them on
+    // HTTP 200 so Bedrock AgentCore returns the JSON body to the orchestrator
+    // instead of turning the response into an SDK transport exception.
+    return { statusCode: 200, body: { ...result, command, at: now() } };
   } catch (e) {
     return { statusCode: 500, body: { error: e.message, command } };
   } finally {

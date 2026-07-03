@@ -83,23 +83,23 @@ describe('dispatchInvocation', () => {
       statusCode: 200,
       body: { ok: true, unitSlug: 'auth', command: 'init-lane' },
     });
-    // A merge conflict is an ok:false VALUE → 422, never a 500.
+    // A merge conflict is an ok:false VALUE, not an HTTP transport failure.
     const b = await dispatchInvocation({
       payload: { command: 'merge-lane', unitSlug: 'auth' },
       handlers: laneHandlers,
     });
     expect(b).toMatchObject({
-      statusCode: 422,
+      statusCode: 200,
       body: { ok: false, reason: 'merge_conflict', command: 'merge-lane' },
     });
   });
 
-  it('maps a handler ok:false to 422', async () => {
+  it('keeps a handler ok:false on 200 so callers receive the failure body', async () => {
     const r = await dispatchInvocation({
       payload: { command: 'run-stage' },
       handlers: { runStage: async () => ({ ok: false, reason: 'no_cli' }) },
     });
-    expect(r.statusCode).toBe(422);
+    expect(r.statusCode).toBe(200);
     expect(r.body.reason).toBe('no_cli');
   });
 
