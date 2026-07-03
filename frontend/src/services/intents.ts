@@ -60,9 +60,22 @@ export interface Intent {
   maxParallelUnits?: number | null;
   constructionAutonomyMode?: 'gated' | 'autonomous' | null;
   source: IntentSource | null;
+  // Non-fatal plan warnings snapshotted at create: the selected scope resolves
+  // to a runnable but DEGRADED plan (required inputs whose producer stage is
+  // out of scope, parallel sections downgraded to once-per-workflow). Null
+  // when the plan is clean.
+  planWarnings?: PlanWarning[] | null;
   createdAt: string | null;
   updatedAt: string | null;
   completedAt: string | null;
+}
+
+// Shape mirrors the plan resolver's error objects (lambda/shared/v2-execution-plan.js).
+export interface PlanWarning {
+  code: string;
+  message: string;
+  stageId?: string;
+  ref?: string | string[];
 }
 
 export interface IntentStage {

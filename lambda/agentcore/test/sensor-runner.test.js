@@ -82,6 +82,27 @@ describe('runStageSensors — graph kind', () => {
     expect(verdicts[0].detail.artifacts[0].unreferenced).toEqual(['security-design']);
   });
 
+  it('upstream-coverage skips expectedAbsent consumes (no false FAIL in lean scopes)', async () => {
+    // `unit-of-work` is never produced in this scope (producer out of scope) —
+    // the output can't legitimately reference it, so it must not be threaded
+    // into the coverage check. Only the present input counts.
+    const runner = createSensorRunner({
+      graph: fakeGraph({ design: [{ id: 'd1', content: 'derived from requirements' }] }),
+      loadBlockScript: async () => '',
+      workspaceDir: null,
+    });
+    const verdicts = await runner.runStageSensors({
+      sensors: [{ sensorId: 'upstream-coverage', severity: 'advisory' }],
+      outputArtifacts: [{ artifact: 'design' }],
+      inputArtifacts: [
+        { artifact: 'requirements', required: true },
+        { artifact: 'unit-of-work', required: true, expectedAbsent: true },
+      ],
+      stageId: 's',
+    });
+    expect(verdicts[0].result).toBe('PASS');
+  });
+
   it('INCONCLUSIVE when the stage produced no artifacts', async () => {
     const runner = createSensorRunner({
       graph: fakeGraph({}),

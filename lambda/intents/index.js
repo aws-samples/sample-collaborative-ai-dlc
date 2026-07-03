@@ -469,6 +469,7 @@ const mapIntent = (meta) => ({
   constructionAutonomyMode: meta.constructionAutonomyMode ?? null,
   prStrategy: meta.prStrategy ?? null,
   source: meta.source ?? null,
+  planWarnings: meta.planWarnings ?? null,
   createdAt: meta.startedAt ?? null,
   updatedAt: meta.updatedAt ?? null,
   completedAt: meta.completedAt ?? null,
@@ -1062,6 +1063,28 @@ export const handler = async (event) => {
           scopes,
         });
       }
+      // Resolve the full execution plan NOW, before any row is written. The
+      // plan is a pure function of (workflow@pinnedVersion, scope), so a pass
+      // here holds for the whole intent lifetime — this turns a structurally
+      // broken scope into a synchronous 400 instead of a post-init-ws
+      // `plan_invalid` failure (after a git clone + Neptune anchor were burnt).
+      // Non-fatal `warnings` (scope-shortcut degradations: inputs whose
+      // producer is out of scope, sections downgraded to once-per-workflow)
+      // are persisted on the intent so the UI can surface the degraded run.
+      const planCheck = await loadExecutionPlan({
+        ddb,
+        tableName: BLOCKS_TABLE(),
+        workflowId,
+        workflowVersion,
+        scope,
+      });
+      if (!planCheck.valid) {
+        return response(400, {
+          error: `Scope "${scope}" is not runnable for workflow "${workflowId}"`,
+          errors: planCheck.errors ?? [],
+        });
+      }
+      const planWarnings = planCheck.warnings?.length ? planCheck.warnings : null;
       // Optional provenance — when the intent is kicked off from a tracker
       // issue, record which one. The imported text rides in `prompt`; this is
       // only the back-link. Validated against the project's actual bindings.
@@ -1086,6 +1109,7 @@ export const handler = async (event) => {
         maxParallelUnits: cfg.maxParallelUnits,
         prStrategy: cfg.prStrategy,
         source,
+        planWarnings,
       });
       return response(201, mapIntent(meta));
     }

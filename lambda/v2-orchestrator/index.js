@@ -354,6 +354,19 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       const out = await fail('plan_invalid', JSON.stringify(planResult.errors ?? []));
       return { ...out, errors: planResult.errors };
     }
+    // Non-fatal scope-shortcut warnings (inputs whose producer is out of scope,
+    // sections degraded to once-per-workflow) — visible on the timeline so a
+    // degraded lean-scope run is attributable, never a blocker.
+    if (planResult.warnings?.length) {
+      await emitEvent(
+        ctx,
+        'plan-warnings',
+        'v2.plan.warnings',
+        `Plan resolved with ${planResult.warnings.length} scope warning(s): ${[
+          ...new Set(planResult.warnings.map((w) => w.code)),
+        ].join(', ')}`,
+      );
+    }
 
     const stages = planResult.plan.stages;
     // Instance-id namespace: exposed by the plan so per-unit instance ids here

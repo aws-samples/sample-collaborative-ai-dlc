@@ -48,7 +48,10 @@ const UNIT_FOR_EACH = 'unit-of-work';
 const UNIT_DAG_ARTIFACT = 'unit-of-work-dependency';
 
 // Every validation failure is a plain object (never thrown) so the caller can
-// surface all reasons at once and reject cleanly.
+// surface all reasons at once and reject cleanly. Warnings share the shape:
+// non-fatal, informational, returned alongside `errors` without affecting
+// `valid` (the "required when in scope" pattern — see the dangling-consume
+// classification below).
 const err = (code, message, extra = {}) => ({ code, message, ...extra });
 
 // Deterministic stage-instance id: stable for a given (namespace, stageId), with
@@ -199,6 +202,7 @@ const buildExecutionPlan = ({
   compiled = null,
 } = {}) => {
   const errors = [];
+  const warnings = [];
   const {
     stagesById = {},
     agentsById = {},
@@ -211,6 +215,7 @@ const buildExecutionPlan = ({
     return {
       valid: false,
       errors: [err('workflow_missing', 'workflow composition is required')],
+      warnings,
       plan: null,
     };
   }
@@ -235,7 +240,7 @@ const buildExecutionPlan = ({
       }),
     );
     // Without a resolvable scope there is nothing meaningful to build.
-    return { valid: false, errors, plan: null };
+    return { valid: false, errors, warnings, plan: null };
   }
 
   // Project the workflow onto the scope: only EXECUTE placements become stage
@@ -243,6 +248,18 @@ const buildExecutionPlan = ({
   // authored workflow.
   const placements = (workflow.placements ?? []).filter((p) => isInScope(p, scope));
   const inScopeIds = new Set(placements.map((p) => p.stageId));
+
+  // Scope-agnostic producer map over the WHOLE authored workflow (every
+  // placement, any scope). This is what tells a deliberate scope shortcut
+  // (producer exists, but is SKIP for this scope — upstream's documented
+  // "required when in scope" semantics) apart from a genuine authoring bug
+  // (no stage anywhere produces the artifact — a typo / missing placement).
+  const workflowProducers = new Set();
+  for (const p of workflow.placements ?? []) {
+    for (const artifact of stagesById[p.stageId]?.produces ?? []) {
+      workflowProducers.add(artifact);
+    }
+  }
 
   // Reuse the authoring graph compiler over the in-scope subset (single source
   // of truth for cycle + dangling detection).
@@ -255,18 +272,37 @@ const buildExecutionPlan = ({
     );
   }
 
-  // A dangling consume (consumed but produced by no in-scope stage) is fatal
-  // UNLESS the edge is allowed to dangle: an optional input (required:false) or
-  // one gated on a run condition (conditionalOn — e.g. brownfield). Required,
-  // unconditional dangles fail the plan.
+  // A dangling consume (consumed but produced by no in-scope stage) follows the
+  // "required when in scope" pattern (upstream stage-definition.md: required
+  // means "if the producing stage runs, this consume must be satisfied", never
+  // a global existence assertion). Classification:
+  //   - optional (required:false) or gated (conditionalOn) → allowed, silent.
+  //   - required + unconditional, but SOME stage in the authored workflow
+  //     produces it (just not in this scope) → the designed scope-shortcut:
+  //     non-fatal `scope_absent_consume` warning; the input is annotated
+  //     `expectedAbsent` below so the prompt/sensors treat it as by-design.
+  //   - required + unconditional, produced NOWHERE in the workflow → a genuine
+  //     authoring bug (typo / missing placement): fatal `dangling_consume`.
+  const expectedAbsentByStage = new Map(); // stageId → Set(artifact)
   for (const { stageId, artifact } of graph.danglingConsumes) {
     const input = stageInputs(stagesById[stageId]).find((i) => i.artifact === artifact);
     const allowed = input && (input.required === false || input.conditionalOn != null);
-    if (!allowed) {
+    if (allowed) continue;
+    if (workflowProducers.has(artifact)) {
+      warnings.push(
+        err(
+          'scope_absent_consume',
+          `stage "${stageId}" consumes "${artifact}", whose producer is not in scope "${scope}" — expected absent (scope shortcut)`,
+          { stageId, ref: artifact },
+        ),
+      );
+      if (!expectedAbsentByStage.has(stageId)) expectedAbsentByStage.set(stageId, new Set());
+      expectedAbsentByStage.get(stageId).add(artifact);
+    } else {
       errors.push(
         err(
           'dangling_consume',
-          `stage "${stageId}" consumes "${artifact}", which no in-scope stage produces`,
+          `stage "${stageId}" consumes "${artifact}", which no stage in the workflow produces`,
           { stageId, ref: artifact },
         ),
       );
@@ -331,10 +367,16 @@ const buildExecutionPlan = ({
       ].filter((id) => inScopeIds.has(id));
 
       // Input artifacts, annotated with the in-scope stages that produce each.
+      // `expectedAbsent` marks a required input whose producer exists in the
+      // workflow but is out of scope (the scope-shortcut warning above): the
+      // artifact will NOT exist at runtime and downstream consumers (prompt
+      // rendering, sensors) must treat its absence as by-design, never invent
+      // it. Mirrors upstream PR #482's `consumes_absent` / `expected: true`.
       const inputArtifacts = stageInputs(stage).map((i) => ({
         artifact: i.artifact,
         required: i.required,
         conditionalOn: i.conditionalOn,
+        ...(expectedAbsentByStage.get(stageId)?.has(i.artifact) ? { expectedAbsent: true } : {}),
         producedBy: [
           ...new Set(
             graph.edges
@@ -370,9 +412,12 @@ const buildExecutionPlan = ({
         // Fan-out marker (upstream `for_each`) + execution policy (ALWAYS /
         // CONDITIONAL — per-unit skippability, docs/v2-parallel.md A2 rule 7).
         // `parallelSection` is stamped after the topological sort below.
+        // `forEachDegraded` flips true when the stage's section is degraded to
+        // once-per-workflow because the unit-DAG producer is out of scope.
         forEach: stage.forEach ?? null,
         execution: stage.execution ?? null,
         parallelSection: null,
+        forEachDegraded: false,
       };
 
       // `agent-team` is a known-but-unrunnable mode. Flag, don't crash.
@@ -408,10 +453,30 @@ const buildExecutionPlan = ({
   //   no_unit_dag_producer — every section needs an in-scope stage EARLIER in
   //     the run order producing `unit-of-work-dependency` (the scheduling
   //     truth); mirrors upstream's Doctor rule, same style as dangling_consume.
+  //     Like dangling_consume, this follows the "required when in scope"
+  //     split: a producer that exists in the authored workflow but is SKIP for
+  //     this scope DEGRADES the section (its stages run once per workflow —
+  //     upstream's linear-walk behavior for lean scopes) with a
+  //     `scope_absent_unit_dag` warning; only a producer that exists NOWHERE
+  //     stays fatal.
   const sections = [];
   {
     const producesUnitDag = (s) =>
       (s.outputArtifacts ?? []).some((o) => (o.artifact ?? o) === UNIT_DAG_ARTIFACT);
+    // Scope-agnostic: does any once-per-workflow placement in the authored
+    // workflow produce the unit DAG? Same qualifier as the in-scope gate (a
+    // forEach producer can never gate a fan-out — not even its own), applied
+    // workflow-wide to tell a scope shortcut from a genuine authoring gap.
+    // The in-scope variant tells an ORDERING bug (producer in scope but after
+    // the section — stays fatal) apart from the out-of-scope shortcut.
+    const unitDagProducerPlacements = (workflow.placements ?? []).filter((p) => {
+      const st = stagesById[p.stageId];
+      return st && st.forEach !== UNIT_FOR_EACH && (st.produces ?? []).includes(UNIT_DAG_ARTIFACT);
+    });
+    const workflowHasUnitDagProducer = unitDagProducerPlacements.length > 0;
+    const inScopeHasUnitDagProducer = unitDagProducerPlacements.some((p) =>
+      inScopeIds.has(p.stageId),
+    );
     let dagProducerSeen = false;
     let current = null;
     for (const s of orderedStages) {
@@ -442,22 +507,51 @@ const buildExecutionPlan = ({
       // so only non-forEach producers count — checked after section membership.
       if (s.forEach !== UNIT_FOR_EACH && producesUnitDag(s)) dagProducerSeen = true;
     }
+    const degradedIndexes = new Set();
     for (const section of sections) {
       if (!section.hasUnitDagProducer) {
-        errors.push(
-          err(
-            'no_unit_dag_producer',
-            `parallel section ${section.index} (${section.stageIds.join(', ')}) has no in-scope upstream stage producing "${UNIT_DAG_ARTIFACT}"`,
-            { ref: section.stageIds },
-          ),
-        );
+        // Degrade ONLY when the producer is genuinely out of scope (the lean-
+        // scope shortcut). A producer that IS in scope but sits after the
+        // section (an ordering bug) — or exists nowhere — stays fatal.
+        if (workflowHasUnitDagProducer && !inScopeHasUnitDagProducer) {
+          warnings.push(
+            err(
+              'scope_absent_unit_dag',
+              `parallel section ${section.index} (${section.stageIds.join(', ')}) has no in-scope producer of "${UNIT_DAG_ARTIFACT}"; its stages run once per workflow (degraded)`,
+              { ref: section.stageIds },
+            ),
+          );
+          degradedIndexes.add(section.index);
+        } else {
+          errors.push(
+            err(
+              'no_unit_dag_producer',
+              `parallel section ${section.index} (${section.stageIds.join(', ')}) has no in-scope upstream stage producing "${UNIT_DAG_ARTIFACT}"`,
+              { ref: section.stageIds },
+            ),
+          );
+        }
       }
       delete section.hasUnitDagProducer;
+    }
+    // Degrade: clear the section stamp so planSegments routes these stages
+    // through the plain once-per-workflow loop, and mark each instance so the
+    // runtime's unit-lane invariants (run-stage's unit_required) stand down.
+    if (degradedIndexes.size > 0) {
+      for (const s of orderedStages) {
+        if (s.parallelSection != null && degradedIndexes.has(s.parallelSection)) {
+          s.parallelSection = null;
+          s.forEachDegraded = true;
+        }
+      }
+      for (let i = sections.length - 1; i >= 0; i -= 1) {
+        if (degradedIndexes.has(sections[i].index)) sections.splice(i, 1);
+      }
     }
   }
 
   const plan = { workflowId, workflowVersion, scope, namespace, stages: orderedStages, sections };
-  return { valid: errors.length === 0, errors, plan };
+  return { valid: errors.length === 0, errors, warnings, plan };
 };
 
 // Split an ordered plan-stage list into an alternating sequence of segments the

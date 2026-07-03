@@ -1828,6 +1828,52 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
     const put = deps.store.calls.find((c) => c[0] === 'putStage')[1];
     expect(put.unitSlug).toBeNull();
   });
+
+  // "Required when in scope" (lean scopes): the DAG producer exists in the
+  // workflow but is SKIP for the selected scope, so the plan resolver degrades
+  // the forEach stage to once-per-workflow (forEachDegraded). Dispatching it
+  // without a unit must run, not fail unit_required.
+  const leanWorkflow = () => ({
+    id: 'aidlc-v2',
+    version: 1,
+    placements: [
+      { stageId: 'units-generation', order: 0, scopeMembership: { feature: 'EXECUTE' } },
+      {
+        stageId: 'code-generation',
+        order: 1,
+        scopeMembership: { feature: 'EXECUTE', bugfix: 'EXECUTE' },
+      },
+    ],
+    ruleRefs: [],
+    scopeRefs: [{ scopeId: 'feature' }, { scopeId: 'bugfix' }],
+  });
+  const leanDeps = (overrides = {}) =>
+    baseDeps({
+      store: spyStore({}),
+      loadLibrary: async () => ({ workflow: leanWorkflow(), library: unitLibrary() }),
+      spawnFn: okSpawn,
+      ...overrides,
+    });
+
+  it('runs a DEGRADED forEach stage once per workflow without a unit (lean scope)', async () => {
+    const deps = leanDeps();
+    const res = await runStage({ ...baseArgs, stageId: 'code-generation', scope: 'bugfix' }, deps);
+    expect(res).toMatchObject({
+      ok: true,
+      state: 'SUCCEEDED',
+      stageInstanceId: planStageInstanceId('aidlc-v2@1', 'code-generation'),
+      unitSlug: null,
+    });
+  });
+
+  it('rejects a unit dispatch onto a DEGRADED forEach stage (unit_not_applicable)', async () => {
+    const deps = leanDeps();
+    const res = await runStage(
+      { ...baseArgs, stageId: 'code-generation', scope: 'bugfix', unitSlug: 'auth' },
+      deps,
+    );
+    expect(res).toMatchObject({ ok: false, reason: 'unit_not_applicable' });
+  });
 });
 
 // ── run-stage delivers the intent from META to the prompt ────────────────────

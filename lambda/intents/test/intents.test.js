@@ -387,6 +387,106 @@ describe('POST /projects/{id}/intents', () => {
     expect(body.scopes).toEqual(['feature']);
   });
 
+  // ── Create-time plan validation ("required when in scope") ──
+  // Seed a workflow snapshot with real placements + STAGE catalog blocks so
+  // loadExecutionPlan resolves an actual plan at create.
+  const seedPlanFixtures = (projectId, { scopes, placements, stages }) => {
+    void projectId;
+    for (const scopeId of scopes) {
+      procStore.set(keyOf('WF#default#aidlc-v2', `V#4#SCOPEREF#${scopeId}`), {
+        pk: 'WF#default#aidlc-v2',
+        sk: `V#4#SCOPEREF#${scopeId}`,
+        scopeId,
+      });
+    }
+    for (const p of placements) {
+      procStore.set(keyOf('WF#default#aidlc-v2', `V#4#PLACEMENT#${p.stageId}`), {
+        pk: 'WF#default#aidlc-v2',
+        sk: `V#4#PLACEMENT#${p.stageId}`,
+        stageId: p.stageId,
+        order: p.order ?? 0,
+        scopeMembership: p.scopeMembership,
+      });
+    }
+    for (const s of stages) {
+      procStore.set(keyOf(`BLOCK#SYSTEM#STAGE#${s.id}`, 'V#latest'), {
+        pk: `BLOCK#SYSTEM#STAGE#${s.id}`,
+        sk: 'V#latest',
+        GSI1PK: 'TENANT#SYSTEM#STAGE',
+        GSI1SK: s.id,
+        blockId: s.id,
+        id: s.id,
+        version: 1,
+        phase: 'construction',
+        mode: 'inline',
+        leadAgent: 'orchestrator', // reserved ref — no AGENT block needed
+        produces: s.produces ?? [],
+        consumes: s.consumes ?? [],
+        sensors: [],
+        humanValidation: 'none',
+      });
+    }
+  };
+
+  it('rejects a scope whose plan cannot resolve (genuinely dangling consume) with a 400', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedPlanFixtures(projectId, {
+      scopes: ['broken'],
+      placements: [{ stageId: 'consumer', scopeMembership: { broken: 'EXECUTE' } }],
+      stages: [{ id: 'consumer', consumes: [{ artifact: 'ghost', required: true }] }],
+    });
+    const res = await createIntent(sub, projectId, { title: 'I', prompt: 'X', scope: 'broken' });
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.error).toMatch(/not runnable/);
+    expect(body.errors.map((e) => e.code)).toContain('dangling_consume');
+    // Nothing was written — the DRAFT row must not exist.
+    const metas = [...procStore.values()].filter(
+      (i) => i.type === 'Execution' && i.projectId === projectId,
+    );
+    expect(metas).toEqual([]);
+  });
+
+  it('persists non-fatal plan warnings on the intent and returns them in the 201 (lean scope)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedPlanFixtures(projectId, {
+      scopes: ['lean'],
+      placements: [
+        // Producer exists in the workflow but is SKIP for the lean scope.
+        { stageId: 'producer', scopeMembership: { lean: 'SKIP' } },
+        { stageId: 'consumer', order: 1, scopeMembership: { lean: 'EXECUTE' } },
+      ],
+      stages: [
+        { id: 'producer', produces: ['unit-of-work'] },
+        { id: 'consumer', consumes: [{ artifact: 'unit-of-work', required: true }] },
+      ],
+    });
+    const res = await createIntent(sub, projectId, { title: 'I', prompt: 'X', scope: 'lean' });
+    expect(res.statusCode).toBe(201);
+    const intent = JSON.parse(res.body);
+    expect(intent.planWarnings).toHaveLength(1);
+    expect(intent.planWarnings[0]).toMatchObject({
+      code: 'scope_absent_consume',
+      stageId: 'consumer',
+      ref: 'unit-of-work',
+    });
+    // Persisted on META (not just echoed) so GETs carry it after navigation.
+    const meta = [...procStore.values()].find(
+      (i) => i.type === 'Execution' && i.intentId === intent.id,
+    );
+    expect(meta.planWarnings).toHaveLength(1);
+  });
+
+  it('leaves planWarnings null for a clean scope', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const res = await createIntent(sub, projectId);
+    expect(res.statusCode).toBe(201);
+    expect(JSON.parse(res.body).planWarnings).toBeNull();
+  });
+
   it('rejects a v1 project', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = randomUUID();

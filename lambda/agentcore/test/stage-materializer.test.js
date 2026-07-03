@@ -65,6 +65,24 @@ describe('buildStagePrompt', () => {
     // The annex is unconditional — present even when optional sections are omitted.
     expect(prompt).toContain(MCP_EXECUTION_ANNEX);
   });
+
+  it('calls out an expectedAbsent input so the agent never fabricates it (lean scopes)', () => {
+    const prompt = buildStagePrompt({
+      stage: stage({
+        inputArtifacts: [
+          { artifact: 'intent-capture', required: true, producedBy: ['intent-capture'] },
+          { artifact: 'unit-of-work', required: true, expectedAbsent: true, producedBy: [] },
+        ],
+      }),
+      stageBody: 'x',
+    });
+    // Present inputs keep the normal rendering.
+    expect(prompt).toContain('- intent-capture — from intent-capture');
+    // Absent-by-design inputs carry the explicit degradation instruction.
+    expect(prompt).toContain('- unit-of-work — NOT produced in this scope');
+    expect(prompt).toContain('Do NOT fabricate its content');
+    expect(prompt).toContain('fall back to the available in-scope context');
+  });
 });
 
 describe('buildStagePrompt — MCP execution annex binding', () => {

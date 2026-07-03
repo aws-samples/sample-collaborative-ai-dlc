@@ -700,11 +700,21 @@ export const runStage = async (
   // stage exists ONLY as per-unit instances — dispatching it without a unit
   // would run it once against the whole workflow and break its own contract;
   // conversely a unit slug on a once-per-workflow stage is a dispatch bug.
-  // Fail loudly on both rather than guessing.
+  // Fail loudly on both rather than guessing. EXCEPTION: a degraded forEach
+  // stage (`forEachDegraded` — the scope has no in-scope unit-DAG producer, so
+  // the plan resolver downgraded its section) legitimately runs once per
+  // workflow with no unit dimension, mirroring upstream's linear walk.
   if (unitSlug && stage.forEach !== UNIT_FOR_EACH) {
     return fail(null, 'unit_not_applicable', `stage "${stageId}" is not a per-unit stage`);
   }
-  if (!unitSlug && stage.forEach === UNIT_FOR_EACH) {
+  if (unitSlug && stage.forEachDegraded) {
+    return fail(
+      null,
+      'unit_not_applicable',
+      `stage "${stageId}" is degraded to once-per-workflow in scope "${scope}"`,
+    );
+  }
+  if (!unitSlug && stage.forEach === UNIT_FOR_EACH && !stage.forEachDegraded) {
     return fail(null, 'unit_required', `stage "${stageId}" runs per unit; no unitSlug supplied`);
   }
   // The stage-instance id gains the unit dimension on a lane run — one

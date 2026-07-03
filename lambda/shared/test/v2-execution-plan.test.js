@@ -116,7 +116,7 @@ describe('buildExecutionPlan — validation', () => {
     expect(plan.stages.find((s) => s.stageId === 'a').agentRef).toBe('orchestrator');
   });
 
-  it('fails a required, unconditional dangling consume', () => {
+  it('fails a required, unconditional dangling consume when NO stage in the workflow produces it', () => {
     const lib = baseLibrary({
       stagesById: { a: stage('a', { consumes: [{ artifact: 'missing', required: true }] }) },
     });
@@ -127,6 +127,39 @@ describe('buildExecutionPlan — validation', () => {
     });
     expect(valid).toBe(false);
     expect(errors.map((e) => e.code)).toContain('dangling_consume');
+  });
+
+  it('downgrades a required dangling consume to a warning when the producer exists but is out of scope', () => {
+    // The "required when in scope" pattern: units-gen produces the artifact but
+    // is SKIP for this scope — a designed scope shortcut, not an authoring bug.
+    const lib = baseLibrary({
+      stagesById: {
+        'units-gen': stage('units-gen', { produces: ['unit-of-work'] }),
+        a: stage('a', { consumes: [{ artifact: 'unit-of-work', required: true }] }),
+      },
+    });
+    const wf = workflow([
+      { stageId: 'units-gen', order: 0, scopeMembership: { feature: 'SKIP', mvp: 'EXECUTE' } },
+      placement('a', 'feature', 1),
+    ]);
+    const { valid, errors, warnings, plan } = buildExecutionPlan({
+      workflow: wf,
+      scope: 'feature',
+      library: lib,
+    });
+    expect(valid).toBe(true);
+    expect(errors).toEqual([]);
+    expect(warnings.map((w) => w.code)).toContain('scope_absent_consume');
+    expect(warnings.find((w) => w.code === 'scope_absent_consume')).toMatchObject({
+      stageId: 'a',
+      ref: 'unit-of-work',
+    });
+    // The input is annotated so the prompt/sensors treat the absence as by-design.
+    const input = plan.stages
+      .find((s) => s.stageId === 'a')
+      .inputArtifacts.find((i) => i.artifact === 'unit-of-work');
+    expect(input.expectedAbsent).toBe(true);
+    expect(input.producedBy).toEqual([]);
   });
 
   it('allows an optional dangling consume', () => {
@@ -405,16 +438,63 @@ describe('buildExecutionPlan — parallel sections', () => {
     expect(plan.stages[0].parallelSection).toBeNull();
   });
 
-  it('an out-of-scope DAG producer does not satisfy the gate', () => {
+  it('an out-of-scope DAG producer DEGRADES the section instead of failing the plan', () => {
+    // "Required when in scope": units-gen exists in the workflow but is SKIP for
+    // this scope (the lean-scope shortcut, e.g. bugfix/poc skipping
+    // units-generation). The section's stages run once per workflow — like
+    // upstream's linear walk — with a warning, never a fatal error.
     const lib = sectionLibrary();
     const wf = workflow([
       { stageId: 'units-gen', order: 0, scopeMembership: { feature: 'SKIP' } },
       placement('fd', 'feature', 1),
       placement('cg', 'feature', 2),
     ]);
-    const { valid, errors } = buildExecutionPlan({ workflow: wf, scope: 'feature', library: lib });
+    const { valid, errors, warnings, plan } = buildExecutionPlan({
+      workflow: wf,
+      scope: 'feature',
+      library: lib,
+    });
+    expect(valid).toBe(true);
+    expect(errors).toEqual([]);
+    expect(warnings.map((w) => w.code)).toContain('scope_absent_unit_dag');
+    // fd also consumes unit-of-work-dependency (required) — its producer is the
+    // same out-of-scope stage, so it rides the consume warning too.
+    expect(warnings.map((w) => w.code)).toContain('scope_absent_consume');
+    // Degraded: no sections, no parallelSection stamps, degraded flag set so the
+    // runtime's unit-lane invariants stand down.
+    expect(plan.sections).toEqual([]);
+    const byId = Object.fromEntries(plan.stages.map((s) => [s.stageId, s]));
+    expect(byId.fd.parallelSection).toBeNull();
+    expect(byId.cg.parallelSection).toBeNull();
+    expect(byId.fd.forEachDegraded).toBe(true);
+    expect(byId.cg.forEachDegraded).toBe(true);
+    // The forEach marker stays truthful (the block still declares it).
+    expect(byId.fd.forEach).toBe('unit-of-work');
+  });
+
+  it('an in-scope DAG producer placed AFTER the section stays fatal (ordering bug, not a shortcut)', () => {
+    // Degradation applies only when the producer is OUT of scope. Here the
+    // producer is in scope but topologically after the fan-out — the section
+    // could never have a unit plan; that is an authoring bug, not a lean scope.
+    const lib = baseLibrary({
+      stagesById: {
+        early: stage('early', { forEach: 'unit-of-work' }),
+        'units-gen': stage('units-gen', {
+          produces: ['unit-of-work-dependency'],
+          requires: ['early'],
+        }),
+      },
+      artifactsById: { 'unit-of-work-dependency': { id: 'unit-of-work-dependency' } },
+    });
+    const wf = workflow([placement('early', 'feature', 0), placement('units-gen', 'feature', 1)]);
+    const { valid, errors, warnings } = buildExecutionPlan({
+      workflow: wf,
+      scope: 'feature',
+      library: lib,
+    });
     expect(valid).toBe(false);
     expect(errors.map((e) => e.code)).toContain('no_unit_dag_producer');
+    expect(warnings.map((w) => w.code)).not.toContain('scope_absent_unit_dag');
   });
 });
 

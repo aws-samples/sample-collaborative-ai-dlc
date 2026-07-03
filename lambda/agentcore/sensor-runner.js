@@ -275,7 +275,15 @@ export const createSensorRunner = ({
     inputArtifacts = [],
     stageId,
   }) => {
-    const consumes = (inputArtifacts ?? []).map((i) => i.artifact).filter(Boolean);
+    // Upstream-coverage checks that the stage's output references each consumed
+    // artifact — an `expectedAbsent` input (producer out of scope, absence by
+    // design) can never be legitimately referenced, so threading it through
+    // would manufacture a guaranteed false FAIL on every run in a lean scope.
+    // Filter them out (our port of upstream PR #482's sensor filter).
+    const consumes = (inputArtifacts ?? [])
+      .filter((i) => !i?.expectedAbsent)
+      .map((i) => i.artifact)
+      .filter(Boolean);
     const verdicts = [];
     for (const sensor of sensors) {
       const kind = sensorKind(sensor);
