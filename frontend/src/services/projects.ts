@@ -42,11 +42,18 @@ export interface TrackerBinding {
 // phases/stages). There is no migration path between them.
 export type ProjectKind = 'v1' | 'v2';
 
+// How agents authenticate against the git provider for this project. `'oauth'`
+// (the default) uses the creator's per-user OAuth connection. `'app'` (GitHub
+// only) has agents act as a server-side GitHub App installation (a bot); the
+// backend enforces an operator repo allowlist for app mode.
+export type GitAuthMode = 'oauth' | 'app';
+
 export interface Project {
   id: string;
   name: string;
   gitProvider: GitProvider;
   gitRepo: string;
+  gitAuthMode?: GitAuthMode;
   agentCli: AgentCli;
   cliModels?: CliModels;
   issueIntegrationEnabled?: boolean;
@@ -88,6 +95,7 @@ export interface CreateProjectInput {
   cliModels?: CliModels;
   issueIntegrationEnabled?: boolean;
   repos?: { url: string; provider?: string; role?: RepoRole }[];
+  gitAuthMode?: GitAuthMode;
   // v2 project options. `kind: 'v2'` enables the rest; omitted = v1.
   kind?: ProjectKind;
   workflowId?: string;

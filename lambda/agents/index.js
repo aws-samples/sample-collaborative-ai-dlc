@@ -27,7 +27,11 @@ const gremlin = require('gremlin');
 const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
 const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
 const { buildResponse } = require('./shared/response');
-const { resolveGitToken, ensureFreshGitToken } = require('./shared/git-token');
+const {
+  resolveGitToken,
+  ensureFreshGitToken,
+  getInstallationToken,
+} = require('./shared/git-token');
 const { getGitConnection } = require('./shared/git-connection-store');
 const { validateMcpServersJson } = require('./shared/mcp-validator');
 const { broadcastToSprintChannel } = require('./shared/ws-fanout');
@@ -898,6 +902,7 @@ exports.handler = async (event) => {
       let projectCliModels = {};
       let gitRepos = [];
       let gitProvider = 'github';
+      let gitAuthMode = 'oauth';
       let projectCreatedBy = '';
       let isMember = false;
       await withNeptune(async (g) => {
@@ -907,6 +912,7 @@ exports.handler = async (event) => {
           projectAgentCli = result.value.get('agent_cli')?.[0] || 'kiro';
           projectCliModels = parseCliModels(result.value.get('cli_models')?.[0] || '{}');
           gitProvider = result.value.get('git_provider')?.[0] || 'github';
+          gitAuthMode = result.value.get('git_auth_mode')?.[0] || 'oauth';
           projectCreatedBy = result.value.get('created_by')?.[0] || '';
         }
         // Fetch all Repository vertices linked to the project (multi-repo support)
@@ -999,7 +1005,56 @@ exports.handler = async (event) => {
         gitRepo = '';
         gitRepos = [];
       }
-      if (!isDiscussion && gitIdentityUserId) {
+      if (!isDiscussion && gitAuthMode === 'app' && gitProvider === 'github') {
+        // GitHub App projects authenticate as the installation, not a user
+        // OAuth connection — mint a short-lived installation token instead.
+        //
+        // SECURITY (fail-closed): an installation token can write every repo the
+        // App is installed on, so App auth is gated by an operator-approved
+        // allowlist (GITHUB_APP_ALLOWED_REPOS, comma-separated owner/repo). The
+        // projects Lambda blocks creating/flipping an app-mode project for a
+        // non-approved repo; this is the runtime backstop at the mint chokepoint.
+        const allowedAppRepos = (process.env.GITHUB_APP_ALLOWED_REPOS || '')
+          .split(',')
+          .map((s) => s.trim().toLowerCase())
+          .filter(Boolean);
+        const appRepoUrls = [gitRepo, ...gitRepos.map((r) => r.url)].filter(Boolean);
+        const appAuthPermitted =
+          allowedAppRepos.length > 0 &&
+          appRepoUrls.length > 0 &&
+          appRepoUrls.every((u) => allowedAppRepos.includes(u.toLowerCase().trim()));
+        if (!appAuthPermitted) {
+          console.error(
+            `[agents] Rejecting app-auth job: repos ${JSON.stringify(appRepoUrls)} not in GITHUB_APP_ALLOWED_REPOS`,
+          );
+          return response(403, {
+            error: 'GitHub App auth not permitted',
+            message: 'This project is not approved for GitHub App authentication.',
+          });
+        }
+        // Scope the minted token to ONLY this project's repos + the minimal
+        // permissions the agent loop needs (clone/push, open PRs, comment).
+        // Full owner/repo slugs are passed; git-token.js validates the owner
+        // and extracts short names for the GitHub mint API.
+        try {
+          gitToken = await getInstallationToken({
+            secrets,
+            repositories: appRepoUrls,
+            permissions: {
+              contents: 'write',
+              pull_requests: 'write',
+              issues: 'write',
+              metadata: 'read',
+            },
+          });
+        } catch (e) {
+          console.error('Failed to mint GitHub App installation token:', e.message);
+          return response(500, {
+            error: 'GitHub App auth failed',
+            message: 'Could not obtain a GitHub App installation token for this project.',
+          });
+        }
+      } else if (!isDiscussion && gitIdentityUserId) {
         try {
           // Resolve the owner's connection for the project's git provider. A
           // non-matching/absent provider yields null, leaving gitToken empty →
@@ -1014,8 +1069,11 @@ exports.handler = async (event) => {
         }
       }
 
-      // Fall back to gitToken passed in request body (used by orchestrator/system re-triggers)
-      if (!gitToken && input.gitToken) {
+      // Fall back to a gitToken in the request body ONLY for synthetic
+      // orchestrator/system re-triggers, which carry the owner's already-resolved
+      // token across phases. A human caller must never inject a token — it would
+      // bypass the connection-store provider check above.
+      if (!gitToken && input.gitToken && isSyntheticCaller) {
         gitToken = input.gitToken;
       }
 

@@ -22,6 +22,14 @@ output "jira_oauth_secret_name" {
   value = aws_secretsmanager_secret.jira_oauth.name
 }
 
+output "github_app_private_key_secret_arn" {
+  value = aws_secretsmanager_secret.github_app_private_key.arn
+}
+
+output "github_app_private_key_secret_name" {
+  value = aws_secretsmanager_secret.github_app_private_key.name
+}
+
 output "git_connections_table_name" {
   value = aws_dynamodb_table.git_connections.name
 }

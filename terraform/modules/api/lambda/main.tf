@@ -368,6 +368,11 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
       },
       {
         Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = var.github_app_private_key_secret_arn != "" ? [var.github_app_private_key_secret_arn] : ["arn:${local.partition}:secretsmanager:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:secret:nonexistent-github-app-*"]
+      },
+      {
+        Effect   = "Allow"
         Action   = ["ecs:RunTask"]
         Resource = "${var.agent_task_definition_family_arn}:*"
         Condition = {
@@ -560,6 +565,7 @@ module "projects_lambda" {
     GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
     GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
     ARTIFACTS_BUCKET               = var.artifacts_bucket_name
+    GITHUB_APP_ALLOWED_REPOS       = var.github_app_allowed_repos
   }
 }
 

@@ -619,6 +619,30 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
     const repoInputError = validateRepoRoleAndProvider(data);
     if (repoInputError) return response(400, { error: repoInputError });
 
+    // SECURITY: app-mode repos must be on the allowlist, including late additions.
+    const projectProps = await g
+      .V()
+      .has('Project', 'id', projectId)
+      .valueMap('git_auth_mode')
+      .next();
+    const projectAuthMode = projectProps.value?.get?.('git_auth_mode')?.[0] || 'oauth';
+    if (projectAuthMode === 'app') {
+      const allowedAppRepos = (process.env.GITHUB_APP_ALLOWED_REPOS || '')
+        .split(',')
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean);
+      if (
+        allowedAppRepos.length === 0 ||
+        !allowedAppRepos.includes(data.url.toLowerCase().trim())
+      ) {
+        return response(403, {
+          error: 'GitHub App auth not permitted',
+          message:
+            'GitHub App authentication is restricted to approved repositories. Use OAuth or request approval for this repository.',
+        });
+      }
+    }
+
     // Check for duplicates
     const duplicate = await g
       .V()
@@ -840,6 +864,7 @@ export const handler = async (event) => {
             id: getVal(v, 'id') || projectId,
             name: getVal(v, 'name'),
             gitProvider: getVal(v, 'git_provider') || 'github',
+            gitAuthMode: getVal(v, 'git_auth_mode') || 'oauth',
             gitRepo: derivePrimaryRepo(repos, legacyGitRepo),
             agentCli: getVal(v, 'agent_cli') || 'kiro',
             cliModels: parseCliModels(getVal(v, 'cli_models')),
@@ -888,6 +913,7 @@ export const handler = async (event) => {
               id: pid,
               name: getVal(v, 'name'),
               gitProvider: getVal(v, 'git_provider') || 'github',
+              gitAuthMode: getVal(v, 'git_auth_mode') || 'oauth',
               gitRepo: derivePrimaryRepo(repos, legacyGitRepo),
               agentCli: getVal(v, 'agent_cli') || 'kiro',
               cliModels: parseCliModels(getVal(v, 'cli_models')),
@@ -954,6 +980,29 @@ export const handler = async (event) => {
         const primaryUrl = derivePrimaryRepo(inputRepos, '');
 
         const issueIntegrationEnabled = data.issueIntegrationEnabled === true;
+        const gitAuthMode = data.gitAuthMode === 'app' ? 'app' : 'oauth';
+        // SECURITY: App auth hands agents an installation token scoped to the
+        // project's repos. Restrict it to an operator-approved allowlist so a
+        // user cannot create an app-mode project pointed at an arbitrary repo
+        // the App happens to be installed on. Empty allowlist = App auth off.
+        if (gitAuthMode === 'app') {
+          const allowedAppRepos = (process.env.GITHUB_APP_ALLOWED_REPOS || '')
+            .split(',')
+            .map((s) => s.trim().toLowerCase())
+            .filter(Boolean);
+          const appRepoUrls = inputRepos.map((r) => r.url);
+          if (
+            allowedAppRepos.length === 0 ||
+            appRepoUrls.length === 0 ||
+            !appRepoUrls.every((u) => allowedAppRepos.includes(u.toLowerCase().trim()))
+          ) {
+            return response(403, {
+              error: 'GitHub App auth not permitted',
+              message:
+                'GitHub App authentication is restricted to approved repositories. Use OAuth or request approval for this repository.',
+            });
+          }
+        }
         const cliModelsValidation = normalizeCliModels(data.cliModels);
         if (!cliModelsValidation.valid) {
           return response(400, {
@@ -991,6 +1040,7 @@ export const handler = async (event) => {
           .property('id', id)
           .property('name', data.name)
           .property('git_provider', data.gitProvider || 'github')
+          .property('git_auth_mode', gitAuthMode)
           .property('git_repo', primaryUrl)
           .property('agent_cli', data.agentCli || 'kiro')
           .property('cli_models', JSON.stringify(cliModels))
@@ -1067,6 +1117,7 @@ export const handler = async (event) => {
           id,
           name: data.name,
           gitProvider: data.gitProvider || 'github',
+          gitAuthMode,
           gitRepo: primaryUrl,
           agentCli: data.agentCli || 'kiro',
           cliModels,
@@ -1088,6 +1139,40 @@ export const handler = async (event) => {
         }
 
         const data = JSON.parse(body);
+        // SECURITY: re-check the App-auth allowlist whenever this update yields
+        // an app-mode project (flipping to app, or repointing an app-mode repo),
+        // validating BEFORE any write so a disallowed combo never persists.
+        if (data.gitAuthMode === 'app' || data.gitRepo !== undefined) {
+          const cur = await g.V().has('Project', 'id', projectId).valueMap().next();
+          const curMode = cur.value?.get?.('git_auth_mode')?.[0] || 'oauth';
+          const curRepo = cur.value?.get?.('git_repo')?.[0] || '';
+          const effMode = data.gitAuthMode
+            ? data.gitAuthMode === 'app'
+              ? 'app'
+              : 'oauth'
+            : curMode;
+          const effRepo = data.gitRepo !== undefined ? data.gitRepo : curRepo;
+          if (effMode === 'app') {
+            const allowedAppRepos = (process.env.GITHUB_APP_ALLOWED_REPOS || '')
+              .split(',')
+              .map((s) => s.trim().toLowerCase())
+              .filter(Boolean);
+            const existingRepos = await fetchRepos(g, projectId);
+            const allRepoUrls = [effRepo, ...existingRepos.map((r) => r.url)].filter(Boolean);
+            const uniqueRepoUrls = [...new Set(allRepoUrls)];
+            if (
+              allowedAppRepos.length === 0 ||
+              uniqueRepoUrls.length === 0 ||
+              !uniqueRepoUrls.every((u) => allowedAppRepos.includes(u.toLowerCase().trim()))
+            ) {
+              return response(403, {
+                error: 'GitHub App auth not permitted',
+                message:
+                  'GitHub App authentication is restricted to approved repositories. Use OAuth or request approval for this repository.',
+              });
+            }
+          }
+        }
         if (data.name) {
           await g
             .V()
@@ -1122,6 +1207,17 @@ export const handler = async (event) => {
             .V()
             .has('Project', 'id', projectId)
             .property(cardinality.single, 'git_provider', data.gitProvider)
+            .next();
+        }
+        if (data.gitAuthMode) {
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .property(
+              cardinality.single,
+              'git_auth_mode',
+              data.gitAuthMode === 'app' ? 'app' : 'oauth',
+            )
             .next();
         }
         if (data.agentCli) {

@@ -39,3 +39,21 @@ variable "git_author_email" {
   type        = string
   default     = "ai-dlc@example.com"
 }
+
+variable "github_app_id" {
+  description = "GitHub App ID. Used by the agents Lambda to mint installation tokens for projects with git_auth_mode='app'. Empty disables App auth."
+  type        = string
+  default     = ""
+}
+
+variable "github_app_installation_id" {
+  description = "GitHub App installation ID for the target org/repos. Empty disables App auth."
+  type        = string
+  default     = ""
+}
+
+variable "github_app_allowed_repos" {
+  description = "Comma-separated owner/repo allowlist permitted to use GitHub App auth (git_auth_mode='app'). Empty disables App auth. Enforced by the projects and agents Lambdas."
+  type        = string
+  default     = ""
+}

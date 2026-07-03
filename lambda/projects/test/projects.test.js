@@ -100,6 +100,7 @@ describe('POST /projects', () => {
       gitRepo: '',
       gitProvider: 'github',
       agentCli: 'kiro',
+      gitAuthMode: 'oauth',
       cliModels: {},
       issueIntegrationEnabled: false,
       repos: [],
@@ -133,6 +134,7 @@ describe('POST /projects', () => {
       gitRepo: 'git@x:y.git',
       gitProvider: 'github',
       agentCli: 'kiro',
+      gitAuthMode: 'oauth',
       cliModels: {},
       issueIntegrationEnabled: false,
       repos: [
@@ -1884,5 +1886,83 @@ describe('shared Repository vertex safety on project DELETE', () => {
     expect(JSON.parse(listRes.body)).toEqual(
       expect.arrayContaining([expect.objectContaining({ url: sharedRepo })]),
     );
+  });
+});
+
+describe('GitHub App allowlist security', () => {
+  it('POST /projects rejects app-mode when repo not in allowlist (case-insensitive)', async () => {
+    vi.stubEnv('GITHUB_APP_ALLOWED_REPOS', 'Org/Allowed-Repo');
+    const sub = `u-${randomUUID()}`;
+    const res = await handler({
+      httpMethod: 'POST',
+      body: JSON.stringify({
+        name: 'Blocked',
+        gitAuthMode: 'app',
+        repos: [{ url: 'org/other-repo', role: 'primary' }],
+      }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body).error).toBe('GitHub App auth not permitted');
+    vi.stubEnv('GITHUB_APP_ALLOWED_REPOS', '');
+  });
+
+  it('POST /projects accepts app-mode when slug matches case-insensitively', async () => {
+    vi.stubEnv('GITHUB_APP_ALLOWED_REPOS', 'ORG/my-repo');
+    const sub = `u-${randomUUID()}`;
+    const res = await handler({
+      httpMethod: 'POST',
+      body: JSON.stringify({
+        name: 'Allowed',
+        gitAuthMode: 'app',
+        repos: [{ url: 'org/My-Repo', role: 'primary' }],
+      }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(201);
+    vi.stubEnv('GITHUB_APP_ALLOWED_REPOS', '');
+  });
+
+  it('PUT validates ALL repos (primary + additional) against the allowlist', async () => {
+    vi.stubEnv('GITHUB_APP_ALLOWED_REPOS', 'org/primary-repo');
+    const sub = `u-${randomUUID()}`;
+    // Create a project in oauth mode with two repos
+    const created = await createProject(sub, {
+      name: 'MultiRepo',
+      gitAuthMode: 'oauth',
+      repos: [
+        { url: 'org/primary-repo', role: 'primary' },
+        { url: 'org/extra-repo', role: 'secondary' },
+      ],
+    });
+    // Now try to flip to app mode — should fail because extra-repo is not allowed
+    const putRes = await handler({
+      httpMethod: 'PUT',
+      pathParameters: { projectId: created.id },
+      body: JSON.stringify({ gitAuthMode: 'app' }),
+      ...claims(sub),
+    });
+    expect(putRes.statusCode).toBe(403);
+    expect(JSON.parse(putRes.body).error).toBe('GitHub App auth not permitted');
+    vi.stubEnv('GITHUB_APP_ALLOWED_REPOS', '');
+  });
+
+  it('POST /repos rejects adding a repo to an app-mode project when not on the allowlist', async () => {
+    vi.stubEnv('GITHUB_APP_ALLOWED_REPOS', 'org/allowed-repo');
+    const sub = `u-${randomUUID()}`;
+    const created = await createProject(sub, {
+      name: 'AppProject',
+      gitAuthMode: 'app',
+      repos: [{ url: 'org/allowed-repo', role: 'primary' }],
+    });
+    const addRes = await handler({
+      ...reposEvent('POST', created.id, {
+        body: JSON.stringify({ url: 'org/forbidden-repo', role: 'secondary' }),
+      }),
+      ...claims(sub),
+    });
+    expect(addRes.statusCode).toBe(403);
+    expect(JSON.parse(addRes.body).error).toBe('GitHub App auth not permitted');
+    vi.stubEnv('GITHUB_APP_ALLOWED_REPOS', '');
   });
 });

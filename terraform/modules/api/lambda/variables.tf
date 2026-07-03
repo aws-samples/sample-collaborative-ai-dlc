@@ -130,6 +130,18 @@ variable "gitlab_oauth_secret_arn" {
   default     = ""
 }
 
+variable "github_app_private_key_secret_arn" {
+  description = "Secrets Manager secret ARN for the GitHub App private key (PEM). Grants the agents-orchestrator role GetSecretValue."
+  type        = string
+  default     = ""
+}
+
+variable "github_app_allowed_repos" {
+  description = "Comma-separated owner/repo allowlist permitted to use GitHub App auth. Empty disables App auth. Injected into the projects Lambda."
+  type        = string
+  default     = ""
+}
+
 variable "gitlab_redirect_uri" {
   description = "OAuth redirect URI for GitLab callback"
   type        = string

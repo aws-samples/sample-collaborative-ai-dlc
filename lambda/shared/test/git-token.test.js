@@ -1,4 +1,5 @@
 import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
+import { generateKeyPairSync } from 'node:crypto';
 import { mockClient } from 'aws-sdk-client-mock';
 import { SSMClient, GetParameterCommand, PutParameterCommand } from '@aws-sdk/client-ssm';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
@@ -156,5 +157,118 @@ describe('ensureFreshGitToken', () => {
     await expect(
       ensureFreshGitToken({ ssm, secrets, ddb, item: ITEM, gitProvider: 'gitlab' }),
     ).rejects.toThrow(/refresh token revoked/);
+  });
+});
+
+describe('getInstallationToken', () => {
+  let getInstallationToken;
+  // Throwaway keypair generated per test run — never a literal PEM in the
+  // repo, so secret scanners stay green.
+  const { privateKey: testPrivateKeyPem } = generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+  });
+
+  beforeEach(async () => {
+    ssmMock.reset();
+    secretsMock.reset();
+    delete globalThis.fetch;
+    vi.stubEnv('GITHUB_APP_PRIVATE_KEY_SECRET_NAME', 'test/app-key');
+    vi.stubEnv('GITHUB_APP_ID', '12345');
+    vi.stubEnv('GITHUB_INSTALLATION_ID', '67890');
+    // Re-import to get a fresh module with clean caches.
+    vi.resetModules();
+    ({ getInstallationToken } = await import('../git-token.js'));
+    secretsMock.on(GetSecretValueCommand).resolves({
+      SecretString: JSON.stringify({ privateKey: testPrivateKeyPem }),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    delete globalThis.fetch;
+  });
+
+  it('throws when repositories array is missing (fail-closed)', async () => {
+    await expect(getInstallationToken({ secrets })).rejects.toThrow(
+      /repositories array is required/,
+    );
+  });
+
+  it('throws when repositories array is empty (fail-closed)', async () => {
+    await expect(getInstallationToken({ secrets, repositories: [] })).rejects.toThrow(
+      /repositories array is required/,
+    );
+  });
+
+  it('throws when repo owner does not match installation account', async () => {
+    globalThis.fetch = vi.fn(async (url) => {
+      if (url.includes('/access_tokens')) {
+        return {
+          ok: true,
+          json: async () => ({
+            token: 'ghs_xxx',
+            expires_at: new Date(Date.now() + 3600000).toISOString(),
+          }),
+        };
+      }
+      // GET /app/installations/:id → account.login = 'my-org'
+      return { ok: true, json: async () => ({ account: { login: 'my-org' } }) };
+    });
+
+    await expect(
+      getInstallationToken({ secrets, repositories: ['other-org/repo'] }),
+    ).rejects.toThrow(/owner does not match installation account/);
+  });
+
+  it('mints a token when owner matches (case-insensitive)', async () => {
+    globalThis.fetch = vi.fn(async (url) => {
+      if (url.includes('/access_tokens')) {
+        return {
+          ok: true,
+          json: async () => ({
+            token: 'ghs_abc',
+            expires_at: new Date(Date.now() + 3600000).toISOString(),
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({ account: { login: 'My-Org' } }) };
+    });
+
+    const token = await getInstallationToken({ secrets, repositories: ['my-org/my-repo'] });
+    expect(token).toBe('ghs_abc');
+    // Verify the mint call used short repo names
+    const mintCall = globalThis.fetch.mock.calls.find((c) => c[0].includes('/access_tokens'));
+    const mintBody = JSON.parse(mintCall[1].body);
+    expect(mintBody.repositories).toEqual(['my-repo']);
+    // Default permissions applied
+    expect(mintBody.permissions).toEqual(
+      expect.objectContaining({ contents: 'write', pull_requests: 'write' }),
+    );
+  });
+
+  it('applies caller-specified permissions when provided', async () => {
+    globalThis.fetch = vi.fn(async (url) => {
+      if (url.includes('/access_tokens')) {
+        return {
+          ok: true,
+          json: async () => ({
+            token: 'ghs_xyz',
+            expires_at: new Date(Date.now() + 3600000).toISOString(),
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({ account: { login: 'org' } }) };
+    });
+
+    await getInstallationToken({
+      secrets,
+      repositories: ['org/repo'],
+      permissions: { contents: 'read' },
+    });
+    const mintCall = globalThis.fetch.mock.calls.find((c) => c[0].includes('/access_tokens'));
+    const mintBody = JSON.parse(mintCall[1].body);
+    expect(mintBody.permissions).toEqual({ contents: 'read' });
   });
 });

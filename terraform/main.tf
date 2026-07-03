@@ -9,6 +9,10 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.0"
     }
+    awscc = {
+      source  = "hashicorp/awscc"
+      version = "~> 1.0"
+    }
   }
   backend "s3" {}
 }
@@ -22,6 +26,14 @@ provider "aws" {
       Project     = var.project_name
     }
   }
+}
+
+# Cloud Control provider (used only for the Bedrock AgentCore Runtime). Pin it to
+# the deployment region so the AgentCore application region matches the ECR image
+# region — otherwise awscc falls back to the profile/AWS_REGION default and a
+# cross-region ECR URI is rejected.
+provider "awscc" {
+  region = var.aws_region
 }
 
 data "aws_caller_identity" "current" {}
@@ -174,6 +186,8 @@ module "lambda" {
   agentcore_runtime_arn               = module.agentcore.runtime_arn
   github_oauth_secret_name            = module.git.github_oauth_secret_name
   github_oauth_secret_arn             = module.git.github_oauth_secret_arn
+  github_app_private_key_secret_arn   = module.git.github_app_private_key_secret_arn
+  github_app_allowed_repos            = var.github_app_allowed_repos
   gitlab_oauth_secret_name            = module.git.gitlab_oauth_secret_name
   gitlab_oauth_secret_arn             = module.git.gitlab_oauth_secret_arn
   git_connections_table_name          = module.git.git_connections_table_name
@@ -256,6 +270,10 @@ module "api" {
   gitlab_lambda_invoke_arn            = module.lambda.gitlab_lambda_invoke_arn
   gitlab_lambda_name                  = module.lambda.gitlab_lambda_name
   gitlab_oauth_secret_name            = module.git.gitlab_oauth_secret_name
+  github_app_id                       = var.github_app_id
+  github_app_installation_id          = var.github_app_installation_id
+  github_app_private_key_secret_name  = module.git.github_app_private_key_secret_name
+  github_app_allowed_repos            = var.github_app_allowed_repos
   gitlab_redirect_uri                 = "https://${module.frontend.cloudfront_domain_name}/gitlab/callback"
   trackers_lambda_invoke_arn          = module.lambda.trackers_lambda_invoke_arn
   trackers_lambda_name                = module.lambda.trackers_lambda_name

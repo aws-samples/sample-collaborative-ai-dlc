@@ -44,7 +44,10 @@ rm -f tfplan
 # the default insert-only mode would skip every already-existing block. Scoped
 # to SYSTEM only; customer forks (per-tenant partitions) are never touched.
 echo "Applying AI-DLC default workflow and building blocks (reseed)"
-aws lambda invoke --function-name "$(cd "$TF_DIR" && terraform output -raw seed_blocks_lambda_name)" --payload '{"reseed":true}' --cli-binary-format raw-in-base64-out /tmp/out.json
+# Pin --region to the deployed stack's region: without it the AWS CLI falls
+# back to the profile default, which fails with "Function not found" whenever
+# the profile region differs from the deployment region.
+aws lambda invoke --function-name "$(cd "$TF_DIR" && terraform output -raw seed_blocks_lambda_name)" --region "$(cd "$TF_DIR" && terraform output -raw aws_region)" --payload '{"reseed":true}' --cli-binary-format raw-in-base64-out /tmp/out.json
 cat /tmp/out.json
 echo ""
 echo "✅ AI-DLC default workflow & building blocks applied!"
