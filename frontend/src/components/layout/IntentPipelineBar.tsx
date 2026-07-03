@@ -19,6 +19,13 @@ export function IntentPipelineBar() {
     [stageRows, initializationPhasePaths],
   );
 
+  const activeIndex = useMemo(() => {
+    const idx = phases.findIndex(
+      (g) => derivePhaseState(g, detail?.intent.currentPhase ?? null) === 'active',
+    );
+    return idx >= 0 ? idx : phases.length - 1;
+  }, [phases, detail]);
+
   const currentRoute: 'graph' | 'observability' | 'workbench' = location.pathname.endsWith('/graph')
     ? 'graph'
     : location.pathname.endsWith('/observability')
@@ -47,6 +54,8 @@ export function IntentPipelineBar() {
         {phases.map((group, index) => {
           const state = derivePhaseState(group, detail?.intent.currentPhase ?? null);
           const progress = group.total > 0 ? Math.round((group.done / group.total) * 100) : null;
+          const distance = Math.abs(index - activeIndex);
+          const isNear = distance <= 1;
 
           return (
             <div key={group.phase} className="flex items-center">
@@ -55,10 +64,11 @@ export function IntentPipelineBar() {
               )}
               <div
                 className={cn(
-                  'flex flex-col gap-1 px-2 py-1 rounded-md text-xs font-medium whitespace-nowrap',
+                  'flex flex-col gap-1 rounded-md font-medium whitespace-nowrap transition-all',
+                  isNear ? 'px-3 py-1.5 text-xs' : 'px-1.5 py-1 text-[10px] opacity-60',
                   state === 'active' && 'bg-sidebar-accent text-foreground',
                   state === 'done' && 'text-muted-foreground',
-                  state === 'pending' && 'text-muted-foreground/40 opacity-60',
+                  state === 'pending' && 'text-muted-foreground/40',
                 )}
               >
                 <span className="flex items-center gap-1.5">
@@ -70,15 +80,17 @@ export function IntentPipelineBar() {
                     <span className="h-2 w-2 rounded-full bg-muted-foreground/40 shrink-0" />
                   )}
                   <span>{phaseNameOf(group.phase)}</span>
-                  <span className="hidden xl:inline text-[10px] text-muted-foreground font-normal">
-                    {group.done}/{group.total}
-                  </span>
+                  {isNear && (
+                    <span className="hidden xl:inline text-[10px] text-muted-foreground font-normal">
+                      {group.done}/{group.total}
+                    </span>
+                  )}
                 </span>
-                {progress !== null && (
+                {isNear && progress !== null && (
                   <Progress
                     value={progress}
                     className={cn(
-                      'h-0.5 w-full',
+                      'h-1 w-full',
                       state === 'done' && '[&>div]:bg-agent-success',
                       state === 'active' && '[&>div]:bg-agent-running',
                     )}

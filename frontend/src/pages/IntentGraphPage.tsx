@@ -1,12 +1,16 @@
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useIntent } from '@/contexts/IntentContext';
 import { intentsService } from '@/services/intents';
 import { type GraphNode, type GraphEdge } from '@/services/sprintGraph';
 import { GraphCanvas } from '@/components/graph/GraphCanvas';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Button } from '@/components/ui/button';
+import { ArrowLeft } from 'lucide-react';
 
 export default function IntentGraphPage() {
   const { projectId, intentId, loading: contextLoading, error: contextError } = useIntent();
+  const navigate = useNavigate();
 
   const [nodes, setNodes] = useState<GraphNode[]>([]);
   const [edges, setEdges] = useState<GraphEdge[]>([]);
@@ -45,14 +49,27 @@ export default function IntentGraphPage() {
   }
 
   return (
-    <div className="h-full overflow-hidden">
-      <GraphCanvas
-        nodes={nodes}
-        edges={edges}
-        title="Knowledge graph"
-        loading={loading}
-        error={error}
-      />
+    <div className="h-full overflow-hidden flex flex-col">
+      <div className="flex h-12 shrink-0 items-center border-b px-4">
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-1.5 h-7"
+          onClick={() => navigate(`/project/${projectId}/intent/${intentId}`)}
+        >
+          <ArrowLeft className="h-3.5 w-3.5" />
+          Back to workbench
+        </Button>
+      </div>
+      <div className="flex-1 overflow-hidden">
+        <GraphCanvas
+          nodes={nodes}
+          edges={edges}
+          title="Knowledge graph"
+          loading={loading}
+          error={error}
+        />
+      </div>
     </div>
   );
 }

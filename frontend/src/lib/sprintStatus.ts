@@ -39,7 +39,7 @@ export function effectiveIntentStatus(intent: Intent | null): EffectiveSprintSta
     case 'FAILED':
       return 'failed';
     case 'SUCCEEDED':
-      return 'completed';
+      return 'passed';
     default:
       return 'idle';
   }

@@ -15,36 +15,12 @@ import { Progress } from '@/components/ui/progress';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ArrowLeft, CheckCircle2, ExternalLink } from 'lucide-react';
 import { cn } from '@/lib/utils';
-
-const V1_PHASE_PALETTE = [
-  {
-    headerBg: 'bg-blue-100 dark:bg-blue-950/60',
-    headerText: 'text-blue-800 dark:text-blue-200',
-    blockBg: 'bg-blue-50 dark:bg-blue-950/30',
-    blockBorder: 'border-blue-200 dark:border-blue-800',
-  },
-  {
-    headerBg: 'bg-green-100 dark:bg-green-950/60',
-    headerText: 'text-green-800 dark:text-green-200',
-    blockBg: 'bg-green-50 dark:bg-green-950/30',
-    blockBorder: 'border-green-200 dark:border-green-800',
-  },
-  {
-    headerBg: 'bg-purple-100 dark:bg-purple-950/60',
-    headerText: 'text-purple-800 dark:text-purple-200',
-    blockBg: 'bg-purple-50 dark:bg-purple-950/30',
-    blockBorder: 'border-purple-200 dark:border-purple-800',
-  },
-  {
-    headerBg: 'bg-orange-100 dark:bg-orange-950/60',
-    headerText: 'text-orange-800 dark:text-orange-200',
-    blockBg: 'bg-orange-50 dark:bg-orange-950/30',
-    blockBorder: 'border-orange-200 dark:border-orange-800',
-  },
-] as const;
+import { PHASE_CONFIGS } from '@/components/observability/phaseConfig';
 
 function phaseColorAt(index: number) {
-  return V1_PHASE_PALETTE[index % V1_PHASE_PALETTE.length];
+  const { headerBg, headerText, blockBg, blockBorder } =
+    PHASE_CONFIGS[index % PHASE_CONFIGS.length];
+  return { headerBg, headerText, blockBg, blockBorder };
 }
 
 function aggregateStageStatus(rows: IntentStageRow[]): Record<string, StageState> {
@@ -221,8 +197,9 @@ export default function IntentObservabilityPage() {
 
         {/* ── USAGE & COST + RUNNING AGENTS ──────────────────────────── */}
         <Card>
-          <CardContent className="py-4 px-5">
-            <div className="flex items-center gap-4 flex-wrap">
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm">Usage &amp; activity</CardTitle>
               {runningCount > 0 ? (
                 <Badge
                   variant="outline"
@@ -236,13 +213,14 @@ export default function IntentObservabilityPage() {
                   0 active
                 </Badge>
               )}
-              <div className="h-4 w-px bg-border" />
-              {Object.keys(totals).length > 0 ? (
-                <UsageMetrics metrics={totals} cost={cost} contextLabel="Peak context window" />
-              ) : (
-                <span className="text-xs text-muted-foreground">No usage yet</span>
-              )}
             </div>
+          </CardHeader>
+          <CardContent>
+            {Object.keys(totals).length > 0 ? (
+              <UsageMetrics metrics={totals} cost={cost} contextLabel="Peak context window" />
+            ) : (
+              <span className="text-xs text-muted-foreground">No usage yet</span>
+            )}
           </CardContent>
         </Card>
 

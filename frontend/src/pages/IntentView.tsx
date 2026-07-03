@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   intentsService,
   type GateAnswer,
+  type IntentArtifact,
   type IntentDetail,
   type IntentGate,
   type IntentSteering,
@@ -14,6 +15,7 @@ import QuestionEditor from '@/components/QuestionEditor';
 import type { Question } from '@/services/questions';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { ArtifactViewer } from '@/components/intent/ArtifactViewer';
+import { artifactAccent } from '@/components/intent/artifactAccent';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -37,10 +39,25 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
-import { aggregateMetrics, summarizeCost } from '@/lib/metricAggregation';
-import { UsageMetrics } from '@/components/intent/UsageMetrics';
-import { AlertTriangle, Compass, Loader2, Play, Trash2, XCircle } from 'lucide-react';
+import { getTimeAgo } from '@/lib/timeAgo';
+import {
+  AlertTriangle,
+  ChevronRight,
+  Compass,
+  FileText,
+  Loader2,
+  MoreHorizontal,
+  Play,
+  Trash2,
+  XCircle,
+} from 'lucide-react';
 
 // The v2 intent page — main-pane content only. All fetch/realtime/output state
 // lives in IntentProvider (mounted by AppShell, shared with the right-hand
@@ -171,58 +188,20 @@ export default function IntentView() {
           <Badge variant="outline" className="text-[10px]">
             {intent.status}
           </Badge>
+          <Badge variant="secondary" className="text-[10px]">
+            {intent.scope}
+          </Badge>
           {isActive && (
             <span
               className="h-1.5 w-1.5 rounded-full bg-agent-running animate-pulse"
               aria-label="live"
             />
           )}
-          {/* Intent-level discussion thread. */}
           <DiscussButton entityType="intent" entityTitle={intent.title || 'Intent'} />
-          {isCancellable && (
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-6 gap-1 px-2 text-[11px] text-muted-foreground hover:text-destructive"
-              disabled={cancelling}
-              onClick={handleCancel}
-            >
-              {cancelling ? (
-                <Loader2 className="h-3 w-3 animate-spin" />
-              ) : (
-                <XCircle className="h-3 w-3" />
-              )}
-              {cancelling ? 'Cancelling…' : 'Cancel run'}
-            </Button>
-          )}
-          {isDeletable && (
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-6 gap-1 px-2 text-[11px] text-muted-foreground hover:text-destructive"
-              disabled={deleting}
-              onClick={() => setConfirmDelete(true)}
-            >
-              {deleting ? (
-                <Loader2 className="h-3 w-3 animate-spin" />
-              ) : (
-                <Trash2 className="h-3 w-3" />
-              )}
-              {deleting ? 'Deleting…' : 'Delete'}
-            </Button>
-          )}
         </div>
-        <div className="text-xs text-muted-foreground">
-          {intent.workflowId} · v{intent.workflowVersion} · {intent.scope}
-          {isActive && intent.currentStage && (
-            <>
-              {' · '}
-              <span className="text-foreground">{intent.currentStage}</span>
-            </>
-          )}
+        <div className="flex items-center gap-2">
           {intent.source && (
-            <>
-              {' · '}
+            <span className="text-xs text-muted-foreground">
               {intent.source.resourceUrl ? (
                 <a
                   href={intent.source.resourceUrl}
@@ -233,9 +212,36 @@ export default function IntentView() {
                   from {intent.source.resourceId}
                 </a>
               ) : (
-                <span>from {intent.source.resourceId}</span>
+                <>from {intent.source.resourceId}</>
               )}
-            </>
+            </span>
+          )}
+          {(isCancellable || isDeletable) && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-7 w-7">
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {isCancellable && (
+                  <DropdownMenuItem disabled={cancelling} onClick={handleCancel}>
+                    <XCircle className="mr-2 h-4 w-4" />
+                    {cancelling ? 'Cancelling…' : 'Cancel run'}
+                  </DropdownMenuItem>
+                )}
+                {isDeletable && (
+                  <DropdownMenuItem
+                    disabled={deleting}
+                    onClick={() => setConfirmDelete(true)}
+                    className="text-destructive"
+                  >
+                    <Trash2 className="mr-2 h-4 w-4" />
+                    {deleting ? 'Deleting…' : 'Delete'}
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
         </div>
       </div>
@@ -384,9 +390,6 @@ export default function IntentView() {
             </div>
           )}
 
-          {/* Metrics */}
-          {detail.metrics.length > 0 && <MetricsPanel detail={detail} />}
-
           <WorkProductsPanel detail={detail} gates={gates} />
         </>
       )}
@@ -421,7 +424,60 @@ export default function IntentView() {
   );
 }
 
+// Document heuristic: long-form markdown content (opened in the preview panel
+// instead of expanded inline).
+const DOCUMENT_TYPE_RE = /markdown|document|statement|research|report|notes?/i;
+const MD_HEADING_RE = /^#{1,3}\s/m;
+
+function isDocumentArtifact(a: IntentArtifact): boolean {
+  if (a.artifactType && DOCUMENT_TYPE_RE.test(a.artifactType)) return true;
+  const content = a.content ?? '';
+  return content.length > 600 && MD_HEADING_RE.test(content);
+}
+
+interface ArtifactGroup {
+  type: string;
+  label: string;
+  items: IntentArtifact[];
+}
+
+function humanizeType(type: string, count: number): string {
+  const label = type.replace(/[_-]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  if (count > 1 && !label.endsWith('s')) return `${label}s`;
+  return label;
+}
+
+function groupArtifacts(artifacts: IntentArtifact[]): {
+  itemizedGroups: ArtifactGroup[];
+  documents: IntentArtifact[];
+} {
+  const documents: IntentArtifact[] = [];
+  const groupMap = new Map<string, IntentArtifact[]>();
+  const groupOrder: string[] = [];
+
+  for (const a of artifacts) {
+    if (isDocumentArtifact(a)) {
+      documents.push(a);
+      continue;
+    }
+    const type = a.artifactType ?? 'other';
+    if (!groupMap.has(type)) {
+      groupMap.set(type, []);
+      groupOrder.push(type);
+    }
+    groupMap.get(type)!.push(a);
+  }
+
+  const itemizedGroups: ArtifactGroup[] = groupOrder.map((type) => {
+    const items = groupMap.get(type)!;
+    return { type, label: humanizeType(type, items.length), items };
+  });
+
+  return { itemizedGroups, documents };
+}
+
 function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: IntentGate[] }) {
+  const { openArtifactPreview } = useIntent();
   const questionGates = gates.filter((g) => g.kind === 'question');
   const steering = detail.steering ?? [];
   if (detail.artifacts.length === 0 && questionGates.length === 0 && steering.length === 0) {
@@ -433,8 +489,13 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
       .filter((ev) => ev.type === 'v2.question.answered' && ev.humanTaskId)
       .map((ev) => [ev.humanTaskId as string, ev.artifacts ?? []]),
   );
+
+  const activeArtifacts = detail.artifacts.filter((a) => !a.supersededAt);
+  const { itemizedGroups, documents } = groupArtifacts(activeArtifacts);
+
   const defaultValue = [
-    detail.artifacts.length > 0 ? 'artifacts' : null,
+    ...itemizedGroups.map((g) => `artifact-${g.type}`),
+    documents.length > 0 ? 'documents' : null,
     questionGates.length > 0 ? 'questions' : null,
   ].filter((v): v is string => Boolean(v));
 
@@ -448,14 +509,62 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
       </CardHeader>
       <CardContent>
         <Accordion type="multiple" defaultValue={defaultValue} className="space-y-2">
-          {detail.artifacts.length > 0 && (
-            <AccordionItem value="artifacts" className="rounded-md border px-3">
+          {itemizedGroups.map((group) => {
+            const accent = artifactAccent(group.type);
+            return (
+              <AccordionItem
+                key={group.type}
+                value={`artifact-${group.type}`}
+                className="rounded-md border px-3"
+              >
+                <AccordionTrigger className="py-3 hover:no-underline">
+                  <div className="flex items-center gap-2">
+                    <span className={cn('h-2 w-2 rounded-full shrink-0', accent.dot)} />
+                    <span className="text-sm font-medium">{group.label}</span>
+                    <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
+                      {group.items.length}
+                    </Badge>
+                  </div>
+                </AccordionTrigger>
+                <AccordionContent className="space-y-3 pb-3">
+                  {group.items.map((a) => (
+                    <ArtifactViewer key={a.id} artifact={a} />
+                  ))}
+                </AccordionContent>
+              </AccordionItem>
+            );
+          })}
+
+          {documents.length > 0 && (
+            <AccordionItem value="documents" className="rounded-md border px-3">
               <AccordionTrigger className="py-3 hover:no-underline">
-                <span className="text-sm font-medium">Artifacts ({detail.artifacts.length})</span>
+                <div className="flex items-center gap-2">
+                  <FileText className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm font-medium">
+                    Document{documents.length > 1 ? 's' : ''} ({documents.length})
+                  </span>
+                </div>
               </AccordionTrigger>
-              <AccordionContent className="space-y-3 pb-3">
-                {detail.artifacts.map((a) => (
-                  <ArtifactViewer key={a.id} artifact={a} />
+              <AccordionContent className="space-y-1 pb-3">
+                {documents.map((a) => (
+                  <button
+                    key={a.id}
+                    type="button"
+                    className="group/doc flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-muted/50 transition-colors"
+                    onClick={() => openArtifactPreview(a.id)}
+                  >
+                    <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 flex-1 truncate text-sm">{a.title || a.id}</span>
+                    {a.createdAt && (
+                      <span className="shrink-0 text-[11px] text-muted-foreground/60">
+                        {getTimeAgo(a.createdAt)}
+                      </span>
+                    )}
+                    <ChevronRight
+                      aria-hidden="true"
+                      className="h-3 w-3 shrink-0 text-muted-foreground/40 opacity-0 group-hover/doc:opacity-100 transition-opacity"
+                    />
+                  </button>
                 ))}
               </AccordionContent>
             </AccordionItem>
@@ -478,9 +587,6 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
             </AccordionItem>
           )}
 
-          {/* Steering audit trail (docs/v2-steering.md): every human course
-              correction — answer-riders, revisions, rewind guidance — with its
-              delivery state (pending = queued for the next injection point). */}
           {steering.length > 0 && (
             <AccordionItem value="steering" className="rounded-md border px-3">
               <AccordionTrigger className="py-3 hover:no-underline">
@@ -968,26 +1074,4 @@ function formatGateAnswer(answer: unknown, questions: Question['questions']): st
       .join('\n');
   }
   return JSON.stringify(answer);
-}
-
-function MetricsPanel({ detail }: { detail: IntentDetail }) {
-  // Aggregate across ALL the intent's samples with correct semantics: tokens sum,
-  // contextWindowPct is a gauge (peak across stages, not a sum). Intent cost sums
-  // every sample via summarizeCost (the shared verdict: "unavailable" if a spend
-  // lacked a price, "~" when Kiro credit-estimated dollars are in the total).
-  const { totals, cost } = useMemo(
-    () => ({ totals: aggregateMetrics(detail.metrics), cost: summarizeCost(detail.metrics) }),
-    [detail.metrics],
-  );
-  if (Object.keys(totals).length === 0 && !cost) return null;
-  return (
-    <Card>
-      <CardHeader className="pb-3">
-        <CardTitle className="text-sm">Usage &amp; cost</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <UsageMetrics metrics={totals} cost={cost} contextLabel="Peak context window" />
-      </CardContent>
-    </Card>
-  );
 }

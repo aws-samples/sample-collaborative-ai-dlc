@@ -140,6 +140,12 @@ interface IntentContextValue {
   /** Focus the sidebar Agent tab on a stage's output (null → run-level). */
   focusOutput: (stageInstanceId: string | null) => void;
 
+  /** Preview tab: the artifact currently displayed (null = nothing selected). */
+  previewArtifactId: string | null;
+  previewSeq: number;
+  /** Open a document artifact in the right panel's Preview tab. */
+  openArtifactPreview: (artifactId: string) => void;
+
   reload: () => Promise<void>;
   answerGate: (gate: IntentGate, input: GateAnswer) => Promise<void>;
   /** Steering: correct an already-given answer (delivered at the next injection point). */
@@ -190,8 +196,13 @@ export function IntentProvider({
   const [agentFocus, setAgentFocus] = useState<AgentFocusRequest | null>(null);
   const focusSeq = useRef(0);
 
+  const [previewArtifactId, setPreviewArtifactId] = useState<string | null>(null);
+  const [previewSeq, setPreviewSeq] = useState(0);
+  const previewSeqRef = useRef(0);
+
   // Guards late async resolutions (compiled fetch) against route changes.
   const activeIntentRef = useRef(intentId);
+  const fetchedWorkflowKeyRef = useRef<string | null>(null);
   activeIntentRef.current = intentId;
 
   const load = useCallback(async () => {
@@ -212,12 +223,20 @@ export function IntentProvider({
             if (activeIntentRef.current === intentId) setCompiled(c);
           })
           .catch(() => {});
-        workflowsService
-          .get(dto.intent.workflowId, dto.intent.workflowVersion ?? undefined)
-          .then((wf) => {
-            if (activeIntentRef.current === intentId) setWorkflowPhases(wf.phases);
-          })
-          .catch(() => {});
+        // The workflow definition is immutable per (id, version) — fetch once,
+        // not on every 8s poll cycle.
+        const workflowKey = `${dto.intent.workflowId}@${dto.intent.workflowVersion ?? ''}`;
+        if (fetchedWorkflowKeyRef.current !== workflowKey) {
+          fetchedWorkflowKeyRef.current = workflowKey;
+          workflowsService
+            .get(dto.intent.workflowId, dto.intent.workflowVersion ?? undefined)
+            .then((wf) => {
+              if (activeIntentRef.current === intentId) setWorkflowPhases(wf.phases);
+            })
+            .catch(() => {
+              fetchedWorkflowKeyRef.current = null;
+            });
+        }
       }
     } catch (err) {
       if (activeIntentRef.current !== intentId) return;
@@ -235,6 +254,7 @@ export function IntentProvider({
     setDetail(null);
     setCompiled(null);
     setWorkflowPhases(null);
+    fetchedWorkflowKeyRef.current = null;
     setLiveGates(new Map());
     setSelectedStageId(null);
     setAgentFocus(null);
@@ -454,6 +474,16 @@ export function IntentProvider({
     [onAgentFocus],
   );
 
+  const openArtifactPreview = useCallback(
+    (artifactId: string) => {
+      previewSeqRef.current += 1;
+      setPreviewArtifactId(artifactId);
+      setPreviewSeq(previewSeqRef.current);
+      onAgentFocus?.();
+    },
+    [onAgentFocus],
+  );
+
   // Merge the compiled plan's stages with the live STAGE rows, filtered to the
   // intent's scope: the compiled graph covers ALL placements, but the run only
   // executes stages whose scopeMembership is EXECUTE — without the filter,
@@ -603,10 +633,11 @@ export function IntentProvider({
 
   const phaseNameOf = useCallback(
     (phasePath: string): string => {
-      if (!workflowPhases) return phasePath;
+      const capitalize = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+      if (!workflowPhases) return capitalize(phasePath);
       const node = workflowPhases.find((p) => p.path === phasePath);
-      if (!node) return phasePath;
-      return node.name.charAt(0).toUpperCase() + node.name.slice(1);
+      if (!node) return capitalize(phasePath);
+      return capitalize(node.name);
     },
     [workflowPhases],
   );
@@ -641,6 +672,9 @@ export function IntentProvider({
         setSelectedStageId,
         agentFocus,
         focusOutput,
+        previewArtifactId,
+        previewSeq,
+        openArtifactPreview,
         reload: load,
         answerGate,
         reviseGate,

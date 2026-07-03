@@ -33,7 +33,10 @@ vi.mock('@/services/intents', () => ({
   },
 }));
 vi.mock('@/services/workflows', () => ({
-  workflowsService: { compiled: (...a: unknown[]) => compiled(...a) },
+  workflowsService: {
+    compiled: (...a: unknown[]) => compiled(...a),
+    get: vi.fn().mockResolvedValue({ phases: [] }),
+  },
 }));
 
 import IntentView from './IntentView';
@@ -221,7 +224,7 @@ describe('IntentView', () => {
     });
     renderAt();
     expect(await screen.findByText('Work products')).toBeInTheDocument();
-    expect(screen.getByText('Artifacts (1)')).toBeInTheDocument();
+    expect(screen.getByText('Requirements')).toBeInTheDocument();
     expect(screen.getByText('Questions (1)')).toBeInTheDocument();
     expect(screen.getByText('Which provider?')).toBeInTheDocument();
     expect(screen.getByText('Q1: Cognito')).toBeInTheDocument();

@@ -81,8 +81,8 @@ export function AppShell() {
   const sidebarPanel = useResizablePanel(SIDEBAR_SIZING);
 
   useEffect(() => {
-    setActivityPanelOpen(inSprint || inIntent);
-  }, [inSprint, inIntent]);
+    setActivityPanelOpen(inSprint || (inIntent && !onIntentSubPage));
+  }, [inSprint, inIntent, onIntentSubPage]);
 
   const showSidebar = !sidebarCollapsed;
   const showActivity = (inSprint || inIntent || onProjectPage) && activityPanelOpen;
