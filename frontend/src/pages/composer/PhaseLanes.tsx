@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Trash2, X, Layers, Plus } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { AUTONOMY_STYLES } from '@/lib/autonomy';
 import { paletteColorForIndex } from '@/components/v2/scope-graph-utils';
-import { AddPhaseDialog } from './AddPhaseDialog';
-import type { PhaseNode, Placement, CompiledWorkflow, ScopeRef } from '@/services/workflows';
+import type { PhaseNode, Placement, CompiledWorkflow } from '@/services/workflows';
 import type { Block } from '@/services/blocks';
 
 interface PhaseLanesProps {
@@ -14,8 +14,6 @@ interface PhaseLanesProps {
   stagesById: Record<string, Block>;
   readOnly: boolean;
   compiled: CompiledWorkflow | null;
-  scopeRefs: ScopeRef[];
-  scopeLib: Block[];
   onDropStage: (stageId: string, phasePath: string | null) => void;
   onReorderPlacement: (
     stageId: string,
@@ -23,12 +21,13 @@ interface PhaseLanesProps {
     targetIndex: number,
   ) => void;
   onRemovePlacement: (stageId: string) => void;
-  onAddPhase: (phaseId: string, name: string, path: string) => void;
+  onAddPhase: () => void;
+  editingPhasePath: string | null;
+  onStartPhaseRename: (path: string) => void;
+  onCancelPhaseRename: () => void;
+  onRenamePhase: (path: string, name: string) => void;
   onRemovePhase: (path: string) => void;
   onApplySkeleton: () => void;
-  onToggleCell: (stageId: string, scopeId: string, next: 'EXECUTE' | 'SKIP') => void;
-  onAddScope: (scopeId: string) => void;
-  onRemoveScope: (scopeId: string) => void;
   onOpenStage: (stageId: string) => void;
 }
 
@@ -42,25 +41,22 @@ export function PhaseLanes({
   stagesById,
   readOnly,
   compiled,
-  scopeRefs,
-  scopeLib,
   onDropStage,
   onReorderPlacement,
   onRemovePlacement,
   onAddPhase,
+  editingPhasePath,
+  onStartPhaseRename,
+  onCancelPhaseRename,
+  onRenamePhase,
   onRemovePhase,
   onApplySkeleton,
-  onToggleCell,
-  onAddScope,
-  onRemoveScope,
   onOpenStage,
 }: PhaseLanesProps) {
   const [dragOverPath, setDragOverPath] = useState<string | null>(null);
-  const [activeScope, setActiveScope] = useState<string | null>(null);
+  const visiblePhases = phases.filter((phase) => phase.phaseId !== 'initialization');
 
-  const sortedPhases = phases
-    .filter((p) => p.phaseId !== 'initialization')
-    .toSorted((a, b) => a.path.localeCompare(b.path));
+  const sortedPhases = visiblePhases.toSorted((a, b) => a.path.localeCompare(b.path));
 
   // Match the graph's colorByPath: sorted-index → paletteColorForIndex
   const phaseColorByPath: Record<string, string> = {};
@@ -68,18 +64,16 @@ export function PhaseLanes({
     phaseColorByPath[p.path] = paletteColorForIndex(i);
   });
 
-  const topPaths = phases.filter((p) => !p.path.includes('.')).map((p) => p.path);
-
-  const scopeIds = scopeRefs.map((r) => r.scopeId);
-  const refScopeIdSet = new Set(scopeIds);
-  const availableScopes = scopeLib.filter((s) => !refScopeIdSet.has(s.id));
+  const visiblePlacements = placements.filter(
+    (placement) => stagesById[placement.stageId]?.phase !== 'initialization',
+  );
 
   const placementsByPhase = (phasePath: string | null) =>
-    placements
+    visiblePlacements
       .filter((p) => (phasePath === null ? !p.phasePath : p.phasePath === phasePath))
       .toSorted((a, b) => a.order - b.order);
 
-  const placedStageIdSet = new Set(placements.map((p) => p.stageId));
+  const placedStageIdSet = new Set(visiblePlacements.map((p) => p.stageId));
 
   const handleDragOver = (e: React.DragEvent, key: string) => {
     e.preventDefault();
@@ -119,61 +113,8 @@ export function PhaseLanes({
 
   return (
     <div className="flex-1 min-w-0 flex flex-col gap-2">
-      <div className="flex items-center gap-2 flex-wrap">
-        {!readOnly && (
-          <>
-            <AddPhaseDialog existingTopPaths={topPaths} onAdd={onAddPhase} />
-            {phases.length === 0 && (
-              <Button variant="outline" size="sm" className="gap-1.5" onClick={onApplySkeleton}>
-                <Layers className="h-3.5 w-3.5" />
-                Start from skeleton
-              </Button>
-            )}
-          </>
-        )}
-        {scopeIds.length > 0 && (
-          <div className="flex items-center gap-1 ml-auto">
-            <span className="text-[10px] text-muted-foreground mr-1">Scope:</span>
-            {scopeIds.map((s) => (
-              <span key={s} className="inline-flex items-center gap-0.5">
-                <Button
-                  variant={activeScope === s ? 'secondary' : 'ghost'}
-                  size="sm"
-                  className="h-6 px-2 text-[10px]"
-                  onClick={() => setActiveScope(activeScope === s ? null : s)}
-                >
-                  {s}
-                </Button>
-                {!readOnly && (
-                  <button
-                    type="button"
-                    className="text-muted-foreground hover:text-destructive"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (activeScope === s) setActiveScope(null);
-                      onRemoveScope(s);
-                    }}
-                  >
-                    <X className="h-2.5 w-2.5" />
-                  </button>
-                )}
-              </span>
-            ))}
-            {!readOnly && availableScopes.length > 0 && (
-              <DropdownAddScope scopes={availableScopes} onAdd={onAddScope} />
-            )}
-          </div>
-        )}
-        {scopeIds.length === 0 && !readOnly && availableScopes.length > 0 && (
-          <div className="flex items-center gap-1 ml-auto">
-            <span className="text-[10px] text-muted-foreground mr-1">Scope:</span>
-            <DropdownAddScope scopes={availableScopes} onAdd={onAddScope} />
-          </div>
-        )}
-      </div>
-
       <div className="flex flex-row gap-2 overflow-x-auto pb-2">
-        {sortedPhases.map((phase) => {
+        {sortedPhases.map((phase, visibleIndex) => {
           const depth = phase.path.split('.').length - 1;
           const key = laneKey(phase.path);
           const lanePlacements = placementsByPhase(phase.path);
@@ -194,16 +135,27 @@ export function PhaseLanes({
               onDragLeave={(e) => handleDragLeave(e, key)}
               onDrop={(e) => handleDrop(e, phase.path)}
             >
-              <div className="flex items-center gap-1.5 p-2 border-b">
+              <div
+                className="flex items-center gap-1.5 p-2 border-b rounded-t-lg"
+                style={{ backgroundColor: `${phaseColorByPath[phase.path]}18` }}
+              >
                 {depth > 0 && (
                   <span className="text-[9px] text-muted-foreground select-none">
                     {'└'.repeat(depth)}
                   </span>
                 )}
                 <span className="font-mono text-[10px] text-muted-foreground shrink-0">
-                  {phase.path}
+                  {String(visibleIndex + 1).padStart(2, '0')}
                 </span>
-                <span className="text-xs font-medium truncate">{phase.name}</span>
+                <EditablePhaseName
+                  phasePath={phase.path}
+                  name={phase.name}
+                  readOnly={readOnly}
+                  editing={editingPhasePath === phase.path}
+                  onStartEdit={onStartPhaseRename}
+                  onCancelEdit={onCancelPhaseRename}
+                  onCommitEdit={onRenamePhase}
+                />
                 {!readOnly && (
                   <Button
                     variant="ghost"
@@ -215,7 +167,10 @@ export function PhaseLanes({
                   </Button>
                 )}
               </div>
-              <div className="flex-1 p-1.5 flex flex-col gap-1 min-h-[80px]">
+              <div
+                className="flex-1 p-1.5 flex flex-col gap-1 min-h-[80px] rounded-b-lg"
+                style={{ backgroundColor: `${phaseColorByPath[phase.path]}08` }}
+              >
                 {lanePlacements.length === 0 && (
                   <span className="text-[10px] text-muted-foreground italic py-4 text-center">
                     Drop stages here
@@ -228,14 +183,6 @@ export function PhaseLanes({
                     label={stagesById[p.stageId]?.name ?? p.stageId}
                     readOnly={readOnly}
                     autonomyLevel={compiled?.autonomy.perStage[p.stageId]}
-                    scopeState={
-                      activeScope ? (p.scopeMembership[activeScope] ?? 'SKIP') : undefined
-                    }
-                    onToggleScope={
-                      activeScope && !readOnly
-                        ? (next) => onToggleCell(p.stageId, activeScope, next)
-                        : undefined
-                    }
                     onRemove={() => onRemovePlacement(p.stageId)}
                     onOpenStage={() => onOpenStage(p.stageId)}
                     index={idx}
@@ -257,16 +204,40 @@ export function PhaseLanes({
           return (
             <div
               className={`shrink-0 min-w-[256px] w-64 border border-dashed rounded-lg flex flex-col transition-colors ${
-                isOver ? 'border-primary bg-primary/5' : 'border-border'
+                isOver ? 'border-primary bg-primary/5' : 'border-border bg-muted/30'
               }`}
               onDragOver={(e) => handleDragOver(e, key)}
               onDragLeave={(e) => handleDragLeave(e, key)}
               onDrop={(e) => handleDrop(e, null)}
             >
-              <div className="flex items-center gap-1.5 p-2 border-b border-dashed">
+              <div className="flex items-center gap-1.5 p-2 border-b border-dashed bg-muted/40 rounded-t-lg">
                 <span className="text-xs font-medium text-muted-foreground">Unphased</span>
+                {!readOnly && (
+                  <span className="ml-auto flex items-center gap-1">
+                    {visiblePhases.length === 0 && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 gap-1 px-2 text-[10px]"
+                        onClick={onApplySkeleton}
+                      >
+                        <Layers className="h-3 w-3" />
+                        Skeleton
+                      </Button>
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 gap-1 px-2 text-[10px]"
+                      onClick={() => void onAddPhase()}
+                    >
+                      <Plus className="h-3 w-3" />
+                      Add phase
+                    </Button>
+                  </span>
+                )}
               </div>
-              <div className="flex-1 p-1.5 flex flex-col gap-1 min-h-[80px]">
+              <div className="flex-1 p-1.5 flex flex-col gap-1 min-h-[80px] bg-muted/15 rounded-b-lg">
                 {lanePlacements.length === 0 && (
                   <span className="text-[10px] text-muted-foreground italic py-4 text-center">
                     Stages without a phase
@@ -279,14 +250,6 @@ export function PhaseLanes({
                     label={stagesById[p.stageId]?.name ?? p.stageId}
                     readOnly={readOnly}
                     autonomyLevel={compiled?.autonomy.perStage[p.stageId]}
-                    scopeState={
-                      activeScope ? (p.scopeMembership[activeScope] ?? 'SKIP') : undefined
-                    }
-                    onToggleScope={
-                      activeScope && !readOnly
-                        ? (next) => onToggleCell(p.stageId, activeScope, next)
-                        : undefined
-                    }
                     onRemove={() => onRemovePlacement(p.stageId)}
                     onOpenStage={() => onOpenStage(p.stageId)}
                     index={idx}
@@ -305,13 +268,85 @@ export function PhaseLanes({
   );
 }
 
+function EditablePhaseName({
+  phasePath,
+  name,
+  readOnly,
+  editing,
+  onStartEdit,
+  onCancelEdit,
+  onCommitEdit,
+}: {
+  phasePath: string;
+  name: string;
+  readOnly: boolean;
+  editing: boolean;
+  onStartEdit: (path: string) => void;
+  onCancelEdit: () => void;
+  onCommitEdit: (path: string, name: string) => void;
+}) {
+  const [draft, setDraft] = useState(name);
+  const inputRef = useRef<HTMLInputElement>(null);
+  // Escape unmounts the input, which fires a browser blur whose closure still
+  // holds the pre-cancel draft — this ref stops that blur from committing it.
+  const cancelledRef = useRef(false);
+
+  useEffect(() => {
+    setDraft(name);
+  }, [name]);
+
+  useEffect(() => {
+    if (!editing) return;
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, [editing]);
+
+  if (editing && !readOnly) {
+    return (
+      <Input
+        ref={inputRef}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        className="h-7 min-w-0 text-xs font-medium"
+        onBlur={() => {
+          if (cancelledRef.current) {
+            cancelledRef.current = false;
+            return;
+          }
+          onCommitEdit(phasePath, draft.trim() || name);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            e.currentTarget.blur();
+          }
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            cancelledRef.current = true;
+            setDraft(name);
+            onCancelEdit();
+          }
+        }}
+      />
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className="min-w-0 truncate text-left text-xs font-medium"
+      onClick={() => onStartEdit(phasePath)}
+      disabled={readOnly}
+    >
+      {name}
+    </button>
+  );
+}
+
 function PlacementChip({
   stageId,
   label,
   readOnly,
   autonomyLevel,
-  scopeState,
-  onToggleScope,
   onRemove,
   onOpenStage,
   index,
@@ -324,8 +359,6 @@ function PlacementChip({
   label: string;
   readOnly: boolean;
   autonomyLevel?: string;
-  scopeState?: 'EXECUTE' | 'SKIP';
-  onToggleScope?: (next: 'EXECUTE' | 'SKIP') => void;
   onRemove: () => void;
   onOpenStage: () => void;
   index: number;
@@ -413,23 +446,6 @@ function PlacementChip({
         </div>
 
         <span className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
-          {onToggleScope && scopeState && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onToggleScope(scopeState === 'EXECUTE' ? 'SKIP' : 'EXECUTE');
-              }}
-              className={cn(
-                'h-6 w-12 rounded text-[10px] font-medium transition-colors',
-                scopeState === 'EXECUTE'
-                  ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400'
-                  : 'bg-muted text-muted-foreground',
-              )}
-            >
-              {scopeState === 'EXECUTE' ? 'EXEC' : 'SKIP'}
-            </button>
-          )}
           {!readOnly && (
             <button
               type="button"
@@ -448,56 +464,5 @@ function PlacementChip({
         <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary rounded-full translate-y-0.5 z-10" />
       )}
     </div>
-  );
-}
-
-function DropdownAddScope({
-  scopes,
-  onAdd,
-}: {
-  scopes: Block[];
-  onAdd: (scopeId: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLSpanElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', onDown);
-    return () => document.removeEventListener('mousedown', onDown);
-  }, [open]);
-
-  return (
-    <span className="relative" ref={ref}>
-      <Button
-        variant="outline"
-        size="sm"
-        className="h-6 gap-1 text-[10px]"
-        onClick={() => setOpen(!open)}
-      >
-        <Plus className="h-3 w-3" />
-        Add scope
-      </Button>
-      {open && (
-        <div className="absolute z-10 top-full mt-1 right-0 bg-popover border rounded-md shadow-md p-1 min-w-[120px]">
-          {scopes.map((s) => (
-            <button
-              key={s.id}
-              type="button"
-              className="w-full text-left text-xs px-2 py-1 rounded hover:bg-accent"
-              onClick={() => {
-                onAdd(s.id);
-                setOpen(false);
-              }}
-            >
-              {s.name}
-            </button>
-          ))}
-        </div>
-      )}
-    </span>
   );
 }

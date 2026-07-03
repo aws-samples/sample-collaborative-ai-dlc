@@ -9,6 +9,7 @@ import {
   MessageCircleQuestion,
   Plus,
   Settings,
+  Workflow,
   XCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -107,6 +108,7 @@ export function AppSidebar() {
   const isOnDashboard = location.pathname === '/dashboard';
   const isOnObservability = location.pathname === '/observability';
   const isOnAdmin = location.pathname === '/admin';
+  const isOnWorkflows = location.pathname.startsWith('/workflows');
 
   const filteredIterations = projects.filter(({ project, latestSprint }) => {
     // v2 projects have no sprints — the iterations rail is sprint-only. Exclude
@@ -277,7 +279,19 @@ export function AppSidebar() {
         </div>
       </ScrollArea>
 
-      <div className="border-t border-sidebar-border p-2">
+      <div className="border-t border-sidebar-border p-2 flex flex-col gap-0.5">
+        <button
+          onClick={() => navigate('/workflows')}
+          className={cn(
+            'flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors rounded-md text-left w-full',
+            isOnWorkflows
+              ? 'bg-sidebar-accent text-sidebar-foreground'
+              : 'text-sidebar-foreground/60 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
+          )}
+        >
+          <Workflow className="h-3.5 w-3.5 shrink-0" />
+          Workflows
+        </button>
         <button
           onClick={() => navigate('/admin')}
           className={cn(

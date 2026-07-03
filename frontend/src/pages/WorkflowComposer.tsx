@@ -14,7 +14,17 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { ArrowLeft, AlertCircle, CheckCircle2, X, Lock, Loader2 } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import {
+  ArrowLeft,
+  AlertCircle,
+  CheckCircle2,
+  X,
+  Lock,
+  Loader2,
+  Plus,
+  Library,
+} from 'lucide-react';
 import { BlockPalette } from './composer/BlockPalette';
 import { PhaseLanes } from './composer/PhaseLanes';
 import { StageEditModal } from './composer/StageEditModal';
@@ -33,6 +43,8 @@ export default function WorkflowComposer() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [editingStageId, setEditingStageId] = useState<string | null>(null);
+  const [editingPhasePath, setEditingPhasePath] = useState<string | null>(null);
+  const [activeScope, setActiveScope] = useState<string | null>(null);
 
   const readOnly = workflow?.readOnly ?? false;
 
@@ -133,8 +145,30 @@ export default function WorkflowComposer() {
     }
   };
 
-  const addPhase = (phaseId: string, phaseName: string, path: string) => {
-    replacePhases([...existingPhases(), { phaseId, name: phaseName, path, kind: 'phase' }]);
+  const createPhase = async () => {
+    const topPaths = existingPhases()
+      .filter((phase) => !phase.path.includes('.'))
+      .map((phase) => phase.path);
+    let max = 0;
+    for (const path of topPaths) {
+      const parsed = Number.parseInt(path.split('.')[0], 10);
+      if (Number.isFinite(parsed) && parsed > max) max = parsed;
+    }
+    const path = String(max + 1).padStart(2, '0');
+    setEditingPhasePath(path);
+    await replacePhases([
+      ...existingPhases(),
+      { phaseId: `phase-${path.replaceAll('.', '-')}`, name: 'New phase', path, kind: 'phase' },
+    ]);
+  };
+
+  const renamePhase = async (path: string, rawName: string) => {
+    const nextName = rawName.trim();
+    setEditingPhasePath(null);
+    if (!nextName) return;
+    await replacePhases(
+      existingPhases().map((phase) => (phase.path === path ? { ...phase, name: nextName } : phase)),
+    );
   };
 
   const removePhase = (path: string) => {
@@ -463,22 +497,58 @@ export default function WorkflowComposer() {
     [stageLib],
   );
 
+  const visibleStageLib = useMemo(
+    () => stageLib.filter((stage) => stage.phase !== 'initialization'),
+    [stageLib],
+  );
+
+  const scopeIds = useMemo(
+    () => (workflow ? workflow.scopeRefs.map((scopeRef) => scopeRef.scopeId) : []),
+    [workflow],
+  );
+
+  const availableScopes = useMemo(
+    () => scopeLib.filter((scope) => !scopeIds.includes(scope.id)),
+    [scopeIds, scopeLib],
+  );
+
+  useEffect(() => {
+    if (scopeIds.length === 0) {
+      setActiveScope(null);
+      return;
+    }
+    setActiveScope((prev) => {
+      if (prev && scopeIds.includes(prev)) return prev;
+      if (workflow?.defaultScope && scopeIds.includes(workflow.defaultScope)) {
+        return workflow.defaultScope;
+      }
+      return scopeIds[0] ?? null;
+    });
+  }, [scopeIds, workflow?.defaultScope]);
+
   const stageMeta = useMemo(() => {
     const meta: Record<string, { number: string; name: string; phase: string }> = {};
     if (workflow) {
+      const initializationPaths = new Set(
+        workflow.phases
+          .filter((phase) => phase.phaseId === 'initialization')
+          .map((phase) => phase.path),
+      );
       const ordered = workflow.placements.toSorted((a, b) => {
         const ap = a.phasePath ?? '';
         const bp = b.phasePath ?? '';
         return ap === bp ? a.order - b.order : ap.localeCompare(bp);
       });
-      ordered.forEach((p, i) => {
-        const block = stagesById[p.stageId];
-        meta[p.stageId] = {
-          number: String(i + 1),
-          name: block?.name ?? p.stageId,
-          phase: p.phasePath ?? '00',
-        };
-      });
+      ordered
+        .filter((placement) => !initializationPaths.has(placement.phasePath ?? ''))
+        .forEach((p, i) => {
+          const block = stagesById[p.stageId];
+          meta[p.stageId] = {
+            number: String(i + 1),
+            name: block?.name ?? p.stageId,
+            phase: p.phasePath ?? '00',
+          };
+        });
     }
     return meta;
   }, [stagesById, workflow]);
@@ -497,6 +567,34 @@ export default function WorkflowComposer() {
     return Object.keys(grid).length > 0 ? { ...compiled, scopeGrid: grid } : compiled;
   }, [compiled, workflow]);
 
+  const graphCompiled = useMemo(() => {
+    if (!compiledView || !workflow) return compiledView;
+    const visiblePhasePaths = new Set(
+      workflow.phases
+        .filter((phase) => phase.phaseId !== 'initialization')
+        .map((phase) => phase.path),
+    );
+    const visibleGraphStageIds = new Set(
+      workflow.placements
+        .filter(
+          (placement) =>
+            stagesById[placement.stageId]?.phase !== 'initialization' &&
+            (placement.phasePath === null || visiblePhasePaths.has(placement.phasePath)),
+        )
+        .map((placement) => placement.stageId),
+    );
+    return {
+      ...compiledView,
+      graph: {
+        ...compiledView.graph,
+        nodes: compiledView.graph.nodes.filter((node) => visibleGraphStageIds.has(node.stageId)),
+        edges: compiledView.graph.edges.filter(
+          (edge) => visibleGraphStageIds.has(edge.from) && visibleGraphStageIds.has(edge.to),
+        ),
+      },
+    };
+  }, [compiledView, workflow, stagesById]);
+
   if (loading) {
     return (
       <div className="mx-auto w-full max-w-[1600px] px-6 py-6 text-sm text-muted-foreground">
@@ -513,18 +611,6 @@ export default function WorkflowComposer() {
   }
 
   const placedStageIds = new Set(workflow.placements.map((p) => p.stageId));
-
-  const initPhasePath = workflow.phases.find((p) => p.phaseId === 'initialization')?.path;
-  const graphCompiled =
-    compiledView && initPhasePath
-      ? {
-          ...compiledView,
-          graph: {
-            ...compiledView.graph,
-            nodes: compiledView.graph.nodes.filter((n) => n.phasePath !== initPhasePath),
-          },
-        }
-      : compiledView;
 
   return (
     <div className="h-full overflow-y-auto">
@@ -587,7 +673,12 @@ export default function WorkflowComposer() {
 
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm">Objective</CardTitle>
+            <div className="flex flex-col gap-1">
+              <CardTitle className="text-sm">Objective</CardTitle>
+              <p className="text-xs text-muted-foreground">
+                Define the end-to-end outcome this workflow should deliver.
+              </p>
+            </div>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid gap-2">
@@ -615,35 +706,65 @@ export default function WorkflowComposer() {
 
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm">Build — phases & stages</CardTitle>
+            <div className="flex items-start gap-3 flex-wrap">
+              <div className="flex flex-col gap-1">
+                <CardTitle className="text-sm shrink-0">Build — phases & stages</CardTitle>
+                <p className="text-xs text-muted-foreground">
+                  Organize stages into phases and structure the workflow.
+                </p>
+              </div>
+              <div className="ml-auto flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1 text-xs"
+                  onClick={() => navigate('/blocks/stage/new')}
+                >
+                  <Plus className="h-3 w-3" />
+                  New stage
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1 text-xs"
+                  onClick={() => navigate('/blocks/stage')}
+                >
+                  <Library className="h-3 w-3" />
+                  Block library
+                </Button>
+              </div>
+            </div>
           </CardHeader>
           <CardContent>
-            <div className="flex flex-col gap-4">
-              <BlockPalette
-                stages={stageLib}
-                placedStageIds={placedStageIds}
-                readOnly={readOnly}
-                onAdd={(stageId) => addPlacement(stageId)}
-              />
-              <PhaseLanes
-                phases={workflow.phases}
-                placements={workflow.placements}
-                stagesById={stagesById}
-                readOnly={readOnly}
-                compiled={compiled}
-                scopeRefs={workflow.scopeRefs}
-                scopeLib={scopeLib}
-                onDropStage={onDropStage}
-                onReorderPlacement={onReorderPlacement}
-                onRemovePlacement={removePlacement}
-                onAddPhase={addPhase}
-                onRemovePhase={removePhase}
-                onApplySkeleton={applySkeleton}
-                onToggleCell={toggleCell}
-                onAddScope={addScope}
-                onRemoveScope={removeScope}
-                onOpenStage={setEditingStageId}
-              />
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
+              <div className="w-full shrink-0 lg:w-72">
+                <BlockPalette
+                  stages={visibleStageLib}
+                  placedStageIds={placedStageIds}
+                  readOnly={readOnly}
+                  onAdd={(stageId) => addPlacement(stageId)}
+                />
+              </div>
+              <div className="min-w-0 flex-1">
+                <PhaseLanes
+                  phases={workflow.phases}
+                  placements={workflow.placements}
+                  stagesById={stagesById}
+                  readOnly={readOnly}
+                  compiled={compiled}
+                  onDropStage={onDropStage}
+                  onReorderPlacement={onReorderPlacement}
+                  onRemovePlacement={removePlacement}
+                  onAddPhase={createPhase}
+                  editingPhasePath={editingPhasePath}
+                  onStartPhaseRename={setEditingPhasePath}
+                  onCancelPhaseRename={() => setEditingPhasePath(null)}
+                  onRenamePhase={renamePhase}
+                  onRemovePhase={removePhase}
+                  onApplySkeleton={applySkeleton}
+                  onOpenStage={setEditingStageId}
+                />
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -654,19 +775,43 @@ export default function WorkflowComposer() {
           onSaved={refresh}
         />
 
-        {compiledView && compiledView.graph.nodes.length > 0 && (
+        {graphCompiled && graphCompiled.graph.nodes.length > 0 && (
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">Workflow graph — scope preview</CardTitle>
+              <div className="flex flex-col gap-3">
+                <div className="flex flex-col gap-1">
+                  <CardTitle className="text-sm">Workflow graph — scope preview</CardTitle>
+                  <p className="text-xs text-muted-foreground">
+                    Preview execution flow and configure which stages run in each scope.
+                  </p>
+                </div>
+                <ScopeSelectionBar
+                  scopeIds={scopeIds}
+                  activeScope={activeScope}
+                  availableScopes={availableScopes}
+                  readOnly={readOnly}
+                  onSelectScope={setActiveScope}
+                  onAddScope={addScope}
+                  onRemoveScope={removeScope}
+                />
+              </div>
             </CardHeader>
             <CardContent>
               <WorkflowScopeGraph
-                compiled={graphCompiled!}
-                scopes={scopeLib.length > 0 ? scopeLib.map((b) => b.id) : undefined}
+                compiled={graphCompiled}
+                scopes={scopeIds.length > 0 ? scopeIds : undefined}
                 defaultScope={workflow.defaultScope ?? undefined}
+                activeScope={activeScope}
+                onActiveScopeChange={setActiveScope}
+                hideScopeSelector
                 scopeDescriptions={
-                  scopeLib.length > 0
-                    ? Object.fromEntries(scopeLib.map((b) => [b.id, b.description ?? b.name]))
+                  scopeIds.length > 0
+                    ? Object.fromEntries(
+                        scopeIds
+                          .map((scopeId) => scopeLib.find((block) => block.id === scopeId))
+                          .filter((block): block is Block => !!block)
+                          .map((block) => [block.id, block.description ?? block.name]),
+                      )
                     : undefined
                 }
                 stageMeta={stageMeta}
@@ -680,10 +825,15 @@ export default function WorkflowComposer() {
           </Card>
         )}
 
-        {compiledView && compiledView.graph.nodes.length === 0 && (
+        {graphCompiled && graphCompiled.graph.nodes.length === 0 && (
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">Workflow graph — scope preview</CardTitle>
+              <div className="flex flex-col gap-1">
+                <CardTitle className="text-sm">Workflow graph — scope preview</CardTitle>
+                <p className="text-xs text-muted-foreground">
+                  Preview execution flow and configure which stages run in each scope.
+                </p>
+              </div>
             </CardHeader>
             <CardContent>
               <p className="text-sm text-muted-foreground italic">
@@ -695,6 +845,85 @@ export default function WorkflowComposer() {
 
         <WorkflowInsights workflow={workflow} compiled={compiled} readOnly={readOnly} />
       </div>
+    </div>
+  );
+}
+
+function ScopeSelectionBar({
+  scopeIds,
+  activeScope,
+  availableScopes,
+  readOnly,
+  onSelectScope,
+  onAddScope,
+  onRemoveScope,
+}: {
+  scopeIds: string[];
+  activeScope: string | null;
+  availableScopes: Block[];
+  readOnly: boolean;
+  onSelectScope: (scopeId: string) => void;
+  onAddScope: (scopeId: string) => void;
+  onRemoveScope: (scopeId: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  if (scopeIds.length === 0 && (readOnly || availableScopes.length === 0)) {
+    return null;
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-xs font-medium text-muted-foreground">Scopes</span>
+      {scopeIds.map((scopeId) => (
+        <span key={scopeId} className="inline-flex items-center gap-0.5">
+          <Button
+            variant={scopeId === activeScope ? 'secondary' : 'ghost'}
+            size="sm"
+            className="h-6 px-2 text-[10px]"
+            onClick={() => onSelectScope(scopeId)}
+          >
+            {scopeId}
+          </Button>
+          {!readOnly && (
+            <button
+              type="button"
+              className="text-muted-foreground hover:text-destructive"
+              onClick={(event) => {
+                event.stopPropagation();
+                onRemoveScope(scopeId);
+              }}
+            >
+              <X className="h-2.5 w-2.5" />
+            </button>
+          )}
+        </span>
+      ))}
+      {!readOnly && availableScopes.length > 0 && (
+        <Popover open={open} onOpenChange={setOpen}>
+          <PopoverTrigger asChild>
+            <Button variant="outline" size="sm" className="h-6 gap-1 text-[10px]">
+              <Plus className="h-3 w-3" />
+              Add scope
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="start" className="w-[160px] p-1">
+            {availableScopes.map((scope) => (
+              <button
+                key={scope.id}
+                type="button"
+                className="w-full rounded px-2 py-1 text-left text-xs hover:bg-accent"
+                onClick={() => {
+                  onAddScope(scope.id);
+                  setOpen(false);
+                }}
+              >
+                {scope.name}
+              </button>
+            ))}
+          </PopoverContent>
+        </Popover>
+      )}
     </div>
   );
 }

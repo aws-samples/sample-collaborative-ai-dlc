@@ -18,6 +18,9 @@ export interface WorkflowScopeGraphProps {
   scopes?: string[];
   phases?: PhaseInput[];
   defaultScope?: string;
+  activeScope?: string | null;
+  onActiveScopeChange?: (scope: string) => void;
+  hideScopeSelector?: boolean;
   stageMeta?: Record<string, { number: string; name: string; phase: string }>;
   scopeDescriptions?: Record<string, string>;
   readOnly?: boolean;
@@ -92,6 +95,9 @@ export function WorkflowScopeGraph({
   scopes: scopesProp,
   phases: phasesProp,
   defaultScope,
+  activeScope: activeScopeProp,
+  onActiveScopeChange,
+  hideScopeSelector,
   stageMeta: stageMetaProp,
   scopeDescriptions: scopeDescProp,
   readOnly,
@@ -107,9 +113,10 @@ export function WorkflowScopeGraph({
     [scopesProp, compiled.scopeGrid, graphNodeIds],
   );
 
-  const [activeScope, setActiveScope] = useState(
+  const [internalActiveScope, setInternalActiveScope] = useState(
     () => defaultScope ?? pickDefaultScope(scopeList, compiled.scopeGrid),
   );
+  const activeScope = activeScopeProp ?? internalActiveScope;
 
   const phaseList = useMemo(() => phasesProp ?? defaultPhaseList(), [phasesProp]);
 
@@ -148,19 +155,27 @@ export function WorkflowScopeGraph({
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap gap-1.5">
-        {scopeList.map((scope) => (
-          <Button
-            key={scope}
-            variant={scope === activeScope ? 'secondary' : 'ghost'}
-            size="sm"
-            className="h-7 px-2.5 text-xs"
-            onClick={() => setActiveScope(scope)}
-          >
-            {scope}
-          </Button>
-        ))}
-      </div>
+      {!hideScopeSelector && (
+        <div className="flex flex-wrap gap-1.5">
+          {scopeList.map((scope) => (
+            <Button
+              key={scope}
+              variant={scope === activeScope ? 'secondary' : 'ghost'}
+              size="sm"
+              className="h-7 px-2.5 text-xs"
+              onClick={() => {
+                if (activeScopeProp !== undefined) {
+                  onActiveScopeChange?.(scope);
+                  return;
+                }
+                setInternalActiveScope(scope);
+              }}
+            >
+              {scope}
+            </Button>
+          ))}
+        </div>
+      )}
 
       <div className="overflow-x-auto">
         <svg

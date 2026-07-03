@@ -1,10 +1,19 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Plus, Pencil, Library } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Plus, Pencil } from 'lucide-react';
 import type { Block } from '@/services/blocks';
+
+const ALL_PHASES = '__all__';
 
 interface BlockPaletteProps {
   stages: Block[];
@@ -20,62 +29,68 @@ function titleCase(s: string): string {
 export function BlockPalette({ stages, placedStageIds, readOnly, onAdd }: BlockPaletteProps) {
   const navigate = useNavigate();
   const [filter, setFilter] = useState('');
+  const [phaseFilter, setPhaseFilter] = useState(ALL_PHASES);
 
-  const filtered = stages.filter((s) => {
+  const phaseOptions = [
+    ...new Set(
+      stages
+        .map((stage) => (typeof stage.phase === 'string' ? stage.phase : null))
+        .filter((phase): phase is string => phase !== null),
+    ),
+  ].toSorted();
+
+  const filteredStages = stages.filter((stage) => {
+    if (phaseFilter !== ALL_PHASES) {
+      const stagePhase = typeof stage.phase === 'string' ? stage.phase : null;
+      if (stagePhase !== phaseFilter) return false;
+    }
     if (!filter) return true;
-    const q = filter.toLowerCase();
+    const query = filter.toLowerCase();
     return (
-      s.name.toLowerCase().includes(q) ||
-      (s.description &&
-        typeof s.description === 'string' &&
-        s.description.toLowerCase().includes(q))
+      stage.name.toLowerCase().includes(query) ||
+      (typeof stage.description === 'string' && stage.description.toLowerCase().includes(query))
     );
   });
 
   return (
-    <div className="w-full border rounded-lg flex flex-col">
-      <div className="flex items-center gap-3 flex-wrap p-2.5 border-b">
-        <p className="text-xs font-medium shrink-0">Building blocks</p>
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-7 gap-1 text-xs"
-          onClick={() => navigate('/blocks/stage/new')}
-        >
-          <Plus className="h-3 w-3" />
-          New stage
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-7 gap-1 text-xs"
-          onClick={() => navigate('/blocks/stage')}
-        >
-          <Library className="h-3 w-3" />
-          Block library
-        </Button>
-        <Input
-          placeholder="Filter stages…"
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          className="h-7 text-xs w-48"
-        />
+    <div className="w-full border rounded-lg flex flex-col bg-muted/40">
+      <div className="border-b p-2.5 bg-muted/30">
+        <p className="text-xs font-medium">Building blocks</p>
+        <div className="mt-2 flex items-center gap-2">
+          <Select value={phaseFilter} onValueChange={setPhaseFilter}>
+            <SelectTrigger className="h-7 w-28 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_PHASES}>All phases</SelectItem>
+              {phaseOptions.map((phase) => (
+                <SelectItem key={phase} value={phase}>
+                  {titleCase(phase)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Input
+            placeholder="Filter stages…"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            className="h-7 min-w-0 flex-1 text-xs"
+          />
+        </div>
       </div>
-      <div className="grid grid-rows-2 grid-flow-col auto-cols-[14rem] gap-2 overflow-x-auto p-2">
-        {filtered.length === 0 && (
+      <div className="flex max-h-[36rem] flex-col gap-2 overflow-y-auto p-2">
+        {filteredStages.length === 0 && (
           <p className="text-xs text-muted-foreground py-4 text-center">No stages match.</p>
         )}
-        {filtered.map((stage) => {
+        {filteredStages.map((stage) => {
           const placed = placedStageIds.has(stage.id);
           const draggable = !placed && !readOnly;
-          const leadAgent =
-            typeof stage.leadAgent === 'string' ? (stage.leadAgent as string) : null;
           const defaultGrouping = typeof stage.phase === 'string' ? stage.phase : null;
 
           return (
             <div
               key={stage.id}
-              className={`group shrink-0 border rounded-md p-2 text-xs transition-colors ${
+              className={`group shrink-0 border rounded-md p-2 text-xs transition-colors bg-card shadow-sm ${
                 placed
                   ? 'opacity-50 cursor-default'
                   : readOnly
@@ -128,21 +143,14 @@ export function BlockPalette({ stages, placedStageIds, readOnly, onAdd }: BlockP
                   )}
                 </span>
               </div>
-              {(defaultGrouping || leadAgent) && (
+              {defaultGrouping && (
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1 text-[10px] text-muted-foreground">
-                  {defaultGrouping && (
-                    <span>
-                      <span className="opacity-70">Recommended:</span>{' '}
-                      <span className="font-medium text-foreground/80">
-                        {titleCase(defaultGrouping)}
-                      </span>
+                  <span>
+                    <span className="opacity-70">Recommended:</span>{' '}
+                    <span className="font-medium text-foreground/80">
+                      {titleCase(defaultGrouping)}
                     </span>
-                  )}
-                  {leadAgent && (
-                    <span>
-                      <span className="opacity-70">Agent:</span> {leadAgent}
-                    </span>
-                  )}
+                  </span>
                 </div>
               )}
               {stage.description && (
