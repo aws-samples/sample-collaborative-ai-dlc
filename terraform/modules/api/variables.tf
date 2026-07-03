@@ -165,6 +165,30 @@ variable "gitlab_redirect_uri" {
   default     = ""
 }
 
+variable "github_app_id" {
+  description = "GitHub App ID. Injected into the agents Lambda to mint installation tokens for git_auth_mode='app' projects."
+  type        = string
+  default     = ""
+}
+
+variable "github_app_installation_id" {
+  description = "GitHub App installation ID for the target org/repos."
+  type        = string
+  default     = ""
+}
+
+variable "github_app_private_key_secret_name" {
+  description = "Secrets Manager secret NAME holding the GitHub App private key (PEM), read by the agents Lambda."
+  type        = string
+  default     = ""
+}
+
+variable "github_app_allowed_repos" {
+  description = "Comma-separated owner/repo allowlist permitted to use GitHub App auth. Empty disables App auth. Injected into the agents Lambda."
+  type        = string
+  default     = ""
+}
+
 variable "github_lambda_invoke_arn" {
   description = "Invoke ARN of the github Lambda"
   type        = string

@@ -24,6 +24,15 @@ resource "aws_secretsmanager_secret" "jira_oauth" {
   tags = var.tags
 }
 
+# Value populated out-of-band (console/CLI) like the OAuth secrets above — the
+# PEM never lives in code or tfstate.
+resource "aws_secretsmanager_secret" "github_app_private_key" {
+  name_prefix = "${var.project_name}-${var.environment}-github-app-private-key-"
+  description = "GitHub App private key (PEM) for installation-token auth"
+
+  tags = var.tags
+}
+
 # Legacy DynamoDB table for user git connections, keyed by userId ALONE.
 # Superseded by git_provider_connections (composite key userId+provider) so a
 # user can connect more than one git provider at once. Kept in place — NOT

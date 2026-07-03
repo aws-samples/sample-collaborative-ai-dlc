@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const { GetParameterCommand, PutParameterCommand } = require('@aws-sdk/client-ssm');
 const { GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
 const { putGitConnection } = require('./git-connection-store');
@@ -134,9 +135,199 @@ const ensureFreshGitToken = async ({ ssm, secrets, ddb, item, gitProvider }) => 
   return refreshGitlabToken({ ssm, secrets, ddb, item, tokens });
 };
 
+// GitHub App installation tokens (GitHub-only): used by projects with
+// git_auth_mode='app' instead of a per-user OAuth connection. The App private
+// key never expires (unlike OAuth refresh tokens, there is nothing to rotate or
+// revoke server-side), so minting is stateless and dependency-free. Each MINTED
+// installation token still has GitHub's hard ~1h TTL; we cache per repo-scope
+// and re-mint on demand. A single agent phase running >1h is the only edge case
+// — the orchestrator re-mints per phase on re-dispatch.
+let _appPrivateKeyPem = null;
+let _appPrivateKeyPemFetchedAt = 0;
+// Cache key = `${installationId}|${sortedRepoScope}` so a token scoped to repo A
+// is never handed to a request scoped to repo B.
+const _installationTokenCache = new Map();
+
+// Installation account login cache: avoids re-fetching on every mint. Keyed by
+// installationId. Entries expire after PEM_CACHE_TTL_MS.
+const _installationAccountCache = new Map();
+const PEM_CACHE_TTL_MS = 15 * 60 * 1000;
+
+const base64url = (buf) =>
+  Buffer.from(buf).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+
+// Build a short-lived RS256 JWT signed with the App private key. Per GitHub's
+// requirements: iat backdated 60s for clock skew, exp <= 10min (we use 9), and
+// iss set to the App ID. The token is opaque — do not parse or store it.
+const buildAppJwt = (appId, privateKeyPem) => {
+  const now = Math.floor(Date.now() / 1000);
+  const header = base64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
+  const payload = base64url(
+    JSON.stringify({ iat: now - 60, exp: now + 9 * 60, iss: String(appId) }),
+  );
+  const signingInput = `${header}.${payload}`;
+  const signature = base64url(
+    crypto.createSign('RSA-SHA256').update(signingInput).sign(privateKeyPem),
+  );
+  return `${signingInput}.${signature}`;
+};
+
+// Secret may be a raw PEM or JSON ({ privateKey | private_key | pem }), with
+// literal or \n-escaped newlines — all tolerated.
+const getAppPrivateKey = async (secrets) => {
+  if (_appPrivateKeyPem && Date.now() - _appPrivateKeyPemFetchedAt < PEM_CACHE_TTL_MS) {
+    return _appPrivateKeyPem;
+  }
+  const secretId = process.env.GITHUB_APP_PRIVATE_KEY_SECRET_NAME;
+  if (!secretId) throw new Error('GITHUB_APP_PRIVATE_KEY_SECRET_NAME env var is required');
+  const result = await secrets.send(new GetSecretValueCommand({ SecretId: secretId }));
+  const raw = result.SecretString || '';
+  let pem = raw;
+  if (raw.trim().startsWith('{')) {
+    const parsed = JSON.parse(raw);
+    pem = parsed.privateKey || parsed.private_key || parsed.pem || '';
+  }
+  pem = pem.replace(/\\n/g, '\n');
+  if (!pem.includes('BEGIN') || !pem.includes('PRIVATE KEY')) {
+    throw new Error('GitHub App private key in Secrets Manager is not a valid PEM');
+  }
+  _appPrivateKeyPem = pem;
+  _appPrivateKeyPemFetchedAt = Date.now();
+  return pem;
+};
+
+const getInstallationAccountLogin = async (secrets, appId, installationId) => {
+  const cached = _installationAccountCache.get(installationId);
+  if (cached && Date.now() - cached.fetchedAt < PEM_CACHE_TTL_MS) {
+    return cached.login;
+  }
+  const privateKeyPem = await getAppPrivateKey(secrets);
+  const jwt = buildAppJwt(appId, privateKeyPem);
+  const res = await fetch(
+    `https://api.github.com/app/installations/${encodeURIComponent(installationId)}`,
+    {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${jwt}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'User-Agent': 'collaborative-ai-dlc',
+      },
+    },
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.account?.login) {
+    throw new Error(
+      `Failed to resolve installation account (HTTP ${res.status}): ${data.message || 'unknown'}`,
+    );
+  }
+  _installationAccountCache.set(installationId, {
+    login: data.account.login,
+    fetchedAt: Date.now(),
+  });
+  return data.account.login;
+};
+
+const getInstallationToken = async ({
+  secrets,
+  appId,
+  installationId,
+  repositories,
+  permissions,
+} = {}) => {
+  const resolvedAppId = appId || process.env.GITHUB_APP_ID;
+  const resolvedInstallationId = installationId || process.env.GITHUB_INSTALLATION_ID;
+  if (!resolvedAppId || !resolvedInstallationId) {
+    throw new Error('GITHUB_APP_ID and GITHUB_INSTALLATION_ID are required for GitHub App auth');
+  }
+
+  // SECURITY: fail closed — never mint an installation-wide token.
+  if (!Array.isArray(repositories) || repositories.filter(Boolean).length === 0) {
+    throw new Error('repositories array is required and must not be empty');
+  }
+
+  // Normalize: callers pass full owner/repo slugs; we validate the owner below
+  // and extract short names for the GitHub mint API.
+  const fullSlugs = [...new Set(repositories.filter(Boolean))];
+
+  // SECURITY: bind to the installation account. Reject any slug whose
+  // owner does not match the installation's account login.
+  const accountLogin = await getInstallationAccountLogin(
+    secrets,
+    resolvedAppId,
+    resolvedInstallationId,
+  );
+  for (const slug of fullSlugs) {
+    const owner = slug.split('/')[0];
+    if (!owner || owner.toLowerCase() !== accountLogin.toLowerCase()) {
+      throw new Error(
+        `Repository "${slug}" owner does not match installation account "${accountLogin}"`,
+      );
+    }
+  }
+
+  const scopedRepos = fullSlugs.map((s) => s.split('/').pop()).toSorted();
+  // SECURITY: default down-scoped permissions when caller omits them.
+  const resolvedPermissions =
+    permissions && Object.keys(permissions).length
+      ? permissions
+      : { contents: 'write', pull_requests: 'write' };
+  // Cache key includes the permission set so a token minted for one permission
+  // profile is never served to a caller requesting a different one.
+  const permKey = Object.entries(resolvedPermissions)
+    .map(([k, v]) => `${k}=${v}`)
+    .toSorted()
+    .join(',');
+  const cacheKey = `${resolvedInstallationId}|${scopedRepos.join(',')}|${permKey}`;
+
+  const cached = _installationTokenCache.get(cacheKey);
+  if (cached && cached.expiresAt - Date.now() > REFRESH_SAFETY_MARGIN_MS) {
+    return cached.token;
+  }
+
+  const privateKeyPem = await getAppPrivateKey(secrets);
+  const jwt = buildAppJwt(resolvedAppId, privateKeyPem);
+  const mintBody = { repositories: scopedRepos, permissions: resolvedPermissions };
+  const res = await fetch(
+    `https://api.github.com/app/installations/${encodeURIComponent(resolvedInstallationId)}/access_tokens`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${jwt}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'User-Agent': 'collaborative-ai-dlc',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(mintBody),
+    },
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.token) {
+    console.error('[git-token:app] installation token mint failed', {
+      httpStatus: res.status,
+      message: data.message,
+      installationId: resolvedInstallationId,
+      scopedRepos,
+    });
+    throw new Error(data.message || `Failed to mint installation token (HTTP ${res.status})`);
+  }
+
+  const expiresAt = data.expires_at ? Date.parse(data.expires_at) : Date.now() + 60 * 60 * 1000;
+  _installationTokenCache.set(cacheKey, { token: data.token, expiresAt });
+  console.log('[git-token:app] minted installation token', {
+    installationId: resolvedInstallationId,
+    scopedRepos,
+    expiresAt: new Date(expiresAt).toISOString(),
+  });
+  return data.token;
+};
+
 module.exports = {
   GIT_TOKEN_PARAM_PATTERN,
   resolveGitToken,
   ensureFreshGitToken,
+  getInstallationToken,
   REFRESH_SAFETY_MARGIN_MS,
+  PEM_CACHE_TTL_MS,
 };
