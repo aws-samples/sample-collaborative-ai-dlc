@@ -1,11 +1,14 @@
 import { useCollaborativeInception } from '../hooks/useCollaborativeInception';
 import { CollaborativeTextarea } from './CollaborativeTextarea';
+import { GitRepoLink } from './GitRepoLink';
 import type { UserPresence } from '../hooks/usePresence';
+import type { GitProvider } from '@/services/gitProvider';
 
 interface Props {
   projectId: string;
   projectName: string;
   gitRepo?: string;
+  gitProvider: GitProvider;
   userId: string;
   userName: string;
   collaborators: UserPresence[];
@@ -18,6 +21,7 @@ export function StartInceptionModal({
   projectId,
   projectName,
   gitRepo,
+  gitProvider,
   userId,
   userName,
   collaborators,
@@ -96,7 +100,11 @@ export function StartInceptionModal({
           {gitRepo && (
             <div className="flex justify-between mt-1">
               <span className="text-gray-500">Repository:</span>
-              <span className="font-mono text-xs">{gitRepo}</span>
+              <GitRepoLink
+                gitRepo={gitRepo}
+                gitProvider={gitProvider}
+                className="font-mono text-xs"
+              />
             </div>
           )}
         </div>
