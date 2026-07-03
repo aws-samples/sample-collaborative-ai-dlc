@@ -1,6 +1,11 @@
 import { useState, useEffect } from 'react';
 import { GitHubIcon, GitLabIcon } from '@/components/icons/git-providers';
-import { projectsService, type CreateProjectInput, type ProjectKind } from '../services/projects';
+import {
+  projectsService,
+  type CreateProjectInput,
+  type GitAuthMode,
+  type ProjectKind,
+} from '../services/projects';
 import { workflowsService, type WorkflowSummary } from '../services/workflows';
 import { trackersService } from '../services/trackers';
 import { useGitProviderStatus } from '../hooks/useGitProviderStatus';
@@ -21,6 +26,16 @@ interface Props {
 
 const repoShortName = (fullName: string) => fullName.split('/').pop() || '';
 
+// Client-side "owner/repo" shape check for GitHub App mode, where repos are
+// typed manually (repo listing needs the OAuth token app mode lacks). The
+// backend is the source of truth and enforces the operator allowlist.
+const OWNER_REPO_RE = /^[^/\s]+\/[^/\s]+$/;
+const parseRepoTokens = (raw: string): string[] =>
+  raw
+    .split(',')
+    .map((r) => r.trim())
+    .filter((r) => r.length > 0);
+
 // Local form shape: gitProvider may be '' before the user selects one.
 type ProjectForm = Omit<CreateProjectInput, 'gitProvider'> & { gitProvider: GitProvider | '' };
 
@@ -28,6 +43,9 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
   const [step, setStep] = useState(1);
   const [selectedRepos, setSelectedRepos] = useState<string[]>([]);
   const [primaryRepo, setPrimaryRepo] = useState<string>('');
+  const [gitAuthMode, setGitAuthMode] = useState<GitAuthMode>('oauth');
+  const [appRepos, setAppRepos] = useState<string[]>([]);
+  const [appRepoInput, setAppRepoInput] = useState<string>('');
   const [formData, setFormData] = useState<ProjectForm>({
     name: '',
     gitProvider: initialProvider,
@@ -104,6 +122,36 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
     setFormData((prev) => ({ ...prev, gitProvider: provider, gitRepo: '' }));
     setSelectedRepos([]);
     setPrimaryRepo('');
+    setAppRepos([]);
+    setAppRepoInput('');
+    if (provider !== 'github') setGitAuthMode('oauth');
+  };
+
+  // Each mode owns its repo selection; switching wipes the other mode's picks
+  // so a stale selection can never leak into the submit payload.
+  const handleAuthModeChange = (mode: GitAuthMode) => {
+    if (mode === gitAuthMode) return;
+    setGitAuthMode(mode);
+    setSelectedRepos([]);
+    setAppRepos([]);
+    setAppRepoInput('');
+    applyPrimaryRepo('');
+  };
+
+  const handleAddAppRepos = () => {
+    const tokens = parseRepoTokens(appRepoInput);
+    if (tokens.length === 0) return;
+    if (!tokens.every((r) => OWNER_REPO_RE.test(r))) return;
+    const next = [...appRepos, ...tokens.filter((r) => !appRepos.includes(r))];
+    setAppRepos(next);
+    setAppRepoInput('');
+    if (!primaryRepo && next.length > 0) applyPrimaryRepo(next[0]);
+  };
+
+  const handleRemoveAppRepo = (repo: string) => {
+    const next = appRepos.filter((r) => r !== repo);
+    setAppRepos(next);
+    if (primaryRepo === repo) applyPrimaryRepo(next[0] ?? '');
   };
 
   const handleSetPrimary = (repoFullName: string) => {
@@ -112,7 +160,9 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (selectedRepos.length > 0 && !selectedRepos.includes(primaryRepo)) {
+    const appMode = gitAuthMode === 'app';
+    const activeRepos = appMode ? appRepos : selectedRepos;
+    if (activeRepos.length > 0 && !activeRepos.includes(primaryRepo)) {
       setError('Select exactly one primary repository.');
       return;
     }
@@ -130,13 +180,20 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
         setSubmitting(false);
         return;
       }
+      if (appMode && appRepos.length === 0) {
+        setError('Add at least one repository as "owner/repo".');
+        setSubmitting(false);
+        return;
+      }
+      const repos = activeRepos.map((url) => ({
+        url,
+        role: url === primaryRepo ? ('primary' as const) : ('secondary' as const),
+      }));
       const input: CreateProjectInput = {
         ...formData,
         gitProvider,
-        repos: selectedRepos.map((url) => ({
-          url,
-          role: url === primaryRepo ? ('primary' as const) : ('secondary' as const),
-        })),
+        gitAuthMode,
+        repos,
         ...(kind === 'v2' ? { kind: 'v2' as const, workflowId } : { kind: 'v1' as const }),
       };
       const project = await projectsService.create(input);
@@ -163,8 +220,14 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
     }
   };
 
-  const canProceedStep1 = gitStatus?.connected;
-  const canProceedStep2 = selectedRepos.length > 0;
+  const pendingAppInput = appRepoInput.trim().length > 0;
+  const pendingAppInputValid =
+    pendingAppInput && parseRepoTokens(appRepoInput).every((r) => OWNER_REPO_RE.test(r));
+  const canProceedStep1 = formData.gitProvider
+    ? gitAuthMode === 'app' || gitStatus?.connected
+    : false;
+  const canProceedStep2 = gitAuthMode === 'app' ? appRepos.length > 0 : selectedRepos.length > 0;
+  const repoCount = gitAuthMode === 'app' ? appRepos.length : selectedRepos.length;
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -269,10 +332,57 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                 {gitStatusError}
               </div>
             )}
+            {formData.gitProvider === 'github' && (
+              <div className="mb-4">
+                <label className="block font-medium mb-1 text-gray-900 dark:text-white">
+                  Authentication
+                </label>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+                  How agents authenticate with GitHub for this project.
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    {
+                      mode: 'oauth' as const,
+                      title: 'OAuth (your account)',
+                      sub: 'Your connection',
+                    },
+                    { mode: 'app' as const, title: 'GitHub App (bot)', sub: 'Installation token' },
+                  ].map(({ mode, title, sub }) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => handleAuthModeChange(mode)}
+                      className={`rounded border px-3 py-2 text-left text-sm transition-colors ${
+                        gitAuthMode === mode
+                          ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-900/30 text-gray-900 dark:text-white'
+                          : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'
+                      }`}
+                    >
+                      <span className="font-medium">{title}</span>
+                      <span className="block text-[11px] text-gray-500 dark:text-gray-400">
+                        {sub}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             {!formData.gitProvider ? (
               <p className="text-sm text-gray-500 dark:text-gray-400">
                 Select a git provider to continue.
               </p>
+            ) : gitAuthMode === 'app' ? (
+              <div className="rounded border border-indigo-200 dark:border-indigo-800 bg-indigo-50/50 dark:bg-indigo-900/20 p-3">
+                <p className="text-sm text-gray-700 dark:text-gray-300">
+                  Agents authenticate as the GitHub App installation (a bot) using a server-side
+                  token — no personal connection is needed.
+                </p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  The repository must be operator-approved for GitHub App access, or creation will
+                  be rejected.
+                </p>
+              </div>
             ) : gitStatusLoading ? (
               <p className="text-sm text-gray-500 dark:text-gray-400">Checking connection...</p>
             ) : (
@@ -303,47 +413,127 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
         {/* Step 2: Select Repositories (provider is always set past step 1) */}
         {step === 2 && formData.gitProvider && (
           <div>
-            <h3 className="font-medium mb-1 text-gray-900 dark:text-white">Select Repositories</h3>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-              Choose one or more repositories. The primary repo drives issue integration and project
-              naming.
-            </p>
-            <GitRepoSelect
-              provider={formData.gitProvider}
-              multiple
-              value={selectedRepos}
-              onChange={handleReposChange}
-            />
-            {selectedRepos.length > 1 && (
-              <div className="mt-3 border dark:border-gray-600 rounded divide-y dark:divide-gray-600">
-                <div className="px-3 py-1.5 bg-gray-50 dark:bg-gray-700">
-                  <span className="text-[10px] font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
-                    Designate primary
-                  </span>
-                </div>
-                {selectedRepos.map((repo) => (
-                  <label
-                    key={repo}
-                    className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700"
+            <h3 className="font-medium mb-1 text-gray-900 dark:text-white">
+              {gitAuthMode === 'app' ? 'Repositories' : 'Select Repositories'}
+            </h3>
+            {gitAuthMode === 'app' ? (
+              <>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+                  Add repositories as <code className="text-[11px]">owner/repo</code>. Each must be
+                  operator-approved for GitHub App access.
+                </p>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={appRepoInput}
+                    onChange={(e) => setAppRepoInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleAddAppRepos();
+                      }
+                    }}
+                    placeholder="owner/repo"
+                    spellCheck={false}
+                    autoComplete="off"
+                    className="flex-1 border dark:border-gray-600 rounded px-3 py-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddAppRepos}
+                    disabled={!pendingAppInputValid}
+                    className="px-3 py-2 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50"
                   >
-                    <input
-                      type="radio"
-                      name="primaryRepo"
-                      checked={primaryRepo === repo}
-                      onChange={() => handleSetPrimary(repo)}
-                      className="accent-indigo-600"
-                    />
-                    <span className="text-sm text-gray-900 dark:text-gray-100 truncate flex-1">
-                      {repo}
-                    </span>
-                    {primaryRepo === repo && (
-                      <span className="text-[10px] font-medium bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300 px-1.5 py-0.5 rounded">
-                        primary
+                    Add
+                  </button>
+                </div>
+                {pendingAppInput && !pendingAppInputValid && (
+                  <p className="text-xs text-red-600 dark:text-red-400 mt-1">
+                    Each entry must look like "owner/repo".
+                  </p>
+                )}
+                {appRepos.length > 0 && (
+                  <div className="mt-3 border dark:border-gray-600 rounded divide-y dark:divide-gray-600">
+                    {appRepos.map((repo) => (
+                      <label
+                        key={repo}
+                        className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700"
+                      >
+                        <input
+                          type="radio"
+                          name="primaryAppRepo"
+                          checked={primaryRepo === repo}
+                          onChange={() => handleSetPrimary(repo)}
+                          className="accent-indigo-600"
+                        />
+                        <span className="text-sm text-gray-900 dark:text-gray-100 truncate flex-1">
+                          {repo}
+                        </span>
+                        {primaryRepo === repo && (
+                          <span className="text-[10px] font-medium bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300 px-1.5 py-0.5 rounded">
+                            primary
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            handleRemoveAppRepo(repo);
+                          }}
+                          aria-label={`Remove ${repo}`}
+                          className="text-gray-400 hover:text-red-600 dark:hover:text-red-400 text-sm px-1"
+                        >
+                          ✕
+                        </button>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+                  Choose one or more repositories. The primary repo drives issue integration and
+                  project naming.
+                </p>
+                <GitRepoSelect
+                  provider={formData.gitProvider}
+                  multiple
+                  value={selectedRepos}
+                  onChange={handleReposChange}
+                />
+                {selectedRepos.length > 1 && (
+                  <div className="mt-3 border dark:border-gray-600 rounded divide-y dark:divide-gray-600">
+                    <div className="px-3 py-1.5 bg-gray-50 dark:bg-gray-700">
+                      <span className="text-[10px] font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                        Designate primary
                       </span>
-                    )}
-                  </label>
-                ))}
-              </div>
+                    </div>
+                    {selectedRepos.map((repo) => (
+                      <label
+                        key={repo}
+                        className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700"
+                      >
+                        <input
+                          type="radio"
+                          name="primaryRepo"
+                          checked={primaryRepo === repo}
+                          onChange={() => handleSetPrimary(repo)}
+                          className="accent-indigo-600"
+                        />
+                        <span className="text-sm text-gray-900 dark:text-gray-100 truncate flex-1">
+                          {repo}
+                        </span>
+                        {primaryRepo === repo && (
+                          <span className="text-[10px] font-medium bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300 px-1.5 py-0.5 rounded">
+                            primary
+                          </span>
+                        )}
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </>
             )}
             <div className="flex justify-end gap-2 mt-6">
               <button
@@ -382,7 +572,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
             </div>
             <div className="mb-4">
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                {selectedRepos.length > 1 ? 'Primary Repository' : 'Repository'}
+                {repoCount > 1 ? 'Primary Repository' : 'Repository'}
               </label>
               <input
                 type="text"
@@ -390,12 +580,19 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                 className="w-full border dark:border-gray-600 rounded px-3 py-2 bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white"
                 disabled
               />
-              {selectedRepos.length > 1 && (
-                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                  +{selectedRepos.length - 1} additional repositor
-                  {selectedRepos.length - 1 === 1 ? 'y' : 'ies'}
-                </p>
-              )}
+              <div className="flex items-center gap-2 mt-1">
+                {formData.gitProvider === 'github' && (
+                  <span className="text-[10px] font-medium bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300 px-1.5 py-0.5 rounded">
+                    {gitAuthMode === 'app' ? 'GitHub App (bot)' : 'OAuth (your account)'}
+                  </span>
+                )}
+                {repoCount > 1 && (
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    +{repoCount - 1} additional repositor
+                    {repoCount - 1 === 1 ? 'y' : 'ies'}
+                  </p>
+                )}
+              </div>
             </div>
             {(formData.gitProvider === 'github' || formData.gitProvider === 'gitlab') && (
               <div className="mb-4">
@@ -416,7 +613,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                     </span>
                     <span className="block text-xs text-gray-500 dark:text-gray-400">
                       Browse issues on the project page and start sprints from them.
-                      {selectedRepos.length > 1 ? ' Applies to the primary repository only.' : ''}
+                      {repoCount > 1 ? ' Applies to the primary repository only.' : ''}
                     </span>
                   </span>
                 </label>
