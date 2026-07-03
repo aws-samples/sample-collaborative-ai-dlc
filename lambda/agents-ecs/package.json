@@ -13,5 +13,8 @@
     "@aws-sdk/lib-dynamodb": "^3.1060.0",
     "gremlin": "^3.8.1",
     "gremlin-aws-sigv4": "^3.6.1"
+  },
+  "overrides": {
+    "uuid": "^11.1.1"
   }
 }
