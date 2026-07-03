@@ -6,7 +6,6 @@
     "lambda/building-blocks",
     "lambda/create-pr",
     "lambda/discussions",
-    "lambda/get-agent-output",
     "lambda/github",
     "lambda/intents",
     "lambda/gitlab",

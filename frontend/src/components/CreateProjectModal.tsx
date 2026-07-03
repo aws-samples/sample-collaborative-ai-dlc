@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Github, Gitlab } from 'lucide-react';
+import { GitHubIcon, GitLabIcon } from '@/components/icons/git-providers';
 import { projectsService, type CreateProjectInput, type ProjectKind } from '../services/projects';
 import { workflowsService, type WorkflowSummary } from '../services/workflows';
 import { trackersService } from '../services/trackers';
@@ -252,13 +252,13 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
               <SelectContent>
                 <SelectItem value="github">
                   <span className="flex items-center gap-2">
-                    <Github />
+                    <GitHubIcon className="h-4 w-4" />
                     GitHub
                   </span>
                 </SelectItem>
                 <SelectItem value="gitlab">
                   <span className="flex items-center gap-2">
-                    <Gitlab />
+                    <GitLabIcon className="h-4 w-4" />
                     GitLab
                   </span>
                 </SelectItem>

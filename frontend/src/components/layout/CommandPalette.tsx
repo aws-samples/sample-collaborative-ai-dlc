@@ -22,6 +22,7 @@ import {
   Activity,
 } from 'lucide-react';
 import { useProjectsCache } from '@/hooks/useProjectsCache';
+import { GitRepoLink } from '@/components/GitRepoLink';
 
 interface CommandPaletteProps {
   open: boolean;
@@ -88,7 +89,12 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
                 <FolderGit2 className="mr-2 h-4 w-4" />
                 {p.project.name}
                 {p.project.gitRepo && (
-                  <span className="ml-auto text-xs text-muted-foreground">{p.project.gitRepo}</span>
+                  <GitRepoLink
+                    gitRepo={p.project.gitRepo}
+                    gitProvider={p.project.gitProvider}
+                    className="ml-auto text-xs text-muted-foreground"
+                    noLink
+                  />
                 )}
               </CommandItem>
             ))}
