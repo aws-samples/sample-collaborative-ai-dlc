@@ -8,6 +8,7 @@ import {
   ChevronRight,
   Settings,
   LogOut,
+  Activity,
   Blocks,
   Workflow,
 } from 'lucide-react';
@@ -69,24 +70,20 @@ export function AppHeader({
   return (
     <header className="flex h-12 shrink-0 items-center border-b bg-background px-3 gap-2">
       {/* Sidebar toggle */}
-      {params.sprintId && (
-        <>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onToggleSidebar}>
-                {sidebarCollapsed ? (
-                  <PanelLeftOpen className="h-4 w-4" />
-                ) : (
-                  <PanelLeftClose className="h-4 w-4" />
-                )}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>{sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}</TooltipContent>
-          </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onToggleSidebar}>
+            {sidebarCollapsed ? (
+              <PanelLeftOpen className="h-4 w-4" />
+            ) : (
+              <PanelLeftClose className="h-4 w-4" />
+            )}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}</TooltipContent>
+      </Tooltip>
 
-          <Separator orientation="vertical" className="h-5" />
-        </>
-      )}
+      <Separator orientation="vertical" className="h-5" />
 
       {/* Logo */}
       <button
@@ -176,6 +173,20 @@ export function AppHeader({
           </Button>
         </TooltipTrigger>
         <TooltipContent>Workflows</TooltipContent>
+      </Tooltip>
+
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className={`h-7 w-7 ${location.pathname === '/observability' ? 'text-primary bg-primary/10' : ''}`}
+            onClick={() => navigate('/observability')}
+          >
+            <Activity className="h-4 w-4" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Observability</TooltipContent>
       </Tooltip>
 
       {/* Activity panel toggle — sprint AND v2 intent routes host a panel. */}
