@@ -3,6 +3,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { AppSidebar } from '@/components/layout/AppSidebar';
 import { AppHeader } from '@/components/layout/AppHeader';
 import { SprintPipelineBar } from '@/components/layout/SprintPipelineBar';
+import { IntentPipelineBar } from '@/components/layout/IntentPipelineBar';
 import { ActivityPanel } from '@/components/layout/ActivityPanel';
 import { IntentActivityPanel } from '@/components/layout/IntentActivityPanel';
 import { StatusBar } from '@/components/layout/StatusBar';
@@ -143,6 +144,7 @@ export function AppShell() {
               {/* Main content */}
               <main className="h-full overflow-hidden min-w-0 flex flex-col">
                 {inSprint && <SprintPipelineBar />}
+                {inIntent && <IntentPipelineBar />}
                 <div className="flex-1 overflow-y-auto min-w-0">
                   <Outlet />
                 </div>
