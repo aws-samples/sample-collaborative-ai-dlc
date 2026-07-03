@@ -1518,13 +1518,28 @@ resource "aws_iam_role_policy" "intents" {
     Statement = [
       local.neptune_statement,
       {
-        # v2 process table: read/write execution state + GSI1 list.
+        # v2 process table: read/write execution state + GSI1 list. Delete /
+        # BatchWrite drain the whole EXEC#<id> partition on intent delete.
         Effect = "Allow"
-        Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Query",
+          "dynamodb:DeleteItem",
+          "dynamodb:BatchWriteItem",
+        ]
         Resource = [
           var.v2_executions_table_arn,
           "${var.v2_executions_table_arn}/index/*",
         ]
+      },
+      {
+        # Yjs documents: remove the intent-scoped realtime docs (gate editors,
+        # discussion threads, presence) when an intent is deleted.
+        Effect   = "Allow"
+        Action   = ["dynamodb:DeleteItem"]
+        Resource = [var.yjs_documents_table_arn]
       },
       {
         # Blocks table: resolve a workflow's latest version to pin at create
@@ -1597,6 +1612,8 @@ module "intents_lambda" {
     V2_PROCESS_TABLE      = var.v2_executions_table_name
     BLOCKS_TABLE          = var.blocks_table_name
     REALTIME_SECRET_PARAM = var.realtime_doc_secret_param_name
+    # Intent-scoped realtime docs are removed on intent delete.
+    YJS_DOCUMENTS_TABLE = var.yjs_documents_table_name
     # Admin global cli-models default lives under this SSM prefix; the intents
     # lambda merges it under the project selection at intent create.
     AGENT_SETTINGS_SSM_PREFIX = "/${var.project_name}/${var.environment}"

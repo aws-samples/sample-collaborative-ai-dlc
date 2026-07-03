@@ -11,7 +11,13 @@
 // happen here — this is process state only.
 
 const { randomUUID } = require('node:crypto');
-const { GetCommand, PutCommand, QueryCommand, UpdateCommand } = require('@aws-sdk/lib-dynamodb');
+const {
+  BatchWriteCommand,
+  GetCommand,
+  PutCommand,
+  QueryCommand,
+  UpdateCommand,
+} = require('@aws-sdk/lib-dynamodb');
 const {
   META,
   executionMetaKey,
@@ -1130,10 +1136,51 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     };
   };
 
+  // Delete EVERY record for an execution — the whole EXEC#<id> partition
+  // (META, STAGE#, EVENT#, HUMAN#, METRIC#, OUTPUT#, SENSOR#, STEER#,
+  // UNITPLAN, UNIT#). Keys-only projection: OUTPUT# rows can be megabytes and
+  // we only need pk/sk to delete them. BatchWrite in chunks of 25 (the API
+  // maximum), retrying UnprocessedItems with backoff so a throttled batch
+  // never silently leaves rows behind. Idempotent — deleting a missing key is
+  // a no-op, so a retried delete after a partial failure just finishes the job.
+  const deleteExecution = async (executionId) => {
+    const keys = await queryAll(ddb, {
+      TableName: table(),
+      KeyConditionExpression: 'pk = :pk',
+      ExpressionAttributeValues: { ':pk': executionPk(executionId) },
+      ProjectionExpression: 'pk, sk',
+    });
+    let deleted = 0;
+    for (let i = 0; i < keys.length; i += 25) {
+      let requests = keys
+        .slice(i, i + 25)
+        .map((k) => ({ DeleteRequest: { Key: { pk: k.pk, sk: k.sk } } }));
+      let attempt = 0;
+      while (requests.length > 0) {
+        const { UnprocessedItems } = await ddb.send(
+          new BatchWriteCommand({ RequestItems: { [table()]: requests } }),
+        );
+        const remaining = UnprocessedItems?.[table()] ?? [];
+        deleted += requests.length - remaining.length;
+        requests = remaining;
+        if (requests.length > 0) {
+          if (attempt >= 5)
+            throw new Error(
+              `deleteExecution: ${requests.length} rows still unprocessed after ${attempt} retries`,
+            );
+          await new Promise((resolve) => setTimeout(resolve, 100 * 2 ** attempt));
+          attempt += 1;
+        }
+      }
+    }
+    return { deleted };
+  };
+
   return {
     createExecution,
     getExecution,
     updateExecution,
+    deleteExecution,
     putStage,
     getStage,
     updateStageState,

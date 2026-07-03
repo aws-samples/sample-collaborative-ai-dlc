@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import {
   LambdaClient,
   InvokeCommand,
@@ -731,6 +731,101 @@ export const handler = async (event) => {
         })
         .catch((err) => console.error('Cancel event append failed:', err.message));
       return response(200, mapIntent(updated));
+    }
+
+    // DELETE /projects/{projectId}/intents/{intentId}
+    // Permanently remove an intent: the Neptune subgraph (anchor + everything
+    // it CONTAINS + discussion threads), the entire EXEC#<id> DynamoDB
+    // partition, and the intent-scoped realtime Yjs documents. Owner/admin
+    // only (destructive, matches repo removal). A RUNNING intent is refused —
+    // its durable orchestrator + AgentCore session are live and would write
+    // into the deleted partition; any other non-terminal status is first
+    // retired exactly like cancel (supersede pending gates, wake the parked
+    // orchestrator with a cancel sentinel) so nothing resumes afterwards.
+    // Deletion order is deliberate: Yjs docs → Neptune → DynamoDB (META last),
+    // so a partial failure leaves the intent listed and the delete retryable.
+    if (intentId && httpMethod === 'DELETE') {
+      const meta = await store.getExecution(intentId);
+      if (!meta || meta.projectId !== projectId) {
+        return response(404, { error: 'Intent not found' });
+      }
+      if (auth.role !== 'owner' && auth.role !== 'admin') {
+        return response(403, { error: 'Only project owners and admins can delete intents' });
+      }
+      if (meta.status === 'RUNNING') {
+        return response(409, {
+          error:
+            'Intent is RUNNING, cannot delete — wait for it to park or finish, or cancel it first',
+        });
+      }
+
+      // Collect the derived Yjs document ids BEFORE their sources are deleted:
+      // gate editors (intent-sq-<id>-<humanTaskId>, from HUMAN# rows),
+      // discussion threads (intent-discussion-<id>-<discussionId>, from the
+      // Neptune Discussion vertices) and the presence doc.
+      const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
+      const discussionIds = await g
+        .V()
+        .has('Intent', 'id', intentId)
+        .out('HAS_DISCUSSION')
+        .values('id')
+        .toList()
+        .catch(() => []);
+      const yjsDocIds = [
+        `intent-presence-${intentId}`,
+        ...(records.humanTasks ?? []).map((h) => `intent-sq-${intentId}-${h.humanTaskId}`),
+        ...discussionIds.map((d) => `intent-discussion-${intentId}-${d}`),
+      ];
+
+      // Retire anything that could still wake up (same mechanics as cancel).
+      const responder = getResponder(event);
+      if (!['DRAFT', 'SUCCEEDED', 'CANCELLED'].includes(meta.status)) {
+        await retireParkedRun(intentId, `deleted by ${responder.displayName || responder.sub}`);
+      }
+
+      // Yjs docs — best-effort: they are unreachable once the intent is gone
+      // (doc ids are derived from the intent id), so a failed delete here only
+      // leaves harmless orphans and must not block the real deletion.
+      const yjsTable = process.env.YJS_DOCUMENTS_TABLE;
+      if (yjsTable) {
+        await Promise.all(
+          yjsDocIds.map(async (documentId) => {
+            try {
+              await ddb.send(new DeleteCommand({ TableName: yjsTable, Key: { documentId } }));
+            } catch (err) {
+              console.error(`Yjs doc delete failed (${documentId}):`, err.message);
+            }
+          }),
+        );
+      }
+
+      // Neptune cascade. Children are enumerated TOGETHER WITH the anchor in
+      // one union because drop() consumes eagerly (see the sprint delete):
+      // CONTAINS → Artifact | Question | Steering | UnitOfWork, plus the
+      // discussion threads and their messages. Project-scoped TeamKnowledge /
+      // LearningRule vertices are cross-intent by design and stay. Edges
+      // (PRODUCES/CONSUMES/DERIVED_FROM/…, INFLUENCES, DISCUSSES) drop with
+      // their vertices. A DRAFT intent has no anchor yet — the traversal just
+      // matches nothing.
+      await g
+        .V()
+        .has('Intent', 'id', intentId)
+        .union(
+          __.out('CONTAINS'),
+          __.out('HAS_DISCUSSION').union(__.out('HAS_MESSAGE'), __.identity()),
+          __.identity(),
+        )
+        .drop()
+        .next();
+
+      // DynamoDB partition last — META goes with it, so until this succeeds
+      // the intent still lists and the whole delete can simply be re-run.
+      await store.deleteExecution(intentId);
+
+      console.log(
+        `Intent ${intentId} deleted by ${responder.sub} (project ${projectId}, was ${meta.status})`,
+      );
+      return response(204, {});
     }
 
     // POST /projects/{projectId}/intents/{intentId}/rewind

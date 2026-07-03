@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import {
+  BatchWriteCommand,
   DynamoDBDocumentClient,
   GetCommand,
   PutCommand,
@@ -329,6 +330,56 @@ describe('createProcessStore', () => {
     expect(below.ExpressionAttributeValues[':lo']).toBe('OUTPUT#');
     expect(above.KeyConditionExpression).toBe('pk = :pk AND sk >= :hi');
     expect(above.ExpressionAttributeValues[':hi']).toBe('OUTPUT$');
+  });
+
+  it('deleteExecution drains the whole partition keys-only and BatchWrite-deletes in chunks of 25', async () => {
+    // 30 rows → 2 batches (25 + 5). The Query must be keys-only (OUTPUT# rows
+    // can be megabytes the delete never needs).
+    const keys = Array.from({ length: 30 }, (_, i) => ({
+      pk: 'EXEC#e1',
+      sk: `EVENT#T#${String(i).padStart(2, '0')}`,
+    }));
+    ddb.on(QueryCommand).resolves({ Items: keys });
+    ddb.on(BatchWriteCommand).resolves({ UnprocessedItems: {} });
+    const { deleted } = await store.deleteExecution('e1');
+    expect(deleted).toBe(30);
+    const query = ddb.commandCalls(QueryCommand)[0].args[0].input;
+    expect(query.KeyConditionExpression).toBe('pk = :pk');
+    expect(query.ExpressionAttributeValues[':pk']).toBe('EXEC#e1');
+    expect(query.ProjectionExpression).toBe('pk, sk');
+    const batches = ddb.commandCalls(BatchWriteCommand).map((c) => c.args[0].input);
+    expect(batches).toHaveLength(2);
+    expect(batches[0].RequestItems['v2-proc']).toHaveLength(25);
+    expect(batches[1].RequestItems['v2-proc']).toHaveLength(5);
+    expect(batches[0].RequestItems['v2-proc'][0]).toEqual({
+      DeleteRequest: { Key: { pk: 'EXEC#e1', sk: 'EVENT#T#00' } },
+    });
+  });
+
+  it('deleteExecution retries UnprocessedItems until the batch fully lands', async () => {
+    ddb.on(QueryCommand).resolves({
+      Items: [
+        { pk: 'EXEC#e1', sk: 'META' },
+        { pk: 'EXEC#e1', sk: 'STAGE#si-1' },
+      ],
+    });
+    const leftover = [{ DeleteRequest: { Key: { pk: 'EXEC#e1', sk: 'STAGE#si-1' } } }];
+    ddb
+      .on(BatchWriteCommand)
+      .resolvesOnce({ UnprocessedItems: { 'v2-proc': leftover } })
+      .resolvesOnce({ UnprocessedItems: {} });
+    const { deleted } = await store.deleteExecution('e1');
+    expect(deleted).toBe(2);
+    const batches = ddb.commandCalls(BatchWriteCommand).map((c) => c.args[0].input);
+    expect(batches).toHaveLength(2);
+    expect(batches[1].RequestItems['v2-proc']).toEqual(leftover);
+  });
+
+  it('deleteExecution is a no-op on an empty partition', async () => {
+    ddb.on(QueryCommand).resolves({ Items: [] });
+    const { deleted } = await store.deleteExecution('gone');
+    expect(deleted).toBe(0);
+    expect(ddb.commandCalls(BatchWriteCommand)).toHaveLength(0);
   });
 
   it('getOutputs filters by stageInstanceId (null → stage-less bucket) and afterSeq', async () => {

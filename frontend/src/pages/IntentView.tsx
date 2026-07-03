@@ -9,6 +9,7 @@ import {
 } from '@/services/intents';
 import { useIntent } from '@/contexts/IntentContext';
 import { useAuth } from '@/contexts/AuthContext';
+import { useProjectCache } from '@/hooks/useProjectsCache';
 import QuestionEditor from '@/components/QuestionEditor';
 import type { Question } from '@/services/questions';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
@@ -31,6 +32,16 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from '@/components/ui/accordion';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { cn } from '@/lib/utils';
 import { aggregateMetrics, summarizeCost } from '@/lib/metricAggregation';
 import { UsageMetrics } from '@/components/intent/UsageMetrics';
@@ -41,6 +52,7 @@ import {
   List,
   Loader2,
   Play,
+  Trash2,
   Workflow,
   XCircle,
 } from 'lucide-react';
@@ -61,13 +73,20 @@ export default function IntentView() {
     reload,
     answerGate,
     cancelIntent,
+    deleteIntent,
   } = useIntent();
   const navigate = useNavigate();
   const { user } = useAuth();
   const userName = user?.displayName || user?.email || '';
+  // Role gate for the destructive delete (owner/admin — the API enforces it
+  // too; hiding the button just avoids a guaranteed 403).
+  const { project } = useProjectCache(projectId ?? null);
+  const canDelete = project?.userRole === 'owner' || project?.userRole === 'admin';
 
   const [starting, setStarting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [view, setView] = useState<'list' | 'graph' | 'lanes'>('list');
 
@@ -105,6 +124,22 @@ export default function IntentView() {
     }
   };
 
+  // Permanent delete (owner/admin): removes the intent's graph data, run
+  // history and realtime docs, then returns to the project page. Refused by
+  // the API while RUNNING — the button hides for it.
+  const handleDelete = async () => {
+    setDeleting(true);
+    setActionError(null);
+    try {
+      await deleteIntent();
+      navigate(`/project/${projectId}`);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to delete intent');
+      setConfirmDelete(false);
+      setDeleting(false);
+    }
+  };
+
   if (!projectId || !intentId) return <div className="p-6">Intent not found</div>;
   if (loading && !detail) {
     return (
@@ -123,6 +158,8 @@ export default function IntentView() {
   const isFailed = intent.status === 'FAILED';
   // Cancellable (steering): parked, stranded, or failed — never mid-RUNNING.
   const isCancellable = ['WAITING', 'CREATED', 'FAILED'].includes(intent.status);
+  // Deletable (destructive): owner/admin, any status except mid-RUNNING.
+  const isDeletable = canDelete && intent.status !== 'RUNNING';
   // Pre-stage progress: before any stage row exists, init-ws lifecycle events
   // are the only signal the run is doing something (they stream into the
   // sidebar Timeline); this strip keeps the main pane from looking dead.
@@ -173,6 +210,22 @@ export default function IntentView() {
                 <XCircle className="h-3 w-3" />
               )}
               {cancelling ? 'Cancelling…' : 'Cancel run'}
+            </Button>
+          )}
+          {isDeletable && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-6 gap-1 px-2 text-[11px] text-muted-foreground hover:text-destructive"
+              disabled={deleting}
+              onClick={() => setConfirmDelete(true)}
+            >
+              {deleting ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Trash2 className="h-3 w-3" />
+              )}
+              {deleting ? 'Deleting…' : 'Delete'}
             </Button>
           )}
         </div>
@@ -411,6 +464,33 @@ export default function IntentView() {
           <WorkProductsPanel detail={detail} gates={gates} />
         </>
       )}
+
+      {/* Delete confirmation */}
+      <AlertDialog
+        open={confirmDelete}
+        onOpenChange={(open) => !deleting && setConfirmDelete(open)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Intent</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete “{intent.title || 'this intent'}”? All of its
+              artifacts, questions, discussions and run history will be permanently removed. This
+              action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDelete}
+              disabled={deleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleting ? 'Deleting…' : 'Delete Intent'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

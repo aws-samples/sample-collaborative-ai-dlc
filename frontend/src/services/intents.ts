@@ -397,6 +397,10 @@ export const intentsService = {
     api.post<Intent>(`/projects/${projectId}/intents/${intentId}/start`, {}),
   cancel: (projectId: string, intentId: string) =>
     api.post<Intent>(`/projects/${projectId}/intents/${intentId}/cancel`, {}),
+  // Permanent delete: removes the intent's graph data, process state and
+  // realtime docs. Owner/admin only; refused (409) while RUNNING.
+  delete: (projectId: string, intentId: string) =>
+    api.delete(`/projects/${projectId}/intents/${intentId}`),
   // Steering rewind: restart the run from `fromStageId` (409 while RUNNING —
   // wait for the stage to park or finish). Guidance is optional: with it this
   // is a corrective rewind (a steering row the restarted stage consumes);

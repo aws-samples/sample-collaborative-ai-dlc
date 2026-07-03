@@ -4,6 +4,8 @@ import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { mockClient } from 'aws-sdk-client-mock';
 import {
+  BatchWriteCommand,
+  DeleteCommand,
   DynamoDBDocumentClient,
   GetCommand,
   PutCommand,
@@ -33,11 +35,14 @@ const ssmMock = mockClient(SSMClient);
 
 // In-memory single-table fake for the v2 process table + blocks table.
 const procStore = new Map();
+// Separate fake for the yjs-documents table (hash key `documentId` only).
+const yjsStore = new Map();
 const keyOf = (pk, sk) => `${pk}|${sk}`;
 
 const installDdbFakes = () => {
   ddbMock.reset();
   procStore.clear();
+  yjsStore.clear();
   ddbMock.on(GetCommand).callsFake((input) => {
     const item = procStore.get(keyOf(input.Key.pk, input.Key.sk));
     return { Item: item ? { ...item } : undefined };
@@ -127,6 +132,21 @@ const installDdbFakes = () => {
     procStore.set(k, next);
     return { Attributes: { ...next } };
   });
+  ddbMock.on(DeleteCommand).callsFake((input) => {
+    // Yjs docs are keyed by documentId alone; everything else is pk|sk.
+    if (input.Key.documentId !== undefined) yjsStore.delete(input.Key.documentId);
+    else procStore.delete(keyOf(input.Key.pk, input.Key.sk));
+    return {};
+  });
+  ddbMock.on(BatchWriteCommand).callsFake((input) => {
+    for (const requests of Object.values(input.RequestItems || {})) {
+      for (const req of requests) {
+        const key = req.DeleteRequest?.Key;
+        if (key) procStore.delete(keyOf(key.pk, key.sk));
+      }
+    }
+    return { UnprocessedItems: {} };
+  });
   lambdaMock.reset();
   lambdaMock.on(InvokeCommand).resolves({ StatusCode: 202 });
   lambdaMock.on(SendDurableExecutionCallbackSuccessCommand).resolves({});
@@ -170,6 +190,7 @@ beforeAll(async () => {
   vi.stubEnv('BLOCKS_TABLE', 'blocks-test');
   vi.stubEnv('V2_ORCHESTRATOR_FUNCTION', 'orchestrator-test');
   vi.stubEnv('REALTIME_DOC_SECRET', 'test-secret');
+  vi.stubEnv('YJS_DOCUMENTS_TABLE', 'yjs-test');
   ({ handler } = await import('../index.js'));
 
   const url = `ws://${process.env.NEPTUNE_ENDPOINT}:${process.env.GREMLIN_PORT}/gremlin`;
@@ -1497,6 +1518,157 @@ describe('POST /cancel', () => {
       expect(res.statusCode).toBe(409);
     },
   );
+});
+
+describe('DELETE /projects/{id}/intents/{intentId}', () => {
+  const del = (sub, projectId, intentId) =>
+    handler({
+      httpMethod: 'DELETE',
+      path: `/projects/${projectId}/intents/${intentId}`,
+      pathParameters: { projectId, intentId },
+      ...claims(sub),
+    });
+
+  const addMember = async (projectId, sub, role) => {
+    await g.addV('User').property('id', sub).property('email', `${sub}@x`).next();
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .addE('HAS_MEMBER')
+      .property('role', role)
+      .to(gremlin.process.statics.V().has('User', 'id', sub))
+      .next();
+  };
+
+  it('deletes a DRAFT intent (no Neptune anchor yet) — 204 and the META row is gone', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+
+    const res = await del(sub, projectId, intent.id);
+    expect(res.statusCode).toBe(204);
+    expect(procStore.has(keyOf(`EXEC#${intent.id}`, 'META'))).toBe(false);
+    // Idempotent from the caller's view: the intent no longer exists.
+    const again = await del(sub, projectId, intent.id);
+    expect(again.statusCode).toBe(404);
+  });
+
+  it('cascades the Neptune subgraph, drains the DDB partition and removes the Yjs docs', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const intentId = intent.id;
+    // Graph: anchor + CONTAINS artifact + a discussion thread with a message.
+    await seedIntentAnchor(intentId);
+    await g
+      .addV('Artifact')
+      .property('id', `a-${intentId}`)
+      .property('intent_id', intentId)
+      .as('a')
+      .V()
+      .has('Intent', 'id', intentId)
+      .addE('CONTAINS')
+      .to('a')
+      .next();
+    await g
+      .addV('Discussion')
+      .property('id', `d-${intentId}`)
+      .as('d')
+      .addV('DiscussionMessage')
+      .property('id', `m-${intentId}`)
+      .as('m')
+      .V()
+      .has('Intent', 'id', intentId)
+      .addE('HAS_DISCUSSION')
+      .to('d')
+      .select('d')
+      .addE('HAS_MESSAGE')
+      .to('m')
+      .next();
+    // Process rows beyond META: an answered gate + an output chunk.
+    seedGate(intentId, 'h1', { status: 'answered' });
+    procStore.set(keyOf(`EXEC#${intentId}`, 'OUTPUT#000000000001'), {
+      pk: `EXEC#${intentId}`,
+      sk: 'OUTPUT#000000000001',
+      seq: 1,
+      content: 'x',
+    });
+    // Intent-scoped realtime docs (+ one unrelated doc that must survive).
+    yjsStore.set(`intent-presence-${intentId}`, {});
+    yjsStore.set(`intent-sq-${intentId}-h1`, {});
+    yjsStore.set(`intent-discussion-${intentId}-d-${intentId}`, {});
+    yjsStore.set('unrelated-doc', {});
+    setStatus(intentId, { status: 'SUCCEEDED' });
+
+    const res = await del(sub, projectId, intentId);
+    expect(res.statusCode).toBe(204);
+    // Neptune: anchor + everything it contained is gone.
+    expect(await g.V().has('Intent', 'id', intentId).hasNext()).toBe(false);
+    expect(await g.V().has('Artifact', 'id', `a-${intentId}`).hasNext()).toBe(false);
+    expect(await g.V().has('Discussion', 'id', `d-${intentId}`).hasNext()).toBe(false);
+    expect(await g.V().has('DiscussionMessage', 'id', `m-${intentId}`).hasNext()).toBe(false);
+    // DynamoDB: the whole EXEC# partition is drained.
+    const leftover = [...procStore.keys()].filter((k) => k.startsWith(`EXEC#${intentId}|`));
+    expect(leftover).toEqual([]);
+    // Yjs: only the intent-scoped docs are removed.
+    expect([...yjsStore.keys()]).toEqual(['unrelated-doc']);
+  });
+
+  it('retires a WAITING run first: supersedes the pending gate and wakes the callback', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    await seedIntentAnchor(intent.id);
+    seedGate(intent.id, 'h1', { status: 'pending', callbackId: 'cb-h1' });
+    setStatus(intent.id, { status: 'WAITING', pendingHumanTaskId: 'h1' });
+
+    const res = await del(sub, projectId, intent.id);
+    expect(res.statusCode).toBe(204);
+    // The suspended orchestrator was woken with the cancel sentinel so it can
+    // exit quietly instead of writing into the deleted partition.
+    const cb = lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand);
+    expect(cb).toHaveLength(1);
+    expect(JSON.parse(Buffer.from(cb[0].args[0].input.Result).toString())).toMatchObject({
+      cancelled: true,
+    });
+    expect(procStore.has(keyOf(`EXEC#${intent.id}`, 'META'))).toBe(false);
+  });
+
+  it('409s deleting a RUNNING run (live orchestrator + agent session)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    setStatus(intent.id, { status: 'RUNNING' });
+    const res = await del(sub, projectId, intent.id);
+    expect(res.statusCode).toBe(409);
+    expect(procStore.has(keyOf(`EXEC#${intent.id}`, 'META'))).toBe(true);
+  });
+
+  it('403s a plain member (owner/admin only); admin may delete', async () => {
+    const owner = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(owner);
+    const intent = JSON.parse((await createIntent(owner, projectId)).body);
+    const member = `u-${randomUUID()}`;
+    await addMember(projectId, member, 'member');
+    const denied = await del(member, projectId, intent.id);
+    expect(denied.statusCode).toBe(403);
+    expect(procStore.has(keyOf(`EXEC#${intent.id}`, 'META'))).toBe(true);
+
+    const admin = `u-${randomUUID()}`;
+    await addMember(projectId, admin, 'admin');
+    const allowed = await del(admin, projectId, intent.id);
+    expect(allowed.statusCode).toBe(204);
+  });
+
+  it('404s an intent that belongs to a different project', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectA = await seedV2Project(sub);
+    const projectB = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectA)).body);
+    const res = await del(sub, projectB, intent.id);
+    expect(res.statusCode).toBe(404);
+    expect(procStore.has(keyOf(`EXEC#${intent.id}`, 'META'))).toBe(true);
+  });
 });
 
 describe('POST /rewind', () => {

@@ -276,6 +276,16 @@ variable "v2_executions_table_arn" {
   type        = string
 }
 
+variable "yjs_documents_table_name" {
+  description = "DynamoDB table name for realtime Yjs documents (intent-scoped docs are removed on intent delete)"
+  type        = string
+}
+
+variable "yjs_documents_table_arn" {
+  description = "DynamoDB table ARN for realtime Yjs documents"
+  type        = string
+}
+
 variable "agentcore_runtime_arn" {
   description = "AgentCore stage-executor runtime ARN the orchestrator invokes"
   type        = string

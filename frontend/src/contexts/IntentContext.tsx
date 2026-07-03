@@ -141,6 +141,9 @@ interface IntentContextValue {
   reviseGate: (gate: IntentGate, message: string) => Promise<void>;
   /** Steering: retire a parked/stranded/failed run (409 while RUNNING). */
   cancelIntent: () => Promise<Intent>;
+  /** Permanently delete the intent (graph + process state + realtime docs).
+   *  Owner/admin only; 409 while RUNNING. Caller navigates away on success. */
+  deleteIntent: () => Promise<void>;
   /** Steering: restart the run from an earlier stage. Guidance optional — with
    *  it a corrective rewind, without it a plain retry of the stage + rest. */
   rewindIntent: (fromStageId: string, guidance?: string) => Promise<void>;
@@ -411,6 +414,12 @@ export function IntentProvider({
     return updated;
   }, [projectId, intentId, load]);
 
+  // No reload after delete — the intent is gone (a refetch would 404); the
+  // caller navigates back to the project page.
+  const deleteIntent = useCallback(async () => {
+    await intentsService.delete(projectId, intentId);
+  }, [projectId, intentId]);
+
   const rewindIntent = useCallback(
     async (fromStageId: string, guidance?: string) => {
       if (!projectId || !intentId) return;
@@ -605,6 +614,7 @@ export function IntentProvider({
         answerGate,
         reviseGate,
         cancelIntent,
+        deleteIntent,
         rewindIntent,
       }}
     >

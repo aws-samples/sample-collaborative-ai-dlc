@@ -169,6 +169,8 @@ module "lambda" {
   blocks_table_arn                    = module.dynamodb.blocks_table_arn
   v2_executions_table_name            = module.agentcore.v2_executions_table_name
   v2_executions_table_arn             = module.agentcore.v2_executions_table_arn
+  yjs_documents_table_name            = module.dynamodb.yjs_documents_table_name
+  yjs_documents_table_arn             = module.dynamodb.yjs_documents_table_arn
   agentcore_runtime_arn               = module.agentcore.runtime_arn
   github_oauth_secret_name            = module.git.github_oauth_secret_name
   github_oauth_secret_arn             = module.git.github_oauth_secret_arn

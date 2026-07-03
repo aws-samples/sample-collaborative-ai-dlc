@@ -649,6 +649,10 @@ function IntentsView({
   }, [showCreate, scopeOptions.length, project.workflowId]);
 
   const [usage, setUsage] = useState<ProjectMetrics | null>(null);
+  // Row-level delete (owner/admin, never mid-RUNNING — the API 409s anyway).
+  const [confirmDeleteIntent, setConfirmDeleteIntent] = useState<Intent | null>(null);
+  const [deletingIntent, setDeletingIntent] = useState(false);
+  const canDeleteIntents = project.userRole === 'owner' || project.userRole === 'admin';
 
   const refresh = useCallback(() => {
     intentsService
@@ -728,6 +732,22 @@ function IntentsView({
       setError(err instanceof Error ? err.message : 'Failed to create intent');
     } finally {
       setCreating(false);
+    }
+  };
+
+  const handleDeleteIntent = async () => {
+    if (!confirmDeleteIntent) return;
+    setDeletingIntent(true);
+    setError(null);
+    try {
+      await intentsService.delete(projectId, confirmDeleteIntent.id);
+      setConfirmDeleteIntent(null);
+      refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete intent');
+      setConfirmDeleteIntent(null);
+    } finally {
+      setDeletingIntent(false);
     }
   };
 
@@ -827,11 +847,21 @@ function IntentsView({
           ) : (
             intents.map((it) => {
               const Icon = INTENT_STATUS_ICON[it.status];
+              // A row is a div-with-role, not a <button>: the delete affordance
+              // nested inside would otherwise be a button-in-button (invalid HTML).
               return (
-                <button
+                <div
                   key={it.id}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => onNavigate(`/project/${projectId}/intent/${it.id}`)}
-                  className="group flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors hover:bg-accent/50"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onNavigate(`/project/${projectId}/intent/${it.id}`);
+                    }
+                  }}
+                  className="group flex w-full cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors hover:bg-accent/50"
                 >
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center gap-2">
@@ -859,8 +889,22 @@ function IntentsView({
                       )}
                     />
                   )}
+                  {canDeleteIntents && it.status !== 'RUNNING' && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 shrink-0 opacity-0 group-hover:opacity-100"
+                      aria-label="Delete intent"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setConfirmDeleteIntent(it);
+                      }}
+                    >
+                      <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                    </Button>
+                  )}
                   <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/40 shrink-0" />
-                </button>
+                </div>
               );
             })
           )}
@@ -1016,6 +1060,35 @@ function IntentsView({
           </form>
         </DialogContent>
       </Dialog>
+
+      {/* Intent delete confirmation */}
+      <AlertDialog
+        open={!!confirmDeleteIntent}
+        onOpenChange={(open) => {
+          if (!open) setConfirmDeleteIntent(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Intent</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete “{confirmDeleteIntent?.title || 'this intent'}”? All
+              of its artifacts, questions, discussions and run history will be permanently removed.
+              This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deletingIntent}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteIntent}
+              disabled={deletingIntent}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deletingIntent ? 'Deleting…' : 'Delete Intent'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
