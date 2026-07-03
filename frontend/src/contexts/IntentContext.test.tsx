@@ -13,10 +13,12 @@ vi.mock('@/hooks/useIntentEvents', () => ({
 const get = vi.fn();
 const answerGate = vi.fn();
 const compiled = vi.fn();
+const outputs = vi.fn();
 vi.mock('@/services/intents', () => ({
   intentsService: {
     get: (...a: unknown[]) => get(...a),
     answerGate: (...a: unknown[]) => answerGate(...a),
+    outputs: (...a: unknown[]) => outputs(...a),
   },
 }));
 vi.mock('@/services/workflows', () => ({
@@ -26,7 +28,7 @@ vi.mock('@/services/workflows', () => ({
 import { IntentProvider, useIntent } from './IntentContext';
 
 function Probe() {
-  const { stageRows, pendingGates, outputBuffers, outputVersion } = useIntent();
+  const { stageRows, pendingGates, outputBuffers, outputVersion, ensureOutputs } = useIntent();
   return (
     <div>
       <div data-testid="rows">{stageRows.map((r) => `${r.stageId}:${r.state}`).join(',')}</div>
@@ -34,6 +36,7 @@ function Probe() {
       <div data-testid="out" data-version={outputVersion}>
         {[...outputBuffers.entries()].map(([k, v]) => `${k}=${v}`).join('|')}
       </div>
+      <button data-testid="seed" onClick={() => ensureOutputs('si-1')} />
     </div>
   );
 }
@@ -86,6 +89,7 @@ describe('IntentContext', () => {
     capturedOnEvent = null;
     get.mockReset();
     answerGate.mockReset();
+    outputs.mockReset().mockResolvedValue({ outputs: [] });
     compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
   });
 
@@ -127,19 +131,77 @@ describe('IntentContext', () => {
   });
 
   it('appends agent.output to per-stage buffers (null stage → intent bucket)', async () => {
-    get.mockResolvedValue({
-      ...detail(),
-      outputs: [{ seq: 1, stageInstanceId: 'si-1', kind: 'text', content: 'seed ' }],
-    });
+    get.mockResolvedValue(detail());
     renderProvider();
-    expect(await screen.findByTestId('out')).toHaveTextContent('si-1=seed');
+    await screen.findByTestId('out');
 
     act(() => {
-      capturedOnEvent?.({ action: 'agent.output', stageInstanceId: 'si-1', content: 'more' });
-      capturedOnEvent?.({ action: 'agent.output', content: 'init-ws log' });
+      capturedOnEvent?.({
+        action: 'agent.output',
+        stageInstanceId: 'si-1',
+        seq: 1,
+        content: 'more',
+      });
+      capturedOnEvent?.({ action: 'agent.output', seq: 2, content: 'init-ws log' });
     });
-    expect(screen.getByTestId('out')).toHaveTextContent('si-1=seed more');
+    expect(screen.getByTestId('out')).toHaveTextContent('si-1=more');
     expect(screen.getByTestId('out')).toHaveTextContent('intent=init-ws log');
+  });
+
+  it('ensureOutputs lazily seeds a pane and dedupes live chunks by seq', async () => {
+    // The detail DTO carries no outputs; a pane's durable history arrives via
+    // the outputs endpoint when the pane is first displayed. Live chunks that
+    // raced the seed (seq ≤ the seed's max) must not duplicate.
+    get.mockResolvedValue(detail());
+    outputs.mockResolvedValue({
+      outputs: [
+        { seq: 1, stageInstanceId: 'si-1', kind: 'text', content: 'seed ' },
+        { seq: 2, stageInstanceId: 'si-1', kind: 'text', content: 'two ' },
+      ],
+    });
+    renderProvider();
+    await screen.findByTestId('out');
+
+    // seq 2 is a broadcast duplicate of a durable chunk; seq 3 is genuinely new.
+    act(() => {
+      capturedOnEvent?.({
+        action: 'agent.output',
+        stageInstanceId: 'si-1',
+        seq: 2,
+        content: 'two ',
+      });
+      capturedOnEvent?.({
+        action: 'agent.output',
+        stageInstanceId: 'si-1',
+        seq: 3,
+        content: 'tail',
+      });
+    });
+    expect(screen.getByTestId('out')).toHaveTextContent('si-1=two tail');
+
+    await act(async () => {
+      screen.getByTestId('seed').click();
+    });
+    expect(outputs).toHaveBeenCalledWith('p1', 'i1', { stageInstanceId: 'si-1' });
+    expect(screen.getByTestId('out')).toHaveTextContent('si-1=seed two tail');
+
+    // Re-selecting the pane never refetches.
+    await act(async () => {
+      screen.getByTestId('seed').click();
+    });
+    expect(outputs).toHaveBeenCalledTimes(1);
+
+    // A post-seed live chunk at/below the seeded max is dropped as a dupe.
+    act(() => {
+      capturedOnEvent?.({
+        action: 'agent.output',
+        stageInstanceId: 'si-1',
+        seq: 1,
+        content: 'DUP',
+      });
+      capturedOnEvent?.({ action: 'agent.output', stageInstanceId: 'si-1', seq: 4, content: '!' });
+    });
+    expect(screen.getByTestId('out')).toHaveTextContent('si-1=seed two tail!');
   });
 
   it('refetches the detail on agent.note — debounced (the realtime path for artifact creation)', async () => {

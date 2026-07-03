@@ -215,6 +215,85 @@ describe('createProcessStore', () => {
     expect(grouped.metrics).toHaveLength(1);
   });
 
+  it('getExecutionRecords drains every 1MB Query page (STAGE rows sort past OUTPUT)', async () => {
+    // The regression: OUTPUT# chunks filled the first 1MB page, LastEvaluatedKey
+    // was ignored, and every STAGE# row (sorting after OUTPUT#) vanished — the
+    // UI rendered a healthy run as all-PENDING.
+    ddb
+      .on(QueryCommand)
+      .resolvesOnce({
+        Items: [{ sk: 'META' }, { sk: 'OUTPUT#000000000001', seq: 1 }],
+        LastEvaluatedKey: { pk: 'EXEC#e1', sk: 'OUTPUT#000000000001' },
+      })
+      .resolvesOnce({
+        Items: [{ sk: 'OUTPUT#000000000002', seq: 2 }, { sk: 'STAGE#si-1' }],
+      });
+    const grouped = await store.getExecutionRecords('e1');
+    expect(grouped.meta).toEqual({ sk: 'META' });
+    expect(grouped.outputs).toHaveLength(2);
+    expect(grouped.stages).toHaveLength(1);
+    const calls = ddb.commandCalls(QueryCommand);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].args[0].input.ExclusiveStartKey).toEqual({
+      pk: 'EXEC#e1',
+      sk: 'OUTPUT#000000000001',
+    });
+  });
+
+  it('getExecutionRecords includeOutputs:false skips the OUTPUT# range entirely', async () => {
+    ddb
+      .on(QueryCommand)
+      .resolvesOnce({ Items: [{ sk: 'META' }, { sk: 'HUMAN#h1' }] })
+      .resolvesOnce({ Items: [{ sk: 'STAGE#si-1' }, { sk: 'UNITPLAN' }] });
+    const grouped = await store.getExecutionRecords('e1', { includeOutputs: false });
+    expect(grouped.meta).toEqual({ sk: 'META' });
+    expect(grouped.stages).toHaveLength(1);
+    expect(grouped.unitPlan).toEqual({ sk: 'UNITPLAN' });
+    expect(grouped.outputs).toHaveLength(0);
+    const [below, above] = ddb.commandCalls(QueryCommand).map((c) => c.args[0].input);
+    expect(below.KeyConditionExpression).toBe('pk = :pk AND sk < :lo');
+    expect(below.ExpressionAttributeValues[':lo']).toBe('OUTPUT#');
+    expect(above.KeyConditionExpression).toBe('pk = :pk AND sk >= :hi');
+    expect(above.ExpressionAttributeValues[':hi']).toBe('OUTPUT$');
+  });
+
+  it('getOutputs filters by stageInstanceId (null → stage-less bucket) and afterSeq', async () => {
+    ddb.on(QueryCommand).resolves({ Items: [] });
+    await store.getOutputs('e1', { stageInstanceId: 'si-1', afterSeq: 7 });
+    let input = ddb.commandCalls(QueryCommand)[0].args[0].input;
+    expect(input.KeyConditionExpression).toBe('pk = :pk AND begins_with(sk, :p)');
+    expect(input.FilterExpression).toBe('(stageInstanceId = :sid) AND (seq > :after)');
+    expect(input.ExpressionAttributeValues[':sid']).toBe('si-1');
+    expect(input.ExpressionAttributeValues[':after']).toBe(7);
+
+    ddb.reset();
+    ddb.on(QueryCommand).resolves({ Items: [] });
+    await store.getOutputs('e1', { stageInstanceId: null });
+    input = ddb.commandCalls(QueryCommand)[0].args[0].input;
+    expect(input.FilterExpression).toBe(
+      '(attribute_not_exists(stageInstanceId) OR stageInstanceId = :null)',
+    );
+
+    ddb.reset();
+    ddb.on(QueryCommand).resolves({ Items: [] });
+    await store.getOutputs('e1');
+    input = ddb.commandCalls(QueryCommand)[0].args[0].input;
+    expect(input.FilterExpression).toBeUndefined();
+  });
+
+  it('getOutputs drains every Query page (transcripts exceed 1MB)', async () => {
+    ddb
+      .on(QueryCommand)
+      .resolvesOnce({
+        Items: [{ sk: 'OUTPUT#000000000001', seq: 1 }],
+        LastEvaluatedKey: { pk: 'EXEC#e1', sk: 'OUTPUT#000000000001' },
+      })
+      .resolvesOnce({ Items: [{ sk: 'OUTPUT#000000000002', seq: 2 }] });
+    const rows = await store.getOutputs('e1');
+    expect(rows.map((r) => r.seq)).toEqual([1, 2]);
+    expect(ddb.commandCalls(QueryCommand)).toHaveLength(2);
+  });
+
   it('recordMetric stores the numeric bag', async () => {
     ddb.on(PutCommand).resolves({});
     await store.recordMetric({
@@ -242,6 +321,49 @@ describe('createProcessStore', () => {
     const byStatus = ddb.commandCalls(QueryCommand)[0].args[0].input;
     expect(byStatus.KeyConditionExpression).toContain('begins_with(GSI1SK, :sk)');
     expect(byStatus.ExpressionAttributeValues[':sk']).toBe('STATUS#DRAFT#');
+  });
+
+  it('listProjectExecutions drains 1MB-truncated pages up to `limit` (META rows carry unbounded prompts)', async () => {
+    // DynamoDB stops a page at min(Limit, 1MB) — a page can come back with
+    // FEWER than `limit` items AND a LastEvaluatedKey. The old single-shot read
+    // returned that short page as if it were the whole project.
+    ddb
+      .on(QueryCommand)
+      .resolvesOnce({
+        Items: [{ sk: 'META', executionId: 'e1' }],
+        LastEvaluatedKey: { pk: 'x', sk: 'y' },
+      })
+      .resolvesOnce({ Items: [{ sk: 'META', executionId: 'e2' }] });
+    const all = await store.listProjectExecutions({ projectId: 'p1', limit: 5 });
+    expect(all.map((i) => i.executionId)).toEqual(['e1', 'e2']);
+    const calls = ddb.commandCalls(QueryCommand);
+    expect(calls).toHaveLength(2);
+    // The second page only asks for what is still missing.
+    expect(calls[1].args[0].input.Limit).toBe(4);
+    expect(calls[1].args[0].input.ExclusiveStartKey).toEqual({ pk: 'x', sk: 'y' });
+  });
+
+  it('listProjectExecutions stops paging once `limit` rows have arrived', async () => {
+    ddb.on(QueryCommand).resolves({
+      Items: [{ sk: 'META', executionId: 'e1' }],
+      LastEvaluatedKey: { pk: 'x', sk: 'y' },
+    });
+    const all = await store.listProjectExecutions({ projectId: 'p1', limit: 1 });
+    expect(all).toHaveLength(1);
+    expect(ddb.commandCalls(QueryCommand)).toHaveLength(1);
+  });
+
+  it('listUnits drains every Query page (lanes must never be invisible to the scheduler)', async () => {
+    ddb
+      .on(QueryCommand)
+      .resolvesOnce({
+        Items: [{ sk: 'UNIT#auth', slug: 'auth' }],
+        LastEvaluatedKey: { pk: 'x', sk: 'y' },
+      })
+      .resolvesOnce({ Items: [{ sk: 'UNIT#billing', slug: 'billing' }] });
+    const units = await store.listUnits('e1');
+    expect(units.map((u) => u.slug)).toEqual(['auth', 'billing']);
+    expect(ddb.commandCalls(QueryCommand)).toHaveLength(2);
   });
 
   it('patchExecutionConfig only sets supplied intent-config fields', async () => {

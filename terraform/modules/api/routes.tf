@@ -1223,6 +1223,7 @@ resource "aws_lambda_permission" "workflows" {
 #   /projects/{projectId}/intents/metrics                          GET
 #   /projects/{projectId}/intents/{intentId}                       GET
 #   /projects/{projectId}/intents/{intentId}/graph                 GET
+#   /projects/{projectId}/intents/{intentId}/outputs               GET
 #   /projects/{projectId}/intents/{intentId}/start                 POST
 #   /projects/{projectId}/intents/{intentId}/cancel                POST
 #   /projects/{projectId}/intents/{intentId}/rewind                POST
@@ -1257,6 +1258,14 @@ resource "aws_api_gateway_resource" "intent_graph" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.intent.id
   path_part   = "graph"
+}
+
+# Lazy agent transcript: the detail DTO no longer carries OUTPUT rows (they
+# dominate a long run's partition); the UI fetches them per activity pane.
+resource "aws_api_gateway_resource" "intent_outputs" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent.id
+  path_part   = "outputs"
 }
 
 resource "aws_api_gateway_resource" "intent_start" {
@@ -1318,6 +1327,7 @@ locals {
     metrics_get     = { resource = aws_api_gateway_resource.intents_metrics.id, method = "GET" }
     item_get        = { resource = aws_api_gateway_resource.intent.id, method = "GET" }
     graph_get       = { resource = aws_api_gateway_resource.intent_graph.id, method = "GET" }
+    outputs_get     = { resource = aws_api_gateway_resource.intent_outputs.id, method = "GET" }
     start_post      = { resource = aws_api_gateway_resource.intent_start.id, method = "POST" }
     cancel_post     = { resource = aws_api_gateway_resource.intent_cancel.id, method = "POST" }
     rewind_post     = { resource = aws_api_gateway_resource.intent_rewind.id, method = "POST" }
@@ -1368,6 +1378,12 @@ module "cors_intent_graph" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.intent_graph.id
+}
+
+module "cors_intent_outputs" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_outputs.id
 }
 
 module "cors_intent_start" {

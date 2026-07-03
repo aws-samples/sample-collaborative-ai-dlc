@@ -76,6 +76,21 @@ export interface AgentFocusRequest {
   seq: number;
 }
 
+// Lazy transcript pane state. The detail DTO carries NO outputs (a long run's
+// transcript is megabytes and the DTO is polled) — each pane's durable history
+// is fetched once, on first display, from GET .../outputs, and merged with the
+// live websocket chunks that arrived meanwhile (deduped by seq).
+export type OutputPaneStatus = 'unseeded' | 'loading' | 'seeded';
+interface OutputPane {
+  status: OutputPaneStatus;
+  /** Durable chunks fetched from the outputs endpoint, concatenated. */
+  seededText: string;
+  /** Highest seq contained in seededText — live chunks at or below are dupes. */
+  maxSeededSeq: number;
+  /** Live websocket chunks (kept until seeding merges or supersedes them). */
+  live: { seq: number; content: string }[];
+}
+
 interface IntentContextValue {
   projectId: string;
   intentId: string;
@@ -103,6 +118,10 @@ interface IntentContextValue {
   outputVersion: number;
   /** Human name for a buffer key (stageInstanceId → stageId). */
   stageNameOf: (key: string) => string;
+  /** Lazily fetch a pane's durable transcript (no-op once seeded/loading). */
+  ensureOutputs: (key: string) => void;
+  /** Seeding state for a pane key (re-render via outputVersion). */
+  outputPaneStatus: (key: string) => OutputPaneStatus;
 
   // Shared UI state — selection is keyed by `stageRowKey` (instance-aware:
   // two unit instances of one stage select independently).
@@ -146,8 +165,11 @@ export function IntentProvider({
   // Seeded from the assembled detail, then upserted on each agent.question.
   const [liveGates, setLiveGates] = useState<Map<string, IntentGate>>(new Map());
 
-  // Live streamed output appended per stage instance (replayed from detail first).
+  // Live streamed output appended per stage instance; durable history is
+  // seeded lazily per pane (see ensureOutputs). `outputBufRef` holds the
+  // render-ready string per key; `panesRef` holds the merge bookkeeping.
   const outputBufRef = useRef<Map<string, string>>(new Map());
+  const panesRef = useRef<Map<string, OutputPane>>(new Map());
   const [outputVersion, setOutputVersion] = useState(0);
 
   const [selectedStageId, setSelectedStageId] = useState<string | null>(null);
@@ -165,15 +187,9 @@ export function IntentProvider({
       if (activeIntentRef.current !== intentId) return;
       setDetail(dto);
       setError(null);
-      // Seed the gate map + output buffers from durable state.
+      // Seed the gate map from durable state. Output buffers are NOT seeded
+      // here — the DTO carries no outputs; panes fetch lazily (ensureOutputs).
       setLiveGates(new Map(dto.gates.map((g) => [g.humanTaskId, g])));
-      const buf = new Map<string, string>();
-      for (const o of dto.outputs) {
-        const key = o.stageInstanceId ?? INTENT_OUTPUT_KEY;
-        buf.set(key, (buf.get(key) ?? '') + o.content);
-      }
-      outputBufRef.current = buf;
-      setOutputVersion((n) => n + 1);
       // Compiled workflow drives the phase/stage plan (best-effort).
       if (dto.intent.workflowId) {
         workflowsService
@@ -194,6 +210,7 @@ export function IntentProvider({
   // Reset everything when the intent (or route) changes, then load.
   useEffect(() => {
     outputBufRef.current = new Map();
+    panesRef.current = new Map();
     setOutputVersion(0);
     setDetail(null);
     setCompiled(null);
@@ -240,6 +257,69 @@ export function IntentProvider({
     [],
   );
 
+  // ── Lazy transcript panes ─────────────────────────────────────────────────
+  const paneOf = useCallback((key: string): OutputPane => {
+    let pane = panesRef.current.get(key);
+    if (!pane) {
+      pane = { status: 'unseeded', seededText: '', maxSeededSeq: 0, live: [] };
+      panesRef.current.set(key, pane);
+    }
+    return pane;
+  }, []);
+
+  // Rebuild a pane's render string: durable history + the live tail (chunks
+  // newer than the seed, in seq order — websocket frames can only race the
+  // seed fetch, not each other, but sorting is cheap and safe).
+  const renderPane = useCallback(
+    (key: string) => {
+      const pane = paneOf(key);
+      const tail = pane.live
+        .filter((c) => c.seq > pane.maxSeededSeq)
+        .toSorted((a, b) => a.seq - b.seq)
+        .map((c) => c.content)
+        .join('');
+      outputBufRef.current.set(key, pane.seededText + tail);
+      setOutputVersion((n) => n + 1);
+    },
+    [paneOf],
+  );
+
+  // Fetch a pane's durable transcript once, on first display. Live chunks that
+  // arrived while unseeded/loading are deduped by seq against the fetch result
+  // (every persisted chunk broadcasts its seq). Failure returns the pane to
+  // `unseeded` so the next selection retries.
+  const ensureOutputs = useCallback(
+    (key: string) => {
+      if (!projectId || !intentId) return;
+      const pane = paneOf(key);
+      if (pane.status !== 'unseeded') return;
+      pane.status = 'loading';
+      setOutputVersion((n) => n + 1);
+      const forIntent = intentId;
+      intentsService
+        .outputs(projectId, intentId, { stageInstanceId: key })
+        .then(({ outputs }) => {
+          if (activeIntentRef.current !== forIntent) return;
+          pane.seededText = outputs.map((o) => o.content).join('');
+          pane.maxSeededSeq = outputs.reduce((m, o) => Math.max(m, o.seq ?? 0), 0);
+          pane.live = pane.live.filter((c) => c.seq > pane.maxSeededSeq);
+          pane.status = 'seeded';
+          renderPane(key);
+        })
+        .catch(() => {
+          if (activeIntentRef.current !== forIntent) return;
+          pane.status = 'unseeded';
+          setOutputVersion((n) => n + 1);
+        });
+    },
+    [projectId, intentId, paneOf, renderPane],
+  );
+
+  const outputPaneStatus = useCallback(
+    (key: string): OutputPaneStatus => panesRef.current.get(key)?.status ?? 'unseeded',
+    [],
+  );
+
   // Realtime: refetch on lifecycle transitions; accumulate questions + output live.
   const onEvent = useCallback(
     (evt: IntentEvent) => {
@@ -271,6 +351,15 @@ export function IntentProvider({
       }
       if (evt.action === 'agent.output' && evt.content) {
         const key = evt.stageInstanceId ?? INTENT_OUTPUT_KEY;
+        const pane = paneOf(key);
+        // Chunks the pane's seed already contains are duplicates (the seed
+        // fetch raced the broadcast). A chunk with no seq can't be deduped —
+        // treat it as newest so it is never dropped.
+        const seq = typeof evt.seq === 'number' ? evt.seq : Number.MAX_SAFE_INTEGER;
+        if (pane.status === 'seeded' && seq <= pane.maxSeededSeq) return;
+        pane.live.push({ seq, content: evt.content });
+        // Fast path: append to the render string (renderPane would re-join the
+        // whole live tail on every streamed token).
         outputBufRef.current.set(key, (outputBufRef.current.get(key) ?? '') + evt.content);
         setOutputVersion((n) => n + 1);
         return;
@@ -289,7 +378,7 @@ export function IntentProvider({
         scheduleLoad();
       }
     },
-    [scheduleLoad],
+    [scheduleLoad, paneOf],
   );
   useIntentEvents(projectId, intentId, onEvent);
 
@@ -492,6 +581,8 @@ export function IntentProvider({
         outputBuffers: outputBufRef.current,
         outputVersion,
         stageNameOf,
+        ensureOutputs,
+        outputPaneStatus,
         selectedStageId,
         setSelectedStageId,
         agentFocus,

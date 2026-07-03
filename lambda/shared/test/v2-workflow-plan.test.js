@@ -174,4 +174,38 @@ describe('loadExecutionPlan', () => {
     // The fork (stage-a only) wins; SYSTEM's stage-b is NOT pulled in.
     expect(result.plan.stages.map((s) => s.stageId)).toEqual(['stage-a']);
   });
+
+  it('drains paginated workflow + catalog queries (a truncated page would silently narrow the plan)', async () => {
+    // Split BOTH the workflow snapshot rows and the STAGE catalog across two
+    // 1MB pages: a dropped second page loses PLACEMENT#stage-b (stage silently
+    // skipped) or its STAGE block (plan fails unresolved_stage).
+    ddbMock.reset();
+    ddbMock.on(QueryCommand).callsFake((input) => {
+      const values = input.ExpressionAttributeValues || {};
+      if (input.IndexName === 'GSI1') {
+        if (values[':pk'] === 'TENANT#SYSTEM#STAGE') {
+          return input.ExclusiveStartKey
+            ? { Items: [stageBlocks[1]] }
+            : { Items: [stageBlocks[0]], LastEvaluatedKey: { pk: 'x', sk: 'y' } };
+        }
+        if (values[':pk'] === 'TENANT#SYSTEM#AGENT') return { Items: agentBlocks };
+        return { Items: [] };
+      }
+      if (values[':pk'] === 'WF#SYSTEM#aidlc-v2') {
+        return input.ExclusiveStartKey
+          ? { Items: wfItems.slice(2) }
+          : { Items: wfItems.slice(0, 2), LastEvaluatedKey: { pk: 'x', sk: 'y' } };
+      }
+      return { Items: [] };
+    });
+    const result = await loadExecutionPlan({
+      ddb: ddbMock,
+      tableName: TABLE,
+      workflowId: 'aidlc-v2',
+      workflowVersion: 1,
+      scope: 'feature',
+    });
+    expect(result.valid).toBe(true);
+    expect(result.plan.stages.map((s) => s.stageId)).toEqual(['stage-a', 'stage-b']);
+  });
 });

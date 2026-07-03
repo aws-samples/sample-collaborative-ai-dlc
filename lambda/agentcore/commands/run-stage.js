@@ -51,7 +51,7 @@ import {
 import { ensureWorkspaceSource as defaultEnsureWorkspaceSource } from '../workspace.js';
 import { commitAndPushAll as defaultCommitAndPushAll } from '../git-engine.js';
 import { resolveStageModel } from '../model-resolver.js';
-import { createGraphWriter } from '../mcp/graph-writer.js';
+import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
 import { createSensorRunner } from '../sensor-runner.js';
 
 const require = createRequire(import.meta.url);
@@ -201,8 +201,9 @@ const loadMethodologyKnowledge = async ({ agentRef, library, loadBlockBody }) =>
 const readProjectMemory = async ({ agentRef, projectId, intentId, executionId, openGraph }) => {
   const empty = { teamKnowledge: [], learningRules: [] };
   if (!openGraph || !projectId) return empty;
+  let g = null;
   try {
-    const g = await openGraph();
+    g = await openGraph();
     const writer = createGraphWriter({ g, scope: { projectId, intentId, executionId } });
     const [teamKnowledge, learningRules] = await Promise.all([
       writer.getTeamKnowledge({ agentRef }).catch(() => []),
@@ -211,6 +212,8 @@ const readProjectMemory = async ({ agentRef, projectId, intentId, executionId, o
     return { teamKnowledge, learningRules };
   } catch {
     return empty;
+  } finally {
+    await closeGraphSource(g);
   }
 };
 
@@ -306,14 +309,50 @@ const runStageSensors = async ({
   publish,
 }) => {
   let graph = null;
+  let gConn = null;
   if (openGraph) {
     try {
-      const g = await openGraph();
-      graph = createGraphWriter({ g, scope: { projectId, intentId, executionId } });
+      gConn = await openGraph();
+      graph = createGraphWriter({ g: gConn, scope: { projectId, intentId, executionId } });
     } catch {
       graph = null;
     }
   }
+  try {
+    return await runSensorsWithGraph({
+      graph,
+      stage,
+      stageInstanceId,
+      unitSlug,
+      executionId,
+      loadBlockScript,
+      workspaceDir,
+      env,
+      spawnFn,
+      store,
+      publish,
+    });
+  } finally {
+    await closeGraphSource(gConn);
+  }
+};
+
+// The sensor pass itself, given an already-opened graph-writer (or null). Split
+// out so runStageSensors can guarantee the graph connection is closed in a
+// finally regardless of how this returns/throws.
+const runSensorsWithGraph = async ({
+  graph,
+  stage,
+  stageInstanceId,
+  unitSlug = null,
+  executionId,
+  loadBlockScript,
+  workspaceDir,
+  env,
+  spawnFn,
+  store,
+  publish,
+}) => {
   const runner = createSensorRunner({
     graph,
     loadBlockScript,
@@ -1372,8 +1411,9 @@ export const runStage = async (
   // artifacts it produced (Steering --INFLUENCES--> Artifact), mirroring the
   // answered-question linking. Best-effort — provenance never fails a stage.
   if (consumedSteering.length && openGraph) {
+    let gLink = null;
     try {
-      const gLink = await openGraph();
+      gLink = await openGraph();
       const writer = createGraphWriter({
         g: gLink,
         scope: { projectId, intentId, executionId, stageInstanceId },
@@ -1384,6 +1424,8 @@ export const runStage = async (
       });
     } catch {
       /* provenance linking is best-effort */
+    } finally {
+      await closeGraphSource(gLink);
     }
   }
   await store.appendEvent({

@@ -24,18 +24,28 @@ const keyById = (items) => {
   return byId;
 };
 
-// List every block of a type for a tenant via the catalog GSI.
-const listBlocks = async (ddb, tableName, tenant, type) => {
-  const { Items } = await ddb.send(
-    new QueryCommand({
-      TableName: tableName,
-      IndexName: 'GSI1',
-      KeyConditionExpression: 'GSI1PK = :pk',
-      ExpressionAttributeValues: { ':pk': catalogGsi1Pk(tenant, type) },
-    }),
-  );
-  return Items ?? [];
+// Drain every 1MB Query page. A truncated read here is silently WRONG: a
+// dropped placement row narrows the plan (stages skipped without error), and a
+// dropped library block fails resolution for a stage that exists.
+const queryAll = async (ddb, input) => {
+  const items = [];
+  let ExclusiveStartKey;
+  do {
+    const page = await ddb.send(new QueryCommand({ ...input, ExclusiveStartKey }));
+    items.push(...(page.Items ?? []));
+    ExclusiveStartKey = page.LastEvaluatedKey;
+  } while (ExclusiveStartKey);
+  return items;
 };
+
+// List every block of a type for a tenant via the catalog GSI.
+const listBlocks = async (ddb, tableName, tenant, type) =>
+  queryAll(ddb, {
+    TableName: tableName,
+    IndexName: 'GSI1',
+    KeyConditionExpression: 'GSI1PK = :pk',
+    ExpressionAttributeValues: { ':pk': catalogGsi1Pk(tenant, type) },
+  });
 
 // Merge SYSTEM + default catalogs for a type; default shadows SYSTEM by id.
 const listMergedBlocks = async (ddb, tableName, type) => {
@@ -52,17 +62,15 @@ const listMergedBlocks = async (ddb, tableName, type) => {
 // Load the pinned workflow's version snapshot rows (default shadows SYSTEM).
 const loadWorkflowItems = async (ddb, tableName, workflowId, workflowVersion) => {
   for (const tenant of [DEFAULT_TENANT, SYSTEM_TENANT]) {
-    const { Items } = await ddb.send(
-      new QueryCommand({
-        TableName: tableName,
-        KeyConditionExpression: 'pk = :pk AND begins_with(sk, :v)',
-        ExpressionAttributeValues: {
-          ':pk': workflowPk(tenant, workflowId),
-          ':v': workflowVersionPrefix(workflowVersion),
-        },
-      }),
-    );
-    if (Items && Items.length) return Items;
+    const items = await queryAll(ddb, {
+      TableName: tableName,
+      KeyConditionExpression: 'pk = :pk AND begins_with(sk, :v)',
+      ExpressionAttributeValues: {
+        ':pk': workflowPk(tenant, workflowId),
+        ':v': workflowVersionPrefix(workflowVersion),
+      },
+    });
+    if (items.length) return items;
   }
   return [];
 };

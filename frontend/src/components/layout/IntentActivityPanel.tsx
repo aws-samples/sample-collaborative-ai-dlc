@@ -127,35 +127,47 @@ function AgentTab({
   selectedKey: string;
   onSelectKey: (key: string) => void;
 }) {
-  const { outputBuffers, outputVersion, stageRows, stageNameOf } = useIntent();
+  const { outputBuffers, outputVersion, stageRows, stageNameOf, ensureOutputs, outputPaneStatus } =
+    useIntent();
 
-  // Buffer keys ordered like the pipeline: workspace setup first, then stages
-  // in plan order, then anything unrecognized. Recomputed per render — the
-  // panel re-renders on every outputVersion bump anyway, and the maps are tiny.
-  const withContent = new Set(
-    [...outputBuffers.entries()].filter(([, v]) => v.trim().length > 0).map(([k]) => k),
-  );
+  // Pane keys ordered like the pipeline: workspace setup first, then every
+  // STARTED stage instance in plan order (transcripts load lazily, so a pane
+  // is offered for any stage that ran — not just ones with a filled buffer),
+  // then any unrecognized buffer keys. Recomputed per render — the panel
+  // re-renders on every outputVersion bump anyway, and the maps are tiny.
+  const startedKeys = stageRows
+    .filter((row) => row.stageInstanceId)
+    .map((row) => row.stageInstanceId as string);
   const orderedKeys: string[] = [];
-  if (withContent.has(INTENT_OUTPUT_KEY)) orderedKeys.push(INTENT_OUTPUT_KEY);
-  for (const row of stageRows) {
-    if (row.stageInstanceId && withContent.has(row.stageInstanceId)) {
-      orderedKeys.push(row.stageInstanceId);
+  if (startedKeys.length > 0 || outputBuffers.has(INTENT_OUTPUT_KEY)) {
+    orderedKeys.push(INTENT_OUTPUT_KEY);
+  }
+  orderedKeys.push(...startedKeys);
+  for (const k of outputBuffers.keys()) {
+    if (!orderedKeys.includes(k) && (outputBuffers.get(k) ?? '').trim().length > 0) {
+      orderedKeys.push(k);
     }
   }
-  for (const k of withContent) if (!orderedKeys.includes(k)) orderedKeys.push(k);
 
-  // Follow mode: the RUNNING stage's buffer, else the last buffer that has
-  // content (the most recently active stage). Follow the running stage even
-  // before its buffer has content — otherwise, during the gap between a stage
-  // going RUNNING and its first streamed token, we'd fall back to the previous
-  // stage's output and never advance to the live one. `findLast` picks the
-  // most-advanced running row when a prior stage's terminal transition hasn't
-  // landed yet (both briefly read RUNNING).
+  // Follow mode: the RUNNING stage's buffer, else the last started stage (the
+  // most recently active). Follow the running stage even before its buffer has
+  // content — otherwise, during the gap between a stage going RUNNING and its
+  // first streamed token, we'd fall back to the previous stage's output and
+  // never advance to the live one. `findLast` picks the most-advanced running
+  // row when a prior stage's terminal transition hasn't landed yet (both
+  // briefly read RUNNING).
   const runningRow = stageRows.findLast((s) => s.state === 'RUNNING' && s.stageInstanceId);
   const followKey = runningRow?.stageInstanceId ?? orderedKeys[orderedKeys.length - 1] ?? null;
 
   const displayKey = selectedKey === FOLLOW_KEY ? followKey : selectedKey;
   const content = displayKey ? (outputBuffers.get(displayKey) ?? '') : '';
+
+  // Lazy transcript: seed the displayed pane's durable history on first show
+  // (covers manual selection AND follow-mode advancing to a new stage).
+  useEffect(() => {
+    if (displayKey) ensureOutputs(displayKey);
+  }, [displayKey, ensureOutputs]);
+  const paneLoading = displayKey ? outputPaneStatus(displayKey) === 'loading' : false;
 
   // Stick-to-bottom auto-scroll: follow appends unless the user scrolled up.
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -213,7 +225,9 @@ function AgentTab({
             {content}
           </pre>
         ) : (
-          <p className="text-xs text-muted-foreground">Waiting for output…</p>
+          <p className="text-xs text-muted-foreground">
+            {paneLoading ? 'Loading output…' : 'Waiting for output…'}
+          </p>
         )}
       </div>
     </div>

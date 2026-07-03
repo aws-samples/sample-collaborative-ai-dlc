@@ -71,18 +71,27 @@ const broadcastToIntentChannel = async (intentId, payload) => {
   const websocketEndpoint = process.env.WEBSOCKET_ENDPOINT;
   if (!connectionsTable || !websocketEndpoint || !intentId) return;
   try {
-    const result = await ddb.send(
-      new QueryCommand({
-        TableName: connectionsTable,
-        IndexName: 'DocumentIdIndex',
-        KeyConditionExpression: 'documentId = :docId',
-        ExpressionAttributeValues: { ':docId': `intent:${intentId}` },
-      }),
-    );
+    // Drain LastEvaluatedKey: a Query page caps at 1MB, and truncation would
+    // silently stop broadcasting to connections past the first page.
+    const items = [];
+    let ExclusiveStartKey;
+    do {
+      const page = await ddb.send(
+        new QueryCommand({
+          TableName: connectionsTable,
+          IndexName: 'DocumentIdIndex',
+          KeyConditionExpression: 'documentId = :docId',
+          ExpressionAttributeValues: { ':docId': `intent:${intentId}` },
+          ExclusiveStartKey,
+        }),
+      );
+      items.push(...(page.Items ?? []));
+      ExclusiveStartKey = page.LastEvaluatedKey;
+    } while (ExclusiveStartKey);
     const api = new ApiGatewayManagementApiClient({ endpoint: websocketEndpoint });
     const data = JSON.stringify(payload);
     await Promise.all(
-      (result.Items || [])
+      items
         // Never target connections whose scope token has expired.
         .filter((item) => isTokenLive(item.tokenExp))
         .map((item) =>

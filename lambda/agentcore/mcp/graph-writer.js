@@ -147,6 +147,21 @@ export const flattenValueMap = (vm) => {
   return out;
 };
 
+// Close the traversal source `g` (from openGraph), releasing its WebSocket fd.
+// The long-lived session process opens the graph several times per stage; every
+// unclosed source orphaned a socket until the process hit EMFILE ("too many open
+// files") and the next stage crashed. Best-effort and never throws: an
+// already-closed or fake (test) source no-ops. Gremlin exposes the closable
+// DriverRemoteConnection at `remoteConnection`. Lives here (not clients.js) so
+// the injected-deps command modules can close without importing the AWS clients.
+export const closeGraphSource = async (g) => {
+  try {
+    await g?.remoteConnection?.close?.();
+  } catch {
+    /* already closed / unreachable — the fd is gone either way */
+  }
+};
+
 // `scope` is the trusted execution context from ENV:
 //   { projectId, intentId, executionId, stageInstanceId }
 // `clock` is injectable for deterministic tests.

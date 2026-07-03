@@ -24,6 +24,7 @@
           "__resetCache",
           "__durableHandler",
           "_conn",
+          "_apiClients",
           "_g",
           "_cachedBearerToken",
           "_cachedKiroApiKey",

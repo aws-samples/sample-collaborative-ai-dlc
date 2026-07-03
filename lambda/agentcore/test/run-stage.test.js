@@ -703,6 +703,53 @@ describe('runStage — deterministic sensors', () => {
     const res = await runStage(baseArgs, deps);
     expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
   });
+
+  // Regression: the session process is long-lived and reused across every stage.
+  // Each openGraph() opens a WebSocket (a socket fd); if run-stage doesn't close
+  // it, fds accumulate stage-over-stage until the process hits EMFILE ("too many
+  // open files") and the NEXT stage crashes on startup (the real requirements-
+  // analysis crash). Assert every graph connection run-stage opens is closed.
+  it('closes every graph connection it opens (no fd leak across stages)', async () => {
+    let opened = 0;
+    let closed = 0;
+    // A traversal-source proxy that also carries a spy `remoteConnection.close`
+    // (where gremlin puts the closable connection), so we can count closes.
+    const countingGraph = async () => {
+      opened += 1;
+      const rows = [
+        {
+          id: ['a1'],
+          content: ['## A\n\nx\n\n## B\n\ny'],
+          artifact_type: ['requirements-analysis'],
+        },
+      ];
+      const proxy = new Proxy(
+        { remoteConnection: { close: async () => ((closed += 1), undefined) } },
+        {
+          get(target, prop) {
+            if (prop === 'remoteConnection') return target.remoteConnection;
+            if (prop === 'then' || typeof prop === 'symbol') return undefined;
+            if (prop === 'toList') return async () => rows;
+            if (prop === 'next') return async () => ({ value: rows[0] });
+            if (prop === 'hasNext') return async () => true;
+            return () => proxy;
+          },
+        },
+      );
+      return proxy;
+    };
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      loadLibrary: async () => ({ workflow: workflow(), library: libWithSensor('advisory') }),
+      openGraph: countingGraph,
+    });
+    const res = await runStage(baseArgs, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    // At least one connection was opened (readProjectMemory + the sensor pass),
+    // and every one was closed.
+    expect(opened).toBeGreaterThan(0);
+    expect(closed).toBe(opened);
+  });
 });
 
 describe('runStage — fresh run persists the CLI session + parks on a pending gate', () => {

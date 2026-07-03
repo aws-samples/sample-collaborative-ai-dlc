@@ -918,8 +918,48 @@ export const handler = async (event) => {
         return response(200, await fetchKnowledgeGraph(g, { projectId, intentId }));
       }
 
-      // GET single — assembled detail DTO.
-      const records = await store.getExecutionRecords(intentId);
+      // GET /projects/{projectId}/intents/{intentId}/outputs — the agent
+      // transcript, fetched lazily per activity pane instead of riding the
+      // detail DTO (a long run's transcript is megabytes; the DTO is polled).
+      // Query params:
+      //   stageInstanceId — that stage's chunks; the literal "intent" selects
+      //     the stage-less workspace/init bucket; absent = ALL chunks.
+      //   afterSeq — only chunks with seq > afterSeq (incremental catch-up
+      //     after a websocket-live pane is seeded).
+      if (path?.endsWith('/outputs')) {
+        const meta = await store.getExecution(intentId);
+        if (!meta || meta.projectId !== projectId) {
+          return response(404, { error: 'Intent not found' });
+        }
+        const qs = event.queryStringParameters ?? {};
+        const rawStage = qs.stageInstanceId ?? undefined;
+        const afterSeq = qs.afterSeq != null && qs.afterSeq !== '' ? Number(qs.afterSeq) : null;
+        if (afterSeq != null && !Number.isFinite(afterSeq)) {
+          return response(400, { error: 'afterSeq must be a number' });
+        }
+        const rows = await store.getOutputs(intentId, {
+          // "intent" is the UI's bucket key for stage-less (init-ws) output.
+          ...(rawStage !== undefined
+            ? { stageInstanceId: rawStage === 'intent' ? null : rawStage, filterByStage: true }
+            : {}),
+          afterSeq,
+        });
+        return response(200, {
+          outputs: rows.map((o) => ({
+            seq: o.seq,
+            stageInstanceId: o.stageInstanceId ?? null,
+            unitSlug: o.unitSlug ?? null,
+            kind: o.kind,
+            content: o.content,
+            timestamp: o.timestamp,
+          })),
+        });
+      }
+
+      // GET single — assembled detail DTO. Outputs are deliberately EXCLUDED
+      // (see /outputs above): they dominate the partition's size and the UI
+      // fetches them lazily per pane. `outputs: []` keeps the DTO shape stable.
+      const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
       if (!records.meta || records.meta.projectId !== projectId) {
         return response(404, { error: 'Intent not found' });
       }
@@ -948,14 +988,7 @@ export const handler = async (event) => {
         gates,
         steering: (records.steering ?? []).map(mapSteering),
         metrics: mapMetricsWithCost(records.metrics, records.stages, priceFor),
-        outputs: records.outputs.map((o) => ({
-          seq: o.seq,
-          stageInstanceId: o.stageInstanceId ?? null,
-          unitSlug: o.unitSlug ?? null,
-          kind: o.kind,
-          content: o.content,
-          timestamp: o.timestamp,
-        })),
+        outputs: [],
         sensorRuns: records.sensorRuns.map((s) => ({
           sensorRunId: s.sensorRunId,
           stageInstanceId: s.stageInstanceId ?? null,
@@ -990,7 +1023,9 @@ export const handler = async (event) => {
       const priceFor = await getPriceResolver();
       const perIntent = await Promise.all(
         metas.map(async (meta) => {
-          const records = await store.getExecutionRecords(meta.executionId ?? meta.intentId);
+          const records = await store.getExecutionRecords(meta.executionId ?? meta.intentId, {
+            includeOutputs: false,
+          });
           const summary = summarizeExecutionMetrics(records.metrics, records.stages, priceFor);
           return {
             intentId: meta.intentId ?? meta.executionId,
@@ -1164,7 +1199,7 @@ const resumeDurableCallback = async (callbackId, answer) => {
 // the retire can never race the relaunch. Best-effort per gate: a gate answered
 // concurrently is simply left alone.
 const retireParkedRun = async (executionId, reason) => {
-  const records = await store.getExecutionRecords(executionId);
+  const records = await store.getExecutionRecords(executionId, { includeOutputs: false });
   const pending = (records.humanTasks ?? []).filter((h) => h.status === 'pending');
   for (const gate of pending) {
     const superseded = await store
