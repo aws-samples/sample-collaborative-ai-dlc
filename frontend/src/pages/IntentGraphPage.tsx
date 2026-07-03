@@ -8,24 +8,61 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft } from 'lucide-react';
 
+const GRAPH_CACHE_MAX = 20;
+
+interface GraphCacheEntry {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
+const graphCache = new Map<string, GraphCacheEntry>();
+
+function graphCacheKey(projectId: string, intentId: string): string {
+  return `${projectId}#${intentId}`;
+}
+
+function trimGraphCache() {
+  while (graphCache.size > GRAPH_CACHE_MAX) {
+    const oldest = graphCache.keys().next().value!;
+    graphCache.delete(oldest);
+  }
+}
+
+export function clearIntentGraphCache() {
+  graphCache.clear();
+}
+
 export default function IntentGraphPage() {
   const { projectId, intentId, loading: contextLoading, error: contextError } = useIntent();
   const navigate = useNavigate();
 
-  const [nodes, setNodes] = useState<GraphNode[]>([]);
-  const [edges, setEdges] = useState<GraphEdge[]>([]);
-  const [loading, setLoading] = useState(true);
+  const key = graphCacheKey(projectId, intentId);
+  const cached = graphCache.get(key);
+
+  const [nodes, setNodes] = useState<GraphNode[]>(cached?.nodes ?? []);
+  const [edges, setEdges] = useState<GraphEdge[]>(cached?.edges ?? []);
+  const [loading, setLoading] = useState(!cached);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!projectId || !intentId) return;
-    setLoading(true);
+    const k = graphCacheKey(projectId, intentId);
+    const hit = graphCache.get(k);
+    if (hit) {
+      setNodes(hit.nodes);
+      setEdges(hit.edges);
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
     setError(null);
     intentsService
       .graph(projectId, intentId)
       .then(({ nodes: n, edges: e }) => {
         setNodes(n);
         setEdges(e);
+        graphCache.set(k, { nodes: n, edges: e });
+        trimGraphCache();
       })
       .catch(() => setError('Failed to load knowledge graph'))
       .finally(() => setLoading(false));

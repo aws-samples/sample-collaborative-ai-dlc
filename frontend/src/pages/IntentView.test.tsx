@@ -40,7 +40,7 @@ vi.mock('@/services/workflows', () => ({
 }));
 
 import IntentView from './IntentView';
-import { IntentProvider } from '@/contexts/IntentContext';
+import { IntentProvider, clearIntentCache } from '@/contexts/IntentContext';
 
 const renderAt = () =>
   render(
@@ -93,6 +93,7 @@ const baseDetail = (over: Record<string, unknown> = {}) => ({
 
 describe('IntentView', () => {
   beforeEach(() => {
+    clearIntentCache();
     get.mockReset();
     start.mockReset();
     answerGate.mockReset();
@@ -236,6 +237,7 @@ describe('IntentView', () => {
 
 describe('IntentView — WP7 construction UI', () => {
   beforeEach(() => {
+    clearIntentCache();
     get.mockReset();
     start.mockReset();
     answerGate.mockReset();

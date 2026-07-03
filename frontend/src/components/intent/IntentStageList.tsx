@@ -118,6 +118,11 @@ function StageRow({
         className={cn(
           'flex w-full items-center gap-3 rounded-md border px-3 py-2 text-left text-sm transition-colors hover:bg-muted/40',
           current && 'border-primary/40 bg-primary/[0.03]',
+          !current && row.state === 'SUCCEEDED' && 'bg-agent-success/10',
+          !current && row.state === 'SKIPPED' && 'bg-agent-success/5',
+          !current && row.state === 'RUNNING' && 'bg-agent-running/10 animate-pulse',
+          !current && row.state === 'WAITING_FOR_HUMAN' && 'bg-amber-400/10',
+          !current && row.state === 'FAILED' && 'bg-agent-error/10',
           selected && 'rounded-b-none',
         )}
       >

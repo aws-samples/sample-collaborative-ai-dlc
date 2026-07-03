@@ -1,26 +1,28 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useIntent, type IntentStageRow } from '@/contexts/IntentContext';
 import type { StageState } from '@/services/intents';
 import type { CompiledWorkflow } from '@/services/workflows';
 import { aggregateMetrics, summarizeCost } from '@/lib/metricAggregation';
-import { groupByPhase, derivePhaseState } from '@/lib/intentPhases';
 import { WorkflowScopeGraph } from '@/components/v2';
 import { UsageMetrics } from '@/components/intent/UsageMetrics';
+import { IntentPhaseDiagram } from '@/components/intent/IntentPhaseDiagram';
+import { IntentStageList } from '@/components/intent/IntentStageList';
 import { useProjectCache } from '@/hooks/useProjectsCache';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Progress } from '@/components/ui/progress';
 import { Skeleton } from '@/components/ui/skeleton';
-import { ArrowLeft, CheckCircle2, ExternalLink } from 'lucide-react';
-import { cn } from '@/lib/utils';
-import { PHASE_CONFIGS } from '@/components/observability/phaseConfig';
+import { ArrowLeft, ExternalLink } from 'lucide-react';
 
-function phaseColorAt(index: number) {
-  const { headerBg, headerText, blockBg, blockBorder } =
-    PHASE_CONFIGS[index % PHASE_CONFIGS.length];
-  return { headerBg, headerText, blockBg, blockBorder };
+type ObsView = 'diagram' | 'graph' | 'list';
+const VALID_VIEWS: ReadonlySet<ObsView> = new Set(['diagram', 'graph', 'list']);
+const VIEW_STORAGE_KEY = 'aidlc-intent-obs-view';
+
+function readStoredView(): ObsView {
+  const stored = localStorage.getItem(VIEW_STORAGE_KEY);
+  return stored && VALID_VIEWS.has(stored as ObsView) ? (stored as ObsView) : 'diagram';
 }
 
 function aggregateStageStatus(rows: IntentStageRow[]): Record<string, StageState> {
@@ -86,11 +88,7 @@ export default function IntentObservabilityPage() {
   } = useIntent();
   const navigate = useNavigate();
   const { project } = useProjectCache(projectId);
-
-  const phases = useMemo(
-    () => groupByPhase(stageRows).filter((g) => !initializationPhasePaths.has(g.phase)),
-    [stageRows, initializationPhasePaths],
-  );
+  const [view, setView] = useState<ObsView>(readStoredView);
 
   const stageStatus = useMemo(() => aggregateStageStatus(stageRows), [stageRows]);
 
@@ -224,66 +222,38 @@ export default function IntentObservabilityPage() {
           </CardContent>
         </Card>
 
-        {/* ── PHASE PROGRESS STRIP ───────────────────────────────────── */}
-        {phases.length > 0 && (
-          <Card>
-            <CardContent className="py-4 px-5">
-              <div className="flex items-stretch gap-3 overflow-x-auto">
-                {phases.map((group, idx) => {
-                  const state = derivePhaseState(group);
-                  const palette = phaseColorAt(idx);
-                  const pct = group.total > 0 ? Math.round((group.done / group.total) * 100) : 0;
-                  return (
-                    <div
-                      key={group.phase}
-                      className={cn(
-                        'flex flex-col gap-1.5 min-w-[120px] flex-1 rounded-md px-3 py-2 border',
-                        palette.blockBg,
-                        palette.blockBorder,
-                      )}
-                    >
-                      <div className="flex items-center gap-1.5">
-                        {state === 'done' && (
-                          <CheckCircle2
-                            className={cn('h-3.5 w-3.5 shrink-0', palette.headerText)}
-                          />
-                        )}
-                        {state === 'active' && (
-                          <span className="h-2 w-2 rounded-full bg-agent-running animate-pulse shrink-0" />
-                        )}
-                        {state === 'pending' && (
-                          <span className="h-2 w-2 rounded-full bg-muted-foreground/40 shrink-0" />
-                        )}
-                        <span className={cn('text-xs font-medium truncate', palette.headerText)}>
-                          {phaseNameOf(group.phase)}
-                        </span>
-                      </div>
-                      <span className="text-[10px] text-muted-foreground">
-                        {group.done}/{group.total} done
-                      </span>
-                      <Progress
-                        value={pct}
-                        className={cn(
-                          'h-1',
-                          state === 'done' && '[&>div]:bg-agent-success',
-                          state === 'active' && '[&>div]:bg-agent-running',
-                        )}
-                      />
-                    </div>
-                  );
-                })}
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* ── EXECUTION GRAPH ────────────────────────────────────────── */}
-        {scopeCompiled && scopeCompiled.graph.nodes.length > 0 && (
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm">Execution graph</CardTitle>
-            </CardHeader>
-            <CardContent>
+        {/* ── EXECUTION PROGRESS (toggle: Diagram / Graph / List) ──── */}
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm">Execution progress</CardTitle>
+              <ToggleGroup
+                type="single"
+                value={view}
+                onValueChange={(v) => {
+                  if (v && VALID_VIEWS.has(v as ObsView)) {
+                    const next = v as ObsView;
+                    setView(next);
+                    localStorage.setItem(VIEW_STORAGE_KEY, next);
+                  }
+                }}
+                className="gap-0.5"
+              >
+                <ToggleGroupItem value="diagram" className="h-6 px-2 text-[11px]">
+                  Diagram
+                </ToggleGroupItem>
+                <ToggleGroupItem value="graph" className="h-6 px-2 text-[11px]">
+                  Graph
+                </ToggleGroupItem>
+                <ToggleGroupItem value="list" className="h-6 px-2 text-[11px]">
+                  List
+                </ToggleGroupItem>
+              </ToggleGroup>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {view === 'diagram' && <IntentPhaseDiagram />}
+            {view === 'graph' && scopeCompiled && scopeCompiled.graph.nodes.length > 0 && (
               <WorkflowScopeGraph
                 compiled={scopeCompiled}
                 activeScope={intent.scope}
@@ -292,9 +262,13 @@ export default function IntentObservabilityPage() {
                 readOnly
                 stageStatus={filteredStageStatus}
               />
-            </CardContent>
-          </Card>
-        )}
+            )}
+            {view === 'graph' && (!scopeCompiled || scopeCompiled.graph.nodes.length === 0) && (
+              <p className="text-sm text-muted-foreground">No graph data yet.</p>
+            )}
+            {view === 'list' && <IntentStageList />}
+          </CardContent>
+        </Card>
       </div>
     </div>
   );

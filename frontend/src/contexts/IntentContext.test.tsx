@@ -29,7 +29,7 @@ vi.mock('@/services/workflows', () => ({
   },
 }));
 
-import { IntentProvider, useIntent } from './IntentContext';
+import { IntentProvider, useIntent, clearIntentCache } from './IntentContext';
 
 function Probe() {
   const { stageRows, pendingGates, outputBuffers, outputVersion, ensureOutputs } = useIntent();
@@ -91,6 +91,7 @@ const detail = (over: Record<string, unknown> = {}) => ({
 describe('IntentContext', () => {
   beforeEach(() => {
     capturedOnEvent = null;
+    clearIntentCache();
     get.mockReset();
     answerGate.mockReset();
     outputs.mockReset().mockResolvedValue({ outputs: [] });

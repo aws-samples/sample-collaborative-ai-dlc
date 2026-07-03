@@ -160,6 +160,35 @@ interface IntentContextValue {
   rewindIntent: (fromStageId: string, guidance?: string) => Promise<void>;
 }
 
+// ── Module-level stale-while-revalidate cache ───────────────────────────────
+// Mirrors the pattern in src/hooks/useProjectsCache.ts: show last-known data
+// instantly on revisit, refetch in the background, update if changed.
+const INTENT_CACHE_MAX = 20;
+
+interface IntentCacheEntry {
+  detail: IntentDetail;
+  compiled: CompiledWorkflow | null;
+  workflowPhases: PhaseNode[] | null;
+}
+
+const intentCache = new Map<string, IntentCacheEntry>();
+
+function intentCacheKey(projectId: string, intentId: string): string {
+  return `${projectId}#${intentId}`;
+}
+
+function trimIntentCache() {
+  while (intentCache.size > INTENT_CACHE_MAX) {
+    const oldest = intentCache.keys().next().value!;
+    intentCache.delete(oldest);
+  }
+}
+
+/** Clear the module-level intent cache (for test isolation). */
+export function clearIntentCache() {
+  intentCache.clear();
+}
+
 const IntentContext = createContext<IntentContextValue | undefined>(undefined);
 
 export function IntentProvider({
@@ -212,32 +241,45 @@ export function IntentProvider({
       if (activeIntentRef.current !== intentId) return;
       setDetail(dto);
       setError(null);
-      // Seed the gate map from durable state. Output buffers are NOT seeded
-      // here — the DTO carries no outputs; panes fetch lazily (ensureOutputs).
       setLiveGates(new Map(dto.gates.map((g) => [g.humanTaskId, g])));
-      // Compiled workflow drives the phase/stage plan (best-effort).
+
+      const cacheKey = intentCacheKey(projectId, intentId);
+      const prevEntry = intentCache.get(cacheKey);
+
       if (dto.intent.workflowId) {
         workflowsService
           .compiled(dto.intent.workflowId, dto.intent.workflowVersion ?? undefined)
           .then((c) => {
-            if (activeIntentRef.current === intentId) setCompiled(c);
+            if (activeIntentRef.current !== intentId) return;
+            setCompiled(c);
+            const entry = intentCache.get(cacheKey);
+            if (entry) entry.compiled = c;
           })
           .catch(() => {});
-        // The workflow definition is immutable per (id, version) — fetch once,
-        // not on every 8s poll cycle.
+
         const workflowKey = `${dto.intent.workflowId}@${dto.intent.workflowVersion ?? ''}`;
         if (fetchedWorkflowKeyRef.current !== workflowKey) {
           fetchedWorkflowKeyRef.current = workflowKey;
           workflowsService
             .get(dto.intent.workflowId, dto.intent.workflowVersion ?? undefined)
             .then((wf) => {
-              if (activeIntentRef.current === intentId) setWorkflowPhases(wf.phases);
+              if (activeIntentRef.current !== intentId) return;
+              setWorkflowPhases(wf.phases);
+              const entry = intentCache.get(cacheKey);
+              if (entry) entry.workflowPhases = wf.phases;
             })
             .catch(() => {
               fetchedWorkflowKeyRef.current = null;
             });
         }
       }
+
+      intentCache.set(cacheKey, {
+        detail: dto,
+        compiled: prevEntry?.compiled ?? null,
+        workflowPhases: prevEntry?.workflowPhases ?? null,
+      });
+      trimIntentCache();
     } catch (err) {
       if (activeIntentRef.current !== intentId) return;
       setError(err instanceof Error ? err.message : 'Failed to load intent');
@@ -246,23 +288,40 @@ export function IntentProvider({
     }
   }, [projectId, intentId]);
 
-  // Reset everything when the intent (or route) changes, then load.
   useEffect(() => {
     outputBufRef.current = new Map();
     panesRef.current = new Map();
     setOutputVersion(0);
-    setDetail(null);
-    setCompiled(null);
-    setWorkflowPhases(null);
-    fetchedWorkflowKeyRef.current = null;
-    setLiveGates(new Map());
     setSelectedStageId(null);
     setAgentFocus(null);
     setError(null);
+    fetchedWorkflowKeyRef.current = null;
+
     if (projectId && intentId) {
-      setLoading(true);
+      const cached = intentCache.get(intentCacheKey(projectId, intentId));
+      if (cached) {
+        setDetail(cached.detail);
+        setCompiled(cached.compiled);
+        setWorkflowPhases(cached.workflowPhases);
+        setLiveGates(new Map(cached.detail.gates.map((g) => [g.humanTaskId, g])));
+        setLoading(false);
+        if (cached.compiled && cached.detail.intent.workflowId) {
+          const wfKey = `${cached.detail.intent.workflowId}@${cached.detail.intent.workflowVersion ?? ''}`;
+          fetchedWorkflowKeyRef.current = wfKey;
+        }
+      } else {
+        setDetail(null);
+        setCompiled(null);
+        setWorkflowPhases(null);
+        setLiveGates(new Map());
+        setLoading(true);
+      }
       load();
     } else {
+      setDetail(null);
+      setCompiled(null);
+      setWorkflowPhases(null);
+      setLiveGates(new Map());
       setLoading(false);
     }
   }, [projectId, intentId, load]);
@@ -451,6 +510,7 @@ export function IntentProvider({
   // caller navigates back to the project page.
   const deleteIntent = useCallback(async () => {
     await intentsService.delete(projectId, intentId);
+    intentCache.delete(intentCacheKey(projectId, intentId));
   }, [projectId, intentId]);
 
   const rewindIntent = useCallback(

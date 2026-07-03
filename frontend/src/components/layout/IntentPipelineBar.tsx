@@ -11,12 +11,29 @@ import { groupByPhase, derivePhaseState } from '@/lib/intentPhases';
 export function IntentPipelineBar() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { projectId, intentId, detail, stageRows, loading, phaseNameOf, initializationPhasePaths } =
-    useIntent();
+  const {
+    projectId,
+    intentId,
+    detail,
+    compiled,
+    stageRows,
+    loading,
+    phaseNameOf,
+    initializationPhasePaths,
+    workflowPhases,
+  } = useIntent();
+
+  // The plan (compiled) and the phase names (workflow) land after the intent
+  // DTO — rendering chips before both arrive flashes a partial phase list
+  // (only the phases with live rows, unfiltered init).
+  const planReady = !!compiled && !!workflowPhases;
 
   const phases = useMemo(
-    () => groupByPhase(stageRows).filter((g) => !initializationPhasePaths.has(g.phase)),
-    [stageRows, initializationPhasePaths],
+    () =>
+      planReady
+        ? groupByPhase(stageRows).filter((g) => !initializationPhasePaths.has(g.phase))
+        : [],
+    [planReady, stageRows, initializationPhasePaths],
   );
 
   const activeIndex = useMemo(() => {
