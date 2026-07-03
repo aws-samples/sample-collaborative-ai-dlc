@@ -5,7 +5,11 @@ import {
   type GitFile,
   type GitFileContent,
 } from '../services/gitProvider';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+// PrismAsyncLight instead of the full Prism build: the full build statically
+// bundles every refractor language grammar (~570 kB minified — it was the
+// single largest item in the app bundle). The async-light build ships with no
+// grammars and lazy-loads each language chunk on first use.
+import { PrismAsyncLight as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { TreeView, type TreeDataItem } from './ui/tree-view';
 import { Folder, File } from 'lucide-react';
@@ -27,7 +31,9 @@ const getLanguage = (path: string) => {
     c: 'c',
     cs: 'csharp',
     php: 'php',
-    html: 'html',
+    // Prism's language id for HTML is `markup` (`html` is not a loadable id
+    // in the async-light build — it would silently fall back to plain text).
+    html: 'markup',
     css: 'css',
     json: 'json',
     yaml: 'yaml',
