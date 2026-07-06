@@ -3,7 +3,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
-import { useIntent, type IntentStageRow } from '@/contexts/IntentContext';
+import { useIntent, stageRowKey, type IntentStageRow } from '@/contexts/IntentContext';
 import { stageDurations, useTick } from '@/components/intent/stageStyle';
 import {
   SensorChips,
@@ -36,6 +36,7 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
   const {
     detail,
     stageEdges,
+    stageRows,
     gates,
     sensorsByStage,
     artifactsByStage,
@@ -213,7 +214,7 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
         {(() => {
           const shortModel = row.resolvedModel
             ? row.resolvedModel.includes('.')
-              ? row.resolvedModel.split('.').pop()!
+              ? (row.resolvedModel.split('.').at(-1) ?? row.resolvedModel)
               : row.resolvedModel
             : null;
           const showHarness = row.cli && (!shortModel || row.cli !== shortModel);
@@ -280,7 +281,6 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
                         <span
                           key={artifactName}
                           className="inline-flex cursor-default items-center gap-1 rounded border border-dashed px-1.5 py-0.5 text-[11px] text-muted-foreground"
-                          aria-disabled="true"
                         >
                           <span className="h-1.5 w-1.5 rounded-full border border-current" />
                           {artifactName}
@@ -289,7 +289,10 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
                     })}
                     <button
                       type="button"
-                      onClick={() => setSelectedStageId(stageFrom)}
+                      onClick={() => {
+                        const matchingRow = stageRows.find((r) => r.stageId === stageFrom);
+                        setSelectedStageId(matchingRow ? stageRowKey(matchingRow) : stageFrom);
+                      }}
                       className="text-[9px] text-muted-foreground hover:text-foreground hover:underline"
                     >
                       ← {stageFrom}
@@ -325,7 +328,6 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
                     <span
                       key={item.label}
                       className="inline-flex cursor-default items-center gap-1 rounded border border-dashed px-1.5 py-0.5 text-[11px] text-muted-foreground"
-                      aria-disabled="true"
                     >
                       <span className="h-1.5 w-1.5 rounded-full border border-current" />
                       {item.label}
@@ -410,11 +412,8 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
             size="sm"
             variant="outline"
             className="h-6 gap-1 px-2 text-[11px]"
-            onClick={() =>
-              document
-                .getElementById(`artifact-${a.id}`)
-                ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-            }
+            title="Open in preview"
+            onClick={() => openArtifactPreview(a.id)}
           >
             <FileText className="h-3 w-3" />
             {a.title || a.artifactType || a.id}

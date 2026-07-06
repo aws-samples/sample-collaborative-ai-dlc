@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { useIntent, stageRowKey, type IntentStageRow } from '@/contexts/IntentContext';
@@ -43,9 +43,7 @@ export function IntentStageList() {
     return out;
   }, [stageRows]);
 
-  // Determine which AccordionItems should be open by default:
-  // phases with active rows (RUNNING, WAITING_FOR_HUMAN, FAILED).
-  const defaultOpen = useMemo(
+  const activeKeys = useMemo(
     () =>
       groups
         .map((g, gi) => ({ key: `${g.phase ?? 'no-phase'}-${gi}`, active: isGroupActive(g.rows) }))
@@ -54,12 +52,26 @@ export function IntentStageList() {
     [groups],
   );
 
+  const [openItems, setOpenItems] = useState<string[]>(activeKeys);
+
+  useEffect(() => {
+    setOpenItems((prev) => {
+      const merged = [...new Set([...prev, ...activeKeys])];
+      return merged.length === prev.length ? prev : merged;
+    });
+  }, [activeKeys]);
+
   if (stageRows.length === 0) {
     return <p className="text-sm text-muted-foreground">No stages resolved yet.</p>;
   }
 
   return (
-    <Accordion type="multiple" defaultValue={defaultOpen} className="space-y-2.5">
+    <Accordion
+      type="multiple"
+      value={openItems}
+      onValueChange={setOpenItems}
+      className="space-y-2.5"
+    >
       {groups.map((g, gi) => {
         const itemKey = `${g.phase ?? 'no-phase'}-${gi}`;
         const done = g.rows.filter((r) => r.state === 'SUCCEEDED' || r.state === 'SKIPPED').length;

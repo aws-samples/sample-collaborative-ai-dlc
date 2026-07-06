@@ -585,6 +585,7 @@ function WaitingCard({ intent, gates, stageRows, stageNameOf, rewindIntent }: Wa
   const [guidanceOpen, setGuidanceOpen] = useState(false);
   const [guidance, setGuidance] = useState('');
   const [rewinding, setRewinding] = useState(false);
+  const [rewindError, setRewindError] = useState<string | null>(null);
 
   const activeGate =
     gates.find((g) => g.humanTaskId === intent.pendingHumanTaskId) ??
@@ -608,7 +609,7 @@ function WaitingCard({ intent, gates, stageRows, stageNameOf, rewindIntent }: Wa
         const parsed: { text?: string }[] = JSON.parse(activeGate.questions);
         if (Array.isArray(parsed) && parsed.length > 0) {
           questionPreview = parsed[0].text ?? null;
-          if (parsed.length > 1) {
+          if (questionPreview && parsed.length > 1) {
             questionPreview = `${questionPreview} — and ${parsed.length - 1} more`;
           }
         }
@@ -619,24 +620,30 @@ function WaitingCard({ intent, gates, stageRows, stageNameOf, rewindIntent }: Wa
   }
 
   const handleRestart = async () => {
+    setRewindError(null);
     setRewinding(true);
     try {
       await rewindIntent(stageId);
+      setConfirmRestart(false);
+    } catch (err) {
+      setRewindError(err instanceof Error ? err.message : 'Failed to restart stage');
     } finally {
       setRewinding(false);
-      setConfirmRestart(false);
     }
   };
 
   const handleRestartWithGuidance = async () => {
     if (!guidance.trim()) return;
+    setRewindError(null);
     setRewinding(true);
     try {
       await rewindIntent(stageId, guidance.trim());
-    } finally {
-      setRewinding(false);
       setGuidanceOpen(false);
       setGuidance('');
+    } catch (err) {
+      setRewindError(err instanceof Error ? err.message : 'Failed to restart stage');
+    } finally {
+      setRewinding(false);
     }
   };
 
@@ -672,7 +679,10 @@ function WaitingCard({ intent, gates, stageRows, stageNameOf, rewindIntent }: Wa
           size="sm"
           className="h-7 gap-1.5 text-xs"
           disabled={rewinding || !stageId}
-          onClick={() => setConfirmRestart(true)}
+          onClick={() => {
+            setRewindError(null);
+            setConfirmRestart(true);
+          }}
         >
           <RotateCcw className="h-3 w-3" />
           Restart stage
@@ -682,7 +692,10 @@ function WaitingCard({ intent, gates, stageRows, stageNameOf, rewindIntent }: Wa
           size="sm"
           className="h-7 gap-1.5 text-xs"
           disabled={rewinding || !stageId}
-          onClick={() => setGuidanceOpen(true)}
+          onClick={() => {
+            setRewindError(null);
+            setGuidanceOpen(true);
+          }}
         >
           <RotateCcw className="h-3 w-3" />
           Restart with guidance
@@ -690,7 +703,15 @@ function WaitingCard({ intent, gates, stageRows, stageNameOf, rewindIntent }: Wa
       </div>
 
       {/* Confirm restart */}
-      <AlertDialog open={confirmRestart} onOpenChange={(o) => !rewinding && setConfirmRestart(o)}>
+      <AlertDialog
+        open={confirmRestart}
+        onOpenChange={(o) => {
+          if (!rewinding) {
+            setConfirmRestart(o);
+            if (o) setRewindError(null);
+          }
+        }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Restart stage</AlertDialogTitle>
@@ -699,6 +720,9 @@ function WaitingCard({ intent, gates, stageRows, stageNameOf, rewindIntent }: Wa
               Any pending questions for this stage are retired.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {rewindError && !guidanceOpen && (
+            <p className="text-xs text-destructive">{rewindError}</p>
+          )}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={rewinding}>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={handleRestart} disabled={rewinding}>
@@ -709,7 +733,15 @@ function WaitingCard({ intent, gates, stageRows, stageNameOf, rewindIntent }: Wa
       </AlertDialog>
 
       {/* Restart with guidance dialog */}
-      <Dialog open={guidanceOpen} onOpenChange={(o) => !rewinding && setGuidanceOpen(o)}>
+      <Dialog
+        open={guidanceOpen}
+        onOpenChange={(o) => {
+          if (!rewinding) {
+            setGuidanceOpen(o);
+            if (o) setRewindError(null);
+          }
+        }}
+      >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Restart with guidance</DialogTitle>
@@ -723,7 +755,9 @@ function WaitingCard({ intent, gates, stageRows, stageNameOf, rewindIntent }: Wa
             placeholder="e.g. 'Use the existing event bus instead of creating a new REST layer.'"
             rows={3}
             className="text-sm"
+            aria-label="Guidance for the restarted stage"
           />
+          {rewindError && guidanceOpen && <p className="text-xs text-destructive">{rewindError}</p>}
           <DialogFooter>
             <DialogClose asChild>
               <Button variant="ghost" size="sm" disabled={rewinding}>

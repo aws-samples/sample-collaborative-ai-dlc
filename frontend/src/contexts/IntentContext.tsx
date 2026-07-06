@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import type { ReactNode } from 'react';
+import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import { useParams } from 'react-router-dom';
 import {
   intentsService,
@@ -132,7 +132,7 @@ interface IntentContextValue {
   // Shared UI state — selection is keyed by `stageRowKey` (instance-aware:
   // two unit instances of one stage select independently).
   selectedStageId: string | null;
-  setSelectedStageId: (rowKey: string | null) => void;
+  setSelectedStageId: Dispatch<SetStateAction<string | null>>;
   agentFocus: AgentFocusRequest | null;
   /** Focus the sidebar Agent tab on a stage's output (null → run-level). */
   focusOutput: (stageInstanceId: string | null) => void;

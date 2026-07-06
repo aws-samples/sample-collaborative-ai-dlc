@@ -112,9 +112,9 @@ export default function IntentObservabilityPage() {
       const matchingRow = stageRows.find((r) => r.stageId === stageId);
       if (!matchingRow) return;
       const key = stageRowKey(matchingRow);
-      setSelectedStageId(selectedStageId === key ? null : key);
+      setSelectedStageId((prev) => (prev === key ? null : key));
     },
-    [stageRows, selectedStageId, setSelectedStageId],
+    [stageRows, setSelectedStageId],
   );
 
   const selectedRow = useMemo(() => {

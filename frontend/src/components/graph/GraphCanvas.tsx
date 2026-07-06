@@ -858,7 +858,8 @@ export function GraphCanvas({
     const factor = e.deltaY > 0 ? 1.08 : 0.92;
     const mouse = svgToWorld(e.clientX, e.clientY);
     const newW = Math.max(300, Math.min(viewBox.width * factor, 12000));
-    const newH = Math.max(300, Math.min(viewBox.height * factor, 12000));
+    const actual = newW / viewBox.width;
+    const newH = viewBox.height * actual;
     setViewBox({
       x: mouse.x - ((mouse.x - viewBox.x) / viewBox.width) * newW,
       y: mouse.y - ((mouse.y - viewBox.y) / viewBox.height) * newH,
@@ -1778,7 +1779,7 @@ export function GraphCanvas({
               </svg>
 
               {/* ===== Zoom Slider ===== */}
-              <div className="absolute bottom-[132px] right-3 z-10 flex flex-col items-center gap-1 rounded-lg bg-background/90 backdrop-blur-sm border shadow-sm px-1.5 py-2">
+              <div className="absolute bottom-[160px] right-3 z-10 flex flex-col items-center gap-1 rounded-lg bg-background/90 backdrop-blur-sm border shadow-sm px-1.5 py-2">
                 <span
                   className="text-[9px] font-semibold text-muted-foreground select-none"
                   title="Zoom in"
@@ -1802,7 +1803,7 @@ export function GraphCanvas({
                   }}
                   aria-label="Zoom level"
                   title="Zoom level"
-                  className="h-20 w-4 appearance-none bg-transparent cursor-pointer [writing-mode:vertical-lr] [direction:rtl] [&::-webkit-slider-runnable-track]:w-1 [&::-webkit-slider-runnable-track]:rounded-full [&::-webkit-slider-runnable-track]:bg-muted [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-foreground/70 [&::-webkit-slider-thumb]:border [&::-webkit-slider-thumb]:border-background [&::-webkit-slider-thumb]:shadow-sm [&::-moz-range-track]:w-1 [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-muted [&::-moz-range-thumb]:w-3 [&::-moz-range-thumb]:h-3 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-foreground/70 [&::-moz-range-thumb]:border-0"
+                  className="h-20 w-4 appearance-none bg-transparent cursor-pointer focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none [writing-mode:vertical-lr] [direction:rtl] [&::-webkit-slider-runnable-track]:w-1 [&::-webkit-slider-runnable-track]:rounded-full [&::-webkit-slider-runnable-track]:bg-muted [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-foreground/70 [&::-webkit-slider-thumb]:border [&::-webkit-slider-thumb]:border-background [&::-webkit-slider-thumb]:shadow-sm [&::-moz-range-track]:w-1 [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-muted [&::-moz-range-thumb]:w-3 [&::-moz-range-thumb]:h-3 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-foreground/70 [&::-moz-range-thumb]:border-0"
                 />
                 <span
                   className="text-[9px] font-semibold text-muted-foreground select-none"

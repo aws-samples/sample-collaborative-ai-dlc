@@ -64,67 +64,75 @@ export function IntentPhaseDiagram() {
               !isActive && !isExpanded && 'opacity-70',
             )}
           >
-            <button
-              type="button"
-              onClick={() => {
-                if (!isActive) {
+            {isActive ? (
+              <div
+                className={cn(
+                  'flex w-full items-center gap-2 px-3 text-left transition-colors',
+                  'py-1.5',
+                )}
+              >
+                <span className="relative flex h-3 w-3 shrink-0">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-agent-running opacity-75" />
+                  <span className="relative inline-flex h-3 w-3 rounded-full bg-agent-running" />
+                </span>
+                <span
+                  className={cn(
+                    'font-bold tracking-wider uppercase',
+                    palette.headerText,
+                    'text-sm',
+                  )}
+                >
+                  {phaseNameOf(group.phase)}
+                </span>
+                <span className={cn('ml-auto font-medium text-muted-foreground', 'text-[11px]')}>
+                  {group.done}/{group.total}
+                </span>
+                <Progress value={pct} className={cn('w-14 h-1.5', '[&>div]:bg-agent-running')} />
+              </div>
+            ) : (
+              <button
+                type="button"
+                aria-expanded={isExpanded}
+                onClick={() => {
                   setExpandedManual((prev) => ({ ...prev, [group.phase]: !isExpanded }));
-                }
-              }}
-              className={cn(
-                'flex w-full items-center gap-2 px-3 text-left transition-colors',
-                isActive ? 'py-1.5 cursor-default' : 'py-1.5 hover:bg-muted/20 cursor-pointer',
-              )}
-            >
-              {!isActive && (
+                }}
+                className={cn(
+                  'flex w-full items-center gap-2 px-3 text-left transition-colors',
+                  'py-1.5 hover:bg-muted/20 cursor-pointer',
+                )}
+              >
                 <ChevronRight
                   className={cn(
                     'h-3 w-3 shrink-0 text-muted-foreground transition-transform duration-200',
                     isExpanded && 'rotate-90',
                   )}
                 />
-              )}
-              {state === 'done' && (
-                <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-agent-success/20">
-                  <Check className="h-2.5 w-2.5 text-agent-success" />
+                {state === 'done' && (
+                  <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-agent-success/20">
+                    <Check className="h-2.5 w-2.5 text-agent-success" />
+                  </span>
+                )}
+                {state === 'pending' && (
+                  <span className="h-2 w-2 rounded-full bg-muted-foreground/40 shrink-0" />
+                )}
+                <span
+                  className={cn(
+                    'font-bold tracking-wider uppercase',
+                    palette.headerText,
+                    'text-[10px]',
+                  )}
+                >
+                  {phaseNameOf(group.phase)}
                 </span>
-              )}
-              {state === 'active' && (
-                <span className="relative flex h-3 w-3 shrink-0">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-agent-running opacity-75" />
-                  <span className="relative inline-flex h-3 w-3 rounded-full bg-agent-running" />
+                <span className={cn('ml-auto font-medium text-muted-foreground', 'text-[10px]')}>
+                  {group.done}/{group.total}
                 </span>
-              )}
-              {state === 'pending' && (
-                <span className="h-2 w-2 rounded-full bg-muted-foreground/40 shrink-0" />
-              )}
-              <span
-                className={cn(
-                  'font-bold tracking-wider uppercase',
-                  palette.headerText,
-                  isActive ? 'text-sm' : 'text-[10px]',
-                )}
-              >
-                {phaseNameOf(group.phase)}
-              </span>
-              <span
-                className={cn(
-                  'ml-auto font-medium text-muted-foreground',
-                  isActive ? 'text-[11px]' : 'text-[10px]',
-                )}
-              >
-                {group.done}/{group.total}
-              </span>
-              <Progress
-                value={pct}
-                className={cn(
-                  'w-14',
-                  isActive ? 'h-1.5' : 'h-1',
-                  state === 'done' && '[&>div]:bg-agent-success',
-                  state === 'active' && '[&>div]:bg-agent-running',
-                )}
-              />
-            </button>
+                <Progress
+                  value={pct}
+                  className={cn('w-14 h-1', state === 'done' && '[&>div]:bg-agent-success')}
+                />
+              </button>
+            )}
 
             {isExpanded && (
               <div

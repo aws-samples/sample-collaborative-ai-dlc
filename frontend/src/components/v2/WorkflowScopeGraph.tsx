@@ -13,6 +13,7 @@ import {
   type PhaseInput,
 } from './scope-graph-utils';
 import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
 
 const STATUS_NODE_STYLE: Record<
   StageState,
@@ -296,12 +297,17 @@ export function WorkflowScopeGraph({
                 key={node.stageId}
                 transform={`translate(${pos.x},${pos.y})`}
                 opacity={nodeOpacity}
-                className={statusStyle?.pulse ? 'animate-pulse-subtle' : undefined}
+                className={cn(
+                  statusStyle?.pulse && 'animate-pulse-subtle',
+                  onStageClick &&
+                    'focus-visible:[outline:2px_solid_var(--ring)] [outline-offset:2px]',
+                )}
                 data-stage-status={statusEntry ?? undefined}
                 {...(onStageClick
                   ? {
                       role: 'button',
                       tabIndex: 0,
+                      'aria-label': stageInfo?.name || node.stageId,
                       style: { cursor: 'pointer' },
                       onClick: () => onStageClick(node.stageId),
                       onKeyDown: (e: React.KeyboardEvent) => handleNodeKeyDown(e, node.stageId),
