@@ -48,7 +48,7 @@ export function JiraConnectButton({
         </Button>
         <p className="text-[11px] text-muted-foreground max-w-xs text-right">
           Jira Cloud isn’t configured for this deployment. Ask an administrator to add OAuth
-          credentials in <strong>Admin → Tracker OAuth Apps</strong>.
+          credentials in <strong>Platform Admin → Trackers</strong>.
         </p>
       </div>
     );

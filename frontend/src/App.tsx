@@ -26,7 +26,7 @@ const GitOAuthCallback = lazy(() =>
   import('./pages/GitOAuthCallback').then((m) => ({ default: m.GitOAuthCallback })),
 );
 const JiraCallback = lazy(() => import('./pages/JiraCallback'));
-const Admin = lazy(() => import('./pages/Admin'));
+const PlatformAdmin = lazy(() => import('./pages/PlatformAdmin'));
 const ObservabilityLayout = lazy(() => import('./pages/ObservabilityLayout'));
 const BlockLibrary = lazy(() => import('./pages/BlockLibrary'));
 const BlockEditor = lazy(() => import('./pages/BlockEditor'));
@@ -81,7 +81,7 @@ function App() {
                   path="/admin"
                   element={
                     <ProtectedRoute requirePlatformAdmin>
-                      <Admin />
+                      <PlatformAdmin />
                     </ProtectedRoute>
                   }
                 />

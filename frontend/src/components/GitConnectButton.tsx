@@ -109,7 +109,7 @@ export function GitConnectButton({ provider, connected, onDisconnect }: GitConne
         </button>
         <p className="text-xs text-gray-600 max-w-md">
           {meta.label} isn't configured for this deployment. Ask an administrator to add OAuth
-          credentials in <strong>Admin → Tracker OAuth Apps</strong>.
+          credentials in <strong>Platform Admin → Source Control</strong>.
         </p>
       </div>
     );

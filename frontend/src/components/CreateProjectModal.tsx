@@ -261,7 +261,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                 {!gitStatus?.connected && (
                   <p className="text-xs text-red-600 dark:text-red-400 mt-1">
                     The GitHub App is not fully configured. Ask an administrator to complete the
-                    setup in <strong>Admin → GitHub Integration</strong>.
+                    setup in <strong>Platform Admin → Source Control</strong>.
                   </p>
                 )}
               </div>

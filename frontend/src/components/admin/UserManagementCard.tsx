@@ -4,7 +4,6 @@
 // administrator can never lock the platform out of its Admin page.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -12,6 +11,16 @@ import { CheckCircle2, XCircle, Loader2, Users, ShieldCheck } from 'lucide-react
 import { adminUsersService, type AdminUser } from '@/services/adminUsers';
 import { useAuth } from '@/contexts/AuthContext';
 import { ApiError } from '@/services/api';
+import { AdminCard } from './shared/AdminCard';
+
+const initials = (u: AdminUser) => {
+  const source = u.displayName || u.email || u.username;
+  const parts = source
+    .replace(/@.*$/, '')
+    .split(/[\s._-]+/)
+    .filter(Boolean);
+  return ((parts[0]?.[0] ?? '?') + (parts[1]?.[0] ?? '')).toUpperCase();
+};
 
 export function UserManagementCard() {
   const { user: currentUser } = useAuth();
@@ -77,21 +86,24 @@ export function UserManagementCard() {
 
   const isSelf = (u: AdminUser) => u.username === currentUser?.username;
 
+  const adminCount = users.filter((u) => u.platformAdmin).length;
+
   return (
-    <Card>
-      <CardHeader className="pb-3 pt-5 px-5">
-        <CardTitle className="text-sm font-semibold flex items-center gap-2">
-          <Users className="h-4 w-4 text-muted-foreground" />
-          User Management
-        </CardTitle>
-        <p className="text-xs text-muted-foreground">
-          Grant or revoke the <span className="font-medium">platform-admin</span> role. Admins can
-          access this page and change platform-wide settings. Role changes take effect when the user
-          signs in again (the role rides on their ID token). Users are created in the Cognito User
-          Pool.
-        </p>
-      </CardHeader>
-      <CardContent className="px-5 pb-5 space-y-3">
+    <AdminCard
+      icon={<Users />}
+      title="User Management"
+      badge={
+        !loading &&
+        !loadError && (
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium leading-4 text-muted-foreground">
+            {users.length} user{users.length === 1 ? '' : 's'} · {adminCount} admin
+            {adminCount === 1 ? '' : 's'}
+          </span>
+        )
+      }
+      description="Grant or revoke the platform-admin role — changes apply at the user's next sign-in."
+    >
+      <div className="space-y-3">
         {loading ? (
           <div className="space-y-2">
             <Skeleton className="h-9 w-full" />
@@ -113,14 +125,17 @@ export function UserManagementCard() {
                 <XCircle className="h-3.5 w-3.5 shrink-0" /> {actionError}
               </p>
             )}
-            <div className="border rounded-md divide-y">
+            <div className="rounded-lg border divide-y">
               {filtered.length === 0 ? (
                 <p className="text-xs text-muted-foreground px-3 py-4">No users match.</p>
               ) : (
                 filtered.map((u) => (
-                  <div key={u.username} className="flex items-center gap-3 px-3 py-2.5">
+                  <div key={u.username} className="flex items-center gap-3 px-3.5 py-2.5">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[11px] font-semibold text-primary">
+                      {initials(u)}
+                    </div>
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm text-foreground truncate flex items-center gap-1.5">
+                      <p className="text-sm font-medium text-foreground truncate flex items-center gap-1.5">
                         {u.displayName || u.email || u.username}
                         {isSelf(u) && (
                           <span className="text-[10px] text-muted-foreground font-normal">
@@ -128,7 +143,7 @@ export function UserManagementCard() {
                           </span>
                         )}
                         {!u.enabled && (
-                          <span className="text-[10px] font-medium bg-muted text-muted-foreground px-1.5 py-0.5 rounded">
+                          <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
                             disabled
                           </span>
                         )}
@@ -136,14 +151,14 @@ export function UserManagementCard() {
                       <p className="text-[11px] text-muted-foreground truncate">{u.email}</p>
                     </div>
                     {u.platformAdmin && (
-                      <span className="inline-flex items-center gap-1 text-[10px] font-medium text-agent-success shrink-0">
-                        <ShieldCheck className="h-3.5 w-3.5" /> Platform admin
+                      <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-agent-success/10 px-2 py-0.5 text-[10px] font-medium text-agent-success">
+                        <ShieldCheck className="h-3 w-3" /> Admin
                       </span>
                     )}
                     <Button
                       size="sm"
                       variant={u.platformAdmin ? 'outline' : 'default'}
-                      className="gap-1.5 shrink-0"
+                      className="gap-1.5 shrink-0 h-7 text-xs"
                       disabled={togglingUsername !== null || (u.platformAdmin && isSelf(u))}
                       title={
                         u.platformAdmin && isSelf(u)
@@ -167,7 +182,7 @@ export function UserManagementCard() {
             </div>
           </>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </AdminCard>
   );
 }

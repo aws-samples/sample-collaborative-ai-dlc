@@ -205,9 +205,9 @@ function buildBreadcrumbs(
   project: Project | null,
   sprint: Sprint | null,
 ): Breadcrumb[] {
-  // Admin panel - just "Admin"
+  // Admin panel - just "Platform Admin"
   if (pathname === '/admin') {
-    return [{ label: 'Admin' }];
+    return [{ label: 'Platform Admin' }];
   }
 
   // Dashboard - just "Projects"

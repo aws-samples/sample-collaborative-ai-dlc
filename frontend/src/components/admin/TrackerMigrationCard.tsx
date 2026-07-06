@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { AlertCircle, CheckCircle2, Database, Loader2, XCircle } from 'lucide-react';
@@ -8,6 +7,7 @@ import {
   type TrackerMigrationResult,
   type TrackerMigrationStatus,
 } from '@/services/projects';
+import { AdminCard } from './shared/AdminCard';
 
 // Operator-facing card for the tracker provider abstraction migration
 // (#194 phase #198). Surfaces "X projects on the legacy data model" and
@@ -54,36 +54,46 @@ export function TrackerMigrationCard() {
 
   const projectCandidates = status?.projects.candidates ?? 0;
   const sprintCandidates = status?.sprints.candidates ?? 0;
-  const allMigrated = !loading && projectCandidates === 0 && sprintCandidates === 0;
+  const allMigrated = !loading && !error && projectCandidates === 0 && sprintCandidates === 0;
+
+  // Nothing to do: collapse to a one-line note instead of a full card so the
+  // Trackers tab stays clean for the common case.
+  if (allMigrated) {
+    return (
+      <p className="text-xs text-muted-foreground flex items-center gap-1.5 px-1">
+        <CheckCircle2 className="h-3.5 w-3.5 text-agent-success" />
+        {lastRun
+          ? `Migrated ${lastRun.projects.applied} project binding${
+              lastRun.projects.applied === 1 ? '' : 's'
+            } and ${lastRun.sprints.applied} sprint${
+              lastRun.sprints.applied === 1 ? '' : 's'
+            } — all projects are now on the current tracker model.`
+          : 'Tracker data migration: all projects are on the current tracker model — nothing to migrate.'}
+      </p>
+    );
+  }
 
   return (
-    <Card>
-      <CardHeader className="pb-3 pt-5 px-5">
-        <CardTitle className="text-sm font-semibold flex items-center gap-2">
-          <Database className="h-4 w-4 text-muted-foreground" />
-          Tracker Migration
-        </CardTitle>
-        <p className="text-xs text-muted-foreground">
-          Backfills the new tracker provider abstraction (issue <code>#194</code>) for projects
-          still on the legacy <code>issue_integration_enabled</code> shape. Idempotent. Legacy data
-          and tooling stay deployed permanently — running this only converts what hasn't been
-          converted yet.
-        </p>
-      </CardHeader>
-      <CardContent className="px-5 pb-5 space-y-4">
+    <AdminCard
+      icon={<Database />}
+      title="Tracker Migration"
+      description={
+        <>
+          Backfills the tracker provider abstraction for projects still on the legacy{' '}
+          <code className="rounded bg-muted px-1 text-[10px]">issue_integration_enabled</code>{' '}
+          shape. Idempotent — only converts what hasn't been converted yet.
+        </>
+      }
+    >
+      <div className="space-y-4">
         {loading ? (
           <div className="space-y-2">
             <Skeleton className="h-4 w-2/3" />
             <Skeleton className="h-9 w-32" />
           </div>
-        ) : allMigrated ? (
-          <p className="text-xs text-agent-success flex items-center gap-1.5">
-            <CheckCircle2 className="h-3.5 w-3.5" />
-            All projects on the new tracker model — nothing to migrate.
-          </p>
-        ) : (
+        ) : status ? (
           <>
-            <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2">
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3.5 py-2.5">
               <p className="text-xs flex items-center gap-1.5 font-medium text-amber-700 dark:text-amber-400">
                 <AlertCircle className="h-3.5 w-3.5" />
                 Legacy tracker data detected
@@ -116,13 +126,13 @@ export function TrackerMigrationCard() {
               )}
             </div>
           </>
-        )}
+        ) : null}
         {error && (
           <p className="text-xs text-destructive flex items-center gap-1">
             <XCircle className="h-3.5 w-3.5 shrink-0" /> {error}
           </p>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </AdminCard>
   );
 }
