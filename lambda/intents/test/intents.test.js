@@ -320,7 +320,7 @@ describe('POST /projects/{id}/intents', () => {
     expect(intent.scope).toBe('feature');
     expect(intent.prompt).toBe('Build X');
     expect(intent.repos).toEqual(['owner/repo']);
-    expect(intent.branch).toBe(`aidlc/${intent.id}`);
+    expect(intent.branch).toBe('aidlc/i'); // slug of the title 'I'
     // Project run-config snapshotted onto the intent at create.
     expect(intent.agentCli).toBe('kiro');
     expect(intent.cliModels).toEqual({ claude: 'us.anthropic.claude-opus-4-8' });
@@ -330,6 +330,69 @@ describe('POST /projects/{id}/intents', () => {
     expect(intent.constructionAutonomyMode).toBeNull();
     // WP6: PR strategy snapshotted (project default = intent-pr).
     expect(intent.prStrategy).toBe('intent-pr');
+  });
+
+  it('derives the branch from the title slug (single hyphens, no `--`)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const res = await createIntent(sub, projectId, {
+      title: 'Add User Login — OAuth & SSO!',
+      prompt: 'Build the login flow',
+      scope: 'feature',
+    });
+    expect(res.statusCode).toBe(201);
+    const intent = JSON.parse(res.body);
+    // Punctuation/em-dash runs collapse to a single hyphen: the `--` separator
+    // is reserved for unit-lane branches (`<branch>--s<k>-unit-<slug>`).
+    expect(intent.branch).toBe('aidlc/add-user-login-oauth-sso');
+  });
+
+  it('falls back to the prompt slug when there is no title', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const res = await createIntent(sub, projectId, {
+      prompt: 'Fix the checkout crash',
+      scope: 'feature',
+    });
+    expect(res.statusCode).toBe(201);
+    expect(JSON.parse(res.body).branch).toBe('aidlc/fix-the-checkout-crash');
+  });
+
+  it('appends a short id suffix only when the slug collides within the project', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const body = { title: 'Same Title', prompt: 'Build X', scope: 'feature' };
+    const first = JSON.parse((await createIntent(sub, projectId, body)).body);
+    const second = JSON.parse((await createIntent(sub, projectId, body)).body);
+    expect(first.branch).toBe('aidlc/same-title');
+    const shortId = second.id.replace(/-/g, '').slice(0, 8);
+    expect(second.branch).toBe(`aidlc/same-title-${shortId}`);
+  });
+
+  it('falls back to a short id when the title yields no slug', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const res = await createIntent(sub, projectId, {
+      title: '🚀🚀🚀',
+      prompt: '🔥',
+      scope: 'feature',
+    });
+    expect(res.statusCode).toBe(201);
+    const intent = JSON.parse(res.body);
+    expect(intent.branch).toBe(`aidlc/${intent.id.replace(/-/g, '').slice(0, 8)}`);
+  });
+
+  it('honors a caller-supplied branch verbatim', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const res = await createIntent(sub, projectId, {
+      title: 'Whatever',
+      prompt: 'Build X',
+      scope: 'feature',
+      branch: 'custom/my-branch',
+    });
+    expect(res.statusCode).toBe(201);
+    expect(JSON.parse(res.body).branch).toBe('custom/my-branch');
   });
 
   it('merges the Admin global model under the project selection at create', async () => {

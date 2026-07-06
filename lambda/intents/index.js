@@ -47,8 +47,31 @@ const ORCHESTRATOR_FN = () => process.env.V2_ORCHESTRATOR_FUNCTION;
 // what the project-settings UI advertises. Empty prefix disables the merge.
 const AGENT_SETTINGS_SSM_PREFIX = () => process.env.AGENT_SETTINGS_SSM_PREFIX || '';
 const DEFAULT_WORKFLOW_ID = 'aidlc-v2';
-// Branch a started intent runs on. Mirrors v1 (aidlc/<id>) so PRs are predictable.
-const branchForIntent = (intentId) => `aidlc/${intentId}`;
+// Branch a started intent runs on: aidlc/<title-slug> — derived from the human
+// title (falling back to the prompt) so the branch is recognizable in git and
+// PR UIs instead of an opaque UUID. Only single hyphens are emitted: `--` is
+// reserved as the unit-lane separator (v2-orchestrator/section.js appends
+// `--s<k>-unit-<slug>`, and the git providers list `<branch>--task-*` refs).
+const slugForBranch = (text) =>
+  String(text || '')
+    .slice(0, 200) // slug is cut to 60 anyway; don't regex a whole prompt
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '') // strip diacritics: "café" -> "cafe"
+    .replace(/[^a-z0-9]+/g, '-') // any other run becomes a single hyphen
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60)
+    .replace(/-+$/, '');
+
+// `taken` = branch names already claimed by the project's other intents. On a
+// slug collision a short id suffix keeps the branch unique; a title that
+// yields no slug (e.g. all emoji) falls back to the short id alone.
+const branchForIntent = ({ title, prompt, intentId, taken = new Set() }) => {
+  const shortId = String(intentId).replace(/-/g, '').slice(0, 8);
+  const slug = slugForBranch(title) || slugForBranch(prompt) || shortId;
+  const candidate = `aidlc/${slug}`;
+  return taken.has(candidate) ? `${candidate}-${shortId}` : candidate;
+};
 
 const getConnection = async () => {
   const host = process.env.NEPTUNE_ENDPOINT;
@@ -1226,6 +1249,21 @@ export const handler = async (event) => {
       // issue, record which one. The imported text rides in `prompt`; this is
       // only the back-link. Validated against the project's actual bindings.
       const source = normalizeSource(data.source, cfg.trackers);
+      // Branch: caller override wins; otherwise derive a readable slug from
+      // the title/prompt, de-duplicated against the project's existing intents
+      // (best-effort — the listing is capped, and a stale duplicate only means
+      // two intents share a branch name candidate, not data corruption).
+      let branch = data.branch || null;
+      if (!branch) {
+        const existing = await store.listProjectExecutions({ projectId, limit: 1000 });
+        const taken = new Set(existing.map((m) => m.branch).filter(Boolean));
+        branch = branchForIntent({
+          title: data.title,
+          prompt: data.prompt,
+          intentId: newIntentId,
+          taken,
+        });
+      }
       const meta = await store.createExecution({
         executionId: newIntentId,
         projectId,
@@ -1237,7 +1275,7 @@ export const handler = async (event) => {
         startedBy: sub,
         title: data.title || null,
         prompt: data.prompt || null,
-        branch: data.branch || branchForIntent(newIntentId),
+        branch,
         baseBranch: data.baseBranch || cfg.baseBranch,
         repos: cfg.repos,
         agentCli: cfg.agentCli,

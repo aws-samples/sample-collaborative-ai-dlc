@@ -120,7 +120,7 @@ semantics:
 6. **Multiple sections**: each section fans out from the current intent-branch
    HEAD (which contains the previous section's merged work) and must fully
    merge back before any downstream non-`forEach` stage. Unit branches are
-   per-section: `ai-dlc/<intent>--s<k>-unit-<slug>` — a unit gets a fresh
+   per-section: `aidlc/<intent-slug>--s<k>-unit-<slug>` — a unit gets a fresh
    branch per section, avoiding long-lived divergence.
 7. **Per-unit stage skipping**: per-unit stages with `execution: CONDITIONAL`
    are skippable per unit. Mechanism: the fan-out gate presents a
@@ -154,7 +154,8 @@ merges, or holds credentials (v1 lost code precisely where agents owned commits
 and an LLM orchestrator owned merges).
 
 ```
-init-ws                     → create intent branch ai-dlc/<intent>
+init-ws                     → create intent branch aidlc/<intent-slug> (title
+                              slug; short-id suffix only on collision)
 ideation/inception stages   → run on intent branch; ENGINE commits after every
                               stage exit (success, park, fail) + pushes
 units-generation gate ✔     → engine re-parses unit-of-work-dependency,
@@ -166,7 +167,7 @@ units-generation gate ✔     → engine re-parses unit-of-work-dependency,
 walking-skeleton lane       → runs SOLO on its unit branch → Bolt-level gate
                               → autonomy ladder prompt
 ── fan-out (per section) ───
-lane start (unit U)         → engine: branch ai-dlc/<intent>--s<k>-unit-<slug>
+lane start (unit U)         → engine: branch aidlc/<intent-slug>--s<k>-unit-<slug>
                               from intent HEAD; own AgentCore session
 per-unit stages             → agent works in its workspace; ENGINE commits
                               (aidlc(<stage>): <unit> — <executionId>) and
