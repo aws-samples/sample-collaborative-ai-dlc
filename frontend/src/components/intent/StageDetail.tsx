@@ -11,7 +11,14 @@ import {
   sensorNeedsAttention,
   summarizeSensorDetail,
 } from '@/components/intent/SensorChips';
-import { FileText, Loader2, RotateCcw, ScrollText } from 'lucide-react';
+import {
+  ArrowDownLeft,
+  ArrowUpRight,
+  FileText,
+  Loader2,
+  RotateCcw,
+  ScrollText,
+} from 'lucide-react';
 import { aggregateMetrics, summarizeCost } from '@/lib/metricAggregation';
 import { UsageMetrics } from '@/components/intent/UsageMetrics';
 
@@ -33,6 +40,7 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
     outputBuffers,
     setSelectedStageId,
     focusOutput,
+    openArtifactPreview,
     rewindIntent,
   } = useIntent();
   useTick(row.state === 'RUNNING' || row.state === 'WAITING_FOR_HUMAN');
@@ -95,6 +103,15 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
     [stageEdges, row.stageId],
   );
 
+  const existingByName = useMemo(() => {
+    const map = new Map<string, { id: string }>();
+    for (const a of detail?.artifacts ?? []) {
+      if (a.supersededAt || !a.artifactType) continue;
+      map.set(a.artifactType, { id: a.id });
+    }
+    return map;
+  }, [detail]);
+
   const instanceId = row.stageInstanceId;
   const sensors = instanceId ? (sensorsByStage.get(instanceId) ?? []) : [];
   // Non-PASS latest verdicts with a terse explanation — surfaced inline (not
@@ -144,11 +161,35 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
           </span>
         )}
         {row.attempt > 1 && <span>Attempt {row.attempt}</span>}
-        {row.cli && (
-          <Badge variant="secondary" className="px-1 py-0 text-[9px]">
-            {row.cli}
-          </Badge>
-        )}
+        {(() => {
+          const shortModel = row.resolvedModel
+            ? row.resolvedModel.includes('.')
+              ? row.resolvedModel.split('.').pop()!
+              : row.resolvedModel
+            : null;
+          const showHarness = row.cli && (!shortModel || row.cli !== shortModel);
+          return (
+            <>
+              {shortModel && (
+                <Badge
+                  variant="secondary"
+                  className="px-1 py-0 text-[9px]"
+                  title={row.resolvedModel!}
+                >
+                  {shortModel}
+                </Badge>
+              )}
+              {!shortModel && row.cli && (
+                <Badge variant="secondary" className="px-1 py-0 text-[9px]">
+                  {row.cli}
+                </Badge>
+              )}
+              {shortModel && showHarness && (
+                <span className="text-[9px] text-muted-foreground/70">{row.cli}</span>
+              )}
+            </>
+          );
+        })()}
         {!row.planned && <span className="italic">not in the compiled plan</span>}
       </div>
 
@@ -160,37 +201,108 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
 
       {/* Wiring */}
       {(dependsOn.length > 0 || produces.length > 0) && (
-        <div className="space-y-1.5">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           {dependsOn.length > 0 && (
-            <div className="flex flex-wrap items-center gap-1 text-[11px]">
-              <span className="text-muted-foreground">Depends on</span>
-              {dependsOn.map((e, i) => (
-                <button
-                  key={`${e.from}-${i}`}
-                  type="button"
-                  onClick={() => setSelectedStageId(e.from)}
-                  title={e.kind === 'data' ? `reads ${e.artifact}` : e.kind}
-                  className={cn(
-                    'rounded border px-1.5 py-0.5 font-medium hover:bg-muted',
-                    e.kind !== 'data' && 'border-dashed',
-                  )}
-                >
-                  {e.from}
-                  {e.kind === 'data' && e.artifact && (
-                    <span className="ml-1 font-normal text-muted-foreground">{e.artifact}</span>
-                  )}
-                </button>
-              ))}
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
+                <ArrowDownLeft className="h-3 w-3" />
+                Depends on
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {dependsOn.map((e, i) => {
+                  const artifactName = e.kind === 'data' && e.artifact ? e.artifact : null;
+                  const existing = artifactName ? existingByName.get(artifactName) : undefined;
+                  if (artifactName) {
+                    return (
+                      <div key={`${e.from}-${i}`} className="flex flex-col gap-0.5">
+                        {existing ? (
+                          <button
+                            type="button"
+                            onClick={() => openArtifactPreview(existing.id)}
+                            title="Open in preview"
+                            className={cn(
+                              'inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] font-medium',
+                              'border-emerald-500/40 bg-emerald-500/5 text-foreground hover:bg-emerald-500/10',
+                            )}
+                          >
+                            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                            {artifactName}
+                          </button>
+                        ) : (
+                          <span
+                            className="inline-flex cursor-default items-center gap-1 rounded border border-dashed px-1.5 py-0.5 text-[11px] text-muted-foreground"
+                            aria-disabled="true"
+                          >
+                            <span className="h-1.5 w-1.5 rounded-full border border-current" />
+                            {artifactName}
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setSelectedStageId(e.from)}
+                          className="text-[9px] text-muted-foreground hover:text-foreground hover:underline"
+                        >
+                          ← {e.from}
+                        </button>
+                      </div>
+                    );
+                  }
+                  return (
+                    <button
+                      key={`${e.from}-${i}`}
+                      type="button"
+                      onClick={() => setSelectedStageId(e.from)}
+                      title={e.kind}
+                      className={cn(
+                        'rounded border px-1.5 py-0.5 text-[11px] font-medium hover:bg-muted',
+                        e.kind !== 'data' && 'border-dashed',
+                      )}
+                    >
+                      {e.from}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           )}
           {produces.length > 0 && (
-            <div className="flex flex-wrap items-center gap-1 text-[11px]">
-              <span className="text-muted-foreground">Produces</span>
-              {produces.map((a) => (
-                <span key={a} className="rounded border px-1.5 py-0.5">
-                  {a}
-                </span>
-              ))}
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
+                <ArrowUpRight className="h-3 w-3" />
+                Produces
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {produces.map((a) => {
+                  const existing = existingByName.get(a);
+                  if (existing) {
+                    return (
+                      <button
+                        key={a}
+                        type="button"
+                        onClick={() => openArtifactPreview(existing.id)}
+                        title="Open in preview"
+                        className={cn(
+                          'inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] font-medium',
+                          'border-emerald-500/40 bg-emerald-500/5 text-foreground hover:bg-emerald-500/10',
+                        )}
+                      >
+                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                        {a}
+                      </button>
+                    );
+                  }
+                  return (
+                    <span
+                      key={a}
+                      className="inline-flex cursor-default items-center gap-1 rounded border border-dashed px-1.5 py-0.5 text-[11px] text-muted-foreground"
+                      aria-disabled="true"
+                    >
+                      <span className="h-1.5 w-1.5 rounded-full border border-current" />
+                      {a}
+                    </span>
+                  );
+                })}
+              </div>
             </div>
           )}
         </div>

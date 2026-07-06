@@ -92,6 +92,10 @@ export interface IntentStage {
   startedAt: string | null;
   completedAt: string | null;
   updatedAt: string | null;
+  // The model the orchestrator resolved for this stage (Bedrock region-prefixed
+  // id like `us.anthropic.claude-sonnet-4-6`). Null when the stage ran
+  // without model attribution (legacy rows, non-LLM stages).
+  resolvedModel?: string | null;
   // Human-wait accounting: accumulated parked milliseconds across park/resume
   // cycles, and the open park's start (null unless WAITING_FOR_HUMAN). Active
   // duration = (completedAt ?? now) − startedAt − waitMs − open park window.

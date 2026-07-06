@@ -53,6 +53,7 @@ export interface IntentStageRow {
   parkedAt: string | null;
   attempt: number;
   cli: string | null;
+  resolvedModel: string | null;
   order: number;
   /** false when the row exists only in live state (plan missing/diverged). */
   planned: boolean;
@@ -587,6 +588,7 @@ export function IntentProvider({
             parkedAt: null,
             attempt: 0,
             cli: null,
+            resolvedModel: null,
             order: n.order ?? i,
             planned: true,
           },
@@ -608,6 +610,7 @@ export function IntentProvider({
         parkedAt: row.parkedAt ?? null,
         attempt: row.attempt ?? 0,
         cli: row.cli ?? null,
+        resolvedModel: row.resolvedModel ?? null,
         order: n.order ?? i,
         planned: true,
       }));
@@ -631,6 +634,7 @@ export function IntentProvider({
         parkedAt: s.parkedAt ?? null,
         attempt: s.attempt ?? 0,
         cli: s.cli ?? null,
+        resolvedModel: s.resolvedModel ?? null,
         order: Number.MAX_SAFE_INTEGER,
         planned: false,
       });
