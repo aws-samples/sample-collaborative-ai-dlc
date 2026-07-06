@@ -244,8 +244,8 @@ const addPRComment = async (ctx, repoId, prNumber, { body, path, line, side }) =
 };
 
 // ---------------------------------------------------------------------------
-// PR creation + construction-task-branch helpers (used by create-pr) and
-// PR-state / server-side merge (used by the construction MCP server).
+// PR creation + construction-task-branch helpers (used by the v2 orchestrator)
+// and PR-state / server-side merge.
 //
 // These methods take a plain { token, fetchImpl? } ctx and operate via the
 // GitHub REST API. The construction-task-branch guard is GitHub-specific (it
@@ -352,7 +352,7 @@ const cleanupConstructionTaskBranches = async (ctx, repoId, branch) => {
 };
 
 // A 422 from POST /pulls is benign when the sprint produced no changes for this
-// repository (normal in multi-repo projects). See the original create-pr notes.
+// repository (normal in multi-repo projects).
 const isNoChanges422 = (errorText) => {
   const text = (errorText || '').toLowerCase();
   if (text.includes('no commits between')) return true;

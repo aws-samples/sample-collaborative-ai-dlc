@@ -173,38 +173,6 @@ resource "aws_dynamodb_table" "agent_outputs" {
   tags = var.tags
 }
 
-resource "aws_dynamodb_table" "agent_pool" {
-  name           = "${var.project_name}-agent-pool-${var.environment}"
-  billing_mode   = local.billing_mode
-  hash_key       = "workerId"
-  read_capacity  = local.read_capacity
-  write_capacity = local.write_capacity
-
-  attribute {
-    name = "workerId"
-    type = "S"
-  }
-
-  attribute {
-    name = "status"
-    type = "S"
-  }
-
-  global_secondary_index {
-    name            = "StatusIndex"
-    projection_type = "ALL"
-    read_capacity   = local.read_capacity
-    write_capacity  = local.write_capacity
-
-    key_schema {
-      attribute_name = "status"
-      key_type       = "HASH"
-    }
-  }
-
-  tags = var.tags
-}
-
 # Discussions feature: one table, three record kinds —
 # assist locks (`assist:{discussionId}`), creation guards
 # (`create:{sprintId}:{entityType}:{entityId}`), and stateful message guards

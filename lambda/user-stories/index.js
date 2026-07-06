@@ -1,12 +1,10 @@
 const gremlin = require('gremlin');
-const { randomUUID } = require('crypto');
 const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
 const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
 const { buildResponse } = require('./shared/response');
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
-const { cardinality } = gremlin.process;
 
 const getConnection = async () => {
   const host = process.env.NEPTUNE_ENDPOINT;
@@ -32,9 +30,11 @@ exports.handler = async (event) => {
   try {
     conn = await getConnection();
     const g = traversal().withRemote(conn);
-    const { httpMethod, pathParameters, body } = event;
+    const { httpMethod, pathParameters } = event;
     const { sprintId, storyId } = pathParameters || {};
 
+    // v1 projects are read-only: user-story writes were removed together with
+    // the v1 execution engine, so only the GET routes remain.
     switch (httpMethod) {
       case 'GET': {
         if (storyId) {
@@ -50,79 +50,6 @@ exports.handler = async (event) => {
           .valueMap()
           .toList();
         return res(200, list.map(mapStory));
-      }
-
-      case 'POST': {
-        const data = JSON.parse(body);
-        const id = randomUUID();
-
-        await g
-          .V()
-          .has('Sprint', 'id', sprintId)
-          .as('s')
-          .addV('UserStory')
-          .property('id', id)
-          .property('title', data.title)
-          .property('description', data.description || '')
-          .property('story_points', data.storyPoints || 0)
-          .property('sprint_id', sprintId)
-          .as('us')
-          .addE('CONTAINS')
-          .from_('s')
-          .to('us')
-          .next();
-
-        // BREAKS_INTO from Requirement
-        if (data.requirementId) {
-          await g
-            .V()
-            .has('Requirement', 'id', data.requirementId)
-            .as('r')
-            .V()
-            .has('UserStory', 'id', id)
-            .as('us')
-            .addE('BREAKS_INTO')
-            .from_('r')
-            .to('us')
-            .next();
-        }
-
-        return res(201, {
-          id,
-          title: data.title,
-          description: data.description || '',
-          storyPoints: data.storyPoints || 0,
-          sprintId,
-        });
-      }
-
-      case 'PUT': {
-        const data = JSON.parse(body);
-        if (data.title)
-          await g
-            .V()
-            .has('UserStory', 'id', storyId)
-            .property(cardinality.single, 'title', data.title)
-            .next();
-        if (data.description !== undefined)
-          await g
-            .V()
-            .has('UserStory', 'id', storyId)
-            .property(cardinality.single, 'description', data.description)
-            .next();
-        if (data.storyPoints !== undefined)
-          await g
-            .V()
-            .has('UserStory', 'id', storyId)
-            .property(cardinality.single, 'story_points', data.storyPoints)
-            .next();
-        const updated = await g.V().has('UserStory', 'id', storyId).valueMap().next();
-        return res(200, mapStory(updated.value));
-      }
-
-      case 'DELETE': {
-        await g.V().has('UserStory', 'id', storyId).drop().next();
-        return res(204, {});
       }
 
       default:

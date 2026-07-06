@@ -77,14 +77,9 @@ export interface GitProviderService {
   listBranches: (repoId: string) => Promise<{ branches: string[] }>;
   getRepoTree: (repoId: string, branch?: string) => Promise<{ tree: GitFile[] }>;
   getFileContents: (repoId: string, path: string, branch?: string) => Promise<GitFileContent>;
-  // PR (GitHub) / MR (GitLab) comments. prNumber is the GitHub PR number or the
-  // GitLab MR iid.
+  // PR (GitHub) / MR (GitLab) comments — read-only in the UI (ReviewPage
+  // displays them). prNumber is the GitHub PR number or the GitLab MR iid.
   getPullRequestComments: (repoId: string, prNumber: number) => Promise<{ comments: GitComment[] }>;
-  addPullRequestComment: (
-    repoId: string,
-    prNumber: number,
-    comment: { body: string; path?: string; line?: number; side?: string },
-  ) => Promise<{ id: number; body: string; createdAt: string }>;
 }
 
 // =============================================================================
@@ -124,17 +119,6 @@ export const githubService: GitProviderService = {
       `/github/repos/${owner}/${repo}/pulls/${prNumber}/comments`,
     );
   },
-  addPullRequestComment: (
-    repoId: string,
-    prNumber: number,
-    comment: { body: string; path?: string; line?: number; side?: string },
-  ) => {
-    const [owner, repo] = splitOwnerRepo(repoId);
-    return api.post<{ id: number; body: string; createdAt: string }>(
-      `/github/repos/${owner}/${repo}/pulls/${prNumber}/comments`,
-      comment,
-    );
-  },
 };
 
 // =============================================================================
@@ -164,15 +148,6 @@ export const gitlabService: GitProviderService = {
   getPullRequestComments: (repoId: string, mrIid: number) =>
     api.get<{ comments: GitComment[] }>(
       `/gitlab/projects/merge_requests/${mrIid}/notes?project=${encodeURIComponent(repoId)}`,
-    ),
-  addPullRequestComment: (
-    repoId: string,
-    mrIid: number,
-    comment: { body: string; path?: string; line?: number; side?: string },
-  ) =>
-    api.post<{ id: number; body: string; createdAt: string }>(
-      `/gitlab/projects/merge_requests/${mrIid}/notes?project=${encodeURIComponent(repoId)}`,
-      comment,
     ),
 };
 

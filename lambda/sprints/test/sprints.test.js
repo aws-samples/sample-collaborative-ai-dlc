@@ -3,12 +3,6 @@ import { randomUUID } from 'node:crypto';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 
-// The fanout helper is mocked at module level — its internals are covered by
-// its consumers' own suites; here we only assert the sprints lambda EMITS the
-// server-origin phase-change hint.
-vi.mock('../../shared/ws-fanout.js', () => ({ broadcastToSprintChannel: vi.fn() }));
-const { broadcastToSprintChannel } = await import('../../shared/ws-fanout.js');
-
 const NOW = new Date('2026-05-28T00:00:00.000Z');
 const PARTITION = `t-${randomUUID()}`;
 
@@ -40,7 +34,6 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
-  vi.mocked(broadcastToSprintChannel).mockClear();
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(NOW);
 });
@@ -66,6 +59,8 @@ const seedProject = async ({ gitRepo = 'acme/widgets' } = {}) => {
 
 // Seeds a Sprint vertex on the legacy shape (issue_number/issue_url only,
 // no tracker_*) — simulates pre-#194 data that hasn't been migrated yet.
+// The sprint write handlers are gone (v1 is read-only), so all seeding goes
+// straight through gremlin.
 const seedLegacySprint = async (projectId, { issueNumber = '99', issueUrl = '' } = {}) => {
   const id = randomUUID();
   await g
@@ -89,14 +84,38 @@ const seedLegacySprint = async (projectId, { issueNumber = '99', issueUrl = '' }
   return id;
 };
 
-const createSprint = async (projectId, body) => {
-  const res = await handler({
-    httpMethod: 'POST',
-    pathParameters: { projectId },
-    body: JSON.stringify(body),
-  });
-  expect(res.statusCode).toBe(201);
-  return JSON.parse(res.body);
+// Seeds a Sprint with the polymorphic tracker_* properties (post-#194 shape,
+// what the v1 POST handler used to write for a github-issues sprint).
+const seedTrackerSprint = async (projectId, tracker) => {
+  const id = randomUUID();
+  await g
+    .V()
+    .has('Project', 'id', projectId)
+    .as('p')
+    .addV('Sprint')
+    .property('id', id)
+    .property('name', `tracked-${id.slice(0, 8)}`)
+    .property('description', '')
+    .property('phase', 'INCEPTION')
+    .property('sprint_id', id)
+    .property('created_at', NOW.toISOString())
+    .property('current_execution_arn', '')
+    .property('current_execution_id', '')
+    .property('current_agent_status', '')
+    .property('issue_number', tracker.provider === 'github-issues' ? tracker.resourceId : '')
+    .property('issue_url', tracker.provider === 'github-issues' ? tracker.resourceUrl : '')
+    .property('tracker_provider', tracker.provider)
+    .property('tracker_instance', tracker.instance || '')
+    .property('tracker_external_project_key', tracker.externalProjectKey || '')
+    .property('tracker_resource_type', tracker.resourceType || 'issue')
+    .property('tracker_resource_id', tracker.resourceId || '')
+    .property('tracker_resource_url', tracker.resourceUrl || '')
+    .as('s')
+    .addE('HAS_SPRINT')
+    .from_('p')
+    .to('s')
+    .next();
+  return id;
 };
 
 const getSprint = async (sprintId) => {
@@ -108,60 +127,37 @@ const getSprint = async (sprintId) => {
   return JSON.parse(res.body);
 };
 
-describe('POST /sprints', () => {
-  it('derives a github-issues tracker from issueNumber/issueUrl (legacy frontend path)', async () => {
-    const projectId = await seedProject({ gitRepo: 'octo/repo' });
-    const created = await createSprint(projectId, {
-      name: 'S',
-      issueNumber: 7,
-      issueUrl: 'https://github.com/octo/repo/issues/7',
-    });
-
-    expect(created.issueNumber).toBe('7');
-    expect(created.issueUrl).toBe('https://github.com/octo/repo/issues/7');
-    expect(created.tracker).toEqual({
-      provider: 'github-issues',
-      instance: 'public',
-      externalProjectKey: 'octo/repo',
-      resourceType: 'issue',
-      resourceId: '7',
-      resourceUrl: 'https://github.com/octo/repo/issues/7',
-    });
-  });
-
-  it('passes through an explicit Jira-shaped tracker payload', async () => {
-    const projectId = await seedProject({ gitRepo: 'octo/repo' });
-    const created = await createSprint(projectId, {
-      name: 'Jira sprint',
-      tracker: {
-        provider: 'jira-cloud',
-        instance: 'cloud',
-        externalProjectKey: 'PROJ',
-        resourceType: 'issue',
-        resourceId: 'PROJ-123',
-        resourceUrl: 'https://acme.atlassian.net/browse/PROJ-123',
-      },
-    });
-
-    expect(created.tracker).toMatchObject({
-      provider: 'jira-cloud',
-      externalProjectKey: 'PROJ',
-      resourceId: 'PROJ-123',
-    });
-    // Legacy fields stay null because the tracker isn't a github-issue.
-    expect(created.issueNumber).toBeNull();
-    expect(created.issueUrl).toBeNull();
-  });
-
-  it('returns tracker=null when no issue or tracker is supplied', async () => {
+describe('GET /projects/:projectId/sprints (list)', () => {
+  it('lists all sprints of the project', async () => {
     const projectId = await seedProject();
-    const created = await createSprint(projectId, { name: 'plain' });
-    expect(created.tracker).toBeNull();
-    expect(created.issueNumber).toBeNull();
+    const a = await seedLegacySprint(projectId);
+    const b = await seedLegacySprint(projectId);
+
+    const res = await handler({ httpMethod: 'GET', pathParameters: { projectId } });
+    expect(res.statusCode).toBe(200);
+    const list = JSON.parse(res.body);
+    expect(list.map((s) => s.id).toSorted()).toEqual([a, b].toSorted());
+  });
+
+  it('does not return sprints of other projects', async () => {
+    const projectId = await seedProject();
+    const otherProjectId = await seedProject();
+    await seedLegacySprint(otherProjectId);
+
+    const res = await handler({ httpMethod: 'GET', pathParameters: { projectId } });
+    expect(JSON.parse(res.body)).toEqual([]);
   });
 });
 
-describe('GET /sprints/:id (backward compatibility)', () => {
+describe('GET /sprints/:id (single)', () => {
+  it('returns 404 for an unknown sprint', async () => {
+    const res = await handler({
+      httpMethod: 'GET',
+      pathParameters: { sprintId: 'nope' },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
   it('still surfaces issueNumber/issueUrl for unmigrated legacy sprints', async () => {
     const projectId = await seedProject({ gitRepo: 'foo/bar' });
     const sprintId = await seedLegacySprint(projectId, {
@@ -177,112 +173,63 @@ describe('GET /sprints/:id (backward compatibility)', () => {
     expect(fetched.issueUrl).toBe('https://github.com/foo/bar/issues/42');
   });
 
-  it('round-trips a fresh github-issues sprint and exposes both shapes', async () => {
+  it('maps the tracker_* properties of a github-issues sprint into both shapes', async () => {
     const projectId = await seedProject({ gitRepo: 'octo/repo' });
-    const created = await createSprint(projectId, {
-      name: 'S',
-      issueNumber: 7,
-      issueUrl: 'https://github.com/octo/repo/issues/7',
+    const sprintId = await seedTrackerSprint(projectId, {
+      provider: 'github-issues',
+      instance: 'public',
+      externalProjectKey: 'octo/repo',
+      resourceType: 'issue',
+      resourceId: '7',
+      resourceUrl: 'https://github.com/octo/repo/issues/7',
     });
 
-    const fetched = await getSprint(created.id);
-    expect(fetched.tracker).toEqual(created.tracker);
+    const fetched = await getSprint(sprintId);
+    expect(fetched.tracker).toEqual({
+      provider: 'github-issues',
+      instance: 'public',
+      externalProjectKey: 'octo/repo',
+      resourceType: 'issue',
+      resourceId: '7',
+      resourceUrl: 'https://github.com/octo/repo/issues/7',
+    });
     expect(fetched.issueNumber).toBe('7');
     expect(fetched.issueUrl).toBe('https://github.com/octo/repo/issues/7');
   });
-});
 
-describe('DELETE /sprints/:id — discussion cascade', () => {
-  it('drops the sprint together with its discussions AND their messages', async () => {
+  it('keeps legacy fields null for a Jira-shaped tracker', async () => {
     const projectId = await seedProject();
-    const sprintId = await seedLegacySprint(projectId);
+    const sprintId = await seedTrackerSprint(projectId, {
+      provider: 'jira-cloud',
+      instance: 'cloud',
+      externalProjectKey: 'PROJ',
+      resourceType: 'issue',
+      resourceId: 'PROJ-123',
+      resourceUrl: 'https://acme.atlassian.net/browse/PROJ-123',
+    });
 
-    // Sprint -HAS_DISCUSSION-> Discussion -HAS_MESSAGE-> DiscussionMessage,
-    // plus a CONTAINS artifact to confirm the existing cascade still works.
-    await g
-      .V()
-      .has('Sprint', 'id', sprintId)
-      .as('s')
-      .addV('Discussion')
-      .property('id', 'disc-cascade')
-      .property('sprint_id', sprintId)
-      .as('d')
-      .addE('HAS_DISCUSSION')
-      .from_('s')
-      .to('d')
-      .select('d')
-      .addE('DISCUSSES')
-      .from_('d')
-      .to('s')
-      .select('d')
-      .addV('DiscussionMessage')
-      .property('id', 'dm-cascade-msg00001')
-      .property('discussion_id', 'disc-cascade')
-      .as('m')
-      .addE('HAS_MESSAGE')
-      .from_('d')
-      .to('m')
-      .next();
-    await g
-      .V()
-      .has('Sprint', 'id', sprintId)
-      .as('s')
-      .addV('Task')
-      .property('id', 'task-cascade')
-      .as('t')
-      .addE('CONTAINS')
-      .from_('s')
-      .to('t')
-      .next();
-
-    const res = await handler({ httpMethod: 'DELETE', pathParameters: { sprintId } });
-    expect(res.statusCode).toBe(204);
-
-    // Scope to this test's vertices (by the `id` property — the codebase
-    // never uses native T.id) — the file partition accumulates vertices from
-    // other tests.
-    const remaining = await g
-      .V()
-      .has(
-        'id',
-        gremlin.process.P.within(sprintId, 'disc-cascade', 'dm-cascade-msg00001', 'task-cascade'),
-      )
-      .values('id')
-      .toList();
-    expect(remaining).toEqual([]);
+    const fetched = await getSprint(sprintId);
+    expect(fetched.tracker).toMatchObject({
+      provider: 'jira-cloud',
+      externalProjectKey: 'PROJ',
+      resourceId: 'PROJ-123',
+    });
+    // Legacy fields stay null because the tracker isn't a github-issue.
+    expect(fetched.issueNumber).toBeNull();
+    expect(fetched.issueUrl).toBeNull();
   });
 });
 
-describe('server-origin sprint.phaseChanged fanout', () => {
-  it('emits the payload-blind reload hint on a phase update', async () => {
+describe('method routing (v1 is read-only)', () => {
+  it.each(['POST', 'PUT', 'DELETE', 'PATCH'])('returns 405 for %s', async (httpMethod) => {
     const projectId = await seedProject();
     const sprintId = await seedLegacySprint(projectId);
-
     const res = await handler({
-      httpMethod: 'PUT',
-      pathParameters: { sprintId },
-      body: JSON.stringify({ phase: 'CONSTRUCTION' }),
+      httpMethod,
+      pathParameters: { projectId, sprintId },
+      body: JSON.stringify({ name: 'nope' }),
     });
-    expect(res.statusCode).toBe(200);
-
-    // The hint deliberately carries NO phase — handlers re-fetch and act on
-    // server state only (payload-blind invariant).
-    expect(broadcastToSprintChannel).toHaveBeenCalledExactlyOnceWith(sprintId, {
-      action: 'sprint.phaseChanged',
-      sprintId,
-    });
-  });
-
-  it('does NOT emit on non-phase updates', async () => {
-    const projectId = await seedProject();
-    const sprintId = await seedLegacySprint(projectId);
-
-    const res = await handler({
-      httpMethod: 'PUT',
-      pathParameters: { sprintId },
-      body: JSON.stringify({ description: 'updated description' }),
-    });
-    expect(res.statusCode).toBe(200);
-    expect(broadcastToSprintChannel).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(405);
+    expect(JSON.parse(res.body)).toEqual({ error: 'Method not allowed' });
   });
 });

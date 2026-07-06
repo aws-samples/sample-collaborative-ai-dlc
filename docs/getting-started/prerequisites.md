@@ -42,11 +42,11 @@ You must also have an AWS account with permissions to manage the following servi
 
 | Category      | Services                                                                                                           |
 | ------------- | ------------------------------------------------------------------------------------------------------------------ |
-| Compute       | AWS Lambda, Amazon ECS with Fargate, AWS Step Functions                                                            |
+| Compute       | AWS Lambda, Amazon ECS with Fargate (Yjs collaboration server), Amazon Bedrock AgentCore (agent runtime)           |
 | Networking    | Amazon VPC, Amazon API Gateway (REST and WebSocket), Amazon CloudFront, Elastic Load Balancing                     |
 | Storage       | Amazon S3, Amazon DynamoDB, Amazon Neptune                                                                         |
 | Security      | Amazon Cognito, AWS Identity and Access Management (IAM), AWS Secrets Manager, AWS Systems Manager Parameter Store |
-| Integration   | Amazon EventBridge, Amazon Elastic Container Registry (Amazon ECR), Amazon SQS                                     |
+| Integration   | Amazon Elastic Container Registry (Amazon ECR)                                                                     |
 | Observability | Amazon CloudWatch Logs                                                                                             |
 
 ## Optional tools
@@ -62,19 +62,19 @@ The following tools are optional. Install them to enable additional features.
 
 Agents authenticate using API keys configured through the platform UI. The platform supports two options:
 
-An agent CLI cannot start until its credential is configured. The platform runs a pre-flight check before dispatching a job and blocks it with a clear error if the credential is missing, so set the relevant value below before starting agents for a project.
+An agent CLI cannot reach its model until its credential is configured — the Bedrock AgentCore runtime has no IAM-role fallback — so set the relevant value below in **Admin → Agent Settings** before starting agents for a project.
 
 ### Kiro CLI API key (required for the Kiro CLI driver)
 
 Kiro API keys are turned **off by default**. A Kiro administrator must first enable them in the Kiro console (**Settings → Kiro settings → Enable users to generate API keys → On**). Users can then sign in to the Kiro portal and generate a key. See the [Kiro API keys documentation](https://kiro.dev/docs/enterprise/governance/api-keys/) for details.
 
-In the platform settings, enter this key as the **Kiro API Key**. Agent containers use it to authenticate with the Kiro CLI during Construction, and the driver validates it at startup with `kiro-cli whoami`.
+In the platform settings, enter this key as the **Kiro API Key**. The AgentCore runtime reads it at container startup and provides it to Kiro-driven agents as the `KIRO_API_KEY` environment variable.
 
 ### Amazon Bedrock API key (required for Claude Code and OpenCode setups)
 
 Generate an Amazon Bedrock API key in the AWS Console (**Amazon Bedrock → API keys → Generate long-term API key**, scoped to your account and region). In the platform settings, enter this key as the **Bedrock Bearer Token**. The platform stores it and provides it to agent containers as the `AWS_BEARER_TOKEN_BEDROCK` environment variable.
 
-This token is required for Claude Code and OpenCode agents: the ECS task IAM role intentionally has no Amazon Bedrock permissions, so there is no IAM-role fallback. Agents authenticate to Bedrock exclusively through this token.
+This token is required for Claude Code and OpenCode agents: the Bedrock AgentCore runtime's IAM role intentionally has no Amazon Bedrock model-invocation permissions, so there is no IAM-role fallback. Agents authenticate to Bedrock exclusively through this token.
 
 ### Where these values are stored
 

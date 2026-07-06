@@ -15,16 +15,6 @@ export interface SprintTracker {
   resourceUrl: string | null;
 }
 
-export interface CreateSprintTrackerInput {
-  bindingId?: string;
-  provider?: string;
-  instance?: string;
-  externalProjectKey?: string;
-  resourceType?: 'issue';
-  resourceId: string;
-  resourceUrl: string;
-}
-
 export interface Sprint {
   id: string;
   name: string;
@@ -53,20 +43,10 @@ export interface Sprint {
   issueUrl: string | null;
 }
 
-export interface CreateSprintInput {
-  name: string;
-  description?: string;
-  tracker?: CreateSprintTrackerInput;
-}
-
+// v1 sprints are read-only: create/update/delete were removed with the v1
+// engine — only the GET routes remain.
 export const sprintsService = {
   list: (projectId: string) => api.get<Sprint[]>(`/projects/${projectId}/sprints`),
   get: (projectId: string, sprintId: string) =>
     api.get<Sprint>(`/projects/${projectId}/sprints/${sprintId}`),
-  create: (projectId: string, input: CreateSprintInput) =>
-    api.post<Sprint>(`/projects/${projectId}/sprints`, input),
-  update: (projectId: string, sprintId: string, input: Partial<Sprint>) =>
-    api.put<Sprint>(`/projects/${projectId}/sprints/${sprintId}`, input),
-  delete: (projectId: string, sprintId: string) =>
-    api.delete(`/projects/${projectId}/sprints/${sprintId}`),
 };

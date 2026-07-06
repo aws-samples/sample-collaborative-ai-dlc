@@ -145,7 +145,7 @@ const verifyRealtimeAccess = ({ token, secret, requiredScope, sub, now = Date.no
 //
 // App-WS documentId formats:
 //   sprint:{sprintId}   useSprintEvents.ts / useObservabilityEvents.ts
-//   {projectId}         server-side emitters (notify, mcp-server-graph)
+//   {projectId}         legacy server-side emitters (v1 engine, removed)
 // -----------------------------------------------------------------------------
 
 const UUID_PATTERN = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}';

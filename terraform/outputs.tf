@@ -183,37 +183,6 @@ output "yjs_ecs_service_name" {
   value       = module.yjs_server.ecs_service_name
 }
 
-# Agents
-output "agents_ecr_repository_url" {
-  description = "ECR repository URL for agent images"
-  value       = module.agents.ecr_repository_url
-}
-
-output "agents_cluster_arn" {
-  description = "ECS cluster ARN for agents"
-  value       = module.compute.cluster_arn
-}
-
-output "agent_task_definition_arn" {
-  description = "Agent task definition ARN"
-  value       = module.agents.agent_task_definition_arn
-}
-
-output "agent_security_group_id" {
-  description = "Agent security group ID"
-  value       = module.agents.agent_security_group_id
-}
-
-output "agent_image_uri" {
-  description = "Full image URI with tag for the deployed agent image"
-  value       = module.agents.agent_image_uri
-}
-
-output "agent_image_tag" {
-  description = "Image tag (hash) for the deployed agent image"
-  value       = module.agents.agent_image_tag
-}
-
 output "yjs_image_uri" {
   description = "Full image URI with tag for the deployed yjs-server image"
   value       = module.yjs_server.yjs_image_uri
@@ -237,12 +206,6 @@ output "aws_region" {
 output "environment" {
   description = "Environment this state is deployed to. Used by deploy scripts to guard against running against the wrong backend."
   value       = var.environment
-}
-
-# EventBridge
-output "agent_event_bus_name" {
-  description = "EventBridge event bus name for agent events"
-  value       = module.events.event_bus_name
 }
 
 # GitHub OAuth

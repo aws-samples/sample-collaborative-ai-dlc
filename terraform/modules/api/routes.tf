@@ -88,42 +88,6 @@ resource "aws_api_gateway_resource" "member" {
 }
 
 # -----------------------------------------------------------------------------
-# /projects/{projectId}/mcp-servers Resource
-# -----------------------------------------------------------------------------
-resource "aws_api_gateway_resource" "project_mcp_servers" {
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.project.id
-  path_part   = "mcp-servers"
-}
-
-# -----------------------------------------------------------------------------
-# /projects/{projectId}/steering-docs Resource
-# -----------------------------------------------------------------------------
-resource "aws_api_gateway_resource" "project_steering_docs" {
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.project.id
-  path_part   = "steering-docs"
-}
-
-# -----------------------------------------------------------------------------
-# /sprints/{sprintId}/tasks/{taskId}/mcp-servers Resource
-# -----------------------------------------------------------------------------
-resource "aws_api_gateway_resource" "task_mcp_servers" {
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.task.id
-  path_part   = "mcp-servers"
-}
-
-# -----------------------------------------------------------------------------
-# /sprints/{sprintId}/tasks/{taskId}/steering-docs Resource
-# -----------------------------------------------------------------------------
-resource "aws_api_gateway_resource" "task_steering_docs" {
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.task.id
-  path_part   = "steering-docs"
-}
-
-# -----------------------------------------------------------------------------
 # /projects/{projectId}/sprints Resource
 # -----------------------------------------------------------------------------
 resource "aws_api_gateway_resource" "sprints" {
@@ -499,186 +463,6 @@ resource "aws_api_gateway_integration" "member_delete" {
 }
 
 # =============================================================================
-# Project MCP Servers Methods (GET, PUT)
-# /projects/{projectId}/mcp-servers
-# =============================================================================
-resource "aws_api_gateway_method" "project_mcp_servers_get" {
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.project_mcp_servers.id
-  http_method   = "GET"
-  authorization = "COGNITO_USER_POOLS"
-  authorizer_id = aws_api_gateway_authorizer.cognito.id
-
-  request_parameters = { "method.request.path.projectId" = true }
-}
-
-resource "aws_api_gateway_method" "project_mcp_servers_put" {
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.project_mcp_servers.id
-  http_method   = "PUT"
-  authorization = "COGNITO_USER_POOLS"
-  authorizer_id = aws_api_gateway_authorizer.cognito.id
-
-  request_parameters = { "method.request.path.projectId" = true }
-}
-
-resource "aws_api_gateway_integration" "project_mcp_servers_get" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.project_mcp_servers.id
-  http_method             = aws_api_gateway_method.project_mcp_servers_get.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.projects_lambda_invoke_arn
-}
-
-resource "aws_api_gateway_integration" "project_mcp_servers_put" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.project_mcp_servers.id
-  http_method             = aws_api_gateway_method.project_mcp_servers_put.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.projects_lambda_invoke_arn
-}
-
-# =============================================================================
-# Project Steering Docs Methods (GET, PUT)
-# /projects/{projectId}/steering-docs
-# =============================================================================
-resource "aws_api_gateway_method" "project_steering_docs_get" {
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.project_steering_docs.id
-  http_method   = "GET"
-  authorization = "COGNITO_USER_POOLS"
-  authorizer_id = aws_api_gateway_authorizer.cognito.id
-
-  request_parameters = { "method.request.path.projectId" = true }
-}
-
-resource "aws_api_gateway_method" "project_steering_docs_put" {
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.project_steering_docs.id
-  http_method   = "PUT"
-  authorization = "COGNITO_USER_POOLS"
-  authorizer_id = aws_api_gateway_authorizer.cognito.id
-
-  request_parameters = { "method.request.path.projectId" = true }
-}
-
-resource "aws_api_gateway_integration" "project_steering_docs_get" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.project_steering_docs.id
-  http_method             = aws_api_gateway_method.project_steering_docs_get.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.projects_lambda_invoke_arn
-}
-
-resource "aws_api_gateway_integration" "project_steering_docs_put" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.project_steering_docs.id
-  http_method             = aws_api_gateway_method.project_steering_docs_put.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.projects_lambda_invoke_arn
-}
-
-# =============================================================================
-# Task MCP Servers Methods (GET, PUT)
-# /sprints/{sprintId}/tasks/{taskId}/mcp-servers
-# =============================================================================
-resource "aws_api_gateway_method" "task_mcp_servers_get" {
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.task_mcp_servers.id
-  http_method   = "GET"
-  authorization = "COGNITO_USER_POOLS"
-  authorizer_id = aws_api_gateway_authorizer.cognito.id
-
-  request_parameters = {
-    "method.request.path.sprintId" = true
-    "method.request.path.taskId"   = true
-  }
-}
-
-resource "aws_api_gateway_method" "task_mcp_servers_put" {
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.task_mcp_servers.id
-  http_method   = "PUT"
-  authorization = "COGNITO_USER_POOLS"
-  authorizer_id = aws_api_gateway_authorizer.cognito.id
-
-  request_parameters = {
-    "method.request.path.sprintId" = true
-    "method.request.path.taskId"   = true
-  }
-}
-
-resource "aws_api_gateway_integration" "task_mcp_servers_get" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.task_mcp_servers.id
-  http_method             = aws_api_gateway_method.task_mcp_servers_get.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.tasks_lambda_invoke_arn
-}
-
-resource "aws_api_gateway_integration" "task_mcp_servers_put" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.task_mcp_servers.id
-  http_method             = aws_api_gateway_method.task_mcp_servers_put.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.tasks_lambda_invoke_arn
-}
-
-# =============================================================================
-# Task Steering Docs Methods (GET, PUT)
-# /sprints/{sprintId}/tasks/{taskId}/steering-docs
-# =============================================================================
-resource "aws_api_gateway_method" "task_steering_docs_get" {
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.task_steering_docs.id
-  http_method   = "GET"
-  authorization = "COGNITO_USER_POOLS"
-  authorizer_id = aws_api_gateway_authorizer.cognito.id
-
-  request_parameters = {
-    "method.request.path.sprintId" = true
-    "method.request.path.taskId"   = true
-  }
-}
-
-resource "aws_api_gateway_method" "task_steering_docs_put" {
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.task_steering_docs.id
-  http_method   = "PUT"
-  authorization = "COGNITO_USER_POOLS"
-  authorizer_id = aws_api_gateway_authorizer.cognito.id
-
-  request_parameters = {
-    "method.request.path.sprintId" = true
-    "method.request.path.taskId"   = true
-  }
-}
-
-resource "aws_api_gateway_integration" "task_steering_docs_get" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.task_steering_docs.id
-  http_method             = aws_api_gateway_method.task_steering_docs_get.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.tasks_lambda_invoke_arn
-}
-
-resource "aws_api_gateway_integration" "task_steering_docs_put" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.task_steering_docs.id
-  http_method             = aws_api_gateway_method.task_steering_docs_put.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.tasks_lambda_invoke_arn
-}
-
-# =============================================================================
 # Sprints Methods (nested under project)
 # =============================================================================
 resource "aws_api_gateway_method" "sprints_get" {
@@ -689,34 +473,10 @@ resource "aws_api_gateway_method" "sprints_get" {
   authorizer_id      = aws_api_gateway_authorizer.cognito.id
   request_parameters = { "method.request.path.projectId" = true }
 }
-resource "aws_api_gateway_method" "sprints_post" {
-  rest_api_id        = aws_api_gateway_rest_api.main.id
-  resource_id        = aws_api_gateway_resource.sprints.id
-  http_method        = "POST"
-  authorization      = "COGNITO_USER_POOLS"
-  authorizer_id      = aws_api_gateway_authorizer.cognito.id
-  request_parameters = { "method.request.path.projectId" = true }
-}
 resource "aws_api_gateway_method" "sprint_get" {
   rest_api_id        = aws_api_gateway_rest_api.main.id
   resource_id        = aws_api_gateway_resource.sprint.id
   http_method        = "GET"
-  authorization      = "COGNITO_USER_POOLS"
-  authorizer_id      = aws_api_gateway_authorizer.cognito.id
-  request_parameters = { "method.request.path.projectId" = true, "method.request.path.sprintId" = true }
-}
-resource "aws_api_gateway_method" "sprint_put" {
-  rest_api_id        = aws_api_gateway_rest_api.main.id
-  resource_id        = aws_api_gateway_resource.sprint.id
-  http_method        = "PUT"
-  authorization      = "COGNITO_USER_POOLS"
-  authorizer_id      = aws_api_gateway_authorizer.cognito.id
-  request_parameters = { "method.request.path.projectId" = true, "method.request.path.sprintId" = true }
-}
-resource "aws_api_gateway_method" "sprint_delete" {
-  rest_api_id        = aws_api_gateway_rest_api.main.id
-  resource_id        = aws_api_gateway_resource.sprint.id
-  http_method        = "DELETE"
   authorization      = "COGNITO_USER_POOLS"
   authorizer_id      = aws_api_gateway_authorizer.cognito.id
   request_parameters = { "method.request.path.projectId" = true, "method.request.path.sprintId" = true }
@@ -730,34 +490,10 @@ resource "aws_api_gateway_integration" "sprints_get" {
   type                    = "AWS_PROXY"
   uri                     = var.sprints_lambda_invoke_arn
 }
-resource "aws_api_gateway_integration" "sprints_post" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.sprints.id
-  http_method             = aws_api_gateway_method.sprints_post.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.sprints_lambda_invoke_arn
-}
 resource "aws_api_gateway_integration" "sprint_get" {
   rest_api_id             = aws_api_gateway_rest_api.main.id
   resource_id             = aws_api_gateway_resource.sprint.id
   http_method             = aws_api_gateway_method.sprint_get.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.sprints_lambda_invoke_arn
-}
-resource "aws_api_gateway_integration" "sprint_put" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.sprint.id
-  http_method             = aws_api_gateway_method.sprint_put.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.sprints_lambda_invoke_arn
-}
-resource "aws_api_gateway_integration" "sprint_delete" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.sprint.id
-  http_method             = aws_api_gateway_method.sprint_delete.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
   uri                     = var.sprints_lambda_invoke_arn
@@ -800,25 +536,10 @@ resource "aws_api_gateway_resource" "discussion_messages" {
   parent_id   = aws_api_gateway_resource.discussion.id
   path_part   = "messages"
 }
-resource "aws_api_gateway_resource" "discussion_message" {
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.discussion_messages.id
-  path_part   = "{messageId}"
-}
-resource "aws_api_gateway_resource" "discussion_message_redact" {
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.discussion_message.id
-  path_part   = "redact"
-}
 resource "aws_api_gateway_resource" "discussion_read" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.discussion.id
   path_part   = "read"
-}
-resource "aws_api_gateway_resource" "discussion_assist" {
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.discussion.id
-  path_part   = "assist"
 }
 # Static sibling of {discussionId} — API Gateway resolves static parts first.
 resource "aws_api_gateway_resource" "discussions_search" {
@@ -1602,23 +1323,13 @@ locals {
 }
 
 # =============================================================================
-# Sprint-scoped entity CRUD (collection: GET, POST)
+# Sprint-scoped entity reads (collection: GET) — v1 is frozen read-only
 # =============================================================================
 resource "aws_api_gateway_method" "entity_collection_get" {
   for_each           = local.sprint_entities
   rest_api_id        = aws_api_gateway_rest_api.main.id
   resource_id        = each.value.collection_resource
   http_method        = "GET"
-  authorization      = "COGNITO_USER_POOLS"
-  authorizer_id      = aws_api_gateway_authorizer.cognito.id
-  request_parameters = { "method.request.path.sprintId" = true }
-}
-
-resource "aws_api_gateway_method" "entity_collection_post" {
-  for_each           = local.sprint_entities
-  rest_api_id        = aws_api_gateway_rest_api.main.id
-  resource_id        = each.value.collection_resource
-  http_method        = "POST"
   authorization      = "COGNITO_USER_POOLS"
   authorizer_id      = aws_api_gateway_authorizer.cognito.id
   request_parameters = { "method.request.path.sprintId" = true }
@@ -1634,44 +1345,14 @@ resource "aws_api_gateway_integration" "entity_collection_get" {
   uri                     = each.value.invoke_arn
 }
 
-resource "aws_api_gateway_integration" "entity_collection_post" {
-  for_each                = local.sprint_entities
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = each.value.collection_resource
-  http_method             = aws_api_gateway_method.entity_collection_post[each.key].http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = each.value.invoke_arn
-}
-
 # =============================================================================
-# Sprint-scoped entity CRUD (item: GET, PUT, DELETE)
+# Sprint-scoped entity reads (item: GET)
 # =============================================================================
 resource "aws_api_gateway_method" "entity_item_get" {
   for_each           = local.sprint_entities
   rest_api_id        = aws_api_gateway_rest_api.main.id
   resource_id        = each.value.item_resource
   http_method        = "GET"
-  authorization      = "COGNITO_USER_POOLS"
-  authorizer_id      = aws_api_gateway_authorizer.cognito.id
-  request_parameters = { "method.request.path.sprintId" = true, "method.request.path.${each.value.item_param}" = true }
-}
-
-resource "aws_api_gateway_method" "entity_item_put" {
-  for_each           = local.sprint_entities
-  rest_api_id        = aws_api_gateway_rest_api.main.id
-  resource_id        = each.value.item_resource
-  http_method        = "PUT"
-  authorization      = "COGNITO_USER_POOLS"
-  authorizer_id      = aws_api_gateway_authorizer.cognito.id
-  request_parameters = { "method.request.path.sprintId" = true, "method.request.path.${each.value.item_param}" = true }
-}
-
-resource "aws_api_gateway_method" "entity_item_delete" {
-  for_each           = local.sprint_entities
-  rest_api_id        = aws_api_gateway_rest_api.main.id
-  resource_id        = each.value.item_resource
-  http_method        = "DELETE"
   authorization      = "COGNITO_USER_POOLS"
   authorizer_id      = aws_api_gateway_authorizer.cognito.id
   request_parameters = { "method.request.path.sprintId" = true, "method.request.path.${each.value.item_param}" = true }
@@ -1687,28 +1368,8 @@ resource "aws_api_gateway_integration" "entity_item_get" {
   uri                     = each.value.invoke_arn
 }
 
-resource "aws_api_gateway_integration" "entity_item_put" {
-  for_each                = local.sprint_entities
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = each.value.item_resource
-  http_method             = aws_api_gateway_method.entity_item_put[each.key].http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = each.value.invoke_arn
-}
-
-resource "aws_api_gateway_integration" "entity_item_delete" {
-  for_each                = local.sprint_entities
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = each.value.item_resource
-  http_method             = aws_api_gateway_method.entity_item_delete[each.key].http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = each.value.invoke_arn
-}
-
 # =============================================================================
-# Review Methods (singleton per sprint: GET, POST, PUT)
+# Review Methods (singleton per sprint: GET) — v1 is frozen read-only
 # =============================================================================
 resource "aws_api_gateway_method" "review_get" {
   rest_api_id        = aws_api_gateway_rest_api.main.id
@@ -1718,43 +1379,11 @@ resource "aws_api_gateway_method" "review_get" {
   authorizer_id      = aws_api_gateway_authorizer.cognito.id
   request_parameters = { "method.request.path.sprintId" = true }
 }
-resource "aws_api_gateway_method" "review_post" {
-  rest_api_id        = aws_api_gateway_rest_api.main.id
-  resource_id        = aws_api_gateway_resource.review.id
-  http_method        = "POST"
-  authorization      = "COGNITO_USER_POOLS"
-  authorizer_id      = aws_api_gateway_authorizer.cognito.id
-  request_parameters = { "method.request.path.sprintId" = true }
-}
-resource "aws_api_gateway_method" "review_put" {
-  rest_api_id        = aws_api_gateway_rest_api.main.id
-  resource_id        = aws_api_gateway_resource.review.id
-  http_method        = "PUT"
-  authorization      = "COGNITO_USER_POOLS"
-  authorizer_id      = aws_api_gateway_authorizer.cognito.id
-  request_parameters = { "method.request.path.sprintId" = true }
-}
 
 resource "aws_api_gateway_integration" "review_get" {
   rest_api_id             = aws_api_gateway_rest_api.main.id
   resource_id             = aws_api_gateway_resource.review.id
   http_method             = aws_api_gateway_method.review_get.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.reviews_lambda_invoke_arn
-}
-resource "aws_api_gateway_integration" "review_post" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.review.id
-  http_method             = aws_api_gateway_method.review_post.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.reviews_lambda_invoke_arn
-}
-resource "aws_api_gateway_integration" "review_put" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.review.id
-  http_method             = aws_api_gateway_method.review_put.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
   uri                     = var.reviews_lambda_invoke_arn
@@ -1781,7 +1410,7 @@ resource "aws_api_gateway_integration" "sprint_graph_get" {
 }
 
 # =============================================================================
-# Timeline Events Methods (GET list, POST create)
+# Timeline Events Methods (GET list) — v1 is frozen read-only
 # =============================================================================
 resource "aws_api_gateway_method" "timeline_events_get" {
   rest_api_id        = aws_api_gateway_rest_api.main.id
@@ -1791,27 +1420,11 @@ resource "aws_api_gateway_method" "timeline_events_get" {
   authorizer_id      = aws_api_gateway_authorizer.cognito.id
   request_parameters = { "method.request.path.sprintId" = true }
 }
-resource "aws_api_gateway_method" "timeline_events_post" {
-  rest_api_id        = aws_api_gateway_rest_api.main.id
-  resource_id        = aws_api_gateway_resource.timeline_events.id
-  http_method        = "POST"
-  authorization      = "COGNITO_USER_POOLS"
-  authorizer_id      = aws_api_gateway_authorizer.cognito.id
-  request_parameters = { "method.request.path.sprintId" = true }
-}
 
 resource "aws_api_gateway_integration" "timeline_events_get" {
   rest_api_id             = aws_api_gateway_rest_api.main.id
   resource_id             = aws_api_gateway_resource.timeline_events.id
   http_method             = aws_api_gateway_method.timeline_events_get.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.timeline_events_lambda_invoke_arn
-}
-resource "aws_api_gateway_integration" "timeline_events_post" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.timeline_events.id
-  http_method             = aws_api_gateway_method.timeline_events_post.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
   uri                     = var.timeline_events_lambda_invoke_arn
@@ -1855,9 +1468,12 @@ resource "aws_api_gateway_integration" "project_realtime_token_post" {
 }
 
 # =============================================================================
-# Discussions Methods
-#   GET/POST /sprints/{sprintId}/discussions
-#   GET/POST /sprints/{sprintId}/discussions/{discussionId}/messages
+# Discussions Methods (v1 sprint-scoped, frozen read-only; the user-scoped
+# read-state PUT stays writable — it is not project content)
+#   GET /sprints/{sprintId}/discussions
+#   GET /sprints/{sprintId}/discussions/search
+#   PUT /sprints/{sprintId}/discussions/{discussionId}/read
+#   GET /sprints/{sprintId}/discussions/{discussionId}/messages
 # =============================================================================
 locals {
   discussion_routes = {
@@ -1866,29 +1482,14 @@ locals {
       method   = "GET"
       params   = { "method.request.path.sprintId" = true }
     }
-    discussions_post = {
-      resource = "discussions"
-      method   = "POST"
-      params   = { "method.request.path.sprintId" = true }
-    }
     discussions_search_get = {
       resource = "discussions_search"
       method   = "GET"
       params   = { "method.request.path.sprintId" = true }
     }
-    discussion_put = {
-      resource = "discussion"
-      method   = "PUT"
-      params   = { "method.request.path.sprintId" = true, "method.request.path.discussionId" = true }
-    }
     discussion_read_put = {
       resource = "discussion_read"
       method   = "PUT"
-      params   = { "method.request.path.sprintId" = true, "method.request.path.discussionId" = true }
-    }
-    discussion_assist_post = {
-      resource = "discussion_assist"
-      method   = "POST"
       params   = { "method.request.path.sprintId" = true, "method.request.path.discussionId" = true }
     }
     discussion_messages_get = {
@@ -1896,29 +1497,13 @@ locals {
       method   = "GET"
       params   = { "method.request.path.sprintId" = true, "method.request.path.discussionId" = true }
     }
-    discussion_messages_post = {
-      resource = "discussion_messages"
-      method   = "POST"
-      params   = { "method.request.path.sprintId" = true, "method.request.path.discussionId" = true }
-    }
-    discussion_message_redact_post = {
-      resource = "discussion_message_redact"
-      method   = "POST"
-      params = {
-        "method.request.path.sprintId"     = true,
-        "method.request.path.discussionId" = true,
-        "method.request.path.messageId"    = true,
-      }
-    }
   }
   discussion_resource_ids = {
-    discussions               = aws_api_gateway_resource.discussions.id
-    discussions_search        = aws_api_gateway_resource.discussions_search.id
-    discussion                = aws_api_gateway_resource.discussion.id
-    discussion_read           = aws_api_gateway_resource.discussion_read.id
-    discussion_assist         = aws_api_gateway_resource.discussion_assist.id
-    discussion_messages       = aws_api_gateway_resource.discussion_messages.id
-    discussion_message_redact = aws_api_gateway_resource.discussion_message_redact.id
+    discussions         = aws_api_gateway_resource.discussions.id
+    discussions_search  = aws_api_gateway_resource.discussions_search.id
+    discussion          = aws_api_gateway_resource.discussion.id
+    discussion_read     = aws_api_gateway_resource.discussion_read.id
+    discussion_messages = aws_api_gateway_resource.discussion_messages.id
   }
 }
 
@@ -1985,30 +1570,6 @@ module "cors_member" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.member.id
-}
-
-module "cors_project_mcp_servers" {
-  source      = "./cors"
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  resource_id = aws_api_gateway_resource.project_mcp_servers.id
-}
-
-module "cors_project_steering_docs" {
-  source      = "./cors"
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  resource_id = aws_api_gateway_resource.project_steering_docs.id
-}
-
-module "cors_task_mcp_servers" {
-  source      = "./cors"
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  resource_id = aws_api_gateway_resource.task_mcp_servers.id
-}
-
-module "cors_task_steering_docs" {
-  source      = "./cors"
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  resource_id = aws_api_gateway_resource.task_steering_docs.id
 }
 
 module "cors_sprints" {
@@ -2127,22 +1688,10 @@ module "cors_discussion_messages" {
   resource_id = aws_api_gateway_resource.discussion_messages.id
 }
 
-module "cors_discussion_message_redact" {
-  source      = "./cors"
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  resource_id = aws_api_gateway_resource.discussion_message_redact.id
-}
-
 module "cors_discussion_read" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.discussion_read.id
-}
-
-module "cors_discussion_assist" {
-  source      = "./cors"
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  resource_id = aws_api_gateway_resource.discussion_assist.id
 }
 
 module "cors_discussions_search" {

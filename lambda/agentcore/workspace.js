@@ -18,7 +18,7 @@ import path from 'node:path';
 
 // Provider-aware clone-URL builder — the single source of truth for the per-
 // provider auth scheme (GitHub `x-access-token:`, GitLab `oauth2:`) and host.
-// Reusing it keeps v2 checkout at parity with the v1 pool-worker rather than
+// Reusing it keeps the checkout on the shared registry rather than
 // re-deriving the GitHub-only scheme here. Defaults to github for legacy/blank.
 const require = createRequire(import.meta.url);
 const { buildCloneUrl } = require('../shared/git-providers.js');

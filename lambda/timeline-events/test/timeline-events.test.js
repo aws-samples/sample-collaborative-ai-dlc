@@ -1,9 +1,7 @@
-import { beforeAll, beforeEach, afterAll, afterEach, describe, it, expect, vi } from 'vitest';
+import { beforeAll, beforeEach, afterAll, describe, it, expect, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
-
-const NOW = new Date('2026-01-01T00:00:00.000Z');
 
 // File-level partition: every test in this file shares it.
 const PARTITION = `t-${randomUUID()}`;
@@ -24,8 +22,9 @@ beforeAll(async () => {
   // so useIam resolves to false and nothing is signed.
   ({ handler, close } = await import('../index.js'));
 
-  // Direct gremlin connection for seeding sprints. Uses the same partition so
-  // writes are visible to the handler under test.
+  // Direct gremlin connection for seeding. Uses the same partition so writes
+  // are visible to the handler under test. The POST handler is gone (v1 is
+  // read-only), so all seeding goes straight through gremlin.
   const url = `ws://${process.env.NEPTUNE_ENDPOINT}:${process.env.GREMLIN_PORT}/gremlin`;
   conn = new gremlin.driver.DriverRemoteConnection(url);
   g = gremlin.process.AnonymousTraversalSource.traversal()
@@ -47,22 +46,37 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await g.V().drop().next();
-  // Pin Date so the POST timestamp default is assertable. Don't fake
-  // setTimeout/etc — gremlin's WebSocket driver uses real timers internally.
-  vi.useFakeTimers({ toFake: ['Date'] });
-  vi.setSystemTime(NOW);
-});
-
-afterEach(() => {
-  vi.useRealTimers();
 });
 
 const addSprint = async (sprintId) => g.addV('Sprint').property('id', sprintId).next();
 
-const get = (sprintId) => handler({ httpMethod: 'GET', pathParameters: { sprintId } });
+// Seeds a TimelineEvent with the same property shape the removed POST handler
+// used to write.
+const addEvent = async (sprintId, data) => {
+  const id = randomUUID();
+  await g
+    .V()
+    .has('Sprint', 'id', sprintId)
+    .as('s')
+    .addV('TimelineEvent')
+    .property('id', id)
+    .property('type', data.type)
+    .property('title', data.title)
+    .property('detail', data.detail || '')
+    .property('user_id', data.userId || '')
+    .property('user_name', data.userName || '')
+    .property('timestamp', data.timestamp || new Date().toISOString())
+    .property('sprint_id', sprintId)
+    .property('question_id', data.questionId || '')
+    .as('e')
+    .addE('HAS_TIMELINE_EVENT')
+    .from_('s')
+    .to('e')
+    .next();
+  return id;
+};
 
-const post = (sprintId, data) =>
-  handler({ httpMethod: 'POST', pathParameters: { sprintId }, body: JSON.stringify(data) });
+const get = (sprintId) => handler({ httpMethod: 'GET', pathParameters: { sprintId } });
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -87,17 +101,17 @@ describe('GET /sprints/:sprintId/timeline', () => {
     const sprintId = `s-${randomUUID()}`;
     await addSprint(sprintId);
 
-    await post(sprintId, {
+    await addEvent(sprintId, {
       type: 'created',
       title: 'First',
       timestamp: '2026-01-01T00:00:00.000Z',
     });
-    await post(sprintId, {
+    await addEvent(sprintId, {
       type: 'updated',
       title: 'Third',
       timestamp: '2026-01-03T00:00:00.000Z',
     });
-    await post(sprintId, {
+    await addEvent(sprintId, {
       type: 'updated',
       title: 'Second',
       timestamp: '2026-01-02T00:00:00.000Z',
@@ -112,7 +126,7 @@ describe('GET /sprints/:sprintId/timeline', () => {
   it('maps every persisted property into the camelCase response shape', async () => {
     const sprintId = `s-${randomUUID()}`;
     await addSprint(sprintId);
-    await post(sprintId, {
+    await addEvent(sprintId, {
       type: 'comment',
       title: 'A title',
       detail: 'some detail',
@@ -142,88 +156,22 @@ describe('GET /sprints/:sprintId/timeline', () => {
     const otherSprintId = `s-${randomUUID()}`;
     await addSprint(sprintId);
     await addSprint(otherSprintId);
-    await post(otherSprintId, { type: 'created', title: 'Foreign' });
+    await addEvent(otherSprintId, { type: 'created', title: 'Foreign' });
 
     const res = await get(sprintId);
     expect(JSON.parse(res.body)).toEqual([]);
   });
 });
 
-describe('POST /sprints/:sprintId/timeline', () => {
-  it('creates an event, wires the HAS_TIMELINE_EVENT edge, and echoes it back', async () => {
+describe('method routing (v1 is read-only)', () => {
+  it.each(['POST', 'PUT', 'DELETE', 'PATCH'])('returns 405 for %s', async (httpMethod) => {
     const sprintId = `s-${randomUUID()}`;
     await addSprint(sprintId);
-
-    const res = await post(sprintId, {
-      type: 'created',
-      title: 'Sprint started',
-      detail: 'kicked off',
-      userId: 'u-7',
-      userName: 'Bob',
-      timestamp: '2026-03-03T00:00:00.000Z',
+    const res = await handler({
+      httpMethod,
+      pathParameters: { sprintId },
+      body: JSON.stringify({ type: 'created', title: 'nope' }),
     });
-    expect(res.statusCode).toBe(201);
-    expect(JSON.parse(res.body)).toEqual({
-      id: expect.stringMatching(UUID_RE),
-      type: 'created',
-      title: 'Sprint started',
-      detail: 'kicked off',
-      userId: 'u-7',
-      userName: 'Bob',
-      timestamp: '2026-03-03T00:00:00.000Z',
-      sprintId,
-      questionId: '',
-    });
-
-    // Follow-up GET confirms the edge from the sprint was created.
-    const fetched = await get(sprintId);
-    expect(JSON.parse(fetched.body)).toHaveLength(1);
-    expect(JSON.parse(fetched.body)[0].id).toBe(JSON.parse(res.body).id);
-  });
-
-  it('defaults timestamp to now and optional fields to empty strings', async () => {
-    const sprintId = `s-${randomUUID()}`;
-    await addSprint(sprintId);
-
-    const res = await post(sprintId, { type: 'created', title: 'Minimal' });
-    expect(res.statusCode).toBe(201);
-    expect(JSON.parse(res.body)).toEqual({
-      id: expect.stringMatching(UUID_RE),
-      type: 'created',
-      title: 'Minimal',
-      detail: '',
-      userId: '',
-      userName: '',
-      timestamp: NOW.toISOString(),
-      sprintId,
-      questionId: '',
-    });
-  });
-
-  it('persists questionId so question events can deep-link to the question', async () => {
-    const sprintId = `s-${randomUUID()}`;
-    await addSprint(sprintId);
-
-    const res = await post(sprintId, {
-      type: 'question_answered',
-      title: 'Answered agent question',
-      userName: 'Alice',
-      questionId: 'q-123',
-    });
-    expect(res.statusCode).toBe(201);
-    expect(JSON.parse(res.body).questionId).toBe('q-123');
-
-    const fetched = await get(sprintId);
-    const [event] = JSON.parse(fetched.body);
-    expect(event.questionId).toBe('q-123');
-  });
-});
-
-describe('method routing', () => {
-  it('returns 405 for an unsupported method', async () => {
-    const sprintId = `s-${randomUUID()}`;
-    await addSprint(sprintId);
-    const res = await handler({ httpMethod: 'PATCH', pathParameters: { sprintId } });
     expect(res.statusCode).toBe(405);
     expect(JSON.parse(res.body)).toEqual({ error: 'Method not allowed' });
   });

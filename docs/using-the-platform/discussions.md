@@ -1,10 +1,14 @@
 # Discussions
 
-A chat-like discussion thread can be attached to any sprint-scoped entity — an
-agent question, a requirement, a user story, a task, the review, a general-info
-item, the inception prompt, or the sprint itself. Team members chat in real
-time, every message is durably stored as a vertex in the sprint graph, and the
-project's configured agent CLI can be invoked inside the thread.
+A chat-like discussion thread can be attached to any intent- or sprint-scoped
+entity — an agent question, an intent artifact, a requirement, a user story, a
+task, the review, a general-info item, the inception prompt, or the intent or
+sprint itself. Team members chat in real time, and every message is durably
+stored as a vertex in the scope's graph.
+
+Sprint-scoped (v1) threads are now **read-only**: existing discussions stay
+viewable, but posting, resolving, and redaction are available only on
+intent-scoped (v2) threads.
 
 ## Opening a thread
 
@@ -42,9 +46,7 @@ arrow in the thread header returns to the thread list.
 Any project member can resolve a thread (the action is fully audited — the
 resolver's name is shown in the thread header). When resolving you can record
 a **resolution summary** — the durable "what did we decide" — and optionally
-mark one message as the accepted outcome. Resolution summaries are visible to
-the platform's agents as team decisions: inception/construction/review agents
-are instructed to consult discussions on the entities they work on.
+mark one message as the accepted outcome.
 
 Resolved threads can be reopened by any member.
 
@@ -56,31 +58,7 @@ original text is purged from the database while the audit trail (who redacted,
 when) is preserved.
 
 Known limitation: copies of the original text may persist in the memory of
-clients that already rendered it, and in prompts already sent to an in-flight
-agent assist.
-
-## Agent assist
-
-The ✨ button in the message input (or `/` in an empty input) invokes the
-project's configured agent CLI inside the thread:
-
-| Command              | Behavior                                                                                                                                                    |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Suggest an answer    | Question threads only. Recommends selections/free-text for the anchored question — **advice only**; the agent never fills in or modifies the answer itself. |
-| Summarize discussion | Decisions, open points, and positions, attributed by participant.                                                                                           |
-| Explain in detail    | Explains the anchored entity in the context of the sprint graph.                                                                                            |
-| Ask the assistant…   | Free-form instruction, scoped to the thread and sprint. The agent advises humans and never mutates artifacts.                                               |
-
-What to expect:
-
-- Assists run on the same agent pool as regular agent runs, so the first
-  token can take **15–60 seconds** — the thread shows an explicit
-  "Assistant is starting…" state, then streams the reply live.
-- One assist per thread at a time; a second request is rejected until the
-  first finishes.
-- The reply is posted as a regular message with a
-  "requested by {name} · {command}" caption, and the run appears in the
-  sprint's agent-run history. Assists never affect the sprint's phase status.
+clients that already rendered it.
 
 ## Roles at a glance
 
@@ -89,7 +67,6 @@ What to expect:
 | View threads & messages, search         | ✓      | ✓             |
 | Post messages, mention, typing/presence | ✓      | ✓             |
 | Resolve / reopen (audited)              | ✓      | ✓             |
-| Invoke agent assist (audited)           | ✓      | ✓             |
 | Redact a message                        | ✗      | ✓             |
 
 Non-members get a 403 on everything, including realtime access.

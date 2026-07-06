@@ -1,9 +1,7 @@
 import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import { useEffect, useState, useCallback } from 'react';
 import {
-  Activity,
   ArrowLeft,
-  Bot,
   CheckCircle2,
   ChevronRight,
   ExternalLink,
@@ -250,21 +248,6 @@ export function SprintPipelineBar() {
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 w-7 p-0"
-              aria-label="Observability"
-              onClick={() => navigate(`/observability?project=${projectId}&sprint=${sprintId}`)}
-            >
-              <Activity className="h-3.5 w-3.5" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Observability</TooltipContent>
-        </Tooltip>
-
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
               variant={currentPhase === 'GRAPH' ? 'secondary' : 'ghost'}
               size="sm"
               className="h-7 w-7 p-0"
@@ -275,21 +258,6 @@ export function SprintPipelineBar() {
             </Button>
           </TooltipTrigger>
           <TooltipContent>Graph View</TooltipContent>
-        </Tooltip>
-
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant={currentPhase === 'AGENT' ? 'secondary' : 'ghost'}
-              size="sm"
-              className="h-7 w-7 p-0"
-              aria-label="Invoke Agent"
-              onClick={() => navigate(`/project/${projectId}/sprint/${sprintId}/agent`)}
-            >
-              <Bot className="h-3.5 w-3.5" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Invoke Agent</TooltipContent>
         </Tooltip>
 
         {sprint?.prUrl && (

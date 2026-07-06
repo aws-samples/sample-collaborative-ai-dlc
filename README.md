@@ -26,7 +26,7 @@ AI-DLC is a platform where humans and AI agents collaborate on software developm
 | AWS CLI   | v2            |
 | Docker    | Recent stable |
 
-You need an AWS account with permissions to manage VPC, ECS, ECR, Lambda, API Gateway, DynamoDB, Neptune, S3, CloudFront, Cognito, EventBridge, Step Functions, Secrets Manager, and IAM.
+You need an AWS account with permissions to manage VPC, ECS, ECR, Lambda, API Gateway, DynamoDB, Neptune, S3, CloudFront, Cognito, Bedrock AgentCore, Secrets Manager, and IAM.
 
 ## Getting Started
 
@@ -49,13 +49,13 @@ cp terraform/environments/dev.tfvars.example terraform/environments/<your-profil
 
 ### 3. Deploy Infrastructure
 
-This builds all Lambda packages and provisions the full AWS stack (VPC, Neptune, DynamoDB, Cognito, API Gateway, ECS, S3, CloudFront, etc.):
+This builds all Lambda packages and provisions the full AWS stack (VPC, Neptune, DynamoDB, Cognito, API Gateway, ECS, Bedrock AgentCore, S3, CloudFront, etc.):
 
 ```bash
 ./scripts/deploy-terraform.sh <your-profile-name>
 ```
 
-After deployment, agent workers authenticate with Kiro CLI via device flow. Check the agent pool DynamoDB table or ECS logs for the auth URL and device code.
+After deployment, configure agent authentication in the deployed app under **Admin → Agent Settings**: enter a Bedrock bearer token (for Claude Code / OpenCode) or a Kiro API key. The Bedrock AgentCore runtime reads these settings when executing agents.
 
 ### 4. Configure Provider OAuth Apps
 

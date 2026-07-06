@@ -1,15 +1,10 @@
-import { useState, useCallback, useMemo, useEffect } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
-import {
-  useProjectCache,
-  useProjectSprintsCache,
-  useProjectsCache,
-} from '@/hooks/useProjectsCache';
+import { useProjectCache, useProjectSprintsCache } from '@/hooks/useProjectsCache';
 import { useSprintEvents } from '@/hooks/useSprintEvents';
-import { projectsService, type Project as ProjectType } from '@/services/projects';
-import { getTrackerProvider } from '@/lib/trackerProviders';
-import { sprintsService, type Sprint } from '@/services/sprints';
+import { type Project as ProjectType } from '@/services/projects';
+import { type Sprint } from '@/services/sprints';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -46,10 +41,9 @@ import {
   Plus,
   Trash2,
   Settings,
+  Archive,
 } from 'lucide-react';
-import { TrackerIssueListPanel } from '@/components/TrackerIssueListPanel';
 import { IntentSourcePicker } from '@/components/IntentSourcePicker';
-import { MigrateTrackerCard } from '@/components/MigrateTrackerCard';
 import { GitRepoLink } from '@/components/GitRepoLink';
 import { effectiveSprintStatus, isActiveStatus } from '@/lib/sprintStatus';
 import { intentsService, type Intent, type ProjectMetrics } from '@/services/intents';
@@ -98,19 +92,6 @@ export default function Project() {
   const navigate = useNavigate();
   const { project, loading: projectLoading } = useProjectCache(projectId ?? null);
   const { sprints, refresh: refreshSprints } = useProjectSprintsCache(projectId ?? null);
-  const { invalidate: invalidateProjects } = useProjectsCache();
-
-  const [showCreate, setShowCreate] = useState(false);
-  const [newName, setNewName] = useState('');
-  const [creating, setCreating] = useState(false);
-  const [createError, setCreateError] = useState<string | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-  const [activeTrackerTab, setActiveTrackerTab] = useState<string | null>(null);
-  const [migrating, setMigrating] = useState(false);
-  const [migrationResult, setMigrationResult] = useState<{
-    sprintsApplied: number;
-    projectsApplied: number;
-  } | null>(null);
 
   const latestSprint = sprints[0] ?? null;
   const agentStatus = effectiveSprintStatus(latestSprint);
@@ -122,59 +103,6 @@ export default function Project() {
       refreshSprints();
     }, [refreshSprints]),
   );
-
-  const handleSprintCreated = useCallback(() => {
-    refreshSprints();
-  }, [refreshSprints]);
-
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!projectId || !newName.trim()) return;
-    setCreating(true);
-    setCreateError(null);
-    try {
-      await sprintsService.create(projectId, { name: newName, description: '' });
-      refreshSprints();
-      setShowCreate(false);
-      setNewName('');
-    } catch (err) {
-      setCreateError(err instanceof Error ? err.message : 'Failed to create sprint');
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  const handleDelete = async () => {
-    if (!projectId || !confirmDelete) return;
-    try {
-      await sprintsService.delete(projectId, confirmDelete);
-      refreshSprints();
-    } catch (error) {
-      console.error('Failed to delete sprint:', error);
-    } finally {
-      setConfirmDelete(null);
-    }
-  };
-
-  const handleMigrateTracker = async () => {
-    if (!projectId) return;
-    setMigrating(true);
-    try {
-      const result = await projectsService.migrateTracker(projectId);
-      setMigrationResult({
-        sprintsApplied: result.sprints.applied,
-        projectsApplied: result.projects.applied,
-      });
-      // Refresh so project.trackers reflects the new binding and the
-      // MigrateTrackerCard self-dismisses on next render.
-      invalidateProjects();
-      refreshSprints();
-    } catch (error) {
-      console.error('Failed to migrate tracker:', error);
-    } finally {
-      setMigrating(false);
-    }
-  };
 
   const activeSprints = sprints.filter((s) => isActiveStatus(effectiveSprintStatus(s)));
   const pastSprints = sprints.filter((s) => !isActiveStatus(effectiveSprintStatus(s)));
@@ -203,14 +131,16 @@ export default function Project() {
     return <IntentsView project={project} projectId={projectId} onNavigate={navigate} />;
   }
 
-  const hasTrackers = project.trackers.length > 0;
-
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-6">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-3 min-w-0">
           <FolderGit2 className="h-5 w-5 text-primary shrink-0" />
           <h1 className="text-lg font-bold tracking-tight truncate">{project.name}</h1>
+          <Badge variant="outline" className="gap-1 text-[10px] shrink-0">
+            <Archive className="h-2.5 w-2.5" />
+            v1 · read-only
+          </Badge>
           {isAgentActive && (
             <Badge
               variant="outline"
@@ -221,17 +151,12 @@ export default function Project() {
             </Badge>
           )}
         </div>
-        <div className="flex items-center gap-1.5 shrink-0">
-          <Button
-            variant="outline"
-            size="sm"
-            className="gap-1.5 h-7"
-            onClick={() => navigate(`/project/${projectId}/settings`)}
-          >
-            <Settings className="h-3 w-3" />
-            Settings
-          </Button>
-        </div>
+      </div>
+
+      <div className="rounded-lg border bg-muted/40 px-4 py-3 text-xs text-muted-foreground">
+        This is a v1 project. The v1 sprint lifecycle has been retired — existing sprints,
+        artifacts, and agent history remain viewable, but nothing new can be created or executed
+        here. New work happens in v2 projects (intents).
       </div>
 
       <div className="grid md:grid-cols-2 gap-3">
@@ -284,42 +209,7 @@ export default function Project() {
         </Card>
       </div>
 
-      {/* Tracker-abstraction migration banner — only renders for legacy
-          projects that still use issueIntegrationEnabled and have no
-          HAS_TRACKER edge yet. Lives here so users discover the
-          migration on the project page where their issue list used to
-          be (the same banner also appears in Project Settings). */}
-      <MigrateTrackerCard
-        project={project}
-        canEditProject={project.userRole === 'owner' || project.userRole === 'admin'}
-        migrating={migrating}
-        migrationResult={migrationResult}
-        onMigrate={handleMigrateTracker}
-      />
-
-      <div className={cn('grid gap-6', hasTrackers && 'md:grid-cols-2')}>
-        {hasTrackers && (
-          <div>
-            {project.trackers.length === 1 && (
-              <TrackerIssueListPanel
-                project={project}
-                binding={project.trackers[0]}
-                sprints={sprints}
-                onSprintCreated={handleSprintCreated}
-              />
-            )}
-            {project.trackers.length > 1 && (
-              <TrackerTabs
-                project={project}
-                sprints={sprints}
-                activeTabId={activeTrackerTab}
-                onTabChange={setActiveTrackerTab}
-                onSprintCreated={handleSprintCreated}
-              />
-            )}
-          </div>
-        )}
-
+      <div className="grid gap-6">
         <Card className="flex flex-col">
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between gap-3 min-h-7">
@@ -331,10 +221,6 @@ export default function Project() {
                   </Badge>
                 )}
               </div>
-              <Button onClick={() => setShowCreate(true)} size="sm" className="gap-1.5 h-7">
-                <Plus className="h-3.5 w-3.5" />
-                New Sprint
-              </Button>
             </div>
           </CardHeader>
           <CardContent className="flex-1 space-y-4 pt-0">
@@ -347,7 +233,6 @@ export default function Project() {
                     projectId={projectId}
                     active
                     onNavigate={navigate}
-                    onDelete={setConfirmDelete}
                   />
                 ))}
               </div>
@@ -367,7 +252,6 @@ export default function Project() {
                         sprint={s}
                         projectId={projectId}
                         onNavigate={navigate}
-                        onDelete={setConfirmDelete}
                       />
                     ))}
                   </div>
@@ -377,138 +261,15 @@ export default function Project() {
 
             {sprints.length === 0 && (
               <div className="flex flex-col items-center justify-center rounded-lg border border-dashed py-10 text-center">
-                <p className="text-sm text-muted-foreground">No iterations yet</p>
+                <p className="text-sm text-muted-foreground">No iterations</p>
                 <p className="text-xs text-muted-foreground/60 mt-1">
-                  Start one to kick off the AI-DLC lifecycle.
+                  This v1 project is read-only — sprints can no longer be created.
                 </p>
               </div>
             )}
           </CardContent>
         </Card>
       </div>
-
-      {/* Create Sprint Dialog */}
-      <Dialog
-        open={showCreate}
-        onOpenChange={(open) => {
-          setShowCreate(open);
-          if (!open) setCreateError(null);
-        }}
-      >
-        <DialogContent className="sm:max-w-md">
-          <form onSubmit={handleCreate}>
-            <DialogHeader>
-              <DialogTitle>Create Sprint</DialogTitle>
-              <DialogDescription>
-                Create a new sprint to start a development iteration. You'll define the inception
-                prompt after creation.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="py-4">
-              <Label htmlFor="sprint-name">Sprint Name</Label>
-              <Input
-                id="sprint-name"
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                placeholder="e.g., Sprint 1 - User Authentication"
-                className="mt-1.5"
-                required
-                autoFocus
-              />
-              {createError && <p className="mt-2 text-xs text-destructive">{createError}</p>}
-            </div>
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setShowCreate(false)}
-                disabled={creating}
-              >
-                Cancel
-              </Button>
-              <Button type="submit" disabled={creating || !newName.trim()}>
-                {creating ? 'Creating...' : 'Create Sprint'}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      {/* Delete Confirmation */}
-      <AlertDialog open={!!confirmDelete} onOpenChange={() => setConfirmDelete(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Sprint</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure? This will permanently delete the sprint and all its artifacts.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDelete}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </div>
-  );
-}
-
-interface TrackerTabsProps {
-  project: ProjectType;
-  sprints: Sprint[];
-  activeTabId: string | null;
-  onTabChange: (id: string) => void;
-  onSprintCreated: (sprint: Sprint) => void;
-}
-
-function TrackerTabs({
-  project,
-  sprints,
-  activeTabId,
-  onTabChange,
-  onSprintCreated,
-}: TrackerTabsProps) {
-  const trackers = project.trackers;
-  const activeBinding = useMemo(() => {
-    return trackers.find((t) => t.id === activeTabId) ?? trackers[0];
-  }, [trackers, activeTabId]);
-
-  return (
-    <div>
-      <div className="flex items-center gap-1 border-b">
-        {trackers.map((binding) => {
-          const isActive = binding.id === activeBinding.id;
-          const tabLabel = getTrackerProvider(binding.provider).tabLabel;
-          const label = binding.displayName || binding.externalProjectKey || tabLabel;
-          return (
-            <button
-              key={binding.id}
-              type="button"
-              onClick={() => onTabChange(binding.id)}
-              className={`px-3 py-2 text-sm border-b-2 -mb-px transition-colors ${
-                isActive
-                  ? 'border-primary text-foreground font-medium'
-                  : 'border-transparent text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              <span className="text-muted-foreground mr-1.5">{tabLabel}</span>
-              {label}
-            </button>
-          );
-        })}
-      </div>
-      <TrackerIssueListPanel
-        key={activeBinding.id}
-        project={project}
-        binding={activeBinding}
-        sprints={sprints}
-        onSprintCreated={onSprintCreated}
-      />
     </div>
   );
 }
@@ -518,13 +279,11 @@ function SprintRow({
   projectId,
   active,
   onNavigate,
-  onDelete,
 }: {
   sprint: Sprint;
   projectId: string;
   active?: boolean;
   onNavigate: (path: string) => void;
-  onDelete: (sprintId: string) => void;
 }) {
   const status = effectiveSprintStatus(sprint);
   const phaseRoute =
@@ -571,17 +330,6 @@ function SprintRow({
             />
           );
         })()}
-      <Button
-        variant="ghost"
-        size="icon"
-        className="h-6 w-6 opacity-0 group-hover:opacity-100 shrink-0"
-        onClick={(e) => {
-          e.stopPropagation();
-          onDelete(sprint.id);
-        }}
-      >
-        <Trash2 className="h-3 w-3 text-destructive" />
-      </Button>
       <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/40 shrink-0" />
     </div>
   );

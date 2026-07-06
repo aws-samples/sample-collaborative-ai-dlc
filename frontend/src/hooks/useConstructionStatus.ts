@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { agentsService } from '../services/agents';
 import type { TaskAgentStatus, AgentQuestion } from '../services/agents';
-import type { StructuredAnswer } from '../services/questions';
 import { realtimeService } from '../services/realtime';
 import type { ToolCallEvent } from './useAgentStatus';
 
@@ -266,24 +265,12 @@ export function useConstructionStatus({
     return () => unsubs.forEach((u) => u());
   }, [refreshTasks, refreshOrchestrator]);
 
-  const answerQuestion = async (questionId: string, structuredAnswer: StructuredAnswer) => {
-    const key = executionId || executionArn;
-    if (!key) return;
-    await agentsService.answerQuestion(key, questionId, structuredAnswer);
-    setQuestions((prev) =>
-      prev.map((q) =>
-        q.questionId === questionId ? { ...q, status: 'answered' as const, structuredAnswer } : q,
-      ),
-    );
-  };
-
   return {
     orchestratorStatus,
     taskStatuses,
     taskStreams,
     orchestratorStream,
     questions,
-    answerQuestion,
     refreshTasks,
   };
 }

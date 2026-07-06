@@ -205,6 +205,28 @@ export function DiscussionProvider({
       setDiscussion(null);
       setPendingTitle(args.entityTitle || '');
       onDiscussionOpen?.();
+      if (scope.kind === 'sprint') {
+        // v1 sprint discussions are read-only — thread creation is gone from
+        // the backend, so only an EXISTING thread can be opened for viewing.
+        discussionsService
+          .list(scope)
+          .then((all) => {
+            const existing = all.find(
+              (d) =>
+                d.entityType === args.entityType &&
+                (args.entityId === undefined || d.entityId === args.entityId),
+            );
+            if (!existing) throw new Error('v1 discussions are read-only.');
+            setDiscussion(existing);
+            setDiscussions(all);
+          })
+          .catch((err) => {
+            console.error('Failed to open discussion:', err);
+            setError(err instanceof Error ? err.message : 'Failed to open discussion');
+          })
+          .finally(() => setLoading(false));
+        return;
+      }
       discussionsService
         .getOrCreate(scope, {
           entityType: args.entityType,

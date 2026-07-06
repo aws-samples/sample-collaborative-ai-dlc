@@ -118,9 +118,8 @@ const refreshGitlabToken = async ({ ssm, secrets, ddb, item, tokens }) => {
 // Return a valid access token for a connection, refreshing GitLab tokens
 // just-in-time when they are expired or near expiry. GitHub OAuth-App tokens
 // never expire, so this is a passthrough for GitHub (and for any provider
-// without a refresh token). Used by the construction path (create-pr, the
-// agents-lambda token-refresh action) so long-running jobs don't push/MR with
-// a stale GitLab token.
+// without a refresh token). Used by shared/git-handler.js and the GitLab
+// issues tracker so long-running jobs don't push/MR with a stale GitLab token.
 const ensureFreshGitToken = async ({ ssm, secrets, ddb, item, gitProvider }) => {
   if (!item?.parameterName) throw new Error('No SSM parameter name set');
   const tokens = await readTokenValue(ssm, item.parameterName);

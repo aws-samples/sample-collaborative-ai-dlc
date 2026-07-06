@@ -4,13 +4,11 @@
   "workspaces": [
     "lambda/agentcore",
     "lambda/building-blocks",
-    "lambda/create-pr",
     "lambda/discussions",
     "lambda/github",
     "lambda/intents",
     "lambda/gitlab",
     "lambda/migrate-tracker-fields",
-    "lambda/notify",
     "lambda/seed-blocks",
     "lambda/projects",
     "lambda/purge-neptune",

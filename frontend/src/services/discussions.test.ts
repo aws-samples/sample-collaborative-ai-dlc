@@ -68,4 +68,19 @@ describe('discussionsService routes both scopes through the base path', () => {
       {},
     );
   });
+
+  it('markRead stays available for the read-only sprint scope', async () => {
+    await discussionsService.markRead(SPRINT, 'd1', {
+      lastReadAt: '2026-01-01T00:00:00Z',
+      lastReadMessageId: 'dm-9',
+    });
+    expect(put).toHaveBeenCalledWith('/sprints/s1/discussions/d1/read', {
+      lastReadAt: '2026-01-01T00:00:00Z',
+      lastReadMessageId: 'dm-9',
+    });
+  });
+
+  it('has no assist method anymore (v1 in-thread assist was removed)', () => {
+    expect('assist' in discussionsService).toBe(false);
+  });
 });

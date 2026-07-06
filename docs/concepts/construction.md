@@ -1,5 +1,8 @@
 # Construction
 
+!!! note "Retired v1 lifecycle"
+This page describes the v1 sprint lifecycle, which is now read-only: existing v1 projects and their history stay viewable, but no new sprints or agent runs can start. New work runs on v2 intents, executed by the Bedrock AgentCore runtime — see the [architecture overview](architecture.md#agent-runtime).
+
 The Construction phase is where AI agents write code based on the requirements, user stories, and tasks defined during Inception.
 
 ## How it works
@@ -14,7 +17,7 @@ The Construction phase is where AI agents write code based on the requirements, 
 
 ## The Construction Agent
 
-The Construction Agent runs in an ECS Fargate container with access to the full repository. It receives:
+The Construction Agent ran in an ECS Fargate container with access to the full repository. It received:
 
 - The project description
 - All requirements and acceptance criteria

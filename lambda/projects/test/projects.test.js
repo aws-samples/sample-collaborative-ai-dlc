@@ -91,6 +91,17 @@ describe('OPTIONS', () => {
 });
 
 describe('POST /projects', () => {
+  // Every created project is v2 now, so the response always carries the v2
+  // settings block with its defaults.
+  const V2_DEFAULTS = {
+    kind: 'v2',
+    workflowId: 'aidlc-v2',
+    workflowVersion: null,
+    parkReleaseSeconds: 300,
+    maxParallelUnits: 0,
+    prStrategy: 'intent-pr',
+  };
+
   it('applies defaults when only name is supplied', async () => {
     const sub = `u-${randomUUID()}`;
     const created = await createProject(sub, { name: 'Bare' });
@@ -104,8 +115,8 @@ describe('POST /projects', () => {
       cliModels: {},
       issueIntegrationEnabled: false,
       repos: [],
-      kind: 'v1',
       createdAt: NOW.toISOString(),
+      ...V2_DEFAULTS,
     });
   });
 
@@ -146,8 +157,8 @@ describe('POST /projects', () => {
           addedAt: NOW.toISOString(),
         },
       ],
-      kind: 'v1',
       createdAt: NOW.toISOString(),
+      ...V2_DEFAULTS,
     });
 
     // Follow-up GET confirms membership edge was wired correctly.
@@ -267,12 +278,32 @@ describe('POST /projects', () => {
     expect(JSON.parse(disabled.body).error).toContain('not enabled yet');
   });
 
-  it('defaults kind to v1 when omitted and omits v2 settings', async () => {
+  it('creates a v2 project when kind is omitted (v2 is the only kind)', async () => {
     const sub = `u-${randomUUID()}`;
     const created = await createProject(sub, { name: 'Classic' });
-    expect(created.kind).toBe('v1');
-    expect(created.workflowId).toBeUndefined();
-    expect(created.parkReleaseSeconds).toBeUndefined();
+    expect(created.kind).toBe('v2');
+    expect(created.workflowId).toBe('aidlc-v2');
+    expect(created.parkReleaseSeconds).toBe(300);
+
+    const fetched = await handler({
+      httpMethod: 'GET',
+      pathParameters: { projectId: created.id },
+      ...claims(sub),
+    });
+    expect(JSON.parse(fetched.body).kind).toBe('v2');
+  });
+
+  it('rejects an explicit kind=v1 with 400', async () => {
+    const sub = `u-${randomUUID()}`;
+    const res = await handler({
+      httpMethod: 'POST',
+      body: JSON.stringify({ name: 'Frozen', kind: 'v1' }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({
+      error: 'v1 projects can no longer be created; v2 is the only supported project kind',
+    });
   });
 });
 
@@ -554,134 +585,6 @@ describe('PUT /projects/:id', () => {
     });
     expect(res.statusCode).toBe(401);
     expect(JSON.parse(res.body)).toEqual({ error: 'Unauthorized' });
-  });
-});
-
-describe('PUT /projects/:id/mcp-servers authorization', () => {
-  it('allows owners to update MCP servers', async () => {
-    const sub = `u-${randomUUID()}`;
-    const { id } = await createProject(sub);
-    const res = await handler({
-      httpMethod: 'PUT',
-      pathParameters: { projectId: id },
-      path: `/projects/${id}/mcp-servers`,
-      body: JSON.stringify({ mcpServers: '[]' }),
-      ...claims(sub),
-    });
-    expect(res.statusCode).toBe(200);
-  });
-
-  it('allows admins to update MCP servers', async () => {
-    const ownerSub = `u-${randomUUID()}`;
-    const adminSub = `u-${randomUUID()}`;
-    const { id } = await createProject(ownerSub);
-    await addMember(id, adminSub, 'admin');
-    const res = await handler({
-      httpMethod: 'PUT',
-      pathParameters: { projectId: id },
-      path: `/projects/${id}/mcp-servers`,
-      body: JSON.stringify({ mcpServers: '[]' }),
-      ...claims(adminSub),
-    });
-    expect(res.statusCode).toBe(200);
-  });
-
-  it('returns 403 when a plain member tries to update MCP servers', async () => {
-    const ownerSub = `u-${randomUUID()}`;
-    const memberSub = `u-${randomUUID()}`;
-    const { id } = await createProject(ownerSub);
-    await addMember(id, memberSub, 'member');
-    const res = await handler({
-      httpMethod: 'PUT',
-      pathParameters: { projectId: id },
-      path: `/projects/${id}/mcp-servers`,
-      body: JSON.stringify({ mcpServers: '[]' }),
-      ...claims(memberSub),
-    });
-    expect(res.statusCode).toBe(403);
-    expect(JSON.parse(res.body)).toEqual({
-      error: 'Only project owners and admins can update MCP servers',
-    });
-  });
-
-  it('returns 403 when a non-member tries to update MCP servers', async () => {
-    const ownerSub = `u-${randomUUID()}`;
-    const otherSub = `u-${randomUUID()}`;
-    const { id } = await createProject(ownerSub);
-    const res = await handler({
-      httpMethod: 'PUT',
-      pathParameters: { projectId: id },
-      path: `/projects/${id}/mcp-servers`,
-      body: JSON.stringify({ mcpServers: '[]' }),
-      ...claims(otherSub),
-    });
-    expect(res.statusCode).toBe(403);
-  });
-});
-
-describe('PUT /projects/:id/steering-docs authorization', () => {
-  it('allows owners to update steering docs', async () => {
-    vi.stubEnv('ARTIFACTS_BUCKET', 'test-bucket');
-    const sub = `u-${randomUUID()}`;
-    const { id } = await createProject(sub);
-    const res = await handler({
-      httpMethod: 'PUT',
-      pathParameters: { projectId: id },
-      path: `/projects/${id}/steering-docs`,
-      body: JSON.stringify({ steeringDocs: [] }),
-      ...claims(sub),
-    });
-    expect(res.statusCode).toBe(200);
-    vi.stubEnv('ARTIFACTS_BUCKET', undefined);
-  });
-
-  it('allows admins to update steering docs', async () => {
-    vi.stubEnv('ARTIFACTS_BUCKET', 'test-bucket');
-    const ownerSub = `u-${randomUUID()}`;
-    const adminSub = `u-${randomUUID()}`;
-    const { id } = await createProject(ownerSub);
-    await addMember(id, adminSub, 'admin');
-    const res = await handler({
-      httpMethod: 'PUT',
-      pathParameters: { projectId: id },
-      path: `/projects/${id}/steering-docs`,
-      body: JSON.stringify({ steeringDocs: [] }),
-      ...claims(adminSub),
-    });
-    expect(res.statusCode).toBe(200);
-    vi.stubEnv('ARTIFACTS_BUCKET', undefined);
-  });
-
-  it('returns 403 when a plain member tries to update steering docs', async () => {
-    const ownerSub = `u-${randomUUID()}`;
-    const memberSub = `u-${randomUUID()}`;
-    const { id } = await createProject(ownerSub);
-    await addMember(id, memberSub, 'member');
-    const res = await handler({
-      httpMethod: 'PUT',
-      pathParameters: { projectId: id },
-      path: `/projects/${id}/steering-docs`,
-      body: JSON.stringify({ steeringDocs: [] }),
-      ...claims(memberSub),
-    });
-    expect(res.statusCode).toBe(403);
-    expect(JSON.parse(res.body)).toEqual({
-      error: 'Only project owners and admins can update steering docs',
-    });
-  });
-
-  it('returns 403 when a non-member tries to update steering docs', async () => {
-    const ownerSub = `u-${randomUUID()}`;
-    const otherSub = `u-${randomUUID()}`;
-    const { id } = await createProject(ownerSub);
-    const res = await handler({
-      httpMethod: 'PUT',
-      pathParameters: { projectId: id },
-      path: `/projects/${id}/steering-docs`,
-      body: JSON.stringify({ steeringDocs: [] }),
-      ...claims(otherSub),
-    });
-    expect(res.statusCode).toBe(403);
   });
 });
 

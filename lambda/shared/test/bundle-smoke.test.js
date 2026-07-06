@@ -21,7 +21,6 @@ const repoRoot = fileURLToPath(new URL('../../..', import.meta.url));
 const bundles = [
   ['ws-connection', 'lambda/ws-connection/.build/index.mjs'],
   ['ws-message', 'lambda/ws-message/.build/index.mjs'],
-  ['notify', 'lambda/notify/.build/notify.mjs'],
   // seed-blocks bundles CommonJS shared modules (frontmatter, block-mappers,
   // repo-fetch) plus js-yaml + tar-stream — needs the createRequire banner.
   ['seed-blocks', 'lambda/seed-blocks/.build/index.mjs'],

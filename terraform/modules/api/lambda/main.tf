@@ -97,7 +97,8 @@ resource "aws_iam_role_policy" "neptune_reader" {
 
 # -----------------------------------------------------------------------------
 # Role 2: neptune-questions (1 Lambda — questions)
-# Adds DynamoDB UpdateItem/GetItem on the agent-questions table.
+# Read-only sprint Q&A history: plain Neptune access. (The DynamoDB
+# agent-questions statement went with the retired v1 answer/resume path.)
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "neptune_questions" {
   name               = "${var.project_name}-neptune-questions-${var.environment}"
@@ -120,12 +121,7 @@ resource "aws_iam_role_policy" "neptune_questions" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-      local.neptune_statement,
-      {
-        Effect   = "Allow"
-        Action   = ["dynamodb:GetItem", "dynamodb:UpdateItem"]
-        Resource = [var.agent_questions_table_arn]
-      }
+      local.neptune_statement
     ]
   })
 }
@@ -287,9 +283,9 @@ resource "aws_iam_role_policy" "cognito_reader" {
 # -----------------------------------------------------------------------------
 # Role 5: agents-orchestrator (1 Lambda — agents)
 # Superset role: Neptune + multiple DynamoDB tables + SSM agent-settings +
-# ECS RunTask/DescribeTasks/StopTask (scoped to this cluster and the agent
-# task-definition family) + iam:PassRole (scoped to the two ECS task roles).
-# This is the most privileged Lambda role — intentionally isolated.
+# AgentCore runtime invoke (v2 model discovery). The v1 ECS dispatch perms
+# (RunTask/StopTask/DescribeTasks + iam:PassRole) were removed with the v1
+# execution engine. Still intentionally isolated from the other Lambda roles.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "agents_orchestrator" {
   name               = "${var.project_name}-agents-orchestrator-${var.environment}"
@@ -322,84 +318,21 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
         Resource = concat(
           var.dynamodb_table_arns,
           [for arn in var.dynamodb_table_arns : "${arn}/index/*"],
-          compact([
-            var.git_connections_table_arn,
-            var.git_connections_table_arn != "" ? "${var.git_connections_table_arn}/index/*" : "",
-            var.git_provider_connections_table_arn,
-            var.git_provider_connections_table_arn != "" ? "${var.git_provider_connections_table_arn}/index/*" : ""
-          ])
         )
       },
-      # SSM: read and write agent settings (bearer token + MCP servers) via Admin UI
+      # SSM: read and write agent settings (bearer token, CLI models, Kiro API
+      # key, model pricing) via Admin UI
       {
         Effect = "Allow"
         Action = ["ssm:GetParameter", "ssm:GetParameters", "ssm:PutParameter"]
         Resource = [
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/bedrock-bearer-token",
-          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/mcp-servers",
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/cli-models",
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/kiro-api-key",
           # Token→USD price table, refreshed from the Price List API on model
           # discovery and read by the intents lambda to compute cost.
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/model-pricing",
         ]
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["ssm:GetParameter"]
-        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
-      },
-      # Just-in-time GitLab token refresh (POST /git/refresh-token): rotate the
-      # stored access token using the refresh token + GitLab OAuth secret so
-      # long-running construction jobs don't push/MR with an expired token.
-      # PutParameter writes the rotated token back; GetSecretValue reads the
-      # GitLab OAuth client credentials. GitHub needs neither (tokens don't
-      # expire). The gitlab secret ARN is empty when GitLab OAuth isn't
-      # provisioned, so the statement is dropped via compact().
-      {
-        Effect   = "Allow"
-        Action   = ["ssm:PutParameter"]
-        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["secretsmanager:GetSecretValue"]
-        Resource = var.gitlab_oauth_secret_arn != "" ? [var.gitlab_oauth_secret_arn] : ["arn:${local.partition}:secretsmanager:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:secret:nonexistent-gitlab-oauth-*"]
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["secretsmanager:GetSecretValue"]
-        Resource = var.github_app_private_key_secret_arn != "" ? [var.github_app_private_key_secret_arn] : ["arn:${local.partition}:secretsmanager:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:secret:nonexistent-github-app-*"]
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["ecs:RunTask"]
-        Resource = "${var.agent_task_definition_family_arn}:*"
-        Condition = {
-          ArnEquals = {
-            "ecs:cluster" = var.ecs_cluster_arn
-          }
-        }
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["ecs:DescribeTasks", "ecs:StopTask"]
-        Resource = "arn:${local.partition}:ecs:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:task/*/*"
-        Condition = {
-          ArnEquals = {
-            "ecs:cluster" = var.ecs_cluster_arn
-          }
-        }
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["iam:PassRole"]
-        Resource = compact([var.agent_task_role_arn, var.agent_execution_role_arn])
-        Condition = {
-          StringEquals = {
-            "iam:PassedToService" = "ecs-tasks.${local.dns_suffix}"
-          }
-        }
       },
       # Model discovery for the project-settings picker (GET /agents/capabilities
       # ?models=1): list the region's Bedrock inference profiles (claude/opencode
@@ -429,8 +362,8 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
 
 # -----------------------------------------------------------------------------
 # Role 6: neptune-artifacts (2 Lambdas — projects, tasks)
-# Neptune CRUD + S3 GetObject/PutObject on the artifacts bucket
-# (used to sign presigned URLs for steering-rule docs).
+# Neptune CRUD. (The steering-docs S3 presign statement went with the retired
+# v1 agent-config endpoints.)
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "neptune_artifacts" {
   name               = "${var.project_name}-neptune-artifacts-${var.environment}"
@@ -453,12 +386,7 @@ resource "aws_iam_role_policy" "neptune_artifacts" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-      local.neptune_statement,
-      {
-        Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:PutObject"]
-        Resource = ["${var.artifacts_bucket_arn}/steering/*"]
-      }
+      local.neptune_statement
     ]
   })
 }
@@ -633,10 +561,6 @@ module "sprints_lambda" {
     NEPTUNE_ENDPOINT     = var.neptune_endpoint
     ENVIRONMENT          = var.environment
     CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
-    # Server-origin sprint.phaseChanged fanout: the sprints lambda pushes the
-    # event to sprint-channel WS connections.
-    CONNECTIONS_TABLE  = var.connections_table_name
-    WEBSOCKET_ENDPOINT = var.websocket_api_endpoint_https
   }
 }
 
@@ -838,14 +762,9 @@ module "questions_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT      = var.neptune_endpoint
-    ENVIRONMENT           = var.environment
-    AGENT_QUESTIONS_TABLE = var.agent_questions_table_name
-    CORS_ALLOWED_ORIGINS  = var.cors_allowed_origins
-    # Server-origin question.answered fanout: the questions lambda pushes the
-    # event to sprint-channel WS connections.
-    CONNECTIONS_TABLE  = var.connections_table_name
-    WEBSOCKET_ENDPOINT = var.websocket_api_endpoint_https
+    NEPTUNE_ENDPOINT     = var.neptune_endpoint
+    ENVIRONMENT          = var.environment
+    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
   }
 }
 
@@ -1117,8 +1036,7 @@ module "timeline_events_lambda" {
 # Neptune CRUD + read access to the realtime doc-token secret (issues HMAC
 # scope tokens after a membership check) + the discussion-locks / read-state
 # tables (creation + message guards) + connections-table fan-out
-# (server-driven discussion.message broadcasts) + a synchronous invoke of the
-# agents lambda for assist dispatch.
+# (server-driven discussion.message broadcasts).
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "discussions" {
   name               = "${var.project_name}-discussions-${var.environment}"
@@ -1164,13 +1082,6 @@ resource "aws_iam_role_policy" "discussions" {
         Effect   = "Allow"
         Action   = ["execute-api:ManageConnections"]
         Resource = "${var.websocket_execution_arn}/*"
-      },
-      {
-        # Assist dispatch: synchronous invoke of the agents lambda with
-        # phase:'discussion' (assist runs as a pool-worker 'discussion' phase).
-        Effect   = "Allow"
-        Action   = ["lambda:InvokeFunction"]
-        Resource = "arn:${local.partition}:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-agents-${var.environment}"
       }
     ]
   })
@@ -1211,7 +1122,6 @@ module "discussions_lambda" {
     READ_STATE_TABLE      = var.discussion_read_state_table_name
     CONNECTIONS_TABLE     = var.connections_table_name
     WEBSOCKET_ENDPOINT    = var.websocket_api_endpoint_https
-    AGENTS_LAMBDA         = "${var.project_name}-agents-${var.environment}"
     # Takeover-safety invariant: must match `timeout` above; the
     # lambda asserts message-guard pending window (120 s) > this at init.
     LAMBDA_TIMEOUT_SECONDS = "30"
@@ -1452,42 +1362,6 @@ resource "aws_iam_role_policy" "realtime_fanout" {
       }
     ]
   })
-}
-
-# =============================================================================
-# Create PR Lambda — invoked by the construction MCP server (trigger_pr_creation)
-# =============================================================================
-module "create_pr_lambda" {
-  source  = "terraform-aws-modules/lambda/aws"
-  version = "~> 8.0"
-
-  function_name = "${var.project_name}-create-pull-request-${var.environment}"
-  handler       = "create-pr.handler"
-  runtime       = "nodejs24.x"
-  timeout       = 30
-
-  source_path = [
-    {
-      path = "${path.module}/../../../../lambda/create-pr"
-      commands = [
-        "cd ../.. && npm run build -w create-pr",
-        ":zip lambda/create-pr/.build",
-      ]
-    }
-  ]
-
-  create_role = false
-  lambda_role = aws_iam_role.create_pr.arn
-}
-
-resource "aws_iam_role" "create_pr" {
-  name               = "${var.project_name}-create-pull-request-${var.environment}"
-  assume_role_policy = local.lambda_assume_role_policy
-}
-
-resource "aws_iam_role_policy_attachment" "create_pr_basic" {
-  role       = aws_iam_role.create_pr.name
-  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
 # =============================================================================

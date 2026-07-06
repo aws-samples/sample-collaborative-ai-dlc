@@ -1,5 +1,8 @@
 # Running Inception
 
+!!! note "Retired v1 lifecycle"
+This page describes the v1 sprint lifecycle, which is now read-only: existing v1 projects and their history stay viewable, but new sprints and agent runs can no longer be started. New work runs on v2 intents, executed by the Bedrock AgentCore runtime — see the [architecture overview](../concepts/architecture.md#agent-runtime).
+
 The Inception phase turns a project description into structured requirements, user stories, and tasks. It is the first phase of the [AI-DLC methodology](https://github.com/awslabs/aidlc-workflows) lifecycle.
 
 ## Starting Inception

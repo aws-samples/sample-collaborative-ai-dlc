@@ -1,6 +1,5 @@
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
-import nodePath from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
@@ -18,10 +17,7 @@ import {
   mapBinding,
   fetchMembershipRole,
 } from '../shared/trackers.js';
-import { validateMcpServersJson } from '../shared/mcp-validator.js';
 import { normalizeCliModels, parseCliModels } from '../shared/cli-models.js';
-import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
@@ -37,9 +33,13 @@ const { cardinality, P } = gremlin.process;
 // The trackers lambda special-cases this id on the issue routes.
 export const LEGACY_GITHUB_BINDING_ID = 'legacy-github';
 
-// Project kind discriminator. Every existing project predates this field and is
-// implicitly v1 (no migration). v2 projects run the AI-DLC v2 block/workflow
-// runtime (intents, dynamic phases/stages) and carry the extra settings below.
+// Project kind discriminator. v2 is the only kind that can be created: POST
+// rejects an explicit kind='v1' and an omitted kind now means v2. Pre-freeze
+// projects without the property remain implicitly v1 and are read-only —
+// viewable through the GET paths (their v1 execution runtime was deleted),
+// with project-level admin ops (rename/delete/membership) still allowed.
+// v2 projects run the AI-DLC v2 block/workflow runtime (intents, dynamic
+// phases/stages) and carry the extra settings below.
 const DEFAULT_V2_WORKFLOW_ID = 'aidlc-v2';
 // Seconds a parked (waiting-for-human) stage's compute lingers before release.
 // Default 5 min; bounded by the runtime idle backstop (900s) — see v2-open.md D1.
@@ -238,9 +238,8 @@ const REPO_URL_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}\/[a-zA-Z0-9][a-zA-Z0-9.
 
 // The legacy `gitRepo` field is historically a freeform string (bare names,
 // SSH URLs). We can't tighten it to owner/repo without breaking that contract,
-// but it still gets interpolated into `git clone "https://.../${url}.git"` in
-// the pool-worker. The shell/traversal-safe guard lives in shared/ so it can't
-// drift from the agents lambda's read-path copy (esbuild bundles ../shared).
+// but it still flows into the v2 workspace `git clone`. The shell/traversal-safe
+// guard lives in shared/ so it can't drift (esbuild bundles ../shared).
 const { isSafeRepo } = require('../shared/repo-validation');
 
 // Canonical repository role + provider vocabularies. Keep in sync with
@@ -288,7 +287,7 @@ const guessRole = (url) => {
 const ensureLegacyRepoMigrated = async (g, projectId, legacyGitRepo) => {
   if (!legacyGitRepo) return;
   // Defense-in-depth: this is the final gate before a value becomes a cloneable
-  // Repository vertex (and flows into the pool-worker's git clone execSync).
+  // Repository vertex (and flows into the v2 workspace's git clone).
   // Legacy git_repo is freeform, so we only enforce shell-safety here (not strict
   // owner/repo). Skip (don't throw) on a dangerous value — this runs on read paths
   // and must not break GETs of old projects.
@@ -807,21 +806,8 @@ export const handler = async (event) => {
       return response(200, result);
     }
 
-    // ---------------------------------------------------------------------------
-    // Sub-resource routing: /projects/{projectId}/mcp-servers
-    //                       /projects/{projectId}/steering-docs
-    // Detected by examining event.path since each sub-resource has its own
-    // API Gateway resource that maps to this Lambda.
-    // ---------------------------------------------------------------------------
-    const requestPath = event.path || '';
-    if (projectId && requestPath.endsWith('/mcp-servers')) {
-      return await handleProjectMcpServers(g, response, httpMethod, projectId, userId, body);
-    }
-    if (projectId && requestPath.endsWith('/steering-docs')) {
-      return await handleProjectSteeringDocs(g, response, httpMethod, projectId, userId, body);
-    }
-
     // Route: /projects/{projectId}/repos
+    const requestPath = event.path || '';
     if (projectId && /\/repos(\/|$)/.test(requestPath)) {
       if (!userId) return response(401, { error: 'Unauthorized' });
       return await handleReposRoute(g, response, event, projectId, userId);
@@ -945,8 +931,8 @@ export const handler = async (event) => {
         const createdAt = new Date().toISOString();
 
         // Support both legacy `gitRepo` (string) and new `repos` (array) input.
-        // SECURITY: repo urls are interpolated into a shell `git clone` in the
-        // pool-worker. The multi-repo `repos[]` entries are real clone targets,
+        // SECURITY: repo urls become `git clone` targets in the v2 workspace.
+        // The multi-repo `repos[]` entries are real clone targets,
         // so they must be strict owner/repo. The legacy `gitRepo` string stays
         // freeform but must be shell-safe (no injection chars).
         if (data.repos !== undefined && !Array.isArray(data.repos)) {
@@ -1012,27 +998,31 @@ export const handler = async (event) => {
         }
         const cliModels = cliModelsValidation.value;
 
-        // v2 project discriminator + settings. v1 (default) skips them entirely.
-        const kind = data.kind === 'v2' ? 'v2' : 'v1';
-        let v2Settings = { kind };
-        if (kind === 'v2') {
-          const parkValidation = normalizeParkReleaseSeconds(data.parkReleaseSeconds);
-          if (!parkValidation.valid) return response(400, { error: parkValidation.error });
-          const parallelValidation = normalizeMaxParallelUnits(data.maxParallelUnits);
-          if (!parallelValidation.valid) return response(400, { error: parallelValidation.error });
-          const prValidation = normalizePrStrategy(data.prStrategy);
-          if (!prValidation.valid) return response(400, { error: prValidation.error });
-          v2Settings = {
-            kind,
-            workflowId: data.workflowId || DEFAULT_V2_WORKFLOW_ID,
-            // Empty pin = "resolve latest at intent create" (left to the intents API).
-            workflowVersion: Number.isInteger(data.workflowVersion) ? data.workflowVersion : null,
-            // Scope is NOT a project property — it is chosen per-intent.
-            parkReleaseSeconds: parkValidation.value,
-            maxParallelUnits: parallelValidation.value,
-            prStrategy: prValidation.value,
-          };
+        // v2 is the only supported project kind: reject explicit v1 creation,
+        // and treat an omitted kind as v2. Existing pre-freeze v1 projects are
+        // read-only (their execution runtime was deleted).
+        if (data.kind === 'v1') {
+          return response(400, {
+            error: 'v1 projects can no longer be created; v2 is the only supported project kind',
+          });
         }
+        const kind = 'v2';
+        const parkValidation = normalizeParkReleaseSeconds(data.parkReleaseSeconds);
+        if (!parkValidation.valid) return response(400, { error: parkValidation.error });
+        const parallelValidation = normalizeMaxParallelUnits(data.maxParallelUnits);
+        if (!parallelValidation.valid) return response(400, { error: parallelValidation.error });
+        const prValidation = normalizePrStrategy(data.prStrategy);
+        if (!prValidation.valid) return response(400, { error: prValidation.error });
+        const v2Settings = {
+          kind,
+          workflowId: data.workflowId || DEFAULT_V2_WORKFLOW_ID,
+          // Empty pin = "resolve latest at intent create" (left to the intents API).
+          workflowVersion: Number.isInteger(data.workflowVersion) ? data.workflowVersion : null,
+          // Scope is NOT a project property — it is chosen per-intent.
+          parkReleaseSeconds: parkValidation.value,
+          maxParallelUnits: parallelValidation.value,
+          prStrategy: prValidation.value,
+        };
 
         // Create the project vertex with creator tracking
         const createV = g
@@ -1047,18 +1037,15 @@ export const handler = async (event) => {
           .property('issue_integration_enabled', issueIntegrationEnabled ? 'true' : 'false')
           .property('kind', kind)
           .property('created_by', userId)
-          .property('created_at', createdAt);
-        if (kind === 'v2') {
-          createV
-            .property('workflow_id', v2Settings.workflowId)
-            .property(
-              'workflow_version',
-              v2Settings.workflowVersion == null ? '' : String(v2Settings.workflowVersion),
-            )
-            .property('park_release_seconds', String(v2Settings.parkReleaseSeconds))
-            .property('max_parallel_units', String(v2Settings.maxParallelUnits))
-            .property('pr_strategy', v2Settings.prStrategy);
-        }
+          .property('created_at', createdAt)
+          .property('workflow_id', v2Settings.workflowId)
+          .property(
+            'workflow_version',
+            v2Settings.workflowVersion == null ? '' : String(v2Settings.workflowVersion),
+          )
+          .property('park_release_seconds', String(v2Settings.parkReleaseSeconds))
+          .property('max_parallel_units', String(v2Settings.maxParallelUnits))
+          .property('pr_strategy', v2Settings.prStrategy);
         await createV.next();
 
         // Create Repository vertices and HAS_REPO edges. Normalize so at most
@@ -1380,172 +1367,3 @@ export const handler = async (event) => {
     }
   }
 };
-
-// ---------------------------------------------------------------------------
-// Project-level MCP servers: GET/PUT /projects/{projectId}/mcp-servers
-// ---------------------------------------------------------------------------
-
-async function handleProjectMcpServers(g, response, httpMethod, projectId, userId, body) {
-  if (!userId) return response(401, { error: 'Unauthorized' });
-
-  // Verify user is a project member
-  const memberEdges = await g
-    .V()
-    .has('Project', 'id', projectId)
-    .outE('HAS_MEMBER')
-    .as('e')
-    .inV()
-    .has('User', 'id', userId)
-    .select('e')
-    .by(__.valueMap())
-    .toList();
-  if (memberEdges.length === 0) return response(403, { error: 'Access denied' });
-
-  if (httpMethod === 'GET') {
-    const result = await g.V().has('Project', 'id', projectId).valueMap('mcp_servers').next();
-    const raw = result.value ? getVal(result.value, 'mcp_servers') : '[]';
-    return response(200, { mcpServers: raw || '[]' });
-  }
-
-  if (httpMethod === 'PUT') {
-    // Only owners and admins can update MCP servers
-    const role = await fetchMembershipRole(g, projectId, userId);
-    if (!role) return response(403, { error: 'Access denied' });
-    if (role !== 'owner' && role !== 'admin') {
-      return response(403, { error: 'Only project owners and admins can update MCP servers' });
-    }
-
-    const data = JSON.parse(body || '{}');
-    const mcpServersJson = data.mcpServers || '[]';
-    const validation = validateMcpServersJson(mcpServersJson);
-    if (!validation.valid) {
-      return response(400, {
-        error: 'Invalid MCP servers configuration',
-        issues: validation.issues,
-      });
-    }
-    await g
-      .V()
-      .has('Project', 'id', projectId)
-      .property(cardinality.single, 'mcp_servers', mcpServersJson)
-      .next();
-    return response(200, { saved: true });
-  }
-
-  return response(405, { error: 'Method not allowed' });
-}
-
-// ---------------------------------------------------------------------------
-// Project-level steering docs: GET/PUT /projects/{projectId}/steering-docs
-// ---------------------------------------------------------------------------
-
-async function handleProjectSteeringDocs(g, response, httpMethod, projectId, userId, body) {
-  if (!userId) return response(401, { error: 'Unauthorized' });
-
-  // Verify user is a project member
-  const memberEdges = await g
-    .V()
-    .has('Project', 'id', projectId)
-    .outE('HAS_MEMBER')
-    .as('e')
-    .inV()
-    .has('User', 'id', userId)
-    .select('e')
-    .by(__.valueMap())
-    .toList();
-  if (memberEdges.length === 0) return response(403, { error: 'Access denied' });
-
-  const artifactsBucket = process.env.ARTIFACTS_BUCKET;
-  const region = process.env.AWS_REGION || 'us-east-1';
-  const s3 = new S3Client({ region });
-
-  if (httpMethod === 'GET') {
-    const result = await g.V().has('Project', 'id', projectId).valueMap('steering_docs').next();
-    const raw = result.value ? getVal(result.value, 'steering_docs') : '[]';
-    let docs = [];
-    try {
-      docs = JSON.parse(raw || '[]');
-    } catch {
-      docs = [];
-    }
-
-    // Generate presigned download URLs for each doc
-    const docsWithUrls = await Promise.all(
-      docs.map(async (doc) => {
-        if (!doc.s3Key || !artifactsBucket) return doc;
-        try {
-          const downloadUrl = await getSignedUrl(
-            s3,
-            new GetObjectCommand({ Bucket: artifactsBucket, Key: doc.s3Key }),
-            { expiresIn: 3600 },
-          );
-          return { ...doc, downloadUrl };
-        } catch {
-          return doc;
-        }
-      }),
-    );
-
-    return response(200, { steeringDocs: docsWithUrls });
-  }
-
-  if (httpMethod === 'PUT') {
-    // Only owners and admins can update steering docs
-    const role = await fetchMembershipRole(g, projectId, userId);
-    if (!role) return response(403, { error: 'Access denied' });
-    if (role !== 'owner' && role !== 'admin') {
-      return response(403, { error: 'Only project owners and admins can update steering docs' });
-    }
-
-    const data = JSON.parse(body || '{}');
-    const incomingDocs = data.steeringDocs || [];
-
-    if (!artifactsBucket) {
-      return response(500, { error: 'ARTIFACTS_BUCKET env var not configured' });
-    }
-    if (incomingDocs.length > 20) {
-      return response(400, { error: 'Maximum 20 steering documents per project' });
-    }
-
-    // Compute S3 keys and generate presigned upload URLs for new/changed docs
-    const uploadUrls = [];
-    const savedDocs = [];
-    for (const doc of incomingDocs) {
-      const filename = doc.filename || '';
-      const safeBase = nodePath.basename(filename);
-      if (!safeBase || safeBase !== filename || !safeBase.toLowerCase().endsWith('.md')) {
-        return response(400, {
-          error: `Invalid filename "${filename}". Must end in .md and contain no path separators.`,
-        });
-      }
-      const s3Key = `steering/${projectId}/project--${safeBase}`;
-      try {
-        const uploadUrl = await getSignedUrl(
-          s3,
-          new PutObjectCommand({
-            Bucket: artifactsBucket,
-            Key: s3Key,
-            ContentType: 'text/markdown',
-          }),
-          { expiresIn: 3600 },
-        );
-        uploadUrls.push({ filename: safeBase, s3Key, uploadUrl });
-      } catch (err) {
-        console.error(`[projects] Failed to generate presigned URL for ${s3Key}:`, err.message);
-      }
-      savedDocs.push({ filename: safeBase, s3Key });
-    }
-
-    // Persist metadata to Neptune
-    const metadataJson = JSON.stringify(savedDocs);
-    await g
-      .V()
-      .has('Project', 'id', projectId)
-      .property(cardinality.single, 'steering_docs', metadataJson)
-      .next();
-
-    return response(200, { saved: true, uploadUrls });
-  }
-
-  return response(405, { error: 'Method not allowed' });
-}

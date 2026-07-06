@@ -5,8 +5,8 @@
 //
 //   - commits the whole working tree after every stage exit (success, park,
 //     fail) with a deterministic `aidlc(<stage>): …` message,
-//   - pushes with v1 pushBranchWithRetry semantics ported from
-//     lambda/agents-ecs/pool-worker.js: retry + linear backoff + remote-HEAD
+//   - pushes with v1 pushBranchWithRetry semantics ported from the (since
+//     removed) v1 pool worker: retry + linear backoff + remote-HEAD
 //     verification, `'empty'` as a neutral no-commit sentinel,
 //   - owns credentials: the checkout's remote URL is TOKEN-FREE at rest
 //     (workspace.js scrubs it after clone); the tokenized URL is injected only

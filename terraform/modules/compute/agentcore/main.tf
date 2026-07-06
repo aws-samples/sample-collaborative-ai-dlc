@@ -321,9 +321,13 @@ resource "aws_iam_role_policy" "agentcore" {
       {
         # Read agent model + bearer/api-key settings at startup (no Bedrock IAM —
         # Claude/Kiro authenticate via the bearer token / API key, as in v1).
-        Effect   = "Allow"
-        Action   = ["ssm:GetParameter", "ssm:GetParameters"]
-        Resource = var.agent_settings_ssm_arns
+        Effect = "Allow"
+        Action = ["ssm:GetParameter", "ssm:GetParameters"]
+        Resource = [
+          aws_ssm_parameter.bedrock_bearer_token.arn,
+          aws_ssm_parameter.kiro_api_key.arn,
+          aws_ssm_parameter.cli_models.arn,
+        ]
       },
       {
         # Async stage invocation (docs/v2-parallel.md WP1): the run-stage-start
@@ -350,6 +354,64 @@ resource "aws_cloudwatch_log_group" "agentcore" {
   name              = "/aws/bedrock-agentcore/${var.project_name}-${var.environment}"
   retention_in_days = var.environment == "prod" ? 30 : 7
   tags              = var.tags
+}
+
+# ---------------------------------------------------------------------------
+# Agent Settings — SSM Parameters (managed via Admin UI at runtime)
+#   Read by this runtime at startup (auth-resolver / model-resolver) and by the
+#   agents + intents lambdas (Admin settings API, model defaults/pricing).
+#   Formerly defined in modules/compute/agents (the retired v1 ECS pool) —
+#   root-level `moved` blocks preserve the stored values across the migration.
+# ---------------------------------------------------------------------------
+
+# Bedrock bearer token — optional alternative to IAM role auth.
+# Created with a placeholder value; updated at runtime via the Admin UI.
+resource "aws_ssm_parameter" "bedrock_bearer_token" {
+  name        = "/${var.project_name}/${var.environment}/bedrock-bearer-token"
+  description = "AWS_BEARER_TOKEN_BEDROCK for Claude Code / OpenCode (leave blank to use IAM role)"
+  type        = "SecureString"
+  value       = "placeholder"
+
+  lifecycle {
+    # Never overwrite a value that was set via the Admin UI
+    ignore_changes = [value]
+  }
+
+  tags = var.tags
+}
+
+# Default agent models by CLI — JSON object managed by the Admin UI at runtime.
+resource "aws_ssm_parameter" "cli_models" {
+  name        = "/${var.project_name}/${var.environment}/cli-models"
+  description = "Default agent model IDs by CLI (JSON object)"
+  type        = "String"
+  value = jsonencode(merge(
+    var.kiro_model != "" ? { kiro = var.kiro_model } : {},
+    var.bedrock_model != "" ? {
+      opencode = can(regex("^amazon-bedrock/", var.bedrock_model)) ? var.bedrock_model : "amazon-bedrock/${var.bedrock_model}"
+    } : {}
+  ))
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+
+  tags = var.tags
+}
+
+# Kiro API key — stored as SecureString; set via Admin UI.
+# Created with a placeholder; the driver treats "placeholder" as "not configured".
+resource "aws_ssm_parameter" "kiro_api_key" {
+  name        = "/${var.project_name}/${var.environment}/kiro-api-key"
+  description = "KIRO_API_KEY for Kiro CLI authentication"
+  type        = "SecureString"
+  value       = "placeholder"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+
+  tags = var.tags
 }
 
 # ---------------------------------------------------------------------------
@@ -451,8 +513,8 @@ resource "awscc_bedrockagentcore_runtime" "stage_executor" {
     AIDLC_REPO_REF                = var.aidlc_repo_ref
     BEDROCK_MODEL                 = var.bedrock_model
     AWS_REGION                    = var.aws_region
-    BEDROCK_BEARER_TOKEN_SSM_PATH = var.bedrock_bearer_token_ssm_name
-    KIRO_API_KEY_SSM_PATH         = var.kiro_api_key_ssm_name
+    BEDROCK_BEARER_TOKEN_SSM_PATH = aws_ssm_parameter.bedrock_bearer_token.name
+    KIRO_API_KEY_SSM_PATH         = aws_ssm_parameter.kiro_api_key.name
   }
 
   tags = var.tags

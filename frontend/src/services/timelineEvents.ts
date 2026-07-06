@@ -27,17 +27,8 @@ export interface TimelineEvent {
   questionId?: string;
 }
 
-export interface CreateTimelineEventInput {
-  type: TimelineEventType;
-  title: string;
-  detail?: string;
-  userId?: string;
-  userName?: string;
-  questionId?: string;
-}
-
+// v1 timeline events are read-only: the create route was removed with the v1
+// engine — only the list remains.
 export const timelineEventsService = {
   list: (sprintId: string) => api.get<TimelineEvent[]>(`/sprints/${sprintId}/timeline-events`),
-  create: (sprintId: string, input: CreateTimelineEventInput) =>
-    api.post<TimelineEvent>(`/sprints/${sprintId}/timeline-events`, input),
 };

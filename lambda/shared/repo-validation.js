@@ -1,14 +1,12 @@
 // Shared shell-injection guards for repo identifiers and git refs.
 //
-// These values are interpolated into double-quoted shell `git` commands (clone
-// URLs) and into "/workspace/${url}" directory paths by the pool-worker, so this
-// is the authoritative injection gate. It lived in two copies (agents + projects
-// lambdas) that had already drifted (one capped length, the other didn't); keeping
-// a single definition here prevents a future hardening fix from being applied to
-// one lambda but not the other.
+// These values become git clone URLs and workspace directory paths (the v2
+// agentcore checkout), so this is the authoritative injection gate. It lived in
+// two copies (agents + projects lambdas) that had already drifted (one capped
+// length, the other didn't); keeping a single definition here prevents a future
+// hardening fix from being applied to one lambda but not the other.
 //
 // Consumed by:
-//   - lambda/agents/index.js   via require('./shared/repo-validation')  (raw-zip, runtime ./shared)
 //   - lambda/projects/index.js via require('../shared/repo-validation') (esbuild bundles ../shared)
 
 // Reject anything that could break out of a double-quoted shell string

@@ -1,10 +1,8 @@
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
-import { randomUUID } from 'node:crypto';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { buildResponse } from '../shared/response.js';
-import { broadcastToSprintChannel } from '../shared/ws-fanout.js';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -19,8 +17,6 @@ const getConnection = async () => {
   const { url, headers } = getUrlAndHeaders(host, port, credentials, '/gremlin', protocol);
   return new DriverRemoteConnection(url, { headers });
 };
-
-const VALID_PHASES = ['INCEPTION', 'CONSTRUCTION', 'REVIEW', 'COMPLETED'];
 
 const nonEmpty = (s) => (s && s !== '' ? s : null);
 
@@ -106,9 +102,12 @@ export const handler = async (event) => {
         }),
       );
     }
-    const { httpMethod, pathParameters, body } = event;
+    const { httpMethod, pathParameters } = event;
     const { projectId, sprintId } = pathParameters || {};
 
+    // Sprints belong to v1 projects, which are read-only: sprint writes were
+    // removed together with the v1 execution engine, so only the GET routes
+    // (list + single) remain.
     switch (httpMethod) {
       case 'GET': {
         if (sprintId) {
@@ -123,272 +122,6 @@ export const handler = async (event) => {
           .valueMap()
           .toList();
         return res(200, list.map(mapSprint));
-      }
-
-      case 'POST': {
-        const data = JSON.parse(body);
-        const id = randomUUID();
-        const createdAt = new Date().toISOString();
-        const phase = data.phase || 'INCEPTION';
-        if (!VALID_PHASES.includes(phase)) return res(400, { error: 'Invalid phase' });
-
-        const issueNumber =
-          data.issueNumber !== undefined && data.issueNumber !== null
-            ? String(data.issueNumber)
-            : '';
-        const issueUrl = data.issueUrl || '';
-
-        // Two ways the caller can pin a tracker resource to the sprint:
-        //   1. data.tracker = {provider, instance, externalProjectKey, resourceType, resourceId, resourceUrl}
-        //   2. data.issueNumber/issueUrl — interpreted as a github-issues tracker
-        //      against the parent project's git_repo. Legacy path from #171,
-        //      kept so older deployed frontends or external API callers keep
-        //      working. The Phase 2 frontend (#196) writes (1).
-        let trackerProperties = null;
-        if (data.tracker?.provider) {
-          trackerProperties = {
-            provider: data.tracker.provider,
-            instance: data.tracker.instance || '',
-            externalProjectKey: data.tracker.externalProjectKey || '',
-            resourceType: data.tracker.resourceType || 'issue',
-            resourceId:
-              data.tracker.resourceId !== undefined && data.tracker.resourceId !== null
-                ? String(data.tracker.resourceId)
-                : '',
-            resourceUrl: data.tracker.resourceUrl || '',
-          };
-        } else if (issueNumber || issueUrl) {
-          // Look up the parent project's git_repo so we can populate
-          // externalProjectKey for the synthetic GitHub-issues tracker.
-          const projectVal = await g.V().has('Project', 'id', projectId).values('git_repo').next();
-          const externalProjectKey = projectVal.value || '';
-          trackerProperties = {
-            provider: 'github-issues',
-            instance: 'public',
-            externalProjectKey,
-            resourceType: 'issue',
-            resourceId: issueNumber,
-            resourceUrl: issueUrl,
-          };
-        }
-
-        let createTrav = g
-          .V()
-          .has('Project', 'id', projectId)
-          .as('p')
-          .addV('Sprint')
-          .property('id', id)
-          .property('name', data.name)
-          .property('description', data.description || '')
-          .property('phase', phase)
-          .property('sprint_id', id)
-          .property('created_at', createdAt)
-          .property('current_execution_arn', '')
-          .property('current_execution_id', '')
-          .property('current_agent_status', '')
-          .property('issue_number', issueNumber)
-          .property('issue_url', issueUrl);
-
-        if (trackerProperties) {
-          createTrav = createTrav
-            .property('tracker_provider', trackerProperties.provider)
-            .property('tracker_instance', trackerProperties.instance)
-            .property('tracker_external_project_key', trackerProperties.externalProjectKey)
-            .property('tracker_resource_type', trackerProperties.resourceType)
-            .property('tracker_resource_id', trackerProperties.resourceId)
-            .property('tracker_resource_url', trackerProperties.resourceUrl);
-        }
-
-        await createTrav.as('s').addE('HAS_SPRINT').from_('p').to('s').next();
-
-        return res(201, {
-          id,
-          name: data.name,
-          description: data.description || '',
-          phase,
-          createdAt,
-          currentExecutionArn: null,
-          currentExecutionId: null,
-          currentAgentStatus: null,
-          issueNumber: issueNumber || null,
-          issueUrl: issueUrl || null,
-          tracker: trackerProperties
-            ? {
-                provider: trackerProperties.provider,
-                instance: trackerProperties.instance || null,
-                externalProjectKey: trackerProperties.externalProjectKey || null,
-                resourceType: trackerProperties.resourceType,
-                resourceId: trackerProperties.resourceId || null,
-                resourceUrl: trackerProperties.resourceUrl || null,
-              }
-            : null,
-        });
-      }
-
-      case 'PUT': {
-        const raw = JSON.parse(body);
-        console.log('PUT request - sprintId:', sprintId);
-
-        const existing = await g.V().has('Sprint', 'id', sprintId).valueMap().next();
-        if (!existing.value) return res(404, { error: 'Sprint not found' });
-
-        // Agent state fields are system-write-only; strip them from user requests.
-        // The orchestrator and pool-worker update these via internal invocations.
-        const USER_WRITABLE = ['name', 'description', 'phase'];
-        const isSystemCaller = event.requestContext?.authorizer?.claims?.sub === 'system';
-        const SYSTEM_FIELDS = [
-          'currentExecutionArn',
-          'currentExecutionId',
-          'currentAgentType',
-          'currentAgentStatus',
-          'agentStartedAt',
-          'agentCompletedAt',
-          'prUrl',
-          'prNumber',
-          'branch',
-          'baseBranch',
-        ];
-        const allowedKeys = isSystemCaller ? [...USER_WRITABLE, ...SYSTEM_FIELDS] : USER_WRITABLE;
-        const data = Object.fromEntries(
-          Object.entries(raw).filter(([k]) => allowedKeys.includes(k)),
-        );
-
-        if (data.phase) {
-          if (!VALID_PHASES.includes(data.phase)) return res(400, { error: 'Invalid phase' });
-        }
-
-        const { cardinality } = gremlin.process;
-
-        if (data.name) {
-          await g
-            .V()
-            .has('Sprint', 'id', sprintId)
-            .property(cardinality.single, 'name', data.name)
-            .next();
-        }
-        if (data.description !== undefined) {
-          await g
-            .V()
-            .has('Sprint', 'id', sprintId)
-            .property(cardinality.single, 'description', data.description)
-            .next();
-        }
-        if (data.phase) {
-          await g
-            .V()
-            .has('Sprint', 'id', sprintId)
-            .property(cardinality.single, 'phase', data.phase)
-            .next();
-        }
-
-        // Agent state fields (system-caller only)
-        if (data.currentExecutionArn !== undefined) {
-          await g
-            .V()
-            .has('Sprint', 'id', sprintId)
-            .property(cardinality.single, 'current_execution_arn', data.currentExecutionArn)
-            .next();
-        }
-        if (data.currentExecutionId !== undefined) {
-          await g
-            .V()
-            .has('Sprint', 'id', sprintId)
-            .property(cardinality.single, 'current_execution_id', data.currentExecutionId)
-            .next();
-        }
-        if (data.currentAgentType !== undefined) {
-          await g
-            .V()
-            .has('Sprint', 'id', sprintId)
-            .property(cardinality.single, 'current_agent_type', data.currentAgentType)
-            .next();
-        }
-        if (data.currentAgentStatus !== undefined) {
-          await g
-            .V()
-            .has('Sprint', 'id', sprintId)
-            .property(cardinality.single, 'current_agent_status', data.currentAgentStatus)
-            .next();
-        }
-        if (data.agentStartedAt !== undefined) {
-          await g
-            .V()
-            .has('Sprint', 'id', sprintId)
-            .property(cardinality.single, 'agent_started_at', data.agentStartedAt)
-            .next();
-        }
-        if (data.agentCompletedAt !== undefined) {
-          await g
-            .V()
-            .has('Sprint', 'id', sprintId)
-            .property(cardinality.single, 'agent_completed_at', data.agentCompletedAt)
-            .next();
-        }
-        if (data.prUrl !== undefined) {
-          await g
-            .V()
-            .has('Sprint', 'id', sprintId)
-            .property(cardinality.single, 'pr_url', data.prUrl || '')
-            .next();
-        }
-        if (data.prNumber !== undefined) {
-          await g
-            .V()
-            .has('Sprint', 'id', sprintId)
-            .property(cardinality.single, 'pr_number', data.prNumber ? String(data.prNumber) : '')
-            .next();
-        }
-        if (data.branch !== undefined) {
-          await g
-            .V()
-            .has('Sprint', 'id', sprintId)
-            .property(cardinality.single, 'branch', data.branch || '')
-            .next();
-        }
-        if (data.baseBranch !== undefined) {
-          await g
-            .V()
-            .has('Sprint', 'id', sprintId)
-            .property(cardinality.single, 'base_branch', data.baseBranch || '')
-            .next();
-        }
-
-        const updated = await g.V().has('Sprint', 'id', sprintId).valueMap().next();
-
-        // Server-origin reload hint: peers re-fetch the sprint and navigate
-        // from the FETCHED phase — the payload deliberately carries no
-        // phase. Replaces the client broadcast.
-        if (data.phase) {
-          await broadcastToSprintChannel(sprintId, {
-            action: 'sprint.phaseChanged',
-            sprintId,
-          });
-        }
-
-        return res(200, mapSprint(updated.value));
-      }
-
-      case 'DELETE': {
-        // Drop sprint and all contained vertices (incl. discussion threads
-        // and their messages — cascade delete)
-        await g
-          .V()
-          .has('Sprint', 'id', sprintId)
-          .union(
-            gremlin.process.statics.out('CONTAINS'),
-            gremlin.process.statics.out('HAS_REVIEW'),
-            gremlin.process.statics.out('HAS_DISCUSSION').union(
-              // Messages BEFORE their thread: drop() consumes eagerly, and
-              // out('HAS_MESSAGE') from an already-dropped Discussion
-              // yields nothing.
-              gremlin.process.statics.out('HAS_MESSAGE'),
-              gremlin.process.statics.identity(),
-            ),
-            gremlin.process.statics.identity(),
-          )
-          .drop()
-          .next();
-        return res(204, {});
       }
 
       default:

@@ -36,20 +36,10 @@ export interface Question {
   answeredAt?: string;
 }
 
+// v1 questions are read-only: create/update were removed with the v1 engine —
+// only the GET routes remain. The Structured* types stay: the v2 question
+// gates (QuestionEditor, collaborative answer drafts) share them.
 export const questionsService = {
   list: (sprintId: string) => api.get<Question[]>(`/sprints/${sprintId}/questions`),
   get: (sprintId: string, id: string) => api.get<Question>(`/sprints/${sprintId}/questions/${id}`),
-  create: (sprintId: string, input: { agent: string; questions: StructuredQuestion[] }) =>
-    api.post<Question>(`/sprints/${sprintId}/questions`, input),
-  update: (
-    sprintId: string,
-    id: string,
-    input: {
-      structuredAnswer?: StructuredAnswer;
-      draftAnswer?: StructuredAnswer;
-      influencesRequirementIds?: string[];
-      influencesUserStoryIds?: string[];
-      influencesTaskIds?: string[];
-    },
-  ) => api.put<Question>(`/sprints/${sprintId}/questions/${id}`, input),
 };

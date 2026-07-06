@@ -219,7 +219,8 @@ export function ActivityPanel({ sprintId, onClose }: ActivityPanelProps) {
       // Refresh timeline when artifacts change
       realtimeService.on('artifact.created', () => fetchTimeline()),
       realtimeService.on('agent.question', () => {
-        // Timeline event is created server-side in submit-question Lambda (once, not per-client)
+        // Historical v1 event — nothing emits it anymore, but replayed/old
+        // connections may still deliver it; refreshing is harmless.
         fetchTimeline();
       }),
     ];

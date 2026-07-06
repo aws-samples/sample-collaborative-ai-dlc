@@ -9,13 +9,10 @@ export interface GeneralInfo {
   createdAt: string;
 }
 
+// v1 general info is read-only: the write routes were removed with the v1
+// engine — only the GET routes remain.
 export const generalInfoService = {
   list: (sprintId: string) => api.get<GeneralInfo[]>(`/sprints/${sprintId}/general-info`),
   get: (sprintId: string, id: string) =>
     api.get<GeneralInfo>(`/sprints/${sprintId}/general-info/${id}`),
-  create: (sprintId: string, input: { type: string; title: string; content: string }) =>
-    api.post<GeneralInfo>(`/sprints/${sprintId}/general-info`, input),
-  update: (sprintId: string, id: string, input: Partial<GeneralInfo>) =>
-    api.put<GeneralInfo>(`/sprints/${sprintId}/general-info/${id}`, input),
-  delete: (sprintId: string, id: string) => api.delete(`/sprints/${sprintId}/general-info/${id}`),
 };

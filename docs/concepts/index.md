@@ -52,7 +52,7 @@ AIDLC Collaborative is collaborative-first. Specs, requirements, and tasks are e
 
 The platform is not locked into any single technology. We integrate what works best for each module:
 
-- **Agent compute:** Currently ECS Fargate containers on AWS. Could be [Bedrock AgentCore](https://github.com/aws-samples/sample-autonomous-cloud-coding-agents/) or other serverless agent runtimes.
+- **Agent compute:** Currently the Amazon Bedrock AgentCore runtime (serverless, one isolated session per agent). Could be container-based (ECS) or other serverless agent runtimes.
 - **Structured data:** Currently Neptune (graph DB) + DynamoDB. Could be other graph engines (Neo4j, etc.) or supplemented with vector databases for semantic search.
 - **Agent tooling:** Integrates with Claude Code, OpenCode, Kiro, and other adopted tools rather than replacing them.
 - **Source control:** GitHub today, with GitLab and other providers on the roadmap.
@@ -82,6 +82,9 @@ Each phase has a clear purpose:
 A sprint moves through these phases sequentially. The Review phase can send work back to Construction with structured feedback, creating an iterative improvement loop until the result meets expectations.
 
 ## Sprints
+
+!!! note "Retired v1 lifecycle"
+Sprints are the v1 unit of work and are now read-only: existing sprints and their history stay viewable, but new sprints and agent runs can no longer be started. New work is organized around v2 **intents**, which execute the same AI-DLC methodology on the Bedrock AgentCore runtime — see the [architecture overview](architecture.md#agent-runtime).
 
 A sprint is one iteration of the [AI-DLC methodology](https://github.com/awslabs/aidlc-workflows). It groups a set of requirements, user stories, and tasks under a single lifecycle.
 

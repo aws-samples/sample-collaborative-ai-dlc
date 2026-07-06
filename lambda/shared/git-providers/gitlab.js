@@ -356,8 +356,8 @@ const addPRComment = async (ctx, repoId, mrIid, { body, path, line }) => {
 };
 
 // ---------------------------------------------------------------------------
-// MR creation + construction-task-branch helpers (used by create-pr) and
-// MR-state / server-side merge (used by the construction MCP server).
+// MR creation + construction-task-branch helpers (used by the v2 orchestrator)
+// and MR-state / server-side merge.
 //
 // Construction task branches follow the same "<sprintBranch>--task-..." naming
 // convention as GitHub; we list them via the branches API and check merge

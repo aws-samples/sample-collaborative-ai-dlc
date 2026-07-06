@@ -1,5 +1,8 @@
 # Running Agents
 
+!!! note "Retired v1 lifecycle"
+This page describes the v1 sprint lifecycle, which is now read-only: existing v1 projects and their history (including agent transcripts) stay viewable, but new sprints and agent runs can no longer be started. New work runs on v2 intents, executed by the Bedrock AgentCore runtime — see the [architecture overview](../concepts/architecture.md#agent-runtime).
+
 After running Inception to generate tasks, you can start the Construction Agent to implement them.
 
 ## Prerequisites

@@ -1,5 +1,8 @@
 # Reviewing Work
 
+!!! note "Retired v1 lifecycle"
+This page describes the v1 sprint lifecycle, which is now read-only: existing v1 reviews stay viewable, but new v1 agent runs and review writes can no longer be started. New work runs on v2 intents with per-stage verification and human gates — see the [architecture overview](../concepts/architecture.md#agent-runtime).
+
 When an agent finishes a task, it moves to "review" status. A human reviewer evaluates the changes and decides to approve or reject.
 
 ## Opening a review

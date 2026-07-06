@@ -152,7 +152,9 @@ export function DiscussionsTab() {
               <MessageSquare className="h-5 w-5 text-muted-foreground mb-2" />
               <p className="text-xs text-muted-foreground">No discussions yet</p>
               <p className="text-[10px] text-muted-foreground/60 mt-0.5">
-                Open one from any question, artifact or the sprint
+                {scope?.kind === 'sprint'
+                  ? 'v1 discussions are read-only.'
+                  : 'Open one from any question, artifact or the sprint'}
               </p>
             </div>
           )}

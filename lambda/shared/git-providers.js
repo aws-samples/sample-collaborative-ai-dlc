@@ -5,12 +5,11 @@
 // means dropping one file in ./git-providers/ and registering it here; no
 // caller needs to learn provider-specific hosts, auth schemes, or REST shapes.
 //
-// Why CJS + a top-level file (not git-providers/index.js): the agents-ecs
-// container build copies individual `shared/<file>.js` into the image (it does
-// NOT mount lambda/shared wholesale), and the pool-worker packaging test only
-// recognises `require('../shared/<name>')`. Keeping this entry point as a
-// single top-level file lets the Dockerfile copy it (plus the ./git-providers/
-// implementation files) without changing the established pattern.
+// Why CJS + a top-level file (not git-providers/index.js): the shared/ helpers
+// are CommonJS consumed both by ESM lambdas (via default-import interop) and by
+// require() from the agentcore image, which copies shared/ wholesale to
+// /opt/shared. Keeping this entry point as a single top-level file preserves
+// the established `../shared/<name>` import pattern.
 //
 // Provider contract (each implementation exports):
 //   id, displayName, gitHost, apiBase
@@ -50,8 +49,8 @@ const getProvider = (providerId) => {
   return provider;
 };
 
-// Convenience helpers for the construction runtime (pool-worker, prompts) that
-// only need the host/clone plumbing, not the full REST surface.
+// Convenience helpers for callers (e.g. the agentcore workspace) that only
+// need the host/clone plumbing, not the full REST surface.
 const gitHost = (providerId) => getProvider(providerId).gitHost;
 const buildCloneUrl = (providerId, repoId, token) =>
   getProvider(providerId).buildCloneUrl(repoId, token);

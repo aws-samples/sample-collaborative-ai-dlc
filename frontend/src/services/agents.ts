@@ -49,26 +49,6 @@ export interface UserStory {
   updatedAt?: number;
 }
 
-export interface PoolWorker {
-  workerId: string;
-  status: 'idle' | 'assigned' | 'busy' | 'starting' | 'draining';
-  version: string;
-  availableClis: AgentCli[];
-  /** CLIs installed on the worker that failed to authenticate at startup,
-   *  mapped to the human-readable error message. */
-  cliAuthErrors?: Partial<Record<AgentCli, string>>;
-  agentCli?: AgentCli | null; // legacy
-  taskArn?: string;
-  lastHeartbeat?: number;
-  job?: { executionId: string; projectId: string; agentType: string } | null;
-}
-
-export interface PoolStatus {
-  workers: PoolWorker[];
-  currentVersion: string;
-  poolSize: number;
-}
-
 /** One selectable model in the project-settings picker. */
 export interface AgentModel {
   id: string;
@@ -100,8 +80,6 @@ export interface AgentSettings {
   bedrockBearerTokenSet: boolean;
   /** True when a Kiro API key is stored in SSM */
   kiroApiKeySet: boolean;
-  /** Raw JSON string of the MCP servers array */
-  mcpServers: string;
   /** Default runtime model overrides by supported CLI */
   cliModels?: CliModels;
 }
@@ -111,8 +89,6 @@ export interface AgentSettingsUpdate {
   bedrockBearerToken?: string;
   /** New Kiro API key value. Pass empty string to clear. Omit to leave unchanged. */
   kiroApiKey?: string;
-  /** Updated MCP servers as a JSON string */
-  mcpServers?: string;
   /** Default runtime model overrides by supported CLI */
   cliModels?: CliModels;
 }
@@ -127,25 +103,6 @@ export interface TaskAgentStatus {
 }
 
 export const agentsService = {
-  // Pool admin
-  async getPool(): Promise<PoolStatus> {
-    return api.get('/agents/pool');
-  },
-
-  async recyclePool(): Promise<{ drained: number; version: string }> {
-    return api.post('/agents/pool/recycle', {});
-  },
-
-  async warmPool(
-    count?: number,
-  ): Promise<{ launched: { workerId: string; taskArn: string }[]; version: string }> {
-    return api.post('/agents/pool/warm', { count });
-  },
-
-  async killWorker(workerId: string): Promise<void> {
-    return api.delete(`/agents/pool/${encodeURIComponent(workerId)}`);
-  },
-
   // Agent CLI capabilities — which CLIs are installed in the current image.
   // Pass `withModels` to also fetch the per-CLI model lists + v2 runtime CLI
   // availability (drives the project-settings model/CLI pickers).
@@ -153,7 +110,8 @@ export const agentsService = {
     return api.get(`/agents/capabilities${withModels ? '?models=1' : ''}`);
   },
 
-  // Agent settings — Bedrock bearer token + extra MCP servers (SSM-backed)
+  // Agent settings — Bedrock bearer token, Kiro API key + default CLI models
+  // (SSM-backed)
   async getSettings(): Promise<AgentSettings> {
     return api.get('/agents/settings');
   },
@@ -162,11 +120,8 @@ export const agentsService = {
     return api.put('/agents/settings', update);
   },
 
-  // Project agents
-  async startWorkflow(projectId: string, input?: Record<string, unknown>): Promise<AgentExecution> {
-    return api.post(`/projects/${projectId}/agents`, input || {});
-  },
-
+  // Project agents (v1 read-only: dispatch/cancel/answer routes are gone —
+  // only the status/question GETs remain).
   async getCurrentExecution(
     projectId: string,
     sprintId?: string,
@@ -187,23 +142,9 @@ export const agentsService = {
     return api.get(`/agents/${encodeURIComponent(executionArn)}${params}`);
   },
 
-  async cancel(executionArn: string): Promise<void> {
-    return api.delete(`/agents/${encodeURIComponent(executionArn)}`);
-  },
-
   // Questions are keyed by executionId (stable across restarts), not ECS task ARN
   async getQuestions(executionId: string): Promise<{ questions: AgentQuestion[] }> {
     return api.get(`/agents/${encodeURIComponent(executionId)}/questions`);
-  },
-
-  async answerQuestion(
-    executionId: string,
-    questionId: string,
-    structuredAnswer: StructuredAnswer,
-  ): Promise<{ success: boolean; restarted?: boolean; newTaskArn?: string }> {
-    return api.post(`/agents/${encodeURIComponent(executionId)}/questions/${questionId}/answer`, {
-      structuredAnswer,
-    });
   },
 
   async getRequirements(projectId: string): Promise<{ requirements: Requirement[] }> {

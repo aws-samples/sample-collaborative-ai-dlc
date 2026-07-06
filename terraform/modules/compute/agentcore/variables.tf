@@ -78,22 +78,10 @@ variable "bedrock_model" {
   type        = string
 }
 
-variable "bedrock_bearer_token_ssm_name" {
-  description = "SSM parameter name holding the Bedrock bearer token (Claude/Kiro auth)"
+variable "kiro_model" {
+  description = "Default Kiro-native model id seeded into the cli-models SSM parameter (empty = none)"
   type        = string
   default     = ""
-}
-
-variable "kiro_api_key_ssm_name" {
-  description = "SSM parameter name holding the Kiro API key"
-  type        = string
-  default     = ""
-}
-
-variable "agent_settings_ssm_arns" {
-  description = "ARNs of the SSM parameters the runtime may read at startup (bearer token, api key, models)"
-  type        = list(string)
-  default     = []
 }
 
 # AgentCore Runtime network mode. Neptune lives in a private VPC, so VPC mode is

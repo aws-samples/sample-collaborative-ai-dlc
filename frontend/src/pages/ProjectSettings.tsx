@@ -11,7 +11,6 @@ import {
   type PrStrategy,
   type RuntimeModelCli,
   type TrackerBinding,
-  type SteeringDoc,
   type ProjectRepo,
 } from '../services/projects';
 import { trackersService, type TrackerConnection } from '../services/trackers';
@@ -36,8 +35,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { McpServersSection } from '../components/settings/McpServersSection';
-import { SteeringDocsSection } from '../components/settings/SteeringDocsSection';
 import {
   Dialog,
   DialogContent,
@@ -229,12 +226,6 @@ export default function ProjectSettings() {
   const [editPrStrategy, setEditPrStrategy] = useState<PrStrategy>('intent-pr');
   const [savingV2Settings, setSavingV2Settings] = useState(false);
 
-  // MCP servers state (raw JSON string; persistence handled by McpServersSection)
-  const [mcpServers, setMcpServers] = useState('[]');
-
-  // Steering docs state (persistence/upload handled by SteeringDocsSection)
-  const [steeringDocs, setSteeringDocs] = useState<SteeringDoc[]>([]);
-
   const userRole = project?.userRole;
   const canManageMembers = userRole === 'owner' || userRole === 'admin';
   const canEditProject = userRole === 'owner' || userRole === 'admin';
@@ -270,6 +261,10 @@ export default function ProjectSettings() {
         projectsService.listMembers(projectId),
         trackersService.listConnections().catch(() => []),
       ]);
+      if (proj.kind !== 'v2') {
+        navigate(`/project/${projectId}`, { replace: true });
+        return;
+      }
       setProject(proj);
       setEditName(proj.name);
       setEditGitRepo(proj.gitRepo);
@@ -281,21 +276,12 @@ export default function ProjectSettings() {
       setRepos(proj.repos ?? []);
       setMembers(Array.isArray(mems) ? mems : []);
       setTrackerConnections(Array.isArray(conns) ? conns : []);
-
-      // Load MCP servers and steering docs in parallel (non-blocking)
-      Promise.all([
-        projectsService.getMcpServers(projectId).catch(() => ({ mcpServers: '[]' })),
-        projectsService.getSteeringDocs(projectId).catch(() => ({ steeringDocs: [] })),
-      ]).then(([mcpResp, docsResp]) => {
-        setMcpServers(mcpResp.mcpServers ?? '[]');
-        setSteeringDocs(docsResp.steeringDocs ?? []);
-      });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load project');
     } finally {
       setLoading(false);
     }
-  }, [projectId]);
+  }, [projectId, navigate]);
 
   // Load available CLI capabilities + per-CLI model lists (non-blocking). The
   // `withModels` variant also returns the v2 runtime's CLI availability and the
@@ -708,24 +694,6 @@ export default function ProjectSettings() {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to remove member');
     }
-  };
-
-  const handleSaveMcpServers = async (value: string) => {
-    if (!projectId) return;
-    clearMessages();
-    await projectsService.updateMcpServers(projectId, value);
-    setSuccess('MCP servers saved');
-  };
-
-  const handleSaveSteeringMetadata = async (docs: Array<{ filename: string }>) => {
-    if (!projectId) throw new Error('Missing projectId');
-    return projectsService.updateSteeringDocs(projectId, docs);
-  };
-
-  const refreshSteeringDocs = async () => {
-    if (!projectId) return;
-    const refreshed = await projectsService.getSteeringDocs(projectId);
-    setSteeringDocs(refreshed.steeringDocs ?? []);
   };
 
   const getAssignableRoles = (): ProjectRole[] => {
@@ -1340,31 +1308,6 @@ export default function ProjectSettings() {
                 </CardContent>
               </Card>
             )}
-
-            {/* MCP Servers */}
-            <div className="mb-6">
-              <McpServersSection
-                value={mcpServers}
-                onChange={setMcpServers}
-                onSave={handleSaveMcpServers}
-                canEdit={canEditProject}
-                description="JSON array of MCP server definitions injected into every agent session for this project. These are merged with global MCP servers; when names collide, project-level entries take precedence over global ones."
-              />
-            </div>
-
-            {/* Steering Rules */}
-            <div className="mb-6">
-              <SteeringDocsSection
-                docs={steeringDocs}
-                onSaveMetadata={handleSaveSteeringMetadata}
-                onRefresh={refreshSteeringDocs}
-                canEdit={canEditProject}
-                description="Markdown documents loaded into the agent context for every phase in this project (coding standards, API reference, framework guidelines, etc.)."
-                onSuccess={setSuccess}
-                onError={setError}
-                onClearMessages={clearMessages}
-              />
-            </div>
 
             {/* Members */}
             <Card>

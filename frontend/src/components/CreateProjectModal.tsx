@@ -1,11 +1,6 @@
 import { useState, useEffect } from 'react';
 import { GitHubIcon, GitLabIcon } from '@/components/icons/git-providers';
-import {
-  projectsService,
-  type CreateProjectInput,
-  type GitAuthMode,
-  type ProjectKind,
-} from '../services/projects';
+import { projectsService, type CreateProjectInput, type GitAuthMode } from '../services/projects';
 import { workflowsService, type WorkflowSummary } from '../services/workflows';
 import { trackersService } from '../services/trackers';
 import { useGitProviderStatus } from '../hooks/useGitProviderStatus';
@@ -64,18 +59,16 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // v2 project options. `kind` defaults to v1; choosing v2 reveals the workflow
-  // setting in step 3. Scope is chosen per-intent (not on the project), and park
-  // release is tuned later in project settings.
-  const [kind, setKind] = useState<ProjectKind>('v1');
+  // v2 workflow options — every new project is a v2 (AI-DLC workflow runtime)
+  // project; the backend rejects v1 creation. Scope is chosen per-intent (not
+  // on the project), and park release is tuned later in project settings.
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
   const [workflowId, setWorkflowId] = useState<string>('');
   const [v2Loading, setV2Loading] = useState(false);
   const [v2Error, setV2Error] = useState<string | null>(null);
 
-  // Load the workflow catalog once the user opts into a v2 project.
+  // Load the workflow catalog on mount — a workflow is always required.
   useEffect(() => {
-    if (kind !== 'v2' || workflows.length > 0) return;
     let cancelled = false;
     setV2Loading(true);
     setV2Error(null);
@@ -97,7 +90,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
     return () => {
       cancelled = true;
     };
-  }, [kind, workflows.length]);
+  }, []);
 
   const applyPrimaryRepo = (nextPrimary: string) => {
     const prevPrimaryName = repoShortName(primaryRepo);
@@ -175,8 +168,8 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
         setSubmitting(false);
         return;
       }
-      if (kind === 'v2' && !workflowId) {
-        setError('Select a workflow for the v2 project.');
+      if (!workflowId) {
+        setError('Select a workflow for the project.');
         setSubmitting(false);
         return;
       }
@@ -194,7 +187,8 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
         gitProvider,
         gitAuthMode,
         repos,
-        ...(kind === 'v2' ? { kind: 'v2' as const, workflowId } : { kind: 'v1' as const }),
+        kind: 'v2',
+        workflowId,
       };
       const project = await projectsService.create(input);
       if (formData.issueIntegrationEnabled && formData.gitRepo) {
@@ -266,36 +260,9 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
           </div>
         )}
 
-        {/* Step 1: Project type + Connect Git Provider */}
+        {/* Step 1: Connect Git Provider */}
         {step === 1 && (
           <div>
-            <label className="block font-medium mb-1 text-gray-900 dark:text-white">
-              Project Type
-            </label>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
-              v1 runs the classic sprint lifecycle. v2 runs the AI-DLC v2 workflow runtime (intents,
-              dynamic phases &amp; stages). This can't be changed later.
-            </p>
-            <div className="grid grid-cols-2 gap-2 mb-4">
-              {(['v1', 'v2'] as const).map((k) => (
-                <button
-                  key={k}
-                  type="button"
-                  onClick={() => setKind(k)}
-                  className={`rounded border px-3 py-2 text-left text-sm transition-colors ${
-                    kind === k
-                      ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-900/30 text-gray-900 dark:text-white'
-                      : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'
-                  }`}
-                >
-                  <span className="font-medium uppercase">{k}</span>
-                  <span className="block text-[11px] text-gray-500 dark:text-gray-400">
-                    {k === 'v1' ? 'Sprint lifecycle' : 'AI-DLC v2 workflow'}
-                  </span>
-                </button>
-              ))}
-            </div>
-
             <label
               htmlFor="git-provider-select"
               className="block font-medium mb-1 text-gray-900 dark:text-white"
@@ -612,42 +579,40 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                       integration
                     </span>
                     <span className="block text-xs text-gray-500 dark:text-gray-400">
-                      Browse issues on the project page and start sprints from them.
+                      Browse issues on the project page and start intents from them.
                       {repoCount > 1 ? ' Applies to the primary repository only.' : ''}
                     </span>
                   </span>
                 </label>
               </div>
             )}
-            {kind === 'v2' && (
-              <div className="mb-4 rounded border border-indigo-200 dark:border-indigo-800 bg-indigo-50/50 dark:bg-indigo-900/20 p-3 space-y-3">
-                <p className="text-xs font-medium uppercase tracking-wide text-indigo-700 dark:text-indigo-300">
-                  AI-DLC v2 settings
-                </p>
-                {v2Error && <p className="text-xs text-red-600 dark:text-red-400">{v2Error}</p>}
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    Workflow
-                  </label>
-                  <Select value={workflowId} onValueChange={setWorkflowId} disabled={submitting}>
-                    <SelectTrigger>
-                      <SelectValue placeholder={v2Loading ? 'Loading…' : 'Select a workflow'} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {workflows.map((w) => (
-                        <SelectItem key={w.workflowId} value={w.workflowId}>
-                          {w.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <p className="text-xs text-gray-500 dark:text-gray-400">
-                  Scope is chosen per-intent. Park release and other runtime settings can be tuned
-                  later in project settings.
-                </p>
+            <div className="mb-4 rounded border border-indigo-200 dark:border-indigo-800 bg-indigo-50/50 dark:bg-indigo-900/20 p-3 space-y-3">
+              <p className="text-xs font-medium uppercase tracking-wide text-indigo-700 dark:text-indigo-300">
+                AI-DLC v2 settings
+              </p>
+              {v2Error && <p className="text-xs text-red-600 dark:text-red-400">{v2Error}</p>}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Workflow
+                </label>
+                <Select value={workflowId} onValueChange={setWorkflowId} disabled={submitting}>
+                  <SelectTrigger>
+                    <SelectValue placeholder={v2Loading ? 'Loading…' : 'Select a workflow'} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {workflows.map((w) => (
+                      <SelectItem key={w.workflowId} value={w.workflowId}>
+                        {w.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
-            )}
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Scope is chosen per-intent. Park release and other runtime settings can be tuned
+                later in project settings.
+              </p>
+            </div>
             <div className="flex justify-end gap-2 mt-6">
               <button
                 type="button"
@@ -660,7 +625,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
               <button
                 type="submit"
                 className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50"
-                disabled={submitting || (kind === 'v2' && !workflowId)}
+                disabled={submitting || !workflowId}
               >
                 {submitting ? 'Creating...' : 'Create Project'}
               </button>

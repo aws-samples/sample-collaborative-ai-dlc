@@ -1,12 +1,10 @@
 const gremlin = require('gremlin');
-const { randomUUID } = require('crypto');
 const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
 const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
 const { buildResponse } = require('./shared/response');
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
-const { cardinality } = gremlin.process;
 const { order: Order } = gremlin.process;
 
 const getConnection = async () => {
@@ -17,13 +15,10 @@ const getConnection = async () => {
   return new DriverRemoteConnection(connInfo.url, { headers: connInfo.headers });
 };
 
-// NOTE (known design constraint, tracked): the review verdict is sprint-wide —
-// exactly one active Review per Sprint — so a single `status` aggregates quality
-// across ALL repos in a multi-repo sprint. Per-repo verdicts ("infra PASSED, ui
-// FAILED") cannot be expressed in the machine status; the human-readable per-repo
-// breakdown lives in `full_review` (see pool-worker.js buildFullReviewPrompt).
-// Splitting the model into per-repo Review nodes is deferred.
-const { VALID_REVIEW_STATUSES: VALID_STATUSES } = require('./shared/review-statuses');
+// NOTE (known design constraint, kept for historical data): the review verdict
+// is sprint-wide — exactly one active Review per Sprint — so a single `status`
+// aggregates quality across ALL repos in a multi-repo sprint. The human-readable
+// per-repo breakdown lives in `full_review`.
 
 const mapReview = (v) => ({
   id: v.get('id')?.[0] || '',
@@ -50,9 +45,11 @@ exports.handler = async (event) => {
   try {
     conn = await getConnection();
     const g = traversal().withRemote(conn);
-    const { httpMethod, pathParameters, body } = event;
+    const { httpMethod, pathParameters } = event;
     const { sprintId } = pathParameters || {};
 
+    // v1 projects are read-only: review writes were removed together with the
+    // v1 execution engine, so only the GET route remains.
     switch (httpMethod) {
       case 'GET': {
         // Return the active (non-stale) review. If all are stale, return the most
@@ -80,160 +77,6 @@ exports.handler = async (event) => {
         // All stale: return the most recent. With Order.desc on stale_at the newest
         // is at index 0 (allReviews[length-1] would be the oldest).
         return res(200, mapReview(activeReview || allReviews[0]));
-      }
-
-      case 'POST': {
-        // Only block if a non-stale review already exists
-        const existing = await g
-          .V()
-          .has('Sprint', 'id', sprintId)
-          .out('HAS_REVIEW')
-          .hasLabel('Review')
-          .not(gremlin.process.statics.has('stale', 'true'))
-          .count()
-          .next();
-        if (existing.value > 0) return res(409, { error: 'Review already exists for this sprint' });
-
-        const data = JSON.parse(body || '{}');
-        const id = randomUUID();
-
-        await g
-          .V()
-          .has('Sprint', 'id', sprintId)
-          .as('s')
-          .addV('Review')
-          .property('id', id)
-          .property('status', 'PENDING')
-          .property('comments', data.comments || '')
-          .property('sprint_id', sprintId)
-          .as('rv')
-          .addE('HAS_REVIEW')
-          .from_('s')
-          .to('rv')
-          .next();
-
-        return res(201, { id, status: 'PENDING', comments: data.comments || '', sprintId });
-      }
-
-      case 'PUT': {
-        const raw = JSON.parse(body);
-
-        const review = await g
-          .V()
-          .has('Sprint', 'id', sprintId)
-          .out('HAS_REVIEW')
-          .hasLabel('Review')
-          .not(gremlin.process.statics.has('stale', 'true'))
-          .next();
-        if (!review.value) return res(404, { error: 'Review not found' });
-
-        const reviewId = review.value.id;
-
-        // Agent-written fields are system-write-only (set by review agents via MCP tools).
-        // Users may update status (human verdict), comments, and edges.
-        const isSystemCaller = event.requestContext?.authorizer?.claims?.sub === 'system';
-        const SYSTEM_FIELDS = [
-          'blindReview',
-          'fullReview',
-          'blindStatus',
-          'blindRiskScore',
-          'blindRiskReasoning',
-          'fullStatus',
-          'fullRiskScore',
-          'fullRiskReasoning',
-        ];
-        const data = isSystemCaller
-          ? raw
-          : Object.fromEntries(Object.entries(raw).filter(([k]) => !SYSTEM_FIELDS.includes(k)));
-
-        if (data.status) {
-          if (!VALID_STATUSES.includes(data.status)) return res(400, { error: 'Invalid status' });
-          await g.V(reviewId).property(cardinality.single, 'status', data.status).next();
-        }
-        if (data.comments !== undefined)
-          await g.V(reviewId).property(cardinality.single, 'comments', data.comments).next();
-        if (data.blindReview !== undefined)
-          await g.V(reviewId).property(cardinality.single, 'blind_review', data.blindReview).next();
-        if (data.blindStatus) {
-          if (!VALID_STATUSES.includes(data.blindStatus))
-            return res(400, { error: 'Invalid blind status' });
-          await g.V(reviewId).property(cardinality.single, 'blind_status', data.blindStatus).next();
-        }
-        if (data.blindRiskScore !== undefined)
-          await g
-            .V(reviewId)
-            .property(cardinality.single, 'blind_risk_score', data.blindRiskScore)
-            .next();
-        if (data.blindRiskReasoning !== undefined)
-          await g
-            .V(reviewId)
-            .property(cardinality.single, 'blind_risk_reasoning', data.blindRiskReasoning)
-            .next();
-        if (data.fullReview !== undefined)
-          await g.V(reviewId).property(cardinality.single, 'full_review', data.fullReview).next();
-        if (data.fullStatus) {
-          if (!VALID_STATUSES.includes(data.fullStatus))
-            return res(400, { error: 'Invalid full status' });
-          await g.V(reviewId).property(cardinality.single, 'full_status', data.fullStatus).next();
-        }
-        if (data.fullRiskScore !== undefined)
-          await g
-            .V(reviewId)
-            .property(cardinality.single, 'full_risk_score', data.fullRiskScore)
-            .next();
-        if (data.fullRiskReasoning !== undefined)
-          await g
-            .V(reviewId)
-            .property(cardinality.single, 'full_risk_reasoning', data.fullRiskReasoning)
-            .next();
-
-        // Add REVIEWS edges to code files
-        if (data.codeFileIds) {
-          for (const cfId of data.codeFileIds) {
-            await g
-              .V(reviewId)
-              .as('rv')
-              .V()
-              .has('CodeFile', 'id', cfId)
-              .as('cf')
-              .addE('REVIEWS')
-              .from_('rv')
-              .to('cf')
-              .next();
-          }
-        }
-        // Add VALIDATES edges to requirements/stories
-        if (data.requirementIds) {
-          for (const rId of data.requirementIds) {
-            await g
-              .V(reviewId)
-              .as('rv')
-              .V()
-              .has('Requirement', 'id', rId)
-              .as('r')
-              .addE('VALIDATES')
-              .from_('rv')
-              .to('r')
-              .next();
-          }
-        }
-        if (data.userStoryIds) {
-          for (const usId of data.userStoryIds) {
-            await g
-              .V(reviewId)
-              .as('rv')
-              .V()
-              .has('UserStory', 'id', usId)
-              .as('us')
-              .addE('VALIDATES')
-              .from_('rv')
-              .to('us')
-              .next();
-          }
-        }
-
-        const updated = await g.V(reviewId).valueMap().next();
-        return res(200, mapReview(updated.value));
       }
 
       default:

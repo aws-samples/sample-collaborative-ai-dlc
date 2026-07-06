@@ -37,9 +37,10 @@ export interface TrackerBinding {
   createdBy: string | null;
 }
 
-// v1 (the default for every pre-existing project) runs the original sprint
-// lifecycle; v2 runs the AI-DLC v2 block/workflow runtime (intents, dynamic
-// phases/stages). There is no migration path between them.
+// v1 (pre-existing projects only) ran the original sprint lifecycle; v2 runs
+// the AI-DLC v2 block/workflow runtime (intents, dynamic phases/stages). New
+// projects are always v2 — the backend rejects `kind: 'v1'` on create. The
+// type is kept so v1 badges can still be rendered for frozen v1 projects.
 export type ProjectKind = 'v1' | 'v2';
 
 // How agents authenticate against the git provider for this project. `'oauth'`
@@ -96,7 +97,9 @@ export interface CreateProjectInput {
   issueIntegrationEnabled?: boolean;
   repos?: { url: string; provider?: string; role?: RepoRole }[];
   gitAuthMode?: GitAuthMode;
-  // v2 project options. `kind: 'v2'` enables the rest; omitted = v1.
+  // v2 project options. v2 is the only creatable kind: the backend rejects
+  // `kind: 'v1'` (400) and treats an omitted kind as v2. workflowId falls back
+  // to the canonical default workflow when omitted.
   kind?: ProjectKind;
   workflowId?: string;
   workflowVersion?: number | null;
@@ -147,13 +150,6 @@ export interface CognitoUser {
   status: string;
 }
 
-export interface SteeringDoc {
-  filename: string;
-  s3Key: string;
-  downloadUrl?: string;
-  uploadUrl?: string;
-}
-
 export const projectsService = {
   list: () => api.get<Project[]>('/projects'),
   get: (id: string) => api.get<Project>(`/projects/${id}`),
@@ -192,19 +188,4 @@ export const projectsService = {
     api.get<TrackerMigrationStatus>('/admin/tracker-migration/status'),
   runTrackerMigration: (dryRun = false) =>
     api.post<TrackerMigrationResult>('/admin/tracker-migration', { dryRun }),
-
-  // Project-level MCP servers (raw JSON string)
-  getMcpServers: (projectId: string) =>
-    api.get<{ mcpServers: string }>(`/projects/${projectId}/mcp-servers`),
-  updateMcpServers: (projectId: string, mcpServers: string) =>
-    api.put<{ saved: boolean }>(`/projects/${projectId}/mcp-servers`, { mcpServers }),
-
-  // Project-level steering docs
-  getSteeringDocs: (projectId: string) =>
-    api.get<{ steeringDocs: SteeringDoc[] }>(`/projects/${projectId}/steering-docs`),
-  updateSteeringDocs: (projectId: string, steeringDocs: Array<{ filename: string }>) =>
-    api.put<{
-      saved: boolean;
-      uploadUrls: Array<{ filename: string; s3Key: string; uploadUrl: string }>;
-    }>(`/projects/${projectId}/steering-docs`, { steeringDocs }),
 };

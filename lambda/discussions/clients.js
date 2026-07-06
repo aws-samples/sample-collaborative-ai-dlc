@@ -9,7 +9,6 @@ import { create } from 'neptune-lambda-client';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { SSMClient } from '@aws-sdk/client-ssm';
-import { LambdaClient } from '@aws-sdk/client-lambda';
 
 export const { cardinality, order, TextP } = gremlin.process;
 export const __ = gremlin.process.statics;
@@ -37,7 +36,6 @@ export const { query, close } = create(
 
 export const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 export const ssm = new SSMClient();
-export const lambdaClient = new LambdaClient({});
 
 export const locksTable = () => process.env.LOCKS_TABLE;
 export const readStateTable = () => process.env.READ_STATE_TABLE;

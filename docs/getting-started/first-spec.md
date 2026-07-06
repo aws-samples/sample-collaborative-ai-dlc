@@ -1,5 +1,8 @@
 # Your first sprint
 
+!!! note "Retired v1 lifecycle"
+This guide describes the v1 sprint lifecycle, which is now read-only: existing v1 projects and their history stay viewable, but new sprints and agent runs can no longer be started. New work runs on v2 intents, executed by the Bedrock AgentCore runtime — see the [architecture overview](../concepts/architecture.md#agent-runtime).
+
 This guide walks you through creating your first sprint and running the Inception phase.
 
 Before starting, make sure you have completed the [Setup](setup.md) steps and can access your deployed application.

@@ -28,18 +28,6 @@ variable "aidlc_repo_ref" {
   default     = "ba0cfe999856033ecb909a9135b46fe10811bf55"
 }
 
-variable "git_author_name" {
-  description = "Git author name used by agents for commits they create"
-  type        = string
-  default     = "AI-DLC Agent"
-}
-
-variable "git_author_email" {
-  description = "Git author email used by agents for commits they create"
-  type        = string
-  default     = "ai-dlc@example.com"
-}
-
 variable "github_app_id" {
   description = "GitHub App ID. Used by the agents Lambda to mint installation tokens for projects with git_auth_mode='app'. Empty disables App auth."
   type        = string

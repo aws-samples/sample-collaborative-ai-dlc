@@ -1,5 +1,8 @@
 # Review
 
+!!! note "Retired v1 lifecycle"
+This page describes the v1 sprint lifecycle, which is now read-only: existing v1 projects and their history stay viewable, but no new sprints or agent runs can start. New work runs on v2 intents, executed by the Bedrock AgentCore runtime — see the [architecture overview](architecture.md#agent-runtime).
+
 The Review phase is where the code produced during Construction is evaluated for quality, correctness, and alignment with requirements.
 
 ## How it works

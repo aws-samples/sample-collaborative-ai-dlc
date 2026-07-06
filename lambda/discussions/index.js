@@ -13,7 +13,6 @@
 //   PUT  …/discussions/{discussionId}/read      composite read cursor
 //   GET  …/discussions/search                   bounded scope search
 //   + per-user mention notifications and author read-cursor auto-advance on append
-//   (in-thread agent assist is sprint-only.)
 //
 // Durability model (server-first): REST persists to Neptune (source of truth),
 // then THIS lambda fans out the full payload over the app WebSocket. Yjs is a
@@ -49,7 +48,6 @@ import {
   redactMessage,
   markRead,
   searchDiscussions,
-  invokeAssist,
 } from './handlers.js';
 
 // Exported for test teardown only — production reuses the connection.
@@ -82,9 +80,6 @@ export const handler = async (event) => {
     }
     if (method === 'POST' && path.endsWith('/redact')) {
       return await redactMessage(event, res);
-    }
-    if (method === 'POST' && path.endsWith('/assist')) {
-      return await invokeAssist(event, res);
     }
     if (method === 'PUT' && path.endsWith('/{discussionId}')) {
       return await updateDiscussion(event, res);

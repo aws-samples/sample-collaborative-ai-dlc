@@ -4,11 +4,11 @@ Where AIDLC Collaborative is today and where it is heading.
 
 ## Current status
 
-| Phase            | Status  | Notes                                                                                    |
-| ---------------- | ------- | ---------------------------------------------------------------------------------------- |
-| **Inception**    | Working | Inception Agent, requirements, user stories, tasks, Q&A, collaborative editing           |
-| **Construction** | Working | Construction Agent, ECS workers, code file tracking, real-time status, parallel dispatch |
-| **Review**       | Working | Blind and full review agents, modify agent, manual comments, pass/fail                   |
+| Phase            | Status  | Notes                                                                                                         |
+| ---------------- | ------- | ------------------------------------------------------------------------------------------------------------- |
+| **Inception**    | Working | Inception Agent, requirements, user stories, tasks, Q&A, collaborative editing                                |
+| **Construction** | Working | Construction stages on the Bedrock AgentCore runtime, code file tracking, real-time status, parallel dispatch |
+| **Review**       | Working | Blind and full review agents, modify agent, manual comments, pass/fail                                        |
 
 ## What has been built
 
@@ -22,8 +22,8 @@ Where AIDLC Collaborative is today and where it is heading.
 
 ### Construction
 
-- Construction Orchestrator with parallel task dispatch
-- Multiple agents working simultaneously on independent tasks (up to `maxParallelAgents`)
+- Durable orchestration with parallel dispatch of independent units of work
+- Multiple agents working simultaneously on independent units (up to `maxParallelUnits`)
 - Code file artifact tracking (path, commit, summary)
 - Follow-up questions during implementation
 - Real-time agent status streaming via WebSocket
@@ -45,6 +45,7 @@ Where AIDLC Collaborative is today and where it is heading.
 - GitHub integration (OAuth, issue creation, status sync)
 - Neptune graph database for traceability
 - DynamoDB for operational state
+- Bedrock AgentCore agent runtime with durable orchestration
 - Cross-sprint knowledge carry-forward
 - Terraform for full AWS deployment
 
@@ -81,7 +82,7 @@ Where AIDLC Collaborative is today and where it is heading.
 
 ### Alternative compute and data surfaces
 
-- **[Bedrock AgentCore](https://github.com/aws-samples/sample-autonomous-cloud-coding-agents/)** as an alternative agent runtime
+- **[Bedrock AgentCore](https://github.com/aws-samples/sample-autonomous-cloud-coding-agents/)** is now the platform's agent runtime; further serverless runtimes remain possible
 - **Vector databases** for semantic codebase search (complementing the graph for backward traceability: code → purpose)
 - **Alternative graph engines** — the platform is not locked to Neptune; any graph DB that models the AI-DLC hierarchy works
 

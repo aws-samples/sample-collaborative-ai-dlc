@@ -19,26 +19,8 @@ export interface Review {
   sprintId: string;
 }
 
+// v1 reviews are read-only: create/update were removed with the v1 engine —
+// only the GET route remains.
 export const reviewsService = {
   get: (sprintId: string) => api.get<Review | null>(`/sprints/${sprintId}/review`),
-  create: (sprintId: string, input?: { comments?: string }) =>
-    api.post<Review>(`/sprints/${sprintId}/review`, input || {}),
-  update: (
-    sprintId: string,
-    input: {
-      status?: ReviewStatus;
-      comments?: string;
-      blindReview?: string;
-      fullReview?: string;
-      blindStatus?: ReviewStatus;
-      blindRiskScore?: string;
-      blindRiskReasoning?: string;
-      fullStatus?: ReviewStatus;
-      fullRiskScore?: string;
-      fullRiskReasoning?: string;
-      codeFileIds?: string[];
-      requirementIds?: string[];
-      userStoryIds?: string[];
-    },
-  ) => api.put<Review>(`/sprints/${sprintId}/review`, input),
 };

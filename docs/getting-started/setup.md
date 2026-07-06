@@ -36,7 +36,6 @@ Edit `terraform/environments/dev/terraform.tfvars` to set your configuration.
 | `environment`            | Environment name (`dev` or `prod`) |
 | `vpc_cidr`               | VPC CIDR block                     |
 | `neptune_instance_class` | Neptune instance size              |
-| `agent_pool_size`        | Number of agent workers            |
 
 ### Deploy infrastructure
 
@@ -46,7 +45,7 @@ Edit `terraform/environments/dev/terraform.tfvars` to set your configuration.
 
 The deployment takes 15-30 minutes. Neptune DB cluster creation takes the longest.
 
-After deployment, configure agent authentication in the platform UI by entering either a Kiro CLI API key or Bedrock credentials (for Claude Code / OpenCode setups). Check the agent pool DynamoDB table or ECS task logs to confirm agents are authenticated and ready.
+After deployment, configure agent authentication in the platform UI under **Admin → Agent Settings** by entering either a Kiro CLI API key or a Bedrock bearer token (for Claude Code / OpenCode setups). The Bedrock AgentCore runtime reads these credentials when agents run; the same admin page reports which credentials are set and which CLIs the runtime has available.
 
 ### Configure provider OAuth apps
 
@@ -225,9 +224,9 @@ aws s3 rb s3://<bucket-name> --force
 
 Make sure the bootstrap script completed successfully and that `backend.tf` contains the correct bucket name.
 
-**ECS tasks fail to start**
+**Yjs (ECS) tasks fail to start**
 
-Check CloudWatch Logs for the ECS service. Common issues: missing IAM permissions, ECR image not found, resource limits exceeded.
+Check CloudWatch Logs for the Yjs collaboration server's ECS service. Common issues: missing IAM permissions, ECR image not found, resource limits exceeded.
 
 **Frontend shows authentication errors**
 

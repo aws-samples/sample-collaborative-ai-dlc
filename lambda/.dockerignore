@@ -12,8 +12,8 @@ test
 # Lambda packaging outputs — written DURING terraform apply by the
 # terraform-aws-modules/lambda build commands. Tarring them while they are
 # rewritten corrupts the docker build context (archive/tar: invalid tar
-# header) and stalls parallel image builds. The agents image copies only
-# agents-ecs/** and shared/mcp-validator.js — never .build artifacts.
+# header) and stalls parallel image builds. The agentcore image copies only
+# agentcore/** and shared/** — never .build artifacts.
 .build
 **/.build
 builds

@@ -3,7 +3,7 @@
 AIDLC Collaborative integrates with external systems on two independent axes:
 
 - **Code host** — GitHub or GitLab. The repository is cloned into the agent workspace and all code changes flow back as a pull request (GitHub) or merge request (GitLab).
-- **Issue trackers** — GitHub Issues, GitLab Issues, and Jira Cloud. A sprint can be started from any tracker issue; the issue's title, body, and comments become the sprint's brief for the agent.
+- **Issue trackers** — GitHub Issues, GitLab Issues, and Jira Cloud. An intent can be started from any tracker issue; the issue's title, body, and comments become the intent's brief for the agent.
 
 A project can bind to _one_ code host and to _zero or more_ trackers. Both are configured per project in **Project Settings**.
 
@@ -32,11 +32,11 @@ A connection is scoped to its provider: connecting GitHub does not satisfy a Git
 3. The platform checks for an active connection to that provider and prompts you to connect if one is missing.
 4. Pick the repository (GitHub) or project (GitLab) that should back the collaborative project.
 
-The repository is cloned into the agent workspace and becomes available to the LLM assistant and agents during inception, construction, and review.
+The repository is cloned into the agent workspace and becomes available to the agents while an intent executes.
 
 ## Binding a tracker to a project
 
-A tracker binding tells the platform which external project to list issues from when starting a sprint. The same collaborative project can be bound to multiple trackers — for example, GitHub Issues for the platform's own bug tracker plus Jira Cloud for the team's product backlog.
+A tracker binding tells the platform which external project to list issues from when starting an intent. The same collaborative project can be bound to multiple trackers — for example, GitHub Issues for the platform's own bug tracker plus Jira Cloud for the team's product backlog.
 
 In **Project Settings → Trackers**:
 
@@ -48,17 +48,17 @@ You can also enable the matching git-issues tracker in one step at project creat
 
 When a project has more than one tracker bound, the project page renders a tab strip above the issue list — one tab per binding, labeled with the provider and external project key.
 
-## Starting a sprint from an issue
+## Starting an intent from an issue
 
-On the project page, the **Start a sprint from a … issue** panel lists open issues from the bound tracker. Click **Start sprint** on any issue. The sprint is created with:
+In the **New intent** dialog, choose **From tracker issue** to browse open issues from the bound tracker(s). Selecting an issue seeds the intent:
 
-- The issue title as its name
-- The issue body and any comments rendered as Markdown into the sprint description (Jira's ADF body is converted to Markdown server-side; comments are appended in chronological order)
-- A polymorphic link back to the originating tracker resource so the agent can reference it
+- The issue title becomes the intent title
+- The issue body and any comments are imported into the intent prompt (Jira's ADF body is converted to Markdown server-side; comments are appended in chronological order)
+- A polymorphic link back to the originating tracker resource is stored so the intent can reference it
 
-Issues already linked to an existing sprint show **Open sprint** instead of **Start sprint**, scoped per binding so the same numeric ID across two trackers (`PROJ-1` vs `OTHER-1`) doesn't collide.
+On read-only v1 projects, issues that were already linked to a sprint keep their **Open sprint** link, scoped per binding so the same numeric ID across two trackers (`PROJ-1` vs `OTHER-1`) doesn't collide. New sprints can no longer be started from issues.
 
-The Jira and GitLab Issues integrations are **read-only** — the agent never writes back issue comments or status changes. (On the code-host side, the agent does open a pull request / merge request and posts review results back to it — see [Reviews](#reviews).)
+The Jira and GitLab Issues integrations are **read-only** — the agent never writes back issue comments or status changes. (On the code-host side, the platform does open a pull request / merge request — see [Reviews](#reviews).)
 
 ## Reconnecting a tracker
 
@@ -90,4 +90,4 @@ Why nothing is removed: this is open source. Downstream forks are on their own u
 
 ## Reviews
 
-The platform opens a pull request (GitHub) or merge request (GitLab) on the bound code host once construction finishes. You can start a review on the platform; the review results are written back as a comment on that pull/merge request.
+The platform opens a pull request (GitHub) or merge request (GitLab) on the bound code host when an intent's execution succeeds. Reviews happen on the platform through per-stage verification and human gates. On read-only v1 projects, review results that were posted back as comments on the pull/merge request remain visible there.

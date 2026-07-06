@@ -24,6 +24,10 @@ export type DiscussionEntityType =
 
 // A discussion lives under a scope root: a v1 sprint or a v2 intent. The scope
 // decides the REST base path; the intent path is project-scoped.
+//
+// v1 sprint discussions are READ-ONLY: the backend keeps list/messages/search
+// + the read-state PUT, but the write routes (thread create, post, resolve,
+// redact) only exist for the intent scope.
 export type DiscussionScope =
   | { kind: 'sprint'; sprintId: string }
   | { kind: 'intent'; projectId: string; intentId: string };
@@ -87,8 +91,6 @@ export interface SearchResult {
   discussion: Discussion;
   message?: DiscussionMessage;
 }
-
-export type AssistCommand = 'suggest-answer' | 'summarize' | 'explain' | 'custom';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -193,20 +195,4 @@ export const discussionsService = {
       `${discussionBasePath(scope)}/discussions/search?${params.toString()}`,
     );
   },
-
-  /**
-   * Invoke an in-thread agent assist. Returns the executionId
-   * used to correlate the agent.* stream. 409 {reason:'assist_in_progress'}
-   * and 400 cli_unavailable are NOT retried — the UI surfaces them.
-   * Sprint scope only (the backend 400s for intents).
-   */
-  assist: (
-    scope: DiscussionScope,
-    discussionId: string,
-    input: { command: AssistCommand; instruction?: string },
-  ) =>
-    api.post<{ assistId: string }>(
-      `${discussionBasePath(scope)}/discussions/${discussionId}/assist`,
-      input,
-    ),
 };

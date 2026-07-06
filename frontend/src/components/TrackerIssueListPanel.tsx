@@ -5,24 +5,20 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
-import { AlertCircle, CircleDot, CheckCircle2, Loader2, Play, Search } from 'lucide-react';
-import {
-  trackersService,
-  type TrackerIssue,
-  type TrackerComment,
-  type IssuePageResult,
-} from '@/services/trackers';
-import { sprintsService, type Sprint } from '@/services/sprints';
+import { AlertCircle, CircleDot, CheckCircle2, Loader2, Search } from 'lucide-react';
+import { trackersService, type TrackerIssue, type IssuePageResult } from '@/services/trackers';
+import { type Sprint } from '@/services/sprints';
 import { ApiError } from '@/services/api';
 import type { Project, TrackerBinding } from '@/services/projects';
-import { buildSprintDescription } from '@/lib/buildSprintDescription';
 import { getTrackerProvider } from '@/lib/trackerProviders';
 
+// Read-only tracker issue browser for v1 projects. The v1 sprint lifecycle is
+// retired, so issues can no longer start sprints — issues that already have a
+// sprint keep their "Open sprint" link.
 interface Props {
   project: Project;
   binding: TrackerBinding;
   sprints: Sprint[];
-  onSprintCreated: (sprint: Sprint) => void;
 }
 
 const PER_PAGE = 30;
@@ -63,9 +59,7 @@ const formatErrorDetail = (err: unknown): FormattedError => {
   };
 };
 
-const formatError = (err: unknown): string => formatErrorDetail(err).message;
-
-export function TrackerIssueListPanel({ project, binding, sprints, onSprintCreated }: Props) {
+export function TrackerIssueListPanel({ project, binding, sprints }: Props) {
   const navigate = useNavigate();
   const [state, setState] = useState<'open' | 'closed'>('open');
   const [searchInput, setSearchInput] = useState('');
@@ -77,8 +71,6 @@ export function TrackerIssueListPanel({ project, binding, sprints, onSprintCreat
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [errorDetail, setErrorDetail] = useState<FormattedError | null>(null);
-  const [warning, setWarning] = useState<string | null>(null);
-  const [startingResourceId, setStartingResourceId] = useState<string | null>(null);
 
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const iteratorRef = useRef<AsyncGenerator<IssuePageResult> | null>(null);
@@ -191,47 +183,6 @@ export function TrackerIssueListPanel({ project, binding, sprints, onSprintCreat
     return map;
   }, [sprints, binding.id, binding.provider]);
 
-  const handleStartSprint = async (issue: TrackerIssue) => {
-    if (!project.id) return;
-    const dedupeKey = `${binding.id}#${issue.resourceId}`;
-    const existing = sprintByResource.get(dedupeKey);
-    if (existing) {
-      navigate(`/project/${project.id}/sprint/${existing.id}`);
-      return;
-    }
-    setStartingResourceId(issue.resourceId);
-    setWarning(null);
-    try {
-      let comments: TrackerComment[] = [];
-      try {
-        comments = await trackersService.listComments(project.id, binding.id, issue.resourceId);
-      } catch (err) {
-        setWarning(
-          `Couldn't load issue comments — sprint created from issue body only. (${formatError(err)})`,
-        );
-      }
-      const sprint = await sprintsService.create(project.id, {
-        name: issue.title,
-        description: buildSprintDescription(issue, comments),
-        tracker: {
-          bindingId: binding.id,
-          provider: binding.provider,
-          instance: binding.instance ?? undefined,
-          externalProjectKey: binding.externalProjectKey ?? undefined,
-          resourceType: 'issue',
-          resourceId: issue.resourceId,
-          resourceUrl: issue.resourceUrl,
-        },
-      });
-      onSprintCreated(sprint);
-      navigate(`/project/${project.id}/sprint/${sprint.id}`);
-    } catch (err) {
-      setError(formatError(err));
-    } finally {
-      setStartingResourceId(null);
-    }
-  };
-
   const countLine = (() => {
     if (loading) return null;
     if (issues.length === 0) return null;
@@ -285,19 +236,6 @@ export function TrackerIssueListPanel({ project, binding, sprints, onSprintCreat
         {countLine && <p className="text-[11px] text-muted-foreground mt-2">{countLine}</p>}
       </CardHeader>
       <CardContent className="pt-0">
-        {warning && (
-          <div className="flex items-start gap-2 text-xs text-muted-foreground bg-muted/40 border rounded-md p-2 mb-2">
-            <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-            <p className="flex-1">{warning}</p>
-            <button
-              type="button"
-              className="text-xs hover:underline"
-              onClick={() => setWarning(null)}
-            >
-              Dismiss
-            </button>
-          </div>
-        )}
         {error ? (
           <div className="flex items-start gap-2 text-sm text-destructive bg-destructive/5 border border-destructive/20 rounded-md p-3">
             <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
@@ -308,16 +246,9 @@ export function TrackerIssueListPanel({ project, binding, sprints, onSprintCreat
                   : error}
               </p>
               {(errorDetail?.notConnected || errorDetail?.reconnect) && (
-                <Button
-                  variant="link"
-                  size="sm"
-                  className="h-auto p-0 text-xs"
-                  onClick={() => navigate(`/project/${project.id}/settings`)}
-                >
-                  {errorDetail?.reconnect
-                    ? 'Reconnect in project settings'
-                    : 'Connect in project settings'}
-                </Button>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  v1 project tracker settings are retired; existing linked sprints remain viewable.
+                </p>
               )}
             </div>
           </div>
@@ -353,7 +284,6 @@ export function TrackerIssueListPanel({ project, binding, sprints, onSprintCreat
             {issues.map((issue) => {
               const dedupeKey = `${binding.id}#${issue.resourceId}`;
               const existingSprint = sprintByResource.get(dedupeKey);
-              const isStarting = startingResourceId === issue.resourceId;
               return (
                 <div
                   key={dedupeKey}
@@ -407,20 +337,16 @@ export function TrackerIssueListPanel({ project, binding, sprints, onSprintCreat
                       {new Date(issue.createdAt).toLocaleDateString()}
                     </p>
                   </div>
-                  <Button
-                    size="sm"
-                    variant={existingSprint ? 'outline' : 'default'}
-                    className="gap-1.5 shrink-0"
-                    onClick={() => handleStartSprint(issue)}
-                    disabled={isStarting}
-                  >
-                    {isStarting ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Play className="h-3.5 w-3.5" />
-                    )}
-                    {existingSprint ? 'Open sprint' : 'Start sprint'}
-                  </Button>
+                  {existingSprint && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="gap-1.5 shrink-0"
+                      onClick={() => navigate(`/project/${project.id}/sprint/${existingSprint.id}`)}
+                    >
+                      Open sprint
+                    </Button>
+                  )}
                 </div>
               );
             })}

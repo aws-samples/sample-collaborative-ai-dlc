@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useYjsDocument } from './useYjsDocument';
 import { realtimeService } from '../services/realtime';
 import { discussionsService } from '../services/discussions';
-import type { AssistCommand, DiscussionMessage, DiscussionScope } from '../services/discussions';
+import type { DiscussionMessage, DiscussionScope } from '../services/discussions';
 import {
   changeCursorOf,
   displayCursorOf,
@@ -10,10 +10,6 @@ import {
   newerOf,
   sortMessages,
 } from '../lib/discussion';
-import { SeqDeduplicator } from '../lib/seqDeduplicator';
-import { extractAgentStartError } from '../lib/agentStartError';
-import type { AgentStartError } from '../lib/agentStartError';
-import { ApiError } from '../services/api';
 import { generateColor } from '../utils/colors';
 
 // Core discussion hook.
@@ -74,16 +70,6 @@ export function useDiscussion({ scope, discussionId, open, user }: UseDiscussion
   const [hasMoreOlder, setHasMoreOlder] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [seeded, setSeeded] = useState(false);
-
-  // ── Assist lifecycle: 202 → 'starting' (the assist runs as a pool-worker
-  // phase, so pickup can take 15–60 s) → first matching agent.chunk →
-  // 'streaming' → finalized by the durable discussion.message broadcast ──
-  const [assistId, setAssistId] = useState<string | null>(null);
-  const [assistState, setAssistState] = useState<'starting' | 'streaming' | null>(null);
-  const [streamingReply, setStreamingReply] = useState('');
-  const [assistError, setAssistError] = useState<AgentStartError | null>(null);
-  const assistDedupRef = useRef(new SeqDeduplicator());
-  const assistBufferRef = useRef('');
 
   // The latest (updatedAt, id) seen — change-delta reconciliation cursor.
   const changeCursorRef = useRef<string | null>(null);
@@ -223,82 +209,6 @@ export function useDiscussion({ scope, discussionId, open, user }: UseDiscussion
     return () => unsubs.forEach((unsub) => unsub());
   }, [docId, discussionId, messagesMap, upsertMessages]);
 
-  // ── Assist stream correlation: agent.* events filtered by
-  // executionId === assistId; the durable reply arrives as a normal
-  // discussion.message and clears the streaming bubble ──
-  const clearAssist = useCallback(() => {
-    setAssistId(null);
-    setAssistState(null);
-    setStreamingReply('');
-    assistBufferRef.current = '';
-    assistDedupRef.current.reset();
-  }, []);
-
-  useEffect(() => {
-    if (!assistId) return;
-    const unsubs = [
-      realtimeService.on('agent.chunk', (data) => {
-        if (data.executionId !== assistId) return;
-        if (!assistDedupRef.current.accept(data.seq)) return;
-        if (!data.text) return;
-        assistBufferRef.current += data.text;
-        setStreamingReply(assistBufferRef.current);
-        setAssistState('streaming');
-      }),
-      realtimeService.on('agent.error', (data) => {
-        if (data.executionId !== assistId) return;
-        setAssistError({ message: data.error || 'The assistant failed.' });
-        clearAssist();
-      }),
-      realtimeService.on('agent.completed', (data) => {
-        if (data.executionId !== assistId) return;
-        // The durable reply normally lands as a discussion.message right
-        // after completion. Grace period, then reconcile + clear so a missed
-        // broadcast still resolves via REST.
-        setTimeout(() => {
-          reconcile().finally(() => clearAssist());
-        }, 3000);
-      }),
-      realtimeService.on('discussion.message', (data) => {
-        if (data.discussionId !== discussionId) return;
-        const msg = data.message as DiscussionMessage | undefined;
-        if (data.executionId === assistId || msg?.authorType === 'agent') clearAssist();
-      }),
-    ];
-    return () => unsubs.forEach((unsub) => unsub());
-  }, [assistId, discussionId, clearAssist, reconcile]);
-
-  const invokeAssist = useCallback(
-    async (command: AssistCommand, instruction?: string) => {
-      if (!discussionId || assistId || !scope) return;
-      setAssistError(null);
-      try {
-        const { assistId: executionId } = await discussionsService.assist(scope, discussionId, {
-          command,
-          instruction,
-        });
-        assistDedupRef.current.reset();
-        assistBufferRef.current = '';
-        setStreamingReply('');
-        setAssistId(executionId);
-        setAssistState('starting');
-      } catch (err) {
-        if (
-          err instanceof ApiError &&
-          err.status === 409 &&
-          err.body?.reason === 'assist_in_progress'
-        ) {
-          setAssistError({
-            message: 'An assist is already running in this thread — wait for it to finish.',
-          });
-          return;
-        }
-        setAssistError(extractAgentStartError(err));
-      }
-    },
-    [discussionId, assistId, scope],
-  );
-
   // ── Send ──
   const sendMessage = useCallback(
     async (content: string, mentions: string[] = []) => {
@@ -392,11 +302,5 @@ export function useDiscussion({ scope, discussionId, open, user }: UseDiscussion
     remoteUsers,
     /** Direct upsert path for locally-initiated mutations (e.g. redact). */
     applyMessages: upsertMessages,
-    // Assist lifecycle
-    invokeAssist,
-    assistState,
-    streamingReply,
-    assistError,
-    clearAssistError: () => setAssistError(null),
   };
 }

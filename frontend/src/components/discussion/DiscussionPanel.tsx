@@ -8,7 +8,6 @@ import { useDiscussion } from '@/hooks/useDiscussion';
 import { discussionsService } from '@/services/discussions';
 import { generateColor } from '@/utils/colors';
 import { firstUnreadIndex } from '@/lib/discussion';
-import { AgentStartErrorBanner } from '@/components/AgentStartErrorBanner';
 import { DiscussionThread } from './DiscussionThread';
 import { DiscussionInput } from './DiscussionInput';
 import { ResolveDialog } from './ResolveDialog';
@@ -19,6 +18,10 @@ import { useDiscussions } from './DiscussionProvider';
 // interactive while a discussion is open. Header with back-to-list arrow +
 // anchor badge + title + presence dots + resolve control, scrollable thread
 // opening at the first-unread divider, input footer with mention combobox.
+//
+// Sprint (v1) scope is READ-ONLY: the v1 engine is gone, so posting,
+// resolving/reopening and redacting are hidden and a muted note replaces the
+// input footer. Intent (v2) scope keeps the full write surface.
 //
 // Read marking is VISIBILITY-gated: the cursor advances only when the newest
 // message is actually on screen in a visible tab — opening the thread alone
@@ -51,7 +54,9 @@ export function DiscussionPanel() {
 
   const discussion = ctx?.activeDiscussion ?? null;
   const role = ctx?.role ?? null;
-  const canRedact = role === 'admin' || role === 'owner';
+  // v1 sprint discussions are read-only — every write affordance is hidden.
+  const readOnly = scope?.kind === 'sprint';
+  const canRedact = !readOnly && (role === 'admin' || role === 'owner');
 
   const {
     messages,
@@ -66,11 +71,6 @@ export function DiscussionPanel() {
     typingUsers,
     remoteUsers,
     applyMessages,
-    invokeAssist,
-    assistState,
-    streamingReply,
-    assistError,
-    clearAssistError,
   } = useDiscussion({
     scope,
     discussionId: discussion?.id || null,
@@ -192,6 +192,7 @@ export function DiscussionPanel() {
             ))}
           </div>
           {discussion &&
+            !readOnly &&
             (resolved ? (
               <Button
                 variant="ghost"
@@ -219,7 +220,9 @@ export function DiscussionPanel() {
         <p className="text-xs text-muted-foreground">
           {resolved
             ? `Resolved${discussion?.resolvedByName ? ` by ${discussion.resolvedByName}` : ''}`
-            : 'Team discussion — messages are saved to the sprint graph.'}
+            : readOnly
+              ? 'v1 discussions are read-only.'
+              : 'Team discussion — messages are saved to the sprint graph.'}
         </p>
       </div>
 
@@ -257,19 +260,12 @@ export function DiscussionPanel() {
               canRedact={canRedact}
               onRedact={redact}
               onBottomVisible={markRead}
-              assistState={assistState}
-              streamingReply={streamingReply}
             />
           </ScrollArea>
           {!synced && (
             <p className="px-3 py-1 text-[10px] text-muted-foreground border-t">
               Connecting live sync…
             </p>
-          )}
-          {assistError && (
-            <div className="px-3 pt-2">
-              <AgentStartErrorBanner error={assistError} onDismiss={clearAssistError} />
-            </div>
           )}
           {redactError && (
             <div className="px-3 pt-2">
@@ -289,22 +285,21 @@ export function DiscussionPanel() {
               </div>
             </div>
           )}
-          <DiscussionInput
-            onSend={sendMessage}
-            onTyping={setTyping}
-            members={members}
-            // Assist runs as a v1 sprint pool-worker phase — the backend
-            // rejects it for intent-scoped threads, so hide the menu there.
-            onAssist={scope?.kind === 'sprint' ? invokeAssist : undefined}
-            canSuggestAnswer={discussion.entityType === 'question'}
-            assistRunning={assistState !== null}
-          />
-          <ResolveDialog
-            open={resolveOpen}
-            onOpenChange={setResolveOpen}
-            messages={messages}
-            onResolve={(input) => setStatus({ status: 'resolved', ...input })}
-          />
+          {readOnly ? (
+            <p className="border-t px-3 py-2 text-[11px] text-muted-foreground">
+              v1 discussions are read-only.
+            </p>
+          ) : (
+            <>
+              <DiscussionInput onSend={sendMessage} onTyping={setTyping} members={members} />
+              <ResolveDialog
+                open={resolveOpen}
+                onOpenChange={setResolveOpen}
+                messages={messages}
+                onResolve={(input) => setStatus({ status: 'resolved', ...input })}
+              />
+            </>
+          )}
         </>
       )}
     </div>

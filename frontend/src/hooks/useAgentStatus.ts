@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { agentsService } from '../services/agents';
 import type { AgentExecution, AgentQuestion } from '../services/agents';
-import type { StructuredAnswer } from '../services/questions';
 import { realtimeService } from '../services/realtime';
 import { SeqDeduplicator } from '../lib/seqDeduplicator';
 
@@ -299,16 +298,6 @@ export function useAgentStatus({
     return () => unsubscribers.forEach((unsub) => unsub());
   }, []); // Subscribe once on mount
 
-  const answerQuestion = async (questionId: string, structuredAnswer: StructuredAnswer) => {
-    const questionKey = executionId || currentArn;
-    if (!questionKey) return;
-    const result = await agentsService.answerQuestion(questionKey, questionId, structuredAnswer);
-    if (result.restarted && result.newTaskArn) {
-      setCurrentArn(result.newTaskArn);
-    }
-    await refresh();
-  };
-
   const reset = useCallback(() => {
     streamBuffer.current = '';
     chunkDedup.current.reset();
@@ -330,7 +319,6 @@ export function useAgentStatus({
     loading,
     error,
     refresh,
-    answerQuestion,
     reset,
     artifactsUpdated,
     currentArn,

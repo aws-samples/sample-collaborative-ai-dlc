@@ -1,22 +1,20 @@
-// Agents Lambda - handles agent task pool, status, Q&A, and graph queries
-const {
-  ECSClient,
-  RunTaskCommand,
-  DescribeTasksCommand,
-  StopTaskCommand,
-} = require('@aws-sdk/client-ecs');
+// Agents Lambda — v1 agent HISTORY (read-only) + shared admin/model plumbing.
+//
+// The v1 execution engine (ECS pool dispatch) was removed when v2 became the
+// only runtime: v1 projects are read-only, no new v1 executions can start.
+// What remains here:
+//   - GET  /projects/{projectId}/agents        — sprint agent status (read;
+//     lazily settles any non-terminal state left behind by the retired engine)
+//   - GET  /projects/{projectId}/agents/tasks  — per-task agent statuses (read)
+//   - GET  /agents/{taskId}                    — execution status/output (read)
+//   - GET  /agents/{taskId}/questions          — recorded agent questions (read)
+//   - GET  /agents/capabilities                — CLI/model discovery for the v2
+//     model picker (probes the AgentCore runtime; refreshes model-pricing SSM)
+//   - GET/PUT /agents/settings                 — Admin CLI auth + model defaults
+//     (SSM parameters consumed by the v2 AgentCore runtime and intents lambda)
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
-const {
-  DynamoDBDocumentClient,
-  QueryCommand,
-  GetCommand,
-  UpdateCommand,
-  PutCommand,
-  DeleteCommand,
-  ScanCommand,
-} = require('@aws-sdk/lib-dynamodb');
+const { DynamoDBDocumentClient, QueryCommand } = require('@aws-sdk/lib-dynamodb');
 const { SSMClient, GetParametersCommand, PutParameterCommand } = require('@aws-sdk/client-ssm');
-const { SecretsManagerClient } = require('@aws-sdk/client-secrets-manager');
 const { BedrockClient, ListInferenceProfilesCommand } = require('@aws-sdk/client-bedrock');
 const { PricingClient, GetProductsCommand } = require('@aws-sdk/client-pricing');
 const {
@@ -27,22 +25,12 @@ const gremlin = require('gremlin');
 const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
 const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
 const { buildResponse } = require('./shared/response');
-const {
-  resolveGitToken,
-  ensureFreshGitToken,
-  getInstallationToken,
-} = require('./shared/git-token');
-const { getGitConnection } = require('./shared/git-connection-store');
-const { validateMcpServersJson } = require('./shared/mcp-validator');
-const { broadcastToSprintChannel } = require('./shared/ws-fanout');
 const { normalizeCliModels, parseCliModels } = require('./shared/cli-models');
 const { listClaudeModels } = require('./shared/bedrock-models');
 const { refreshPricing } = require('./shared/model-pricing');
 
-const ecs = new ECSClient({});
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({ region: process.env.AWS_REGION || 'us-east-1' });
-const secrets = new SecretsManagerClient({ region: process.env.AWS_REGION || 'us-east-1' });
 const bedrock = new BedrockClient({ region: process.env.AWS_REGION || 'us-east-1' });
 const agentcore = new BedrockAgentCoreClient({ region: process.env.AWS_REGION || 'us-east-1' });
 // The AWS Price List API only serves us-east-1 / ap-south-1 — pin to the nearest.
@@ -53,27 +41,15 @@ const pricing = new PricingClient({
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const { cardinality } = gremlin.process;
-const __ = gremlin.process.statics;
 
-const POOL_TABLE = process.env.POOL_TABLE || '';
-const POOL_SIZE = parseInt(process.env.POOL_SIZE || '5', 10);
-const MAX_POOL_WORKERS = parseInt(process.env.MAX_POOL_WORKERS || String(POOL_SIZE * 2), 10);
-const POOL_TASK_DEFINITION_ARN = process.env.AGENT_TASK_DEFINITION_ARN || '';
-const POOL_VERSION = process.env.POOL_VERSION || 'unknown';
-const STALE_STARTING_MS = 5 * 60 * 1000; // 5 minutes
-const STALE_IDLE_MS = 3 * 60 * 1000; // 3 minutes
-const STALE_BUSY_MS = 30 * 60 * 1000; // 30 minutes — sub-agents should not run this long
 const RUNTIME_MODEL_OVERRIDE = {
   kiro: true,
-  // Claude honors a runtime model override: the driver injects the resolved
-  // model as ANTHROPIC_MODEL (a bare Bedrock cross-region inference profile ID)
-  // into the claude-agent-acp subprocess. See lambda/agents-ecs/drivers/claude.js.
   claude: true,
   opencode: true,
 };
-// The v2 AgentCore runtime ARN — set for v2-enabled deployments so the models
-// endpoint can invoke its `capabilities` command (the only source of Kiro's model
-// list, which is CLI-native, not Bedrock). Empty on v1-only stacks.
+// The v2 AgentCore runtime ARN — the models endpoint invokes its `capabilities`
+// command (the only source of Kiro's model list, which is CLI-native, not
+// Bedrock, plus per-CLI install/auth state).
 const AGENTCORE_RUNTIME_ARN = process.env.AGENTCORE_RUNTIME_ARN || '';
 // A session id >= 33 chars is required by InvokeAgentRuntime; the capabilities
 // command is stateless so any stable id works.
@@ -103,16 +79,6 @@ const fetchRuntimeCapabilities = async () => {
   }
 };
 
-// ---------------------------------------------------------------------------
-// Repo / branch validation — authoritative gate before values reach the
-// pool-worker, which interpolates them into shell `git` commands. The projects
-// lambda validates on write, but legacy/pre-existing `git_repo` values were
-// stored without validation, so we MUST re-validate here on the read path.
-// Validators live in shared/ so the agents and projects lambdas can't drift.
-// ---------------------------------------------------------------------------
-
-const { isSafeRepo, isSafeRef } = require('./shared/repo-validation');
-
 const getConnection = async () => {
   const host = process.env.NEPTUNE_ENDPOINT;
   const port = '8182';
@@ -131,58 +97,6 @@ async function withNeptune(fn) {
   } finally {
     await conn.close();
   }
-}
-
-// --- Task Pool Logic ---
-
-async function findIdleWorkers(agentCli) {
-  if (!POOL_TABLE) return [];
-  const result = await ddb.send(
-    new QueryCommand({
-      TableName: POOL_TABLE,
-      IndexName: 'StatusIndex',
-      KeyConditionExpression: '#s = :s',
-      FilterExpression: 'version = :v AND contains(availableClis, :cli)',
-      ExpressionAttributeNames: { '#s': 'status' },
-      ExpressionAttributeValues: { ':s': 'idle', ':v': POOL_VERSION, ':cli': agentCli },
-      Limit: 10,
-    }),
-  );
-  return result.Items || [];
-}
-
-// ---------------------------------------------------------------------------
-// CLI pre-flight checks
-//
-// Before dispatching a job we verify the selected CLI has the credentials it
-// needs. Without this, a misconfigured CLI (missing/invalid SSM key) results
-// in a silently hung job: the worker catches the auth error internally, never
-// advertises the CLI, and the job only times out after 45 minutes.
-// ---------------------------------------------------------------------------
-
-// CLI -> SSM parameter that stores its credential. Must stay in sync with
-// the `${prefix}/...` keys used by the GET/PUT /agents/settings handlers above.
-function ssmPathForCli(cliName) {
-  const prefix = process.env.AGENT_SETTINGS_SSM_PREFIX || '';
-  if (!prefix) return null;
-  if (cliName === 'kiro') return `${prefix}/kiro-api-key`;
-  if (cliName === 'claude' || cliName === 'opencode') return `${prefix}/bedrock-bearer-token`;
-  return null;
-}
-
-function humanCliName(cliName) {
-  return cliName === 'kiro'
-    ? 'Kiro'
-    : cliName === 'claude'
-      ? 'Claude'
-      : cliName === 'opencode'
-        ? 'OpenCode'
-        : cliName;
-}
-
-function modelSettingsPath() {
-  const prefix = process.env.AGENT_SETTINGS_SSM_PREFIX || '';
-  return prefix ? `${prefix}/cli-models` : '';
 }
 
 function modelPricingPath() {
@@ -232,287 +146,6 @@ async function refreshModelPricing() {
   }
 }
 
-function resolveAgentModel(projectCliModels, globalCliModels, cliName) {
-  const projectModel = projectCliModels?.[cliName];
-  if (projectModel) return { model: projectModel, source: 'project' };
-  const globalModel = globalCliModels?.[cliName];
-  if (globalModel) return { model: globalModel, source: 'global' };
-  return { model: '', source: 'fallback' };
-}
-
-async function loadGlobalCliModels() {
-  const path = modelSettingsPath();
-  if (!path) return {};
-  try {
-    const result = await ssm.send(
-      new GetParametersCommand({
-        Names: [path],
-        WithDecryption: false,
-      }),
-    );
-    return parseCliModels(result.Parameters?.[0]?.Value || '{}');
-  } catch (err) {
-    console.warn('[settings] Failed to load global CLI models:', err.message);
-    return {};
-  }
-}
-
-/**
- * Returns { configured: true } if the SSM parameter for the CLI's credential
- * is set to a non-placeholder value, otherwise { configured: false, reason }.
- */
-async function checkCliConfigured(cliName) {
-  const ssmPath = ssmPathForCli(cliName);
-  if (!ssmPath) {
-    return { configured: false, reason: `No SSM path mapped for CLI "${cliName}"` };
-  }
-  try {
-    const result = await ssm.send(
-      new GetParametersCommand({
-        Names: [ssmPath],
-        WithDecryption: true,
-      }),
-    );
-    const param = (result.Parameters || [])[0];
-    const value = param?.Value || '';
-    if (!value || value === 'placeholder') {
-      const human = humanCliName(cliName);
-      const credLabel = cliName === 'kiro' ? 'API key' : 'Bedrock bearer token';
-      return {
-        configured: false,
-        reason: `${human} is not configured. Set the ${credLabel} in Admin → Agent Settings before starting agents for this project.`,
-      };
-    }
-    return { configured: true };
-  } catch (err) {
-    return {
-      configured: false,
-      reason: `Could not read credential for ${humanCliName(cliName)} from SSM: ${err.message}`,
-    };
-  }
-}
-
-/**
- * Collect the most recent auth error for a CLI across current-version workers.
- * Returns a string (the first non-empty message) or null if no worker has
- * reported an error yet.
- */
-async function collectWorkerAuthError(cliName) {
-  if (!POOL_TABLE) return null;
-  try {
-    const result = await ddb.send(new ScanCommand({ TableName: POOL_TABLE }));
-    for (const w of result.Items || []) {
-      if (w.version !== POOL_VERSION) continue;
-      const msg = w.cliAuthErrors?.[cliName];
-      if (msg) return msg;
-    }
-  } catch (err) {
-    console.error('[agents] collectWorkerAuthError scan failed:', err.message);
-  }
-  return null;
-}
-
-async function assignJobToWorker(workerId, job) {
-  await ddb.send(
-    new UpdateCommand({
-      TableName: POOL_TABLE,
-      Key: { workerId },
-      UpdateExpression: 'SET #s = :assigned, job = :job, lastHeartbeat = :t',
-      ConditionExpression: '#s = :idle',
-      ExpressionAttributeNames: { '#s': 'status' },
-      ExpressionAttributeValues: {
-        ':assigned': 'assigned',
-        ':idle': 'idle',
-        ':job': job,
-        ':t': Date.now(),
-      },
-    }),
-  );
-}
-
-async function launchPoolWorker(workerId) {
-  const result = await ecs.send(
-    new RunTaskCommand({
-      cluster: process.env.ECS_CLUSTER_ARN,
-      taskDefinition: POOL_TASK_DEFINITION_ARN,
-      launchType: 'FARGATE',
-      enableExecuteCommand: true,
-      networkConfiguration: {
-        awsvpcConfiguration: {
-          subnets: JSON.parse(process.env.PRIVATE_SUBNET_IDS || '[]'),
-          securityGroups: [process.env.AGENT_SECURITY_GROUP_ID],
-          assignPublicIp: 'DISABLED',
-        },
-      },
-      overrides: {
-        containerOverrides: [
-          {
-            name: 'agent',
-            environment: [
-              { name: 'WORKER_ID', value: workerId },
-              // CLIs are discovered at runtime by probing installed binaries —
-              // no AGENT_CAPABILITIES override needed.
-            ],
-          },
-        ],
-      },
-    }),
-  );
-  const task = result.tasks?.[0];
-  if (!task) throw new Error('Failed to launch pool worker');
-
-  await ddb.send(
-    new PutCommand({
-      TableName: POOL_TABLE,
-      Item: {
-        workerId,
-        status: 'starting',
-        taskArn: task.taskArn,
-        version: 'starting',
-        lastHeartbeat: Date.now(),
-      },
-    }),
-  );
-
-  return task.taskArn;
-}
-
-async function cleanupStaleWorkers() {
-  if (!POOL_TABLE) return;
-  const now = Date.now();
-  for (const status of ['starting', 'idle', 'busy']) {
-    const threshold =
-      status === 'starting' ? STALE_STARTING_MS : status === 'idle' ? STALE_IDLE_MS : STALE_BUSY_MS;
-    const result = await ddb.send(
-      new QueryCommand({
-        TableName: POOL_TABLE,
-        IndexName: 'StatusIndex',
-        KeyConditionExpression: '#s = :s',
-        ExpressionAttributeNames: { '#s': 'status' },
-        ExpressionAttributeValues: { ':s': status },
-      }),
-    );
-    for (const w of result.Items || []) {
-      if (w.lastHeartbeat && now - w.lastHeartbeat > threshold) {
-        console.log(
-          `Cleaning up stale ${status} worker ${w.workerId} (last heartbeat ${now - w.lastHeartbeat}ms ago)`,
-        );
-        // When cleaning up a stale busy worker with a sprint job, mark Sprint and AgentRun as failed.
-        // Discussion assists never own the Sprint status — only their AgentRun is failed.
-        if (status === 'busy' && w.job?.sprintId) {
-          const isDiscussionJob = (w.job.agentType || '').toLowerCase() === 'discussion';
-          try {
-            await withNeptune(async (g) => {
-              const completedAt = new Date().toISOString();
-              if (!isDiscussionJob) {
-                await g
-                  .V()
-                  .has('Sprint', 'id', w.job.sprintId)
-                  .property(cardinality.single, 'current_agent_status', 'failed')
-                  .property(cardinality.single, 'agent_completed_at', completedAt)
-                  .next();
-              }
-              if (w.job.executionId) {
-                await g
-                  .V()
-                  .hasLabel('AgentRun')
-                  .has('execution_id', w.job.executionId)
-                  .property(cardinality.single, 'status', 'failed')
-                  .property(cardinality.single, 'completed_at', completedAt)
-                  .next();
-              }
-            });
-          } catch (e) {
-            console.error('Failed to update Neptune for stale worker:', e.message);
-          }
-        }
-        if (w.taskArn)
-          await ecs
-            .send(
-              new StopTaskCommand({
-                cluster: process.env.ECS_CLUSTER_ARN,
-                task: w.taskArn,
-                reason: `Stale ${status} worker cleanup`,
-              }),
-            )
-            .catch(() => {});
-        await ddb
-          .send(new DeleteCommand({ TableName: POOL_TABLE, Key: { workerId: w.workerId } }))
-          .catch(() => {});
-      }
-    }
-  }
-}
-
-async function ensurePoolSize() {
-  if (!POOL_TABLE || !POOL_TASK_DEFINITION_ARN) return;
-  try {
-    const poolVersion = POOL_VERSION;
-    const queryByStatus = async (status) => {
-      const r = await ddb.send(
-        new QueryCommand({
-          TableName: POOL_TABLE,
-          IndexName: 'StatusIndex',
-          KeyConditionExpression: '#s = :s',
-          FilterExpression: 'version = :v',
-          ExpressionAttributeNames: { '#s': 'status' },
-          ExpressionAttributeValues: { ':s': status, ':v': poolVersion },
-        }),
-      );
-      return r.Items || [];
-    };
-    const idle = await queryByStatus('idle');
-    const busy = await queryByStatus('busy');
-    const starting = await queryByStatus('starting');
-    const assigned = await queryByStatus('assigned');
-    const total = idle.length + busy.length + starting.length + assigned.length;
-
-    // Cull excess idle workers beyond POOL_SIZE
-    if (idle.length > POOL_SIZE) {
-      const excess = idle.slice(POOL_SIZE);
-      for (const w of excess) {
-        console.log(`Draining excess idle worker ${w.workerId}`);
-        await ddb
-          .send(
-            new UpdateCommand({
-              TableName: POOL_TABLE,
-              Key: { workerId: w.workerId },
-              UpdateExpression: 'SET #s = :s',
-              ExpressionAttributeNames: { '#s': 'status' },
-              ExpressionAttributeValues: { ':s': 'draining' },
-            }),
-          )
-          .catch(() => {});
-      }
-    }
-
-    // Launch new workers to fill up to POOL_SIZE
-    for (let i = 0; i < Math.max(0, POOL_SIZE - total); i++) {
-      await launchPoolWorker(`worker-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
-    }
-  } catch (err) {
-    console.error('ensurePoolSize error:', err.message);
-  }
-}
-
-async function getTaskStatus(taskArn) {
-  const result = await ecs.send(
-    new DescribeTasksCommand({ cluster: process.env.ECS_CLUSTER_ARN, tasks: [taskArn] }),
-  );
-  const task = result.tasks?.[0];
-  if (!task) return { status: 'STOPPED', lastStatus: 'UNKNOWN' };
-  const lastStatus = task.lastStatus;
-  const stoppedReason = task.stoppedReason || '';
-  let status;
-  if (['RUNNING', 'PENDING', 'PROVISIONING'].includes(lastStatus)) status = 'RUNNING';
-  else if (lastStatus === 'STOPPED') {
-    const exitCode = task.containers?.[0]?.exitCode;
-    status =
-      exitCode === 0 ? 'SUCCEEDED' : stoppedReason.includes('imeout') ? 'TIMED_OUT' : 'FAILED';
-  } else status = 'RUNNING';
-  return { status, lastStatus, stoppedReason };
-}
-
 // --- Handler ---
 
 exports.handler = async (event) => {
@@ -520,68 +153,20 @@ exports.handler = async (event) => {
   const { httpMethod, path = '', pathParameters, body } = event;
   const projectId = pathParameters?.projectId;
   const taskId = pathParameters?.taskId ? decodeURIComponent(pathParameters.taskId) : null;
-  const questionId = pathParameters?.questionId;
-  const workerId = pathParameters?.workerId;
-  const reqId = pathParameters?.reqId;
-  const storyId = pathParameters?.storyId;
 
   try {
-    // ===== INTERNAL: just-in-time git token refresh =====
-    // POST /git/refresh-token — used by the construction runtime (pool-worker
-    // before push, mcp-server-graph before create-pr / PR-state / comments) to
-    // obtain a non-stale GitLab access token. GitLab OAuth tokens expire (~2h)
-    // and a long-running construction job bakes only the dispatch-time token;
-    // this endpoint refreshes via the stored refresh token + GitLab OAuth
-    // secret and persists the rotation. GitHub OAuth-App tokens never expire,
-    // so this is a passthrough for GitHub. Internal only — restricted to the
-    // 'system' caller (the worker/MCP invoke this Lambda directly, never via
-    // API Gateway / Cognito).
-    if (httpMethod === 'POST' && path.endsWith('/git/refresh-token')) {
-      const callerSub = event.requestContext?.authorizer?.claims?.sub;
-      if (callerSub !== 'system' && callerSub !== 'orchestrator') {
-        return response(403, { error: 'Forbidden' });
-      }
-      let input = {};
-      try {
-        input = body ? JSON.parse(body) : {};
-      } catch {
-        return response(400, { error: 'Invalid JSON body' });
-      }
-      const refreshUserId = input.userId;
-      const refreshProvider = input.gitProvider || 'github';
-      if (!refreshUserId) return response(400, { error: 'userId is required' });
-      try {
-        const Item = await getGitConnection(ddb, refreshUserId, refreshProvider);
-        if (!Item?.parameterName) {
-          return response(400, { error: `${refreshProvider} not connected` });
-        }
-        const accessToken = await ensureFreshGitToken({
-          ssm,
-          secrets,
-          ddb,
-          item: Item,
-          gitProvider: refreshProvider,
-        });
-        return response(200, { accessToken });
-      } catch (e) {
-        console.error('[agents] git token refresh failed:', e.message);
-        return response(502, { error: 'Token refresh failed' });
-      }
-    }
-
     // ===== AGENT SETTINGS (SSM-backed, editable via Admin UI) =====
 
-    // GET /agents/settings — read bearer token, Kiro API key, and MCP servers from SSM
+    // GET /agents/settings — read bearer token, Kiro API key, and model defaults from SSM
     if (httpMethod === 'GET' && path.endsWith('/settings')) {
       const prefix = process.env.AGENT_SETTINGS_SSM_PREFIX || '';
       const bearerPath = `${prefix}/bedrock-bearer-token`;
-      const mcpPath = `${prefix}/mcp-servers`;
       const kiroApiKeyPath = `${prefix}/kiro-api-key`;
       const cliModelsPath = `${prefix}/cli-models`;
       try {
         const result = await ssm.send(
           new GetParametersCommand({
-            Names: [bearerPath, mcpPath, kiroApiKeyPath, cliModelsPath],
+            Names: [bearerPath, kiroApiKeyPath, cliModelsPath],
             WithDecryption: true,
           }),
         );
@@ -589,13 +174,11 @@ exports.handler = async (event) => {
         for (const p of result.Parameters || []) byName[p.Name] = p.Value;
         const bearerToken = byName[bearerPath] || '';
         const kiroApiKey = byName[kiroApiKeyPath] || '';
-        const mcpServersRaw = byName[mcpPath] || '[]';
         const cliModels = parseCliModels(byName[cliModelsPath] || '{}');
         // Return secrets as masked flags (never send the raw values to the browser)
         return response(200, {
           bedrockBearerTokenSet: bearerToken !== '' && bearerToken !== 'placeholder',
           kiroApiKeySet: kiroApiKey !== '' && kiroApiKey !== 'placeholder',
-          mcpServers: mcpServersRaw,
           cliModels,
         });
       } catch (err) {
@@ -604,7 +187,7 @@ exports.handler = async (event) => {
       }
     }
 
-    // PUT /agents/settings — write bearer token, Kiro API key, and/or MCP servers to SSM
+    // PUT /agents/settings — write bearer token, Kiro API key, and/or model defaults to SSM
     if (httpMethod === 'PUT' && path.endsWith('/settings')) {
       const prefix = process.env.AGENT_SETTINGS_SSM_PREFIX || '';
       const input = JSON.parse(body || '{}');
@@ -645,29 +228,6 @@ exports.handler = async (event) => {
         }
       }
 
-      if (typeof input.mcpServers === 'string') {
-        const validation = validateMcpServersJson(input.mcpServers);
-        if (!validation.valid) {
-          return response(400, {
-            error: 'Invalid MCP servers configuration',
-            issues: validation.issues,
-          });
-        }
-        try {
-          await ssm.send(
-            new PutParameterCommand({
-              Name: `${prefix}/mcp-servers`,
-              Value: input.mcpServers,
-              Type: 'String',
-              Overwrite: true,
-            }),
-          );
-        } catch (err) {
-          console.error('[settings] Failed to write MCP servers:', err.message);
-          errors.push('mcpServers: ' + err.message);
-        }
-      }
-
       if (input.cliModels !== undefined) {
         const validation = normalizeCliModels(input.cliModels);
         if (!validation.valid) {
@@ -695,37 +255,21 @@ exports.handler = async (event) => {
       return response(200, { saved: true });
     }
 
-    // ===== POOL ADMIN ENDPOINTS =====
-
-    // GET /agents/capabilities — CLIs available across live pool workers.
-    // Always derived from the live pool — no static fallback.
-    // Returns an empty list when no workers are running; warm the pool first.
-    //
-    // With `?models=1` the response is ENRICHED for the v2 project-settings model
-    // picker (additive — v1 callers that omit the flag are unaffected):
+    // GET /agents/capabilities — CLI availability + (with ?models=1) the model
+    // catalog for the v2 project-settings model picker:
     //   models.claude / models.opencode — region-valid Bedrock inference profiles
     //   models.kiro                     — Kiro-native models (from the runtime)
     //   runtimeClis                     — per-CLI {installed, authed, available}
     //                                     from the v2 AgentCore runtime
-    // The v2 runtime (not the ECS pool) is the authority for v2 CLI availability.
+    // The v2 AgentCore runtime is the sole authority for CLI availability.
     if (httpMethod === 'GET' && path.endsWith('/capabilities')) {
-      const cliSet = new Set();
-      if (POOL_TABLE) {
-        try {
-          const result = await ddb.send(new ScanCommand({ TableName: POOL_TABLE }));
-          for (const w of result.Items || []) {
-            for (const cli of w.availableClis || []) {
-              cliSet.add(cli);
-            }
-          }
-        } catch (e) {
-          console.error('[capabilities] pool scan failed:', e.message);
-        }
-      }
-      const base = { available: [...cliSet], runtimeModelOverride: RUNTIME_MODEL_OVERRIDE };
-
       if (event.queryStringParameters?.models !== '1') {
-        return response(200, base);
+        const caps = await fetchRuntimeCapabilities();
+        const available = (caps?.clis ?? [])
+          .filter((c) => c.available)
+          .map((c) => c.cli)
+          .filter(Boolean);
+        return response(200, { available, runtimeModelOverride: RUNTIME_MODEL_OVERRIDE });
       }
 
       // Piggy-back a pricing refresh on model discovery so the SSM price table
@@ -751,10 +295,14 @@ exports.handler = async (event) => {
         ...m,
         id: `amazon-bedrock/${m.id}`,
       }));
+      const available = (runtimeCaps?.clis ?? [])
+        .filter((c) => c.available)
+        .map((c) => c.cli)
+        .filter(Boolean);
       return response(200, {
-        ...base,
-        // Per-CLI availability from the v2 runtime (installed + authed). Falls back
-        // to the pool-derived list when the runtime is unreachable.
+        available,
+        runtimeModelOverride: RUNTIME_MODEL_OVERRIDE,
+        // Per-CLI availability from the v2 runtime (installed + authed).
         runtimeClis: runtimeCaps?.clis ?? null,
         models: {
           claude: claudeModels,
@@ -764,610 +312,7 @@ exports.handler = async (event) => {
       });
     }
 
-    // GET /agents/pool - List all pool workers
-    if (httpMethod === 'GET' && path.endsWith('/pool') && !workerId) {
-      if (!POOL_TABLE)
-        return response(200, { workers: [], currentVersion: POOL_VERSION, poolSize: POOL_SIZE });
-      const result = await ddb.send(new ScanCommand({ TableName: POOL_TABLE }));
-      const workers = (result.Items || []).map((w) => ({
-        workerId: w.workerId,
-        status: w.status,
-        version: w.version || 'unknown',
-        availableClis: w.availableClis || [],
-        cliAuthErrors: w.cliAuthErrors || {},
-        agentCli: w.agentCli || null, // legacy field, kept for compatibility
-        taskArn: w.taskArn,
-        lastHeartbeat: w.lastHeartbeat,
-        job: w.job
-          ? {
-              executionId: w.job.executionId,
-              projectId: w.job.projectId,
-              agentType: w.job.agentType,
-            }
-          : null,
-      }));
-      return response(200, { workers, currentVersion: POOL_VERSION, poolSize: POOL_SIZE });
-    }
-
-    // POST /agents/pool/warm - Launch workers to fill pool
-    if (httpMethod === 'POST' && path.endsWith('/pool/warm')) {
-      if (!POOL_TABLE) return response(400, { error: 'Pool not configured' });
-      const input = JSON.parse(body || '{}');
-      const count = Math.min(input.count || POOL_SIZE, 10);
-      const launched = [];
-      for (let i = 0; i < count; i++) {
-        const wid = `worker-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-        const arn = await launchPoolWorker(wid);
-        launched.push({ workerId: wid, taskArn: arn });
-      }
-      return response(200, { launched, version: POOL_VERSION });
-    }
-
-    // POST /agents/pool/recycle - Drain old-version workers and warm new ones
-    if (httpMethod === 'POST' && path.endsWith('/pool/recycle')) {
-      if (!POOL_TABLE) return response(400, { error: 'Pool not configured' });
-      const poolVersion = POOL_VERSION;
-      let drained = 0;
-      for (const status of ['idle', 'busy', 'assigned', 'starting']) {
-        const result = await ddb.send(
-          new QueryCommand({
-            TableName: POOL_TABLE,
-            IndexName: 'StatusIndex',
-            KeyConditionExpression: '#s = :s',
-            FilterExpression: 'version <> :v',
-            ExpressionAttributeNames: { '#s': 'status' },
-            ExpressionAttributeValues: { ':s': status, ':v': poolVersion },
-          }),
-        );
-        for (const item of result.Items || []) {
-          if (status === 'idle' || status === 'starting') {
-            if (item.taskArn)
-              await ecs
-                .send(
-                  new StopTaskCommand({
-                    cluster: process.env.ECS_CLUSTER_ARN,
-                    task: item.taskArn,
-                    reason: 'Pool recycle',
-                  }),
-                )
-                .catch(() => {});
-            await ddb
-              .send(new DeleteCommand({ TableName: POOL_TABLE, Key: { workerId: item.workerId } }))
-              .catch(() => {});
-          } else {
-            await ddb
-              .send(
-                new UpdateCommand({
-                  TableName: POOL_TABLE,
-                  Key: { workerId: item.workerId },
-                  UpdateExpression: 'SET #s = :s',
-                  ExpressionAttributeNames: { '#s': 'status' },
-                  ExpressionAttributeValues: { ':s': 'draining' },
-                }),
-              )
-              .catch(() => {});
-          }
-          drained++;
-        }
-      }
-      await ensurePoolSize();
-      return response(200, { drained, version: poolVersion });
-    }
-
-    // DELETE /agents/pool/{workerId} - Kill a specific worker
-    if (httpMethod === 'DELETE' && workerId) {
-      if (!POOL_TABLE) return response(400, { error: 'Pool not configured' });
-      const worker = await ddb.send(new GetCommand({ TableName: POOL_TABLE, Key: { workerId } }));
-      if (!worker.Item) return response(404, { error: 'Worker not found' });
-      if (worker.Item.taskArn) {
-        await ecs
-          .send(
-            new StopTaskCommand({
-              cluster: process.env.ECS_CLUSTER_ARN,
-              task: worker.Item.taskArn,
-              reason: 'Killed by admin',
-            }),
-          )
-          .catch(() => {});
-      }
-      await ddb.send(new DeleteCommand({ TableName: POOL_TABLE, Key: { workerId } }));
-      return response(200, { killed: true });
-    }
-
-    // ===== PROJECT AGENT ENDPOINTS =====
-
-    // POST /projects/{projectId}/agents - Start agent
-    if (httpMethod === 'POST' && path.endsWith('/agents') && projectId && !taskId) {
-      const userId = event.requestContext?.authorizer?.claims?.sub;
-      const input = JSON.parse(body || '{}');
-      const executionId = `exec-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-      // Discussion assists run as a pool-worker phase with NO workspace —
-      // no git clone/branch/push, no repo validation, no git token, and most
-      // importantly NO Sprint current_* writes (assists must never hijack the
-      // sprint status shown on phase pages). The AgentRun vertex is the
-      // assist's only run-tracking record.
-      const isDiscussion = (input.phase || '').toLowerCase() === 'discussion';
-      if (isDiscussion && (!input.sprintId || !input.discussionId)) {
-        return response(400, {
-          error: 'Invalid discussion job',
-          message: 'phase=discussion requires sprintId and discussionId',
-        });
-      }
-
-      let gitRepo = '',
-        description = input.description || '',
-        sprintPhase = '',
-        projectAgentCli = 'kiro';
-      let projectCliModels = {};
-      let gitRepos = [];
-      let gitProvider = 'github';
-      let gitAuthMode = 'oauth';
-      let projectCreatedBy = '';
-      let isMember = false;
-      await withNeptune(async (g) => {
-        const result = await g.V().has('Project', 'id', projectId).valueMap().next();
-        if (result.value?.get) {
-          gitRepo = result.value.get('git_repo')?.[0] || '';
-          projectAgentCli = result.value.get('agent_cli')?.[0] || 'kiro';
-          projectCliModels = parseCliModels(result.value.get('cli_models')?.[0] || '{}');
-          gitProvider = result.value.get('git_provider')?.[0] || 'github';
-          gitAuthMode = result.value.get('git_auth_mode')?.[0] || 'oauth';
-          projectCreatedBy = result.value.get('created_by')?.[0] || '';
-        }
-        // Fetch all Repository vertices linked to the project (multi-repo support)
-        const repoVertices = await g
-          .V()
-          .has('Project', 'id', projectId)
-          .out('HAS_REPO')
-          .hasLabel('Repository')
-          .valueMap()
-          .toList();
-        if (repoVertices.length > 0) {
-          gitRepos = repoVertices.map((r) => ({
-            url: (r.get('url') || [''])[0],
-            role: (r.get('role') || ['unknown'])[0],
-            detectedStack: (r.get('detected_stack') || [''])[0],
-          }));
-          // Ensure gitRepo (primary) is derived from repos list for backward compat
-          const primary = gitRepos.find((r) => r.role === 'primary') || gitRepos[0];
-          if (primary && !gitRepo) gitRepo = primary.url;
-        }
-        if (input.sprintId) {
-          const sr = await g.V().has('Sprint', 'id', input.sprintId).valueMap().next();
-          if (sr.value?.get) {
-            sprintPhase = sr.value.get('phase')?.[0] || 'INCEPTION';
-            description = description || sr.value.get('description')?.[0] || '';
-          }
-        }
-        // Verify the requesting user is a member of this project
-        if (userId) {
-          isMember = await g
-            .V()
-            .has('Project', 'id', projectId)
-            .outE('HAS_MEMBER')
-            .inV()
-            .has('User', 'id', userId)
-            .hasNext();
-        }
-      });
-
-      // Allow system/orchestrator re-triggers to bypass membership check
-      if (!isMember && userId !== 'system' && userId !== 'orchestrator') {
-        return response(403, {
-          error: 'Access denied',
-          message: 'You are not a member of this project',
-        });
-      }
-
-      // Resolve the GIT identity, which is distinct from the AUTH identity
-      // (`userId` / claims.sub). Orchestrator-launched sub-agents and system
-      // re-triggers authenticate as the synthetic 'orchestrator'/'system'
-      // principals (so they bypass the membership/preflight gates above), but
-      // those principals own no git connection. The git token + its just-in-time
-      // refresh must key off a REAL user — the project owner (`created_by`) — so
-      // long-running GitLab jobs can renew the expiring access token rather than
-      // re-using a stale one. For genuine human callers the two are identical.
-      const isSyntheticCaller = userId === 'system' || userId === 'orchestrator';
-      const gitIdentityUserId = isSyntheticCaller ? projectCreatedBy : userId;
-
-      // Pre-flight: verify the project's selected CLI has credentials configured.
-      // Without this check, a misconfigured CLI (missing/invalid SSM key) would
-      // cause the pool worker's authenticate() to silently fail, the CLI would
-      // never be advertised, and the job would hang until the 45-minute stale
-      // timeout. System/orchestrator re-triggers skip this check because they
-      // represent internal re-entries for jobs already past the user-facing gate.
-      if (userId !== 'system' && userId !== 'orchestrator') {
-        const preflight = await checkCliConfigured(projectAgentCli);
-        if (!preflight.configured) {
-          // If any worker already tried and failed to authenticate, surface the
-          // real reason (e.g. "kiro-cli whoami failed — invalid key") instead
-          // of the generic "not configured" message.
-          const workerErr = await collectWorkerAuthError(projectAgentCli);
-          return response(400, {
-            error: 'cli_unavailable',
-            cli: projectAgentCli,
-            message: workerErr || preflight.reason,
-            actionHref: '/admin#agent-settings',
-            actionLabel: 'Open Agent Settings',
-          });
-        }
-      }
-
-      // Look up the git token for the resolved git identity (the project owner
-      // for synthetic callers, otherwise the requesting user). The connection
-      // store confirms the stored connection is for THIS project's provider —
-      // otherwise a GitHub token could be handed to a GitLab clone (or vice
-      // versa) — and lazily migrates legacy rows.
-      // Discussion assists have no repository — skip the git plumbing entirely.
-      let gitToken = '';
-      if (isDiscussion) {
-        gitRepo = '';
-        gitRepos = [];
-      }
-      if (!isDiscussion && gitAuthMode === 'app' && gitProvider === 'github') {
-        // GitHub App projects authenticate as the installation, not a user
-        // OAuth connection — mint a short-lived installation token instead.
-        //
-        // SECURITY (fail-closed): an installation token can write every repo the
-        // App is installed on, so App auth is gated by an operator-approved
-        // allowlist (GITHUB_APP_ALLOWED_REPOS, comma-separated owner/repo). The
-        // projects Lambda blocks creating/flipping an app-mode project for a
-        // non-approved repo; this is the runtime backstop at the mint chokepoint.
-        const allowedAppRepos = (process.env.GITHUB_APP_ALLOWED_REPOS || '')
-          .split(',')
-          .map((s) => s.trim().toLowerCase())
-          .filter(Boolean);
-        const appRepoUrls = [gitRepo, ...gitRepos.map((r) => r.url)].filter(Boolean);
-        const appAuthPermitted =
-          allowedAppRepos.length > 0 &&
-          appRepoUrls.length > 0 &&
-          appRepoUrls.every((u) => allowedAppRepos.includes(u.toLowerCase().trim()));
-        if (!appAuthPermitted) {
-          console.error(
-            `[agents] Rejecting app-auth job: repos ${JSON.stringify(appRepoUrls)} not in GITHUB_APP_ALLOWED_REPOS`,
-          );
-          return response(403, {
-            error: 'GitHub App auth not permitted',
-            message: 'This project is not approved for GitHub App authentication.',
-          });
-        }
-        // Scope the minted token to ONLY this project's repos + the minimal
-        // permissions the agent loop needs (clone/push, open PRs, comment).
-        // Full owner/repo slugs are passed; git-token.js validates the owner
-        // and extracts short names for the GitHub mint API.
-        try {
-          gitToken = await getInstallationToken({
-            secrets,
-            repositories: appRepoUrls,
-            permissions: {
-              contents: 'write',
-              pull_requests: 'write',
-              issues: 'write',
-              metadata: 'read',
-            },
-          });
-        } catch (e) {
-          console.error('Failed to mint GitHub App installation token:', e.message);
-          return response(500, {
-            error: 'GitHub App auth failed',
-            message: 'Could not obtain a GitHub App installation token for this project.',
-          });
-        }
-      } else if (!isDiscussion && gitIdentityUserId) {
-        try {
-          // Resolve the owner's connection for the project's git provider. A
-          // non-matching/absent provider yields null, leaving gitToken empty →
-          // the "not connected" guard below fires (or we fall back to the
-          // token passed in the re-trigger body).
-          const Item = await getGitConnection(ddb, gitIdentityUserId, gitProvider);
-          if (Item?.parameterName) {
-            gitToken = await resolveGitToken(ssm, Item);
-          }
-        } catch (e) {
-          console.error('Failed to fetch git token:', e.message);
-        }
-      }
-
-      // Fall back to a gitToken in the request body ONLY for synthetic
-      // orchestrator/system re-triggers, which carry the owner's already-resolved
-      // token across phases. A human caller must never inject a token — it would
-      // bypass the connection-store provider check above.
-      if (!gitToken && input.gitToken && isSyntheticCaller) {
-        gitToken = input.gitToken;
-      }
-
-      // Require a matching provider connection for projects with a git repo
-      if (gitRepo && !gitToken) {
-        const providerLabel = gitProvider === 'gitlab' ? 'GitLab' : 'GitHub';
-        return response(400, {
-          error: `${providerLabel} not connected`,
-          message: `You must connect your ${providerLabel} account before running agents on this project. Go to project settings to connect ${providerLabel}.`,
-        });
-      }
-
-      // SECURITY: re-validate every repo URL and git ref before they reach the
-      // pool-worker, which interpolates them into shell `git` commands. Legacy
-      // `git_repo` values may predate the projects-lambda write-time validation,
-      // so this read-path gate is authoritative against command injection.
-      for (const url of [gitRepo, ...gitRepos.map((r) => r.url)].filter(Boolean)) {
-        if (!isSafeRepo(url)) {
-          console.error(`[agents] Rejecting job: unsafe repository url ${JSON.stringify(url)}`);
-          return response(400, {
-            error: 'Invalid repository',
-            message: 'A linked repository URL contains unsafe characters and cannot be cloned.',
-          });
-        }
-      }
-      for (const ref of [input.branch, input.baseBranch].filter(Boolean)) {
-        if (!isSafeRef(ref)) {
-          console.error(`[agents] Rejecting job: unsafe git ref ${JSON.stringify(ref)}`);
-          return response(400, {
-            error: 'Invalid branch',
-            message: 'The branch name contains characters that are not allowed.',
-          });
-        }
-      }
-
-      const globalCliModels = await loadGlobalCliModels();
-      const resolvedModel = resolveAgentModel(projectCliModels, globalCliModels, projectAgentCli);
-      console.log(
-        `[agents] resolved model execution=${executionId} project=${projectId} cli=${projectAgentCli} source=${resolvedModel.source} model=${resolvedModel.model || 'driver-default'}`,
-      );
-
-      const job = {
-        executionId,
-        projectId,
-        agentType: input.phase || sprintPhase || 'inception',
-        description,
-        gitRepo,
-        gitRepos,
-        gitProvider,
-        // The worker uses job.userId solely as the GIT identity: it becomes
-        // GIT_USER_ID and keys the just-in-time GitLab token refresh. Carry the
-        // resolved git identity (project owner for synthetic callers) so the
-        // worker/MCP can refresh the owner's expiring token instead of failing
-        // the lookup for 'system'/'orchestrator'.
-        userId: gitIdentityUserId || '',
-        sprintId: input.sprintId || '',
-        taskId: input.taskId || '',
-        branch: input.branch || '',
-        baseBranch: input.baseBranch || 'main',
-        gitToken,
-        event: input.event || null,
-        runNumber: 1,
-        changeRequest: input.changeRequest || '',
-        agentCli: projectAgentCli,
-        agentModel: resolvedModel.model,
-        // Discussion-assist job fields — empty for other phases.
-        discussionId: input.discussionId || '',
-        command: input.command || '',
-        instruction: input.instruction || '',
-        requestedBy: input.requestedBy || userId || '',
-        requestedByName: input.requestedByName || '',
-      };
-
-      // Cleanup stale workers before looking for idle ones
-      await cleanupStaleWorkers().catch((e) =>
-        console.error('cleanupStaleWorkers error:', e.message),
-      );
-
-      // Try to assign to an idle worker — retry multiple candidates to handle
-      // race conditions where another job grabs the same worker concurrently.
-      const idleWorkers = await findIdleWorkers(job.agentCli);
-      let taskArn;
-      for (const idle of idleWorkers) {
-        try {
-          await assignJobToWorker(idle.workerId, job);
-          taskArn = idle.taskArn || idle.workerId;
-          break;
-        } catch {
-          // ConditionalCheckFailed — another request grabbed this worker, try next
-          console.log(
-            `[agents] Worker ${idle.workerId} assignment failed (likely race), trying next`,
-          );
-        }
-      }
-      if (!taskArn) {
-        if (POOL_TABLE) {
-          const allWorkers = await ddb.send(new ScanCommand({ TableName: POOL_TABLE }));
-          const items = allWorkers.Items || [];
-
-          // Before launching a fresh worker, check whether any *existing* worker
-          // has already tried and failed to authenticate this CLI. If so, a new
-          // worker running the same image will fail the same way — fail fast and
-          // surface the real reason instead of making the user wait 45 minutes
-          // for the stale timeout.
-          if (userId !== 'system' && userId !== 'orchestrator') {
-            // Only look at workers on the current pool version; older versions
-            // may have had different CLIs installed or different credentials.
-            const currentVersion = items.filter((w) => w.version === POOL_VERSION);
-            const anyAdvertising = currentVersion.some((w) =>
-              (w.availableClis || []).includes(job.agentCli),
-            );
-            if (currentVersion.length > 0 && !anyAdvertising) {
-              // Pick the first reported auth error for this CLI.
-              const reported = currentVersion
-                .map((w) => w.cliAuthErrors?.[job.agentCli])
-                .find(Boolean);
-              if (reported) {
-                return response(400, {
-                  error: 'cli_unavailable',
-                  cli: job.agentCli,
-                  message: `${humanCliName(job.agentCli)} failed to authenticate on every worker: ${reported}`,
-                  actionHref: '/admin#agent-settings',
-                  actionLabel: 'Open Agent Settings',
-                });
-              }
-            }
-          }
-
-          // Check pool cap before launching a new worker (reuse the scan above)
-          if (items.length >= MAX_POOL_WORKERS) {
-            return response(503, {
-              error: 'Agent pool at capacity',
-              message: `Maximum ${MAX_POOL_WORKERS} workers reached. Please try again shortly.`,
-            });
-          }
-        }
-        const wid = `worker-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-        const arn = await launchPoolWorker(wid);
-        await ddb.send(
-          new UpdateCommand({
-            TableName: POOL_TABLE,
-            Key: { workerId: wid },
-            UpdateExpression: 'SET #s = :s, job = :j',
-            ExpressionAttributeNames: { '#s': 'status' },
-            ExpressionAttributeValues: { ':s': 'assigned', ':j': job },
-          }),
-        );
-        taskArn = arn;
-      }
-      ensurePoolSize().catch(() => {});
-
-      try {
-        await withNeptune(async (g) => {
-          // Store execution info on Task node for sub-agents
-          if (input.taskId) {
-            await g
-              .V()
-              .has('Task', 'id', input.taskId)
-              .property(cardinality.single, 'task_execution_id', executionId)
-              .property(cardinality.single, 'task_execution_arn', taskArn)
-              .property(cardinality.single, 'task_execution_status', 'RUNNING')
-              .property(cardinality.single, 'task_dispatched_at', new Date().toISOString())
-              .property(cardinality.single, 'status', 'in_progress')
-              .next();
-          }
-
-          // Store execution info on Sprint node (NEW: replaces Project storage)
-          if (isDiscussion) {
-            // Discussion assist: AgentRun only, keyed run-{executionId} —
-            // per-sprint {n} counters race across concurrent assists in
-            // different threads (locks are per discussion, not per sprint).
-            // NEVER touch Sprint current_* properties.
-            await g
-              .addV('AgentRun')
-              .property('id', `run-${executionId}`)
-              .property('phase', 'DISCUSSION')
-              .property('agent_type', 'discussion')
-              .property('run_number', 1)
-              .property('execution_id', executionId)
-              .property('status', 'running')
-              .property('started_at', new Date().toISOString())
-              .property('sprint_id', input.sprintId)
-              .property('discussion_id', input.discussionId)
-              .property('command', input.command || '')
-              .property('requested_by', input.requestedBy || userId || '')
-              .property('requested_by_name', input.requestedByName || '')
-              .as('run')
-              .V()
-              .has('Sprint', 'id', input.sprintId)
-              .addE('HAS_AGENT_RUN')
-              .to('run')
-              .next();
-          } else if (input.sprintId) {
-            const updateQuery = g
-              .V()
-              .has('Sprint', 'id', input.sprintId)
-              .property(cardinality.single, 'current_execution_arn', taskArn)
-              .property(cardinality.single, 'current_execution_id', executionId)
-              .property(cardinality.single, 'current_agent_type', job.agentType)
-              .property(cardinality.single, 'current_agent_status', 'running')
-              .property(cardinality.single, 'agent_started_at', new Date().toISOString());
-
-            // Update sprint phase only for inception (other phases require manual approval)
-            const agentType = (job.agentType || '').toLowerCase();
-            if (agentType === 'inception') {
-              updateQuery.property(cardinality.single, 'phase', 'INCEPTION');
-            }
-            // Note: CONSTRUCTION and REVIEW phases are set via manual approval in the UI
-
-            await updateQuery.next();
-
-            // When a construction-orchestrator re-run starts (run_number > 1), mark any
-            // existing Review nodes for this sprint as stale so the review phase creates fresh ones.
-            const isConstructionOrchestrator =
-              (job.agentType || '').toLowerCase() === 'construction-orchestrator';
-            if (isConstructionOrchestrator) {
-              try {
-                await g
-                  .V()
-                  .has('Sprint', 'id', input.sprintId)
-                  .out('HAS_REVIEW')
-                  .hasLabel('Review')
-                  .not(__.has('stale', 'true'))
-                  .property(cardinality.single, 'stale', 'true')
-                  .property(cardinality.single, 'stale_at', new Date().toISOString())
-                  .toList();
-              } catch (staleErr) {
-                // Non-fatal: construction proceeds even if stale-marking fails, but
-                // log distinctly so a silent regression (e.g. a missing `__` import)
-                // surfaces in CloudWatch instead of leaving reviews permanently un-stale.
-                console.error(
-                  `[stale-review] Failed to mark Review nodes stale for sprint ${input.sprintId}:`,
-                  staleErr,
-                );
-              }
-            }
-
-            // Compute run_number for this phase and create an AgentRun node.
-            // Only track top-level phase agents (not sub-agents like construction task workers).
-            const isTopLevelAgent = !input.taskId;
-            if (isTopLevelAgent) {
-              const normalizedPhase = (job.agentType || 'inception')
-                .toLowerCase()
-                .replace('construction-orchestrator', 'construction')
-                .replace(/^review.*/, 'review');
-              const phaseLabel = normalizedPhase.toUpperCase();
-
-              // Count existing AgentRun nodes for this sprint+phase to determine run_number
-              const existingRuns = await g
-                .V()
-                .has('Sprint', 'id', input.sprintId)
-                .out('HAS_AGENT_RUN')
-                .has('AgentRun', 'phase', phaseLabel)
-                .count()
-                .next();
-              const runNumber = (existingRuns.value || 0) + 1;
-              job.runNumber = runNumber;
-
-              const runId = `run-${input.sprintId}-${phaseLabel.toLowerCase()}-${runNumber}`;
-              await g
-                .addV('AgentRun')
-                .property('id', runId)
-                .property('phase', phaseLabel)
-                .property('agent_type', job.agentType)
-                .property('run_number', runNumber)
-                .property('execution_id', executionId)
-                .property('status', 'running')
-                .property('started_at', new Date().toISOString())
-                .property('sprint_id', input.sprintId)
-                .property('change_request', input.changeRequest || '')
-                .as('run')
-                .V()
-                .has('Sprint', 'id', input.sprintId)
-                .addE('HAS_AGENT_RUN')
-                .to('run')
-                .next();
-            }
-          } else {
-            // Fallback: Store on Project node for backward compatibility
-            await g
-              .V()
-              .has('Project', 'id', projectId)
-              .property(cardinality.single, 'current_execution_arn', taskArn)
-              .property(cardinality.single, 'current_execution_id', executionId)
-              .property(cardinality.single, 'current_execution_status', 'RUNNING')
-              .next();
-          }
-        });
-      } catch (e) {
-        console.error('Neptune write failed:', e.message);
-      }
-
-      return response(200, { executionArn: taskArn, executionId });
-    }
+    // ===== V1 AGENT HISTORY (read-only) =====
 
     // GET /projects/{projectId}/agents/tasks - Per-task agent status for construction
     if (httpMethod === 'GET' && path.endsWith('/agents/tasks') && projectId) {
@@ -1400,18 +345,19 @@ exports.handler = async (event) => {
     }
 
     // GET /projects/{projectId}/agents
-    if (httpMethod === 'GET' && path.endsWith('/agents') && projectId && !reqId && !storyId) {
+    //
+    // Historical status read. The execution engine is gone, so nothing can be
+    // RUNNING anymore — but sprints abandoned mid-run by the retired engine may
+    // still carry a non-terminal current_agent_status. This read lazily settles
+    // such rows: the recorded final status from agent-outputs wins; anything
+    // else is marked failed so the UI never shows a perpetual spinner.
+    if (httpMethod === 'GET' && path.endsWith('/agents') && projectId) {
       const sprintId = event.queryStringParameters?.sprintId;
-      console.log('[GET /agents] projectId:', projectId, 'sprintId:', sprintId);
-
-      // Proactively prune stale workers on every status poll (fire-and-forget)
-      cleanupStaleWorkers().catch((e) => console.error('cleanupStaleWorkers error:', e.message));
 
       return await withNeptune(async (g) => {
         // Use Sprint vertex if sprintId provided, otherwise fallback to Project
         const vertexLabel = sprintId ? 'Sprint' : 'Project';
         const vertexId = sprintId || projectId;
-        console.log('[GET /agents] Querying vertex:', vertexLabel, 'id:', vertexId);
 
         const result = await g.V().has(vertexLabel, 'id', vertexId).valueMap().next();
         const v = result.value;
@@ -1419,9 +365,9 @@ exports.handler = async (event) => {
 
         const arn = v?.get?.('current_execution_arn')?.[0] || null;
         const execId = v?.get?.('current_execution_id')?.[0] || null;
-        const agentStartedAt = v?.get?.('agent_started_at')?.[0] || null;
-        // Log only execId; ARN contains account ID and is considered sensitive
-        console.log('[GET /agents] execId:', execId, 'hasArn:', !!arn);
+        const currentStatus = v?.get?.('current_agent_status')?.[0] || null;
+
+        if (!arn) return response(200, { executionArn: null, executionId: null, status: null });
 
         // Helper to write terminal status to Sprint and AgentRun nodes
         const writeTerminalStatus = async (statusStr, execIdForRun) => {
@@ -1444,110 +390,40 @@ exports.handler = async (event) => {
           }
         };
 
-        // Check pool first - it's the source of truth for running agents
-        // Use GSI queries instead of full table scan
-        if (POOL_TABLE) {
-          const poolWorkers = [];
-          for (const poolStatus of ['busy', 'assigned']) {
-            const qr = await ddb.send(
-              new QueryCommand({
-                TableName: POOL_TABLE,
-                IndexName: 'StatusIndex',
-                KeyConditionExpression: '#s = :s',
-                ExpressionAttributeNames: { '#s': 'status' },
-                ExpressionAttributeValues: { ':s': poolStatus },
-              }),
-            );
-            poolWorkers.push(...(qr.Items || []));
-          }
-          for (const w of poolWorkers) {
-            const matchesProject = w.job?.projectId === projectId;
-            const matchesSprint = sprintId ? w.job?.sprintId === sprintId : true;
-            if (matchesProject && matchesSprint) {
-              // Found running agent - sync Neptune
-              await g
-                .V()
-                .has(vertexLabel, 'id', vertexId)
-                .property(cardinality.single, 'current_execution_arn', w.taskArn)
-                .property(cardinality.single, 'current_execution_id', w.job.executionId)
-                .property(cardinality.single, 'current_agent_status', 'running')
-                .next();
-              return response(200, {
-                executionArn: w.taskArn,
-                executionId: w.job.executionId,
-                status: 'RUNNING',
-              });
-            }
-          }
-        }
-
-        // No running agent in pool - check historical status
-        if (arn) {
-          // Stale timeout: if agent_started_at > 45 min ago and no worker found, mark as failed
-          const STALE_AGENT_MS = 45 * 60 * 1000;
-          if (agentStartedAt) {
-            const elapsed = Date.now() - new Date(agentStartedAt).getTime();
-            if (elapsed > STALE_AGENT_MS) {
-              console.log(
-                `[GET /agents] Agent stale (${Math.round(elapsed / 60000)}m), marking as failed`,
-              );
-              await writeTerminalStatus('failed', execId);
-              return response(200, { executionArn: arn, executionId: execId, status: 'FAILED' });
-            }
-          }
-
-          // Check agent-outputs for final status
-          if (process.env.AGENT_OUTPUTS_TABLE && execId) {
-            const outputQuery = await ddb.send(
-              new QueryCommand({
-                TableName: process.env.AGENT_OUTPUTS_TABLE,
-                KeyConditionExpression: 'executionId = :eid',
-                ExpressionAttributeValues: { ':eid': execId },
-                Limit: 1,
-              }),
-            );
-            const outputItem = outputQuery.Items?.[0];
-            if (outputItem) {
-              const s = outputItem.status;
-              const mapped =
-                s === 'completed' ? 'SUCCEEDED' : s === 'failed' ? 'FAILED' : 'RUNNING';
-              const statusStr = mapped.toLowerCase();
-              if (mapped === 'SUCCEEDED' || mapped === 'FAILED') {
-                await writeTerminalStatus(statusStr, execId);
-              } else {
-                await g
-                  .V()
-                  .has(vertexLabel, 'id', vertexId)
-                  .property(cardinality.single, 'current_agent_status', statusStr)
-                  .next();
-              }
-              return response(200, { executionArn: arn, executionId: execId, status: mapped });
-            }
-          }
-          try {
-            const taskStatus = await getTaskStatus(arn);
-            const statusStr = taskStatus.status.toLowerCase();
-            if (taskStatus.status === 'SUCCEEDED' || taskStatus.status === 'FAILED') {
+        // The recorded final status from agent-outputs is authoritative.
+        if (process.env.AGENT_OUTPUTS_TABLE && execId) {
+          const outputQuery = await ddb.send(
+            new QueryCommand({
+              TableName: process.env.AGENT_OUTPUTS_TABLE,
+              KeyConditionExpression: 'executionId = :eid',
+              ExpressionAttributeValues: { ':eid': execId },
+              Limit: 1,
+            }),
+          );
+          const outputItem = outputQuery.Items?.[0];
+          if (outputItem) {
+            const s = outputItem.status;
+            const mapped = s === 'completed' ? 'SUCCEEDED' : s === 'failed' ? 'FAILED' : 'FAILED';
+            const statusStr = mapped.toLowerCase();
+            if (statusStr !== currentStatus) {
               await writeTerminalStatus(statusStr, execId);
-            } else {
-              await g
-                .V()
-                .has(vertexLabel, 'id', vertexId)
-                .property(cardinality.single, 'current_agent_status', statusStr)
-                .next();
             }
-            return response(200, {
-              executionArn: arn,
-              executionId: execId,
-              status: taskStatus.status,
-            });
-          } catch {
-            await writeTerminalStatus('failed', execId);
-            return response(200, { executionArn: arn, executionId: execId, status: 'FAILED' });
+            return response(200, { executionArn: arn, executionId: execId, status: mapped });
           }
         }
 
-        return response(200, { executionArn: null, executionId: null, status: null });
+        // No recorded output: the run was lost with the retired engine. Settle
+        // any non-terminal state as failed.
+        const TERMINAL = ['succeeded', 'failed', 'cancelled'];
+        if (currentStatus && TERMINAL.includes(currentStatus)) {
+          return response(200, {
+            executionArn: arn,
+            executionId: execId,
+            status: currentStatus.toUpperCase(),
+          });
+        }
+        await writeTerminalStatus('failed', execId);
+        return response(200, { executionArn: arn, executionId: execId, status: 'FAILED' });
       });
     }
 
@@ -1564,95 +440,9 @@ exports.handler = async (event) => {
       return response(200, { questions: result.Items });
     }
 
-    // POST /agents/{taskId}/questions/{questionId}/answer
-    if (httpMethod === 'POST' && questionId) {
-      const { structuredAnswer } = JSON.parse(body);
-      const claims = event.requestContext.authorizer.claims;
-      const userId = claims.sub;
-      const userName = claims['custom:display_name'] || claims.email || '';
-      const question = await ddb.send(
-        new GetCommand({ TableName: process.env.QUESTIONS_TABLE, Key: { questionId } }),
-      );
-      if (!question.Item) return response(404, { error: 'Question not found' });
-      const structuredAnswerJson =
-        typeof structuredAnswer === 'string' ? structuredAnswer : JSON.stringify(structuredAnswer);
-      await ddb.send(
-        new UpdateCommand({
-          TableName: process.env.QUESTIONS_TABLE,
-          Key: { questionId },
-          UpdateExpression:
-            'SET #s = :s, structuredAnswer = :a, answeredBy = :u, answeredByName = :n, answeredAt = :t',
-          ExpressionAttributeNames: { '#s': 'status' },
-          ExpressionAttributeValues: {
-            ':s': 'answered',
-            ':a': structuredAnswerJson,
-            ':u': userId,
-            ':n': userName,
-            // Epoch millis: the agent-questions DynamoDB table stores all
-            // timestamps as Date.now() (createdAt in submit-question, the
-            // answer-question lambda) and the frontend types them as number.
-            // The Neptune graph uses ISO-8601 strings throughout — the sync
-            // below follows that convention instead.
-            ':t': Date.now(),
-          },
-        }),
-      );
-      // Best-effort sync to the Neptune Question vertex: the sprint pages and
-      // Q&A history render questions from Neptune, so without this the question
-      // would stay "pending" there and the responder would not be traceable.
-      try {
-        await withNeptune(async (g) => {
-          await g
-            .V()
-            .has('Question', 'id', questionId)
-            .property(cardinality.single, 'structured_answer', structuredAnswerJson)
-            .property(cardinality.single, 'answered_by', userId)
-            .property(cardinality.single, 'answered_by_name', userName)
-            .property(cardinality.single, 'answered_at', new Date().toISOString())
-            .next();
-        });
-      } catch (e) {
-        // The DynamoDB write above already succeeded, so the agent will see the
-        // answer; only the sprint pages would lag (question stays pending there
-        // until re-answered). Emit a CloudWatch metric (Embedded Metric Format)
-        // so the failure rate can be alarmed on, rather than failing the request.
-        console.error('Neptune question sync failed:', e.message);
-        console.log(
-          JSON.stringify({
-            _aws: {
-              Timestamp: Date.now(),
-              CloudWatchMetrics: [
-                {
-                  Namespace: 'collaborative-ai-dlc',
-                  Dimensions: [['Lambda']],
-                  Metrics: [{ Name: 'NeptuneQuestionSyncFailure', Unit: 'Count' }],
-                },
-              ],
-            },
-            Lambda: 'agents',
-            NeptuneQuestionSyncFailure: 1,
-            questionId,
-          }),
-        );
-      }
-
-      // Server-origin reload hint: peers re-fetch the answered question.
-      // Replaces the client broadcast.
-      if (question.Item.sprintId) {
-        await broadcastToSprintChannel(question.Item.sprintId, {
-          action: 'question.answered',
-          sprintId: question.Item.sprintId,
-          questionId,
-        });
-      }
-
-      return response(200, { success: true });
-    }
-
     // GET /agents/{taskId}
-    if (httpMethod === 'GET' && taskId && !questionId) {
-      // Check agent-outputs table first (pool workers keep ECS task running across jobs)
-      // taskId may be an executionId (exec-...) or an ECS task ARN
+    if (httpMethod === 'GET' && taskId) {
+      // taskId may be an executionId (exec-...) or a legacy ECS task ARN
       if (process.env.AGENT_OUTPUTS_TABLE) {
         // Try taskId directly as executionId
         let outputQuery = await ddb.send(
@@ -1677,7 +467,7 @@ exports.handler = async (event) => {
         const outputItem = outputQuery.Items?.[0];
         if (outputItem) {
           const s = outputItem.status;
-          const mapped = s === 'completed' ? 'SUCCEEDED' : s === 'failed' ? 'FAILED' : 'RUNNING';
+          const mapped = s === 'completed' ? 'SUCCEEDED' : s === 'failed' ? 'FAILED' : 'FAILED';
           return response(200, {
             status: mapped,
             executionArn: taskId,
@@ -1686,68 +476,9 @@ exports.handler = async (event) => {
           });
         }
       }
-      const taskStatus = await getTaskStatus(taskId);
-      return response(200, { status: taskStatus.status, executionArn: taskId });
-    }
-
-    // DELETE /agents/{taskId}
-    if (httpMethod === 'DELETE' && taskId) {
-      // Find the worker with this taskArn and clear its job
-      if (POOL_TABLE) {
-        const scan = await ddb.send(new ScanCommand({ TableName: POOL_TABLE }));
-        for (const w of scan.Items || []) {
-          if (w.taskArn === taskId && w.job) {
-            await ddb
-              .send(
-                new UpdateCommand({
-                  TableName: POOL_TABLE,
-                  Key: { workerId: w.workerId },
-                  UpdateExpression: 'SET #s = :s, job = :j',
-                  ExpressionAttributeNames: { '#s': 'status' },
-                  ExpressionAttributeValues: { ':s': 'idle', ':j': null },
-                }),
-              )
-              .catch(() => {});
-            break;
-          }
-        }
-      }
-      // Clear execution state from Neptune (both Project and Sprint vertices)
-      await withNeptune(async (g) => {
-        // Clear Project vertex (backward compatibility)
-        await g
-          .V()
-          .has('Project', 'current_execution_arn', taskId)
-          .properties('current_execution_arn', 'current_execution_id', 'current_execution_status')
-          .drop()
-          .next();
-        // Clear Sprint vertex — mark as cancelled with timestamp
-        const completedAt = new Date().toISOString();
-        const sprintVertices = await g.V().has('Sprint', 'current_execution_arn', taskId).toList();
-        for (const sv of sprintVertices) {
-          // Update AgentRun nodes BEFORE dropping execution properties
-          const runs = await g
-            .V(sv)
-            .out('HAS_AGENT_RUN')
-            .has('AgentRun', 'status', 'running')
-            .toList();
-          for (const run of runs) {
-            await g
-              .V(run)
-              .property(cardinality.single, 'status', 'cancelled')
-              .property(cardinality.single, 'completed_at', completedAt)
-              .next();
-          }
-          // Set cancelled status and clear execution pointers
-          await g
-            .V(sv)
-            .property(cardinality.single, 'current_agent_status', 'cancelled')
-            .property(cardinality.single, 'agent_completed_at', completedAt)
-            .next();
-          await g.V(sv).properties('current_execution_arn', 'current_execution_id').drop().next();
-        }
-      }).catch((e) => console.error('Neptune cleanup on cancel failed:', e.message));
-      return response(200, { cancelled: true });
+      // No recorded output — the run predates output tracking or was lost with
+      // the retired engine. Nothing can be running anymore.
+      return response(200, { status: 'FAILED', executionArn: taskId });
     }
 
     return response(404, { error: 'Not found' });

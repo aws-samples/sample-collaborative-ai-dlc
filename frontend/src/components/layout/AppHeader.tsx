@@ -296,7 +296,7 @@ function buildBreadcrumbs(
     } else if (pathname.includes('/graph')) {
       crumbs.push({ label: 'Graph' });
     } else if (pathname.includes('/agent')) {
-      crumbs.push({ label: 'Invoke Agent' });
+      crumbs.push({ label: 'Agent History' });
     } else {
       crumbs.push({ label: 'Inception' });
     }

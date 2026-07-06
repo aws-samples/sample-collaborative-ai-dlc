@@ -4,11 +4,10 @@
 // to these by method + path.
 
 import { randomUUID } from 'node:crypto';
-import { PutCommand, GetCommand, UpdateCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
-import { InvokeCommand } from '@aws-sdk/client-lambda';
+import { PutCommand, GetCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { signRealtimeToken } from '../shared/realtime-token.js';
 import { fetchMembershipRole } from '../shared/trackers.js';
-import { ddb, lambdaClient, query, cardinality, TextP, __, locksTable } from './clients.js';
+import { ddb, query, cardinality, TextP, __, locksTable } from './clients.js';
 import {
   MESSAGE_ID_RE,
   MAX_CONTENT_LENGTH,
@@ -22,8 +21,6 @@ import {
   MESSAGE_GUARD_PENDING_SECONDS,
   POLL_ATTEMPTS,
   POLL_INTERVAL_MS,
-  ASSIST_LOCK_SECONDS,
-  ASSIST_COMMANDS,
 } from './constants.js';
 import {
   getCaller,
@@ -781,132 +778,4 @@ export const searchDiscussions = async (event, res) => {
   });
 
   return res(200, { results: deduped.slice(0, limit) });
-};
-
-export const invokeAssist = async (event, res) => {
-  const { sprintId, discussionId } = event.pathParameters || {};
-  const scope = resolveScope(event.pathParameters);
-  const caller = getCaller(event);
-  const auth = await authorizeScope(scope, caller.sub, res);
-  if (auth.res) return auth.res;
-
-  // In-thread agent assist runs as a v1 pool-worker 'discussion' phase keyed on
-  // a sprint. v2 intents have no such pool agent, so assist is sprint-only.
-  if (scope.kind !== 'sprint') {
-    return res(400, { error: 'Assist is not available for intent discussions' });
-  }
-
-  const discussion = await query((g) => fetchDiscussionInScope(g, scope, discussionId));
-  if (!discussion) return res(404, { error: 'Discussion not found' });
-
-  let body;
-  try {
-    body = JSON.parse(event.body || '{}');
-  } catch {
-    return res(400, { error: 'Invalid JSON body' });
-  }
-
-  const command = body.command;
-  if (!ASSIST_COMMANDS.includes(command)) {
-    return res(400, { error: `command must be one of ${ASSIST_COMMANDS.join(', ')}` });
-  }
-  const instruction = typeof body.instruction === 'string' ? body.instruction.slice(0, 4000) : '';
-  if (command === 'custom' && !instruction.trim()) {
-    return res(400, { error: 'custom command requires an instruction' });
-  }
-  // suggest-answer is advice-only and requires a question-anchored thread;
-  // it never modifies the question itself.
-  if (command === 'suggest-answer' && getVal(discussion, 'entity_type') !== 'question') {
-    return res(400, { error: 'suggest-answer requires a question-anchored discussion' });
-  }
-
-  const agentsLambda = process.env.AGENTS_LAMBDA;
-  if (!agentsLambda) return res(500, { error: 'Assist dispatch is not configured' });
-
-  // Acquire the per-thread assist lock (atomic conditional write). The worker
-  // heartbeats it while the session runs; expiry covers crashed dispatches.
-  const lockId = `assist:${discussionId}`;
-  try {
-    await ddb.send(
-      new PutCommand({
-        TableName: locksTable(),
-        Item: {
-          lockId,
-          kind: 'assist',
-          requestedBy: caller.sub,
-          executionId: 'dispatching',
-          expiresAt: nowSeconds() + ASSIST_LOCK_SECONDS,
-        },
-        ConditionExpression: 'attribute_not_exists(lockId) OR expiresAt < :now',
-        ExpressionAttributeValues: { ':now': nowSeconds() },
-      }),
-    );
-  } catch (err) {
-    if (isConditionalCheckFailed(err)) {
-      return res(409, { reason: 'assist_in_progress', retryAfter: 30 });
-    }
-    throw err;
-  }
-
-  const releaseLock = () =>
-    ddb.send(new DeleteCommand({ TableName: locksTable(), Key: { lockId } })).catch(() => {});
-
-  try {
-    const invokeResult = await lambdaClient.send(
-      new InvokeCommand({
-        FunctionName: agentsLambda,
-        Payload: Buffer.from(
-          JSON.stringify({
-            httpMethod: 'POST',
-            path: `/projects/${auth.projectId}/agents`,
-            pathParameters: { projectId: auth.projectId },
-            body: JSON.stringify({
-              phase: 'discussion',
-              sprintId,
-              discussionId,
-              command,
-              instruction,
-              requestedBy: caller.sub,
-              requestedByName: caller.displayName,
-            }),
-            requestContext: { authorizer: { claims: { sub: caller.sub } } },
-          }),
-        ),
-      }),
-    );
-
-    const payload = JSON.parse(Buffer.from(invokeResult.Payload || []).toString('utf8') || '{}');
-    const statusCode = payload.statusCode || 500;
-    const dispatchBody = (() => {
-      try {
-        return JSON.parse(payload.body || '{}');
-      } catch {
-        return {};
-      }
-    })();
-
-    if (statusCode !== 200) {
-      // Dispatch failure (cli_unavailable, pool at capacity, …) → release the
-      // lock and propagate the original error/status.
-      await releaseLock();
-      return res(statusCode, dispatchBody);
-    }
-
-    const executionId = dispatchBody.executionId;
-    // Stamp the executionId on the lock — the worker's heartbeat/release are
-    // conditioned on it.
-    await ddb.send(
-      new UpdateCommand({
-        TableName: locksTable(),
-        Key: { lockId },
-        UpdateExpression: 'SET executionId = :eid',
-        ExpressionAttributeValues: { ':eid': executionId },
-      }),
-    );
-
-    return res(202, { assistId: executionId });
-  } catch (err) {
-    await releaseLock();
-    throw err;
-  }
 };
