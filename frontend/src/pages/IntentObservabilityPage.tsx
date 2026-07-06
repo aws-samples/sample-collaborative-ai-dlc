@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useIntent, type IntentStageRow } from '@/contexts/IntentContext';
+import { useIntent, stageRowKey, type IntentStageRow } from '@/contexts/IntentContext';
 import type { StageState } from '@/services/intents';
 import type { CompiledWorkflow } from '@/services/workflows';
 import { aggregateMetrics, summarizeCost } from '@/lib/metricAggregation';
@@ -8,13 +8,14 @@ import { WorkflowScopeGraph } from '@/components/v2';
 import { UsageMetrics } from '@/components/intent/UsageMetrics';
 import { IntentPhaseDiagram } from '@/components/intent/IntentPhaseDiagram';
 import { IntentStageList } from '@/components/intent/IntentStageList';
+import { StageDetail } from '@/components/intent/StageDetail';
 import { useProjectCache } from '@/hooks/useProjectsCache';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
-import { ArrowLeft, ExternalLink } from 'lucide-react';
+import { ArrowLeft, ExternalLink, X } from 'lucide-react';
 
 type ObsView = 'diagram' | 'graph' | 'list';
 const VALID_VIEWS: ReadonlySet<ObsView> = new Set(['diagram', 'graph', 'list']);
@@ -85,10 +86,41 @@ export default function IntentObservabilityPage() {
     phaseNameOf,
     initializationPhasePaths,
     currentPhasePath,
+    selectedStageId,
+    setSelectedStageId,
   } = useIntent();
   const navigate = useNavigate();
   const { project } = useProjectCache(projectId);
   const [view, setView] = useState<ObsView>(readStoredView);
+
+  const handleViewChange = useCallback(
+    (v: string) => {
+      if (v && VALID_VIEWS.has(v as ObsView)) {
+        const next = v as ObsView;
+        setView(next);
+        setSelectedStageId(null);
+        try {
+          localStorage.setItem(VIEW_STORAGE_KEY, next);
+        } catch {}
+      }
+    },
+    [setSelectedStageId],
+  );
+
+  const handleGraphStageClick = useCallback(
+    (stageId: string) => {
+      const matchingRow = stageRows.find((r) => r.stageId === stageId);
+      if (!matchingRow) return;
+      const key = stageRowKey(matchingRow);
+      setSelectedStageId(selectedStageId === key ? null : key);
+    },
+    [stageRows, selectedStageId, setSelectedStageId],
+  );
+
+  const selectedRow = useMemo(() => {
+    if (!selectedStageId || view === 'list') return null;
+    return stageRows.find((r) => stageRowKey(r) === selectedStageId) ?? null;
+  }, [selectedStageId, stageRows, view]);
 
   const stageStatus = useMemo(() => aggregateStageStatus(stageRows), [stageRows]);
 
@@ -235,15 +267,7 @@ export default function IntentObservabilityPage() {
                 type="single"
                 aria-label="Execution view"
                 value={view}
-                onValueChange={(v) => {
-                  if (v && VALID_VIEWS.has(v as ObsView)) {
-                    const next = v as ObsView;
-                    setView(next);
-                    try {
-                      localStorage.setItem(VIEW_STORAGE_KEY, next);
-                    } catch {}
-                  }
-                }}
+                onValueChange={handleViewChange}
                 className="gap-0.5"
               >
                 <ToggleGroupItem value="diagram" className="h-6 px-2 text-[11px]">
@@ -268,6 +292,7 @@ export default function IntentObservabilityPage() {
                 hideScopeSelector
                 readOnly
                 stageStatus={filteredStageStatus}
+                onStageClick={handleGraphStageClick}
               />
             )}
             {view === 'graph' && (!scopeCompiled || scopeCompiled.graph.nodes.length === 0) && (
@@ -275,6 +300,26 @@ export default function IntentObservabilityPage() {
             )}
             {view === 'list' && <IntentStageList />}
           </CardContent>
+          {selectedRow && view !== 'list' && (
+            <CardContent className="border-t pt-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-medium text-muted-foreground">
+                  {selectedRow.stageId}
+                  {selectedRow.unitSlug && ` · ${selectedRow.unitSlug}`}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-5 w-5 p-0"
+                  aria-label="Close stage detail"
+                  onClick={() => setSelectedStageId(null)}
+                >
+                  <X className="h-3 w-3" />
+                </Button>
+              </div>
+              <StageDetail row={selectedRow} />
+            </CardContent>
+          )}
         </Card>
       </div>
     </div>

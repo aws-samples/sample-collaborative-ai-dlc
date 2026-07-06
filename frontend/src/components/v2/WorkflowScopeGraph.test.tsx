@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { render } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { render, fireEvent } from '@testing-library/react';
 import { WorkflowScopeGraph } from './WorkflowScopeGraph';
 import type { CompiledWorkflow } from '@/services/workflows';
 import type { StageState } from '@/services/intents';
@@ -140,5 +140,39 @@ describe('WorkflowScopeGraph', () => {
     const rect = node!.querySelector('rect');
     expect(rect).toHaveAttribute('stroke', 'var(--muted-foreground)');
     expect(rect).toHaveAttribute('stroke-dasharray', '4 3');
+  });
+
+  it('fires onStageClick when a node is clicked', () => {
+    const stageStatus: Record<string, StageState> = { s1: 'SUCCEEDED', s2: 'RUNNING' };
+    const handler = vi.fn();
+    const { container } = render(
+      <WorkflowScopeGraph
+        compiled={compiled}
+        scopes={['feature']}
+        stageStatus={stageStatus}
+        readOnly
+        onStageClick={handler}
+      />,
+    );
+    const node = container.querySelector('g[data-stage-status="SUCCEEDED"]');
+    expect(node).toBeInTheDocument();
+    expect(node).toHaveAttribute('role', 'button');
+    fireEvent.click(node!);
+    expect(handler).toHaveBeenCalledWith('s1');
+  });
+
+  it('does not add interactive attributes when onStageClick is absent', () => {
+    const stageStatus: Record<string, StageState> = { s1: 'SUCCEEDED' };
+    const { container } = render(
+      <WorkflowScopeGraph
+        compiled={compiled}
+        scopes={['feature']}
+        stageStatus={stageStatus}
+        readOnly
+      />,
+    );
+    const node = container.querySelector('g[data-stage-status="SUCCEEDED"]');
+    expect(node).toBeInTheDocument();
+    expect(node).not.toHaveAttribute('role');
   });
 });

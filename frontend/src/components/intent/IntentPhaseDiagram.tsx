@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { useIntent } from '@/contexts/IntentContext';
+import { useIntent, stageRowKey } from '@/contexts/IntentContext';
 import { groupByPhase, derivePhaseState } from '@/lib/intentPhases';
 import { phaseColorAt } from '@/components/observability/phaseConfig';
 import { Progress } from '@/components/ui/progress';
@@ -14,6 +14,8 @@ export function IntentPhaseDiagram() {
     workflowPhases,
     currentPhasePath,
     phaseNameOf,
+    selectedStageId,
+    setSelectedStageId,
   } = useIntent();
 
   const planReady = !!compiled && !!workflowPhases;
@@ -138,6 +140,8 @@ export function IntentPhaseDiagram() {
                   const isRunning = chipState === 'RUNNING';
                   const isWaiting = chipState === 'WAITING_FOR_HUMAN';
                   const isFailed = chipState === 'FAILED';
+                  const rowKey = stageRowKey(row);
+                  const isSelected = selectedStageId === rowKey;
 
                   return (
                     <div
@@ -147,7 +151,10 @@ export function IntentPhaseDiagram() {
                       {rowIdx > 0 && isActive && (
                         <span className="text-muted-foreground/30 text-[11px]">&rarr;</span>
                       )}
-                      <div
+                      <button
+                        type="button"
+                        aria-pressed={isSelected}
+                        onClick={() => setSelectedStageId(isSelected ? null : rowKey)}
                         className={cn(
                           'relative flex flex-col items-center justify-center rounded-md border-2 text-center transition-all',
                           isActive ? 'px-2.5 py-1.5 min-w-[104px]' : 'px-1.5 py-1 min-w-[82px]',
@@ -173,6 +180,8 @@ export function IntentPhaseDiagram() {
                             !isWaiting &&
                             !isFailed &&
                             palette.conditionalBg.split(' ')[0],
+                          isSelected &&
+                            'ring-2 ring-primary/50 ring-offset-1 ring-offset-background',
                         )}
                       >
                         <span
@@ -227,7 +236,7 @@ export function IntentPhaseDiagram() {
                             )}
                           />
                         )}
-                      </div>
+                      </button>
                     </div>
                   );
                 })}

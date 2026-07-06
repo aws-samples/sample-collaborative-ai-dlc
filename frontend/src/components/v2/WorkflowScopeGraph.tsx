@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import type { CompiledWorkflow } from '@/services/workflows';
 import type { StageState } from '@/services/intents';
 import {
@@ -44,6 +44,7 @@ export interface WorkflowScopeGraphProps {
   readOnly?: boolean;
   onToggleScope?: (stageId: string, scopeId: string, next: 'EXECUTE' | 'SKIP') => void;
   stageStatus?: Record<string, StageState>;
+  onStageClick?: (stageId: string) => void;
 }
 
 const EDGE_STYLES: Record<
@@ -122,6 +123,7 @@ export function WorkflowScopeGraph({
   readOnly,
   onToggleScope,
   stageStatus,
+  onStageClick,
 }: WorkflowScopeGraphProps) {
   const graphNodeIds = useMemo(
     () => new Set(compiled.graph.nodes.map((n) => n.stageId)),
@@ -172,6 +174,16 @@ export function WorkflowScopeGraph({
     [compiled.graph.edges, executeSet],
   );
   const totalStages = compiled.graph.nodes.length;
+
+  const handleNodeKeyDown = useCallback(
+    (e: React.KeyboardEvent, stageId: string) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        onStageClick?.(stageId);
+      }
+    },
+    [onStageClick],
+  );
 
   return (
     <div className="flex flex-col gap-3">
@@ -286,6 +298,15 @@ export function WorkflowScopeGraph({
                 opacity={nodeOpacity}
                 className={statusStyle?.pulse ? 'animate-pulse-subtle' : undefined}
                 data-stage-status={statusEntry ?? undefined}
+                {...(onStageClick
+                  ? {
+                      role: 'button',
+                      tabIndex: 0,
+                      style: { cursor: 'pointer' },
+                      onClick: () => onStageClick(node.stageId),
+                      onKeyDown: (e: React.KeyboardEvent) => handleNodeKeyDown(e, node.stageId),
+                    }
+                  : {})}
               >
                 <rect
                   width={NODE_W}
