@@ -167,11 +167,11 @@ export default function IntentObservabilityPage() {
             >
               <ArrowLeft className="h-4 w-4" />
             </button>
-            <h1 className="text-lg font-bold tracking-tight truncate">
-              {project?.name ?? 'Project'}
-            </h1>
-            <span className="text-xs text-muted-foreground truncate max-w-[200px]">
+            <h1 className="text-xl font-bold tracking-tight text-foreground truncate max-w-[480px]">
               {intent.title}
+            </h1>
+            <span className="text-xs text-muted-foreground">
+              Project: {project?.name ?? 'Project'}
             </span>
             <Badge variant="outline" className="text-[10px] h-5 bg-muted/40">
               {currentPhasePath ? phaseNameOf(currentPhasePath) : intent.status}

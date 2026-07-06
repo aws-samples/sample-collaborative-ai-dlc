@@ -145,6 +145,8 @@ export default function ObservabilityDashboard() {
             />
           </div>
 
+          <IntentStatusCards items={v2Items} />
+
           <AgentStatusCards
             projects={filtered}
             lastToolMap={lastToolMap}
@@ -152,8 +154,6 @@ export default function ObservabilityDashboard() {
             velocityMap={velocityMap}
             onSelectSprint={selectSprint}
           />
-
-          <IntentStatusCards items={v2Items} />
         </>
       )}
     </div>
