@@ -156,7 +156,7 @@ export function AppShell() {
 
               {/* Activity panel - inline column on lg+, with a resize handle */}
               {showActivity && panelsInline && (
-                <aside className="relative flex overflow-hidden">
+                <aside className="relative flex overflow-hidden border-l border-border shadow-[-4px_0_12px_-4px_rgba(0,0,0,0.08)] dark:shadow-[-4px_0_12px_-4px_rgba(0,0,0,0.4)]">
                   <div
                     role="separator"
                     aria-orientation="vertical"
