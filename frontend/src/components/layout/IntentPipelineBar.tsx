@@ -21,6 +21,7 @@ export function IntentPipelineBar() {
     phaseNameOf,
     initializationPhasePaths,
     workflowPhases,
+    currentPhasePath,
   } = useIntent();
 
   // The plan (compiled) and the phase names (workflow) land after the intent
@@ -37,11 +38,9 @@ export function IntentPipelineBar() {
   );
 
   const activeIndex = useMemo(() => {
-    const idx = phases.findIndex(
-      (g) => derivePhaseState(g, detail?.intent.currentPhase ?? null) === 'active',
-    );
+    const idx = phases.findIndex((g) => derivePhaseState(g, currentPhasePath) === 'active');
     return idx >= 0 ? idx : phases.length - 1;
-  }, [phases, detail]);
+  }, [phases, currentPhasePath]);
 
   const currentRoute: 'graph' | 'observability' | 'workbench' = location.pathname.endsWith('/graph')
     ? 'graph'
@@ -69,7 +68,7 @@ export function IntentPipelineBar() {
 
       <div className="flex items-center gap-0.5 shrink-0">
         {phases.map((group, index) => {
-          const state = derivePhaseState(group, detail?.intent.currentPhase ?? null);
+          const state = derivePhaseState(group, currentPhasePath);
           const progress = group.total > 0 ? Math.round((group.done / group.total) * 100) : null;
           const distance = Math.abs(index - activeIndex);
           const isNear = distance <= 1;

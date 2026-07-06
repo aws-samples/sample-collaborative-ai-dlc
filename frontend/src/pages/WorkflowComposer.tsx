@@ -843,7 +843,7 @@ export default function WorkflowComposer() {
           </Card>
         )}
 
-        <WorkflowInsights workflow={workflow} compiled={compiled} readOnly={readOnly} />
+        <WorkflowInsights compiled={compiled} />
       </div>
     </div>
   );

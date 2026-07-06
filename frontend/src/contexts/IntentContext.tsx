@@ -19,8 +19,6 @@ import {
   type IntentSensorRun,
   type IntentStage,
   type IntentSteering,
-  type IntentUnit,
-  type IntentUnitPlan,
   type StageState,
 } from '@/services/intents';
 import { workflowsService, type CompiledWorkflow, type PhaseNode } from '@/services/workflows';
@@ -107,6 +105,7 @@ interface IntentContextValue {
   workflowPhases: PhaseNode[] | null;
   phaseNameOf: (phasePath: string) => string;
   initializationPhasePaths: Set<string>;
+  currentPhasePath: string | null;
 
   // Derived views
   stageRows: IntentStageRow[];
@@ -116,9 +115,6 @@ interface IntentContextValue {
   steering: IntentSteering[];
   sensorsByStage: Map<string, IntentSensorRun[]>;
   artifactsByStage: Map<string, IntentArtifact[]>;
-  /** Unit lanes (docs/v2-parallel.md WP5/WP7): [] before promotion. */
-  units: IntentUnit[];
-  unitPlan: IntentUnitPlan | null;
 
   // Live streamed output per stage instance (+ INTENT_OUTPUT_KEY). The map is
   // held in a ref for append performance; `outputVersion` bumps on every
@@ -562,8 +558,11 @@ export function IntentProvider({
       list.push(s);
       byStageId.set(s.stageId, list);
     }
-    for (const list of byStageId.values()) {
-      list.sort((a, b) => (a.unitSlug ?? '').localeCompare(b.unitSlug ?? ''));
+    for (const [key, list] of byStageId) {
+      byStageId.set(
+        key,
+        list.toSorted((a, b) => (a.unitSlug ?? '').localeCompare(b.unitSlug ?? '')),
+      );
     }
     const scope = detail?.intent.scope ?? null;
     const grid = scope ? compiled?.scopeGrid?.[scope] : undefined;
@@ -650,16 +649,6 @@ export function IntentProvider({
   const gates = useMemo(() => [...liveGates.values()], [liveGates]);
   const pendingGates = useMemo(() => gates.filter((g) => g.status === 'pending'), [gates]);
   const steering = useMemo(() => detail?.steering ?? [], [detail]);
-  // Unit lanes (docs/v2-parallel.md WP7): sorted by wave then slug so the lane
-  // board renders in scheduling order.
-  const units = useMemo<IntentUnit[]>(
-    () =>
-      (detail?.units ?? []).toSorted(
-        (a, b) => (a.batchIndex ?? 0) - (b.batchIndex ?? 0) || a.slug.localeCompare(b.slug),
-      ),
-    [detail],
-  );
-  const unitPlan = useMemo<IntentUnitPlan | null>(() => detail?.unitPlan ?? null, [detail]);
 
   const sensorsByStage = useMemo(() => {
     const map = new Map<string, IntentSensorRun[]>();
@@ -708,6 +697,13 @@ export function IntentProvider({
     [workflowPhases],
   );
 
+  const currentPhasePath = useMemo<string | null>(() => {
+    const raw = detail?.intent.currentPhase ?? null;
+    if (!raw) return null;
+    const matched = workflowPhases?.find((p) => p.phaseId === raw);
+    return matched?.path ?? raw;
+  }, [detail, workflowPhases]);
+
   return (
     <IntentContext.Provider
       value={{
@@ -720,6 +716,7 @@ export function IntentProvider({
         workflowPhases,
         phaseNameOf,
         initializationPhasePaths,
+        currentPhasePath,
         stageRows,
         stageEdges,
         gates,
@@ -727,8 +724,6 @@ export function IntentProvider({
         steering,
         sensorsByStage,
         artifactsByStage,
-        units,
-        unitPlan,
         outputBuffers: outputBufRef.current,
         outputVersion,
         stageNameOf,

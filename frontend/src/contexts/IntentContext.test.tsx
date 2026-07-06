@@ -32,7 +32,8 @@ vi.mock('@/services/workflows', () => ({
 import { IntentProvider, useIntent, clearIntentCache } from './IntentContext';
 
 function Probe() {
-  const { stageRows, pendingGates, outputBuffers, outputVersion, ensureOutputs } = useIntent();
+  const { stageRows, pendingGates, outputBuffers, outputVersion, ensureOutputs, currentPhasePath } =
+    useIntent();
   return (
     <div>
       <div data-testid="rows">{stageRows.map((r) => `${r.stageId}:${r.state}`).join(',')}</div>
@@ -40,6 +41,7 @@ function Probe() {
       <div data-testid="out" data-version={outputVersion}>
         {[...outputBuffers.entries()].map(([k, v]) => `${k}=${v}`).join('|')}
       </div>
+      <div data-testid="phase-path">{currentPhasePath ?? 'null'}</div>
       <button data-testid="seed" onClick={() => ensureOutputs('si-1')} />
     </div>
   );
@@ -278,5 +280,24 @@ describe('IntentContext', () => {
     });
     renderProvider();
     expect(await screen.findByTestId('rows')).toHaveTextContent('cg:SUCCEEDED,cg:RUNNING');
+  });
+
+  it('currentPhasePath maps a phaseId to its workflow path', async () => {
+    get.mockResolvedValue(detail({ currentPhase: 'ideation' }));
+    workflowGet.mockResolvedValue({
+      phases: [
+        { phaseId: 'initialization', path: '00', name: 'Initialization' },
+        { phaseId: 'ideation', path: '01', name: 'Ideation' },
+      ],
+    });
+    renderProvider();
+    expect(await screen.findByTestId('phase-path')).toHaveTextContent('01');
+  });
+
+  it('currentPhasePath falls back to raw value when workflowPhases lacks the id', async () => {
+    get.mockResolvedValue(detail({ currentPhase: 'unknown-phase' }));
+    workflowGet.mockResolvedValue({ phases: [] });
+    renderProvider();
+    expect(await screen.findByTestId('phase-path')).toHaveTextContent('unknown-phase');
   });
 });

@@ -21,8 +21,12 @@ const VALID_VIEWS: ReadonlySet<ObsView> = new Set(['diagram', 'graph', 'list']);
 const VIEW_STORAGE_KEY = 'aidlc-intent-obs-view';
 
 function readStoredView(): ObsView {
-  const stored = localStorage.getItem(VIEW_STORAGE_KEY);
-  return stored && VALID_VIEWS.has(stored as ObsView) ? (stored as ObsView) : 'diagram';
+  try {
+    const stored = localStorage.getItem(VIEW_STORAGE_KEY);
+    return stored && VALID_VIEWS.has(stored as ObsView) ? (stored as ObsView) : 'diagram';
+  } catch {
+    return 'diagram';
+  }
 }
 
 function aggregateStageStatus(rows: IntentStageRow[]): Record<string, StageState> {
@@ -52,14 +56,9 @@ function aggregateStageStatus(rows: IntentStageRow[]): Record<string, StageState
 function filterCompiledToScope(
   compiled: CompiledWorkflow,
   stageRows: IntentStageRow[],
-  initPaths: Set<string>,
+  initNodeIds: Set<string>,
 ): CompiledWorkflow {
   const ids = new Set(stageRows.map((r) => r.stageId));
-  const initNodeIds = new Set(
-    compiled.graph.nodes
-      .filter((n) => n.phasePath && initPaths.has(n.phasePath))
-      .map((n) => n.stageId),
-  );
   return {
     ...compiled,
     graph: {
@@ -85,6 +84,7 @@ export default function IntentObservabilityPage() {
     workflowPhases,
     phaseNameOf,
     initializationPhasePaths,
+    currentPhasePath,
   } = useIntent();
   const navigate = useNavigate();
   const { project } = useProjectCache(projectId);
@@ -92,24 +92,28 @@ export default function IntentObservabilityPage() {
 
   const stageStatus = useMemo(() => aggregateStageStatus(stageRows), [stageRows]);
 
-  const filteredStageStatus = useMemo(() => {
-    if (!compiled) return stageStatus;
-    const initNodeIds = new Set(
+  const initNodeIds = useMemo<Set<string>>(() => {
+    if (!compiled) return new Set();
+    return new Set(
       compiled.graph.nodes
         .filter((n) => n.phasePath && initializationPhasePaths.has(n.phasePath))
         .map((n) => n.stageId),
     );
+  }, [compiled, initializationPhasePaths]);
+
+  const filteredStageStatus = useMemo(() => {
+    if (!compiled) return stageStatus;
     const result: Record<string, StageState> = {};
     for (const [id, state] of Object.entries(stageStatus)) {
       if (!initNodeIds.has(id)) result[id] = state;
     }
     return result;
-  }, [stageStatus, compiled, initializationPhasePaths]);
+  }, [stageStatus, compiled, initNodeIds]);
 
   const scopeCompiled = useMemo(() => {
     if (!compiled) return null;
-    return filterCompiledToScope(compiled, stageRows, initializationPhasePaths);
-  }, [compiled, stageRows, initializationPhasePaths]);
+    return filterCompiledToScope(compiled, stageRows, initNodeIds);
+  }, [compiled, stageRows, initNodeIds]);
 
   const graphPhases = useMemo(() => {
     if (!workflowPhases) return undefined;
@@ -170,7 +174,7 @@ export default function IntentObservabilityPage() {
               {intent.title}
             </span>
             <Badge variant="outline" className="text-[10px] h-5 bg-muted/40">
-              {intent.currentPhase ? phaseNameOf(intent.currentPhase) : intent.status}
+              {currentPhasePath ? phaseNameOf(currentPhasePath) : intent.status}
             </Badge>
             {isActive && (
               <Badge
@@ -229,12 +233,15 @@ export default function IntentObservabilityPage() {
               <CardTitle className="text-sm">Execution progress</CardTitle>
               <ToggleGroup
                 type="single"
+                aria-label="Execution view"
                 value={view}
                 onValueChange={(v) => {
                   if (v && VALID_VIEWS.has(v as ObsView)) {
                     const next = v as ObsView;
                     setView(next);
-                    localStorage.setItem(VIEW_STORAGE_KEY, next);
+                    try {
+                      localStorage.setItem(VIEW_STORAGE_KEY, next);
+                    } catch {}
                   }
                 }}
                 className="gap-0.5"

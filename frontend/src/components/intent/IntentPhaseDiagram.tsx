@@ -18,8 +18,14 @@ function phaseColorAt(index: number) {
 }
 
 export function IntentPhaseDiagram() {
-  const { stageRows, initializationPhasePaths, detail, compiled, workflowPhases } = useIntent();
-  const currentPhase = detail?.intent.currentPhase ?? null;
+  const {
+    stageRows,
+    initializationPhasePaths,
+    compiled,
+    workflowPhases,
+    currentPhasePath,
+    phaseNameOf,
+  } = useIntent();
 
   // The plan (compiled) and the phase names (workflow) land after the intent
   // DTO — rendering before both arrive flashes a partial phase list.
@@ -50,7 +56,7 @@ export function IntentPhaseDiagram() {
   return (
     <div className="space-y-2">
       {phases.map((group, idx) => {
-        const state = derivePhaseState(group, currentPhase);
+        const state = derivePhaseState(group, currentPhasePath);
         const isActive = state === 'active';
         const palette = phaseColorAt(idx);
         const pct = group.total > 0 ? Math.round((group.done / group.total) * 100) : 0;
@@ -84,7 +90,7 @@ export function IntentPhaseDiagram() {
                   isActive ? 'text-xs' : 'text-[10px]',
                 )}
               >
-                {group.phase}
+                {phaseNameOf(group.phase)}
               </span>
               <span
                 className={cn(
