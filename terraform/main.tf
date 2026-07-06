@@ -349,6 +349,18 @@ module "agentcore" {
   }
 }
 
+# Tombstone for the retired v1 ECS agents module.
+#
+# Existing installations may still have Docker provider-owned objects in state at
+# module.agents.module.agents_docker_build.*. Terraform needs the old child-module
+# provider address (module.agents.provider["registry.terraform.io/kreuzwerker/docker"])
+# present so it can destroy those orphaned objects. The module intentionally
+# contains no resources and can be removed after environments have applied the v1
+# retirement once.
+module "agents" {
+  source = "./modules/compute/agents"
+}
+
 # The agent-settings SSM parameters moved from the retired v1 ECS agents module
 # (modules/compute/agents) into the agentcore module. The values set via the
 # Admin UI survive because the parameters are moved in state, not recreated.
