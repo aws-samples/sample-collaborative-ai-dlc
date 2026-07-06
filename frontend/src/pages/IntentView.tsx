@@ -49,13 +49,24 @@ import {
 import { cn } from '@/lib/utils';
 import { getTimeAgo } from '@/lib/timeAgo';
 import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
   AlertTriangle,
   ChevronRight,
   Compass,
   FileText,
+  HelpCircle,
   Loader2,
   MoreHorizontal,
   Play,
+  RotateCcw,
   Trash2,
   XCircle,
 } from 'lucide-react';
@@ -63,6 +74,26 @@ import {
 // The v2 intent page — main-pane content only. All fetch/realtime/output state
 // lives in IntentProvider (mounted by AppShell, shared with the right-hand
 // IntentActivityPanel where output/timeline/discussions render).
+
+const TERMINAL_STATUSES = new Set(['FAILED', 'CANCELLED', 'SUCCEEDED']);
+
+const SCOPE_PALETTE = [
+  'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300',
+  'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300',
+  'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
+  'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
+  'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300',
+  'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300',
+] as const;
+
+function scopeColor(scope: string): string {
+  let hash = 0;
+  for (let i = 0; i < scope.length; i++) {
+    hash = (hash * 31 + scope.charCodeAt(i)) | 0;
+  }
+  return SCOPE_PALETTE[Math.abs(hash) % SCOPE_PALETTE.length];
+}
+
 export default function IntentView() {
   const {
     projectId,
@@ -180,12 +211,20 @@ export default function IntentView() {
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-3 min-w-0">
           <h1 className="text-lg font-bold tracking-tight truncate">{intent.title || 'Intent'}</h1>
-          <Badge variant="outline" className="text-[10px]">
-            {intent.status}
-          </Badge>
-          <Badge variant="secondary" className="text-[10px]">
-            {intent.scope}
-          </Badge>
+          {intent.scope && (
+            <Badge
+              variant="secondary"
+              className={cn('text-xs font-semibold px-2.5 border-0', scopeColor(intent.scope))}
+              aria-label={`Scope: ${intent.scope}`}
+            >
+              {intent.scope}
+            </Badge>
+          )}
+          {TERMINAL_STATUSES.has(intent.status) && (
+            <Badge variant="outline" className="text-[10px]">
+              {intent.status}
+            </Badge>
+          )}
           {isActive && (
             <span
               className="h-1.5 w-1.5 rounded-full bg-agent-running animate-pulse"
@@ -360,8 +399,14 @@ export default function IntentView() {
         <>
           {/* Pending human gates (D3: one editor per pending gate) */}
           {pendingGates.length > 0 && (
-            <div className="space-y-3">
-              <h2 className="text-sm font-semibold">Open questions ({pendingGates.length})</h2>
+            <div className="rounded-lg border border-l-4 border-l-agent-waiting bg-agent-waiting/[0.04] p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <HelpCircle className="h-4 w-4 text-agent-waiting" />
+                <h2 className="text-sm font-semibold">Questions for you</h2>
+                <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
+                  {pendingGates.length}
+                </Badge>
+              </div>
               {pendingGates.map((gate) => (
                 <GateCard
                   key={gate.humanTaskId}
@@ -432,10 +477,12 @@ function AgentProgressCard() {
     stageRows,
     stageNameOf,
     phaseNameOf,
+    gates,
     outputBuffers,
     outputVersion,
     ensureOutputs,
     focusOutput,
+    rewindIntent,
   } = useIntent();
   const intent = detail?.intent;
   const isRunning = intent?.status === 'RUNNING';
@@ -466,13 +513,13 @@ function AgentProgressCard() {
 
   if (isWaiting) {
     return (
-      <div className="rounded-lg border border-agent-waiting/30 bg-agent-waiting/[0.05] px-4 py-3">
-        <div className="flex items-center gap-2">
-          <span className="h-2 w-2 rounded-full bg-agent-waiting animate-pulse-subtle" />
-          <span className="text-sm font-medium text-agent-waiting">Waiting</span>
-          {stageName && <span className="text-xs text-muted-foreground">{stageName}</span>}
-        </div>
-      </div>
+      <WaitingCard
+        intent={intent}
+        gates={gates}
+        stageRows={stageRows}
+        stageNameOf={stageNameOf}
+        rewindIntent={rewindIntent}
+      />
     );
   }
 
@@ -488,7 +535,12 @@ function AgentProgressCard() {
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm font-medium">Agent working</span>
+            <span className="text-sm font-medium">Running</span>
+            <span className="inline-flex items-center gap-0.5">
+              <span className="h-1 w-1 rounded-full bg-agent-running animate-bounce [animation-delay:0ms]" />
+              <span className="h-1 w-1 rounded-full bg-agent-running animate-bounce [animation-delay:150ms]" />
+              <span className="h-1 w-1 rounded-full bg-agent-running animate-bounce [animation-delay:300ms]" />
+            </span>
             {stageName && <span className="text-xs text-muted-foreground">{stageName}</span>}
             {phaseName && (
               <Badge variant="outline" className="h-4 text-[10px]">
@@ -512,6 +564,182 @@ function AgentProgressCard() {
           View live output
         </Button>
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// WaitingCard — rich "parked, waiting on human" state with context + actions.
+// ---------------------------------------------------------------------------
+
+interface WaitingCardProps {
+  intent: NonNullable<ReturnType<typeof useIntent>['detail']>['intent'];
+  gates: ReturnType<typeof useIntent>['gates'];
+  stageRows: ReturnType<typeof useIntent>['stageRows'];
+  stageNameOf: ReturnType<typeof useIntent>['stageNameOf'];
+  rewindIntent: ReturnType<typeof useIntent>['rewindIntent'];
+}
+
+function WaitingCard({ intent, gates, stageRows, stageNameOf, rewindIntent }: WaitingCardProps) {
+  const [confirmRestart, setConfirmRestart] = useState(false);
+  const [guidanceOpen, setGuidanceOpen] = useState(false);
+  const [guidance, setGuidance] = useState('');
+  const [rewinding, setRewinding] = useState(false);
+
+  const activeGate =
+    gates.find((g) => g.humanTaskId === intent.pendingHumanTaskId) ??
+    gates.findLast((g) => g.status === 'pending') ??
+    null;
+
+  const parkedRow = stageRows.find((r) => r.state === 'WAITING_FOR_HUMAN') ?? null;
+  const stageId = parkedRow?.stageId ?? intent.currentStage ?? '';
+  const displayStageName = parkedRow?.stageInstanceId
+    ? stageNameOf(parkedRow.stageInstanceId)
+    : stageId;
+
+  const waitingSince = activeGate?.createdAt ?? parkedRow?.parkedAt ?? null;
+
+  let questionPreview: string | null = null;
+  if (activeGate) {
+    if (activeGate.prompt) {
+      questionPreview = activeGate.prompt;
+    } else if (activeGate.kind === 'question' && activeGate.questions) {
+      try {
+        const parsed: { text?: string }[] = JSON.parse(activeGate.questions);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          questionPreview = parsed[0].text ?? null;
+          if (parsed.length > 1) {
+            questionPreview = `${questionPreview} — and ${parsed.length - 1} more`;
+          }
+        }
+      } catch {
+        questionPreview = null;
+      }
+    }
+  }
+
+  const handleRestart = async () => {
+    setRewinding(true);
+    try {
+      await rewindIntent(stageId);
+    } finally {
+      setRewinding(false);
+      setConfirmRestart(false);
+    }
+  };
+
+  const handleRestartWithGuidance = async () => {
+    if (!guidance.trim()) return;
+    setRewinding(true);
+    try {
+      await rewindIntent(stageId, guidance.trim());
+    } finally {
+      setRewinding(false);
+      setGuidanceOpen(false);
+      setGuidance('');
+    }
+  };
+
+  return (
+    <div className="rounded-lg border border-agent-waiting/30 bg-agent-waiting/[0.05] px-4 py-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 space-y-1.5">
+          <div className="flex items-center gap-2">
+            <span className="h-2 w-2 rounded-full bg-agent-waiting" />
+            <span className="text-sm font-semibold text-agent-waiting">Waiting for your input</span>
+            {waitingSince && (
+              <span className="text-xs text-muted-foreground">
+                since {getTimeAgo(waitingSince)}
+              </span>
+            )}
+          </div>
+          {displayStageName && (
+            <p className="text-xs text-muted-foreground">
+              Stage: <span className="font-medium text-foreground/80">{displayStageName}</span>
+            </p>
+          )}
+          {questionPreview && (
+            <p className="line-clamp-1 text-xs text-muted-foreground italic">
+              &ldquo;{questionPreview}&rdquo;
+            </p>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-3 flex items-center gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 gap-1.5 text-xs"
+          disabled={rewinding || !stageId}
+          onClick={() => setConfirmRestart(true)}
+        >
+          <RotateCcw className="h-3 w-3" />
+          Restart stage
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 gap-1.5 text-xs"
+          disabled={rewinding || !stageId}
+          onClick={() => setGuidanceOpen(true)}
+        >
+          <RotateCcw className="h-3 w-3" />
+          Restart with guidance
+        </Button>
+      </div>
+
+      {/* Confirm restart */}
+      <AlertDialog open={confirmRestart} onOpenChange={(o) => !rewinding && setConfirmRestart(o)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Restart stage</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will rewind the run to re-execute "{displayStageName || stageId}" from scratch.
+              Any pending questions for this stage are retired.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={rewinding}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleRestart} disabled={rewinding}>
+              {rewinding ? 'Restarting…' : 'Restart'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Restart with guidance dialog */}
+      <Dialog open={guidanceOpen} onOpenChange={(o) => !rewinding && setGuidanceOpen(o)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Restart with guidance</DialogTitle>
+            <DialogDescription>
+              Tell the agent what to do differently when it re-runs this stage.
+            </DialogDescription>
+          </DialogHeader>
+          <Textarea
+            value={guidance}
+            onChange={(e) => setGuidance(e.target.value)}
+            placeholder="e.g. 'Use the existing event bus instead of creating a new REST layer.'"
+            rows={3}
+            className="text-sm"
+          />
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="ghost" size="sm" disabled={rewinding}>
+                Cancel
+              </Button>
+            </DialogClose>
+            <Button
+              size="sm"
+              disabled={!guidance.trim() || rewinding}
+              onClick={handleRestartWithGuidance}
+            >
+              {rewinding ? 'Restarting…' : 'Restart'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
