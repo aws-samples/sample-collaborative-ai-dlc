@@ -6,8 +6,8 @@
 import { Skeleton } from '@/components/ui/skeleton';
 import { GitLabIcon } from '@/components/icons/git-providers';
 import type { TrackerProviderStatus } from '@/services/trackers';
-import { AdminCard } from '../shared/AdminCard';
-import { ConfigStatusBadge } from '../shared/ConfigStatusBadge';
+import { SettingsCard } from '@/components/settings/SettingsCard';
+import { ConfigStatusBadge } from '@/components/settings/ConfigStatusBadge';
 import { GitHubSourceControlCard } from '../GitHubSourceControlCard';
 import { OAuthAppConfigForm } from '../OAuthAppConfigForm';
 
@@ -41,7 +41,7 @@ export function SourceControlTab({ providers, providersLoading, onProvidersChang
         onOAuthSaved={onProvidersChanged}
       />
 
-      <AdminCard
+      <SettingsCard
         icon={<GitLabIcon />}
         title="GitLab"
         badge={<ConfigStatusBadge ok={gitlabConfigured} notOkTone="warning" />}
@@ -52,7 +52,7 @@ export function SourceControlTab({ providers, providersLoading, onProvidersChang
           configured={gitlabConfigured}
           onSaved={onProvidersChanged}
         />
-      </AdminCard>
+      </SettingsCard>
     </div>
   );
 }

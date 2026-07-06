@@ -20,9 +20,9 @@ import {
   type GitHubAuthMode,
 } from '@/services/gitProvider';
 import { cn } from '@/lib/utils';
-import { AdminCard } from './shared/AdminCard';
-import { ConfigStatusBadge } from './shared/ConfigStatusBadge';
-import { SaveStatusButton, type SaveResult } from './shared/SaveStatusButton';
+import { SettingsCard } from '@/components/settings/SettingsCard';
+import { ConfigStatusBadge } from '@/components/settings/ConfigStatusBadge';
+import { SaveStatusButton, type SaveResult } from '@/components/settings/SaveStatusButton';
 import { OAuthAppConfigForm } from './OAuthAppConfigForm';
 
 const MODE_OPTIONS: {
@@ -128,7 +128,7 @@ export function GitHubSourceControlCard({ oauthConfigured, onOAuthSaved }: Props
   };
 
   return (
-    <AdminCard
+    <SettingsCard
       icon={<GitHubIcon />}
       title="GitHub"
       badge={
@@ -297,6 +297,6 @@ export function GitHubSourceControlCard({ oauthConfigured, onOAuthSaved }: Props
           )}
         </div>
       )}
-    </AdminCard>
+    </SettingsCard>
   );
 }

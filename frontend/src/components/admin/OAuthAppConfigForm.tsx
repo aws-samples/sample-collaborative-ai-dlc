@@ -24,7 +24,7 @@ import {
 } from 'lucide-react';
 import { trackersService } from '@/services/trackers';
 import { getTrackerProvider } from '@/lib/trackerProviders';
-import { SaveStatusButton, type SaveResult } from './shared/SaveStatusButton';
+import { SaveStatusButton, type SaveResult } from '@/components/settings/SaveStatusButton';
 
 interface Props {
   /** Tracker-provider id owning the OAuth secret slot (e.g. 'github-issues'). */

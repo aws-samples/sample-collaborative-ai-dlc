@@ -6,10 +6,10 @@ import { useEffect, useState } from 'react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { KeyRound } from 'lucide-react';
 import { agentsService, type AgentSettings } from '@/services/agents';
-import { AdminCard } from './shared/AdminCard';
-import { ConfigStatusBadge } from './shared/ConfigStatusBadge';
-import { SecretField } from './shared/SecretField';
-import { SaveStatusButton, type SaveResult } from './shared/SaveStatusButton';
+import { SettingsCard } from '@/components/settings/SettingsCard';
+import { ConfigStatusBadge } from '@/components/settings/ConfigStatusBadge';
+import { SecretField } from '@/components/settings/SecretField';
+import { SaveStatusButton, type SaveResult } from '@/components/settings/SaveStatusButton';
 
 type SecretName = 'bedrockBearerToken' | 'kiroApiKey';
 
@@ -79,7 +79,7 @@ export function AgentCredentialsCard() {
   const bothSet = !!settings?.bedrockBearerTokenSet && !!settings?.kiroApiKeySet;
 
   return (
-    <AdminCard
+    <SettingsCard
       icon={<KeyRound />}
       title="Agent Credentials"
       badge={
@@ -145,6 +145,6 @@ export function AgentCredentialsCard() {
           />
         </div>
       )}
-    </AdminCard>
+    </SettingsCard>
   );
 }

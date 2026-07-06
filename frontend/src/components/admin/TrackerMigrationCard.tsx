@@ -7,7 +7,7 @@ import {
   type TrackerMigrationResult,
   type TrackerMigrationStatus,
 } from '@/services/projects';
-import { AdminCard } from './shared/AdminCard';
+import { SettingsCard } from '@/components/settings/SettingsCard';
 
 // Operator-facing card for the tracker provider abstraction migration
 // (#194 phase #198). Surfaces "X projects on the legacy data model" and
@@ -74,7 +74,7 @@ export function TrackerMigrationCard() {
   }
 
   return (
-    <AdminCard
+    <SettingsCard
       icon={<Database />}
       title="Tracker Migration"
       description={
@@ -133,6 +133,6 @@ export function TrackerMigrationCard() {
           </p>
         )}
       </div>
-    </AdminCard>
+    </SettingsCard>
   );
 }

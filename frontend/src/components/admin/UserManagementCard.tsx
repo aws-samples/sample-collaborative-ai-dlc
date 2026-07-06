@@ -11,7 +11,7 @@ import { CheckCircle2, XCircle, Loader2, Users, ShieldCheck } from 'lucide-react
 import { adminUsersService, type AdminUser } from '@/services/adminUsers';
 import { useAuth } from '@/contexts/AuthContext';
 import { ApiError } from '@/services/api';
-import { AdminCard } from './shared/AdminCard';
+import { SettingsCard } from '@/components/settings/SettingsCard';
 
 const initials = (u: AdminUser) => {
   const source = u.displayName || u.email || u.username;
@@ -89,7 +89,7 @@ export function UserManagementCard() {
   const adminCount = users.filter((u) => u.platformAdmin).length;
 
   return (
-    <AdminCard
+    <SettingsCard
       icon={<Users />}
       title="User Management"
       badge={
@@ -183,6 +183,6 @@ export function UserManagementCard() {
           </>
         )}
       </div>
-    </AdminCard>
+    </SettingsCard>
   );
 }

@@ -1,6 +1,6 @@
-// Shared card shell for the Platform Admin page: icon tile + title + status
-// pill + one-line description, then content. Gives every settings card the
-// same visual rhythm instead of ad-hoc headers.
+// Shared card shell for settings pages (Platform Admin + Project Settings):
+// icon tile + title + status pill + one-line description, then content.
+// Gives every settings card the same visual rhythm instead of ad-hoc headers.
 
 import type { ReactNode } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
@@ -19,7 +19,7 @@ interface Props {
   className?: string;
 }
 
-export function AdminCard({
+export function SettingsCard({
   icon,
   title,
   badge,

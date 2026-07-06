@@ -9,8 +9,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { ArrowRight, Link2 } from 'lucide-react';
 import { getTrackerProvider } from '@/lib/trackerProviders';
 import type { TrackerProviderStatus } from '@/services/trackers';
-import { AdminCard } from '../shared/AdminCard';
-import { ConfigStatusBadge } from '../shared/ConfigStatusBadge';
+import { SettingsCard } from '@/components/settings/SettingsCard';
+import { ConfigStatusBadge } from '@/components/settings/ConfigStatusBadge';
 import { OAuthAppConfigForm } from '../OAuthAppConfigForm';
 import { TrackerMigrationCard } from '../TrackerMigrationCard';
 
@@ -43,7 +43,7 @@ export function TrackersTab({ providers, providersLoading, onProvidersChanged }:
   return (
     <div className="space-y-6">
       {jira && (
-        <AdminCard
+        <SettingsCard
           icon={<JiraIcon />}
           title={jira.label}
           badge={<ConfigStatusBadge ok={jira.configured} notOkTone="warning" />}
@@ -54,11 +54,11 @@ export function TrackersTab({ providers, providersLoading, onProvidersChanged }:
             configured={jira.configured}
             onSaved={onProvidersChanged}
           />
-        </AdminCard>
+        </SettingsCard>
       )}
 
       {gitBacked.length > 0 && (
-        <AdminCard
+        <SettingsCard
           icon={<Link2 />}
           title="Source-control trackers"
           description="These reuse the source-control OAuth apps — one connection covers repos and issues."
@@ -86,7 +86,7 @@ export function TrackersTab({ providers, providersLoading, onProvidersChanged }:
               );
             })}
           </div>
-        </AdminCard>
+        </SettingsCard>
       )}
 
       <TrackerMigrationCard />

@@ -7,8 +7,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Cpu, ExternalLink } from 'lucide-react';
 import { agentsService } from '@/services/agents';
 import type { CliModels, RuntimeModelCli } from '@/services/projects';
-import { AdminCard } from './shared/AdminCard';
-import { SaveStatusButton, type SaveResult } from './shared/SaveStatusButton';
+import { SettingsCard } from '@/components/settings/SettingsCard';
+import { SaveStatusButton, type SaveResult } from '@/components/settings/SaveStatusButton';
 
 const MODEL_CLI_LABELS: Record<RuntimeModelCli, string> = {
   kiro: 'Kiro',
@@ -88,7 +88,7 @@ export function DefaultModelsCard() {
   };
 
   return (
-    <AdminCard
+    <SettingsCard
       icon={<Cpu />}
       title="Default Models"
       description="Fallback model per CLI when a project sets no override — applies to new agent runs."
@@ -141,6 +141,6 @@ export function DefaultModelsCard() {
           />
         </div>
       )}
-    </AdminCard>
+    </SettingsCard>
   );
 }
