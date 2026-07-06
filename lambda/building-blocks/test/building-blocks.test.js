@@ -76,7 +76,9 @@ const installFakes = () => {
 };
 
 // ─── Event builders ───
-const claims = { sub: 'user-1', email: 'user@example.com' };
+// Block authoring requires the platform-admin group, so the default test
+// caller is an admin; non-admin behaviour is covered explicitly below.
+const claims = { sub: 'user-1', email: 'user@example.com', 'cognito:groups': 'platform-admin' };
 
 const event = ({ method, type, id, body, sub = 'body' }) => {
   let resource = '/blocks/{type}';
@@ -548,5 +550,32 @@ describe('building-blocks handler', () => {
       expect(res.body.name).toBe('MVP (mine)');
       expect(res.body.readOnly).toBe(false);
     });
+  });
+});
+
+// ─── Platform-admin gating (shared/authz.js) ───
+// Every mutation requires the Cognito platform-admin group; reads stay open.
+describe('platform-admin gating', () => {
+  const nonAdminClaims = { sub: 'user-2', email: 'user2@example.com' };
+  const asNonAdmin = (ev) => ({
+    ...ev,
+    requestContext: { authorizer: { claims: nonAdminClaims } },
+  });
+
+  it('rejects non-admin mutations with 403 (create / update / delete)', async () => {
+    for (const ev of [
+      event({ method: 'POST', type: 'scope', body: { id: 'x', name: 'X' } }),
+      event({ method: 'PUT', type: 'scope', id: 'x', body: { name: 'Y' } }),
+      event({ method: 'DELETE', type: 'scope', id: 'x' }),
+    ]) {
+      const res = parse(await handler(asNonAdmin(ev)));
+      expect(res.status).toBe(403);
+      expect(res.body.code).toBe('PLATFORM_ADMIN_REQUIRED');
+    }
+  });
+
+  it('keeps reads open for non-admins', async () => {
+    const res = parse(await handler(asNonAdmin(event({ method: 'GET', type: 'scope' }))));
+    expect(res.status).toBe(200);
   });
 });

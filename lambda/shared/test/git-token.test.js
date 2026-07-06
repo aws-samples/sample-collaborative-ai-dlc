@@ -272,3 +272,147 @@ describe('getInstallationToken', () => {
     expect(mintBody.permissions).toEqual({ contents: 'read' });
   });
 });
+
+// ── mode-aware resolution (platform GitHub auth mode, shared/github-auth-config)
+
+describe('resolveGitHubTokenForMode / getInstallationTokenFromConfig / getInstallationReadToken', () => {
+  let gitToken;
+  const { privateKey: pem } = generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+  });
+
+  const MODE_PARAM = '/proj/dev/github-auth-mode';
+  const CONFIG_PARAM = '/proj/dev/github-app-config';
+
+  const stubAppConfig = (mode = 'app', appId = '12345', installationId = '67890') => {
+    ssmMock.on(GetParameterCommand, { Name: MODE_PARAM }).resolves({ Parameter: { Value: mode } });
+    ssmMock
+      .on(GetParameterCommand, { Name: CONFIG_PARAM })
+      .resolves({ Parameter: { Value: JSON.stringify({ appId, installationId }) } });
+  };
+
+  const stubGitHubApi = (login = 'org') => {
+    globalThis.fetch = vi.fn(async (url) => {
+      if (url.includes('/access_tokens')) {
+        return {
+          ok: true,
+          json: async () => ({
+            token: 'ghs_mode',
+            expires_at: new Date(Date.now() + 3600000).toISOString(),
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({ account: { login } }) };
+    });
+  };
+
+  beforeEach(async () => {
+    ssmMock.reset();
+    secretsMock.reset();
+    delete globalThis.fetch;
+    vi.stubEnv('GITHUB_APP_PRIVATE_KEY_SECRET_NAME', 'test/app-key');
+    vi.stubEnv('GITHUB_AUTH_MODE_PARAM', MODE_PARAM);
+    vi.stubEnv('GITHUB_APP_CONFIG_PARAM', CONFIG_PARAM);
+    vi.resetModules();
+    gitToken = await import('../git-token.js');
+    // Explicitly drop module-level caches — the CJS interop can hand the same
+    // module instance back across resetModules, and both modules cache reads.
+    gitToken.clearAppAuthCaches();
+    const authConfig = await import('../github-auth-config.js');
+    authConfig.clearGitHubAuthConfigCache();
+    secretsMock.on(GetSecretValueCommand).resolves({
+      SecretString: JSON.stringify({ privateKey: pem }),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    delete globalThis.fetch;
+  });
+
+  it('app mode mints a repo-scoped installation token from the SSM config', async () => {
+    stubAppConfig('app');
+    stubGitHubApi('org');
+    const out = await gitToken.resolveGitHubTokenForMode(
+      { ssm, secrets, ddb },
+      { userId: 'user-1', repositories: ['org/repo'] },
+    );
+    expect(out).toEqual({ mode: 'app', token: 'ghs_mode' });
+  });
+
+  it('getInstallationTokenFromConfig throws when the App config is incomplete', async () => {
+    stubAppConfig('app', null, null);
+    await expect(
+      gitToken.getInstallationTokenFromConfig({ ssm, secrets, repositories: ['org/repo'] }),
+    ).rejects.toThrow(/GitHub App is not configured/);
+  });
+
+  it('oauth mode resolves the per-user connection token', async () => {
+    vi.stubEnv('GIT_CONNECTIONS_TABLE', 'test-git-connections');
+    vi.stubEnv('GIT_PROVIDER_CONNECTIONS_TABLE', 'test-git-provider-connections');
+    ssmMock
+      .on(GetParameterCommand, { Name: MODE_PARAM })
+      .resolves({ Parameter: { Value: 'oauth' } });
+    ssmMock
+      .on(GetParameterCommand, { Name: '/proj/dev/git-token/user-1' })
+      .resolves({ Parameter: { Value: JSON.stringify({ accessToken: 'gho_user' }) } });
+    const { GetCommand } = await import('@aws-sdk/lib-dynamodb');
+    ddbMock.on(GetCommand).resolves({
+      Item: { userId: 'user-1', provider: 'github', parameterName: '/proj/dev/git-token/user-1' },
+    });
+
+    const out = await gitToken.resolveGitHubTokenForMode(
+      { ssm, secrets, ddb },
+      { userId: 'user-1', repositories: ['org/repo'] },
+    );
+    expect(out).toEqual({ mode: 'oauth', token: 'gho_user' });
+  });
+
+  it('oauth mode returns a null token when the user has no connection', async () => {
+    vi.stubEnv('GIT_CONNECTIONS_TABLE', 'test-git-connections');
+    vi.stubEnv('GIT_PROVIDER_CONNECTIONS_TABLE', 'test-git-provider-connections');
+    ssmMock
+      .on(GetParameterCommand, { Name: MODE_PARAM })
+      .resolves({ Parameter: { Value: 'oauth' } });
+    const { GetCommand } = await import('@aws-sdk/lib-dynamodb');
+    ddbMock.on(GetCommand).resolves({});
+
+    const out = await gitToken.resolveGitHubTokenForMode(
+      { ssm, secrets, ddb },
+      { userId: 'user-1' },
+    );
+    expect(out).toEqual({ mode: 'oauth', token: null });
+  });
+
+  it('getInstallationReadToken mints an unscoped metadata:read token', async () => {
+    stubAppConfig('app');
+    stubGitHubApi('org');
+    const token = await gitToken.getInstallationReadToken({ ssm, secrets });
+    expect(token).toBe('ghs_mode');
+    const mintCall = globalThis.fetch.mock.calls.find((c) => c[0].includes('/access_tokens'));
+    const mintBody = JSON.parse(mintCall[1].body);
+    // No repositories field (discovery must see all installation repos) and
+    // permissions pinned to metadata:read.
+    expect(mintBody.repositories).toBeUndefined();
+    expect(mintBody.permissions).toEqual({ metadata: 'read' });
+  });
+
+  it('clearAppAuthCaches forces a re-mint', async () => {
+    stubAppConfig('app');
+    stubGitHubApi('org');
+    await gitToken.getInstallationReadToken({ ssm, secrets });
+    await gitToken.getInstallationReadToken({ ssm, secrets });
+    const mintsBefore = globalThis.fetch.mock.calls.filter((c) =>
+      c[0].includes('/access_tokens'),
+    ).length;
+    expect(mintsBefore).toBe(1); // cached
+    gitToken.clearAppAuthCaches();
+    await gitToken.getInstallationReadToken({ ssm, secrets });
+    const mintsAfter = globalThis.fetch.mock.calls.filter((c) =>
+      c[0].includes('/access_tokens'),
+    ).length;
+    expect(mintsAfter).toBe(2);
+  });
+});

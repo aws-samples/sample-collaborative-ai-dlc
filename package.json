@@ -4,6 +4,7 @@
   "workspaces": [
     "lambda/agentcore",
     "lambda/building-blocks",
+    "lambda/cognito-users",
     "lambda/discussions",
     "lambda/github",
     "lambda/intents",

@@ -160,10 +160,28 @@ resource "aws_iam_role_policy" "github_connector" {
         Action   = ["secretsmanager:GetSecretValue"]
         Resource = [var.github_oauth_secret_arn]
       },
+      # GitHub App auth: read the private key for installation-token minting
+      # and validation probes; write it from the Admin "GitHub Integration"
+      # card (PUT /github/admin/config, platform-admin gated).
+      {
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue"]
+        Resource = [var.github_app_private_key_secret_arn]
+      },
       {
         Effect   = "Allow"
         Action   = ["ssm:PutParameter", "ssm:GetParameter", "ssm:DeleteParameter"]
         Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
+      },
+      # Platform GitHub auth mode + App config: read for mode dispatch, write
+      # from the Admin card (same endpoint as the private key above).
+      {
+        Effect = "Allow"
+        Action = ["ssm:GetParameter", "ssm:PutParameter"]
+        Resource = compact([
+          var.github_auth_mode_param_arn,
+          var.github_app_config_param_arn,
+        ])
       }
     ]
   })
@@ -222,7 +240,24 @@ resource "aws_iam_role_policy" "trackers" {
           Action   = ["ssm:PutParameter", "ssm:GetParameter", "ssm:DeleteParameter"]
           Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/jira-token/*"
         },
+        # GitHub App auth (read-only): the github-issues provider consults the
+        # platform auth mode and, in app mode, mints installation tokens.
+        {
+          Effect = "Allow"
+          Action = ["ssm:GetParameter"]
+          Resource = compact([
+            var.github_auth_mode_param_arn,
+            var.github_app_config_param_arn,
+          ])
+        },
       ],
+      var.github_app_private_key_secret_arn != "" ? [
+        {
+          Effect   = "Allow"
+          Action   = ["secretsmanager:GetSecretValue"]
+          Resource = [var.github_app_private_key_secret_arn]
+        }
+      ] : [],
       # Tracker OAuth secrets — read for OAuth flows, write from the
       # Admin "Tracker OAuth Apps" panel. Jira, GitHub and GitLab all flow
       # through the trackers Lambda's admin endpoints.
@@ -253,7 +288,9 @@ resource "aws_iam_role_policy" "trackers" {
 
 # -----------------------------------------------------------------------------
 # Role 4: cognito-reader (1 Lambda — cognito-users)
-# Only ListUsers on the project's user pool.
+# ListUsers (user directory) + platform-admin group management (list members,
+# add/remove — the Admin page's User Management card; the Lambda enforces the
+# platform-admin gate before any group mutation).
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "cognito_reader" {
   name               = "${var.project_name}-cognito-reader-${var.environment}"
@@ -272,8 +309,13 @@ resource "aws_iam_role_policy" "cognito_reader" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect   = "Allow"
-        Action   = ["cognito-idp:ListUsers"]
+        Effect = "Allow"
+        Action = [
+          "cognito-idp:ListUsers",
+          "cognito-idp:ListUsersInGroup",
+          "cognito-idp:AdminAddUserToGroup",
+          "cognito-idp:AdminRemoveUserFromGroup",
+        ]
         Resource = var.cognito_user_pool_arn
       }
     ]
@@ -385,9 +427,28 @@ resource "aws_iam_role_policy" "neptune_artifacts" {
   role = aws_iam_role.neptune_artifacts.id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
-      local.neptune_statement
-    ]
+    Statement = concat(
+      [
+        local.neptune_statement,
+        # GitHub App auth (read-only): repo stack detection in the projects
+        # lambda mints a contents:read installation token in app mode.
+        {
+          Effect = "Allow"
+          Action = ["ssm:GetParameter"]
+          Resource = compact([
+            var.github_auth_mode_param_arn,
+            var.github_app_config_param_arn,
+          ])
+        },
+      ],
+      var.github_app_private_key_secret_arn != "" ? [
+        {
+          Effect   = "Allow"
+          Action   = ["secretsmanager:GetSecretValue"]
+          Resource = [var.github_app_private_key_secret_arn]
+        }
+      ] : [],
+    )
   })
 }
 
@@ -493,7 +554,10 @@ module "projects_lambda" {
     GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
     GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
     ARTIFACTS_BUCKET               = var.artifacts_bucket_name
-    GITHUB_APP_ALLOWED_REPOS       = var.github_app_allowed_repos
+    # GitHub App auth (mode-aware stack detection)
+    GITHUB_AUTH_MODE_PARAM             = var.github_auth_mode_param_name
+    GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
+    GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
   }
 }
 
@@ -867,8 +931,12 @@ module "github_lambda" {
     GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
     GIT_TOKEN_SSM_PREFIX           = "${var.project_name}/${var.environment}/git-token"
     GITHUB_REDIRECT_URI            = var.github_redirect_uri
-    ENVIRONMENT                    = var.environment
-    CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
+    # GitHub App auth (mode switch + config + installation-token minting)
+    GITHUB_AUTH_MODE_PARAM             = var.github_auth_mode_param_name
+    GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
+    GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
+    ENVIRONMENT                        = var.environment
+    CORS_ALLOWED_ORIGINS               = var.cors_allowed_origins
   }
 }
 
@@ -993,8 +1061,12 @@ module "trackers_lambda" {
     GITHUB_OAUTH_SECRET_NAME       = var.github_oauth_secret_name
     GITLAB_OAUTH_SECRET_NAME       = var.gitlab_oauth_secret_name
     GITLAB_REDIRECT_URI            = var.gitlab_redirect_uri
-    ENVIRONMENT                    = var.environment
-    CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
+    # GitHub App auth (mode-aware token resolution for github-issues)
+    GITHUB_AUTH_MODE_PARAM             = var.github_auth_mode_param_name
+    GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
+    GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
+    ENVIRONMENT                        = var.environment
+    CORS_ALLOWED_ORIGINS               = var.cors_allowed_origins
   }
 }
 
@@ -1134,21 +1206,23 @@ module "cognito_users_lambda" {
   version = "~> 8.0"
 
   function_name = "${var.project_name}-cognito-users-${var.environment}"
-  description   = "Lists users from Cognito User Pool"
+  description   = "Cognito user directory + platform-admin role management"
   handler       = "index.handler"
-  runtime       = "nodejs18.x"
+  runtime       = "nodejs24.x"
   timeout       = 15
 
   source_path = [
     {
-      path             = "${path.module}/../../../../lambda/cognito-users"
-      npm_requirements = true
-    },
-    {
-      path          = "${path.module}/../../../../lambda/shared"
-      prefix_in_zip = "shared"
+      path = "${path.module}/../../../../lambda/cognito-users"
+      commands = [
+        "cd ../.. && npm run build -w cognito-users-lambda",
+        ":zip lambda/cognito-users/.build",
+      ]
     }
   ]
+
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.cognito_reader.arn
@@ -1568,6 +1642,21 @@ resource "aws_iam_role_policy" "v2_orchestrator" {
         Effect   = "Allow"
         Action   = ["ssm:GetParameter"]
         Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
+      },
+      {
+        # GitHub App auth (read-only): mode dispatch + per-stage installation
+        # token minting when the platform runs in app mode.
+        Effect = "Allow"
+        Action = ["ssm:GetParameter"]
+        Resource = compact([
+          var.github_auth_mode_param_arn,
+          var.github_app_config_param_arn,
+        ])
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = compact([var.github_app_private_key_secret_arn])
       }
     ]
   })
@@ -1623,6 +1712,12 @@ module "v2_orchestrator_lambda" {
     # a private-repo clone silently fell back to `git init` (see init-ws).
     GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
     GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
+    # GitHub App auth: the orchestrator consults the platform auth mode and, in
+    # app mode, mints repo-scoped installation tokens per stage dispatch
+    # (installation tokens live ~1h, shorter than a long run).
+    GITHUB_AUTH_MODE_PARAM             = var.github_auth_mode_param_name
+    GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
+    GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
     # Live realtime fan-out (lambda/shared/ws-fanout.js) — the orchestrator emits
     # execution/workspace lifecycle events on the intent:<id> channel itself, since
     # it is the only component that owns those transitions (the runtime broadcasts

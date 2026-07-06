@@ -24,6 +24,8 @@ export interface User {
   email?: string;
   displayName?: string;
   avatarUrl?: string;
+  /** Cognito groups from the ID token (e.g. 'platform-admin'). */
+  groups: string[];
 }
 
 export interface AuthSession {
@@ -109,11 +111,22 @@ export const authService = {
     try {
       const user = await getCurrentUser();
       const attributes = await fetchUserAttributes();
+      // Groups ride on the ID token (same token the API receives), so the
+      // frontend's soft-gating always matches the backend's authz decision.
+      let groups: string[] = [];
+      try {
+        const session = await fetchAuthSession();
+        const raw = session.tokens?.idToken?.payload?.['cognito:groups'];
+        if (Array.isArray(raw)) groups = raw.map(String);
+      } catch {
+        // Best-effort: missing groups only hides admin UI; backend still enforces.
+      }
       return {
         username: user.username,
         email: attributes.email,
         displayName: attributes['custom:display_name'] || attributes.email?.split('@')[0],
         avatarUrl: attributes['custom:avatar_url'],
+        groups,
       };
     } catch (error) {
       console.error('Get current user error:', error);

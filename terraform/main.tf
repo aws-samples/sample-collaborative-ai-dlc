@@ -184,7 +184,12 @@ module "lambda" {
   agentcore_runtime_arn               = module.agentcore.runtime_arn
   github_oauth_secret_name            = module.git.github_oauth_secret_name
   github_oauth_secret_arn             = module.git.github_oauth_secret_arn
-  github_app_allowed_repos            = var.github_app_allowed_repos
+  github_app_private_key_secret_name  = module.git.github_app_private_key_secret_name
+  github_app_private_key_secret_arn   = module.git.github_app_private_key_secret_arn
+  github_auth_mode_param_name         = module.git.github_auth_mode_param_name
+  github_auth_mode_param_arn          = module.git.github_auth_mode_param_arn
+  github_app_config_param_name        = module.git.github_app_config_param_name
+  github_app_config_param_arn         = module.git.github_app_config_param_arn
   gitlab_oauth_secret_name            = module.git.gitlab_oauth_secret_name
   gitlab_oauth_secret_arn             = module.git.gitlab_oauth_secret_arn
   git_connections_table_name          = module.git.git_connections_table_name

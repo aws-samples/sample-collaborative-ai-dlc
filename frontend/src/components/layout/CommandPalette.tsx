@@ -22,6 +22,7 @@ import {
   Activity,
 } from 'lucide-react';
 import { useProjectsCache } from '@/hooks/useProjectsCache';
+import { useAuth } from '@/contexts/AuthContext';
 import { GitRepoLink } from '@/components/GitRepoLink';
 
 interface CommandPaletteProps {
@@ -32,6 +33,7 @@ interface CommandPaletteProps {
 export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const navigate = useNavigate();
   const { projects: projectsWithSprint } = useProjectsCache();
+  const { isPlatformAdmin } = useAuth();
 
   // Global keyboard shortcut
   useEffect(() => {
@@ -66,10 +68,12 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
             Dashboard
             <CommandShortcut>Go</CommandShortcut>
           </CommandItem>
-          <CommandItem onSelect={() => runCommand(() => navigate('/admin'))}>
-            <Shield className="mr-2 h-4 w-4" />
-            Admin Panel
-          </CommandItem>
+          {isPlatformAdmin && (
+            <CommandItem onSelect={() => runCommand(() => navigate('/admin'))}>
+              <Shield className="mr-2 h-4 w-4" />
+              Admin Panel
+            </CommandItem>
+          )}
           <CommandItem onSelect={() => runCommand(() => navigate('/observability'))}>
             <Activity className="mr-2 h-4 w-4" />
             Observability

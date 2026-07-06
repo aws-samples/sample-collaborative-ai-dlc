@@ -74,14 +74,32 @@ function App() {
                 }
               >
                 <Route path="/dashboard" element={<Dashboard />} />
-                <Route path="/admin" element={<Admin />} />
+                <Route
+                  path="/admin"
+                  element={
+                    <ProtectedRoute requirePlatformAdmin>
+                      <Admin />
+                    </ProtectedRoute>
+                  }
+                />
                 <Route path="/observability" element={<ObservabilityLayout />} />
-                <Route path="/blocks" element={<BlockLibrary />} />
-                <Route path="/blocks/:type" element={<BlockLibrary />} />
-                <Route path="/blocks/:type/new" element={<BlockEditor />} />
-                <Route path="/blocks/:type/:id" element={<BlockEditor />} />
-                <Route path="/workflows" element={<WorkflowList />} />
-                <Route path="/workflows/:workflowId" element={<WorkflowComposer />} />
+                {/* Block + workflow authoring is platform-admin only (the
+                    backend rejects mutations for everyone else; these are
+                    editor pages, so the whole route is soft-gated). */}
+                {[
+                  { path: '/blocks', el: <BlockLibrary /> },
+                  { path: '/blocks/:type', el: <BlockLibrary /> },
+                  { path: '/blocks/:type/new', el: <BlockEditor /> },
+                  { path: '/blocks/:type/:id', el: <BlockEditor /> },
+                  { path: '/workflows', el: <WorkflowList /> },
+                  { path: '/workflows/:workflowId', el: <WorkflowComposer /> },
+                ].map(({ path, el }) => (
+                  <Route
+                    key={path}
+                    path={path}
+                    element={<ProtectedRoute requirePlatformAdmin>{el}</ProtectedRoute>}
+                  />
+                ))}
                 <Route path="/project/:projectId" element={<Project />} />
                 <Route path="/project/:projectId/settings" element={<ProjectSettings />} />
                 <Route path="/project/:projectId/intent/:intentId" element={<IntentView />} />

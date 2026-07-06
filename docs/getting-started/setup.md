@@ -47,6 +47,15 @@ The deployment takes 15-30 minutes. Neptune DB cluster creation takes the longes
 
 After deployment, configure agent authentication in the platform UI under **Admin → Agent Settings** by entering either a Kiro CLI API key or a Bedrock bearer token (for Claude Code / OpenCode setups). The Bedrock AgentCore runtime reads these credentials when agents run; the same admin page reports which credentials are set and which CLIs the runtime has available.
 
+The **Admin** page (user management, agent settings, provider OAuth apps, GitHub auth mode, migrations) and workflow/building-block authoring require membership in the Cognito `platform-admin` group. Bootstrap the first administrator via the CLI (users must sign out and back in to pick up the group); afterwards, additional admins can be granted or revoked in the UI under **Admin → User Management**:
+
+```bash
+aws cognito-idp admin-add-user-to-group \
+  --user-pool-id $(terraform -chdir=terraform output -raw user_pool_id) \
+  --username <username> \
+  --group-name platform-admin
+```
+
 ### Configure provider OAuth apps
 
 The platform integrates with external providers as code hosts (GitHub, GitLab) and issue trackers (GitHub Issues, GitLab Issues, Jira Cloud) so a sprint can be started from a tracker issue. For each provider you want to enable, register an OAuth app and paste the credentials into **Admin → Tracker OAuth Apps** in the deployed app.
@@ -55,13 +64,27 @@ For GitHub and GitLab a single OAuth app serves both the code host and that prov
 
 #### GitHub (code host + GitHub Issues)
 
+GitHub supports two platform-wide authentication modes, switchable at runtime in **Admin → GitHub Integration**:
+
+- **OAuth mode** (default): each user connects their own GitHub account; commits, PRs and comments are attributed to that user.
+- **GitHub App mode**: the platform authenticates as a GitHub App installation (a bot); users don't connect personal accounts, and the repo picker lists the repositories the App is installed on.
+
+For **OAuth mode**:
+
 1. Open [GitHub Developer Settings → OAuth Apps → New OAuth App](https://github.com/settings/developers).
-   Choose an **OAuth App**, _not_ a GitHub App — the flow expects OAuth App semantics.
+   Choose an **OAuth App**, _not_ a GitHub App — this mode expects OAuth App semantics.
 2. Set:
    - **Homepage URL**: `https://<your-cloudfront-domain>`
    - **Authorization callback URL**: `https://<your-cloudfront-domain>/github/callback`
 3. Copy the **Client ID** and generate a **Client Secret**.
 4. In the deployed app, sign in and open **Admin → Tracker OAuth Apps → GitHub Issues**. Paste both values and click **Save**.
+
+For **GitHub App mode**:
+
+1. Create a [GitHub App](https://github.com/settings/apps) with repository permissions **Contents: Read & write**, **Pull requests: Read & write**, and **Issues: Read-only**. No callback URL or webhook is needed.
+2. Generate a **private key** (PEM) and note the **App ID**.
+3. Install the App on the organization/repositories the platform should access, and note the **Installation ID** (the number at the end of the installation's settings URL).
+4. In the deployed app, open **Admin → GitHub Integration**, paste the App ID, Installation ID and private key, select **GitHub App (bot)** and click **Save**. The platform validates the configuration live against GitHub before the mode switches. Switching back to OAuth mode is the same toggle.
 
 #### GitLab (code host + GitLab Issues)
 

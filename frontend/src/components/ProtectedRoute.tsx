@@ -4,10 +4,17 @@ import { useAuth } from '../contexts/AuthContext';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
+  /** When true, additionally requires membership in the Cognito
+   *  `platform-admin` group. UI-only soft gate — the backend enforces the
+   *  same check on every admin endpoint. */
+  requirePlatformAdmin?: boolean;
 }
 
-export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
-  const { isAuthenticated, isLoading } = useAuth();
+export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
+  children,
+  requirePlatformAdmin = false,
+}) => {
+  const { isAuthenticated, isLoading, isPlatformAdmin } = useAuth();
   const location = useLocation();
 
   if (isLoading) {
@@ -20,6 +27,10 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
 
   if (!isAuthenticated) {
     return <Navigate to="/login" state={{ from: location }} replace />;
+  }
+
+  if (requirePlatformAdmin && !isPlatformAdmin) {
+    return <Navigate to="/dashboard" replace />;
   }
 
   return <>{children}</>;

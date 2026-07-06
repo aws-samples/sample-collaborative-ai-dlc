@@ -26,6 +26,7 @@ import {
 } from '@aws-sdk/lib-dynamodb';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { buildResponse } from '../shared/response.js';
+import { requirePlatformAdmin } from '../shared/authz.js';
 import { resolveTenant, SYSTEM_TENANT } from '../shared/tenant.js';
 import {
   LATEST,
@@ -335,6 +336,15 @@ export const handler = async (event) => {
 
   try {
     const method = event.httpMethod;
+
+    // Block AUTHORING is platform-admin only: create/update/delete require the
+    // Cognito platform-admin group (shared/authz.js). Reads stay open — the
+    // composer and run views load block metadata/bodies for every user.
+    if (method !== 'GET') {
+      const denied = requirePlatformAdmin(event);
+      if (denied) return res(denied.statusCode, { error: denied.error, code: denied.code });
+    }
+
     const path = event.resource || event.path || '';
     const { type: rawType, id } = event.pathParameters || {};
 

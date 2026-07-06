@@ -113,6 +113,16 @@ const claims = (sub = 'user-1') => ({
   requestContext: { authorizer: { claims: { sub, email: `${sub}@x` } } },
 });
 
+// Platform-admin caller (Cognito group claim) — required by the oauth-config
+// writer since the platform-admin gating landed.
+const adminClaims = (sub = 'admin-1') => ({
+  requestContext: {
+    authorizer: {
+      claims: { sub, email: `${sub}@x`, 'cognito:groups': '[platform-admin]' },
+    },
+  },
+});
+
 const seedProjectAndBinding = async ({
   gitRepo = 'acme/widgets',
   provider = 'github-issues',
@@ -1424,7 +1434,7 @@ describe('PUT /trackers/providers/{provider}/oauth-config — admin secret write
       pathParameters: { provider: 'jira-cloud' },
       headers: { origin: 'https://example.com' },
       body: JSON.stringify({ clientId: 'jc-id', clientSecret: 'jc-secret' }),
-      ...claims(),
+      ...adminClaims(),
     });
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toEqual({ success: true });
@@ -1444,7 +1454,7 @@ describe('PUT /trackers/providers/{provider}/oauth-config — admin secret write
       pathParameters: { provider: 'github-issues' },
       headers: { origin: 'https://example.com' },
       body: JSON.stringify({ clientId: 'gh-id', clientSecret: 'gh-secret' }),
-      ...claims(),
+      ...adminClaims(),
     });
     expect(res.statusCode).toBe(200);
     const calls = secretsMock.commandCalls(PutSecretValueCommand);
@@ -1458,7 +1468,7 @@ describe('PUT /trackers/providers/{provider}/oauth-config — admin secret write
       pathParameters: { provider: 'unknown-provider' },
       headers: { origin: 'https://example.com' },
       body: JSON.stringify({ clientId: 'a', clientSecret: 'b' }),
-      ...claims(),
+      ...adminClaims(),
     });
     expect(res.statusCode).toBe(400);
   });
@@ -1470,7 +1480,7 @@ describe('PUT /trackers/providers/{provider}/oauth-config — admin secret write
       pathParameters: { provider: 'jira-cloud' },
       headers: { origin: 'https://example.com' },
       body: JSON.stringify({ clientId: '', clientSecret: '' }),
-      ...claims(),
+      ...adminClaims(),
     });
     expect(res.statusCode).toBe(400);
     expect(secretsMock.commandCalls(PutSecretValueCommand)).toHaveLength(0);
@@ -1483,7 +1493,7 @@ describe('PUT /trackers/providers/{provider}/oauth-config — admin secret write
       pathParameters: { provider: 'jira-cloud' },
       headers: { origin: 'https://example.com' },
       body: JSON.stringify({ clientId: 'x', clientSecret: 'y'.repeat(2000) }),
-      ...claims(),
+      ...adminClaims(),
     });
     expect(res.statusCode).toBe(400);
   });
@@ -1498,6 +1508,20 @@ describe('PUT /trackers/providers/{provider}/oauth-config — admin secret write
       requestContext: { authorizer: { claims: {} } },
     });
     expect(res.statusCode).toBe(401);
+  });
+
+  it('rejects an authenticated non-platform-admin caller with 403', async () => {
+    const res = await handler({
+      httpMethod: 'PUT',
+      path: '/trackers/providers/jira-cloud/oauth-config',
+      pathParameters: { provider: 'jira-cloud' },
+      headers: { origin: 'https://example.com' },
+      body: JSON.stringify({ clientId: 'a', clientSecret: 'b' }),
+      ...claims(),
+    });
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body).code).toBe('PLATFORM_ADMIN_REQUIRED');
+    expect(secretsMock.commandCalls(PutSecretValueCommand)).toHaveLength(0);
   });
 });
 

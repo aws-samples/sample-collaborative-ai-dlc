@@ -17,6 +17,7 @@ import {
   PutSecretValueCommand,
 } from '@aws-sdk/client-secrets-manager';
 import { buildResponse } from '../shared/response.js';
+import { requirePlatformAdmin } from '../shared/authz.js';
 import {
   trackerBindingProjectionStep,
   mapBinding,
@@ -601,9 +602,8 @@ export const handler = async (event) => {
 
   // PUT /trackers/providers/{provider}/oauth-config — admin-facing
   // writer. Persists {client_id, client_secret} to the provider's
-  // Secrets-Manager slot. Cognito-authed (matches the existing
-  // /agents/settings pattern; backend admin gating is a separate
-  // follow-up across all admin endpoints).
+  // Secrets-Manager slot. Restricted to the Cognito `platform-admin`
+  // group (see shared/authz.js).
   if (
     httpMethod === 'PUT' &&
     path.includes('/trackers/providers/') &&
@@ -611,6 +611,8 @@ export const handler = async (event) => {
     pathParameters.provider
   ) {
     if (!userId) return response(401, { error: 'Unauthorized' });
+    const denied = requirePlatformAdmin(event);
+    if (denied) return response(denied.statusCode, { error: denied.error, code: denied.code });
     const cfg = PROVIDER_OAUTH_CONFIG[pathParameters.provider];
     if (!cfg) {
       return response(400, { error: `Unknown tracker provider: ${pathParameters.provider}` });

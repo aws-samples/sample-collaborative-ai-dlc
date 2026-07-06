@@ -1,6 +1,8 @@
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
 import { ProviderError } from './errors.js';
 import { getGitConnection } from '../../shared/git-connection-store.js';
+import { getGitHubAuthMode } from '../../shared/github-auth-config.js';
+import { getInstallationTokenFromConfig } from '../../shared/git-token.js';
 
 const GIT_TOKEN_PARAM_PATTERN = /^\/[\w-]+\/[\w-]+\/[\w-]+\/[\w-]+(\/[\w-]+)?$/;
 
@@ -45,6 +47,25 @@ const resolveGithubToken = async (ddb, ssm, userId) => {
     new GetParameterCommand({ Name: Item.parameterName, WithDecryption: true }),
   );
   return JSON.parse(param.Parameter.Value).accessToken;
+};
+
+// App-mode token: a repo-scoped installation token with issues:read — issue
+// browsing needs no user connection when the platform authenticates as the
+// GitHub App. Failures surface as NOT_CONNECTED-style provider errors so the
+// UI shows the same "check configuration" affordance either way.
+const resolveAppModeToken = async (ssm, secrets, repoSlug) => {
+  try {
+    return await getInstallationTokenFromConfig({
+      ssm,
+      secrets,
+      repositories: [repoSlug],
+      permissions: { issues: 'read' },
+    });
+  } catch (e) {
+    const err = new Error(`GitHub App token unavailable: ${e.message}`);
+    err.code = 'NOT_CONNECTED';
+    throw err;
+  }
 };
 
 const githubFetch = (url, token, etag) => {
@@ -125,14 +146,20 @@ const parsePageNumber = (raw) => {
   return n;
 };
 
-const buildContext = async ({ ddb, ssm, userId }) => {
+const buildContext = async ({ ddb, ssm, secrets, userId }, repoSlug) => {
+  // Mode dispatch (shared/github-auth-config.js): app mode mints a repo-scoped
+  // installation token; oauth mode resolves the user's connection token.
+  if (secrets && (await getGitHubAuthMode(ssm)) === 'app') {
+    const token = await resolveAppModeToken(ssm, secrets, repoSlug);
+    return { userId, token };
+  }
   const token = await resolveGithubToken(ddb, ssm, userId);
   return { userId, token };
 };
 
-const listIssues = async ({ ddb, ssm, userId }, externalProjectKey, opts = {}) => {
+const listIssues = async ({ ddb, ssm, secrets, userId }, externalProjectKey, opts = {}) => {
   const { owner, repo } = splitOwnerRepo(externalProjectKey);
-  const ctx = await buildContext({ ddb, ssm, userId });
+  const ctx = await buildContext({ ddb, ssm, secrets, userId }, `${owner}/${repo}`);
   const state = ['open', 'closed', 'all'].includes(opts.state) ? opts.state : 'open';
   const q = (opts.q || '').trim();
   const page = parsePageNumber(opts.page);
@@ -183,9 +210,9 @@ const listIssues = async ({ ddb, ssm, userId }, externalProjectKey, opts = {}) =
   return body;
 };
 
-const getIssue = async ({ ddb, ssm, userId }, externalProjectKey, resourceId) => {
+const getIssue = async ({ ddb, ssm, secrets, userId }, externalProjectKey, resourceId) => {
   const { owner, repo } = splitOwnerRepo(externalProjectKey);
-  const ctx = await buildContext({ ddb, ssm, userId });
+  const ctx = await buildContext({ ddb, ssm, secrets, userId }, `${owner}/${repo}`);
   const cacheKey = `detail:${ctx.userId}:${owner}/${repo}#${resourceId}`;
   const cached = cacheGet(cacheKey);
   const r = await githubFetch(
@@ -206,9 +233,13 @@ const getIssue = async ({ ddb, ssm, userId }, externalProjectKey, resourceId) =>
   return mapped;
 };
 
-const getIssueDiscussion = async ({ ddb, ssm, userId }, externalProjectKey, resourceId) => {
+const getIssueDiscussion = async (
+  { ddb, ssm, secrets, userId },
+  externalProjectKey,
+  resourceId,
+) => {
   const { owner, repo } = splitOwnerRepo(externalProjectKey);
-  const ctx = await buildContext({ ddb, ssm, userId });
+  const ctx = await buildContext({ ddb, ssm, secrets, userId }, `${owner}/${repo}`);
   const url = `https://api.github.com/repos/${owner}/${repo}/issues/${resourceId}/comments?per_page=100`;
   const cacheKey = `comments:${ctx.userId}:${owner}/${repo}#${resourceId}`;
   const cached = cacheGet(cacheKey);

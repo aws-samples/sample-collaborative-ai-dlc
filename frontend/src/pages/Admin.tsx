@@ -4,6 +4,8 @@ import type { CliModels, RuntimeModelCli } from '@/services/projects';
 import { trackersService, type TrackerProviderStatus } from '@/services/trackers';
 import { OAuthProviderCard } from '@/components/admin/OAuthProviderCard';
 import { TrackerMigrationCard } from '@/components/admin/TrackerMigrationCard';
+import { GitHubIntegrationCard } from '@/components/admin/GitHubIntegrationCard';
+import { UserManagementCard } from '@/components/admin/UserManagementCard';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -160,9 +162,12 @@ export default function Admin() {
         <div>
           <h1 className="text-xl font-bold tracking-tight">Admin</h1>
           <p className="text-sm text-muted-foreground">
-            Manage agent settings, tracker OAuth apps, and data migrations
+            Manage users, agent settings, integrations, and data migrations
           </p>
         </div>
+
+        {/* User management — grant/revoke the platform-admin role. */}
+        <UserManagementCard />
 
         {/* Agent Settings */}
         <Card>
@@ -357,6 +362,12 @@ export default function Admin() {
             )}
           </CardContent>
         </Card>
+
+        {/* GitHub Integration — platform-wide auth mode (OAuth vs GitHub App)
+            + GitHub App configuration. Admin-switchable at runtime; the
+            backend live-probes the App installation before any flip to App
+            mode can land. */}
+        <GitHubIntegrationCard />
 
         {/* Tracker OAuth Apps — operator-facing OAuth credential editor.
             Replaces the per-provider `aws secretsmanager put-secret-value`

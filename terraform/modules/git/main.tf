@@ -25,10 +25,42 @@ resource "aws_secretsmanager_secret" "jira_oauth" {
 }
 
 # Value populated out-of-band (console/CLI) like the OAuth secrets above — the
-# PEM never lives in code or tfstate.
+# PEM never lives in code or tfstate. Also writable at runtime from the Admin
+# page's "GitHub Integration" card (PUT /github/admin/config).
 resource "aws_secretsmanager_secret" "github_app_private_key" {
   name_prefix = "${var.project_name}-${var.environment}-github-app-private-key-"
   description = "GitHub App private key (PEM) for installation-token auth"
+
+  tags = var.tags
+}
+
+# Platform-wide GitHub auth mode: 'oauth' (per-user OAuth tokens) or 'app'
+# (GitHub App installation tokens). Runtime-editable from the Admin page
+# (platform-admin only); Terraform only seeds the default and never fights
+# the admin's choice (ignore_changes).
+resource "aws_ssm_parameter" "github_auth_mode" {
+  name  = "/${var.project_name}/${var.environment}/github-auth-mode"
+  type  = "String"
+  value = "oauth"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+
+  tags = var.tags
+}
+
+# GitHub App configuration ({"appId": "...", "installationId": "..."}) —
+# non-secret companion to the private-key secret above. Written from the
+# Admin page; Terraform seeds an empty object.
+resource "aws_ssm_parameter" "github_app_config" {
+  name  = "/${var.project_name}/${var.environment}/github-app-config"
+  type  = "String"
+  value = "{}"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
 
   tags = var.tags
 }

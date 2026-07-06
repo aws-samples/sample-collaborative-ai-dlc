@@ -379,7 +379,7 @@ describe('gitlab handler', () => {
 
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.body);
-      expect(body).toEqual({ connected: true, provider: 'gitlab' });
+      expect(body).toEqual({ connected: true, provider: 'gitlab', mode: 'oauth' });
     });
 
     it('returns connected: false when no DynamoDB item', async () => {
@@ -390,7 +390,7 @@ describe('gitlab handler', () => {
 
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.body);
-      expect(body).toEqual({ connected: false, provider: undefined });
+      expect(body).toEqual({ connected: false, provider: undefined, mode: 'oauth' });
     });
 
     it('returns connected: false when the only connection belongs to GitHub', async () => {
@@ -409,7 +409,11 @@ describe('gitlab handler', () => {
       const res = await handler(makeEvent('GET', '/gitlab/status'));
 
       expect(res.statusCode).toBe(200);
-      expect(JSON.parse(res.body)).toEqual({ connected: false, provider: undefined });
+      expect(JSON.parse(res.body)).toEqual({
+        connected: false,
+        provider: undefined,
+        mode: 'oauth',
+      });
     });
 
     it('does not use a GitHub connection for GitLab repo listing', async () => {

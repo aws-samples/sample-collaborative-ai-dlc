@@ -72,6 +72,27 @@ resource "aws_api_gateway_resource" "admin_tracker_migration_status" {
   path_part   = "status"
 }
 
+# /admin/users — platform-admin user management (cognito-users lambda):
+# GET lists users with their platform-admin flag; PUT on
+# /admin/users/{username}/platform-admin grants/revokes the Cognito group.
+resource "aws_api_gateway_resource" "admin_users" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.admin.id
+  path_part   = "users"
+}
+
+resource "aws_api_gateway_resource" "admin_users_username" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.admin_users.id
+  path_part   = "{username}"
+}
+
+resource "aws_api_gateway_resource" "admin_users_platform_admin" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.admin_users_username.id
+  path_part   = "platform-admin"
+}
+
 # -----------------------------------------------------------------------------
 # /projects/{projectId}/members Resource
 # -----------------------------------------------------------------------------
@@ -1847,6 +1868,20 @@ resource "aws_api_gateway_resource" "github_repos_contents" {
   path_part   = "contents"
 }
 
+# /github/admin — platform-admin GitHub configuration (auth mode + App config)
+resource "aws_api_gateway_resource" "github_admin" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.github.id
+  path_part   = "admin"
+}
+
+# /github/admin/config
+resource "aws_api_gateway_resource" "github_admin_config" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.github_admin.id
+  path_part   = "config"
+}
+
 # -----------------------------------------------------------------------------
 # GitHub Methods
 # -----------------------------------------------------------------------------
@@ -1935,6 +1970,43 @@ resource "aws_api_gateway_integration" "github_disconnect_delete" {
   rest_api_id             = aws_api_gateway_rest_api.main.id
   resource_id             = aws_api_gateway_resource.github_disconnect.id
   http_method             = aws_api_gateway_method.github_disconnect_delete.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.github_lambda_invoke_arn
+}
+
+# GET /github/admin/config (authenticated; the Lambda additionally enforces
+# the Cognito platform-admin group — see lambda/shared/authz.js)
+resource "aws_api_gateway_method" "github_admin_config_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.github_admin_config.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "github_admin_config_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.github_admin_config.id
+  http_method             = aws_api_gateway_method.github_admin_config_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.github_lambda_invoke_arn
+}
+
+# PUT /github/admin/config (authenticated; platform-admin enforced in Lambda)
+resource "aws_api_gateway_method" "github_admin_config_put" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.github_admin_config.id
+  http_method   = "PUT"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "github_admin_config_put" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.github_admin_config.id
+  http_method             = aws_api_gateway_method.github_admin_config_put.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
   uri                     = var.github_lambda_invoke_arn
@@ -2043,6 +2115,12 @@ module "cors_github_repos_contents" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.github_repos_contents.id
+}
+
+module "cors_github_admin_config" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.github_admin_config.id
 }
 
 # /github/repos/{owner}/{repo}/pulls
@@ -3032,6 +3110,56 @@ module "cors_cognito_users" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.cognito_users.id
+}
+
+# GET /admin/users (authenticated; the Lambda additionally enforces the
+# Cognito platform-admin group — see lambda/shared/authz.js)
+resource "aws_api_gateway_method" "admin_users_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.admin_users.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "admin_users_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.admin_users.id
+  http_method             = aws_api_gateway_method.admin_users_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.cognito_users_lambda_invoke_arn
+}
+
+# PUT /admin/users/{username}/platform-admin (authenticated; platform-admin
+# enforced in the Lambda, plus a self-demotion guard)
+resource "aws_api_gateway_method" "admin_users_platform_admin_put" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.admin_users_platform_admin.id
+  http_method   = "PUT"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "admin_users_platform_admin_put" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.admin_users_platform_admin.id
+  http_method             = aws_api_gateway_method.admin_users_platform_admin_put.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.cognito_users_lambda_invoke_arn
+}
+
+module "cors_admin_users" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.admin_users.id
+}
+
+module "cors_admin_users_platform_admin" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.admin_users_platform_admin.id
 }
 
 resource "aws_lambda_permission" "cognito_users" {

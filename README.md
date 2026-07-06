@@ -67,13 +67,27 @@ All providers are optional. Skip a section if you don't need that provider; the 
 
 #### GitHub (code host + GitHub Issues)
 
+GitHub supports two platform-wide authentication modes, switchable at runtime in **Admin → GitHub Integration**:
+
+- **OAuth mode** (default): each user connects their own GitHub account; commits, PRs and comments are attributed to that user.
+- **GitHub App mode**: the platform authenticates as a GitHub App installation (a bot); users don't connect personal accounts, and the repo picker lists the repositories the App is installed on.
+
+For **OAuth mode**:
+
 1. Open [GitHub Developer Settings → OAuth Apps → New OAuth App](https://github.com/settings/developers).
-   (Choose an **OAuth App**, _not_ a GitHub App — the flow here expects OAuth App semantics.)
+   (Choose an **OAuth App**, _not_ a GitHub App — this mode expects OAuth App semantics.)
 2. Use:
    - **Homepage URL**: `https://<your-cloudfront-domain>`
    - **Authorization callback URL**: `https://<your-cloudfront-domain>/github/callback`
 3. Copy the **Client ID** and generate a **Client Secret**.
 4. In the deployed app, sign in and open **Admin → Tracker OAuth Apps → GitHub Issues**. Paste both values and click **Save**.
+
+For **GitHub App mode**:
+
+1. Create a [GitHub App](https://github.com/settings/apps) with repository permissions **Contents: Read & write**, **Pull requests: Read & write**, and **Issues: Read-only**. No callback URL or webhook is needed.
+2. Generate a **private key** (PEM) and note the **App ID**.
+3. Install the App on the organization/repositories the platform should access, and note the **Installation ID** (the number at the end of the installation's settings URL).
+4. In the deployed app, open **Admin → GitHub Integration**, paste the App ID, Installation ID and private key, select **GitHub App (bot)** and click **Save**. The platform validates the configuration live against GitHub before the mode switches.
 
 #### GitLab (code host + GitLab Issues)
 
@@ -124,6 +138,17 @@ aws secretsmanager put-secret-value \
 ### 5. Create Users
 
 Create users in the Cognito User Pool. The User Pool ID is available via `terraform output user_pool_id` from the `terraform/` directory.
+
+Platform-wide administration (the **Admin** page: user management, agent settings, tracker OAuth apps, GitHub auth mode, migrations — plus workflow and building-block authoring) requires membership in the Cognito `platform-admin` group. Add at least one administrator:
+
+```bash
+aws cognito-idp admin-add-user-to-group \
+  --user-pool-id $(terraform -chdir=terraform output -raw user_pool_id) \
+  --username <username> \
+  --group-name platform-admin
+```
+
+Group membership is read from the ID token — users need to sign out and back in after being added. Once the first administrator exists, additional admins can be granted or revoked from the UI under **Admin → User Management** (the CLI is only needed to bootstrap the first one).
 
 ### 6. Deploy Frontend
 

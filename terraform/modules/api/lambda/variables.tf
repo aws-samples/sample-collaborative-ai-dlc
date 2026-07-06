@@ -72,6 +72,42 @@ variable "github_oauth_secret_arn" {
   default     = ""
 }
 
+variable "github_app_private_key_secret_name" {
+  description = "Secrets Manager secret name for the GitHub App private key (PEM)"
+  type        = string
+  default     = ""
+}
+
+variable "github_app_private_key_secret_arn" {
+  description = "Secrets Manager secret ARN for the GitHub App private key (PEM)"
+  type        = string
+  default     = ""
+}
+
+variable "github_auth_mode_param_name" {
+  description = "SSM parameter name holding the platform-wide GitHub auth mode ('oauth' | 'app')"
+  type        = string
+  default     = ""
+}
+
+variable "github_auth_mode_param_arn" {
+  description = "SSM parameter ARN holding the platform-wide GitHub auth mode"
+  type        = string
+  default     = ""
+}
+
+variable "github_app_config_param_name" {
+  description = "SSM parameter name holding the GitHub App config JSON ({appId, installationId})"
+  type        = string
+  default     = ""
+}
+
+variable "github_app_config_param_arn" {
+  description = "SSM parameter ARN holding the GitHub App config JSON"
+  type        = string
+  default     = ""
+}
+
 variable "git_connections_table_name" {
   description = "DynamoDB table name for git connections"
   type        = string
@@ -122,13 +158,6 @@ variable "gitlab_oauth_secret_name" {
 
 variable "gitlab_oauth_secret_arn" {
   description = "Secrets Manager secret ARN for GitLab OAuth credentials"
-  type        = string
-  default     = ""
-}
-
-
-variable "github_app_allowed_repos" {
-  description = "Comma-separated owner/repo allowlist permitted to use GitHub App auth. Empty disables App auth. Injected into the projects Lambda."
   type        = string
   default     = ""
 }

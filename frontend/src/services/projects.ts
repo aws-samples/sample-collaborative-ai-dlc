@@ -43,18 +43,11 @@ export interface TrackerBinding {
 // type is kept so v1 badges can still be rendered for frozen v1 projects.
 export type ProjectKind = 'v1' | 'v2';
 
-// How agents authenticate against the git provider for this project. `'oauth'`
-// (the default) uses the creator's per-user OAuth connection. `'app'` (GitHub
-// only) has agents act as a server-side GitHub App installation (a bot); the
-// backend enforces an operator repo allowlist for app mode.
-export type GitAuthMode = 'oauth' | 'app';
-
 export interface Project {
   id: string;
   name: string;
   gitProvider: GitProvider;
   gitRepo: string;
-  gitAuthMode?: GitAuthMode;
   agentCli: AgentCli;
   cliModels?: CliModels;
   issueIntegrationEnabled?: boolean;
@@ -96,7 +89,6 @@ export interface CreateProjectInput {
   cliModels?: CliModels;
   issueIntegrationEnabled?: boolean;
   repos?: { url: string; provider?: string; role?: RepoRole }[];
-  gitAuthMode?: GitAuthMode;
   // v2 project options. v2 is the only creatable kind: the backend rejects
   // `kind: 'v1'` (400) and treats an omitted kind as v2. workflowId falls back
   // to the canonical default workflow when omitted.

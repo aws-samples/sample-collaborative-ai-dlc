@@ -31,10 +31,43 @@ export interface GitRepo {
   defaultBranch: string;
 }
 
+// Platform-wide GitHub auth mode (admin-managed): 'oauth' = per-user OAuth
+// connections; 'app' = GitHub App installation tokens (no per-user connect).
+export type GitHubAuthMode = 'oauth' | 'app';
+
 export interface GitProviderStatus {
   connected: boolean;
   provider?: string;
+  // Present for GitHub (and defaulted to 'oauth' for GitLab). In 'app' mode
+  // the connect/disconnect UI is hidden — the platform authenticates as the
+  // GitHub App installation.
+  mode?: GitHubAuthMode;
 }
+
+// Admin-only GitHub integration config (GET/PUT /github/admin/config,
+// platform-admin gated on the backend).
+export interface GitHubAdminConfig {
+  mode: GitHubAuthMode;
+  appId: string | null;
+  installationId: string | null;
+  privateKeySet: boolean;
+  appConfigured: boolean;
+  // Returned by PUT when the live installation probe ran successfully.
+  installationAccount?: string;
+}
+
+export interface GitHubAdminConfigUpdate {
+  mode?: GitHubAuthMode;
+  appId?: string;
+  installationId?: string;
+  privateKey?: string;
+}
+
+export const githubAdminService = {
+  getConfig: () => api.get<GitHubAdminConfig>('/github/admin/config'),
+  updateConfig: (update: GitHubAdminConfigUpdate) =>
+    api.put<GitHubAdminConfig>('/github/admin/config', update),
+};
 
 export interface GitFile {
   path: string;

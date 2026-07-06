@@ -81,7 +81,9 @@ const installFakes = () => {
   });
 };
 
-const claims = { sub: 'user-1', email: 'user@example.com' };
+// Workflow authoring requires the platform-admin group, so the default test
+// caller is an admin; non-admin behaviour is covered explicitly below.
+const claims = { sub: 'user-1', email: 'user@example.com', 'cognito:groups': 'platform-admin' };
 
 const event = ({ method, workflowId, stageId, scopeId, layer, ruleId, body, path, query }) => {
   let resource = '/workflows';
@@ -745,5 +747,34 @@ describe('workflows handler', () => {
       expect(fork.status).toBe(201);
       expect(fork.body.readOnly).toBe(false);
     });
+  });
+});
+
+// ─── Platform-admin gating (shared/authz.js) ───
+// Every mutation requires the Cognito platform-admin group; reads stay open.
+describe('platform-admin gating', () => {
+  const nonAdminClaims = { sub: 'user-2', email: 'user2@example.com' };
+  const asNonAdmin = (ev) => ({
+    ...ev,
+    requestContext: { authorizer: { claims: nonAdminClaims } },
+  });
+
+  it('rejects non-admin mutations with 403 (create / update / placements)', async () => {
+    for (const ev of [
+      event({ method: 'POST', body: { id: 'wf-x', name: 'X' } }),
+      event({ method: 'PUT', workflowId: 'wf-x', body: { name: 'Y' } }),
+      event({ method: 'DELETE', workflowId: 'wf-x' }),
+      event({ method: 'POST', workflowId: 'wf-x', path: 'placements', body: {} }),
+      event({ method: 'PUT', workflowId: 'wf-x', path: 'phases', body: { phases: [] } }),
+    ]) {
+      const res = parse(await handler(asNonAdmin(ev)));
+      expect(res.status).toBe(403);
+      expect(res.body.code).toBe('PLATFORM_ADMIN_REQUIRED');
+    }
+  });
+
+  it('keeps reads open for non-admins (list + compiled)', async () => {
+    const list = parse(await handler(asNonAdmin(event({ method: 'GET' }))));
+    expect(list.status).toBe(200);
   });
 });

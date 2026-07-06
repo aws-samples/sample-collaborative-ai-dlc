@@ -11,13 +11,22 @@ GitHub and GitLab each span both axes: a single connection serves as the code ho
 
 ## Operator setup (one time per deployment)
 
-Before users can connect their accounts, an administrator registers OAuth apps with each provider and pastes the credentials into the platform. See [Setup → Configure provider OAuth apps](../getting-started/setup.md#configure-provider-oauth-apps) for the full walkthrough.
+Before users can connect their accounts, an administrator registers OAuth apps with each provider and pastes the credentials into the platform. See [Setup → Configure provider OAuth apps](../getting-started/setup.md#configure-provider-oauth-apps) for the full walkthrough. Admin pages require the Cognito `platform-admin` group.
 
 The status of each provider is visible in **Admin → Tracker OAuth Apps**. Until a provider shows **Configured**, the corresponding **Connect** button in Project Settings stays disabled with a hint pointing back to the admin panel.
 
+### GitHub authentication mode
+
+GitHub supports two platform-wide authentication modes, switchable at runtime by a platform admin in **Admin → GitHub Integration**:
+
+- **OAuth mode** (default) — each user connects their own GitHub account (described below). All git activity is attributed to the individual user.
+- **GitHub App mode** — the platform authenticates as a GitHub App installation (a bot). Users don't connect personal GitHub accounts at all; the repo picker lists the repositories the App is installed on, and commits/PRs/comments are attributed to the App. Which repositories are reachable is controlled by the App installation on GitHub — installing/uninstalling repos there takes effect immediately.
+
+Switching modes takes effect for new work right away; in-flight runs finish under the mode they started with. Switching to App mode is validated live against GitHub (App ID + installation + private key) before it lands, so a broken configuration can never strand the platform.
+
 ## Connecting your account
 
-Each user connects their own GitHub / GitLab / Atlassian account once; the connection is reused across every project that needs that provider.
+Each user connects their own GitHub / GitLab / Atlassian account once; the connection is reused across every project that needs that provider. (In GitHub App mode there is nothing to connect for GitHub — the section below applies to OAuth mode.)
 
 - **GitHub**: from the dashboard (or the project-creation flow), click **Connect GitHub** and approve the OAuth flow. The button stays disabled if your administrator hasn't configured GitHub OAuth credentials yet.
 - **GitLab**: choose **GitLab** as the provider in the project-creation flow, then click **Connect GitLab** and approve the OAuth flow. The button stays disabled until your administrator has configured GitLab OAuth credentials. GitLab access tokens are short-lived; the platform refreshes them automatically using the stored refresh token, so you don't need to reconnect periodically.

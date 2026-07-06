@@ -13,6 +13,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useAuth } from '@/contexts/AuthContext';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { CreateProjectModal } from '@/components/CreateProjectModal';
 import { useProjectsCache } from '@/hooks/useProjectsCache';
@@ -87,6 +88,7 @@ export function AppSidebar() {
   const location = useLocation();
   const params = useParams<{ projectId?: string }>();
   const { projects, loading, refresh } = useProjectsCache();
+  const { isPlatformAdmin } = useAuth();
 
   const projectId = params.projectId ?? null;
 
@@ -280,30 +282,34 @@ export function AppSidebar() {
       </ScrollArea>
 
       <div className="border-t border-sidebar-border p-2 flex flex-col gap-0.5">
-        <button
-          onClick={() => navigate('/workflows')}
-          className={cn(
-            'flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors rounded-md text-left w-full',
-            isOnWorkflows
-              ? 'bg-sidebar-accent text-sidebar-foreground'
-              : 'text-sidebar-foreground/60 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
-          )}
-        >
-          <Workflow className="h-3.5 w-3.5 shrink-0" />
-          Workflows
-        </button>
-        <button
-          onClick={() => navigate('/admin')}
-          className={cn(
-            'flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors rounded-md text-left w-full',
-            isOnAdmin
-              ? 'bg-sidebar-accent text-sidebar-foreground'
-              : 'text-sidebar-foreground/60 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
-          )}
-        >
-          <Settings className="h-3.5 w-3.5 shrink-0" />
-          Admin & Settings
-        </button>
+        {isPlatformAdmin && (
+          <button
+            onClick={() => navigate('/workflows')}
+            className={cn(
+              'flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors rounded-md text-left w-full',
+              isOnWorkflows
+                ? 'bg-sidebar-accent text-sidebar-foreground'
+                : 'text-sidebar-foreground/60 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
+            )}
+          >
+            <Workflow className="h-3.5 w-3.5 shrink-0" />
+            Workflows
+          </button>
+        )}
+        {isPlatformAdmin && (
+          <button
+            onClick={() => navigate('/admin')}
+            className={cn(
+              'flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors rounded-md text-left w-full',
+              isOnAdmin
+                ? 'bg-sidebar-accent text-sidebar-foreground'
+                : 'text-sidebar-foreground/60 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
+            )}
+          >
+            <Settings className="h-3.5 w-3.5 shrink-0" />
+            Admin & Settings
+          </button>
+        )}
       </div>
 
       {showCreateProject && (

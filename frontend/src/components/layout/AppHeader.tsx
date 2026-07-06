@@ -42,7 +42,7 @@ export function AppHeader({
   sidebarCollapsed,
   activityPanelOpen,
 }: AppHeaderProps) {
-  const { user, logout } = useAuth();
+  const { user, logout, isPlatformAdmin } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const params = useParams();
@@ -175,11 +175,15 @@ export function AppHeader({
             <p className="text-xs text-muted-foreground">{user?.email}</p>
           </div>
           <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={() => navigate('/admin')}>
-            <Settings className="mr-2 h-4 w-4" />
-            Admin Panel
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
+          {isPlatformAdmin && (
+            <>
+              <DropdownMenuItem onClick={() => navigate('/admin')}>
+                <Settings className="mr-2 h-4 w-4" />
+                Admin Panel
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+            </>
+          )}
           <DropdownMenuItem onClick={logout} className="text-destructive">
             <LogOut className="mr-2 h-4 w-4" />
             Log out

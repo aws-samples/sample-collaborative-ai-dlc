@@ -807,17 +807,6 @@ export default function ProjectSettings() {
                     <p className="text-xs text-muted-foreground">
                       Primary repository — managed in the Repositories section below
                     </p>
-                    {project?.gitProvider === 'github' && (
-                      <p className="text-xs text-muted-foreground">
-                        Agent authentication:{' '}
-                        <span className="font-medium">
-                          {project?.gitAuthMode === 'app'
-                            ? 'GitHub App installation (bot)'
-                            : 'OAuth (creator account)'}
-                        </span>{' '}
-                        — set at creation
-                      </p>
-                    )}
                   </div>
                   {canEditProject && (
                     <div className="flex justify-end pt-2">

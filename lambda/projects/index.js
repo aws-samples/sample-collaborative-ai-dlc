@@ -6,10 +6,12 @@ import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { SSMClient } from '@aws-sdk/client-ssm';
+import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { buildResponse } from '../shared/response.js';
+import { requirePlatformAdmin } from '../shared/authz.js';
 import { runTrackerMigration } from '../shared/tracker-migration.js';
 import { getGitConnection } from '../shared/git-connection-store.js';
-import { resolveGitToken } from '../shared/git-token.js';
+import { resolveGitToken, resolveGitHubTokenForMode } from '../shared/git-token.js';
 import { getProvider } from '../shared/git-providers.js';
 import {
   getVal,
@@ -21,6 +23,7 @@ import { normalizeCliModels, parseCliModels } from '../shared/cli-models.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
+const secrets = new SecretsManagerClient({});
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -422,13 +425,30 @@ function detectRoleFromContents(fileNames, dirNames, frameworks) {
   return null;
 }
 
-// Resolve a user's git access token for a given provider, for the optional
-// repo stack-detection below. Reads the connection row via the shared store
-// (composite key, with legacy migrate-on-read) and the token from SSM. Returns
-// null when the user has no connection for that provider — detection is
-// best-effort, so callers treat null as "skip detection".
-const getUserGitToken = async (userId, provider) => {
-  if (!userId || !provider) return null;
+// Resolve a git access token for a given provider, for the optional repo
+// stack-detection below. GitHub dispatches on the platform auth mode (see
+// shared/github-auth-config.js): app mode mints a repo-scoped contents:read
+// installation token; oauth mode reads the user's connection row + SSM token.
+// Returns null when no credential is available — detection is best-effort,
+// so callers treat null as "skip detection".
+const getUserGitToken = async (userId, provider, repoSlug = null) => {
+  if (!provider) return null;
+  if (provider === 'github') {
+    try {
+      const { token } = await resolveGitHubTokenForMode(
+        { ssm, secrets, ddb },
+        {
+          userId,
+          repositories: repoSlug ? [repoSlug] : [],
+          permissions: { contents: 'read' },
+        },
+      );
+      return token || null;
+    } catch {
+      return null;
+    }
+  }
+  if (!userId) return null;
   try {
     const item = await getGitConnection(ddb, userId, provider);
     if (!item?.parameterName) return null;
@@ -618,30 +638,6 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
     const repoInputError = validateRepoRoleAndProvider(data);
     if (repoInputError) return response(400, { error: repoInputError });
 
-    // SECURITY: app-mode repos must be on the allowlist, including late additions.
-    const projectProps = await g
-      .V()
-      .has('Project', 'id', projectId)
-      .valueMap('git_auth_mode')
-      .next();
-    const projectAuthMode = projectProps.value?.get?.('git_auth_mode')?.[0] || 'oauth';
-    if (projectAuthMode === 'app') {
-      const allowedAppRepos = (process.env.GITHUB_APP_ALLOWED_REPOS || '')
-        .split(',')
-        .map((s) => s.trim().toLowerCase())
-        .filter(Boolean);
-      if (
-        allowedAppRepos.length === 0 ||
-        !allowedAppRepos.includes(data.url.toLowerCase().trim())
-      ) {
-        return response(403, {
-          error: 'GitHub App auth not permitted',
-          message:
-            'GitHub App authentication is restricted to approved repositories. Use OAuth or request approval for this repository.',
-        });
-      }
-    }
-
     // Check for duplicates
     const duplicate = await g
       .V()
@@ -654,7 +650,7 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
     // Run quick detection (non-blocking — failures are non-fatal). Detection
     // runs against the repo's own provider so GitLab repos are detected too.
     const detectionProvider = data.provider || 'github';
-    const token = await getUserGitToken(userId, detectionProvider);
+    const token = await getUserGitToken(userId, detectionProvider, data.url);
     let detection = { languages: [], frameworks: [], role: guessRole(data.url), summary: '' };
     if (token) {
       try {
@@ -778,12 +774,12 @@ export const handler = async (event) => {
     // the Admin page's "Tracker Migration" card. Implemented as a dry-run
     // of the same shared core that the per-project endpoint and the bulk
     // CLI lambda use, so the three paths cannot drift. See parent issue
-    // #194 phase #198. Authenticated-only — matches the existing posture
-    // for admin-config endpoints in this repo (see `/agents/settings` and
-    // `/trackers/providers/{p}/oauth-config`); tightening admin gating is
-    // a separate, repo-wide hardening pass.
+    // #194 phase #198. Restricted to the Cognito `platform-admin` group
+    // (see shared/authz.js).
     if (isAdminMigrationStatus) {
       if (!userId) return response(401, { error: 'Unauthorized' });
+      const denied = requirePlatformAdmin(event);
+      if (denied) return response(denied.statusCode, { error: denied.error, code: denied.code });
       const result = await runTrackerMigration(g, { dryRun: true });
       return response(200, result);
     }
@@ -791,9 +787,11 @@ export const handler = async (event) => {
     // POST /admin/tracker-migration — operator-facing bulk migration
     // trigger. Same effect as `aws lambda invoke ... migrate-tracker-fields`,
     // exposed through the API so operators don't need shell access. Body
-    // `{ dryRun?: boolean }`. Idempotent.
+    // `{ dryRun?: boolean }`. Idempotent. Platform-admin only.
     if (isAdminMigrationRun) {
       if (!userId) return response(401, { error: 'Unauthorized' });
+      const denied = requirePlatformAdmin(event);
+      if (denied) return response(denied.statusCode, { error: denied.error, code: denied.code });
       let dryRun = false;
       if (body) {
         try {
@@ -850,7 +848,6 @@ export const handler = async (event) => {
             id: getVal(v, 'id') || projectId,
             name: getVal(v, 'name'),
             gitProvider: getVal(v, 'git_provider') || 'github',
-            gitAuthMode: getVal(v, 'git_auth_mode') || 'oauth',
             gitRepo: derivePrimaryRepo(repos, legacyGitRepo),
             agentCli: getVal(v, 'agent_cli') || 'kiro',
             cliModels: parseCliModels(getVal(v, 'cli_models')),
@@ -899,7 +896,6 @@ export const handler = async (event) => {
               id: pid,
               name: getVal(v, 'name'),
               gitProvider: getVal(v, 'git_provider') || 'github',
-              gitAuthMode: getVal(v, 'git_auth_mode') || 'oauth',
               gitRepo: derivePrimaryRepo(repos, legacyGitRepo),
               agentCli: getVal(v, 'agent_cli') || 'kiro',
               cliModels: parseCliModels(getVal(v, 'cli_models')),
@@ -966,29 +962,6 @@ export const handler = async (event) => {
         const primaryUrl = derivePrimaryRepo(inputRepos, '');
 
         const issueIntegrationEnabled = data.issueIntegrationEnabled === true;
-        const gitAuthMode = data.gitAuthMode === 'app' ? 'app' : 'oauth';
-        // SECURITY: App auth hands agents an installation token scoped to the
-        // project's repos. Restrict it to an operator-approved allowlist so a
-        // user cannot create an app-mode project pointed at an arbitrary repo
-        // the App happens to be installed on. Empty allowlist = App auth off.
-        if (gitAuthMode === 'app') {
-          const allowedAppRepos = (process.env.GITHUB_APP_ALLOWED_REPOS || '')
-            .split(',')
-            .map((s) => s.trim().toLowerCase())
-            .filter(Boolean);
-          const appRepoUrls = inputRepos.map((r) => r.url);
-          if (
-            allowedAppRepos.length === 0 ||
-            appRepoUrls.length === 0 ||
-            !appRepoUrls.every((u) => allowedAppRepos.includes(u.toLowerCase().trim()))
-          ) {
-            return response(403, {
-              error: 'GitHub App auth not permitted',
-              message:
-                'GitHub App authentication is restricted to approved repositories. Use OAuth or request approval for this repository.',
-            });
-          }
-        }
         const cliModelsValidation = normalizeCliModels(data.cliModels);
         if (!cliModelsValidation.valid) {
           return response(400, {
@@ -1030,7 +1003,6 @@ export const handler = async (event) => {
           .property('id', id)
           .property('name', data.name)
           .property('git_provider', data.gitProvider || 'github')
-          .property('git_auth_mode', gitAuthMode)
           .property('git_repo', primaryUrl)
           .property('agent_cli', data.agentCli || 'kiro')
           .property('cli_models', JSON.stringify(cliModels))
@@ -1104,7 +1076,6 @@ export const handler = async (event) => {
           id,
           name: data.name,
           gitProvider: data.gitProvider || 'github',
-          gitAuthMode,
           gitRepo: primaryUrl,
           agentCli: data.agentCli || 'kiro',
           cliModels,
@@ -1126,40 +1097,6 @@ export const handler = async (event) => {
         }
 
         const data = JSON.parse(body);
-        // SECURITY: re-check the App-auth allowlist whenever this update yields
-        // an app-mode project (flipping to app, or repointing an app-mode repo),
-        // validating BEFORE any write so a disallowed combo never persists.
-        if (data.gitAuthMode === 'app' || data.gitRepo !== undefined) {
-          const cur = await g.V().has('Project', 'id', projectId).valueMap().next();
-          const curMode = cur.value?.get?.('git_auth_mode')?.[0] || 'oauth';
-          const curRepo = cur.value?.get?.('git_repo')?.[0] || '';
-          const effMode = data.gitAuthMode
-            ? data.gitAuthMode === 'app'
-              ? 'app'
-              : 'oauth'
-            : curMode;
-          const effRepo = data.gitRepo !== undefined ? data.gitRepo : curRepo;
-          if (effMode === 'app') {
-            const allowedAppRepos = (process.env.GITHUB_APP_ALLOWED_REPOS || '')
-              .split(',')
-              .map((s) => s.trim().toLowerCase())
-              .filter(Boolean);
-            const existingRepos = await fetchRepos(g, projectId);
-            const allRepoUrls = [effRepo, ...existingRepos.map((r) => r.url)].filter(Boolean);
-            const uniqueRepoUrls = [...new Set(allRepoUrls)];
-            if (
-              allowedAppRepos.length === 0 ||
-              uniqueRepoUrls.length === 0 ||
-              !uniqueRepoUrls.every((u) => allowedAppRepos.includes(u.toLowerCase().trim()))
-            ) {
-              return response(403, {
-                error: 'GitHub App auth not permitted',
-                message:
-                  'GitHub App authentication is restricted to approved repositories. Use OAuth or request approval for this repository.',
-              });
-            }
-          }
-        }
         if (data.name) {
           await g
             .V()
@@ -1194,17 +1131,6 @@ export const handler = async (event) => {
             .V()
             .has('Project', 'id', projectId)
             .property(cardinality.single, 'git_provider', data.gitProvider)
-            .next();
-        }
-        if (data.gitAuthMode) {
-          await g
-            .V()
-            .has('Project', 'id', projectId)
-            .property(
-              cardinality.single,
-              'git_auth_mode',
-              data.gitAuthMode === 'app' ? 'app' : 'oauth',
-            )
             .next();
         }
         if (data.agentCli) {

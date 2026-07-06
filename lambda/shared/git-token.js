@@ -134,10 +134,11 @@ const ensureFreshGitToken = async ({ ssm, secrets, ddb, item, gitProvider }) => 
   return refreshGitlabToken({ ssm, secrets, ddb, item, tokens });
 };
 
-// GitHub App installation tokens (GitHub-only): used by projects with
-// git_auth_mode='app' instead of a per-user OAuth connection. The App private
-// key never expires (unlike OAuth refresh tokens, there is nothing to rotate or
-// revoke server-side), so minting is stateless and dependency-free. Each MINTED
+// GitHub App installation tokens (GitHub-only): used platform-wide when the
+// admin-controlled auth mode is 'app' (see shared/github-auth-config.js)
+// instead of per-user OAuth connections. The App private key never expires
+// (unlike OAuth refresh tokens, there is nothing to rotate or revoke
+// server-side), so minting is stateless and dependency-free. Each MINTED
 // installation token still has GitHub's hard ~1h TTL; we cache per repo-scope
 // and re-mint on demand. A single agent phase running >1h is the only edge case
 // — the orchestrator re-mints per phase on re-dispatch.
@@ -151,6 +152,23 @@ const _installationTokenCache = new Map();
 // installationId. Entries expire after PEM_CACHE_TTL_MS.
 const _installationAccountCache = new Map();
 const PEM_CACHE_TTL_MS = 15 * 60 * 1000;
+
+// Drop all App-auth caches. Called by the admin config endpoint after the
+// private key / App config changes so the validation probe (and subsequent
+// mints in this container) use the fresh values instead of a 15-min-stale PEM.
+const clearAppAuthCaches = () => {
+  _appPrivateKeyPem = null;
+  _appPrivateKeyPemFetchedAt = 0;
+  _installationTokenCache.clear();
+  _installationAccountCache.clear();
+  // The auth-mode/App-config reads cache too — clear the SAME module instance
+  // this file resolves at runtime (lazy require avoids a cycle at load time).
+  try {
+    require('./github-auth-config').clearGitHubAuthConfigCache();
+  } catch {
+    /* config module unavailable — nothing to clear */
+  }
+};
 
 const base64url = (buf) =>
   Buffer.from(buf).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
@@ -322,11 +340,107 @@ const getInstallationToken = async ({
   return data.token;
 };
 
+// Installation-token minting with App credentials sourced from the
+// admin-managed SSM config parameter (GITHUB_APP_CONFIG_PARAM) instead of
+// caller-supplied/env values. This is the runtime entry point used by
+// mode-aware callers (orchestrator, trackers, git-handler).
+const getInstallationTokenFromConfig = async ({ ssm, secrets, repositories, permissions } = {}) => {
+  const { getGitHubAppConfig } = require('./github-auth-config');
+  const { appId, installationId } = await getGitHubAppConfig(ssm);
+  if (!appId || !installationId) {
+    throw new Error(
+      'GitHub App is not configured (missing appId/installationId) — set it up on the Admin page',
+    );
+  }
+  return getInstallationToken({ secrets, appId, installationId, repositories, permissions });
+};
+
+// Metadata-read installation token for repo DISCOVERY (the app-mode repo
+// picker calls GET /installation/repositories, which must not be repo-scoped
+// or GitHub would only return the scoped repos). The deliberate exception to
+// getInstallationToken's fail-closed repo requirement: permissions are pinned
+// to metadata:read — the least GitHub grants any installation token — so this
+// token can list repos and branches but never touch contents.
+const getInstallationReadToken = async ({ ssm, secrets } = {}) => {
+  const { getGitHubAppConfig } = require('./github-auth-config');
+  const { appId, installationId } = await getGitHubAppConfig(ssm);
+  if (!appId || !installationId) {
+    throw new Error(
+      'GitHub App is not configured (missing appId/installationId) — set it up on the Admin page',
+    );
+  }
+  const cacheKey = `${installationId}|__all__|metadata=read`;
+  const cached = _installationTokenCache.get(cacheKey);
+  if (cached && cached.expiresAt - Date.now() > REFRESH_SAFETY_MARGIN_MS) {
+    return cached.token;
+  }
+  const privateKeyPem = await getAppPrivateKey(secrets);
+  const jwt = buildAppJwt(appId, privateKeyPem);
+  const res = await fetch(
+    `https://api.github.com/app/installations/${encodeURIComponent(installationId)}/access_tokens`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${jwt}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'User-Agent': 'collaborative-ai-dlc',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ permissions: { metadata: 'read' } }),
+    },
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.token) {
+    throw new Error(data.message || `Failed to mint installation read token (HTTP ${res.status})`);
+  }
+  const expiresAt = data.expires_at ? Date.parse(data.expires_at) : Date.now() + 60 * 60 * 1000;
+  _installationTokenCache.set(cacheKey, { token: data.token, expiresAt });
+  return data.token;
+};
+
+/**
+ * Mode-aware GitHub token resolution — THE single dispatch point between the
+ * two platform auth modes (see shared/github-auth-config.js):
+ *
+ *   oauth — resolve the user's per-user OAuth token from their connection row
+ *           (returns { mode:'oauth', token:null } when not connected so the
+ *           caller can surface its provider-specific "not connected" error).
+ *   app   — mint a repo-scoped installation token; `repositories` is required
+ *           (fail-closed, see getInstallationToken). userId is irrelevant.
+ *
+ * @param {object} deps { ssm, secrets, ddb }
+ * @param {object} opts { userId, repositories, permissions }
+ * @returns {Promise<{ mode: 'oauth'|'app', token: string|null }>}
+ */
+const resolveGitHubTokenForMode = async (
+  { ssm, secrets, ddb },
+  { userId, repositories, permissions } = {},
+) => {
+  const { getGitHubAuthMode } = require('./github-auth-config');
+  const mode = await getGitHubAuthMode(ssm);
+  if (mode === 'app') {
+    const token = await getInstallationTokenFromConfig({ ssm, secrets, repositories, permissions });
+    return { mode, token };
+  }
+  const { getGitConnection } = require('./git-connection-store');
+  const item = userId ? await getGitConnection(ddb, userId, 'github') : null;
+  if (!item) return { mode, token: null };
+  return { mode, token: await resolveGitToken(ssm, item) };
+};
+
 module.exports = {
   GIT_TOKEN_PARAM_PATTERN,
   resolveGitToken,
   ensureFreshGitToken,
   getInstallationToken,
+  getInstallationTokenFromConfig,
+  getInstallationReadToken,
+  resolveGitHubTokenForMode,
+  getInstallationAccountLogin,
+  buildAppJwt,
+  getAppPrivateKey,
+  clearAppAuthCaches,
   REFRESH_SAFETY_MARGIN_MS,
   PEM_CACHE_TTL_MS,
 };

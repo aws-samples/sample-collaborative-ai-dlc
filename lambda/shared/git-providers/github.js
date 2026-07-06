@@ -110,6 +110,31 @@ const listRepos = async (ctx) => {
   return repos.map(mapRepo);
 };
 
+// App-mode repo discovery: the repos the GitHub App installation can access
+// (GET /installation/repositories — requires an installation token, not a
+// user token). Replaces /user/repos in the picker when the platform auth mode
+// is 'app': installation scoping IS the allowlist.
+const listInstallationRepos = async (ctx) => {
+  const repos = [];
+  let page = 1;
+  // Defensive page cap — an installation with >1000 repos gets truncated
+  // rather than looping forever on a misbehaving mock/endpoint.
+  while (page <= 10) {
+    const res = await ghFetch(
+      ctx,
+      `${API_BASE}/installation/repositories?per_page=100&page=${page}`,
+    );
+    const data = await res.json();
+    if (!res.ok || !Array.isArray(data.repositories)) {
+      throw new ProviderError(400, data.message || 'Failed to fetch installation repos');
+    }
+    repos.push(...data.repositories.map(mapRepo));
+    if (data.repositories.length < 100) break;
+    page += 1;
+  }
+  return repos;
+};
+
 const listBranches = async (ctx, repoId) => {
   const { owner, repo } = splitOwnerRepo(repoId);
   const res = await ghFetch(ctx, `${API_BASE}/repos/${owner}/${repo}/branches?per_page=100`);
@@ -515,6 +540,7 @@ module.exports = {
   oauth,
   mapRepo,
   listRepos,
+  listInstallationRepos,
   listBranches,
   getDefaultBranch,
   getTree,

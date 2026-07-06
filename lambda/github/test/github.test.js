@@ -454,7 +454,7 @@ describe('github handler', () => {
 
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.body);
-      expect(body).toEqual({ connected: true, provider: 'github' });
+      expect(body).toEqual({ connected: true, provider: 'github', mode: 'oauth' });
     });
 
     it('returns connected: false when no DynamoDB item', async () => {
@@ -465,7 +465,7 @@ describe('github handler', () => {
 
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.body);
-      expect(body).toEqual({ connected: false, provider: undefined });
+      expect(body).toEqual({ connected: false, provider: undefined, mode: 'oauth' });
     });
   });
 

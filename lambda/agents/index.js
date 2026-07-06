@@ -25,6 +25,7 @@ const gremlin = require('gremlin');
 const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
 const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
 const { buildResponse } = require('./shared/response');
+const { requirePlatformAdmin } = require('./shared/authz');
 const { normalizeCliModels, parseCliModels } = require('./shared/cli-models');
 const { listClaudeModels } = require('./shared/bedrock-models');
 const { refreshPricing } = require('./shared/model-pricing');
@@ -189,6 +190,8 @@ exports.handler = async (event) => {
 
     // PUT /agents/settings — write bearer token, Kiro API key, and/or model defaults to SSM
     if (httpMethod === 'PUT' && path.endsWith('/settings')) {
+      const denied = requirePlatformAdmin(event);
+      if (denied) return response(denied.statusCode, { error: denied.error, code: denied.code });
       const prefix = process.env.AGENT_SETTINGS_SSM_PREFIX || '';
       const input = JSON.parse(body || '{}');
       const errors = [];

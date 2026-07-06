@@ -38,20 +38,24 @@ import workflowPlanPkg from '../shared/v2-workflow-plan.js';
 import executionPlanPkg from '../shared/v2-execution-plan.js';
 import gitConnectionStorePkg from '../shared/git-connection-store.js';
 import gitTokenPkg from '../shared/git-token.js';
+import githubAuthConfigPkg from '../shared/github-auth-config.js';
 import gitProvidersPkg from '../shared/git-providers.js';
 import wsFanoutPkg from '../shared/ws-fanout.js';
 import { runParallelSection } from './section.js';
+import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 
 const { createProcessStore } = processStorePkg;
 const { loadExecutionPlan } = workflowPlanPkg;
 const { planSegments, stageInstanceId: planStageInstanceId } = executionPlanPkg;
 const { getGitConnection } = gitConnectionStorePkg;
-const { resolveGitToken } = gitTokenPkg;
+const { resolveGitToken, getInstallationTokenFromConfig } = gitTokenPkg;
+const { getGitHubAuthMode } = githubAuthConfigPkg;
 const { getProvider } = gitProvidersPkg;
 const { broadcastToIntentChannel } = wsFanoutPkg;
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
+const secrets = new SecretsManagerClient({});
 const agentcore = new BedrockAgentCoreClient({});
 const defaultStore = createProcessStore({ ddb });
 
@@ -102,12 +106,43 @@ const streamToString = async (body) => {
   return Buffer.concat(chunks).toString('utf8');
 };
 
-// Resolve the git token for the intent's run (from the starter's connection).
-// Returns { token, reason } — the reason names WHY the token is empty
+// Normalize a repo entry (slug or URL, string or {url}) to an "owner/repo"
+// slug — the shape both the provider layer and installation-token minting use.
+const toRepoSlug = (repo) => {
+  const raw = typeof repo === 'string' ? repo : (repo?.url ?? '');
+  return raw
+    .replace(/^https?:\/\/[^/]+\//, '')
+    .replace(/\.git$/, '')
+    .replace(/^\/+|\/+$/g, '');
+};
+
+// Resolve the git token for the intent's run. Mode-aware for GitHub (see
+// shared/github-auth-config.js): in 'app' mode a repo-scoped installation
+// token is minted (no per-user connection involved); in 'oauth' mode (and for
+// every non-GitHub provider) the starter's per-user connection is resolved.
+// Returns { token, mode, reason } — the reason names WHY the token is empty
 // (no_connection / resolve_failed with the error), so a repo-ful run can
 // surface it instead of silently degrading to unauthenticated git. An empty
 // token can turn a private clone failure into a blind run against an empty repo.
-const defaultResolveToken = async ({ startedBy, gitProvider }) => {
+const defaultResolveToken = async ({ startedBy, gitProvider, repos = [] }) => {
+  if (gitProvider === 'github') {
+    try {
+      const mode = await getGitHubAuthMode(ssm);
+      if (mode === 'app') {
+        const repoSlugs = repos.map(toRepoSlug).filter(Boolean);
+        if (repoSlugs.length === 0) return { token: '', mode, reason: 'app_mode_no_repos' };
+        const token = await getInstallationTokenFromConfig({
+          ssm,
+          secrets,
+          repositories: repoSlugs,
+        });
+        return token ? { token, mode } : { token: '', mode, reason: 'app_mint_empty' };
+      }
+    } catch (e) {
+      console.error('[v2-orchestrator] app-mode git token mint failed:', e?.message);
+      return { token: '', mode: 'app', reason: `app_mint_failed: ${e?.message ?? 'unknown'}` };
+    }
+  }
   if (!startedBy || !gitProvider) return { token: '', reason: 'no_starter_or_provider' };
   try {
     const item = await getGitConnection(ddb, startedBy, gitProvider);
@@ -117,6 +152,27 @@ const defaultResolveToken = async ({ startedBy, gitProvider }) => {
   } catch (e) {
     console.error('[v2-orchestrator] git token resolution failed:', e?.message);
     return { token: '', reason: `resolve_failed: ${e?.message ?? 'unknown'}` };
+  }
+};
+
+// App-mode only: mint a FRESH repo-scoped installation token (served from the
+// ~1h cache in shared/git-token.js when still valid). Installation tokens
+// expire after ~1h — far shorter than a long run — so every dispatch that
+// hands git credentials to the runtime re-resolves through this instead of
+// reusing the run-start snapshot. Returns null in oauth mode (the snapshot
+// token never expires for GitHub OAuth) and null on failure (callers fall
+// back to the snapshot, which keeps oauth/legacy behaviour intact).
+const defaultMintFreshToken = async ({ gitProvider, repos = [] }) => {
+  if (gitProvider !== 'github') return null;
+  try {
+    const mode = await getGitHubAuthMode(ssm);
+    if (mode !== 'app') return null;
+    const repoSlugs = repos.map(toRepoSlug).filter(Boolean);
+    if (repoSlugs.length === 0) return null;
+    return await getInstallationTokenFromConfig({ ssm, secrets, repositories: repoSlugs });
+  } catch (e) {
+    console.error('[v2-orchestrator] fresh app token mint failed:', e?.message);
+    return null;
   }
 };
 
@@ -151,6 +207,7 @@ const defaultDeps = () => ({
   loadPlan: (args) => loadExecutionPlan({ ddb, tableName: BLOCKS_TABLE(), ...args }),
   invokeRuntime: defaultInvokeRuntime,
   resolveToken: defaultResolveToken,
+  mintFreshToken: defaultMintFreshToken,
   stopSession: stopRuntimeSession,
   broadcast: broadcastToIntentChannel,
   // WP6: open the fan-in PR through the shared provider layer. Injectable so
@@ -165,7 +222,16 @@ const defaultDeps = () => ({
 });
 
 const handler = async (event, ctx, deps = defaultDeps()) => {
-  const { store, loadPlan, invokeRuntime, resolveToken, stopSession, broadcast, openPr } = deps;
+  const {
+    store,
+    loadPlan,
+    invokeRuntime,
+    resolveToken,
+    mintFreshToken,
+    stopSession,
+    broadcast,
+    openPr,
+  } = deps;
   const { intentId, executionId } = event;
   if (event.action !== 'start') {
     // Resume is handled out-of-band via SendDurableExecutionCallbackSuccess
@@ -273,7 +339,11 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // proceeds (init-ws now fails a private clone honestly; public/read-only
     // flows still work) but the reason is on the timeline, not swallowed.
     const tokenResult = await ctx.step('git-token', async () => {
-      const res = await resolveToken({ startedBy: meta.startedBy, gitProvider });
+      const res = await resolveToken({
+        startedBy: meta.startedBy,
+        gitProvider,
+        repos: meta.repos ?? [],
+      });
       return typeof res === 'string' ? { token: res } : res;
     });
     const token = tokenResult?.token ?? '';
@@ -282,9 +352,24 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         ctx,
         'git-token-missing',
         'v2.git.token_unavailable',
-        `No usable git credentials for this run (${tokenResult?.reason ?? 'unknown'}) — private clones and pushes will fail; connect ${gitProvider} for the starting user`,
+        tokenResult?.mode === 'app'
+          ? `No usable git credentials for this run (${tokenResult?.reason ?? 'unknown'}) — private clones and pushes will fail; check the GitHub App configuration on the Admin page`
+          : `No usable git credentials for this run (${tokenResult?.reason ?? 'unknown'}) — private clones and pushes will fail; connect ${gitProvider} for the starting user`,
       );
     }
+    // Fresh-token accessor for every later dispatch that hands git credentials
+    // to the runtime. In GitHub-App mode the run-start snapshot expires after
+    // ~1h, so each dispatch re-resolves (cached mint); in oauth mode this
+    // always returns the snapshot. Called INSIDE durable step bodies only —
+    // replay never re-executes a memoized step, so a re-mint can't fork state.
+    const freshGitToken = async () => {
+      try {
+        const fresh = await mintFreshToken?.({ gitProvider, repos: meta.repos ?? [] });
+        return fresh || token;
+      } catch {
+        return token;
+      }
+    };
     const sessionId = sessionIdFor(intentId);
     await emitEvent(
       ctx,
@@ -426,7 +511,8 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
 
     // Clone inputs so run-stage can self-heal a wiped source checkout (the mount is
     // wiped on every runtime redeploy). Same values init-ws used; forwarded on every
-    // run-stage invoke (fresh + resume). The token read is already a durable step.
+    // run-stage invoke (fresh + resume). The token read is already a durable step;
+    // in app mode the dispatch-time freshGitToken override supersedes gitToken.
     const cloneInputs = {
       repos: meta.repos ?? [],
       branch: meta.branch,
@@ -471,6 +557,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         requestedCli,
         sessionId: stageSessionId,
         cloneInputs: stageCloneInputs,
+        freshGitToken,
       };
       let result = await runStage(ctxArg, invokeRuntime, { ...stageOpts, resumeFrom: null });
 
@@ -564,6 +651,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         gitToken: token,
         gitProvider,
       },
+      // Dispatch-time token refresh for lane init/merge/conflict dispatches
+      // (see freshGitToken above) — called inside durable step bodies only.
+      freshGitToken,
       intentSessionId: sessionId,
       maxParallelUnits: meta.maxParallelUnits ?? 0,
       requestedCli,
@@ -664,13 +754,15 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // v1 unmerged-branch guard lives inside createPullRequest). PR problems
     // never un-succeed the run — every outcome is a loud timeline event. A
     // token-less project records a skip instead of failing silently.
-    const prResults = await ctx.step('open-pr', () =>
+    const prResults = await ctx.step('open-pr', async () =>
       openIntentPrs({
         openPr,
         store,
         meta,
         executionId,
-        token,
+        // Re-resolve at PR time: an app-mode run that outlived the ~1h
+        // installation token must not open PRs with the stale snapshot.
+        token: await freshGitToken(),
         gitProvider,
         log: (m) => ctx.logger?.info?.(m, { intentId }),
       }),
@@ -724,6 +816,7 @@ const runStage = async (
     requestedCli,
     sessionId,
     cloneInputs,
+    freshGitToken,
     resumeFrom,
   },
 ) => {
@@ -740,7 +833,7 @@ const runStage = async (
     heartbeatTimeout: STAGE_CALLBACK_HEARTBEAT_TIMEOUT,
   });
 
-  const dispatch = await ctx.step(`run-${attemptKey}`, () =>
+  const dispatch = await ctx.step(`run-${attemptKey}`, async () =>
     invokeRuntime(
       {
         command: 'run-stage-start',
@@ -760,7 +853,11 @@ const runStage = async (
         ...(cliModels ? { cliModels } : {}),
         ...(requestedCli ? { requestedCli } : {}),
         // repos/branch/baseBranch/gitToken/gitProvider — for source self-heal.
+        // The token is re-resolved at dispatch time (inside this step): a
+        // GitHub-App installation token from the run-start snapshot would be
+        // expired by now on any stage past the first hour.
         ...cloneInputs,
+        ...(freshGitToken ? { gitToken: await freshGitToken() } : {}),
         resumeFrom: resumeFrom ?? null,
         stageCallbackId,
       },

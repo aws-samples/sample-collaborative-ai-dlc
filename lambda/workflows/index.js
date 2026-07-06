@@ -29,6 +29,7 @@ import {
   BatchWriteCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { buildResponse } from '../shared/response.js';
+import { requirePlatformAdmin } from '../shared/authz.js';
 import { resolveTenant, SYSTEM_TENANT } from '../shared/tenant.js';
 import {
   META,
@@ -694,6 +695,16 @@ export const handler = async (event) => {
 
   try {
     const method = event.httpMethod;
+
+    // Workflow AUTHORING is platform-admin only: every mutation (create/update/
+    // delete workflows, placements, phases, scope/rule refs) requires the
+    // Cognito platform-admin group (shared/authz.js). Reads stay open — project
+    // creation lists workflows and runs load compiled plans for every user.
+    if (method !== 'GET') {
+      const denied = requirePlatformAdmin(event);
+      if (denied) return res(denied.statusCode, { error: denied.error, code: denied.code });
+    }
+
     const path = event.resource || event.path || '';
     const { workflowId, stageId, scopeId, layer, ruleId } = event.pathParameters || {};
     const tenant = resolveTenant(getClaims(event));

@@ -284,6 +284,9 @@ export const runParallelSection = async (segment, toolkit) => {
     ids,
     intentBranch,
     cloneBase, // { repos, baseBranch, gitToken, gitProvider }
+    // Dispatch-time git-token refresh (GitHub-App mode mints ~1h tokens; the
+    // run-start snapshot goes stale). Optional: falls back to cloneBase.gitToken.
+    freshGitToken = null,
     intentSessionId,
     maxParallelUnits,
     // Forwarded to the conflict-resolution stage's CLI run (WP6).
@@ -292,6 +295,10 @@ export const runParallelSection = async (segment, toolkit) => {
   } = toolkit;
   const { executionId, intentId, projectId } = ids;
   const sk = `s${segment.index}`;
+
+  // Fresh (or snapshot) git token for lane dispatches — must be resolved
+  // INSIDE durable step bodies only (replay never re-executes memoized steps).
+  const laneGitToken = async () => (freshGitToken ? await freshGitToken() : cloneBase.gitToken);
 
   const unitPlan = await ctx.step(`load-unit-plan-${sk}`, () => store.getUnitPlan(executionId));
   if (!unitPlan || (unitPlan.units ?? []).length === 0) {
@@ -451,7 +458,7 @@ export const runParallelSection = async (segment, toolkit) => {
       );
 
       // Lane workspace: clone + unit branch off intent HEAD + push (engine git).
-      const init = await laneCtx.step(`init-lane-${sk}-${slug}${rTag}`, () =>
+      const init = await laneCtx.step(`init-lane-${sk}-${slug}${rTag}`, async () =>
         invokeRuntime(
           {
             command: 'init-lane',
@@ -463,7 +470,7 @@ export const runParallelSection = async (segment, toolkit) => {
             repos: cloneBase.repos,
             unitBranch,
             intentBranch,
-            gitToken: cloneBase.gitToken,
+            gitToken: await laneGitToken(),
             gitProvider: cloneBase.gitProvider,
           },
           laneSession,
@@ -538,7 +545,7 @@ export const runParallelSection = async (segment, toolkit) => {
       });
       const dispatchMerge = (stepName) =>
         laneCtx.step(stepName, () =>
-          withMergeLock(() =>
+          withMergeLock(async () =>
             invokeRuntime(
               {
                 command: 'merge-lane',
@@ -550,7 +557,7 @@ export const runParallelSection = async (segment, toolkit) => {
                 unitBranch,
                 intentBranch,
                 baseBranch: cloneBase.baseBranch,
-                gitToken: cloneBase.gitToken,
+                gitToken: await laneGitToken(),
                 gitProvider: cloneBase.gitProvider,
               },
               intentSessionId,
@@ -575,7 +582,7 @@ export const runParallelSection = async (segment, toolkit) => {
           `Unit ${slug} merge conflicts with ${intentBranch}: ${(merge.conflicts ?? []).join(', ')} — running the conflict-resolution stage`,
           { unitSlug: slug },
         );
-        const resolution = await laneCtx.step(`resolve-conflict-${sk}-${slug}${rTag}`, () =>
+        const resolution = await laneCtx.step(`resolve-conflict-${sk}-${slug}${rTag}`, async () =>
           invokeRuntime(
             {
               command: 'resolve-conflict',
@@ -587,7 +594,7 @@ export const runParallelSection = async (segment, toolkit) => {
               repos: cloneBase.repos,
               unitBranch,
               intentBranch,
-              gitToken: cloneBase.gitToken,
+              gitToken: await laneGitToken(),
               gitProvider: cloneBase.gitProvider,
               requestedCli,
               ...(cliModels ? { cliModels } : {}),
