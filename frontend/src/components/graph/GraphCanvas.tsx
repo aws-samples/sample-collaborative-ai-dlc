@@ -250,7 +250,7 @@ const EDGE_LABELS: Record<string, string> = {
 };
 
 const NODE_W = 156;
-const NODE_H = 52;
+const NODE_H = 56;
 const NODE_RX = 12;
 const ICON_SIZE = 14;
 
@@ -410,6 +410,37 @@ function deriveNodeLabel(node: GraphNode): string {
     default:
       return node.label || node.type;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Utility: two-line word-aware label wrapping
+// ---------------------------------------------------------------------------
+
+function splitLabelTwoLines(label: string): [string, string | null] {
+  if (!label) return ['', null];
+  if (label.length <= 17) return [label, null];
+  const breakIdx = label.lastIndexOf(' ', 17);
+  const line1 = breakIdx > 0 ? label.slice(0, breakIdx) : label.slice(0, 17);
+  const rest = breakIdx > 0 ? label.slice(breakIdx + 1) : label.slice(17);
+  if (!rest) return [line1, null];
+  const line2 = rest.length > 17 ? rest.slice(0, 15) + '...' : rest;
+  return [line1, line2];
+}
+
+// ---------------------------------------------------------------------------
+// Zoom log-scale helpers: t ∈ [0,1] → width = 12000*(300/12000)^t
+// ---------------------------------------------------------------------------
+
+const ZOOM_MIN_W = 300;
+const ZOOM_MAX_W = 12000;
+const ZOOM_LOG_RATIO = Math.log(ZOOM_MIN_W / ZOOM_MAX_W);
+
+function widthToSliderT(w: number): number {
+  return Math.log(w / ZOOM_MAX_W) / ZOOM_LOG_RATIO;
+}
+
+function sliderTToWidth(t: number): number {
+  return ZOOM_MAX_W * Math.pow(ZOOM_MIN_W / ZOOM_MAX_W, t);
 }
 
 // ---------------------------------------------------------------------------
@@ -1675,11 +1706,11 @@ export function GraphCanvas({
                           opacity={0.12}
                         />
 
-                        <circle cx={-NODE_W / 2 + 20} cy={0} r={13} fill="rgba(0,0,0,0.15)" />
+                        <circle cx={-NODE_W / 2 + 20} cy={-6} r={13} fill="rgba(0,0,0,0.15)" />
 
                         <foreignObject
                           x={-NODE_W / 2 + 20 - ICON_SIZE / 2}
-                          y={-ICON_SIZE / 2}
+                          y={-6 - ICON_SIZE / 2}
                           width={ICON_SIZE}
                           height={ICON_SIZE}
                         >
@@ -1687,34 +1718,99 @@ export function GraphCanvas({
                         </foreignObject>
 
                         <text
-                          x={6}
-                          y={-6}
+                          x={-NODE_W / 2 + 20}
+                          y={13}
                           textAnchor="middle"
                           fill={cfg.textColor}
-                          fontSize={8}
+                          fontSize={6.5}
                           fontWeight={700}
-                          letterSpacing={0.8}
-                          opacity={0.7}
+                          letterSpacing={0.6}
+                          opacity={0.75}
+                          style={{ textTransform: 'uppercase' }}
                         >
-                          {cfg.shortLabel.toUpperCase()}
+                          {cfg.shortLabel}
                         </text>
 
-                        <text
-                          x={6}
-                          y={10}
-                          textAnchor="middle"
-                          fill={cfg.textColor}
-                          fontSize={10}
-                          fontWeight={500}
-                        >
-                          {(node.label || '').length > 18
-                            ? (node.label || '').slice(0, 16) + '...'
-                            : node.label || ''}
-                        </text>
+                        {(() => {
+                          const [l1, l2] = splitLabelTwoLines(node.label || '');
+                          if (l2 === null) {
+                            return (
+                              <text
+                                x={6}
+                                y={4}
+                                textAnchor="middle"
+                                fill={cfg.textColor}
+                                fontSize={10}
+                                fontWeight={500}
+                              >
+                                {l1}
+                              </text>
+                            );
+                          }
+                          return (
+                            <>
+                              <text
+                                x={6}
+                                y={-3}
+                                textAnchor="middle"
+                                fill={cfg.textColor}
+                                fontSize={10}
+                                fontWeight={500}
+                              >
+                                {l1}
+                              </text>
+                              <text
+                                x={6}
+                                y={9}
+                                textAnchor="middle"
+                                fill={cfg.textColor}
+                                fontSize={10}
+                                fontWeight={500}
+                              >
+                                {l2}
+                              </text>
+                            </>
+                          );
+                        })()}
                       </g>
                     );
                   })}
               </svg>
+
+              {/* ===== Zoom Slider ===== */}
+              <div className="absolute bottom-[132px] right-3 z-10 flex flex-col items-center gap-1 rounded-lg bg-background/90 backdrop-blur-sm border shadow-sm px-1.5 py-2">
+                <span
+                  className="text-[9px] font-semibold text-muted-foreground select-none"
+                  title="Zoom in"
+                >
+                  +
+                </span>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.005}
+                  value={widthToSliderT(viewBox.width)}
+                  onChange={(e) => {
+                    const t = parseFloat(e.target.value);
+                    const newW = sliderTToWidth(t);
+                    const aspect = viewBox.height / viewBox.width;
+                    const newH = newW * aspect;
+                    const cx = viewBox.x + viewBox.width / 2;
+                    const cy = viewBox.y + viewBox.height / 2;
+                    setViewBox({ x: cx - newW / 2, y: cy - newH / 2, width: newW, height: newH });
+                  }}
+                  aria-label="Zoom level"
+                  title="Zoom level"
+                  className="h-20 w-4 appearance-none bg-transparent cursor-pointer [writing-mode:vertical-lr] [direction:rtl] [&::-webkit-slider-runnable-track]:w-1 [&::-webkit-slider-runnable-track]:rounded-full [&::-webkit-slider-runnable-track]:bg-muted [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-foreground/70 [&::-webkit-slider-thumb]:border [&::-webkit-slider-thumb]:border-background [&::-webkit-slider-thumb]:shadow-sm [&::-moz-range-track]:w-1 [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-muted [&::-moz-range-thumb]:w-3 [&::-moz-range-thumb]:h-3 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-foreground/70 [&::-moz-range-thumb]:border-0"
+                />
+                <span
+                  className="text-[9px] font-semibold text-muted-foreground select-none"
+                  title="Zoom out"
+                >
+                  −
+                </span>
+              </div>
 
               {/* ===== Minimap ===== */}
               {showMinimap && minimapData && nodes.length > 3 && (
