@@ -68,6 +68,9 @@
     "@aws/durable-execution-sdk-js-testing": {
       "@aws/durable-execution-sdk-js": "^2.0.0"
     },
+    "archiver-utils": {
+      "glob": "^13.0.6"
+    },
     "uuid": "^11.1.1"
   }
 }
