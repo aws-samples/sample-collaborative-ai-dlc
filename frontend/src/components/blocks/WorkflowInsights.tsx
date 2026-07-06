@@ -3,12 +3,10 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { AlertTriangle, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { AUTONOMY_STYLES } from '@/lib/autonomy';
-import type { Workflow, CompiledWorkflow } from '@/services/workflows';
+import type { CompiledWorkflow } from '@/services/workflows';
 
 interface Props {
-  workflow: Workflow;
   compiled: CompiledWorkflow | null;
-  readOnly: boolean;
 }
 
 export function WorkflowInsights({ compiled }: Props) {

@@ -1,6 +1,21 @@
 import { cn } from '@/lib/utils';
 import { formatTokens, formatCost, formatMillis, contextGaugeTone } from '@/lib/metricAggregation';
 
+const KNOWN_LABELS: Record<string, string> = {
+  artifactsCreated: 'Artifacts created',
+  questionsAsked: 'Questions asked',
+  filesModified: 'Files modified',
+  suggestionsAccepted: 'Suggestions accepted',
+  iterationsRun: 'Iterations run',
+  decisionsLogged: 'Decisions logged',
+};
+
+function humanizeKey(key: string): string {
+  if (KNOWN_LABELS[key]) return KNOWN_LABELS[key];
+  const spaced = key.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_-]/g, ' ');
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
 // Shared usage/cost renderer for aggregated metric bags — used at stage, intent
 // and project scope so the three surfaces read identically. Callers pass an
 // already-aggregated bag (see metricAggregation) plus an optional cost total.
@@ -76,7 +91,7 @@ export function UsageMetrics({
 
   return (
     <div className={cn('space-y-3', className)}>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         {hasTokens && <Stat label="Input tokens" value={formatTokens(tokensIn)} />}
         {hasTokens && <Stat label="Output tokens" value={formatTokens(tokensOut)} />}
         {hasTokens && <Stat label="Total tokens" value={formatTokens(tokensIn + tokensOut)} />}
@@ -92,7 +107,7 @@ export function UsageMetrics({
         )}
         {launchMs !== undefined && <Stat label="Agent launch" value={formatMillis(launchMs)} />}
         {extras.map(([k, v]) => (
-          <Stat key={k} label={k} value={v.toLocaleString()} />
+          <Stat key={k} label={humanizeKey(k)} value={v.toLocaleString()} />
         ))}
       </div>
       {ctx !== undefined && <ContextGauge pct={ctx} label={contextLabel} />}

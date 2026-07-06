@@ -19,11 +19,9 @@ import {
   type IntentSensorRun,
   type IntentStage,
   type IntentSteering,
-  type IntentUnit,
-  type IntentUnitPlan,
   type StageState,
 } from '@/services/intents';
-import { workflowsService, type CompiledWorkflow } from '@/services/workflows';
+import { workflowsService, type CompiledWorkflow, type PhaseNode } from '@/services/workflows';
 import { useIntentEvents, type IntentEvent } from '@/hooks/useIntentEvents';
 
 // Shared state for the v2 intent experience (the SprintContext analog). The
@@ -103,6 +101,12 @@ interface IntentContextValue {
   loading: boolean;
   error: string | null;
 
+  // Workflow phase metadata (from the full Workflow object, not compiled DTO).
+  workflowPhases: PhaseNode[] | null;
+  phaseNameOf: (phasePath: string) => string;
+  initializationPhasePaths: Set<string>;
+  currentPhasePath: string | null;
+
   // Derived views
   stageRows: IntentStageRow[];
   stageEdges: StageEdge[];
@@ -111,9 +115,6 @@ interface IntentContextValue {
   steering: IntentSteering[];
   sensorsByStage: Map<string, IntentSensorRun[]>;
   artifactsByStage: Map<string, IntentArtifact[]>;
-  /** Unit lanes (docs/v2-parallel.md WP5/WP7): [] before promotion. */
-  units: IntentUnit[];
-  unitPlan: IntentUnitPlan | null;
 
   // Live streamed output per stage instance (+ INTENT_OUTPUT_KEY). The map is
   // held in a ref for append performance; `outputVersion` bumps on every
@@ -135,6 +136,12 @@ interface IntentContextValue {
   /** Focus the sidebar Agent tab on a stage's output (null → run-level). */
   focusOutput: (stageInstanceId: string | null) => void;
 
+  /** Preview tab: the artifact currently displayed (null = nothing selected). */
+  previewArtifactId: string | null;
+  previewSeq: number;
+  /** Open a document artifact in the right panel's Preview tab. */
+  openArtifactPreview: (artifactId: string) => void;
+
   reload: () => Promise<void>;
   answerGate: (gate: IntentGate, input: GateAnswer) => Promise<void>;
   /** Steering: correct an already-given answer (delivered at the next injection point). */
@@ -147,6 +154,35 @@ interface IntentContextValue {
   /** Steering: restart the run from an earlier stage. Guidance optional — with
    *  it a corrective rewind, without it a plain retry of the stage + rest. */
   rewindIntent: (fromStageId: string, guidance?: string) => Promise<void>;
+}
+
+// ── Module-level stale-while-revalidate cache ───────────────────────────────
+// Mirrors the pattern in src/hooks/useProjectsCache.ts: show last-known data
+// instantly on revisit, refetch in the background, update if changed.
+const INTENT_CACHE_MAX = 20;
+
+interface IntentCacheEntry {
+  detail: IntentDetail;
+  compiled: CompiledWorkflow | null;
+  workflowPhases: PhaseNode[] | null;
+}
+
+const intentCache = new Map<string, IntentCacheEntry>();
+
+function intentCacheKey(projectId: string, intentId: string): string {
+  return `${projectId}#${intentId}`;
+}
+
+function trimIntentCache() {
+  while (intentCache.size > INTENT_CACHE_MAX) {
+    const oldest = intentCache.keys().next().value!;
+    intentCache.delete(oldest);
+  }
+}
+
+/** Clear the module-level intent cache (for test isolation). */
+export function clearIntentCache() {
+  intentCache.clear();
 }
 
 const IntentContext = createContext<IntentContextValue | undefined>(undefined);
@@ -166,6 +202,7 @@ export function IntentProvider({
 
   const [detail, setDetail] = useState<IntentDetail | null>(null);
   const [compiled, setCompiled] = useState<CompiledWorkflow | null>(null);
+  const [workflowPhases, setWorkflowPhases] = useState<PhaseNode[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -184,8 +221,13 @@ export function IntentProvider({
   const [agentFocus, setAgentFocus] = useState<AgentFocusRequest | null>(null);
   const focusSeq = useRef(0);
 
+  const [previewArtifactId, setPreviewArtifactId] = useState<string | null>(null);
+  const [previewSeq, setPreviewSeq] = useState(0);
+  const previewSeqRef = useRef(0);
+
   // Guards late async resolutions (compiled fetch) against route changes.
   const activeIntentRef = useRef(intentId);
+  const fetchedWorkflowKeyRef = useRef<string | null>(null);
   activeIntentRef.current = intentId;
 
   const load = useCallback(async () => {
@@ -195,18 +237,45 @@ export function IntentProvider({
       if (activeIntentRef.current !== intentId) return;
       setDetail(dto);
       setError(null);
-      // Seed the gate map from durable state. Output buffers are NOT seeded
-      // here — the DTO carries no outputs; panes fetch lazily (ensureOutputs).
       setLiveGates(new Map(dto.gates.map((g) => [g.humanTaskId, g])));
-      // Compiled workflow drives the phase/stage plan (best-effort).
+
+      const cacheKey = intentCacheKey(projectId, intentId);
+      const prevEntry = intentCache.get(cacheKey);
+
       if (dto.intent.workflowId) {
         workflowsService
           .compiled(dto.intent.workflowId, dto.intent.workflowVersion ?? undefined)
           .then((c) => {
-            if (activeIntentRef.current === intentId) setCompiled(c);
+            if (activeIntentRef.current !== intentId) return;
+            setCompiled(c);
+            const entry = intentCache.get(cacheKey);
+            if (entry) entry.compiled = c;
           })
           .catch(() => {});
+
+        const workflowKey = `${dto.intent.workflowId}@${dto.intent.workflowVersion ?? ''}`;
+        if (fetchedWorkflowKeyRef.current !== workflowKey) {
+          fetchedWorkflowKeyRef.current = workflowKey;
+          workflowsService
+            .get(dto.intent.workflowId, dto.intent.workflowVersion ?? undefined)
+            .then((wf) => {
+              if (activeIntentRef.current !== intentId) return;
+              setWorkflowPhases(wf.phases);
+              const entry = intentCache.get(cacheKey);
+              if (entry) entry.workflowPhases = wf.phases;
+            })
+            .catch(() => {
+              fetchedWorkflowKeyRef.current = null;
+            });
+        }
       }
+
+      intentCache.set(cacheKey, {
+        detail: dto,
+        compiled: prevEntry?.compiled ?? null,
+        workflowPhases: prevEntry?.workflowPhases ?? null,
+      });
+      trimIntentCache();
     } catch (err) {
       if (activeIntentRef.current !== intentId) return;
       setError(err instanceof Error ? err.message : 'Failed to load intent');
@@ -215,21 +284,40 @@ export function IntentProvider({
     }
   }, [projectId, intentId]);
 
-  // Reset everything when the intent (or route) changes, then load.
   useEffect(() => {
     outputBufRef.current = new Map();
     panesRef.current = new Map();
     setOutputVersion(0);
-    setDetail(null);
-    setCompiled(null);
-    setLiveGates(new Map());
     setSelectedStageId(null);
     setAgentFocus(null);
     setError(null);
+    fetchedWorkflowKeyRef.current = null;
+
     if (projectId && intentId) {
-      setLoading(true);
+      const cached = intentCache.get(intentCacheKey(projectId, intentId));
+      if (cached) {
+        setDetail(cached.detail);
+        setCompiled(cached.compiled);
+        setWorkflowPhases(cached.workflowPhases);
+        setLiveGates(new Map(cached.detail.gates.map((g) => [g.humanTaskId, g])));
+        setLoading(false);
+        if (cached.compiled && cached.detail.intent.workflowId) {
+          const wfKey = `${cached.detail.intent.workflowId}@${cached.detail.intent.workflowVersion ?? ''}`;
+          fetchedWorkflowKeyRef.current = wfKey;
+        }
+      } else {
+        setDetail(null);
+        setCompiled(null);
+        setWorkflowPhases(null);
+        setLiveGates(new Map());
+        setLoading(true);
+      }
       load();
     } else {
+      setDetail(null);
+      setCompiled(null);
+      setWorkflowPhases(null);
+      setLiveGates(new Map());
       setLoading(false);
     }
   }, [projectId, intentId, load]);
@@ -418,6 +506,7 @@ export function IntentProvider({
   // caller navigates back to the project page.
   const deleteIntent = useCallback(async () => {
     await intentsService.delete(projectId, intentId);
+    intentCache.delete(intentCacheKey(projectId, intentId));
   }, [projectId, intentId]);
 
   const rewindIntent = useCallback(
@@ -441,6 +530,16 @@ export function IntentProvider({
     [onAgentFocus],
   );
 
+  const openArtifactPreview = useCallback(
+    (artifactId: string) => {
+      previewSeqRef.current += 1;
+      setPreviewArtifactId(artifactId);
+      setPreviewSeq(previewSeqRef.current);
+      onAgentFocus?.();
+    },
+    [onAgentFocus],
+  );
+
   // Merge the compiled plan's stages with the live STAGE rows, filtered to the
   // intent's scope: the compiled graph covers ALL placements, but the run only
   // executes stages whose scopeMembership is EXECUTE — without the filter,
@@ -459,8 +558,11 @@ export function IntentProvider({
       list.push(s);
       byStageId.set(s.stageId, list);
     }
-    for (const list of byStageId.values()) {
-      list.sort((a, b) => (a.unitSlug ?? '').localeCompare(b.unitSlug ?? ''));
+    for (const [key, list] of byStageId) {
+      byStageId.set(
+        key,
+        list.toSorted((a, b) => (a.unitSlug ?? '').localeCompare(b.unitSlug ?? '')),
+      );
     }
     const scope = detail?.intent.scope ?? null;
     const grid = scope ? compiled?.scopeGrid?.[scope] : undefined;
@@ -492,7 +594,10 @@ export function IntentProvider({
       }
       return instances.map((row) => ({
         stageId: n.stageId,
-        phase: row.phase ?? n.phasePath ?? null,
+        // Live rows carry the backend phaseId ('ideation'), the plan carries
+        // the phasePath ('01') — mixing them splits one phase into two groups.
+        // The plan's path is canonical.
+        phase: n.phasePath ?? row.phase ?? null,
         state: row.state,
         stageInstanceId: row.stageInstanceId,
         unitSlug: row.unitSlug ?? null,
@@ -508,11 +613,14 @@ export function IntentProvider({
       }));
     });
     // Live rows outside the plan (plan unavailable or diverged) still render.
+    // Their phase field is the backend phaseId — map it to the workflow path
+    // so grouping and the init filter see one vocabulary.
+    const pathByPhaseId = new Map((workflowPhases ?? []).map((p) => [p.phaseId, p.path]));
     for (const s of detail?.stages ?? []) {
       if (!s.stageId || planIds.has(s.stageId)) continue;
       rows.push({
         stageId: s.stageId,
-        phase: s.phase ?? null,
+        phase: (s.phase ? (pathByPhaseId.get(s.phase) ?? s.phase) : null) ?? null,
         state: s.state,
         stageInstanceId: s.stageInstanceId,
         unitSlug: s.unitSlug ?? null,
@@ -528,7 +636,7 @@ export function IntentProvider({
       });
     }
     return rows;
-  }, [detail, compiled]);
+  }, [detail, compiled, workflowPhases]);
 
   // Compiled edges restricted to the rendered (in-scope) stages — the graph
   // AND the per-stage dependency list derive from these (the compiled DTO has
@@ -541,16 +649,6 @@ export function IntentProvider({
   const gates = useMemo(() => [...liveGates.values()], [liveGates]);
   const pendingGates = useMemo(() => gates.filter((g) => g.status === 'pending'), [gates]);
   const steering = useMemo(() => detail?.steering ?? [], [detail]);
-  // Unit lanes (docs/v2-parallel.md WP7): sorted by wave then slug so the lane
-  // board renders in scheduling order.
-  const units = useMemo<IntentUnit[]>(
-    () =>
-      (detail?.units ?? []).toSorted(
-        (a, b) => (a.batchIndex ?? 0) - (b.batchIndex ?? 0) || a.slug.localeCompare(b.slug),
-      ),
-    [detail],
-  );
-  const unitPlan = useMemo<IntentUnitPlan | null>(() => detail?.unitPlan ?? null, [detail]);
 
   const sensorsByStage = useMemo(() => {
     const map = new Map<string, IntentSensorRun[]>();
@@ -583,6 +681,29 @@ export function IntentProvider({
     [detail],
   );
 
+  const initializationPhasePaths = useMemo<Set<string>>(() => {
+    if (!workflowPhases) return new Set();
+    return new Set(workflowPhases.filter((p) => p.phaseId === 'initialization').map((p) => p.path));
+  }, [workflowPhases]);
+
+  const phaseNameOf = useCallback(
+    (phasePath: string): string => {
+      const capitalize = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+      if (!workflowPhases) return capitalize(phasePath);
+      const node = workflowPhases.find((p) => p.path === phasePath);
+      if (!node) return capitalize(phasePath);
+      return capitalize(node.name);
+    },
+    [workflowPhases],
+  );
+
+  const currentPhasePath = useMemo<string | null>(() => {
+    const raw = detail?.intent.currentPhase ?? null;
+    if (!raw) return null;
+    const matched = workflowPhases?.find((p) => p.phaseId === raw);
+    return matched?.path ?? raw;
+  }, [detail, workflowPhases]);
+
   return (
     <IntentContext.Provider
       value={{
@@ -592,6 +713,10 @@ export function IntentProvider({
         compiled,
         loading,
         error,
+        workflowPhases,
+        phaseNameOf,
+        initializationPhasePaths,
+        currentPhasePath,
         stageRows,
         stageEdges,
         gates,
@@ -599,8 +724,6 @@ export function IntentProvider({
         steering,
         sensorsByStage,
         artifactsByStage,
-        units,
-        unitPlan,
         outputBuffers: outputBufRef.current,
         outputVersion,
         stageNameOf,
@@ -610,6 +733,9 @@ export function IntentProvider({
         setSelectedStageId,
         agentFocus,
         focusOutput,
+        previewArtifactId,
+        previewSeq,
+        openArtifactPreview,
         reload: load,
         answerGate,
         reviseGate,

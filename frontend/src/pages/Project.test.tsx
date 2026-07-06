@@ -25,18 +25,19 @@ vi.mock('@/services/intents', () => ({
   },
 }));
 vi.mock('@/services/projects', () => ({ projectsService: {} }));
-const compiled = vi.fn().mockResolvedValue({ scopeGrid: { feature: {} } });
-vi.mock('@/services/workflows', () => ({
-  workflowsService: { compiled: (...a: unknown[]) => compiled(...a) },
-}));
 
 import Project from './Project';
+
+function NewIntentStub() {
+  return <span data-testid="new-intent-page">NewIntentPage</span>;
+}
 
 const renderProject = () =>
   render(
     <MemoryRouter initialEntries={['/project/p1']}>
       <Routes>
         <Route path="/project/:projectId" element={<Project />} />
+        <Route path="/project/:projectId/intent/new" element={<NewIntentStub />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -68,7 +69,7 @@ describe('Project page — v2 routing', () => {
     expect(list).toHaveBeenCalledWith('p1');
   });
 
-  it('offers a "From tracker issue" mode in New Intent only when a tracker is bound', async () => {
+  it('navigates to /project/:projectId/intent/new when New Intent is clicked', async () => {
     useProjectCache.mockReturnValue({
       project: {
         id: 'p1',
@@ -92,28 +93,6 @@ describe('Project page — v2 routing', () => {
     });
     renderProject();
     await userEvent.click(await screen.findByText('New Intent'));
-    expect(await screen.findByText('From tracker issue')).toBeInTheDocument();
-    expect(screen.getByText('Write a prompt')).toBeInTheDocument();
-  });
-
-  it('hides the tracker mode toggle when the v2 project has no tracker', async () => {
-    useProjectCache.mockReturnValue({
-      project: {
-        id: 'p1',
-        name: 'V2 Project',
-        kind: 'v2',
-        workflowId: 'aidlc-v2',
-        gitRepo: 'owner/repo',
-        trackers: [],
-      },
-      loading: false,
-    });
-    renderProject();
-    await userEvent.click(await screen.findByText('New Intent'));
-    // The prompt textarea is present, but no source-mode toggle.
-    expect(
-      await screen.findByPlaceholderText('Describe the intent in detail…'),
-    ).toBeInTheDocument();
-    expect(screen.queryByText('From tracker issue')).not.toBeInTheDocument();
+    expect(await screen.findByTestId('new-intent-page')).toBeInTheDocument();
   });
 });

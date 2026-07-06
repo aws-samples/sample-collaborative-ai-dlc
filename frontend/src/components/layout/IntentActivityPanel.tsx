@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Bot, Clock, MessageSquare, X } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { Bot, Clock, Eye, MessageSquare, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { getTimeAgo } from '@/lib/timeAgo';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -15,6 +18,7 @@ import {
 import { DiscussionsTab } from '@/components/discussion/DiscussionsTab';
 import { DiscussionPanel, useDiscussions } from '@/components/discussion';
 import { INTENT_OUTPUT_KEY, useIntent } from '@/contexts/IntentContext';
+import { artifactAccent } from '@/components/intent/artifactAccent';
 import type { IntentActivityEvent } from '@/services/intents';
 
 // The v2 intent analog of the sprint ActivityPanel: same 3-tab shell (Agent /
@@ -26,8 +30,8 @@ import type { IntentActivityEvent } from '@/services/intents';
 const FOLLOW_KEY = 'auto';
 
 export function IntentActivityPanel({ onClose }: { onClose: () => void }) {
-  const { detail, stageRows, agentFocus } = useIntent();
-  const [activeTab, setActiveTab] = useState('agent');
+  const { detail, stageRows, agentFocus, previewSeq } = useIntent();
+  const [activeTab, setActiveTab] = useState('timeline');
   const discussionsCtx = useDiscussions();
   const totalUnread = (discussionsCtx?.discussions ?? []).reduce(
     (sum, d) => sum + (d.unreadCount ?? 0),
@@ -50,6 +54,10 @@ export function IntentActivityPanel({ onClose }: { onClose: () => void }) {
     setSelectedKey(agentFocus.key);
   }, [agentFocus]);
 
+  useEffect(() => {
+    if (previewSeq > 0) setActiveTab('preview');
+  }, [previewSeq]);
+
   // Reset pinned selection when the intent changes.
   const intentKey = detail?.intent.id ?? null;
   useEffect(() => {
@@ -60,7 +68,7 @@ export function IntentActivityPanel({ onClose }: { onClose: () => void }) {
   const events = detail?.events ?? [];
 
   return (
-    <div className="flex h-full w-full flex-col bg-background border-l">
+    <div className="flex h-full w-full flex-col bg-muted/30 border-l">
       {/* Header */}
       <div className="flex h-10 items-center justify-between px-3 border-b shrink-0">
         <Tabs value={activeTab} onValueChange={setActiveTab}>
@@ -93,6 +101,10 @@ export function IntentActivityPanel({ onClose }: { onClose: () => void }) {
                 </Badge>
               )}
             </TabsTrigger>
+            <TabsTrigger value="preview" className="h-6 px-2.5 text-xs gap-1.5">
+              <Eye className="h-3 w-3" />
+              Preview
+            </TabsTrigger>
           </TabsList>
         </Tabs>
         <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onClose}>
@@ -107,6 +119,8 @@ export function IntentActivityPanel({ onClose }: { onClose: () => void }) {
         <DiscussionPanel />
       ) : activeTab === 'agent' ? (
         <AgentTab selectedKey={selectedKey} onSelectKey={setSelectedKey} />
+      ) : activeTab === 'preview' ? (
+        <PreviewTab />
       ) : (
         <ScrollArea className="flex-1">
           {activeTab === 'discussions' ? <DiscussionsTab /> : <TimelineTab events={events} />}
@@ -323,14 +337,6 @@ function answerSummary(
   return JSON.stringify(answer);
 }
 
-function getTimeAgo(timestamp: string): string {
-  const diff = Date.now() - new Date(timestamp).getTime();
-  if (!Number.isFinite(diff) || diff < 60000) return 'just now';
-  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
-  return `${Math.floor(diff / 86400000)}d ago`;
-}
-
 function IntentTimelineItem({ event }: { event: IntentActivityEvent }) {
   const { stageNameOf } = useIntent();
   const isAnswer = event.type === 'v2.question.answered';
@@ -387,5 +393,67 @@ function IntentTimelineItem({ event }: { event: IntentActivityEvent }) {
         </div>
       </div>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Preview tab — renders the selected artifact's markdown content
+// ---------------------------------------------------------------------------
+
+function PreviewTab() {
+  const { detail, previewArtifactId } = useIntent();
+  const discussions = useDiscussions();
+  const artifact = detail?.artifacts.find((a) => a.id === previewArtifactId) ?? null;
+
+  if (!artifact) {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center px-3 py-12 text-center">
+        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-muted mb-3">
+          <Eye className="h-5 w-5 text-muted-foreground" />
+        </div>
+        <p className="text-sm text-muted-foreground">Select a document to preview</p>
+      </div>
+    );
+  }
+
+  const accent = artifactAccent(artifact.artifactType);
+
+  return (
+    <ScrollArea className="flex-1">
+      <div className="px-4 py-3">
+        <div className="flex items-center gap-2 mb-2">
+          <span className={cn('h-2 w-2 rounded-full shrink-0', accent.dot)} />
+          {artifact.artifactType && (
+            <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground/60">
+              {artifact.artifactType}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2 mb-3">
+          <h3 className="text-sm font-semibold min-w-0 flex-1">{artifact.title || artifact.id}</h3>
+          {discussions && (
+            <Button
+              variant="ghost"
+              className="h-7 px-2 gap-1.5 shrink-0 text-xs"
+              onClick={() =>
+                discussions.openDiscussion({
+                  entityType: 'artifact',
+                  entityId: artifact.id,
+                  entityTitle: artifact.title || artifact.id,
+                })
+              }
+            >
+              <MessageSquare className="h-3 w-3" />
+              Discuss
+            </Button>
+          )}
+        </div>
+        {artifact.content && (
+          <div className="prose prose-sm dark:prose-invert max-w-none">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{artifact.content}</ReactMarkdown>
+          </div>
+        )}
+      </div>
+    </ScrollArea>
   );
 }

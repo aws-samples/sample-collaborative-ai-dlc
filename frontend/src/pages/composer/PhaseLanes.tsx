@@ -424,8 +424,16 @@ function PlacementChip({
       <div
         className="flex items-center gap-2 px-2.5 py-2 rounded-md border bg-background hover:border-foreground/30 hover:bg-accent/50 transition-colors cursor-grab"
         draggable={!readOnly}
+        role="button"
+        tabIndex={0}
         title="Open stage"
         onClick={() => onOpenStage()}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            onOpenStage();
+          }
+        }}
         onDragStart={(e) => {
           if (readOnly) return;
           e.dataTransfer.setData(DRAG_KEY, stageId);

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { X, Bot, Clock, ChevronDown, Wrench, Check, AlertTriangle, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { getTimeAgo } from '@/lib/timeAgo';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -243,7 +244,7 @@ export function ActivityPanel({ sprintId, onClose }: ActivityPanelProps) {
   }, [sprintId]);
 
   return (
-    <div className="flex h-full w-full flex-col bg-background border-l">
+    <div className="flex h-full w-full flex-col bg-muted/30 border-l">
       {/* Header */}
       <div className="flex h-10 items-center justify-between px-3 border-b shrink-0">
         <Tabs value={activeTab} onValueChange={setActiveTab}>
@@ -604,16 +605,6 @@ export function TimelineEventItem({ event }: { event: TimelineEvent }) {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function getTimeAgo(timestamp: string): string {
-  const now = Date.now();
-  const then = new Date(timestamp).getTime();
-  const diff = now - then;
-  if (diff < 60000) return 'just now';
-  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
-  return `${Math.floor(diff / 86400000)}d ago`;
-}
 
 function getEventStyle(type: string): { color: string } {
   switch (type) {

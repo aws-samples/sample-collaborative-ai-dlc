@@ -8,18 +8,8 @@ import { type Sprint } from '@/services/sprints';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from '@/components/ui/dialog';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -43,22 +33,10 @@ import {
   Settings,
   Archive,
 } from 'lucide-react';
-import { IntentSourcePicker } from '@/components/IntentSourcePicker';
 import { GitRepoLink } from '@/components/GitRepoLink';
 import { effectiveSprintStatus, isActiveStatus } from '@/lib/sprintStatus';
 import { intentsService, type Intent, type ProjectMetrics } from '@/services/intents';
 import { UsageMetrics } from '@/components/intent/UsageMetrics';
-import { trackersService, type TrackerIssue } from '@/services/trackers';
-import type { TrackerBinding } from '@/services/projects';
-import { buildSprintDescription } from '@/lib/buildSprintDescription';
-import { workflowsService } from '@/services/workflows';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 
 const STATUS_ICON: Record<string, typeof Loader2> = {
   running: Loader2,
@@ -355,49 +333,9 @@ function IntentsView({
 }) {
   const [intents, setIntents] = useState<Intent[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showCreate, setShowCreate] = useState(false);
-  const [title, setTitle] = useState('');
-  const [prompt, setPrompt] = useState('');
-  const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Kick-off source: write the prompt by hand, or import it from a tracker
-  // issue (GitHub / Jira / …) the project is bound to. The imported text
-  // becomes an editable prompt; `source` records the provenance back-link.
-  const hasTrackers = project.trackers.length > 0;
-  const [mode, setMode] = useState<'write' | 'tracker'>('write');
-  const [source, setSource] = useState<{
-    binding: TrackerBinding;
-    issue: TrackerIssue;
-  } | null>(null);
-  const [importing, setImporting] = useState(false);
-  // Scope is chosen per-intent (a project can hold features, bugfixes, etc.).
-  // The vocabulary MUST come from the project's workflow compiled scope grid — a
-  // free-typed scope would be rejected by buildExecutionPlan at run time.
-  const [scope, setScope] = useState<string>('');
-  const [scopeOptions, setScopeOptions] = useState<string[]>([]);
-
-  // Load the workflow's available scopes when the create dialog opens.
-  useEffect(() => {
-    if (!showCreate || scopeOptions.length > 0) return;
-    let cancelled = false;
-    workflowsService
-      .compiled(project.workflowId ?? 'aidlc-v2')
-      .then((compiled) => {
-        if (cancelled) return;
-        const scopes = Object.keys(compiled.scopeGrid ?? {});
-        setScopeOptions(scopes);
-        setScope((prev) => (prev && scopes.includes(prev) ? prev : (scopes[0] ?? '')));
-      })
-      .catch((e) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load workflow scopes');
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [showCreate, scopeOptions.length, project.workflowId]);
 
   const [usage, setUsage] = useState<ProjectMetrics | null>(null);
-  // Row-level delete (owner/admin, never mid-RUNNING — the API 409s anyway).
   const [confirmDeleteIntent, setConfirmDeleteIntent] = useState<Intent | null>(null);
   const [deletingIntent, setDeletingIntent] = useState(false);
   const canDeleteIntents = project.userRole === 'owner' || project.userRole === 'admin';
@@ -422,66 +360,6 @@ function IntentsView({
   // Show the card only once there's real usage to report.
   const hasUsage =
     !!usage && (Object.keys(usage.project.metrics).length > 0 || usage.project.cost.totalCost > 0);
-
-  const resetCreate = useCallback(() => {
-    setTitle('');
-    setPrompt('');
-    setSource(null);
-    setMode('write');
-    setError(null);
-  }, []);
-
-  // Pull the issue body (+ comments, best-effort) into an editable prompt and
-  // record the provenance. The user can edit everything before creating.
-  const handleSelectIssue = useCallback(
-    async (issue: TrackerIssue, binding: TrackerBinding) => {
-      setSource({ binding, issue });
-      setTitle(issue.title);
-      setImporting(true);
-      setError(null);
-      try {
-        let comments: Awaited<ReturnType<typeof trackersService.listComments>> = [];
-        try {
-          comments = await trackersService.listComments(projectId, binding.id, issue.resourceId);
-        } catch {
-          // Comments are a best-effort enrichment — fall back to the body alone.
-        }
-        setPrompt(buildSprintDescription(issue, comments));
-      } finally {
-        setImporting(false);
-      }
-    },
-    [projectId],
-  );
-
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!prompt.trim() || !scope) return;
-    setCreating(true);
-    setError(null);
-    try {
-      const intent = await intentsService.create(projectId, {
-        title: title.trim(),
-        prompt: prompt.trim(),
-        scope,
-        source: source
-          ? {
-              bindingId: source.binding.id,
-              resourceType: source.issue.resourceType,
-              resourceId: source.issue.resourceId,
-              resourceUrl: source.issue.resourceUrl,
-            }
-          : undefined,
-      });
-      setShowCreate(false);
-      resetCreate();
-      onNavigate(`/project/${projectId}/intent/${intent.id}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create intent');
-    } finally {
-      setCreating(false);
-    }
-  };
 
   const handleDeleteIntent = async () => {
     if (!confirmDeleteIntent) return;
@@ -575,7 +453,11 @@ function IntentsView({
                 </Badge>
               )}
             </div>
-            <Button onClick={() => setShowCreate(true)} size="sm" className="gap-1.5 h-7">
+            <Button
+              onClick={() => onNavigate(`/project/${projectId}/intent/new`)}
+              size="sm"
+              className="gap-1.5 h-7"
+            >
               <Plus className="h-3.5 w-3.5" />
               New Intent
             </Button>
@@ -658,156 +540,6 @@ function IntentsView({
           )}
         </CardContent>
       </Card>
-
-      <Dialog
-        open={showCreate}
-        onOpenChange={(open) => {
-          setShowCreate(open);
-          if (!open) resetCreate();
-        }}
-      >
-        <DialogContent className="sm:max-w-lg">
-          <form onSubmit={handleCreate}>
-            <DialogHeader>
-              <DialogTitle>New Intent</DialogTitle>
-              <DialogDescription>
-                Describe what you want the agents to build, or import it from a tracker issue.
-                You'll review and start it next.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-3 py-4">
-              {/* Source toggle — only offer "from issue" when the project has
-                  a tracker bound. */}
-              {hasTrackers && (
-                <div className="flex items-center gap-1 rounded-md border p-0.5 text-xs">
-                  <button
-                    type="button"
-                    onClick={() => setMode('write')}
-                    className={cn(
-                      'flex-1 rounded px-2 py-1 transition-colors',
-                      mode === 'write'
-                        ? 'bg-primary text-primary-foreground'
-                        : 'text-muted-foreground hover:text-foreground',
-                    )}
-                  >
-                    Write a prompt
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setMode('tracker')}
-                    className={cn(
-                      'flex-1 rounded px-2 py-1 transition-colors',
-                      mode === 'tracker'
-                        ? 'bg-primary text-primary-foreground'
-                        : 'text-muted-foreground hover:text-foreground',
-                    )}
-                  >
-                    From tracker issue
-                  </button>
-                </div>
-              )}
-              {mode === 'tracker' && (
-                <div>
-                  <Label>Tracker issue</Label>
-                  <div className="mt-1.5">
-                    <IntentSourcePicker
-                      project={project}
-                      selected={
-                        source
-                          ? { bindingId: source.binding.id, resourceId: source.issue.resourceId }
-                          : null
-                      }
-                      onSelect={handleSelectIssue}
-                    />
-                  </div>
-                </div>
-              )}
-              <div>
-                <Label htmlFor="intent-title">Title</Label>
-                <Input
-                  id="intent-title"
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  placeholder="e.g. Add user authentication"
-                  className="mt-1.5"
-                  autoFocus
-                />
-              </div>
-              <div>
-                <Label htmlFor="intent-prompt">
-                  Prompt
-                  {importing && (
-                    <span className="ml-2 text-xs text-muted-foreground">Importing issue…</span>
-                  )}
-                </Label>
-                <textarea
-                  id="intent-prompt"
-                  value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
-                  rows={5}
-                  required
-                  placeholder="Describe the intent in detail…"
-                  className="mt-1.5 w-full rounded-md border bg-background px-3 py-2 text-sm"
-                />
-                {source && (
-                  <p className="mt-1.5 text-xs text-muted-foreground">
-                    Imported from{' '}
-                    {source.issue.resourceUrl ? (
-                      <a
-                        href={source.issue.resourceUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="underline hover:no-underline"
-                      >
-                        {source.issue.resourceId}
-                      </a>
-                    ) : (
-                      source.issue.resourceId
-                    )}
-                    . Edit freely before creating.
-                  </p>
-                )}
-              </div>
-              <div>
-                <Label htmlFor="intent-scope">Scope</Label>
-                <Select value={scope} onValueChange={setScope} disabled={scopeOptions.length === 0}>
-                  <SelectTrigger id="intent-scope" className="mt-1.5">
-                    <SelectValue placeholder="Select a scope" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {scopeOptions.map((s) => (
-                      <SelectItem key={s} value={s}>
-                        {s}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="mt-1.5 text-xs text-muted-foreground">
-                  Decides which stages execute (e.g. feature vs. bugfix). Comes from the workflow's
-                  compiled scopes.
-                </p>
-              </div>
-              {error && <p className="text-xs text-destructive">{error}</p>}
-            </div>
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  setShowCreate(false);
-                  resetCreate();
-                }}
-                disabled={creating}
-              >
-                Cancel
-              </Button>
-              <Button type="submit" disabled={creating || !prompt.trim() || !scope}>
-                {creating ? 'Creating…' : 'Create Intent'}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
 
       {/* Intent delete confirmation */}
       <AlertDialog

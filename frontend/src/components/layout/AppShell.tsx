@@ -1,8 +1,9 @@
-import { Outlet, useParams } from 'react-router-dom';
+import { Outlet, useParams, useLocation } from 'react-router-dom';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { AppSidebar } from '@/components/layout/AppSidebar';
 import { AppHeader } from '@/components/layout/AppHeader';
 import { SprintPipelineBar } from '@/components/layout/SprintPipelineBar';
+import { IntentPipelineBar } from '@/components/layout/IntentPipelineBar';
 import { ActivityPanel } from '@/components/layout/ActivityPanel';
 import { IntentActivityPanel } from '@/components/layout/IntentActivityPanel';
 import { StatusBar } from '@/components/layout/StatusBar';
@@ -40,11 +41,15 @@ export function AppShell() {
     projectId: string;
     intentId: string;
   }>();
+  const location = useLocation();
   const inSprint = !!sprintId;
   // v2 intent pages get their own 3-tab activity panel (IntentActivityPanel),
   // mounted in the same slots as the sprint one and backed by IntentProvider.
   const inIntent = !!intentId;
   const onProjectPage = !!projectId && !inSprint && !inIntent;
+  const onIntentSubPage =
+    location.pathname.endsWith('/graph') || location.pathname.endsWith('/observability');
+  const showPipelineBar = inIntent && !onIntentSubPage;
 
   // Breakpoint (Tailwind lg): below it BOTH side panels render as NON-modal
   // overlays above the content instead of grid columns, so they stay usable
@@ -76,8 +81,8 @@ export function AppShell() {
   const sidebarPanel = useResizablePanel(SIDEBAR_SIZING);
 
   useEffect(() => {
-    setActivityPanelOpen(inSprint || inIntent);
-  }, [inSprint, inIntent]);
+    setActivityPanelOpen(inSprint || (inIntent && !onIntentSubPage));
+  }, [inSprint, inIntent, onIntentSubPage]);
 
   const showSidebar = !sidebarCollapsed;
   const showActivity = (inSprint || inIntent || onProjectPage) && activityPanelOpen;
@@ -143,6 +148,7 @@ export function AppShell() {
               {/* Main content */}
               <main className="h-full overflow-hidden min-w-0 flex flex-col">
                 {inSprint && <SprintPipelineBar />}
+                {showPipelineBar && <IntentPipelineBar />}
                 <div className="flex-1 overflow-y-auto min-w-0">
                   <Outlet />
                 </div>

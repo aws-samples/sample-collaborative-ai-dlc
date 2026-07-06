@@ -20,11 +20,6 @@ vi.mock('@/hooks/useIntentEvents', () => ({ useIntentEvents: () => {} }));
 vi.mock('@/contexts/AuthContext', () => ({
   useAuth: () => ({ user: { displayName: 'U', email: 'u@x' } }),
 }));
-// The knowledge graph has its own suite (KnowledgeGraph.test.tsx) and pulls the
-// discussions provider — stub it here so IntentView tests stay hermetic.
-vi.mock('@/components/intent/KnowledgeGraph', () => ({
-  KnowledgeGraph: () => <div data-testid="knowledge-graph" />,
-}));
 
 const get = vi.fn();
 const start = vi.fn();
@@ -38,11 +33,14 @@ vi.mock('@/services/intents', () => ({
   },
 }));
 vi.mock('@/services/workflows', () => ({
-  workflowsService: { compiled: (...a: unknown[]) => compiled(...a) },
+  workflowsService: {
+    compiled: (...a: unknown[]) => compiled(...a),
+    get: vi.fn().mockResolvedValue({ phases: [] }),
+  },
 }));
 
 import IntentView from './IntentView';
-import { IntentProvider } from '@/contexts/IntentContext';
+import { IntentProvider, clearIntentCache } from '@/contexts/IntentContext';
 
 const renderAt = () =>
   render(
@@ -95,6 +93,7 @@ const baseDetail = (over: Record<string, unknown> = {}) => ({
 
 describe('IntentView', () => {
   beforeEach(() => {
+    clearIntentCache();
     get.mockReset();
     start.mockReset();
     answerGate.mockReset();
@@ -110,64 +109,6 @@ describe('IntentView', () => {
     // silently discarded on Start — no update endpoint exists).
     expect(screen.queryByRole('textbox', { name: /prompt/i })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /start/i })).toBeInTheDocument();
-  });
-
-  it('running state renders the pipeline as the union of plan + STAGE rows', async () => {
-    // Plan has a + b; only stage-a has a STAGE row (SUCCEEDED). stage-b is plan-only → PENDING.
-    get.mockResolvedValue({
-      ...baseDetail({ status: 'RUNNING', currentStage: 'stage-b' }),
-      stages: [{ stageInstanceId: 'si-a', stageId: 'stage-a', state: 'SUCCEEDED', phase: 'p' }],
-    });
-    compiled.mockResolvedValue({
-      graph: {
-        nodes: [
-          { stageId: 'stage-a', phasePath: 'p', order: 0 },
-          { stageId: 'stage-b', phasePath: 'p', order: 1 },
-        ],
-        edges: [],
-      },
-    });
-    renderAt();
-    expect(await screen.findByText('stage-a')).toBeInTheDocument();
-    // `stage-b` also appears in the header (currentStage) — scope to the row.
-    expect(screen.getByRole('button', { name: /stage-b/ })).toBeInTheDocument();
-    expect(screen.getByText('Succeeded')).toBeInTheDocument();
-    expect(screen.getByText('Pending')).toBeInTheDocument(); // plan-only stage-b
-  });
-
-  it('filters plan stages to the intent scope (SKIP stages never render)', async () => {
-    get.mockResolvedValue(baseDetail({ status: 'RUNNING' }));
-    compiled.mockResolvedValue({
-      scopeGrid: { feature: { 'stage-a': 'EXECUTE', 'stage-b': 'SKIP' } },
-      graph: {
-        nodes: [
-          { stageId: 'stage-a', phasePath: 'p', order: 0 },
-          { stageId: 'stage-b', phasePath: 'p', order: 1 },
-        ],
-        edges: [],
-      },
-    });
-    renderAt();
-    expect(await screen.findByText('stage-a')).toBeInTheDocument();
-    expect(screen.queryByText('stage-b')).not.toBeInTheDocument();
-  });
-
-  it('stage drill-down shows dependencies derived from compiled edges', async () => {
-    get.mockResolvedValue(baseDetail({ status: 'RUNNING' }));
-    compiled.mockResolvedValue({
-      graph: {
-        nodes: [
-          { stageId: 'stage-a', phasePath: 'p', order: 0 },
-          { stageId: 'stage-b', phasePath: 'p', order: 1 },
-        ],
-        edges: [{ from: 'stage-a', to: 'stage-b', artifact: 'reqs', kind: 'data' }],
-      },
-    });
-    renderAt();
-    await screen.findByText('stage-b');
-    await userEvent.click(screen.getByRole('button', { name: /stage-b/ }));
-    expect(await screen.findByText('Depends on')).toBeInTheDocument();
-    expect(screen.getByText('reqs')).toBeInTheDocument();
   });
 
   it('renders one QuestionEditor per pending gate (D3 multi-gate)', async () => {
@@ -284,7 +225,7 @@ describe('IntentView', () => {
     });
     renderAt();
     expect(await screen.findByText('Work products')).toBeInTheDocument();
-    expect(screen.getByText('Artifacts (1)')).toBeInTheDocument();
+    expect(screen.getByText('Requirements')).toBeInTheDocument();
     expect(screen.getByText('Questions (1)')).toBeInTheDocument();
     expect(screen.getByText('Which provider?')).toBeInTheDocument();
     expect(screen.getByText('Q1: Cognito')).toBeInTheDocument();
@@ -296,6 +237,7 @@ describe('IntentView', () => {
 
 describe('IntentView — WP7 construction UI', () => {
   beforeEach(() => {
+    clearIntentCache();
     get.mockReset();
     start.mockReset();
     answerGate.mockReset();
@@ -369,93 +311,5 @@ describe('IntentView — WP7 construction UI', () => {
       'eg-skeleton-s1-run1',
       expect.objectContaining({ status: 'rejected' }),
     );
-  });
-
-  it('shows the Lanes view when units exist: waves, skeleton marker, states, stage strips', async () => {
-    get.mockResolvedValue({
-      ...baseDetail({ status: 'RUNNING' }),
-      stages: [
-        {
-          stageInstanceId: 'si-cg-auth',
-          stageId: 'cg',
-          state: 'SUCCEEDED',
-          unitSlug: 'auth',
-          phase: 'c',
-        },
-        {
-          stageInstanceId: 'si-cg-billing',
-          stageId: 'cg',
-          state: 'RUNNING',
-          unitSlug: 'billing',
-          phase: 'c',
-        },
-      ],
-      unitPlan: {
-        units: [
-          { slug: 'auth', dependsOn: [] },
-          { slug: 'billing', dependsOn: ['auth'] },
-        ],
-        batches: [['auth'], ['billing']],
-        unitCount: 2,
-        skipMatrix: {},
-        walkingSkeleton: 'auth',
-        autonomyMode: 'autonomous',
-        promotedAt: 'T',
-      },
-      units: [
-        {
-          slug: 'auth',
-          dependsOn: [],
-          state: 'MERGED',
-          batchIndex: 0,
-          branch: 'aidlc/i1--s1-unit-auth',
-          startedAt: 'T',
-          mergedAt: 'T2',
-          failureReason: null,
-          blockedOn: null,
-          updatedAt: 'T2',
-        },
-        {
-          slug: 'billing',
-          dependsOn: ['auth'],
-          state: 'RUNNING',
-          batchIndex: 1,
-          branch: 'aidlc/i1--s1-unit-billing',
-          startedAt: 'T2',
-          mergedAt: null,
-          failureReason: null,
-          blockedOn: null,
-          updatedAt: 'T3',
-        },
-      ],
-    });
-    compiled.mockResolvedValue({
-      scopeGrid: { feature: { cg: 'EXECUTE' } },
-      graph: { nodes: [{ stageId: 'cg', phasePath: 'c', order: 0 }], edges: [] },
-    });
-    renderAt();
-    // The Lanes toggle appears only when units exist.
-    const lanesToggle = await screen.findByRole('radio', { name: /unit lanes view/i });
-    await userEvent.click(lanesToggle);
-    // Waves + lane rows + skeleton marker + merged counter + autonomy mode.
-    expect(screen.getByText('Wave 1')).toBeInTheDocument();
-    expect(screen.getByText('Wave 2')).toBeInTheDocument();
-    expect(screen.getByText('auth')).toBeInTheDocument();
-    expect(screen.getByText('billing')).toBeInTheDocument();
-    expect(screen.getByText('skeleton')).toBeInTheDocument();
-    expect(screen.getByText(/1\/2 unit\(s\) merged/)).toBeInTheDocument();
-    expect(screen.getByText(/autonomous mode/)).toBeInTheDocument();
-    // Lane states + dependency chip + per-lane stage strip chips.
-    expect(screen.getByText('Merged')).toBeInTheDocument();
-    expect(screen.getByText('Running')).toBeInTheDocument();
-    expect(screen.getByText('← auth')).toBeInTheDocument();
-    expect(screen.getAllByTitle(/cg — /)).toHaveLength(2);
-  });
-
-  it('does NOT offer the Lanes view before units are promoted', async () => {
-    get.mockResolvedValue(baseDetail({ status: 'RUNNING' }));
-    renderAt();
-    await screen.findByText('Stages');
-    expect(screen.queryByRole('radio', { name: /unit lanes view/i })).not.toBeInTheDocument();
   });
 });
