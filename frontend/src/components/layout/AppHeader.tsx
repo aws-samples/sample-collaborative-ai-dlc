@@ -1,16 +1,13 @@
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import {
   PanelLeftClose,
+  PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
-  PanelLeftOpen,
   Search,
   ChevronRight,
   Settings,
   LogOut,
-  Activity,
-  Blocks,
-  Workflow,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
@@ -36,7 +33,6 @@ interface AppHeaderProps {
   onOpenCommand: () => void;
   sidebarCollapsed: boolean;
   activityPanelOpen: boolean;
-  inSprint?: boolean;
 }
 
 export function AppHeader({
@@ -147,49 +143,6 @@ export function AppHeader({
       {/* Right: theme + activity toggle + user */}
       <ThemeToggle />
 
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon"
-            className={`h-7 w-7 ${location.pathname.startsWith('/blocks') ? 'text-primary bg-primary/10' : ''}`}
-            onClick={() => navigate('/blocks')}
-          >
-            <Blocks className="h-4 w-4" />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>Building Blocks</TooltipContent>
-      </Tooltip>
-
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon"
-            className={`h-7 w-7 ${location.pathname.startsWith('/workflows') ? 'text-primary bg-primary/10' : ''}`}
-            onClick={() => navigate('/workflows')}
-          >
-            <Workflow className="h-4 w-4" />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>Workflows</TooltipContent>
-      </Tooltip>
-
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon"
-            className={`h-7 w-7 ${location.pathname === '/observability' ? 'text-primary bg-primary/10' : ''}`}
-            onClick={() => navigate('/observability')}
-          >
-            <Activity className="h-4 w-4" />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>Observability</TooltipContent>
-      </Tooltip>
-
-      {/* Activity panel toggle — sprint AND v2 intent routes host a panel. */}
       {(params.sprintId || params.intentId) && (
         <Tooltip>
           <TooltipTrigger asChild>

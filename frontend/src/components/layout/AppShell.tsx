@@ -115,7 +115,6 @@ export function AppShell() {
               onOpenCommand={() => setCommandOpen(true)}
               sidebarCollapsed={sidebarCollapsed}
               activityPanelOpen={activityPanelOpen}
-              inSprint={inSprint}
             />
 
             {/* Main content area (relative: hosts the small-screen overlays,

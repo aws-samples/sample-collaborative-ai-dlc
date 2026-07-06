@@ -1,61 +1,26 @@
 import { useState } from 'react';
-import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Plus, Trash2, AlertTriangle, ChevronRight } from 'lucide-react';
+import { AlertTriangle, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { Workflow, CompiledWorkflow, AutonomyLevel } from '@/services/workflows';
-import type { Block } from '@/services/blocks';
+import { AUTONOMY_STYLES } from '@/lib/autonomy';
+import type { Workflow, CompiledWorkflow } from '@/services/workflows';
 
 interface Props {
   workflow: Workflow;
-  scopeLib: Block[];
   compiled: CompiledWorkflow | null;
   readOnly: boolean;
-  onAddScope: (scopeId: string) => void;
-  onRemoveScope: (scopeId: string) => void;
-  // Toggle a single (stage, scope) cell EXECUTE↔SKIP.
-  onToggleCell: (stageId: string, scopeId: string, next: 'EXECUTE' | 'SKIP') => void;
 }
 
-const AUTONOMY: Record<AutonomyLevel, { dot: string; label: string }> = {
-  'self-halting': { dot: 'bg-emerald-500', label: 'self-halting' },
-  mixed: { dot: 'bg-amber-500', label: 'mixed' },
-  'human-gated': { dot: 'bg-rose-500', label: 'human-gated' },
-};
-
-export function WorkflowInsights({
-  workflow,
-  scopeLib,
-  compiled,
-  readOnly,
-  onAddScope,
-  onRemoveScope,
-  onToggleCell,
-}: Props) {
-  const scopeIds = workflow.scopeRefs.map((s) => s.scopeId);
-  const placedStageIds = workflow.placements.map((p) => p.stageId);
-  const refScopeIds = new Set(scopeIds);
-  const availableScopes = scopeLib.filter((s) => !refScopeIds.has(s.id));
-
-  // Cell state from the compiled grid (server-derived, SKIP by default).
-  const cell = (stageId: string, scopeId: string): 'EXECUTE' | 'SKIP' =>
-    compiled?.scopeGrid?.[scopeId]?.[stageId] === 'EXECUTE' ? 'EXECUTE' : 'SKIP';
-
+export function WorkflowInsights({ compiled }: Props) {
   const rollup = compiled?.autonomy.rollup;
   const graph = compiled?.graph;
   const [showTerminal, setShowTerminal] = useState(false);
 
-  // Split orphan-produces into deliberate end-of-flow outputs (registered
-  // terminal artifacts — quiet) and genuine unwired producers (warn). A null
-  // terminal flag (no registry) is treated as a warning, to be safe.
   const orphans = graph?.orphanProduces ?? [];
   const terminalOutputs = orphans.filter((o) => o.terminal === true);
   const unwiredProduces = orphans.filter((o) => o.terminal !== true);
   const unknownArtifacts = graph?.unknownArtifacts ?? [];
 
-  // The workflow is "clean" when there are no hard errors (cycles, dangling
-  // consumes, unknown/typo names) and no unwired producers. Terminal outputs
-  // alone are by design and do not count against a clean bill of health.
   const isClean =
     graph != null &&
     graph.acyclic &&
@@ -65,7 +30,6 @@ export function WorkflowInsights({
 
   return (
     <>
-      {/* Autonomy profile */}
       <Card>
         <CardHeader>
           <CardTitle className="text-sm">Autonomy profile</CardTitle>
@@ -74,15 +38,19 @@ export function WorkflowInsights({
           {rollup && rollup.total > 0 ? (
             <div className="flex items-center gap-4 text-sm">
               <span className="flex items-center gap-1.5">
-                <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
+                <span
+                  className={cn('h-2.5 w-2.5 rounded-full', AUTONOMY_STYLES['self-halting'].dot)}
+                />
                 {rollup.selfHalting} self-halting
               </span>
               <span className="flex items-center gap-1.5">
-                <span className="h-2.5 w-2.5 rounded-full bg-amber-500" />
+                <span className={cn('h-2.5 w-2.5 rounded-full', AUTONOMY_STYLES['mixed'].dot)} />
                 {rollup.mixed} mixed
               </span>
               <span className="flex items-center gap-1.5">
-                <span className="h-2.5 w-2.5 rounded-full bg-rose-500" />
+                <span
+                  className={cn('h-2.5 w-2.5 rounded-full', AUTONOMY_STYLES['human-gated'].dot)}
+                />
                 {rollup.humanGated} human-gated
               </span>
               <span className="text-muted-foreground ml-auto">
@@ -97,113 +65,6 @@ export function WorkflowInsights({
         </CardContent>
       </Card>
 
-      {/* Scope × stage matrix */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm">Scope × stage matrix</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <p className="text-xs text-muted-foreground">
-            Toggle EXECUTE/SKIP per stage per scope. Columns are the scopes available in this
-            workflow.
-          </p>
-          {placedStageIds.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Place stages to populate the matrix.</p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="text-sm border-collapse">
-                <thead>
-                  <tr>
-                    <th className="text-left font-medium p-2 sticky left-0 bg-background">Stage</th>
-                    <th className="p-2 text-center font-medium">
-                      <span className="text-muted-foreground/60">⬤</span> autonomy
-                    </th>
-                    {scopeIds.map((s) => (
-                      <th key={s} className="p-2 text-center font-medium whitespace-nowrap">
-                        {s}
-                        {!readOnly && (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-5 w-5 ml-1 align-middle"
-                            onClick={() => onRemoveScope(s)}
-                          >
-                            <Trash2 className="h-3 w-3 text-destructive" />
-                          </Button>
-                        )}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {placedStageIds.map((stageId) => {
-                    const level = compiled?.autonomy.perStage[stageId];
-                    return (
-                      <tr key={stageId} className="border-t">
-                        <td className="p-2 font-medium sticky left-0 bg-background">{stageId}</td>
-                        <td className="p-2 text-center">
-                          {level && (
-                            <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-                              <span className={cn('h-2 w-2 rounded-full', AUTONOMY[level].dot)} />
-                              {AUTONOMY[level].label}
-                            </span>
-                          )}
-                        </td>
-                        {scopeIds.map((scopeId) => {
-                          const state = cell(stageId, scopeId);
-                          return (
-                            <td key={scopeId} className="p-2 text-center">
-                              <button
-                                type="button"
-                                disabled={readOnly}
-                                onClick={() =>
-                                  onToggleCell(
-                                    stageId,
-                                    scopeId,
-                                    state === 'EXECUTE' ? 'SKIP' : 'EXECUTE',
-                                  )
-                                }
-                                className={cn(
-                                  'h-6 w-12 rounded text-[10px] font-medium transition-colors',
-                                  state === 'EXECUTE'
-                                    ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400'
-                                    : 'bg-muted text-muted-foreground',
-                                  !readOnly && 'hover:opacity-80',
-                                )}
-                              >
-                                {state === 'EXECUTE' ? 'EXEC' : 'SKIP'}
-                              </button>
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-          {!readOnly && availableScopes.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 pt-1">
-              <span className="text-xs text-muted-foreground">Add scope:</span>
-              {availableScopes.map((s) => (
-                <Button
-                  key={s.id}
-                  variant="outline"
-                  size="sm"
-                  className="h-7 gap-1 text-xs"
-                  onClick={() => onAddScope(s.id)}
-                >
-                  <Plus className="h-3 w-3" />
-                  {s.name}
-                </Button>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Validation */}
       {graph && (
         <Card>
           <CardHeader>
@@ -216,7 +77,6 @@ export function WorkflowInsights({
               </p>
             ) : (
               <ul className="space-y-1">
-                {/* Errors (rose): cycles, dangling consumes, unknown/typo names. */}
                 {!graph.acyclic && (
                   <li className="flex items-center gap-2 text-rose-600">
                     <AlertTriangle className="h-3.5 w-3.5" />
@@ -244,7 +104,6 @@ export function WorkflowInsights({
                   </li>
                 ))}
 
-                {/* Warnings (amber): genuine unwired producers only. */}
                 {unwiredProduces.map((o) => (
                   <li key={o.artifact} className="flex items-center gap-2 text-amber-600">
                     <AlertTriangle className="h-3.5 w-3.5" />
@@ -252,7 +111,6 @@ export function WorkflowInsights({
                   </li>
                 ))}
 
-                {/* A clean bill of health when only terminal outputs remain. */}
                 {isClean && (
                   <li className="flex items-center gap-2 text-emerald-700 dark:text-emerald-400">
                     <CheckIcon /> No cycles, no dangling consumes, no unwired producers.
@@ -261,7 +119,6 @@ export function WorkflowInsights({
               </ul>
             )}
 
-            {/* Terminal outputs: deliberate end-of-flow artifacts — collapsed. */}
             {terminalOutputs.length > 0 && (
               <div className="pt-1">
                 <button

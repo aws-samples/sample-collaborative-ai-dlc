@@ -5,6 +5,7 @@ import {
   type WorkflowSummary,
   type CreateWorkflowInput,
 } from '@/services/workflows';
+import { DEFAULT_PHASE_NODES } from './composer/defaultPhases';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -232,6 +233,7 @@ function CreateWorkflowDialog({ workflows, onClose, onCreated }: CreateProps) {
       const input: CreateWorkflowInput = { id, name, objective };
       if (basedOn) input.basedOn = basedOn;
       const created = await workflowsService.create(input);
+      await workflowsService.putPhases(created.id, DEFAULT_PHASE_NODES);
       onCreated(created.id);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to create workflow');
