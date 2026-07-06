@@ -1,21 +1,10 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useIntent } from '@/contexts/IntentContext';
 import { groupByPhase, derivePhaseState } from '@/lib/intentPhases';
-import { PHASE_CONFIGS } from '@/components/observability/phaseConfig';
+import { phaseColorAt } from '@/components/observability/phaseConfig';
 import { Progress } from '@/components/ui/progress';
 import { cn } from '@/lib/utils';
-
-function phaseColorAt(index: number) {
-  const cfg = PHASE_CONFIGS[index % PHASE_CONFIGS.length];
-  return {
-    headerBg: cfg.headerBg,
-    headerText: cfg.headerText,
-    blockBg: cfg.blockBg,
-    blockBorder: cfg.blockBorder,
-    mandatoryBg: cfg.mandatoryBg,
-    conditionalBg: cfg.conditionalBg,
-  };
-}
+import { Check, ChevronRight } from 'lucide-react';
 
 export function IntentPhaseDiagram() {
   const {
@@ -27,8 +16,6 @@ export function IntentPhaseDiagram() {
     phaseNameOf,
   } = useIntent();
 
-  // The plan (compiled) and the phase names (workflow) land after the intent
-  // DTO — rendering before both arrive flashes a partial phase list.
   const planReady = !!compiled && !!workflowPhases;
 
   const phases = useMemo(
@@ -38,6 +25,8 @@ export function IntentPhaseDiagram() {
         : [],
     [planReady, stageRows, initializationPhasePaths],
   );
+
+  const [expandedManual, setExpandedManual] = useState<Record<string, boolean>>({});
 
   if (!planReady) {
     return (
@@ -60,6 +49,7 @@ export function IntentPhaseDiagram() {
         const isActive = state === 'active';
         const palette = phaseColorAt(idx);
         const pct = group.total > 0 ? Math.round((group.done / group.total) * 100) : 0;
+        const isExpanded = expandedManual[group.phase] ?? isActive;
 
         return (
           <div
@@ -69,16 +59,39 @@ export function IntentPhaseDiagram() {
               palette.blockBorder,
               palette.blockBg,
               isActive && 'ring-2 ring-offset-1 ring-offset-background ring-agent-running/50',
-              !isActive && 'opacity-75',
+              !isActive && !isExpanded && 'opacity-70',
             )}
           >
-            {/* Header row — v1 PhaseBlock style */}
-            <div className={cn('flex items-center gap-2 px-3', isActive ? 'py-1.5' : 'py-1')}>
+            <button
+              type="button"
+              onClick={() => {
+                if (!isActive) {
+                  setExpandedManual((prev) => ({ ...prev, [group.phase]: !isExpanded }));
+                }
+              }}
+              className={cn(
+                'flex w-full items-center gap-2 px-3 text-left transition-colors',
+                isActive ? 'py-1.5 cursor-default' : 'py-1.5 hover:bg-muted/20 cursor-pointer',
+              )}
+            >
+              {!isActive && (
+                <ChevronRight
+                  className={cn(
+                    'h-3 w-3 shrink-0 text-muted-foreground transition-transform duration-200',
+                    isExpanded && 'rotate-90',
+                  )}
+                />
+              )}
               {state === 'done' && (
-                <span className="h-2 w-2 rounded-full bg-agent-success shrink-0" />
+                <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-agent-success/20">
+                  <Check className="h-2.5 w-2.5 text-agent-success" />
+                </span>
               )}
               {state === 'active' && (
-                <span className="h-2.5 w-2.5 rounded-full bg-agent-running animate-pulse shrink-0" />
+                <span className="relative flex h-3 w-3 shrink-0">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-agent-running opacity-75" />
+                  <span className="relative inline-flex h-3 w-3 rounded-full bg-agent-running" />
+                </span>
               )}
               {state === 'pending' && (
                 <span className="h-2 w-2 rounded-full bg-muted-foreground/40 shrink-0" />
@@ -87,7 +100,7 @@ export function IntentPhaseDiagram() {
                 className={cn(
                   'font-bold tracking-wider uppercase',
                   palette.headerText,
-                  isActive ? 'text-xs' : 'text-[10px]',
+                  isActive ? 'text-sm' : 'text-[10px]',
                 )}
               >
                 {phaseNameOf(group.phase)}
@@ -95,7 +108,7 @@ export function IntentPhaseDiagram() {
               <span
                 className={cn(
                   'ml-auto font-medium text-muted-foreground',
-                  isActive ? 'text-[10px]' : 'text-[9px]',
+                  isActive ? 'text-[11px]' : 'text-[10px]',
                 )}
               >
                 {group.done}/{group.total}
@@ -109,115 +122,117 @@ export function IntentPhaseDiagram() {
                   state === 'active' && '[&>div]:bg-agent-running',
                 )}
               />
-            </div>
+            </button>
 
-            {/* Stage chips — flex-wrap kanban */}
-            <div
-              className={cn(
-                'flex flex-wrap items-center gap-1',
-                isActive ? 'p-2.5' : 'px-2 py-1.5',
-              )}
-            >
-              {group.rows.map((row, rowIdx) => {
-                const chipState = row.state;
-                const isDone = chipState === 'SUCCEEDED';
-                const isSkipped = chipState === 'SKIPPED';
-                const isRunning = chipState === 'RUNNING';
-                const isWaiting = chipState === 'WAITING_FOR_HUMAN';
-                const isFailed = chipState === 'FAILED';
+            {isExpanded && (
+              <div
+                className={cn(
+                  'flex flex-wrap items-center gap-1',
+                  isActive ? 'p-2.5' : 'px-2 py-1.5',
+                )}
+              >
+                {group.rows.map((row, rowIdx) => {
+                  const chipState = row.state;
+                  const isDone = chipState === 'SUCCEEDED';
+                  const isSkipped = chipState === 'SKIPPED';
+                  const isRunning = chipState === 'RUNNING';
+                  const isWaiting = chipState === 'WAITING_FOR_HUMAN';
+                  const isFailed = chipState === 'FAILED';
 
-                return (
-                  <div
-                    key={`${row.stageId}-${row.stageInstanceId ?? rowIdx}`}
-                    className="flex items-center gap-1"
-                  >
-                    {rowIdx > 0 && isActive && (
-                      <span className="text-muted-foreground/30 text-[10px]">→</span>
-                    )}
+                  return (
                     <div
-                      className={cn(
-                        'relative flex flex-col items-center justify-center rounded-md border-2 text-center transition-all',
-                        isActive ? 'px-2.5 py-1.5 min-w-[90px]' : 'px-1.5 py-1 min-w-[70px]',
-                        isDone &&
-                          'bg-green-100 dark:bg-green-900/50 border-green-500 dark:border-green-500',
-                        isSkipped &&
-                          'opacity-30 grayscale border-dashed border-muted-foreground/40',
-                        isRunning &&
-                          'ring-2 ring-agent-running ring-offset-1 ring-offset-background border-agent-running/40',
-                        isWaiting &&
-                          'ring-2 ring-amber-400 ring-offset-1 ring-offset-background border-amber-400/40',
-                        isFailed && 'border-agent-error/60 bg-red-50 dark:bg-red-900/20',
-                        !isDone &&
-                          !isSkipped &&
-                          !isRunning &&
-                          !isWaiting &&
-                          !isFailed &&
-                          'opacity-40 border-muted-foreground/30',
-                        !isDone &&
-                          !isSkipped &&
-                          !isRunning &&
-                          !isWaiting &&
-                          !isFailed &&
-                          palette.conditionalBg.split(' ')[0],
-                      )}
+                      key={`${row.stageId}-${row.stageInstanceId ?? rowIdx}`}
+                      className="flex items-center gap-1"
                     >
-                      <span
+                      {rowIdx > 0 && isActive && (
+                        <span className="text-muted-foreground/30 text-[11px]">&rarr;</span>
+                      )}
+                      <div
                         className={cn(
-                          'font-semibold leading-tight',
-                          isActive ? 'text-[11px]' : 'text-[10px]',
-                          isDone
-                            ? 'text-green-800 dark:text-green-200'
-                            : isSkipped
-                              ? 'line-through text-muted-foreground'
-                              : isFailed
-                                ? 'text-agent-error'
-                                : 'text-foreground/80',
-                        )}
-                      >
-                        {row.stageId}
-                      </span>
-                      <span
-                        className={cn(
-                          'font-bold uppercase tracking-wider mt-0.5',
-                          isActive ? 'text-[9px]' : 'text-[8px]',
-                          isDone && 'text-green-600 dark:text-green-400',
-                          isSkipped && 'text-muted-foreground/50',
-                          isRunning && 'text-agent-running',
-                          isWaiting && 'text-amber-600 dark:text-amber-400',
-                          isFailed && 'text-agent-error',
+                          'relative flex flex-col items-center justify-center rounded-md border-2 text-center transition-all',
+                          isActive ? 'px-2.5 py-1.5 min-w-[104px]' : 'px-1.5 py-1 min-w-[82px]',
+                          isDone &&
+                            'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-400 dark:border-emerald-600',
+                          isSkipped &&
+                            'opacity-30 grayscale border-dashed border-muted-foreground/40',
+                          isRunning &&
+                            'ring-2 ring-agent-running ring-offset-1 ring-offset-background border-agent-running/50 bg-agent-running/5',
+                          isWaiting &&
+                            'ring-2 ring-amber-400 ring-offset-1 ring-offset-background border-amber-400/50 bg-amber-50 dark:bg-amber-950/30',
+                          isFailed &&
+                            'border-red-400 dark:border-red-600 bg-red-50 dark:bg-red-950/30',
                           !isDone &&
                             !isSkipped &&
                             !isRunning &&
                             !isWaiting &&
                             !isFailed &&
-                            'text-muted-foreground/50',
+                            'opacity-40 border-muted-foreground/30',
+                          !isDone &&
+                            !isSkipped &&
+                            !isRunning &&
+                            !isWaiting &&
+                            !isFailed &&
+                            palette.conditionalBg.split(' ')[0],
                         )}
                       >
-                        {isDone
-                          ? '✓ Done'
-                          : isSkipped
-                            ? '— Skipped'
-                            : isRunning
-                              ? 'Running'
-                              : isWaiting
-                                ? 'Waiting'
-                                : isFailed
-                                  ? 'Failed'
-                                  : 'Pending'}
-                      </span>
-                      {(isRunning || isWaiting) && (
                         <span
                           className={cn(
-                            'absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full animate-ping',
-                            isRunning ? 'bg-agent-running' : 'bg-amber-400',
+                            'font-semibold leading-tight',
+                            isActive ? 'text-xs' : 'text-[11px]',
+                            isDone
+                              ? 'text-emerald-800 dark:text-emerald-200'
+                              : isSkipped
+                                ? 'line-through text-muted-foreground'
+                                : isFailed
+                                  ? 'text-agent-error'
+                                  : 'text-foreground/80',
                           )}
-                        />
-                      )}
+                        >
+                          {row.stageId}
+                        </span>
+                        <span
+                          className={cn(
+                            'font-bold uppercase tracking-wider mt-0.5',
+                            isActive ? 'text-[10px]' : 'text-[9px]',
+                            isDone && 'text-emerald-600 dark:text-emerald-400',
+                            isSkipped && 'text-muted-foreground/50',
+                            isRunning && 'text-agent-running',
+                            isWaiting && 'text-amber-600 dark:text-amber-400',
+                            isFailed && 'text-agent-error',
+                            !isDone &&
+                              !isSkipped &&
+                              !isRunning &&
+                              !isWaiting &&
+                              !isFailed &&
+                              'text-muted-foreground/50',
+                          )}
+                        >
+                          {isDone
+                            ? '\u2713 Done'
+                            : isSkipped
+                              ? '\u2014 Skipped'
+                              : isRunning
+                                ? 'Running'
+                                : isWaiting
+                                  ? 'Waiting'
+                                  : isFailed
+                                    ? 'Failed'
+                                    : 'Pending'}
+                        </span>
+                        {(isRunning || isWaiting) && (
+                          <span
+                            className={cn(
+                              'absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full animate-ping',
+                              isRunning ? 'bg-agent-running' : 'bg-amber-400',
+                            )}
+                          />
+                        )}
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         );
       })}

@@ -125,7 +125,6 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
     <div className="space-y-3 rounded-b-md border border-t-0 bg-muted/20 px-3 py-3 text-sm">
       {/* Meta line */}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
-        {row.phase && <span>Phase {row.phase}</span>}
         {durations && (
           <span>
             {row.state === 'RUNNING'
