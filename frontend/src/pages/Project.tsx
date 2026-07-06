@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { useProjectCache, useProjectSprintsCache } from '@/hooks/useProjectsCache';
@@ -10,6 +10,13 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -32,6 +39,7 @@ import {
   Trash2,
   Settings,
   Archive,
+  ArrowUpDown,
 } from 'lucide-react';
 import { GitRepoLink } from '@/components/GitRepoLink';
 import { effectiveSprintStatus, isActiveStatus } from '@/lib/sprintStatus';
@@ -322,6 +330,18 @@ const INTENT_STATUS_ICON: Record<string, typeof Loader2> = {
   FAILED: XCircle,
 };
 
+type IntentSort = 'updated' | 'created' | 'title';
+const INTENT_SORT_KEY = 'aidlc.intentSort';
+
+function loadIntentSort(): IntentSort {
+  try {
+    const v = localStorage.getItem(INTENT_SORT_KEY);
+    return v === 'created' || v === 'title' ? v : 'updated';
+  } catch {
+    return 'updated';
+  }
+}
+
 function IntentsView({
   project,
   projectId,
@@ -338,7 +358,34 @@ function IntentsView({
   const [usage, setUsage] = useState<ProjectMetrics | null>(null);
   const [confirmDeleteIntent, setConfirmDeleteIntent] = useState<Intent | null>(null);
   const [deletingIntent, setDeletingIntent] = useState(false);
+  const [sortBy, setSortBy] = useState<IntentSort>(loadIntentSort);
   const canDeleteIntents = project.userRole === 'owner' || project.userRole === 'admin';
+
+  const changeSort = (value: IntentSort) => {
+    setSortBy(value);
+    try {
+      localStorage.setItem(INTENT_SORT_KEY, value);
+    } catch {
+      /* persistence is best-effort */
+    }
+  };
+
+  // The API returns intents grouped by status (DynamoDB GSI ordering), which
+  // reads as arbitrary — always re-sort client-side.
+  const sortedIntents = useMemo(() => {
+    const time = (t: string | null | undefined) => (t ? new Date(t).getTime() : 0);
+    return [...intents].toSorted((a, b) => {
+      switch (sortBy) {
+        case 'title':
+          return (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base' });
+        case 'created':
+          return time(b.createdAt) - time(a.createdAt);
+        case 'updated':
+        default:
+          return time(b.updatedAt ?? b.createdAt) - time(a.updatedAt ?? a.createdAt);
+      }
+    });
+  }, [intents, sortBy]);
 
   const refresh = useCallback(() => {
     intentsService
@@ -453,14 +500,29 @@ function IntentsView({
                 </Badge>
               )}
             </div>
-            <Button
-              onClick={() => onNavigate(`/project/${projectId}/intent/new`)}
-              size="sm"
-              className="gap-1.5 h-7"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              New Intent
-            </Button>
+            <div className="flex items-center gap-2">
+              {intents.length > 1 && (
+                <Select value={sortBy} onValueChange={(v) => changeSort(v as IntentSort)}>
+                  <SelectTrigger className="h-7 w-[160px] gap-1.5 text-xs">
+                    <ArrowUpDown className="h-3 w-3 text-muted-foreground shrink-0" />
+                    <SelectValue placeholder="Sort" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="updated">Last updated</SelectItem>
+                    <SelectItem value="created">Recently created</SelectItem>
+                    <SelectItem value="title">Title (A–Z)</SelectItem>
+                  </SelectContent>
+                </Select>
+              )}
+              <Button
+                onClick={() => onNavigate(`/project/${projectId}/intent/new`)}
+                size="sm"
+                className="gap-1.5 h-7"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                New Intent
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent className="flex-1 space-y-2 pt-0">
@@ -475,7 +537,7 @@ function IntentsView({
               </p>
             </div>
           ) : (
-            intents.map((it) => {
+            sortedIntents.map((it) => {
               const Icon = INTENT_STATUS_ICON[it.status];
               // A row is a div-with-role, not a <button>: the delete affordance
               // nested inside would otherwise be a button-in-button (invalid HTML).
@@ -502,11 +564,19 @@ function IntentsView({
                         {it.status}
                       </Badge>
                     </span>
-                    {it.currentStage && (
-                      <span className="text-[11px] text-muted-foreground">
-                        stage: {it.currentStage}
-                      </span>
-                    )}
+                    <span className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                      {it.currentStage && <span>stage: {it.currentStage}</span>}
+                      {it.createdAt && (
+                        <span className="text-muted-foreground/60">
+                          created {formatRelativeTime(it.createdAt)}
+                        </span>
+                      )}
+                      {it.updatedAt && it.updatedAt !== it.createdAt && (
+                        <span className="text-muted-foreground/60">
+                          updated {formatRelativeTime(it.updatedAt)}
+                        </span>
+                      )}
+                    </span>
                   </span>
                   {Icon && (
                     <Icon

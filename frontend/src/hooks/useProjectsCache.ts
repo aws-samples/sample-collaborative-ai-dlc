@@ -10,6 +10,9 @@ export interface ProjectWithSprint {
   project: Project;
   latestSprint: Sprint | null;
   latestIntent: Intent | null;
+  // Max updatedAt/completedAt/createdAt across ALL of the project's intents
+  // (latestIntent alone can be a stale WAITING intent — see pickIntent).
+  lastIntentActivityAt: string | null;
 }
 
 interface CacheEntry<T> {
@@ -70,6 +73,32 @@ function pickIntent(intents: Intent[]): Intent | null {
   });
 }
 
+// Best-known "last activity" instant for a project: the max of the project's
+// own timestamps and the latest intent/sprint activity we already fetch for
+// the dashboard. Returns null only when no timestamp is known at all.
+export function projectLastActivityAt(p: ProjectWithSprint): string | null {
+  const candidates = [
+    p.project.updatedAt,
+    p.project.createdAt,
+    p.lastIntentActivityAt,
+    p.latestSprint?.agentCompletedAt,
+    p.latestSprint?.agentStartedAt,
+    p.latestSprint?.createdAt,
+  ].filter((t): t is string => !!t);
+  if (candidates.length === 0) return null;
+  return candidates.reduce((max, t) => (new Date(t).getTime() > new Date(max).getTime() ? t : max));
+}
+
+function maxIntentActivity(intents: Intent[]): string | null {
+  let max: string | null = null;
+  for (const i of intents) {
+    for (const t of [i.updatedAt, i.completedAt, i.createdAt]) {
+      if (t && (!max || new Date(t).getTime() > new Date(max).getTime())) max = t;
+    }
+  }
+  return max;
+}
+
 async function fetchProjects(): Promise<ProjectWithSprint[]> {
   const projs = await projectsService.list();
   const results = await Promise.allSettled(
@@ -77,22 +106,42 @@ async function fetchProjects(): Promise<ProjectWithSprint[]> {
       if (project.kind === 'v2') {
         try {
           const intents = await intentsService.list(project.id);
-          return { project, latestSprint: null, latestIntent: pickIntent(intents) };
+          return {
+            project,
+            latestSprint: null,
+            latestIntent: pickIntent(intents),
+            lastIntentActivityAt: maxIntentActivity(intents),
+          };
         } catch {
-          return { project, latestSprint: null, latestIntent: null };
+          return { project, latestSprint: null, latestIntent: null, lastIntentActivityAt: null };
         }
       }
       const cached = sprintsCache.get(project.id);
       if (cached && !isStale(cached, SPRINTS_TTL)) {
-        return { project, latestSprint: latestOf(cached.data), latestIntent: null };
+        return {
+          project,
+          latestSprint: latestOf(cached.data),
+          latestIntent: null,
+          lastIntentActivityAt: null,
+        };
       }
       try {
         const sprints = await sprintsService.list(project.id);
         sprintsCache.set(project.id, { data: sprints, fetchedAt: Date.now() });
         notifySprintListeners(project.id);
-        return { project, latestSprint: latestOf(sprints), latestIntent: null };
+        return {
+          project,
+          latestSprint: latestOf(sprints),
+          latestIntent: null,
+          lastIntentActivityAt: null,
+        };
       } catch {
-        return { project, latestSprint: cached ? latestOf(cached.data) : null, latestIntent: null };
+        return {
+          project,
+          latestSprint: cached ? latestOf(cached.data) : null,
+          latestIntent: null,
+          lastIntentActivityAt: null,
+        };
       }
     }),
   );

@@ -853,6 +853,8 @@ export const handler = async (event) => {
             cliModels: parseCliModels(getVal(v, 'cli_models')),
             issueIntegrationEnabled: getVal(v, 'issue_integration_enabled') === 'true',
             createdAt: getVal(v, 'created_at') || new Date().toISOString(),
+            // Legacy projects created before updated_at existed fall back to created_at.
+            updatedAt: getVal(v, 'updated_at') || getVal(v, 'created_at') || null,
             userRole: role || 'member',
             trackers: trackerMaps.map(mapBinding),
             repos,
@@ -901,6 +903,8 @@ export const handler = async (event) => {
               cliModels: parseCliModels(getVal(v, 'cli_models')),
               issueIntegrationEnabled: getVal(v, 'issue_integration_enabled') === 'true',
               createdAt: getVal(v, 'created_at') || new Date().toISOString(),
+              // Legacy projects created before updated_at existed fall back to created_at.
+              updatedAt: getVal(v, 'updated_at') || getVal(v, 'created_at') || null,
               userRole: role || 'member',
               trackers: trackerMaps.map(mapBinding),
               repos,
@@ -1010,6 +1014,7 @@ export const handler = async (event) => {
           .property('kind', kind)
           .property('created_by', userId)
           .property('created_at', createdAt)
+          .property('updated_at', createdAt)
           .property('workflow_id', v2Settings.workflowId)
           .property(
             'workflow_version',
@@ -1081,6 +1086,7 @@ export const handler = async (event) => {
           cliModels,
           issueIntegrationEnabled,
           createdAt,
+          updatedAt: createdAt,
           repos: reposOut,
           ...v2Settings,
         });
@@ -1231,9 +1237,18 @@ export const handler = async (event) => {
             )
             .next();
         }
+        // Stamp updated_at on every successful settings change so lists can
+        // sort by recency.
+        const updatedAt = new Date().toISOString();
+        await g
+          .V()
+          .has('Project', 'id', projectId)
+          .property(cardinality.single, 'updated_at', updatedAt)
+          .next();
         return response(200, {
           id: projectId,
           ...data,
+          updatedAt,
           ...(normalizedCliModels !== undefined ? { cliModels: normalizedCliModels } : {}),
           ...(normalizedParkReleaseSeconds !== undefined
             ? { parkReleaseSeconds: normalizedParkReleaseSeconds }

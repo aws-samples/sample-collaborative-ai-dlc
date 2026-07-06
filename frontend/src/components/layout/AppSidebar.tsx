@@ -1,7 +1,8 @@
 import { useNavigate, useLocation, useParams } from 'react-router-dom';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   Activity,
+  ArrowUpDown,
   CheckCircle2,
   LayoutDashboard,
   ListFilter,
@@ -16,7 +17,13 @@ import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { CreateProjectModal } from '@/components/CreateProjectModal';
-import { useProjectsCache } from '@/hooks/useProjectsCache';
+import { useProjectsCache, projectLastActivityAt } from '@/hooks/useProjectsCache';
+import {
+  useProjectSort,
+  projectComparator,
+  PROJECT_SORT_LABELS,
+  type ProjectSort,
+} from '@/hooks/useProjectSort';
 import {
   effectiveSprintStatus,
   effectiveIntentStatus,
@@ -90,6 +97,27 @@ export function AppSidebar() {
   const params = useParams<{ projectId?: string }>();
   const { projects, loading, refresh } = useProjectsCache();
   const { isPlatformAdmin } = useAuth();
+  // Same sort selection as the Dashboard grid/list (shared store) — the
+  // sidebar mirrors whatever ordering the user picked there, and vice versa.
+  const [projectSort, setProjectSort] = useProjectSort();
+
+  const sortedProjects = useMemo(() => {
+    const cmp = projectComparator(projectSort);
+    return projects.toSorted((a, b) =>
+      cmp(
+        {
+          name: a.project.name,
+          createdAt: a.project.createdAt,
+          lastActivityAt: projectLastActivityAt(a),
+        },
+        {
+          name: b.project.name,
+          createdAt: b.project.createdAt,
+          lastActivityAt: projectLastActivityAt(b),
+        },
+      ),
+    );
+  }, [projects, projectSort]);
 
   const projectId = params.projectId ?? null;
 
@@ -124,7 +152,7 @@ export function AppSidebar() {
     onClick: () => void;
   }
 
-  const filteredIterations: IterationItem[] = projects.flatMap(
+  const filteredIterations: IterationItem[] = sortedProjects.flatMap(
     ({ project, latestSprint, latestIntent }) => {
       if (project.kind === 'v2') {
         if (!latestIntent) return [];
@@ -171,6 +199,31 @@ export function AppSidebar() {
           <LayoutDashboard className="h-4 w-4 shrink-0" />
           <span className="flex-1 truncate">Projects</span>
         </button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              title={`Sort: ${PROJECT_SORT_LABELS[projectSort]}`}
+              aria-label="Sort projects"
+              className="h-6 w-6 shrink-0 flex items-center justify-center rounded text-sidebar-foreground/40 hover:text-sidebar-foreground/70 hover:bg-sidebar-accent/50 transition-colors"
+            >
+              <ArrowUpDown className="h-3.5 w-3.5" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-44">
+            <DropdownMenuRadioGroup
+              value={projectSort}
+              onValueChange={(v) => setProjectSort(v as ProjectSort)}
+            >
+              <DropdownMenuRadioItem value="activity">
+                {PROJECT_SORT_LABELS.activity}
+              </DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="created">
+                {PROJECT_SORT_LABELS.created}
+              </DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="name">{PROJECT_SORT_LABELS.name}</DropdownMenuRadioItem>
+            </DropdownMenuRadioGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <button
           onClick={() => setShowCreateProject(true)}
           title="New project"
@@ -190,7 +243,7 @@ export function AppSidebar() {
               ))}
             </div>
           )}
-          {projects.map(({ project, latestSprint }) => {
+          {sortedProjects.map(({ project, latestSprint }) => {
             const status = effectiveSprintStatus(latestSprint);
             const isActive = status === 'running' || status === 'waiting';
             const dotColor = STATUS_DOT[status];

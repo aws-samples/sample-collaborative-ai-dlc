@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { projectsService } from '@/services/projects';
-import { useProjectsCache } from '@/hooks/useProjectsCache';
+import { useProjectsCache, projectLastActivityAt } from '@/hooks/useProjectsCache';
 import { CreateProjectModal } from '@/components/CreateProjectModal';
 import { GitRepoLink } from '@/components/GitRepoLink';
 import type { GitProvider } from '@/services/gitProvider';
@@ -10,6 +10,13 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -20,8 +27,36 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Plus, Trash2, FolderGit2, Search, LayoutGrid, List, RefreshCw } from 'lucide-react';
+import {
+  Plus,
+  Trash2,
+  FolderGit2,
+  Search,
+  LayoutGrid,
+  List,
+  RefreshCw,
+  ArrowUpDown,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
+import {
+  useProjectSort,
+  projectComparator,
+  PROJECT_SORT_LABELS,
+  type ProjectSort,
+} from '@/hooks/useProjectSort';
+
+function formatRelativeTime(dateStr: string | null | undefined): string {
+  if (!dateStr) return '—';
+  const ms = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(ms / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(dateStr).toLocaleDateString();
+}
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -33,8 +68,20 @@ export default function Dashboard() {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  // Shared with the sidebar project list (useProjectSort store) — changing the
+  // sort here re-orders both views.
+  const [sortBy, changeSort] = useProjectSort();
 
-  const projects = useMemo(() => projectsWithSprints.map((p) => p.project), [projectsWithSprints]);
+  // Enrich each project with its derived "last activity" (own updatedAt +
+  // latest intent/sprint activity) so both display and sorting can use it.
+  const projects = useMemo(
+    () =>
+      projectsWithSprints.map((p) => ({
+        ...p.project,
+        lastActivityAt: projectLastActivityAt(p),
+      })),
+    [projectsWithSprints],
+  );
 
   useEffect(() => {
     if (searchParams.get('reopenCreateProject') === '1') {
@@ -61,11 +108,13 @@ export default function Dashboard() {
     }
   };
 
-  const filteredProjects = projects.filter(
-    (p) =>
-      p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      p.gitRepo?.toLowerCase().includes(searchQuery.toLowerCase()),
-  );
+  const filteredProjects = useMemo(() => {
+    const q = searchQuery.toLowerCase();
+    const filtered = projects.filter(
+      (p) => p.name.toLowerCase().includes(q) || p.gitRepo?.toLowerCase().includes(q),
+    );
+    return filtered.toSorted(projectComparator(sortBy));
+  }, [projects, searchQuery, sortBy]);
 
   const roleColors: Record<string, string> = {
     owner: 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20',
@@ -120,6 +169,17 @@ export default function Dashboard() {
               className="pl-9 h-9"
             />
           </div>
+          <Select value={sortBy} onValueChange={(v) => changeSort(v as ProjectSort)}>
+            <SelectTrigger className="h-9 w-[180px] gap-1.5">
+              <ArrowUpDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+              <SelectValue placeholder="Sort" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="activity">{PROJECT_SORT_LABELS.activity}</SelectItem>
+              <SelectItem value="created">{PROJECT_SORT_LABELS.created}</SelectItem>
+              <SelectItem value="name">{PROJECT_SORT_LABELS.name}</SelectItem>
+            </SelectContent>
+          </Select>
           <div className="flex items-center border rounded-md">
             <Button
               variant={viewMode === 'grid' ? 'secondary' : 'ghost'}
@@ -255,8 +315,9 @@ export default function Dashboard() {
                     </div>
                   )}
 
-                  <div className="text-[11px] text-muted-foreground/60">
-                    Created {new Date(project.createdAt).toLocaleDateString()}
+                  <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground/60">
+                    <span>Created {new Date(project.createdAt).toLocaleDateString()}</span>
+                    <span>Active {formatRelativeTime(project.lastActivityAt)}</span>
                   </div>
                 </CardContent>
               </Card>
@@ -294,8 +355,11 @@ export default function Dashboard() {
                       {project.userRole}
                     </Badge>
                   )}
+                  <span className="text-[11px] text-muted-foreground/60 shrink-0 hidden sm:inline">
+                    Active {formatRelativeTime(project.lastActivityAt)}
+                  </span>
                   <span className="text-[11px] text-muted-foreground/60 shrink-0">
-                    {new Date(project.createdAt).toLocaleDateString()}
+                    Created {new Date(project.createdAt).toLocaleDateString()}
                   </span>
                   {project.userRole === 'owner' && (
                     <Button

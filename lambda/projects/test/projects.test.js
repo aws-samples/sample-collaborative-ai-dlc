@@ -123,6 +123,7 @@ describe('POST /projects', () => {
       issueIntegrationEnabled: false,
       repos: [],
       createdAt: NOW.toISOString(),
+      updatedAt: NOW.toISOString(),
       ...V2_DEFAULTS,
     });
   });
@@ -164,6 +165,7 @@ describe('POST /projects', () => {
         },
       ],
       createdAt: NOW.toISOString(),
+      updatedAt: NOW.toISOString(),
       ...V2_DEFAULTS,
     });
 

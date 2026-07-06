@@ -52,6 +52,10 @@ export interface Project {
   cliModels?: CliModels;
   issueIntegrationEnabled?: boolean;
   createdAt: string;
+  // Stamped by the backend on every settings PUT; legacy projects fall back to
+  // createdAt server-side. Note: intent activity does NOT bump this — use
+  // projectLastActivityAt (useProjectsCache) for an activity-based recency.
+  updatedAt?: string | null;
   userRole?: ProjectRole;
   trackers: TrackerBinding[];
   repos?: ProjectRepo[];
