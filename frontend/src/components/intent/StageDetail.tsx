@@ -26,6 +26,8 @@ import { UsageMetrics } from '@/components/intent/UsageMetrics';
 // RUNNING stage cannot be interrupted — the API 409s; the button hides.
 const REWINDABLE_STATUSES = new Set(['SUCCEEDED', 'FAILED', 'WAITING', 'CANCELLED']);
 
+const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+
 // Drill-down for one stage, shared by the list (inline expansion) and the
 // graph (below-canvas panel): timing, dependencies (derived from the compiled
 // edges — the DTO has no dependencyStageIds), sensors, metrics, artifacts
@@ -103,14 +105,61 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
     [stageEdges, row.stageId],
   );
 
-  const existingByName = useMemo(() => {
-    const map = new Map<string, { id: string }>();
+  const existingByNorm = useMemo(() => {
+    const map = new Map<string, { id: string; originalName: string }>();
     for (const a of detail?.artifacts ?? []) {
       if (a.supersededAt || !a.artifactType) continue;
-      map.set(a.artifactType, { id: a.id });
+      map.set(norm(a.artifactType), { id: a.id, originalName: a.artifactType });
     }
     return map;
   }, [detail]);
+
+  const groupedDeps = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const e of dependsOn) {
+      if (!map.has(e.from)) map.set(e.from, []);
+      if (e.kind === 'data' && e.artifact) {
+        map.get(e.from)!.push(e.artifact);
+      }
+    }
+    return map;
+  }, [dependsOn]);
+
+  const producesResolved = useMemo(() => {
+    const stageArtifacts = row.stageInstanceId
+      ? (artifactsByStage.get(row.stageInstanceId) ?? [])
+      : [];
+    const seen = new Set<string>();
+    const items: Array<{
+      label: string;
+      exists: { id: string } | undefined;
+    }> = [];
+
+    for (const declared of produces) {
+      const key = norm(declared);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const match =
+        existingByNorm.get(key) ??
+        (() => {
+          const found = stageArtifacts.find(
+            (a) => !a.supersededAt && a.artifactType && norm(a.artifactType) === key,
+          );
+          return found ? { id: found.id, originalName: found.artifactType! } : undefined;
+        })();
+      items.push({ label: declared, exists: match ? { id: match.id } : undefined });
+    }
+
+    for (const a of stageArtifacts) {
+      if (a.supersededAt) continue;
+      const key = norm(a.artifactType ?? a.title ?? '');
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      items.push({ label: a.artifactType ?? a.title ?? 'artifact', exists: { id: a.id } });
+    }
+
+    return items;
+  }, [produces, existingByNorm, artifactsByStage, row.stageInstanceId]);
 
   const instanceId = row.stageInstanceId;
   const sensors = instanceId ? (sensorsByStage.get(instanceId) ?? []) : [];
@@ -200,108 +249,89 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
       )}
 
       {/* Wiring */}
-      {(dependsOn.length > 0 || produces.length > 0) && (
+      {(groupedDeps.size > 0 || producesResolved.length > 0) && (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          {dependsOn.length > 0 && (
+          {groupedDeps.size > 0 && (
             <div className="space-y-1.5">
               <div className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
                 <ArrowDownLeft className="h-3 w-3" />
                 Depends on
               </div>
-              <div className="flex flex-wrap gap-1">
-                {dependsOn.map((e, i) => {
-                  const artifactName = e.kind === 'data' && e.artifact ? e.artifact : null;
-                  const existing = artifactName ? existingByName.get(artifactName) : undefined;
-                  if (artifactName) {
-                    return (
-                      <div key={`${e.from}-${i}`} className="flex flex-col gap-0.5">
-                        {existing ? (
-                          <button
-                            type="button"
-                            onClick={() => openArtifactPreview(existing.id)}
-                            title="Open in preview"
-                            className={cn(
-                              'inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] font-medium',
-                              'border-emerald-500/40 bg-emerald-500/5 text-foreground hover:bg-emerald-500/10',
-                            )}
-                          >
-                            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                            {artifactName}
-                          </button>
-                        ) : (
-                          <span
-                            className="inline-flex cursor-default items-center gap-1 rounded border border-dashed px-1.5 py-0.5 text-[11px] text-muted-foreground"
-                            aria-disabled="true"
-                          >
-                            <span className="h-1.5 w-1.5 rounded-full border border-current" />
-                            {artifactName}
-                          </span>
-                        )}
+              <div className="flex flex-col gap-1.5 items-start">
+                {[...groupedDeps.entries()].map(([stageFrom, artifactNames]) => (
+                  <div key={stageFrom} className="flex flex-col gap-0.5">
+                    {artifactNames.map((artifactName) => {
+                      const existing = existingByNorm.get(norm(artifactName));
+                      return existing ? (
                         <button
+                          key={artifactName}
                           type="button"
-                          onClick={() => setSelectedStageId(e.from)}
-                          className="text-[9px] text-muted-foreground hover:text-foreground hover:underline"
+                          onClick={() => openArtifactPreview(existing.id)}
+                          title="Open in preview"
+                          className={cn(
+                            'inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] font-medium',
+                            'border-emerald-500/40 bg-emerald-500/5 text-foreground hover:bg-emerald-500/10',
+                          )}
                         >
-                          ← {e.from}
+                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                          {artifactName}
                         </button>
-                      </div>
-                    );
-                  }
-                  return (
+                      ) : (
+                        <span
+                          key={artifactName}
+                          className="inline-flex cursor-default items-center gap-1 rounded border border-dashed px-1.5 py-0.5 text-[11px] text-muted-foreground"
+                          aria-disabled="true"
+                        >
+                          <span className="h-1.5 w-1.5 rounded-full border border-current" />
+                          {artifactName}
+                        </span>
+                      );
+                    })}
                     <button
-                      key={`${e.from}-${i}`}
                       type="button"
-                      onClick={() => setSelectedStageId(e.from)}
-                      title={e.kind}
-                      className={cn(
-                        'rounded border px-1.5 py-0.5 text-[11px] font-medium hover:bg-muted',
-                        e.kind !== 'data' && 'border-dashed',
-                      )}
+                      onClick={() => setSelectedStageId(stageFrom)}
+                      className="text-[9px] text-muted-foreground hover:text-foreground hover:underline"
                     >
-                      {e.from}
+                      ← {stageFrom}
                     </button>
-                  );
-                })}
+                  </div>
+                ))}
               </div>
             </div>
           )}
-          {produces.length > 0 && (
+          {producesResolved.length > 0 && (
             <div className="space-y-1.5">
               <div className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
                 <ArrowUpRight className="h-3 w-3" />
                 Produces
               </div>
-              <div className="flex flex-wrap gap-1">
-                {produces.map((a) => {
-                  const existing = existingByName.get(a);
-                  if (existing) {
-                    return (
-                      <button
-                        key={a}
-                        type="button"
-                        onClick={() => openArtifactPreview(existing.id)}
-                        title="Open in preview"
-                        className={cn(
-                          'inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] font-medium',
-                          'border-emerald-500/40 bg-emerald-500/5 text-foreground hover:bg-emerald-500/10',
-                        )}
-                      >
-                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                        {a}
-                      </button>
-                    );
-                  }
-                  return (
+              <div className="flex flex-col gap-1.5 items-start">
+                {producesResolved.map((item) =>
+                  item.exists ? (
+                    <button
+                      key={item.label}
+                      type="button"
+                      onClick={() => openArtifactPreview(item.exists!.id)}
+                      title="Open in preview"
+                      className={cn(
+                        'inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] font-medium',
+                        'border-emerald-500/40 bg-emerald-500/5 text-foreground hover:bg-emerald-500/10',
+                      )}
+                    >
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                      {item.label}
+                    </button>
+                  ) : (
                     <span
-                      key={a}
+                      key={item.label}
                       className="inline-flex cursor-default items-center gap-1 rounded border border-dashed px-1.5 py-0.5 text-[11px] text-muted-foreground"
                       aria-disabled="true"
                     >
                       <span className="h-1.5 w-1.5 rounded-full border border-current" />
-                      {a}
+                      {item.label}
                     </span>
-                  );
-                })}
+                  ),
+                )}
               </div>
             </div>
           )}
