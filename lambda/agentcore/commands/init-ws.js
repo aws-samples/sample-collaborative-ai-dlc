@@ -73,6 +73,7 @@ export const initWs = async (
       workspaceDir,
     });
   } catch (e) {
+    console.error('[init-ws] checkout_failed:', e?.message, e?.stack);
     return { ok: false, reason: 'checkout_failed', detail: e.message };
   }
   // checkoutRepo degrades a FAILED clone to `git init` (cloned:false). That
