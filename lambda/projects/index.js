@@ -7,6 +7,8 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
+import { LambdaClient } from '@aws-sdk/client-lambda';
+import { BedrockAgentCoreClient } from '@aws-sdk/client-bedrock-agentcore';
 import { buildResponse } from '../shared/response.js';
 import { requirePlatformAdmin } from '../shared/authz.js';
 import { runTrackerMigration } from '../shared/tracker-migration.js';
@@ -20,10 +22,18 @@ import {
   fetchMembershipRole,
 } from '../shared/trackers.js';
 import { normalizeCliModels, parseCliModels } from '../shared/cli-models.js';
+import processStorePkg from '../shared/v2-process-store.js';
+import intentDeletionPkg from '../shared/intent-deletion.js';
+
+const { createProcessStore } = processStorePkg;
+const { deleteIntentCascade } = intentDeletionPkg;
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
 const secrets = new SecretsManagerClient({});
+const lambdaClient = new LambdaClient({});
+const agentcore = new BedrockAgentCoreClient({});
+const store = createProcessStore({ ddb });
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -1274,19 +1284,83 @@ export const handler = async (event) => {
           .hasNext();
         if (!canDelete) return response(403, { error: 'Only project owners can delete projects' });
 
-        // Drop associated Repository vertices first. drop() on an empty
-        // traversal is a no-op, so a rejection here is a real error — let it
-        // propagate to the handler-level catch instead of being swallowed.
-        await g
-          .V()
-          .has('Project', 'id', projectId)
-          .out('HAS_REPO')
-          .hasLabel('Repository')
-          .drop()
-          .next();
+        // Full cascade. A project owns many intents; each intent owns an entire
+        // EXEC#<id> DynamoDB partition (META, stages, events, gates, METRIC#,
+        // outputs, sensors, steering, units), intent-scoped Yjs realtime docs,
+        // and a Neptune subgraph. Dropping only the Project vertex (the old
+        // behavior) orphaned ALL of that — a permanent leak since the process
+        // table has no TTL. So we delete every child intent with the SAME
+        // hardened, intent_id-guarded cascade the intents lambda uses
+        // (force:true — a RUNNING intent is retired + its session stopped, then
+        // deleted; project delete is an owner-level teardown, not a per-intent
+        // guard). Ordering mirrors the intent cascade: child data first, the
+        // Project vertex LAST, so a partial failure leaves the project listed
+        // and the delete is simply retryable.
+        {
+          const actor = userEmail || userId;
+          const execs = await store.listProjectExecutions({ projectId, limit: 1000 });
+          const failures = [];
+          for (const execMeta of execs) {
+            const intentId = execMeta.intentId ?? execMeta.executionId;
+            try {
+              await deleteIntentCascade({
+                g,
+                store,
+                ddb,
+                agentcore,
+                lambdaClient,
+                intentId,
+                meta: execMeta,
+                yjsTable: process.env.YJS_DOCUMENTS_TABLE,
+                agentcoreRuntimeArn: process.env.AGENTCORE_RUNTIME_ARN || '',
+                actor,
+                force: true,
+              });
+            } catch (err) {
+              console.error(`Project delete: intent ${intentId} cascade failed:`, err.message);
+              failures.push(intentId);
+            }
+          }
+          // If any intent failed to purge, stop BEFORE dropping the project
+          // vertex so the project (and its remaining intents) stay listed and
+          // the whole delete can be re-run.
+          if (failures.length) {
+            return response(500, {
+              error: `Failed to delete ${failures.length} of ${execs.length} intent(s); project not removed. Retry the delete.`,
+              intents: failures,
+            });
+          }
 
-        await g.V().has('Project', 'id', projectId).drop().next();
-        return response(204, {});
+          // Project-scoped Neptune vertices the per-intent cascade deliberately
+          // spares (they are cross-intent by design): the team knowledge corpus
+          // and learning-rule guardrails anchored on the Project
+          // (graph-writer.js HAS_KNOWLEDGE / HAS_LEARNING).
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .out('HAS_KNOWLEDGE', 'HAS_LEARNING')
+            .drop()
+            .next();
+
+          // Associated Repository vertices. drop() on an empty traversal is a
+          // no-op, so a rejection here is a real error — let it propagate to the
+          // handler-level catch instead of being swallowed.
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .out('HAS_REPO')
+            .hasLabel('Repository')
+            .drop()
+            .next();
+
+          // The Project vertex itself LAST (its HAS_MEMBER / HAS_TRACKER edges
+          // drop with it).
+          await g.V().has('Project', 'id', projectId).drop().next();
+          console.log(
+            `Project ${projectId} deleted by ${actor} (${execs.length} intent(s) purged)`,
+          );
+          return response(204, {});
+        }
 
       default:
         return response(405, { error: 'Method not allowed' });

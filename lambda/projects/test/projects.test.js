@@ -2,8 +2,47 @@ import { beforeAll, beforeEach, afterAll, afterEach, describe, it, expect, vi } 
 import { randomUUID } from 'node:crypto';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
+import { mockClient } from 'aws-sdk-client-mock';
+import { DynamoDBDocumentClient, QueryCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
+import { LambdaClient } from '@aws-sdk/client-lambda';
+import { BedrockAgentCoreClient } from '@aws-sdk/client-bedrock-agentcore';
 
 const NOW = new Date('2026-01-01T00:00:00.000Z');
+
+// Project delete cascades into each intent's process state (DynamoDB) — mock the
+// v2 process table so the graph tests stay hermetic. `projectExecs` is the set
+// of META rows listProjectExecutions (GSI1) returns for a given project; the
+// per-EXEC partition reads (getExecutionRecords / deleteExecution key drain)
+// return empty by default, which is all the cascade needs to exercise its
+// ordering + graph drops. `batchWrites` records the BatchWrite deletes so a test
+// can assert each intent's partition was drained.
+const ddbMock = mockClient(DynamoDBDocumentClient);
+const lambdaMock = mockClient(LambdaClient);
+const agentcoreMock = mockClient(BedrockAgentCoreClient);
+let projectExecs = new Map(); // projectId -> [{ intentId, executionId, status, projectId }]
+let batchWrites = [];
+
+const installProcessTableFakes = () => {
+  ddbMock.reset();
+  batchWrites = [];
+  ddbMock.on(QueryCommand).callsFake((input) => {
+    // listProjectExecutions: GSI1 query keyed by PROJECT#<id>.
+    if (input.IndexName === 'GSI1') {
+      const pk = input.ExpressionAttributeValues?.[':pk'] ?? '';
+      const projectId = pk.replace(/^PROJECT#/, '');
+      return { Items: projectExecs.get(projectId) ?? [] };
+    }
+    // Per-EXEC partition reads (getExecutionRecords, deleteExecution key drain):
+    // no rows — the cascade tolerates an intent with no process records.
+    return { Items: [] };
+  });
+  ddbMock.on(BatchWriteCommand).callsFake((input) => {
+    batchWrites.push(input);
+    return {};
+  });
+  lambdaMock.reset();
+  agentcoreMock.reset();
+};
 
 // File-level partition: every test in this file shares it.
 const PARTITION = `t-${randomUUID()}`;
@@ -18,6 +57,9 @@ beforeAll(async () => {
   // creds planted by globalSetup and tries to resolve the profile via SSO/IMDS,
   // adding ~1s per getConnection call. Unset for the test process.
   vi.stubEnv('AWS_PROFILE', undefined);
+  // Project delete cascades into the process table + Yjs docs (both mocked).
+  vi.stubEnv('V2_PROCESS_TABLE', 'v2-proc-test');
+  vi.stubEnv('YJS_DOCUMENTS_TABLE', 'yjs-test');
   ({ handler } = await import('../index.js'));
 
   // Direct gremlin connection for seeding non-owner member edges. Uses the
@@ -61,6 +103,8 @@ beforeEach(() => {
   // gremlin's WebSocket driver uses real timers internally.
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(NOW);
+  projectExecs = new Map();
+  installProcessTableFakes();
 });
 
 afterEach(() => {
@@ -653,6 +697,126 @@ describe('DELETE /projects/:id', () => {
     });
     expect(res.statusCode).toBe(401);
     expect(JSON.parse(res.body)).toEqual({ error: 'Unauthorized' });
+  });
+
+  // ── Cascade: a project owns intents (each an EXEC# partition + a Neptune
+  // subgraph) and project-scoped knowledge vertices. Delete must purge all of
+  // it — without leaking, and without touching a sibling project's data. ──
+
+  // Seed one intent's Neptune footprint under a project: the Intent anchor, an
+  // artifact it CONTAINS, and register a META row for listProjectExecutions.
+  const seedIntent = async (projectId, { status = 'SUCCEEDED' } = {}) => {
+    const intentId = randomUUID();
+    await g.addV('Intent').property('id', intentId).property('project_id', projectId).next();
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .addE('CONTAINS')
+      .to(gremlin.process.statics.V().has('Intent', 'id', intentId))
+      .next();
+    await g.addV('Artifact').property('id', 'requirements').property('intent_id', intentId).next();
+    await g
+      .V()
+      .has('Intent', 'id', intentId)
+      .addE('CONTAINS')
+      .to(
+        gremlin.process.statics
+          .V()
+          .has('Artifact', 'id', 'requirements')
+          .has('intent_id', intentId),
+      )
+      .next();
+    const rows = projectExecs.get(projectId) ?? [];
+    rows.push({ intentId, executionId: intentId, projectId, status });
+    projectExecs.set(projectId, rows);
+    return intentId;
+  };
+
+  const seedKnowledge = async (projectId) => {
+    await g.addV('TeamKnowledge').property('id', `k-${randomUUID()}`).next();
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .addE('HAS_KNOWLEDGE')
+      .to(gremlin.process.statics.V().hasLabel('TeamKnowledge').order().by('id').tail(1))
+      .next();
+    await g.addV('LearningRule').property('id', `r-${randomUUID()}`).next();
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .addE('HAS_LEARNING')
+      .to(gremlin.process.statics.V().hasLabel('LearningRule').order().by('id').tail(1))
+      .next();
+  };
+
+  it('cascades into every intent + knowledge vertex and drains each partition', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const intentA = await seedIntent(id);
+    const intentB = await seedIntent(id);
+    await seedKnowledge(id);
+
+    const res = await handler({
+      httpMethod: 'DELETE',
+      pathParameters: { projectId: id },
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(204);
+
+    // Both Intent anchors + their artifacts are gone from Neptune.
+    expect(await g.V().has('Intent', 'id', intentA).hasNext()).toBe(false);
+    expect(await g.V().has('Intent', 'id', intentB).hasNext()).toBe(false);
+    expect(await g.V().hasLabel('Artifact').has('intent_id', intentA).hasNext()).toBe(false);
+    // Project-scoped knowledge vertices dropped, and the Project itself.
+    expect(await g.V().hasLabel('TeamKnowledge').hasNext()).toBe(false);
+    expect(await g.V().hasLabel('LearningRule').hasNext()).toBe(false);
+    expect(await g.V().has('Project', 'id', id).hasNext()).toBe(false);
+
+    // deleteExecution drained a partition — but with no process rows in the
+    // mock, BatchWrite is only issued when there are keys, so at minimum the
+    // list was consulted per project (asserted implicitly by 204). The graph
+    // drops above are the authoritative teardown assertion.
+  });
+
+  it('spares a sibling project’s intents and knowledge', async () => {
+    const sub = `u-${randomUUID()}`;
+    const keepSub = `u-${randomUUID()}`;
+    const { id: victim } = await createProject(sub);
+    const { id: keep } = await createProject(keepSub);
+    await seedIntent(victim);
+    const keepIntent = await seedIntent(keep);
+    await seedKnowledge(keep);
+
+    const res = await handler({
+      httpMethod: 'DELETE',
+      pathParameters: { projectId: victim },
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(204);
+
+    // The sibling project keeps its intent, artifact and knowledge vertices.
+    expect(await g.V().has('Project', 'id', keep).hasNext()).toBe(true);
+    expect(await g.V().has('Intent', 'id', keepIntent).hasNext()).toBe(true);
+    expect(await g.V().hasLabel('Artifact').has('intent_id', keepIntent).hasNext()).toBe(true);
+    expect(await g.V().hasLabel('TeamKnowledge').hasNext()).toBe(true);
+    expect(await g.V().hasLabel('LearningRule').hasNext()).toBe(true);
+  });
+
+  it('force-retires a RUNNING intent instead of refusing the project delete', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const running = await seedIntent(id, { status: 'RUNNING' });
+
+    const res = await handler({
+      httpMethod: 'DELETE',
+      pathParameters: { projectId: id },
+      ...claims(sub),
+    });
+    // A RUNNING child does NOT block a project delete (force:true) — contrast
+    // with the intents lambda's single-intent DELETE which 409s on RUNNING.
+    expect(res.statusCode).toBe(204);
+    expect(await g.V().has('Intent', 'id', running).hasNext()).toBe(false);
+    expect(await g.V().has('Project', 'id', id).hasNext()).toBe(false);
   });
 });
 

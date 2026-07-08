@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
 import {
   LambdaClient,
   InvokeCommand,
@@ -18,6 +18,7 @@ import {
 } from '@aws-sdk/client-bedrock-agentcore';
 import authzPkg from '../shared/authz.js';
 import pkg from '../shared/v2-process-store.js';
+import intentDeletionPkg from '../shared/intent-deletion.js';
 import { buildResponse } from '../shared/response.js';
 import { fetchMembershipRole, projectTrackersFoldStep, mapBinding } from '../shared/trackers.js';
 import { signRealtimeToken } from '../shared/realtime-token.js';
@@ -30,6 +31,7 @@ import { fetchKnowledgeGraph } from './knowledge-graph.js';
 import { buildIntentAudit } from './audit.js';
 
 const { createProcessStore } = pkg;
+const { deleteIntentCascade, IntentRunningError } = intentDeletionPkg;
 const { parseCliModels, mergeCliModels } = cliModelsPkg;
 const { loadWorkflowScopes, loadExecutionPlan } = workflowPlanPkg;
 const { stageInstanceId: planStageInstanceId } = executionPlanPkg;
@@ -874,94 +876,34 @@ export const handler = async (event) => {
       if (auth.role !== 'owner' && auth.role !== 'admin') {
         return response(403, { error: 'Only project owners and admins can delete intents' });
       }
-      if (meta.status === 'RUNNING') {
-        return response(409, {
-          error:
-            'Intent is RUNNING, cannot delete — wait for it to park or finish, or cancel it first',
-        });
-      }
-
-      // Collect the derived Yjs document ids BEFORE their sources are deleted:
-      // gate editors (intent-sq-<id>-<humanTaskId>, from HUMAN# rows),
-      // discussion threads (intent-discussion-<id>-<discussionId>, from the
-      // Neptune Discussion vertices) and the presence doc.
-      const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
-      const discussionIds = await g
-        .V()
-        .has('Intent', 'id', intentId)
-        .out('HAS_DISCUSSION')
-        .values('id')
-        .toList()
-        .catch(() => []);
-      const yjsDocIds = [
-        `intent-presence-${intentId}`,
-        ...(records.humanTasks ?? []).map((h) => `intent-sq-${intentId}-${h.humanTaskId}`),
-        ...discussionIds.map((d) => `intent-discussion-${intentId}-${d}`),
-      ];
-
-      // Retire anything that could still wake up (same mechanics as cancel).
+      // The two-pass, intent_id-guarded cascade (Yjs → Neptune → DynamoDB) lives
+      // in shared/intent-deletion so the projects lambda reuses it verbatim on a
+      // project delete. force:false → a RUNNING run is refused (IntentRunningError
+      // → 409) instead of deleted out from under its live orchestrator.
       const responder = getResponder(event);
-      if (!['DRAFT', 'SUCCEEDED', 'CANCELLED'].includes(meta.status)) {
-        await retireParkedRun(intentId, `deleted by ${responder.displayName || responder.sub}`);
+      try {
+        await deleteIntentCascade({
+          g,
+          store,
+          ddb,
+          agentcore,
+          lambdaClient,
+          intentId,
+          meta,
+          yjsTable: process.env.YJS_DOCUMENTS_TABLE,
+          agentcoreRuntimeArn: AGENTCORE_RUNTIME_ARN(),
+          actor: responder.displayName || responder.sub,
+          force: false,
+        });
+      } catch (err) {
+        if (err instanceof IntentRunningError) {
+          return response(409, {
+            error:
+              'Intent is RUNNING, cannot delete — wait for it to park or finish, or cancel it first',
+          });
+        }
+        throw err;
       }
-      // Stop any live session so nothing writes into the deleted partition.
-      await stopRuntimeSessions(intentId);
-
-      // Yjs docs — best-effort: they are unreachable once the intent is gone
-      // (doc ids are derived from the intent id), so a failed delete here only
-      // leaves harmless orphans and must not block the real deletion.
-      const yjsTable = process.env.YJS_DOCUMENTS_TABLE;
-      if (yjsTable) {
-        await Promise.all(
-          yjsDocIds.map(async (documentId) => {
-            try {
-              await ddb.send(new DeleteCommand({ TableName: yjsTable, Key: { documentId } }));
-            } catch (err) {
-              console.error(`Yjs doc delete failed (${documentId}):`, err.message);
-            }
-          }),
-        );
-      }
-
-      // Neptune cascade, in TWO passes because drop() consumes eagerly — a
-      // grandchild reached THROUGH a vertex that the same traversal also drops
-      // can become unreachable mid-drop (its edge is already gone).
-      //
-      // Pass 1 — the derived layer: Section / typed items hanging off this
-      // intent's artifacts (HAS_SECTION / HAS_ITEM). Without this they
-      // orphan-leaked on every delete — the field incident. intent_id-guarded
-      // so a legacy shared vertex is never dropped for a sibling that owns it.
-      await g
-        .V()
-        .has('Intent', 'id', intentId)
-        .out('CONTAINS')
-        .has('intent_id', intentId)
-        .hasLabel('Artifact')
-        .out('HAS_SECTION', 'HAS_ITEM')
-        .has('intent_id', intentId)
-        .drop()
-        .next();
-
-      // Pass 2 — the anchor + its direct children (enumerated together in one
-      // union, the proven pattern): CONTAINS → Artifact | Question | Steering |
-      // UnitOfWork (intent_id-guarded), the discussion threads and their
-      // messages, and the Intent itself. Project-scoped TeamKnowledge /
-      // LearningRule vertices are cross-intent by design and stay. Edges drop
-      // with their vertices. A DRAFT intent has no anchor — matches nothing.
-      await g
-        .V()
-        .has('Intent', 'id', intentId)
-        .union(
-          __.out('CONTAINS').has('intent_id', intentId),
-          __.out('HAS_DISCUSSION').union(__.out('HAS_MESSAGE'), __.identity()),
-          __.identity(),
-        )
-        .drop()
-        .next();
-
-      // DynamoDB partition last — META goes with it, so until this succeeds
-      // the intent still lists and the whole delete can simply be re-run.
-      await store.deleteExecution(intentId);
 
       console.log(
         `Intent ${intentId} deleted by ${responder.sub} (project ${projectId}, was ${meta.status})`,

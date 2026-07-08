@@ -36,6 +36,8 @@ import {
   List,
   RefreshCw,
   ArrowUpDown,
+  AlertTriangle,
+  Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
@@ -79,6 +81,11 @@ export default function Dashboard() {
       projectsWithSprints.map((p) => ({
         ...p.project,
         lastActivityAt: projectLastActivityAt(p),
+        // pickIntent surfaces a RUNNING (else WAITING) intent first, so this
+        // flags a project with live/parked work — the delete dialog warns that
+        // deleting will cancel it (the backend force-retires it).
+        hasActiveWork:
+          p.latestIntent?.status === 'RUNNING' || p.latestIntent?.status === 'WAITING',
       })),
     [projectsWithSprints],
   );
@@ -115,6 +122,13 @@ export default function Dashboard() {
     );
     return filtered.toSorted(projectComparator(sortBy));
   }, [projects, searchQuery, sortBy]);
+
+  // Whether the project pending delete confirmation has live/parked work, so the
+  // dialog can warn that deleting will cancel it.
+  const confirmDeleteHasActiveWork = useMemo(
+    () => !!confirmDelete && !!projects.find((p) => p.id === confirmDelete)?.hasActiveWork,
+    [confirmDelete, projects],
+  );
 
   const roleColors: Record<string, string> = {
     owner: 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20',
@@ -259,11 +273,21 @@ export default function Dashboard() {
         ) : viewMode === 'grid' ? (
           /* Grid view */
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {filteredProjects.map((project) => (
+            {filteredProjects.map((project) => {
+              const isDeleting = deleting === project.id;
+              return (
               <Card
                 key={project.id}
-                className="group cursor-pointer transition-all hover:shadow-md hover:border-foreground/20"
-                onClick={() => navigate(`/project/${project.id}`)}
+                aria-busy={isDeleting}
+                className={cn(
+                  'group transition-all',
+                  isDeleting
+                    ? 'pointer-events-none opacity-50'
+                    : 'cursor-pointer hover:shadow-md hover:border-foreground/20',
+                )}
+                onClick={() => {
+                  if (!isDeleting) navigate(`/project/${project.id}`);
+                }}
               >
                 <CardContent className="p-5">
                   <div className="flex items-start justify-between mb-3">
@@ -290,18 +314,22 @@ export default function Dashboard() {
                         </div>
                       </div>
                     </div>
-                    {project.userRole === 'owner' && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 opacity-0 group-hover:opacity-100 shrink-0"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setConfirmDelete(project.id);
-                        }}
-                      >
-                        <Trash2 className="h-3.5 w-3.5 text-destructive" />
-                      </Button>
+                    {isDeleting ? (
+                      <Loader2 className="h-4 w-4 shrink-0 animate-spin text-destructive" />
+                    ) : (
+                      project.userRole === 'owner' && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 opacity-0 group-hover:opacity-100 shrink-0"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setConfirmDelete(project.id);
+                          }}
+                        >
+                          <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                        </Button>
+                      )
                     )}
                   </div>
 
@@ -321,16 +349,27 @@ export default function Dashboard() {
                   </div>
                 </CardContent>
               </Card>
-            ))}
+              );
+            })}
           </div>
         ) : (
           /* List view */
           <div className="space-y-1">
-            {filteredProjects.map((project) => (
+            {filteredProjects.map((project) => {
+              const isDeleting = deleting === project.id;
+              return (
               <Card
                 key={project.id}
-                className="group cursor-pointer transition-all hover:bg-accent/50"
-                onClick={() => navigate(`/project/${project.id}`)}
+                aria-busy={isDeleting}
+                className={cn(
+                  'group transition-all',
+                  isDeleting
+                    ? 'pointer-events-none opacity-50'
+                    : 'cursor-pointer hover:bg-accent/50',
+                )}
+                onClick={() => {
+                  if (!isDeleting) navigate(`/project/${project.id}`);
+                }}
               >
                 <CardContent className="flex items-center gap-4 p-3 px-4">
                   <div className="h-8 w-8 rounded-md bg-primary/10 flex items-center justify-center shrink-0">
@@ -361,22 +400,27 @@ export default function Dashboard() {
                   <span className="text-[11px] text-muted-foreground/60 shrink-0">
                     Created {new Date(project.createdAt).toLocaleDateString()}
                   </span>
-                  {project.userRole === 'owner' && (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 opacity-0 group-hover:opacity-100 shrink-0"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setConfirmDelete(project.id);
-                      }}
-                    >
-                      <Trash2 className="h-3.5 w-3.5 text-destructive" />
-                    </Button>
+                  {isDeleting ? (
+                    <Loader2 className="h-4 w-4 shrink-0 animate-spin text-destructive" />
+                  ) : (
+                    project.userRole === 'owner' && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 opacity-0 group-hover:opacity-100 shrink-0"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setConfirmDelete(project.id);
+                        }}
+                      >
+                        <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                      </Button>
+                    )
                   )}
                 </CardContent>
               </Card>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -391,15 +435,25 @@ export default function Dashboard() {
       )}
 
       {/* Delete confirmation */}
-      <AlertDialog open={!!confirmDelete} onOpenChange={() => setConfirmDelete(null)}>
+      <AlertDialog open={!!confirmDelete} onOpenChange={() => (deleting ? null : setConfirmDelete(null))}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Project</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete this project? This action cannot be undone. All work
-              and artifacts will be permanently removed.
+              Are you sure you want to delete this project? This action cannot be undone. Every
+              intent — with all of its artifacts, questions, discussions, run history and usage
+              metrics — will be permanently removed.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {confirmDeleteHasActiveWork && (
+            <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+              <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+              <span>
+                This project has running or waiting work. Deleting it will cancel that work before
+                removing everything.
+              </span>
+            </div>
+          )}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={!!deleting}>Cancel</AlertDialogCancel>
             <AlertDialogAction
@@ -407,7 +461,14 @@ export default function Dashboard() {
               disabled={!!deleting}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              {deleting ? 'Deleting...' : 'Delete Project'}
+              {deleting ? (
+                <span className="flex items-center gap-1.5">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Deleting…
+                </span>
+              ) : (
+                'Delete Project'
+              )}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

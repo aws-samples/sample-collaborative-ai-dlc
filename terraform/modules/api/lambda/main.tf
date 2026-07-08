@@ -453,6 +453,61 @@ resource "aws_iam_role_policy" "neptune_artifacts" {
   })
 }
 
+# Project delete cascades into every child intent, reusing the intents lambda's
+# hardened deletion (shared/intent-deletion.js). That needs, beyond Neptune:
+# drain each EXEC#<id> partition in the v2 process table (incl. METRIC# rows),
+# remove intent-scoped Yjs docs, stop live AgentCore sessions, and wake parked
+# durable callbacks with a cancel sentinel. Scoped to the projects lambda's role
+# (shared with the read-only tasks lambda — an unused over-grant there, but the
+# cascade only fires from the projects DELETE path).
+resource "aws_iam_role_policy" "projects_intent_cascade" {
+  name = "projects-intent-cascade"
+  role = aws_iam_role.neptune_artifacts.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        # v2 process table: enumerate a project's executions (GSI1) then drain
+        # each EXEC#<id> partition (Query + BatchWrite delete).
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:Query",
+          "dynamodb:DeleteItem",
+          "dynamodb:BatchWriteItem",
+        ]
+        Resource = [
+          var.v2_executions_table_arn,
+          "${var.v2_executions_table_arn}/index/*",
+        ]
+      },
+      {
+        # Yjs documents: remove the intent-scoped realtime docs (gate editors,
+        # discussion threads, presence) for each deleted intent.
+        Effect   = "Allow"
+        Action   = ["dynamodb:DeleteItem"]
+        Resource = [var.yjs_documents_table_arn]
+      },
+      {
+        # Wake a parked run's suspended durable callback with a cancel sentinel
+        # so nothing resumes into a deleted partition.
+        Effect = "Allow"
+        Action = ["lambda:SendDurableExecutionCallbackSuccess"]
+        Resource = [
+          "arn:${local.partition}:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}",
+          "arn:${local.partition}:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}:*",
+        ]
+      },
+      {
+        # Stop a deleted intent's live AgentCore session(s).
+        Effect   = "Allow"
+        Action   = ["bedrock-agentcore:StopRuntimeSession"]
+        Resource = var.agentcore_runtime_arn != "" ? [var.agentcore_runtime_arn, "${var.agentcore_runtime_arn}/*"] : ["*"]
+      },
+    ]
+  })
+}
+
 # -----------------------------------------------------------------------------
 # Role 7: blocks (2 Lambdas — building-blocks CRUD + seed-blocks)
 # DynamoDB RW on the blocks table + its GSI1, plus S3 RW scoped to the blocks/
@@ -527,7 +582,12 @@ module "projects_lambda" {
   function_name = "${var.project_name}-projects-${var.environment}"
   handler       = "index.handler"
   runtime       = "nodejs24.x"
-  timeout       = 30
+  # Project delete cascades sequentially through every child intent (each a
+  # multi-store purge), so give it more headroom than the 30s CRUD default. API
+  # Gateway still caps the synchronous response at 29s, but the cascade drops the
+  # Project vertex LAST, so a client-side timeout on a big project leaves it
+  # listed and the delete simply re-runs to completion.
+  timeout = 300
 
   source_path = [
     {
@@ -559,6 +619,12 @@ module "projects_lambda" {
     GITHUB_AUTH_MODE_PARAM             = var.github_auth_mode_param_name
     GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
     GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
+    # Project delete fans out into the intents' process state: the v2 process
+    # table (drained per intent, incl. metrics), the intent-scoped Yjs docs, and
+    # the AgentCore runtime (stop live sessions of deleted intents).
+    V2_PROCESS_TABLE      = var.v2_executions_table_name
+    YJS_DOCUMENTS_TABLE   = var.yjs_documents_table_name
+    AGENTCORE_RUNTIME_ARN = var.agentcore_runtime_arn
   }
 }
 
