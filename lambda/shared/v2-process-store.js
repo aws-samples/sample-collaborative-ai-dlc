@@ -958,6 +958,19 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return Item ?? null;
   };
 
+  // The append-only audit trail (SK prefix EVENT#, time-ordered). The PR
+  // fan-in reads this to decide whether repo work happened during the run
+  // (v2.git.pushed / v2.git.push_failed) before trusting a "no changes"
+  // comparison. Paginated — a dropped page could hide a push failure.
+  const listEvents = async (executionId) => {
+    const items = await queryAll(ddb, {
+      TableName: table(),
+      KeyConditionExpression: 'pk = :pk AND begins_with(sk, :p)',
+      ExpressionAttributeValues: { ':pk': executionPk(executionId), ':p': 'EVENT#' },
+    });
+    return items.toSorted(bySk);
+  };
+
   // All unit lane rows for an execution. SK prefix 'UNIT#' (exact — a bare
   // 'UNIT' would also match UNITPLAN). Paginated: the orchestrator's lane
   // scheduler reads this — a dropped page would make lanes invisible.
@@ -1212,6 +1225,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     updateStageState,
     resumeStageRow,
     appendEvent,
+    listEvents,
     createHumanTask,
     getHumanTask,
     setGateCallbackId,

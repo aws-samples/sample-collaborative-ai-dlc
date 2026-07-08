@@ -531,11 +531,17 @@ const createPullRequest = async (ctx, repoId, { branch, baseBranch, title, body 
     }
     if (res.status === 422 || res.status === 400) {
       const text = (errorText || '').toLowerCase();
-      if (
-        text.includes('source branch') ||
-        text.includes('no commits') ||
-        text.includes('does not exist')
-      ) {
+      // A missing SOURCE branch means the intent branch was never pushed —
+      // that is a FAILURE (work may be stranded on the session workspace),
+      // never a benign "no changes" skip (the 2026-07 conflation).
+      if (text.includes('source branch') && text.includes('exist')) {
+        return {
+          failed: true,
+          reason: 'head_missing',
+          error: `Source branch "${branch}" does not exist on the remote — the intent branch was never pushed`,
+        };
+      }
+      if (text.includes('no commits')) {
         return { skipped: true, reason: 'no_changes' };
       }
       // Target branch does not exist (e.g. a caller-supplied base was mistyped
@@ -565,6 +571,39 @@ const createPullRequest = async (ctx, repoId, { branch, baseBranch, title, body 
   await cleanupConstructionTaskBranches(ctx, repoId, branch);
   const mr = await res.json();
   return { prUrl: mr.web_url, prNumber: mr.iid };
+};
+
+// Compare base...head — the MR fan-in's pre-check that the intent branch
+// exists and carries commits (see the GitHub provider's compareBranches for
+// the incident rationale). GitLab's compare returns the commits `to` has that
+// `from` lacks; an empty list means identical-or-behind — either way there is
+// nothing to merge, which is all the caller needs to know.
+// Returns { status: 'ahead'|'identical'|'missing_head'|'missing_base'|'unknown', aheadBy?, base }.
+const compareBranches = async (ctx, repoId, { base, head }) => {
+  const project = encodeProject(repoId);
+  const resolvedBase = base || (await getDefaultBranch(ctx, repoId)) || 'main';
+  const res = await glFetch(
+    ctx,
+    `${API_BASE}/projects/${project}/repository/compare?from=${encodeURIComponent(
+      resolvedBase,
+    )}&to=${encodeURIComponent(head)}`,
+  );
+  if (res.status === 404) {
+    // Which side is missing? Probe the head branch.
+    const headRes = await glFetch(
+      ctx,
+      `${API_BASE}/projects/${project}/repository/branches/${encodeURIComponent(head)}`,
+    );
+    if (headRes.status === 404) return { status: 'missing_head', base: resolvedBase };
+    if (headRes.ok) return { status: 'missing_base', base: resolvedBase };
+    return { status: 'unknown', base: resolvedBase, detail: `head probe ${headRes.status}` };
+  }
+  if (!res.ok) {
+    return { status: 'unknown', base: resolvedBase, detail: `compare ${res.status}` };
+  }
+  const data = await res.json();
+  const aheadBy = Array.isArray(data.commits) ? data.commits.length : 0;
+  return { status: aheadBy > 0 ? 'ahead' : 'identical', aheadBy, base: resolvedBase };
 };
 
 // Get the live state of an MR ('open' | 'closed' | 'merged' | null).
@@ -641,6 +680,7 @@ export {
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
   createPullRequest,
+  compareBranches,
   getPullRequestState,
   mergeBranch,
   constructionBranchPrefix,
@@ -666,6 +706,7 @@ export default {
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
   createPullRequest,
+  compareBranches,
   getPullRequestState,
   mergeBranch,
   constructionBranchPrefix,

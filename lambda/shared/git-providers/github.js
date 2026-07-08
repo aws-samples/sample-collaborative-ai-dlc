@@ -374,11 +374,19 @@ const cleanupConstructionTaskBranches = async (ctx, repoId, branch) => {
   return { deleted, failed, skipped };
 };
 
-// A 422 from POST /pulls is benign when the sprint produced no changes for this
-// repository (normal in multi-repo projects).
-const isNoChanges422 = (errorText) => {
+// A 422 from POST /pulls is benign ONLY when the branches genuinely hold no
+// commits between them (normal in multi-repo projects). "Head does not exist"
+// used to be classified here too — that conflation masked the 2026-07 lost-work
+// incident (a never-pushed intent branch reported as benign "no changes"), so
+// missing-head is now its own NON-benign classification below.
+const isNoChanges422 = (errorText) =>
+  (errorText || '').toLowerCase().includes('no commits between');
+
+// A 422 whose cause is a head branch that does not exist on the remote — the
+// intent branch was never pushed. This is a FAILURE (work may be stranded on
+// the session workspace), never a benign skip.
+const isMissingHead422 = (errorText) => {
   const text = (errorText || '').toLowerCase();
-  if (text.includes('no commits between')) return true;
   if (/head sha can't be blank|head ref.*(does not|doesn't) exist/.test(text)) return true;
   try {
     const errors = Array.isArray(JSON.parse(errorText)?.errors) ? JSON.parse(errorText).errors : [];
@@ -471,6 +479,13 @@ const createPullRequest = async (ctx, repoId, { branch, baseBranch, title, body 
       if (isNoChanges422(errorText)) {
         return { skipped: true, reason: 'no_changes' };
       }
+      if (isMissingHead422(errorText)) {
+        return {
+          failed: true,
+          reason: 'head_missing',
+          error: `Head branch "${branch}" does not exist on the remote — the intent branch was never pushed`,
+        };
+      }
       // The base branch we asked for does not exist (e.g. a caller-supplied
       // base was mistyped or deleted since). Resolve the repo's real default
       // branch and retry once against it — the intent branch was cut from
@@ -494,6 +509,43 @@ const createPullRequest = async (ctx, repoId, { branch, baseBranch, title, body 
   const pr = await res.json();
   await cleanupConstructionTaskBranches(ctx, repoId, branch);
   return { prUrl: pr.html_url, prNumber: pr.number };
+};
+
+// Compare base...head — the PR fan-in's pre-check that the intent branch
+// actually exists and carries commits (the 2026-07 incident finished a run
+// whose branch was identical to base and reported it as a benign skip).
+// Returns { status, aheadBy?, base }:
+//   'ahead' | 'diverged'  — head has commits base lacks (a PR is meaningful)
+//   'identical'|'behind'  — head brings nothing (PR would 422 "no commits")
+//   'missing_head'        — head branch does not exist on the remote
+//   'missing_base'        — base branch does not exist
+//   'unknown'             — comparison unavailable (caller falls through to
+//                           the POST /pulls behavior; never blocks on this)
+const compareBranches = async (ctx, repoId, { base, head }) => {
+  const { owner, repo } = splitOwnerRepo(repoId);
+  const resolvedBase = base || (await getDefaultBranch(ctx, repoId)) || 'main';
+  const res = await ghFetch(
+    ctx,
+    `${API_BASE}/repos/${owner}/${repo}/compare/${resolvedBase}...${head}`,
+  );
+  if (res.status === 404) {
+    // Which side is missing? Probe the head ref (slashes are legal in the
+    // git/ref path). A readable head means the BASE side caused the 404.
+    const headRes = await ghFetch(ctx, `${API_BASE}/repos/${owner}/${repo}/git/ref/heads/${head}`);
+    if (headRes.status === 404) return { status: 'missing_head', base: resolvedBase };
+    if (headRes.ok) return { status: 'missing_base', base: resolvedBase };
+    return { status: 'unknown', base: resolvedBase, detail: `head probe ${headRes.status}` };
+  }
+  if (!res.ok) {
+    return { status: 'unknown', base: resolvedBase, detail: `compare ${res.status}` };
+  }
+  const data = await res.json();
+  const known = ['ahead', 'behind', 'identical', 'diverged'];
+  return {
+    status: known.includes(data.status) ? data.status : 'unknown',
+    aheadBy: data.ahead_by ?? 0,
+    base: resolvedBase,
+  };
 };
 
 // Get the live state of a PR ('open' | 'closed' | 'merged' | null if not found).
@@ -554,6 +606,7 @@ export {
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
   createPullRequest,
+  compareBranches,
   getPullRequestState,
   mergeBranch,
   constructionBranchPrefix,
@@ -580,6 +633,7 @@ export default {
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
   createPullRequest,
+  compareBranches,
   getPullRequestState,
   mergeBranch,
   constructionBranchPrefix,

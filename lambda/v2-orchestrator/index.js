@@ -249,6 +249,11 @@ const defaultDeps = () => ({
       title,
       body,
     }),
+  // PR-time verification (2026-07 incident): compare base...head BEFORE the PR
+  // call so a never-pushed or commit-less intent branch is a LOUD failure, not
+  // a benign "no changes" skip. Injectable so tests never touch provider APIs.
+  comparePrBranches: ({ gitProvider, token, repoId, base, head }) =>
+    getProvider(gitProvider).compareBranches({ token }, repoId, { base, head }),
 });
 
 const handler = async (event, ctx, deps = defaultDeps()) => {
@@ -261,6 +266,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     stopSession,
     broadcast,
     openPr,
+    comparePrBranches,
   } = deps;
   const { intentId, executionId } = event;
   if (event.action !== 'start') {
@@ -861,6 +867,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     const prResults = await ctx.step('open-pr', async () =>
       openIntentPrs({
         openPr,
+        comparePrBranches,
         store,
         meta,
         executionId,
@@ -1020,7 +1027,16 @@ const nowIso = () => new Date().toISOString();
 // failure are named, so the reviewer knows what the increment does NOT
 // contain (the human explicitly chose to continue without them — the fan-in
 // gate is the decision record, the PR body is its mirror).
-const openIntentPrs = async ({ openPr, store, meta, executionId, token, gitProvider, log }) => {
+const openIntentPrs = async ({
+  openPr,
+  comparePrBranches = null,
+  store,
+  meta,
+  executionId,
+  token,
+  gitProvider,
+  log,
+}) => {
   const repos = meta.repos ?? [];
   const branch = meta.branch;
   const strategy = meta.prStrategy ?? 'intent-pr';
@@ -1042,6 +1058,27 @@ const openIntentPrs = async ({ openPr, store, meta, executionId, token, gitProvi
       },
     ];
   }
+
+  // Deterministic lost-work signal (2026-07 incident): did the engine record
+  // repo work during this run? v2.git.pushed names repos whose commits reached
+  // the remote; v2.git.push_failed names repos whose work did NOT become
+  // durable. An artifact-only run has neither — for those, a commit-less
+  // branch is genuinely "no changes". Best-effort: an unreadable timeline
+  // just means the signal is silent (never blocks the PR).
+  let gitEvents = [];
+  try {
+    gitEvents = ((await store.listEvents?.(executionId)) ?? []).filter(
+      (e) => e.eventType === 'v2.git.pushed' || e.eventType === 'v2.git.push_failed',
+    );
+  } catch {
+    /* signal is best-effort */
+  }
+  const repoGitActivity = (repoId) => ({
+    pushed: gitEvents.some((e) => e.eventType === 'v2.git.pushed' && e.summary?.includes(repoId)),
+    pushFailed: gitEvents.some(
+      (e) => e.eventType === 'v2.git.push_failed' && e.summary?.includes(repoId),
+    ),
+  });
 
   // Unit transparency for the PR body (best-effort — a store without unit
   // rows, or a pre-WP3 run, just omits the section).
@@ -1076,6 +1113,50 @@ const openIntentPrs = async ({ openPr, store, meta, executionId, token, gitProvi
   for (const repo of repos) {
     const repoId = typeof repo === 'string' ? repo : repo.url;
     try {
+      const activity = repoGitActivity(repoId);
+      // Pre-check: does the intent branch exist remotely with commits ahead of
+      // base? 'unknown' (comparison unavailable) falls through to the PR call
+      // — the pre-check adds safety, never a new way to block a good PR.
+      const cmp = comparePrBranches
+        ? await comparePrBranches({
+            gitProvider,
+            token,
+            repoId,
+            base: baseFor(repoId),
+            head: branch,
+          }).catch((e) => ({ status: 'unknown', detail: e?.message }))
+        : { status: 'unknown' };
+      if (cmp.status === 'missing_head') {
+        results.push({
+          eventType: 'v2.pr.failed',
+          summary: `PR for ${repoId} not possible: intent branch "${branch}" does not exist on the remote — the engine never pushed it${
+            activity.pushFailed
+              ? ' (git push failures were recorded during the run; the work may still sit on the session workspace)'
+              : ''
+          }`,
+        });
+        continue;
+      }
+      if (cmp.status === 'identical' || cmp.status === 'behind') {
+        // No commits to merge. Benign ONLY for a run that never had repo work;
+        // a run that recorded engine git activity but ends commit-less has
+        // LOST WORK and must fail loudly (the 2026-07 incident: two ENOSPC'd
+        // commits, a clean-looking branch, and a quiet "no changes" skip).
+        if (activity.pushed || activity.pushFailed) {
+          results.push({
+            eventType: 'v2.pr.failed',
+            summary: `PR for ${repoId} not possible: "${branch}" has no commits ahead of ${cmp.base ?? 'the base branch'} although the run recorded ${
+              activity.pushFailed ? 'engine push FAILURES' : 'engine pushes'
+            } — likely lost work; check the run's v2.git events and the session workspace`,
+          });
+          continue;
+        }
+        results.push({
+          eventType: 'v2.pr.skipped',
+          summary: `No PR for ${repoId}: no changes between ${branch} and ${cmp.base ?? 'the base branch'} (no repo work was recorded this run)`,
+        });
+        continue;
+      }
       const res = await openPr({
         gitProvider,
         token,
@@ -1091,9 +1172,26 @@ const openIntentPrs = async ({ openPr, store, meta, executionId, token, gitProvi
           summary: `${res.existing ? 'PR already open' : 'PR opened'} for ${repoId}: ${res.prUrl}`,
         });
       } else if (res?.skipped) {
+        // The provider's own "no changes" verdict (compare was unavailable).
+        // Same lost-work override as above: recorded git activity means this
+        // skip is NOT benign.
+        if (activity.pushed || activity.pushFailed) {
+          results.push({
+            eventType: 'v2.pr.failed',
+            summary: `PR for ${repoId} reported "${res.reason ?? 'no changes'}" although the run recorded ${
+              activity.pushFailed ? 'engine push FAILURES' : 'engine pushes'
+            } — likely lost work; check the run's v2.git events and the session workspace`,
+          });
+        } else {
+          results.push({
+            eventType: 'v2.pr.skipped',
+            summary: `No PR for ${repoId}: ${res.reason ?? 'no changes between the branches'}`,
+          });
+        }
+      } else if (res?.failed) {
         results.push({
-          eventType: 'v2.pr.skipped',
-          summary: `No PR for ${repoId}: ${res.reason ?? 'no changes between the branches'}`,
+          eventType: 'v2.pr.failed',
+          summary: `PR for ${repoId} failed (${res.reason ?? 'error'}): ${res.error ?? 'no detail'}`,
         });
       } else if (res?.conflict) {
         results.push({

@@ -153,6 +153,150 @@ describe('commitAll', () => {
   });
 });
 
+// ── commitAll durability hardening (the 2026-07 "no changes" incident) ───────
+// Retry/self-heal paths are driven through a SCRIPTED git stub — real ENOSPC
+// cannot be simulated hermetically. The stub answers by argv substring; more
+// specific matchers first.
+describe('commitAll — retry / ENOSPC self-heal / dirty reporting', () => {
+  const scriptedGit = (script) => {
+    const calls = [];
+    const fn = async (args) => {
+      const line = args.join(' ');
+      calls.push(line);
+      for (const [match, resp] of script) {
+        if (line.includes(match)) {
+          const r = typeof resp === 'function' ? resp(args, calls) : resp;
+          return { exitCode: 0, stdout: '', stderr: '', ...r };
+        }
+      }
+      return { exitCode: 0, stdout: '', stderr: '' };
+    };
+    fn.calls = calls;
+    return fn;
+  };
+  const quiet = () => {};
+
+  it('retries a transient commit failure with backoff and succeeds', async () => {
+    let commits = 0;
+    const g = scriptedGit([
+      ['status --porcelain --ignored', { stdout: '' }],
+      ['status --porcelain', { stdout: ' M src.js\n' }],
+      [
+        'commit',
+        () =>
+          ++commits === 1
+            ? { exitCode: 1, stderr: 'error: unable to write — waiting to be backed up' }
+            : { exitCode: 0 },
+      ],
+      ['rev-parse HEAD', { stdout: `${'a'.repeat(40)}\n` }],
+    ]);
+    const sleep = vi.fn(async () => {});
+    const res = await commitAll({ dir: root, message: 'm', git: g, sleep, log: quiet });
+    expect(res.committed).toBe(true);
+    expect(commits).toBe(2);
+    expect(sleep).toHaveBeenCalledWith(2000);
+  });
+
+  it('persistent ENOSPC reclaims ONLY well-known git-ignored dirs and then commits', async () => {
+    let reclaimed = false;
+    const rmDir = vi.fn(async () => {
+      reclaimed = true;
+    });
+    const g = scriptedGit([
+      // The ignored listing: node_modules is reclaimable; dist is NOT in the
+      // reclaim set; .env is a file (no trailing slash) — both must survive.
+      ['status --porcelain --ignored', { stdout: '!! node_modules/\n!! dist/\n!! .env\n' }],
+      ['status --porcelain', { stdout: ' M src.js\n' }],
+      [
+        'commit',
+        () =>
+          reclaimed
+            ? { exitCode: 0 }
+            : {
+                exitCode: 1,
+                stderr: 'fatal: unable to write loose object: No space left on device',
+              },
+      ],
+      ['rev-parse HEAD', { stdout: `${'b'.repeat(40)}\n` }],
+    ]);
+    const res = await commitAll({
+      dir: root,
+      message: 'm',
+      git: g,
+      sleep: async () => {},
+      log: quiet,
+      rmDir,
+    });
+    expect(res.committed).toBe(true);
+    expect(res.reclaimed).toEqual(['node_modules']);
+    expect(rmDir).toHaveBeenCalledTimes(1);
+    expect(rmDir.mock.calls[0][0]).toBe(path.resolve(root, 'node_modules'));
+  });
+
+  it('a terminal commit failure reports dirty:true with the git stderr (stage-failing signal)', async () => {
+    const rmDir = vi.fn();
+    const g = scriptedGit([
+      ['status --porcelain --ignored', { stdout: '' }],
+      ['status --porcelain', { stdout: ' M src.js\n' }],
+      ['commit', { exitCode: 1, stderr: 'fatal: disk I/O error' }],
+    ]);
+    const sleep = vi.fn(async () => {});
+    const res = await commitAll({
+      dir: root,
+      message: 'm',
+      git: g,
+      sleep,
+      log: quiet,
+      rmDir,
+    });
+    expect(res).toMatchObject({
+      committed: false,
+      reason: 'commit_failed',
+      dirty: true,
+    });
+    expect(res.detail).toContain('disk I/O error');
+    // Non-ENOSPC failures never trigger the reclaim.
+    expect(rmDir).not.toHaveBeenCalled();
+    // All three attempts ran, with linear backoff between them.
+    expect(sleep.mock.calls.map((c) => c[0])).toEqual([2000, 4000]);
+  });
+
+  it('an add failure with a CLEAN tree reports dirty:false (no work at risk)', async () => {
+    const g = scriptedGit([
+      ['add -A', { exitCode: 1, stderr: 'error: transient lock' }],
+      ['status --porcelain --ignored', { stdout: '' }],
+      ['status --porcelain', { stdout: '' }],
+    ]);
+    const res = await commitAll({
+      dir: root,
+      message: 'm',
+      git: g,
+      sleep: async () => {},
+      log: quiet,
+    });
+    expect(res).toMatchObject({ committed: false, reason: 'add_failed', dirty: false });
+  });
+
+  it('reclaim never escapes the repo dir (a hostile ignored path is skipped)', async () => {
+    const rmDir = vi.fn(async () => {});
+    const g = scriptedGit([
+      ['status --porcelain --ignored', { stdout: '!! ../../outside/node_modules/\n' }],
+      ['status --porcelain', { stdout: ' M src.js\n' }],
+      ['commit', { exitCode: 1, stderr: 'No space left on device' }],
+    ]);
+    const res = await commitAll({
+      dir: root,
+      message: 'm',
+      git: g,
+      sleep: async () => {},
+      log: quiet,
+      rmDir,
+    });
+    expect(rmDir).not.toHaveBeenCalled();
+    expect(res.committed).toBe(false);
+  });
+});
+
 describe('isAheadOfRemote', () => {
   it('false right after clone (remote-tracking ref matches HEAD)', async () => {
     const { work } = await initRemoteAndClone();

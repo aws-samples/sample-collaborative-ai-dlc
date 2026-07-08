@@ -1808,6 +1808,127 @@ describe('runStage — engine git hook (docs/v2-parallel.md WP2)', () => {
     expect(evTypes).toContain('v2.git.push_failed');
   });
 
+  // ── durability hardening (the 2026-07 "no changes" incident: commit_failed
+  // with a dirty tree sailed through and the run succeeded with zero durable
+  // work) ────────────────────────────────────────────────────────────────────
+
+  it('FAILS the stage (git_commit_failed) when the tree is dirty and the engine could not commit', async () => {
+    const deps = baseDeps({
+      ...sourcePresent,
+      spawnFn: okSpawn,
+      commitAndPushAll: async () => ({
+        ok: false,
+        committed: false,
+        results: [
+          {
+            repo: 'owner/repo',
+            committed: false,
+            reason: 'commit_failed',
+            detail: 'fatal: unable to write loose object: No space left on device',
+            dirty: true,
+            pushed: false,
+          },
+        ],
+      }),
+    });
+    const res = await runStage(gitArgs, deps);
+    expect(res).toMatchObject({ ok: false, reason: 'git_commit_failed' });
+    expect(res.detail).toContain('No space left on device');
+    const evTypes = deps.store.calls.filter((c) => c[0] === 'appendEvent').map((c) => c[1].type);
+    expect(evTypes).toContain('v2.git.push_failed');
+    expect(evTypes).toContain('v2.stage.failed');
+    // The git stderr rides in the event summary — the ENOSPC root cause was
+    // invisible in the incident because only the reason label was recorded.
+    const gitEv = deps.store.calls.find(
+      (c) => c[0] === 'appendEvent' && c[1].type === 'v2.git.push_failed',
+    );
+    expect(gitEv[1].summary).toContain('No space left on device');
+    const states = deps.store.calls
+      .filter((c) => c[0] === 'updateStageState')
+      .map((c) => c[1].state);
+    expect(states).toContain('FAILED');
+    expect(states).not.toContain('SUCCEEDED');
+  });
+
+  it('FAILS the stage when the git engine crashed (unknown durability must be loud)', async () => {
+    const deps = baseDeps({
+      ...sourcePresent,
+      spawnFn: okSpawn,
+      commitAndPushAll: async () => ({
+        ok: false,
+        committed: false,
+        results: [
+          {
+            repo: 'owner/repo',
+            committed: false,
+            pushed: false,
+            reason: 'engine_crashed',
+            detail: 'boom',
+          },
+        ],
+      }),
+    });
+    const res = await runStage(gitArgs, deps);
+    expect(res).toMatchObject({ ok: false, reason: 'git_commit_failed' });
+    expect(res.detail).toContain('engine_crashed');
+  });
+
+  it('a commit failure with a CLEAN tree does not fail the stage (no work at risk)', async () => {
+    const deps = baseDeps({
+      ...sourcePresent,
+      spawnFn: okSpawn,
+      commitAndPushAll: async () => ({
+        ok: false,
+        committed: false,
+        results: [
+          {
+            repo: 'owner/repo',
+            committed: false,
+            reason: 'commit_failed',
+            detail: 'transient index lock',
+            dirty: false,
+            pushed: false,
+          },
+        ],
+      }),
+    });
+    const res = await runStage(gitArgs, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    // Still visible for ops.
+    const evTypes = deps.store.calls.filter((c) => c[0] === 'appendEvent').map((c) => c[1].type);
+    expect(evTypes).toContain('v2.git.push_failed');
+  });
+
+  it('broadcasts a live agent.note on push failure (the user sees git trouble mid-run)', async () => {
+    const broadcasts = [];
+    const deps = baseDeps({
+      ...sourcePresent,
+      spawnFn: okSpawn,
+      broadcast: async (payload) => {
+        broadcasts.push(payload);
+      },
+      commitAndPushAll: async () => ({
+        ok: false,
+        committed: false,
+        results: [
+          {
+            repo: 'owner/repo',
+            committed: false,
+            reason: 'commit_failed',
+            detail: 'No space left on device',
+            dirty: true,
+            pushed: false,
+          },
+        ],
+      }),
+    });
+    await runStage(gitArgs, deps);
+    const note = broadcasts.find((b) => b.noteType === 'v2.git.push_failed');
+    expect(note).toBeTruthy();
+    expect(note.action).toBe('agent.note');
+    expect(note.summary).toContain('No space left on device');
+  });
+
   it('a parked stage still parks when the push failed — the human loop is never blocked', async () => {
     const deps = baseDeps({
       ...sourcePresent,

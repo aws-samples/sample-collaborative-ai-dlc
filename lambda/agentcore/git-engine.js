@@ -25,7 +25,7 @@
 // reach the remote (new work at risk = the documented v2 loss mode).
 
 import { spawn } from 'node:child_process';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rm, statfs } from 'node:fs/promises';
 import path from 'node:path';
 import { buildCloneUrl } from '../shared/git-providers.js';
 
@@ -134,25 +134,142 @@ export const scrubRemote = async ({ dir, repo, gitProvider, urls = {}, git = run
 //   { committed: true,  sha }             — a new commit was created
 //   { committed: false, reason: 'clean' } — nothing to commit (normal for
 //                                           stages that only write graph artifacts)
-//   { committed: false, reason: 'add_failed' | 'commit_failed', detail }
-export const commitAll = async ({ dir, message, git = runGit }) => {
+//   { committed: false, reason: 'add_failed' | 'commit_failed', detail, dirty }
+//
+// Durability hardening (the 2026-07 "no changes" incident: an ENOSPC'd mount
+// made both engine commits fail, the stages still succeeded, and the intent
+// finished with zero durable work):
+//   - add/commit failures are RETRIED with backoff — the session mount's NFS
+//     backup pipeline throttles writes transiently ("waiting to be backed up"),
+//   - a persistent ENOSPC triggers the self-heal: delete git-ignored,
+//     re-creatable directories (node_modules & friends) and retry once —
+//     losing a commit is strictly worse than a dependency re-install,
+//   - a terminal failure reports `dirty` (does the tree hold uncommitted
+//     work?) so run-stage can fail the stage when real work is at risk.
+export const commitAll = async ({
+  dir,
+  message,
+  git = runGit,
+  attempts = 3,
+  sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+  log = (...a) => console.error('[git-engine]', ...a),
+  rmDir = (p) => rm(p, { recursive: true, force: true }),
+}) => {
   // Runtime files (.aidlc/.claude/…) must never enter the user's history —
   // ensure the repo-local excludes before staging the tree.
   await ensureRuntimeExcludes({ dir });
-  const add = await git(['add', '-A'], { cwd: dir });
-  if (add.exitCode !== 0) {
-    return { committed: false, reason: 'add_failed', detail: add.stderr.trim() };
+
+  const attemptOnce = async () => {
+    const add = await git(['add', '-A'], { cwd: dir });
+    if (add.exitCode !== 0) {
+      return { committed: false, reason: 'add_failed', detail: add.stderr.trim() };
+    }
+    const status = await git(['status', '--porcelain'], { cwd: dir });
+    if (status.exitCode === 0 && status.stdout.trim() === '') {
+      return { committed: false, reason: 'clean' };
+    }
+    const commit = await git([...GIT_IDENTITY, 'commit', '-m', message], { cwd: dir });
+    if (commit.exitCode !== 0) {
+      return { committed: false, reason: 'commit_failed', detail: commit.stderr.trim() };
+    }
+    const head = await git(['rev-parse', 'HEAD'], { cwd: dir });
+    return { committed: true, sha: head.stdout.trim() || null };
+  };
+
+  let last = null;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    last = await attemptOnce();
+    if (last.committed || last.reason === 'clean') return last;
+    log(
+      `commit attempt ${attempt}/${attempts} failed for ${dir}: ${last.reason}${
+        last.detail ? ` — ${last.detail}` : ''
+      }`,
+    );
+    if (attempt < attempts) await sleep(attempt * 2000);
   }
-  const status = await git(['status', '--porcelain'], { cwd: dir });
-  if (status.exitCode === 0 && status.stdout.trim() === '') {
-    return { committed: false, reason: 'clean' };
+
+  // ENOSPC self-heal: reclaim git-ignored re-creatable directories, then one
+  // final attempt. Only ignored paths are ever deleted — the agent's actual
+  // work is never ignored, so nothing the commit is trying to save is touched.
+  if (isEnospc(last?.detail)) {
+    const freed = await reclaimIgnoredDirs({ dir, git, rmDir, log });
+    if (freed.length > 0) {
+      log(`ENOSPC self-heal reclaimed ${freed.join(', ')} in ${dir}; retrying commit`);
+      const healed = await attemptOnce();
+      if (healed.committed || healed.reason === 'clean') return { ...healed, reclaimed: freed };
+      last = { ...healed, reclaimed: freed };
+    }
   }
-  const commit = await git([...GIT_IDENTITY, 'commit', '-m', message], { cwd: dir });
-  if (commit.exitCode !== 0) {
-    return { committed: false, reason: 'commit_failed', detail: commit.stderr.trim() };
+
+  // Terminal durability failure — report whether user work sits uncommitted in
+  // the tree. An unreadable status counts as dirty: unknown durability must
+  // fail loud, not pass silent.
+  const dirtyStatus = await git(['status', '--porcelain'], { cwd: dir });
+  const dirty = dirtyStatus.exitCode === 0 ? dirtyStatus.stdout.trim() !== '' : true;
+  return { committed: false, ...last, dirty };
+};
+
+// True when a git failure is caused by a full filesystem (the session mount is
+// a fixed 1 GiB — AgentCore offers no larger size).
+export const isEnospc = (detail) => /no space left on device|enospc/i.test(detail ?? '');
+
+// Directory basenames that are safe to reclaim when the mount is full: they
+// are git-ignored AND re-creatable by a dependency install or build.
+export const RECLAIMABLE_DIR_NAMES = new Set([
+  'node_modules',
+  '.cache',
+  '.npm',
+  '.turbo',
+  '.vite',
+  '.parcel-cache',
+  '.pnpm-store',
+  '.gradle',
+  'target',
+  '.venv',
+]);
+
+// Enumerate git-ignored directories (collapsed `!! dir/` rows from
+// `git status --ignored`) whose basename marks them re-creatable, and delete
+// them. Only paths that resolve INSIDE the repo dir are ever touched.
+export const reclaimIgnoredDirs = async ({
+  dir,
+  git = runGit,
+  rmDir = (p) => rm(p, { recursive: true, force: true }),
+  log = (...a) => console.error('[git-engine]', ...a),
+}) => {
+  const status = await git(['status', '--porcelain', '--ignored'], { cwd: dir });
+  if (status.exitCode !== 0) return [];
+  const freed = [];
+  const root = path.resolve(dir);
+  for (const line of status.stdout.split('\n')) {
+    if (!line.startsWith('!! ')) continue;
+    const rel = line.slice(3).trim();
+    if (!rel.endsWith('/')) continue; // only whole ignored directories
+    const relDir = rel.replace(/\/$/, '');
+    const base = relDir.split('/').pop();
+    if (!RECLAIMABLE_DIR_NAMES.has(base)) continue;
+    const abs = path.resolve(root, relDir);
+    if (abs !== root && !abs.startsWith(root + path.sep)) continue; // never escape the repo
+    try {
+      await rmDir(abs);
+      freed.push(relDir);
+    } catch (e) {
+      log(`reclaim failed for ${relDir}:`, e?.message);
+    }
   }
-  const head = await git(['rev-parse', 'HEAD'], { cwd: dir });
-  return { committed: true, sha: head.stdout.trim() || null };
+  return freed;
+};
+
+// Free bytes on the filesystem containing `dir` (null when unreadable). The
+// disk preflight in run-stage uses this to warn BEFORE work is attempted on a
+// nearly-full session mount.
+export const freeDiskBytes = async ({ dir, statfsFn = statfs }) => {
+  try {
+    const s = await statfsFn(dir);
+    return Number(s.bavail) * Number(s.bsize);
+  } catch {
+    return null;
+  }
 };
 
 // Is there anything HEAD has that the remote-tracking ref does not? Used to
@@ -631,7 +748,7 @@ export const commitAndPushAll = async ({
     const dir = repoTargetDir({ url, workspaceDir, multi });
     const urls = urlsFor ? urlsFor(url) : {};
     try {
-      const commit = await commitAll({ dir, message, git });
+      const commit = await commitAll({ dir, message, git, sleep, log });
       if (commit.reason === 'add_failed' || commit.reason === 'commit_failed') {
         results.push({ repo: url, ...commit, pushed: false });
         continue;

@@ -27,6 +27,16 @@ you. Read this section before the stage prose and let it govern.
   the working tree; durability and branch mechanics are handled for you. If a
   stage's prose asks you to commit/push/branch, that is upstream vocabulary —
   ignore the git mechanics and only do the file work.
+- **The workspace disk is SMALL (1 GB) — dependency installs are the main
+  risk.** Your working directory lives on a small persistent mount; filling it
+  makes writes (including the runtime's commit of YOUR work) fail with
+  "no space left on device". Install dependencies only when the stage truly
+  needs them (build/test), install them ONCE at the level that needs them —
+  never duplicate `npm install` at multiple directory levels — and prefer
+  targeted commands (a single test file, `--no-audit --no-fund`) over full
+  workspace installs. Package-manager caches are already redirected off the
+  mount for you. If a write fails with a space error, delete a `node_modules`
+  directory you created and continue — it is re-creatable.
 - **The MCP tools are your ONLY I/O for methodology + collaboration.** You read
   prior methodology work, record every methodology output, ask the human, and
   report progress exclusively through the tools listed below.

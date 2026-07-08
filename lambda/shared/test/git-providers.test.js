@@ -182,6 +182,127 @@ describe('github provider — repo browse + PR + comments', () => {
     expect(JSON.parse(postCall.options.body).base).toBe('develop');
   });
 
+  // ── 422 classification (2026-07 incident: a never-pushed head must NOT be
+  // reported as a benign "no changes" skip) ─────────────────────────────────
+
+  it('createPullRequest classifies a genuine "no commits between" 422 as skipped/no_changes', async () => {
+    const fetchImpl = makeFetch([
+      ['/git/matching-refs/', { json: [] }],
+      [
+        '/repos/o/r/pulls',
+        (url, opts) =>
+          opts.method === 'POST'
+            ? {
+                status: 422,
+                text: JSON.stringify({
+                  message: 'Validation Failed',
+                  errors: [{ message: 'No commits between main and feat' }],
+                }),
+              }
+            : { json: [] }, // findPRByBranch → none
+      ],
+    ]);
+    const out = await gh.createPullRequest({ token: 't', fetchImpl }, 'o/r', {
+      branch: 'feat',
+      baseBranch: 'main',
+      title: 'T',
+      body: 'B',
+    });
+    expect(out).toEqual({ skipped: true, reason: 'no_changes' });
+  });
+
+  it('createPullRequest classifies a missing-head 422 as FAILED head_missing, never a skip', async () => {
+    const fetchImpl = makeFetch([
+      ['/git/matching-refs/', { json: [] }],
+      [
+        '/repos/o/r/pulls',
+        (url, opts) =>
+          opts.method === 'POST'
+            ? {
+                status: 422,
+                text: JSON.stringify({
+                  message: 'Validation Failed',
+                  errors: [{ resource: 'PullRequest', field: 'head', code: 'invalid' }],
+                }),
+              }
+            : { json: [] },
+      ],
+    ]);
+    const out = await gh.createPullRequest({ token: 't', fetchImpl }, 'o/r', {
+      branch: 'feat',
+      baseBranch: 'main',
+      title: 'T',
+      body: 'B',
+    });
+    expect(out.failed).toBe(true);
+    expect(out.reason).toBe('head_missing');
+    expect(out.error).toContain('never pushed');
+    expect(out.skipped).toBeUndefined();
+  });
+
+  // ── compareBranches — the PR fan-in pre-check ─────────────────────────────
+
+  it('compareBranches maps ahead/identical from the compare API', async () => {
+    const ahead = makeFetch([['/compare/main...feat', { json: { status: 'ahead', ahead_by: 2 } }]]);
+    expect(
+      await gh.compareBranches({ token: 't', fetchImpl: ahead }, 'o/r', {
+        base: 'main',
+        head: 'feat',
+      }),
+    ).toEqual({ status: 'ahead', aheadBy: 2, base: 'main' });
+    const identical = makeFetch([
+      ['/compare/main...feat', { json: { status: 'identical', ahead_by: 0 } }],
+    ]);
+    expect(
+      await gh.compareBranches({ token: 't', fetchImpl: identical }, 'o/r', {
+        base: 'main',
+        head: 'feat',
+      }),
+    ).toEqual({ status: 'identical', aheadBy: 0, base: 'main' });
+  });
+
+  it('compareBranches distinguishes a missing head from a missing base on a compare 404', async () => {
+    const headGone = makeFetch([
+      ['/compare/', { status: 404, json: { message: 'Not Found' } }],
+      ['/git/ref/heads/feat', { status: 404, json: { message: 'Not Found' } }],
+    ]);
+    expect(
+      await gh.compareBranches({ token: 't', fetchImpl: headGone }, 'o/r', {
+        base: 'main',
+        head: 'feat',
+      }),
+    ).toEqual({ status: 'missing_head', base: 'main' });
+    const baseGone = makeFetch([
+      ['/compare/', { status: 404, json: { message: 'Not Found' } }],
+      ['/git/ref/heads/feat', { json: { ref: 'refs/heads/feat' } }],
+    ]);
+    expect(
+      await gh.compareBranches({ token: 't', fetchImpl: baseGone }, 'o/r', {
+        base: 'main',
+        head: 'feat',
+      }),
+    ).toEqual({ status: 'missing_base', base: 'main' });
+  });
+
+  it('compareBranches resolves the repo default branch when base is omitted and reports unknown on API trouble', async () => {
+    const fetchImpl = makeFetch([
+      ['/compare/develop...feat', { json: { status: 'ahead', ahead_by: 1 } }],
+      ['/repos/o/r', { json: { default_branch: 'develop' } }],
+    ]);
+    expect(
+      await gh.compareBranches({ token: 't', fetchImpl }, 'o/r', { base: null, head: 'feat' }),
+    ).toEqual({ status: 'ahead', aheadBy: 1, base: 'develop' });
+    const broken = makeFetch([['/compare/', { status: 500, json: {} }]]);
+    expect(
+      (
+        await gh.compareBranches({ token: 't', fetchImpl: broken }, 'o/r', {
+          base: 'main',
+          head: 'feat',
+        })
+      ).status,
+    ).toBe('unknown');
+  });
+
   it('getPullRequestState classifies merged vs closed vs open', async () => {
     const open = makeFetch([['/pulls/1', { json: { state: 'open' } }]]);
     const merged = makeFetch([['/pulls/2', { json: { state: 'closed', merged_at: 'x' } }]]);
@@ -311,6 +432,87 @@ describe('gitlab provider — repo browse + MR + token refresh', () => {
     expect(await gl.getPullRequestState({ token: 't', fetchImpl: closed }, 'g/p', 3)).toBe(
       'closed',
     );
+  });
+
+  // ── 400/422 classification (2026-07 incident parity with GitHub) ──────────
+
+  it('createPullRequest classifies a missing SOURCE branch as FAILED head_missing, never a skip', async () => {
+    const fetchImpl = makeFetch([
+      ['/repository/branches?search', { json: [] }],
+      ['/merge_requests?source_branch', { json: [] }],
+      [
+        '/merge_requests',
+        (url, opts) =>
+          opts.method === 'POST'
+            ? {
+                status: 400,
+                text: JSON.stringify({ message: ['Source branch "feat" does not exist'] }),
+              }
+            : { json: [] },
+      ],
+    ]);
+    const out = await gl.createPullRequest({ token: 't', fetchImpl }, 'g/p', {
+      branch: 'feat',
+      baseBranch: 'main',
+      title: 'T',
+      body: 'B',
+    });
+    expect(out.failed).toBe(true);
+    expect(out.reason).toBe('head_missing');
+    expect(out.error).toContain('never pushed');
+  });
+
+  it('createPullRequest keeps a genuine "no commits" 400 as skipped/no_changes', async () => {
+    const fetchImpl = makeFetch([
+      ['/repository/branches?search', { json: [] }],
+      ['/merge_requests?source_branch', { json: [] }],
+      [
+        '/merge_requests',
+        (url, opts) =>
+          opts.method === 'POST'
+            ? {
+                status: 400,
+                text: JSON.stringify({ message: ['No commits between main and feat'] }),
+              }
+            : { json: [] },
+      ],
+    ]);
+    const out = await gl.createPullRequest({ token: 't', fetchImpl }, 'g/p', {
+      branch: 'feat',
+      baseBranch: 'main',
+      title: 'T',
+      body: 'B',
+    });
+    expect(out).toEqual({ skipped: true, reason: 'no_changes' });
+  });
+
+  // ── compareBranches — the MR fan-in pre-check ─────────────────────────────
+
+  it('compareBranches maps commits→ahead / empty→identical and detects a missing head on 404', async () => {
+    const ahead = makeFetch([['/repository/compare', { json: { commits: [{}, {}] } }]]);
+    expect(
+      await gl.compareBranches({ token: 't', fetchImpl: ahead }, 'g/p', {
+        base: 'main',
+        head: 'feat',
+      }),
+    ).toEqual({ status: 'ahead', aheadBy: 2, base: 'main' });
+    const identical = makeFetch([['/repository/compare', { json: { commits: [] } }]]);
+    expect(
+      await gl.compareBranches({ token: 't', fetchImpl: identical }, 'g/p', {
+        base: 'main',
+        head: 'feat',
+      }),
+    ).toEqual({ status: 'identical', aheadBy: 0, base: 'main' });
+    const headGone = makeFetch([
+      ['/repository/compare', { status: 404, json: { message: '404 Not Found' } }],
+      ['/repository/branches/feat', { status: 404, json: { message: '404 Branch Not Found' } }],
+    ]);
+    expect(
+      await gl.compareBranches({ token: 't', fetchImpl: headGone }, 'g/p', {
+        base: 'main',
+        head: 'feat',
+      }),
+    ).toEqual({ status: 'missing_head', base: 'main' });
   });
 });
 

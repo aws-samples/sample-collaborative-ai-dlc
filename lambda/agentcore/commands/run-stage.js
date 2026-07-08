@@ -48,7 +48,7 @@ import {
   resolveKiroStore,
 } from '../cli/kiro-store.js';
 import { ensureWorkspaceSource as defaultEnsureWorkspaceSource } from '../workspace.js';
-import { commitAndPushAll as defaultCommitAndPushAll } from '../git-engine.js';
+import { commitAndPushAll as defaultCommitAndPushAll, freeDiskBytes } from '../git-engine.js';
 import { resolveStageModel } from '../model-resolver.js';
 import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
 import { createSensorRunner } from '../sensor-runner.js';
@@ -61,6 +61,24 @@ import {
 // The typed-extraction registry gates the platform-injected graph-coverage
 // sensor: only stages that produce a registered structured artifact get it.
 import { REGISTRY } from '../../shared/artifact-extractors.js';
+
+// Package-manager caches and scratch space belong on container-local /tmp,
+// NEVER on the 1 GiB session mount (AgentCore offers no larger size). The
+// 2026-07 incident filled the mount with npm state until the engine commit
+// ENOSPC'd and the run finished with zero durable work. The working tree (the
+// durable part) stays on the mount; caches are re-creatable.
+export const OFF_MOUNT_CACHE_ENV = {
+  npm_config_cache: '/tmp/aidlc-cache/npm',
+  YARN_CACHE_FOLDER: '/tmp/aidlc-cache/yarn',
+  PNPM_HOME: '/tmp/aidlc-cache/pnpm',
+  PIP_CACHE_DIR: '/tmp/aidlc-cache/pip',
+  UV_CACHE_DIR: '/tmp/aidlc-cache/uv',
+  TMPDIR: '/tmp',
+};
+
+// Free-space floor for the disk preflight — below this, installs and even the
+// engine commit are at ENOSPC risk on the 1 GiB mount.
+export const DISK_LOW_FLOOR_BYTES = 100 * 1024 * 1024;
 
 // Resolve the plan and locate the stage instance for `stageId`.
 const resolveStage = ({ workflow, library, scope, stageId }) => {
@@ -733,6 +751,30 @@ export const runStage = async (
     return { ok: false, reason, detail };
   };
 
+  // Disk preflight (2026-07 ENOSPC incident): the session mount is a fixed
+  // 1 GiB — when nearly full, dependency installs and even the engine commit
+  // fail. Warn loudly (timeline event + live note) BEFORE tokens are burned.
+  // Best-effort: statfs trouble never breaks a stage. (References
+  // stageInstanceId lazily — it is declared below, before any call site runs.)
+  const warnIfDiskLow = async (where) => {
+    const free = await freeDiskBytes({ dir: workspaceDir }).catch(() => null);
+    if (free === null || free >= DISK_LOW_FLOOR_BYTES) return;
+    const summary = `Workspace mount low on disk ${where}: ${Math.round(
+      free / (1024 * 1024),
+    )} MB free — installs/commits may hit ENOSPC; the engine reclaims git-ignored caches if the commit fails`;
+    await store
+      .appendEvent({
+        executionId,
+        type: 'v2.workspace.disk_low',
+        stageInstanceId,
+        unitSlug,
+        actor: 'agentcore',
+        summary,
+      })
+      .catch(() => {});
+    await publish({ action: 'agent.note', noteType: 'v2.workspace.disk_low', summary });
+  };
+
   // 1. Load the pinned workflow + library, then fold in the project's accrued
   // runtime memory (team knowledge + learning rules) read from Neptune. Learning
   // rules are merged into the workflow/library BEFORE resolution so the existing
@@ -1235,7 +1277,14 @@ export const runStage = async (
   }
 
   // 4. Spawn the headless CLI.
-  const childEnv = { ...invocation.env, ...driver.envForAuth(env) };
+  // Package-manager caches and scratch files must NOT land on the session
+  // mount — it is a fixed 1 GiB (AgentCore offers no larger size) and the
+  // 2026-07 incident filled it with npm state until the engine commit ENOSPC'd.
+  // Container-local /tmp is ephemeral but plentiful; the working tree (the
+  // durable part) stays on the mount. Driver/invocation env still wins.
+  const childEnv = { ...OFF_MOUNT_CACHE_ENV, ...invocation.env, ...driver.envForAuth(env) };
+  // Disk preflight — a nearly-full mount is loud BEFORE the CLI burns tokens.
+  await warnIfDiskLow('before the agent run');
   let result;
   let outputQueue = Promise.resolve();
   const emitCliOutput = (content) => {
@@ -1368,6 +1417,7 @@ export const runStage = async (
   // sensor hold AFTER the push is fine — the pushed commit preserves the work
   // for the retry. Artifact-only stages leave the tree clean (no commit, no
   // network). NEVER throws — failures are values recorded below.
+  await warnIfDiskLow('before the engine commit');
   const gitResult = await commitAndPushAll({
     repos,
     workspaceDir,
@@ -1383,7 +1433,18 @@ export const runStage = async (
   if (gitResult.committed || !gitResult.ok) {
     const failedRepos = gitResult.results
       .filter((r) => r.pushed !== true && r.pushed !== 'empty' && r.pushed !== 'up_to_date')
-      .map((r) => `${r.repo} (${r.reason ?? 'unknown'})`);
+      // Carry the git stderr into the event — the 2026-07 incident's ENOSPC
+      // root cause was invisible because only the reason label was recorded.
+      .map(
+        (r) =>
+          `${r.repo} (${r.reason ?? 'unknown'}${r.detail ? `: ${String(r.detail).slice(0, 300)}` : ''})`,
+      );
+    const gitSummary = gitResult.ok
+      ? `Engine committed + pushed work for ${stageLabel} (${gitResult.results
+          .filter((r) => r.committed)
+          .map((r) => `${r.repo}@${(r.sha ?? '').slice(0, 8)}`)
+          .join(', ')})`
+      : `Engine push failed for ${stageLabel}: ${failedRepos.join(', ')}`;
     await store
       .appendEvent({
         executionId,
@@ -1391,14 +1452,21 @@ export const runStage = async (
         stageInstanceId,
         unitSlug,
         actor: 'agentcore',
-        summary: gitResult.ok
-          ? `Engine committed + pushed work for ${stageLabel} (${gitResult.results
-              .filter((r) => r.committed)
-              .map((r) => `${r.repo}@${(r.sha ?? '').slice(0, 8)}`)
-              .join(', ')})`
-          : `Engine push failed for ${stageLabel}: ${failedRepos.join(', ')}`,
+        summary: gitSummary,
       })
       .catch(() => {});
+    // Surface a push failure live (agent.note is the timeline-note action the
+    // UI already routes) — the user must see git trouble at stage N, not after
+    // the whole run has burned its tokens.
+    if (!gitResult.ok) {
+      await publish({
+        action: 'agent.note',
+        noteType: 'v2.git.push_failed',
+        stageInstanceId,
+        unitSlug,
+        summary: gitSummary,
+      });
+    }
   }
 
   // 5. Park check — did the agent leave a pending question? ask_question parks
@@ -1472,20 +1540,43 @@ export const runStage = async (
     };
   }
 
-  // WP2 policy: a push failure fails the stage ONLY when THIS run created
-  // commits that never reached the remote — new work at risk is exactly the
-  // loss mode the engine exists to close (the commit stays in the local tree
-  // for the retry). Pre-existing unpushed state without new work (e.g. a
-  // token-less project whose stages only write graph artifacts) was recorded
-  // as a v2.git.push_failed event above but does not change stage behavior.
+  // WP2 policy (extended after the 2026-07 "no changes" incident): a git
+  // failure fails the stage whenever NEW WORK IS AT RISK —
+  //   (a) THIS run created commits that never reached the remote (the commit
+  //       stays in the local tree for the retry), OR
+  //   (b) the working tree holds uncommitted changes the engine could not
+  //       commit (add/commit failed on a dirty tree — e.g. an ENOSPC'd mount;
+  //       previously this sailed through because `committed` was false and the
+  //       run finished "successfully" with zero durable work), OR
+  //   (c) the engine crashed, leaving durability UNKNOWN — unknown must fail
+  //       loud, not pass silent.
+  // Pre-existing unpushed state without new work (e.g. a token-less project
+  // whose stages only write graph artifacts) was recorded as a
+  // v2.git.push_failed event above but does not change stage behavior.
   // A parked stage (above) parks regardless — the human loop must not be
   // blocked by a push outage; the resume leg retries the push.
-  if (!gitResult.ok && gitResult.committed) {
-    const detail = gitResult.results
-      .filter((r) => r.pushed !== true && r.pushed !== 'empty' && r.pushed !== 'up_to_date')
-      .map((r) => `${r.repo}: ${r.detail ?? r.reason ?? 'unknown'}`)
+  const atRiskRepos = gitResult.ok
+    ? []
+    : gitResult.results.filter(
+        (r) =>
+          (r.committed === true &&
+            r.pushed !== true &&
+            r.pushed !== 'empty' &&
+            r.pushed !== 'up_to_date') ||
+          (r.committed !== true && (r.dirty === true || r.reason === 'engine_crashed')),
+      );
+  if (atRiskRepos.length > 0) {
+    const detail = atRiskRepos
+      .map(
+        (r) =>
+          `${r.repo}: ${r.reason ?? 'push_failed'}${r.detail ? ` — ${String(r.detail).slice(0, 300)}` : ''}`,
+      )
       .join('; ');
-    return fail(stageInstanceId, 'push_failed', detail);
+    const uncommitted = atRiskRepos.some((r) => r.committed !== true);
+    // 'push_failed' keeps its v1 meaning (commit exists, push did not land);
+    // 'git_commit_failed' is the new durability failure (work never became a
+    // commit at all — the loss mode the engine exists to close).
+    return fail(stageInstanceId, uncommitted ? 'git_commit_failed' : 'push_failed', detail);
   }
 
   // 6. Deterministic sensors — the verification axis that runs AFTER the agent.

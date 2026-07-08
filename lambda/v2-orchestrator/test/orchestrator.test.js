@@ -1656,6 +1656,123 @@ describe('WP6 — PR opened on SUCCEEDED (intent-pr)', () => {
     expect(res.ok).toBe(true);
     expect(events().some((e) => e.type === 'v2.pr.skipped')).toBe(true);
   });
+
+  // ── PR-time verification (the 2026-07 "no changes" lost-work incident) ─────
+
+  it('a missing head branch is v2.pr.failed ("never pushed"), NOT a benign skip', async () => {
+    deps.comparePrBranches = vi.fn(async () => ({ status: 'missing_head', base: 'main' }));
+    deps.openPr = vi.fn();
+    const res = await start();
+    expect(res.ok).toBe(true); // PR problems never un-succeed the run
+    expect(deps.openPr).not.toHaveBeenCalled();
+    const failed = events().find((e) => e.type === 'v2.pr.failed');
+    expect(failed?.summary).toContain('does not exist on the remote');
+    expect(failed?.summary).toContain('never pushed');
+    expect(events().some((e) => e.type === 'v2.pr.skipped')).toBe(false);
+  });
+
+  it('an identical branch WITH recorded engine push failures is v2.pr.failed (likely lost work)', async () => {
+    deps.comparePrBranches = vi.fn(async () => ({ status: 'identical', base: 'main' }));
+    deps.store.listEvents = vi.fn(async () => [
+      {
+        eventType: 'v2.git.push_failed',
+        summary: 'Engine push failed for code-generation: owner/repo (commit_failed: ENOSPC)',
+      },
+    ]);
+    deps.openPr = vi.fn();
+    const res = await start();
+    expect(res.ok).toBe(true);
+    expect(deps.openPr).not.toHaveBeenCalled();
+    const failed = events().find((e) => e.type === 'v2.pr.failed');
+    expect(failed?.summary).toContain('no commits ahead of main');
+    expect(failed?.summary).toContain('push FAILURES');
+    expect(failed?.summary).toContain('likely lost work');
+  });
+
+  it('an identical branch with NO recorded repo work stays a benign v2.pr.skipped', async () => {
+    deps.comparePrBranches = vi.fn(async () => ({ status: 'identical', base: 'main' }));
+    deps.store.listEvents = vi.fn(async () => [
+      { eventType: 'v2.stage.succeeded', summary: 'Stage a succeeded' },
+    ]);
+    deps.openPr = vi.fn();
+    const res = await start();
+    expect(res.ok).toBe(true);
+    expect(deps.openPr).not.toHaveBeenCalled();
+    const skipped = events().find((e) => e.type === 'v2.pr.skipped');
+    expect(skipped?.summary).toContain('no changes');
+    expect(events().some((e) => e.type === 'v2.pr.failed')).toBe(false);
+  });
+
+  it('an ahead branch passes the pre-check and opens the PR normally', async () => {
+    deps.comparePrBranches = vi.fn(async () => ({ status: 'ahead', aheadBy: 3, base: 'main' }));
+    deps.openPr = vi.fn(async () => ({ prUrl: 'https://x/pr/9', prNumber: 9 }));
+    const res = await start();
+    expect(res.ok).toBe(true);
+    expect(deps.openPr).toHaveBeenCalledTimes(1);
+    expect(events().some((e) => e.type === 'v2.pr.opened')).toBe(true);
+  });
+
+  it('an unavailable comparison (throw) falls through to the PR call — never a new block', async () => {
+    deps.comparePrBranches = vi.fn(async () => {
+      throw new Error('compare 500');
+    });
+    deps.openPr = vi.fn(async () => ({ prUrl: 'https://x/pr/9', prNumber: 9 }));
+    const res = await start();
+    expect(res.ok).toBe(true);
+    expect(deps.openPr).toHaveBeenCalledTimes(1);
+    expect(events().some((e) => e.type === 'v2.pr.opened')).toBe(true);
+  });
+
+  it("the provider's own no_changes skip is overridden to v2.pr.failed when the run recorded engine pushes", async () => {
+    // Compare unavailable (unknown) so the provider verdict is the only signal.
+    deps.comparePrBranches = vi.fn(async () => ({ status: 'unknown' }));
+    deps.store.listEvents = vi.fn(async () => [
+      {
+        eventType: 'v2.git.pushed',
+        summary: 'Engine committed + pushed work for code-generation (owner/repo@abc12345)',
+      },
+    ]);
+    deps.openPr = vi.fn(async () => ({ skipped: true, reason: 'no_changes' }));
+    const res = await start();
+    expect(res.ok).toBe(true);
+    const failed = events().find((e) => e.type === 'v2.pr.failed');
+    expect(failed?.summary).toContain('likely lost work');
+    expect(events().some((e) => e.type === 'v2.pr.skipped')).toBe(false);
+  });
+
+  it('a provider head_missing failure result records v2.pr.failed with the detail', async () => {
+    deps.openPr = vi.fn(async () => ({
+      failed: true,
+      reason: 'head_missing',
+      error:
+        'Head branch "aidlc/i1" does not exist on the remote — the intent branch was never pushed',
+    }));
+    const res = await start();
+    expect(res.ok).toBe(true);
+    const failed = events().find((e) => e.type === 'v2.pr.failed');
+    expect(failed?.summary).toContain('head_missing');
+    expect(failed?.summary).toContain('never pushed');
+  });
+
+  it('git activity attribution is PER REPO — a push failure in one repo does not poison the other', async () => {
+    deps.store.getExecution = vi.fn(async () => ({ ...META, repos: ['o/r', 'o/web'] }));
+    deps.comparePrBranches = vi.fn(async () => ({ status: 'identical', base: 'main' }));
+    deps.store.listEvents = vi.fn(async () => [
+      {
+        eventType: 'v2.git.push_failed',
+        summary: 'Engine push failed for code-generation: o/r (commit_failed)',
+      },
+    ]);
+    deps.openPr = vi.fn();
+    const res = await start();
+    expect(res.ok).toBe(true);
+    const failed = events().filter((e) => e.type === 'v2.pr.failed');
+    const skipped = events().filter((e) => e.type === 'v2.pr.skipped');
+    expect(failed).toHaveLength(1);
+    expect(failed[0].summary).toContain('o/r');
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0].summary).toContain('o/web');
+  });
 });
 
 // ── git-token resolution must be LOUD, never silent ────

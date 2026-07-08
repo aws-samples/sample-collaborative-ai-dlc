@@ -272,6 +272,26 @@ describe('createProcessStore', () => {
     expect(input.ConditionExpression).toBe('#status = :pending');
   });
 
+  it('listEvents queries the EVENT# prefix time-ordered and drains pagination', async () => {
+    // The PR fan-in reads this to detect recorded git activity — a dropped
+    // page could hide a push failure (the 2026-07 lost-work signal).
+    ddb
+      .on(QueryCommand)
+      .resolvesOnce({
+        Items: [{ sk: 'EVENT#T1#a', eventType: 'v2.git.push_failed' }],
+        LastEvaluatedKey: { pk: 'EXEC#e1', sk: 'EVENT#T1#a' },
+      })
+      .resolvesOnce({
+        Items: [{ sk: 'EVENT#T2#b', eventType: 'v2.pr.skipped' }],
+      });
+    const events = await store.listEvents('e1');
+    expect(events.map((e) => e.eventType)).toEqual(['v2.git.push_failed', 'v2.pr.skipped']);
+    const input = ddb.commandCalls(QueryCommand)[0].args[0].input;
+    expect(input.KeyConditionExpression).toBe('pk = :pk AND begins_with(sk, :p)');
+    expect(input.ExpressionAttributeValues[':p']).toBe('EVENT#');
+    expect(ddb.commandCalls(QueryCommand)).toHaveLength(2);
+  });
+
   it('getExecutionRecords groups rows by SK prefix', async () => {
     ddb.on(QueryCommand).resolves({
       Items: [
