@@ -118,40 +118,79 @@ const toRepoSlug = (repo) => {
 
 // Resolve the git token for the intent's run. Mode-aware for GitHub (see
 // shared/github-auth-config.js): in 'app' mode a repo-scoped installation
-// token is minted (no per-user connection involved); in 'oauth' mode (and for
-// every non-GitHub provider) the starter's per-user connection is resolved.
+// token is minted; when the mint yields nothing (App not installed on the
+// repo, misconfigured, or the call failed) it FALLS THROUGH to the starter's
+// per-user OAuth connection instead of hard-failing — field incident: a repo
+// the App wasn't installed on could never be cloned even though the starting
+// user held a valid OAuth token. In 'oauth' mode (and for every non-GitHub
+// provider) the starter's per-user connection is resolved directly.
 // Returns { token, mode, reason } — the reason names WHY the token is empty
-// (no_connection / resolve_failed with the error), so a repo-ful run can
-// surface it instead of silently degrading to unauthenticated git. An empty
-// token can turn a private clone failure into a blind run against an empty repo.
-const defaultResolveToken = async ({ startedBy, gitProvider, repos = [] }) => {
+// (composed across both paths, e.g. "app_mint_empty; oauth: no_connection"),
+// so a repo-ful run can surface it instead of silently degrading to
+// unauthenticated git. An empty token can turn a private clone failure into a
+// blind run against an empty repo.
+const tokenLog = (outcome, extra = {}) =>
+  console.log(JSON.stringify({ at: 'resolveToken', outcome, ...extra }));
+
+// `io` bundles the shared-module collaborators so tests can exercise the
+// mode/fallback matrix without mocking module singletons (same injection
+// spirit as defaultDeps). Runtime always uses the real defaults.
+const defaultTokenIo = () => ({
+  getGitHubAuthMode: () => getGitHubAuthMode(ssm),
+  mintInstallationToken: (repositories) =>
+    getInstallationTokenFromConfig({ ssm, secrets, repositories }),
+  getGitConnection: (startedBy, gitProvider) => getGitConnection(ddb, startedBy, gitProvider),
+  resolveGitToken: (item) => resolveGitToken(ssm, item),
+});
+
+export const defaultResolveToken = async (
+  { startedBy, gitProvider, repos = [] },
+  io = defaultTokenIo(),
+) => {
+  // App-mode failure reason carried into the OAuth fallback for a composed
+  // diagnostic when BOTH paths yield nothing.
+  let appReason = null;
   if (gitProvider === 'github') {
     try {
-      const mode = await getGitHubAuthMode(ssm);
+      const mode = await io.getGitHubAuthMode();
       if (mode === 'app') {
         const repoSlugs = repos.map(toRepoSlug).filter(Boolean);
-        if (repoSlugs.length === 0) return { token: '', mode, reason: 'app_mode_no_repos' };
-        const token = await getInstallationTokenFromConfig({
-          ssm,
-          secrets,
-          repositories: repoSlugs,
-        });
-        return token ? { token, mode } : { token: '', mode, reason: 'app_mint_empty' };
+        if (repoSlugs.length === 0) {
+          appReason = 'app_mode_no_repos';
+        } else {
+          const token = await io.mintInstallationToken(repoSlugs);
+          if (token) {
+            tokenLog('app_mint_ok', { mode });
+            return { token, mode };
+          }
+          appReason = 'app_mint_empty';
+        }
       }
     } catch (e) {
       console.error('[v2-orchestrator] app-mode git token mint failed:', e?.message);
-      return { token: '', mode: 'app', reason: `app_mint_failed: ${e?.message ?? 'unknown'}` };
+      appReason = `app_mint_failed: ${e?.message ?? 'unknown'}`;
     }
+    if (appReason) tokenLog('app_mint_miss', { reason: appReason, fallback: 'oauth' });
   }
-  if (!startedBy || !gitProvider) return { token: '', reason: 'no_starter_or_provider' };
+  // Compose the final reason across app-mode (when it was tried) and OAuth so
+  // the timeline event names every failed path; mode:'app' is preserved so the
+  // UI points the operator at the App configuration first.
+  const miss = (oauthReason) => {
+    const reason = appReason ? `${appReason}; oauth: ${oauthReason}` : oauthReason;
+    tokenLog('no_token', { reason, ...(appReason ? { mode: 'app' } : {}) });
+    return { token: '', ...(appReason ? { mode: 'app' } : {}), reason };
+  };
+  if (!startedBy || !gitProvider) return miss('no_starter_or_provider');
   try {
-    const item = await getGitConnection(ddb, startedBy, gitProvider);
-    if (!item?.parameterName) return { token: '', reason: 'no_connection' };
-    const token = (await resolveGitToken(ssm, item)) || '';
-    return token ? { token } : { token: '', reason: 'empty_ssm_token' };
+    const item = await io.getGitConnection(startedBy, gitProvider);
+    if (!item?.parameterName) return miss('no_connection');
+    const token = (await io.resolveGitToken(item)) || '';
+    if (!token) return miss('empty_ssm_token');
+    tokenLog(appReason ? 'oauth_fallback_ok' : 'oauth_ok', appReason ? { after: appReason } : {});
+    return appReason ? { token, mode: 'app', reason: `oauth_fallback: ${appReason}` } : { token };
   } catch (e) {
     console.error('[v2-orchestrator] git token resolution failed:', e?.message);
-    return { token: '', reason: `resolve_failed: ${e?.message ?? 'unknown'}` };
+    return miss(`resolve_failed: ${e?.message ?? 'unknown'}`);
   }
 };
 
@@ -353,7 +392,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         'git-token-missing',
         'v2.git.token_unavailable',
         tokenResult?.mode === 'app'
-          ? `No usable git credentials for this run (${tokenResult?.reason ?? 'unknown'}) — private clones and pushes will fail; check the GitHub App configuration on the Admin page`
+          ? `No usable git credentials for this run (${tokenResult?.reason ?? 'unknown'}) — private clones and pushes will fail; check the GitHub App configuration on the Admin page or connect ${gitProvider} for the starting user`
           : `No usable git credentials for this run (${tokenResult?.reason ?? 'unknown'}) — private clones and pushes will fail; connect ${gitProvider} for the starting user`,
       );
     }

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { __durableHandler } from '../index.js';
+import { __durableHandler, defaultResolveToken } from '../index.js';
 
 // The orchestrator's control flow is driven through an injected `deps` bag and a
 // fake DurableContext — no real AWS/Neptune. This isolates the sequencing logic
@@ -1679,5 +1679,95 @@ describe('git token resolution', () => {
     const res = await start();
     expect(res.ok).toBe(true);
     expect(events().some((e) => e.type === 'v2.git.token_unavailable')).toBe(false);
+  });
+});
+
+// ── defaultResolveToken — App-mode → OAuth fallback matrix (field incident:
+// a repo the GitHub App was NOT installed on could never be cloned even
+// though the starting user held a valid OAuth connection, because app-mode
+// misses hard-returned instead of falling through) ────
+
+describe('defaultResolveToken (app-mode OAuth fallback)', () => {
+  const args = { startedBy: 'user-1', gitProvider: 'github', repos: ['acme/api'] };
+  // io stub: app mode by default, both credential sources controllable.
+  const io = (overrides = {}) => ({
+    getGitHubAuthMode: vi.fn(async () => 'app'),
+    mintInstallationToken: vi.fn(async () => 'app-token'),
+    getGitConnection: vi.fn(async () => ({ parameterName: '/git/u1' })),
+    resolveGitToken: vi.fn(async () => 'oauth-token'),
+    ...overrides,
+  });
+
+  it('app mode with a successful mint returns the installation token (no OAuth touched)', async () => {
+    const tio = io();
+    const res = await defaultResolveToken(args, tio);
+    expect(res).toEqual({ token: 'app-token', mode: 'app' });
+    expect(tio.getGitConnection).not.toHaveBeenCalled();
+  });
+
+  it('falls through to OAuth when the app mint comes back EMPTY (App not installed on the repo)', async () => {
+    const tio = io({ mintInstallationToken: vi.fn(async () => '') });
+    const res = await defaultResolveToken(args, tio);
+    expect(res.token).toBe('oauth-token');
+    expect(res.mode).toBe('app');
+    expect(res.reason).toBe('oauth_fallback: app_mint_empty');
+    expect(tio.getGitConnection).toHaveBeenCalledWith('user-1', 'github');
+  });
+
+  it('falls through to OAuth when the app mint THROWS', async () => {
+    const tio = io({
+      mintInstallationToken: vi.fn(async () => {
+        throw new Error('installation not found');
+      }),
+    });
+    const res = await defaultResolveToken(args, tio);
+    expect(res.token).toBe('oauth-token');
+    expect(res.reason).toContain('oauth_fallback: app_mint_failed: installation not found');
+  });
+
+  it('falls through to OAuth in app mode when the intent has no repos to scope a mint to', async () => {
+    const tio = io();
+    const res = await defaultResolveToken({ ...args, repos: [] }, tio);
+    expect(res.token).toBe('oauth-token');
+    expect(res.reason).toBe('oauth_fallback: app_mode_no_repos');
+    expect(tio.mintInstallationToken).not.toHaveBeenCalled();
+  });
+
+  it('composes BOTH failure reasons when the mint misses and OAuth has no connection', async () => {
+    const tio = io({
+      mintInstallationToken: vi.fn(async () => ''),
+      getGitConnection: vi.fn(async () => null),
+    });
+    const res = await defaultResolveToken(args, tio);
+    expect(res).toEqual({ token: '', mode: 'app', reason: 'app_mint_empty; oauth: no_connection' });
+  });
+
+  it('composes the reason when the mint misses and the OAuth SSM token is empty', async () => {
+    const tio = io({
+      mintInstallationToken: vi.fn(async () => ''),
+      resolveGitToken: vi.fn(async () => ''),
+    });
+    const res = await defaultResolveToken(args, tio);
+    expect(res.reason).toBe('app_mint_empty; oauth: empty_ssm_token');
+  });
+
+  it('oauth mode goes straight to the user connection (no mint, no app reason)', async () => {
+    const tio = io({ getGitHubAuthMode: vi.fn(async () => 'oauth') });
+    const res = await defaultResolveToken(args, tio);
+    expect(res).toEqual({ token: 'oauth-token' });
+    expect(tio.mintInstallationToken).not.toHaveBeenCalled();
+  });
+
+  it('non-GitHub providers never consult the GitHub auth mode', async () => {
+    const tio = io();
+    const res = await defaultResolveToken({ ...args, gitProvider: 'gitlab' }, tio);
+    expect(res).toEqual({ token: 'oauth-token' });
+    expect(tio.getGitHubAuthMode).not.toHaveBeenCalled();
+  });
+
+  it('a missing starter yields a plain miss (no fabricated fallback)', async () => {
+    const tio = io({ getGitHubAuthMode: vi.fn(async () => 'oauth') });
+    const res = await defaultResolveToken({ ...args, startedBy: null }, tio);
+    expect(res).toEqual({ token: '', reason: 'no_starter_or_provider' });
   });
 });
