@@ -18,6 +18,10 @@ import {
   SendDurableExecutionCallbackSuccessCommand,
 } from '@aws-sdk/client-lambda';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
+import {
+  BedrockAgentCoreClient,
+  InvokeAgentRuntimeCommand,
+} from '@aws-sdk/client-bedrock-agentcore';
 // CJS shared module — default-import then destructure. Used to compute the
 // deterministic stage-instance ids the rewind flow resets/supersedes.
 import executionPlanPkg from '../../shared/v2-execution-plan.js';
@@ -32,6 +36,7 @@ let g;
 const ddbMock = mockClient(DynamoDBDocumentClient);
 const lambdaMock = mockClient(LambdaClient);
 const ssmMock = mockClient(SSMClient);
+const agentcoreMock = mockClient(BedrockAgentCoreClient);
 
 // In-memory single-table fake for the v2 process table + blocks table.
 const procStore = new Map();
@@ -214,6 +219,7 @@ afterAll(async () => {
 beforeEach(() => {
   installDdbFakes();
   ssmMock.reset();
+  agentcoreMock.reset();
 });
 
 const claims = (sub) => ({
@@ -1731,6 +1737,117 @@ describe('DELETE /projects/{id}/intents/{intentId}', () => {
     const res = await del(sub, projectB, intent.id);
     expect(res.statusCode).toBe(404);
     expect(procStore.has(keyOf(`EXEC#${intent.id}`, 'META'))).toBe(true);
+  });
+});
+
+describe('POST /derive — manual graph-projection backfill', () => {
+  // The route sits behind BOTH gates: project membership (like every intent
+  // route) AND the platform-admin group.
+  const adminClaims = (sub) => ({
+    requestContext: {
+      authorizer: { claims: { sub, email: `${sub}@x`, 'cognito:groups': 'platform-admin' } },
+    },
+  });
+  const derive = (claimsBag, projectId, intentId) =>
+    handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intentId}/derive`,
+      pathParameters: { projectId, intentId },
+      body: null,
+      ...claimsBag,
+    });
+  const seedMeta = (projectId, intentId, extra = {}) => {
+    procStore.set(keyOf(`EXEC#${intentId}`, 'META'), {
+      pk: `EXEC#${intentId}`,
+      sk: 'META',
+      type: 'Execution',
+      executionId: intentId,
+      intentId,
+      projectId,
+      status: 'WAITING',
+      ...extra,
+    });
+  };
+
+  beforeEach(() => {
+    vi.stubEnv('AGENTCORE_RUNTIME_ARN', 'arn:aws:bedrock-agentcore:eu:1:runtime/x');
+  });
+
+  it('requires platform admin (a plain project owner is refused)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedMeta(projectId, 'i-plain');
+    const res = await derive(claims(sub), projectId, 'i-plain');
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body).code).toBe('PLATFORM_ADMIN_REQUIRED');
+  });
+
+  it('refuses while RUNNING and 404s a project mismatch', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedMeta(projectId, 'i-run', { status: 'RUNNING' });
+    expect((await derive(adminClaims(sub), projectId, 'i-run')).statusCode).toBe(409);
+    seedMeta('another-project', 'i-other');
+    expect((await derive(adminClaims(sub), projectId, 'i-other')).statusCode).toBe(404);
+  });
+
+  it('dispatches derive-artifacts to the runtime with the META enrichment/CLI snapshot', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedMeta(projectId, 'i-done', {
+      status: 'SUCCEEDED',
+      deriveEnrichment: 'llm',
+      agentCli: 'claude',
+      cliModels: { claude: 'us.anthropic.claude-haiku-4-5' },
+    });
+    agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+      response: {
+        transformToString: async () =>
+          JSON.stringify({
+            ok: true,
+            artifacts: ['a1'],
+            sections: 2,
+            items: 3,
+            enrichment: 'llm',
+            enriched: 1,
+          }),
+      },
+    });
+    const res = await derive(adminClaims(sub), projectId, 'i-done');
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({
+      ok: true,
+      artifacts: ['a1'],
+      items: 3,
+      enriched: 1,
+    });
+    const call = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input;
+    expect(call.runtimeSessionId.startsWith('aidlc-intent-i-done')).toBe(true);
+    expect(call.runtimeSessionId.length).toBeGreaterThanOrEqual(33);
+    expect(JSON.parse(Buffer.from(call.payload).toString('utf8'))).toMatchObject({
+      command: 'derive-artifacts',
+      projectId,
+      intentId: 'i-done',
+      executionId: 'i-done',
+      enrichment: 'llm',
+      requestedCli: 'claude',
+      cliModels: { claude: 'us.anthropic.claude-haiku-4-5' },
+    });
+  });
+
+  it('maps a command-level failure to 422', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedMeta(projectId, 'i-fail', { status: 'FAILED' });
+    agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+      response: {
+        transformToString: async () =>
+          JSON.stringify({ ok: false, reason: 'derive_failed', detail: 'neptune down' }),
+      },
+    });
+    const res = await derive(adminClaims(sub), projectId, 'i-fail');
+    expect(res.statusCode).toBe(422);
+    expect(JSON.parse(res.body)).toMatchObject({ error: 'derive_failed', detail: 'neptune down' });
   });
 });
 

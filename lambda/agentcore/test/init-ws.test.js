@@ -169,6 +169,40 @@ describe('initWs', () => {
 describe('workspace checkout (mocked git runner)', () => {
   const noMkdir = async () => {};
 
+  it('REUSES an existing checkout (warm session on rewind/retry): no clone, no init, still scrubbed', async () => {
+    // Field incident: the rewind relaunch reuses the intent's runtimeSessionId,
+    // so /mnt/workspace still holds the checkout. `git clone` refused the
+    // non-empty dir, the git-init fallback flagged cloned:false, and init-ws
+    // failed every retry with checkout_failed for a perfectly healthy tree.
+    const cmds = [];
+    const runner = async (command, args) => {
+      cmds.push([command, ...args].join(' '));
+      return { code: 0 };
+    };
+    const statFn = async (p) => {
+      if (p.endsWith('/.git')) return { isDirectory: () => true, isFile: () => false };
+      throw new Error('ENOENT');
+    };
+    const res = await checkoutRepo({
+      repo: 'acme/api',
+      branch: 'aidlc/x',
+      baseBranch: 'main',
+      gitToken: 'tok',
+      targetDir: '/ws',
+      runner,
+      ensureDir: noMkdir,
+      statFn,
+    });
+    expect(res).toMatchObject({ cloned: true, reused: true });
+    expect(cmds.some((c) => c.startsWith('git clone'))).toBe(false);
+    expect(cmds.some((c) => c.startsWith('git init'))).toBe(false);
+    // Remote is still (re-)scrubbed and the intent branch ensured.
+    expect(cmds[0]).toBe('git remote set-url origin https://github.com/acme/api.git');
+    expect(cmds[1]).toBe('git checkout aidlc/x');
+    // Nothing in the reuse path ever sees the token.
+    for (const c of cmds) expect(c).not.toContain('tok');
+  });
+
   it('clones, scrubs the token from origin, then checks out the branch', async () => {
     const cmds = [];
     const runner = async (command, args) => {

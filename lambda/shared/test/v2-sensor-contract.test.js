@@ -8,6 +8,7 @@ import {
   buildScriptArgv,
   evalRequiredSections,
   evalUpstreamCoverage,
+  evalGraphCoverage,
   parseBoltDag,
 } from '../v2-sensor-contract.js';
 
@@ -15,6 +16,7 @@ describe('sensorKind', () => {
   it('routes the document-shape sensors in-process', () => {
     expect(sensorKind({ sensorId: 'required-sections' })).toBe('graph');
     expect(sensorKind({ sensorId: 'upstream-coverage' })).toBe('graph');
+    expect(sensorKind({ sensorId: 'graph-coverage' })).toBe('graph');
   });
   it('routes code-quality sensors to the script path', () => {
     expect(sensorKind({ sensorId: 'linter', runtime: 'bun' })).toBe('script');
@@ -131,6 +133,101 @@ describe('evalRequiredSections', () => {
     const r = evalRequiredSections('## A\n## B\n', 'unit-of-work-dependency');
     expect(r.pass).toBe(false);
     expect(r.detail.edge_block).toBe('absent');
+  });
+  it('reports registered structured blocks when present', () => {
+    const r = evalRequiredSections(
+      [
+        '## Stories',
+        '## Traceability',
+        '```yaml',
+        'stories:',
+        '  - id: s1',
+        '    title: Login',
+        '```',
+      ].join('\n'),
+      'stories',
+    );
+    expect(r.pass).toBe(true);
+    expect(r.detail.structured_key).toBe('stories');
+    expect(r.detail.structured_block).toBe('present');
+    expect(r.detail.structured_items).toBe(1);
+  });
+  it('fails registered artifacts when a structured block is malformed', () => {
+    const r = evalRequiredSections(
+      ['## Stories', '## Traceability', '```yaml', 'stories:', '  - [', '```'].join('\n'),
+      'stories',
+    );
+    expect(r.pass).toBe(false);
+    expect(r.detail.structured_block).toBe('malformed');
+  });
+  it('an ABSENT structured block is a finding but passes by default (strictness ladder)', () => {
+    const r = evalRequiredSections('## Stories\n## Traceability\nprose only', 'stories');
+    expect(r.pass).toBe(true);
+    expect(r.detail.structured_block).toBe('absent');
+    expect(r.detail.findings_count).toBe(1);
+  });
+  it('strictStructuredBlocks flips an absent block to a FAIL (config, not code)', () => {
+    const r = evalRequiredSections('## Stories\n## Traceability\nprose only', 'stories', {
+      strictStructuredBlocks: true,
+    });
+    expect(r.pass).toBe(false);
+    expect(r.detail.structured_block).toBe('absent');
+    // Present blocks still pass under strict mode.
+    const ok = evalRequiredSections(
+      ['## Stories', '## More', '```yaml', 'stories:', '  - id: s1', '    title: T', '```'].join(
+        '\n',
+      ),
+      'stories',
+      { strictStructuredBlocks: true },
+    );
+    expect(ok.pass).toBe(true);
+  });
+});
+
+describe('evalGraphCoverage', () => {
+  it('is INCONCLUSIVE before any typed items exist (early stages must not fail)', () => {
+    const r = evalGraphCoverage({ counts: {} });
+    expect(r.result).toBe('INCONCLUSIVE');
+  });
+
+  it('passes a fully wired graph and reports non-must-have gaps without failing', () => {
+    const r = evalGraphCoverage({
+      counts: { requirements: 2, stories: 1, mappings: 1, components: 0 },
+      uncoveredRequirements: [{ slug: 'req-theme' }], // could-have — reported only
+      uncoveredMustHave: [],
+      unmappedStories: [],
+      unknownReferences: [],
+      componentCycles: [],
+    });
+    expect(r.pass).toBe(true);
+    expect(r.detail.uncovered_requirements).toEqual(['req-theme']);
+    expect(r.detail.findings_count).toBe(0);
+  });
+
+  it('fails on uncovered must-haves, unknown references, and component cycles', () => {
+    const r = evalGraphCoverage({
+      counts: { requirements: 2, stories: 2, mappings: 1, components: 2 },
+      uncoveredMustHave: [{ slug: 'req-pay' }],
+      unmappedStories: [{ slug: 's-float' }],
+      unknownReferences: [{ kind: 'story-covers-unknown-requirement', from: 's1', ref: 'ghost' }],
+      componentCycles: ['a', 'b'],
+    });
+    expect(r.pass).toBe(false);
+    expect(r.detail.findings_count).toBe(5);
+    expect(r.detail.uncovered_must_have).toEqual(['req-pay']);
+    expect(r.detail.component_cycles).toEqual(['a', 'b']);
+  });
+
+  it('ignores unmapped stories until a story map exists', () => {
+    const r = evalGraphCoverage({
+      counts: { requirements: 0, stories: 2, mappings: 0, components: 0 },
+      uncoveredMustHave: [],
+      unmappedStories: [{ slug: 's-a' }, { slug: 's-b' }],
+      unknownReferences: [],
+      componentCycles: [],
+    });
+    expect(r.pass).toBe(true);
+    expect(r.detail.unmapped_stories).toEqual([]);
   });
 });
 

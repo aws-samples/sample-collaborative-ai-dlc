@@ -24,14 +24,11 @@ export const MCP_SERVER_NAME = 'aidlc';
 const claudeDriver = {
   name: 'claude',
   buildInvocation({ prompt, mcpConfigPath, model, allowedTools = [], sessionId = null }) {
-    const args = [
-      '-p',
-      prompt,
-      '--mcp-config',
-      mcpConfigPath,
-      '--permission-mode',
-      'bypassPermissions',
-    ];
+    const args = ['-p', prompt];
+    // MCP config is optional: a plain one-shot prompt (e.g. derive-time
+    // enrichment) runs without any tool surface.
+    if (mcpConfigPath) args.push('--mcp-config', mcpConfigPath);
+    args.push('--permission-mode', 'bypassPermissions');
     // Force the conversation id up front so the orchestrator persists it without
     // scraping it back. `--session-id` is NEW-session-only — resume uses --resume.
     if (sessionId) args.push('--session-id', sessionId);

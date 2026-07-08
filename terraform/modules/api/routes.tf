@@ -1002,6 +1002,22 @@ resource "aws_api_gateway_resource" "intent_graph" {
   path_part   = "graph"
 }
 
+# Aggregated process/graph-read evidence (reads ledger, enrichment spend,
+# sensor findings) — the intent Audit view.
+resource "aws_api_gateway_resource" "intent_audit" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent.id
+  path_part   = "audit"
+}
+
+# Manual graph-projection backfill (platform admin) — re-derive the intent's
+# artifacts into the fine-grained graph.
+resource "aws_api_gateway_resource" "intent_derive" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent.id
+  path_part   = "derive"
+}
+
 # Lazy agent transcript: the detail DTO no longer carries OUTPUT rows (they
 # dominate a long run's partition); the UI fetches them per activity pane.
 resource "aws_api_gateway_resource" "intent_outputs" {
@@ -1070,6 +1086,8 @@ locals {
     item_get        = { resource = aws_api_gateway_resource.intent.id, method = "GET" }
     item_delete     = { resource = aws_api_gateway_resource.intent.id, method = "DELETE" }
     graph_get       = { resource = aws_api_gateway_resource.intent_graph.id, method = "GET" }
+    audit_get       = { resource = aws_api_gateway_resource.intent_audit.id, method = "GET" }
+    derive_post     = { resource = aws_api_gateway_resource.intent_derive.id, method = "POST" }
     outputs_get     = { resource = aws_api_gateway_resource.intent_outputs.id, method = "GET" }
     start_post      = { resource = aws_api_gateway_resource.intent_start.id, method = "POST" }
     cancel_post     = { resource = aws_api_gateway_resource.intent_cancel.id, method = "POST" }
@@ -1121,6 +1139,18 @@ module "cors_intent_graph" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.intent_graph.id
+}
+
+module "cors_intent_audit" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_audit.id
+}
+
+module "cors_intent_derive" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_derive.id
 }
 
 module "cors_intent_outputs" {

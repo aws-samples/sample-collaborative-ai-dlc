@@ -82,6 +82,10 @@ export interface AgentSettings {
   kiroApiKeySet: boolean;
   /** Default runtime model overrides by supported CLI */
   cliModels?: CliModels;
+  /** Derive-time graph enrichment: 'off' = deterministic projection only,
+   *  'llm' = one bounded agent-CLI summary call per approved artifact.
+   *  Snapshotted per intent at create — flips apply to the NEXT intent. */
+  deriveEnrichment?: 'off' | 'llm';
 }
 
 export interface AgentSettingsUpdate {
@@ -91,6 +95,8 @@ export interface AgentSettingsUpdate {
   kiroApiKey?: string;
   /** Default runtime model overrides by supported CLI */
   cliModels?: CliModels;
+  /** Derive-time graph enrichment mode. Omit to leave unchanged. */
+  deriveEnrichment?: 'off' | 'llm';
 }
 
 export interface TaskAgentStatus {

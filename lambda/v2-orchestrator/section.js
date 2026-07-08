@@ -292,6 +292,9 @@ export const runParallelSection = async (segment, toolkit) => {
     // Forwarded to the conflict-resolution stage's CLI run (WP6).
     requestedCli = null,
     cliModels = null,
+    // Derive-time enrichment mode ('off'|'llm'), snapshotted on META — rides
+    // the lane derive-artifacts dispatches like the once-per-workflow hook.
+    deriveEnrichment = 'off',
   } = toolkit;
   const { executionId, intentId, projectId } = ids;
   const sk = `s${segment.index}`;
@@ -525,6 +528,45 @@ export const runParallelSection = async (segment, toolkit) => {
             stageId: stage.stageId,
             reason: outcome.reason,
           });
+        }
+
+        // Graph projection for lane-produced artifacts — the lane twin of the
+        // once-per-workflow derive hook (index.js). Scoped to THIS unit's
+        // stage instance; unitSlug attributes enrichment spend + events to the
+        // lane in the audit. Fail-open: a derive failure is an event, never a
+        // lane failure (the canonical markdown is already in the graph).
+        const laneOutputTypes = (stage.outputArtifacts ?? [])
+          .map((o) => o.artifact ?? o)
+          .filter(Boolean);
+        if (laneOutputTypes.length > 0) {
+          const derived = await laneCtx.step(
+            `derive-artifacts-${stage.stageId}-u-${slug}${rTag}`,
+            () =>
+              invokeRuntime(
+                {
+                  command: 'derive-artifacts',
+                  projectId,
+                  intentId,
+                  executionId,
+                  stageInstanceId: toolkit.stageInstanceIdFor(stage.stageId, slug),
+                  artifactTypes: laneOutputTypes,
+                  enrichment: deriveEnrichment,
+                  unitSlug: slug,
+                  ...(requestedCli ? { requestedCli } : {}),
+                  ...(cliModels ? { cliModels } : {}),
+                },
+                laneSession,
+              ),
+          );
+          if (!derived || derived.ok === false) {
+            await emitEvent(
+              laneCtx,
+              `derive-failed-${stage.stageId}-u-${slug}${rTag}`,
+              'v2.derive.failed',
+              `${stage.stageId} (unit ${slug}): ${derived?.reason ?? 'no_response'}`,
+              { unitSlug: slug },
+            );
+          }
         }
       }
 

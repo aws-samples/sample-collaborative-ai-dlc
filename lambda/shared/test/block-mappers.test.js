@@ -74,6 +74,51 @@ describe('buildFromFiles', () => {
     expect(phase.phase).toBe('ideation');
   });
 
+  it('maps v2.1.7 memory files to stable rule ids', () => {
+    const { blocks: memoryBlocks, workflow: memoryWorkflow } = buildFromFiles(
+      new Map([
+        [
+          'core/aidlc-common/stages/ideation/intent-capture.md',
+          `---
+slug: intent-capture
+phase: ideation
+execution: ALWAYS
+condition: always
+lead_agent: aidlc-product-agent
+support_agents: []
+mode: inline
+produces: []
+consumes: []
+requires_stage: []
+sensors: []
+scopes:
+  - feature
+inputs: none
+outputs: none
+---
+# Intent Capture`,
+        ],
+        ['core/memory/org.md', '# Org-Level Rules'],
+        ['core/memory/team.md', '# Team Rules'],
+        ['core/memory/project.md', '# Project Rules'],
+        ['core/memory/phases/ideation.md', '# Ideation Phase Guardrails'],
+        ['core/memory/templates/requirements.md', '# Not a rule'],
+      ]),
+    );
+    expect(
+      memoryBlocks
+        .filter((b) => b.type === 'RULE')
+        .map((b) => b.id)
+        .toSorted(),
+    ).toEqual(['aidlc-org', 'aidlc-phase-ideation', 'aidlc-project', 'aidlc-team']);
+    expect(memoryWorkflow.ruleRefs.map((r) => r.ruleId).toSorted()).toEqual([
+      'aidlc-org',
+      'aidlc-phase-ideation',
+      'aidlc-project',
+      'aidlc-team',
+    ]);
+  });
+
   it('derives knowledge agentRef + namespaced id from the path', () => {
     const guide = byId(blocks, 'KNOWLEDGE', 'product-agent-requirements-guide');
     expect(guide.agentRef).toBe('aidlc-product-agent');

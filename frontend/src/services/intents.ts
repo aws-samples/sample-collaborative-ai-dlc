@@ -370,6 +370,109 @@ export interface ProjectMetrics {
   };
 }
 
+// ── Intent audit (GET /projects/{id}/intents/{id}/audit) ──
+// Aggregated process evidence for one intent: what the agents READ from the
+// graph (the attention ledger), what enrichment cost, and what the sensors
+// found — the data for judging whether the graph/enrichment mechanisms are
+// paying off. Server shape: lambda/intents/audit.js.
+export interface IntentAuditReadTool {
+  tool: string;
+  calls: number;
+  bytes: number;
+  resultCount: number;
+}
+
+export interface IntentAuditEnrichment {
+  /** Enrichment mode this execution ran with (snapshotted at intent create). */
+  mode: 'off' | 'llm';
+  /** One-shot summary calls made by derive-artifacts. */
+  calls: number;
+  tokensInput: number;
+  tokensOutput: number;
+  credits: number;
+  /** Compact-read adoption: targeted graph reads vs full-document reads. */
+  reads: {
+    compactCalls: number;
+    compactBytes: number;
+    fullCalls: number;
+    fullBytes: number;
+    /** compactBytes / (compactBytes+fullBytes), 0..1; null with no reads. */
+    compactShare: number | null;
+  };
+}
+
+export interface IntentAuditAdvisory {
+  kind: string;
+  severity: string;
+  summary: string;
+  stageInstanceId?: string | null;
+}
+
+/** Derivation health + structure-contract compliance for the intent. */
+export interface IntentAuditDerivation {
+  /** Successful (incl. partial) derive runs. */
+  runs: number;
+  failures: number;
+  partial: number;
+  enrichmentSkips: number;
+  structuredBlocks: {
+    checked: number;
+    present: number;
+    absent: number;
+    malformed: number;
+    /** present / checked, 0..1; null when nothing was checked. */
+    complianceRate: number | null;
+  };
+}
+
+/** Per-unit-lane read/spend rollup. */
+export interface IntentAuditUnit {
+  unitSlug: string;
+  readCalls: number;
+  readBytes: number;
+  tokensInput: number;
+  tokensOutput: number;
+}
+
+/** Write-side context ledger: what the runtime pushed into fresh stage prompts. */
+export interface IntentAuditPromptContext {
+  samples: number;
+  promptBytes: number;
+  compiledContextBytes: number;
+  avgPromptBytes: number | null;
+}
+
+export interface IntentAudit {
+  summary: {
+    stageCount: number;
+    eventCount: number;
+    humanTaskCount: number;
+    metricSamples: number;
+    graphReadCalls: number;
+    graphReadBytes: number;
+    sensorRuns: number;
+    sensorFindings: number;
+  };
+  graphReads: { totalBytes: number; byTool: IntentAuditReadTool[] };
+  enrichment: IntentAuditEnrichment;
+  derivation: IntentAuditDerivation;
+  promptContext: IntentAuditPromptContext;
+  units: IntentAuditUnit[];
+  metrics: { key: string; samples: number; total: number; max: number }[];
+  sensors: {
+    runs: number;
+    findings: {
+      sensorId?: string;
+      result?: string;
+      severity?: string;
+      held: boolean;
+      stageInstanceId: string | null;
+      detail: unknown;
+    }[];
+  };
+  advisories: IntentAuditAdvisory[];
+}
+
 export const intentsService = {
   list: (projectId: string, status?: IntentStatus) =>
     api.get<Intent[]>(`/projects/${projectId}/intents${status ? `?status=${status}` : ''}`),
@@ -379,6 +482,8 @@ export const intentsService = {
     api.get<ProjectMetrics>(`/projects/${projectId}/intents/metrics`),
   graph: (projectId: string, intentId: string) =>
     api.get<IntentKnowledgeGraph>(`/projects/${projectId}/intents/${intentId}/graph`),
+  audit: (projectId: string, intentId: string) =>
+    api.get<IntentAudit>(`/projects/${projectId}/intents/${intentId}/audit`),
   // Lazy agent transcript (the detail DTO carries no outputs). `stageInstanceId`
   // scopes to one pane — the literal "intent" is the stage-less workspace/init
   // bucket; `afterSeq` fetches only chunks emitted after a known sequence.

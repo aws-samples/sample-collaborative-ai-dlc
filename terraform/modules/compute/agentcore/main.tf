@@ -399,6 +399,24 @@ resource "aws_ssm_parameter" "cli_models" {
   tags = var.tags
 }
 
+# Derive-time graph enrichment mode — "off" (deterministic projection only) or
+# "llm" (a bounded one-shot agent-CLI call per approved artifact adds gist/claims
+# summary metadata; topology stays deterministic either way). Managed by the
+# Admin UI at runtime; snapshotted onto each execution's META row at intent
+# create, so the toggle takes effect on the next intent without a redeploy.
+resource "aws_ssm_parameter" "derive_enrichment" {
+  name        = "/${var.project_name}/${var.environment}/derive-enrichment"
+  description = "Graph derive-time enrichment mode: off | llm (Admin UI managed)"
+  type        = "String"
+  value       = "off"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+
+  tags = var.tags
+}
+
 # Kiro API key — stored as SecureString; set via Admin UI.
 # Created with a placeholder; the driver treats "placeholder" as "not configured".
 resource "aws_ssm_parameter" "kiro_api_key" {

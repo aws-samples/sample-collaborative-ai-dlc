@@ -39,6 +39,15 @@ const cloneUrl = (repo, gitToken, gitProvider) => buildCloneUrl(gitProvider, rep
 // Clone one repo and check out (creating if needed) the working branch off the
 // base branch. Best-effort init for an empty repo. `runner`/`ensureDir`
 // injectable for tests. The origin remote is left TOKEN-FREE in both outcomes.
+//
+// IDEMPOTENT for a warm session: a rewind/retry relaunch reuses the intent's
+// runtimeSessionId, so the managed mount still holds the previous checkout.
+// `git clone` refuses a non-empty directory, and the git-init fallback then
+// made init-ws report checkout_failed ("repository unreachable") for a tree
+// that was actually perfectly healthy — killing every retry (field incident).
+// An existing checkout is REUSED: remote re-scrubbed, branch ensured, no
+// network. The engine pushed after every prior stage, so the tree is the
+// intent branch's durable state — exactly what a rewound run must resume from.
 export const checkoutRepo = async ({
   repo,
   branch,
@@ -48,8 +57,32 @@ export const checkoutRepo = async ({
   targetDir,
   runner = run,
   ensureDir = (d) => mkdir(d, { recursive: true }),
+  statFn = stat,
 }) => {
   await ensureDir(targetDir);
+  const cleanUrl = cloneUrl(repo, '', gitProvider);
+  const scrubRemote = async () => {
+    const setUrl = await runner('git', ['remote', 'set-url', 'origin', cleanUrl], {
+      cwd: targetDir,
+    });
+    if (setUrl.code !== 0) {
+      await runner('git', ['remote', 'add', 'origin', cleanUrl], { cwd: targetDir });
+    }
+  };
+  const ensureBranch = async () => {
+    if (!branch) return;
+    const checkout = await runner('git', ['checkout', branch], { cwd: targetDir });
+    if (checkout.code !== 0) {
+      await runner('git', ['checkout', '-b', branch, baseBranch], { cwd: targetDir });
+    }
+  };
+
+  if (await hasCheckout(targetDir, statFn)) {
+    await scrubRemote();
+    await ensureBranch();
+    return { repo, targetDir, cloned: true, reused: true };
+  }
+
   const clone = await runner('git', ['clone', cloneUrl(repo, gitToken, gitProvider), targetDir]);
   const cloned = clone.code === 0;
   if (!cloned) {
@@ -63,19 +96,8 @@ export const checkoutRepo = async ({
   // Either way origin ends up as the token-FREE URL (added if missing) so the
   // agent CLI can never read a token; git-engine re-injects it only inside its
   // own push window.
-  const cleanUrl = cloneUrl(repo, '', gitProvider);
-  const setUrl = await runner('git', ['remote', 'set-url', 'origin', cleanUrl], {
-    cwd: targetDir,
-  });
-  if (setUrl.code !== 0) {
-    await runner('git', ['remote', 'add', 'origin', cleanUrl], { cwd: targetDir });
-  }
-  if (branch) {
-    const checkout = await runner('git', ['checkout', branch], { cwd: targetDir });
-    if (checkout.code !== 0) {
-      await runner('git', ['checkout', '-b', branch, baseBranch], { cwd: targetDir });
-    }
-  }
+  await scrubRemote();
+  await ensureBranch();
   return { repo, targetDir, cloned };
 };
 

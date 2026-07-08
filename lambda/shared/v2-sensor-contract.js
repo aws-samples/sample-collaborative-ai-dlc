@@ -1,5 +1,7 @@
 'use strict';
 
+const { REGISTRY, extractArtifactStructure } = require('./artifact-extractors.js');
+
 // V2 deterministic sensor contract — PURE + shared (no I/O, no AWS, no spawn).
 //
 // A sensor is one of a stage's three verification axes (the others are the
@@ -54,7 +56,7 @@ const DEFAULT_TIMEOUT_SECONDS = 30;
 // The two sensors we evaluate in-process over graph content, by id. Everything
 // else is treated as a `script` sensor (materialize + spawn). Keyed on the
 // stable sensor id the seed assigns (basename minus `aidlc-` prefix).
-const GRAPH_SENSORS = Object.freeze(['required-sections', 'upstream-coverage']);
+const GRAPH_SENSORS = Object.freeze(['required-sections', 'upstream-coverage', 'graph-coverage']);
 
 // Classify a resolved sensor into its execution kind. A sensor whose id is one
 // of the graph evaluators runs in-process; otherwise it is a script sensor that
@@ -140,7 +142,16 @@ const buildScriptArgv = (spec, { scriptPath, substitutions = {} } = {}) => {
 // dependency artifact additionally requires a valid acyclic `units:` DAG block.
 // `body` is the artifact content (from Neptune); `name` is the artifact type /
 // filename used to gate the DAG extension.
-const evalRequiredSections = (body = '', name = '') => {
+//
+// Structured-block strictness ladder (registered types): a MALFORMED fenced
+// block always fails (broken YAML would silently drop typed items); an ABSENT
+// block is reported (`structured_block: 'absent'`) but only fails when
+// `options.strictStructuredBlocks` is set — the prompt-injected structure
+// contracts are new, so absence stays an advisory finding until field-test
+// compliance data justifies flipping the switch (a sensor-row/config change,
+// not code).
+const evalRequiredSections = (body = '', name = '', options = {}) => {
+  const strictStructuredBlocks = Boolean(options.strictStructuredBlocks);
   const seen = new Set();
   const headings = [];
   for (const raw of String(body).split(/\r?\n/)) {
@@ -164,6 +175,28 @@ const evalRequiredSections = (body = '', name = '') => {
       pass = false;
       findingsCount += 1;
       detail.edge_detail = parsed.detail ?? null;
+    }
+  }
+
+  const artifactType = String(name).replace(/\.md$/, '');
+  if (REGISTRY[artifactType]) {
+    const extracted = extractArtifactStructure({ artifactType, content: body });
+    detail.structured_key = extracted.structuredKey;
+    detail.structured_block = extracted.error
+      ? 'malformed'
+      : extracted.structuredPresent
+        ? 'present'
+        : 'absent';
+    detail.structured_items = extracted.items.length;
+    if (extracted.error) {
+      pass = false;
+      findingsCount += 1;
+      detail.structured_detail = extracted.error;
+    } else if (!extracted.structuredPresent) {
+      // Absent: a finding either way (audit surfaces it); blocking only in
+      // strict mode.
+      findingsCount += 1;
+      if (strictStructuredBlocks) pass = false;
     }
   }
 
@@ -202,6 +235,57 @@ const evalUpstreamCoverage = (body = '', consumes = []) => {
     pass,
     result: pass ? SENSOR_RESULT.PASS : SENSOR_RESULT.FAIL,
     detail: { consumes: slugs, unreferenced, findings_count: unreferenced.length },
+  };
+};
+
+// ─── In-process evaluator: graph-coverage ───
+// Pure verdict over a getCoverage() report (the typed-item joins the graph
+// writer computes): the topology-integrity gate for the derived graph.
+//   INCONCLUSIVE — no typed items derived yet (early stages; nothing to judge).
+//   FAIL — a must-have requirement no story covers, a reference to a
+//          nonexistent slug, a component dependency cycle, or (once a story
+//          map exists) stories mapped to no unit.
+//   PASS — everything wired. Non-must-have uncovered requirements are
+//          reported in detail but never fail (could/should-haves may be
+//          deliberately deferred).
+const evalGraphCoverage = (coverage = {}) => {
+  const counts = coverage.counts ?? {};
+  const totalItems =
+    (counts.requirements ?? 0) +
+    (counts.stories ?? 0) +
+    (counts.mappings ?? 0) +
+    (counts.components ?? 0);
+  if (totalItems === 0) {
+    return {
+      pass: true,
+      result: SENSOR_RESULT.INCONCLUSIVE,
+      detail: { reason: 'no typed items derived yet', findings_count: 0 },
+    };
+  }
+  const uncoveredMustHave = coverage.uncoveredMustHave ?? [];
+  const unknownReferences = coverage.unknownReferences ?? [];
+  const componentCycles = coverage.componentCycles ?? [];
+  // Unmapped stories only count once a story map exists — before that stage,
+  // every story is trivially unmapped.
+  const unmappedStories = (counts.mappings ?? 0) > 0 ? (coverage.unmappedStories ?? []) : [];
+  const findings =
+    uncoveredMustHave.length +
+    unknownReferences.length +
+    componentCycles.length +
+    unmappedStories.length;
+  const pass = findings === 0;
+  return {
+    pass,
+    result: pass ? SENSOR_RESULT.PASS : SENSOR_RESULT.FAIL,
+    detail: {
+      counts,
+      uncovered_must_have: uncoveredMustHave.map((r) => r.slug),
+      uncovered_requirements: (coverage.uncoveredRequirements ?? []).map((r) => r.slug),
+      unmapped_stories: unmappedStories.map((s) => s.slug),
+      unknown_references: unknownReferences,
+      component_cycles: componentCycles,
+      findings_count: findings,
+    },
   };
 };
 
@@ -353,5 +437,6 @@ module.exports = {
   buildScriptArgv,
   evalRequiredSections,
   evalUpstreamCoverage,
+  evalGraphCoverage,
   parseBoltDag,
 };

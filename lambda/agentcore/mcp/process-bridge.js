@@ -206,5 +206,18 @@ export const createProcessBridge = ({
     return { eventId: row.eventId };
   };
 
-  return { askQuestion, sendOutput, collectMetric, emitStageNote };
+  const recordGraphRead = async ({ tool, bytes = 0, resultCount = null, args = {} }) => {
+    if (!store.recordGraphRead) return null;
+    return store.recordGraphRead({
+      executionId,
+      stageInstanceId,
+      unitSlug,
+      tool,
+      bytes,
+      resultCount,
+      args,
+    });
+  };
+
+  return { askQuestion, sendOutput, collectMetric, emitStageNote, recordGraphRead };
 };

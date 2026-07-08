@@ -83,6 +83,37 @@ describe('buildStagePrompt', () => {
     expect(prompt).toContain('Do NOT fabricate its content');
     expect(prompt).toContain('fall back to the available in-scope context');
   });
+
+  it('injects the structure contract for registered output types, after the outputs list', () => {
+    const prompt = buildStagePrompt({
+      stage: stage({ outputArtifacts: [{ artifact: 'stories' }] }),
+      stageBody: 'x',
+    });
+    expect(prompt).toContain('# Artifact structure contracts');
+    expect(prompt).toContain('## Structure contract — stories');
+    expect(prompt).toContain('stories:'); // the fenced YAML example key
+    expect(prompt).toContain('at least two `##` section headings');
+    expect(prompt.indexOf('## Expected outputs')).toBeLessThan(
+      prompt.indexOf('# Artifact structure contracts'),
+    );
+  });
+
+  it('injects BOTH the units: and contracts: specs for the DAG artifact', () => {
+    const prompt = buildStagePrompt({
+      stage: stage({ outputArtifacts: [{ artifact: 'unit-of-work-dependency' }] }),
+      stageBody: 'x',
+    });
+    expect(prompt).toContain('Structured block: `units:` (REQUIRED');
+    expect(prompt).toContain('Structured block: `contracts:`');
+  });
+
+  it('injects NO structure section for unregistered output types', () => {
+    const prompt = buildStagePrompt({
+      stage: stage({ outputArtifacts: [{ artifact: 'walking-skeleton-notes' }] }),
+      stageBody: 'x',
+    });
+    expect(prompt).not.toContain('# Artifact structure contracts');
+  });
 });
 
 describe('buildStagePrompt — MCP execution annex binding', () => {

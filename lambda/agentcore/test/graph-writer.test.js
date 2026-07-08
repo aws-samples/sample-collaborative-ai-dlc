@@ -1,9 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
-import { createGraphWriter, GraphWriteError } from '../mcp/graph-writer.js';
+import { createGraphWriter, GraphWriteError, flattenValueMap } from '../mcp/graph-writer.js';
+import { extractArtifactStructure } from '../../shared/artifact-extractors.js';
 
 const PARTITION = 'agentcore-graph-writer';
+
+// Gremlin anonymous-traversal statics for edge-existence assertions.
+const anon = gremlin.process.statics;
 
 const SCOPE = {
   projectId: 'proj-1',
@@ -43,6 +47,50 @@ beforeEach(async () => {
   await g.V().drop().next();
   let t = 0;
   writer = createGraphWriter({ g, scope: SCOPE, clock: () => `2026-01-01T00:00:0${t++}.000Z` });
+});
+
+// The Neptune entry-order regression (field incident): valueMap(true) returns
+// the T.id token in DIFFERENT positions per provider. gremlin-server yields it
+// FIRST (business `id` property overwrote it — masking the bug in every
+// container test); Neptune can yield it LAST, where the old flatten clobbered
+// the business id with the internal vertex UUID: every derive failed with
+// "artifact not found" and the UI dropped all artifact↔artifact edges.
+describe('flattenValueMap — token vs property precedence (Neptune order)', () => {
+  const T_ID = { elementName: 'id' };
+  const T_LABEL = { elementName: 'label' };
+
+  it('business id survives regardless of token position', () => {
+    // Neptune order: token AFTER the property.
+    const neptune = new Map([
+      ['id', ['stories-art']],
+      ['title', ['Stories']],
+      [T_ID, '4acf899d-d580-9c18-f791-df4ecf8a11a6'],
+      [T_LABEL, 'Artifact'],
+    ]);
+    expect(flattenValueMap(neptune)).toMatchObject({ id: 'stories-art', label: 'Artifact' });
+    // gremlin-server order: token BEFORE the property.
+    const gserver = new Map([
+      [T_ID, '4acf899d-d580-9c18-f791-df4ecf8a11a6'],
+      [T_LABEL, 'Artifact'],
+      ['id', ['stories-art']],
+      ['title', ['Stories']],
+    ]);
+    expect(flattenValueMap(gserver)).toMatchObject({ id: 'stories-art', label: 'Artifact' });
+  });
+
+  it('tokens still fill gaps when no property claims the name (derived-item label)', () => {
+    const row = new Map([
+      ['slug', ['s-login']],
+      [T_ID, 'internal-uuid'],
+      [T_LABEL, 'Story'],
+    ]);
+    // No `id`/`label` property on the vertex → token values surface.
+    expect(flattenValueMap(row)).toMatchObject({
+      id: 'internal-uuid',
+      label: 'Story',
+      slug: 's-login',
+    });
+  });
 });
 
 describe('createGraphWriter — guards', () => {
@@ -184,18 +232,114 @@ describe('reads', () => {
   it('lookupArtifacts filters by type within the intent', async () => {
     const reqs = await writer.lookupArtifacts({ artifactType: 'requirements-analysis' });
     expect(reqs.map((a) => a.id).toSorted()).toEqual(['r1', 'r2']);
+    expect(reqs.find((a) => a.id === 'r1').content).toBeUndefined();
+    expect(reqs.find((a) => a.id === 'r1').contentLength).toBe(5);
+
+    const withContent = await writer.lookupArtifacts({
+      artifactType: 'requirements-analysis',
+      includeContent: true,
+    });
+    expect(withContent.find((a) => a.id === 'r1').content).toBe('login');
   });
 
   it('getIntentGraph returns every contained artifact', async () => {
     const all = await writer.getIntentGraph();
     expect(all.map((a) => a.id).toSorted()).toEqual(['d1', 'r1', 'r2']);
+    expect(all.every((a) => a.content === undefined)).toBe(true);
   });
 
   it('searchGraph matches title/content substrings, optionally by type', async () => {
     const hits = await writer.searchGraph({ query: 'auth' });
     expect(hits.map((a) => a.id).toSorted()).toEqual(['d1', 'r1']);
+    expect(hits.every((a) => a.content === undefined && typeof a.snippet === 'string')).toBe(true);
     const typed = await writer.searchGraph({ query: 'auth', artifactType: 'design' });
     expect(typed.map((a) => a.id)).toEqual(['d1']);
+  });
+
+  it('searchGraph matches enrichment summaries (gist/claims wording)', async () => {
+    await writer.applyArtifactEnrichment({
+      artifactId: 'r2',
+      gist: 'Invoicing and payment reconciliation requirements.',
+      claims: ['Monthly statements are mandatory'],
+      model: 'm',
+      sourceHash: 'h',
+    });
+    // 'reconciliation' appears ONLY in the gist, 'statements' only in a claim.
+    expect((await writer.searchGraph({ query: 'reconciliation' })).map((a) => a.id)).toEqual([
+      'r2',
+    ]);
+    expect((await writer.searchGraph({ query: 'statements' })).map((a) => a.id)).toEqual(['r2']);
+  });
+
+  it('getArtifact supports full, summary, and toc modes', async () => {
+    const full = await writer.getArtifact({ id: 'r1' });
+    expect(full.content).toBe('login');
+    const summary = await writer.getArtifact({ id: 'r1', mode: 'summary' });
+    expect(summary.content).toBeUndefined();
+    expect(summary.contentLength).toBe(5);
+    await writer.createArtifact({
+      artifactType: 'requirements-analysis',
+      id: 'r3',
+      content: '# Title\n\n## A\nBody\n### A.1\nMore',
+    });
+    const toc = await writer.getArtifact({ id: 'r3', mode: 'toc' });
+    expect(toc.content).toBeUndefined();
+    expect(toc.headings.map((h) => h.heading)).toEqual(['Title', 'A', 'A.1']);
+  });
+
+  it('mirrors derived sections, typed items, and citation edges from artifact content', async () => {
+    await writer.createArtifact({ artifactType: 'requirements', id: 'req-art', title: 'Reqs' });
+    await writer.createArtifact({
+      artifactType: 'stories',
+      id: 'stories-art',
+      title: 'Stories',
+      content: [
+        '## Stories',
+        'References [[requirements]].',
+        '',
+        '```yaml',
+        'stories:',
+        '  - id: story-login',
+        '    title: Login',
+        '    persona: Admin',
+        '    priority: Must Have',
+        '    covers: [req-auth]',
+        '```',
+      ].join('\n'),
+    });
+    const artifact = await writer.getArtifact({ id: 'stories-art' });
+    const extraction = extractArtifactStructure({
+      artifactType: artifact.artifact_type,
+      artifactId: artifact.id,
+      content: artifact.content,
+    });
+    const mirrored = await writer.mirrorArtifactDerivations({ artifact, extraction });
+    expect(mirrored).toMatchObject({
+      artifactId: 'stories-art',
+      sections: 1,
+      items: 1,
+      citations: 1,
+    });
+
+    const toc = await writer.getArtifactToc({ id: 'stories-art' });
+    expect(toc).toHaveLength(1);
+    expect(toc[0]).toMatchObject({ heading: 'Stories', slug: 'stories' });
+    expect(toc[0].content).toBeUndefined();
+
+    const section = await writer.getSection({ artifactId: 'stories-art', slug: 'stories' });
+    expect(section.content).toContain('References [[requirements]]');
+    const items = await writer.getItems({ itemType: 'Story' });
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ slug: 'story-login', title: 'Login', persona: 'Admin' });
+    expect(items[0].content).toBeUndefined();
+
+    const cites = await g
+      .V()
+      .has('Artifact', 'id', 'stories-art')
+      .out('CITES')
+      .has('Artifact', 'id', 'req-art')
+      .hasNext();
+    expect(cites).toBe(true);
   });
 
   it('updateArtifact patches props and errors on a missing artifact', async () => {
@@ -204,6 +348,136 @@ describe('reads', () => {
     await expect(writer.updateArtifact({ id: 'nope', props: {} })).rejects.toBeInstanceOf(
       GraphWriteError,
     );
+  });
+
+  it('applyArtifactEnrichment writes summary props only — visible in compact reads', async () => {
+    await writer.applyArtifactEnrichment({
+      artifactId: 'r1',
+      gist: 'Login requirements for the auth flow.',
+      claims: ['Users must log in', 'MFA is required'],
+      model: 'us.anthropic.claude-haiku-4-5',
+      sourceHash: 'hash-1',
+    });
+    // Compact reads carry the gist for orientation; content stays behind full reads.
+    const compact = await writer.getArtifact({ id: 'r1', mode: 'summary' });
+    expect(compact.summary_gist).toBe('Login requirements for the auth flow.');
+    expect(JSON.parse(compact.summary_claims)).toEqual(['Users must log in', 'MFA is required']);
+    expect(compact.enrichment_source_hash).toBe('hash-1');
+    expect(compact.enrichment_model).toBe('us.anthropic.claude-haiku-4-5');
+    expect(compact.enriched_at).toBeTruthy();
+    expect(compact.content).toBeUndefined();
+    // Full content is untouched.
+    expect((await writer.getArtifact({ id: 'r1' })).content).toBe('login');
+    // Missing artifact errors (the derive command treats it fail-open).
+    await expect(
+      writer.applyArtifactEnrichment({ artifactId: 'nope', gist: 'x' }),
+    ).rejects.toBeInstanceOf(GraphWriteError);
+  });
+
+  it('getCoverage joins requirements/stories/mappings/contracts with integrity findings', async () => {
+    const mirror = async (artifactType, id, content) => {
+      await writer.createArtifact({ artifactType, id, content });
+      const artifact = await writer.getArtifact({ id });
+      await writer.mirrorArtifactDerivations({
+        artifact,
+        extraction: extractArtifactStructure({ artifactType, artifactId: id, content }),
+      });
+    };
+    await mirror(
+      'requirements',
+      'req-art',
+      [
+        '## Reqs',
+        '```yaml',
+        'requirements:',
+        '  - id: req-login',
+        '    title: Login',
+        '    priority: must-have',
+        '  - id: req-report',
+        '    title: Reporting',
+        '    priority: must-have',
+        '  - id: req-theme',
+        '    title: Theming',
+        '    priority: could-have',
+        '```',
+      ].join('\n'),
+    );
+    await mirror(
+      'stories',
+      'story-art',
+      [
+        '## Stories',
+        '```yaml',
+        'stories:',
+        '  - id: s-login',
+        '    title: Login story',
+        '    covers: [req-login, req-ghost]',
+        '  - id: s-float',
+        '    title: Unmapped story',
+        '```',
+      ].join('\n'),
+    );
+    await mirror(
+      'unit-of-work-story-map',
+      'map-art',
+      [
+        '## Map',
+        '```yaml',
+        'mappings:',
+        '  - id: map-auth',
+        '    unit: auth',
+        '    stories: [s-login, s-missing]',
+        '```',
+      ].join('\n'),
+    );
+    await mirror(
+      'unit-of-work-dependency',
+      'dep-art',
+      [
+        '## Contracts',
+        '```yaml',
+        'contracts:',
+        '  - id: c-auth-api',
+        '    title: Auth API',
+        '    provider: auth',
+        '    consumers: [billing]',
+        '```',
+      ].join('\n'),
+    );
+
+    const cov = await writer.getCoverage();
+    expect(cov.counts).toMatchObject({ requirements: 3, stories: 2, mappings: 1, contracts: 1 });
+    // req-login covered; req-report (must-have) + req-theme (could-have) uncovered.
+    expect(cov.uncoveredRequirements.map((r) => r.slug).toSorted()).toEqual([
+      'req-report',
+      'req-theme',
+    ]);
+    expect(cov.uncoveredMustHave.map((r) => r.slug)).toEqual(['req-report']);
+    // s-float is not in any mapping.
+    expect(cov.unmappedStories.map((s) => s.slug)).toEqual(['s-float']);
+    // Integrity: a covers→unknown requirement and a mapping→unknown story.
+    expect(cov.unknownReferences).toEqual(
+      expect.arrayContaining([
+        { kind: 'story-covers-unknown-requirement', from: 's-login', ref: 'req-ghost' },
+        { kind: 'mapping-references-unknown-story', from: 'map-auth', ref: 's-missing' },
+      ]),
+    );
+
+    // Lane view: auth's stories + contracts.
+    const lane = await writer.getCoverage({ unitSlug: 'auth' });
+    expect(lane.unit.stories.map((s) => s.slug)).toEqual(['s-login']);
+    expect(lane.unit.storyIds).toEqual(['s-login', 's-missing']);
+    expect(lane.unit.contracts).toEqual([
+      {
+        slug: 'c-auth-api',
+        title: 'Auth API',
+        role: 'provides',
+        provider: 'auth',
+        consumers: ['billing'],
+      },
+    ]);
+    const consumerLane = await writer.getCoverage({ unitSlug: 'billing' });
+    expect(consumerLane.unit.contracts[0].role).toBe('consumes');
   });
 });
 
@@ -411,6 +685,115 @@ describe('rewind supersede lifecycle', () => {
     expect(fetched.superseded_at).toBeUndefined();
     expect(fetched.superseded_by).toBeUndefined();
   });
+
+  it('superseded artifacts vanish from list/search/neighbor reads (explicit-id read still works)', async () => {
+    await seedIntent();
+    await writer.createArtifact({
+      artifactType: 'design',
+      id: 'a1',
+      title: 'Old auth',
+      content: 'auth v1',
+    });
+    await writer.createArtifact({
+      artifactType: 'design',
+      id: 'a2',
+      title: 'New auth',
+      content: 'auth v2',
+    });
+    await writer.linkArtifacts({ fromId: 'a2', toId: 'a1', edge: 'DERIVED_FROM' });
+    await markSuperseded('a1');
+
+    expect((await writer.lookupArtifacts({ artifactType: 'design' })).map((a) => a.id)).toEqual([
+      'a2',
+    ]);
+    expect((await writer.getIntentGraph()).map((a) => a.id)).toEqual(['a2']);
+    expect((await writer.searchGraph({ query: 'auth' })).map((a) => a.id)).toEqual(['a2']);
+    expect((await writer.getNeighbors({ id: 'a2' })).map((a) => a.id)).toEqual([]);
+    // Opt-in for audit/derive consumers.
+    expect(
+      (await writer.getIntentGraph({ includeSuperseded: true })).map((a) => a.id).toSorted(),
+    ).toEqual(['a1', 'a2']);
+    // Explicit-id needle read may still target history.
+    expect((await writer.getArtifact({ id: 'a1' })).superseded_at).toBeTruthy();
+  });
+
+  it('re-derive supersedes removed sections/items and reads hide them', async () => {
+    await seedIntent();
+    const content = (bodies) =>
+      [
+        ...bodies.map((b) => `## ${b}\ntext`),
+        '',
+        '```yaml',
+        'stories:',
+        ...bodies.map((b) => `  - id: s-${b.toLowerCase()}\n    title: ${b}`),
+        '```',
+      ].join('\n');
+    await writer.createArtifact({
+      artifactType: 'stories',
+      id: 'st-art',
+      content: content(['One', 'Two']),
+    });
+    const mirror = async () => {
+      const artifact = await writer.getArtifact({ id: 'st-art' });
+      const extraction = extractArtifactStructure({
+        artifactType: 'stories',
+        artifactId: 'st-art',
+        content: artifact.content,
+      });
+      return writer.mirrorArtifactDerivations({ artifact, extraction });
+    };
+    await mirror();
+    expect((await writer.getArtifactToc({ id: 'st-art' })).map((s) => s.slug).toSorted()).toEqual([
+      'one',
+      'two',
+    ]);
+    expect((await writer.getItems({ itemType: 'Story' })).map((i) => i.slug).toSorted()).toEqual([
+      's-one',
+      's-two',
+    ]);
+
+    // Section/story "Two" removed in v2 → re-derive marks its rows superseded.
+    await writer.createArtifact({
+      artifactType: 'stories',
+      id: 'st-art',
+      content: content(['One']),
+    });
+    const second = await mirror();
+    expect(second.superseded).toBe(2);
+    expect((await writer.getArtifactToc({ id: 'st-art' })).map((s) => s.slug)).toEqual(['one']);
+    expect(await writer.getSection({ artifactId: 'st-art', slug: 'two' })).toBeNull();
+    expect((await writer.getItems({ itemType: 'Story' })).map((i) => i.slug)).toEqual(['s-one']);
+  });
+
+  it('supersedeDerivationsForArtifacts sweeps orphaned derivations; getItems drops superseded parents', async () => {
+    await seedIntent();
+    await writer.createArtifact({
+      artifactType: 'stories',
+      id: 'old-art',
+      content: ['## S', '```yaml', 'stories:', '  - id: s-old', '    title: Old', '```'].join('\n'),
+    });
+    const artifact = await writer.getArtifact({ id: 'old-art' });
+    await writer.mirrorArtifactDerivations({
+      artifact,
+      extraction: extractArtifactStructure({
+        artifactType: 'stories',
+        artifactId: 'old-art',
+        content: artifact.content,
+      }),
+    });
+    await markSuperseded('old-art');
+    // Rewind superseded the ARTIFACT but no re-derive ran: the item row itself
+    // is still current — getItems must already hide it via the parent filter.
+    expect(await writer.getItems({ itemType: 'Story' })).toEqual([]);
+    // The sweep then marks the derived rows themselves.
+    const swept = await writer.supersedeDerivationsForArtifacts({ artifactIds: ['old-art'] });
+    expect(swept.superseded).toBe(2); // 1 section + 1 item
+    // Idempotent: nothing left to sweep.
+    expect(
+      (await writer.supersedeDerivationsForArtifacts({ artifactIds: ['old-art'] })).superseded,
+    ).toBe(0);
+    expect(await writer.getArtifactToc({ id: 'old-art' })).toEqual([]);
+  });
 });
 
 describe('linkSteeringInfluences', () => {
@@ -574,5 +957,287 @@ describe('mirrorUnitDag (traceability mirror of the promoted unit DAG)', () => {
       .values('superseded_at')
       .next();
     expect(revived.value).toBe('');
+  });
+});
+
+describe('resolveDerivedItemEdges (item↔item traceability sweep)', () => {
+  // Mirror an artifact through the real extractor — the same path derive uses.
+  const mirror = async (artifactType, id, content) => {
+    await writer.createArtifact({ artifactType, id, content });
+    const artifact = await writer.getArtifact({ id });
+    await writer.mirrorArtifactDerivations({
+      artifact,
+      extraction: extractArtifactStructure({ artifactType, artifactId: id, content }),
+    });
+  };
+  const yamlArtifact = (heading, lines) => ['## ' + heading, '```yaml', ...lines, '```'].join('\n');
+
+  const seedInceptionItems = async () => {
+    await seedIntent();
+    await mirror(
+      'personas',
+      'art-personas',
+      yamlArtifact('Personas', ['personas:', '  - id: p-operator', '    title: Operator']),
+    );
+    await mirror(
+      'requirements',
+      'art-reqs',
+      yamlArtifact('Reqs', [
+        'requirements:',
+        '  - id: req-auth',
+        '    title: Auth',
+        '    priority: must-have',
+        '  - id: req-report',
+        '    title: Reporting',
+        '    priority: should-have',
+      ]),
+    );
+    await mirror(
+      'stories',
+      'art-stories',
+      yamlArtifact('Stories', [
+        'stories:',
+        '  - id: s-login',
+        '    title: Login',
+        '    persona: p-operator',
+        '    covers: [req-auth]',
+        '  - id: s-report',
+        '    title: Reports',
+        '    persona: p-operator',
+        '    covers: [req-auth, req-report]',
+        '    depends_on: [s-login]',
+      ]),
+    );
+  };
+
+  const edgeExists = (fromLabel, fromId, edge, toId) =>
+    g.V().has(fromLabel, 'id', fromId).outE(edge).where(anon.inV().has('id', toId)).hasNext();
+
+  it('materializes COVERS/FOR_PERSONA/DEPENDS_ON from the structured-block refs', async () => {
+    await seedInceptionItems();
+    const res = await writer.resolveDerivedItemEdges();
+    // s-login: covers 1 + persona 1; s-report: covers 2 + persona 1 + depends 1.
+    expect(res.edges).toBe(6);
+    expect(
+      await edgeExists(
+        'Story',
+        'story:intent-1:s-login',
+        'COVERS',
+        'requirement:intent-1:req-auth',
+      ),
+    ).toBe(true);
+    expect(
+      await edgeExists(
+        'Story',
+        'story:intent-1:s-login',
+        'FOR_PERSONA',
+        'persona:intent-1:p-operator',
+      ),
+    ).toBe(true);
+    expect(
+      await edgeExists(
+        'Story',
+        'story:intent-1:s-report',
+        'COVERS',
+        'requirement:intent-1:req-report',
+      ),
+    ).toBe(true);
+    expect(
+      await edgeExists('Story', 'story:intent-1:s-report', 'DEPENDS_ON', 'story:intent-1:s-login'),
+    ).toBe(true);
+  });
+
+  it('skips dangling refs silently and never links a vertex to itself', async () => {
+    await seedIntent();
+    await mirror(
+      'stories',
+      'art-stories',
+      yamlArtifact('Stories', [
+        'stories:',
+        '  - id: s-solo',
+        '    title: Solo',
+        '    persona: p-ghost',
+        '    covers: [req-ghost]',
+        '    depends_on: [s-solo]',
+      ]),
+    );
+    const res = await writer.resolveDerivedItemEdges();
+    expect(res.edges).toBe(0);
+    const out = await g
+      .V()
+      .has('Story', 'id', 'story:intent-1:s-solo')
+      .outE('COVERS', 'FOR_PERSONA', 'DEPENDS_ON')
+      .count()
+      .next();
+    expect(out.value).toBe(0);
+  });
+
+  it('re-derive that drops a ref also drops its edge (sweep is drop-then-recreate)', async () => {
+    await seedInceptionItems();
+    await writer.resolveDerivedItemEdges();
+    // s-report no longer covers req-report after the re-derive.
+    await mirror(
+      'stories',
+      'art-stories',
+      yamlArtifact('Stories', [
+        'stories:',
+        '  - id: s-login',
+        '    title: Login',
+        '    persona: p-operator',
+        '    covers: [req-auth]',
+        '  - id: s-report',
+        '    title: Reports',
+        '    persona: p-operator',
+        '    covers: [req-auth]',
+        '    depends_on: [s-login]',
+      ]),
+    );
+    await writer.resolveDerivedItemEdges();
+    expect(
+      await edgeExists(
+        'Story',
+        'story:intent-1:s-report',
+        'COVERS',
+        'requirement:intent-1:req-report',
+      ),
+    ).toBe(false);
+    expect(
+      await edgeExists(
+        'Story',
+        'story:intent-1:s-report',
+        'COVERS',
+        'requirement:intent-1:req-auth',
+      ),
+    ).toBe(true);
+    // Idempotent: re-running does not duplicate.
+    await writer.resolveDerivedItemEdges();
+    const covers = await g
+      .V()
+      .has('Story', 'id', 'story:intent-1:s-report')
+      .outE('COVERS')
+      .count()
+      .next();
+    expect(covers.value).toBe(1);
+  });
+
+  it('wires StoryMapEntry→Story/UnitOfWork and unit EXPOSES/CONSUMES_CONTRACT — units resolving late', async () => {
+    await seedInceptionItems();
+    await mirror(
+      'unit-of-work-story-map',
+      'art-map',
+      yamlArtifact('Map', [
+        'mappings:',
+        '  - id: m-auth',
+        '    unit: u-auth',
+        '    stories: [s-login]',
+      ]),
+    );
+    await mirror(
+      'unit-of-work-dependency',
+      'art-contracts',
+      yamlArtifact('Contracts', [
+        'contracts:',
+        '  - id: c-auth-api',
+        '    title: Auth API',
+        '    provider: u-auth',
+        '    consumers: [u-report]',
+        '    kind: api',
+      ]),
+    );
+    // First sweep runs BEFORE promote-units created the UnitOfWork vertices:
+    // story wiring lands, unit wiring cannot yet.
+    await writer.resolveDerivedItemEdges();
+    expect(
+      await edgeExists(
+        'StoryMapEntry',
+        'storymapentry:intent-1:m-auth',
+        'IMPLEMENTS',
+        'story:intent-1:s-login',
+      ),
+    ).toBe(true);
+    expect(
+      await edgeExists(
+        'StoryMapEntry',
+        'storymapentry:intent-1:m-auth',
+        'IMPLEMENTS',
+        'unit:intent-1:u-auth',
+      ),
+    ).toBe(false);
+
+    // promote-units mirrors the DAG, then re-sweeps (the hook under test).
+    await writer.mirrorUnitDag({
+      units: [
+        { slug: 'u-auth', dependsOn: [] },
+        { slug: 'u-report', dependsOn: ['u-auth'] },
+      ],
+      sourceArtifactId: 'art-contracts',
+    });
+    await writer.resolveDerivedItemEdges();
+    expect(
+      await edgeExists(
+        'StoryMapEntry',
+        'storymapentry:intent-1:m-auth',
+        'IMPLEMENTS',
+        'unit:intent-1:u-auth',
+      ),
+    ).toBe(true);
+    expect(
+      await edgeExists(
+        'UnitOfWork',
+        'unit:intent-1:u-auth',
+        'EXPOSES',
+        'contract:intent-1:c-auth-api',
+      ),
+    ).toBe(true);
+    expect(
+      await edgeExists(
+        'UnitOfWork',
+        'unit:intent-1:u-report',
+        'CONSUMES_CONTRACT',
+        'contract:intent-1:c-auth-api',
+      ),
+    ).toBe(true);
+    // The sweep must NOT touch the DAG edges mirrorUnitDag owns.
+    expect(
+      await edgeExists(
+        'UnitOfWork',
+        'unit:intent-1:u-report',
+        'DEPENDS_ON',
+        'unit:intent-1:u-auth',
+      ),
+    ).toBe(true);
+  });
+
+  it('never wires edges from or to superseded items', async () => {
+    await seedInceptionItems();
+    // Re-derive the requirements artifact WITHOUT req-report → its item is
+    // superseded; a story still claiming to cover it must get no edge.
+    await mirror(
+      'requirements',
+      'art-reqs',
+      yamlArtifact('Reqs', [
+        'requirements:',
+        '  - id: req-auth',
+        '    title: Auth',
+        '    priority: must-have',
+      ]),
+    );
+    await writer.resolveDerivedItemEdges();
+    expect(
+      await edgeExists(
+        'Story',
+        'story:intent-1:s-report',
+        'COVERS',
+        'requirement:intent-1:req-report',
+      ),
+    ).toBe(false);
+    expect(
+      await edgeExists(
+        'Story',
+        'story:intent-1:s-report',
+        'COVERS',
+        'requirement:intent-1:req-auth',
+      ),
+    ).toBe(true);
   });
 });

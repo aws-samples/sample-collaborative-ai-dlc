@@ -17,6 +17,7 @@ import { useTrackerProviders } from '@/hooks/useTrackerProviders';
 import { UserManagementCard } from '@/components/admin/UserManagementCard';
 import { AgentCredentialsCard } from '@/components/admin/AgentCredentialsCard';
 import { DefaultModelsCard } from '@/components/admin/DefaultModelsCard';
+import { GraphEnrichmentCard } from '@/components/admin/GraphEnrichmentCard';
 import { SourceControlTab } from '@/components/admin/tabs/SourceControlTab';
 import { TrackersTab } from '@/components/admin/tabs/TrackersTab';
 
@@ -80,6 +81,7 @@ export default function PlatformAdmin() {
           <TabsContent value="agents" className="mt-5 space-y-6">
             <AgentCredentialsCard />
             <DefaultModelsCard />
+            <GraphEnrichmentCard />
           </TabsContent>
 
           <TabsContent value="source-control" className="mt-5">

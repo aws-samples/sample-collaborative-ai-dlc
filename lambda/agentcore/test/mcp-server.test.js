@@ -13,8 +13,8 @@ import { GraphWriteError } from '../mcp/graph-writer.js';
 // and DynamoDB, so we assert it routes args through and envelopes results.
 const stubWriter = () => ({
   calls: [],
-  getArtifact({ id }) {
-    this.calls.push(['getArtifact', id]);
+  getArtifact({ id, mode }) {
+    this.calls.push(['getArtifact', { id, mode }]);
     return { id, artifact_type: 't' };
   },
   lookupArtifacts({ artifactType }) {
@@ -29,9 +29,25 @@ const stubWriter = () => ({
     this.calls.push(['getNeighbors', args]);
     return [];
   },
+  getArtifactToc(args) {
+    this.calls.push(['getArtifactToc', args]);
+    return [{ id: 'section:a:intro', heading: 'Intro' }];
+  },
+  getSection(args) {
+    this.calls.push(['getSection', args]);
+    return { id: 'section:a:intro', content: 'body' };
+  },
+  getItems(args) {
+    this.calls.push(['getItems', args]);
+    return [{ id: 'story:intent:s1' }];
+  },
   searchGraph(args) {
     this.calls.push(['searchGraph', args]);
     return [];
+  },
+  getCoverage(args) {
+    this.calls.push(['getCoverage', args]);
+    return { counts: { requirements: 1 }, uncoveredMustHave: [] };
   },
   createArtifact(args) {
     this.calls.push(['createArtifact', args]);
@@ -80,6 +96,10 @@ const stubBridge = () => ({
   emitStageNote(args) {
     this.calls.push(['emitStageNote', args]);
     return { eventId: 'e1' };
+  },
+  recordGraphRead(args) {
+    this.calls.push(['recordGraphRead', args]);
+    return { readId: 'read-1' };
   },
 });
 
@@ -185,6 +205,51 @@ describe('buildToolHandlers — routing + envelopes', () => {
     const env = await h.get_learning_rules({});
     expect(parse(env)).toEqual([{ id: 'no-secrets', layer: 'project-learnings' }]);
     expect(writer.calls[0]).toEqual(['getLearningRules']);
+  });
+
+  it('records graph read ledger samples for read tools', async () => {
+    await h.lookup_artifacts({ artifactType: 'stories' });
+    const read = bridge.calls.find((c) => c[0] === 'recordGraphRead');
+    expect(read[1]).toMatchObject({
+      tool: 'lookup_artifacts',
+      args: { artifactType: 'stories' },
+      resultCount: 1,
+    });
+    expect(read[1].bytes).toBeGreaterThan(0);
+  });
+
+  it('routes get_coverage through the writer with read-ledger sampling', async () => {
+    const env = await h.get_coverage({ unitSlug: 'auth' });
+    expect(parse(env)).toMatchObject({ counts: { requirements: 1 } });
+    expect(writer.calls[0]).toEqual(['getCoverage', { unitSlug: 'auth' }]);
+    const read = bridge.calls.find((c) => c[0] === 'recordGraphRead');
+    expect(read[1]).toMatchObject({ tool: 'get_coverage', args: { unitSlug: 'auth' } });
+    // unitSlug defaults to null for the intent-wide report.
+    await h.get_coverage({});
+    expect(writer.calls[1]).toEqual(['getCoverage', { unitSlug: null }]);
+  });
+
+  it('routes compact derived graph reads through the writer', async () => {
+    expect(parse(await h.get_artifact({ id: 'a1', mode: 'toc' }))).toEqual({
+      id: 'a1',
+      artifact_type: 't',
+    });
+    expect(parse(await h.get_artifact_toc({ id: 'a1' }))).toEqual([
+      { id: 'section:a:intro', heading: 'Intro' },
+    ]);
+    expect(parse(await h.get_section({ artifactId: 'a1', slug: 'intro' }))).toEqual({
+      id: 'section:a:intro',
+      content: 'body',
+    });
+    expect(parse(await h.get_items({ itemType: 'Story', artifactType: 'stories' }))).toEqual([
+      { id: 'story:intent:s1' },
+    ]);
+    expect(writer.calls.slice(-4)).toEqual([
+      ['getArtifact', { id: 'a1', mode: 'toc' }],
+      ['getArtifactToc', { id: 'a1' }],
+      ['getSection', { artifactId: 'a1', heading: null, slug: 'intro' }],
+      ['getItems', { itemType: 'Story', artifactType: 'stories', limit: 100 }],
+    ]);
   });
 
   it('turns a GraphWriteError into a clean isError envelope', async () => {

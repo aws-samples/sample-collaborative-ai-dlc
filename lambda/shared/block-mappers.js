@@ -30,12 +30,23 @@ const AGENTS_DIR = 'core/agents/';
 const SCOPES_DIR = 'core/scopes/';
 const SENSORS_DIR = 'core/sensors/';
 const RULES_DIR = 'core/rules/';
+const MEMORY_DIR = 'core/memory/';
 const KNOWLEDGE_DIR = 'core/knowledge/';
 const SKILLS_DIR = 'core/skills/';
 const TEMPLATES_DIR = 'core/templates/';
 
 const basename = (path) => path.slice(path.lastIndexOf('/') + 1);
 const stripMd = (name) => name.replace(/\.md$/, '');
+
+const memoryRuleId = (path) => {
+  if (!path.startsWith(MEMORY_DIR) || !path.endsWith('.md')) return null;
+  const rel = path.slice(MEMORY_DIR.length);
+  if (rel.startsWith('templates/')) return null;
+  const phase = rel.match(/^phases\/([^/]+)\.md$/)?.[1];
+  if (phase) return `aidlc-phase-${phase}.md`;
+  const layer = rel.match(/^([^/]+)\.md$/)?.[1];
+  return ['org', 'team', 'project'].includes(layer) ? `aidlc-${layer}.md` : null;
+};
 
 // ─── Stages ───
 // Frontmatter mirrors V2 1:1; the body is the stage instructions. `consumes`
@@ -353,6 +364,8 @@ const buildFromFiles = (files) => {
       blocks.push(mapSensor(data, body, stripMd(basename(path)).replace(/^aidlc-/, '')));
     } else if (path.startsWith(RULES_DIR) && path.endsWith('.md')) {
       blocks.push(mapRule(content, basename(path)));
+    } else if (memoryRuleId(path)) {
+      blocks.push(mapRule(content, memoryRuleId(path)));
     } else if (path.startsWith(KNOWLEDGE_DIR) && path.endsWith('.md')) {
       const rel = path.slice(KNOWLEDGE_DIR.length); // <agentDir>/<doc>.md
       const [agentDir, file] = rel.split('/');

@@ -25,5 +25,7 @@ variable "bedrock_model" {
 variable "aidlc_repo_ref" {
   description = "Pinned ref (commit SHA/tag/branch) of awslabs/aidlc-workflows the seed + AgentCore runtime use. Keep in sync with the seed-blocks lambda."
   type        = string
-  default     = "ba0cfe999856033ecb909a9135b46fe10811bf55"
+  default     = "fde1e1af7aae16f4c4defc991abaa3877ee2ac26"
 }
+
+

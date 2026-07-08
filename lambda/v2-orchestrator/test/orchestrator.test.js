@@ -270,6 +270,80 @@ describe('orchestrator durable handler', () => {
     expect(deps.stopSession).toHaveBeenCalledWith(expect.stringContaining('aidlc-intent-i1'));
   });
 
+  it('resumes IMMEDIATELY when the answer landed before the callback was bound (no release-timer stall)', async () => {
+    // Field incident: the human answered ~100ms after the park, in the window
+    // before bind-callback wrote the callbackId — the answer endpoint had no
+    // callback to complete, and the run stalled for the FULL parkReleaseSeconds
+    // until the release timer noticed the answered gate. The answered-early
+    // re-read after binding must resume without touching timer or callback.
+    deps.store.getExecution
+      .mockResolvedValueOnce(META)
+      .mockResolvedValue({ ...META, pendingHumanTaskId: 'h1' });
+    deps.loadPlan.mockResolvedValue({ valid: true, plan: { stages: [{ stageId: 'a' }] } });
+    deps.store.getHumanTask = vi.fn(async () => ({ status: 'answered' }));
+    const base = makeCtx();
+    const strictCtx = {
+      ...base,
+      // Reaching the park race or the release wait = regression (the stall).
+      wait: () => {
+        throw new Error('release timer must not be armed for an already-answered gate');
+      },
+      promise: {
+        race: () => {
+          throw new Error('park race must not run for an already-answered gate');
+        },
+      },
+      createCallback: async (name) => {
+        if (String(name).startsWith('stage-cb-')) return base.createCallback(name);
+        // Gate callback: NEVER resolves — awaiting it would hang the test.
+        return [new Promise(() => {}), `cb-${name}`];
+      },
+    };
+    deps.invokeRuntime = makeRuntime(strictCtx, (payload, n) => {
+      if (n === 1) return { ok: true };
+      if (n === 2) return { ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'h1' };
+      return { ok: true, state: 'SUCCEEDED' };
+    });
+    const res = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1' },
+      strictCtx,
+      deps,
+    );
+    expect(res.ok).toBe(true);
+    // The resume leg was dispatched (answer consumed) and no release happened.
+    expect(invokes.filter((p) => p.resumeFrom === 'h1')).toHaveLength(1);
+    expect(deps.stopSession).not.toHaveBeenCalled();
+  });
+
+  it('exits retired (no resume, no writes) when a rewind took ownership while parked', async () => {
+    // Field incident: a retry/rewind relaunched under a new orchestratorRunId
+    // while the old run was parked on an ANSWERED (not superseded) gate. The
+    // old run woke and dispatched a resume against the freshly reset stage
+    // rows (wiped CLI session → resume_no_session + a stale FAILED write).
+    // The ownership check after the wake must exit retired instead.
+    deps.store.getExecution
+      .mockResolvedValueOnce(META) // load-meta at start
+      .mockResolvedValue({ ...META, orchestratorRunId: 'run-of-the-NEW-relaunch' });
+    deps.loadPlan.mockResolvedValue({ valid: true, plan: { stages: [{ stageId: 'a' }] } });
+    deps.store.getHumanTask = vi.fn(async () => ({ status: 'answered' }));
+    deps.invokeRuntime = makeRuntime(ctx, (payload, n) => {
+      if (n === 1) return { ok: true };
+      if (n === 2) return { ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'h1' };
+      return { ok: true, state: 'SUCCEEDED' };
+    });
+    const res = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1' },
+      ctx,
+      deps,
+    );
+    expect(res).toMatchObject({ ok: false, reason: 'retired' });
+    // The retired run never dispatched the resume leg…
+    expect(invokes.filter((p) => p.resumeFrom === 'h1')).toHaveLength(0);
+    // …and wrote no terminal status over the new run's META.
+    const statuses = deps.store.updateExecution.mock.calls.map((c) => c[0].status).filter(Boolean);
+    expect(statuses).not.toContain('FAILED');
+  });
+
   it('skips release when parkReleaseSeconds is null', async () => {
     deps.store.getExecution
       .mockResolvedValueOnce({ ...META, parkReleaseSeconds: null })
@@ -737,9 +811,24 @@ describe('unit DAG promotion after the producing stage succeeds', () => {
     expect(commands).toEqual([
       'init-ws',
       'run-stage-start', // units-generation
+      'derive-artifacts', // projection before downstream consumers run
       'promote-units', // right after the producer succeeded
       'run-stage-start', // delivery-planning
+      'derive-artifacts',
     ]);
+    const derive = invokes.find((p) => p.command === 'derive-artifacts');
+    expect(derive).toMatchObject({
+      projectId: 'p1',
+      intentId: 'i1',
+      executionId: 'i1',
+      stageInstanceId: 'si-units',
+      artifactTypes: ['unit-of-work', 'unit-of-work-dependency'],
+      // Enrichment defaults off when META carries no Admin snapshot; the CLI
+      // selection rides along so an 'llm' derive can spawn the one-shot call.
+      enrichment: 'off',
+      requestedCli: 'kiro',
+      cliModels: { claude: 'us.anthropic.claude-opus-4-8' },
+    });
     const promote = invokes.find((p) => p.command === 'promote-units');
     expect(promote).toMatchObject({
       projectId: 'p1',
@@ -756,6 +845,20 @@ describe('unit DAG promotion after the producing stage succeeds', () => {
     // Default plan (stages a, b — no outputArtifacts).
     await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
     expect(invokes.map((p) => p.command)).not.toContain('promote-units');
+  });
+
+  it('forwards the META enrichment snapshot to derive-artifacts (Admin toggle, no redeploy)', async () => {
+    deps.store.getExecution = vi.fn(async () => ({ ...META, deriveEnrichment: 'llm' }));
+    deps.loadPlan.mockResolvedValue(PLAN_WITH_DAG_PRODUCER);
+    deps.invokeRuntime = makeRuntime(ctx, (payload) => {
+      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'promote-units') return { ok: true, unitCount: 1, batchCount: 1 };
+      return { ok: true, state: 'SUCCEEDED' };
+    });
+    await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
+    const derives = invokes.filter((p) => p.command === 'derive-artifacts');
+    expect(derives.length).toBeGreaterThan(0);
+    for (const d of derives) expect(d.enrichment).toBe('llm');
   });
 
   it('fails the run (units_promotion_failed) when promotion is refused', async () => {
@@ -802,8 +905,14 @@ describe('unit DAG promotion after the producing stage succeeds', () => {
     );
     expect(res.ok).toBe(true);
     const commands = invokes.map((p) => p.command);
-    // fresh leg → resume leg → THEN promotion.
-    expect(commands).toEqual(['init-ws', 'run-stage-start', 'run-stage-start', 'promote-units']);
+    // fresh leg → resume leg → THEN projection and promotion.
+    expect(commands).toEqual([
+      'init-ws',
+      'run-stage-start',
+      'run-stage-start',
+      'derive-artifacts',
+      'promote-units',
+    ]);
   });
 });
 
@@ -894,6 +1003,7 @@ describe('WP5 — parallel sections: lanes, skeleton, ladder, halt-and-ask', () 
     expect(invokes.map((p) => `${p.command}:${p.stageId ?? p.unitSlug ?? '-'}`)).toEqual([
       'init-ws:-',
       'run-stage-start:units-gen',
+      'derive-artifacts:-',
       'promote-units:-',
       'init-lane:auth',
       'run-stage-start:fd',

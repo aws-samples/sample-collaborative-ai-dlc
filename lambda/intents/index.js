@@ -11,6 +11,11 @@ import {
   SendDurableExecutionCallbackSuccessCommand,
 } from '@aws-sdk/client-lambda';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
+import {
+  BedrockAgentCoreClient,
+  InvokeAgentRuntimeCommand,
+} from '@aws-sdk/client-bedrock-agentcore';
+import authzPkg from '../shared/authz.js';
 import pkg from '../shared/v2-process-store.js';
 import { buildResponse } from '../shared/response.js';
 import { fetchMembershipRole, projectTrackersFoldStep, mapBinding } from '../shared/trackers.js';
@@ -21,6 +26,7 @@ import executionPlanPkg from '../shared/v2-execution-plan.js';
 import pricingPkg from '../shared/model-pricing.js';
 import metricClassificationPkg from '../shared/metric-classification.js';
 import { fetchKnowledgeGraph } from './knowledge-graph.js';
+import { buildIntentAudit } from './audit.js';
 
 const { createProcessStore } = pkg;
 const { parseCliModels, mergeCliModels } = cliModelsPkg;
@@ -37,10 +43,16 @@ const { cardinality, P } = gremlin.process;
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
 const lambdaClient = new LambdaClient({});
+const agentcore = new BedrockAgentCoreClient({});
+const { requirePlatformAdmin } = authzPkg;
 const store = createProcessStore({ ddb });
 
 const BLOCKS_TABLE = () => process.env.BLOCKS_TABLE;
 const ORCHESTRATOR_FN = () => process.env.V2_ORCHESTRATOR_FUNCTION;
+// The AgentCore stage-executor runtime — used for the manual derive backfill
+// (POST .../derive). Same ARN + session-id convention as the orchestrator.
+const AGENTCORE_RUNTIME_ARN = () => process.env.AGENTCORE_RUNTIME_ARN || '';
+const runtimeSessionIdFor = (intentId) => `aidlc-intent-${intentId}`.padEnd(33, '0');
 // SSM path of the Admin GLOBAL per-CLI model defaults (written by the agents
 // lambda's PUT /agents/settings). Merged UNDER the project selection at create so
 // the model precedence is project > global(admin) > agentBlock > env, matching
@@ -181,6 +193,21 @@ const fetchGlobalCliModels = async () => {
     return parseCliModels(res.Parameter?.Value || '{}');
   } catch {
     return {};
+  }
+};
+
+// Read the Admin derive-time graph enrichment mode ('off'|'llm') from SSM
+// (written by the agents lambda). Snapshotted onto the execution META row at
+// intent create so a toggle flip needs no redeploy and never changes a run
+// mid-flight. Best-effort: any failure or unknown value yields 'off'.
+const fetchDeriveEnrichment = async () => {
+  const prefix = AGENT_SETTINGS_SSM_PREFIX();
+  if (!prefix) return 'off';
+  try {
+    const res = await ssm.send(new GetParameterCommand({ Name: `${prefix}/derive-enrichment` }));
+    return res.Parameter?.Value === 'llm' ? 'llm' : 'off';
+  } catch {
+    return 'off';
   }
 };
 
@@ -851,6 +878,69 @@ export const handler = async (event) => {
       return response(204, {});
     }
 
+    // POST /projects/{projectId}/intents/{intentId}/derive
+    // Manual graph-projection backfill (platform admin): re-run the
+    // derive-artifacts command over ALL of the intent's current artifacts —
+    // e.g. to project intents that predate the derivation feature, or to apply
+    // enrichment after flipping the Admin toggle. Idempotent (the command
+    // upserts by deterministic ids and supersedes stale rows) and safe to run
+    // repeatedly; refused while RUNNING to keep out of a live stage's way.
+    if (intentId && httpMethod === 'POST' && path?.endsWith('/derive')) {
+      const denied = requirePlatformAdmin(event);
+      if (denied) return response(denied.statusCode, { error: denied.error, code: denied.code });
+      if (!AGENTCORE_RUNTIME_ARN()) {
+        return response(500, { error: 'AGENTCORE_RUNTIME_ARN not configured' });
+      }
+      const meta = await store.getExecution(intentId);
+      if (!meta || meta.projectId !== projectId) {
+        return response(404, { error: 'Intent not found' });
+      }
+      if (meta.status === 'RUNNING') {
+        return response(409, { error: 'Intent is RUNNING — the run derives after each stage' });
+      }
+      const payload = {
+        command: 'derive-artifacts',
+        projectId,
+        intentId,
+        executionId: intentId,
+        // No stageInstanceId / artifactTypes: the whole intent is the target.
+        enrichment: meta.deriveEnrichment === 'llm' ? 'llm' : 'off',
+        ...(meta.agentCli ? { requestedCli: meta.agentCli } : {}),
+        ...(meta.cliModels ? { cliModels: meta.cliModels } : {}),
+      };
+      try {
+        const res = await agentcore.send(
+          new InvokeAgentRuntimeCommand({
+            agentRuntimeArn: AGENTCORE_RUNTIME_ARN(),
+            runtimeSessionId: runtimeSessionIdFor(intentId),
+            contentType: 'application/json',
+            accept: 'application/json',
+            payload: Buffer.from(JSON.stringify(payload)),
+          }),
+        );
+        const text = res.response ? await res.response.transformToString() : '';
+        const out = text ? JSON.parse(text) : {};
+        if (out.ok === false) {
+          return response(422, {
+            error: out.reason ?? 'derive_failed',
+            detail: out.detail ?? null,
+          });
+        }
+        return response(200, {
+          ok: true,
+          artifacts: out.artifacts ?? [],
+          sections: out.sections ?? 0,
+          items: out.items ?? 0,
+          citations: out.citations ?? 0,
+          enrichment: out.enrichment ?? 'off',
+          enriched: out.enriched ?? 0,
+        });
+      } catch (err) {
+        console.error('[derive] runtime invoke failed:', err.message);
+        return response(502, { error: 'Failed to invoke the derive runtime' });
+      }
+    }
+
     // POST /projects/{projectId}/intents/{intentId}/rewind
     // Restart the run from an earlier stage with corrective guidance
     // (docs/v2-steering.md). Rejected while RUNNING (409) — steering is only
@@ -1041,6 +1131,16 @@ export const handler = async (event) => {
           return response(404, { error: 'Intent not found' });
         }
         return response(200, await fetchKnowledgeGraph(g, { projectId, intentId }));
+      }
+
+      // GET /projects/{projectId}/intents/{intentId}/audit — aggregated process
+      // and graph-read evidence for improving future runs.
+      if (path?.endsWith('/audit')) {
+        const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
+        if (!records.meta || records.meta.projectId !== projectId) {
+          return response(404, { error: 'Intent not found' });
+        }
+        return response(200, buildIntentAudit({ records }));
       }
 
       // GET /projects/{projectId}/intents/{intentId}/outputs — the agent
@@ -1280,6 +1380,7 @@ export const handler = async (event) => {
         repos: cfg.repos,
         agentCli: cfg.agentCli,
         cliModels: cfg.cliModels,
+        deriveEnrichment: await fetchDeriveEnrichment(),
         parkReleaseSeconds: cfg.parkReleaseSeconds,
         maxParallelUnits: cfg.maxParallelUnits,
         prStrategy: cfg.prStrategy,

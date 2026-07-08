@@ -35,6 +35,7 @@ const WorkflowComposer = lazy(() => import('./pages/WorkflowComposer'));
 const NewIntentPage = lazy(() => import('./pages/NewIntentPage'));
 const IntentObservabilityPage = lazy(() => import('./pages/IntentObservabilityPage'));
 const IntentGraphPage = lazy(() => import('./pages/IntentGraphPage'));
+const IntentAuditPage = lazy(() => import('./pages/IntentAuditPage'));
 
 // Minimal route-transition fallback — chunk loads are fast (same-origin,
 // HTTP-cached); a spinner flash would be noisier than a brief blank pane.
@@ -113,6 +114,10 @@ function App() {
                 <Route
                   path="/project/:projectId/intent/:intentId/observability"
                   element={<IntentObservabilityPage />}
+                />
+                <Route
+                  path="/project/:projectId/intent/:intentId/audit"
+                  element={<IntentAuditPage />}
                 />
                 <Route path="/project/:projectId/intent/:intentId" element={<IntentView />} />
 

@@ -14,6 +14,10 @@ import { writeFile, mkdir } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const { renderStructureContracts } = require('../shared/artifact-structure-contract.js');
 
 // The MCP execution annex — the harness binding that redirects the upstream
 // stage prose (which is written for a filesystem + `bun` harness) onto our MCP
@@ -127,6 +131,7 @@ export const buildStagePrompt = ({
   agentPersona = '',
   knowledge = '',
   conductor = '',
+  compiledContext = '',
 }) => {
   const sections = [
     `# Stage: ${stage.stageId ?? 'unknown'} (phase: ${stage.phase ?? 'unphased'})`,
@@ -151,6 +156,7 @@ export const buildStagePrompt = ({
   if (conductor)
     sections.push('', '## Execution quality (conductor)', neutralizeHarnessDir(conductor));
   if (agentPersona) sections.push('', '## Your role', neutralizeHarnessDir(agentPersona));
+  if (compiledContext) sections.push('', neutralizeHarnessDir(compiledContext));
   // Unit lane: the fan-out scoping must precede the stage prose (which is
   // worded once-per-workflow) so the agent reads its lane boundary first.
   const unitScope = renderUnitScope(unit);
@@ -166,6 +172,14 @@ export const buildStagePrompt = ({
     '## Expected outputs (record each via create_artifact)',
     renderOutputs(stage.outputArtifacts),
   );
+  // Structure contracts — generated from the extraction registry for THIS
+  // stage's registered output types (artifact-structure-contract.js). Placed
+  // directly after the outputs list so "what to produce" and "what shape it
+  // must take" read as one unit. Nothing is injected for unregistered types.
+  const structureContracts = renderStructureContracts(
+    (stage.outputArtifacts ?? []).map((o) => o.artifact ?? o).filter(Boolean),
+  );
+  if (structureContracts) sections.push('', structureContracts);
   if (knowledge) sections.push('', '## Reference knowledge', neutralizeHarnessDir(knowledge));
   if (stage.humanValidation === 'required') {
     sections.push(
@@ -292,6 +306,7 @@ export const materializeStage = async ({
   agentPersona,
   knowledge,
   conductor = '',
+  compiledContext = '',
   rulesDoc,
   mcpEntry,
   scope,
@@ -312,6 +327,7 @@ export const materializeStage = async ({
     agentPersona,
     knowledge,
     conductor,
+    compiledContext,
   });
   return { prompt, mcpConfigPath, rulesPath: rulesDoc ? path.join(aidlcDir, 'rules.md') : null };
 };

@@ -2,7 +2,28 @@ import { beforeAll, beforeEach, afterAll, describe, it, expect } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
-import { fetchKnowledgeGraph } from '../knowledge-graph.js';
+import { fetchKnowledgeGraph, flattenVertexMap } from '../knowledge-graph.js';
+
+// Field regression: Neptune returns the valueMap(true) T.id token AFTER the
+// business `id` property (gremlin-server returns it first). The old flatten
+// let the token clobber the business id with the internal vertex UUID —
+// dropping EVERY artifact↔artifact edge from the UI graph (edge endpoints are
+// business ids, so mapEdgeRows found no matching node).
+describe('flattenVertexMap — Neptune token order', () => {
+  it('business id wins over the T.id token regardless of position', () => {
+    const T_ID = { elementName: 'id' };
+    const neptuneOrder = new Map([
+      ['id', ['reqs-1']],
+      [T_ID, 'e0cf8ec4-af58-149d-8766-e2a3466e411f'],
+    ]);
+    expect(flattenVertexMap(neptuneOrder).id).toBe('reqs-1');
+    const gserverOrder = new Map([
+      [T_ID, 'e0cf8ec4-af58-149d-8766-e2a3466e411f'],
+      ['id', ['reqs-1']],
+    ]);
+    expect(flattenVertexMap(gserverOrder).id).toBe('reqs-1');
+  });
+});
 
 const PARTITION = `t-kg-${randomUUID()}`;
 
@@ -266,5 +287,148 @@ describe('fetchKnowledgeGraph — steering + supersede lineage', () => {
     expect(design.superseded).toBe(true);
     const reqs = graph.nodes.find((n) => n.id === 'reqs-1');
     expect(reqs.superseded).toBe(false);
+  });
+});
+
+// ── Derived layer (typed items + unit DAG mirror) ──
+
+describe('fetchKnowledgeGraph — derived layer', () => {
+  it('renders current typed items and units with their edges, tagged graphLayer=derived', async () => {
+    await seedFullGraph();
+    await addV('Story', {
+      id: 'story:intent-kg:s-login',
+      artifact_id: 'reqs-1',
+      artifact_type: 'requirements-analysis',
+      slug: 's-login',
+      title: 'User logs in',
+      priority: 'must-have',
+      superseded_at: '',
+    });
+    await addE('Artifact', 'reqs-1', 'HAS_ITEM', 'Story', 'story:intent-kg:s-login');
+    // A superseded item (re-derive removed it) must not render.
+    await addV('Story', {
+      id: 'story:intent-kg:s-old',
+      artifact_id: 'reqs-1',
+      slug: 's-old',
+      title: 'Removed story',
+      superseded_at: '2026-01-02T00:00:00Z',
+    });
+    await addE('Artifact', 'reqs-1', 'HAS_ITEM', 'Story', 'story:intent-kg:s-old');
+    // Artifact-level citation projection.
+    await addE('Artifact', 'design-1', 'CITES', 'Artifact', 'reqs-1');
+    // Unit DAG mirror.
+    await addV('UnitOfWork', { id: 'unit:intent-kg:auth', slug: 'auth', superseded_at: '' });
+    await addV('UnitOfWork', { id: 'unit:intent-kg:billing', slug: 'billing', superseded_at: '' });
+    await addE('Intent', INTENT, 'CONTAINS', 'UnitOfWork', 'unit:intent-kg:auth');
+    await addE('Intent', INTENT, 'CONTAINS', 'UnitOfWork', 'unit:intent-kg:billing');
+    await addE(
+      'UnitOfWork',
+      'unit:intent-kg:billing',
+      'DEPENDS_ON',
+      'UnitOfWork',
+      'unit:intent-kg:auth',
+    );
+    await addE('UnitOfWork', 'unit:intent-kg:auth', 'DERIVED_FROM', 'Artifact', 'design-1');
+
+    const { nodes, edges } = await fetchKnowledgeGraph(g, {
+      projectId: PROJECT,
+      intentId: INTENT,
+    });
+
+    expect(byId(nodes, 'story:intent-kg:s-login')).toMatchObject({
+      type: 'Story',
+      graphLayer: 'derived',
+      label: 'User logs in',
+      slug: 's-login',
+      artifactId: 'reqs-1',
+      priority: 'must-have',
+    });
+    expect(byId(nodes, 'story:intent-kg:s-old')).toBeUndefined();
+    expect(byId(nodes, 'unit:intent-kg:auth')).toMatchObject({
+      type: 'UnitOfWork',
+      graphLayer: 'derived',
+      label: 'auth',
+    });
+
+    expect(edge(edges, 'reqs-1', 'story:intent-kg:s-login', 'HAS_ITEM')).toBeDefined();
+    expect(edges.some((e) => e.target === 'story:intent-kg:s-old')).toBe(false);
+    expect(edge(edges, 'design-1', 'reqs-1', 'CITES')).toBeDefined();
+    expect(edge(edges, INTENT, 'unit:intent-kg:auth', 'CONTAINS')).toBeDefined();
+    expect(
+      edge(edges, 'unit:intent-kg:billing', 'unit:intent-kg:auth', 'DEPENDS_ON'),
+    ).toBeDefined();
+    expect(edge(edges, 'unit:intent-kg:auth', 'design-1', 'DERIVED_FROM')).toBeDefined();
+  });
+
+  it('hides items whose parent artifact was rewind-superseded', async () => {
+    await seedFullGraph();
+    await addV('Requirement', {
+      id: 'requirement:intent-kg:req-x',
+      artifact_id: 'design-1',
+      slug: 'req-x',
+      title: 'Orphaned by rewind',
+      superseded_at: '',
+    });
+    await addE('Artifact', 'design-1', 'HAS_ITEM', 'Requirement', 'requirement:intent-kg:req-x');
+    await g
+      .V()
+      .has('Artifact', 'id', 'design-1')
+      .property('superseded_at', '2026-01-02T00:00:00Z')
+      .next();
+    const { nodes } = await fetchKnowledgeGraph(g, { projectId: PROJECT, intentId: INTENT });
+    expect(byId(nodes, 'requirement:intent-kg:req-x')).toBeUndefined();
+  });
+
+  it('renders item↔item traceability edges (COVERS/FOR_PERSONA/DEPENDS_ON/IMPLEMENTS) and unit contract edges', async () => {
+    await seedFullGraph();
+    const item = async (label, slug, props = {}) => {
+      const id = `${label.toLowerCase()}:intent-kg:${slug}`;
+      await addV(label, {
+        id,
+        artifact_id: 'reqs-1',
+        slug,
+        title: slug,
+        superseded_at: '',
+        ...props,
+      });
+      await addE('Artifact', 'reqs-1', 'HAS_ITEM', label, id);
+      return id;
+    };
+    const req = await item('Requirement', 'req-auth');
+    const persona = await item('Persona', 'p-operator');
+    const s1 = await item('Story', 's-login');
+    const s2 = await item('Story', 's-report');
+    const map = await item('StoryMapEntry', 'm-auth');
+    const contract = await item('Contract', 'c-auth-api');
+    await addV('UnitOfWork', { id: 'unit:intent-kg:u-auth', slug: 'u-auth', superseded_at: '' });
+    await addE('Intent', INTENT, 'CONTAINS', 'UnitOfWork', 'unit:intent-kg:u-auth');
+    // The edges the derive sweep materializes.
+    await addE('Story', s1, 'COVERS', 'Requirement', req);
+    await addE('Story', s1, 'FOR_PERSONA', 'Persona', persona);
+    await addE('Story', s2, 'DEPENDS_ON', 'Story', s1);
+    await addE('StoryMapEntry', map, 'IMPLEMENTS', 'Story', s1);
+    await addE('StoryMapEntry', map, 'IMPLEMENTS', 'UnitOfWork', 'unit:intent-kg:u-auth');
+    await addE('UnitOfWork', 'unit:intent-kg:u-auth', 'EXPOSES', 'Contract', contract);
+    await addE('UnitOfWork', 'unit:intent-kg:u-auth', 'CONSUMES_CONTRACT', 'Contract', contract);
+    // An edge into a STALE item must never render (endpoint filter).
+    const stale = 'story:intent-kg:s-stale';
+    await addV('Story', {
+      id: stale,
+      artifact_id: 'reqs-1',
+      slug: 's-stale',
+      superseded_at: '2026-01-02T00:00:00Z',
+    });
+    await addE('Artifact', 'reqs-1', 'HAS_ITEM', 'Story', stale);
+    await addE('Story', s2, 'DEPENDS_ON', 'Story', stale);
+
+    const { edges } = await fetchKnowledgeGraph(g, { projectId: PROJECT, intentId: INTENT });
+    expect(edge(edges, s1, req, 'COVERS')).toBeDefined();
+    expect(edge(edges, s1, persona, 'FOR_PERSONA')).toBeDefined();
+    expect(edge(edges, s2, s1, 'DEPENDS_ON')).toBeDefined();
+    expect(edge(edges, map, s1, 'IMPLEMENTS')).toBeDefined();
+    expect(edge(edges, map, 'unit:intent-kg:u-auth', 'IMPLEMENTS')).toBeDefined();
+    expect(edge(edges, 'unit:intent-kg:u-auth', contract, 'EXPOSES')).toBeDefined();
+    expect(edge(edges, 'unit:intent-kg:u-auth', contract, 'CONSUMES_CONTRACT')).toBeDefined();
+    expect(edges.some((e) => e.target === stale)).toBe(false);
   });
 });

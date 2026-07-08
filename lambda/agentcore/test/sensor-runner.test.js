@@ -103,6 +103,46 @@ describe('runStageSensors — graph kind', () => {
     expect(verdicts[0].result).toBe('PASS');
   });
 
+  it('graph-coverage runs intent-wide off getCoverage (not per produced artifact)', async () => {
+    const runner = createSensorRunner({
+      graph: {
+        ...fakeGraph({}),
+        getCoverage: async () => ({
+          counts: { requirements: 1, stories: 1, mappings: 1, components: 0 },
+          uncoveredRequirements: [],
+          uncoveredMustHave: [{ slug: 'req-pay' }],
+          unmappedStories: [],
+          unknownReferences: [],
+          componentCycles: [],
+        }),
+      },
+      loadBlockScript: async () => '',
+      workspaceDir: null,
+    });
+    const verdicts = await runner.runStageSensors({
+      sensors: [{ sensorId: 'graph-coverage', severity: 'advisory' }],
+      // No produced artifacts needed — the report is intent-wide.
+      outputArtifacts: [],
+      stageId: 's',
+    });
+    expect(verdicts[0]).toMatchObject({ kind: 'graph', result: 'FAIL', held: false });
+    expect(verdicts[0].detail.uncovered_must_have).toEqual(['req-pay']);
+  });
+
+  it('graph-coverage degrades to INCONCLUSIVE when the writer lacks getCoverage', async () => {
+    const runner = createSensorRunner({
+      graph: fakeGraph({}),
+      loadBlockScript: async () => '',
+      workspaceDir: null,
+    });
+    const verdicts = await runner.runStageSensors({
+      sensors: [{ sensorId: 'graph-coverage', severity: 'advisory' }],
+      outputArtifacts: [],
+      stageId: 's',
+    });
+    expect(verdicts[0].result).toBe('INCONCLUSIVE');
+  });
+
   it('INCONCLUSIVE when the stage produced no artifacts', async () => {
     const runner = createSensorRunner({
       graph: fakeGraph({}),

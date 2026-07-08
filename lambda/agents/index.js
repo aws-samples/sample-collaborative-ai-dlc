@@ -164,10 +164,11 @@ exports.handler = async (event) => {
       const bearerPath = `${prefix}/bedrock-bearer-token`;
       const kiroApiKeyPath = `${prefix}/kiro-api-key`;
       const cliModelsPath = `${prefix}/cli-models`;
+      const deriveEnrichmentPath = `${prefix}/derive-enrichment`;
       try {
         const result = await ssm.send(
           new GetParametersCommand({
-            Names: [bearerPath, kiroApiKeyPath, cliModelsPath],
+            Names: [bearerPath, kiroApiKeyPath, cliModelsPath, deriveEnrichmentPath],
             WithDecryption: true,
           }),
         );
@@ -176,11 +177,13 @@ exports.handler = async (event) => {
         const bearerToken = byName[bearerPath] || '';
         const kiroApiKey = byName[kiroApiKeyPath] || '';
         const cliModels = parseCliModels(byName[cliModelsPath] || '{}');
+        const deriveEnrichment = byName[deriveEnrichmentPath] === 'llm' ? 'llm' : 'off';
         // Return secrets as masked flags (never send the raw values to the browser)
         return response(200, {
           bedrockBearerTokenSet: bearerToken !== '' && bearerToken !== 'placeholder',
           kiroApiKeySet: kiroApiKey !== '' && kiroApiKey !== 'placeholder',
           cliModels,
+          deriveEnrichment,
         });
       } catch (err) {
         console.error('[settings] GET failed:', err.message);
@@ -251,6 +254,30 @@ exports.handler = async (event) => {
         } catch (err) {
           console.error('[settings] Failed to write CLI models:', err.message);
           errors.push('cliModels: ' + err.message);
+        }
+      }
+
+      if (input.deriveEnrichment !== undefined) {
+        // Derive-time graph enrichment mode. Strict allowlist: it gates model
+        // spend (one bounded CLI call per approved artifact when "llm").
+        if (input.deriveEnrichment !== 'off' && input.deriveEnrichment !== 'llm') {
+          return response(400, {
+            error: 'Invalid deriveEnrichment value',
+            issues: ['deriveEnrichment must be "off" or "llm"'],
+          });
+        }
+        try {
+          await ssm.send(
+            new PutParameterCommand({
+              Name: `${prefix}/derive-enrichment`,
+              Value: input.deriveEnrichment,
+              Type: 'String',
+              Overwrite: true,
+            }),
+          );
+        } catch (err) {
+          console.error('[settings] Failed to write derive enrichment mode:', err.message);
+          errors.push('deriveEnrichment: ' + err.message);
         }
       }
 

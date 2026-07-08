@@ -70,6 +70,19 @@ describe('dispatchInvocation', () => {
     });
   });
 
+  it('routes derive-artifacts for fine-grained graph projection', async () => {
+    const r = await dispatchInvocation({
+      payload: { command: 'derive-artifacts', intentId: 'i1', executionId: 'e1' },
+      handlers: {
+        deriveArtifacts: async (p) => ({ ok: true, artifacts: ['a1'], executionId: p.executionId }),
+      },
+    });
+    expect(r).toMatchObject({
+      statusCode: 200,
+      body: { ok: true, artifacts: ['a1'], executionId: 'e1', command: 'derive-artifacts' },
+    });
+  });
+
   it('routes init-lane and merge-lane (WP5 unit lanes)', async () => {
     const laneHandlers = {
       initLane: async (p) => ({ ok: true, unitSlug: p.unitSlug }),

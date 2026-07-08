@@ -22,6 +22,11 @@
 //   { "command": "promote-units", projectId, intentId, executionId, stageInstanceId? }
 //     → WP3: re-parse the approved unit-of-work-dependency artifact into the
 //       UNITPLAN/UNIT scheduling rows + the Neptune traceability mirror.
+//   { "command": "derive-artifacts", projectId, intentId, executionId, stageInstanceId?,
+//     artifactTypes?, enrichment?, requestedCli?, cliModels? }
+//     → rebuild the fine-grained graph projection from canonical artifact markdown.
+//       `enrichment` ('off'|'llm') is the Admin toggle snapshotted on the execution;
+//       'llm' adds bounded summary metadata via a one-shot agent-CLI call.
 //   { "command": "init-lane",  ...initLane args }   → WP5: prepare a unit
 //       lane's session workspace (clone + unit branch off intent HEAD + push).
 //   { "command": "merge-lane", ...mergeLane args }  → WP5: serialized --no-ff
@@ -68,6 +73,7 @@ export const dispatchInvocation = async ({
     'run-stage': handlers.runStage,
     'run-stage-start': handlers.runStageStart,
     'promote-units': handlers.promoteUnits,
+    'derive-artifacts': handlers.deriveArtifacts,
     'init-lane': handlers.initLane,
     'merge-lane': handlers.mergeLane,
     'resolve-conflict': handlers.resolveConflict,
@@ -155,6 +161,7 @@ const main = async () => {
   const { runStage } = await import('./commands/run-stage.js');
   const { createRunStageStart } = await import('./commands/run-stage-start.js');
   const { promoteUnits } = await import('./commands/promote-units.js');
+  const { deriveArtifacts } = await import('./commands/derive-artifacts.js');
   const { initLane, mergeLane } = await import('./commands/lane.js');
   const { resolveConflict } = await import('./commands/resolve-conflict.js');
   const { inspect } = await import('./commands/inspect.js');
@@ -208,6 +215,8 @@ const main = async () => {
     // mirror. Dispatched by the orchestrator after the producing stage
     // succeeds (docs/v2-parallel.md).
     promoteUnits: (p) => promoteUnits(p, { store, openGraph, broadcast }),
+    deriveArtifacts: (p) =>
+      deriveArtifacts(p, { store, openGraph, broadcast, availableClis, env: process.env }),
     // WP5 unit lanes: engine-owned lane git (docs/v2-parallel.md A3). init-lane
     // runs in the lane's own session; merge-lane in the intent session.
     initLane: (p) => initLane({ ...p, workspaceDir }, { store, broadcast }),

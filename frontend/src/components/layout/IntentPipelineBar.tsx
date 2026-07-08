@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Activity, ArrowLeft, CheckCircle2, ChevronRight, Network } from 'lucide-react';
+import { Activity, ArrowLeft, CheckCircle2, ChevronRight, Network, ScrollText } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
@@ -42,11 +42,14 @@ export function IntentPipelineBar() {
     return idx >= 0 ? idx : phases.length - 1;
   }, [phases, currentPhasePath]);
 
-  const currentRoute: 'graph' | 'observability' | 'workbench' = location.pathname.endsWith('/graph')
-    ? 'graph'
-    : location.pathname.endsWith('/observability')
-      ? 'observability'
-      : 'workbench';
+  const currentRoute: 'graph' | 'observability' | 'audit' | 'workbench' =
+    location.pathname.endsWith('/graph')
+      ? 'graph'
+      : location.pathname.endsWith('/observability')
+        ? 'observability'
+        : location.pathname.endsWith('/audit')
+          ? 'audit'
+          : 'workbench';
 
   if (!detail && loading) return null;
   if (!projectId || !intentId) return null;
@@ -151,6 +154,22 @@ export function IntentPipelineBar() {
             </Button>
           </TooltipTrigger>
           <TooltipContent>Observability</TooltipContent>
+        </Tooltip>
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant={currentRoute === 'audit' ? 'secondary' : 'ghost'}
+              size="sm"
+              className="h-7 gap-1.5 px-2 text-xs"
+              aria-label="Audit"
+              onClick={() => navigate(`/project/${projectId}/intent/${intentId}/audit`)}
+            >
+              <ScrollText className="h-3.5 w-3.5" />
+              Audit
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Graph reads, enrichment spend & sensor findings</TooltipContent>
         </Tooltip>
       </div>
     </div>

@@ -45,6 +45,11 @@ import {
   Brain,
   Lightbulb,
   CircleDot,
+  User,
+  Box,
+  Scale,
+  FileSignature,
+  Package,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -215,6 +220,78 @@ export const NODE_TYPES: Record<
     label: 'Learning Rule',
     shortLabel: 'Rule',
   },
+  // -- v2 derived layer (typed items mirrored from artifact structured blocks
+  //    + the unit-of-work DAG mirror; nodes carry graphLayer='derived') --
+  Story: {
+    color: '#22c55e',
+    darkColor: '#16a34a',
+    gradientFrom: '#4ade80',
+    gradientTo: '#16a34a',
+    textColor: '#fff',
+    icon: BookOpen,
+    label: 'Story',
+    shortLabel: 'Story',
+  },
+  Persona: {
+    color: '#8b5cf6',
+    darkColor: '#7c3aed',
+    gradientFrom: '#a78bfa',
+    gradientTo: '#7c3aed',
+    textColor: '#fff',
+    icon: User,
+    label: 'Persona',
+    shortLabel: 'Pers',
+  },
+  Component: {
+    color: '#0ea5e9',
+    darkColor: '#0284c7',
+    gradientFrom: '#38bdf8',
+    gradientTo: '#0284c7',
+    textColor: '#fff',
+    icon: Box,
+    label: 'Component',
+    shortLabel: 'Comp',
+  },
+  Decision: {
+    color: '#eab308',
+    darkColor: '#ca8a04',
+    gradientFrom: '#facc15',
+    gradientTo: '#ca8a04',
+    textColor: '#000',
+    icon: Scale,
+    label: 'Decision',
+    shortLabel: 'Dec',
+  },
+  StoryMapEntry: {
+    color: '#14b8a6',
+    darkColor: '#0d9488',
+    gradientFrom: '#2dd4bf',
+    gradientTo: '#0d9488',
+    textColor: '#fff',
+    icon: MapIcon,
+    label: 'Story Mapping',
+    shortLabel: 'Map',
+  },
+  Contract: {
+    color: '#6366f1',
+    darkColor: '#4f46e5',
+    gradientFrom: '#818cf8',
+    gradientTo: '#4f46e5',
+    textColor: '#fff',
+    icon: FileSignature,
+    label: 'Contract',
+    shortLabel: 'Ctr',
+  },
+  UnitOfWork: {
+    color: '#f59e0b',
+    darkColor: '#d97706',
+    gradientFrom: '#fbbf24',
+    gradientTo: '#d97706',
+    textColor: '#000',
+    icon: Package,
+    label: 'Unit of Work',
+    shortLabel: 'Unit',
+  },
 };
 
 const UNKNOWN_NODE_CFG = {
@@ -247,6 +324,8 @@ const EDGE_LABELS: Record<string, string> = {
   CONSUMES: 'consumes',
   DERIVED_FROM: 'derived from',
   INFORMS: 'informs',
+  HAS_ITEM: 'has item',
+  CITES: 'cites',
 };
 
 const NODE_W = 156;
@@ -265,6 +344,13 @@ const TYPE_HIERARCHY: string[] = [
   'LearningRule',
   'Task',
   'Artifact',
+  'UnitOfWork',
+  'Story',
+  'Persona',
+  'Component',
+  'Decision',
+  'StoryMapEntry',
+  'Contract',
   'CodeFile',
   'Review',
   'Question',

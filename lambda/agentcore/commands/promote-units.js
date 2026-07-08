@@ -1,5 +1,5 @@
 // promote-units — freeze the approved unit-of-work-dependency DAG into the
-// scheduling data model (docs/v2-parallel.md WP3).
+// scheduling data model.
 //
 // Invoked by the orchestrator (durable step) right after the stage producing
 // `unit-of-work-dependency` SUCCEEDS — i.e. after its sensors passed (the
@@ -87,7 +87,10 @@ export const promoteUnits = async (payload, deps) => {
   // closeGraphSource). The long-lived session process reuses this command.
   try {
     // 1+2. Read + re-parse the DAG artifact.
-    const rows = await graph.lookupArtifacts({ artifactType: DAG_ARTIFACT_TYPE });
+    const rows = await graph.lookupArtifacts({
+      artifactType: DAG_ARTIFACT_TYPE,
+      includeContent: true,
+    });
     const artifact = pickCurrentArtifact(rows);
     if (!artifact) {
       await event('v2.units.promotion_failed', `no current ${DAG_ARTIFACT_TYPE} artifact`);
@@ -126,6 +129,10 @@ export const promoteUnits = async (payload, deps) => {
     let mirror = null;
     try {
       mirror = await graph.mirrorUnitDag({ units, sourceArtifactId: artifact.id ?? null });
+      // Re-resolve item↔item traceability now that the UnitOfWork vertices
+      // exist: StoryMapEntry/Contract items derived BEFORE promotion could not
+      // wire IMPLEMENTS/EXPOSES/CONSUMES_CONTRACT edges to units yet.
+      if (graph.resolveDerivedItemEdges) await graph.resolveDerivedItemEdges();
     } catch (e) {
       await event('v2.units.mirror_failed', e.message);
     }

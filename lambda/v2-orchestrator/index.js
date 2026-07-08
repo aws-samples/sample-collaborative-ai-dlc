@@ -506,6 +506,10 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // `requestedCli` so the run uses the chosen CLI (selection depends on which
     // CLI is authed). null = let run-stage pick the first installed CLI.
     const requestedCli = meta.agentCli ?? null;
+    // Derive-time graph enrichment mode ('off'|'llm'), snapshotted onto META at
+    // create from the Admin SSM setting; forwarded in the derive-artifacts
+    // payload so the container needs no redeploy (and no SSM read) to honour it.
+    const deriveEnrichment = meta.deriveEnrichment === 'llm' ? 'llm' : 'off';
     // Seconds a parked stage's warm microVM lingers before release (D1).
     const parkReleaseSeconds = meta.parkReleaseSeconds ?? null;
 
@@ -581,31 +585,44 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           store.setGateCallbackId({ executionId, humanTaskId, callbackId }),
         );
 
-        // D1 release-on-park: if no human answers within parkReleaseSeconds, free
-        // the warm microVM compute (StopRuntimeSession) while we keep waiting —
-        // for a lane, ITS OWN session is released, never a sibling's. Resume
-        // re-mounts the persistent session storage, so the parked CLI
-        // conversation is not lost. parkReleaseSeconds <= 0 stops immediately;
-        // null skips release (wait on the callback alone).
-        if (Number.isFinite(parkReleaseSeconds) && parkReleaseSeconds >= 0) {
-          // Race the human answer (callbackPromise) against the release deadline
-          // (a durable wait). Both are DurablePromises so race is replay-safe. The
-          // wait resolves to void; if the callback hasn't resolved by then the gate
-          // is still pending — re-read to disambiguate the winner deterministically.
-          await ctxArg.promise.race(`park-${humanTaskId}`, [
-            callbackPromise,
-            ctxArg.wait(`release-timer-${humanTaskId}`, { seconds: parkReleaseSeconds }),
-          ]);
-          const stillPending = await ctxArg.step(`gate-status-${humanTaskId}`, async () => {
-            const gate = await store.getHumanTask(executionId, humanTaskId);
-            return gate?.status === 'pending';
-          });
-          if (stillPending) {
-            await ctxArg.step(`release-${humanTaskId}`, () => stopSession(stageSessionId));
-            await callbackPromise; // keep waiting; resume re-mounts persistent storage
+        // Answer/bind race (field incident): a fast human can answer in the
+        // window between the runtime parking the stage and the bind above —
+        // the answer endpoint found NO callbackId to complete, so nothing
+        // would wake this run until the park-release timer fired (a full
+        // parkReleaseSeconds stall the human reads as "my answer was
+        // ignored"). Re-read AFTER binding: an already-answered gate skips
+        // the wait entirely and resumes now.
+        const answeredEarly = await ctxArg.step(`gate-answered-early-${humanTaskId}`, async () => {
+          const gate = await store.getHumanTask(executionId, humanTaskId);
+          return Boolean(gate?.status) && gate.status !== 'pending';
+        });
+        if (!answeredEarly) {
+          // D1 release-on-park: if no human answers within parkReleaseSeconds, free
+          // the warm microVM compute (StopRuntimeSession) while we keep waiting —
+          // for a lane, ITS OWN session is released, never a sibling's. Resume
+          // re-mounts the persistent session storage, so the parked CLI
+          // conversation is not lost. parkReleaseSeconds <= 0 stops immediately;
+          // null skips release (wait on the callback alone).
+          if (Number.isFinite(parkReleaseSeconds) && parkReleaseSeconds >= 0) {
+            // Race the human answer (callbackPromise) against the release deadline
+            // (a durable wait). Both are DurablePromises so race is replay-safe. The
+            // wait resolves to void; if the callback hasn't resolved by then the gate
+            // is still pending — re-read to disambiguate the winner deterministically.
+            await ctxArg.promise.race(`park-${humanTaskId}`, [
+              callbackPromise,
+              ctxArg.wait(`release-timer-${humanTaskId}`, { seconds: parkReleaseSeconds }),
+            ]);
+            const stillPending = await ctxArg.step(`gate-status-${humanTaskId}`, async () => {
+              const gate = await store.getHumanTask(executionId, humanTaskId);
+              return gate?.status === 'pending';
+            });
+            if (stillPending) {
+              await ctxArg.step(`release-${humanTaskId}`, () => stopSession(stageSessionId));
+              await callbackPromise; // keep waiting; resume re-mounts persistent storage
+            }
+          } else {
+            await callbackPromise; // resolved by SendDurableExecutionCallbackSuccess
           }
-        } else {
-          await callbackPromise; // resolved by SendDurableExecutionCallbackSuccess
         }
 
         // Retired while parked? Cancel/rewind supersedes the pending gate and
@@ -616,6 +633,27 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         );
         if (gateAfter?.status === 'superseded') {
           ctx.logger?.info?.('run retired while parked', { intentId, humanTaskId });
+          return {
+            state: 'TERMINAL',
+            value: { ok: false, reason: 'retired', intentId, humanTaskId },
+          };
+        }
+        // The gate may be ANSWERED yet the run retired anyway: a rewind/retry
+        // relaunches under a NEW orchestratorRunId without superseding
+        // already-answered gates. Without this ownership check the retired run
+        // dispatched a resume against stage rows the rewind had just reset
+        // (wiped CLI session → resume_no_session, and a stale FAILED write
+        // over the fresh row — field incident). Verify we still own the run
+        // BEFORE dispatching anything.
+        const ownerRunId = await ctxArg.step(`run-owner-${humanTaskId}`, async () => {
+          const currentMeta = await store.getExecution(executionId);
+          return currentMeta?.orchestratorRunId ?? null;
+        });
+        if (runId && ownerRunId && ownerRunId !== runId) {
+          ctx.logger?.info?.('run retired while parked (ownership lost)', {
+            intentId,
+            humanTaskId,
+          });
           return {
             state: 'TERMINAL',
             value: { ok: false, reason: 'retired', intentId, humanTaskId },
@@ -658,6 +696,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       maxParallelUnits: meta.maxParallelUnits ?? 0,
       requestedCli,
       cliModels,
+      deriveEnrichment,
       stageInstanceIdFor: (stageId, slug) => planStageInstanceId(namespace, stageId, slug),
     };
     sectionToolkit.runId = runId;
@@ -676,6 +715,38 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         if (outcome.state === 'FAILED') {
           const out = await fail('stage_failed', `${stage.stageId}: ${outcome.reason}`);
           return { ...out, stageId: stage.stageId };
+        }
+
+        const outputArtifactTypes = (stage.outputArtifacts ?? [])
+          .map((o) => o.artifact ?? o)
+          .filter(Boolean);
+        if (outputArtifactTypes.length > 0) {
+          const derived = await ctx.step(`derive-artifacts-${stage.stageId}`, () =>
+            invokeRuntime(
+              {
+                command: 'derive-artifacts',
+                projectId,
+                intentId,
+                executionId,
+                stageInstanceId: stage.stageInstanceId ?? null,
+                artifactTypes: outputArtifactTypes,
+                enrichment: deriveEnrichment,
+                ...(requestedCli ? { requestedCli } : {}),
+                ...(cliModels ? { cliModels } : {}),
+              },
+              sessionId,
+            ),
+          );
+          if (!derived || derived.ok === false) {
+            await emitEvent(
+              ctx,
+              `derive-artifacts-failed-${stage.stageId}`,
+              'v2.derive.failed',
+              `${stage.stageId}: ${derived?.reason ?? 'no_response'}${
+                derived?.detail ? ` (${derived.detail})` : ''
+              }`,
+            );
+          }
         }
 
         // Unit DAG promotion (docs/v2-parallel.md WP3): the stage that produces

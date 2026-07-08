@@ -35,6 +35,7 @@ const {
   buildEventRow,
   buildHumanTaskRow,
   buildMetricRow,
+  buildGraphReadRow,
   buildSensorRow,
   buildSteeringRow,
   buildOutputRow,
@@ -741,6 +742,30 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return item;
   };
 
+  const recordGraphRead = async ({
+    executionId,
+    stageInstanceId,
+    unitSlug,
+    tool,
+    bytes = 0,
+    resultCount = null,
+    args = {},
+  }) => {
+    const item = buildGraphReadRow({
+      executionId,
+      stageInstanceId,
+      unitSlug,
+      readId: nextId(),
+      tool,
+      bytes,
+      resultCount,
+      args,
+      now: now(),
+    });
+    await ddb.send(new PutCommand({ TableName: table(), Item: item }));
+    return item;
+  };
+
   // Persist a deterministic sensor verdict for a stage. Append-only (each run is
   // a distinct row keyed by ts+id), so a re-run never clobbers a prior verdict.
   const recordSensorRun = async ({
@@ -1128,6 +1153,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       events: records.filter((r) => r.sk.startsWith('EVENT#')),
       humanTasks: records.filter((r) => r.sk.startsWith('HUMAN#')),
       metrics: records.filter((r) => r.sk.startsWith('METRIC#')),
+      graphReads: records.filter((r) => r.sk.startsWith('READ#')),
       sensorRuns: records.filter((r) => r.sk.startsWith('SENSOR#')),
       steering: records.filter((r) => r.sk.startsWith('STEER#')),
       outputs: records.filter((r) => r.sk.startsWith('OUTPUT#')),
@@ -1199,6 +1225,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     supersedeSteering,
     resetStageRow,
     recordMetric,
+    recordGraphRead,
     recordSensorRun,
     appendOutput,
     getOutputs,

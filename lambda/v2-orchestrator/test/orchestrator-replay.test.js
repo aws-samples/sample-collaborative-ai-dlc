@@ -359,6 +359,7 @@ describe('WP5 sections on the real durable runner', () => {
       expect(world.invokes.map((p) => `${p.command}:${p.stageId ?? p.unitSlug ?? '-'}`)).toEqual([
         'init-ws:-',
         'run-stage-start:gen',
+        'derive-artifacts:-',
         'promote-units:-',
         'init-lane:auth',
         'run-stage-start:cg', // auth fresh (parks)

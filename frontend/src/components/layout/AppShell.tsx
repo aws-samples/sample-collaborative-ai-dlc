@@ -48,7 +48,9 @@ export function AppShell() {
   const inIntent = !!intentId;
   const onProjectPage = !!projectId && !inSprint && !inIntent;
   const onIntentSubPage =
-    location.pathname.endsWith('/graph') || location.pathname.endsWith('/observability');
+    location.pathname.endsWith('/graph') ||
+    location.pathname.endsWith('/observability') ||
+    location.pathname.endsWith('/audit');
   const showPipelineBar = inIntent && !onIntentSubPage;
 
   // Breakpoint (Tailwind lg): below it BOTH side panels render as NON-modal

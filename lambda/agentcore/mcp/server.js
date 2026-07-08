@@ -52,18 +52,71 @@ const notifyArtifact = async (bridge, { id, title, action }) => {
   }
 };
 
+const envelopeTextBytes = (env) =>
+  (env?.content ?? []).reduce((n, part) => n + Buffer.byteLength(part?.text ?? '', 'utf8'), 0);
+
+const envelopeResultCount = (env) => {
+  try {
+    const parsed = JSON.parse(env?.content?.[0]?.text ?? 'null');
+    return Array.isArray(parsed) ? parsed.length : parsed == null ? 0 : 1;
+  } catch {
+    return null;
+  }
+};
+
+const guardRead = async (bridge, tool, args, fn) => {
+  const env = await guard(fn);
+  if (!env?.isError) {
+    Promise.resolve(
+      bridge?.recordGraphRead?.({
+        tool,
+        args,
+        bytes: envelopeTextBytes(env),
+        resultCount: envelopeResultCount(env),
+      }),
+    ).catch(() => {});
+  }
+  return env;
+};
+
 // The full author tool surface (a main stage agent). Reviewer runs get the
 // READ_TOOLS subset only (see reviewerHandlers).
 export const buildToolHandlers = ({ writer, bridge }) => ({
   // ── Business reads ──
-  get_artifact: ({ id }) => guard(() => writer.getArtifact({ id })),
-  lookup_artifacts: ({ artifactType }) => guard(() => writer.lookupArtifacts({ artifactType })),
-  get_intent_graph: () => guard(() => writer.getIntentGraph()),
+  get_artifact: ({ id, mode }) =>
+    guardRead(bridge, 'get_artifact', { id, mode: mode ?? 'full' }, () =>
+      writer.getArtifact({ id, mode: mode ?? 'full' }),
+    ),
+  lookup_artifacts: ({ artifactType }) =>
+    guardRead(bridge, 'lookup_artifacts', { artifactType }, () =>
+      writer.lookupArtifacts({ artifactType }),
+    ),
+  get_intent_graph: () => guardRead(bridge, 'get_intent_graph', {}, () => writer.getIntentGraph()),
   get_artifact_neighbors: ({ id, edge, direction }) =>
-    guard(() => writer.getNeighbors({ id, edge: edge ?? null, direction: direction ?? 'both' })),
+    guardRead(bridge, 'get_artifact_neighbors', { id, edge, direction }, () =>
+      writer.getNeighbors({ id, edge: edge ?? null, direction: direction ?? 'both' }),
+    ),
+  get_artifact_toc: ({ id }) =>
+    guardRead(bridge, 'get_artifact_toc', { id }, () => writer.getArtifactToc({ id })),
+  get_section: ({ artifactId, heading, slug }) =>
+    guardRead(bridge, 'get_section', { artifactId, heading, slug }, () =>
+      writer.getSection({ artifactId, heading: heading ?? null, slug: slug ?? null }),
+    ),
+  get_items: ({ itemType, artifactType, limit }) =>
+    guardRead(bridge, 'get_items', { itemType, artifactType, limit }, () =>
+      writer.getItems({
+        itemType: itemType ?? null,
+        artifactType: artifactType ?? null,
+        limit: limit ?? 100,
+      }),
+    ),
   search_graph: ({ query, artifactType, limit }) =>
-    guard(() =>
+    guardRead(bridge, 'search_graph', { query, artifactType, limit }, () =>
       writer.searchGraph({ query, artifactType: artifactType ?? null, limit: limit ?? 25 }),
+    ),
+  get_coverage: ({ unitSlug }) =>
+    guardRead(bridge, 'get_coverage', { unitSlug }, () =>
+      writer.getCoverage({ unitSlug: unitSlug ?? null }),
     ),
   get_team_knowledge: ({ agentRef }) =>
     guard(() => writer.getTeamKnowledge({ agentRef: agentRef ?? null })),
@@ -121,7 +174,11 @@ export const READ_TOOLS = [
   'lookup_artifacts',
   'get_intent_graph',
   'get_artifact_neighbors',
+  'get_artifact_toc',
+  'get_section',
+  'get_items',
   'search_graph',
+  'get_coverage',
   'get_team_knowledge',
   'get_learning_rules',
 ];
@@ -151,35 +208,60 @@ export const handlersForRole = (allHandlers, role) => {
 // assertable and registration stays a thin loop.
 export const toolSchemas = (z) => ({
   get_artifact: {
-    description: 'Fetch one business artifact by id (its full properties).',
-    shape: { id: z.string() },
+    description:
+      'Fetch one business artifact by id. Use mode "toc" or "summary" to avoid loading full markdown unless needed.',
+    shape: { id: z.string(), mode: z.enum(['full', 'summary', 'toc']).optional() },
   },
   lookup_artifacts: {
     description:
-      'List existing artifacts of a given type in this intent (e.g. all "requirements-analysis").',
+      'List existing artifacts of a given type in this intent as compact metadata (incl. summary_gist/summary_claims when enriched), without full markdown content.',
     shape: { artifactType: z.string() },
   },
   get_intent_graph: {
     description:
-      'Snapshot every artifact in this intent (id, type, title) to orient before working.',
+      'Snapshot every artifact in this intent (id, type, title, and summary_gist/summary_claims when enriched) to orient before working — often enough context without any full read.',
     shape: {},
   },
   get_artifact_neighbors: {
-    description: 'Artifacts directly linked to a given artifact, optionally by edge + direction.',
+    description:
+      'Artifacts directly linked to a given artifact, optionally by edge + direction. Returns compact metadata, not full markdown.',
     shape: {
       id: z.string(),
       edge: z.enum(['PRODUCES', 'CONSUMES', 'DERIVED_FROM', 'RELATES_TO', 'DEPENDS_ON']).optional(),
       direction: z.enum(['in', 'out', 'both']).optional(),
     },
   },
+  get_artifact_toc: {
+    description:
+      'List derived markdown sections for one artifact as compact metadata (heading, slug, order, content length).',
+    shape: { id: z.string() },
+  },
+  get_section: {
+    description: 'Fetch one derived markdown section by artifact id and heading or slug.',
+    shape: { artifactId: z.string(), heading: z.string().optional(), slug: z.string().optional() },
+  },
+  get_items: {
+    description:
+      'List derived typed items in this intent, optionally filtered by item label (Story, Requirement, Component, etc.) and artifact type.',
+    shape: {
+      itemType: z.string().optional(),
+      artifactType: z.string().optional(),
+      limit: z.number().int().min(1).max(500).optional(),
+    },
+  },
   search_graph: {
     description:
-      'Substring search across this intent’s artifacts (title/content/type), optionally one type.',
+      'Substring search across this intent’s artifacts (title/content/type + enrichment summaries), returning compact metadata and snippets.',
     shape: {
       query: z.string(),
       artifactType: z.string().optional(),
       limit: z.number().int().min(1).max(100).optional(),
     },
+  },
+  get_coverage: {
+    description:
+      'One-call coverage report over the typed graph items: requirements uncovered by stories (incl. must-haves), stories unmapped to units, unknown references. Pass unitSlug for one lane’s stories + contracts.',
+    shape: { unitSlug: z.string().optional() },
   },
   get_team_knowledge: {
     description:
@@ -273,12 +355,6 @@ export const toolSchemas = (z) => ({
     shape: { summary: z.string(), type: z.string().optional() },
   },
 });
-
-// Byte length of an MCP result envelope's text payload — this is what the CLI
-// feeds back into the model turn as a tool_result, so it is the number that
-// matters for context pressure. Sums all text parts; 0 for an empty envelope.
-const envelopeTextBytes = (env) =>
-  (env?.content ?? []).reduce((n, part) => n + Buffer.byteLength(part?.text ?? '', 'utf8'), 0);
 
 // Wrap a tool handler with a one-line stderr trace (stderr flows to the
 // container log). Records the call, its arg keys, latency, error flag, and —

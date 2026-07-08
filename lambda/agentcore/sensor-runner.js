@@ -35,6 +35,7 @@ const {
   buildScriptArgv,
   evalRequiredSections,
   evalUpstreamCoverage,
+  evalGraphCoverage,
 } = require('../shared/v2-sensor-contract.js');
 
 // Convert a sensor `matches` glob (e.g. `**/*.{ts,tsx}`, `**/aidlc-docs/**`)
@@ -180,6 +181,19 @@ export const createSensorRunner = ({
   // evaluator. The worst result across the produced artifacts wins (a single
   // FAIL fails the sensor). `consumes` is the upstream artifact-name list.
   const runGraphSensor = async ({ sensor, outputArtifacts = [], consumes = [] }) => {
+    // graph-coverage is INTENT-WIDE (typed-item joins across all artifacts),
+    // not per-produced-artifact like the content evaluators below.
+    if (sensor.sensorId === 'graph-coverage') {
+      if (typeof graph.getCoverage !== 'function') {
+        return { result: SENSOR_RESULT.INCONCLUSIVE, detail: { reason: 'coverage unavailable' } };
+      }
+      const coverage = await graph.getCoverage().catch(() => null);
+      if (!coverage) {
+        return { result: SENSOR_RESULT.INCONCLUSIVE, detail: { reason: 'coverage read failed' } };
+      }
+      const evalled = evalGraphCoverage(coverage);
+      return { result: evalled.result, detail: evalled.detail };
+    }
     const produced = (outputArtifacts ?? []).map((o) => o.artifact).filter(Boolean);
     if (produced.length === 0) {
       return {
@@ -191,7 +205,9 @@ export const createSensorRunner = ({
     let worst = SENSOR_RESULT.PASS;
     for (const artifactType of produced) {
       // The agent ids artifacts however it likes; look them all up by type.
-      const rows = await graph.lookupArtifacts({ artifactType }).catch(() => []);
+      const rows = await graph
+        .lookupArtifacts({ artifactType, includeContent: true })
+        .catch(() => []);
       if (!rows.length) {
         details.push({ artifact: artifactType, reason: 'not found in graph' });
         if (worst === SENSOR_RESULT.PASS) worst = SENSOR_RESULT.INCONCLUSIVE;
@@ -202,7 +218,13 @@ export const createSensorRunner = ({
         const evalled =
           sensor.sensorId === 'upstream-coverage'
             ? evalUpstreamCoverage(body, consumes)
-            : evalRequiredSections(body, artifactType);
+            : evalRequiredSections(body, artifactType, {
+                // Strictness ladder: the sensor ROW (authored in the block
+                // library) opts a workflow into failing on ABSENT structured
+                // blocks. Default lenient — absence is an audit finding until
+                // field-test compliance justifies flipping the switch.
+                strictStructuredBlocks: Boolean(sensor.strictStructuredBlocks),
+              });
         details.push({ artifact: artifactType, id: row.id ?? null, ...evalled.detail });
         if (evalled.result === SENSOR_RESULT.FAIL) worst = SENSOR_RESULT.FAIL;
       }

@@ -75,10 +75,20 @@ export const runChild = ({
 // Run a short command and CAPTURE its stdout — used for the Kiro post-run session
 // id capture (`--list-sessions --format json`), which the long-lived runChild
 // can't do (it inherits stdout to the log). `captureStderr` additionally buffers
-// stderr (kiro-cli prints its `/usage` report there). Resolves { exitCode,
-// stdout, stderr }; a spawn error yields { exitCode: null, stdout: '', stderr: '' }
+// stderr (kiro-cli prints its `/usage` report there). `timeoutMs` (optional)
+// SIGKILLs a hung child — one-shot LLM calls must never wedge the derive
+// command or the backfill route. Resolves { exitCode, stdout, stderr,
+// timedOut }; a spawn error yields { exitCode: null, stdout: '', stderr: '' }
 // so the caller degrades.
-export const captureChild = ({ command, args, env, cwd, captureStderr = false, spawnFn = spawn }) =>
+export const captureChild = ({
+  command,
+  args,
+  env,
+  cwd,
+  captureStderr = false,
+  timeoutMs = 0,
+  spawnFn = spawn,
+}) =>
   new Promise((resolve) => {
     const child = spawnFn(command, args, {
       cwd,
@@ -91,11 +101,30 @@ export const captureChild = ({ command, args, env, cwd, captureStderr = false, s
     let stderr = '';
     if (captureStderr) child.stderr?.on('data', (c) => (stderr += c.toString()));
     let settled = false;
+    let timedOut = false;
+    let timer = null;
     const finish = (exitCode) => {
       if (settled) return;
       settled = true;
-      resolve({ exitCode, stdout, stderr });
+      if (timer) clearTimeout(timer);
+      resolve({ exitCode, stdout, stderr, timedOut });
     };
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => {
+        timedOut = true;
+        try {
+          child.kill?.('SIGKILL');
+        } catch {
+          /* already gone */
+        }
+        // Resolve immediately — a SIGKILLed child's close event may never
+        // arrive through a mocked/edge-case stream teardown, and the caller
+        // must not hang on the very thing the timeout guards against.
+        finish(null);
+      }, timeoutMs);
+      // Never hold the event loop open for the watchdog alone.
+      timer.unref?.();
+    }
     child.on('error', () => finish(null));
     child.on('close', (code) => finish(code));
   });

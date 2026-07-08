@@ -114,7 +114,9 @@ const PLAN = {
         parallelSection: 1,
         execution: 'ALWAYS',
         phase: 'construction',
-        outputArtifacts: [],
+        // A lane stage that RECORDS an artifact: the per-lane derive hook must
+        // fire (graph projection for lane-produced artifacts, unit-attributed).
+        outputArtifacts: [{ artifact: 'component-implementation' }],
       },
       { stageId: 'bt', stageInstanceId: 'si-bt', parallelSection: null, outputArtifacts: [] },
     ],
@@ -212,6 +214,9 @@ const makeWorld = ({ remote, unitPlan, fileFor, beforeStage = null, conflictAgen
     }
     if (payload.command === 'promote-units') {
       return { ok: true, unitCount: unitPlan.units.length, batchCount: unitPlan.batches.length };
+    }
+    if (payload.command === 'derive-artifacts') {
+      return { ok: true, artifacts: payload.artifactTypes ?? [], sections: 0, items: 0 };
     }
     if (payload.command === 'init-lane') {
       return initLane(
@@ -374,6 +379,23 @@ describe('WP8 fixture 1 — 3-unit DAG: a, b ∥ → c sees merged a+b code (rea
       'aidlc(merge): b — i1',
       'aidlc(merge): c — i1',
     ]);
+
+    // ── Lane derive hook: one graph-projection dispatch per unit lane, scoped
+    // to the lane's stage instance, attributed to the unit, riding the lane
+    // session (never the intent session). Enrichment defaults off (no META
+    // snapshot in this fixture).
+    const laneDerives = world.invokes.filter((p) => p.command === 'derive-artifacts' && p.unitSlug);
+    expect(laneDerives.map((p) => p.unitSlug).toSorted()).toEqual(['a', 'b', 'c']);
+    // Per-unit stage instances are distinct (hashed plan ids), one per lane.
+    expect(new Set(laneDerives.map((p) => p.stageInstanceId)).size).toBe(3);
+    for (const d of laneDerives) {
+      expect(d).toMatchObject({
+        artifactTypes: ['component-implementation'],
+        enrichment: 'off',
+      });
+      const session = world.sessions[world.invokes.indexOf(d)];
+      expect(session).toContain(`-${d.unitSlug}`);
+    }
     // Unit branches remain on the remote (audit trail / retry substrate).
     for (const slug of ['a', 'b', 'c']) {
       const ls = await git(['ls-remote', remote, `aidlc/i1--s1-unit-${slug}`], root);

@@ -53,6 +53,7 @@ import { commitAndPushAll as defaultCommitAndPushAll } from '../git-engine.js';
 import { resolveStageModel } from '../model-resolver.js';
 import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
 import { createSensorRunner } from '../sensor-runner.js';
+import { compileContextPack as defaultCompileContextPack } from '../context-compiler.js';
 
 const require = createRequire(import.meta.url);
 const {
@@ -60,6 +61,9 @@ const {
   stageInstanceId: planStageInstanceId,
   UNIT_FOR_EACH,
 } = require('../../shared/v2-execution-plan.js');
+// The typed-extraction registry gates the platform-injected graph-coverage
+// sensor: only stages that produce a registered structured artifact get it.
+const { REGISTRY } = require('../../shared/artifact-extractors.js');
 
 // Resolve the plan and locate the stage instance for `stageId`.
 const resolveStage = ({ workflow, library, scope, stageId }) => {
@@ -337,6 +341,24 @@ const runStageSensors = async ({
   }
 };
 
+// Platform-injected sensors — always-on checks the RUNTIME owns, layered on
+// top of whatever the block library authored (which we never modify). The
+// graph-coverage evaluator (typed-item topology integrity: uncovered
+// must-haves, unmapped stories, unknown refs, component cycles) runs as an
+// ADVISORY on every stage that produces a registered structured artifact —
+// exactly the stages that change the typed graph. Never injected when the
+// library already binds it (an authored row may carry `blocking` or the
+// strictness switch, which must win).
+export const withPlatformSensors = (stage = {}) => {
+  const authored = stage.sensors ?? [];
+  const producesRegistered = (stage.outputArtifacts ?? []).some(
+    (o) => REGISTRY[o.artifact ?? o] !== undefined,
+  );
+  if (!producesRegistered) return authored;
+  if (authored.some((s) => s.sensorId === 'graph-coverage')) return authored;
+  return [...authored, { sensorId: 'graph-coverage', severity: 'advisory' }];
+};
+
 // The sensor pass itself, given an already-opened graph-writer (or null). Split
 // out so runStageSensors can guarantee the graph connection is closed in a
 // finally regardless of how this returns/throws.
@@ -367,7 +389,7 @@ const runSensorsWithGraph = async ({
   });
 
   const verdicts = await runner.runStageSensors({
-    sensors: stage.sensors ?? [],
+    sensors: withPlatformSensors(stage),
     outputArtifacts: stage.outputArtifacts ?? [],
     inputArtifacts: stage.inputArtifacts ?? [],
     stageId: stage.stageId,
@@ -670,6 +692,7 @@ export const runStage = async (
     // Engine-owned git (docs/v2-parallel.md WP2): commit + push after every CLI
     // exit. Injected for tests.
     commitAndPushAll = defaultCommitAndPushAll,
+    compileContextPack = defaultCompileContextPack,
   } = deps;
 
   const now = () => clock();
@@ -1118,6 +1141,23 @@ export const runStage = async (
     // intent create. Read it here and inject it into every fresh stage prompt
     // so agents do not have to ask the human what the run is about.
     const intentMeta = await store.getExecution(executionId).catch(() => null);
+    let compiledContext = '';
+    if (openGraph) {
+      let gContext;
+      try {
+        gContext = await openGraph();
+        const contextGraph = createGraphWriter({
+          g: gContext,
+          scope: { projectId, intentId, executionId, stageInstanceId },
+        });
+        const pack = await compileContextPack({ graph: contextGraph, stage, unit });
+        compiledContext = pack.markdown ?? '';
+      } catch (e) {
+        compiledContext = `## Compiled graph context\n\n- Context compiler unavailable: ${e.message}`;
+      } finally {
+        await closeGraphSource(gContext);
+      }
+    }
 
     const materialized = await materializeStage({
       workspaceDir,
@@ -1132,6 +1172,7 @@ export const runStage = async (
       agentPersona,
       knowledge,
       conductor,
+      compiledContext,
       rulesDoc,
       mcpEntry,
       scope: stageScope,
@@ -1160,6 +1201,24 @@ export const runStage = async (
       sessionId: cliSessionId,
       ...mcpKwargs,
     });
+
+    // Prompt-size sample — the WRITE side of the context-efficiency ledger.
+    // The read ledger measures what agents pull; this measures what we push:
+    // total materialized prompt bytes and the compiled-graph-context share of
+    // them. The audit joins both to answer "does the graph context pay for
+    // itself". Fresh runs only (a resume sends just the answer). Best-effort.
+    await store
+      .recordMetric?.({
+        executionId,
+        stageInstanceId,
+        unitSlug,
+        metrics: {
+          promptBytes: Buffer.byteLength(prompt, 'utf8'),
+          compiledContextBytes: Buffer.byteLength(compiledContext ?? '', 'utf8'),
+        },
+        resolvedModel: model ?? null,
+      })
+      .catch(() => {});
   }
 
   // Kiro store handling for a RESUME is done in step 2b (restore + the D2 wiped-
@@ -1433,7 +1492,9 @@ export const runStage = async (
   // sensors spawn against the workspace checkout. Advisory verdicts record a
   // note and never hold; a BLOCKING sensor that did not PASS fails the stage.
   // Best-effort wiring: a sensor subsystem error never masks a successful run.
-  if ((stage.sensors ?? []).length > 0) {
+  // The list is the authored sensors PLUS the platform-injected ones (see
+  // withPlatformSensors) — hence the gate checks the merged list.
+  if (withPlatformSensors(stage).length > 0) {
     const held = await runStageSensors({
       stage,
       stageInstanceId,

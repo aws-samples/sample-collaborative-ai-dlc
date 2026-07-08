@@ -1,7 +1,12 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createRequire } from 'node:module';
 import { EventEmitter } from 'node:events';
-import { runStage, resetKiroCreditRateCache, __test } from '../commands/run-stage.js';
+import {
+  runStage,
+  resetKiroCreditRateCache,
+  withPlatformSensors,
+  __test,
+} from '../commands/run-stage.js';
 import { renderRulesDoc } from '../stage-materializer.js';
 
 const require = createRequire(import.meta.url);
@@ -598,6 +603,34 @@ describe('runStage — failure paths (always records terminal state)', () => {
     const res = await runStage(baseArgs, deps);
     expect(res).toMatchObject({ ok: false, reason: 'not_implemented' });
     expect(spawned).toBe(false);
+  });
+});
+
+describe('withPlatformSensors — runtime-injected graph-coverage', () => {
+  it('appends the advisory graph-coverage sensor when a registered type is produced', () => {
+    const merged = withPlatformSensors({
+      sensors: [{ sensorId: 'required-sections', severity: 'blocking' }],
+      outputArtifacts: [{ artifact: 'stories' }],
+    });
+    expect(merged).toHaveLength(2);
+    expect(merged[1]).toEqual({ sensorId: 'graph-coverage', severity: 'advisory' });
+  });
+
+  it('injects nothing for unregistered outputs (no sensor pass on plain stages)', () => {
+    expect(
+      withPlatformSensors({ sensors: [], outputArtifacts: [{ artifact: 'code-summary' }] }),
+    ).toEqual([]);
+    expect(withPlatformSensors({ sensors: [], outputArtifacts: [] })).toEqual([]);
+    expect(withPlatformSensors({})).toEqual([]);
+  });
+
+  it('an authored graph-coverage binding wins (severity/strictness stay authoritative)', () => {
+    const authored = [{ sensorId: 'graph-coverage', severity: 'blocking' }];
+    const merged = withPlatformSensors({
+      sensors: authored,
+      outputArtifacts: [{ artifact: 'requirements' }],
+    });
+    expect(merged).toEqual(authored);
   });
 });
 
@@ -1292,7 +1325,11 @@ describe('runStage — Kiro credit capture (per-turn footer → credits metric)'
     });
     const res = await runStage({ ...baseArgs, cliModels: { kiro: 'claude-opus-4.6' } }, deps);
     expect(res).toMatchObject({ ok: true, cli: 'kiro' });
-    const metric = deps.store.calls.find((c) => c[0] === 'recordMetric');
+    // Several metric samples land per run (prompt bytes, credits); pick the
+    // credits one explicitly.
+    const metric = deps.store.calls.find(
+      (c) => c[0] === 'recordMetric' && c[1].metrics?.credits !== undefined,
+    );
     expect(metric).toBeTruthy();
     expect(metric[1]).toMatchObject({
       executionId: 'e1',
@@ -1312,11 +1349,13 @@ describe('runStage — Kiro credit capture (per-turn footer → credits metric)'
     });
     const res = await runStage({ ...baseArgs, cliModels: { kiro: 'claude-opus-4.6' } }, deps);
     expect(res.ok).toBe(true);
-    const metric = deps.store.calls.find((c) => c[0] === 'recordMetric');
+    const metric = deps.store.calls.find(
+      (c) => c[0] === 'recordMetric' && c[1].metrics?.credits !== undefined,
+    );
     expect(metric[1]).toMatchObject({ metrics: { credits: 0.42 }, creditRate: null });
   });
 
-  it('records no credits metric when the footer is absent', async () => {
+  it('records no credits metric when the footer is absent (prompt-size sample still lands)', async () => {
     const deps = baseDeps({
       availableClis: ['kiro'],
       env: { BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6' },
@@ -1324,7 +1363,15 @@ describe('runStage — Kiro credit capture (per-turn footer → credits metric)'
     });
     const res = await runStage({ ...baseArgs, cliModels: { kiro: 'claude-opus-4.6' } }, deps);
     expect(res.ok).toBe(true);
-    expect(deps.store.calls.some((c) => c[0] === 'recordMetric')).toBe(false);
+    expect(
+      deps.store.calls.some((c) => c[0] === 'recordMetric' && c[1].metrics?.credits !== undefined),
+    ).toBe(false);
+    // The write-side context ledger records prompt size on every fresh run.
+    const promptMetric = deps.store.calls.find(
+      (c) => c[0] === 'recordMetric' && c[1].metrics?.promptBytes !== undefined,
+    );
+    expect(promptMetric[1].metrics.promptBytes).toBeGreaterThan(0);
+    expect(promptMetric[1].metrics.compiledContextBytes).toBeGreaterThanOrEqual(0);
   });
 
   it('caches the /usage rate for the container life (one capture, many stages)', async () => {

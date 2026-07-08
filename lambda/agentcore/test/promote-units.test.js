@@ -108,6 +108,24 @@ describe('promoteUnits', () => {
     expect(res.walkingSkeleton).toBe('auth');
   });
 
+  it('re-resolves item↔item edges after the unit mirror (late UnitOfWork targets)', async () => {
+    // StoryMapEntry/Contract items derive BEFORE promotion creates the
+    // UnitOfWork vertices — the post-mirror sweep wires IMPLEMENTS/EXPOSES/
+    // CONSUMES_CONTRACT once the targets exist.
+    const calls = [];
+    writer.mirrorUnitDag = vi.fn(async () => {
+      calls.push('mirror');
+      return { mirrored: 3, superseded: 0 };
+    });
+    writer.resolveDerivedItemEdges = vi.fn(async () => {
+      calls.push('sweep');
+      return { edges: 2 };
+    });
+    const res = await promoteUnits(basePayload, deps);
+    expect(res.ok).toBe(true);
+    expect(calls).toEqual(['mirror', 'sweep']);
+  });
+
   it('mirrors the DAG to the graph and reports the mirror result', async () => {
     const res = await promoteUnits(basePayload, deps);
     expect(writer.mirrorUnitDag).toHaveBeenCalledWith({

@@ -61,6 +61,36 @@ actually appears in your output prose; writing only the human title ("Business
 Overview") does NOT satisfy it. This keeps the artifact graph traceable — do it
 for each input the stage declares as `consumes:`.
 
+## Read efficiently — compact first, full documents last
+
+Artifact reads are metered. Full markdown bodies are large; most of the time
+you need a fragment, not the document. Work down this ladder:
+
+1. **Orient**: `get_intent_graph` — every artifact as compact metadata (type,
+   id, title, size). Enriched artifacts also carry a `summary_gist` one-liner
+   and `summary_claims` key facts — often all the orientation you need.
+2. **Navigate**: `get_artifact_toc(id)` — the artifact's section headings;
+   or `get_artifact(id, mode: "summary" | "toc")` for compact metadata / an
+   inline heading list without the body.
+3. **Fetch fragments**: `get_section(artifactId, slug|heading)` for one
+   section's text; `get_items(itemType, artifactType?)` for typed entries
+   (Story, Requirement, Persona, Component, Decision, StoryMapEntry,
+   Contract) parsed from structured blocks — query these instead of re-reading
+   the documents that contain them.
+4. **Search**: `search_graph(query)` matches titles, bodies, and summaries and
+   returns compact rows with snippets.
+5. **Only then**: `get_artifact(id)` for the full markdown — when you genuinely
+   need the whole document.
+
+## Write structured artifacts — the blocks are machine-parsed
+
+Some output artifact types have a **structure contract** (rendered with the
+expected-outputs list below when it applies): a fenced ```yaml block with a
+specific top-level key, plus at least two `##` section headings. These blocks
+are parsed into the typed graph items that step 3 above serves to every later
+stage — follow the contract exactly (shape verbatim, ids stable across
+revisions). Prose quality is yours; block shape is not negotiable.
+
 Use `emit_stage_note` for a short progress/audit note and `collect_metric` to
 report token/context usage when you finish.
 

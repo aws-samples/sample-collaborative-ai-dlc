@@ -20,6 +20,7 @@
 //     SK = EVENT#<ts>#<eventId>       — append-only audit trail
 //     SK = HUMAN#<humanTaskId>        — a pending/answered human gate (question/approval)
 //     SK = METRIC#<ts>#<metricId>     — token usage / context-window samples
+//     SK = READ#<ts>#<readId>         — graph read/context usage ledger samples
 //     SK = OUTPUT#<seq>               — agent output chunks (restore-on-reload)
 //     SK = SENSOR#<ts>#<sensorRunId>  — a deterministic sensor verdict for a stage
 //     SK = STEER#<ts>#<steerId>       — a human steering/course-correction message
@@ -51,6 +52,10 @@ const humanTaskKey = (executionId, humanTaskId) => ({
 const metricKey = (executionId, timestamp, metricId) => ({
   pk: executionPk(executionId),
   sk: `METRIC#${timestamp}#${metricId}`,
+});
+const graphReadKey = (executionId, timestamp, readId) => ({
+  pk: executionPk(executionId),
+  sk: `READ#${timestamp}#${readId}`,
 });
 const sensorRunKey = (executionId, timestamp, sensorRunId) => ({
   pk: executionPk(executionId),
@@ -174,6 +179,11 @@ const buildExecutionMeta = ({
   // create; the orchestrator forwards it to run-stage (cliModels[cli] is the
   // authoritative model knob — see v2-agent.md). null = use run-stage defaults.
   cliModels = null,
+  // Derive-time graph enrichment mode ('off'|'llm') snapshotted from the Admin
+  // SSM setting at create; the orchestrator forwards it in the derive-artifacts
+  // payload. Snapshotting keeps a run's behaviour stable even if the Admin
+  // flips the toggle mid-flight. null = off.
+  deriveEnrichment = null,
   // Seconds a parked stage's warm microVM lingers before the orchestrator frees
   // it via StopRuntimeSession (v2-open.md D1). null = use the runtime default.
   parkReleaseSeconds = null,
@@ -233,6 +243,7 @@ const buildExecutionMeta = ({
   repos,
   agentCli,
   cliModels,
+  deriveEnrichment,
   parkReleaseSeconds,
   maxParallelUnits,
   prStrategy,
@@ -426,6 +437,31 @@ const buildMetricRow = ({
   timestamp: now,
 });
 
+const buildGraphReadRow = ({
+  executionId,
+  stageInstanceId = null,
+  unitSlug = null,
+  readId,
+  tool,
+  bytes = 0,
+  resultCount = null,
+  args = {},
+  now,
+}) => ({
+  ...graphReadKey(executionId, now, readId),
+  ...executionTypeStateIndex({ executionId, type: 'READ', state: 'sample', id: readId }),
+  type: 'GraphRead',
+  executionId,
+  stageInstanceId,
+  unitSlug,
+  readId,
+  tool,
+  bytes,
+  resultCount,
+  args,
+  timestamp: now,
+});
+
 // A deterministic sensor verdict for a stage. `result` is the SENSOR_RESULT
 // enum (PASS/FAIL/INCONCLUSIVE/BLOCKED); `severity` carries the sensor's
 // advisory/blocking class so a reader knows whether the result held the stage.
@@ -581,6 +617,7 @@ module.exports = {
   eventKey,
   humanTaskKey,
   metricKey,
+  graphReadKey,
   sensorRunKey,
   steeringKey,
   outputKey,
@@ -602,6 +639,7 @@ module.exports = {
   buildEventRow,
   buildHumanTaskRow,
   buildMetricRow,
+  buildGraphReadRow,
   buildSensorRow,
   buildSteeringRow,
   buildOutputRow,

@@ -363,7 +363,7 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
         )
       },
       # SSM: read and write agent settings (bearer token, CLI models, Kiro API
-      # key, model pricing) via Admin UI
+      # key, derive enrichment mode, model pricing) via Admin UI
       {
         Effect = "Allow"
         Action = ["ssm:GetParameter", "ssm:GetParameters", "ssm:PutParameter"]
@@ -371,6 +371,7 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/bedrock-bearer-token",
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/cli-models",
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/kiro-api-key",
+          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/derive-enrichment",
           # Token→USD price table, refreshed from the Price List API on model
           # discovery and read by the intents lambda to compute cost.
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/model-pricing",
@@ -1506,12 +1507,15 @@ resource "aws_iam_role_policy" "intents" {
       {
         # Realtime scope-token signing secret + the Admin global cli-models
         # default (merged under the project selection at intent create, so the
-        # runtime model precedence is project > global > agentBlock > env).
+        # runtime model precedence is project > global > agentBlock > env) +
+        # the derive-enrichment mode (snapshotted onto the execution META row
+        # at intent create so the toggle needs no redeploy).
         Effect = "Allow"
         Action = ["ssm:GetParameter"]
         Resource = [
           var.realtime_doc_secret_param_arn,
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/cli-models",
+          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/derive-enrichment",
           # Token→USD price table (written by the agents lambda) — read to attach
           # cost to the intent's metric samples in the detail/rollup DTOs.
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/model-pricing",
@@ -1528,6 +1532,13 @@ resource "aws_iam_role_policy" "intents" {
           "arn:${local.partition}:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}",
           "arn:${local.partition}:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}:*",
         ]
+      },
+      {
+        # Manual graph-projection backfill (POST .../intents/{id}/derive):
+        # dispatch the derive-artifacts command to the AgentCore runtime.
+        Effect   = "Allow"
+        Action   = ["bedrock-agentcore:InvokeAgentRuntime"]
+        Resource = var.agentcore_runtime_arn != "" ? [var.agentcore_runtime_arn, "${var.agentcore_runtime_arn}/*"] : ["*"]
       }
     ]
   })
@@ -1571,6 +1582,9 @@ module "intents_lambda" {
     # Admin global cli-models default lives under this SSM prefix; the intents
     # lambda merges it under the project selection at intent create.
     AGENT_SETTINGS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
+    # The AgentCore stage-executor runtime — for the manual derive backfill
+    # (POST .../intents/{id}/derive, platform admin).
+    AGENTCORE_RUNTIME_ARN = var.agentcore_runtime_arn
     # Qualified name (function:alias) — durable functions reject $LATEST invokes.
     V2_ORCHESTRATOR_FUNCTION = "${module.v2_orchestrator_lambda.lambda_function_name}:${module.v2_orchestrator_alias.lambda_alias_name}"
   }

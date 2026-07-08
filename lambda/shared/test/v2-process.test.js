@@ -431,6 +431,29 @@ describe('createProcessStore', () => {
     expect(item.sk).toMatch(/^METRIC#T#id-/);
   });
 
+  it('recordGraphRead stores graph read ledger samples', async () => {
+    ddb.on(PutCommand).resolves({});
+    await store.recordGraphRead({
+      executionId: 'e1',
+      stageInstanceId: 'si-1',
+      tool: 'get_items',
+      bytes: 123,
+      resultCount: 2,
+      args: { itemType: 'Story' },
+    });
+    const item = ddb.commandCalls(PutCommand)[0].args[0].input.Item;
+    expect(item).toMatchObject({
+      type: 'GraphRead',
+      executionId: 'e1',
+      stageInstanceId: 'si-1',
+      tool: 'get_items',
+      bytes: 123,
+      resultCount: 2,
+      args: { itemType: 'Story' },
+    });
+    expect(item.sk).toMatch(/^READ#T#id-/);
+  });
+
   it('listProjectExecutions queries GSI1 newest-first, optionally by status', async () => {
     ddb.on(QueryCommand).resolves({ Items: [{ sk: 'META', executionId: 'e1' }] });
     const all = await store.listProjectExecutions({ projectId: 'p1' });
@@ -553,10 +576,12 @@ describe('buildExecutionMeta intent-config + DRAFT', () => {
       startedAt: 'T',
       agentCli: 'kiro',
       cliModels: { claude: 'us.anthropic.claude-opus-4-8' },
+      deriveEnrichment: 'llm',
       parkReleaseSeconds: 120,
     });
     expect(meta.agentCli).toBe('kiro');
     expect(meta.cliModels).toEqual({ claude: 'us.anthropic.claude-opus-4-8' });
+    expect(meta.deriveEnrichment).toBe('llm');
     expect(meta.parkReleaseSeconds).toBe(120);
   });
 
@@ -577,6 +602,7 @@ describe('buildExecutionMeta intent-config + DRAFT', () => {
       repos: null,
       agentCli: null,
       cliModels: null,
+      deriveEnrichment: null,
       parkReleaseSeconds: null,
       source: null,
     });

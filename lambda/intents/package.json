@@ -13,6 +13,7 @@
     "format:check": "oxfmt --check ."
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock-agentcore": "^3.1060.0",
     "@aws-sdk/client-dynamodb": "^3.1060.0",
     "@aws-sdk/client-lambda": "^3.1060.0",
     "@aws-sdk/client-ssm": "^3.1060.0",

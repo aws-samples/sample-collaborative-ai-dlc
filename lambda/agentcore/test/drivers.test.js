@@ -63,6 +63,22 @@ describe('claude driver', () => {
     expect(inv.promptViaStdin).toBe(false);
   });
 
+  it('omits --mcp-config when no path is given (plain one-shot prompt)', () => {
+    const inv = claudeDriver.buildInvocation({ prompt: 'summarize', model: 'm' });
+    expect(inv.args).not.toContain('--mcp-config');
+    expect(inv.args).toEqual([
+      '-p',
+      'summarize',
+      '--permission-mode',
+      'bypassPermissions',
+      '--model',
+      'm',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+    ]);
+  });
+
   it('sets Bedrock auth env, including the bearer token when present', () => {
     const env = claudeDriver.envForAuth({
       AWS_REGION: 'eu-west-1',

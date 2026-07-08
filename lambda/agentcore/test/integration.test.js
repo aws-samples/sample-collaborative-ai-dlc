@@ -241,8 +241,13 @@ describe('end-to-end: init-ws → run-stage with a real agent-equivalent MCP ses
       state: 'SUCCEEDED',
     });
 
-    // 3c. Output persisted for restore-on-reload, metric recorded.
+    // 3c. Output persisted for restore-on-reload, metric recorded. Multiple
+    // metric samples land per run (the write-side prompt-size sample + the
+    // agent-reported usage) — find each by its keys.
     expect(outputs.map((o) => o.content)).toContain('Analyzing the intent…');
-    expect(metrics[0].metrics).toMatchObject({ tokensInput: 120, contextWindowPct: 18 });
+    const usageSample = metrics.find((m) => m.metrics?.tokensInput !== undefined);
+    expect(usageSample.metrics).toMatchObject({ tokensInput: 120, contextWindowPct: 18 });
+    const promptSample = metrics.find((m) => m.metrics?.promptBytes !== undefined);
+    expect(promptSample.metrics.promptBytes).toBeGreaterThan(0);
   });
 });

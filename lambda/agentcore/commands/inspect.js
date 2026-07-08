@@ -55,7 +55,7 @@ export const inspect = async (
 
     try {
       const reader = createGraphWriter({ g, scope: { intentId } });
-      const artifacts = await reader.getIntentGraph();
+      const artifacts = await reader.getIntentGraph({ includeContent: true });
       const result = {
         ok: true,
         intentId,
@@ -71,7 +71,8 @@ export const inspect = async (
           contentBytes: typeof a.content === 'string' ? a.content.length : 0,
         })),
       };
-      if (artifactType) result.ofType = await reader.lookupArtifacts({ artifactType });
+      if (artifactType)
+        result.ofType = await reader.lookupArtifacts({ artifactType, includeContent: true });
       if (artifactId) result.artifact = await reader.getArtifact({ id: artifactId });
       return result;
     } catch (e) {
