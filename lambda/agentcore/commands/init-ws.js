@@ -87,6 +87,18 @@ export const initWs = async (
       detail: `clone failed for ${notCloned.join(', ')} — repository unreachable or credentials missing/insufficient (check the git connection for the starting user)`,
     };
   }
+  // The clone came down but the intent branch could not be set up (all three
+  // rungs failed: checkout / -b off base / --orphan). Proceeding would let
+  // every stage commit to whatever branch HEAD happens to be on — fail loudly
+  // instead so the operator sees WHICH repo, not a downstream push surprise.
+  const badBranch = checkedOut.filter((r) => r.branchOk === false).map((r) => r.repo);
+  if (badBranch.length > 0) {
+    return {
+      ok: false,
+      reason: 'branch_setup_failed',
+      detail: `could not create/checkout the intent branch${branch ? ` '${branch}'` : ''} in ${badBranch.join(', ')} — the base branch may not exist and orphan creation failed`,
+    };
+  }
 
   // 2. Create the Intent anchor in Neptune. Close the connection once done —
   // the graph is only needed here, and the long-lived session process would

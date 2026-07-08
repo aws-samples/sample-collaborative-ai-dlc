@@ -164,6 +164,34 @@ describe('initWs', () => {
     expect(res.detail).toContain('owner/private-repo');
     expect(res.detail).toContain('credentials');
   });
+
+  it('FAILS loudly when the intent branch could not be set up (branchOk:false)', async () => {
+    // Clone came down but every branch rung failed — proceeding would commit
+    // every stage's work to whatever branch HEAD happens to be on.
+    const d = deps({
+      checkoutRepos: async ({ repos }) =>
+        repos.map((r) => ({
+          repo: typeof r === 'string' ? r : r.url,
+          cloned: true,
+          branchOk: false,
+        })),
+    });
+    const res = await initWs(
+      {
+        projectId: 'p1',
+        intentId: 'i1',
+        executionId: 'e1',
+        repos: ['acme/empty'],
+        branch: 'aidlc/i1',
+        baseBranch: 'main',
+      },
+      d,
+    );
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('branch_setup_failed');
+    expect(res.detail).toContain('acme/empty');
+    expect(res.detail).toContain("'aidlc/i1'");
+  });
 });
 
 describe('workspace checkout (mocked git runner)', () => {
@@ -316,6 +344,66 @@ describe('workspace checkout (mocked git runner)', () => {
     expect(cmds.some((c) => c.startsWith('checkout -b feat/y'))).toBe(true);
   });
 
+  it('falls back to an orphan branch for an EMPTY repo (clone ok, no base commit)', async () => {
+    // Field incident: `git clone` of an empty repo exits 0, but
+    // `git checkout -b <branch> main` fails ("'main' is not a commit") — the
+    // run silently stayed on the unborn default branch. The orphan rung gives
+    // the intent a real branch on the unborn HEAD.
+    const cmds = [];
+    const runner = async (command, args) => {
+      cmds.push(args.join(' '));
+      if (args[0] === 'checkout' && args[1] !== '--orphan') return { code: 1 };
+      return { code: 0 };
+    };
+    const res = await checkoutRepo({
+      repo: 'acme/empty',
+      branch: 'aidlc/i1',
+      baseBranch: 'main',
+      targetDir: '/ws',
+      runner,
+      ensureDir: noMkdir,
+    });
+    expect(res).toMatchObject({ cloned: true, branchOk: true });
+    expect(cmds).toContain('checkout --orphan aidlc/i1');
+  });
+
+  it('reports branchOk:false when every branch rung fails (checkout, -b, --orphan)', async () => {
+    const runner = async (command, args) => ({ code: args[0] === 'checkout' ? 1 : 0 });
+    const res = await checkoutRepo({
+      repo: 'acme/broken',
+      branch: 'aidlc/i1',
+      baseBranch: 'main',
+      targetDir: '/ws',
+      runner,
+      ensureDir: noMkdir,
+    });
+    expect(res).toMatchObject({ cloned: true, branchOk: false });
+  });
+
+  it('ensures the branch (with orphan fallback) on the warm-session reuse path too', async () => {
+    const cmds = [];
+    const runner = async (command, args) => {
+      cmds.push(args.join(' '));
+      if (args[0] === 'checkout' && args[1] !== '--orphan') return { code: 1 };
+      return { code: 0 };
+    };
+    const statFn = async (p) => {
+      if (p.endsWith('/.git')) return { isDirectory: () => true, isFile: () => false };
+      throw new Error('ENOENT');
+    };
+    const res = await checkoutRepo({
+      repo: 'acme/empty',
+      branch: 'aidlc/i1',
+      baseBranch: 'main',
+      targetDir: '/ws',
+      runner,
+      ensureDir: noMkdir,
+      statFn,
+    });
+    expect(res).toMatchObject({ reused: true, branchOk: true });
+    expect(cmds).toContain('checkout --orphan aidlc/i1');
+  });
+
   it('lays multi-repo out under <ws>/<owner>/<repo>', async () => {
     const targets = [];
     const runner = async (command, args) => {
@@ -432,6 +520,21 @@ describe('ensureWorkspaceSource (self-heal a wiped checkout)', () => {
     const runner = async (command, args) => ({ code: args[0] === 'clone' ? 1 : 0 });
     const res = await ensureWorkspaceSource({
       repos: ['acme/api'],
+      workspaceDir: '/ws',
+      runner,
+      ensureDir: noMkdir,
+      statFn: statFor([]),
+    });
+    expect(res).toMatchObject({ restored: true, repos: ['acme/api'], failed: ['acme/api'] });
+  });
+
+  it('reports a restored repo whose branch setup failed as failed', async () => {
+    // Clone ok but no branch rung landed — the CLI would run on the wrong branch.
+    const runner = async (command, args) => ({ code: args[0] === 'checkout' ? 1 : 0 });
+    const res = await ensureWorkspaceSource({
+      repos: ['acme/api'],
+      branch: 'aidlc/i1',
+      baseBranch: 'main',
       workspaceDir: '/ws',
       runner,
       ensureDir: noMkdir,

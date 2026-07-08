@@ -69,18 +69,30 @@ export const checkoutRepo = async ({
       await runner('git', ['remote', 'add', 'origin', cleanUrl], { cwd: targetDir });
     }
   };
+  // Ensure the working branch exists and is checked out. Three rungs:
+  //   1. `git checkout <branch>`            — branch already exists (warm session).
+  //   2. `git checkout -b <branch> <base>`  — create off the base branch.
+  //   3. `git checkout --orphan <branch>`   — EMPTY repo (no commit on <base>):
+  //      `-b` fails with "'<base>' is not a commit"; the orphan rung gives the
+  //      run a real branch on an unborn HEAD so the first stage's commit lands
+  //      on the intent branch (field incident: greenfield repo with zero
+  //      commits silently kept the run on the default unborn branch).
+  // Returns true when one rung landed on <branch>; false is a REAL failure the
+  // caller must surface (the run would otherwise commit to the wrong branch).
   const ensureBranch = async () => {
-    if (!branch) return;
+    if (!branch) return true;
     const checkout = await runner('git', ['checkout', branch], { cwd: targetDir });
-    if (checkout.code !== 0) {
-      await runner('git', ['checkout', '-b', branch, baseBranch], { cwd: targetDir });
-    }
+    if (checkout.code === 0) return true;
+    const create = await runner('git', ['checkout', '-b', branch, baseBranch], { cwd: targetDir });
+    if (create.code === 0) return true;
+    const orphan = await runner('git', ['checkout', '--orphan', branch], { cwd: targetDir });
+    return orphan.code === 0;
   };
 
   if (await hasCheckout(targetDir, statFn)) {
     await scrubRemote();
-    await ensureBranch();
-    return { repo, targetDir, cloned: true, reused: true };
+    const branchOk = await ensureBranch();
+    return { repo, targetDir, cloned: true, reused: true, branchOk };
   }
 
   const clone = await runner('git', ['clone', cloneUrl(repo, gitToken, gitProvider), targetDir]);
@@ -97,8 +109,8 @@ export const checkoutRepo = async ({
   // agent CLI can never read a token; git-engine re-injects it only inside its
   // own push window.
   await scrubRemote();
-  await ensureBranch();
-  return { repo, targetDir, cloned };
+  const branchOk = await ensureBranch();
+  return { repo, targetDir, cloned, branchOk };
 };
 
 // The on-disk target dir for a repo, given the intent's repo count. Single-repo
@@ -196,7 +208,7 @@ export const ensureWorkspaceSource = async ({
       ensureDir,
     });
     restoredRepos.push(url);
-    if (!res.cloned) failed.push(url);
+    if (!res.cloned || res.branchOk === false) failed.push(url);
   }
   return { restored: restoredRepos.length > 0, repos: restoredRepos, failed };
 };
