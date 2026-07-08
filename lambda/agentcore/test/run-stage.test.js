@@ -1690,6 +1690,61 @@ describe('runStage — engine git hook (docs/v2-parallel.md WP2)', () => {
     ensureWorkspaceSource: async () => ({ restored: false, repos: [], failed: [] }),
   };
 
+  // ── node_modules off-mount redirect (2026-07 ENOSPC incident #2) ──────────
+
+  it('redirects node_modules off the mount BEFORE the CLI spawns (repos present)', async () => {
+    const order = [];
+    const deps = baseDeps({
+      ...sourcePresent,
+      spawnFn: () => {
+        order.push('spawn');
+        return okSpawn();
+      },
+      redirectHeavyDirs: async ({ workspaceDir }) => {
+        order.push(`redirect:${workspaceDir}`);
+        return { links: [{ dir: workspaceDir, action: 'created' }] };
+      },
+    });
+    const res = await runStage(gitArgs, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(order).toEqual(['redirect:/ws', 'spawn']);
+  });
+
+  it('skips the redirect for a repo-less project (nothing to install into)', async () => {
+    const redirect = [];
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      redirectHeavyDirs: async (args) => {
+        redirect.push(args);
+        return { links: [] };
+      },
+    });
+    const res = await runStage(baseArgs, deps); // baseArgs has no repos
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(redirect).toHaveLength(0);
+  });
+
+  it('a redirect failure records v2.workspace.redirect_failed but never blocks the stage', async () => {
+    const deps = baseDeps({
+      ...sourcePresent,
+      spawnFn: okSpawn,
+      redirectHeavyDirs: async () => ({
+        links: [
+          { dir: '/ws', action: 'kept' },
+          { dir: '/ws/frontend', action: 'failed', detail: 'EACCES boom' },
+        ],
+      }),
+    });
+    const res = await runStage(gitArgs, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    const ev = deps.store.calls.find(
+      (c) => c[0] === 'appendEvent' && c[1].type === 'v2.workspace.redirect_failed',
+    );
+    expect(ev).toBeTruthy();
+    expect(ev[1].summary).toContain('EACCES boom');
+    expect(ev[1].summary).toContain('1 GiB mount');
+  });
+
   it('invokes the hook once after the CLI exits, with the clone inputs and a deterministic message', async () => {
     const calls = [];
     const deps = baseDeps({

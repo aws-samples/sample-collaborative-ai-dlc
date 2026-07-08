@@ -12,7 +12,7 @@
 // (git-engine.js) re-injects the token only inside its own push/fetch window.
 
 import { spawn } from 'node:child_process';
-import { mkdir, stat } from 'node:fs/promises';
+import { mkdir, stat, readdir, rm, symlink, lstat } from 'node:fs/promises';
 import path from 'node:path';
 import { buildCloneUrl } from '../shared/git-providers.js';
 
@@ -204,6 +204,101 @@ const hasCheckout = async (targetDir, statFn) => {
   } catch {
     return false;
   }
+};
+
+// ── node_modules off-mount redirect (2026-07 ENOSPC incident #2) ─────────────
+// The 1 GiB session mount's REAL constraint is its write/backup pipeline, not
+// used bytes: a single `npm install` (~30-60k files) makes writes fail with
+// "Write failed: waiting to be backed up." / ENOSPC while `df` still reports
+// 0% used — so a statfs preflight cannot see it coming, and redirecting only
+// the package-manager CACHES (the first fix) was not enough. The cure is to
+// keep `node_modules` off the mount entirely: before every CLI run the engine
+// pre-creates `node_modules` SYMLINKS (one per package.json directory)
+// pointing at container-local /tmp. Installs then write through the link onto
+// ephemeral disk; the durable working tree stays on the mount.
+//
+// Properties:
+//   - IDEMPOTENT: an existing symlink is kept (its target re-mkdir'd, which
+//     also HEALS a dangling link after a container swap — /tmp is per-microVM;
+//     npm simply reinstalls into the fresh empty target when needed).
+//   - a REAL node_modules directory (pre-fix session, or an agent that
+//     deleted the link and reinstalled) is REPLACED by a link — a re-install
+//     costs minutes; a choked mount loses work.
+//   - the symlink itself is kept out of the user's history via the engine's
+//     repo-local runtime excludes (git-engine.js RUNTIME_EXCLUDES).
+//   - best-effort per directory: one failed link never blocks the stage (the
+//     engine's ENOSPC commit self-heal remains the backstop).
+const HEAVY_DIR = 'node_modules';
+const WALK_SKIP = new Set([
+  '.git',
+  'node_modules',
+  '.aidlc',
+  '.kiro',
+  '.claude',
+  '.kiro-data',
+  'dist',
+  'build',
+  'coverage',
+  '.next',
+]);
+
+export const redirectHeavyDirs = async ({
+  workspaceDir,
+  offMountRoot = '/tmp/aidlc-node-modules',
+  maxDepth = 5,
+  maxPackages = 50,
+  fsOps = { mkdir, readdir, rm, symlink, lstat },
+  log = (...a) => console.error('[workspace]', ...a),
+}) => {
+  // Find every directory holding a package.json (each is an install root).
+  const pkgDirs = [];
+  const walk = async (dir, depth) => {
+    if (depth > maxDepth || pkgDirs.length >= maxPackages) return;
+    let entries;
+    try {
+      entries = await fsOps.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    if (entries.some((e) => e.isFile() && e.name === 'package.json')) pkgDirs.push(dir);
+    for (const e of entries) {
+      if (!e.isDirectory() || WALK_SKIP.has(e.name)) continue;
+      await walk(path.join(dir, e.name), depth + 1);
+    }
+  };
+  await walk(workspaceDir, 0);
+
+  const links = [];
+  for (const dir of pkgDirs) {
+    const linkPath = path.join(dir, HEAVY_DIR);
+    const rel = path.relative(workspaceDir, dir);
+    const target = path.join(
+      offMountRoot,
+      rel === '' ? 'root' : rel.split(path.sep).join('__'),
+      HEAVY_DIR,
+    );
+    try {
+      // Always ensure the target exists — this is also the dangling-link heal.
+      await fsOps.mkdir(target, { recursive: true });
+      let existing = null;
+      try {
+        existing = await fsOps.lstat(linkPath);
+      } catch {
+        /* absent */
+      }
+      if (existing?.isSymbolicLink()) {
+        links.push({ dir, target, action: 'kept' });
+        continue;
+      }
+      if (existing) await fsOps.rm(linkPath, { recursive: true, force: true });
+      await fsOps.symlink(target, linkPath, 'dir');
+      links.push({ dir, target, action: existing ? 'replaced' : 'created' });
+    } catch (e) {
+      log(`node_modules redirect failed for ${dir}: ${e?.message}`);
+      links.push({ dir, target, action: 'failed', detail: e?.message });
+    }
+  }
+  return { links };
 };
 
 // Self-heal the source checkout. AgentCore managed session storage (/mnt/workspace)

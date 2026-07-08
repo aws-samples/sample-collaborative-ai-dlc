@@ -47,7 +47,10 @@ import {
   persistKiroStore as defaultPersistKiroStore,
   resolveKiroStore,
 } from '../cli/kiro-store.js';
-import { ensureWorkspaceSource as defaultEnsureWorkspaceSource } from '../workspace.js';
+import {
+  ensureWorkspaceSource as defaultEnsureWorkspaceSource,
+  redirectHeavyDirs as defaultRedirectHeavyDirs,
+} from '../workspace.js';
 import { commitAndPushAll as defaultCommitAndPushAll, freeDiskBytes } from '../git-engine.js';
 import { resolveStageModel } from '../model-resolver.js';
 import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
@@ -705,6 +708,9 @@ export const runStage = async (
     persistKiroStore = defaultPersistKiroStore,
     // Re-clone a wiped source checkout before the CLI spawns. Injected for tests.
     ensureWorkspaceSource = defaultEnsureWorkspaceSource,
+    // Keep node_modules off the session mount via engine-owned symlinks to
+    // container-local /tmp (2026-07 ENOSPC incident #2). Injected for tests.
+    redirectHeavyDirs = defaultRedirectHeavyDirs,
     // Engine-owned git (docs/v2-parallel.md WP2): commit + push after every CLI
     // exit. Injected for tests.
     commitAndPushAll = defaultCommitAndPushAll,
@@ -902,6 +908,37 @@ export const runStage = async (
         unitSlug,
         repos: heal.repos,
       });
+    }
+  }
+
+  // 2a½. Keep node_modules OFF the session mount. The mount's write/backup
+  // pipeline chokes on a single npm install even while `df` reports 0% used
+  // (2026-07 ENOSPC incident #2) — redirecting only the package-manager caches
+  // was not enough. Engine-owned symlinks point every package.json dir's
+  // node_modules at container-local /tmp; installs write through them.
+  // Idempotent, heals dangling links after a container swap, replaces real
+  // dirs left by pre-fix sessions. Best-effort: a redirect failure never
+  // blocks the stage (the ENOSPC commit self-heal remains the backstop), but
+  // it is recorded so ops can see the shield was down.
+  if (repos.length > 0) {
+    const redirect = await redirectHeavyDirs({ workspaceDir }).catch((e) => ({
+      links: [{ action: 'failed', detail: e?.message }],
+    }));
+    const failedLinks = (redirect?.links ?? []).filter((l) => l.action === 'failed');
+    if (failedLinks.length > 0) {
+      await store
+        .appendEvent({
+          executionId,
+          type: 'v2.workspace.redirect_failed',
+          stageInstanceId,
+          unitSlug,
+          actor: 'agentcore',
+          summary: `node_modules off-mount redirect failed for ${failedLinks.length} dir(s) — installs will hit the 1 GiB mount (${failedLinks
+            .map((l) => l.detail ?? 'unknown')
+            .join('; ')
+            .slice(0, 300)})`,
+        })
+        .catch(() => {});
     }
   }
 

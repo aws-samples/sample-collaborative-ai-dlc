@@ -27,16 +27,18 @@ you. Read this section before the stage prose and let it govern.
   the working tree; durability and branch mechanics are handled for you. If a
   stage's prose asks you to commit/push/branch, that is upstream vocabulary —
   ignore the git mechanics and only do the file work.
-- **The workspace disk is SMALL (1 GB) — dependency installs are the main
-  risk.** Your working directory lives on a small persistent mount; filling it
-  makes writes (including the runtime's commit of YOUR work) fail with
-  "no space left on device". Install dependencies only when the stage truly
-  needs them (build/test), install them ONCE at the level that needs them —
-  never duplicate `npm install` at multiple directory levels — and prefer
-  targeted commands (a single test file, `--no-audit --no-fund`) over full
-  workspace installs. Package-manager caches are already redirected off the
-  mount for you. If a write fails with a space error, delete a `node_modules`
-  directory you created and continue — it is re-creatable.
+- **The workspace disk is SMALL (1 GB) and slow under heavy writes — but
+  `node_modules` is handled for you.** Your working directory lives on a small
+  persistent mount whose write pipeline chokes on huge file counts. To protect
+  it, every `node_modules` directory is an engine-owned **symlink** to fast
+  local scratch space: `npm install` works completely normally through it. Do
+  **NOT** delete, replace, or `rm -rf` a `node_modules` symlink — removing it
+  re-exposes the slow mount and can corrupt in-flight writes. Beyond that,
+  stay space-conscious: install dependencies only when the stage truly needs
+  them (build/test), once, at the level that needs them, and clean up large
+  build outputs (`dist/`, `build/`) you created when you are done with them.
+  If a write ever fails with "no space left on device", stop writing large
+  artifacts and re-try just the file you need — do not fight the disk.
 - **The MCP tools are your ONLY I/O for methodology + collaboration.** You read
   prior methodology work, record every methodology output, ask the human, and
   report progress exclusively through the tools listed below.

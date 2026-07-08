@@ -1037,4 +1037,42 @@ describe('runtime excludes', () => {
     expect(exclude).toContain('my-scratch/');
     expect(exclude).toContain('aidlc-engine runtime excludes');
   });
+
+  it('node_modules (dir OR the engine off-mount symlink) never rides into a commit', async () => {
+    const { work } = await initRemoteAndClone();
+    // A real dir (pre-fix session)…
+    await mkdir(path.join(work, 'node_modules', 'left-pad'), { recursive: true });
+    await writeFile(path.join(work, 'node_modules', 'left-pad', 'index.js'), 'x');
+    // …and the engine symlink layout in a nested package (repo does NOT
+    // gitignore node_modules — only the runtime excludes protect it).
+    await mkdir(path.join(work, 'frontend'), { recursive: true });
+    const offMount = path.join(root, 'off-mount-nm');
+    await mkdir(offMount, { recursive: true });
+    const { symlink } = await import('node:fs/promises');
+    await symlink(offMount, path.join(work, 'frontend', 'node_modules'), 'dir');
+
+    await writeFile(path.join(work, 'src.js'), 'export const x = 1;\n');
+    const res = await commitAll({ dir: work, message: 'aidlc(code-generation): e1' });
+    expect(res.committed).toBe(true);
+    const tree = await git(['ls-tree', '-r', '--name-only', 'HEAD'], work);
+    expect(tree.stdout).toContain('src.js');
+    expect(tree.stdout).not.toContain('node_modules');
+  });
+
+  it('the versioned marker upgrades a warm session holding only the v1 block', async () => {
+    const { work } = await initRemoteAndClone();
+    // A warm mount whose exclude was written by the PRE-node_modules engine.
+    await writeFile(
+      path.join(work, '.git', 'info', 'exclude'),
+      '# aidlc-engine runtime excludes (managed; do not edit this block)\n.aidlc/\n.kiro/\n.claude/\n.kiro-data/\n',
+    );
+    await ensureRuntimeExcludes({ dir: work });
+    const exclude = await readFile(path.join(work, '.git', 'info', 'exclude'), 'utf8');
+    expect(exclude).toContain('runtime excludes v2');
+    expect(exclude).toContain('node_modules');
+    // Idempotent from here on.
+    await ensureRuntimeExcludes({ dir: work });
+    const again = await readFile(path.join(work, '.git', 'info', 'exclude'), 'utf8');
+    expect(again.match(/runtime excludes v2/g)).toHaveLength(1);
+  });
 });
