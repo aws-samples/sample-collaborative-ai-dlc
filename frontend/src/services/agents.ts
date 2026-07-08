@@ -86,6 +86,14 @@ export interface AgentSettings {
    *  'llm' = one bounded agent-CLI summary call per approved artifact.
    *  Snapshotted per intent at create — flips apply to the NEXT intent. */
   deriveEnrichment?: 'off' | 'llm';
+  /** Global custom MCP servers (raw JSON string, name-keyed JSON object)
+   *  injected into every agent session; merged under a project's own set.
+   *  Only returned to platform admins. */
+  customMcpServers?: string;
+  /** Names of the globally-provided MCP servers (no config/secrets). Returned
+   *  to any authenticated caller so project-level UI can show what's already
+   *  provided globally. */
+  customMcpServerNames?: string[];
 }
 
 export interface AgentSettingsUpdate {
@@ -97,6 +105,8 @@ export interface AgentSettingsUpdate {
   cliModels?: CliModels;
   /** Derive-time graph enrichment mode. Omit to leave unchanged. */
   deriveEnrichment?: 'off' | 'llm';
+  /** Global custom MCP servers (raw JSON string). Omit to leave unchanged. */
+  customMcpServers?: string;
 }
 
 export interface TaskAgentStatus {

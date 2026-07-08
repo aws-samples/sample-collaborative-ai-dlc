@@ -372,6 +372,9 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/cli-models",
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/kiro-api-key",
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/derive-enrichment",
+          # Global custom MCP servers injected into every agent session (merged
+          # with project-level entries at intent-create).
+          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/custom-mcp-servers",
           # Token→USD price table, refreshed from the Price List API on model
           # discovery and read by the intents lambda to compute cost.
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/model-pricing",
@@ -405,8 +408,9 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
 
 # -----------------------------------------------------------------------------
 # Role 6: neptune-artifacts (2 Lambdas — projects, tasks)
-# Neptune CRUD. (The steering-docs S3 presign statement went with the retired
-# v1 agent-config endpoints.)
+# Neptune CRUD + S3 presign for project custom agent rules (custom-rules/
+# prefix): the projects lambda mints presigned PUT/GET URLs so the browser
+# uploads/downloads the .md bodies directly.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "neptune_artifacts" {
   name               = "${var.project_name}-neptune-artifacts-${var.environment}"
@@ -440,6 +444,28 @@ resource "aws_iam_role_policy" "neptune_artifacts" {
             var.github_auth_mode_param_arn,
             var.github_app_config_param_arn,
           ])
+        },
+        # Project custom agent rules: presign PUT/GET for the .md bodies under
+        # the custom-rules/ prefix, and permanently purge on delete — the bucket
+        # is versioned, so we delete all versions (DeleteObjectVersion +
+        # ListBucketVersions) rather than leave a retrievable delete marker.
+        {
+          Effect = "Allow"
+          Action = [
+            "s3:GetObject",
+            "s3:PutObject",
+            "s3:DeleteObject",
+            "s3:DeleteObjectVersion",
+          ]
+          Resource = ["${var.artifacts_bucket_arn}/custom-rules/*"]
+        },
+        {
+          Effect   = "Allow"
+          Action   = ["s3:ListBucketVersions"]
+          Resource = [var.artifacts_bucket_arn]
+          Condition = {
+            StringLike = { "s3:prefix" = ["custom-rules/*"] }
+          }
         },
       ],
       var.github_app_private_key_secret_arn != "" ? [
@@ -1594,6 +1620,9 @@ resource "aws_iam_role_policy" "intents" {
           var.realtime_doc_secret_param_arn,
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/cli-models",
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/derive-enrichment",
+          # Global custom MCP servers default (merged under the project's custom
+          # MCP servers at intent create, snapshotted onto the execution META).
+          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/custom-mcp-servers",
           # Token→USD price table (written by the agents lambda) — read to attach
           # cost to the intent's metric samples in the detail/rollup DTOs.
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/model-pricing",

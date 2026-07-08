@@ -55,6 +55,7 @@
     "@aws-sdk/client-ssm": "^3.1079.0",
     "@aws-sdk/credential-providers": "^3.1079.0",
     "@aws-sdk/lib-dynamodb": "^3.1079.0",
+    "@aws-sdk/s3-request-presigner": "^3.1079.0",
     "@secretlint/secretlint-rule-preset-recommend": "13.0.2",
     "@smithy/config-resolver": "^4.6.6",
     "@smithy/node-config-provider": "^3.0.0",

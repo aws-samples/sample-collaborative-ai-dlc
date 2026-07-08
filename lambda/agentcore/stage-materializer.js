@@ -193,9 +193,13 @@ export const buildStagePrompt = ({
 
 // Build the --mcp-config JSON the CLI loads. Points at our stdio MCP server and
 // passes the TRUSTED scope as the child's ENV (the agent can't override it). The
-// command/args are server-controlled.
-export const buildMcpConfig = ({ mcpEntry, scope, env = {} }) => ({
+// command/args are server-controlled. `customServers` (a name→spec map, already
+// validated + reserved-name-filtered upstream) are spread FIRST so the reserved
+// `aidlc` entry, written last, always wins a name collision — a custom entry can
+// never override the runtime bridge.
+export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }) => ({
   mcpServers: {
+    ...customServers,
     aidlc: {
       command: 'node',
       args: [mcpEntry],
@@ -239,10 +243,11 @@ export const materializeMcpConfig = async ({
   mcpEntry,
   scope,
   env = process.env,
+  customServers = {},
 }) => {
   const aidlcDir = path.join(workspaceDir, '.aidlc');
   await mkdir(aidlcDir, { recursive: true });
-  const mcpConfig = buildMcpConfig({ mcpEntry, scope, env });
+  const mcpConfig = buildMcpConfig({ mcpEntry, scope, env, customServers });
   const mcpConfigPath = path.join(aidlcDir, 'mcp-config.json');
   await writeFile(mcpConfigPath, JSON.stringify(mcpConfig, null, 2), 'utf8');
   return mcpConfigPath;
@@ -256,15 +261,19 @@ export const KIRO_AGENT_NAME = 'aidlc';
 // Build the Kiro agent config that wires our stdio MCP server. Reuses the exact
 // server spec buildMcpConfig produces (command/args/scope-env) — just wrapped in
 // Kiro's agent envelope. `tools:["*"]` exposes the MCP tools (we also pass
-// --trust-all-tools so none prompt for approval). Pure.
-export const buildKiroAgentConfig = ({ mcpEntry, scope, env = {} }) => ({
+// --trust-all-tools so none prompt for approval). `resources` points Kiro at the
+// steering dir: with a custom --agent, Kiro does NOT auto-load .kiro/steering,
+// so the glob is required to load the project's custom rules
+// (https://kiro.dev/docs/cli/steering). Pure.
+export const buildKiroAgentConfig = ({ mcpEntry, scope, env = {}, customServers = {} }) => ({
   $schema:
     'https://raw.githubusercontent.com/aws/amazon-q-developer-cli/refs/heads/main/schemas/agent-v1.json',
   name: KIRO_AGENT_NAME,
   description: 'AI-DLC v2 stage execution agent (runtime-managed MCP surface).',
-  mcpServers: buildMcpConfig({ mcpEntry, scope, env }).mcpServers,
+  mcpServers: buildMcpConfig({ mcpEntry, scope, env, customServers }).mcpServers,
   tools: ['*'],
   allowedTools: ['*'],
+  resources: ['file://.kiro/steering/**/*.md'],
 });
 
 // Effectful: write the Kiro agent config to <workspaceDir>/.kiro/agents/aidlc.json
@@ -276,10 +285,11 @@ export const materializeKiroAgent = async ({
   mcpEntry,
   scope,
   env = process.env,
+  customServers = {},
 }) => {
   const agentsDir = path.join(workspaceDir, '.kiro', 'agents');
   await mkdir(agentsDir, { recursive: true });
-  const config = buildKiroAgentConfig({ mcpEntry, scope, env });
+  const config = buildKiroAgentConfig({ mcpEntry, scope, env, customServers });
   await writeFile(
     path.join(agentsDir, `${KIRO_AGENT_NAME}.json`),
     JSON.stringify(config, null, 2),
@@ -288,10 +298,56 @@ export const materializeKiroAgent = async ({
   return KIRO_AGENT_NAME;
 };
 
+// Per-driver NATIVE rules directory (relative to the workspace). The CLI
+// auto-loads markdown here at session start — even headless:
+//   Claude  → .claude/rules/*.md  (https://code.claude.com/docs/en/memory)
+//   Kiro    → .kiro/steering/*.md (loaded via the agent `resources` glob)
+const CLI_RULES_DIR = {
+  claude: path.join('.claude', 'rules'),
+  kiro: path.join('.kiro', 'steering'),
+};
+
+// Sanitize an uploaded rule filename and resolve its destination inside
+// `rulesDir`, prefixed `custom--` to namespace it from any other rules. Strips
+// path separators (path.basename), enforces `.md`, and verifies the resolved
+// path stays under rulesDir. Returns null when unsafe.
+const safeRuleDest = (rulesDir, filename) => {
+  if (!filename || typeof filename !== 'string') return null;
+  const base = path.basename(filename);
+  if (!base || base === '.' || base === '..') return null;
+  if (!base.toLowerCase().endsWith('.md')) return null;
+  const destName = `custom--${base}`;
+  const dest = path.resolve(rulesDir, destName);
+  const root = path.resolve(rulesDir);
+  if (dest !== path.join(root, destName) || !dest.startsWith(root + path.sep)) return null;
+  return dest;
+};
+
+// Effectful: write the project's custom agent rules into the selected CLI's
+// native rules directory so the CLI auto-loads them (NOT concatenated into the
+// prompt). `customRules` is [{ filename, body }] already fetched from S3.
+// Returns the list of written basenames (for logging/tests). Best-effort per
+// file — an unsafe name is skipped, never throws.
+export const materializeCustomRules = async ({ workspaceDir, cli, customRules = [] }) => {
+  const rel = CLI_RULES_DIR[cli];
+  if (!rel || !Array.isArray(customRules) || customRules.length === 0) return [];
+  const rulesDir = path.join(workspaceDir, rel);
+  await mkdir(rulesDir, { recursive: true });
+  const written = [];
+  for (const doc of customRules) {
+    const dest = safeRuleDest(rulesDir, doc?.filename);
+    if (!dest) continue;
+    await writeFile(dest, doc.body ?? '', 'utf8');
+    written.push(path.basename(dest));
+  }
+  return written;
+};
+
 // Effectful: write the workspace files for a stage and return the paths the CLI
 // runner needs. `workspaceDir` is the session-persistent checkout root.
-//   - .aidlc/rules.md            steering (resolved rules)
+//   - .aidlc/rules.md            steering (resolved methodology rules)
 //   - .aidlc/mcp-config.json     the --mcp-config the CLI loads
+//   - <driver rules dir>/custom--*.md  project custom rules (CLI auto-loads)
 // The stage prompt itself is returned (the runner pipes it to the CLI), not
 // written to disk.
 export const materializeStage = async ({
@@ -308,13 +364,24 @@ export const materializeStage = async ({
   mcpEntry,
   scope,
   env = process.env,
+  customServers = {},
+  cli = null,
+  customRules = [],
 }) => {
   const aidlcDir = path.join(workspaceDir, '.aidlc');
   await mkdir(aidlcDir, { recursive: true });
 
   if (rulesDoc) await writeFile(path.join(aidlcDir, 'rules.md'), rulesDoc, 'utf8');
 
-  const mcpConfigPath = await materializeMcpConfig({ workspaceDir, mcpEntry, scope, env });
+  await materializeCustomRules({ workspaceDir, cli, customRules });
+
+  const mcpConfigPath = await materializeMcpConfig({
+    workspaceDir,
+    mcpEntry,
+    scope,
+    env,
+    customServers,
+  });
 
   const prompt = buildStagePrompt({
     stage,

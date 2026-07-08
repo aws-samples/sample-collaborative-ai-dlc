@@ -146,6 +146,15 @@ export interface CognitoUser {
   status: string;
 }
 
+// A project custom agent rule (user-uploaded .md reference doc). `s3Key` is the
+// artifacts-bucket key; `downloadUrl`/`uploadUrl` are presigned per request.
+export interface CustomRule {
+  filename: string;
+  s3Key: string;
+  downloadUrl?: string;
+  uploadUrl?: string;
+}
+
 export const projectsService = {
   list: () => api.get<Project[]>('/projects'),
   get: (id: string) => api.get<Project>(`/projects/${id}`),
@@ -174,7 +183,9 @@ export const projectsService = {
 
   // Tracker abstraction migration (#194 Phase 1). Owner/admin only. Idempotent.
   migrateTracker: (projectId: string, dryRun = false) =>
-    api.post<TrackerMigrationResult>(`/projects/${projectId}/migrate-tracker`, { dryRun }),
+    api.post<TrackerMigrationResult>(`/projects/${projectId}/migrate-tracker`, {
+      dryRun,
+    }),
 
   // Whole-graph admin counterparts of /projects/{id}/migrate-tracker.
   // Authenticated-only — drives the Admin page's Tracker Migration card and
@@ -184,4 +195,28 @@ export const projectsService = {
     api.get<TrackerMigrationStatus>('/admin/tracker-migration/status'),
   runTrackerMigration: (dryRun = false) =>
     api.post<TrackerMigrationResult>('/admin/tracker-migration', { dryRun }),
+
+  // Project-level custom MCP servers (raw JSON string, name-keyed JSON object)
+  getCustomMcpServers: (projectId: string) =>
+    api.get<{ customMcpServers: string }>(`/projects/${projectId}/custom-mcp-servers`),
+  updateCustomMcpServers: (projectId: string, customMcpServers: string) =>
+    api.put<{ saved: boolean }>(`/projects/${projectId}/custom-mcp-servers`, {
+      customMcpServers,
+    }),
+
+  // Project-level custom agent rules (uploaded .md reference docs).
+  // Two-phase write so metadata is only persisted for objects that uploaded:
+  //   presignCustomRules — get upload URLs (no persist), then upload to S3
+  //   commitCustomRules  — persist the final set (after uploads / on delete)
+  getCustomRules: (projectId: string) =>
+    api.get<{ customRules: CustomRule[] }>(`/projects/${projectId}/custom-rules`),
+  presignCustomRules: (projectId: string, customRules: Array<{ filename: string }>) =>
+    api.put<{
+      uploadUrls: Array<{ filename: string; s3Key: string; uploadUrl: string }>;
+    }>(`/projects/${projectId}/custom-rules`, { customRules, mode: 'presign' }),
+  commitCustomRules: (projectId: string, customRules: Array<{ filename: string }>) =>
+    api.put<{ saved: boolean }>(`/projects/${projectId}/custom-rules`, {
+      customRules,
+      mode: 'commit',
+    }),
 };

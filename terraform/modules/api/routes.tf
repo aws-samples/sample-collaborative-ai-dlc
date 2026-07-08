@@ -3285,3 +3285,126 @@ module "cors_repos" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.repos.id
 }
+# ===========================================================================
+# Custom agent config routes (projects lambda). Both are project-scoped, GET + PUT.
+# Owner/admin only for BOTH read and write — the config may carry secrets
+# (MCP env/headers), so a plain member cannot read it (enforced in the lambda).
+#   /projects/{projectId}/custom-mcp-servers   GET + PUT (owner/admin)
+#   /projects/{projectId}/custom-rules         GET + PUT (owner/admin)
+# custom-rules PUT/GET return presigned S3 upload/download URLs for the .md
+# bodies (metadata persisted on the Project vertex).
+# ===========================================================================
+
+# -----------------------------------------------------------------------------
+# /projects/{projectId}/custom-mcp-servers
+# -----------------------------------------------------------------------------
+resource "aws_api_gateway_resource" "custom_mcp_servers" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.project.id
+  path_part   = "custom-mcp-servers"
+}
+
+resource "aws_api_gateway_method" "custom_mcp_servers_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.custom_mcp_servers.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+
+  request_parameters = {
+    "method.request.path.projectId" = true
+  }
+}
+
+resource "aws_api_gateway_method" "custom_mcp_servers_put" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.custom_mcp_servers.id
+  http_method   = "PUT"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+
+  request_parameters = {
+    "method.request.path.projectId" = true
+  }
+}
+
+resource "aws_api_gateway_integration" "custom_mcp_servers_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.custom_mcp_servers.id
+  http_method             = aws_api_gateway_method.custom_mcp_servers_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.projects_lambda_invoke_arn
+}
+
+resource "aws_api_gateway_integration" "custom_mcp_servers_put" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.custom_mcp_servers.id
+  http_method             = aws_api_gateway_method.custom_mcp_servers_put.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.projects_lambda_invoke_arn
+}
+
+module "cors_custom_mcp_servers" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.custom_mcp_servers.id
+}
+
+# -----------------------------------------------------------------------------
+# /projects/{projectId}/custom-rules
+# -----------------------------------------------------------------------------
+resource "aws_api_gateway_resource" "custom_rules" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.project.id
+  path_part   = "custom-rules"
+}
+
+resource "aws_api_gateway_method" "custom_rules_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.custom_rules.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+
+  request_parameters = {
+    "method.request.path.projectId" = true
+  }
+}
+
+resource "aws_api_gateway_method" "custom_rules_put" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.custom_rules.id
+  http_method   = "PUT"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+
+  request_parameters = {
+    "method.request.path.projectId" = true
+  }
+}
+
+resource "aws_api_gateway_integration" "custom_rules_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.custom_rules.id
+  http_method             = aws_api_gateway_method.custom_rules_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.projects_lambda_invoke_arn
+}
+
+resource "aws_api_gateway_integration" "custom_rules_put" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.custom_rules.id
+  http_method             = aws_api_gateway_method.custom_rules_put.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.projects_lambda_invoke_arn
+}
+
+module "cors_custom_rules" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.custom_rules.id
+}

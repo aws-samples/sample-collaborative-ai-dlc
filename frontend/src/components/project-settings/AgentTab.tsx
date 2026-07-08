@@ -26,6 +26,9 @@ import { invalidateProjects } from '@/hooks/useProjectsCache';
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import { ConfigStatusBadge } from '@/components/settings/ConfigStatusBadge';
 import { SaveStatusButton, type SaveResult } from '@/components/settings/SaveStatusButton';
+import { CustomMcpServersSection } from '@/components/settings/CustomMcpServersSection';
+import { CustomRulesSection } from '@/components/settings/CustomRulesSection';
+import type { CustomRule } from '@/services/projects';
 
 const AGENT_CLI_CONFIG: Record<AgentCli, { label: string; description: string }> = {
   kiro: {
@@ -83,6 +86,9 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
   const [modelOptions, setModelOptions] = useState<Partial<Record<AgentCli, AgentModel[]>>>({});
   const [runtimeClis, setRuntimeClis] = useState<RuntimeCliStatus[] | null>(null);
   const [globalCliModels, setGlobalCliModels] = useState<CliModels>({});
+  // Names of the globally-provided MCP servers (shown for reference in the
+  // project MCP editor; the config/secrets are not exposed to project admins).
+  const [globalMcpServerNames, setGlobalMcpServerNames] = useState<string[]>([]);
 
   // Form state
   const [editAgentCli, setEditAgentCli] = useState<AgentCli>(project.agentCli ?? 'kiro');
@@ -94,6 +100,14 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
   const [savingModels, setSavingModels] = useState(false);
   const [modelsResult, setModelsResult] = useState<SaveResult>(null);
   const [modelsError, setModelsError] = useState<string | null>(null);
+
+  // Custom MCP servers (raw JSON string) + custom agent rules (uploaded .md).
+  const [customMcpServers, setCustomMcpServers] = useState('{}');
+  const [customRules, setCustomRules] = useState<CustomRule[]>([]);
+  const [customMsg, setCustomMsg] = useState<{
+    kind: 'success' | 'error';
+    text: string;
+  } | null>(null);
 
   useEffect(() => {
     agentsService
@@ -109,11 +123,27 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
       });
     agentsService
       .getSettings()
-      .then((settings) => setGlobalCliModels(settings.cliModels || {}))
+      .then((settings) => {
+        setGlobalCliModels(settings.cliModels || {});
+        setGlobalMcpServerNames(settings.customMcpServerNames || []);
+      })
       .catch(() => {
         /* non-fatal — placeholders fall back to generic defaults */
       });
   }, []);
+
+  // Load the project's custom MCP servers + custom rules (non-blocking).
+  // Restricted to owners/admins on the backend, so only fetch when canEdit.
+  useEffect(() => {
+    if (!canEdit) return;
+    Promise.all([
+      projectsService.getCustomMcpServers(project.id).catch(() => ({ customMcpServers: '{}' })),
+      projectsService.getCustomRules(project.id).catch(() => ({ customRules: [] })),
+    ]).then(([mcpResp, rulesResp]) => {
+      setCustomMcpServers(mcpResp.customMcpServers ?? '{}');
+      setCustomRules(rulesResp.customRules ?? []);
+    });
+  }, [project.id, canEdit]);
 
   // Is a CLI usable for a run? Prefer the v2 runtime's truth (installed + authed);
   // fall back to the ECS-pool-derived list when the runtime hasn't reported.
@@ -158,7 +188,9 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
     setSavingModels(true);
     setModelsResult(null);
     try {
-      const saved = await projectsService.update(project.id, { cliModels: editCliModels });
+      const saved = await projectsService.update(project.id, {
+        cliModels: editCliModels,
+      });
       const nextModels = saved.cliModels || editCliModels;
       setEditCliModels(nextModels);
       onProjectUpdated({ cliModels: nextModels });
@@ -170,6 +202,22 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
       setSavingModels(false);
       setTimeout(() => setModelsResult((prev) => (prev === 'saved' ? null : prev)), 4000);
     }
+  };
+
+  const saveCustomMcpServers = async (value: string) => {
+    await projectsService.updateCustomMcpServers(project.id, value);
+    setCustomMcpServers(value);
+  };
+
+  const presignCustomRules = (docs: Array<{ filename: string }>) =>
+    projectsService.presignCustomRules(project.id, docs);
+
+  const commitCustomRules = (docs: Array<{ filename: string }>) =>
+    projectsService.commitCustomRules(project.id, docs);
+
+  const refreshCustomRules = async () => {
+    const refreshed = await projectsService.getCustomRules(project.id);
+    setCustomRules(refreshed.customRules ?? []);
   };
 
   return (
@@ -324,7 +372,10 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
                       id={`model-${cli}`}
                       value={current}
                       onChange={(e) =>
-                        setEditCliModels((cur) => ({ ...cur, [cli]: e.target.value }))
+                        setEditCliModels((cur) => ({
+                          ...cur,
+                          [cli]: e.target.value,
+                        }))
                       }
                       placeholder={
                         globalCliModels[cli] ? `Default: ${globalCliModels[cli]}` : 'Default'
@@ -361,6 +412,42 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
           )}
         </div>
       </SettingsCard>
+
+      {/* Custom MCP servers + rules — owner/admin only (read is restricted). */}
+      {canEdit && (
+        <>
+          <CustomMcpServersSection
+            value={customMcpServers}
+            onChange={setCustomMcpServers}
+            onSave={saveCustomMcpServers}
+            canEdit={canEdit}
+            globalServerNames={globalMcpServerNames}
+            description="Custom MCP servers injected into this project's agent sessions."
+          />
+
+          {customMsg && (
+            <p
+              className={cn(
+                'text-xs',
+                customMsg.kind === 'success' ? 'text-agent-success' : 'text-destructive',
+              )}
+            >
+              {customMsg.text}
+            </p>
+          )}
+          <CustomRulesSection
+            docs={customRules}
+            onPresign={presignCustomRules}
+            onCommit={commitCustomRules}
+            onRefresh={refreshCustomRules}
+            canEdit={canEdit}
+            description="Markdown documents loaded into the agent context for every stage in this project (coding standards, API references, framework guidelines, etc.)."
+            onSuccess={(text) => setCustomMsg({ kind: 'success', text })}
+            onError={(text) => setCustomMsg({ kind: 'error', text })}
+            onClearMessages={() => setCustomMsg(null)}
+          />
+        </>
+      )}
     </div>
   );
 }

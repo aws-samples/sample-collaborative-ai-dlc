@@ -9,11 +9,14 @@
 # agentcore package and the shared/ helpers it imports via ../shared).
 FROM public.ecr.aws/docker/library/node:24.15.0-slim
 
-# Base tools: git (workspace checkout), curl/unzip (CLI installs), jq, procps.
+# Base tools: git (workspace checkout), curl/unzip (CLI installs), jq, procps,
+# python3 (bare-`python`/`python3` MCP servers; `python`→`python3` symlink so
+# both resolve — uv/uvx manage their own Python separately).
 RUN apt-get update -o Acquire::AllowInsecureRepositories=true \
     && apt-get install -y --no-install-recommends --allow-unauthenticated ca-certificates gnupg \
     && apt-get update \
-    && apt-get install -y --no-install-recommends git curl unzip jq procps \
+    && apt-get install -y --no-install-recommends git curl unzip jq procps python3 \
+    && ln -sf /usr/bin/python3 /usr/local/bin/python \
     && rm -rf /var/lib/apt/lists/*
 
 # Agent CLIs — installed for both supported drivers; selectCli picks what's
@@ -36,6 +39,17 @@ RUN curl -fsSL https://bun.sh/install | bash \
     && ln -sf /opt/bun/bin/bunx /usr/local/bin/bunx \
     && rm -rf /root/.bun
 
+# uv / uvx — the standard launcher for Python-based MCP servers (e.g.
+# `uvx mcp-server-fetch`). Custom MCP servers configured per-project/globally
+# may reference it, and the mcp-validator allows `uv`/`uvx` as bare commands, so
+# the binaries must be on PATH. Same install→/opt→symlink pattern as Kiro/bun.
+# UV_NO_MODIFY_PATH: we set PATH explicitly below; skip the installer's shell
+# profile edits (noise/failure in a non-interactive image build).
+RUN curl -LsSf https://astral.sh/uv/install.sh \
+    | env UV_INSTALL_DIR=/opt/uv/bin UV_NO_MODIFY_PATH=1 sh \
+    && ln -sf /opt/uv/bin/uv /usr/local/bin/uv \
+    && ln -sf /opt/uv/bin/uvx /usr/local/bin/uvx
+
 # Install the agentcore package deps (its own package.json — isolated).
 COPY agentcore/package.json /opt/agentcore/package.json
 RUN cd /opt/agentcore && npm install --omit=dev
@@ -52,7 +66,7 @@ RUN ln -s /opt/agentcore/node_modules /opt/shared/node_modules
 # /mnt/workspace is the AgentCore managed-session-storage mount (present only at
 # invocation time). Create a fallback dir for local/non-AgentCore runs; chown so
 # the node user can write the checkout + CLI stores when the mount is absent.
-RUN mkdir -p /mnt/workspace && chown -R node:node /mnt/workspace /opt/agentcore /opt/shared /opt/kiro /opt/bun
+RUN mkdir -p /mnt/workspace && chown -R node:node /mnt/workspace /opt/agentcore /opt/shared /opt/kiro /opt/bun /opt/uv
 
 WORKDIR /mnt/workspace
 USER node
@@ -66,7 +80,7 @@ USER node
 #    local XDG around each Kiro spawn so a resume after a microVM reap still
 #    recalls the conversation. See cli/kiro-store.js.
 ENV HOME=/home/node \
-    PATH=/opt/kiro/bin:/opt/bun/bin:/usr/local/bin:/usr/bin:/bin \
+    PATH=/opt/kiro/bin:/opt/bun/bin:/opt/uv/bin:/usr/local/bin:/usr/bin:/bin \
     V2_WORKSPACE_DIR=/mnt/workspace \
     CLAUDE_CONFIG_DIR=/mnt/workspace/.claude \
     XDG_DATA_HOME=/home/node/.kiro-data \

@@ -9,6 +9,16 @@ import { SSMClient } from '@aws-sdk/client-ssm';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { LambdaClient } from '@aws-sdk/client-lambda';
 import { BedrockAgentCoreClient } from '@aws-sdk/client-bedrock-agentcore';
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  ListObjectVersionsCommand,
+  DeleteObjectsCommand,
+} from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import nodePath from 'node:path';
 import { buildResponse } from '../shared/response.js';
 import { requirePlatformAdmin } from '../shared/authz.js';
 import { runTrackerMigration } from '../shared/tracker-migration.js';
@@ -25,6 +35,7 @@ import { normalizeCliModels, parseCliModels } from '../shared/cli-models.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { deleteIntentCascade } from '../shared/intent-deletion.js';
 import { isSafeRepo } from '../shared/repo-validation.js';
+import { validateMcpServersJson } from '../shared/mcp-validator.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
@@ -543,6 +554,263 @@ async function detectRepoStack(repoUrl, token, providerId = 'github') {
 }
 
 // ---------------------------------------------------------------------------
+// Project-level custom MCP servers: GET/PUT /projects/{projectId}/custom-mcp-servers
+// Stored as a JSON string on the Project vertex `custom_mcp_servers` property
+// (the app's name-keyed author shape: { "<name>": {…} }; the runtime transforms
+// it per CLI). Merged with the global tier at intent-create.
+// ---------------------------------------------------------------------------
+
+const MAX_CUSTOM_RULES = 20;
+// Max bytes per custom-rule body. Enforced here on commit (via HeadObject) AND
+// again at runtime (agentcore/custom-rules.js MAX_RULE_BYTES) AND in the browser
+// (CustomRulesSection.tsx MAX_FILE_SIZE) — keep the three in sync.
+const MAX_CUSTOM_RULE_BYTES = 100 * 1024;
+
+const handleProjectCustomMcpServers = async (g, response, httpMethod, projectId, userId, body) => {
+  if (!userId) return response(401, { error: 'Unauthorized' });
+
+  // The config may carry secrets in env/headers, so BOTH read and write are
+  // restricted to project owners/admins (a plain member cannot see it).
+  const role = await fetchMembershipRole(g, projectId, userId);
+  if (!role) return response(403, { error: 'Access denied' });
+  if (role !== 'owner' && role !== 'admin') {
+    return response(403, { error: 'Only project owners and admins can access MCP servers' });
+  }
+
+  if (httpMethod === 'GET') {
+    const result = await g
+      .V()
+      .has('Project', 'id', projectId)
+      .valueMap('custom_mcp_servers')
+      .next();
+    const raw = result.value ? getVal(result.value, 'custom_mcp_servers') : '{}';
+    return response(200, { customMcpServers: raw || '{}' });
+  }
+
+  if (httpMethod === 'PUT') {
+    let data;
+    try {
+      data = JSON.parse(body || '{}');
+    } catch {
+      return response(400, { error: 'Invalid JSON body' });
+    }
+    const mcpServersJson =
+      typeof data.customMcpServers === 'string'
+        ? data.customMcpServers
+        : JSON.stringify(data.customMcpServers ?? {});
+    const validation = validateMcpServersJson(mcpServersJson || '{}');
+    if (!validation.valid) {
+      return response(400, {
+        error: 'Invalid MCP servers configuration',
+        issues: validation.issues,
+      });
+    }
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .property(cardinality.single, 'custom_mcp_servers', mcpServersJson || '{}')
+      .next();
+    return response(200, { saved: true });
+  }
+
+  return response(405, { error: 'Method not allowed' });
+};
+
+// ---------------------------------------------------------------------------
+// Project-level custom agent rules: GET/PUT /projects/{projectId}/custom-rules
+// Metadata (filename + s3Key) lives on the Project vertex `custom_rules`
+// property; the .md bodies live in S3 under custom-rules/{projectId}/. GET
+// returns presigned download URLs; PUT returns presigned upload URLs.
+// ---------------------------------------------------------------------------
+
+// Permanently purge an S3 object INCLUDING all noncurrent versions — the
+// artifacts bucket is versioned with no noncurrent-version expiry, so a plain
+// DeleteObject would only add a delete marker and leave the body retrievable.
+// Best-effort: logs and swallows errors (a delete must never fail the commit).
+const purgeS3Object = async (s3, bucket, key) => {
+  try {
+    const versions = await s3.send(new ListObjectVersionsCommand({ Bucket: bucket, Prefix: key }));
+    // Prefix is not an exact match — keep only the entries for THIS exact key.
+    const objects = [...(versions.Versions ?? []), ...(versions.DeleteMarkers ?? [])]
+      .filter((v) => v.Key === key)
+      .map((v) => ({ Key: v.Key, VersionId: v.VersionId }));
+    if (objects.length === 0) return;
+    await s3.send(new DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: objects } }));
+  } catch (err) {
+    console.error(`[projects] Failed to purge S3 object ${key}:`, err.message);
+  }
+};
+
+const handleProjectCustomRules = async (g, response, httpMethod, projectId, userId, body) => {
+  if (!userId) return response(401, { error: 'Unauthorized' });
+
+  // Restricted to project owners/admins for both read and write (consistent
+  // with the MCP-servers surface; a plain member cannot access custom rules).
+  const role = await fetchMembershipRole(g, projectId, userId);
+  if (!role) return response(403, { error: 'Access denied' });
+  if (role !== 'owner' && role !== 'admin') {
+    return response(403, { error: 'Only project owners and admins can access custom rules' });
+  }
+
+  const artifactsBucket = process.env.ARTIFACTS_BUCKET;
+  const region = process.env.AWS_REGION || 'us-east-1';
+  const s3 = new S3Client({ region });
+
+  if (httpMethod === 'GET') {
+    const result = await g.V().has('Project', 'id', projectId).valueMap('custom_rules').next();
+    const raw = result.value ? getVal(result.value, 'custom_rules') : '[]';
+    let docs = [];
+    try {
+      docs = JSON.parse(raw || '[]');
+    } catch {
+      docs = [];
+    }
+
+    const docsWithUrls = await Promise.all(
+      docs.map(async (doc) => {
+        if (!doc.s3Key || !artifactsBucket) return doc;
+        try {
+          const downloadUrl = await getSignedUrl(
+            s3,
+            new GetObjectCommand({ Bucket: artifactsBucket, Key: doc.s3Key }),
+            { expiresIn: 3600 },
+          );
+          return { ...doc, downloadUrl };
+        } catch {
+          return doc;
+        }
+      }),
+    );
+
+    return response(200, { customRules: docsWithUrls });
+  }
+
+  if (httpMethod === 'PUT') {
+    let data;
+    try {
+      data = JSON.parse(body || '{}');
+    } catch {
+      return response(400, { error: 'Invalid JSON body' });
+    }
+    const incomingDocs = Array.isArray(data.customRules) ? data.customRules : [];
+    // Two-phase to avoid persisting metadata for an object that never uploaded:
+    //   mode 'presign' — return upload URLs, DO NOT persist (default when the
+    //                    client is about to upload new files)
+    //   mode 'commit'  — persist the final set (after the browser confirms the
+    //                    uploads succeeded), and for deletes. No upload URLs.
+    const mode = data.mode === 'commit' ? 'commit' : 'presign';
+
+    if (!artifactsBucket) {
+      return response(500, { error: 'ARTIFACTS_BUCKET env var not configured' });
+    }
+    if (incomingDocs.length > MAX_CUSTOM_RULES) {
+      return response(400, { error: `Maximum ${MAX_CUSTOM_RULES} custom rules per project` });
+    }
+
+    // Validate filenames + compute S3 keys once (shared by both modes).
+    const docs = [];
+    for (const doc of incomingDocs) {
+      const filename = doc.filename || '';
+      const safeBase = nodePath.basename(filename);
+      if (!safeBase || safeBase !== filename || !safeBase.toLowerCase().endsWith('.md')) {
+        return response(400, {
+          error: `Invalid filename "${filename}". Must end in .md and contain no path separators.`,
+        });
+      }
+      docs.push({ filename: safeBase, s3Key: `custom-rules/${projectId}/${safeBase}` });
+    }
+
+    if (mode === 'presign') {
+      // Mint upload URLs only — the client uploads, then calls back with
+      // mode:'commit' to persist the set that actually landed in S3.
+      const uploadUrls = [];
+      for (const doc of docs) {
+        try {
+          const uploadUrl = await getSignedUrl(
+            s3,
+            new PutObjectCommand({
+              Bucket: artifactsBucket,
+              Key: doc.s3Key,
+              ContentType: 'text/markdown',
+            }),
+            { expiresIn: 3600 },
+          );
+          uploadUrls.push({ filename: doc.filename, s3Key: doc.s3Key, uploadUrl });
+        } catch (err) {
+          console.error(
+            `[projects] Failed to generate presigned URL for ${doc.s3Key}:`,
+            err.message,
+          );
+        }
+      }
+      return response(200, { uploadUrls });
+    }
+
+    // mode 'commit' — persist the confirmed metadata to Neptune, then purge the
+    // S3 objects for any keys that were removed (delete / replace-to-fewer) so a
+    // "deleted" rule is actually gone, not just unlinked (bucket is versioned).
+    //
+    // Validate each committed object in S3 first (same HeadObject serves both):
+    //   - it must exist — the two-phase flow assumes the client uploaded between
+    //     presign and commit; a direct API caller could commit a filename it
+    //     never uploaded, leaving dangling metadata whose GET hands out download
+    //     URLs for missing objects.
+    //   - it must be within the size cap — the browser enforces 100 KB, but a
+    //     direct PUT has no size constraint; reject here so an oversized object
+    //     is never persisted (the runtime would otherwise silently skip it).
+    const checks = await Promise.all(
+      docs.map(async (doc) => {
+        try {
+          const head = await s3.send(
+            new HeadObjectCommand({ Bucket: artifactsBucket, Key: doc.s3Key }),
+          );
+          return { doc, exists: true, size: head.ContentLength ?? 0 };
+        } catch {
+          return { doc, exists: false, size: 0 };
+        }
+      }),
+    );
+    const missingDocs = checks.filter((c) => !c.exists).map((c) => c.doc.filename);
+    if (missingDocs.length > 0) {
+      return response(400, {
+        error: `No uploaded object found for: ${missingDocs.join(', ')}. Upload the file(s) before committing.`,
+      });
+    }
+    const oversizedDocs = checks
+      .filter((c) => c.size > MAX_CUSTOM_RULE_BYTES)
+      .map((c) => c.doc.filename);
+    if (oversizedDocs.length > 0) {
+      return response(400, {
+        error: `File(s) exceed the ${MAX_CUSTOM_RULE_BYTES / 1024} KB limit: ${oversizedDocs.join(', ')}.`,
+      });
+    }
+
+    const prevRes = await g.V().has('Project', 'id', projectId).valueMap('custom_rules').next();
+    let prevKeys = [];
+    try {
+      const prevRaw = prevRes.value ? getVal(prevRes.value, 'custom_rules') : '[]';
+      prevKeys = (JSON.parse(prevRaw || '[]') || []).map((d) => d.s3Key).filter(Boolean);
+    } catch {
+      prevKeys = [];
+    }
+
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .property(cardinality.single, 'custom_rules', JSON.stringify(docs))
+      .next();
+
+    const keptKeys = new Set(docs.map((d) => d.s3Key));
+    const removed = prevKeys.filter((k) => !keptKeys.has(k));
+    await Promise.all(removed.map((key) => purgeS3Object(s3, artifactsBucket, key)));
+
+    return response(200, { saved: true });
+  }
+
+  return response(405, { error: 'Method not allowed' });
+};
+
+// ---------------------------------------------------------------------------
 // Route: /projects/{projectId}/repos
 // ---------------------------------------------------------------------------
 
@@ -816,6 +1084,14 @@ export const handler = async (event) => {
     if (projectId && /\/repos(\/|$)/.test(requestPath)) {
       if (!userId) return response(401, { error: 'Unauthorized' });
       return await handleReposRoute(g, response, event, projectId, userId);
+    }
+    // Route: /projects/{projectId}/custom-mcp-servers
+    if (projectId && /\/custom-mcp-servers(\/|$)/.test(requestPath)) {
+      return await handleProjectCustomMcpServers(g, response, httpMethod, projectId, userId, body);
+    }
+    // Route: /projects/{projectId}/custom-rules
+    if (projectId && /\/custom-rules(\/|$)/.test(requestPath)) {
+      return await handleProjectCustomRules(g, response, httpMethod, projectId, userId, body);
     }
 
     switch (httpMethod) {
