@@ -8,18 +8,31 @@ import { cn } from '@/lib/utils';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { useIntent } from '@/contexts/IntentContext';
 import { artifactAccent } from '@/components/intent/artifactAccent';
+import { IntentGraphPopover } from '@/components/intent/IntentGraphPopover';
+import { DerivedItemCountChip } from '@/components/intent/DerivedItemCountChip';
+import type { GraphNeighbor } from '@/hooks/useIntentGraph';
 import type { IntentArtifact } from '@/services/intents';
 import { ChevronDown } from 'lucide-react';
 
 // Read-only v2 artifact card, modeled on v1's ArtifactCard visual language
 // (type-colored left border) but fed by the intent detail DTO. Artifacts are
 // primary run output, so they stay in the main pane. `id` anchors the
-// stage-detail "produced artifact" jump links.
+// stage-detail "produced artifact" jump links and the graph popover's in-page
+// navigation. `graphNeighbors`/`derivedItemCount` are supplied by the panel
+// (one shared graph fetch) — both optional so the card renders standalone.
 
 // Bodies beyond this many characters start collapsed behind a "Show more".
 const COLLAPSE_CHARS = 1200;
 
-export function ArtifactViewer({ artifact }: { artifact: IntentArtifact }) {
+export function ArtifactViewer({
+  artifact,
+  graphNeighbors = [],
+  derivedItemCount = 0,
+}: {
+  artifact: IntentArtifact;
+  graphNeighbors?: GraphNeighbor[];
+  derivedItemCount?: number;
+}) {
   const { detail, setSelectedStageId } = useIntent();
   const [expanded, setExpanded] = useState(false);
 
@@ -92,6 +105,8 @@ export function ArtifactViewer({ artifact }: { artifact: IntentArtifact }) {
               {artifact.createdAt && <> · {new Date(artifact.createdAt).toLocaleString()}</>}
             </p>
           </div>
+          <DerivedItemCountChip artifactId={artifact.id} count={derivedItemCount} />
+          <IntentGraphPopover neighbors={graphNeighbors} className="shrink-0" />
           <DiscussButton
             entityType="artifact"
             entityId={artifact.id}

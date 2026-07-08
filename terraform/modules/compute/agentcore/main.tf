@@ -399,16 +399,18 @@ resource "aws_ssm_parameter" "cli_models" {
   tags = var.tags
 }
 
-# Derive-time graph enrichment mode — "off" (deterministic projection only) or
-# "llm" (a bounded one-shot agent-CLI call per approved artifact adds gist/claims
-# summary metadata; topology stays deterministic either way). Managed by the
-# Admin UI at runtime; snapshotted onto each execution's META row at intent
-# create, so the toggle takes effect on the next intent without a redeploy.
+# Derive-time graph enrichment mode — "llm" (a bounded one-shot agent-CLI call
+# per approved artifact adds gist/claims summary metadata; topology stays
+# deterministic either way) or "off" (deterministic projection only). Enabled
+# by default on fresh deploys; managed by the Admin UI at runtime (the
+# ignore_changes lifecycle keeps an admin's choice across applies). Snapshotted
+# onto each execution's META row at intent create, so a toggle flip takes
+# effect on the next intent without a redeploy.
 resource "aws_ssm_parameter" "derive_enrichment" {
   name        = "/${var.project_name}/${var.environment}/derive-enrichment"
-  description = "Graph derive-time enrichment mode: off | llm (Admin UI managed)"
+  description = "Graph derive-time enrichment mode: llm | off (Admin UI managed)"
   type        = "String"
-  value       = "off"
+  value       = "llm"
 
   lifecycle {
     ignore_changes = [value]

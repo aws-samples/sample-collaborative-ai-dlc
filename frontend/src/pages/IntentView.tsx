@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   intentsService,
@@ -11,12 +11,25 @@ import {
 import { INTENT_OUTPUT_KEY, useIntent } from '@/contexts/IntentContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProjectCache } from '@/hooks/useProjectsCache';
+import { useIntentGraph } from '@/hooks/useIntentGraph';
 import QuestionEditor from '@/components/QuestionEditor';
 import type { Question } from '@/services/questions';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { ArtifactViewer } from '@/components/intent/ArtifactViewer';
 import { artifactAccent } from '@/components/intent/artifactAccent';
 import { formatDuration, useTick } from '@/components/intent/stageStyle';
+import { IntentGraphPopover } from '@/components/intent/IntentGraphPopover';
+import { DerivedItemCountChip } from '@/components/intent/DerivedItemCountChip';
+import {
+  DerivedItemsSection,
+  DERIVED_ITEMS_ACCORDION_VALUE,
+  DERIVED_ITEMS_SECTION_ID,
+} from '@/components/intent/DerivedItemsSection';
+import {
+  onWorkProductFocus,
+  scrollAndFlash,
+  type WorkProductFocus,
+} from '@/components/intent/workProductsFocus';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -831,12 +844,16 @@ function groupArtifacts(artifacts: IntentArtifact[]): {
 }
 
 function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: IntentGate[] }) {
-  const { openArtifactPreview } = useIntent();
+  const { openArtifactPreview, projectId, intentId } = useIntent();
+  // The knowledge-graph view powers the graph-context popovers, the derived
+  // items section, and the per-artifact item chips (shared SWR cache; see
+  // useIntentGraph). Fail-soft: while loading / on error everything below
+  // renders without the graph affordances.
+  const { getNeighbors, derivedItems, itemsByArtifact } = useIntentGraph(projectId, intentId);
+  const [itemsFilter, setItemsFilter] = useState<string | null>(null);
+
   const questionGates = gates.filter((g) => g.kind === 'question');
   const steering = detail.steering ?? [];
-  if (detail.artifacts.length === 0 && questionGates.length === 0 && steering.length === 0) {
-    return null;
-  }
 
   const influencedArtifactsByQuestion = new Map(
     detail.events
@@ -847,11 +864,65 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
   const activeArtifacts = detail.artifacts.filter((a) => !a.supersededAt);
   const { itemizedGroups, documents } = groupArtifacts(activeArtifacts);
 
-  const defaultValue = [
+  // Controlled accordion: groups open by default (as before), and newly
+  // appearing groups auto-open — but a group the user closed stays closed.
+  // Controlled because in-page navigation (popover/chip) must expand the
+  // target group before scrolling to the anchor. Derived items start closed
+  // (a supplementary layer).
+  const defaultOpen = [
     ...itemizedGroups.map((g) => `artifact-${g.type}`),
     documents.length > 0 ? 'documents' : null,
     questionGates.length > 0 ? 'questions' : null,
   ].filter((v): v is string => Boolean(v));
+  const [openGroups, setOpenGroups] = useState<string[]>(defaultOpen);
+  const seenGroupsRef = useRef<Set<string>>(new Set(defaultOpen));
+  useEffect(() => {
+    const fresh = defaultOpen.filter((k) => !seenGroupsRef.current.has(k));
+    if (fresh.length === 0) return;
+    fresh.forEach((k) => seenGroupsRef.current.add(k));
+    setOpenGroups((prev) => [...new Set([...prev, ...fresh])]);
+    // A string signature keeps the effect cheap; defaultOpen is order-stable.
+  }, [defaultOpen.join('|')]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const openGroup = (value: string) =>
+    setOpenGroups((prev) => (prev.includes(value) ? prev : [...prev, value]));
+
+  // In-page navigation target: the graph popover / items chip emits a focus
+  // request; expand the owning group, then scroll-and-flash the anchor.
+  const artifactsRef = useRef(detail.artifacts);
+  artifactsRef.current = detail.artifacts;
+  useEffect(
+    () =>
+      onWorkProductFocus((focus: WorkProductFocus) => {
+        if (focus.kind === 'artifact') {
+          const artifact = artifactsRef.current.find((a) => a.id === focus.id);
+          if (!artifact) return;
+          if (isDocumentArtifact(artifact)) {
+            openGroup('documents');
+            scrollAndFlash(`artifact-${artifact.id}`);
+            openArtifactPreview(artifact.id);
+          } else {
+            openGroup(`artifact-${artifact.artifactType ?? 'other'}`);
+            scrollAndFlash(`artifact-${artifact.id}`);
+          }
+          return;
+        }
+        openGroup(DERIVED_ITEMS_ACCORDION_VALUE);
+        if (focus.filterArtifactId !== undefined) {
+          setItemsFilter(focus.filterArtifactId || null);
+        }
+        scrollAndFlash(focus.id ? `item-${focus.id}` : DERIVED_ITEMS_SECTION_ID);
+      }),
+    [openArtifactPreview],
+  );
+
+  if (detail.artifacts.length === 0 && questionGates.length === 0 && steering.length === 0) {
+    return null;
+  }
+
+  const artifactTitleById = new Map(
+    activeArtifacts.map((a) => [a.id, a.title || a.id] as [string, string]),
+  );
 
   return (
     <Card>
@@ -862,7 +933,12 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
         </p>
       </CardHeader>
       <CardContent>
-        <Accordion type="multiple" defaultValue={defaultValue} className="space-y-2">
+        <Accordion
+          type="multiple"
+          value={openGroups}
+          onValueChange={setOpenGroups}
+          className="space-y-2"
+        >
           {itemizedGroups.map((group) => {
             const accent = artifactAccent(group.type);
             return (
@@ -882,7 +958,12 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
                 </AccordionTrigger>
                 <AccordionContent className="space-y-3 pb-3">
                   {group.items.map((a) => (
-                    <ArtifactViewer key={a.id} artifact={a} />
+                    <ArtifactViewer
+                      key={a.id}
+                      artifact={a}
+                      graphNeighbors={getNeighbors(a.id)}
+                      derivedItemCount={itemsByArtifact.get(a.id)?.length ?? 0}
+                    />
                   ))}
                 </AccordionContent>
               </AccordionItem>
@@ -901,11 +982,22 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
               </AccordionTrigger>
               <AccordionContent className="space-y-1 pb-3">
                 {documents.map((a) => (
-                  <button
+                  // role=button div (not <button>): the row hosts interactive
+                  // children (discuss, graph popover, items chip) and nested
+                  // buttons are invalid HTML.
+                  <div
                     key={a.id}
-                    type="button"
-                    className="group/doc flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-muted/50 transition-colors"
+                    id={`artifact-${a.id}`}
+                    role="button"
+                    tabIndex={0}
+                    className="group/doc flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left scroll-mt-4 hover:bg-muted/50 transition-colors"
                     onClick={() => openArtifactPreview(a.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        openArtifactPreview(a.id);
+                      }
+                    }}
                   >
                     <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                     <span className="min-w-0 flex-1 truncate text-sm">{a.title || a.id}</span>
@@ -914,6 +1006,11 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
                         {getTimeAgo(a.createdAt)}
                       </span>
                     )}
+                    <DerivedItemCountChip
+                      artifactId={a.id}
+                      count={itemsByArtifact.get(a.id)?.length ?? 0}
+                    />
+                    <IntentGraphPopover neighbors={getNeighbors(a.id)} className="shrink-0" />
                     <DiscussButton
                       entityType="artifact"
                       entityId={a.id}
@@ -924,11 +1021,19 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
                       aria-hidden="true"
                       className="h-3 w-3 shrink-0 text-muted-foreground/40 opacity-0 group-hover/doc:opacity-100 transition-opacity"
                     />
-                  </button>
+                  </div>
                 ))}
               </AccordionContent>
             </AccordionItem>
           )}
+
+          <DerivedItemsSection
+            items={derivedItems}
+            getNeighbors={getNeighbors}
+            filterArtifactId={itemsFilter}
+            onClearFilter={() => setItemsFilter(null)}
+            artifactTitleById={artifactTitleById}
+          />
 
           {questionGates.length > 0 && (
             <AccordionItem value="questions" className="rounded-md border px-3">

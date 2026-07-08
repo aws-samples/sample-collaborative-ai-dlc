@@ -63,7 +63,8 @@ current source vertex — a re-derive that removes a reference removes its edge
    every artifact-producing stage (orchestrator + unit-lane hooks) and on the
    admin backfill route. Extraction (`extractArtifactStructure`) → mirror
    (`mirrorArtifactDerivations`) → item-edge sweep → optional LLM enrichment
-   (props only: `summary_gist`/`summary_claims`). Fail-open at every step; the
+   (enabled by default on deploy; Admin-togglable — props only:
+   `summary_gist`/`summary_claims`). Fail-open at every step; the
    event feed reports `N artifact(s), N section(s), N item(s), N item edge(s),
 N citation set(s)[, N enriched]`.
 4. **Hygiene** — supersede, never delete: re-derive marks removed rows

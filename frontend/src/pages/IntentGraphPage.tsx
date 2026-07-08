@@ -1,44 +1,20 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useIntent } from '@/contexts/IntentContext';
-import { intentsService } from '@/services/intents';
-import { type GraphNode, type GraphEdge } from '@/services/sprintGraph';
+import { useIntentGraph } from '@/hooks/useIntentGraph';
 import { GraphCanvas } from '@/components/graph/GraphCanvas';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { ArrowLeft } from 'lucide-react';
 
-const GRAPH_CACHE_MAX = 20;
-
-interface GraphCacheEntry {
-  nodes: GraphNode[];
-  edges: GraphEdge[];
-}
-
-const graphCache = new Map<string, GraphCacheEntry>();
-
-function graphCacheKey(projectId: string, intentId: string): string {
-  return `${projectId}#${intentId}`;
-}
-
-function trimGraphCache() {
-  while (graphCache.size > GRAPH_CACHE_MAX) {
-    const oldest = graphCache.keys().next().value!;
-    graphCache.delete(oldest);
-  }
-}
-
 export default function IntentGraphPage() {
   const { projectId, intentId, loading: contextLoading, error: contextError } = useIntent();
   const navigate = useNavigate();
 
-  const key = graphCacheKey(projectId, intentId);
-
-  const [nodes, setNodes] = useState<GraphNode[]>(() => graphCache.get(key)?.nodes ?? []);
-  const [edges, setEdges] = useState<GraphEdge[]>(() => graphCache.get(key)?.edges ?? []);
-  const [loading, setLoading] = useState(() => !graphCache.get(key));
-  const [error, setError] = useState<string | null>(null);
+  // Shared SWR graph cache — the same fetch the workbench popovers and the
+  // derived-items section use (see useIntentGraph).
+  const { nodes, edges, loading, error } = useIntentGraph(projectId, intentId);
   // Layer toggle: 'artifacts' hides the derived projection (typed items +
   // unit DAG, nodes tagged graphLayer='derived'); 'all' shows everything.
   const [layer, setLayer] = useState<'artifacts' | 'all'>('artifacts');
@@ -52,43 +28,6 @@ export default function IntentGraphPage() {
       visibleEdges: edges.filter((e) => keptIds.has(e.source) && keptIds.has(e.target)),
     };
   }, [layer, nodes, edges]);
-
-  useEffect(() => {
-    if (!projectId || !intentId) return;
-    let cancelled = false;
-    const k = graphCacheKey(projectId, intentId);
-    const hit = graphCache.get(k);
-    if (hit) {
-      if (!cancelled) {
-        setNodes(hit.nodes);
-        setEdges(hit.edges);
-        setLoading(false);
-      }
-    } else {
-      if (!cancelled) setLoading(true);
-    }
-    if (!cancelled) setError(null);
-    intentsService
-      .graph(projectId, intentId)
-      .then(({ nodes: n, edges: e }) => {
-        graphCache.set(k, { nodes: n, edges: e });
-        trimGraphCache();
-        if (cancelled) return;
-        setNodes(n);
-        setEdges(e);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setError('Failed to load knowledge graph');
-      })
-      .finally(() => {
-        if (cancelled) return;
-        setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId, intentId]);
 
   if (contextLoading && !nodes.length) {
     return (

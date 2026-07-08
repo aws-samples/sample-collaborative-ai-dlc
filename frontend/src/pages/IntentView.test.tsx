@@ -30,6 +30,9 @@ vi.mock('@/services/intents', () => ({
     get: (...a: unknown[]) => get(...a),
     start: (...a: unknown[]) => start(...a),
     answerGate: (...a: unknown[]) => answerGate(...a),
+    // Knowledge graph feeding the popovers/derived-items section — empty
+    // graph keeps those affordances out of these page-behavior tests.
+    graph: vi.fn().mockResolvedValue({ nodes: [], edges: [] }),
   },
 }));
 vi.mock('@/services/workflows', () => ({

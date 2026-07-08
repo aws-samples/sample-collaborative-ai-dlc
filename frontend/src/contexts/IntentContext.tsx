@@ -23,6 +23,7 @@ import {
 } from '@/services/intents';
 import { workflowsService, type CompiledWorkflow, type PhaseNode } from '@/services/workflows';
 import { useIntentEvents, type IntentEvent } from '@/hooks/useIntentEvents';
+import { invalidateIntentGraph } from '@/hooks/useIntentGraph';
 
 // Shared state for the v2 intent experience (the SprintContext analog). The
 // provider is mounted once in AppShell — INERT off intent routes (no ids → no
@@ -461,6 +462,12 @@ export function IntentProvider({
         setOutputVersion((n) => n + 1);
         return;
       }
+      // A completed derive changed the knowledge graph's derived layer —
+      // refresh the shared graph cache (popovers, derived-items section).
+      if (evt.action === 'agent.derived') {
+        invalidateIntentGraph(projectId, intentId);
+        return;
+      }
       // Stage/execution/metric/note/steering/unit transitions → refetch the
       // assembled DTO (debounced — lane bursts coalesce into one fetch).
       if (
@@ -475,7 +482,7 @@ export function IntentProvider({
         scheduleLoad();
       }
     },
-    [scheduleLoad, paneOf],
+    [scheduleLoad, paneOf, projectId, intentId],
   );
   useIntentEvents(projectId, intentId, onEvent);
 

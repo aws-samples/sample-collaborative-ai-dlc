@@ -14,7 +14,10 @@ export type IntentEventAction =
   | 'agent.note'
   // Unit-lane lifecycle (docs/v2-parallel.md WP4): v2.unit.* transitions
   // (started / merged / failed) broadcast by the orchestrator.
-  | 'agent.unit';
+  | 'agent.unit'
+  // A derive run completed — the knowledge graph's derived layer changed
+  // (sections/items/edges; docs/v2-granular-graph.md).
+  | 'agent.derived';
 
 export interface IntentEvent {
   action: IntentEventAction;
@@ -60,6 +63,7 @@ const INTENT_EVENTS: IntentEventAction[] = [
   'agent.steering',
   'agent.note',
   'agent.unit',
+  'agent.derived',
 ];
 
 /**
