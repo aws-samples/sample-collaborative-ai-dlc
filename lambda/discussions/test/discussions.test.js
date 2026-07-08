@@ -1329,6 +1329,7 @@ describe('intent-scoped discussions', () => {
       .as('i')
       .addV('Artifact')
       .property('id', artifactId)
+      .property('intent_id', intentId)
       .property('artifact_type', 'requirements')
       .property('title', 'Requirements')
       .as('a')

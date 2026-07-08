@@ -113,6 +113,24 @@ fixed twice — never again.
 - Derive/enrichment/sweep failures are events, never stage failures.
 - Reads never surface superseded rows; edge projections drop any edge whose
   endpoint is not a rendered/current node.
+- **Artifact identity is intent-scoped.** Agents choose artifact ids freely and
+  Section ids embed the artifact id (`section:<artifactId>:<slug>`), so ids are
+  unique only WITHIN an intent. Every lookup/edge/upsert of an `Artifact` or
+  `Section` matches the trusted `intent_id` prop too (graph-writer
+  `INTENT_SCOPED_LABELS`); the vertex upsert keys on `(id, intent_id)`. Without
+  this, two intents choosing the same id shared one vertex — one intent's write
+  overwrote the other's content, and one intent's delete cascade destroyed the
+  other's data (the field incident that lost a run's items). Project-scoped
+  (`TeamKnowledge`/`LearningRule`), the `Intent` anchor, and UUID/deterministic-id
+  labels (`Question`/`Steering`/`UnitOfWork`/typed items) are globally unique and
+  need no scoping.
+- **Delete cascades sweep the derived layer.** Deleting an intent (or the
+  `inspect drop` tool) drops Section/typed-item descendants of its artifacts in
+  a pass BEFORE the artifacts (drop() consumes eagerly, so a grandchild reached
+  through a to-be-dropped vertex would orphan-leak). Guarded by `intent_id` so a
+  sibling intent that shares an id keeps its data. `inspect { cleanup: true }`
+  sweeps pre-existing orphans partition-wide (dry-run by default; `apply: true`
+  to drop).
 - Anything that works against gremlin-server but is provider-sensitive
   (ordering, token keys) must have a both-orders regression test — see
   `flattenVertexMap`'s history.

@@ -1239,6 +1239,7 @@ describe('GET list + detail', () => {
     await g
       .addV('Artifact')
       .property('id', 'a1')
+      .property('intent_id', intent.id)
       .property('artifact_type', 'requirements-analysis')
       .property('title', 'Reqs')
       .property('content', '# hi')
@@ -1375,6 +1376,7 @@ describe('POST /gates/{humanTaskId}/answer', () => {
     await g
       .addV('Artifact')
       .property('id', artifactId)
+      .property('intent_id', intent.id)
       .property('artifact_type', 'requirements-analysis')
       .property('title', 'Requirements')
       .property('created_by_stage_instance_id', 'si-req')
@@ -1802,6 +1804,87 @@ describe('DELETE /projects/{id}/intents/{intentId}', () => {
     expect([...yjsStore.keys()]).toEqual(['unrelated-doc']);
   });
 
+  it('cascade sweeps the derived layer AND spares a sibling intent that shares an artifact id', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const victim = JSON.parse((await createIntent(sub, projectId)).body).id;
+    const sibling = JSON.parse((await createIntent(sub, projectId)).body).id;
+    await seedIntentAnchor(victim);
+    await seedIntentAnchor(sibling);
+
+    // Both intents own an Artifact with the SAME agent-chosen id 'requirements'
+    // (the field-incident collision), each with a Section + a Story hanging off
+    // it. Distinct vertices only because intent_id differs.
+    const seedArtifactWithDerived = async (intentId) => {
+      await g
+        .addV('Artifact')
+        .property('id', 'requirements')
+        .property('intent_id', intentId)
+        .property('artifact_type', 'requirements')
+        .as('a')
+        .V()
+        .has('Intent', 'id', intentId)
+        .addE('CONTAINS')
+        .to('a')
+        .next();
+      await g
+        .addV('Section')
+        .property('id', 'section:requirements:overview')
+        .property('intent_id', intentId)
+        .as('sec')
+        .V()
+        .has('Artifact', 'id', 'requirements')
+        .has('intent_id', intentId)
+        .addE('HAS_SECTION')
+        .to('sec')
+        .next();
+      await g
+        .addV('Story')
+        .property('id', `story:${intentId}:s-login`)
+        .property('intent_id', intentId)
+        .as('it')
+        .V()
+        .has('Artifact', 'id', 'requirements')
+        .has('intent_id', intentId)
+        .addE('HAS_ITEM')
+        .to('it')
+        .next();
+    };
+    await seedArtifactWithDerived(victim);
+    await seedArtifactWithDerived(sibling);
+    setStatus(victim, { status: 'SUCCEEDED' });
+
+    const res = await del(sub, projectId, victim);
+    expect(res.statusCode).toBe(204);
+
+    // Victim's whole subtree is gone — including the derived layer (no orphan
+    // leak: the previous cascade left Section/Story behind).
+    expect(
+      await g.V().has('Artifact', 'id', 'requirements').has('intent_id', victim).hasNext(),
+    ).toBe(false);
+    expect(
+      await g
+        .V()
+        .has('Section', 'id', 'section:requirements:overview')
+        .has('intent_id', victim)
+        .hasNext(),
+    ).toBe(false);
+    expect(await g.V().has('Story', 'id', `story:${victim}:s-login`).hasNext()).toBe(false);
+
+    // The sibling's same-id artifact and its derived layer SURVIVE intact.
+    expect(
+      await g.V().has('Artifact', 'id', 'requirements').has('intent_id', sibling).hasNext(),
+    ).toBe(true);
+    expect(
+      await g
+        .V()
+        .has('Section', 'id', 'section:requirements:overview')
+        .has('intent_id', sibling)
+        .hasNext(),
+    ).toBe(true);
+    expect(await g.V().has('Story', 'id', `story:${sibling}:s-login`).hasNext()).toBe(true);
+  });
+
   it('retires a WAITING run first: supersedes the pending gate and wakes the callback', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -2043,6 +2126,7 @@ describe('POST /rewind', () => {
       await g
         .addV('Artifact')
         .property('id', id)
+        .property('intent_id', intent.id)
         .property('artifact_type', 'doc')
         .property('title', id)
         .property('created_by_stage_instance_id', siOf(stageId))

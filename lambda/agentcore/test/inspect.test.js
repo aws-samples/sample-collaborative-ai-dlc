@@ -9,6 +9,7 @@ import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { createGraphWriter } from '../mcp/graph-writer.js';
 import { inspect } from '../commands/inspect.js';
+import { extractArtifactStructure } from '../../shared/artifact-extractors.js';
 
 const PARTITION = 'agentcore-inspect';
 const SCOPE = {
@@ -123,5 +124,101 @@ describe('inspect command', () => {
     // The Intent anchor vertex itself is removed too.
     const anchor = await g.V().has('Intent', 'id', SCOPE.intentId).count().next();
     expect(anchor.value).toBe(0);
+  });
+
+  it('drop:true sweeps the derived layer (no Section/item orphan leak)', async () => {
+    await g
+      .addV('Intent')
+      .property('id', SCOPE.intentId)
+      .property('project_id', SCOPE.projectId)
+      .next();
+    const w = createGraphWriter({ g, scope: SCOPE, clock: () => '2026-01-01T00:00:00.000Z' });
+    const content = [
+      '## Stories',
+      '```yaml',
+      'stories:',
+      '  - id: s-login',
+      '    title: Login',
+      '```',
+    ].join('\n');
+    await w.createArtifact({ artifactType: 'stories', id: 'stories', content });
+    const artifact = await w.getArtifact({ id: 'stories' });
+    await w.mirrorArtifactDerivations({
+      artifact,
+      extraction: extractArtifactStructure({
+        artifactType: 'stories',
+        artifactId: 'stories',
+        content,
+      }),
+    });
+    // Precondition: a Section + a Story exist.
+    expect((await g.V().hasLabel('Section').count().next()).value).toBe(1);
+    expect((await g.V().hasLabel('Story').count().next()).value).toBe(1);
+
+    await inspect({ intentId: SCOPE.intentId, drop: true }, { openGraph });
+
+    // The derived layer is gone too — not orphaned.
+    expect((await g.V().hasLabel('Section').count().next()).value).toBe(0);
+    expect((await g.V().hasLabel('Story').count().next()).value).toBe(0);
+    expect((await g.V().hasLabel('Artifact').count().next()).value).toBe(0);
+  });
+
+  it('cleanup mode reports and drops orphaned derived vertices partition-wide', async () => {
+    await g
+      .addV('Intent')
+      .property('id', SCOPE.intentId)
+      .property('project_id', SCOPE.projectId)
+      .next();
+    const w = createGraphWriter({ g, scope: SCOPE, clock: () => '2026-01-01T00:00:00.000Z' });
+    const content = [
+      '## Stories',
+      '```yaml',
+      'stories:',
+      '  - id: s-login',
+      '    title: Login',
+      '```',
+    ].join('\n');
+    await w.createArtifact({ artifactType: 'stories', id: 'stories', content });
+    const artifact = await w.getArtifact({ id: 'stories' });
+    await w.mirrorArtifactDerivations({
+      artifact,
+      extraction: extractArtifactStructure({
+        artifactType: 'stories',
+        artifactId: 'stories',
+        content,
+      }),
+    });
+    // Simulate the pre-fix incident: drop ONLY the artifact (old one-hop
+    // cascade), leaving the Section + Story orphaned.
+    await g.V().has('Artifact', 'id', 'stories').drop().next();
+    expect((await g.V().hasLabel('Section').count().next()).value).toBe(1);
+    expect((await g.V().hasLabel('Story').count().next()).value).toBe(1);
+
+    // Dry-run counts without dropping.
+    const dry = await inspect({ cleanup: true }, { openGraph });
+    expect(dry).toMatchObject({ ok: true, cleanup: true, applied: false, total: 2 });
+    expect(dry.orphans).toMatchObject({ HAS_SECTION: 1, HAS_ITEM: 1 });
+    expect((await g.V().hasLabel('Section').count().next()).value).toBe(1);
+
+    // apply drops them.
+    const applied = await inspect({ cleanup: true, apply: true }, { openGraph });
+    expect(applied).toMatchObject({ ok: true, applied: true, total: 2 });
+    expect((await g.V().hasLabel('Section').count().next()).value).toBe(0);
+    expect((await g.V().hasLabel('Story').count().next()).value).toBe(0);
+
+    // A non-orphan (Section still linked to its artifact) is NOT touched.
+    await w.createArtifact({ artifactType: 'stories', id: 'stories', content });
+    const art2 = await w.getArtifact({ id: 'stories' });
+    await w.mirrorArtifactDerivations({
+      artifact: art2,
+      extraction: extractArtifactStructure({
+        artifactType: 'stories',
+        artifactId: 'stories',
+        content,
+      }),
+    });
+    const clean = await inspect({ cleanup: true, apply: true }, { openGraph });
+    expect(clean.total).toBe(0);
+    expect((await g.V().hasLabel('Section').count().next()).value).toBe(1);
   });
 });

@@ -154,7 +154,9 @@ export const getOrCreateDiscussion = async (event, res) => {
   const anchorLabel = scope.anchorLabels[entityType];
 
   // Fast path: thread already exists — no lock.
-  const existing = await query((g) => findDiscussionByAnchor(g, anchorLabel, entityId, entityType));
+  const existing = await query((g) =>
+    findDiscussionByAnchor(g, anchorLabel, entityId, entityType, scope),
+  );
   if (existing) return res(200, existing);
 
   // Validate the anchor lives in this scope before creating anything.
@@ -189,7 +191,7 @@ export const getOrCreateDiscussion = async (event, res) => {
       // Winner: re-check the anchor (guard against a just-finished creator),
       // create vertex + edges, delete the guard.
       const recheck = await query((g) =>
-        findDiscussionByAnchor(g, anchorLabel, entityId, entityType),
+        findDiscussionByAnchor(g, anchorLabel, entityId, entityType, scope),
       );
       if (recheck) {
         await ddb
@@ -201,7 +203,7 @@ export const getOrCreateDiscussion = async (event, res) => {
       const id = `disc-${randomUUID()}`;
       const createdAt = new Date().toISOString();
       const entityTitle =
-        (await query((g) => fetchAnchorTitle(g, anchorLabel, entityId))) ||
+        (await query((g) => fetchAnchorTitle(g, anchorLabel, entityId, scope))) ||
         String(body.entityTitle || '');
 
       await query((g) =>
@@ -222,7 +224,7 @@ export const getOrCreateDiscussion = async (event, res) => {
         .catch(() => {});
 
       const created = await query((g) =>
-        findDiscussionByAnchor(g, anchorLabel, entityId, entityType),
+        findDiscussionByAnchor(g, anchorLabel, entityId, entityType, scope),
       );
       return res(200, created);
     }
@@ -231,7 +233,7 @@ export const getOrCreateDiscussion = async (event, res) => {
     for (let poll = 0; poll < POLL_ATTEMPTS; poll++) {
       await sleep(POLL_INTERVAL_MS);
       const found = await query((g) =>
-        findDiscussionByAnchor(g, anchorLabel, entityId, entityType),
+        findDiscussionByAnchor(g, anchorLabel, entityId, entityType, scope),
       );
       if (found) return res(200, found);
     }

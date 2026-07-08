@@ -242,29 +242,54 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
 
   // Upsert a vertex by (label,id): create it only if absent, then return the
   // traversal positioned on it for property writes.
+  //
+  // Labels whose `id` prop is only unique WITHIN an intent — agents choose
+  // Artifact ids freely and Section ids embed the artifact id (`section:<id>:
+  // <slug>`), so two intents can pick the SAME id and, without scoping, share
+  // (and overwrite/delete) one vertex — the field incident that lost a run's
+  // items. Every lookup/edge/upsert of these MUST additionally match the
+  // trusted `intent_id` prop (from stamp()). Project-scoped labels
+  // (TeamKnowledge/LearningRule), the Intent anchor, and UUID/deterministic-id
+  // labels (Question/Steering/UnitOfWork/typed items — ids are globally unique
+  // or embed the intentId) are safe without it.
+  const INTENT_SCOPED_LABELS = new Set([ARTIFACT_LABEL, SECTION_LABEL]);
+
+  // Append the intent_id match iff the label's id space is intent-local. Works
+  // on any traversal (`g.V()...`, `__.V()...`, `__.inV()...`).
+  const scopeByIntent = (traversal, label) =>
+    INTENT_SCOPED_LABELS.has(label) ? traversal.has('intent_id', scope.intentId) : traversal;
+
+  // Position a fresh traversal on the (label,id) vertex, intent-scoped when the
+  // label needs it. The one lookup helper the write/read sites share.
+  const vAt = (label, id) => scopeByIntent(g.V().has(label, 'id', id), label);
+
+  // Derived-row lookup by id alone (Section/item ids gathered from a scoped
+  // artifact's edges). These rows always carry intent_id, so scope defensively
+  // — an id collision across intents must never let a write cross over.
+  const vDerivedById = (id) => g.V().has('id', id).has('intent_id', scope.intentId);
+
   const upsertVertex = async (label, id) => {
-    await g
-      .V()
-      .has(label, 'id', id)
-      .fold()
-      .coalesce(__.unfold(), __.addV(label).property(cardinality.single, 'id', id))
-      .next();
+    const scoped = INTENT_SCOPED_LABELS.has(label);
+    // The coalesce key must include intent_id for scoped labels so a second
+    // intent reusing an id creates a NEW vertex instead of adopting the
+    // existing one. The new vertex carries intent_id immediately (the full
+    // stamp is written by the caller right after).
+    let create = __.addV(label).property(cardinality.single, 'id', id);
+    if (scoped) create = create.property(cardinality.single, 'intent_id', scope.intentId);
+    await vAt(label, id).fold().coalesce(__.unfold(), create).next();
   };
 
-  // Idempotent edge create between two existing vertices (same label/id pair).
+  // Idempotent edge create between two existing vertices, each end matched with
+  // intent scoping appropriate to its label.
   const ensureEdge = async ({ fromLabel, fromId, toLabel, toId, edge }) => {
-    const exists = await g
-      .V()
-      .has(fromLabel, 'id', fromId)
+    const exists = await scopeByIntent(g.V().has(fromLabel, 'id', fromId), fromLabel)
       .outE(edge)
-      .where(__.inV().has(toLabel, 'id', toId))
+      .where(scopeByIntent(__.inV().has(toLabel, 'id', toId), toLabel))
       .hasNext();
     if (!exists) {
-      await g
-        .V()
-        .has(fromLabel, 'id', fromId)
+      await scopeByIntent(g.V().has(fromLabel, 'id', fromId), fromLabel)
         .addE(edge)
-        .to(__.V().has(toLabel, 'id', toId))
+        .to(scopeByIntent(__.V().has(toLabel, 'id', toId), toLabel))
         .next();
     }
   };
@@ -295,9 +320,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
   // Best-effort; a vertex without the marker is a no-op.
   const clearSuperseded = async (artifactId) => {
     try {
-      await g
-        .V()
-        .has(ARTIFACT_LABEL, 'id', artifactId)
+      await vAt(ARTIFACT_LABEL, artifactId)
         .has('superseded_at')
         .properties('superseded_at', 'superseded_by')
         .drop()
@@ -368,7 +391,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     };
 
     await upsertVertex(ARTIFACT_LABEL, id);
-    let q = g.V().has(ARTIFACT_LABEL, 'id', id);
+    let q = vAt(ARTIFACT_LABEL, id);
     for (const [k, v] of Object.entries(stamped)) q = q.property(cardinality.single, k, v);
     await q.next();
 
@@ -398,10 +421,10 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
   // stamp or artifact_type; refuses reserved props. Errors if absent.
   const updateArtifact = async ({ id, props = {} }) => {
     assertId(id);
-    const exists = await g.V().has(ARTIFACT_LABEL, 'id', id).hasNext();
+    const exists = await vAt(ARTIFACT_LABEL, id).hasNext();
     if (!exists) throw new GraphWriteError(`Artifact "${id}" not found`);
     const clean = sanitizeProps(props);
-    let q = g.V().has(ARTIFACT_LABEL, 'id', id).property(cardinality.single, 'updated_at', now());
+    let q = vAt(ARTIFACT_LABEL, id).property(cardinality.single, 'updated_at', now());
     for (const [k, v] of Object.entries(clean)) q = q.property(cardinality.single, k, v);
     await q.next();
     // An updated artifact is current again (rewind rehabilitation).
@@ -414,9 +437,9 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     assertEdge(edge);
     assertId(fromId);
     assertId(toId);
-    const fromExists = await g.V().has(ARTIFACT_LABEL, 'id', fromId).hasNext();
+    const fromExists = await vAt(ARTIFACT_LABEL, fromId).hasNext();
     if (!fromExists) throw new GraphWriteError(`edge source artifact "${fromId}" not found`);
-    const toExists = await g.V().has(ARTIFACT_LABEL, 'id', toId).hasNext();
+    const toExists = await vAt(ARTIFACT_LABEL, toId).hasNext();
     if (!toExists) throw new GraphWriteError(`edge target artifact "${toId}" not found`);
     await ensureEdge({ fromLabel: ARTIFACT_LABEL, fromId, toLabel: ARTIFACT_LABEL, toId, edge });
     return { fromId, toId, edge };
@@ -424,7 +447,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
 
   const getArtifact = async ({ id, mode = 'full' }) => {
     assertId(id);
-    const res = await g.V().has(ARTIFACT_LABEL, 'id', id).valueMap(true).next();
+    const res = await vAt(ARTIFACT_LABEL, id).valueMap(true).next();
     if (!res.value) return null;
     const artifact = flattenValueMap(res.value);
     if (mode === 'summary') return compactArtifact(artifact);
@@ -470,7 +493,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
   const getNeighbors = async ({ id, edge = null, direction = 'both', includeContent = false }) => {
     assertId(id);
     if (edge) assertEdge(edge);
-    let q = g.V().has(ARTIFACT_LABEL, 'id', id);
+    let q = vAt(ARTIFACT_LABEL, id);
     const step = direction === 'in' ? 'in_' : direction === 'out' ? 'out' : 'both';
     q = edge ? q[step](edge) : q[step]();
     const list = await q.hasLabel(ARTIFACT_LABEL).valueMap(true).toList();
@@ -706,7 +729,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
         edge: ANCHOR_EDGE,
       });
       if (sourceArtifactId) {
-        const artifactExists = await g.V().has(ARTIFACT_LABEL, 'id', sourceArtifactId).hasNext();
+        const artifactExists = await vAt(ARTIFACT_LABEL, sourceArtifactId).hasNext();
         if (artifactExists) {
           await ensureEdge({
             fromLabel: UNIT_OF_WORK_LABEL,
@@ -757,7 +780,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
   const upsertDerivedVertex = async ({ label, id, props = {} }) => {
     await upsertVertex(label, id);
     const stamped = { ...props, id, updated_at: now() };
-    let q = g.V().has(label, 'id', id);
+    let q = vAt(label, id);
     for (const [k, v] of Object.entries(stamped)) {
       if (v === undefined || v === null) continue;
       q = q.property(cardinality.single, k, typeof v === 'string' ? v : JSON.stringify(v));
@@ -768,7 +791,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
   const mirrorArtifactDerivations = async ({ artifact, extraction }) => {
     const artifactId = artifact?.id ?? extraction?.artifactId;
     assertId(artifactId);
-    const artifactExists = await g.V().has(ARTIFACT_LABEL, 'id', artifactId).hasNext();
+    const artifactExists = await vAt(ARTIFACT_LABEL, artifactId).hasNext();
     if (!artifactExists) throw new GraphWriteError(`artifact "${artifactId}" not found`);
 
     const currentSectionIds = [];
@@ -867,33 +890,22 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       }
     }
 
-    const oldSectionIds = await g
-      .V()
-      .has(ARTIFACT_LABEL, 'id', artifactId)
+    const oldSectionIds = await vAt(ARTIFACT_LABEL, artifactId)
       .out('HAS_SECTION')
       .values('id')
       .toList();
-    const oldItemIds = await g
-      .V()
-      .has(ARTIFACT_LABEL, 'id', artifactId)
-      .out('HAS_ITEM')
-      .values('id')
-      .toList();
+    const oldItemIds = await vAt(ARTIFACT_LABEL, artifactId).out('HAS_ITEM').values('id').toList();
     const currentSections = new Set(currentSectionIds);
     const currentItems = new Set(currentItemIds);
     let superseded = 0;
     for (const id of oldSectionIds) {
       if (currentSections.has(id)) continue;
-      await g
-        .V()
-        .has(SECTION_LABEL, 'id', id)
-        .property(cardinality.single, 'superseded_at', now())
-        .next();
+      await vAt(SECTION_LABEL, id).property(cardinality.single, 'superseded_at', now()).next();
       superseded += 1;
     }
     for (const id of oldItemIds) {
       if (currentItems.has(id)) continue;
-      await g.V().has('id', id).property(cardinality.single, 'superseded_at', now()).next();
+      await vDerivedById(id).property(cardinality.single, 'superseded_at', now()).next();
       superseded += 1;
     }
 
@@ -921,7 +933,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     sourceHash = '',
   }) => {
     assertId(artifactId);
-    const exists = await g.V().has(ARTIFACT_LABEL, 'id', artifactId).hasNext();
+    const exists = await vAt(ARTIFACT_LABEL, artifactId).hasNext();
     if (!exists) throw new GraphWriteError(`Artifact "${artifactId}" not found`);
     const props = {
       summary_gist: String(gist ?? ''),
@@ -930,7 +942,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       enrichment_source_hash: String(sourceHash ?? ''),
       enriched_at: now(),
     };
-    let q = g.V().has(ARTIFACT_LABEL, 'id', artifactId);
+    let q = vAt(ARTIFACT_LABEL, artifactId);
     for (const [k, v] of Object.entries(props)) q = q.property(cardinality.single, k, v);
     await q.next();
     return { artifactId, enriched: true };
@@ -946,15 +958,10 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     let superseded = 0;
     for (const artifactId of artifactIds) {
       for (const edge of ['HAS_SECTION', 'HAS_ITEM']) {
-        const rows = await g
-          .V()
-          .has(ARTIFACT_LABEL, 'id', artifactId)
-          .out(edge)
-          .valueMap(true)
-          .toList();
+        const rows = await vAt(ARTIFACT_LABEL, artifactId).out(edge).valueMap(true).toList();
         for (const row of rows.map(flattenValueMap)) {
           if (!isCurrentRow(row)) continue;
-          await g.V().has('id', row.id).property(cardinality.single, 'superseded_at', now()).next();
+          await vDerivedById(row.id).property(cardinality.single, 'superseded_at', now()).next();
           superseded += 1;
         }
       }
@@ -964,9 +971,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
 
   const getArtifactToc = async ({ id }) => {
     assertId(id);
-    const rows = await g
-      .V()
-      .has(ARTIFACT_LABEL, 'id', id)
+    const rows = await vAt(ARTIFACT_LABEL, id)
       .out('HAS_SECTION')
       .hasLabel(SECTION_LABEL)
       .valueMap(true)
@@ -980,7 +985,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
 
   const getSection = async ({ artifactId, heading = null, slug = null }) => {
     assertId(artifactId);
-    let q = g.V().has(ARTIFACT_LABEL, 'id', artifactId).out('HAS_SECTION').hasLabel(SECTION_LABEL);
+    let q = vAt(ARTIFACT_LABEL, artifactId).out('HAS_SECTION').hasLabel(SECTION_LABEL);
     if (slug) q = q.has('slug', slug);
     if (heading) q = q.has('heading', heading);
     // Client-side currency filter (see isCurrentRow) — a heading/slug lookup

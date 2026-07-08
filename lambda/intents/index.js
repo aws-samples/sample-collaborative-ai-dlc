@@ -417,14 +417,17 @@ const linkQuestionToStageArtifacts = async (g, intentId, gate) => {
       .V()
       .has('Question', 'id', gate.humanTaskId)
       .outE('INFLUENCES')
-      .where(__.inV().has('Artifact', 'id', artifactId))
+      // Scope the artifact end by intent_id: agent-chosen artifact ids are only
+      // unique within an intent, so a bare id match could bind to a foreign
+      // intent's same-id vertex.
+      .where(__.inV().has('Artifact', 'id', artifactId).has('intent_id', intentId))
       .hasNext();
     if (!exists) {
       await g
         .V()
         .has('Question', 'id', gate.humanTaskId)
         .addE('INFLUENCES')
-        .to(__.V().has('Artifact', 'id', artifactId))
+        .to(__.V().has('Artifact', 'id', artifactId).has('intent_id', intentId))
         .next();
     }
   }
@@ -501,6 +504,7 @@ const supersedeArtifactsForStages = async (g, intentId, stageInstanceIds, steerI
     await g
       .V()
       .has('Artifact', 'id', id)
+      .has('intent_id', intentId)
       .property(cardinality.single, 'superseded_at', ts)
       .property(cardinality.single, 'superseded_by', steerId)
       .next();
@@ -919,19 +923,36 @@ export const handler = async (event) => {
         );
       }
 
-      // Neptune cascade. Children are enumerated TOGETHER WITH the anchor in
-      // one union because drop() consumes eagerly (see the sprint delete):
-      // CONTAINS → Artifact | Question | Steering | UnitOfWork, plus the
-      // discussion threads and their messages. Project-scoped TeamKnowledge /
-      // LearningRule vertices are cross-intent by design and stay. Edges
-      // (PRODUCES/CONSUMES/DERIVED_FROM/…, INFLUENCES, DISCUSSES) drop with
-      // their vertices. A DRAFT intent has no anchor yet — the traversal just
-      // matches nothing.
+      // Neptune cascade, in TWO passes because drop() consumes eagerly — a
+      // grandchild reached THROUGH a vertex that the same traversal also drops
+      // can become unreachable mid-drop (its edge is already gone).
+      //
+      // Pass 1 — the derived layer: Section / typed items hanging off this
+      // intent's artifacts (HAS_SECTION / HAS_ITEM). Without this they
+      // orphan-leaked on every delete — the field incident. intent_id-guarded
+      // so a legacy shared vertex is never dropped for a sibling that owns it.
+      await g
+        .V()
+        .has('Intent', 'id', intentId)
+        .out('CONTAINS')
+        .has('intent_id', intentId)
+        .hasLabel('Artifact')
+        .out('HAS_SECTION', 'HAS_ITEM')
+        .has('intent_id', intentId)
+        .drop()
+        .next();
+
+      // Pass 2 — the anchor + its direct children (enumerated together in one
+      // union, the proven pattern): CONTAINS → Artifact | Question | Steering |
+      // UnitOfWork (intent_id-guarded), the discussion threads and their
+      // messages, and the Intent itself. Project-scoped TeamKnowledge /
+      // LearningRule vertices are cross-intent by design and stay. Edges drop
+      // with their vertices. A DRAFT intent has no anchor — matches nothing.
       await g
         .V()
         .has('Intent', 'id', intentId)
         .union(
-          __.out('CONTAINS'),
+          __.out('CONTAINS').has('intent_id', intentId),
           __.out('HAS_DISCUSSION').union(__.out('HAS_MESSAGE'), __.identity()),
           __.identity(),
         )

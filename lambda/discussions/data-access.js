@@ -66,10 +66,24 @@ export const fetchProjectIdForIntent = async (g, intentId) => {
 
 // ─── Discussion / anchor graph reads ───
 
-export const findDiscussionByAnchor = async (g, anchorLabel, entityId, entityType) => {
-  const r = await g
-    .V()
-    .has(anchorLabel, 'id', entityId)
+// Scope an anchor-vertex lookup by intent when the anchor's id space is
+// intent-local. Agent-chosen Artifact ids are only unique WITHIN an intent, so
+// a bare `has('Artifact','id',entityId)` can resolve a same-id artifact in a
+// DIFFERENT intent and bind a discussion thread to the wrong vertex. A no-op
+// for sprint scope and for self-anchored roots (Intent/Sprint ids are global).
+const scopeAnchor = (traversal, scope, anchorLabel) =>
+  scope?.kind === 'intent' && anchorLabel === scope.anchorLabels.artifact
+    ? traversal.has('intent_id', scope.rootId)
+    : traversal;
+
+export const findDiscussionByAnchor = async (
+  g,
+  anchorLabel,
+  entityId,
+  entityType,
+  scope = null,
+) => {
+  const r = await scopeAnchor(g.V().has(anchorLabel, 'id', entityId), scope, anchorLabel)
     .in_('DISCUSSES')
     .hasLabel('Discussion')
     .has('entity_type', entityType)
@@ -117,8 +131,10 @@ export const anchorExistsInScope = async (g, scope, entityType, entityId) => {
   return r;
 };
 
-export const fetchAnchorTitle = async (g, anchorLabel, entityId) => {
-  const r = await g.V().has(anchorLabel, 'id', entityId).valueMap('title', 'name').next();
+export const fetchAnchorTitle = async (g, anchorLabel, entityId, scope = null) => {
+  const r = await scopeAnchor(g.V().has(anchorLabel, 'id', entityId), scope, anchorLabel)
+    .valueMap('title', 'name')
+    .next();
   if (r.done || !r.value) return '';
   return getVal(r.value, 'title') || getVal(r.value, 'name') || '';
 };
@@ -131,13 +147,13 @@ export const createDiscussionVertex = async (
   // The Discussion vertex carries the scope-root id under its scope-specific
   // property (sprint_id | intent_id) AND hangs off the root via HAS_DISCUSSION,
   // plus a DISCUSSES edge to the concrete anchor. Sprint scope reproduces the
-  // original graph exactly.
-  await g
-    .V()
-    .has(scope.rootLabel, 'id', scope.rootId)
-    .as('s')
-    .V()
-    .has(anchorLabel, 'id', entityId)
+  // original graph exactly. The anchor bind is intent-scoped for artifacts
+  // (scopeAnchor) so a same-id artifact in another intent is never targeted.
+  await scopeAnchor(
+    g.V().has(scope.rootLabel, 'id', scope.rootId).as('s').V().has(anchorLabel, 'id', entityId),
+    scope,
+    anchorLabel,
+  )
     .as('a')
     .addV('Discussion')
     .property('id', id)

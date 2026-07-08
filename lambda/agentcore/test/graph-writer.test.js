@@ -1241,3 +1241,143 @@ describe('resolveDerivedItemEdges (item↔item traceability sweep)', () => {
     ).toBe(true);
   });
 });
+
+describe('intent-scoped artifact identity (cross-intent isolation)', () => {
+  // The field incident: two intents' agents chose the SAME artifact id, so
+  // they shared one Neptune vertex — one intent's write (or delete) corrupted
+  // the other. Every artifact/section lookup now matches intent_id too. These
+  // tests drive two writers over the SAME partition with the SAME artifact id.
+  const SCOPE_A = { ...SCOPE, intentId: 'intent-A', executionId: 'exec-A' };
+  const SCOPE_B = { ...SCOPE, intentId: 'intent-B', executionId: 'exec-B' };
+  let writerA;
+  let writerB;
+
+  beforeEach(async () => {
+    let t = 0;
+    const clock = () => `2026-02-01T00:00:0${t++}.000Z`;
+    writerA = createGraphWriter({ g, scope: SCOPE_A, clock });
+    writerB = createGraphWriter({ g, scope: SCOPE_B, clock });
+    await g.addV('Intent').property('id', 'intent-A').property('project_id', 'proj-1').next();
+    await g.addV('Intent').property('id', 'intent-B').property('project_id', 'proj-1').next();
+  });
+
+  it('same artifact id in two intents = two distinct vertices, no overwrite', async () => {
+    await writerA.createArtifact({
+      artifactType: 'requirements',
+      id: 'requirements',
+      title: 'A reqs',
+      content: 'A body',
+    });
+    await writerB.createArtifact({
+      artifactType: 'requirements',
+      id: 'requirements',
+      title: 'B reqs',
+      content: 'B body',
+    });
+
+    // Two vertices, not one adopted vertex.
+    const count = await g.V().has('Artifact', 'id', 'requirements').count().next();
+    expect(count.value).toBe(2);
+
+    // Each intent reads ITS OWN content — no cross-contamination.
+    expect((await writerA.getArtifact({ id: 'requirements' })).title).toBe('A reqs');
+    expect((await writerB.getArtifact({ id: 'requirements' })).title).toBe('B reqs');
+
+    // B's update never touches A's vertex.
+    await writerB.updateArtifact({ id: 'requirements', props: { status: 'final' } });
+    expect((await writerA.getArtifact({ id: 'requirements' })).status).toBeUndefined();
+    expect((await writerB.getArtifact({ id: 'requirements' })).status).toBe('final');
+
+    // Each intent's CONTAINS points only at its own vertex.
+    expect((await writerA.getIntentGraph()).map((a) => a.title)).toEqual(['A reqs']);
+    expect((await writerB.getIntentGraph()).map((a) => a.title)).toEqual(['B reqs']);
+  });
+
+  it('enrichment and links are isolated per intent', async () => {
+    await writerA.createArtifact({ artifactType: 'requirements', id: 'requirements', title: 'A' });
+    await writerB.createArtifact({ artifactType: 'requirements', id: 'requirements', title: 'B' });
+    await writerA.createArtifact({ artifactType: 'stories', id: 'stories', title: 'A stories' });
+    await writerB.createArtifact({ artifactType: 'stories', id: 'stories', title: 'B stories' });
+
+    await writerA.applyArtifactEnrichment({
+      artifactId: 'requirements',
+      gist: 'A gist',
+      sourceHash: 'ha',
+    });
+    expect((await writerA.getArtifact({ id: 'requirements' })).summary_gist).toBe('A gist');
+    expect((await writerB.getArtifact({ id: 'requirements' })).summary_gist).toBeUndefined();
+
+    // linkArtifacts stays within the intent — A's edge does not appear on B.
+    await writerA.linkArtifacts({ fromId: 'requirements', toId: 'stories', edge: 'RELATES_TO' });
+    const aRelates = await writerA.getNeighbors({
+      id: 'requirements',
+      edge: 'RELATES_TO',
+      direction: 'out',
+    });
+    expect(aRelates.map((n) => n.title)).toEqual(['A stories']);
+    const bRelates = await writerB.getNeighbors({
+      id: 'requirements',
+      edge: 'RELATES_TO',
+      direction: 'out',
+    });
+    expect(bRelates).toEqual([]);
+  });
+
+  it('derived sections/items with identical slugs stay isolated per intent', async () => {
+    const body = [
+      '## Stories',
+      '```yaml',
+      'stories:',
+      '  - id: s-login',
+      '    title: Login',
+      '```',
+    ].join('\n');
+    for (const w of [writerA, writerB]) {
+      await w.createArtifact({ artifactType: 'stories', id: 'stories', title: 'S', content: body });
+      const artifact = await w.getArtifact({ id: 'stories' });
+      await w.mirrorArtifactDerivations({
+        artifact,
+        extraction: extractArtifactStructure({
+          artifactType: 'stories',
+          artifactId: 'stories',
+          content: body,
+        }),
+      });
+    }
+    // Section ids embed the artifact id (section:stories:stories) — collide
+    // across intents unless intent-scoped. Each intent sees exactly one.
+    const tocA = await writerA.getArtifactToc({ id: 'stories' });
+    const tocB = await writerB.getArtifactToc({ id: 'stories' });
+    expect(tocA).toHaveLength(1);
+    expect(tocB).toHaveLength(1);
+    // The two Section vertices are distinct rows keyed by intent.
+    const sectionCount = await g.V().has('Section', 'id', 'section:stories:stories').count().next();
+    expect(sectionCount.value).toBe(2);
+    // Items ARE intent-scoped by id already, but assert per-intent visibility.
+    expect((await writerA.getItems({ itemType: 'Story' })).map((i) => i.slug)).toEqual(['s-login']);
+    expect((await writerB.getItems({ itemType: 'Story' })).map((i) => i.slug)).toEqual(['s-login']);
+  });
+
+  it('re-derive supersede in one intent never supersedes the other intent rows', async () => {
+    const withStory = (slug) =>
+      ['## S', '```yaml', 'stories:', `  - id: ${slug}`, `    title: ${slug}`, '```'].join('\n');
+    const derive = async (w, content) => {
+      await w.createArtifact({ artifactType: 'stories', id: 'stories', title: 'S', content });
+      const artifact = await w.getArtifact({ id: 'stories' });
+      await w.mirrorArtifactDerivations({
+        artifact,
+        extraction: extractArtifactStructure({
+          artifactType: 'stories',
+          artifactId: 'stories',
+          content,
+        }),
+      });
+    };
+    await derive(writerA, withStory('s-old'));
+    await derive(writerB, withStory('s-old'));
+    // A re-derives with a different story → A's s-old supersedes; B's must not.
+    await derive(writerA, withStory('s-new'));
+    expect((await writerA.getItems({ itemType: 'Story' })).map((i) => i.slug)).toEqual(['s-new']);
+    expect((await writerB.getItems({ itemType: 'Story' })).map((i) => i.slug)).toEqual(['s-old']);
+  });
+});
