@@ -355,6 +355,35 @@ const putPhases = async (event, res, tenant, workflowId) => {
   return res(200, composeWorkflow(tenant, items));
 };
 
+// The seeded SYSTEM baseline workflow — the single place that carries the
+// upstream stage → scope wiring (derived from each stage's frontmatter
+// `scopes` by the seed; the persisted STAGE blocks deliberately do NOT keep
+// the field, so the baseline placement is the only recoverable source).
+const BASELINE_WORKFLOW_ID = 'aidlc-v2';
+
+// A new placement's default scope membership: copy the SYSTEM baseline
+// placement for the same stage. A custom stage (no baseline placement) or a
+// lookup failure defaults to {} — the composer then shows it un-wired and the
+// user assigns membership by hand, same as before.
+const baselineScopeMembership = async (stageId) => {
+  try {
+    const { Item } = await ddb.send(
+      new GetCommand({
+        TableName: blocksTable(),
+        Key: {
+          pk: workflowPk(SYSTEM_TENANT, BASELINE_WORKFLOW_ID),
+          sk: placementSk(stageId),
+        },
+      }),
+    );
+    return Item?.scopeMembership && typeof Item.scopeMembership === 'object'
+      ? Item.scopeMembership
+      : {};
+  } catch {
+    return {};
+  }
+};
+
 const addPlacement = async (event, res, tenant, workflowId) => {
   if (tenant === SYSTEM_TENANT) return res(403, { error: 'SYSTEM workflows are read-only' });
   if (!(await loadMeta(tenant, workflowId))) return res(404, { error: 'Not found' });
@@ -369,7 +398,16 @@ const addPlacement = async (event, res, tenant, workflowId) => {
   );
   if (existing.Item) return res(409, { error: 'Stage already placed' });
 
-  const item = buildPlacementItem(tenant, workflowId, stageId, input);
+  // No membership in the request (the composer never sends one on add) →
+  // default from the SYSTEM baseline instead of {}. Field incident: an empty
+  // membership silently excludes the stage from EVERY scope (isInScope needs
+  // an explicit EXECUTE), so a stage re-added via the composer never executed
+  // again — reverse-engineering ended up un-wired for all scopes.
+  const withMembership =
+    input.scopeMembership && typeof input.scopeMembership === 'object'
+      ? input
+      : { ...input, scopeMembership: await baselineScopeMembership(stageId) };
+  const item = buildPlacementItem(tenant, workflowId, stageId, withMembership);
   await ddb.send(new PutCommand({ TableName: blocksTable(), Item: item }));
   await bumpWorkflowVersion(tenant, workflowId);
   return res(201, placementToApi(item));

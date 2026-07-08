@@ -459,6 +459,75 @@ describe('workflows handler', () => {
     expect(after.body.placements).toHaveLength(0);
   });
 
+  it('defaults a new placement scopeMembership from the SYSTEM baseline (composer sends none)', async () => {
+    // Field incident: adding a stage via the composer stored scopeMembership {}
+    // — the stage was silently excluded from EVERY scope (reverse-engineering
+    // was un-wired). The baseline placement carries the upstream wiring.
+    store.set('WF#SYSTEM#aidlc-v2|PLACEMENT#reverse-engineering', {
+      pk: 'WF#SYSTEM#aidlc-v2',
+      sk: 'PLACEMENT#reverse-engineering',
+      type: 'StagePlacement',
+      stageId: 'reverse-engineering',
+      scopeMembership: { mvp: 'EXECUTE', feature: 'EXECUTE', enterprise: 'EXECUTE' },
+    });
+    await createWorkflow({ id: 'wf', name: 'WF' });
+    const added = parse(
+      await handler(
+        event({
+          method: 'POST',
+          workflowId: 'wf',
+          path: 'placements',
+          body: { stageId: 'reverse-engineering' },
+        }),
+      ),
+    );
+    expect(added.status).toBe(201);
+    expect(added.body.scopeMembership).toEqual({
+      mvp: 'EXECUTE',
+      feature: 'EXECUTE',
+      enterprise: 'EXECUTE',
+    });
+  });
+
+  it('an explicit scopeMembership in the request wins over the baseline default', async () => {
+    store.set('WF#SYSTEM#aidlc-v2|PLACEMENT#reverse-engineering', {
+      pk: 'WF#SYSTEM#aidlc-v2',
+      sk: 'PLACEMENT#reverse-engineering',
+      type: 'StagePlacement',
+      stageId: 'reverse-engineering',
+      scopeMembership: { mvp: 'EXECUTE' },
+    });
+    await createWorkflow({ id: 'wf', name: 'WF' });
+    const added = parse(
+      await handler(
+        event({
+          method: 'POST',
+          workflowId: 'wf',
+          path: 'placements',
+          body: { stageId: 'reverse-engineering', scopeMembership: { mvp: 'SKIP' } },
+        }),
+      ),
+    );
+    expect(added.status).toBe(201);
+    expect(added.body.scopeMembership).toEqual({ mvp: 'SKIP' });
+  });
+
+  it('a custom stage with no baseline placement still defaults to {}', async () => {
+    await createWorkflow({ id: 'wf', name: 'WF' });
+    const added = parse(
+      await handler(
+        event({
+          method: 'POST',
+          workflowId: 'wf',
+          path: 'placements',
+          body: { stageId: 'my-custom-stage' },
+        }),
+      ),
+    );
+    expect(added.status).toBe(201);
+    expect(added.body.scopeMembership).toEqual({});
+  });
+
   it('adds and removes scope refs, exposed in the composition', async () => {
     await createWorkflow({ id: 'wf', name: 'WF' });
     const added = parse(
