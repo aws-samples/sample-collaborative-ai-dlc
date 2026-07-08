@@ -11,17 +11,12 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { createRequire } from 'node:module';
 import { ddb, openGraph, broadcastToIntent } from '../clients.js';
 import { createGraphWriter, closeGraphSource } from './graph-writer.js';
 import { createGraphManager } from './graph-manager.js';
 import { createProcessBridge } from './process-bridge.js';
 import { buildToolHandlers, registerTools } from './server.js';
-
-// lambda/shared is CommonJS; import it through createRequire so this ESM module
-// can reuse the single source of truth for the process store.
-const require = createRequire(import.meta.url);
-const { createProcessStore } = require('../../shared/v2-process-store.js');
+import { createProcessStore } from '../../shared/v2-process-store.js';
 
 const scopeFromEnv = (env = process.env) => ({
   executionId: env.V2_EXECUTION_ID,

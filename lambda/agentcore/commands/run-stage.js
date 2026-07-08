@@ -27,7 +27,6 @@
 // run; this command owns ONLY process state. Every effect is injected so the
 // whole flow is unit-tested with the CLI + AWS mocked.
 
-import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import {
   selectCli,
@@ -54,16 +53,14 @@ import { resolveStageModel } from '../model-resolver.js';
 import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
 import { createSensorRunner } from '../sensor-runner.js';
 import { compileContextPack as defaultCompileContextPack } from '../context-compiler.js';
-
-const require = createRequire(import.meta.url);
-const {
+import {
   buildExecutionPlan,
-  stageInstanceId: planStageInstanceId,
+  stageInstanceId as planStageInstanceId,
   UNIT_FOR_EACH,
-} = require('../../shared/v2-execution-plan.js');
+} from '../../shared/v2-execution-plan.js';
 // The typed-extraction registry gates the platform-injected graph-coverage
 // sensor: only stages that produce a registered structured artifact get it.
-const { REGISTRY } = require('../../shared/artifact-extractors.js');
+import { REGISTRY } from '../../shared/artifact-extractors.js';
 
 // Resolve the plan and locate the stage instance for `stageId`.
 const resolveStage = ({ workflow, library, scope, stageId }) => {

@@ -30,28 +30,19 @@ import {
   InvokeAgentRuntimeCommand,
   StopRuntimeSessionCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
-// Shared modules are CommonJS — default-import then destructure (the esbuild
-// build injects the createRequire banner, so the bundle must NOT declare its
-// own `createRequire`/`require` or it collides with the banner at runtime).
-import processStorePkg from '../shared/v2-process-store.js';
-import workflowPlanPkg from '../shared/v2-workflow-plan.js';
-import executionPlanPkg from '../shared/v2-execution-plan.js';
-import gitConnectionStorePkg from '../shared/git-connection-store.js';
-import gitTokenPkg from '../shared/git-token.js';
-import githubAuthConfigPkg from '../shared/github-auth-config.js';
-import gitProvidersPkg from '../shared/git-providers.js';
-import wsFanoutPkg from '../shared/ws-fanout.js';
+import { createProcessStore } from '../shared/v2-process-store.js';
+import { loadExecutionPlan } from '../shared/v2-workflow-plan.js';
+import {
+  planSegments,
+  stageInstanceId as planStageInstanceId,
+} from '../shared/v2-execution-plan.js';
+import { getGitConnection } from '../shared/git-connection-store.js';
+import { resolveGitToken, getInstallationTokenFromConfig } from '../shared/git-token.js';
+import { getGitHubAuthMode } from '../shared/github-auth-config.js';
+import { getProvider } from '../shared/git-providers.js';
+import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
 import { runParallelSection } from './section.js';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
-
-const { createProcessStore } = processStorePkg;
-const { loadExecutionPlan } = workflowPlanPkg;
-const { planSegments, stageInstanceId: planStageInstanceId } = executionPlanPkg;
-const { getGitConnection } = gitConnectionStorePkg;
-const { resolveGitToken, getInstallationTokenFromConfig } = gitTokenPkg;
-const { getGitHubAuthMode } = githubAuthConfigPkg;
-const { getProvider } = gitProvidersPkg;
-const { broadcastToIntentChannel } = wsFanoutPkg;
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
@@ -888,8 +879,8 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
   } catch (err) {
     // Any unexpected throw (runtime transport error, store write failure) — record
     // it so the UI shows FAILED + the message rather than the run silently dying
-    // at the durable-function boundary (exactly what the createRequire INIT crash
-    // did: the run failed with zero user-visible feedback).
+    // at the durable-function boundary (module INIT crashes used to fail with
+    // zero user-visible feedback).
     ctx.logger?.error?.('orchestrator failed', { intentId, error: err?.message });
     return await fail('orchestrator_error', err?.message ?? String(err));
   }

@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { createRequire } from 'node:module';
 import { EventEmitter } from 'node:events';
 import {
   runStage,
@@ -8,12 +7,10 @@ import {
   __test,
 } from '../commands/run-stage.js';
 import { renderRulesDoc } from '../stage-materializer.js';
-
-const require = createRequire(import.meta.url);
-const {
+import {
   buildExecutionPlan,
-  stageInstanceId: planStageInstanceId,
-} = require('../../shared/v2-execution-plan.js');
+  stageInstanceId as planStageInstanceId,
+} from '../../shared/v2-execution-plan.js';
 
 // A flat-frontmatter STAGE block + a minimal library/workflow that resolves to a
 // single in-scope stage.

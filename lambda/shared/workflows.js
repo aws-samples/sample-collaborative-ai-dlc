@@ -1,5 +1,3 @@
-'use strict';
-
 // Shared data-layer helpers for workflows — the composition roots that
 // reference and arrange library blocks. Workflows share the blocks table:
 //   PK = WF#<tenant>#<workflowId>
@@ -62,7 +60,24 @@ const validatePhaseNode = (node) => {
   return null;
 };
 
-module.exports = {
+export {
+  WORKFLOW,
+  META,
+  workflowPk,
+  workflowVersionPrefix,
+  workflowVersionSk,
+  isWorkflowVersionSk,
+  liveSkFromVersionSk,
+  phaseSk,
+  placementSk,
+  scopeRefSk,
+  ruleRefSk,
+  workflowGsi1Pk,
+  validateId,
+  validateName,
+  validatePhaseNode,
+};
+export default {
   WORKFLOW,
   META,
   workflowPk,

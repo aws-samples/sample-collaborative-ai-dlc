@@ -1,5 +1,3 @@
-'use strict';
-
 // Bedrock model discovery — list the Anthropic Claude inference profiles the
 // deployment can actually invoke, for the project-settings model picker.
 //
@@ -66,4 +64,6 @@ const listClaudeModels = async ({ listInferenceProfiles, region = process.env.AW
   return models;
 };
 
-module.exports = { listClaudeModels, regionPrefix, __test: { isUsable, toModel } };
+const __test = { isUsable, toModel };
+export { listClaudeModels, regionPrefix, __test };
+export default { listClaudeModels, regionPrefix, __test };

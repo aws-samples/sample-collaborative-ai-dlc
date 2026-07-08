@@ -1,6 +1,6 @@
-'use strict';
-
-const crypto = require('crypto');
+import crypto from 'crypto';
+import { GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
+import { GetParameterCommand } from '@aws-sdk/client-ssm';
 
 // Matches the git-token SSM parameter path. Legacy connections used a
 // 4-segment path (/PREFIX/env/git-token/userId); per-provider connections add a
@@ -27,8 +27,6 @@ const validateParamName = (parameterName) => {
  * @returns {Promise<{ client_id: string, client_secret: string }>}
  */
 const getOAuthCredentials = async (secretsClient, secretName, providerLabel) => {
-  const { GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
-
   class OAuthNotConfiguredError extends Error {
     constructor() {
       super(
@@ -110,7 +108,6 @@ const verifySignedState = (state, secret) => {
  * @returns {Promise<{ accessToken: string, refreshToken?: string }>}
  */
 const resolveGitTokenFull = async (ssmClient, item) => {
-  const { GetParameterCommand } = require('@aws-sdk/client-ssm');
   if (item?.parameterName) {
     validateParamName(item.parameterName);
     const param = await ssmClient.send(
@@ -130,7 +127,16 @@ const getUserId = (event) => {
   return event.requestContext?.authorizer?.claims?.sub;
 };
 
-module.exports = {
+export {
+  GIT_TOKEN_PARAM_PATTERN,
+  validateParamName,
+  getOAuthCredentials,
+  createSignedState,
+  verifySignedState,
+  resolveGitTokenFull,
+  getUserId,
+};
+export default {
   GIT_TOKEN_PARAM_PATTERN,
   validateParamName,
   getOAuthCredentials,

@@ -1,5 +1,3 @@
-'use strict';
-
 // V2 execution/process state — DynamoDB key scheme + pure record builders.
 //
 // This is the SINGLE source of truth for the v2 process table layout, shared by
@@ -617,7 +615,45 @@ const buildUnitRow = ({
   updatedAt: now,
 });
 
-module.exports = {
+export {
+  META,
+  executionPk,
+  projectPk,
+  executionMetaKey,
+  stageKey,
+  eventKey,
+  humanTaskKey,
+  metricKey,
+  graphReadKey,
+  sensorRunKey,
+  steeringKey,
+  outputKey,
+  outputSeq,
+  unitPlanKey,
+  unitKey,
+  projectStatusIndex,
+  executionTypeStateIndex,
+  EXECUTION_STATUS,
+  STAGE_STATE,
+  HUMAN_TASK_KINDS,
+  HUMAN_TASK_STATUSES,
+  STEERING_KINDS,
+  STEERING_STATUSES,
+  UNIT_STATES,
+  CONSTRUCTION_AUTONOMY_MODES,
+  buildExecutionMeta,
+  buildStageRow,
+  buildEventRow,
+  buildHumanTaskRow,
+  buildMetricRow,
+  buildGraphReadRow,
+  buildSensorRow,
+  buildSteeringRow,
+  buildOutputRow,
+  buildUnitPlanRow,
+  buildUnitRow,
+};
+export default {
   META,
   executionPk,
   projectPk,

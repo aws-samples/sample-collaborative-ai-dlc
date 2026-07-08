@@ -272,4 +272,5 @@ You are the AI-DLC conductor.
   }),
 );
 
-module.exports = { CORE_FILES };
+export { CORE_FILES };
+export default { CORE_FILES };

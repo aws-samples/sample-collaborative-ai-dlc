@@ -1,5 +1,3 @@
-'use strict';
-
 // Ownership namespace resolution for the building-blocks library.
 //
 // The "tenant" field here is not a team/org boundary. It is only the ownership
@@ -25,4 +23,5 @@ const SYSTEM_TENANT = 'SYSTEM';
 // one library per team or project.
 const resolveTenant = (_claims) => DEFAULT_TENANT;
 
-module.exports = { resolveTenant, DEFAULT_TENANT, SYSTEM_TENANT };
+export { resolveTenant, DEFAULT_TENANT, SYSTEM_TENANT };
+export default { resolveTenant, DEFAULT_TENANT, SYSTEM_TENANT };

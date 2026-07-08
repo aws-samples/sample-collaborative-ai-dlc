@@ -1,5 +1,3 @@
-'use strict';
-
 const ALLOWED_CLI_MODEL_KEYS = new Set(['kiro', 'claude', 'opencode']);
 const MAX_CLI_MODEL_LENGTH = 200;
 const OPENCODE_MODEL_PREFIX = 'amazon-bedrock/';
@@ -106,8 +104,5 @@ function mergeCliModels(project, global) {
   return merged;
 }
 
-module.exports = {
-  normalizeCliModels,
-  parseCliModels,
-  mergeCliModels,
-};
+export { normalizeCliModels, parseCliModels, mergeCliModels };
+export default { normalizeCliModels, parseCliModels, mergeCliModels };

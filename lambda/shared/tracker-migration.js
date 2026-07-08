@@ -1,5 +1,3 @@
-'use strict';
-
 // Shared core for the tracker provider abstraction migration (issue #194).
 //
 // Two callers consume this:
@@ -16,8 +14,8 @@
 // unset, and Project vertices with `issue_integration_enabled='true'` +
 // no outgoing HAS_TRACKER edge. Re-running does nothing.
 
-const gremlin = require('gremlin');
-const { randomUUID } = require('node:crypto');
+import gremlin from 'gremlin';
+import { randomUUID } from 'node:crypto';
 
 const __ = gremlin.process.statics;
 const { cardinality } = gremlin.process;
@@ -159,4 +157,5 @@ const runTrackerMigration = async (g, { projectId, dryRun = false } = {}) => {
   return result;
 };
 
-module.exports = { runTrackerMigration };
+export { runTrackerMigration };
+export default { runTrackerMigration };

@@ -1,9 +1,12 @@
-'use strict';
-
-const crypto = require('crypto');
-const { GetParameterCommand, PutParameterCommand } = require('@aws-sdk/client-ssm');
-const { GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
-const { putGitConnection } = require('./git-connection-store');
+import crypto from 'crypto';
+import { GetParameterCommand, PutParameterCommand } from '@aws-sdk/client-ssm';
+import { GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
+import { getGitConnection, putGitConnection } from './git-connection-store.js';
+import {
+  clearGitHubAuthConfigCache,
+  getGitHubAppConfig,
+  getGitHubAuthMode,
+} from './github-auth-config.js';
 
 // Matches the git-token SSM parameter path. Legacy connections used a
 // 4-segment path (/PREFIX/env/git-token/userId); per-provider connections add a
@@ -161,13 +164,7 @@ const clearAppAuthCaches = () => {
   _appPrivateKeyPemFetchedAt = 0;
   _installationTokenCache.clear();
   _installationAccountCache.clear();
-  // The auth-mode/App-config reads cache too — clear the SAME module instance
-  // this file resolves at runtime (lazy require avoids a cycle at load time).
-  try {
-    require('./github-auth-config').clearGitHubAuthConfigCache();
-  } catch {
-    /* config module unavailable — nothing to clear */
-  }
+  clearGitHubAuthConfigCache();
 };
 
 const base64url = (buf) =>
@@ -345,7 +342,6 @@ const getInstallationToken = async ({
 // caller-supplied/env values. This is the runtime entry point used by
 // mode-aware callers (orchestrator, trackers, git-handler).
 const getInstallationTokenFromConfig = async ({ ssm, secrets, repositories, permissions } = {}) => {
-  const { getGitHubAppConfig } = require('./github-auth-config');
   const { appId, installationId } = await getGitHubAppConfig(ssm);
   if (!appId || !installationId) {
     throw new Error(
@@ -362,7 +358,6 @@ const getInstallationTokenFromConfig = async ({ ssm, secrets, repositories, perm
 // to metadata:read — the least GitHub grants any installation token — so this
 // token can list repos and branches but never touch contents.
 const getInstallationReadToken = async ({ ssm, secrets } = {}) => {
-  const { getGitHubAppConfig } = require('./github-auth-config');
   const { appId, installationId } = await getGitHubAppConfig(ssm);
   if (!appId || !installationId) {
     throw new Error(
@@ -417,19 +412,32 @@ const resolveGitHubTokenForMode = async (
   { ssm, secrets, ddb },
   { userId, repositories, permissions } = {},
 ) => {
-  const { getGitHubAuthMode } = require('./github-auth-config');
   const mode = await getGitHubAuthMode(ssm);
   if (mode === 'app') {
     const token = await getInstallationTokenFromConfig({ ssm, secrets, repositories, permissions });
     return { mode, token };
   }
-  const { getGitConnection } = require('./git-connection-store');
   const item = userId ? await getGitConnection(ddb, userId, 'github') : null;
   if (!item) return { mode, token: null };
   return { mode, token: await resolveGitToken(ssm, item) };
 };
 
-module.exports = {
+export {
+  GIT_TOKEN_PARAM_PATTERN,
+  resolveGitToken,
+  ensureFreshGitToken,
+  getInstallationToken,
+  getInstallationTokenFromConfig,
+  getInstallationReadToken,
+  resolveGitHubTokenForMode,
+  getInstallationAccountLogin,
+  buildAppJwt,
+  getAppPrivateKey,
+  clearAppAuthCaches,
+  REFRESH_SAFETY_MARGIN_MS,
+  PEM_CACHE_TTL_MS,
+};
+export default {
   GIT_TOKEN_PARAM_PATTERN,
   resolveGitToken,
   ensureFreshGitToken,

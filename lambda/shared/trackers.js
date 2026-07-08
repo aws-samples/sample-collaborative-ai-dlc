@@ -1,5 +1,3 @@
-'use strict';
-
 // Shared traversal/projection helpers for the tracker provider abstraction
 // (issue #194). Two lambdas read TrackerBinding vertices into the same
 // camelCase API shape:
@@ -13,7 +11,7 @@
 // Keeping the projection step + the result mapper here means both lambdas
 // produce identical wire shapes and the projection logic doesn't drift.
 
-const gremlin = require('gremlin');
+import gremlin from 'gremlin';
 
 const __ = gremlin.process.statics;
 
@@ -86,7 +84,14 @@ const fetchMembershipRole = async (g, projectId, userId) => {
   return r.value || 'member';
 };
 
-module.exports = {
+export {
+  getVal,
+  trackerBindingProjectionStep,
+  projectTrackersFoldStep,
+  mapBinding,
+  fetchMembershipRole,
+};
+export default {
   getVal,
   trackerBindingProjectionStep,
   projectTrackersFoldStep,

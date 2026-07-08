@@ -1,5 +1,3 @@
-'use strict';
-
 // V2 runnable-plan resolver — turns a pinned workflow version + a selected scope
 // into an immutable, validated, runnable execution plan.
 //
@@ -22,8 +20,8 @@
 // (produces/consumes/sensors/reviewer/humanValidation); see `block-mappers.js`
 // `mapStage` for the seeded shape it consumes.
 
-const { createHash } = require('node:crypto');
-const { compileStageGraph, compileRules } = require('./compile.js');
+import { createHash } from 'node:crypto';
+import { compileStageGraph, compileRules } from './compile.js';
 
 // Stage modes the runtime can actually execute. `agent-team` is known but not
 // runnable yet: a stage that declares it is flagged `notImplemented` so it fails
@@ -607,7 +605,16 @@ const planSegments = (stages) => {
   return segments;
 };
 
-module.exports = {
+export {
+  buildExecutionPlan,
+  planSegments,
+  stageInstanceId,
+  workflowScopes,
+  RUNNABLE_MODES,
+  UNIT_FOR_EACH,
+  UNIT_DAG_ARTIFACT,
+};
+export default {
   buildExecutionPlan,
   planSegments,
   stageInstanceId,

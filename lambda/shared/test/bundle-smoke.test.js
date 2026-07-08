@@ -5,31 +5,26 @@ import path from 'node:path';
 
 // Bundle smoke test (regression guard).
 //
-// Lambdas bundled with `--format=esm` that pull in CommonJS code (e.g.
-// `lambda/shared/realtime-token.js`) need esbuild's `createRequire` banner —
-// without it the bundle throws `Dynamic require of "node:crypto" is not
-// supported` at Lambda INIT, which took down ws-connection ($connect → 500 →
-// every app-WS handshake failed) while unit tests stayed green: vitest's own
-// loader provides `require`, masking the failure. So each bundle is built and
-// then imported in a bare `node` child process, exactly like the Lambda ESM
-// loader does.
+// Each bundle is built and then imported in a bare `node` child process, exactly
+// like the Lambda ESM loader does. This catches INIT-time module loading issues
+// that unit tests can miss.
 
 const repoRoot = fileURLToPath(new URL('../../..', import.meta.url));
 
-// Workspace name → bundle produced by `npm run build -w <name>`. Keep in sync
-// with the ESM lambdas that import CommonJS shared modules.
+// Workspace name → bundle produced by `npm run build -w <name>`.
 const bundles = [
+  ['agents', 'lambda/agents/.build/index.mjs'],
+  ['code-files', 'lambda/code-files/.build/index.mjs'],
+  ['general-info', 'lambda/general-info/.build/index.mjs'],
+  ['requirements', 'lambda/requirements/.build/index.mjs'],
+  ['reviews', 'lambda/reviews/.build/index.mjs'],
   ['ws-connection', 'lambda/ws-connection/.build/index.mjs'],
   ['ws-message', 'lambda/ws-message/.build/index.mjs'],
-  // seed-blocks bundles CommonJS shared modules (frontmatter, block-mappers,
-  // repo-fetch) plus js-yaml + tar-stream — needs the createRequire banner.
   ['seed-blocks', 'lambda/seed-blocks/.build/index.mjs'],
   ['github-lambda', 'lambda/github/.build/index.mjs'],
   ['gitlab-lambda', 'lambda/gitlab/.build/index.mjs'],
-  // v2-orchestrator bundles CommonJS shared modules (process-store, workflow-plan,
-  // git-connection-store, git-token) — needs the createRequire banner, and must
-  // NOT also declare its own `createRequire`/`require` (that collides with the
-  // banner: "Identifier 'createRequire' has already been declared" at INIT).
+  ['user-stories', 'lambda/user-stories/.build/index.mjs'],
+  ['users', 'lambda/users/.build/index.mjs'],
   ['v2-orchestrator', 'lambda/v2-orchestrator/.build/index.mjs'],
 ];
 

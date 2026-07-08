@@ -7,7 +7,7 @@
 // hardening fix from being applied to one lambda but not the other.
 //
 // Consumed by:
-//   - lambda/projects/index.js via require('../shared/repo-validation') (esbuild bundles ../shared)
+//   - lambda/projects/index.js via '../shared/repo-validation.js' (esbuild bundles ../shared)
 
 // Reject anything that could break out of a double-quoted shell string
 // ("  `  $  \  whitespace). Freeform values (bare names, SSH URLs) still pass.
@@ -36,4 +36,5 @@ const isSafeRef = (v) =>
   !v.includes('..') &&
   !v.includes('@{');
 
-module.exports = { SHELL_SAFE_REPO_PATTERN, GIT_REF_PATTERN, isSafeRepo, isSafeRef };
+export { SHELL_SAFE_REPO_PATTERN, GIT_REF_PATTERN, isSafeRepo, isSafeRef };
+export default { SHELL_SAFE_REPO_PATTERN, GIT_REF_PATTERN, isSafeRepo, isSafeRef };

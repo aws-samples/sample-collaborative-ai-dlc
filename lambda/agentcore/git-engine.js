@@ -27,10 +27,7 @@
 import { spawn } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { createRequire } from 'node:module';
-
-const require = createRequire(import.meta.url);
-const { buildCloneUrl } = require('../shared/git-providers.js');
+import { buildCloneUrl } from '../shared/git-providers.js';
 
 // Neutral committer identity, passed per-command via `-c` so the repo config
 // is never mutated (and the agent can't inherit it for its own commits).

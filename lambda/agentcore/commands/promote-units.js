@@ -31,11 +31,8 @@
 //   { ok: false, reason: 'dag_absent'|'dag_malformed'|'dag_cyclic', detail }
 //   { ok: false, reason: 'promotion_failed', detail } — infra error
 
-import { createRequire } from 'node:module';
 import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
-
-const require = createRequire(import.meta.url);
-const { parseBoltDag } = require('../../shared/v2-sensor-contract.js');
+import { parseBoltDag } from '../../shared/v2-sensor-contract.js';
 
 const DAG_ARTIFACT_TYPE = 'unit-of-work-dependency';
 

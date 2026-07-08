@@ -1,5 +1,3 @@
-'use strict';
-
 // GitLab provider — encapsulates every GitLab.com-specific detail behind the
 // uniform git-provider contract (see ./index.js for the contract docs).
 //
@@ -7,7 +5,7 @@
 // optional onRefresh callback that re-mints + persists a token on 401). This
 // module only knows how to talk to GitLab once it has a token.
 
-const { ProviderError } = require('./errors');
+import { ProviderError } from './errors.js';
 
 const API_BASE = 'https://gitlab.com/api/v4';
 
@@ -621,11 +619,37 @@ const mergeBranch = async (ctx, repoId, { base, head, message }) => {
   return { error: `GitLab merge returned ${mergeRes.status}: ${text.slice(0, 300)}` };
 };
 
-module.exports = {
+const apiBase = API_BASE;
+export {
   id,
   displayName,
   gitHost,
-  apiBase: API_BASE,
+  apiBase,
+  buildCloneUrl,
+  encodeProject,
+  apiHeaders,
+  glFetch,
+  oauth,
+  mapRepo,
+  listRepos,
+  listBranches,
+  getDefaultBranch,
+  getTree,
+  getFileContents,
+  listPRComments,
+  addPRComment,
+  getUnmergedConstructionTaskBranches,
+  cleanupConstructionTaskBranches,
+  createPullRequest,
+  getPullRequestState,
+  mergeBranch,
+  constructionBranchPrefix,
+};
+export default {
+  id,
+  displayName,
+  gitHost,
+  apiBase,
   buildCloneUrl,
   encodeProject,
   apiHeaders,

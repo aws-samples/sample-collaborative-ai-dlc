@@ -1,6 +1,4 @@
-'use strict';
-
-const { REGISTRY, extractArtifactStructure } = require('./artifact-extractors.js');
+import { REGISTRY, extractArtifactStructure } from './artifact-extractors.js';
 
 // V2 deterministic sensor contract — PURE + shared (no I/O, no AWS, no spawn).
 //
@@ -423,7 +421,24 @@ const parseBoltDag = (body) => {
   return { ok: true, units: edges, batches };
 };
 
-module.exports = {
+export {
+  SENSOR_RESULT,
+  SENSOR_RESULTS,
+  ALLOWED_SCRIPT_RUNTIMES,
+  MAX_TIMEOUT_SECONDS,
+  DEFAULT_TIMEOUT_SECONDS,
+  GRAPH_SENSORS,
+  sensorKind,
+  severityGate,
+  validateScriptSpec,
+  resultFromExit,
+  buildScriptArgv,
+  evalRequiredSections,
+  evalUpstreamCoverage,
+  evalGraphCoverage,
+  parseBoltDag,
+};
+export default {
   SENSOR_RESULT,
   SENSOR_RESULTS,
   ALLOWED_SCRIPT_RUNTIMES,

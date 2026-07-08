@@ -1,5 +1,3 @@
-'use strict';
-
 // Platform-wide GitHub auth mode + GitHub App configuration.
 //
 // Two SSM parameters (provisioned in terraform/modules/git/main.tf, seeded
@@ -19,7 +17,7 @@
 // on warm containers (immediately on cold ones). In-flight orchestrator runs
 // are unaffected either way: they snapshot/mint tokens through durable steps.
 
-const { GetParameterCommand, PutParameterCommand } = require('@aws-sdk/client-ssm');
+import { GetParameterCommand, PutParameterCommand } from '@aws-sdk/client-ssm';
 
 const MODE_CACHE_TTL_MS = 60 * 1000;
 
@@ -127,7 +125,16 @@ const writeGitHubAppConfig = async (ssm, { appId, installationId }) => {
   clearGitHubAuthConfigCache();
 };
 
-module.exports = {
+export {
+  MODE_CACHE_TTL_MS,
+  VALID_MODES,
+  getGitHubAuthMode,
+  getGitHubAppConfig,
+  writeGitHubAuthMode,
+  writeGitHubAppConfig,
+  clearGitHubAuthConfigCache,
+};
+export default {
   MODE_CACHE_TTL_MS,
   VALID_MODES,
   getGitHubAuthMode,

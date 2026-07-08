@@ -918,9 +918,7 @@ describe('unit DAG promotion after the producing stage succeeds', () => {
 
 // ── WP4: plan fan-out — sequential unit lanes (docs/v2-parallel.md) ──────────
 
-import { createRequire } from 'node:module';
-const requireCjs = createRequire(import.meta.url);
-const { stageInstanceId: planStageInstanceId } = requireCjs('../../shared/v2-execution-plan.js');
+import { stageInstanceId as planStageInstanceId } from '../../shared/v2-execution-plan.js';
 
 const SECTION_PLAN = () => ({
   valid: true,

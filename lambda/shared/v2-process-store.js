@@ -1,5 +1,3 @@
-'use strict';
-
 // V2 process store — the thin DynamoDB I/O shell over the pure key scheme +
 // record builders in v2-process-keys.js. The AgentCore container uses this to
 // write execution/stage/event/human/metric state; a future trigger/resume
@@ -10,15 +8,15 @@
 // injectable clock/ids so tests stay deterministic. No business (Neptune) writes
 // happen here — this is process state only.
 
-const { randomUUID } = require('node:crypto');
-const {
+import { randomUUID } from 'node:crypto';
+import {
   BatchWriteCommand,
   GetCommand,
   PutCommand,
   QueryCommand,
   UpdateCommand,
-} = require('@aws-sdk/lib-dynamodb');
-const {
+} from '@aws-sdk/lib-dynamodb';
+import {
   META,
   executionMetaKey,
   stageKey,
@@ -43,7 +41,7 @@ const {
   buildUnitRow,
   UNIT_STATES,
   CONSTRUCTION_AUTONOMY_MODES,
-} = require('./v2-process-keys.js');
+} from './v2-process-keys.js';
 
 const bySk = (a, b) => a.sk.localeCompare(b.sk);
 
@@ -1244,4 +1242,5 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   };
 };
 
-module.exports = { createProcessStore };
+export { createProcessStore };
+export default { createProcessStore };

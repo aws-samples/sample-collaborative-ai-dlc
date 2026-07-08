@@ -1,5 +1,3 @@
-'use strict';
-
 // Model pricing — translate token usage into USD. Two layers:
 //   1. A cached price table keyed by canonical model FAMILY (e.g.
 //      "claude-sonnet-4-6"), refreshed from the AWS Price List API and persisted
@@ -218,7 +216,16 @@ const refreshPricing = async ({ getProducts } = {}) => {
   }
 };
 
-module.exports = {
+export {
+  FALLBACK_PRICES,
+  TOKENS_PER_UNIT,
+  modelFamily,
+  makePriceResolver,
+  costForMetrics,
+  parsePriceList,
+  refreshPricing,
+};
+export default {
   FALLBACK_PRICES,
   TOKENS_PER_UNIT,
   modelFamily,

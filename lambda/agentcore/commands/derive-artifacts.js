@@ -10,12 +10,9 @@
 // enrichment failure is recorded and skipped, deterministic derivation and the
 // stage flow are never blocked by it.
 
-import { createRequire } from 'node:module';
 import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
 import { runOneShotPrompt, extractJsonObject } from '../cli/one-shot.js';
-
-const require = createRequire(import.meta.url);
-const { extractArtifactStructure } = require('../../shared/artifact-extractors.js');
+import { extractArtifactStructure } from '../../shared/artifact-extractors.js';
 
 const artifactTs = (r) => String(r.updated_at ?? r.created_at ?? '');
 export const currentArtifacts = (rows = []) =>

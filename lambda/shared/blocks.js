@@ -1,5 +1,3 @@
-'use strict';
-
 // Shared data-layer helpers for the reusable building-blocks library.
 // Used by both the building-blocks CRUD lambda and the one-shot seed lambda so
 // the key scheme, validation, and content-addressed body storage live in one
@@ -11,7 +9,7 @@
 // Large bodies/scripts are NOT stored inline; they live in the artifacts S3
 // bucket under blocks/bodies/sha256/<hash>, referenced by a `bodyRef` pointer.
 
-const { createHash } = require('node:crypto');
+import { createHash } from 'node:crypto';
 
 // The block types that form the reusable library, named to match the AI-DLC
 // V2 source (awslabs/aidlc-workflows): a STAGE is the atomic unit of work, a
@@ -251,7 +249,28 @@ const validateId = (id) => {
   return null;
 };
 
-module.exports = {
+export {
+  BLOCK_TYPES,
+  KNOWLEDGE_TIERS,
+  RULE_LAYERS,
+  RULE_LAYER_PRIORITY,
+  STAGE_MODES,
+  LATEST,
+  MAX_BODY_BYTES,
+  isBlockType,
+  normalizeType,
+  blockPk,
+  versionSk,
+  catalogGsi1Pk,
+  sha256,
+  bodyS3Key,
+  buildBodyRef,
+  scriptS3Key,
+  buildScriptRef,
+  validateBlockInput,
+  validateId,
+};
+export default {
   BLOCK_TYPES,
   KNOWLEDGE_TIERS,
   RULE_LAYERS,

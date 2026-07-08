@@ -20,13 +20,10 @@
 // (it records a note + broadcasts); a `blocking` sensor that does not PASS marks
 // the stage held. `run-stage` decides what to do with a held verdict.
 
-import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
 import { writeFile, mkdir, readdir } from 'node:fs/promises';
 import path from 'node:path';
-
-const require = createRequire(import.meta.url);
-const {
+import {
   SENSOR_RESULT,
   sensorKind,
   severityGate,
@@ -36,7 +33,7 @@ const {
   evalRequiredSections,
   evalUpstreamCoverage,
   evalGraphCoverage,
-} = require('../shared/v2-sensor-contract.js');
+} from '../shared/v2-sensor-contract.js';
 
 // Convert a sensor `matches` glob (e.g. `**/*.{ts,tsx}`, `**/aidlc-docs/**`)
 // into a RegExp. Supports the limited syntax the baseline sensors use: `**`,

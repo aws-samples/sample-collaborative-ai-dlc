@@ -14,10 +14,7 @@ import { writeFile, mkdir } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createRequire } from 'node:module';
-
-const require = createRequire(import.meta.url);
-const { renderStructureContracts } = require('../shared/artifact-structure-contract.js');
+import { renderStructureContracts } from '../shared/artifact-structure-contract.js';
 
 // The MCP execution annex — the harness binding that redirects the upstream
 // stage prose (which is written for a filesystem + `bun` harness) onto our MCP

@@ -12,23 +12,23 @@
 //     model picker (probes the AgentCore runtime; refreshes model-pricing SSM)
 //   - GET/PUT /agents/settings                 — Admin CLI auth + model defaults
 //     (SSM parameters consumed by the v2 AgentCore runtime and intents lambda)
-const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
-const { DynamoDBDocumentClient, QueryCommand } = require('@aws-sdk/lib-dynamodb');
-const { SSMClient, GetParametersCommand, PutParameterCommand } = require('@aws-sdk/client-ssm');
-const { BedrockClient, ListInferenceProfilesCommand } = require('@aws-sdk/client-bedrock');
-const { PricingClient, GetProductsCommand } = require('@aws-sdk/client-pricing');
-const {
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { SSMClient, GetParametersCommand, PutParameterCommand } from '@aws-sdk/client-ssm';
+import { BedrockClient, ListInferenceProfilesCommand } from '@aws-sdk/client-bedrock';
+import { PricingClient, GetProductsCommand } from '@aws-sdk/client-pricing';
+import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
-} = require('@aws-sdk/client-bedrock-agentcore');
-const gremlin = require('gremlin');
-const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
-const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
-const { buildResponse } = require('./shared/response');
-const { requirePlatformAdmin } = require('./shared/authz');
-const { normalizeCliModels, parseCliModels } = require('./shared/cli-models');
-const { listClaudeModels } = require('./shared/bedrock-models');
-const { refreshPricing } = require('./shared/model-pricing');
+} from '@aws-sdk/client-bedrock-agentcore';
+import gremlin from 'gremlin';
+import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
+import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
+import { buildResponse } from '../shared/response.js';
+import { requirePlatformAdmin } from '../shared/authz.js';
+import { normalizeCliModels, parseCliModels } from '../shared/cli-models.js';
+import { listClaudeModels } from '../shared/bedrock-models.js';
+import { refreshPricing } from '../shared/model-pricing.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({ region: process.env.AWS_REGION || 'us-east-1' });
@@ -149,7 +149,7 @@ async function refreshModelPricing() {
 
 // --- Handler ---
 
-exports.handler = async (event) => {
+export const handler = async (event) => {
   const response = buildResponse(event);
   const { httpMethod, path = '', pathParameters, body } = event;
   const projectId = pathParameters?.projectId;

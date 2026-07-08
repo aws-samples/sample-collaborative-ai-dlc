@@ -1,7 +1,7 @@
-const gremlin = require('gremlin');
-const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
-const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
-const { buildResponse } = require('./shared/response');
+import gremlin from 'gremlin';
+import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
+import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
+import { buildResponse } from '../shared/response.js';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -32,7 +32,7 @@ const getConnection = async () => {
   return new DriverRemoteConnection(connInfo.url, { headers: connInfo.headers });
 };
 
-exports.handler = async (event) => {
+export const handler = async (event) => {
   const response = buildResponse(event);
   if (event.httpMethod === 'OPTIONS') {
     return response(200, {});

@@ -317,8 +317,7 @@ describe('resolveGitHubTokenForMode / getInstallationTokenFromConfig / getInstal
     vi.stubEnv('GITHUB_APP_CONFIG_PARAM', CONFIG_PARAM);
     vi.resetModules();
     gitToken = await import('../git-token.js');
-    // Explicitly drop module-level caches — the CJS interop can hand the same
-    // module instance back across resetModules, and both modules cache reads.
+    // Explicitly drop module-level caches; both modules cache reads.
     gitToken.clearAppAuthCaches();
     const authConfig = await import('../github-auth-config.js');
     authConfig.clearGitHubAuthConfigCache();

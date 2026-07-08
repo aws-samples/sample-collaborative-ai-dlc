@@ -1,15 +1,11 @@
-'use strict';
-
 // Unified git-provider registry — single source of truth for everything that
 // varies between GitHub and GitLab. Adding a third provider (e.g. Bitbucket)
 // means dropping one file in ./git-providers/ and registering it here; no
 // caller needs to learn provider-specific hosts, auth schemes, or REST shapes.
 //
-// Why CJS + a top-level file (not git-providers/index.js): the shared/ helpers
-// are CommonJS consumed both by ESM lambdas (via default-import interop) and by
-// require() from the agentcore image, which copies shared/ wholesale to
-// /opt/shared. Keeping this entry point as a single top-level file preserves
-// the established `../shared/<name>` import pattern.
+// Why a top-level file (not git-providers/index.js): keeping this entry point as
+// a single top-level module preserves the established `../shared/<name>` import
+// pattern across lambdas and the AgentCore image.
 //
 // Provider contract (each implementation exports):
 //   id, displayName, gitHost, apiBase
@@ -26,9 +22,9 @@
 //   addPRComment(ctx, repoId, prRef, {body, path?, line?, side?}) -> GitComment
 // where ctx = { token, fetchImpl?, onRefresh? }.
 
-const github = require('./git-providers/github');
-const gitlab = require('./git-providers/gitlab');
-const { ProviderError } = require('./git-providers/errors');
+import github from './git-providers/github.js';
+import gitlab from './git-providers/gitlab.js';
+import { ProviderError } from './git-providers/errors.js';
 
 const REGISTRY = { github, gitlab };
 
@@ -55,9 +51,20 @@ const gitHost = (providerId) => getProvider(providerId).gitHost;
 const buildCloneUrl = (providerId, repoId, token) =>
   getProvider(providerId).buildCloneUrl(repoId, token);
 
-module.exports = {
+const KNOWN_PROVIDERS = Object.keys(REGISTRY);
+export {
   ProviderError,
-  KNOWN_PROVIDERS: Object.keys(REGISTRY),
+  KNOWN_PROVIDERS,
+  DEFAULT_PROVIDER,
+  normalizeProviderId,
+  isKnownProvider,
+  getProvider,
+  gitHost,
+  buildCloneUrl,
+};
+export default {
+  ProviderError,
+  KNOWN_PROVIDERS,
   DEFAULT_PROVIDER,
   normalizeProviderId,
   isKnownProvider,

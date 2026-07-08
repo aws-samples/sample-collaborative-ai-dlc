@@ -1,5 +1,3 @@
-'use strict';
-
 // Intent deletion cascade — shared by the intents lambda (single-intent DELETE)
 // and the projects lambda (project delete, which cascades into every child
 // intent). Purges, in a deliberate retry-safe order, everything an intent owns:
@@ -17,10 +15,10 @@
 // commit c8ef5ec: an artifact/section vertex a SIBLING intent owns (same
 // agent-chosen id) is never dropped for this intent.
 
-const gremlin = require('gremlin');
-const { DeleteCommand } = require('@aws-sdk/lib-dynamodb');
-const { SendDurableExecutionCallbackSuccessCommand } = require('@aws-sdk/client-lambda');
-const { StopRuntimeSessionCommand } = require('@aws-sdk/client-bedrock-agentcore');
+import gremlin from 'gremlin';
+import { DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import { SendDurableExecutionCallbackSuccessCommand } from '@aws-sdk/client-lambda';
+import { StopRuntimeSessionCommand } from '@aws-sdk/client-bedrock-agentcore';
 
 const __ = gremlin.process.statics;
 
@@ -221,7 +219,15 @@ const deleteIntentCascade = async ({
   await store.deleteExecution(intentId);
 };
 
-module.exports = {
+export {
+  deleteIntentCascade,
+  retireParkedRun,
+  stopRuntimeSessions,
+  runtimeSessionIdFor,
+  laneSessionIdFor,
+  IntentRunningError,
+};
+export default {
   deleteIntentCascade,
   retireParkedRun,
   stopRuntimeSessions,

@@ -23,11 +23,8 @@ import {
   InvokeAgentRuntimeCommand,
   StopRuntimeSessionCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
-// CJS shared module — default-import then destructure. Used to compute the
-// deterministic stage-instance ids the rewind flow resets/supersedes.
-import executionPlanPkg from '../../shared/v2-execution-plan.js';
-
-const { stageInstanceId: planStageInstanceId } = executionPlanPkg;
+// Used to compute the deterministic stage-instance ids the rewind flow resets/supersedes.
+import { stageInstanceId as planStageInstanceId } from '../../shared/v2-execution-plan.js';
 
 const PARTITION = `t-${randomUUID()}`;
 

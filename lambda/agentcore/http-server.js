@@ -40,6 +40,7 @@
 // socket; createServer wires the real commands + clients.
 
 import http from 'node:http';
+import { createProcessStore } from '../shared/v2-process-store.js';
 
 // Track whether a stage is currently running so /ping can report HealthyBusy.
 export const createBusyTracker = () => {
@@ -154,9 +155,6 @@ const main = async () => {
     sendStageCallbackSuccess,
     sendStageCallbackHeartbeat,
   } = await import('./clients.js');
-  const { createRequire } = await import('node:module');
-  const require = createRequire(import.meta.url);
-  const { createProcessStore } = require('../shared/v2-process-store.js');
   const { initWs } = await import('./commands/init-ws.js');
   const { runStage } = await import('./commands/run-stage.js');
   const { createRunStageStart } = await import('./commands/run-stage-start.js');

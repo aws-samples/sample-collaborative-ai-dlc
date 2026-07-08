@@ -12,6 +12,14 @@
 #   - GET/PUT /agents/settings                 — Admin CLI auth + model defaults
 #     (SSM parameters consumed by the v2 AgentCore runtime and intents lambda)
 
+locals {
+  agents_shared_dir = "${path.module}/../../../lambda/shared"
+  agents_shared_sources_hash = sha256(join("", [
+    for f in sort(fileset(local.agents_shared_dir, "**/*.{js,mjs,cjs,json}")) :
+    filesha256("${local.agents_shared_dir}/${f}")
+  ]))
+}
+
 # Agents Lambda
 module "agents_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
@@ -24,14 +32,16 @@ module "agents_lambda" {
 
   source_path = [
     {
-      path             = "${path.module}/../../../lambda/agents"
-      npm_requirements = true
-    },
-    {
-      path          = "${path.module}/../../../lambda/shared"
-      prefix_in_zip = "shared"
+      path = "${path.module}/../../../lambda/agents"
+      commands = [
+        "cd ../.. && npm run build -w agents",
+        ":zip lambda/agents/.build",
+      ]
     }
   ]
+
+  # Force a rebuild when bundled lambda/shared/** changes.
+  hash_extra = local.agents_shared_sources_hash
 
   create_role = false
   lambda_role = var.agents_lambda_role_arn

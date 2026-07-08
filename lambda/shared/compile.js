@@ -1,5 +1,3 @@
-'use strict';
-
 // Pure compilers for the per-workflow derived views. These take already-loaded
 // data (placements, scope slugs, and the stage blocks the placements reference)
 // and return plain objects — no I/O, so they are trivially testable and the
@@ -294,7 +292,15 @@ const compileWorkflow = (
   rules: compileRules(placements, ruleRefs, rulesById, stagesById),
 });
 
-module.exports = {
+export {
+  compileScopeGrid,
+  compileAutonomyProfile,
+  compileStageGraph,
+  compileRules,
+  compileWorkflow,
+  stageAutonomy,
+};
+export default {
   compileScopeGrid,
   compileAutonomyProfile,
   compileStageGraph,

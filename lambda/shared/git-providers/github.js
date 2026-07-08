@@ -1,5 +1,3 @@
-'use strict';
-
 // GitHub provider — encapsulates every GitHub.com-specific detail behind the
 // uniform git-provider contract (see ./index.js for the contract docs).
 //
@@ -7,7 +5,7 @@
 // and SSM-token plumbing live in the handler/shared layers; this module only
 // knows how to talk to GitHub once it has a token.
 
-const { ProviderError } = require('./errors');
+import { ProviderError } from './errors.js';
 
 const API_BASE = 'https://api.github.com';
 
@@ -533,11 +531,38 @@ const mergeBranch = async (ctx, repoId, { base, head, message }) => {
   return { error: `GitHub merges API returned ${res.status}: ${text.slice(0, 300)}` };
 };
 
-module.exports = {
+const apiBase = API_BASE;
+export {
   id,
   displayName,
   gitHost,
-  apiBase: API_BASE,
+  apiBase,
+  buildCloneUrl,
+  splitOwnerRepo,
+  apiHeaders,
+  ghFetch,
+  oauth,
+  mapRepo,
+  listRepos,
+  listInstallationRepos,
+  listBranches,
+  getDefaultBranch,
+  getTree,
+  getFileContents,
+  listPRComments,
+  addPRComment,
+  getUnmergedConstructionTaskBranches,
+  cleanupConstructionTaskBranches,
+  createPullRequest,
+  getPullRequestState,
+  mergeBranch,
+  constructionBranchPrefix,
+};
+export default {
+  id,
+  displayName,
+  gitHost,
+  apiBase,
   buildCloneUrl,
   splitOwnerRepo,
   apiHeaders,

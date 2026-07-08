@@ -84,8 +84,7 @@ export default function Dashboard() {
         // pickIntent surfaces a RUNNING (else WAITING) intent first, so this
         // flags a project with live/parked work — the delete dialog warns that
         // deleting will cancel it (the backend force-retires it).
-        hasActiveWork:
-          p.latestIntent?.status === 'RUNNING' || p.latestIntent?.status === 'WAITING',
+        hasActiveWork: p.latestIntent?.status === 'RUNNING' || p.latestIntent?.status === 'WAITING',
       })),
     [projectsWithSprints],
   );
@@ -276,44 +275,133 @@ export default function Dashboard() {
             {filteredProjects.map((project) => {
               const isDeleting = deleting === project.id;
               return (
-              <Card
-                key={project.id}
-                aria-busy={isDeleting}
-                className={cn(
-                  'group transition-all',
-                  isDeleting
-                    ? 'pointer-events-none opacity-50'
-                    : 'cursor-pointer hover:shadow-md hover:border-foreground/20',
-                )}
-                onClick={() => {
-                  if (!isDeleting) navigate(`/project/${project.id}`);
-                }}
-              >
-                <CardContent className="p-5">
-                  <div className="flex items-start justify-between mb-3">
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <div className="h-9 w-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-                        <FolderGit2 className="h-4.5 w-4.5 text-primary" />
-                      </div>
-                      <div className="min-w-0">
-                        <h3 className="font-semibold text-sm truncate">{project.name}</h3>
-                        <div className="flex items-center gap-1 mt-0.5">
-                          {project.userRole && (
-                            <Badge
-                              variant="outline"
-                              className={cn('h-4 px-1.5 text-[9px]', roleColors[project.userRole])}
-                            >
-                              {project.userRole}
-                            </Badge>
-                          )}
-                          {project.kind === 'v2' && (
-                            <Badge variant="outline" className="h-4 px-1.5 text-[9px]">
-                              v2
-                            </Badge>
-                          )}
+                <Card
+                  key={project.id}
+                  aria-busy={isDeleting}
+                  className={cn(
+                    'group transition-all',
+                    isDeleting
+                      ? 'pointer-events-none opacity-50'
+                      : 'cursor-pointer hover:shadow-md hover:border-foreground/20',
+                  )}
+                  onClick={() => {
+                    if (!isDeleting) navigate(`/project/${project.id}`);
+                  }}
+                >
+                  <CardContent className="p-5">
+                    <div className="flex items-start justify-between mb-3">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="h-9 w-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+                          <FolderGit2 className="h-4.5 w-4.5 text-primary" />
+                        </div>
+                        <div className="min-w-0">
+                          <h3 className="font-semibold text-sm truncate">{project.name}</h3>
+                          <div className="flex items-center gap-1 mt-0.5">
+                            {project.userRole && (
+                              <Badge
+                                variant="outline"
+                                className={cn(
+                                  'h-4 px-1.5 text-[9px]',
+                                  roleColors[project.userRole],
+                                )}
+                              >
+                                {project.userRole}
+                              </Badge>
+                            )}
+                            {project.kind === 'v2' && (
+                              <Badge variant="outline" className="h-4 px-1.5 text-[9px]">
+                                v2
+                              </Badge>
+                            )}
+                          </div>
                         </div>
                       </div>
+                      {isDeleting ? (
+                        <Loader2 className="h-4 w-4 shrink-0 animate-spin text-destructive" />
+                      ) : (
+                        project.userRole === 'owner' && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 opacity-0 group-hover:opacity-100 shrink-0"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setConfirmDelete(project.id);
+                            }}
+                          >
+                            <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                          </Button>
+                        )
+                      )}
                     </div>
+
+                    {project.gitRepo && (
+                      <div className="text-xs text-muted-foreground mb-2">
+                        <GitRepoLink
+                          gitRepo={project.gitRepo}
+                          gitProvider={project.gitProvider}
+                          noLink
+                        />
+                      </div>
+                    )}
+
+                    <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground/60">
+                      <span>Created {new Date(project.createdAt).toLocaleDateString()}</span>
+                      <span>Active {formatRelativeTime(project.lastActivityAt)}</span>
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        ) : (
+          /* List view */
+          <div className="space-y-1">
+            {filteredProjects.map((project) => {
+              const isDeleting = deleting === project.id;
+              return (
+                <Card
+                  key={project.id}
+                  aria-busy={isDeleting}
+                  className={cn(
+                    'group transition-all',
+                    isDeleting
+                      ? 'pointer-events-none opacity-50'
+                      : 'cursor-pointer hover:bg-accent/50',
+                  )}
+                  onClick={() => {
+                    if (!isDeleting) navigate(`/project/${project.id}`);
+                  }}
+                >
+                  <CardContent className="flex items-center gap-4 p-3 px-4">
+                    <div className="h-8 w-8 rounded-md bg-primary/10 flex items-center justify-center shrink-0">
+                      <FolderGit2 className="h-4 w-4 text-primary" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <span className="font-medium text-sm">{project.name}</span>
+                    </div>
+                    {project.gitRepo && (
+                      <GitRepoLink
+                        gitRepo={project.gitRepo}
+                        gitProvider={project.gitProvider}
+                        className="text-xs text-muted-foreground"
+                        noLink
+                      />
+                    )}
+                    {project.userRole && (
+                      <Badge
+                        variant="outline"
+                        className={cn('text-[10px]', roleColors[project.userRole])}
+                      >
+                        {project.userRole}
+                      </Badge>
+                    )}
+                    <span className="text-[11px] text-muted-foreground/60 shrink-0 hidden sm:inline">
+                      Active {formatRelativeTime(project.lastActivityAt)}
+                    </span>
+                    <span className="text-[11px] text-muted-foreground/60 shrink-0">
+                      Created {new Date(project.createdAt).toLocaleDateString()}
+                    </span>
                     {isDeleting ? (
                       <Loader2 className="h-4 w-4 shrink-0 animate-spin text-destructive" />
                     ) : (
@@ -331,94 +419,8 @@ export default function Dashboard() {
                         </Button>
                       )
                     )}
-                  </div>
-
-                  {project.gitRepo && (
-                    <div className="text-xs text-muted-foreground mb-2">
-                      <GitRepoLink
-                        gitRepo={project.gitRepo}
-                        gitProvider={project.gitProvider}
-                        noLink
-                      />
-                    </div>
-                  )}
-
-                  <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground/60">
-                    <span>Created {new Date(project.createdAt).toLocaleDateString()}</span>
-                    <span>Active {formatRelativeTime(project.lastActivityAt)}</span>
-                  </div>
-                </CardContent>
-              </Card>
-              );
-            })}
-          </div>
-        ) : (
-          /* List view */
-          <div className="space-y-1">
-            {filteredProjects.map((project) => {
-              const isDeleting = deleting === project.id;
-              return (
-              <Card
-                key={project.id}
-                aria-busy={isDeleting}
-                className={cn(
-                  'group transition-all',
-                  isDeleting
-                    ? 'pointer-events-none opacity-50'
-                    : 'cursor-pointer hover:bg-accent/50',
-                )}
-                onClick={() => {
-                  if (!isDeleting) navigate(`/project/${project.id}`);
-                }}
-              >
-                <CardContent className="flex items-center gap-4 p-3 px-4">
-                  <div className="h-8 w-8 rounded-md bg-primary/10 flex items-center justify-center shrink-0">
-                    <FolderGit2 className="h-4 w-4 text-primary" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <span className="font-medium text-sm">{project.name}</span>
-                  </div>
-                  {project.gitRepo && (
-                    <GitRepoLink
-                      gitRepo={project.gitRepo}
-                      gitProvider={project.gitProvider}
-                      className="text-xs text-muted-foreground"
-                      noLink
-                    />
-                  )}
-                  {project.userRole && (
-                    <Badge
-                      variant="outline"
-                      className={cn('text-[10px]', roleColors[project.userRole])}
-                    >
-                      {project.userRole}
-                    </Badge>
-                  )}
-                  <span className="text-[11px] text-muted-foreground/60 shrink-0 hidden sm:inline">
-                    Active {formatRelativeTime(project.lastActivityAt)}
-                  </span>
-                  <span className="text-[11px] text-muted-foreground/60 shrink-0">
-                    Created {new Date(project.createdAt).toLocaleDateString()}
-                  </span>
-                  {isDeleting ? (
-                    <Loader2 className="h-4 w-4 shrink-0 animate-spin text-destructive" />
-                  ) : (
-                    project.userRole === 'owner' && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 opacity-0 group-hover:opacity-100 shrink-0"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setConfirmDelete(project.id);
-                        }}
-                      >
-                        <Trash2 className="h-3.5 w-3.5 text-destructive" />
-                      </Button>
-                    )
-                  )}
-                </CardContent>
-              </Card>
+                  </CardContent>
+                </Card>
               );
             })}
           </div>
@@ -435,7 +437,10 @@ export default function Dashboard() {
       )}
 
       {/* Delete confirmation */}
-      <AlertDialog open={!!confirmDelete} onOpenChange={() => (deleting ? null : setConfirmDelete(null))}>
+      <AlertDialog
+        open={!!confirmDelete}
+        onOpenChange={() => (deleting ? null : setConfirmDelete(null))}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Project</AlertDialogTitle>

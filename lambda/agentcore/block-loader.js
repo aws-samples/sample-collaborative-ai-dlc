@@ -7,15 +7,12 @@
 // the same id. We read default first, fall back to SYSTEM — matching the API's
 // read semantics so the runtime honours user forks.
 
-import { createRequire } from 'node:module';
 import { QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { ddb, s3 } from './clients.js';
-
-const require = createRequire(import.meta.url);
-const { catalogGsi1Pk } = require('../shared/blocks.js');
-const { workflowPk, workflowVersionPrefix } = require('../shared/workflows.js');
-const { DEFAULT_TENANT, SYSTEM_TENANT } = require('../shared/tenant.js');
+import { catalogGsi1Pk } from '../shared/blocks.js';
+import { workflowPk, workflowVersionPrefix } from '../shared/workflows.js';
+import { DEFAULT_TENANT, SYSTEM_TENANT } from '../shared/tenant.js';
 
 const blocksTable = () => process.env.BLOCKS_TABLE;
 const artifactsBucket = () => process.env.ARTIFACTS_BUCKET;

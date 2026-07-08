@@ -1,11 +1,9 @@
-'use strict';
-
 // Shared helpers for reading Neptune/gremlin rows — used by BOTH graph stacks:
 // the agentcore graph-writer (MCP tools + derive) and the intents lambda's
 // knowledge-graph read. These lived as per-bundle copies until the Neptune
 // valueMap-order bug had to be fixed twice — one implementation, one fix.
 
-const { REGISTRY } = require('./artifact-extractors.js');
+import { REGISTRY } from './artifact-extractors.js';
 
 // Typed item vertex labels the derive step mirrors out of artifact structured
 // blocks. Derived from the extraction REGISTRY (the single source of truth for
@@ -60,9 +58,5 @@ const jsonListProp = (value) => {
   }
 };
 
-module.exports = {
-  DERIVED_ITEM_LABELS,
-  flattenVertexMap,
-  isCurrentRow,
-  jsonListProp,
-};
+export { DERIVED_ITEM_LABELS, flattenVertexMap, isCurrentRow, jsonListProp };
+export default { DERIVED_ITEM_LABELS, flattenVertexMap, isCurrentRow, jsonListProp };

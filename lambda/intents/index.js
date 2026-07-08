@@ -16,27 +16,19 @@ import {
   InvokeAgentRuntimeCommand,
   StopRuntimeSessionCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
-import authzPkg from '../shared/authz.js';
-import pkg from '../shared/v2-process-store.js';
-import intentDeletionPkg from '../shared/intent-deletion.js';
+import { requirePlatformAdmin } from '../shared/authz.js';
+import { createProcessStore } from '../shared/v2-process-store.js';
+import { deleteIntentCascade, IntentRunningError } from '../shared/intent-deletion.js';
 import { buildResponse } from '../shared/response.js';
 import { fetchMembershipRole, projectTrackersFoldStep, mapBinding } from '../shared/trackers.js';
 import { signRealtimeToken } from '../shared/realtime-token.js';
-import cliModelsPkg from '../shared/cli-models.js';
-import workflowPlanPkg from '../shared/v2-workflow-plan.js';
-import executionPlanPkg from '../shared/v2-execution-plan.js';
-import pricingPkg from '../shared/model-pricing.js';
-import metricClassificationPkg from '../shared/metric-classification.js';
+import { parseCliModels, mergeCliModels } from '../shared/cli-models.js';
+import { loadWorkflowScopes, loadExecutionPlan } from '../shared/v2-workflow-plan.js';
+import { stageInstanceId as planStageInstanceId } from '../shared/v2-execution-plan.js';
+import { makePriceResolver, costForMetrics } from '../shared/model-pricing.js';
+import { aggregateMetrics, rollupAggregates } from '../shared/metric-classification.js';
 import { fetchKnowledgeGraph } from './knowledge-graph.js';
 import { buildIntentAudit } from './audit.js';
-
-const { createProcessStore } = pkg;
-const { deleteIntentCascade, IntentRunningError } = intentDeletionPkg;
-const { parseCliModels, mergeCliModels } = cliModelsPkg;
-const { loadWorkflowScopes, loadExecutionPlan } = workflowPlanPkg;
-const { stageInstanceId: planStageInstanceId } = executionPlanPkg;
-const { makePriceResolver, costForMetrics } = pricingPkg;
-const { aggregateMetrics, rollupAggregates } = metricClassificationPkg;
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -47,7 +39,6 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
 const lambdaClient = new LambdaClient({});
 const agentcore = new BedrockAgentCoreClient({});
-const { requirePlatformAdmin } = authzPkg;
 const store = createProcessStore({ ddb });
 
 const BLOCKS_TABLE = () => process.env.BLOCKS_TABLE;

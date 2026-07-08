@@ -6,8 +6,8 @@ locals {
   partition  = data.aws_partition.current.partition
   dns_suffix = data.aws_partition.current.dns_suffix
 
-  # Lambdas that bundle code from lambda/shared/** via esbuild (gitlab, github,
-  # projects, trackers) are packaged by the terraform-aws-modules/lambda module,
+  # Lambdas that bundle code from lambda/shared/** via esbuild are packaged by
+  # the terraform-aws-modules/lambda module,
   # which only hashes each Lambda's OWN source_path directory. A change in a
   # bundled shared file therefore does NOT change the package hash and the Lambda
   # is silently NOT redeployed. To fix this, we fold a hash of the entire shared
@@ -640,14 +640,16 @@ module "users_lambda" {
 
   source_path = [
     {
-      path             = "${path.module}/../../../../lambda/users"
-      npm_requirements = true
-    },
-    {
-      path          = "${path.module}/../../../../lambda/shared"
-      prefix_in_zip = "shared"
+      path = "${path.module}/../../../../lambda/users"
+      commands = [
+        "cd ../.. && npm run build -w users",
+        ":zip lambda/users/.build",
+      ]
     }
   ]
+
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.neptune_reader.arn
@@ -707,14 +709,16 @@ module "requirements_lambda" {
 
   source_path = [
     {
-      path             = "${path.module}/../../../../lambda/requirements"
-      npm_requirements = true
-    },
-    {
-      path          = "${path.module}/../../../../lambda/shared"
-      prefix_in_zip = "shared"
+      path = "${path.module}/../../../../lambda/requirements"
+      commands = [
+        "cd ../.. && npm run build -w requirements",
+        ":zip lambda/requirements/.build",
+      ]
     }
   ]
+
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.neptune_reader.arn
@@ -741,14 +745,16 @@ module "user_stories_lambda" {
 
   source_path = [
     {
-      path             = "${path.module}/../../../../lambda/user-stories"
-      npm_requirements = true
-    },
-    {
-      path          = "${path.module}/../../../../lambda/shared"
-      prefix_in_zip = "shared"
+      path = "${path.module}/../../../../lambda/user-stories"
+      commands = [
+        "cd ../.. && npm run build -w user-stories",
+        ":zip lambda/user-stories/.build",
+      ]
     }
   ]
+
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.neptune_reader.arn
@@ -803,19 +809,21 @@ module "code_files_lambda" {
 
   function_name = "${var.project_name}-code-files-${var.environment}"
   handler       = "index.handler"
-  runtime       = "nodejs18.x"
+  runtime       = "nodejs24.x"
   timeout       = 30
 
   source_path = [
     {
-      path             = "${path.module}/../../../../lambda/code-files"
-      npm_requirements = true
-    },
-    {
-      path          = "${path.module}/../../../../lambda/shared"
-      prefix_in_zip = "shared"
+      path = "${path.module}/../../../../lambda/code-files"
+      commands = [
+        "cd ../.. && npm run build -w code-files",
+        ":zip lambda/code-files/.build",
+      ]
     }
   ]
+
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.neptune_reader.arn
@@ -837,19 +845,21 @@ module "reviews_lambda" {
 
   function_name = "${var.project_name}-reviews-${var.environment}"
   handler       = "index.handler"
-  runtime       = "nodejs18.x"
+  runtime       = "nodejs24.x"
   timeout       = 30
 
   source_path = [
     {
-      path             = "${path.module}/../../../../lambda/reviews"
-      npm_requirements = true
-    },
-    {
-      path          = "${path.module}/../../../../lambda/shared"
-      prefix_in_zip = "shared"
+      path = "${path.module}/../../../../lambda/reviews"
+      commands = [
+        "cd ../.. && npm run build -w reviews",
+        ":zip lambda/reviews/.build",
+      ]
     }
   ]
+
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.neptune_reader.arn
@@ -939,19 +949,21 @@ module "general_info_lambda" {
 
   function_name = "${var.project_name}-general-info-${var.environment}"
   handler       = "index.handler"
-  runtime       = "nodejs18.x"
+  runtime       = "nodejs24.x"
   timeout       = 30
 
   source_path = [
     {
-      path             = "${path.module}/../../../../lambda/general-info"
-      npm_requirements = true
-    },
-    {
-      path          = "${path.module}/../../../../lambda/shared"
-      prefix_in_zip = "shared"
+      path = "${path.module}/../../../../lambda/general-info"
+      commands = [
+        "cd ../.. && npm run build -w general-info",
+        ":zip lambda/general-info/.build",
+      ]
     }
   ]
+
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.neptune_reader.arn

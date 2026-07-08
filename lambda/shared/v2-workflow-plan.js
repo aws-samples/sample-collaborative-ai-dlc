@@ -1,5 +1,3 @@
-'use strict';
-
 // Shared workflow → ordered execution plan loader (DynamoDB-only).
 //
 // The orchestrator needs the ordered list of stage instances for a pinned
@@ -12,11 +10,11 @@
 // Ownership shadowing matches the rest of the app: a `default` (user) block/
 // workflow shadows the `SYSTEM` baseline of the same id.
 
-const { QueryCommand } = require('@aws-sdk/lib-dynamodb');
-const { catalogGsi1Pk } = require('./blocks.js');
-const { workflowPk, workflowVersionPrefix } = require('./workflows.js');
-const { DEFAULT_TENANT, SYSTEM_TENANT } = require('./tenant.js');
-const { buildExecutionPlan, workflowScopes } = require('./v2-execution-plan.js');
+import { QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { catalogGsi1Pk } from './blocks.js';
+import { workflowPk, workflowVersionPrefix } from './workflows.js';
+import { DEFAULT_TENANT, SYSTEM_TENANT } from './tenant.js';
+import { buildExecutionPlan, workflowScopes } from './v2-execution-plan.js';
 
 const keyById = (items) => {
   const byId = {};
@@ -155,9 +153,6 @@ const loadWorkflowScopes = async ({ ddb, tableName, workflowId, workflowVersion 
   return [...workflowScopes(workflow)];
 };
 
-module.exports = {
-  loadExecutionPlan,
-  loadWorkflowScopes,
-  assembleWorkflow,
-  __test: { listMergedBlocks },
-};
+const __test = { listMergedBlocks };
+export { loadExecutionPlan, loadWorkflowScopes, assembleWorkflow, __test };
+export default { loadExecutionPlan, loadWorkflowScopes, assembleWorkflow, __test };

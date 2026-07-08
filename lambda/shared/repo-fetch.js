@@ -1,5 +1,3 @@
-'use strict';
-
 // Fetches the official aidlc-workflows repo at a pinned commit (or any ref) and
 // returns its `core/**` files in memory. This is the seed job's single source
 // of truth: rather than hand-transcribe the baseline, we read the real repo at
@@ -12,8 +10,8 @@
 // error — a partial or stale seed is worse than a clear failure the operator
 // retries.
 
-const zlib = require('node:zlib');
-const tar = require('tar-stream');
+import zlib from 'node:zlib';
+import tar from 'tar-stream';
 
 const REPO_OWNER = 'awslabs';
 const REPO_NAME = 'aidlc-workflows';
@@ -84,4 +82,5 @@ const fetchCoreFiles = async (ref) => {
   return files;
 };
 
-module.exports = { fetchCoreFiles, tarballUrl, REPO_OWNER, REPO_NAME };
+export { fetchCoreFiles, tarballUrl, REPO_OWNER, REPO_NAME };
+export default { fetchCoreFiles, tarballUrl, REPO_OWNER, REPO_NAME };

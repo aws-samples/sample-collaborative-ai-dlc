@@ -1,5 +1,3 @@
-'use strict';
-
 // Shared HMAC-signed realtime scope tokens.
 //
 // Both realtime fabrics historically verified only "valid Cognito JWT", which
@@ -23,7 +21,7 @@
 // which runs the same vector table against both implementations. If you change
 // anything here, mirror it there.
 
-const crypto = require('node:crypto');
+import crypto from 'node:crypto';
 
 const TOKEN_TTL_SECONDS = 600; // 10 minutes
 const TOKEN_VERSION = 1;
@@ -209,7 +207,16 @@ const isTokenLive = (tokenExp, now = Date.now()) => {
   return exp * 1000 > now;
 };
 
-module.exports = {
+export {
+  TOKEN_TTL_SECONDS,
+  signRealtimeToken,
+  verifyRealtimeToken,
+  verifyRealtimeAccess,
+  requiredScopeForYjsDoc,
+  requiredScopeForChannel,
+  isTokenLive,
+};
+export default {
   TOKEN_TTL_SECONDS,
   signRealtimeToken,
   verifyRealtimeToken,

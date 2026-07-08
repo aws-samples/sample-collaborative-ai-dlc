@@ -13,16 +13,13 @@
 
 import { spawn } from 'node:child_process';
 import { mkdir, stat } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import path from 'node:path';
+import { buildCloneUrl } from '../shared/git-providers.js';
 
 // Provider-aware clone-URL builder — the single source of truth for the per-
 // provider auth scheme (GitHub `x-access-token:`, GitLab `oauth2:`) and host.
 // Reusing it keeps the checkout on the shared registry rather than
 // re-deriving the GitHub-only scheme here. Defaults to github for legacy/blank.
-const require = createRequire(import.meta.url);
-const { buildCloneUrl } = require('../shared/git-providers.js');
-
 const run = (command, args, { cwd, spawnFn = spawn } = {}) =>
   new Promise((resolve) => {
     const child = spawnFn(command, args, {

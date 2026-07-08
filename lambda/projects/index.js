@@ -22,11 +22,9 @@ import {
   fetchMembershipRole,
 } from '../shared/trackers.js';
 import { normalizeCliModels, parseCliModels } from '../shared/cli-models.js';
-import processStorePkg from '../shared/v2-process-store.js';
-import intentDeletionPkg from '../shared/intent-deletion.js';
-
-const { createProcessStore } = processStorePkg;
-const { deleteIntentCascade } = intentDeletionPkg;
+import { createProcessStore } from '../shared/v2-process-store.js';
+import { deleteIntentCascade } from '../shared/intent-deletion.js';
+import { isSafeRepo } from '../shared/repo-validation.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
@@ -253,7 +251,6 @@ const REPO_URL_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}\/[a-zA-Z0-9][a-zA-Z0-9.
 // SSH URLs). We can't tighten it to owner/repo without breaking that contract,
 // but it still flows into the v2 workspace `git clone`. The shell/traversal-safe
 // guard lives in shared/ so it can't drift (esbuild bundles ../shared).
-const { isSafeRepo } = require('../shared/repo-validation');
 
 // Canonical repository role + provider vocabularies. Keep in sync with
 // `RepoRole` and `ProjectRepo.provider` in frontend/src/services/projects.ts.

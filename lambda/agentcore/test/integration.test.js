@@ -8,7 +8,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
-import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { readFileSync, readdirSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
@@ -26,9 +25,7 @@ const upstreamBody = readFileSync(path.join(here, 'fixtures', 'requirements-anal
 import { createGraphWriter } from '../mcp/graph-writer.js';
 import { createProcessBridge } from '../mcp/process-bridge.js';
 import { buildToolHandlers } from '../mcp/server.js';
-
-const require = createRequire(import.meta.url);
-const { createProcessStore } = require('../../shared/v2-process-store.js');
+import { createProcessStore } from '../../shared/v2-process-store.js';
 
 const PARTITION = 'agentcore-integration';
 const TABLE = 'v2-proc-integration';

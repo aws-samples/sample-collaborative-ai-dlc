@@ -1,5 +1,3 @@
-'use strict';
-
 // Metric aggregation — the single source of truth (server side) for how a metric
 // key folds across samples. Mirror of frontend/src/lib/metricAggregation.ts; a
 // cross-tree test asserts the known-key sets match. The runtime emits a free-form
@@ -66,10 +64,6 @@ const rollupAggregates = (bags) => {
   return acc;
 };
 
-module.exports = {
-  KNOWN_METRIC_KEYS: { ...REGISTRY },
-  classify,
-  isGauge,
-  aggregateMetrics,
-  rollupAggregates,
-};
+const KNOWN_METRIC_KEYS = { ...REGISTRY };
+export { KNOWN_METRIC_KEYS, classify, isGauge, aggregateMetrics, rollupAggregates };
+export default { KNOWN_METRIC_KEYS, classify, isGauge, aggregateMetrics, rollupAggregates };

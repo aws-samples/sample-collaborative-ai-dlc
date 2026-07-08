@@ -1,5 +1,3 @@
-'use strict';
-
 // Splits a markdown file into its YAML frontmatter (parsed) and the body that
 // follows. Used by the seed job to read the official aidlc-workflows files: the
 // structured block fields come from the frontmatter, the prose from the body.
@@ -8,7 +6,7 @@
 // file is the body. parseFrontmatter handles that by returning an empty `data`
 // object and the full text as `body`.
 
-const yaml = require('js-yaml');
+import yaml from 'js-yaml';
 
 // Matches a leading `---\n … \n---` fence. The body is everything after the
 // closing fence (a single trailing newline after the fence is swallowed).
@@ -37,4 +35,5 @@ const parseFrontmatter = (text) => {
   return { data, body: match[2] ?? '' };
 };
 
-module.exports = { parseFrontmatter };
+export { parseFrontmatter };
+export default { parseFrontmatter };

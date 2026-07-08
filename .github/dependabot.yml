@@ -29,13 +29,6 @@ updates:
   # desync child package.json vs the root lock and break `npm ci`.
   - package-ecosystem: 'npm'
     directories:
-      - '/lambda/agents'
-      - '/lambda/code-files'
-      - '/lambda/general-info'
-      - '/lambda/requirements'
-      - '/lambda/reviews'
-      - '/lambda/user-stories'
-      - '/lambda/users'
       - '/lambda/yjs-server'
     schedule:
       interval: 'weekly'

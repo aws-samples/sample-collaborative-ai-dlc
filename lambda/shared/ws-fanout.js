@@ -1,18 +1,16 @@
-'use strict';
-
 // Server-origin WebSocket fan-out to the v2 intent channel.
 //
 // Fan-out is BEST-EFFORT: persistence has already succeeded when this runs,
 // and every handler re-fetches from REST on receipt (payload-blind reload
 // hints), so a missed event only delays a refresh.
 
-const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
-const { DynamoDBDocumentClient, QueryCommand } = require('@aws-sdk/lib-dynamodb');
-const {
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import {
   ApiGatewayManagementApiClient,
   PostToConnectionCommand,
-} = require('@aws-sdk/client-apigatewaymanagementapi');
-const { isTokenLive } = require('./realtime-token.js');
+} from '@aws-sdk/client-apigatewaymanagementapi';
+import { isTokenLive } from './realtime-token.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
@@ -64,4 +62,5 @@ const broadcastToIntentChannel = async (intentId, payload) => {
   }
 };
 
-module.exports = { broadcastToIntentChannel };
+export { broadcastToIntentChannel };
+export default { broadcastToIntentChannel };

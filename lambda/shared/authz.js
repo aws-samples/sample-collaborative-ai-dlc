@@ -1,5 +1,3 @@
-'use strict';
-
 // Platform-admin authorization helper.
 //
 // Platform-wide settings (agent settings, tracker OAuth apps, GitHub auth
@@ -80,7 +78,8 @@ const requirePlatformAdmin = (event) => {
   };
 };
 
-module.exports = {
+export { PLATFORM_ADMIN_GROUP, parseGroups, getGroups, isPlatformAdmin, requirePlatformAdmin };
+export default {
   PLATFORM_ADMIN_GROUP,
   parseGroups,
   getGroups,

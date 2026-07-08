@@ -1,5 +1,3 @@
-'use strict';
-
 // Artifact structure contracts — the authoring half of the typed graph.
 //
 // The extraction REGISTRY (artifact-extractors.js) parses fenced YAML blocks
@@ -17,8 +15,8 @@
 // promote-units all depend on it), so its format spec must live in-repo, not
 // only in un-vendored upstream prose.
 
-const yaml = require('js-yaml');
-const { REGISTRY } = require('./artifact-extractors.js');
+import yaml from 'js-yaml';
+import { REGISTRY } from './artifact-extractors.js';
 
 // Build the canonical minimal example object for a registry entry from its
 // field examples. Kept as data (not a string) so the renderer and the
@@ -104,7 +102,8 @@ const renderStructureContracts = (artifactTypes = []) => {
   ].join('\n');
 };
 
-module.exports = {
+export { renderStructureContract, renderStructureContracts, exampleItem, UNITS_DAG_CONTRACT };
+export default {
   renderStructureContract,
   renderStructureContracts,
   exampleItem,

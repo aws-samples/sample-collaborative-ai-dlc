@@ -1,5 +1,3 @@
-'use strict';
-
 // Maps the fetched aidlc-workflows `core/**` files into the block + workflow
 // shapes the seed job writes. This is the data seam that REPLACES the old
 // hand-transcribed tables: every structured field is derived from the real
@@ -15,7 +13,7 @@
 // The `aidlc-v2` default workflow (phases + placements + rule refs) is derived
 // from the parsed stages and rules, exactly as the methodology composes them.
 
-const { parseFrontmatter } = require('./frontmatter.js');
+import { parseFrontmatter } from './frontmatter.js';
 
 const titleCase = (slug) =>
   String(slug)
@@ -407,7 +405,7 @@ const buildFromFiles = (files) => {
   return { blocks: allBlocks, workflow, sensorScripts, runtimeFiles };
 };
 
-module.exports = {
+export {
   buildFromFiles,
   buildArtifacts,
   buildDefaultWorkflow,
@@ -415,7 +413,23 @@ module.exports = {
   sensorScriptPath,
   titleCase,
   PHASE_ORDER,
-  // exported for unit tests
+  mapStage,
+  mapAgent,
+  mapScope,
+  mapSensor,
+  mapRule,
+  mapKnowledge,
+  mapSkill,
+  mapTemplate,
+};
+export default {
+  buildFromFiles,
+  buildArtifacts,
+  buildDefaultWorkflow,
+  isRuntimeFile,
+  sensorScriptPath,
+  titleCase,
+  PHASE_ORDER,
   mapStage,
   mapAgent,
   mapScope,

@@ -1,5 +1,3 @@
-'use strict';
-
 // ProviderError — uniform error shape thrown by every git-provider method.
 // status mirrors the upstream HTTP status (or a synthetic 4xx for client
 // errors); message is human-readable; extra is optional structured data
@@ -13,4 +11,5 @@ class ProviderError extends Error {
   }
 }
 
-module.exports = { ProviderError };
+export { ProviderError };
+export default { ProviderError };

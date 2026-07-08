@@ -1,7 +1,5 @@
-'use strict';
-
-const crypto = require('node:crypto');
-const yaml = require('js-yaml');
+import crypto from 'node:crypto';
+import yaml from 'js-yaml';
 
 const slugify = (value = '') =>
   String(value)
@@ -428,7 +426,8 @@ const extractArtifactStructure = ({ artifactType, artifactId, content = '' } = {
   };
 };
 
-module.exports = {
+export { REGISTRY, extractArtifactStructure, extractCitations, splitSections, slugify, sha256 };
+export default {
   REGISTRY,
   extractArtifactStructure,
   extractCitations,

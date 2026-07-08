@@ -1,5 +1,3 @@
-'use strict';
-
 const allowedOrigin = (headers) => {
   const origins = (process.env.CORS_ALLOWED_ORIGINS || '*').split(',');
   const reqOrigin = headers?.origin || headers?.Origin;
@@ -29,4 +27,5 @@ const buildResponse =
     body: JSON.stringify(body),
   });
 
-module.exports = { allowedOrigin, buildResponse };
+export { allowedOrigin, buildResponse };
+export default { allowedOrigin, buildResponse };
