@@ -283,7 +283,7 @@ export const runParallelSection = async (segment, toolkit) => {
     executeStage, // (ctxArg, stage, opts) → { state, reason?, value? }
     ids,
     intentBranch,
-    cloneBase, // { repos, baseBranch, gitToken, gitProvider }
+    cloneBase, // { repos, baseBranch, baseBranches, gitToken, gitProvider }
     // Dispatch-time git-token refresh (GitHub-App mode mints ~1h tokens; the
     // run-start snapshot goes stale). Optional: falls back to cloneBase.gitToken.
     freshGitToken = null,
@@ -599,6 +599,7 @@ export const runParallelSection = async (segment, toolkit) => {
                 unitBranch,
                 intentBranch,
                 baseBranch: cloneBase.baseBranch,
+                baseBranches: cloneBase.baseBranches,
                 gitToken: await laneGitToken(),
                 gitProvider: cloneBase.gitProvider,
               },

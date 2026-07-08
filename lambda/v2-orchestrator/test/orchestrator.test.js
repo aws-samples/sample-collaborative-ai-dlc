@@ -1592,6 +1592,23 @@ describe('WP6 — PR opened on SUCCEEDED (intent-pr)', () => {
     expect(opened[0].summary).toContain('https://github.com/o/r/pull/7');
   });
 
+  it('resolves each repo base branch from the per-repo baseBranches map, falling back to the legacy single baseBranch', async () => {
+    deps.store.getExecution = vi.fn(async () => ({
+      ...META,
+      repos: ['o/r', 'o/web'],
+      baseBranch: 'main',
+      baseBranches: { 'o/web': 'develop' },
+    }));
+    deps.openPr = vi.fn(async ({ repoId }) => ({
+      prUrl: `https://github.com/${repoId}/pull/7`,
+      prNumber: 7,
+    }));
+    const res = await start();
+    expect(res.ok).toBe(true);
+    expect(deps.openPr.mock.calls[0][0]).toMatchObject({ repoId: 'o/r', baseBranch: 'main' });
+    expect(deps.openPr.mock.calls[1][0]).toMatchObject({ repoId: 'o/web', baseBranch: 'develop' });
+  });
+
   it('names skipped/unmerged units in the PR body (honest partial delivery)', async () => {
     deps.store.listUnits = vi.fn(async () => [
       { slug: 'auth', state: 'MERGED' },

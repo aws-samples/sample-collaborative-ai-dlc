@@ -450,7 +450,12 @@ const createPullRequest = async (ctx, repoId, { branch, baseBranch, title, body 
       body: JSON.stringify({ title, body, head: branch, base }),
     });
 
-  let res = await postPr(baseBranch || 'main');
+  // No explicit base (project-wide legacy default, or a repo the caller left
+  // unset in a per-repo baseBranches map) — resolve the repo's REAL default
+  // branch rather than assuming `main` (a repo whose default is `master`/
+  // `develop`/… must not 422 here just because the caller didn't specify one).
+  const resolvedBase = baseBranch || (await getDefaultBranch(ctx, repoId)) || 'main';
+  let res = await postPr(resolvedBase);
 
   if (!res.ok) {
     let errorText = await res.text();
@@ -468,13 +473,13 @@ const createPullRequest = async (ctx, repoId, { branch, baseBranch, title, body 
       if (isNoChanges422(errorText)) {
         return { skipped: true, reason: 'no_changes' };
       }
-      // The base branch we asked for does not exist (repo default is not `main`).
-      // Resolve the repo's real default branch and retry once against it — the
-      // intent branch was cut from that HEAD at clone time, so it is the correct
-      // merge target.
+      // The base branch we asked for does not exist (e.g. a caller-supplied
+      // base was mistyped or deleted since). Resolve the repo's real default
+      // branch and retry once against it — the intent branch was cut from
+      // that HEAD at clone time, so it is a reasonable merge target.
       if (isBaseInvalid422(errorText)) {
         const defaultBranch = await getDefaultBranch(ctx, repoId);
-        if (defaultBranch && defaultBranch !== (baseBranch || 'main')) {
+        if (defaultBranch && defaultBranch !== resolvedBase) {
           res = await postPr(defaultBranch);
           if (res.ok) {
             const pr = await res.json();

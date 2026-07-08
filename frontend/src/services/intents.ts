@@ -43,6 +43,10 @@ export interface Intent {
   status: IntentStatus;
   branch: string | null;
   baseBranch: string | null;
+  // Per-repo base-branch override ({ [repoUrl]: branchName }); a repo absent
+  // from this map falls back to `baseBranch`, then to its own actual default
+  // branch. null when the caller didn't override anything (the common case).
+  baseBranches: Record<string, string> | null;
   repos: string[] | null;
   workflowId: string;
   workflowVersion: number | null;
@@ -299,6 +303,10 @@ export interface CreateIntentInput {
   prompt?: string;
   branch?: string;
   baseBranch?: string;
+  // Per-repo base-branch override ({ [repoUrl]: branchName }) — lets a caller
+  // pick a different base per repo on a multi-repo project. A repo omitted
+  // here falls back to `baseBranch`, then to its own actual default branch.
+  baseBranches?: Record<string, string>;
   scope?: string;
   // Optional tracker provenance when seeded from a GitHub issue / Jira artifact.
   source?: {

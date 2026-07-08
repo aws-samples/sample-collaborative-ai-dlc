@@ -426,6 +426,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           repos: meta.repos ?? [],
           branch: meta.branch,
           baseBranch: meta.baseBranch,
+          baseBranches: meta.baseBranches,
           gitToken: token,
           gitProvider,
           title: meta.title,
@@ -560,6 +561,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       repos: meta.repos ?? [],
       branch: meta.branch,
       baseBranch: meta.baseBranch,
+      baseBranches: meta.baseBranches,
       gitToken: token,
       gitProvider,
     };
@@ -725,6 +727,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       cloneBase: {
         repos: meta.repos ?? [],
         baseBranch: meta.baseBranch,
+        baseBranches: meta.baseBranches,
         gitToken: token,
         gitProvider,
       },
@@ -1030,16 +1033,21 @@ const openIntentPrs = async ({ openPr, store, meta, executionId, token, gitProvi
   const repos = meta.repos ?? [];
   const branch = meta.branch;
   const strategy = meta.prStrategy ?? 'intent-pr';
+  // Per-repo base-branch override wins; the legacy single string is the
+  // project-wide fallback; a repo absent from both falls through to null so
+  // the provider resolves that repo's ACTUAL default branch (never 'main').
+  const baseFor = (repoId) => meta.baseBranches?.[repoId] ?? meta.baseBranch ?? null;
   if (repos.length === 0) {
     return [
       { eventType: 'v2.pr.skipped', summary: 'No repositories on this intent — no PR to open' },
     ];
   }
   if (!token) {
+    const firstRepoId = typeof repos[0] === 'string' ? repos[0] : repos[0]?.url;
     return [
       {
         eventType: 'v2.pr.skipped',
-        summary: `No git credentials — open the PR manually from ${branch} onto ${meta.baseBranch ?? 'main'}`,
+        summary: `No git credentials — open the PR manually from ${branch} onto ${baseFor(firstRepoId) ?? 'the default branch'}`,
       },
     ];
   }
@@ -1082,7 +1090,7 @@ const openIntentPrs = async ({ openPr, store, meta, executionId, token, gitProvi
         token,
         repoId,
         branch,
-        baseBranch: meta.baseBranch ?? 'main',
+        baseBranch: baseFor(repoId),
         title,
         body,
       });

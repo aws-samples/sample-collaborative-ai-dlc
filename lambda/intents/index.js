@@ -117,6 +117,34 @@ const branchForIntent = ({ title, prompt, intentId, taken = new Set() }) => {
   return taken.has(candidate) ? `${candidate}-${shortId}` : candidate;
 };
 
+// Per-repo base-branch override, e.g. { "acme/api": "develop" }. A project can
+// hold multiple repos (primary + secondaries), and each may want to branch off
+// a DIFFERENT ref (a hotfix repo tracking `release`, a docs repo tracking
+// `main`, …) — so this is a map, not a single string. Any repo omitted from
+// the map falls back to the legacy single `baseBranch` (if the caller sent
+// one), then to that repo's own actual default branch (resolved lazily by the
+// checkout/PR steps — never hardcoded here). Returns `{ value: null }` when
+// there is nothing to override; `{ error }` on a malformed or out-of-scope
+// input so the caller gets a 400 instead of a silently-ignored typo.
+const validateBaseBranches = (input, repos) => {
+  if (input === undefined || input === null) return { value: null };
+  if (typeof input !== 'object' || Array.isArray(input)) {
+    return { error: 'baseBranches must be an object of { repoUrl: branchName }' };
+  }
+  const repoSet = new Set(repos ?? []);
+  const out = {};
+  for (const [repoUrl, branchName] of Object.entries(input)) {
+    if (!repoSet.has(repoUrl)) {
+      return { error: `baseBranches references a repo not on this project: ${repoUrl}` };
+    }
+    if (typeof branchName !== 'string' || !branchName.trim()) {
+      return { error: `baseBranches.${repoUrl} must be a non-empty branch name` };
+    }
+    out[repoUrl] = branchName.trim();
+  }
+  return { value: Object.keys(out).length ? out : null };
+};
+
 const getConnection = async () => {
   const host = process.env.NEPTUNE_ENDPOINT;
   const port = process.env.GREMLIN_PORT ?? '8182';
@@ -298,7 +326,11 @@ const fetchProjectConfig = async (g, projectId) => {
     repos: ordered,
     trackers,
     gitProvider: getVal(v, 'git_provider') || 'github',
-    baseBranch: 'main',
+    // null = each repo's actual default branch (resolved lazily downstream by
+    // the checkout and PR/MR steps via the provider's getDefaultBranch — see
+    // git-providers/{github,gitlab}.js). Do NOT hardcode 'main': a repo whose
+    // default is `master`/`develop`/… must clone/PR against its own HEAD.
+    baseBranch: null,
   };
 };
 
@@ -535,6 +567,7 @@ const mapIntent = (meta) => ({
   status: meta.status,
   branch: meta.branch ?? null,
   baseBranch: meta.baseBranch ?? null,
+  baseBranches: meta.baseBranches ?? null,
   repos: meta.repos ?? null,
   workflowId: meta.workflowId,
   workflowVersion: meta.workflowVersion ?? null,
@@ -1399,6 +1432,15 @@ export const handler = async (event) => {
         });
       }
       const planWarnings = planCheck.warnings?.length ? planCheck.warnings : null;
+      // Optional per-repo base-branch override (see validateBaseBranches) —
+      // validated against THIS intent's repo set before anything is written.
+      const { value: baseBranches, error: baseBranchesError } = validateBaseBranches(
+        data.baseBranches,
+        cfg.repos,
+      );
+      if (baseBranchesError) {
+        return response(400, { error: baseBranchesError });
+      }
       // Optional provenance — when the intent is kicked off from a tracker
       // issue, record which one. The imported text rides in `prompt`; this is
       // only the back-link. Validated against the project's actual bindings.
@@ -1431,6 +1473,7 @@ export const handler = async (event) => {
         prompt: data.prompt || null,
         branch,
         baseBranch: data.baseBranch || cfg.baseBranch,
+        baseBranches,
         repos: cfg.repos,
         gitProvider: cfg.gitProvider,
         agentCli: cfg.agentCli,

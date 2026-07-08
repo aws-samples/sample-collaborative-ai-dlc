@@ -170,6 +170,12 @@ const buildExecutionMeta = ({
   gitProvider = null,
   branch = null,
   baseBranch = null,
+  // Per-repo base-branch override ({ [repoUrl]: branchName }), snapshotted at
+  // create (see lambda/intents validateBaseBranches). A repo absent from this
+  // map falls back to `baseBranch`, then to its own actual default branch —
+  // resolved lazily by checkout/PR steps, never hardcoded here. null when the
+  // caller didn't override anything (the common case).
+  baseBranches = null,
   repos = null,
   // The project's selected agent CLI (claude|kiro|…) snapshotted at create; the
   // orchestrator forwards it to run-stage as `requestedCli` so the run honours the
@@ -241,6 +247,7 @@ const buildExecutionMeta = ({
   prompt,
   branch,
   baseBranch,
+  baseBranches,
   repos,
   gitProvider,
   agentCli,

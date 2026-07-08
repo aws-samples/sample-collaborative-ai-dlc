@@ -396,6 +396,23 @@ export default function IntentView() {
                 </p>
               </div>
             </div>
+            {(intent.baseBranch || intent.baseBranches) && (
+              <div>
+                <Label>Base branch</Label>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  {intent.baseBranches && Object.keys(intent.baseBranches).length > 0
+                    ? Object.entries(intent.baseBranches)
+                        .map(([repo, branch]) => `${repo} → ${branch}`)
+                        .join(', ')
+                    : intent.baseBranch}
+                  {intent.baseBranches &&
+                  Object.keys(intent.baseBranches).length > 0 &&
+                  intent.baseBranch
+                    ? ` (other repos → ${intent.baseBranch})`
+                    : ''}
+                </p>
+              </div>
+            )}
             <div className="flex justify-end">
               <Button onClick={handleStart} disabled={starting} className="gap-1.5">
                 {starting ? (

@@ -344,15 +344,92 @@ describe('workspace checkout (mocked git runner)', () => {
     expect(cmds.some((c) => c.startsWith('checkout -b feat/y'))).toBe(true);
   });
 
+  it('cuts a NON-default base branch off the remote-tracking ref (origin/<base>), not the bare name', async () => {
+    // Field bug: after a fresh clone, only the repo's DEFAULT branch has a
+    // local ref — every other branch exists solely as `origin/<name>`.
+    // `git checkout -b <branch> <base>` with the bare name silently fails for
+    // any non-default base (no DWIM for the `-b <new> <start-point>` form),
+    // which used to fall through to the orphan rung and silently divorce the
+    // branch from the real base. `origin/<base>` must be tried FIRST.
+    const cmds = [];
+    const runner = async (command, args) => {
+      cmds.push(args.join(' '));
+      if (args[0] === 'checkout' && args[1] === 'aidlc/i1') return { code: 1 }; // rung 1: no local ref yet
+      if (args.join(' ') === 'checkout -b aidlc/i1 origin/develop') return { code: 0 };
+      if (args[0] === 'checkout') return { code: 1 }; // bare name / orphan must NOT be reached
+      return { code: 0 }; // clone / remote set-url succeed
+    };
+    const res = await checkoutRepo({
+      repo: 'acme/api',
+      branch: 'aidlc/i1',
+      baseBranch: 'develop',
+      targetDir: '/ws',
+      runner,
+      ensureDir: noMkdir,
+    });
+    expect(res).toMatchObject({ cloned: true, branchOk: true });
+    expect(cmds).toContain('checkout -b aidlc/i1 origin/develop');
+    expect(cmds).not.toContain('checkout --orphan aidlc/i1');
+  });
+
+  it('falls back to the bare base name when origin/<base> does not resolve (caller already holds a local ref)', async () => {
+    // e.g. a unit lane basing off the intent branch, which a prior checkout in
+    // THIS workspace already created as a local branch (no `origin/` needed).
+    const cmds = [];
+    const runner = async (command, args) => {
+      cmds.push(args.join(' '));
+      if (args[0] === 'checkout' && args[1] === 'aidlc/i1--s0-unit-a') return { code: 1 };
+      if (args.join(' ') === 'checkout -b aidlc/i1--s0-unit-a origin/aidlc/i1') return { code: 1 };
+      if (args.join(' ') === 'checkout -b aidlc/i1--s0-unit-a aidlc/i1') return { code: 0 };
+      if (args[0] === 'checkout') return { code: 1 };
+      return { code: 0 }; // clone / remote set-url succeed
+    };
+    const res = await checkoutRepo({
+      repo: 'acme/api',
+      branch: 'aidlc/i1--s0-unit-a',
+      baseBranch: 'aidlc/i1',
+      targetDir: '/ws',
+      runner,
+      ensureDir: noMkdir,
+    });
+    expect(res).toMatchObject({ cloned: true, branchOk: true });
+    expect(cmds).toContain('checkout -b aidlc/i1--s0-unit-a aidlc/i1');
+  });
+
+  it('branches off the clone HEAD (no base arg) when baseBranch is null — never assumes "main"', async () => {
+    const cmds = [];
+    const runner = async (command, args) => {
+      cmds.push(args.join(' '));
+      if (args.join(' ') === 'checkout aidlc/i1') return { code: 1 };
+      if (args.join(' ') === 'checkout -b aidlc/i1') return { code: 0 };
+      if (args[0] === 'checkout') return { code: 1 };
+      return { code: 0 }; // clone / remote set-url succeed
+    };
+    const res = await checkoutRepo({
+      repo: 'acme/api',
+      branch: 'aidlc/i1',
+      baseBranch: null,
+      targetDir: '/ws',
+      runner,
+      ensureDir: noMkdir,
+    });
+    expect(res).toMatchObject({ cloned: true, branchOk: true });
+    expect(cmds).toContain('checkout -b aidlc/i1');
+  });
+
   it('falls back to an orphan branch for an EMPTY repo (clone ok, no base commit)', async () => {
     // Field incident: `git clone` of an empty repo exits 0, but
     // `git checkout -b <branch> main` fails ("'main' is not a commit") — the
     // run silently stayed on the unborn default branch. The orphan rung gives
-    // the intent a real branch on the unborn HEAD.
+    // the intent a real branch on the unborn HEAD. `rev-parse --verify HEAD`
+    // failing is what proves the repo is genuinely empty (unborn HEAD) — the
+    // gate that keeps a typo'd/deleted base from silently orphaning a repo
+    // that actually has history.
     const cmds = [];
     const runner = async (command, args) => {
       cmds.push(args.join(' '));
       if (args[0] === 'checkout' && args[1] !== '--orphan') return { code: 1 };
+      if (args[0] === 'rev-parse') return { code: 1 };
       return { code: 0 };
     };
     const res = await checkoutRepo({
@@ -368,6 +445,9 @@ describe('workspace checkout (mocked git runner)', () => {
   });
 
   it('reports branchOk:false when every branch rung fails (checkout, -b, --orphan)', async () => {
+    // rev-parse succeeds (HEAD exists — the repo genuinely has history), so
+    // the base-branch failure must NOT fall through to orphan (that would
+    // silently divorce the branch from real history); it fails loudly.
     const runner = async (command, args) => ({ code: args[0] === 'checkout' ? 1 : 0 });
     const res = await checkoutRepo({
       repo: 'acme/broken',
@@ -385,6 +465,7 @@ describe('workspace checkout (mocked git runner)', () => {
     const runner = async (command, args) => {
       cmds.push(args.join(' '));
       if (args[0] === 'checkout' && args[1] !== '--orphan') return { code: 1 };
+      if (args[0] === 'rev-parse') return { code: 1 };
       return { code: 0 };
     };
     const statFn = async (p) => {
@@ -440,6 +521,46 @@ describe('workspace checkout (mocked git runner)', () => {
       'https://oauth2:t@gitlab.com/group/api.git',
       'https://oauth2:t@gitlab.com/group/web.git',
     ]);
+  });
+
+  it('resolves each repo base branch from the per-repo baseBranches map, falling back to the legacy single baseBranch', async () => {
+    // acme/api overrides to 'develop' via the map; acme/web has no override
+    // and falls back to the legacy `baseBranch` string.
+    const basesUsed = [];
+    const runner = async (command, args) => {
+      if (args[0] === 'checkout' && args.length === 2) return { code: 1 }; // rung 1: no local ref yet
+      if (args[0] === 'checkout' && args[1] === '-b') basesUsed.push(args[3] ?? null);
+      return { code: 0 };
+    };
+    await checkoutRepos({
+      repos: ['acme/api', 'acme/web'],
+      branch: 'aidlc/i1',
+      baseBranch: 'main',
+      baseBranches: { 'acme/api': 'develop' },
+      gitToken: 't',
+      workspaceDir: '/ws',
+      runner,
+      ensureDir: noMkdir,
+    });
+    expect(basesUsed).toEqual(['origin/develop', 'origin/main']);
+  });
+
+  it('falls back to null (branch off clone HEAD) when a repo is absent from both baseBranches and the legacy baseBranch', async () => {
+    const basesUsed = [];
+    const runner = async (command, args) => {
+      if (args[0] === 'checkout' && args.length === 2) return { code: 1 }; // rung 1: no local ref yet
+      if (args[0] === 'checkout' && args[1] === '-b') basesUsed.push(args[3] ?? null);
+      return { code: 0 };
+    };
+    await checkoutRepos({
+      repos: ['acme/docs'],
+      branch: 'aidlc/i1',
+      gitToken: 't',
+      workspaceDir: '/ws',
+      runner,
+      ensureDir: noMkdir,
+    });
+    expect(basesUsed).toEqual([null]);
   });
 });
 
@@ -513,6 +634,27 @@ describe('ensureWorkspaceSource (self-heal a wiped checkout)', () => {
     expect(res.restored).toBe(true);
     expect(res.repos).toEqual(['acme/web']);
     expect(targets).toEqual(['/ws/acme/web']);
+  });
+
+  it('resolves the re-cloned repo base branch from the per-repo baseBranches map', async () => {
+    const basesUsed = [];
+    const runner = async (command, args) => {
+      if (args[0] === 'checkout' && args.length === 2) return { code: 1 }; // rung 1: fresh clone
+      if (args[0] === 'checkout' && args[1] === '-b') basesUsed.push(args[3] ?? null);
+      return { code: 0 };
+    };
+    const res = await ensureWorkspaceSource({
+      repos: ['acme/api', 'acme/web'],
+      branch: 'aidlc/i1',
+      baseBranch: 'main',
+      baseBranches: { 'acme/web': 'release' },
+      workspaceDir: '/ws',
+      runner,
+      ensureDir: noMkdir,
+      statFn: statFor([]), // both wiped
+    });
+    expect(res.failed).toEqual([]);
+    expect(basesUsed).toEqual(['origin/main', 'origin/release']);
   });
 
   it('reports a repo that could not be re-cloned as failed', async () => {

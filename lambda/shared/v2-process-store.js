@@ -906,6 +906,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     prompt,
     branch,
     baseBranch,
+    baseBranches,
     repos,
   }) => {
     const ts = now();
@@ -921,6 +922,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     maybe('prompt', ':prompt', prompt);
     maybe('branch', ':branch', branch);
     maybe('baseBranch', ':baseBranch', baseBranch);
+    maybe('baseBranches', ':baseBranches', baseBranches);
     maybe('repos', ':repos', repos);
     const { Attributes } = await ddb.send(
       new UpdateCommand({

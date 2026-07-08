@@ -584,6 +584,28 @@ describe('gitlab handler', () => {
       expect(JSON.parse(res.body).error).toBe('GitLab not connected');
     });
 
+    it('includes the project default branch when available', async () => {
+      mockGitConnection();
+      mockResolveGitToken();
+      mockFetch([
+        { body: [{ name: 'main' }, { name: 'develop' }] },
+        { body: { default_branch: 'develop' } },
+      ]);
+
+      const handler = await loadHandler();
+      const res = await handler(
+        makeEvent('GET', '/gitlab/projects/branches', {
+          queryStringParameters: { project: encodeURIComponent('group/widgets') },
+        }),
+      );
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({
+        branches: ['main', 'develop'],
+        defaultBranch: 'develop',
+      });
+    });
+
     it('passes the URL-encoded namespaced project path through to the GitLab API', async () => {
       mockGitConnection();
       mockResolveGitToken();

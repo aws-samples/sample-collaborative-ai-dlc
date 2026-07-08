@@ -5,6 +5,7 @@ import { intentsService } from '@/services/intents';
 import { trackersService, type TrackerIssue } from '@/services/trackers';
 import type { TrackerBinding } from '@/services/projects';
 import { workflowsService } from '@/services/workflows';
+import { getGitProviderService } from '@/services/gitProvider';
 import { buildSprintDescription } from '@/lib/buildSprintDescription';
 import { IntentSourcePicker } from '@/components/IntentSourcePicker';
 import { Button } from '@/components/ui/button';
@@ -20,7 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { AlertCircle, ArrowLeft, Loader2, X } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ChevronDown, ChevronRight, Loader2, X } from 'lucide-react';
 
 export default function NewIntentPage() {
   const navigate = useNavigate();
@@ -39,7 +40,17 @@ export default function NewIntentPage() {
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Base branch (per repo): optional, defaults to each repo's own default
+  // branch. Collapsed by default — most intents just want the default.
+  const [showBaseBranch, setShowBaseBranch] = useState(false);
+  const [baseBranchSelections, setBaseBranchSelections] = useState<Record<string, string>>({});
+  const [branchOptions, setBranchOptions] = useState<Record<string, string[]>>({});
+  const [branchDefaults, setBranchDefaults] = useState<Record<string, string>>({});
+  const [branchLoading, setBranchLoading] = useState<Record<string, boolean>>({});
+  const [branchLoadError, setBranchLoadError] = useState<Record<string, string>>({});
+
   const hasTrackers = (project?.trackers.length ?? 0) > 0;
+  const repos = project?.repos ?? [];
 
   const workflowId = project ? (project.workflowId ?? 'aidlc-v2') : null;
 
@@ -61,6 +72,36 @@ export default function NewIntentPage() {
       cancelled = true;
     };
   }, [workflowId]);
+
+  // Lazily fetch each repo's branch list (+ its actual default branch) the
+  // first time the base-branch picker is expanded — most intents never open
+  // it, so there is no reason to hit the git provider on every page load.
+  useEffect(() => {
+    if (!showBaseBranch || !project || repos.length === 0) return;
+    const service = getGitProviderService(project.gitProvider);
+    for (const repo of repos) {
+      if (branchOptions[repo.url] || branchLoading[repo.url]) continue;
+      setBranchLoading((prev) => ({ ...prev, [repo.url]: true }));
+      service
+        .listBranches(repo.url)
+        .then(({ branches, defaultBranch }) => {
+          setBranchOptions((prev) => ({ ...prev, [repo.url]: branches }));
+          if (defaultBranch) {
+            setBranchDefaults((prev) => ({ ...prev, [repo.url]: defaultBranch }));
+          }
+        })
+        .catch((e) => {
+          setBranchLoadError((prev) => ({
+            ...prev,
+            [repo.url]: e instanceof Error ? e.message : 'Failed to load branches',
+          }));
+        })
+        .finally(() => {
+          setBranchLoading((prev) => ({ ...prev, [repo.url]: false }));
+        });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- branchOptions/branchLoading read for dedupe only
+  }, [showBaseBranch, project, repos]);
 
   const handleSelectIssue = useCallback(
     async (issue: TrackerIssue, binding: TrackerBinding) => {
@@ -92,10 +133,14 @@ export default function NewIntentPage() {
     setCreating(true);
     setError(null);
     try {
+      const baseBranches = Object.fromEntries(
+        Object.entries(baseBranchSelections).filter(([, branch]) => branch),
+      );
       const intent = await intentsService.create(projectId, {
         title: title.trim(),
         prompt: prompt.trim(),
         scope,
+        baseBranches: Object.keys(baseBranches).length ? baseBranches : undefined,
         source: source
           ? {
               bindingId: source.binding.id,
@@ -243,7 +288,17 @@ export default function NewIntentPage() {
 
             <div>
               <Label htmlFor="intent-scope">Scope</Label>
-              <Select value={scope} onValueChange={setScope} disabled={scopeOptions.length === 0}>
+              <Select
+                value={scope}
+                // Radix's hidden bubble-<select> can fire a native `change`
+                // with an empty value when its `disabled` state flips (e.g.
+                // scopeOptions arriving async right after mount) — guard
+                // against silently blanking out an already-picked scope.
+                onValueChange={(v) => {
+                  if (v) setScope(v);
+                }}
+                disabled={scopeOptions.length === 0}
+              >
                 <SelectTrigger id="intent-scope" className="mt-1.5">
                   <SelectValue placeholder="Select a scope" />
                 </SelectTrigger>
@@ -260,6 +315,73 @@ export default function NewIntentPage() {
                 compiled scopes.
               </p>
             </div>
+
+            {repos.length > 0 && (
+              <div className="border rounded-md">
+                <button
+                  type="button"
+                  onClick={() => setShowBaseBranch((v) => !v)}
+                  className="w-full flex items-center gap-1.5 px-3 py-2 text-sm font-medium"
+                >
+                  {showBaseBranch ? (
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  ) : (
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  )}
+                  Base branch
+                  <span className="text-xs text-muted-foreground font-normal">
+                    (optional — defaults to each repo's own default branch)
+                  </span>
+                </button>
+                {showBaseBranch && (
+                  <div className="px-3 pb-3 space-y-3">
+                    {repos.map((repo) => {
+                      const options = branchOptions[repo.url];
+                      const defaultBranch = branchDefaults[repo.url];
+                      return (
+                        <div key={repo.url}>
+                          <Label htmlFor={`base-branch-${repo.url}`} className="text-xs">
+                            {repo.url}
+                          </Label>
+                          {branchLoadError[repo.url] ? (
+                            <p className="mt-1.5 text-xs text-destructive">
+                              Couldn't load branches: {branchLoadError[repo.url]} — will use the
+                              repo's default branch.
+                            </p>
+                          ) : (
+                            <Select
+                              value={baseBranchSelections[repo.url] ?? ''}
+                              onValueChange={(v) =>
+                                setBaseBranchSelections((prev) => ({ ...prev, [repo.url]: v }))
+                              }
+                              disabled={branchLoading[repo.url] || !options}
+                            >
+                              <SelectTrigger id={`base-branch-${repo.url}`} className="mt-1.5">
+                                <SelectValue
+                                  placeholder={
+                                    branchLoading[repo.url]
+                                      ? 'Loading branches…'
+                                      : `Default${defaultBranch ? ` (${defaultBranch})` : ''}`
+                                  }
+                                />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {(options ?? []).map((b) => (
+                                  <SelectItem key={b} value={b}>
+                                    {b}
+                                    {b === defaultBranch ? ' (default)' : ''}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="flex items-center gap-3 pt-2">
               <Button

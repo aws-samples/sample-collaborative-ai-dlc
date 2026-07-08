@@ -107,7 +107,10 @@ export interface GitProviderService {
   getStatus: () => Promise<GitProviderStatus>;
   listRepos: () => Promise<GitRepo[]>;
   disconnect: () => Promise<unknown>;
-  listBranches: (repoId: string) => Promise<{ branches: string[] }>;
+  // `defaultBranch` (best-effort — omitted if the provider lookup failed) is
+  // the repo's ACTUAL default branch, for preselecting a base-branch picker
+  // instead of assuming 'main'.
+  listBranches: (repoId: string) => Promise<{ branches: string[]; defaultBranch?: string }>;
   getRepoTree: (repoId: string, branch?: string) => Promise<{ tree: GitFile[] }>;
   getFileContents: (repoId: string, path: string, branch?: string) => Promise<GitFileContent>;
   // PR (GitHub) / MR (GitLab) comments — read-only in the UI (ReviewPage
@@ -132,7 +135,9 @@ export const githubService: GitProviderService = {
   disconnect: () => api.delete('/github/disconnect'),
   listBranches: (repoId: string) => {
     const [owner, repo] = splitOwnerRepo(repoId);
-    return api.get<{ branches: string[] }>(`/github/repos/${owner}/${repo}/branches`);
+    return api.get<{ branches: string[]; defaultBranch?: string }>(
+      `/github/repos/${owner}/${repo}/branches`,
+    );
   },
   getRepoTree: (repoId: string, branch?: string) => {
     const [owner, repo] = splitOwnerRepo(repoId);
@@ -167,7 +172,7 @@ export const gitlabService: GitProviderService = {
   listRepos: () => api.get<GitRepo[]>('/gitlab/repos'),
   disconnect: () => api.delete('/gitlab/disconnect'),
   listBranches: (repoId: string) =>
-    api.get<{ branches: string[] }>(
+    api.get<{ branches: string[]; defaultBranch?: string }>(
       `/gitlab/projects/branches?project=${encodeURIComponent(repoId)}`,
     ),
   getRepoTree: (repoId: string, branch?: string) =>

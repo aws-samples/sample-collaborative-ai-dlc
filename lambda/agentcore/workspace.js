@@ -51,7 +51,10 @@ const cloneUrl = (repo, gitToken, gitProvider) => buildCloneUrl(gitProvider, rep
 export const checkoutRepo = async ({
   repo,
   branch,
-  baseBranch = 'main',
+  // null (the common case) = branch off whatever HEAD the clone lands on —
+  // the repo's ACTUAL default branch. Never assume 'main': a repo whose
+  // default is 'master'/'develop'/… must still get a correct base.
+  baseBranch = null,
   gitToken,
   gitProvider,
   targetDir,
@@ -69,24 +72,59 @@ export const checkoutRepo = async ({
       await runner('git', ['remote', 'add', 'origin', cleanUrl], { cwd: targetDir });
     }
   };
-  // Ensure the working branch exists and is checked out. Three rungs:
-  //   1. `git checkout <branch>`            — branch already exists (warm session).
-  //   2. `git checkout -b <branch> <base>`  — create off the base branch.
-  //   3. `git checkout --orphan <branch>`   — EMPTY repo (no commit on <base>):
-  //      `-b` fails with "'<base>' is not a commit"; the orphan rung gives the
-  //      run a real branch on an unborn HEAD so the first stage's commit lands
-  //      on the intent branch (field incident: greenfield repo with zero
-  //      commits silently kept the run on the default unborn branch).
+  // Ensure the working branch exists and is checked out. Rungs:
+  //   1. `git checkout <branch>`                    — already exists (warm session).
+  //   2a. `git checkout -b <branch>`                 — no base requested: branch off
+  //       the clone's current HEAD (the repo's real default).
+  //   2b. `git checkout -b <branch> origin/<base>`   — an explicit base: MUST resolve
+  //       via the remote-tracking ref. After a normal `git clone`, only the
+  //       DEFAULT branch gets a local ref — every other branch exists solely as
+  //       `refs/remotes/origin/<name>`. Plain `<base>` as the start-point does NOT
+  //       get git's "single remote match" DWIM (that shorthand only applies to the
+  //       bare `git checkout <branch>` form, not the `-b <new> <start-point>`
+  //       form) — so a non-default base silently failed here and fell through to
+  //       the orphan rung, landing every stage's commits on a HISTORY-LESS branch
+  //       that quietly diverged from the intended base (field bug).
+  //   2c. `git checkout -b <branch> <base>`          — plain-name fallback for a
+  //       caller that already holds a LOCAL ref for <base> (e.g. a unit lane
+  //       branching off the intent branch that a prior checkout already created
+  //       locally in this same workspace — no `origin/` prefix needed there).
+  //   3. `git checkout --orphan <branch>`            — ONLY for a genuinely EMPTY
+  //       repo (unborn HEAD, verified via `rev-parse --verify HEAD`): gives the
+  //       run a real branch so the first stage's commit lands on the intent
+  //       branch (field incident: greenfield repo with zero commits silently kept
+  //       the run on the default unborn branch). Gated on the empty-repo check so
+  //       a typo'd/deleted base branch fails LOUDLY (branch_setup_failed) instead
+  //       of silently orphaning a repo that actually has history.
   // Returns true when one rung landed on <branch>; false is a REAL failure the
   // caller must surface (the run would otherwise commit to the wrong branch).
   const ensureBranch = async () => {
     if (!branch) return true;
     const checkout = await runner('git', ['checkout', branch], { cwd: targetDir });
     if (checkout.code === 0) return true;
-    const create = await runner('git', ['checkout', '-b', branch, baseBranch], { cwd: targetDir });
-    if (create.code === 0) return true;
-    const orphan = await runner('git', ['checkout', '--orphan', branch], { cwd: targetDir });
-    return orphan.code === 0;
+
+    if (!baseBranch) {
+      const createFromHead = await runner('git', ['checkout', '-b', branch], { cwd: targetDir });
+      if (createFromHead.code === 0) return true;
+    } else {
+      const createFromOrigin = await runner(
+        'git',
+        ['checkout', '-b', branch, `origin/${baseBranch}`],
+        { cwd: targetDir },
+      );
+      if (createFromOrigin.code === 0) return true;
+      const createFromLocal = await runner('git', ['checkout', '-b', branch, baseBranch], {
+        cwd: targetDir,
+      });
+      if (createFromLocal.code === 0) return true;
+    }
+
+    const headCheck = await runner('git', ['rev-parse', '--verify', 'HEAD'], { cwd: targetDir });
+    if (headCheck.code !== 0) {
+      const orphan = await runner('git', ['checkout', '--orphan', branch], { cwd: targetDir });
+      return orphan.code === 0;
+    }
+    return false;
   };
 
   if (await hasCheckout(targetDir, statFn)) {
@@ -119,11 +157,19 @@ export const checkoutRepo = async ({
 const repoTargetDir = ({ url, workspaceDir, multi }) =>
   multi ? path.join(workspaceDir, url) : workspaceDir;
 
+// Per-repo base-branch override wins; the legacy single string is the
+// project-wide fallback; a repo absent from both resolves to null, which
+// checkoutRepo treats as "branch off this repo's own default HEAD" — never a
+// hardcoded 'main'.
+const resolveBaseBranch = (url, baseBranch, baseBranches) =>
+  baseBranches?.[url] ?? baseBranch ?? null;
+
 // Check out every repo for the intent into the session workspace.
 export const checkoutRepos = async ({
   repos = [],
   branch,
   baseBranch,
+  baseBranches,
   gitToken,
   gitProvider,
   workspaceDir,
@@ -139,7 +185,7 @@ export const checkoutRepos = async ({
       await checkoutRepo({
         repo: url,
         branch,
-        baseBranch,
+        baseBranch: resolveBaseBranch(url, baseBranch, baseBranches),
         gitToken,
         gitProvider,
         targetDir,
@@ -183,6 +229,7 @@ export const ensureWorkspaceSource = async ({
   repos = [],
   branch,
   baseBranch,
+  baseBranches,
   gitToken,
   gitProvider,
   workspaceDir,
@@ -204,7 +251,7 @@ export const ensureWorkspaceSource = async ({
     const res = await checkoutRepo({
       repo: url,
       branch,
-      baseBranch,
+      baseBranch: resolveBaseBranch(url, baseBranch, baseBranches),
       gitToken,
       gitProvider,
       targetDir,

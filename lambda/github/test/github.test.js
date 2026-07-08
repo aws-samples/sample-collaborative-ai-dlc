@@ -70,6 +70,7 @@ const mockFetch = (responses = []) => {
     callIndex++;
     return Promise.resolve({
       status: res.status || 200,
+      ok: (res.status || 200) >= 200 && (res.status || 200) < 300,
       json: () => Promise.resolve(res.body),
     });
   });
@@ -577,6 +578,24 @@ describe('github handler', () => {
 
       expect(res.statusCode).toBe(400);
       expect(JSON.parse(res.body).error).toBe('GitHub not connected');
+    });
+
+    it('includes the repo default branch when available', async () => {
+      mockGitConnection();
+      mockResolveGitToken();
+      mockFetch([
+        { body: [{ name: 'main' }, { name: 'develop' }] },
+        { body: { default_branch: 'develop' } },
+      ]);
+
+      const handler = await loadHandler();
+      const res = await handler(makeEvent('GET', '/github/repos/org/repo/branches'));
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({
+        branches: ['main', 'develop'],
+        defaultBranch: 'develop',
+      });
     });
 
     it('returns 400 when GitHub returns non-array response', async () => {

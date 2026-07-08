@@ -516,7 +516,11 @@ const createPullRequest = async (ctx, repoId, { branch, baseBranch, title, body 
       }),
     });
 
-  let res = await postMr(baseBranch || 'main');
+  // No explicit base (project-wide legacy default, or a repo the caller left
+  // unset in a per-repo baseBranches map) — resolve the project's REAL default
+  // branch rather than assuming `main`.
+  const resolvedBase = baseBranch || (await getDefaultBranch(ctx, repoId)) || 'main';
+  let res = await postMr(resolvedBase);
 
   if (!res.ok) {
     let errorText = await res.text();
@@ -536,12 +540,13 @@ const createPullRequest = async (ctx, repoId, { branch, baseBranch, title, body 
       ) {
         return { skipped: true, reason: 'no_changes' };
       }
-      // Target branch does not exist (project default is not `main`). Retry once
-      // against the project's real default branch — the source branch was cut
-      // from that HEAD at clone time, so it is the correct merge target.
+      // Target branch does not exist (e.g. a caller-supplied base was mistyped
+      // or deleted since). Retry once against the project's real default
+      // branch — the source branch was cut from that HEAD at clone time, so
+      // it is a reasonable merge target.
       if (text.includes('target branch')) {
         const defaultBranch = await getDefaultBranch(ctx, repoId);
-        if (defaultBranch && defaultBranch !== (baseBranch || 'main')) {
+        if (defaultBranch && defaultBranch !== resolvedBase) {
           res = await postMr(defaultBranch);
           if (res.ok) {
             await cleanupConstructionTaskBranches(ctx, repoId, branch);

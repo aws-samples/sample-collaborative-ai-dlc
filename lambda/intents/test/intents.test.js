@@ -279,6 +279,24 @@ const seedV2Project = async (sub) => {
   return projectId;
 };
 
+// Attach an additional Repository vertex to an existing v2 project (secondary
+// repo, e.g. to exercise per-repo baseBranches validation/resolution).
+const addRepo = async (projectId, url, role = 'secondary') => {
+  const repoId = `repo-${randomUUID()}`;
+  await g
+    .addV('Repository')
+    .property('id', repoId)
+    .property('url', url)
+    .property('role', role)
+    .property('added_at', '2026-01-02')
+    .as('r')
+    .V()
+    .has('Project', 'id', projectId)
+    .addE('HAS_REPO')
+    .to('r')
+    .next();
+};
+
 // Attach a TrackerBinding vertex to a project via HAS_TRACKER (mirrors the
 // tracker abstraction's projection shape). Returns the binding id.
 const seedTrackerBinding = async (projectId, { provider = 'github-issues' } = {}) => {
@@ -400,6 +418,86 @@ describe('POST /projects/{id}/intents', () => {
     });
     expect(res.statusCode).toBe(201);
     expect(JSON.parse(res.body).branch).toBe('custom/my-branch');
+  });
+
+  it('defaults baseBranch/baseBranches to null (never hardcodes "main") when the caller omits them', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const res = await createIntent(sub, projectId);
+    expect(res.statusCode).toBe(201);
+    const intent = JSON.parse(res.body);
+    expect(intent.baseBranch).toBeNull();
+    expect(intent.baseBranches).toBeNull();
+  });
+
+  it('honors a caller-supplied per-repo baseBranches map', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    await addRepo(projectId, 'owner/web');
+    const res = await createIntent(sub, projectId, {
+      title: 'Whatever',
+      prompt: 'Build X',
+      scope: 'feature',
+      baseBranches: { 'owner/repo': 'develop', 'owner/web': 'release' },
+    });
+    expect(res.statusCode).toBe(201);
+    const intent = JSON.parse(res.body);
+    expect(intent.baseBranches).toEqual({ 'owner/repo': 'develop', 'owner/web': 'release' });
+  });
+
+  it('honors the legacy single baseBranch alongside a partial baseBranches override', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const res = await createIntent(sub, projectId, {
+      title: 'Whatever',
+      prompt: 'Build X',
+      scope: 'feature',
+      baseBranch: 'main',
+      baseBranches: { 'owner/repo': 'develop' },
+    });
+    expect(res.statusCode).toBe(201);
+    const intent = JSON.parse(res.body);
+    expect(intent.baseBranch).toBe('main');
+    expect(intent.baseBranches).toEqual({ 'owner/repo': 'develop' });
+  });
+
+  it('rejects a baseBranches map that references a repo not on the project', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const res = await createIntent(sub, projectId, {
+      title: 'Whatever',
+      prompt: 'Build X',
+      scope: 'feature',
+      baseBranches: { 'owner/not-a-project-repo': 'develop' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toContain('owner/not-a-project-repo');
+  });
+
+  it('rejects a malformed baseBranches (not an object of repoUrl -> branchName)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const res = await createIntent(sub, projectId, {
+      title: 'Whatever',
+      prompt: 'Build X',
+      scope: 'feature',
+      baseBranches: ['owner/repo'],
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toContain('baseBranches');
+  });
+
+  it('rejects a baseBranches entry with a blank branch name', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const res = await createIntent(sub, projectId, {
+      title: 'Whatever',
+      prompt: 'Build X',
+      scope: 'feature',
+      baseBranches: { 'owner/repo': '   ' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toContain('owner/repo');
   });
 
   it('merges the Admin global model under the project selection at create', async () => {

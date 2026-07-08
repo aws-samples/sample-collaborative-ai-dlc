@@ -163,6 +163,25 @@ describe('github provider — repo browse + PR + comments', () => {
     expect(posts).toBe(2);
   });
 
+  it('createPullRequest resolves the repo default branch when baseBranch is omitted', async () => {
+    // No baseBranch on the call (per-repo baseBranches map left this repo
+    // unset) — must target the repo's REAL default, not a hardcoded 'main'.
+    const fetchImpl = makeFetch([
+      ['/git/matching-refs/', { json: [] }],
+      ['/repos/o/r/pulls', { status: 201, json: { html_url: 'https://gh/pr/5', number: 5 } }],
+      ['/repos/o/r', { json: { default_branch: 'develop' } }],
+    ]);
+    const out = await gh.createPullRequest({ token: 't', fetchImpl }, 'o/r', {
+      branch: 'feat',
+      baseBranch: null,
+      title: 'T',
+      body: 'B',
+    });
+    expect(out).toEqual({ prUrl: 'https://gh/pr/5', prNumber: 5 });
+    const postCall = fetchImpl.calls.find((c) => c.options?.method === 'POST');
+    expect(JSON.parse(postCall.options.body).base).toBe('develop');
+  });
+
   it('getPullRequestState classifies merged vs closed vs open', async () => {
     const open = makeFetch([['/pulls/1', { json: { state: 'open' } }]]);
     const merged = makeFetch([['/pulls/2', { json: { state: 'closed', merged_at: 'x' } }]]);
@@ -255,6 +274,30 @@ describe('gitlab provider — repo browse + MR + token refresh', () => {
       body: 'B',
     });
     expect(out).toEqual({ prUrl: 'https://gl/mr/3', prNumber: 3, existing: true });
+  });
+
+  it('createPullRequest resolves the project default branch when baseBranch is omitted', async () => {
+    const fetchImpl = makeFetch([
+      ['/repository/branches?search', { json: [] }],
+      ['/merge_requests?source_branch', { json: [] }],
+      [
+        '/merge_requests',
+        (url, opts) =>
+          opts.method === 'POST'
+            ? { status: 201, json: { web_url: 'https://gl/mr/8', iid: 8 } }
+            : { json: [] },
+      ],
+      ['/projects/g%2Fp', { json: { default_branch: 'develop' } }],
+    ]);
+    const out = await gl.createPullRequest({ token: 't', fetchImpl }, 'g/p', {
+      branch: 'feat',
+      baseBranch: null,
+      title: 'T',
+      body: 'B',
+    });
+    expect(out).toEqual({ prUrl: 'https://gl/mr/8', prNumber: 8 });
+    const postCall = fetchImpl.calls.find((c) => c.options?.method === 'POST');
+    expect(JSON.parse(postCall.options.body).target_branch).toBe('develop');
   });
 
   it('getPullRequestState maps opened/merged/closed', async () => {

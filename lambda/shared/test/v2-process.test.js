@@ -525,7 +525,19 @@ describe('createProcessStore', () => {
     expect(input.ExpressionAttributeValues[':prompt']).toBe('do the thing');
     expect(input.ExpressionAttributeValues[':branch']).toBe('aidlc/i1');
     expect(input.ExpressionAttributeValues[':baseBranch']).toBeUndefined();
+    expect(input.ExpressionAttributeValues[':baseBranches']).toBeUndefined();
     expect(input.UpdateExpression).toContain('prompt = :prompt');
+  });
+
+  it('patchExecutionConfig sets baseBranches (per-repo override) when supplied', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: {} });
+    await store.patchExecutionConfig({
+      executionId: 'e1',
+      baseBranches: { 'owner/repo': 'develop' },
+    });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ExpressionAttributeValues[':baseBranches']).toEqual({ 'owner/repo': 'develop' });
+    expect(input.UpdateExpression).toContain('baseBranches = :baseBranches');
   });
 
   it('setGateCallbackId stamps the durable callbackId on the gate row', async () => {
@@ -553,7 +565,8 @@ describe('buildExecutionMeta intent-config + DRAFT', () => {
       prompt: 'Build X',
       branch: 'aidlc/i1',
       baseBranch: 'main',
-      repos: ['owner/repo'],
+      baseBranches: { 'owner/web': 'develop' },
+      repos: ['owner/repo', 'owner/web'],
     });
     expect(meta).toMatchObject({
       status: 'DRAFT',
@@ -561,7 +574,8 @@ describe('buildExecutionMeta intent-config + DRAFT', () => {
       prompt: 'Build X',
       branch: 'aidlc/i1',
       baseBranch: 'main',
-      repos: ['owner/repo'],
+      baseBranches: { 'owner/web': 'develop' },
+      repos: ['owner/repo', 'owner/web'],
     });
     expect(meta.GSI1SK).toBe('STATUS#DRAFT#STARTED#T#EXEC#e1');
   });
@@ -599,6 +613,7 @@ describe('buildExecutionMeta intent-config + DRAFT', () => {
       prompt: null,
       branch: null,
       baseBranch: null,
+      baseBranches: null,
       repos: null,
       agentCli: null,
       cliModels: null,

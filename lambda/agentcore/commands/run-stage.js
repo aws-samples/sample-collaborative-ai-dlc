@@ -641,6 +641,7 @@ export const runStage = async (
     repos = [],
     branch,
     baseBranch,
+    baseBranches,
     gitToken,
     gitProvider,
     // Resume mode: when set, re-invoke the SAME parked stage conversation with the
@@ -831,6 +832,7 @@ export const runStage = async (
       repos,
       branch,
       baseBranch,
+      baseBranches,
       gitToken,
       gitProvider,
       workspaceDir,

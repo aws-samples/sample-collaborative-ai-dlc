@@ -276,7 +276,12 @@ export const createGitHandler = (provider, routes) => {
         });
         if (!ctx) return response(400, { error: `${providerLabel} not connected` });
         const branches = await provider.listBranches(ctx, branchRepo);
-        return response(200, { branches });
+        // Best-effort: also surface the repo's actual default branch so a
+        // base-branch picker can preselect it instead of assuming `main`.
+        // Never fail the request over this — the picker just falls back to
+        // showing no preselection.
+        const defaultBranch = await provider.getDefaultBranch(ctx, branchRepo).catch(() => null);
+        return response(200, defaultBranch ? { branches, defaultBranch } : { branches });
       }
 
       // GET .../tree
