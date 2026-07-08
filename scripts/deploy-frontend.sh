@@ -56,6 +56,7 @@ fi
 # Build frontend
 cd "$SCRIPT_DIR/../frontend"
 echo "Building frontend..."
+npm ci
 npm run build
 
 # Upload to S3
