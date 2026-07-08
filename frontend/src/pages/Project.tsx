@@ -357,7 +357,7 @@ function IntentsView({
 
   const [usage, setUsage] = useState<ProjectMetrics | null>(null);
   const [confirmDeleteIntent, setConfirmDeleteIntent] = useState<Intent | null>(null);
-  const [deletingIntent, setDeletingIntent] = useState(false);
+  const [deletingIntent, setDeletingIntent] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<IntentSort>(loadIntentSort);
   const canDeleteIntents = project.userRole === 'owner' || project.userRole === 'admin';
 
@@ -410,17 +410,18 @@ function IntentsView({
 
   const handleDeleteIntent = async () => {
     if (!confirmDeleteIntent) return;
-    setDeletingIntent(true);
+    const intentToDelete = confirmDeleteIntent;
+    setDeletingIntent(intentToDelete.id);
     setError(null);
     try {
-      await intentsService.delete(projectId, confirmDeleteIntent.id);
+      await intentsService.delete(projectId, intentToDelete.id);
       setConfirmDeleteIntent(null);
       refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete intent');
       setConfirmDeleteIntent(null);
     } finally {
-      setDeletingIntent(false);
+      setDeletingIntent(null);
     }
   };
 
@@ -542,7 +543,7 @@ function IntentsView({
               // The row being purged: dimmed + spinner, navigation disabled while
               // the (multi-store) cascade runs so it can't be clicked into a
               // half-deleted intent.
-              const isDeleting = deletingIntent && confirmDeleteIntent?.id === it.id;
+              const isDeleting = deletingIntent === it.id;
               // A row is a div-with-role, not a <button>: the delete affordance
               // nested inside would otherwise be a button-in-button (invalid HTML).
               return (
@@ -635,7 +636,7 @@ function IntentsView({
       <AlertDialog
         open={!!confirmDeleteIntent}
         onOpenChange={(open) => {
-          if (!open) setConfirmDeleteIntent(null);
+          if (!open && !deletingIntent) setConfirmDeleteIntent(null);
         }}
       >
         <AlertDialogContent>
@@ -648,13 +649,23 @@ function IntentsView({
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={deletingIntent}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={!!deletingIntent}>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              onClick={handleDeleteIntent}
-              disabled={deletingIntent}
+              onClick={(e) => {
+                e.preventDefault();
+                void handleDeleteIntent();
+              }}
+              disabled={!!deletingIntent}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              {deletingIntent ? 'Deleting…' : 'Delete Intent'}
+              {deletingIntent ? (
+                <span className="flex items-center gap-1.5">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Deleting…
+                </span>
+              ) : (
+                'Delete Intent'
+              )}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
