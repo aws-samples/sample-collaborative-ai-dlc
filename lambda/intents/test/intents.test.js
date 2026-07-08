@@ -2127,6 +2127,54 @@ describe('POST /rewind', () => {
       delete process.env.AGENTCORE_RUNTIME_ARN;
     }
   });
+
+  it('409s a rewind to a stage the run scope does not EXECUTE (out-of-scope guard)', async () => {
+    // Field incident follow-up: a rewind must not execute a stage the scope
+    // excludes (e.g. brownfield-only reverse-engineering on a greenfield run).
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedPlan();
+    // Placed in the workflow but SKIP for the run's 'feature' scope.
+    procStore.set(keyOf('WF#default#aidlc-v2', 'V#4#PLACEMENT#reverse-engineering'), {
+      pk: 'WF#default#aidlc-v2',
+      sk: 'V#4#PLACEMENT#reverse-engineering',
+      stageId: 'reverse-engineering',
+      order: 0,
+      scopeMembership: { feature: 'SKIP', enterprise: 'EXECUTE' },
+    });
+    procStore.set(keyOf('BLOCK#reverse-engineering', 'META'), {
+      pk: 'BLOCK#reverse-engineering',
+      sk: 'META',
+      GSI1PK: 'TENANT#default#STAGE',
+      GSI1SK: 'NAME#reverse-engineering',
+      id: 'reverse-engineering',
+      blockId: 'reverse-engineering',
+      type: 'STAGE',
+      version: 1,
+      mode: 'inline',
+      leadAgent: 'orchestrator',
+      produces: [],
+      consumes: [],
+    });
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    setStatus(intent.id, { status: 'FAILED' });
+    const res = await rewind(sub, projectId, intent.id, { fromStageId: 'reverse-engineering' });
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).error).toContain('not executed in scope');
+    // Nothing was reset or relaunched.
+    expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(0);
+  });
+
+  it('still 400s a genuinely unknown rewind target (with the in-scope stage list)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    setStatus(intent.id, { status: 'FAILED' });
+    const res = await rewind(sub, projectId, intent.id, { fromStageId: 'no-such-stage' });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).stages).toEqual(['design', 'implement']);
+  });
 });
 
 // ── WP4: the unit dimension on the API surface (docs/v2-parallel.md) ─────────

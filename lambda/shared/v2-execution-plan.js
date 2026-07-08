@@ -568,7 +568,22 @@ const buildExecutionPlan = ({
     }
   }
 
-  const plan = { workflowId, workflowVersion, scope, namespace, stages: orderedStages, sections };
+  // Authored placements the scope projection dropped (SKIP or un-wired) — the
+  // rewind endpoint uses this to tell "stage exists but is out of scope for
+  // this run" (409, actionable) apart from a genuinely unknown stage id (400).
+  const outOfScopeStageIds = (workflow.placements ?? [])
+    .map((p) => p.stageId)
+    .filter((id) => !inScopeIds.has(id));
+
+  const plan = {
+    workflowId,
+    workflowVersion,
+    scope,
+    namespace,
+    stages: orderedStages,
+    sections,
+    outOfScopeStageIds,
+  };
   return { valid: errors.length === 0, errors, warnings, plan };
 };
 

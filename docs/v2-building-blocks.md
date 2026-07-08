@@ -82,6 +82,23 @@ path), one **placement** per stage (homed under a phase, carrying a
 Every mutation writes an immutable `V#<n>#…` snapshot so a future intent→workflow
 link can pin an exact composition.
 
+Scope membership is the **single execution gate** for once-per-workflow stages:
+the run projects the workflow onto its scope and executes only `EXECUTE`
+placements. The upstream stage files' `condition:` prose (e.g.
+reverse-engineering's "skip for greenfield") is deliberately NOT evaluated at
+run time — encode that intent as membership on the placement. Consequences the
+platform enforces:
+
+- `POST /placements` without a membership defaults from the SYSTEM baseline
+  workflow's placement for the same stage (the seed derives that from the
+  upstream frontmatter `scopes`), so a stage added in the composer is wired the
+  way upstream ships it instead of silently `{}`.
+- A placement with no `EXECUTE` in any scope can never run: the plan builder
+  emits a non-fatal `zero_scope_placement` warning and the composer badges the
+  chip ("No scope — never runs").
+- A rewind target must be in scope: rewinding to a placed-but-skipped stage is
+  a 409, not a back door around the scope projection.
+
 `GET /workflows/{id}/compiled` serves views computed on demand by pure functions
 in `lambda/shared/compile.js`:
 

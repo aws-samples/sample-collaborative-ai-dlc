@@ -1021,6 +1021,16 @@ export const handler = async (event) => {
       const stages = planResult.plan.stages;
       const idx = stages.findIndex((s) => s.stageId === fromStageId);
       if (idx < 0) {
+        // The plan is scope-projected: a stage the workflow places but the
+        // run's scope does not EXECUTE is not a rewind target — running it
+        // would execute a stage the scope deliberately (or accidentally, see
+        // zero_scope_placement) excludes. 409 with the wiring hint instead of
+        // pretending the stage does not exist.
+        if ((planResult.plan.outOfScopeStageIds ?? []).includes(fromStageId)) {
+          return response(409, {
+            error: `Stage "${fromStageId}" is not executed in scope "${meta.scope}" — wire it to EXECUTE for this scope in the workflow composer before rewinding to it`,
+          });
+        }
         return response(400, {
           error: `Unknown stage "${fromStageId}"`,
           stages: stages.map((s) => s.stageId),

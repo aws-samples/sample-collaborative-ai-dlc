@@ -210,6 +210,20 @@ describe('buildExecutionPlan — validation', () => {
     const { warnings } = buildExecutionPlan({ workflow: wf, scope: 'feature', library: lib });
     expect(warnings.filter((w) => w.code === 'zero_scope_placement')).toEqual([]);
   });
+
+  it('lists the authored-but-out-of-scope stages on the plan (rewind guard input)', () => {
+    const lib = baseLibrary({
+      stagesById: { a: stage('a'), b: stage('b'), c: stage('c') },
+    });
+    const wf = workflow([
+      placement('a', 'feature', 0),
+      { stageId: 'b', order: 1, scopeMembership: { mvp: 'EXECUTE', feature: 'SKIP' } },
+      { stageId: 'c', order: 2, scopeMembership: {} },
+    ]);
+    const { plan } = buildExecutionPlan({ workflow: wf, scope: 'feature', library: lib });
+    expect(plan.stages.map((s) => s.stageId)).toEqual(['a']);
+    expect(plan.outOfScopeStageIds).toEqual(['b', 'c']);
+  });
 });
 
 describe('buildExecutionPlan — plan shape', () => {
