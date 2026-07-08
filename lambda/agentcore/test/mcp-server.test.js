@@ -165,6 +165,19 @@ describe('buildToolHandlers — routing + envelopes', () => {
     expect(bridge.calls[0][1]).toEqual({ content: 'hi', kind: 'text' });
   });
 
+  it('uses graph manager for graph tools but not process-only tools', async () => {
+    const graph = { withWriter: vi.fn(async (fn) => fn(writer)) };
+    const handlers = buildToolHandlers({ graph, bridge });
+
+    await handlers.create_artifact({ artifactType: 'design', id: 'd1' });
+    expect(graph.withWriter).toHaveBeenCalledTimes(1);
+
+    await handlers.send_output({ content: 'hi' });
+    await handlers.collect_metric({ metrics: { tokens: 1 } });
+    await handlers.emit_stage_note({ summary: 'note' });
+    expect(graph.withWriter).toHaveBeenCalledTimes(1);
+  });
+
   it('routes record_team_knowledge through the writer (defaulting agentRef to shared)', async () => {
     const env = await h.record_team_knowledge({ id: 'naming-conv', content: 'use kebab' });
     expect(parse(env)).toEqual({ id: 'naming-conv', agentRef: 'shared' });

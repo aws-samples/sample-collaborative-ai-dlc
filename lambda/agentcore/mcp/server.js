@@ -81,91 +81,112 @@ const guardRead = async (bridge, tool, args, fn) => {
 
 // The full author tool surface (a main stage agent). Reviewer runs get the
 // READ_TOOLS subset only (see reviewerHandlers).
-export const buildToolHandlers = ({ writer, bridge }) => ({
-  // ── Business reads ──
-  get_artifact: ({ id, mode }) =>
-    guardRead(bridge, 'get_artifact', { id, mode: mode ?? 'full' }, () =>
-      writer.getArtifact({ id, mode: mode ?? 'full' }),
-    ),
-  lookup_artifacts: ({ artifactType }) =>
-    guardRead(bridge, 'lookup_artifacts', { artifactType }, () =>
-      writer.lookupArtifacts({ artifactType }),
-    ),
-  get_intent_graph: () => guardRead(bridge, 'get_intent_graph', {}, () => writer.getIntentGraph()),
-  get_artifact_neighbors: ({ id, edge, direction }) =>
-    guardRead(bridge, 'get_artifact_neighbors', { id, edge, direction }, () =>
-      writer.getNeighbors({ id, edge: edge ?? null, direction: direction ?? 'both' }),
-    ),
-  get_artifact_toc: ({ id }) =>
-    guardRead(bridge, 'get_artifact_toc', { id }, () => writer.getArtifactToc({ id })),
-  get_section: ({ artifactId, heading, slug }) =>
-    guardRead(bridge, 'get_section', { artifactId, heading, slug }, () =>
-      writer.getSection({ artifactId, heading: heading ?? null, slug: slug ?? null }),
-    ),
-  get_items: ({ itemType, artifactType, limit }) =>
-    guardRead(bridge, 'get_items', { itemType, artifactType, limit }, () =>
-      writer.getItems({
-        itemType: itemType ?? null,
-        artifactType: artifactType ?? null,
-        limit: limit ?? 100,
-      }),
-    ),
-  search_graph: ({ query, artifactType, limit }) =>
-    guardRead(bridge, 'search_graph', { query, artifactType, limit }, () =>
-      writer.searchGraph({ query, artifactType: artifactType ?? null, limit: limit ?? 25 }),
-    ),
-  get_coverage: ({ unitSlug }) =>
-    guardRead(bridge, 'get_coverage', { unitSlug }, () =>
-      writer.getCoverage({ unitSlug: unitSlug ?? null }),
-    ),
-  get_team_knowledge: ({ agentRef }) =>
-    guard(() => writer.getTeamKnowledge({ agentRef: agentRef ?? null })),
-  get_learning_rules: () => guard(() => writer.getLearningRules()),
+export const buildToolHandlers = ({ writer, graph, bridge }) => {
+  const withWriter = (fn) => (graph ? graph.withWriter(fn) : fn(writer));
 
-  // ── Business writes ──
-  create_artifact: ({ artifactType, id, title, content, props, links }) =>
-    guard(async () => {
-      const res = await writer.createArtifact({
-        artifactType,
-        id,
-        title,
-        content,
-        props,
-        links: links ?? [],
-      });
-      await notifyArtifact(bridge, { id, title, action: 'created' });
-      return res;
-    }),
-  update_artifact: ({ id, props }) =>
-    guard(async () => {
-      const res = await writer.updateArtifact({ id, props: props ?? {} });
-      await notifyArtifact(bridge, { id, title: props?.title, action: 'updated' });
-      return res;
-    }),
-  link_artifacts: ({ fromId, toId, edge }) =>
-    guard(() => writer.linkArtifacts({ fromId, toId, edge })),
-  record_team_knowledge: ({ id, title, content, agentRef, props }) =>
-    guard(() =>
-      writer.recordTeamKnowledge({ id, title, content, agentRef: agentRef ?? 'shared', props }),
-    ),
-  record_learning_rule: ({ id, title, content, layer, pairing }) =>
-    guard(() =>
-      writer.recordLearningRule({
-        id,
-        title,
-        content,
-        layer: layer ?? 'project-learnings',
-        pairing: pairing ?? 'feedforward-only',
-      }),
-    ),
+  return {
+    // ── Business reads ──
+    get_artifact: ({ id, mode }) =>
+      guardRead(bridge, 'get_artifact', { id, mode: mode ?? 'full' }, () =>
+        withWriter((w) => w.getArtifact({ id, mode: mode ?? 'full' })),
+      ),
+    lookup_artifacts: ({ artifactType }) =>
+      guardRead(bridge, 'lookup_artifacts', { artifactType }, () =>
+        withWriter((w) => w.lookupArtifacts({ artifactType })),
+      ),
+    get_intent_graph: () =>
+      guardRead(bridge, 'get_intent_graph', {}, () => withWriter((w) => w.getIntentGraph())),
+    get_artifact_neighbors: ({ id, edge, direction }) =>
+      guardRead(bridge, 'get_artifact_neighbors', { id, edge, direction }, () =>
+        withWriter((w) =>
+          w.getNeighbors({ id, edge: edge ?? null, direction: direction ?? 'both' }),
+        ),
+      ),
+    get_artifact_toc: ({ id }) =>
+      guardRead(bridge, 'get_artifact_toc', { id }, () =>
+        withWriter((w) => w.getArtifactToc({ id })),
+      ),
+    get_section: ({ artifactId, heading, slug }) =>
+      guardRead(bridge, 'get_section', { artifactId, heading, slug }, () =>
+        withWriter((w) =>
+          w.getSection({ artifactId, heading: heading ?? null, slug: slug ?? null }),
+        ),
+      ),
+    get_items: ({ itemType, artifactType, limit }) =>
+      guardRead(bridge, 'get_items', { itemType, artifactType, limit }, () =>
+        withWriter((w) =>
+          w.getItems({
+            itemType: itemType ?? null,
+            artifactType: artifactType ?? null,
+            limit: limit ?? 100,
+          }),
+        ),
+      ),
+    search_graph: ({ query, artifactType, limit }) =>
+      guardRead(bridge, 'search_graph', { query, artifactType, limit }, () =>
+        withWriter((w) =>
+          w.searchGraph({ query, artifactType: artifactType ?? null, limit: limit ?? 25 }),
+        ),
+      ),
+    get_coverage: ({ unitSlug }) =>
+      guardRead(bridge, 'get_coverage', { unitSlug }, () =>
+        withWriter((w) => w.getCoverage({ unitSlug: unitSlug ?? null })),
+      ),
+    get_team_knowledge: ({ agentRef }) =>
+      guard(() => withWriter((w) => w.getTeamKnowledge({ agentRef: agentRef ?? null }))),
+    get_learning_rules: () => guard(() => withWriter((w) => w.getLearningRules())),
 
-  // ── Collaboration / process ──
-  ask_question: ({ questions }) => guard(() => bridge.askQuestion({ questions })),
-  send_output: ({ content, kind }) =>
-    guard(() => bridge.sendOutput({ content, kind: kind ?? 'text' })),
-  collect_metric: ({ metrics }) => guard(() => bridge.collectMetric({ metrics })),
-  emit_stage_note: ({ summary, type }) => guard(() => bridge.emitStageNote({ summary, type })),
-});
+    // ── Business writes ──
+    create_artifact: ({ artifactType, id, title, content, props, links }) =>
+      guard(async () => {
+        const res = await withWriter((w) =>
+          w.createArtifact({
+            artifactType,
+            id,
+            title,
+            content,
+            props,
+            links: links ?? [],
+          }),
+        );
+        await notifyArtifact(bridge, { id, title, action: 'created' });
+        return res;
+      }),
+    update_artifact: ({ id, props }) =>
+      guard(async () => {
+        const res = await withWriter((w) => w.updateArtifact({ id, props: props ?? {} }));
+        await notifyArtifact(bridge, { id, title: props?.title, action: 'updated' });
+        return res;
+      }),
+    link_artifacts: ({ fromId, toId, edge }) =>
+      guard(() => withWriter((w) => w.linkArtifacts({ fromId, toId, edge }))),
+    record_team_knowledge: ({ id, title, content, agentRef, props }) =>
+      guard(() =>
+        withWriter((w) =>
+          w.recordTeamKnowledge({ id, title, content, agentRef: agentRef ?? 'shared', props }),
+        ),
+      ),
+    record_learning_rule: ({ id, title, content, layer, pairing }) =>
+      guard(() =>
+        withWriter((w) =>
+          w.recordLearningRule({
+            id,
+            title,
+            content,
+            layer: layer ?? 'project-learnings',
+            pairing: pairing ?? 'feedforward-only',
+          }),
+        ),
+      ),
+
+    // ── Collaboration / process ──
+    ask_question: ({ questions }) => guard(() => bridge.askQuestion({ questions })),
+    send_output: ({ content, kind }) =>
+      guard(() => bridge.sendOutput({ content, kind: kind ?? 'text' })),
+    collect_metric: ({ metrics }) => guard(() => bridge.collectMetric({ metrics })),
+    emit_stage_note: ({ summary, type }) => guard(() => bridge.emitStageNote({ summary, type })),
+  };
+};
 
 // Read-only tool names a clean-room reviewer may call. No writes, no questions —
 // a reviewer inspects and judges; it never mutates the graph or asks the human.

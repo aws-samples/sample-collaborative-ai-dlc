@@ -13,7 +13,8 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { createRequire } from 'node:module';
 import { ddb, openGraph, broadcastToIntent } from '../clients.js';
-import { createGraphWriter } from './graph-writer.js';
+import { createGraphWriter, closeGraphSource } from './graph-writer.js';
+import { createGraphManager } from './graph-manager.js';
 import { createProcessBridge } from './process-bridge.js';
 import { buildToolHandlers, registerTools } from './server.js';
 
@@ -40,18 +41,24 @@ export const startMcpServer = async ({ env = process.env } = {}) => {
   const scope = scopeFromEnv(env);
   const role = env.V2_MCP_ROLE === 'reviewer' ? 'reviewer' : 'author';
 
-  const g = await openGraph();
-  const writer = createGraphWriter({ g, scope });
+  const graph = createGraphManager({
+    openGraph,
+    createWriter: createGraphWriter,
+    closeGraphSource,
+    scope,
+  });
   const store = createProcessStore({ ddb, tableName: env.V2_PROCESS_TABLE });
   const bridge = createProcessBridge({
     store,
-    graphWriter: writer,
+    graphWriter: {
+      recordQuestion: (args) => graph.withWriter((writer) => writer.recordQuestion(args)),
+    },
     broadcast: (payload) => broadcastToIntent(scope.intentId, payload),
     scope,
     pollIntervalMs: Number(env.V2_QUESTION_POLL_MS) || 3000,
   });
 
-  const handlers = buildToolHandlers({ writer, bridge });
+  const handlers = buildToolHandlers({ graph, bridge });
   const server = new McpServer({ name: 'aidlc-v2-mcp', version: '1.0.0' });
   const registered = registerTools({ server, handlers, role, z, env });
 
