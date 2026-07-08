@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Trash2, X, Layers, Plus } from 'lucide-react';
+import { Trash2, X, Layers, Plus, AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { AUTONOMY_STYLES } from '@/lib/autonomy';
 import { paletteColorForIndex } from '@/components/v2/scope-graph-utils';
@@ -74,6 +74,12 @@ export function PhaseLanes({
       .toSorted((a, b) => a.order - b.order);
 
   const placedStageIdSet = new Set(visiblePlacements.map((p) => p.stageId));
+
+  // A placement wired to EXECUTE in no scope can never run in any scope — the
+  // exact silent-un-wiring the incident hit (reverse-engineering). Surface it
+  // on the chip so the author sees the gap in the composer, not in a dead run.
+  const isUnwired = (p: Placement) =>
+    !Object.values(p.scopeMembership ?? {}).some((v) => v === 'EXECUTE');
 
   const handleDragOver = (e: React.DragEvent, key: string) => {
     e.preventDefault();
@@ -183,6 +189,7 @@ export function PhaseLanes({
                     label={stagesById[p.stageId]?.name ?? p.stageId}
                     readOnly={readOnly}
                     autonomyLevel={compiled?.autonomy.perStage[p.stageId]}
+                    unwired={isUnwired(p)}
                     onRemove={() => onRemovePlacement(p.stageId)}
                     onOpenStage={() => onOpenStage(p.stageId)}
                     index={idx}
@@ -250,6 +257,7 @@ export function PhaseLanes({
                     label={stagesById[p.stageId]?.name ?? p.stageId}
                     readOnly={readOnly}
                     autonomyLevel={compiled?.autonomy.perStage[p.stageId]}
+                    unwired={isUnwired(p)}
                     onRemove={() => onRemovePlacement(p.stageId)}
                     onOpenStage={() => onOpenStage(p.stageId)}
                     index={idx}
@@ -347,6 +355,7 @@ function PlacementChip({
   label,
   readOnly,
   autonomyLevel,
+  unwired,
   onRemove,
   onOpenStage,
   index,
@@ -359,6 +368,7 @@ function PlacementChip({
   label: string;
   readOnly: boolean;
   autonomyLevel?: string;
+  unwired?: boolean;
   onRemove: () => void;
   onOpenStage: () => void;
   index: number;
@@ -449,6 +459,17 @@ function PlacementChip({
             <span className="inline-flex items-center gap-1 shrink-0">
               <span className={cn('h-1.5 w-1.5 rounded-full', autonomy.dot)} />
               <span className="text-[10px] text-muted-foreground">{autonomy.chipLabel}</span>
+            </span>
+          )}
+          {unwired && (
+            <span
+              className="inline-flex items-center gap-1 shrink-0"
+              title="Not wired to EXECUTE in any scope — this stage will never run. Enable it in the scope matrix below."
+            >
+              <AlertTriangle className="h-2.5 w-2.5 text-amber-500" />
+              <span className="text-[10px] text-amber-600 dark:text-amber-500">
+                No scope — never runs
+              </span>
             </span>
           )}
         </div>

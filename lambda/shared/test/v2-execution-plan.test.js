@@ -173,6 +173,43 @@ describe('buildExecutionPlan — validation', () => {
     });
     expect(valid).toBe(true);
   });
+
+  it('warns (non-fatal) about a placement wired to EXECUTE in NO scope', () => {
+    // Field incident: the composer stored scopeMembership {} on add — the
+    // stage silently never ran in any scope, with no signal anywhere.
+    const lib = baseLibrary({
+      stagesById: {
+        a: stage('a'),
+        'reverse-engineering': stage('reverse-engineering'),
+      },
+    });
+    const wf = workflow([
+      placement('a', 'feature', 0),
+      { stageId: 'reverse-engineering', order: 1, scopeMembership: {} },
+    ]);
+    const { valid, errors, warnings, plan } = buildExecutionPlan({
+      workflow: wf,
+      scope: 'feature',
+      library: lib,
+    });
+    expect(valid).toBe(true);
+    expect(errors).toEqual([]);
+    expect(warnings.find((w) => w.code === 'zero_scope_placement')).toMatchObject({
+      stageId: 'reverse-engineering',
+    });
+    // The un-wired stage is (correctly) not part of the plan.
+    expect(plan.stages.map((s) => s.stageId)).toEqual(['a']);
+  });
+
+  it('does NOT warn about a stage wired to EXECUTE in some other scope', () => {
+    const lib = baseLibrary({ stagesById: { a: stage('a'), b: stage('b') } });
+    const wf = workflow([
+      placement('a', 'feature', 0),
+      { stageId: 'b', order: 1, scopeMembership: { mvp: 'EXECUTE', feature: 'SKIP' } },
+    ]);
+    const { warnings } = buildExecutionPlan({ workflow: wf, scope: 'feature', library: lib });
+    expect(warnings.filter((w) => w.code === 'zero_scope_placement')).toEqual([]);
+  });
 });
 
 describe('buildExecutionPlan — plan shape', () => {

@@ -566,8 +566,9 @@ describe('POST /projects/{id}/intents', () => {
     seedPlanFixtures(projectId, {
       scopes: ['lean'],
       placements: [
-        // Producer exists in the workflow but is SKIP for the lean scope.
-        { stageId: 'producer', scopeMembership: { lean: 'SKIP' } },
+        // Producer exists in the workflow but is SKIP for the lean scope
+        // (EXECUTE elsewhere — a designed scope shortcut, not an un-wired stage).
+        { stageId: 'producer', scopeMembership: { lean: 'SKIP', full: 'EXECUTE' } },
         { stageId: 'consumer', order: 1, scopeMembership: { lean: 'EXECUTE' } },
       ],
       stages: [

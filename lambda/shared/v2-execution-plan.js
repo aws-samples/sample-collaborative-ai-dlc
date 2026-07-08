@@ -249,6 +249,24 @@ const buildExecutionPlan = ({
   const placements = (workflow.placements ?? []).filter((p) => isInScope(p, scope));
   const inScopeIds = new Set(placements.map((p) => p.stageId));
 
+  // A placement wired to EXECUTE in NO scope can never run in ANY run of this
+  // workflow — almost always an authoring accident (the composer used to store
+  // scopeMembership {} on add; field incident: reverse-engineering silently
+  // un-wired for every scope). Non-fatal: an intentionally parked stage stays
+  // legal, but the advisory reaches the timeline via the warnings pipeline.
+  for (const p of workflow.placements ?? []) {
+    const wired = Object.values(p.scopeMembership ?? {}).some((v) => v === 'EXECUTE');
+    if (!wired) {
+      warnings.push(
+        err(
+          'zero_scope_placement',
+          `stage "${p.stageId}" is not wired to EXECUTE in any scope — it will never run in this workflow`,
+          { stageId: p.stageId, ref: p.stageId },
+        ),
+      );
+    }
+  }
+
   // Scope-agnostic producer map over the WHOLE authored workflow (every
   // placement, any scope). This is what tells a deliberate scope shortcut
   // (producer exists, but is SKIP for this scope — upstream's documented
