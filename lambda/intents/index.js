@@ -1432,6 +1432,7 @@ export const handler = async (event) => {
         branch,
         baseBranch: data.baseBranch || cfg.baseBranch,
         repos: cfg.repos,
+        gitProvider: cfg.gitProvider,
         agentCli: cfg.agentCli,
         cliModels: cfg.cliModels,
         deriveEnrichment: await fetchDeriveEnrichment(),

@@ -167,6 +167,7 @@ const buildExecutionMeta = ({
   // docs/v2-data-model.md). `repos` is the array of clone targets (owner/repo).
   title = null,
   prompt = null,
+  gitProvider = null,
   branch = null,
   baseBranch = null,
   repos = null,
@@ -241,6 +242,7 @@ const buildExecutionMeta = ({
   branch,
   baseBranch,
   repos,
+  gitProvider,
   agentCli,
   cliModels,
   deriveEnrichment,
