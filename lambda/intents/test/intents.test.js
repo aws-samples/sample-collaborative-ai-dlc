@@ -21,6 +21,7 @@ import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
+  StopRuntimeSessionCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
 // CJS shared module — default-import then destructure. Used to compute the
 // deterministic stage-instance ids the rewind flow resets/supersedes.
@@ -1587,6 +1588,25 @@ describe('POST /cancel', () => {
       expect(res.statusCode).toBe(409);
     },
   );
+
+  it('stops the intent runtime session (best-effort) so the cancelled run frees its microVM', async () => {
+    process.env.AGENTCORE_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:eu:1:runtime/x';
+    try {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const intent = JSON.parse((await createIntent(sub, projectId)).body);
+      setStatus(intent.id, { status: 'WAITING' });
+      const res = await cancel(sub, projectId, intent.id);
+      expect(res.statusCode).toBe(200);
+      const stops = agentcoreMock.commandCalls(StopRuntimeSessionCommand);
+      expect(stops).toHaveLength(1);
+      expect(stops[0].args[0].input.runtimeSessionId.startsWith(`aidlc-intent-${intent.id}`)).toBe(
+        true,
+      );
+    } finally {
+      delete process.env.AGENTCORE_RUNTIME_ARN;
+    }
+  });
 });
 
 describe('DELETE /projects/{id}/intents/{intentId}', () => {
@@ -2061,6 +2081,50 @@ describe('POST /rewind', () => {
     });
     expect(res.statusCode).toBe(500);
     expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).status).toBe('FAILED');
+  });
+
+  it('stops the intent runtime session BEFORE relaunching (zombie-session fix)', async () => {
+    // Field incident: an image redeploy does not kill a live session — the
+    // rewound run kept executing on the pre-fix microVM. The rewind must stop
+    // the session so the relaunch starts fresh on the current image.
+    process.env.AGENTCORE_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:eu:1:runtime/x';
+    try {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      seedPlan();
+      const intent = JSON.parse((await createIntent(sub, projectId)).body);
+      setStatus(intent.id, { status: 'FAILED' });
+      seedStageRow(intent.id, 'implement', 'FAILED');
+      const res = await rewind(sub, projectId, intent.id, { fromStageId: 'implement' });
+      expect(res.statusCode).toBe(202);
+      const stops = agentcoreMock.commandCalls(StopRuntimeSessionCommand);
+      expect(stops).toHaveLength(1);
+      expect(stops[0].args[0].input.runtimeSessionId.startsWith(`aidlc-intent-${intent.id}`)).toBe(
+        true,
+      );
+      // The relaunch still went out after the stop.
+      expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(1);
+    } finally {
+      delete process.env.AGENTCORE_RUNTIME_ARN;
+    }
+  });
+
+  it('a failed session stop never blocks the rewind (best-effort)', async () => {
+    process.env.AGENTCORE_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:eu:1:runtime/x';
+    try {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      seedPlan();
+      const intent = JSON.parse((await createIntent(sub, projectId)).body);
+      setStatus(intent.id, { status: 'FAILED' });
+      seedStageRow(intent.id, 'implement', 'FAILED');
+      agentcoreMock.on(StopRuntimeSessionCommand).rejects(new Error('already stopped'));
+      const res = await rewind(sub, projectId, intent.id, { fromStageId: 'implement' });
+      expect(res.statusCode).toBe(202);
+      expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(1);
+    } finally {
+      delete process.env.AGENTCORE_RUNTIME_ARN;
+    }
   });
 });
 

@@ -1536,8 +1536,11 @@ resource "aws_iam_role_policy" "intents" {
       {
         # Manual graph-projection backfill (POST .../intents/{id}/derive):
         # dispatch the derive-artifacts command to the AgentCore runtime.
+        # StopRuntimeSession: rewind/cancel/delete stop the intent's live
+        # session so a relaunch starts a fresh microVM on the CURRENT image
+        # (zombie-session field incident) and a cancelled run frees compute.
         Effect   = "Allow"
-        Action   = ["bedrock-agentcore:InvokeAgentRuntime"]
+        Action   = ["bedrock-agentcore:InvokeAgentRuntime", "bedrock-agentcore:StopRuntimeSession"]
         Resource = var.agentcore_runtime_arn != "" ? [var.agentcore_runtime_arn, "${var.agentcore_runtime_arn}/*"] : ["*"]
       }
     ]

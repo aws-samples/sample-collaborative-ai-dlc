@@ -164,10 +164,14 @@ const hasCheckout = async (targetDir, statFn) => {
 };
 
 // Self-heal the source checkout. AgentCore managed session storage (/mnt/workspace)
-// is wiped on every runtime image redeploy and after 14 idle days, so a stage that
-// runs after a deploy would otherwise spawn its CLI against an EMPTY tree and run
-// blind (the reverse-engineering "source not present" incident). Called before
-// every run-stage (fresh AND resume): re-clone any repo whose checkout is missing.
+// EXPIRES after 14 idle days, and a NEW session (fresh runtimeSessionId, or one
+// whose storage expired) starts with an empty mount — a stage that runs on a
+// fresh mount would otherwise spawn its CLI against an EMPTY tree and run blind
+// (the reverse-engineering "source not present" incident). NOTE (field-proven):
+// an image redeploy does NOT wipe the mount of a LIVE session — the session
+// keeps its microVM (old image + mount) until stopped or idle-reaped; the mount
+// is re-attached by session id across StopRuntimeSession. Called before every
+// run-stage (fresh AND resume): re-clone any repo whose checkout is missing.
 //
 // `repos: []` (a repo-less project) is a legitimate no-op — nothing to restore.
 // Returns { restored, repos, failed }: `restored` is true iff at least one repo

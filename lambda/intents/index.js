@@ -14,6 +14,7 @@ import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
+  StopRuntimeSessionCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
 import authzPkg from '../shared/authz.js';
 import pkg from '../shared/v2-process-store.js';
@@ -53,6 +54,37 @@ const ORCHESTRATOR_FN = () => process.env.V2_ORCHESTRATOR_FUNCTION;
 // (POST .../derive). Same ARN + session-id convention as the orchestrator.
 const AGENTCORE_RUNTIME_ARN = () => process.env.AGENTCORE_RUNTIME_ARN || '';
 const runtimeSessionIdFor = (intentId) => `aidlc-intent-${intentId}`.padEnd(33, '0');
+// Unit-lane session ids — must mirror v2-orchestrator/section.js laneSessionIdFor.
+const laneSessionIdFor = (intentId, sectionIndex, slug) =>
+  `aidlc-intent-${intentId}-s${sectionIndex}-${slug}`.padEnd(33, '0');
+
+// Best-effort: stop the intent's live AgentCore session(s) so a relaunch
+// (rewind) starts a FRESH microVM instead of re-attaching a live one. Field
+// incident: an image redeploy does NOT kill/migrate a live session — the
+// rewound run kept executing on the pre-fix image ("zombie session") until it
+// idled out. The persistent /mnt/workspace mount survives the stop and is
+// re-attached by session id, so no checkout/conversation state is lost.
+// Never throws: an already-stopped/never-started session must not block the
+// caller (same tolerance as the orchestrator's stopRuntimeSession).
+const stopRuntimeSessions = async (intentId, { sectionIndexes = [], unitSlugs = [] } = {}) => {
+  if (!AGENTCORE_RUNTIME_ARN()) return;
+  const ids = [runtimeSessionIdFor(intentId)];
+  for (const idx of sectionIndexes) {
+    for (const slug of unitSlugs) ids.push(laneSessionIdFor(intentId, idx, slug));
+  }
+  for (const id of ids) {
+    try {
+      await agentcore.send(
+        new StopRuntimeSessionCommand({
+          agentRuntimeArn: AGENTCORE_RUNTIME_ARN(),
+          runtimeSessionId: id,
+        }),
+      );
+    } catch (err) {
+      console.log(`stop-runtime-session best-effort miss (${id}): ${err?.message ?? err}`);
+    }
+  }
+};
 // SSM path of the Admin GLOBAL per-CLI model defaults (written by the agents
 // lambda's PUT /agents/settings). Merged UNDER the project selection at create so
 // the model precedence is project > global(admin) > agentBlock > env, matching
@@ -763,6 +795,9 @@ export const handler = async (event) => {
       }
       const responder = getResponder(event);
       await retireParkedRun(intentId, `cancelled by ${responder.displayName || responder.sub}`);
+      // The run is over — free the warm microVM now instead of waiting for the
+      // idle reap (the persistent mount survives for a later rewind relaunch).
+      await stopRuntimeSessions(intentId);
       const updated = await store.updateExecution({
         executionId: intentId,
         projectId,
@@ -832,6 +867,8 @@ export const handler = async (event) => {
       if (!['DRAFT', 'SUCCEEDED', 'CANCELLED'].includes(meta.status)) {
         await retireParkedRun(intentId, `deleted by ${responder.displayName || responder.sub}`);
       }
+      // Stop any live session so nothing writes into the deleted partition.
+      await stopRuntimeSessions(intentId);
 
       // Yjs docs — best-effort: they are unreachable once the intent is gone
       // (doc ids are derived from the intent id), so a failed delete here only
@@ -1014,6 +1051,13 @@ export const handler = async (event) => {
       // Retire a parked run first so the woken orchestrator exits quietly (its
       // gate is superseded) instead of racing the relaunch.
       await retireParkedRun(intentId, `rewound to ${fromStageId}`);
+      // Stop the live session(s) so the relaunch gets a fresh microVM on the
+      // CURRENT runtime image (zombie-session field incident) — the persistent
+      // workspace mount survives and is re-attached by session id.
+      await stopRuntimeSessions(intentId, {
+        sectionIndexes: [...new Set(sectionStages.map((s) => s.parallelSection))],
+        unitSlugs,
+      });
       // Record the guidance BEFORE resetting/relaunching: the restarted stage
       // reads pending steering at entry, so the correction can never be missed.
       // A guidance-less retry records no steering row — there is nothing to

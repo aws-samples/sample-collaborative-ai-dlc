@@ -508,10 +508,14 @@ resource "awscc_bedrockagentcore_runtime" "stage_executor" {
   # a parked question resume hours-to-days later: the git checkout from init-ws AND
   # the headless CLI's conversation store both live under /mnt/workspace, so a
   # microVM reap mid-wait (or a deliberate StopRuntimeSession) loses no state.
-  # Two failure modes the resume path must handle (see docs/v2-resume.md, D2):
-  #   - WIPED on every runtime version update (image redeploy) — a parked session's
-  #     compute is already terminated, so it gets a fresh empty FS on next invoke.
-  #   - EXPIRES after 14 days idle.
+  # Failure modes the resume path must handle (see docs/v2-resume.md, D2):
+  #   - a NEW session (fresh runtimeSessionId) starts with an EMPTY mount.
+  #   - the mount EXPIRES after 14 days idle.
+  # Field-proven (staging incident 2026-07-07): a runtime image redeploy does
+  # NOT wipe the mount of a LIVE session — the session keeps its microVM (old
+  # image + mount) until stopped/idle-reaped, and the mount is re-attached by
+  # session id afterwards. Rewind/cancel therefore stop the session explicitly
+  # (lambda/intents) so relaunches pick up the current image.
   filesystem_configurations = [{ session_storage = { mount_path = "/mnt/workspace" } }]
 
   # idle 900s: with park/resume a parked question lets the session idle and free

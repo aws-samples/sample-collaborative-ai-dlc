@@ -817,10 +817,12 @@ export const runStage = async (
   const agentBlock = library.agentsById[stage.agentRef] ?? null;
 
   // 2a. Source self-heal (runs for EVERY stage, fresh or resume). The managed
-  // /mnt/workspace mount is wiped by any runtime image redeploy and after 14 idle
-  // days, so a stage running after a deploy would otherwise spawn its CLI against
-  // an EMPTY tree and run blind (the reverse-engineering "source not present"
-  // incident). Re-clone any repo whose checkout is missing before doing anything
+  // /mnt/workspace mount expires after 14 idle days, and a NEW session starts
+  // with an empty mount — a stage running on a fresh mount would otherwise
+  // spawn its CLI against an EMPTY tree and run blind (the reverse-engineering
+  // "source not present" incident). NOTE: a live session keeps its mount (and
+  // old image) across redeploys — only new/expired sessions see an empty FS.
+  // Re-clone any repo whose checkout is missing before doing anything
   // else. A repo-less project (empty repos) is a no-op; a genuine clone failure
   // (unreachable/auth) fails the stage rather than letting it proceed on nothing.
   let sourceRestored = false;
