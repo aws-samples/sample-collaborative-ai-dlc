@@ -220,6 +220,11 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+.mermaid-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+
 /* ─── Keyframes ─── */
 @keyframes accordion-down {
   from {

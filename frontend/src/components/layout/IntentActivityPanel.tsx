@@ -1,6 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import { Bot, Clock, Eye, MessageSquare, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getTimeAgo } from '@/lib/timeAgo';
@@ -19,6 +17,7 @@ import { DiscussionsTab } from '@/components/discussion/DiscussionsTab';
 import { DiscussionPanel, useDiscussions } from '@/components/discussion';
 import { INTENT_OUTPUT_KEY, useIntent } from '@/contexts/IntentContext';
 import { artifactAccent } from '@/components/intent/artifactAccent';
+import { ArtifactMarkdown } from '@/components/intent/ArtifactMarkdown';
 import type { IntentActivityEvent } from '@/services/intents';
 
 // The v2 intent analog of the sprint ActivityPanel: same 3-tab shell (Agent /
@@ -450,7 +449,7 @@ function PreviewTab() {
         </div>
         {artifact.content && (
           <div className="prose prose-sm dark:prose-invert max-w-none">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{artifact.content}</ReactMarkdown>
+            <ArtifactMarkdown content={artifact.content} />
           </div>
         )}
       </div>

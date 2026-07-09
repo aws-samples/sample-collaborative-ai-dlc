@@ -1,6 +1,4 @@
 import { useState } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -10,6 +8,7 @@ import { useIntent } from '@/contexts/IntentContext';
 import { artifactAccent } from '@/components/intent/artifactAccent';
 import { IntentGraphPopover } from '@/components/intent/IntentGraphPopover';
 import { DerivedItemCountChip } from '@/components/intent/DerivedItemCountChip';
+import { ArtifactMarkdown } from '@/components/intent/ArtifactMarkdown';
 import type { GraphNeighbor } from '@/hooks/useIntentGraph';
 import type { IntentArtifact } from '@/services/intents';
 import { ChevronDown } from 'lucide-react';
@@ -117,7 +116,7 @@ export function ArtifactViewer({
 
         {content && (
           <div className="prose prose-sm dark:prose-invert mt-2 max-w-none">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{shown}</ReactMarkdown>
+            <ArtifactMarkdown content={shown} />
           </div>
         )}
         {collapsible && (
