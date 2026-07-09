@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   extractArtifactStructure,
+  validateStructuredBlock,
   extractCitations,
   splitSections,
 } from '../artifact-extractors.js';
@@ -67,5 +68,41 @@ describe('artifact extractors', () => {
     expect(out.items).toEqual([]);
     expect(out.sections.map((s) => s.heading)).toEqual(['Notes']);
     expect(out.citations).toEqual(['requirements']);
+  });
+});
+
+describe('validateStructuredBlock', () => {
+  const wrap = (yaml) => `## X\n\n\`\`\`yaml\n${yaml}\n\`\`\`\n`;
+
+  it('is ok for a well-formed registered block', () => {
+    expect(
+      validateStructuredBlock({
+        artifactType: 'requirements',
+        content: wrap('requirements:\n  - id: r1\n    title: R'),
+      }),
+    ).toEqual({ ok: true, error: null });
+  });
+
+  it('flags a malformed block (unquoted leading quote)', () => {
+    const r = validateStructuredBlock({
+      artifactType: 'requirements',
+      content: wrap(
+        'requirements:\n  - id: r1\n    acceptance_criteria:\n      - "Retry" is shown',
+      ),
+    });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/bad indentation|unexpected/i);
+  });
+
+  it('is ok for an unregistered type even with broken yaml', () => {
+    expect(
+      validateStructuredBlock({ artifactType: 'design', content: wrap('not: [valid') }),
+    ).toEqual({ ok: true, error: null });
+  });
+
+  it('is ok when a registered type has no block present', () => {
+    expect(
+      validateStructuredBlock({ artifactType: 'requirements', content: '## Only prose' }),
+    ).toEqual({ ok: true, error: null });
   });
 });

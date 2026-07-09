@@ -156,6 +156,23 @@ export default function QuestionEditor({
   );
 }
 
+/**
+ * An agent-provided option that should behave like our free-text "Other":
+ * selecting it reveals an inline textarea, and it suppresses our own injected
+ * "Other (free text)" block so the two don't double up. Covers explicit
+ * review actions ("request changes") and catch-all options the agent writes
+ * itself ("Other", "Other (please describe)", "please specify", ...).
+ */
+function requiresFreeTextOption(label: string): boolean {
+  const l = label.toLowerCase();
+  return (
+    l.includes('request changes') ||
+    /(^|[^a-z])other([^a-z]|$)/.test(l) ||
+    l.includes('please describe') ||
+    l.includes('please specify')
+  );
+}
+
 /** Renders a single structured question with options + free text */
 function StructuredQuestionBlock({
   question,
@@ -243,7 +260,7 @@ function StructuredQuestionBlock({
       <div className="space-y-1.5 mb-2">
         {question.options.map((opt, optIdx) => {
           const isSelected = selectedOptions.includes(optIdx);
-          const requiresFreeText = opt.label.toLowerCase().includes('request changes');
+          const requiresFreeText = requiresFreeTextOption(opt.label);
           return (
             <div key={optIdx}>
               <label
@@ -301,7 +318,11 @@ function StructuredQuestionBlock({
                     onChange={(val, cursor) => onFreeTextChange(val, cursor)}
                     onCursorChange={onCursorChange}
                     remoteUsers={remoteUsers}
-                    placeholder="Describe what needs to change..."
+                    placeholder={
+                      opt.label.toLowerCase().includes('request changes')
+                        ? 'Describe what needs to change...'
+                        : 'Type your answer...'
+                    }
                     className="w-full px-2 py-1 border border-border rounded-md text-sm bg-background"
                     rows={2}
                     disabled={disabled}
@@ -314,8 +335,9 @@ function StructuredQuestionBlock({
           );
         })}
 
-        {/* "Other" free text option - only show if no "Request changes" option exists */}
-        {!question.options.some((opt) => opt.label.toLowerCase().includes('request changes')) && (
+        {/* App-injected "Other (free text)" — only when the agent hasn't
+            supplied its own free-text-style option (handled inline above). */}
+        {!question.options.some((opt) => requiresFreeTextOption(opt.label)) && (
           <div
             className={cn(
               'p-2 rounded-md border transition-colors',

@@ -37,7 +37,7 @@ import {
   stageInstanceId as planStageInstanceId,
 } from '../shared/v2-execution-plan.js';
 import { getGitConnection, putGitConnection } from '../shared/git-connection-store.js';
-import { resolveGitToken, getInstallationTokenFromConfig } from '../shared/git-token.js';
+import { ensureFreshGitToken, getInstallationTokenFromConfig } from '../shared/git-token.js';
 import { getGitHubAuthMode } from '../shared/github-auth-config.js';
 import { getProvider } from '../shared/git-providers.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
@@ -132,7 +132,11 @@ const defaultTokenIo = () => ({
   mintInstallationToken: (repositories) =>
     getInstallationTokenFromConfig({ ssm, secrets, repositories }),
   getGitConnection: (startedBy, gitProvider) => getGitConnection(ddb, startedBy, gitProvider),
-  resolveGitToken: (item) => resolveGitToken(ssm, item),
+  // Refresh GitLab OAuth tokens just-in-time: the stored access token lives
+  // ~2h, so a construction run starting later would otherwise clone/push with
+  // a dead token (GitLab "HTTP Basic: Access denied"). GitHub is a passthrough.
+  resolveGitToken: (item, gitProvider) =>
+    ensureFreshGitToken({ ssm, secrets, ddb, item, gitProvider }),
   // Commit-attribution collaborators (see resolveAuthor): the provider's
   // /user lookup and the connection-row writer for the lazy backfill.
   fetchAuthorIdentity: (gitProvider, token) => {
@@ -217,7 +221,7 @@ export const defaultResolveToken = async (
   try {
     const item = await io.getGitConnection(startedBy, gitProvider);
     if (!item?.parameterName) return miss('no_connection');
-    const token = (await io.resolveGitToken(item)) || '';
+    const token = (await io.resolveGitToken(item, gitProvider)) || '';
     if (!token) return miss('empty_ssm_token');
     // Author identity rides on the token result only when known — conditional
     // so token-only consumers (and exact-shape assertions) are unaffected.
@@ -237,14 +241,27 @@ export const defaultResolveToken = async (
   }
 };
 
-// App-mode only: mint a FRESH repo-scoped installation token (served from the
-// ~1h cache in shared/git-token.js when still valid). Installation tokens
-// expire after ~1h — far shorter than a long run — so every dispatch that
-// hands git credentials to the runtime re-resolves through this instead of
-// reusing the run-start snapshot. Returns null in oauth mode (the snapshot
-// token never expires for GitHub OAuth) and null on failure (callers fall
-// back to the snapshot, which keeps oauth/legacy behaviour intact).
-const defaultMintFreshToken = async ({ gitProvider, repos = [] }) => {
+// Per-dispatch fresh git credential. Two providers need re-resolution mid-run:
+//   - GitHub App mode: installation tokens expire after ~1h (served from the
+//     cache in shared/git-token.js when still valid).
+//   - GitLab OAuth: access tokens live ~2h and must be refreshed just-in-time,
+//     otherwise a long run clones/pushes with a dead token ("HTTP Basic:
+//     Access denied"). ensureFreshGitToken refreshes only when stale.
+// Returns null in GitHub oauth mode (the snapshot token never expires) and null
+// on failure (callers fall back to the run-start snapshot, keeping legacy
+// behaviour intact).
+const defaultMintFreshToken = async ({ gitProvider, startedBy, repos = [] }) => {
+  if (gitProvider === 'gitlab') {
+    try {
+      if (!startedBy) return null;
+      const item = await getGitConnection(ddb, startedBy, gitProvider);
+      if (!item?.parameterName) return null;
+      return await ensureFreshGitToken({ ssm, secrets, ddb, item, gitProvider });
+    } catch (e) {
+      console.error('[v2-orchestrator] fresh gitlab token refresh failed:', e?.message);
+      return null;
+    }
+  }
   if (gitProvider !== 'github') return null;
   try {
     const mode = await getGitHubAuthMode(ssm);
@@ -462,7 +479,11 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // replay never re-executes a memoized step, so a re-mint can't fork state.
     const freshGitToken = async () => {
       try {
-        const fresh = await mintFreshToken?.({ gitProvider, repos: meta.repos ?? [] });
+        const fresh = await mintFreshToken?.({
+          gitProvider,
+          startedBy: meta.startedBy,
+          repos: meta.repos ?? [],
+        });
         return fresh || token;
       } catch {
         return token;

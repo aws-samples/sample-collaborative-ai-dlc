@@ -1774,8 +1774,13 @@ resource "aws_iam_role_policy" "v2_orchestrator" {
         ])
       },
       {
+        # Read the starter's git token AND write it back: GitLab OAuth access
+        # tokens live ~2h, so init-ws refreshes an expired token just-in-time
+        # (ensureFreshGitToken) and PutParameter persists the rotated token —
+        # without PutParameter the refresh throws and the clone falls back to an
+        # empty (unauthenticated) token → "HTTP Basic: Access denied".
         Effect   = "Allow"
-        Action   = ["ssm:GetParameter"]
+        Action   = ["ssm:GetParameter", "ssm:PutParameter"]
         Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
       },
       {
@@ -1789,9 +1794,22 @@ resource "aws_iam_role_policy" "v2_orchestrator" {
         ])
       },
       {
+        # Best-effort persist of refreshed GitLab connection metadata (the token
+        # itself lives in SSM above; this only rotates the row's scope/updatedAt).
+        Effect = "Allow"
+        Action = ["dynamodb:PutItem", "dynamodb:UpdateItem"]
+        Resource = compact([
+          var.git_connections_table_arn,
+          var.git_provider_connections_table_arn,
+        ])
+      },
+      {
+        # GitHub App private key AND the GitLab OAuth app credentials — the
+        # latter is needed to exchange a refresh token for a fresh GitLab access
+        # token during init-ws (refreshGitlabToken → getGitlabOAuthCredentials).
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
-        Resource = compact([var.github_app_private_key_secret_arn])
+        Resource = compact([var.github_app_private_key_secret_arn, var.gitlab_oauth_secret_arn])
       }
     ]
   })
@@ -1853,6 +1871,13 @@ module "v2_orchestrator_lambda" {
     GITHUB_AUTH_MODE_PARAM             = var.github_auth_mode_param_name
     GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
     GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
+    # GitLab OAuth: access tokens live ~2h, so init-ws refreshes an expired
+    # token just-in-time (ensureFreshGitToken → refreshGitlabToken). The refresh
+    # exchange needs the OAuth app credentials (secret) and the same redirect_uri
+    # used at authorization time; without these the refresh throws and the clone
+    # degrades to an unauthenticated "Access denied".
+    GITLAB_OAUTH_SECRET_NAME = var.gitlab_oauth_secret_name
+    GITLAB_REDIRECT_URI      = var.gitlab_redirect_uri
     # Live realtime fan-out (lambda/shared/ws-fanout.js) — the orchestrator emits
     # execution/workspace lifecycle events on the intent:<id> channel itself, since
     # it is the only component that owns those transitions (the runtime broadcasts
