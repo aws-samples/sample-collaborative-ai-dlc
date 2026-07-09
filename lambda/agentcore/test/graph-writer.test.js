@@ -168,6 +168,57 @@ describe('createArtifact', () => {
     expect(edges.value).toBe(1);
   });
 
+  it('rejects a malformed structured YAML block and persists nothing', async () => {
+    await seedIntent();
+    // A value starting with an unquoted `"` breaks the block.
+    const content = [
+      '## Functional Requirements',
+      '',
+      '```yaml',
+      'requirements:',
+      '  - id: req-x',
+      '    acceptance_criteria:',
+      '      - "Retry" button is shown',
+      '```',
+    ].join('\n');
+    await expect(
+      writer.createArtifact({ artifactType: 'requirements', id: 'bad', content }),
+    ).rejects.toThrow(/malformed `requirements` structured YAML block/);
+    // Nothing was written.
+    const exists = await g.V().has('Artifact', 'id', 'bad').hasNext();
+    expect(exists).toBe(false);
+  });
+
+  it('accepts a well-formed structured block (quoted value)', async () => {
+    await seedIntent();
+    const content = [
+      '## Functional Requirements',
+      '',
+      '```yaml',
+      'requirements:',
+      '  - id: req-x',
+      '    title: Retry works',
+      '    acceptance_criteria:',
+      '      - \'"Retry" button is shown\'',
+      '```',
+    ].join('\n');
+    const created = await writer.createArtifact({
+      artifactType: 'requirements',
+      id: 'ok',
+      content,
+    });
+    expect(created.id).toBe('ok');
+    expect(await g.V().has('Artifact', 'id', 'ok').hasNext()).toBe(true);
+  });
+
+  it('does not gate unregistered artifact types on YAML (no structured block)', async () => {
+    await seedIntent();
+    // `design` is not in the extraction registry — a stray broken fence must not block it.
+    const content = '```yaml\nnot: [valid';
+    const created = await writer.createArtifact({ artifactType: 'design', id: 'free', content });
+    expect(created.id).toBe('free');
+  });
+
   it('wires links to existing artifacts in the same call', async () => {
     await seedIntent();
     await writer.createArtifact({ artifactType: 'requirements-analysis', id: 'req' });

@@ -97,6 +97,7 @@ const renderStructureContracts = (artifactTypes = []) => {
     '',
     'Every artifact must use markdown with at least two `##` section headings, and cite each consumed upstream artifact by its exact slug (inline or as a `[[artifact-slug]]` wikilink).',
     'The fenced YAML blocks specified below are machine-parsed into the business graph. Place each block once, verbatim in shape; keep ids stable across revisions of the same artifact.',
+    'Single-quote free-text string values (titles, descriptions, acceptance criteria) in the YAML block — unquoted text containing `:` `-` `"` breaks parsing and the block is rejected.',
     '',
     ...sections,
   ].join('\n');

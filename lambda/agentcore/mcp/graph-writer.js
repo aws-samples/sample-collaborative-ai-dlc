@@ -24,6 +24,7 @@ import {
   isCurrentRow,
   jsonListProp as jsonList,
 } from '../../shared/graph-rows.js';
+import { validateStructuredBlock } from '../../shared/artifact-extractors.js';
 
 const __ = gremlin.process.statics;
 const { cardinality } = gremlin.process;
@@ -376,6 +377,17 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     assertArtifactType(artifactType);
     assertId(id);
     for (const l of links) assertEdge(l.edge);
+
+    // Reject a malformed structured block before writing — a bad block parses
+    // to zero items downstream. The parse error goes back to the agent to fix.
+    const structure = validateStructuredBlock({ artifactType, content });
+    if (!structure.ok) {
+      throw new GraphWriteError(
+        `malformed \`${artifactType}\` structured YAML block — ${structure.error}. ` +
+          `Fix the fenced YAML and call create_artifact again. ` +
+          `Hint: quote any string value that begins with " ' - : [ ] { } # or contains ": ".`,
+      );
+    }
 
     const intentExists = await g.V().has(INTENT_LABEL, 'id', scope.intentId).hasNext();
     if (!intentExists)

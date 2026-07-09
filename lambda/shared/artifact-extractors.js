@@ -397,6 +397,19 @@ const REGISTRY = Object.freeze({
   },
 });
 
+// Check the fenced YAML block parses. Used by extractArtifactStructure and the
+// create_artifact write guard. Unregistered types have no block → valid.
+const validateStructuredBlock = ({ artifactType, content = '' } = {}) => {
+  const spec = REGISTRY[text(artifactType)];
+  if (!spec) return { ok: true, error: null };
+  try {
+    fencedYaml(content, spec.key);
+    return { ok: true, error: null };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+};
+
 const extractArtifactStructure = ({ artifactType, artifactId, content = '' } = {}) => {
   const type = text(artifactType);
   const sections = splitSections(content);
@@ -406,11 +419,11 @@ const extractArtifactStructure = ({ artifactType, artifactId, content = '' } = {
   let structured = null;
   let error = null;
   if (spec) {
-    try {
+    const validation = validateStructuredBlock({ artifactType: type, content });
+    error = validation.error;
+    if (validation.ok) {
       structured = fencedYaml(content, spec.key);
       if (structured) items = normalizeItems(type, structured, spec);
-    } catch (e) {
-      error = e.message;
     }
   }
   return {
@@ -426,10 +439,19 @@ const extractArtifactStructure = ({ artifactType, artifactId, content = '' } = {
   };
 };
 
-export { REGISTRY, extractArtifactStructure, extractCitations, splitSections, slugify, sha256 };
+export {
+  REGISTRY,
+  extractArtifactStructure,
+  validateStructuredBlock,
+  extractCitations,
+  splitSections,
+  slugify,
+  sha256,
+};
 export default {
   REGISTRY,
   extractArtifactStructure,
+  validateStructuredBlock,
   extractCitations,
   splitSections,
   slugify,
