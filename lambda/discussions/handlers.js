@@ -63,7 +63,7 @@ import {
 } from './services.js';
 import { resolveScope } from './scope.js';
 
-const ASSIST_COMMANDS = new Set(['summarize', 'explain', 'brainstorm']);
+const ASSIST_COMMANDS = new Set(['summarize', 'explain', 'brainstorm', 'ask']);
 const REQUEST_ID_RE = /^[A-Za-z0-9._:-]{8,160}$/;
 const MAX_ASSIST_INSTRUCTIONS = 2000;
 const MAX_SELECTED_MESSAGES = 40;
@@ -77,6 +77,7 @@ const failedAssistContent = (command) =>
 const pendingAssistContent = (command) => {
   if (command === 'summarize') return 'Quorum is summarizing this discussion...';
   if (command === 'explain') return 'Quorum is preparing an explanation...';
+  if (command === 'ask') return 'Quorum is thinking...';
   return 'Quorum is brainstorming options...';
 };
 
@@ -568,7 +569,7 @@ export const assistDiscussion = async (event, res) => {
   }
   const command = String(body.command || '');
   if (!ASSIST_COMMANDS.has(command)) {
-    return res(400, { error: 'command must be one of summarize, explain, brainstorm' });
+    return res(400, { error: 'command must be one of summarize, explain, brainstorm, ask' });
   }
   const instructions =
     typeof body.instructions === 'string'

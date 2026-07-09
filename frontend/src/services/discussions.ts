@@ -94,7 +94,7 @@ export interface SearchResult {
   message?: DiscussionMessage;
 }
 
-export type AssistCommand = 'summarize' | 'explain' | 'brainstorm';
+export type AssistCommand = 'summarize' | 'explain' | 'brainstorm' | 'ask';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 

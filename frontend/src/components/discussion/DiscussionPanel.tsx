@@ -174,7 +174,8 @@ export function DiscussionPanel() {
       !message?.requestId ||
       (message.command !== 'summarize' &&
         message.command !== 'explain' &&
-        message.command !== 'brainstorm')
+        message.command !== 'brainstorm' &&
+        message.command !== 'ask')
     ) {
       return;
     }

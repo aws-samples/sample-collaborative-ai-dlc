@@ -24,6 +24,13 @@ describe('createDiscussionAssistStart', () => {
     });
   });
 
+  it('accepts ask as a supported Quorum command', async () => {
+    const openGraph = vi.fn(() => new Promise(() => {}));
+    const start = createDiscussionAssistStart({ openGraph });
+    const res = await start({ ...basePayload, assistCommand: 'ask', requestId: 'assist-ask' });
+    expect(res).toMatchObject({ ok: true, accepted: true, requestId: 'assist-ask' });
+  });
+
   it('accepts immediately and treats a duplicate request as idempotent while running', async () => {
     const openGraph = vi.fn(() => new Promise(() => {}));
     const start = createDiscussionAssistStart({ openGraph });

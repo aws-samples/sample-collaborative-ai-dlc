@@ -24,6 +24,7 @@ const COMMAND_INSTRUCTIONS = {
   explain:
     'Explain the anchor and thread in plain language, focused on the requester instructions.',
   brainstorm: 'Brainstorm options with tradeoffs, risks, and a recommended next experiment.',
+  ask: 'Answer the requester instructions directly, using the discussion and intent context when relevant.',
 };
 
 const jobKey = (p) => `${p.intentId}:${p.discussionId}:${p.requestId}`;

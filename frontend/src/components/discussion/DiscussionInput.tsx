@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { SendHorizontal, AtSign } from 'lucide-react';
+import { SendHorizontal, AtSign, Bot } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Member } from '@/services/projects';
 import { generateColor } from '@/utils/colors';
@@ -21,11 +21,27 @@ interface Props {
 }
 
 const memberLabel = (m: Member): string => m.email?.split('@')[0] || m.userId.slice(0, 8);
+type MentionSuggestion = { kind: 'quorum' } | { kind: 'member'; member: Member };
+
+const suggestionLabel = (s: MentionSuggestion): string =>
+  s.kind === 'quorum' ? 'quorum' : memberLabel(s.member);
+
+const suggestionKey = (s: MentionSuggestion): string =>
+  s.kind === 'quorum' ? 'quorum' : s.member.userId;
+
+const suggestionRole = (s: MentionSuggestion): string =>
+  s.kind === 'quorum' ? 'AI' : s.member.role;
 
 const slashCommand = (text: string): { command: AssistCommand; instructions: string } | null => {
-  const match = /^\/(summarize|explain|brainstorm)(?:\s+([\s\S]*))?$/i.exec(text.trim());
+  const match = /^\/(summarize|explain|brainstorm|ask)(?:\s+([\s\S]*))?$/i.exec(text.trim());
   if (!match) return null;
   return { command: match[1].toLowerCase() as AssistCommand, instructions: match[2]?.trim() || '' };
+};
+
+const quorumMention = (text: string): string | null => {
+  const match = /^@quorum(?:\s+([\s\S]*))?$/i.exec(text.trim());
+  if (!match) return null;
+  return match[1]?.trim() || '';
 };
 
 export function DiscussionInput({ onSend, onAssist, onTyping, members, disabled }: Props) {
@@ -38,10 +54,13 @@ export function DiscussionInput({ onSend, onAssist, onTyping, members, disabled 
   const suggestions = useMemo(() => {
     if (mentionQuery === null) return [];
     const q = mentionQuery.toLowerCase();
-    return members
+    const quorum: MentionSuggestion[] =
+      onAssist && 'quorum'.includes(q) ? [{ kind: 'quorum' }] : [];
+    const memberSuggestions: MentionSuggestion[] = members
       .filter((m) => memberLabel(m).toLowerCase().includes(q) || m.userId.toLowerCase().includes(q))
-      .slice(0, 6);
-  }, [mentionQuery, members]);
+      .map((member) => ({ kind: 'member', member }));
+    return [...quorum, ...memberSuggestions].slice(0, 6);
+  }, [mentionQuery, members, onAssist]);
 
   const autoGrow = useCallback(() => {
     const el = textareaRef.current;
@@ -65,17 +84,19 @@ export function DiscussionInput({ onSend, onAssist, onTyping, members, disabled 
   }, []);
 
   const insertMention = useCallback(
-    (m: Member) => {
+    (suggestion: MentionSuggestion) => {
       const el = textareaRef.current;
       const caret = el?.selectionStart ?? value.length;
       const upToCaret = value.slice(0, caret);
       const match = /(^|\s)@([\w.+-]*)$/.exec(upToCaret);
       if (!match) return;
-      const label = memberLabel(m);
+      const label = suggestionLabel(suggestion);
       const start = upToCaret.length - match[2].length - 1; // position of '@'
       const next = `${value.slice(0, start)}@${label} ${value.slice(caret)}`;
       setValue(next);
-      setMentioned((prev) => new Map(prev).set(m.userId, label));
+      if (suggestion.kind === 'member') {
+        setMentioned((prev) => new Map(prev).set(suggestion.member.userId, label));
+      }
       setMentionQuery(null);
       requestAnimationFrame(() => {
         el?.focus();
@@ -93,6 +114,16 @@ export function DiscussionInput({ onSend, onAssist, onTyping, members, disabled 
     const assist = slashCommand(trimmed);
     if (assist && onAssist) {
       onAssist(assist.command, assist.instructions);
+      onTyping(false);
+      setValue('');
+      setMentioned(new Map());
+      setMentionQuery(null);
+      requestAnimationFrame(autoGrow);
+      return;
+    }
+    const quorumAsk = onAssist ? quorumMention(trimmed) : null;
+    if (quorumAsk !== null && onAssist) {
+      onAssist('ask', quorumAsk);
       onTyping(false);
       setValue('');
       setMentioned(new Map());
@@ -119,9 +150,9 @@ export function DiscussionInput({ onSend, onAssist, onTyping, members, disabled 
           <p className="px-2 py-0.5 text-[10px] text-muted-foreground flex items-center gap-1">
             <AtSign className="h-2.5 w-2.5" /> Mention a member
           </p>
-          {suggestions.map((m, i) => (
+          {suggestions.map((suggestion, i) => (
             <button
-              key={m.userId}
+              key={suggestionKey(suggestion)}
               type="button"
               className={cn(
                 'w-full flex items-center gap-2 px-2 py-1 text-xs text-left hover:bg-muted',
@@ -130,17 +161,25 @@ export function DiscussionInput({ onSend, onAssist, onTyping, members, disabled 
               onMouseEnter={() => setHighlight(i)}
               onMouseDown={(e) => {
                 e.preventDefault();
-                insertMention(m);
+                insertMention(suggestion);
               }}
             >
-              <span
-                className="h-4 w-4 rounded-full flex items-center justify-center text-[9px] font-semibold text-white shrink-0"
-                style={{ backgroundColor: generateColor(m.userId) }}
-              >
-                {memberLabel(m).slice(0, 1).toUpperCase()}
+              {suggestion.kind === 'quorum' ? (
+                <span className="h-4 w-4 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+                  <Bot className="h-2.5 w-2.5 text-primary" />
+                </span>
+              ) : (
+                <span
+                  className="h-4 w-4 rounded-full flex items-center justify-center text-[9px] font-semibold text-white shrink-0"
+                  style={{ backgroundColor: generateColor(suggestion.member.userId) }}
+                >
+                  {suggestionLabel(suggestion).slice(0, 1).toUpperCase()}
+                </span>
+              )}
+              <span className="truncate">{suggestionLabel(suggestion)}</span>
+              <span className="ml-auto text-[9px] text-muted-foreground">
+                {suggestionRole(suggestion)}
               </span>
-              <span className="truncate">{memberLabel(m)}</span>
-              <span className="ml-auto text-[9px] text-muted-foreground">{m.role}</span>
             </button>
           ))}
         </div>

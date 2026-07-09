@@ -69,12 +69,12 @@ describe('discussionsService routes both scopes through the base path', () => {
     );
     await discussionsService.assist(INTENT, 'd1', {
       requestId: 'assist-12345678',
-      command: 'summarize',
+      command: 'ask',
       instructions: 'focus',
     });
     expect(post).toHaveBeenCalledWith('/projects/p1/intents/i1/discussions/d1/assist', {
       requestId: 'assist-12345678',
-      command: 'summarize',
+      command: 'ask',
       instructions: 'focus',
     });
   });

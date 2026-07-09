@@ -1514,6 +1514,41 @@ describe('intent-scoped discussions', () => {
     expect(agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)).toHaveLength(1);
   });
 
+  it('accepts ask as the free-form Quorum assist command', async () => {
+    agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+      response: { transformToString: async () => JSON.stringify({ ok: true, accepted: true }) },
+    });
+    const { projectId, intentId } = await seedIntent();
+    const created = json(
+      await call('POST', intentPath('/discussions'), {
+        pathParameters: { projectId, intentId },
+        body: { entityType: 'intent' },
+      }),
+    );
+
+    const res = await call('POST', intentPath('/discussions/{discussionId}/assist'), {
+      pathParameters: { projectId, intentId, discussionId: created.id },
+      body: {
+        requestId: 'assist-request-ask',
+        command: 'ask',
+        instructions: 'Check the risks',
+      },
+    });
+    expect(res.statusCode).toBe(202);
+    expect(json(res).message).toMatchObject({
+      command: 'ask',
+      assistStatus: 'running',
+      content: 'Quorum is thinking...',
+    });
+
+    const invoke = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input;
+    const payload = JSON.parse(Buffer.from(invoke.payload).toString('utf8'));
+    expect(payload).toMatchObject({
+      assistCommand: 'ask',
+      instructions: 'Check the risks',
+    });
+  });
+
   it('marks the Quorum message failed when AgentCore invoke fails', async () => {
     agentcoreMock.on(InvokeAgentRuntimeCommand).rejects(new Error('runtime unavailable'));
     const { projectId, intentId } = await seedIntent();
