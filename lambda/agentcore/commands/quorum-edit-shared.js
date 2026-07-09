@@ -1,9 +1,11 @@
 // Shared helpers for the Quorum-edit container commands
 // (quorum-edit-plan-start / quorum-edit-apply-start). Pure where possible so
-// the plan sanitization and fence stripping are unit-testable without a CLI
-// or a graph.
+// the plan sanitization, fence stripping and the rewrite structure guard are
+// unit-testable without a CLI or a graph.
 
 import { flattenVertexMap } from '../../shared/graph-rows.js';
+import { extractArtifactStructure } from '../../shared/artifact-extractors.js';
+import { renderStructureContract } from '../../shared/artifact-structure-contract.js';
 
 // Bounded content windows: Quorum edits are coordinated document rewrites,
 // not whole-corpus analysis. A document beyond the rewrite limit is refused
@@ -22,6 +24,69 @@ export const stripMarkdownFence = (text = '') => {
   const body = String(text ?? '').trim();
   const match = /^```[a-zA-Z]*\r?\n([\s\S]*?)\r?\n```$/.exec(body);
   return match ? match[1] : body;
+};
+
+// ── Rewrite structure guard ──────────────────────────────────────────────────
+// Field incident (2026-07-09): one-shot rewrites silently DROPPED the fenced
+// YAML structured blocks (`requirements:`, `stories:`, …) that
+// extractArtifactStructure machine-parses into typed graph items. The
+// post-apply derive then honestly reconciled to the new content — superseding
+// EVERY previously derived item ("we lost all derived artifacts"). A rewrite
+// is a consistency edit, never a structural demolition — so any rewrite that
+// loses the structured block, empties it, breaks its parse, or flattens all
+// section headings is REFUSED (the caller retries with a corrective reminder,
+// then gives up and leaves the artifact stale instead of writing damage).
+export const checkRewriteStructure = ({ artifactType, artifactId, before, after }) => {
+  const prev = extractArtifactStructure({ artifactType, artifactId, content: before });
+  const next = extractArtifactStructure({ artifactType, artifactId, content: after });
+  const problems = [];
+  if (prev.structuredPresent && !next.structuredPresent) {
+    problems.push(
+      `the machine-parsed fenced YAML block (top-level \`${prev.structuredKey}:\`) was dropped`,
+    );
+  }
+  if (next.structuredPresent && next.error) {
+    problems.push(`the \`${next.structuredKey}:\` block no longer parses: ${next.error}`);
+  }
+  if (
+    prev.structuredPresent &&
+    next.structuredPresent &&
+    prev.items.length > 0 &&
+    next.items.length === 0
+  ) {
+    problems.push(`the \`${prev.structuredKey}:\` block lost all of its entries`);
+  }
+  if (prev.sections.length >= 2 && next.sections.length === 0) {
+    problems.push('every section heading was removed');
+  }
+  return {
+    ok: problems.length === 0,
+    problems,
+    beforeItems: prev.items.length,
+    afterItems: next.items.length,
+  };
+};
+
+// Prompt rules that keep a rewrite structure-safe. Generic fence preservation
+// for every document, plus the SAME machine-readable structure contract the
+// stage prompts inject for types with a registered extraction spec — so what
+// a rewrite is told to preserve and what the parser reads cannot drift.
+export const structurePreservationRules = (artifactType) => {
+  const lines = [
+    'STRUCTURE PRESERVATION (mandatory):',
+    '- Keep every fenced code block (``` … ```) from the original document. Fenced YAML blocks are machine-parsed into the business graph — deleting one destroys derived data.',
+    '- If the change affects entries inside a fenced YAML block, edit/add entries while keeping the block, its top-level key, and its field shape intact. Keep existing ids stable.',
+    '- Keep the markdown section headings; restructure only where the change requires it.',
+  ];
+  const contract = renderStructureContract(String(artifactType ?? ''));
+  if (contract) {
+    lines.push(
+      '',
+      'This document type carries a machine-parsed structured block. Its contract:',
+      contract,
+    );
+  }
+  return lines.join('\n');
 };
 
 // Normalize Quorum's raw plan answer against the ACTUAL downstream closure:
@@ -129,6 +194,8 @@ export default {
   REWRITE_DOC_LIMIT,
   bounded,
   stripMarkdownFence,
+  checkRewriteStructure,
+  structurePreservationRules,
   sanitizePlan,
   fetchArtifactForEdit,
   makeProgressEmitter,

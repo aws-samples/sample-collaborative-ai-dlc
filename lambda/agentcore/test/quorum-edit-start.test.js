@@ -367,3 +367,304 @@ describe('quorum-edit-apply-start', () => {
     expect(collab.markStale).not.toHaveBeenCalled();
   });
 });
+
+// ── Structure guard (2026-07-09 lost-derived-items incident) ─────────────────
+
+import {
+  checkRewriteStructure,
+  structurePreservationRules,
+} from '../commands/quorum-edit-shared.js';
+import {
+  repairStructure,
+  buildRepairPrompt,
+  extractFencedYamlBlock,
+} from '../commands/repair-structure.js';
+
+const YAML_FENCE = '```';
+const REQ_BLOCK = [
+  `${YAML_FENCE}yaml`,
+  'requirements:',
+  '  - id: req-ask-eliza',
+  '    title: Ask ELIZA general questions',
+  '    priority: must-have',
+  `${YAML_FENCE}`,
+].join('\n');
+const REQ_DOC = [
+  '# Requirements',
+  '',
+  '## Functional',
+  'prose',
+  '',
+  '## Non-functional',
+  'more',
+  '',
+  REQ_BLOCK,
+  '',
+].join('\n');
+const REQ_DOC_NO_BLOCK = [
+  '# Requirements',
+  '',
+  '## Functional',
+  'prose (block gone)',
+  '',
+  '## Non-functional',
+  'more',
+  '',
+].join('\n');
+
+describe('checkRewriteStructure', () => {
+  it('refuses a rewrite that drops the machine-parsed YAML block (the incident)', () => {
+    const check = checkRewriteStructure({
+      artifactType: 'requirements',
+      artifactId: 'requirements',
+      before: REQ_DOC,
+      after: REQ_DOC_NO_BLOCK,
+    });
+    expect(check.ok).toBe(false);
+    expect(check.problems.join(' ')).toContain('`requirements:`');
+    expect(check.beforeItems).toBe(1);
+    expect(check.afterItems).toBe(0);
+  });
+
+  it('refuses a rewrite that empties the block or breaks its parse', () => {
+    const emptied = checkRewriteStructure({
+      artifactType: 'requirements',
+      artifactId: 'requirements',
+      before: REQ_DOC,
+      after: REQ_DOC_NO_BLOCK + '\n' + `${YAML_FENCE}yaml\nrequirements: []\n${YAML_FENCE}\n`,
+    });
+    expect(emptied.ok).toBe(false);
+    expect(emptied.problems.join(' ')).toContain('lost all of its entries');
+
+    const flattened = checkRewriteStructure({
+      artifactType: 'requirements',
+      artifactId: 'requirements',
+      before: REQ_DOC,
+      after: 'just a paragraph, no headings, no block',
+    });
+    expect(flattened.ok).toBe(false);
+    expect(flattened.problems.join(' ')).toContain('section heading');
+  });
+
+  it('accepts a rewrite that keeps (or edits within) the block', () => {
+    const edited = REQ_DOC.replace('Ask ELIZA general questions', 'Ask ELIZA anything');
+    expect(
+      checkRewriteStructure({
+        artifactType: 'requirements',
+        artifactId: 'requirements',
+        before: REQ_DOC,
+        after: edited,
+      }).ok,
+    ).toBe(true);
+  });
+
+  it('is permissive for types without a registered structure', () => {
+    expect(
+      checkRewriteStructure({
+        artifactType: 'market-trends',
+        artifactId: 'mt',
+        before: '## A\nx\n\n## B\ny',
+        after: '## A\nchanged\n\n## B\ny',
+      }).ok,
+    ).toBe(true);
+  });
+});
+
+describe('structurePreservationRules', () => {
+  it('always demands fence preservation, and injects the type contract when registered', () => {
+    const generic = structurePreservationRules('market-trends');
+    expect(generic).toContain('Keep every fenced code block');
+    expect(generic).not.toContain('Structured block:');
+    const registered = structurePreservationRules('requirements');
+    expect(registered).toContain('Structured block: `requirements:`');
+  });
+});
+
+describe('quorum-edit-apply-start structure guard', () => {
+  const REQ_ROW = {
+    id: 'requirements',
+    title: 'Requirements',
+    artifact_type: 'requirements',
+    content: REQ_DOC,
+  };
+  const guardPayload = {
+    projectId: 'p1',
+    intentId: 'i1',
+    executionId: 'i1',
+    editId: 'qe-g',
+    artifactId: 'requirements',
+    changeDescription: 'Add @ELIZA general questions',
+    approvedArtifactIds: [],
+    callbackId: 'cb-guard',
+  };
+  const guardStore = () => ({
+    appendOutput: vi.fn(async () => ({ seq: 1 })),
+    appendEvent: vi.fn(async () => ({})),
+    recordMetric: vi.fn(async () => ({})),
+    updateQuorumEdit: vi.fn(async () => ({})),
+    getQuorumEdit: vi.fn(async () => ({ plan: { summary: '', items: [] } })),
+  });
+
+  it('retries once with the guard findings, then refuses (artifact content never overwritten)', async () => {
+    const prompts = [];
+    const collab = {
+      openGraph: vi.fn(async () => ({})),
+      store: guardStore(),
+      sendCallbackSuccess: vi.fn(async () => ({ delivered: true })),
+      fetchArtifact: vi.fn(async () => REQ_ROW),
+      fetchClosure: vi.fn(async () => []),
+      applyEdit: vi.fn(),
+      verify: vi.fn(),
+      markStale: vi.fn(),
+      oneShot: vi.fn(async ({ prompt }) => {
+        prompts.push(prompt);
+        return { ok: true, text: REQ_DOC_NO_BLOCK, metrics: null }; // always drops the block
+      }),
+    };
+    const start = createQuorumEditApplyStart(collab);
+    await start(guardPayload);
+    await vi.waitFor(() => {
+      expect(collab.sendCallbackSuccess).toHaveBeenCalled();
+    });
+    expect(collab.sendCallbackSuccess.mock.calls[0][1]).toMatchObject({
+      ok: false,
+      reason: 'structure_lost',
+    });
+    // Two attempts; the retry prompt carried the guard's findings.
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0]).toContain('Structured block: `requirements:`'); // hardened prompt
+    expect(prompts[1]).toContain('REJECTED');
+    expect(prompts[1]).toContain('requirements:');
+    // The damaged rewrite was NEVER written.
+    expect(collab.applyEdit).not.toHaveBeenCalled();
+  });
+
+  it('accepts on the corrective retry when the model restores the block', async () => {
+    const editedDoc = REQ_DOC.replace('prose', 'prose incl. @ELIZA questions');
+    const collab = {
+      openGraph: vi.fn(async () => ({})),
+      store: guardStore(),
+      sendCallbackSuccess: vi.fn(async () => ({ delivered: true })),
+      fetchArtifact: vi.fn(async () => REQ_ROW),
+      fetchClosure: vi.fn(async () => []),
+      applyEdit: vi.fn(async ({ artifactId }) => ({ artifactId, editedAt: 'T' })),
+      verify: vi.fn(),
+      markStale: vi.fn(async () => []),
+      oneShot: vi
+        .fn()
+        .mockResolvedValueOnce({ ok: true, text: REQ_DOC_NO_BLOCK, metrics: null })
+        .mockResolvedValueOnce({ ok: true, text: editedDoc, metrics: null }),
+    };
+    const start = createQuorumEditApplyStart(collab);
+    await start(guardPayload);
+    await vi.waitFor(() => {
+      expect(collab.sendCallbackSuccess).toHaveBeenCalled();
+    });
+    expect(collab.sendCallbackSuccess.mock.calls[0][1]).toMatchObject({ ok: true });
+    expect(collab.applyEdit).toHaveBeenCalledWith(
+      // stripMarkdownFence trims the answer before the guard/write.
+      expect.objectContaining({ artifactId: 'requirements', content: editedDoc.trim() }),
+    );
+  });
+});
+
+// ── repair-structure (remediation for already-damaged intents) ───────────────
+
+describe('repair-structure', () => {
+  const DAMAGED = {
+    id: 'requirements',
+    artifact_type: 'requirements',
+    title: 'Requirements',
+    content: REQ_DOC_NO_BLOCK,
+  };
+  const INTACT = {
+    id: 'stories-doc',
+    artifact_type: 'stories',
+    title: 'Stories',
+    content: [
+      '## Stories',
+      'prose',
+      '',
+      `${YAML_FENCE}yaml`,
+      'stories:',
+      '  - id: story-ask',
+      '    title: Ask',
+      `${YAML_FENCE}`,
+    ].join('\n'),
+  };
+  const UNREGISTERED = {
+    id: 'mt',
+    artifact_type: 'market-trends',
+    title: 'Trends',
+    content: '## T\nx',
+  };
+
+  const makeDeps = (over = {}) => ({
+    openGraph: vi.fn(async () => ({})),
+    store: {
+      appendEvent: vi.fn(async () => ({})),
+      recordMetric: vi.fn(async () => ({})),
+    },
+    broadcast: vi.fn(async () => {}),
+    createWriter: () => ({
+      getIntentGraph: vi.fn(async () => [DAMAGED, INTACT, UNREGISTERED]),
+      updateArtifact: vi.fn(async ({ id }) => ({ id })),
+    }),
+    deriveArtifacts: vi.fn(async () => ({ ok: true })),
+    oneShot: vi.fn(async () => ({ ok: true, text: REQ_BLOCK, metrics: { tokensInput: 5 } })),
+    ...over,
+  });
+
+  const payload = { projectId: 'p1', intentId: 'i1', executionId: 'i1' };
+
+  it('reconstructs the block from prose, validates through the extractor, re-derives', async () => {
+    const writer = {
+      getIntentGraph: vi.fn(async () => [DAMAGED, INTACT, UNREGISTERED]),
+      updateArtifact: vi.fn(async ({ id }) => ({ id })),
+    };
+    const deps = makeDeps({ createWriter: () => writer });
+    const res = await repairStructure(payload, deps);
+    expect(res.ok).toBe(true);
+    expect(res.repaired).toEqual([
+      { artifactId: 'requirements', artifactType: 'requirements', items: 1 },
+    ]);
+    expect(res.intact).toEqual(['stories-doc']); // intact registered doc untouched
+    expect(res.failures).toEqual([]);
+    // The block was APPENDED to the surviving prose, never replacing it.
+    const written = writer.updateArtifact.mock.calls[0][0];
+    expect(written.props.content).toContain('prose (block gone)');
+    expect(written.props.content).toContain('requirements:');
+    expect(deps.deriveArtifacts).toHaveBeenCalledWith(
+      expect.objectContaining({ artifactTypes: ['requirements'] }),
+    );
+  });
+
+  it('never writes an answer the extractor cannot parse into items', async () => {
+    const writer = {
+      getIntentGraph: vi.fn(async () => [DAMAGED]),
+      updateArtifact: vi.fn(),
+    };
+    const deps = makeDeps({
+      createWriter: () => writer,
+      oneShot: vi.fn(async () => ({ ok: true, text: 'no block here', metrics: null })),
+    });
+    const res = await repairStructure(payload, deps);
+    expect(res.repaired).toEqual([]);
+    expect(res.failures).toEqual([
+      { artifactId: 'requirements', reason: 'no_yaml_block_in_answer' },
+    ]);
+    expect(writer.updateArtifact).not.toHaveBeenCalled();
+    expect(deps.deriveArtifacts).not.toHaveBeenCalled();
+  });
+
+  it('extractFencedYamlBlock tolerates prose around the block; buildRepairPrompt carries the contract', () => {
+    expect(extractFencedYamlBlock(`Sure!\n${REQ_BLOCK}\nDone.`)).toBe(REQ_BLOCK);
+    expect(extractFencedYamlBlock('nothing')).toBeNull();
+    const prompt = buildRepairPrompt({
+      artifact: DAMAGED,
+      contract: 'CONTRACT-TEXT',
+    });
+    expect(prompt).toContain('CONTRACT-TEXT');
+    expect(prompt).toContain('prose (block gone)');
+  });
+});

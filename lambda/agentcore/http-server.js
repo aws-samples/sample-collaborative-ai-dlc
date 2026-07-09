@@ -46,6 +46,11 @@
 //     → accepts in ms; a background job applies the APPROVED plan (bounded
 //       one-shot rewrites + drift bookkeeping + re-derive) and completes the
 //       orchestrator's durable callback with the outcome.
+//   { "command": "repair-structure", projectId, intentId, executionId,
+//     artifactTypes?, requestedCli?, cliModels? }
+//     → ops remediation: reconstruct LOST machine-parsed structured blocks
+//       from each damaged artifact's own prose (validated through the real
+//       extractor before any write), then re-derive the projection.
 //
 // The dispatcher is pure (handlers injected) so it is unit-tested without a
 // socket; createServer wires the real commands + clients.
@@ -92,6 +97,7 @@ export const dispatchInvocation = async ({
     'discussion-assist-start': handlers.discussionAssistStart,
     'quorum-edit-plan-start': handlers.quorumEditPlanStart,
     'quorum-edit-apply-start': handlers.quorumEditApplyStart,
+    'repair-structure': handlers.repairStructure,
     inspect: handlers.inspect,
     capabilities: handlers.capabilities,
   }[command];
@@ -175,6 +181,7 @@ const main = async () => {
   const { createDiscussionAssistStart } = await import('./commands/discussion-assist-start.js');
   const { createQuorumEditPlanStart } = await import('./commands/quorum-edit-plan-start.js');
   const { createQuorumEditApplyStart } = await import('./commands/quorum-edit-apply-start.js');
+  const { repairStructure } = await import('./commands/repair-structure.js');
   const { promoteUnits } = await import('./commands/promote-units.js');
   const { deriveArtifacts } = await import('./commands/derive-artifacts.js');
   const { initLane, mergeLane } = await import('./commands/lane.js');
@@ -287,6 +294,16 @@ const main = async () => {
     sendCallbackHeartbeat: sendStageCallbackHeartbeat,
     busy,
   });
+  // Ops remediation: reconstruct lost structured blocks (see command header).
+  handlers.repairStructure = (p) =>
+    repairStructure(p, {
+      openGraph,
+      store,
+      broadcast,
+      availableClis,
+      deriveArtifacts: (q) => handlers.deriveArtifacts(q),
+      env: process.env,
+    });
 
   const server = createServer({ handlers, busy });
   server.listen(8080, '0.0.0.0', () => console.error('[agentcore] listening on 0.0.0.0:8080'));
