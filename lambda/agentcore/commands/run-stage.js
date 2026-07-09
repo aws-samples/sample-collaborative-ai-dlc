@@ -1620,6 +1620,18 @@ export const runStage = async (
   // for the retry. Artifact-only stages leave the tree clean (no commit, no
   // network). NEVER throws — failures are values recorded below.
   await warnIfDiskLow('before the engine commit');
+  // TODO(gitlab-token-expiry): `gitToken` is the DISPATCH-TIME token, minted by
+  // the orchestrator when this stage was started (freshGitToken →
+  // ensureFreshGitToken). GitLab OAuth access tokens live ~2h, but a stage can
+  // run up to the 8h AgentCore ceiling (max_lifetime 28800s), so a long GitLab
+  // stage reaches this push with an EXPIRED token → "HTTP Basic: Access denied".
+  // v1 refreshed just-before-push (pool-worker.js:1431); v2 lost that timing.
+  // Fix: refresh the GitLab token here (ensureFreshGitToken) right before the
+  // push — which requires giving the AgentCore runtime the GitLab OAuth secret
+  // (GITLAB_OAUTH_SECRET_NAME/GITLAB_REDIRECT_URI env + secretsmanager:GetSecretValue
+  // + ssm:GetParameter/PutParameter + the connection lookup), mirroring the
+  // orchestrator wiring. Common case (stage < 2h) is already covered by the
+  // dispatch-time refresh.
   const gitResult = await commitAndPushAll({
     repos,
     workspaceDir,

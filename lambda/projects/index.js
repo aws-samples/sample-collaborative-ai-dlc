@@ -23,7 +23,7 @@ import { buildResponse } from '../shared/response.js';
 import { requirePlatformAdmin } from '../shared/authz.js';
 import { runTrackerMigration } from '../shared/tracker-migration.js';
 import { getGitConnection } from '../shared/git-connection-store.js';
-import { resolveGitToken, resolveGitHubTokenForMode } from '../shared/git-token.js';
+import { ensureFreshGitToken, resolveGitHubTokenForMode } from '../shared/git-token.js';
 import { getProvider } from '../shared/git-providers.js';
 import {
   getVal,
@@ -470,7 +470,9 @@ const getUserGitToken = async (userId, provider, repoSlug = null) => {
   try {
     const item = await getGitConnection(ddb, userId, provider);
     if (!item?.parameterName) return null;
-    return await resolveGitToken(ssm, item);
+    // Refresh GitLab OAuth tokens just-in-time (they live ~2h); passthrough for
+    // other providers. Keeps detection working even if the stored token expired.
+    return await ensureFreshGitToken({ ssm, secrets, ddb, item, gitProvider: provider });
   } catch {
     return null;
   }
