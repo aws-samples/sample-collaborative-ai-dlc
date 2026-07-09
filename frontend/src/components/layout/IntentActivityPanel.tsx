@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Bot, Clock, Eye, MessageSquare, X } from 'lucide-react';
+import { Bot, Clock, Eye, Maximize2, MessageSquare, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getTimeAgo } from '@/lib/timeAgo';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
@@ -20,7 +27,7 @@ import { artifactAccent } from '@/components/intent/artifactAccent';
 import { ArtifactEditControls, ArtifactStaleBadge } from '@/components/intent/ArtifactEditControls';
 import { ArtifactContentEditor } from '@/components/intent/ArtifactContentEditor';
 import { ArtifactMarkdown } from '@/components/intent/ArtifactMarkdown';
-import type { IntentActivityEvent } from '@/services/intents';
+import type { IntentActivityEvent, IntentArtifact } from '@/services/intents';
 
 // The v2 intent analog of the sprint ActivityPanel: same 3-tab shell (Agent /
 // Timeline / Discuss) hosted in AppShell's right slot, but fed entirely from
@@ -406,6 +413,7 @@ function PreviewTab() {
   const discussions = useDiscussions();
   const artifact = detail?.artifacts.find((a) => a.id === previewArtifactId) ?? null;
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [overlayOpen, setOverlayOpen] = useState(false);
   const editing = artifact != null && editingId === artifact.id;
 
   if (!artifact) {
@@ -419,55 +427,119 @@ function PreviewTab() {
     );
   }
 
+  return (
+    <>
+      <ScrollArea className="flex-1">
+        <ArtifactPreviewContent
+          artifact={artifact}
+          editing={editing}
+          onDoneEditing={() => setEditingId(null)}
+          onStartEdit={() => setEditingId(artifact.id)}
+          onOpenOverlay={() => setOverlayOpen(true)}
+          discussions={discussions}
+        />
+      </ScrollArea>
+      <Dialog open={overlayOpen} onOpenChange={setOverlayOpen}>
+        <DialogContent className="grid h-[92vh] w-[min(96vw,1200px)] max-w-none grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden p-0">
+          <DialogHeader className="border-b px-6 py-4 pr-14">
+            <DialogTitle className="truncate text-base">
+              {artifact.title || artifact.id}
+            </DialogTitle>
+            <DialogDescription className="sr-only">
+              Expanded artifact preview for {artifact.title || artifact.id}
+            </DialogDescription>
+          </DialogHeader>
+          <ScrollArea className="min-h-0">
+            <ArtifactPreviewContent
+              artifact={artifact}
+              editing={editing}
+              onDoneEditing={() => setEditingId(null)}
+              onStartEdit={() => setEditingId(artifact.id)}
+              discussions={discussions}
+              className="px-6 py-5"
+              contentClassName="prose-base"
+            />
+          </ScrollArea>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+function ArtifactPreviewContent({
+  artifact,
+  editing,
+  onDoneEditing,
+  onStartEdit,
+  discussions,
+  onOpenOverlay,
+  className,
+  contentClassName,
+}: {
+  artifact: IntentArtifact;
+  editing: boolean;
+  onDoneEditing: () => void;
+  onStartEdit: () => void;
+  discussions: ReturnType<typeof useDiscussions>;
+  onOpenOverlay?: () => void;
+  className?: string;
+  contentClassName?: string;
+}) {
   const accent = artifactAccent(artifact.artifactType);
+  const title = artifact.title || artifact.id;
 
   return (
-    <ScrollArea className="flex-1">
-      <div className="px-4 py-3">
-        <div className="flex items-center gap-2 mb-2">
-          <span className={cn('h-2 w-2 rounded-full shrink-0', accent.dot)} />
-          {artifact.artifactType && (
-            <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground/60">
-              {artifact.artifactType}
-            </span>
-          )}
-          <ArtifactStaleBadge artifact={artifact} />
-        </div>
-        <div className="flex items-center gap-2 mb-3">
-          <h3 className="text-sm font-semibold min-w-0 flex-1">{artifact.title || artifact.id}</h3>
-          {!editing && (
-            <ArtifactEditControls
-              artifact={artifact}
-              onStartEdit={() => setEditingId(artifact.id)}
-            />
-          )}
-          {discussions && (
-            <Button
-              variant="ghost"
-              className="h-7 px-2 gap-1.5 shrink-0 text-xs"
-              onClick={() =>
-                discussions.openDiscussion({
-                  entityType: 'artifact',
-                  entityId: artifact.id,
-                  entityTitle: artifact.title || artifact.id,
-                })
-              }
-            >
-              <MessageSquare className="h-3 w-3" />
-              Discuss
-            </Button>
-          )}
-        </div>
-        {editing ? (
-          <ArtifactContentEditor artifact={artifact} onDone={() => setEditingId(null)} />
-        ) : (
-          artifact.content && (
-            <div className="prose prose-sm dark:prose-invert max-w-none">
-              <ArtifactMarkdown content={artifact.content} />
-            </div>
-          )
+    <div className={cn('px-4 py-3', className)}>
+      <div className="flex items-center gap-2 mb-2">
+        <span className={cn('h-2 w-2 rounded-full shrink-0', accent.dot)} />
+        {artifact.artifactType && (
+          <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground/60">
+            {artifact.artifactType}
+          </span>
+        )}
+        <ArtifactStaleBadge artifact={artifact} />
+      </div>
+      <div className="flex items-center gap-2 mb-3">
+        <h3 className="text-sm font-semibold min-w-0 flex-1">{title}</h3>
+        {onOpenOverlay && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 shrink-0"
+            onClick={onOpenOverlay}
+            title="Open preview overlay"
+          >
+            <Maximize2 className="h-3 w-3" />
+            <span className="sr-only">Open preview overlay</span>
+          </Button>
+        )}
+        {!editing && <ArtifactEditControls artifact={artifact} onStartEdit={onStartEdit} />}
+        {discussions && (
+          <Button
+            variant="ghost"
+            className="h-7 px-2 gap-1.5 shrink-0 text-xs"
+            onClick={() =>
+              discussions.openDiscussion({
+                entityType: 'artifact',
+                entityId: artifact.id,
+                entityTitle: title,
+              })
+            }
+          >
+            <MessageSquare className="h-3 w-3" />
+            Discuss
+          </Button>
         )}
       </div>
-    </ScrollArea>
+      {editing ? (
+        <ArtifactContentEditor artifact={artifact} onDone={onDoneEditing} />
+      ) : (
+        artifact.content && (
+          <div className={cn('prose prose-sm dark:prose-invert max-w-none', contentClassName)}>
+            <ArtifactMarkdown content={artifact.content} />
+          </div>
+        )
+      )}
+    </div>
   );
 }
