@@ -9,6 +9,6 @@
 // .husky/pre-commit with explicit "command -v" guards so a missing tool
 // silently skips instead of breaking the commit.
 export default {
-  '*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}': () => ['oxfmt --check', 'oxlint'],
+  '*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}': ['oxfmt --check', 'oxlint'],
   '*': 'secretlint',
 };

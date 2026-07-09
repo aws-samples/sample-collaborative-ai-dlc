@@ -41,6 +41,8 @@ export interface IntentEvent {
   // agent.question
   humanTaskId?: string;
   questions?: unknown;
+  prompt?: string | null;
+  options?: unknown;
   // agent.metric
   metricId?: string;
   metrics?: Record<string, number>;

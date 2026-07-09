@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import {
   runStage,
@@ -780,6 +780,125 @@ describe('runStage — deterministic sensors', () => {
     // and every one was closed.
     expect(opened).toBeGreaterThan(0);
     expect(closed).toBe(opened);
+  });
+});
+
+describe('runStage — LLM reviewer axis', () => {
+  const okSpawn = () => ({
+    on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
+    stdin: { end() {} },
+  });
+
+  const libWithReviewer = ({ humanValidation = 'required', reviewerMaxIterations = 1 } = {}) => {
+    const lib = library();
+    lib.stagesById['requirements-analysis'].reviewer = 'aidlc-reviewer-agent';
+    lib.stagesById['requirements-analysis'].reviewerMaxIterations = reviewerMaxIterations;
+    lib.stagesById['requirements-analysis'].humanValidation = humanValidation;
+    lib.agentsById['aidlc-reviewer-agent'] = {
+      id: 'aidlc-reviewer-agent',
+      modelOverride: null,
+      bodyRef: { s3Key: 'blocks/bodies/sha256/reviewer' },
+    };
+    return lib;
+  };
+
+  const storeWithVerdict = (verdict, findings = 'needs work') => {
+    const store = spyStore();
+    store.listSensorRuns = async () => [
+      {
+        sensorRunId: 'review-1',
+        stageInstanceId: 'si-f952091522a81cfb',
+        sensorId: 'reviewer:aidlc-reviewer-agent',
+        kind: 'reviewer',
+        result: verdict === 'READY' ? 'PASS' : 'FAIL',
+        detail: { verdict, findings },
+      },
+    ];
+    return store;
+  };
+
+  const reviewerRow = (verdict, findings = 'needs work') => ({
+    sensorRunId: `review-${verdict}`,
+    stageInstanceId: 'si-f952091522a81cfb',
+    sensorId: 'reviewer:aidlc-reviewer-agent',
+    kind: 'reviewer',
+    result: verdict === 'READY' ? 'PASS' : 'FAIL',
+    detail: { verdict, findings },
+  });
+
+  const storeWithVerdictSequence = (verdicts) => {
+    const store = spyStore();
+    let ix = 0;
+    store.listSensorRuns = vi.fn(async () => [
+      reviewerRow(verdicts[Math.min(ix++, verdicts.length - 1)]),
+    ]);
+    return store;
+  };
+
+  it('fails a reviewer-only stage when the reviewer returns NOT-READY', async () => {
+    const deps = baseDeps({
+      store: storeWithVerdict('NOT-READY', 'missing acceptance criteria'),
+      spawnFn: okSpawn,
+      loadLibrary: async () => ({
+        workflow: workflow(),
+        library: libWithReviewer({ humanValidation: 'none' }),
+      }),
+    });
+    const res = await runStage(baseArgs, deps);
+    expect(res).toMatchObject({ ok: false, reason: 'reviewer_not_ready' });
+  });
+
+  it('lets a NOT-READY reviewer verdict proceed when human validation follows', async () => {
+    const deps = baseDeps({
+      store: storeWithVerdict('NOT-READY', 'human should decide'),
+      spawnFn: okSpawn,
+      loadLibrary: async () => ({
+        workflow: workflow(),
+        library: libWithReviewer({ humanValidation: 'required' }),
+      }),
+    });
+    const res = await runStage(baseArgs, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+  });
+
+  it('retries a NOT-READY reviewer verdict up to reviewerMaxIterations before failing', async () => {
+    const store = storeWithVerdictSequence(['NOT-READY', 'NOT-READY', 'NOT-READY']);
+    const spawnFn = vi.fn(okSpawn);
+    const deps = baseDeps({
+      store,
+      spawnFn,
+      loadLibrary: async () => ({
+        workflow: workflow(),
+        library: libWithReviewer({ humanValidation: 'none', reviewerMaxIterations: 3 }),
+      }),
+    });
+
+    const res = await runStage(baseArgs, deps);
+
+    expect(res).toMatchObject({ ok: false, reason: 'reviewer_not_ready' });
+    expect(store.listSensorRuns).toHaveBeenCalledTimes(3);
+    // One builder invocation plus three clean-room reviewer invocations.
+    expect(spawnFn).toHaveBeenCalledTimes(4);
+  });
+
+  it('stops reviewer retries early once a READY verdict lands', async () => {
+    const store = storeWithVerdictSequence(['NOT-READY', 'READY', 'READY']);
+    const spawnFn = vi.fn(okSpawn);
+    const deps = baseDeps({
+      store,
+      spawnFn,
+      loadLibrary: async () => ({
+        workflow: workflow(),
+        library: libWithReviewer({ humanValidation: 'none', reviewerMaxIterations: 3 }),
+      }),
+    });
+
+    const res = await runStage(baseArgs, deps);
+
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(store.listSensorRuns).toHaveBeenCalledTimes(2);
+    // One builder invocation plus two clean-room reviewer invocations.
+    expect(spawnFn).toHaveBeenCalledTimes(3);
   });
 });
 

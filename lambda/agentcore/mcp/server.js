@@ -185,6 +185,10 @@ export const buildToolHandlers = ({ writer, graph, bridge }) => {
       guard(() => bridge.sendOutput({ content, kind: kind ?? 'text' })),
     collect_metric: ({ metrics }) => guard(() => bridge.collectMetric({ metrics })),
     emit_stage_note: ({ summary, type }) => guard(() => bridge.emitStageNote({ summary, type })),
+    submit_review: ({ reviewer, verdict, findings, round }) =>
+      guard(() =>
+        bridge.submitReview({ reviewer, verdict, findings: findings ?? '', round: round ?? 0 }),
+      ),
   };
 };
 
@@ -218,9 +222,11 @@ export const AUTHOR_TOOLS = [
   'emit_stage_note',
 ];
 
+export const REVIEWER_TOOLS = [...READ_TOOLS, 'collect_metric', 'submit_review'];
+
 // The handler subset for a given role. `reviewer` → read-only; `author` → all.
 export const handlersForRole = (allHandlers, role) => {
-  const names = role === 'reviewer' ? READ_TOOLS : AUTHOR_TOOLS;
+  const names = role === 'reviewer' ? REVIEWER_TOOLS : AUTHOR_TOOLS;
   return Object.fromEntries(names.map((n) => [n, allHandlers[n]]));
 };
 
@@ -371,6 +377,16 @@ export const toolSchemas = (z) => ({
       'Record a numeric metric sample (e.g. tokensInput, tokensOutput, contextWindowPct).',
     shape: { metrics: z.record(z.string(), z.number()) },
   },
+  submit_review: {
+    description:
+      'Reviewer-only: submit your clean-room stage review verdict. Use READY only when the stage artifacts satisfy the stage definition and constraints; use NOT-READY with concrete findings when the builder must revise.',
+    shape: {
+      reviewer: z.string().optional(),
+      verdict: z.enum(['READY', 'NOT-READY']),
+      findings: z.string().optional(),
+      round: z.number().optional(),
+    },
+  },
   emit_stage_note: {
     description: 'Append a short process/progress note to the execution audit trail.',
     shape: { summary: z.string(), type: z.string().optional() },
@@ -405,7 +421,7 @@ const traceHandler = (name, fn, { enabled }) => {
 // is wrapped in a stderr trace (see traceHandler) unless env disables it.
 export const registerTools = ({ server, handlers, role, z, env = process.env }) => {
   const schemas = toolSchemas(z);
-  const names = role === 'reviewer' ? READ_TOOLS : AUTHOR_TOOLS;
+  const names = role === 'reviewer' ? REVIEWER_TOOLS : AUTHOR_TOOLS;
   const enabled = env.V2_MCP_TRACE !== 'off';
   for (const name of names) {
     const { description, shape } = schemas[name];

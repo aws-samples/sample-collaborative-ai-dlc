@@ -103,7 +103,11 @@ export const laneSessionIdFor = (intentId, sectionIndex, slug) =>
 // Deterministic id per (run, name): replay-stable within a run; a relaunch
 // (new runId) re-asks rather than reusing a retired run's decision.
 // Returns { gate } (answered/approved/rejected row) or { superseded: true }.
-const awaitEngineGate = async (ctxArg, toolkit, { name, prompt, options = null }) => {
+export const awaitEngineGate = async (
+  ctxArg,
+  toolkit,
+  { name, prompt, options = null, kind = 'approval', stageInstanceId = null, unitSlug = null },
+) => {
   const { store, broadcast, ids, runId } = toolkit;
   const { executionId, intentId, projectId } = ids;
   const humanTaskId = `eg-${name}-${runId}`;
@@ -122,7 +126,9 @@ const awaitEngineGate = async (ctxArg, toolkit, { name, prompt, options = null }
       await store.createHumanTask({
         executionId,
         humanTaskId,
-        kind: 'approval',
+        stageInstanceId,
+        unitSlug,
+        kind,
         prompt,
         options,
       });
@@ -147,7 +153,9 @@ const awaitEngineGate = async (ctxArg, toolkit, { name, prompt, options = null }
         executionId,
         action: 'agent.question',
         humanTaskId,
-        kind: 'approval',
+        stageInstanceId,
+        unitSlug,
+        kind,
         prompt,
         options,
       });

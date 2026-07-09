@@ -794,6 +794,17 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return item;
   };
 
+  const listSensorRuns = async (executionId, { stageInstanceId } = {}) => {
+    const rows = await queryAll(ddb, {
+      TableName: table(),
+      KeyConditionExpression: 'pk = :pk AND begins_with(sk, :p)',
+      ExpressionAttributeValues: { ':pk': executionPk(executionId), ':p': 'SENSOR#' },
+    });
+    return rows
+      .filter((r) => !stageInstanceId || r.stageInstanceId === stageInstanceId)
+      .toSorted(bySk);
+  };
+
   // Append an agent output chunk for restore-on-reload. The sequence is an atomic
   // counter on the META row (ADD), so concurrent chunks never collide and SK sort
   // == emit order. The live copy is broadcast over the websocket by the caller.
@@ -1241,6 +1252,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     recordMetric,
     recordGraphRead,
     recordSensorRun,
+    listSensorRuns,
     appendOutput,
     getOutputs,
     listProjectExecutions,

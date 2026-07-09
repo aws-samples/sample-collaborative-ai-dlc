@@ -109,6 +109,7 @@ beforeEach(() => {
     store: {
       getExecution: vi.fn(async () => META),
       updateExecution: vi.fn(async () => ({})),
+      createHumanTask: vi.fn(async (args) => ({ ...args, status: 'pending' })),
       setGateCallbackId: vi.fn(async () => ({})),
       // Default: gate is answered (not pending) by the time we re-read it.
       getHumanTask: vi.fn(async () => ({ status: 'answered' })),
@@ -190,6 +191,93 @@ describe('orchestrator durable handler', () => {
     expect(starts[1].stageCallbackId).not.toBe(starts[0].stageCallbackId);
     // Gate answered before the release deadline → no StopRuntimeSession.
     expect(deps.stopSession).not.toHaveBeenCalled();
+  });
+
+  it('opens a validation gate after a required humanValidation stage', async () => {
+    deps.loadPlan.mockResolvedValue({
+      valid: true,
+      plan: {
+        stages: [
+          {
+            stageId: 'a',
+            stageInstanceId: 'si-a',
+            humanValidation: 'required',
+            outputArtifacts: [{ artifact: 'requirements-analysis' }],
+          },
+        ],
+      },
+    });
+    deps.store.getHumanTask = vi
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        humanTaskId: 'eg-validation-si-a-0',
+        status: 'approved',
+        answer: { decision: 'approve' },
+      });
+
+    const res = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1' },
+      ctx,
+      deps,
+    );
+
+    expect(res.ok).toBe(true);
+    expect(deps.store.createHumanTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        executionId: 'i1',
+        kind: 'validation',
+        stageInstanceId: 'si-a',
+        options: ['approve', 'request-changes'],
+      }),
+    );
+    expect(invokes.map((p) => p.command)).toEqual([
+      'init-ws',
+      'run-stage-start',
+      'derive-artifacts',
+    ]);
+  });
+
+  it('request-changes validation feedback re-runs the stage through resumeFrom', async () => {
+    deps.loadPlan.mockResolvedValue({
+      valid: true,
+      plan: {
+        stages: [
+          {
+            stageId: 'a',
+            stageInstanceId: 'si-a',
+            humanValidation: 'required',
+            outputArtifacts: [],
+          },
+        ],
+      },
+    });
+    deps.store.getHumanTask = vi
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        humanTaskId: 'eg-validation-si-a-0',
+        status: 'rejected',
+        answer: { decision: 'request-changes', feedback: 'tighten scope' },
+      })
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        humanTaskId: 'eg-validation-si-a-1',
+        status: 'approved',
+        answer: { decision: 'approve' },
+      });
+
+    const res = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1' },
+      ctx,
+      deps,
+    );
+
+    expect(res.ok).toBe(true);
+    const starts = stageStarts();
+    expect(starts).toHaveLength(2);
+    expect(starts[0].resumeFrom).toBeNull();
+    expect(starts[1].resumeFrom).toBe('eg-validation-si-a-0');
   });
 
   it('forwards the project cliModels to run-stage-start', async () => {

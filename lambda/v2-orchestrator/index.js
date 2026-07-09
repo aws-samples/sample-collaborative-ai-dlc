@@ -41,7 +41,7 @@ import { resolveGitToken, getInstallationTokenFromConfig } from '../shared/git-t
 import { getGitHubAuthMode } from '../shared/github-auth-config.js';
 import { getProvider } from '../shared/git-providers.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
-import { runParallelSection } from './section.js';
+import { awaitEngineGate, parseChoice, runParallelSection } from './section.js';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -577,7 +577,8 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     //   sessionId    — the AgentCore session the stage dispatches to (a lane's
     //                  own session, or the intent session)
     //   cloneInputs  — branch inputs (a lane's unit branch, or the intent's)
-    //   suffix       — durable-identity suffix for halt-and-ask retry rounds
+    //   suffix       — durable-identity suffix for halt-and-ask / validation rounds
+    //   initialResumeFrom — answered gate id to inject into the first attempt
     // Every durable identity (callback names, step names) carries the unit
     // dimension + suffix so lanes and rounds never collide. Outcomes (the
     // caller owns terminal META writes + lane bookkeeping):
@@ -591,6 +592,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         sessionId: stageSessionId = sessionId,
         cloneInputs: stageCloneInputs = cloneInputs,
         suffix = '',
+        initialResumeFrom = null,
       } = opts;
       const label = `${unitSlug ? `${stage.stageId}-u-${unitSlug}` : stage.stageId}${suffix}`;
       const stageOpts = {
@@ -609,7 +611,10 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         cloneInputs: stageCloneInputs,
         freshGitToken,
       };
-      let result = await runStage(ctxArg, invokeRuntime, { ...stageOpts, resumeFrom: null });
+      let result = await runStage(ctxArg, invokeRuntime, {
+        ...stageOpts,
+        resumeFrom: initialResumeFrom,
+      });
 
       // Park loop (D3): the stage may open more than one gate across resumes. Each
       // WAITING_FOR_HUMAN suspends on a durable callback until the gate is answered.
@@ -757,43 +762,88 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         continue;
       }
       for (const stage of segment.stages) {
-        const outcome = await executeStage(ctx, stage);
-        if (outcome.state === 'TERMINAL') return outcome.value;
-        if (outcome.state === 'FAILED') {
-          const out = await fail('stage_failed', `${stage.stageId}: ${outcome.reason}`);
-          return { ...out, stageId: stage.stageId };
-        }
-
         const outputArtifactTypes = (stage.outputArtifacts ?? [])
           .map((o) => o.artifact ?? o)
           .filter(Boolean);
-        if (outputArtifactTypes.length > 0) {
-          const derived = await ctx.step(`derive-artifacts-${stage.stageId}`, () =>
-            invokeRuntime(
-              {
-                command: 'derive-artifacts',
-                projectId,
-                intentId,
-                executionId,
-                stageInstanceId: stage.stageInstanceId ?? null,
-                artifactTypes: outputArtifactTypes,
-                enrichment: deriveEnrichment,
-                ...(requestedCli ? { requestedCli } : {}),
-                ...(cliModels ? { cliModels } : {}),
-              },
-              sessionId,
-            ),
-          );
-          if (!derived || derived.ok === false) {
+        let validationRound = 0;
+        let resumeFromValidation = null;
+        for (;;) {
+          const suffix = validationRound ? `-validation-${validationRound}` : '';
+          const outcome = await executeStage(ctx, stage, {
+            suffix,
+            initialResumeFrom: resumeFromValidation,
+          });
+          if (outcome.state === 'TERMINAL') return outcome.value;
+          if (outcome.state === 'FAILED') {
+            const out = await fail('stage_failed', `${stage.stageId}: ${outcome.reason}`);
+            return { ...out, stageId: stage.stageId };
+          }
+
+          if (outputArtifactTypes.length > 0) {
+            const derived = await ctx.step(`derive-artifacts-${stage.stageId}${suffix}`, () =>
+              invokeRuntime(
+                {
+                  command: 'derive-artifacts',
+                  projectId,
+                  intentId,
+                  executionId,
+                  stageInstanceId: stage.stageInstanceId ?? null,
+                  artifactTypes: outputArtifactTypes,
+                  enrichment: deriveEnrichment,
+                  ...(requestedCli ? { requestedCli } : {}),
+                  ...(cliModels ? { cliModels } : {}),
+                },
+                sessionId,
+              ),
+            );
+            if (!derived || derived.ok === false) {
+              await emitEvent(
+                ctx,
+                `derive-artifacts-failed-${stage.stageId}${suffix}`,
+                'v2.derive.failed',
+                `${stage.stageId}: ${derived?.reason ?? 'no_response'}${
+                  derived?.detail ? ` (${derived.detail})` : ''
+                }`,
+              );
+            }
+          }
+
+          if (stage.humanValidation !== 'required') break;
+
+          const validation = await awaitEngineGate(ctx, sectionToolkit, {
+            name: `validation-${stage.stageInstanceId ?? stage.stageId}-${validationRound}`,
+            kind: 'validation',
+            stageInstanceId: stage.stageInstanceId ?? null,
+            prompt: validationPrompt(stage, outputArtifactTypes, validationRound),
+            options: ['approve', 'request-changes'],
+          });
+          if (validation.superseded) return { ok: false, reason: 'retired', intentId };
+
+          const choice =
+            parseChoice(validation.gate?.answer, ['approve', 'request-changes']) ??
+            (validation.gate?.status === 'approved'
+              ? 'approve'
+              : validation.gate?.status === 'rejected'
+                ? 'request-changes'
+                : 'approve');
+          if (choice === 'approve') {
             await emitEvent(
               ctx,
-              `derive-artifacts-failed-${stage.stageId}`,
-              'v2.derive.failed',
-              `${stage.stageId}: ${derived?.reason ?? 'no_response'}${
-                derived?.detail ? ` (${derived.detail})` : ''
-              }`,
+              `stage-validated-${stage.stageId}-${validationRound}`,
+              'v2.stage.validated',
+              `Stage ${stage.stageId} approved by human validation`,
             );
+            break;
           }
+
+          resumeFromValidation = validation.gate.humanTaskId;
+          validationRound += 1;
+          await emitEvent(
+            ctx,
+            `stage-validation-revision-${stage.stageId}-${validationRound}`,
+            'v2.stage.revision_requested',
+            `Human requested changes for ${stage.stageId}; re-running stage with feedback`,
+          );
         }
 
         // Unit DAG promotion (docs/v2-parallel.md WP3): the stage that produces
@@ -1030,6 +1080,19 @@ const runStage = async (
 };
 
 const nowIso = () => new Date().toISOString();
+
+const validationPrompt = (stage, outputArtifactTypes = [], round = 0) => {
+  const artifacts = outputArtifactTypes.length
+    ? outputArtifactTypes.join(', ')
+    : 'no declared artifacts';
+  return [
+    `Review stage ${stage.stageId}${round ? ` (revision ${round})` : ''}.`,
+    '',
+    `Produced artifacts: ${artifacts}.`,
+    '',
+    'Choose approve to continue, or request-changes with feedback to send this stage back to the agent.',
+  ].join('\n');
+};
 
 // ── WP6: open the fan-in PR(s) (intent-pr strategy) ─────────────────────────
 // One PR per repo from the intent branch onto the base branch. NEVER throws —

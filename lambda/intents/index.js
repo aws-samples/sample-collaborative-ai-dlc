@@ -200,6 +200,15 @@ const getVal = (vertexMap, key) => {
   return Array.isArray(v) ? v[0] : v;
 };
 
+const safeJsonParse = (value, fallback = null) => {
+  if (value == null || value === '') return fallback;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+};
+
 const getResponder = (event) => {
   const claims = event?.requestContext?.authorizer?.claims || {};
   return {
@@ -396,6 +405,9 @@ const fetchArtifacts = async (g, intentId) => {
     // artifact and the re-run has not yet rehabilitated it. UI dims it.
     supersededAt: getVal(vm, 'superseded_at') ?? null,
     supersededBy: getVal(vm, 'superseded_by') ?? null,
+    summaryGist: getVal(vm, 'summary_gist') ?? null,
+    summaryClaims: safeJsonParse(getVal(vm, 'summary_claims'), []),
+    enrichmentModel: getVal(vm, 'enrichment_model') ?? null,
     content: getVal(vm, 'content') ?? null,
   }));
 };

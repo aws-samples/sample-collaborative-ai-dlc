@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import {
   intentsService,
   type GateAnswer,
@@ -72,14 +72,17 @@ import {
 } from '@/components/ui/dialog';
 import {
   AlertTriangle,
+  CheckCircle2,
   ChevronRight,
   Compass,
   FileText,
   HelpCircle,
+  Layers,
   Loader2,
   MoreHorizontal,
   Play,
   RotateCcw,
+  Sparkles,
   Trash2,
   XCircle,
 } from 'lucide-react';
@@ -122,6 +125,7 @@ export default function IntentView() {
     deleteIntent,
   } = useIntent();
   const navigate = useNavigate();
+  const { humanTaskId: reviewGateId } = useParams<{ humanTaskId?: string }>();
   const { user } = useAuth();
   const userName = user?.displayName || user?.email || '';
   // Role gate for the destructive delete (owner/admin — the API enforces it
@@ -209,6 +213,7 @@ export default function IntentView() {
   // are the only signal the run is doing something (they stream into the
   // sidebar Timeline); this strip keeps the main pane from looking dead.
   const noStageRowsYet = detail.stages.length === 0;
+  const reviewGate = reviewGateId ? gates.find((g) => g.humanTaskId === reviewGateId) : null;
   // Stalled detection: a CREATED run whose hand-off never reached a live
   // orchestrator strands here (init-ws should flip it to RUNNING within
   // seconds). After >2 min untouched, offer a restart instead of spinning.
@@ -423,6 +428,31 @@ export default function IntentView() {
                 {starting ? 'Starting…' : 'Start'}
               </Button>
             </div>
+          </CardContent>
+        </Card>
+      ) : reviewGate ? (
+        <StageReviewPanel
+          gate={reviewGate}
+          detail={detail}
+          projectId={projectId}
+          intentId={intentId}
+          onAnswer={answerGate}
+          onBack={() => navigate(`/project/${projectId}/intent/${intentId}`)}
+        />
+      ) : reviewGateId ? (
+        <Card>
+          <CardContent className="space-y-3 py-4">
+            <p className="text-sm font-medium">Review gate not found</p>
+            <p className="text-sm text-muted-foreground">
+              This review may have been retired or belongs to another intent run.
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => navigate(`/project/${projectId}/intent/${intentId}`)}
+            >
+              Back to intent
+            </Button>
           </CardContent>
         </Card>
       ) : (
@@ -1152,6 +1182,300 @@ function SteeringCard({ steer }: { steer: IntentSteering }) {
 const engineGateStatusFor = (opt: string): GateAnswer['status'] =>
   /^reject/i.test(opt) ? 'rejected' : /^approve/i.test(opt) ? 'approved' : 'answered';
 
+function ReviewStat({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string | number;
+  tone?: 'ok' | 'warn';
+}) {
+  return (
+    <div
+      className={cn(
+        'rounded-md border bg-background px-3 py-2',
+        tone === 'ok' && 'border-agent-success/30 bg-agent-success/5',
+        tone === 'warn' && 'border-agent-waiting/30 bg-agent-waiting/5',
+      )}
+    >
+      <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+        {label}
+      </div>
+      <div className="mt-1 text-sm font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function StageReviewPanel({
+  gate,
+  detail,
+  projectId,
+  intentId,
+  onAnswer,
+  onBack,
+}: {
+  gate: IntentGate;
+  detail: IntentDetail;
+  projectId: string;
+  intentId: string;
+  onAnswer: (gate: IntentGate, input: GateAnswer) => Promise<void>;
+  onBack: () => void;
+}) {
+  const [feedback, setFeedback] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const graph = useIntentGraph(projectId, intentId);
+  const stage = detail.stages.find((s) => s.stageInstanceId === gate.stageInstanceId) ?? null;
+  const artifacts = detail.artifacts.filter(
+    (a) => a.createdByStageInstanceId === gate.stageInstanceId,
+  );
+  const sensors = detail.sensorRuns.filter((s) => s.stageInstanceId === gate.stageInstanceId);
+  const reviewerRuns = sensors.filter((s) => s.sensorId.startsWith('reviewer:'));
+  const reviewerFailCount = reviewerRuns.filter(
+    (run) => run.result !== 'PASS' && run.detail?.verdict !== 'READY',
+  ).length;
+  const derivedItems = artifacts.flatMap(
+    (artifact) => graph.itemsByArtifact.get(artifact.id) ?? [],
+  );
+  const artifactSummaries = artifacts.filter(
+    (artifact) => artifact.summaryGist || (artifact.summaryClaims?.length ?? 0) > 0,
+  );
+  const pending = gate.status === 'pending';
+  const submit = async (decision: 'approve' | 'request-changes') => {
+    setSubmitting(true);
+    try {
+      await onAnswer(gate, {
+        status: decision === 'approve' ? 'approved' : 'rejected',
+        answer: decision === 'approve' ? { decision } : { decision, feedback },
+      });
+      onBack();
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Card className="border-agent-waiting/30">
+      <CardHeader className="space-y-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <CardTitle className="text-base">
+              Review stage {stage?.stageId ?? gate.stageInstanceId}
+            </CardTitle>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Durable human validation gate. This page stays open alongside discussions and
+              timeline.
+            </p>
+          </div>
+          <Button variant="outline" size="sm" onClick={onBack}>
+            Back to intent
+          </Button>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-4">
+          <ReviewStat label="Artifacts" value={artifacts.length} />
+          <ReviewStat label="Derived items" value={derivedItems.length} />
+          <ReviewStat
+            label="Reviewer findings"
+            value={reviewerFailCount}
+            tone={reviewerFailCount ? 'warn' : 'ok'}
+          />
+          <ReviewStat label="Gate" value={gate.status} tone={pending ? 'warn' : 'ok'} />
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <section className="space-y-3 rounded-lg border border-agent-waiting/30 bg-agent-waiting/5 p-4">
+          <h2 className="text-sm font-semibold">Decision</h2>
+          {pending ? (
+            <div className="space-y-3">
+              <Label htmlFor="review-feedback">Request changes feedback</Label>
+              <Textarea
+                id="review-feedback"
+                value={feedback}
+                onChange={(e) => setFeedback(e.target.value)}
+                rows={4}
+                placeholder="What should the agent change before this stage can continue?"
+              />
+            </div>
+          ) : (
+            <div className="rounded-lg border bg-background p-3 text-sm text-muted-foreground">
+              Answered by {gate.answeredByName || gate.answeredBy || 'someone'}
+              {gate.answeredAt ? ` at ${new Date(gate.answeredAt).toLocaleString()}` : ''}.
+            </div>
+          )}
+          <div className="flex flex-wrap justify-end gap-2 pt-1">
+            {pending && (
+              <>
+                <Button
+                  variant="outline"
+                  disabled={submitting || !feedback.trim()}
+                  onClick={() => submit('request-changes')}
+                >
+                  Request changes
+                </Button>
+                <Button disabled={submitting} onClick={() => submit('approve')}>
+                  Approve stage
+                </Button>
+              </>
+            )}
+          </div>
+        </section>
+
+        <Accordion type="multiple" defaultValue={[]} className="space-y-2">
+          <AccordionItem value="summary" className="rounded-lg border px-4">
+            <AccordionTrigger className="py-3 hover:no-underline">
+              <div className="flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-agent-running" />
+                <span>At a glance</span>
+                {artifactSummaries.length > 0 && (
+                  <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
+                    LLM summary
+                  </Badge>
+                )}
+              </div>
+            </AccordionTrigger>
+            <AccordionContent className="space-y-3">
+              {artifactSummaries.length > 0 ? (
+                <div className="grid gap-3 md:grid-cols-2">
+                  {artifactSummaries.map((artifact) => (
+                    <div key={artifact.id} className="rounded-md border bg-background p-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium">
+                            {artifact.title || artifact.id}
+                          </p>
+                          <p className="text-[11px] text-muted-foreground">
+                            {artifact.artifactType || 'artifact'}
+                          </p>
+                        </div>
+                        {artifact.enrichmentModel && (
+                          <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[9px]">
+                            {artifact.enrichmentModel}
+                          </Badge>
+                        )}
+                      </div>
+                      {artifact.summaryGist && (
+                        <p className="mt-2 text-sm text-muted-foreground">{artifact.summaryGist}</p>
+                      )}
+                      {artifact.summaryClaims && artifact.summaryClaims.length > 0 && (
+                        <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+                          {artifact.summaryClaims.slice(0, 5).map((claim, idx) => (
+                            <li key={`${artifact.id}-claim-${idx}`} className="flex gap-1.5">
+                              <CheckCircle2 className="mt-0.5 h-3 w-3 shrink-0 text-agent-success" />
+                              <span>{claim}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  No LLM artifact summary is available for this stage. Review the extracted items
+                  and full artifacts below.
+                </p>
+              )}
+              {derivedItems.length > 0 && (
+                <div className="space-y-2 border-t pt-3">
+                  <div className="flex items-center gap-2">
+                    <Layers className="h-4 w-4 text-muted-foreground" />
+                    <span className="text-sm font-medium">Extracted review checklist</span>
+                    <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
+                      {derivedItems.length}
+                    </Badge>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {derivedItems.slice(0, 18).map((item) => (
+                      <Badge key={item.id} variant="outline" className="max-w-full truncate">
+                        {item.slug ? `${item.slug}: ` : ''}
+                        {item.label}
+                      </Badge>
+                    ))}
+                    {derivedItems.length > 18 && (
+                      <Badge variant="secondary">+{derivedItems.length - 18} more</Badge>
+                    )}
+                  </div>
+                </div>
+              )}
+            </AccordionContent>
+          </AccordionItem>
+
+          <AccordionItem value="reviewer-findings" className="rounded-lg border px-4">
+            <AccordionTrigger className="py-3 hover:no-underline">
+              <div className="flex items-center gap-2">
+                <Badge variant={pending ? 'secondary' : 'outline'}>{gate.status}</Badge>
+                <span>LLM reviewer findings</span>
+                {stage?.phase && <Badge variant="outline">{stage.phase}</Badge>}
+              </div>
+            </AccordionTrigger>
+            <AccordionContent className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <DiscussButton
+                  entityType="intent"
+                  entityId={`${intentId}:gate:${gate.humanTaskId}`}
+                  entityTitle={`Review ${stage?.stageId ?? gate.humanTaskId}`}
+                />
+              </div>
+              {reviewerRuns.length > 0 ? (
+                <div className="space-y-2 text-sm">
+                  {reviewerRuns.map((run) => (
+                    <div key={run.sensorRunId} className="rounded-md border p-2">
+                      <div className="flex items-center gap-2">
+                        <Badge variant={run.result === 'PASS' ? 'default' : 'destructive'}>
+                          {String(run.detail?.verdict ?? run.result)}
+                        </Badge>
+                        <span className="text-xs text-muted-foreground">{run.sensorId}</span>
+                      </div>
+                      {typeof run.detail?.findings === 'string' && run.detail.findings && (
+                        <p className="mt-2 whitespace-pre-wrap text-muted-foreground">
+                          {run.detail.findings}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  No LLM reviewer findings were recorded.
+                </p>
+              )}
+            </AccordionContent>
+          </AccordionItem>
+
+          <AccordionItem value="full-artifacts" className="rounded-lg border px-4">
+            <AccordionTrigger className="py-3 hover:no-underline">
+              <div className="flex items-center gap-2">
+                <FileText className="h-4 w-4 text-muted-foreground" />
+                <span>Full artifacts</span>
+                <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
+                  {artifacts.length}
+                </Badge>
+              </div>
+            </AccordionTrigger>
+            <AccordionContent className="space-y-3">
+              {artifacts.length ? (
+                artifacts.map((artifact) => (
+                  <ArtifactViewer key={artifact.id} artifact={artifact} />
+                ))
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  No graph artifacts were produced by this stage.
+                </p>
+              )}
+            </AccordionContent>
+          </AccordionItem>
+        </Accordion>
+
+        <div className="flex flex-wrap justify-end gap-2 border-t pt-4">
+          <Button variant="outline" onClick={onBack}>
+            Back to intent
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function GateCard({
   gate,
   isActiveGate,
@@ -1167,6 +1491,7 @@ function GateCard({
   userName: string;
   onAnswer: (gate: IntentGate, input: GateAnswer) => Promise<void>;
 }) {
+  const navigate = useNavigate();
   // Steering (docs/v2-steering.md): an optional course correction riding the
   // answer — injected into the resumed agent conversation right after it, so
   // the human can redirect the agent's direction while answering.
@@ -1187,6 +1512,32 @@ function GateCard({
       createdAt: gate.createdAt ?? '',
     };
   }, [gate]);
+
+  if (gate.kind === 'validation') {
+    return (
+      <Card className={cn(isActiveGate && 'border-agent-waiting/40')}>
+        <CardContent className="space-y-3 py-3">
+          <div>
+            <p className="text-sm font-medium">Stage output awaits review</p>
+            <p className="mt-1 whitespace-pre-line text-xs text-muted-foreground">
+              {gate.prompt ||
+                'Approve this stage or request changes before the workflow continues.'}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              onClick={() =>
+                navigate(`/project/${projectId}/intent/${intentId}/review/${gate.humanTaskId}`)
+              }
+            >
+              Review stage
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
 
   if (gate.kind === 'review-verdict') {
     const options = Array.isArray(gate.options)

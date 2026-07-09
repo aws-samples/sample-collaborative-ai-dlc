@@ -24,6 +24,7 @@ vi.mock('@/contexts/AuthContext', () => ({
 const get = vi.fn();
 const start = vi.fn();
 const answerGate = vi.fn();
+const graph = vi.fn();
 const compiled = vi.fn();
 vi.mock('@/services/intents', () => ({
   intentsService: {
@@ -32,7 +33,7 @@ vi.mock('@/services/intents', () => ({
     answerGate: (...a: unknown[]) => answerGate(...a),
     // Knowledge graph feeding the popovers/derived-items section — empty
     // graph keeps those affordances out of these page-behavior tests.
-    graph: vi.fn().mockResolvedValue({ nodes: [], edges: [] }),
+    graph: (...a: unknown[]) => graph(...a),
   },
 }));
 vi.mock('@/services/workflows', () => ({
@@ -45,12 +46,20 @@ vi.mock('@/services/workflows', () => ({
 import IntentView from './IntentView';
 import { IntentProvider, clearIntentCache } from '@/contexts/IntentContext';
 
-const renderAt = () =>
+const renderAt = (initialEntry = '/project/p1/intent/i1') =>
   render(
-    <MemoryRouter initialEntries={['/project/p1/intent/i1']}>
+    <MemoryRouter initialEntries={[initialEntry]}>
       <Routes>
         <Route
           path="/project/:projectId/intent/:intentId"
+          element={
+            <IntentProvider>
+              <IntentView />
+            </IntentProvider>
+          }
+        />
+        <Route
+          path="/project/:projectId/intent/:intentId/review/:humanTaskId"
           element={
             <IntentProvider>
               <IntentView />
@@ -100,6 +109,7 @@ describe('IntentView', () => {
     get.mockReset();
     start.mockReset();
     answerGate.mockReset();
+    graph.mockReset().mockResolvedValue({ nodes: [], edges: [] });
     compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
   });
 
@@ -158,6 +168,92 @@ describe('IntentView', () => {
     expect(answerGate).toHaveBeenCalledWith('p1', 'i1', 'h3', {
       answer: 'Accept',
       status: 'answered',
+    });
+  });
+
+  it('opens a validation gate review page and approves the stage', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'eg-validation-si-a-0-run1' }),
+      stages: [
+        { stageInstanceId: 'si-a', stageId: 'stage-a', state: 'WAITING_FOR_HUMAN', phase: 'build' },
+      ],
+      gates: [
+        {
+          humanTaskId: 'eg-validation-si-a-0-run1',
+          stageInstanceId: 'si-a',
+          unitSlug: null,
+          kind: 'validation',
+          status: 'pending',
+          prompt: 'Review stage stage-a.',
+          options: ['approve', 'request-changes'],
+          questions: null,
+          answer: null,
+          answeredBy: null,
+          answeredAt: null,
+          createdAt: null,
+        },
+      ],
+      sensorRuns: [
+        {
+          sensorRunId: 'sr-1',
+          stageInstanceId: 'si-a',
+          sensorId: 'reviewer:qa',
+          result: 'PASS',
+          detail: { verdict: 'READY', findings: 'Looks complete' },
+        },
+      ],
+      artifacts: [
+        {
+          id: 'a1',
+          artifactType: 'requirements',
+          title: 'Reqs',
+          content: '# hi',
+          summaryGist: 'Captures login requirements and MFA acceptance criteria.',
+          summaryClaims: ['Users must authenticate with MFA.', 'Lockout rules are defined.'],
+          enrichmentModel: 'claude-sonnet',
+          createdByStageInstanceId: 'si-a',
+          createdByExecutionId: 'i1',
+          createdAt: null,
+        },
+      ],
+    });
+    graph.mockResolvedValue({
+      nodes: [
+        {
+          id: 'req-1',
+          type: 'Requirement',
+          label: 'MFA is required for sign in',
+          graphLayer: 'derived',
+          artifactId: 'a1',
+          slug: 'REQ-1',
+        },
+      ],
+      edges: [],
+    });
+    answerGate.mockResolvedValue({});
+    renderAt();
+    await userEvent.click(await screen.findByRole('button', { name: 'Review stage' }));
+    expect(await screen.findByText('Review stage stage-a')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Approve stage/i })).toBeInTheDocument();
+    const glance = screen.getByRole('button', { name: /At a glance/i });
+    expect(glance).toHaveAttribute('aria-expanded', 'false');
+    await userEvent.click(glance);
+    expect(
+      screen.getByText('Captures login requirements and MFA acceptance criteria.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Users must authenticate with MFA.')).toBeInTheDocument();
+    expect(await screen.findByText(/REQ-1:/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /LLM reviewer findings/i })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    await userEvent.click(screen.getByRole('button', { name: /LLM reviewer findings/i }));
+    expect(screen.getByText('Looks complete')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Approve stage' }));
+    expect(answerGate).toHaveBeenCalledWith('p1', 'i1', 'eg-validation-si-a-0-run1', {
+      answer: { decision: 'approve' },
+      status: 'approved',
     });
   });
 
@@ -244,6 +340,7 @@ describe('IntentView — WP7 construction UI', () => {
     get.mockReset();
     start.mockReset();
     answerGate.mockReset();
+    graph.mockReset().mockResolvedValue({ nodes: [], edges: [] });
     compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
   });
 

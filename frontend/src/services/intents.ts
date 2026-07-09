@@ -115,7 +115,7 @@ export interface IntentGate {
   stageInstanceId: string | null;
   // Unit lane attribution (docs/v2-parallel.md WP4); null outside lanes.
   unitSlug?: string | null;
-  kind: 'approval' | 'question' | 'review-verdict';
+  kind: 'approval' | 'question' | 'review-verdict' | 'validation';
   // `superseded` = the gate was retired unanswered by a cancel/rewind.
   status: 'pending' | 'answered' | 'approved' | 'rejected' | 'superseded';
   prompt: string | null;
@@ -226,6 +226,11 @@ export interface IntentArtifact {
   // by the re-run (dimmed in the UI).
   supersededAt?: string | null;
   supersededBy?: string | null;
+  // Optional derive-time LLM enrichment (Admin setting `derive-enrichment=llm`).
+  // Used as a review orientation aid; absent when enrichment is off/skipped.
+  summaryGist?: string | null;
+  summaryClaims?: string[] | null;
+  enrichmentModel?: string | null;
   content: string | null;
 }
 

@@ -429,10 +429,13 @@ export function IntentProvider({
             humanTaskId: evt.humanTaskId!,
             stageInstanceId: evt.stageInstanceId ?? null,
             unitSlug: evt.unitSlug ?? null,
-            kind: 'question',
+            kind:
+              evt.kind === 'approval' || evt.kind === 'review-verdict' || evt.kind === 'validation'
+                ? evt.kind
+                : 'question',
             status: 'pending',
-            prompt: null,
-            options: null,
+            prompt: evt.prompt ?? null,
+            options: evt.options ?? null,
             questions:
               typeof evt.questions === 'string'
                 ? evt.questions

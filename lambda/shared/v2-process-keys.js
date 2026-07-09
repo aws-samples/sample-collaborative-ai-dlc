@@ -118,7 +118,7 @@ const EXECUTION_STATUS = [
 const STAGE_STATE = ['PENDING', 'RUNNING', 'WAITING_FOR_HUMAN', 'SUCCEEDED', 'FAILED', 'SKIPPED'];
 // Human gate kinds + lifecycle. `superseded` retires a still-pending gate whose
 // run was cancelled/rewound — never answered, kept as the audit record.
-const HUMAN_TASK_KINDS = ['approval', 'question', 'review-verdict'];
+const HUMAN_TASK_KINDS = ['approval', 'question', 'review-verdict', 'validation'];
 const HUMAN_TASK_STATUSES = ['pending', 'answered', 'approved', 'rejected', 'superseded'];
 // Human steering (course-correction) messages. Immutable once written; a
 // correction of a correction supersedes the old row. Delivery ("consumed") only

@@ -292,6 +292,136 @@ const composeKnowledge = (methodology, teamRows) => {
   return parts.join('\n\n---\n\n');
 };
 
+const buildReviewerPrompt = ({ stage, reviewerAgent, reviewerPersona, knowledge, round }) => {
+  const outputs = (stage.outputArtifacts ?? []).map((o) => o.artifact ?? o).filter(Boolean);
+  const inputs = (stage.inputArtifacts ?? []).map((i) => i.artifact ?? i).filter(Boolean);
+  return [
+    `# Clean-room review: ${stage.stageId}`,
+    '',
+    `You are ${reviewerAgent}, the independent reviewer for this stage.`,
+    'Do not modify artifacts. Use only read tools to inspect the intent graph, inputs, and produced artifacts.',
+    'When done, call submit_review exactly once with verdict READY or NOT-READY and concrete findings.',
+    '',
+    `Review round: ${round}`,
+    `Stage phase: ${stage.phase ?? 'unknown'}`,
+    `Expected input artifacts: ${inputs.length ? inputs.join(', ') : 'none'}`,
+    `Produced artifacts to review: ${outputs.length ? outputs.join(', ') : 'none'}`,
+    '',
+    '## Reviewer role',
+    reviewerPersona || '(no reviewer persona supplied)',
+    knowledge ? `\n## Reference knowledge\n${knowledge}` : '',
+  ].join('\n');
+};
+
+const latestReviewerVerdict = async ({ store, executionId, stageInstanceId, reviewerAgent }) => {
+  if (typeof store.listSensorRuns !== 'function') return null;
+  const rows = await store.listSensorRuns(executionId, { stageInstanceId }).catch(() => []);
+  return [...rows]
+    .toReversed()
+    .find((r) => r.kind === 'reviewer' && r.sensorId === `reviewer:${reviewerAgent}`);
+};
+
+const runReviewer = async ({
+  stage,
+  reviewerAgent,
+  reviewerBlock,
+  reviewerPersona,
+  knowledge,
+  round,
+  cli,
+  cliModels,
+  env,
+  workspaceDir,
+  spawnFn,
+  mcpEntry,
+  materializeMcpConfig,
+  materializeKiroAgent,
+  store,
+  executionId,
+  projectId,
+  intentId,
+  stageInstanceId,
+  unitSlug,
+  publish,
+  ids,
+}) => {
+  const driver = getDriver(cli);
+  const model = resolveStageModel({ cliModels, agentBlock: reviewerBlock, cli, env });
+  const scope = {
+    executionId,
+    intentId,
+    projectId,
+    stageInstanceId,
+    unitSlug,
+    role: 'reviewer',
+    model,
+  };
+  const prompt = buildReviewerPrompt({ stage, reviewerAgent, reviewerPersona, knowledge, round });
+  const mcpKwargs =
+    cli === 'kiro'
+      ? {
+          agentName: await materializeKiroAgent({ workspaceDir, mcpEntry, scope, env }),
+        }
+      : {
+          mcpConfigPath: await materializeMcpConfig({ workspaceDir, mcpEntry, scope, env }),
+        };
+  const invocation = driver.buildInvocation({
+    prompt,
+    model,
+    allowedTools: [],
+    sessionId: cli === 'claude' ? ids() : null,
+    ...mcpKwargs,
+  });
+  await store
+    .appendEvent({
+      executionId,
+      type: 'v2.review.running',
+      stageInstanceId,
+      unitSlug,
+      actor: reviewerAgent,
+      summary: `Reviewer ${reviewerAgent} checking ${stage.stageId}`,
+    })
+    .catch(() => {});
+  await runChild({
+    command: invocation.command,
+    args: invocation.args,
+    env: { ...OFF_MOUNT_CACHE_ENV, ...invocation.env, ...driver.envForAuth(env) },
+    cwd: workspaceDir,
+    prompt,
+    promptViaStdin: invocation.promptViaStdin,
+    spawnFn,
+  });
+  const verdict = await latestReviewerVerdict({
+    store,
+    executionId,
+    stageInstanceId,
+    reviewerAgent,
+  });
+  if (!verdict) {
+    const row = await store.recordSensorRun({
+      executionId,
+      stageInstanceId,
+      unitSlug,
+      sensorId: `reviewer:${reviewerAgent}`,
+      kind: 'reviewer',
+      severity: 'advisory',
+      result: 'INCONCLUSIVE',
+      held: false,
+      detail: { verdict: 'INCONCLUSIVE', findings: 'Reviewer did not submit a verdict', round },
+    });
+    await publish({
+      action: 'agent.note',
+      noteType: 'v2.review.inconclusive',
+      stageInstanceId,
+      unitSlug,
+      summary: `Reviewer ${reviewerAgent} did not submit a verdict`,
+      sensorRunId: row.sensorRunId,
+    });
+    return row;
+  }
+  return verdict;
+};
+
 // Condense a sensor's structured `detail` into a short human suffix for the
 // activity-feed note (the full structured detail is on the SensorRun row for the
 // drill-down). Handles the shapes the evaluators emit: missing artifacts
@@ -468,6 +598,13 @@ const runSensorsWithGraph = async ({
 // / phaseb-answer write (`perQuestion[]`, `freeText`, or a raw string).
 const formatResumeAnswer = (gate) => {
   const a = gate?.answer ?? null;
+  if (gate?.kind === 'validation') {
+    const text =
+      typeof a === 'string'
+        ? a
+        : (a?.feedback ?? a?.freeText ?? a?.decision ?? JSON.stringify(a ?? {}));
+    return `The human reviewed this stage's output and requested changes:\n${text}\n\nRevise the stage artifacts to address this feedback, then finish again.`;
+  }
   if (a && Array.isArray(a.perQuestion) && a.perQuestion.length) {
     const lines = a.perQuestion.map((p) => `- ${p.text ?? 'Q'}: ${p.answer ?? ''}`);
     return `The human answered your question(s):\n${lines.join('\n')}\n\nContinue the stage with these answers.`;
@@ -1665,6 +1802,73 @@ export const runStage = async (
     }).catch(() => null);
     if (held) {
       return fail(stageInstanceId, 'sensor_blocked', held);
+    }
+  }
+
+  if (stage.reviewer?.reviewerAgent) {
+    const reviewerAgent = stage.reviewer.reviewerAgent;
+    const reviewerBlock = library.agentsById[reviewerAgent] ?? null;
+    if (!reviewerBlock) {
+      return fail(stageInstanceId, 'reviewer_not_found', reviewerAgent);
+    }
+    const [reviewerPersona, reviewerMethodology] = await Promise.all([
+      loadBlockBody(reviewerBlock).catch(() => ''),
+      loadMethodologyKnowledge({
+        agentRef: reviewerAgent,
+        library,
+        loadBlockBody,
+      }).catch(() => ''),
+    ]);
+    const maxIterations = Math.max(1, Number(stage.reviewer.maxIterations ?? 1) || 1);
+    let verdict = null;
+    for (let round = 1; round <= maxIterations; round += 1) {
+      verdict = await runReviewer({
+        stage,
+        reviewerAgent,
+        reviewerBlock,
+        reviewerPersona,
+        knowledge: reviewerMethodology,
+        round,
+        cli,
+        cliModels,
+        env,
+        workspaceDir,
+        spawnFn,
+        mcpEntry,
+        materializeMcpConfig,
+        materializeKiroAgent,
+        store,
+        executionId,
+        projectId,
+        intentId,
+        stageInstanceId,
+        unitSlug,
+        publish,
+        ids,
+      }).catch(async (e) => {
+        await store
+          .appendEvent({
+            executionId,
+            type: 'v2.review.failed',
+            stageInstanceId,
+            unitSlug,
+            actor: reviewerAgent,
+            summary: `Reviewer ${reviewerAgent} failed: ${e.message}`,
+          })
+          .catch(() => {});
+        return null;
+      });
+      const ready = verdict?.result === 'PASS' || verdict?.detail?.verdict === 'READY';
+      const notReady = verdict?.result === 'FAIL' || verdict?.detail?.verdict === 'NOT-READY';
+      if (ready || !notReady) break;
+    }
+    const notReady = verdict?.result === 'FAIL' || verdict?.detail?.verdict === 'NOT-READY';
+    if (notReady && stage.humanValidation !== 'required') {
+      return fail(
+        stageInstanceId,
+        'reviewer_not_ready',
+        verdict?.detail?.findings ?? `${reviewerAgent} returned NOT-READY`,
+      );
     }
   }
 

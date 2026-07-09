@@ -119,6 +119,10 @@ function App() {
                   path="/project/:projectId/intent/:intentId/audit"
                   element={<IntentAuditPage />}
                 />
+                <Route
+                  path="/project/:projectId/intent/:intentId/review/:humanTaskId"
+                  element={<IntentView />}
+                />
                 <Route path="/project/:projectId/intent/:intentId" element={<IntentView />} />
 
                 {/* Sprint routes wrapped in SprintLayout for shared context */}

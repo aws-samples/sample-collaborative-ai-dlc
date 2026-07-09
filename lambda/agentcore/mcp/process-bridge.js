@@ -206,6 +206,47 @@ export const createProcessBridge = ({
     return { eventId: row.eventId };
   };
 
+  const submitReview = async ({ reviewer, verdict, findings = '', round = 0 }) => {
+    const normalized = String(verdict ?? '')
+      .trim()
+      .toUpperCase();
+    if (normalized !== 'READY' && normalized !== 'NOT-READY') {
+      throw new Error('submit_review verdict must be READY or NOT-READY');
+    }
+    const result = normalized === 'READY' ? 'PASS' : 'FAIL';
+    const row = await store.recordSensorRun({
+      executionId,
+      stageInstanceId,
+      unitSlug,
+      sensorId: `reviewer:${reviewer || 'unknown'}`,
+      kind: 'reviewer',
+      severity: 'advisory',
+      result,
+      held: false,
+      detail: { verdict: normalized, findings, round, reviewer: reviewer ?? null },
+    });
+    await store
+      .appendEvent({
+        executionId,
+        type: normalized === 'READY' ? 'v2.review.ready' : 'v2.review.not_ready',
+        stageInstanceId,
+        unitSlug,
+        actor: reviewer || 'reviewer',
+        summary: `Reviewer ${reviewer || 'agent'} returned ${normalized}${findings ? `: ${String(findings).slice(0, 240)}` : ''}`,
+      })
+      .catch(() => {});
+    await broadcast({
+      action: 'agent.note',
+      executionId,
+      intentId,
+      stageInstanceId,
+      unitSlug,
+      noteType: normalized === 'READY' ? 'v2.review.ready' : 'v2.review.not_ready',
+      summary: `Reviewer ${reviewer || 'agent'} returned ${normalized}`,
+    });
+    return { sensorRunId: row.sensorRunId, verdict: normalized };
+  };
+
   const recordGraphRead = async ({ tool, bytes = 0, resultCount = null, args = {} }) => {
     if (!store.recordGraphRead) return null;
     return store.recordGraphRead({
@@ -219,5 +260,5 @@ export const createProcessBridge = ({
     });
   };
 
-  return { askQuestion, sendOutput, collectMetric, emitStageNote, recordGraphRead };
+  return { askQuestion, sendOutput, collectMetric, emitStageNote, recordGraphRead, submitReview };
 };

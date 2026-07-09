@@ -3,7 +3,7 @@ import {
   buildToolHandlers,
   handlersForRole,
   registerTools,
-  READ_TOOLS,
+  REVIEWER_TOOLS,
   AUTHOR_TOOLS,
   ok,
 } from '../mcp/server.js';
@@ -288,10 +288,10 @@ describe('buildToolHandlers — routing + envelopes', () => {
 });
 
 describe('role gating', () => {
-  it('reviewer gets the read-only subset only — no writes, no questions', () => {
+  it('reviewer gets the clean-room subset only — reads, metrics, and verdict submit', () => {
     const h = buildToolHandlers({ writer: stubWriter(), bridge: stubBridge() });
     const reviewer = handlersForRole(h, 'reviewer');
-    expect(Object.keys(reviewer).toSorted()).toEqual([...READ_TOOLS].toSorted());
+    expect(Object.keys(reviewer).toSorted()).toEqual([...REVIEWER_TOOLS].toSorted());
     expect(reviewer.create_artifact).toBeUndefined();
     expect(reviewer.ask_question).toBeUndefined();
     // A reviewer may READ team knowledge but never WRITE it.
@@ -300,6 +300,8 @@ describe('role gating', () => {
     // Same for learning rules: read-only for a reviewer.
     expect(reviewer.get_learning_rules).toBeDefined();
     expect(reviewer.record_learning_rule).toBeUndefined();
+    expect(reviewer.collect_metric).toBeDefined();
+    expect(reviewer.submit_review).toBeDefined();
   });
 
   it('author gets the full surface', () => {
@@ -314,7 +316,10 @@ describe('registerTools', () => {
   // schema-shape values to exist; it never invokes zod here).
   const fakeZod = {
     string: () => ({ optional: () => ({}) }),
-    number: () => ({ int: () => ({ min: () => ({ max: () => ({ optional: () => ({}) }) }) }) }),
+    number: () => ({
+      optional: () => ({}),
+      int: () => ({ min: () => ({ max: () => ({ optional: () => ({}) }) }) }),
+    }),
     enum: () => ({ optional: () => ({}) }),
     object: () => ({ optional: () => ({}) }),
     array: () => ({ optional: () => ({}) }),
@@ -325,8 +330,8 @@ describe('registerTools', () => {
     const registered = [];
     const server = { tool: (name) => registered.push(name) };
     const names = registerTools({ server, handlers: {}, role: 'reviewer', z: fakeZod });
-    expect(registered.toSorted()).toEqual([...READ_TOOLS].toSorted());
-    expect(names).toEqual(READ_TOOLS);
+    expect(registered.toSorted()).toEqual([...REVIEWER_TOOLS].toSorted());
+    expect(names).toEqual(REVIEWER_TOOLS);
   });
 
   it('registers the full surface for an author', () => {
