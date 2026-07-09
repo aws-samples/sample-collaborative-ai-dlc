@@ -15,10 +15,12 @@ intent-scoped (v2) threads.
 Look for the speech-bubble icon:
 
 - on agent question cards (pending and answered),
-- in the actions row of requirement / user story / task / general-info cards,
-- on the inception "Project Description" card and the review card,
+- on intent work products (artifacts) on the workbench,
 - in the **Discuss** tab of the activity panel, which lists every thread of
-  the sprint with unread counts and a search box.
+  the intent with unread counts and a search box,
+- on read-only v1 surfaces (requirement / user story / task cards, the
+  inception description, the review card), where existing threads stay
+  viewable.
 
 Threads are created lazily — one thread per entity. The first person to open
 the discussion creates it; everyone after that joins the same thread.
@@ -33,7 +35,7 @@ arrow in the thread header returns to the thread list.
 - `@` opens a mention picker over the project members. Mentioned users who are
   **currently online** get an in-app notification with a jump-to-thread link.
   Offline users see the unread badge on their next visit — there is no email
-  or push delivery in v1.
+  or push delivery yet.
 - Messages are persisted first, then delivered: even if your tab crashes right
   after sending, the message reaches everyone.
 - Unread badges only clear when you have actually **seen** the newest message
@@ -73,12 +75,12 @@ Non-members get a 403 on everything, including realtime access.
 
 ## Design notes
 
-- **One thread per entity** (v1): busy entities may mix decision and
+- **One thread per entity**: busy entities may mix decision and
   implementation topics in one thread. The data model is ready for multiple
   titled threads without migration when the need materializes.
-- Messages live in the sprint graph (`Discussion` / `DiscussionMessage`
+- Messages live in the scope's graph (`Discussion` / `DiscussionMessage`
   vertices), so discussions are queryable collaboration context for both
-  humans and agents — not throwaway chat history. Deleting a sprint deletes
-  its discussions.
-- Search is sprint-scoped substring search (minimum 3 characters); full-text
-  search is a named follow-up.
+  humans and agents — not throwaway chat history. Deleting an intent (or a
+  v1 sprint) deletes its discussions.
+- Search is scoped substring search within the intent or sprint (minimum 3
+  characters); full-text search is a named follow-up.

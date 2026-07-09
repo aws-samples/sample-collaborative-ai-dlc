@@ -13,11 +13,11 @@ GitHub and GitLab each span both axes: a single connection serves as the code ho
 
 Before users can connect their accounts, an administrator registers OAuth apps with each provider and pastes the credentials into the platform. See [Setup → Configure provider OAuth apps](../getting-started/setup.md#configure-provider-oauth-apps) for the full walkthrough. Admin pages require the Cognito `platform-admin` group.
 
-The status of each provider is visible in **Admin → Tracker OAuth Apps**. Until a provider shows **Configured**, the corresponding **Connect** button in Project Settings stays disabled with a hint pointing back to the admin panel.
+The status of each provider is visible in **Admin → Trackers**. Until a provider shows **Configured**, the corresponding **Connect** button in Project Settings stays disabled with a hint pointing back to the admin panel.
 
 ### GitHub authentication mode
 
-GitHub supports two platform-wide authentication modes, switchable at runtime by a platform admin in **Admin → GitHub Integration**:
+GitHub supports two platform-wide authentication modes, switchable at runtime by a platform admin in **Admin → Source Control → GitHub**:
 
 - **OAuth mode** (default) — each user connects their own GitHub account (described below). All git activity is attributed to the individual user.
 - **GitHub App mode** — the platform authenticates as a GitHub App installation (a bot). Users don't connect personal GitHub accounts at all; the repo picker lists the repositories the App is installed on, and commits/PRs/comments are attributed to the App. Which repositories are reachable is controlled by the App installation on GitHub — installing/uninstalling repos there takes effect immediately.
@@ -41,7 +41,17 @@ A connection is scoped to its provider: connecting GitHub does not satisfy a Git
 3. The platform checks for an active connection to that provider and prompts you to connect if one is missing.
 4. Pick the repository (GitHub) or project (GitLab) that should back the collaborative project.
 
-The repository is cloned into the agent workspace and becomes available to the agents while an intent executes.
+The repository is cloned into the agent workspace and becomes available to the agents while an intent executes. Additional repositories can be added later in **Project Settings → Source Control**.
+
+## Branches
+
+All git operations are owned by the engine — agents never run git and never hold credentials:
+
+- Each intent works on its own branch, `aidlc/<title-slug>`, derived from the intent title.
+- The branch is created off the **base branch** — by default each repository's own default branch, overridable per repository at intent creation (see [Creating intents → Base branch](creating-intents.md#base-branch)).
+- During parallel construction, each unit of work gets a per-unit branch that the engine merges back into the intent branch.
+- The engine commits and pushes after every stage, so work is durable even if a run is cancelled.
+- On success, the pull/merge request opens from the intent branch onto the base branch.
 
 ## Binding a tracker to a project
 
@@ -59,7 +69,7 @@ When a project has more than one tracker bound, the project page renders a tab s
 
 ## Starting an intent from an issue
 
-In the **New intent** dialog, choose **From tracker issue** to browse open issues from the bound tracker(s). Selecting an issue seeds the intent:
+On the **New Intent** page, use the **Import from tracker** panel to browse open issues from the bound tracker(s). Selecting an issue seeds the intent:
 
 - The issue title becomes the intent title
 - The issue body and any comments are imported into the intent prompt (Jira's ADF body is converted to Markdown server-side; comments are appended in chronological order)
@@ -84,7 +94,7 @@ Migration is **always optional** and **fully reversible-by-omission**: nothing i
 Three paths exist, all idempotent and equivalent:
 
 - **Per project, in-product**: open the affected project's page or settings. A "Migrate to the new tracker data model" banner appears for owners and admins. Click **Migrate now**. The banner self-dismisses on success.
-- **Bulk, from the Admin page**: open **Admin → Tracker Migration**. The card displays a count of projects + sprints still on the legacy shape; click **Migrate all** to convert everything in one shot. Re-clicking is a no-op.
+- **Bulk, from the Admin page**: open **Admin → Trackers → Tracker Migration**. The card displays a count of projects + sprints still on the legacy shape; click **Migrate all** to convert everything in one shot. Re-clicking is a no-op.
 - **Bulk, from the CLI**: invoke the `migrate-tracker-fields` Lambda directly for installs that prefer shell access. Supports a `{"dryRun": true}` payload for previewing.
 
   ```bash

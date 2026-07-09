@@ -51,18 +51,18 @@ You must also have an AWS account with permissions to manage the following servi
 
 ## Optional tools
 
-The following tools are optional. Install them to enable additional features.
+The following are optional. Set them up to enable additional features.
 
-| Tool                             | Purpose                                                                                                                                              |
-| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **AWS credentials**              | Required for large language model (LLM) features through [Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html) |
-| **GitHub personal access token** | Enables pushing tasks as GitHub issues and syncing issue status                                                                                      |
+| Item                          | Purpose                                                                                                                                              |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **AWS credentials**           | Required for large language model (LLM) features through [Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html) |
+| **Provider OAuth apps**       | GitHub / GitLab / Jira Cloud OAuth apps enable code-host and tracker integration — see [Setup → Configure provider OAuth apps](setup.md#configure-provider-oauth-apps) |
 
 ## Agent authentication
 
 Agents authenticate using API keys configured through the platform UI. The platform supports two options:
 
-An agent CLI cannot reach its model until its credential is configured — the Bedrock AgentCore runtime has no IAM-role fallback — so set the relevant value below in **Admin → Agent Settings** before starting agents for a project.
+An agent CLI cannot reach its model until its credential is configured — the Bedrock AgentCore runtime has no IAM-role fallback — so set the relevant value below in **Admin → Agents** before starting agents for a project.
 
 ### Kiro CLI API key (required for the Kiro CLI driver)
 
@@ -84,4 +84,4 @@ Both credentials are stored in **AWS Systems Manager Parameter Store** as `Secur
 
 AIDLC Collaborative uses [Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html) to access Claude models. You must have valid AWS credentials with Amazon Bedrock access in your environment.
 
-If you don't have AWS credentials, the platform still starts. You can browse the UI, create organizations and projects, and manage specs. However, the large language model (LLM) chat and agent features return a connection error.
+If you don't have AWS credentials, the platform still starts. You can browse the UI and create projects and intents. However, the agent features return a connection error until credentials are configured.

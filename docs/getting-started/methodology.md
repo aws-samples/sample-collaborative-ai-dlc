@@ -6,11 +6,13 @@ The core idea: instead of treating AI as a black-box code generator, AI-DLC trea
 
 ## What AI-DLC defines
 
-- **Phases** (Inception, Construction, Review) as the progression of work
-- **Artifacts** (requirements, user stories, tasks, code files) as the structured outputs at each phase
-- **Agents** (Inception, Construction, Review, Modify) as the AI participants with specific roles
+- **Phases** (Inception, Construction, Operations) as the progression of work, broken into **stages** — the atomic units of agent work
+- **Artifacts** (requirements, user stories, designs, decisions, units of work, code) as the structured outputs stages produce and consume
+- **Agent personas** (domain experts acting as lead, support, or reviewer per stage) as the AI participants with specific roles
+- **Scopes** (feature, bugfix, greenfield, …) that decide which stages execute for a given piece of work
+- **Verification** through deterministic sensors, reviewer agents, and human validation gates
 - **Traceability** as the graph connecting every artifact back to the original intent
-- **Parallel construction** of loosely coupled components through Domain-Driven Design principles
+- **Parallel construction** of loosely coupled units of work through Domain-Driven Design principles
 
 ## Limitations of markdown-only implementations
 
@@ -23,7 +25,7 @@ However, markdown-only implementations hit inherent limitations when scaling to 
 | **Traceability gaps**             | Requirements live in `.md` files, code in repos, decisions in chat. Connections between them exist only in the developer's head and disappear between sessions.                                | Graph database with typed relationships. Every code file links back to its originating requirement automatically.    |
 | **Single-user by default**        | Markdown files are local. Syncing them across a team requires manual git workflows. AI-DLC envisions Mob Elaboration and Mob Construction, but local files don't support simultaneous editing. | Real-time collaboration via WebSocket + CRDT. Multiple stakeholders work on the same artifacts simultaneously.       |
 | **Informal oversight**            | No mechanism for an agent to formally block execution, present structured options, wait for a human decision, and resume with validated context. Oversight happens through unstructured chat.  | Structured approval gates with Question nodes, predefined options, and mandatory ambiguity detection.                |
-| **Context loss between sessions** | Each AI session starts with a blank context window. Teams re-explain architecture decisions and previous work at every iteration because markdown files don't carry forward automatically.     | Cross-sprint carry-forward imports design decisions and requirements from previous sprints automatically.            |
+| **Context loss between sessions** | Each AI session starts with a blank context window. Teams re-explain architecture decisions and previous work at every iteration because markdown files don't carry forward automatically.     | Team knowledge and learning rules accrue on the project graph and are injected into every relevant stage prompt.      |
 | **Manual serial execution**       | Local tools process tasks sequentially in a single session. Even when tasks have no dependencies, there is no mechanism to dispatch them in parallel.                                          | The execution engine reads the dependency graph, identifies unblocked units of work, and dispatches parallel agents. |
 
 These are not limitations of AI-DLC itself — the methodology is implementation-agnostic. They are limitations of using local markdown files as the backing store for any structured development process. Collaborative AI-DLC is one way to overcome them by moving from files to structured databases, from local to collaborative, and from single-agent to multi-agent orchestration.

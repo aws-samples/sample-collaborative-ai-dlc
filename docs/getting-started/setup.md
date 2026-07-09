@@ -45,9 +45,11 @@ Edit `terraform/environments/dev/terraform.tfvars` to set your configuration.
 
 The deployment takes 15-30 minutes. Neptune DB cluster creation takes the longest.
 
-After deployment, configure agent authentication in the platform UI under **Admin → Agent Settings** by entering either a Kiro CLI API key or a Bedrock bearer token (for Claude Code / OpenCode setups). The Bedrock AgentCore runtime reads these credentials when agents run; the same admin page reports which credentials are set and which CLIs the runtime has available.
+After deployment, configure agent authentication in the platform UI under **Admin → Agents** by entering either a Kiro CLI API key or a Bedrock bearer token (for Claude Code / OpenCode setups). The Bedrock AgentCore runtime reads these credentials when agents run; the same admin page reports which credentials are set and which CLIs the runtime has available.
 
-The **Admin** page (user management, agent settings, provider OAuth apps, GitHub auth mode, migrations) and workflow/building-block authoring require membership in the Cognito `platform-admin` group. Bootstrap the first administrator via the CLI (users must sign out and back in to pick up the group); afterwards, additional admins can be granted or revoked in the UI under **Admin → User Management**:
+### Bootstrap the first platform administrator
+
+The **Admin** page (user management, agent settings and default models, provider OAuth apps, GitHub auth mode, migrations) and workflow/building-block authoring require membership in the Cognito **`platform-admin`** group. Bootstrap the first administrator via the CLI (users must sign out and back in to pick up the group); afterwards, additional admins can be granted or revoked in the UI under **Admin → Users**:
 
 ```bash
 aws cognito-idp admin-add-user-to-group \
@@ -58,13 +60,13 @@ aws cognito-idp admin-add-user-to-group \
 
 ### Configure provider OAuth apps
 
-The platform integrates with external providers as code hosts (GitHub, GitLab) and issue trackers (GitHub Issues, GitLab Issues, Jira Cloud) so a sprint can be started from a tracker issue. For each provider you want to enable, register an OAuth app and paste the credentials into **Admin → Tracker OAuth Apps** in the deployed app.
+The platform integrates with external providers as code hosts (GitHub, GitLab) and issue trackers (GitHub Issues, GitLab Issues, Jira Cloud) so an intent can be started from a tracker issue. For each provider you want to enable, register an OAuth app and paste the credentials into **Admin → Trackers** in the deployed app.
 
 For GitHub and GitLab a single OAuth app serves both the code host and that provider's issue tracker. Jira Cloud is a tracker only. All providers are optional — skip a section if you don't need that provider; the corresponding **Connect** buttons in the UI stay disabled with a hint pointing to this admin panel.
 
 #### GitHub (code host + GitHub Issues)
 
-GitHub supports two platform-wide authentication modes, switchable at runtime in **Admin → GitHub Integration**:
+GitHub supports two platform-wide authentication modes, switchable at runtime in **Admin → Source Control → GitHub**:
 
 - **OAuth mode** (default): each user connects their own GitHub account; commits, PRs and comments are attributed to that user.
 - **GitHub App mode**: the platform authenticates as a GitHub App installation (a bot); users don't connect personal accounts, and the repo picker lists the repositories the App is installed on.
@@ -77,14 +79,14 @@ For **OAuth mode**:
    - **Homepage URL**: `https://<your-cloudfront-domain>`
    - **Authorization callback URL**: `https://<your-cloudfront-domain>/github/callback`
 3. Copy the **Client ID** and generate a **Client Secret**.
-4. In the deployed app, sign in and open **Admin → Tracker OAuth Apps → GitHub Issues**. Paste both values and click **Save**.
+4. In the deployed app, sign in and open **Admin → Trackers → GitHub Issues**. Paste both values and click **Save**.
 
 For **GitHub App mode**:
 
 1. Create a [GitHub App](https://github.com/settings/apps) with repository permissions **Contents: Read & write**, **Pull requests: Read & write**, and **Issues: Read-only**. No callback URL or webhook is needed.
 2. Generate a **private key** (PEM) and note the **App ID**.
 3. Install the App on the organization/repositories the platform should access, and note the **Installation ID** (the number at the end of the installation's settings URL).
-4. In the deployed app, open **Admin → GitHub Integration**, paste the App ID, Installation ID and private key, select **GitHub App (bot)** and click **Save**. The platform validates the configuration live against GitHub before the mode switches. Switching back to OAuth mode is the same toggle.
+4. In the deployed app, open **Admin → Source Control → GitHub**, paste the App ID, Installation ID and private key, select **GitHub App (bot)** and click **Save**. The platform validates the configuration live against GitHub before the mode switches. Switching back to OAuth mode is the same toggle.
 
 #### GitLab (code host + GitLab Issues)
 
@@ -94,7 +96,7 @@ For **GitHub App mode**:
    - **Scopes**: `api` and `read_user`
    - Leave **Confidential** enabled.
 3. Save, then copy the **Application ID** (Client ID) and **Secret**.
-4. In the deployed app, sign in and open **Admin → Tracker OAuth Apps → GitLab Issues**. Paste both values and click **Save**.
+4. In the deployed app, sign in and open **Admin → Trackers → GitLab Issues**. Paste both values and click **Save**.
 
 #### Jira Cloud
 
@@ -105,12 +107,13 @@ For **GitHub App mode**:
    - `offline_access` (required for refresh tokens — don't skip)
 3. Under **Authorization**, set the callback URL to `https://<your-cloudfront-domain>/trackers/callback/jira-cloud`.
 4. Open the **Settings** tab of the app and copy the **Client ID** and **Client Secret**.
-5. In the deployed app, sign in and open **Admin → Tracker OAuth Apps → Jira Cloud**. Paste both values and click **Save**.
+5. In the deployed app, sign in and open **Admin → Trackers → Jira Cloud**. Paste both values and click **Save**.
 
 Rotating credentials later is the same flow — paste new values and **Save** overwrites the stored secret.
 
 ??? info "CLI fallback for fully-automated deploys"
-The Admin UI is a wrapper around AWS Secrets Manager. To populate the secrets in your provisioning pipeline:
+
+    The Admin UI is a wrapper around AWS Secrets Manager. To populate the secrets in your provisioning pipeline:
 
     ```bash
     aws secretsmanager put-secret-value \
@@ -142,16 +145,18 @@ aws cognito-idp admin-create-user \
 aws cognito-idp admin-add-user-to-group \
   --user-pool-id <user-pool-id> \
   --username user@example.com \
-  --group-name approver
+  --group-name member
 ```
 
-Available groups:
+Available Cognito groups:
 
-| Group      | Permissions                                       |
-| ---------- | ------------------------------------------------- |
-| `member`   | View and edit specs, run agents                   |
-| `approver` | Member permissions plus approve phase transitions |
-| `owner`    | Full access including project settings            |
+| Group            | Purpose                                                                                                                                       |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `platform-admin` | Platform-wide administration: the **Admin** page (users, agent credentials and models, source control, trackers) and workflow/block authoring |
+| `member`         | Regular platform user                                                                                                                          |
+| `approver`, `owner` | Legacy v1 groups, kept for existing installs; no longer checked by the v2 authorization model                                              |
+
+Day-to-day access to a project's intents, discussions, and settings is governed by **project membership** (owner / admin / member roles managed per project in **Project Settings → Members**), not by Cognito groups — see [Projects and settings](../using-the-platform/projects.md).
 
 ## Set up the frontend
 
@@ -212,7 +217,7 @@ If you're upgrading an install that ran before issue #194 (tracker provider abst
 
 Operators have two equivalent paths, both idempotent:
 
-- **Admin UI**: open **Admin → Tracker Migration** in the deployed app. The card displays a live count of legacy projects + sprints; click **Migrate all** when ready.
+- **Admin UI**: open **Admin → Trackers → Tracker Migration** in the deployed app. The card displays a live count of legacy projects + sprints; click **Migrate all** when ready.
 - **CLI**: invoke the `migrate-tracker-fields` Lambda directly. Supports a dry-run for previewing.
 
   ```bash
@@ -232,7 +237,8 @@ To remove all deployed resources:
 ```
 
 !!! danger "Data loss"
-This permanently deletes all data including DynamoDB tables, Neptune databases, and S3 buckets. This action cannot be undone.
+
+    This permanently deletes all data including DynamoDB tables, Neptune databases, and S3 buckets. This action cannot be undone.
 
 To also remove the Terraform state bucket (created during bootstrap):
 
@@ -257,4 +263,4 @@ Verify User Pool ID and App Client ID match Terraform outputs, and that the user
 
 **Provider integration not working (GitHub, GitLab, or Jira)**
 
-In the deployed app, open **Admin → Tracker OAuth Apps**. Each provider should show **Configured**; if it shows **Not configured**, finish the OAuth-app setup and paste the credentials. Also confirm the OAuth app's **Authorization callback URL** matches the values listed above for your CloudFront domain — provider apps reject mismatched callbacks at sign-in time.
+In the deployed app, open **Admin → Trackers**. Each provider should show **Configured**; if it shows **Not configured**, finish the OAuth-app setup and paste the credentials. Also confirm the OAuth app's **Authorization callback URL** matches the values listed above for your CloudFront domain — provider apps reject mismatched callbacks at sign-in time.
