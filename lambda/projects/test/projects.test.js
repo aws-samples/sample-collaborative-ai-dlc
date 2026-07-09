@@ -6,6 +6,7 @@ import { mockClient } from 'aws-sdk-client-mock';
 import { DynamoDBDocumentClient, QueryCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { LambdaClient } from '@aws-sdk/client-lambda';
 import { BedrockAgentCoreClient } from '@aws-sdk/client-bedrock-agentcore';
+import { S3Client, HeadObjectCommand } from '@aws-sdk/client-s3';
 
 const NOW = new Date('2026-01-01T00:00:00.000Z');
 
@@ -47,6 +48,15 @@ const installProcessTableFakes = () => {
 // File-level partition: every test in this file shares it.
 const PARTITION = `t-${randomUUID()}`;
 
+// S3 has no testcontainer, so mock just the S3 client (ddb + gremlin stay real).
+// `s3Objects` maps an uploaded object's Key → its byte size. HeadObject resolves
+// with that ContentLength for present keys and 404s otherwise — exercising the
+// custom-rules commit existence + size guards. Presign/get/list/delete resolve
+// as no-ops (offline). Helper `putObject(key, size=10)` marks a key present.
+const s3Mock = mockClient(S3Client);
+const s3Objects = new Map();
+const putObject = (key, size = 10) => s3Objects.set(key, size);
+
 let handler;
 let conn;
 let g;
@@ -60,8 +70,8 @@ beforeAll(async () => {
   // Project delete cascades into the process table + Yjs docs (both mocked).
   vi.stubEnv('V2_PROCESS_TABLE', 'v2-proc-test');
   vi.stubEnv('YJS_DOCUMENTS_TABLE', 'yjs-test');
+  vi.stubEnv('ARTIFACTS_BUCKET', 'test-artifacts-bucket');
   ({ handler } = await import('../index.js'));
-
   // Direct gremlin connection for seeding non-owner member edges. Uses the
   // same partition so writes are visible to the handler under test.
   const url = `ws://${process.env.NEPTUNE_ENDPOINT}:${process.env.GREMLIN_PORT}/gremlin`;
@@ -105,6 +115,20 @@ beforeEach(() => {
   vi.setSystemTime(NOW);
   projectExecs = new Map();
   installProcessTableFakes();
+
+  // S3 mock: HeadObject resolves only for keys we've marked as "uploaded";
+  // everything else 404s (drives the commit existence guard). All other S3
+  // commands resolve as harmless no-ops.
+  s3Objects.clear();
+  s3Mock.reset();
+  // Fallback first, then the specific HeadObject handler so it takes precedence.
+  s3Mock.onAnyCommand().resolves({});
+  s3Mock.on(HeadObjectCommand).callsFake((input) => {
+    if (s3Objects.has(input.Key)) return { ContentLength: s3Objects.get(input.Key) };
+    const err = new Error('NotFound');
+    err.name = 'NotFound';
+    throw err;
+  });
 });
 
 afterEach(() => {
@@ -1982,5 +2006,270 @@ describe('shared Repository vertex safety on project DELETE', () => {
     expect(JSON.parse(listRes.body)).toEqual(
       expect.arrayContaining([expect.objectContaining({ url: sharedRepo })]),
     );
+  });
+});
+
+const customMcpEvent = (method, projectId, extra = {}) => ({
+  httpMethod: method,
+  path: `/projects/${projectId}/custom-mcp-servers`,
+  pathParameters: { projectId },
+  ...extra,
+});
+
+const customRulesEvent = (method, projectId, extra = {}) => ({
+  httpMethod: method,
+  path: `/projects/${projectId}/custom-rules`,
+  pathParameters: { projectId },
+  ...extra,
+});
+
+describe('GET/PUT /projects/:id/custom-mcp-servers', () => {
+  it('returns 401 when sub is missing', async () => {
+    const res = await handler({ ...customMcpEvent('GET', 'any'), requestContext: {} });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('returns 403 when the caller is not a member', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const outsiderSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub);
+    const res = await handler({ ...customMcpEvent('GET', id), ...claims(outsiderSub) });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('defaults to an empty object', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const res = await handler({ ...customMcpEvent('GET', id), ...claims(sub) });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ customMcpServers: '{}' });
+  });
+
+  it('persists and reads back valid MCP servers (owner)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const json = JSON.stringify({ 'my-tool': { command: 'npx', args: ['-y', 'p'] } });
+    const putRes = await handler({
+      ...customMcpEvent('PUT', id, { body: JSON.stringify({ customMcpServers: json }) }),
+      ...claims(sub),
+    });
+    expect(putRes.statusCode).toBe(200);
+    const getRes = await handler({ ...customMcpEvent('GET', id), ...claims(sub) });
+    expect(JSON.parse(JSON.parse(getRes.body).customMcpServers)).toEqual({
+      'my-tool': { command: 'npx', args: ['-y', 'p'] },
+    });
+  });
+
+  it('rejects invalid MCP config with field-level issues', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const bad = JSON.stringify({ x: {} }); // missing command
+    const res = await handler({
+      ...customMcpEvent('PUT', id, { body: JSON.stringify({ customMcpServers: bad }) }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(400);
+    const parsed = JSON.parse(res.body);
+    expect(parsed.error).toMatch(/Invalid MCP/);
+    expect(Array.isArray(parsed.issues)).toBe(true);
+  });
+
+  it('rejects a plain member on PUT', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const memberSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub);
+    await addMember(id, memberSub, 'member');
+    const res = await handler({
+      ...customMcpEvent('PUT', id, { body: JSON.stringify({ customMcpServers: '{}' }) }),
+      ...claims(memberSub),
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('rejects a plain member on GET (config may carry secrets)', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const memberSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub);
+    await addMember(id, memberSub, 'member');
+    const res = await handler({ ...customMcpEvent('GET', id), ...claims(memberSub) });
+    expect(res.statusCode).toBe(403);
+  });
+});
+
+describe('GET/PUT /projects/:id/custom-rules', () => {
+  it('defaults to an empty list', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const res = await handler({ ...customRulesEvent('GET', id), ...claims(sub) });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ customRules: [] });
+  });
+
+  it('presign returns upload URLs WITHOUT persisting metadata (owner)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const putRes = await handler({
+      ...customRulesEvent('PUT', id, {
+        body: JSON.stringify({ customRules: [{ filename: 'standards.md' }], mode: 'presign' }),
+      }),
+      ...claims(sub),
+    });
+    expect(putRes.statusCode).toBe(200);
+    const body = JSON.parse(putRes.body);
+    expect(body.saved).toBeUndefined();
+    expect(body.uploadUrls).toHaveLength(1);
+    expect(body.uploadUrls[0]).toMatchObject({
+      filename: 'standards.md',
+      s3Key: `custom-rules/${id}/standards.md`,
+    });
+    expect(typeof body.uploadUrls[0].uploadUrl).toBe('string');
+
+    // Presign must NOT have persisted anything — the list is still empty.
+    const getRes = await handler({ ...customRulesEvent('GET', id), ...claims(sub) });
+    expect(JSON.parse(getRes.body).customRules).toEqual([]);
+  });
+
+  it('commit persists the final metadata set and it reads back (owner)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    // Simulate the browser having uploaded both objects before committing.
+    putObject(`custom-rules/${id}/standards.md`);
+    putObject(`custom-rules/${id}/api.md`);
+    const commitRes = await handler({
+      ...customRulesEvent('PUT', id, {
+        body: JSON.stringify({
+          customRules: [{ filename: 'standards.md' }, { filename: 'api.md' }],
+          mode: 'commit',
+        }),
+      }),
+      ...claims(sub),
+    });
+    expect(commitRes.statusCode).toBe(200);
+    const body = JSON.parse(commitRes.body);
+    expect(body.saved).toBe(true);
+    expect(body.uploadUrls).toBeUndefined();
+
+    const getRes = await handler({ ...customRulesEvent('GET', id), ...claims(sub) });
+    const docs = JSON.parse(getRes.body).customRules;
+    expect(docs).toHaveLength(2);
+    expect(docs.map((d) => d.filename).toSorted()).toEqual(['api.md', 'standards.md']);
+    expect(docs.every((d) => typeof d.downloadUrl === 'string')).toBe(true);
+  });
+
+  it('commit rejects a filename whose object was never uploaded', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    // Only standards.md was uploaded; api.md is fabricated by the caller.
+    putObject(`custom-rules/${id}/standards.md`);
+    const res = await handler({
+      ...customRulesEvent('PUT', id, {
+        body: JSON.stringify({
+          customRules: [{ filename: 'standards.md' }, { filename: 'api.md' }],
+          mode: 'commit',
+        }),
+      }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toMatch(/api\.md/);
+    // Nothing persisted — the list is still empty.
+    const getRes = await handler({ ...customRulesEvent('GET', id), ...claims(sub) });
+    expect(JSON.parse(getRes.body).customRules).toEqual([]);
+  });
+
+  it('commit rejects an object that exceeds the 100 KB size cap', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    putObject(`custom-rules/${id}/ok.md`, 10);
+    putObject(`custom-rules/${id}/big.md`, 200 * 1024);
+    const res = await handler({
+      ...customRulesEvent('PUT', id, {
+        body: JSON.stringify({
+          customRules: [{ filename: 'ok.md' }, { filename: 'big.md' }],
+          mode: 'commit',
+        }),
+      }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toMatch(/big\.md/);
+    expect(JSON.parse(res.body).error).toMatch(/100 KB/);
+    // Nothing persisted.
+    const getRes = await handler({ ...customRulesEvent('GET', id), ...claims(sub) });
+    expect(JSON.parse(getRes.body).customRules).toEqual([]);
+  });
+
+  it('commit can prune the set (delete path)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    putObject(`custom-rules/${id}/a.md`);
+    putObject(`custom-rules/${id}/b.md`);
+    await handler({
+      ...customRulesEvent('PUT', id, {
+        body: JSON.stringify({
+          customRules: [{ filename: 'a.md' }, { filename: 'b.md' }],
+          mode: 'commit',
+        }),
+      }),
+      ...claims(sub),
+    });
+    // Re-commit with only one — simulates deleting b.md.
+    await handler({
+      ...customRulesEvent('PUT', id, {
+        body: JSON.stringify({ customRules: [{ filename: 'a.md' }], mode: 'commit' }),
+      }),
+      ...claims(sub),
+    });
+    const getRes = await handler({ ...customRulesEvent('GET', id), ...claims(sub) });
+    const docs = JSON.parse(getRes.body).customRules;
+    expect(docs.map((d) => d.filename)).toEqual(['a.md']);
+  });
+
+  it('rejects unsafe / non-.md filenames (both modes)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    for (const mode of ['presign', 'commit']) {
+      for (const filename of ['../evil.md', 'sub/dir.md', 'notmd.txt']) {
+        const res = await handler({
+          ...customRulesEvent('PUT', id, {
+            body: JSON.stringify({ customRules: [{ filename }], mode }),
+          }),
+          ...claims(sub),
+        });
+        expect(res.statusCode, `${mode} ${filename}`).toBe(400);
+      }
+    }
+  });
+
+  it('caps the number of custom rules', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const docs = Array.from({ length: 21 }, (_, i) => ({ filename: `r${i}.md` }));
+    const res = await handler({
+      ...customRulesEvent('PUT', id, { body: JSON.stringify({ customRules: docs }) }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('rejects a plain member on PUT', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const memberSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub);
+    await addMember(id, memberSub, 'member');
+    const res = await handler({
+      ...customRulesEvent('PUT', id, { body: JSON.stringify({ customRules: [] }) }),
+      ...claims(memberSub),
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('rejects a plain member on GET', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const memberSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub);
+    await addMember(id, memberSub, 'member');
+    const res = await handler({ ...customRulesEvent('GET', id), ...claims(memberSub) });
+    expect(res.statusCode).toBe(403);
   });
 });

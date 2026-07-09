@@ -184,6 +184,15 @@ const buildExecutionMeta = ({
   // create; the orchestrator forwards it to run-stage (cliModels[cli] is the
   // authoritative model knob — see v2-agent.md). null = use run-stage defaults.
   cliModels = null,
+  // Custom MCP servers (name-keyed object) snapshotted at create by
+  // merging the Admin global set under the project's set (project wins by
+  // name); the orchestrator forwards it to run-stage which merges it into the
+  // CLI's mcpServers map. null = none.
+  customMcpServers = null,
+  // Custom agent rules metadata ([{ filename, s3Key }]) snapshotted at create
+  // from the project; the orchestrator forwards it to run-stage which fetches
+  // each .md from S3 and injects it into the agent context. null = none.
+  customRules = null,
   // Derive-time graph enrichment mode ('off'|'llm') snapshotted from the Admin
   // SSM setting at create; the orchestrator forwards it in the derive-artifacts
   // payload. Snapshotting keeps a run's behaviour stable even if the Admin
@@ -250,6 +259,8 @@ const buildExecutionMeta = ({
   gitProvider,
   agentCli,
   cliModels,
+  customMcpServers,
+  customRules,
   deriveEnrichment,
   parkReleaseSeconds,
   maxParallelUnits,

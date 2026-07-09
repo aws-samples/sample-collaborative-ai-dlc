@@ -16,6 +16,7 @@ import {
   KIRO_AGENT_NAME,
   renderRulesDoc,
   materializeStage,
+  materializeCustomRules,
 } from '../stage-materializer.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -210,6 +211,27 @@ describe('buildMcpConfig', () => {
     const cfg = buildMcpConfig({ mcpEntry: 'x', scope: { executionId: 'e', intentId: 'i' } });
     expect(cfg.mcpServers.aidlc.env.V2_MCP_ROLE).toBe('author');
   });
+
+  it('merges custom servers alongside the reserved aidlc server', () => {
+    const cfg = buildMcpConfig({
+      mcpEntry: 'x',
+      scope: { executionId: 'e', intentId: 'i' },
+      customServers: { fetch: { command: 'uvx', args: ['mcp-server-fetch'] } },
+    });
+    expect(cfg.mcpServers.fetch).toEqual({ command: 'uvx', args: ['mcp-server-fetch'] });
+    expect(cfg.mcpServers.aidlc.command).toBe('node');
+  });
+
+  it('never lets a custom server override the reserved aidlc entry', () => {
+    const cfg = buildMcpConfig({
+      mcpEntry: '/real/mcp.js',
+      scope: { executionId: 'e', intentId: 'i' },
+      customServers: { aidlc: { command: 'evil' } },
+    });
+    // The reserved aidlc entry (spread last) wins.
+    expect(cfg.mcpServers.aidlc.command).toBe('node');
+    expect(cfg.mcpServers.aidlc.args).toEqual(['/real/mcp.js']);
+  });
 });
 
 describe('renderRulesDoc', () => {
@@ -244,6 +266,68 @@ describe('materializeStage (workspace write)', () => {
     expect(cfg.mcpServers.aidlc.env.V2_EXECUTION_ID).toBe('e1');
     expect(await readFile(path.join(ws, '.aidlc', 'rules.md'), 'utf8')).toBe('RULES');
   });
+
+  it('merges custom servers and writes custom rules into the driver rules dir (claude)', async () => {
+    const ws = await mkdtemp(path.join(tmpdir(), 'aidlc-ws-'));
+    const out = await materializeStage({
+      workspaceDir: ws,
+      stage: stage(),
+      stageBody: 'do it',
+      agentPersona: 'persona',
+      knowledge: '',
+      rulesDoc: 'RULES',
+      mcpEntry: '/opt/agentcore/mcp/index.js',
+      scope: { executionId: 'e1', intentId: 'i1', projectId: 'p1', stageInstanceId: 'si1' },
+      env: { V2_PROCESS_TABLE: 'proc' },
+      customServers: { fetch: { command: 'uvx', args: ['mcp-server-fetch'] } },
+      cli: 'claude',
+      customRules: [{ filename: 'standards.md', body: 'Always use tabs.' }],
+    });
+    const cfg = JSON.parse(await readFile(out.mcpConfigPath, 'utf8'));
+    expect(cfg.mcpServers.fetch).toEqual({ command: 'uvx', args: ['mcp-server-fetch'] });
+    expect(cfg.mcpServers.aidlc.command).toBe('node');
+    // Custom rules go into the CLI's NATIVE rules dir (auto-loaded), NOT the prompt.
+    expect(out.prompt).not.toContain('Custom project rules');
+    const ruleBody = await readFile(
+      path.join(ws, '.claude', 'rules', 'custom--standards.md'),
+      'utf8',
+    );
+    expect(ruleBody).toBe('Always use tabs.');
+  });
+
+  it('writes custom rules to .kiro/steering for the kiro driver', async () => {
+    const ws = await mkdtemp(path.join(tmpdir(), 'aidlc-ws-'));
+    await materializeStage({
+      workspaceDir: ws,
+      stage: stage(),
+      stageBody: 'do it',
+      agentPersona: 'persona',
+      knowledge: '',
+      mcpEntry: '/opt/agentcore/mcp/index.js',
+      scope: { executionId: 'e1', intentId: 'i1' },
+      cli: 'kiro',
+      customRules: [{ filename: 'api.md', body: 'REST only.' }],
+    });
+    const ruleBody = await readFile(path.join(ws, '.kiro', 'steering', 'custom--api.md'), 'utf8');
+    expect(ruleBody).toBe('REST only.');
+  });
+
+  it('neutralizes path traversal (basename) and skips non-.md rule filenames', async () => {
+    const ws = await mkdtemp(path.join(tmpdir(), 'aidlc-ws-'));
+    const written = await materializeCustomRules({
+      workspaceDir: ws,
+      cli: 'claude',
+      customRules: [
+        { filename: '../evil.md', body: 'x' }, // basename → evil.md (safe)
+        { filename: 'notmd.txt', body: 'y' }, // skipped: not .md
+        { filename: 'ok.md', body: 'z' },
+      ],
+    });
+    expect(written).toEqual(['custom--evil.md', 'custom--ok.md']);
+    // The traversal-neutralized file lands INSIDE the rules dir, never above it.
+    const evil = await readFile(path.join(ws, '.claude', 'rules', 'custom--evil.md'), 'utf8');
+    expect(evil).toBe('x');
+  });
 });
 
 describe('buildKiroAgentConfig', () => {
@@ -258,6 +342,20 @@ describe('buildKiroAgentConfig', () => {
     expect(cfg.mcpServers.aidlc.command).toBe('node');
     expect(cfg.mcpServers.aidlc.env.V2_EXECUTION_ID).toBe('e1');
     expect(cfg.tools).toEqual(['*']);
+    // Custom-agent steering isn't auto-loaded by Kiro — the resources glob wires
+    // .kiro/steering (where materializeCustomRules writes the project's rules).
+    expect(cfg.resources).toContain('file://.kiro/steering/**/*.md');
+  });
+
+  it('merges custom servers into the Kiro agent envelope', () => {
+    const cfg = buildKiroAgentConfig({
+      mcpEntry: '/opt/agentcore/mcp/index.js',
+      scope: { executionId: 'e1', intentId: 'i1' },
+      env: { V2_PROCESS_TABLE: 'proc' },
+      customServers: { git: { command: 'uvx', args: ['mcp-server-git'] } },
+    });
+    expect(cfg.mcpServers.git).toEqual({ command: 'uvx', args: ['mcp-server-git'] });
+    expect(cfg.mcpServers.aidlc.command).toBe('node');
   });
 });
 

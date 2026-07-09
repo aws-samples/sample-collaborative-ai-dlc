@@ -23,6 +23,7 @@ import { buildResponse } from '../shared/response.js';
 import { fetchMembershipRole, projectTrackersFoldStep, mapBinding } from '../shared/trackers.js';
 import { signRealtimeToken } from '../shared/realtime-token.js';
 import { parseCliModels, mergeCliModels } from '../shared/cli-models.js';
+import { mergeMcpServers } from '../shared/mcp-validator.js';
 import { loadWorkflowScopes, loadExecutionPlan } from '../shared/v2-workflow-plan.js';
 import { stageInstanceId as planStageInstanceId } from '../shared/v2-execution-plan.js';
 import { makePriceResolver, costForMetrics } from '../shared/model-pricing.js';
@@ -249,6 +250,22 @@ const fetchGlobalCliModels = async () => {
   }
 };
 
+// Read the Admin global custom MCP servers (raw JSON string) from SSM (written
+// by the agents lambda). Merged UNDER the project's custom MCP servers at
+// intent create (project wins by name). Best-effort: any failure yields '{}'.
+const fetchGlobalCustomMcpServers = async () => {
+  const prefix = AGENT_SETTINGS_SSM_PREFIX();
+  if (!prefix) return '{}';
+  try {
+    const res = await ssm.send(
+      new GetParameterCommand({ Name: `${prefix}/custom-mcp-servers`, WithDecryption: true }),
+    );
+    return res.Parameter?.Value || '{}';
+  } catch {
+    return '{}';
+  }
+};
+
 // Read the Admin derive-time graph enrichment mode ('off'|'llm') from SSM
 // (written by the agents lambda). Snapshotted onto the execution META row at
 // intent create so a toggle flip needs no redeploy and never changes a run
@@ -303,6 +320,20 @@ const fetchProjectConfig = async (g, projectId) => {
   // agentBlock override > env default — matching what the settings UI advertises.
   const globalCliModels = await fetchGlobalCliModels();
   const cliModels = mergeCliModels(getVal(v, 'cli_models'), globalCliModels);
+  // Custom MCP servers: merge the Admin global set UNDER the project's set
+  // (project wins by name). Snapshotted onto the intent as a name-keyed object
+  // ({ "<name>": {…} }) which the runtime transforms into the CLI's mcpServers
+  // map. Custom rules are project-scope only (metadata carries the s3Key the
+  // runtime fetches).
+  const globalCustomMcp = await fetchGlobalCustomMcpServers();
+  const customMcpServers = mergeMcpServers(globalCustomMcp, getVal(v, 'custom_mcp_servers'));
+  let customRules = [];
+  try {
+    const parsed = JSON.parse(getVal(v, 'custom_rules') || '[]');
+    if (Array.isArray(parsed)) customRules = parsed;
+  } catch {
+    customRules = [];
+  }
   return {
     workflowId: getVal(v, 'workflow_id') || DEFAULT_WORKFLOW_ID,
     workflowVersion: rawVersion ? Number(rawVersion) : null,
@@ -316,6 +347,8 @@ const fetchProjectConfig = async (g, projectId) => {
     // snapshotted onto the intent so the run honours the explicit choice.
     agentCli: getVal(v, 'agent_cli') || null,
     cliModels: Object.keys(cliModels).length ? cliModels : null,
+    customMcpServers: Object.keys(customMcpServers).length ? customMcpServers : null,
+    customRules: customRules.length ? customRules : null,
     repos: ordered,
     trackers,
     gitProvider: getVal(v, 'git_provider') || 'github',
@@ -1432,6 +1465,8 @@ export const handler = async (event) => {
         gitProvider: cfg.gitProvider,
         agentCli: cfg.agentCli,
         cliModels: cfg.cliModels,
+        customMcpServers: cfg.customMcpServers,
+        customRules: cfg.customRules,
         deriveEnrichment: await fetchDeriveEnrichment(),
         parkReleaseSeconds: cfg.parkReleaseSeconds,
         maxParallelUnits: cfg.maxParallelUnits,

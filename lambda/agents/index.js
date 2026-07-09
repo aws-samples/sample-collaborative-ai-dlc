@@ -25,8 +25,9 @@ import gremlin from 'gremlin';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { buildResponse } from '../shared/response.js';
-import { requirePlatformAdmin } from '../shared/authz.js';
+import { requirePlatformAdmin, isPlatformAdmin } from '../shared/authz.js';
 import { normalizeCliModels, parseCliModels } from '../shared/cli-models.js';
+import { validateMcpServersJson } from '../shared/mcp-validator.js';
 import { listClaudeModels } from '../shared/bedrock-models.js';
 import { refreshPricing } from '../shared/model-pricing.js';
 
@@ -165,10 +166,17 @@ export const handler = async (event) => {
       const kiroApiKeyPath = `${prefix}/kiro-api-key`;
       const cliModelsPath = `${prefix}/cli-models`;
       const deriveEnrichmentPath = `${prefix}/derive-enrichment`;
+      const customMcpServersPath = `${prefix}/custom-mcp-servers`;
       try {
         const result = await ssm.send(
           new GetParametersCommand({
-            Names: [bearerPath, kiroApiKeyPath, cliModelsPath, deriveEnrichmentPath],
+            Names: [
+              bearerPath,
+              kiroApiKeyPath,
+              cliModelsPath,
+              deriveEnrichmentPath,
+              customMcpServersPath,
+            ],
             WithDecryption: true,
           }),
         );
@@ -178,12 +186,31 @@ export const handler = async (event) => {
         const kiroApiKey = byName[kiroApiKeyPath] || '';
         const cliModels = parseCliModels(byName[cliModelsPath] || '{}');
         const deriveEnrichment = byName[deriveEnrichmentPath] === 'llm' ? 'llm' : 'off';
+        // Custom MCP servers may carry secrets in env/headers — only expose the
+        // raw config to platform admins (the only ones who can edit it). Others
+        // get an empty object so the non-secret settings fields still load.
+        const rawCustomMcp = byName[customMcpServersPath] || '{}';
+        const customMcpServers = isPlatformAdmin(event) ? rawCustomMcp : '{}';
+        // Server NAMES only (no command/env/headers) are non-sensitive, so any
+        // authenticated caller gets them — lets the project MCP UI show which
+        // servers are already provided globally.
+        let customMcpServerNames = [];
+        try {
+          const parsedMcp = JSON.parse(rawCustomMcp);
+          if (parsedMcp && typeof parsedMcp === 'object' && !Array.isArray(parsedMcp)) {
+            customMcpServerNames = Object.keys(parsedMcp);
+          }
+        } catch {
+          customMcpServerNames = [];
+        }
         // Return secrets as masked flags (never send the raw values to the browser)
         return response(200, {
           bedrockBearerTokenSet: bearerToken !== '' && bearerToken !== 'placeholder',
           kiroApiKeySet: kiroApiKey !== '' && kiroApiKey !== 'placeholder',
           cliModels,
           deriveEnrichment,
+          customMcpServers,
+          customMcpServerNames,
         });
       } catch (err) {
         console.error('[settings] GET failed:', err.message);
@@ -278,6 +305,38 @@ export const handler = async (event) => {
         } catch (err) {
           console.error('[settings] Failed to write derive enrichment mode:', err.message);
           errors.push('deriveEnrichment: ' + err.message);
+        }
+      }
+
+      if (input.customMcpServers !== undefined) {
+        // Global custom MCP servers injected into every agent session (merged
+        // with project-level entries at intent-create; project wins by name).
+        const raw =
+          typeof input.customMcpServers === 'string'
+            ? input.customMcpServers
+            : JSON.stringify(input.customMcpServers ?? {});
+        const validation = validateMcpServersJson(raw || '{}');
+        if (!validation.valid) {
+          return response(400, {
+            error: 'Invalid MCP servers configuration',
+            issues: validation.issues,
+          });
+        }
+        try {
+          await ssm.send(
+            new PutParameterCommand({
+              Name: `${prefix}/custom-mcp-servers`,
+              Value: raw || '{}',
+              // SecureString: the config may carry secrets in env/headers. Note
+              // the project-tier equivalent lives on the Neptune vertex and is
+              // NOT encrypted (documented tradeoff — treat projects as trusted).
+              Type: 'SecureString',
+              Overwrite: true,
+            }),
+          );
+        } catch (err) {
+          console.error('[settings] Failed to write custom MCP servers:', err.message);
+          errors.push('customMcpServers: ' + err.message);
         }
       }
 

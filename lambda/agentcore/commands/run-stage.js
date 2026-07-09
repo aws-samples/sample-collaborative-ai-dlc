@@ -42,6 +42,8 @@ import {
   materializeMcpConfig as defaultMaterializeMcpConfig,
   materializeKiroAgent as defaultMaterializeKiroAgent,
 } from '../stage-materializer.js';
+import { fetchCustomRules as defaultFetchCustomRules } from '../custom-rules.js';
+import { toMcpServerMap } from '../../shared/mcp-validator.js';
 import {
   restoreKiroStore as defaultRestoreKiroStore,
   persistKiroStore as defaultPersistKiroStore,
@@ -652,6 +654,12 @@ export const runStage = async (
     scope,
     requestedCli,
     cliModels = {},
+    // Custom MCP servers (name-keyed object) merged into the CLI's mcpServers map,
+    // and custom agent rules ([{filename, s3Key}]) fetched from S3 into the
+    // agent context. Both snapshotted onto the intent and forwarded by the
+    // orchestrator. Empty = none.
+    customMcpServers = {},
+    customRules = [],
     workspaceDir,
     // Clone inputs, forwarded by the orchestrator so a stage can self-heal a wiped
     // source checkout (see ensureWorkspaceSource). Same values init-ws used; empty
@@ -715,6 +723,9 @@ export const runStage = async (
     // exit. Injected for tests.
     commitAndPushAll = defaultCommitAndPushAll,
     compileContextPack = defaultCompileContextPack,
+    // Fetch project custom agent rules (.md bodies) from S3 → written into the
+    // selected CLI's native rules dir by the materializer. Injected for tests.
+    fetchCustomRules = defaultFetchCustomRules,
   } = deps;
 
   const now = () => clock();
@@ -1149,6 +1160,10 @@ export const runStage = async (
   // conversation already holds the prompt) and feeds the human's answer.
   const driver = getDriver(cli);
 
+  // Custom MCP servers (name-keyed object → per-CLI map, reserved names filtered)
+  // merged into the CLI's mcpServers map by the build* helpers. Computed once.
+  const customServers = toMcpServerMap(customMcpServers);
+
   // Materialize the MCP wiring the selected CLI expects: Claude loads a
   // --mcp-config file; Kiro discovers an --agent config at .kiro/agents/. Returns
   // the kwargs the driver's build* methods take (mcpConfigPath OR agentName).
@@ -1159,6 +1174,7 @@ export const runStage = async (
         mcpEntry,
         scope: stageScope,
         env,
+        customServers,
       });
       return { agentName };
     }
@@ -1167,6 +1183,7 @@ export const runStage = async (
       mcpEntry,
       scope: stageScope,
       env,
+      customServers,
     });
     return { mcpConfigPath };
   };
@@ -1239,6 +1256,10 @@ export const runStage = async (
       }
     }
 
+    // Custom agent rules: fetch bodies from S3, then the materializer writes
+    // them into the selected CLI's native rules dir (the CLI auto-loads them).
+    const customRuleDocs = await fetchCustomRules({ customRules, env }).catch(() => []);
+
     const materialized = await materializeStage({
       workspaceDir,
       stage,
@@ -1257,6 +1278,9 @@ export const runStage = async (
       mcpEntry,
       scope: stageScope,
       env,
+      customServers,
+      cli,
+      customRules: customRuleDocs,
     });
     prompt = materialized.prompt;
     // Demoted resume (D2): the parked conversation was lost with the wiped mount,

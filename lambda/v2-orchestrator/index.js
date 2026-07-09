@@ -543,6 +543,12 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // `requestedCli` so the run uses the chosen CLI (selection depends on which
     // CLI is authed). null = let run-stage pick the first installed CLI.
     const requestedCli = meta.agentCli ?? null;
+    // Custom MCP servers + custom agent rules snapshotted onto META at create
+    // (intents lambda merges Admin global + project). Forwarded to run-stage,
+    // which merges the servers into the CLI's mcpServers map and fetches each
+    // rule's .md from S3 into the agent context. null = none.
+    const customMcpServers = meta.customMcpServers ?? null;
+    const customRules = meta.customRules ?? null;
     // Derive-time graph enrichment mode ('off'|'llm'), snapshotted onto META at
     // create from the Admin SSM setting; forwarded in the derive-artifacts
     // payload so the container needs no redeploy (and no SSM read) to honour it.
@@ -597,6 +603,8 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         scope,
         cliModels,
         requestedCli,
+        customMcpServers,
+        customRules,
         sessionId: stageSessionId,
         cloneInputs: stageCloneInputs,
         freshGitToken,
@@ -925,6 +933,8 @@ const runStage = async (
     scope,
     cliModels,
     requestedCli,
+    customMcpServers,
+    customRules,
     sessionId,
     cloneInputs,
     freshGitToken,
@@ -963,6 +973,8 @@ const runStage = async (
         scope,
         ...(cliModels ? { cliModels } : {}),
         ...(requestedCli ? { requestedCli } : {}),
+        ...(customMcpServers ? { customMcpServers } : {}),
+        ...(customRules ? { customRules } : {}),
         // repos/branch/baseBranch/gitToken/gitProvider — for source self-heal.
         // The token is re-resolved at dispatch time (inside this step): a
         // GitHub-App installation token from the run-start snapshot would be
