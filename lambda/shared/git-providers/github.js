@@ -88,6 +88,29 @@ const oauth = {
 };
 
 // ---------------------------------------------------------------------------
+// Authenticated user (commit attribution)
+// ---------------------------------------------------------------------------
+
+// The identity behind an OAuth token — used to attribute engine commits to the
+// user ("on behalf of": author = user, committer = AI-DLC Engine). The OAuth
+// scope (`read:user`) covers GET /user but NOT /user/emails, so when the user
+// has no PUBLIC email we fall back to the GitHub noreply address
+// (<id>+<login>@users.noreply.github.com) — which GitHub always links to the
+// account and which respects "block pushes that expose my email".
+const getAuthenticatedUser = async (ctx) => {
+  const res = await ghFetch(ctx, `${API_BASE}/user`);
+  const data = await res.json();
+  if (!res.ok || !data?.login) {
+    throw new ProviderError(res.status || 400, data?.message || 'Failed to fetch user');
+  }
+  return {
+    login: data.login,
+    authorName: data.name || data.login,
+    authorEmail: data.email || `${data.id}+${data.login}@users.noreply.github.com`,
+  };
+};
+
+// ---------------------------------------------------------------------------
 // Repo browse
 // ---------------------------------------------------------------------------
 
@@ -594,6 +617,7 @@ export {
   apiHeaders,
   ghFetch,
   oauth,
+  getAuthenticatedUser,
   mapRepo,
   listRepos,
   listInstallationRepos,
@@ -621,6 +645,7 @@ export default {
   apiHeaders,
   ghFetch,
   oauth,
+  getAuthenticatedUser,
   mapRepo,
   listRepos,
   listInstallationRepos,

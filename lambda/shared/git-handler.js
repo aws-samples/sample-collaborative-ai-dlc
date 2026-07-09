@@ -206,12 +206,29 @@ export const createGitHandler = (provider, routes) => {
             Overwrite: true,
           }),
         );
+        // Commit-attribution identity ("on behalf of": author = user,
+        // committer = engine). Best-effort — a failed /user lookup must never
+        // break the connect flow; the orchestrator lazily backfills later.
+        let authorFields = {};
+        if (typeof provider.getAuthenticatedUser === 'function') {
+          try {
+            const user = await provider.getAuthenticatedUser({ token: tokens.accessToken });
+            authorFields = {
+              githubLogin: user.login,
+              authorName: user.authorName,
+              authorEmail: user.authorEmail,
+            };
+          } catch (e) {
+            console.error(`Failed to fetch ${providerLabel} user for attribution:`, e.message);
+          }
+        }
         await putGitConnection(ddb, {
           userId: statePayload.userId,
           provider: provider.id,
           parameterName,
           scope: tokens.scope,
           createdAt: new Date().toISOString(),
+          ...authorFields,
         });
         return response(200, { success: true });
       }

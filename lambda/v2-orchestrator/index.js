@@ -36,7 +36,7 @@ import {
   planSegments,
   stageInstanceId as planStageInstanceId,
 } from '../shared/v2-execution-plan.js';
-import { getGitConnection } from '../shared/git-connection-store.js';
+import { getGitConnection, putGitConnection } from '../shared/git-connection-store.js';
 import { resolveGitToken, getInstallationTokenFromConfig } from '../shared/git-token.js';
 import { getGitHubAuthMode } from '../shared/github-auth-config.js';
 import { getProvider } from '../shared/git-providers.js';
@@ -132,7 +132,48 @@ const defaultTokenIo = () => ({
     getInstallationTokenFromConfig({ ssm, secrets, repositories }),
   getGitConnection: (startedBy, gitProvider) => getGitConnection(ddb, startedBy, gitProvider),
   resolveGitToken: (item) => resolveGitToken(ssm, item),
+  // Commit-attribution collaborators (see resolveAuthor): the provider's
+  // /user lookup and the connection-row writer for the lazy backfill.
+  fetchAuthorIdentity: (gitProvider, token) => {
+    const fn = getProvider(gitProvider)?.getAuthenticatedUser;
+    return typeof fn === 'function' ? fn({ token }) : null;
+  },
+  saveConnection: (item) => putGitConnection(ddb, item),
 });
+
+// Commit-attribution identity for an OAuth connection ("on behalf of":
+// author = user, committer = AI-DLC Engine — see agentcore/git-engine.js).
+// Connection rows written before this feature lack the author fields; they
+// are lazily backfilled ONCE from the provider's /user endpoint using the
+// just-resolved token. Strictly best-effort: attribution is never worth
+// failing a run over — on any failure commits fall back to the engine
+// identity. Returns { name, email } or null.
+const resolveAuthor = async (item, { gitProvider, token, io }) => {
+  if (item?.authorName && item?.authorEmail) {
+    return { name: item.authorName, email: item.authorEmail };
+  }
+  try {
+    const user = await io.fetchAuthorIdentity?.(gitProvider, token);
+    if (!user?.authorEmail) return null;
+    // Persist is a cache write — a failure must not drop the fetched identity.
+    try {
+      await io.saveConnection?.({
+        ...item,
+        githubLogin: user.login,
+        authorName: user.authorName,
+        authorEmail: user.authorEmail,
+        updatedAt: new Date().toISOString(),
+      });
+      tokenLog('author_backfilled', { login: user.login });
+    } catch (e) {
+      console.error('[v2-orchestrator] author identity persist failed:', e?.message);
+    }
+    return { name: user.authorName, email: user.authorEmail };
+  } catch (e) {
+    console.error('[v2-orchestrator] author identity backfill failed:', e?.message);
+    return null;
+  }
+};
 
 export const defaultResolveToken = async (
   { startedBy, gitProvider, repos = [] },
@@ -177,8 +218,18 @@ export const defaultResolveToken = async (
     if (!item?.parameterName) return miss('no_connection');
     const token = (await io.resolveGitToken(item)) || '';
     if (!token) return miss('empty_ssm_token');
+    // Author identity rides on the token result only when known — conditional
+    // so token-only consumers (and exact-shape assertions) are unaffected.
+    const author = await resolveAuthor(item, { gitProvider, token, io });
     tokenLog(appReason ? 'oauth_fallback_ok' : 'oauth_ok', appReason ? { after: appReason } : {});
-    return appReason ? { token, mode: 'app', reason: `oauth_fallback: ${appReason}` } : { token };
+    return appReason
+      ? {
+          token,
+          mode: 'app',
+          reason: `oauth_fallback: ${appReason}`,
+          ...(author ? { author } : {}),
+        }
+      : { token, ...(author ? { author } : {}) };
   } catch (e) {
     console.error('[v2-orchestrator] git token resolution failed:', e?.message);
     return miss(`resolve_failed: ${e?.message ?? 'unknown'}`);
@@ -383,6 +434,10 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       return typeof res === 'string' ? { token: res } : res;
     });
     const token = tokenResult?.token ?? '';
+    // Commit-attribution identity ({ name, email }) resolved with the token —
+    // rides every payload that can produce engine commits so they are authored
+    // by the starting user (committer stays AI-DLC Engine). null = engine-only.
+    const gitAuthor = tokenResult?.author ?? null;
     if (!token && (meta.repos ?? []).length > 0) {
       await emitEvent(
         ctx,
@@ -567,6 +622,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       baseBranches: meta.baseBranches,
       gitToken: token,
       gitProvider,
+      ...(gitAuthor ? { gitAuthor } : {}),
     };
 
     // ── One stage instance through its park loop (D3) ─────────────────────
@@ -740,6 +796,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         baseBranches: meta.baseBranches,
         gitToken: token,
         gitProvider,
+        ...(gitAuthor ? { gitAuthor } : {}),
       },
       // Dispatch-time token refresh for lane init/merge/conflict dispatches
       // (see freshGitToken above) — called inside durable step bodies only.

@@ -38,6 +38,27 @@ const GIT_IDENTITY = [
   'user.name=AI-DLC Engine',
 ];
 
+// "On behalf of" attribution: when the orchestrator supplies the starting
+// user's identity ({ name, email }, resolved from their OAuth connection),
+// engine commits and merges are AUTHORED by the user while the COMMITTER
+// stays AI-DLC Engine — GitHub renders "<user> authored and AI-DLC Engine
+// committed". Implemented via `-c author.name/author.email` (git ≥2.22):
+// unlike `--author` it works for `merge` too, and unlike GIT_AUTHOR_* env it
+// survives sanitizedGitEnv (which must keep stripping ambient overrides so
+// the agent can't spoof authorship).
+//
+// Fields are sanitized to a valid git ident (no newlines/angle brackets); an
+// unusable identity falls back to the engine-only identity — attribution is
+// cosmetic, a commit must never fail over it.
+const sanitizeIdentField = (v) => (typeof v === 'string' ? v.replace(/[<>\n\r]/g, ' ').trim() : '');
+
+export const gitIdentity = (author = null) => {
+  const name = sanitizeIdentField(author?.name);
+  const email = sanitizeIdentField(author?.email);
+  if (!name || !email) return GIT_IDENTITY;
+  return [...GIT_IDENTITY, '-c', `author.name=${name}`, '-c', `author.email=${email}`];
+};
+
 // Runtime files that live INSIDE the workspace mount — which, for a
 // single-repo project, IS the repo checkout — but are NEVER the user's work
 // and must never be captured by `git add -A`:
@@ -155,6 +176,7 @@ export const scrubRemote = async ({ dir, repo, gitProvider, urls = {}, git = run
 export const commitAll = async ({
   dir,
   message,
+  author = null,
   git = runGit,
   attempts = 3,
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -174,7 +196,7 @@ export const commitAll = async ({
     if (status.exitCode === 0 && status.stdout.trim() === '') {
       return { committed: false, reason: 'clean' };
     }
-    const commit = await git([...GIT_IDENTITY, 'commit', '-m', message], { cwd: dir });
+    const commit = await git([...gitIdentity(author), 'commit', '-m', message], { cwd: dir });
     if (commit.exitCode !== 0) {
       return { committed: false, reason: 'commit_failed', detail: commit.stderr.trim() };
     }
@@ -487,6 +509,7 @@ export const mergeBranchNoFf = async ({
   intentBranch,
   unitBranch,
   message,
+  author = null,
   gitToken,
   gitProvider,
   urls = {},
@@ -532,7 +555,14 @@ export const mergeBranchNoFf = async ({
   }
 
   const merge = await git(
-    [...GIT_IDENTITY, 'merge', '--no-ff', '-m', message, `refs/remotes/origin/${unitBranch}`],
+    [
+      ...gitIdentity(author),
+      'merge',
+      '--no-ff',
+      '-m',
+      message,
+      `refs/remotes/origin/${unitBranch}`,
+    ],
     { cwd: dir },
   );
   if (merge.exitCode !== 0) {
@@ -588,6 +618,7 @@ export const beginConflictMerge = async ({
   unitBranch,
   intentBranch,
   message,
+  author = null,
   gitToken,
   gitProvider,
   urls = {},
@@ -610,7 +641,14 @@ export const beginConflictMerge = async ({
   if (ancestor.exitCode === 0) return { conflicted: false, merged: 'up_to_date' };
 
   const merge = await git(
-    [...GIT_IDENTITY, 'merge', '--no-ff', '-m', message, `refs/remotes/origin/${intentBranch}`],
+    [
+      ...gitIdentity(author),
+      'merge',
+      '--no-ff',
+      '-m',
+      message,
+      `refs/remotes/origin/${intentBranch}`,
+    ],
     { cwd: dir },
   );
   if (merge.exitCode === 0) {
@@ -661,6 +699,7 @@ export const concludeConflictMerge = async ({
   repo,
   unitBranch,
   conflicts = [],
+  author = null,
   gitToken,
   gitProvider,
   urls = {},
@@ -700,7 +739,7 @@ export const concludeConflictMerge = async ({
     }
     // `git commit` with no -m completes the merge using MERGE_MSG (the message
     // beginConflictMerge supplied via -m).
-    const commit = await git([...GIT_IDENTITY, 'commit', '--no-edit'], { cwd: dir });
+    const commit = await git([...gitIdentity(author), 'commit', '--no-edit'], { cwd: dir });
     if (commit.exitCode !== 0) {
       await abort();
       return { concluded: false, reason: 'commit_failed', detail: commit.stderr.trim() };
@@ -742,6 +781,7 @@ export const commitAndPushAll = async ({
   gitToken,
   gitProvider,
   message,
+  author = null,
   urlsFor = null, // (repoUrl) => { clean, auth } — test seam for file:// remotes
   git = runGit,
   sleep,
@@ -754,7 +794,7 @@ export const commitAndPushAll = async ({
     const dir = repoTargetDir({ url, workspaceDir, multi });
     const urls = urlsFor ? urlsFor(url) : {};
     try {
-      const commit = await commitAll({ dir, message, git, sleep, log });
+      const commit = await commitAll({ dir, message, author, git, sleep, log });
       if (commit.reason === 'add_failed' || commit.reason === 'commit_failed') {
         results.push({ repo: url, ...commit, pushed: false });
         continue;

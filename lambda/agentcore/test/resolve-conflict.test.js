@@ -157,6 +157,25 @@ describe('resolveConflict', () => {
     ]);
   });
 
+  it('a payload gitAuthor attributes the resolution merge commit to the user', async () => {
+    const { remote, ws } = await conflictWorld();
+    const spawnFn = fakeCliSpawn(async (cwd) => {
+      await writeFile(path.join(cwd, 'shared.txt'), 'intent version + unit version\n');
+    });
+    const gitAuthor = { name: 'Jane Dev', email: '1+jane@users.noreply.github.com' };
+    const res = await resolveConflict(
+      basePayload(ws, { gitAuthor }),
+      baseDeps(remote, spyStore(), spawnFn),
+    );
+    expect(res.ok).toBe(true);
+    const verify = path.join(root, 'verify-author');
+    await git(['clone', '--branch', 'aidlc/i1--s1-unit-u', remote, verify], root);
+    const who = await git(['log', '-1', '--format=%an|%ae|%cn|%ce'], verify);
+    expect(who.stdout.trim()).toBe(
+      'Jane Dev|1+jane@users.noreply.github.com|AI-DLC Engine|aidlc-engine@noreply.local',
+    );
+  });
+
   it('REFUSES a lazy agent (markers remain): aborts to a pristine tree and fails as a value', async () => {
     const { remote, ws } = await conflictWorld();
     const store = spyStore();

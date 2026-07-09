@@ -931,6 +931,154 @@ describe('beginConflictMerge / concludeConflictMerge', () => {
   });
 });
 
+// ── "On behalf of" attribution (author = user, committer = engine) ──────────
+// When the orchestrator supplies the starting user's identity, every engine
+// commit/merge is AUTHORED by the user while the COMMITTER stays AI-DLC
+// Engine — GitHub renders "<user> authored and AI-DLC Engine committed".
+
+import { gitIdentity } from '../git-engine.js';
+
+const AUTHOR = { name: 'Jane Dev', email: '123+janedev@users.noreply.github.com' };
+const ENGINE = 'AI-DLC Engine|aidlc-engine@noreply.local';
+
+describe('gitIdentity', () => {
+  it('is engine-only without an author (null / missing fields / empty strings)', () => {
+    const engineOnly = [
+      '-c',
+      'user.email=aidlc-engine@noreply.local',
+      '-c',
+      'user.name=AI-DLC Engine',
+    ];
+    expect(gitIdentity()).toEqual(engineOnly);
+    expect(gitIdentity(null)).toEqual(engineOnly);
+    expect(gitIdentity({ name: 'x' })).toEqual(engineOnly);
+    expect(gitIdentity({ name: '', email: 'a@b' })).toEqual(engineOnly);
+    expect(gitIdentity({ name: '  ', email: 'a@b' })).toEqual(engineOnly);
+  });
+
+  it('appends author.name/author.email for a valid author', () => {
+    expect(gitIdentity(AUTHOR)).toEqual([
+      '-c',
+      'user.email=aidlc-engine@noreply.local',
+      '-c',
+      'user.name=AI-DLC Engine',
+      '-c',
+      `author.name=${AUTHOR.name}`,
+      '-c',
+      `author.email=${AUTHOR.email}`,
+    ]);
+  });
+
+  it('sanitizes newlines and angle brackets out of the ident fields', () => {
+    const dirty = gitIdentity({ name: 'Ev<il>Name', email: 'a@b<x>' });
+    expect(dirty).toContain('author.name=Ev il Name');
+    expect(dirty).toContain('author.email=a@b x');
+    // A field that sanitizes to NOTHING falls back to engine-only.
+    expect(gitIdentity({ name: '<>\n', email: 'a@b' })).toHaveLength(4);
+  });
+});
+
+describe('on-behalf-of attribution', () => {
+  it('commitAll: author = user, committer = engine', async () => {
+    const { work } = await initRemoteAndClone();
+    await writeFile(path.join(work, 'src.js'), 'export const x = 1;\n');
+    const res = await commitAll({
+      dir: work,
+      message: 'aidlc(code-generation): e1',
+      author: AUTHOR,
+    });
+    expect(res.committed).toBe(true);
+    const log = await git(['log', '-1', '--format=%an|%ae|%cn|%ce'], work);
+    expect(log.stdout.trim()).toBe(`${AUTHOR.name}|${AUTHOR.email}|${ENGINE}`);
+    // The repo config was NOT mutated (identity passed per-command).
+    const cfg = await git(['config', '--local', '--get', 'author.name'], work);
+    expect(cfg.exitCode).not.toBe(0);
+  });
+
+  it('commitAll: a malformed author falls back to the full engine identity (never fails the commit)', async () => {
+    const { work } = await initRemoteAndClone();
+    await writeFile(path.join(work, 'src.js'), 'x\n');
+    const res = await commitAll({
+      dir: work,
+      message: 'aidlc(x): e1',
+      author: { name: '<>\n', email: '' },
+    });
+    expect(res.committed).toBe(true);
+    const log = await git(['log', '-1', '--format=%an|%ae|%cn|%ce'], work);
+    expect(log.stdout.trim()).toBe(`${ENGINE}|${ENGINE}`);
+  });
+
+  it('commitAndPushAll forwards the author to the repo commit', async () => {
+    const { remote, work } = await initRemoteAndClone();
+    await writeFile(path.join(work, 'src.js'), 'x\n');
+    const res = await commitAndPushAll({
+      repos: ['o/r'],
+      workspaceDir: work,
+      branch: 'main',
+      author: AUTHOR,
+      message: 'aidlc(code-generation): e1',
+      urlsFor: () => ({ auth: remote, clean: 'https://github.com/o/r.git' }),
+      ...quiet,
+    });
+    expect(res.ok).toBe(true);
+    expect(res.committed).toBe(true);
+    const log = await git(['log', '-1', '--format=%an|%ae|%cn|%ce'], work);
+    expect(log.stdout.trim()).toBe(`${AUTHOR.name}|${AUTHOR.email}|${ENGINE}`);
+  });
+
+  it('mergeBranchNoFf: the merge commit is authored by the user, committed by the engine', async () => {
+    const { remote, work } = await initRemoteAndClone();
+    await commitOnRemote(remote, 'aidlc/i1', 'base.txt', 'base\n');
+    await fetchOrigin({ dir: work, repo: 'o/r', urls: laneUrls(remote) });
+    await git(['checkout', '-B', 'aidlc/i1', 'refs/remotes/origin/aidlc/i1'], work);
+    await commitOnRemote(remote, 'aidlc/i1--s1-unit-auth', 'auth.txt', 'auth code\n');
+    const res = await mergeBranchNoFf({
+      dir: work,
+      repo: 'o/r',
+      intentBranch: 'aidlc/i1',
+      unitBranch: 'aidlc/i1--s1-unit-auth',
+      message: 'aidlc(merge): auth — e1',
+      author: AUTHOR,
+      urls: laneUrls(remote),
+      ...quiet,
+    });
+    expect(res.merged).toBe(true);
+    const log = await git(['log', '-1', '--format=%an|%ae|%cn|%ce'], work);
+    expect(log.stdout.trim()).toBe(`${AUTHOR.name}|${AUTHOR.email}|${ENGINE}`);
+  });
+
+  it('conflict resolution: begin + conclude both attribute to the user', async () => {
+    const { remote, work } = await initRemoteAndClone();
+    await commitOnRemote(remote, 'aidlc/i1', 'base.txt', 'base\n');
+    await commitOnRemote(remote, 'aidlc/i1--s1-unit-u', 'unit.txt', 'unit work\n');
+    await commitOnRemote(remote, 'aidlc/i1', 'shared.txt', 'intent version\n');
+    await commitOnRemote(remote, 'aidlc/i1--s1-unit-u', 'shared.txt', 'unit version\n');
+    const begin = await beginConflictMerge({
+      dir: work,
+      repo: 'o/r',
+      unitBranch: 'aidlc/i1--s1-unit-u',
+      intentBranch: 'aidlc/i1',
+      message: 'aidlc(conflict-resolution): u — e1',
+      author: AUTHOR,
+      urls: laneUrls(remote),
+    });
+    expect(begin.conflicted).toBe(true);
+    await writeFile(path.join(work, 'shared.txt'), 'both versions\n');
+    const conclude = await concludeConflictMerge({
+      dir: work,
+      repo: 'o/r',
+      unitBranch: 'aidlc/i1--s1-unit-u',
+      conflicts: begin.conflicts,
+      author: AUTHOR,
+      urls: laneUrls(remote),
+      ...quiet,
+    });
+    expect(conclude.concluded).toBe(true);
+    const log = await git(['log', '-1', '--format=%an|%ae|%cn|%ce'], work);
+    expect(log.stdout.trim()).toBe(`${AUTHOR.name}|${AUTHOR.email}|${ENGINE}`);
+  });
+});
+
 describe('findRemainingConflictMarkers', () => {
   it('detects real marker lines, tolerates deleted files, ignores marker-free text', async () => {
     const { work } = await initRemoteAndClone();

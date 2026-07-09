@@ -1885,6 +1885,25 @@ describe('runStage — engine git hook (docs/v2-parallel.md WP2)', () => {
       gitProvider: 'github',
       message: 'aidlc(requirements-analysis): e1',
     });
+    // No gitAuthor in the payload → engine-only identity (author: null).
+    expect(calls[0].author).toBeNull();
+  });
+
+  it('forwards the payload gitAuthor to the engine commit ("on behalf of" attribution)', async () => {
+    const calls = [];
+    const deps = baseDeps({
+      ...sourcePresent,
+      spawnFn: okSpawn,
+      commitAndPushAll: async (input) => {
+        calls.push(input);
+        return { ok: true, committed: false, results: [] };
+      },
+    });
+    const gitAuthor = { name: 'Jane Dev', email: '1+jane@users.noreply.github.com' };
+    const res = await runStage({ ...gitArgs, gitAuthor }, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].author).toEqual(gitAuthor);
   });
 
   it('records a v2.git.pushed event when the engine committed work', async () => {

@@ -807,6 +807,10 @@ export const runStage = async (
     baseBranches,
     gitToken,
     gitProvider,
+    // Commit attribution ({ name, email } of the starting user, resolved by the
+    // orchestrator from their OAuth connection): engine commits are authored by
+    // the user, committed by AI-DLC Engine. null = engine-only identity.
+    gitAuthor = null,
     // Resume mode: when set, re-invoke the SAME parked stage conversation with the
     // human's answer to `resumeFrom` (a humanTaskId) instead of running fresh. The
     // session's persistent /mnt/workspace mount restores the checkout + CLI store.
@@ -1622,6 +1626,7 @@ export const runStage = async (
     branch,
     gitToken,
     gitProvider,
+    author: gitAuthor,
     // Commit message carries the unit dimension on lane runs (docs/v2-parallel.md
     // A3): every commit is attributable to stage + lane + execution from git alone.
     message: unitSlug

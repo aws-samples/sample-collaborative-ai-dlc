@@ -88,6 +88,9 @@ export const resolveConflict = async (
     intentBranch,
     gitToken,
     gitProvider,
+    // Commit attribution: conflict-resolution commits are authored by the
+    // starting user, committed by AI-DLC Engine (see git-engine.js gitIdentity).
+    gitAuthor = null,
     requestedCli,
     cliModels = {},
     workspaceDir,
@@ -136,6 +139,7 @@ export const resolveConflict = async (
       unitBranch,
       intentBranch,
       message: mergeMessage,
+      author: gitAuthor,
       gitToken,
       gitProvider,
       urls: urlsFor ? urlsFor(url) : {},
@@ -235,6 +239,7 @@ export const resolveConflict = async (
       repo,
       unitBranch,
       conflicts,
+      author: gitAuthor,
       gitToken,
       gitProvider,
       urls: urlsFor ? urlsFor(repo) : {},

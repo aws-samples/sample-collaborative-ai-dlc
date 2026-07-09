@@ -151,6 +151,9 @@ export const mergeLane = async (
     baseBranches,
     gitToken,
     gitProvider,
+    // Commit attribution: merge commits are authored by the starting user,
+    // committed by AI-DLC Engine (see git-engine.js gitIdentity).
+    gitAuthor = null,
     workspaceDir,
   },
   deps,
@@ -203,6 +206,7 @@ export const mergeLane = async (
       intentBranch,
       unitBranch,
       message: `aidlc(merge): ${unitSlug} — ${executionId}`,
+      author: gitAuthor,
       gitToken,
       gitProvider,
       urls: urlsFor ? urlsFor(url) : {},

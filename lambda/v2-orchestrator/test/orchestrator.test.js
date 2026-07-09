@@ -1900,6 +1900,23 @@ describe('git token resolution', () => {
     expect(res.ok).toBe(true);
     expect(events().some((e) => e.type === 'v2.git.token_unavailable')).toBe(false);
   });
+
+  it('an author on the token result rides every run-stage dispatch as gitAuthor', async () => {
+    const author = { name: 'Jane Dev', email: '1+jane@users.noreply.github.com' };
+    deps.resolveToken = vi.fn(async () => ({ token: 'tok', author }));
+    const res = await start();
+    expect(res.ok).toBe(true);
+    const starts = invokes.filter((p) => p.command === 'run-stage-start');
+    expect(starts.length).toBeGreaterThan(0);
+    for (const s of starts) expect(s.gitAuthor).toEqual(author);
+  });
+
+  it('no author on the token result → no gitAuthor key in the dispatch payloads', async () => {
+    deps.resolveToken = vi.fn(async () => ({ token: 'tok' }));
+    const res = await start();
+    expect(res.ok).toBe(true);
+    for (const p of invokes) expect('gitAuthor' in p).toBe(false);
+  });
 });
 
 // ── defaultResolveToken — App-mode → OAuth fallback matrix (field incident:
@@ -1989,5 +2006,116 @@ describe('defaultResolveToken (app-mode OAuth fallback)', () => {
     const tio = io({ getGitHubAuthMode: vi.fn(async () => 'oauth') });
     const res = await defaultResolveToken({ ...args, startedBy: null }, tio);
     expect(res).toEqual({ token: '', reason: 'no_starter_or_provider' });
+  });
+});
+
+// ── defaultResolveToken — commit attribution ("on behalf of": author = user,
+// committer = AI-DLC Engine). The author rides the token result; connection
+// rows written before the feature are lazily backfilled from the provider's
+// /user endpoint — strictly best-effort, never worth failing a run over. ────
+
+describe('defaultResolveToken (commit attribution)', () => {
+  const args = { startedBy: 'user-1', gitProvider: 'github', repos: ['acme/api'] };
+  const USER = {
+    login: 'janedev',
+    authorName: 'Jane Dev',
+    authorEmail: '1+janedev@users.noreply.github.com',
+  };
+  const io = (overrides = {}) => ({
+    getGitHubAuthMode: vi.fn(async () => 'oauth'),
+    mintInstallationToken: vi.fn(async () => 'app-token'),
+    getGitConnection: vi.fn(async () => ({ parameterName: '/git/u1' })),
+    resolveGitToken: vi.fn(async () => 'oauth-token'),
+    fetchAuthorIdentity: vi.fn(async () => USER),
+    saveConnection: vi.fn(async () => {}),
+    ...overrides,
+  });
+
+  it('an enriched connection row yields the author WITHOUT any fetch or persist', async () => {
+    const tio = io({
+      getGitConnection: vi.fn(async () => ({
+        parameterName: '/git/u1',
+        githubLogin: 'janedev',
+        authorName: 'Jane Dev',
+        authorEmail: '1+janedev@users.noreply.github.com',
+      })),
+    });
+    const res = await defaultResolveToken(args, tio);
+    expect(res).toEqual({
+      token: 'oauth-token',
+      author: { name: 'Jane Dev', email: '1+janedev@users.noreply.github.com' },
+    });
+    expect(tio.fetchAuthorIdentity).not.toHaveBeenCalled();
+    expect(tio.saveConnection).not.toHaveBeenCalled();
+  });
+
+  it('a legacy row (no author fields) is lazily backfilled: fetch once, persist the enriched row', async () => {
+    const tio = io();
+    const res = await defaultResolveToken(args, tio);
+    expect(res).toEqual({
+      token: 'oauth-token',
+      author: { name: 'Jane Dev', email: '1+janedev@users.noreply.github.com' },
+    });
+    expect(tio.fetchAuthorIdentity).toHaveBeenCalledWith('github', 'oauth-token');
+    expect(tio.saveConnection).toHaveBeenCalledWith(
+      expect.objectContaining({
+        parameterName: '/git/u1',
+        githubLogin: 'janedev',
+        authorName: 'Jane Dev',
+        authorEmail: '1+janedev@users.noreply.github.com',
+      }),
+    );
+  });
+
+  it('a failed /user lookup degrades to a token-only result (never fails the run)', async () => {
+    const tio = io({
+      fetchAuthorIdentity: vi.fn(async () => {
+        throw new Error('GitHub 500');
+      }),
+    });
+    const res = await defaultResolveToken(args, tio);
+    expect(res).toEqual({ token: 'oauth-token' });
+    expect(tio.saveConnection).not.toHaveBeenCalled();
+  });
+
+  it('a provider without user lookup (null identity) yields token-only, no persist', async () => {
+    const tio = io({ fetchAuthorIdentity: vi.fn(async () => null) });
+    const res = await defaultResolveToken(args, tio);
+    expect(res).toEqual({ token: 'oauth-token' });
+    expect(tio.saveConnection).not.toHaveBeenCalled();
+  });
+
+  it('a failed persist still returns the fetched author (persist is only a cache)', async () => {
+    const tio = io({
+      saveConnection: vi.fn(async () => {
+        throw new Error('DDB throttled');
+      }),
+    });
+    const res = await defaultResolveToken(args, tio);
+    expect(res).toEqual({
+      token: 'oauth-token',
+      author: { name: 'Jane Dev', email: '1+janedev@users.noreply.github.com' },
+    });
+  });
+
+  it('app-mode mint success carries no author (no user connection consumed)', async () => {
+    const tio = io({ getGitHubAuthMode: vi.fn(async () => 'app') });
+    const res = await defaultResolveToken(args, tio);
+    expect(res).toEqual({ token: 'app-token', mode: 'app' });
+    expect(tio.fetchAuthorIdentity).not.toHaveBeenCalled();
+  });
+
+  it('the app→oauth fallback path DOES carry the author (a user token is used)', async () => {
+    const tio = io({
+      getGitHubAuthMode: vi.fn(async () => 'app'),
+      mintInstallationToken: vi.fn(async () => ''),
+    });
+    const res = await defaultResolveToken(args, tio);
+    expect(res).toEqual({
+      token: 'oauth-token',
+      mode: 'app',
+      reason: 'oauth_fallback: app_mint_empty',
+      author: { name: 'Jane Dev', email: '1+janedev@users.noreply.github.com' },
+    });
   });
 });

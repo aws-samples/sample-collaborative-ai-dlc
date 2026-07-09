@@ -380,6 +380,62 @@ describe('github handler', () => {
       });
     });
 
+    it('enriches the connection row with the commit-attribution identity from GET /user', async () => {
+      mockOAuthSecret();
+      ssmMock.on(PutParameterCommand).resolves({});
+      ddbMock.on(PutCommand).resolves({});
+
+      const validState = createSignedState({ userId: USER_ID, ts: Date.now() }, CLIENT_SECRET);
+      mockFetch([
+        { body: { access_token: 'ghp_new', token_type: 'bearer', scope: 'repo' } },
+        // GET /user — private email → noreply fallback.
+        { body: { login: 'janedev', id: 123, name: 'Jane Dev', email: null } },
+      ]);
+
+      const handler = await loadHandler();
+      const res = await handler(
+        makeEvent('GET', '/github/callback', {
+          queryStringParameters: { code: 'valid-code', state: validState },
+        }),
+      );
+
+      expect(res.statusCode).toBe(200);
+      expect(ddbMock).toHaveReceivedCommandWith(PutCommand, {
+        TableName: PROVIDER_CONNECTIONS_TABLE,
+        Item: expect.objectContaining({
+          userId: USER_ID,
+          githubLogin: 'janedev',
+          authorName: 'Jane Dev',
+          authorEmail: '123+janedev@users.noreply.github.com',
+        }),
+      });
+    });
+
+    it('a failed GET /user never breaks the connect flow — the row is stored without author fields', async () => {
+      mockOAuthSecret();
+      ssmMock.on(PutParameterCommand).resolves({});
+      ddbMock.on(PutCommand).resolves({});
+
+      const validState = createSignedState({ userId: USER_ID, ts: Date.now() }, CLIENT_SECRET);
+      mockFetch([
+        { body: { access_token: 'ghp_new', token_type: 'bearer', scope: 'repo' } },
+        { status: 500, body: { message: 'boom' } },
+      ]);
+
+      const handler = await loadHandler();
+      const res = await handler(
+        makeEvent('GET', '/github/callback', {
+          queryStringParameters: { code: 'valid-code', state: validState },
+        }),
+      );
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ success: true });
+      const put = ddbMock.commandCalls(PutCommand)[0].args[0].input;
+      expect(put.Item.authorEmail).toBeUndefined();
+      expect(put.Item.githubLogin).toBeUndefined();
+    });
+
     it('returns 400 when queryStringParameters is null', async () => {
       const handler = await loadHandler();
       const res = await handler(

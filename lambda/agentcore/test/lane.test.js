@@ -181,6 +181,19 @@ describe('merge-lane', () => {
     ]);
   });
 
+  it('a payload gitAuthor makes the merge commit authored by the user, committed by the engine', async () => {
+    const remote = await initRemote();
+    await commitOnRemote(remote, 'aidlc/i1--s1-unit-auth', 'auth.txt', 'auth code\n');
+    const ws = await intentWorkspace(remote);
+    const gitAuthor = { name: 'Jane Dev', email: '1+jane@users.noreply.github.com' };
+    const res = await mergeLane(basePayload(ws, { gitAuthor }), deps(remote));
+    expect(res.ok).toBe(true);
+    const who = await git(['log', '-1', '--format=%an|%ae|%cn|%ce', 'aidlc/i1'], ws);
+    expect(who.stdout.trim()).toBe(
+      'Jane Dev|1+jane@users.noreply.github.com|AI-DLC Engine|aidlc-engine@noreply.local',
+    );
+  });
+
   it('a conflict fails with the conflicted paths (repo-qualified) and the merge_failed event', async () => {
     const remote = await initRemote();
     await commitOnRemote(remote, 'aidlc/i1', 'shared.txt', 'intent version\n');

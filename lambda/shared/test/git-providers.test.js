@@ -93,6 +93,37 @@ describe('github provider — repo browse + PR + comments', () => {
     ]);
   });
 
+  it('getAuthenticatedUser uses the PUBLIC email when present', async () => {
+    const fetchImpl = makeFetch([
+      ['/user', { json: { login: 'janedev', id: 123, name: 'Jane Dev', email: 'jane@corp.com' } }],
+    ]);
+    const user = await gh.getAuthenticatedUser({ token: 't', fetchImpl });
+    expect(user).toEqual({
+      login: 'janedev',
+      authorName: 'Jane Dev',
+      authorEmail: 'jane@corp.com',
+    });
+  });
+
+  it('getAuthenticatedUser falls back to the noreply address (private email) and login (no name)', async () => {
+    const fetchImpl = makeFetch([
+      ['/user', { json: { login: 'janedev', id: 123, name: null, email: null } }],
+    ]);
+    const user = await gh.getAuthenticatedUser({ token: 't', fetchImpl });
+    expect(user).toEqual({
+      login: 'janedev',
+      authorName: 'janedev',
+      authorEmail: '123+janedev@users.noreply.github.com',
+    });
+  });
+
+  it('getAuthenticatedUser throws ProviderError on an API failure', async () => {
+    const fetchImpl = makeFetch([['/user', { status: 401, json: { message: 'Bad credentials' } }]]);
+    await expect(gh.getAuthenticatedUser({ token: 't', fetchImpl })).rejects.toThrow(
+      'Bad credentials',
+    );
+  });
+
   it('createPullRequest returns prUrl/prNumber on success', async () => {
     const fetchImpl = makeFetch([
       ['/git/matching-refs/', { json: [] }],
