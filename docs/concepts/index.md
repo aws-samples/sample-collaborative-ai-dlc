@@ -75,11 +75,11 @@ graph LR
 
 The default `aidlc-v2` workflow follows the AI-DLC methodology's progression:
 
-| Phase group      | Purpose                                | Output                                                      |
-| ---------------- | -------------------------------------- | ----------------------------------------------------------- |
-| **Inception**    | Define what to build, remove ambiguity | Requirements, user stories, personas, units of work         |
-| **Construction** | Build it, one lane per unit of work    | Designs, decisions, and code on per-unit branches           |
-| **Delivery**     | Integrate and verify                   | Merged intent branch, build and test results, pull request  |
+| Phase group      | Purpose                                | Output                                                     |
+| ---------------- | -------------------------------------- | ---------------------------------------------------------- |
+| **Inception**    | Define what to build, remove ambiguity | Requirements, user stories, personas, units of work        |
+| **Construction** | Build it, one lane per unit of work    | Designs, decisions, and code on per-unit branches          |
+| **Delivery**     | Integrate and verify                   | Merged intent branch, build and test results, pull request |
 
 Every stage is verified three ways before the run advances: deterministic **sensors**, an LLM-judged **reviewer** agent, and **human validation gates**. When work needs redirecting, you steer the run with course corrections or rewind it to an earlier stage — an iterative loop without restarting from scratch.
 

@@ -6,17 +6,17 @@ The AI-DLC methodology is not hard-coded into the platform. It is imported as da
 
 A **block** is the atomic, editable unit of the methodology. There are nine block types, mirroring the upstream [AI-DLC source](https://github.com/awslabs/aidlc-workflows):
 
-| Type          | What it is                                                                                                                                                        |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Type          | What it is                                                                                                                                                                      |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Stage**     | The atomic unit of work. Declares its phase, execution mode, lead/support agents, the artifacts it produces/consumes/requires, its sensors, reviewer, and human-validation gate |
-| **Agent**     | A domain-expert persona (lead, support, or reviewer) with optional model override and examples                                                                     |
-| **Scope**     | A run profile — e.g. feature, bugfix, greenfield. Decides which stages execute for a given intent                                                                  |
-| **Rule**      | A layered guardrail on the chain `org → team → team-learnings → project → project-learnings → phase → stage`                                                        |
-| **Sensor**    | A deterministic post-stage check: a command plus file-glob matches, backed by an executable script                                                                  |
-| **Artifact**  | A named output that wires stages together (produces → consumes); derived from the stage graph so it can't drift                                                     |
-| **Knowledge** | A methodology corpus attached to an agent (or shared); team-tier knowledge is accrued at runtime                                                                    |
-| **Skill**     | A user-invocable runner pack                                                                                                                                        |
-| **Template**  | An authored scaffold                                                                                                                                                |
+| **Agent**     | A domain-expert persona (lead, support, or reviewer) with optional model override and examples                                                                                  |
+| **Scope**     | A run profile — e.g. feature, bugfix, greenfield. Decides which stages execute for a given intent                                                                               |
+| **Rule**      | A layered guardrail on the chain `org → team → team-learnings → project → project-learnings → phase → stage`                                                                    |
+| **Sensor**    | A deterministic post-stage check: a command plus file-glob matches, backed by an executable script                                                                              |
+| **Artifact**  | A named output that wires stages together (produces → consumes); derived from the stage graph so it can't drift                                                                 |
+| **Knowledge** | A methodology corpus attached to an agent (or shared); team-tier knowledge is accrued at runtime                                                                                |
+| **Skill**     | A user-invocable runner pack                                                                                                                                                    |
+| **Template**  | An authored scaffold                                                                                                                                                            |
 
 Phases are not a block type — they are defined inline on each workflow's phase tree.
 

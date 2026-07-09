@@ -20,11 +20,11 @@ Two independent layers govern access:
 
 Every project has members with one of three roles, managed in **Project Settings → Members**:
 
-| Role       | Can do                                                                              |
-| ---------- | ------------------------------------------------------------------------------------ |
-| **Owner**  | Everything, including managing members, all settings, and deleting the project      |
-| **Admin**  | Manage members, settings, repositories, and trackers; delete non-running intents    |
-| **Member** | Create and start intents, answer gates, steer runs, participate in discussions      |
+| Role       | Can do                                                                           |
+| ---------- | -------------------------------------------------------------------------------- |
+| **Owner**  | Everything, including managing members, all settings, and deleting the project   |
+| **Admin**  | Manage members, settings, repositories, and trackers; delete non-running intents |
+| **Member** | Create and start intents, answer gates, steer runs, participate in discussions   |
 
 Non-members have no access to a project's intents, discussions, or real-time channels.
 

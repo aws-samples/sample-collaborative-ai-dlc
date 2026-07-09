@@ -49,14 +49,14 @@ Creating the intent opens it on the workbench in **DRAFT** state, with a **Revie
 
 ## Intent lifecycle
 
-| State       | Meaning                                                                   |
-| ----------- | -------------------------------------------------------------------------- |
-| `DRAFT`     | Created, not yet started — review and start it from the workbench          |
-| `RUNNING`   | A stage is executing                                                        |
-| `WAITING`   | Parked on a human gate — answer it to resume; no compute is consumed       |
-| `SUCCEEDED` | All in-scope stages passed; a pull/merge request has been opened            |
-| `FAILED`    | A stage failed terminally — retry the stage or rewind with guidance         |
-| `CANCELLED` | Stopped by a user; pushed work is preserved on the intent branch            |
+| State       | Meaning                                                              |
+| ----------- | -------------------------------------------------------------------- |
+| `DRAFT`     | Created, not yet started — review and start it from the workbench    |
+| `RUNNING`   | A stage is executing                                                 |
+| `WAITING`   | Parked on a human gate — answer it to resume; no compute is consumed |
+| `SUCCEEDED` | All in-scope stages passed; a pull/merge request has been opened     |
+| `FAILED`    | A stage failed terminally — retry the stage or rewind with guidance  |
+| `CANCELLED` | Stopped by a user; pushed work is preserved on the intent branch     |
 
 Terminal states are not dead ends: any executed stage can be [rewound](intent-observability.md#steering-and-rewind) to iterate.
 
