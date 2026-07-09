@@ -115,6 +115,12 @@ const installDdbFakes = () => {
       casFail();
     }
     if (cond.includes('attribute_exists(pk)') && !existing) casFail();
+    // Lifecycle CAS used by updateUnitState / updateQuorumEdit: `#state IN (:from0, …)`.
+    const inMatch = /#state IN \(([^)]+)\)/.exec(cond);
+    if (inMatch) {
+      const allowed = inMatch[1].split(',').map((ref) => values[ref.trim()]);
+      if (!existing || !allowed.includes(existing.state)) casFail();
+    }
     if (
       cond.includes(':ifOrid') &&
       (!existing || existing.orchestratorRunId !== values[':ifOrid'])
@@ -2634,5 +2640,377 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
     expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'UNIT#auth'))).toMatchObject({
       state: 'MERGED',
     });
+  });
+});
+
+// ── Post-hoc artifact editing (impact / content / verify / quorum edit) ─────
+
+// Seed one artifact vertex anchored to the intent. Downstream wiring is done
+// by the caller (downstream --CONSUMES/DERIVED_FROM--> upstream in-edges).
+const seedArtifact = async (intentId, id, { type = 'doc', title = id, content = '# x' } = {}) => {
+  await g
+    .addV('Artifact')
+    .property('id', id)
+    .property('intent_id', intentId)
+    .property('artifact_type', type)
+    .property('title', title)
+    .property('content', content)
+    .next();
+  await g
+    .V()
+    .has('Intent', 'id', intentId)
+    .addE('CONTAINS')
+    .to(gremlin.process.statics.V().has('Artifact', 'id', id).has('intent_id', intentId))
+    .next();
+};
+
+const linkArtifacts = (intentId, fromId, toId, edge) =>
+  g
+    .V()
+    .has('Artifact', 'id', fromId)
+    .has('intent_id', intentId)
+    .addE(edge)
+    .to(gremlin.process.statics.V().has('Artifact', 'id', toId).has('intent_id', intentId))
+    .next();
+
+// market-research (mr) is consumed by trends (depth 1), which build-vs-buy
+// derives from (depth 2) — the canonical drift chain.
+const seedEditFixture = async (sub) => {
+  const projectId = await seedV2Project(sub);
+  const intent = JSON.parse((await createIntent(sub, projectId)).body);
+  await seedIntentAnchor(intent.id);
+  await seedArtifact(intent.id, 'mr', { type: 'market-research', title: 'Market research' });
+  await seedArtifact(intent.id, 'trends', { type: 'market-trends', title: 'Trends' });
+  await seedArtifact(intent.id, 'bvb', { type: 'build-vs-buy', title: 'Build vs buy' });
+  await linkArtifacts(intent.id, 'trends', 'mr', 'CONSUMES');
+  await linkArtifacts(intent.id, 'bvb', 'trends', 'DERIVED_FROM');
+  return { projectId, intent };
+};
+
+describe('GET /artifacts/{id}/impact', () => {
+  it('returns the transitive downstream closure + the edit-blocking verdict', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    const res = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}/artifacts/mr/impact`,
+      pathParameters: { projectId, intentId: intent.id, artifactId: 'mr' },
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(200);
+    const impact = JSON.parse(res.body);
+    expect(impact.downstream.map((d) => [d.id, d.depth])).toEqual([
+      ['trends', 1],
+      ['bvb', 2],
+    ]);
+    expect(impact.downstream[0].via).toEqual(['CONSUMES']);
+    expect(impact).toMatchObject({ executionActive: false, editBlocked: false });
+  });
+
+  it('404s an unknown artifact', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    const res = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}/artifacts/nope/impact`,
+      pathParameters: { projectId, intentId: intent.id, artifactId: 'nope' },
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(404);
+  });
+});
+
+const putContent = (sub, projectId, intentId, artifactId, content) =>
+  handler({
+    httpMethod: 'PUT',
+    path: `/projects/${projectId}/intents/${intentId}/artifacts/${artifactId}/content`,
+    pathParameters: { projectId, intentId, artifactId },
+    body: JSON.stringify({ content }),
+    ...claims(sub),
+  });
+
+describe('PUT /artifacts/{id}/content (simple edit)', () => {
+  it('writes content + human provenance, marks the closure stale, records the event', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    const res = await putContent(sub, projectId, intent.id, 'mr', '# Market research\nEU focus.');
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.staleMarked.toSorted()).toEqual(['bvb', 'trends']);
+
+    // The vertex carries the new content + the server-stamped provenance.
+    const detail = JSON.parse(
+      (
+        await handler({
+          httpMethod: 'GET',
+          path: `/projects/${projectId}/intents/${intent.id}`,
+          pathParameters: { projectId, intentId: intent.id },
+          ...claims(sub),
+        })
+      ).body,
+    );
+    const mr = detail.artifacts.find((a) => a.id === 'mr');
+    expect(mr.content).toBe('# Market research\nEU focus.');
+    expect(mr.editOrigin).toBe('human');
+    expect(mr.editedBy).toBe(sub);
+    expect(mr.staleSince).toBeNull(); // the edited doc itself is never stale
+    const trends = detail.artifacts.find((a) => a.id === 'trends');
+    expect(trends.staleSince).toBeTruthy();
+    expect(trends.staleReason).toContain('edit:mr');
+    // Audit event landed in the feed.
+    expect(detail.events.some((e) => e.type === 'v2.artifact.edited')).toBe(true);
+  });
+
+  it('409s while a stage is genuinely executing (block-while-running policy)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    for (const status of ['RUNNING', 'CREATED']) {
+      setStatus(intent.id, { status });
+      const res = await putContent(sub, projectId, intent.id, 'mr', 'new');
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body).code).toBe('execution_active');
+    }
+  });
+
+  it('a parked run (WAITING) is editable and the edit is announced via a steering row', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    setStatus(intent.id, { status: 'WAITING' });
+    const res = await putContent(sub, projectId, intent.id, 'mr', '# EU focus');
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    // The parked conversation is told to re-read the edited document at the
+    // next deterministic injection point (gate resume / fresh stage start).
+    expect(body.steering).toMatchObject({ kind: 'artifact-edit', status: 'pending' });
+    expect(body.steering.message).toContain('Market research');
+    const steerRows = [...procStore.values()].filter(
+      (r) => r.pk === `EXEC#${intent.id}` && r.sk.startsWith('STEER#'),
+    );
+    expect(steerRows).toHaveLength(1);
+    expect(steerRows[0]).toMatchObject({ kind: 'artifact-edit', status: 'pending' });
+  });
+
+  it('a terminal-state edit records NO steering row (nothing will resume)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    const res = await putContent(sub, projectId, intent.id, 'mr', '# EU focus');
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).steering).toBeNull();
+    const steerRows = [...procStore.values()].filter(
+      (r) => r.pk === `EXEC#${intent.id}` && r.sk.startsWith('STEER#'),
+    );
+    expect(steerRows).toHaveLength(0);
+  });
+
+  it('rejects empty content', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    const res = await putContent(sub, projectId, intent.id, 'mr', '   ');
+    expect(res.statusCode).toBe(400);
+  });
+});
+
+describe('POST /artifacts/{id}/verify', () => {
+  it('clears the drift marker and stamps the verifier', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    await putContent(sub, projectId, intent.id, 'mr', 'changed');
+    const res = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/artifacts/trends/verify`,
+      pathParameters: { projectId, intentId: intent.id, artifactId: 'trends' },
+      body: JSON.stringify({ note: 'still valid' }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(200);
+    const detail = JSON.parse(
+      (
+        await handler({
+          httpMethod: 'GET',
+          path: `/projects/${projectId}/intents/${intent.id}`,
+          pathParameters: { projectId, intentId: intent.id },
+          ...claims(sub),
+        })
+      ).body,
+    );
+    const trends = detail.artifacts.find((a) => a.id === 'trends');
+    expect(trends.staleSince).toBeNull();
+    expect(trends.verifiedBy).toBe(sub);
+    // bvb was NOT verified — its marker stays.
+    expect(detail.artifacts.find((a) => a.id === 'bvb').staleSince).toBeTruthy();
+  });
+});
+
+const startQuorumEdit = (sub, projectId, intentId, artifactId, changeDescription) =>
+  handler({
+    httpMethod: 'POST',
+    path: `/projects/${projectId}/intents/${intentId}/artifacts/${artifactId}/quorum-edit`,
+    pathParameters: { projectId, intentId, artifactId },
+    body: JSON.stringify({ changeDescription }),
+    ...claims(sub),
+  });
+
+describe('POST /artifacts/{id}/quorum-edit', () => {
+  it('creates the QEDIT session and hands off to the orchestrator', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    const res = await startQuorumEdit(sub, projectId, intent.id, 'mr', 'Target the EU market');
+    expect(res.statusCode).toBe(202);
+    const body = JSON.parse(res.body);
+    expect(body).toMatchObject({
+      artifactId: 'mr',
+      state: 'PLANNING',
+      changeDescription: 'Target the EU market',
+    });
+    // Orchestrator invoked with the quorum-edit action.
+    const invoke = lambdaMock.commandCalls(InvokeCommand)[0].args[0].input;
+    expect(JSON.parse(Buffer.from(invoke.Payload).toString())).toMatchObject({
+      action: 'quorum-edit',
+      intentId: intent.id,
+      editId: body.editId,
+    });
+    // The session rides the detail DTO.
+    const detail = JSON.parse(
+      (
+        await handler({
+          httpMethod: 'GET',
+          path: `/projects/${projectId}/intents/${intent.id}`,
+          pathParameters: { projectId, intentId: intent.id },
+          ...claims(sub),
+        })
+      ).body,
+    );
+    expect(detail.quorumEdits).toHaveLength(1);
+    expect(detail.quorumEdits[0].state).toBe('PLANNING');
+  });
+
+  it('409s a second edit while one is live, and blocks simple edits + start too', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    await startQuorumEdit(sub, projectId, intent.id, 'mr', 'change 1');
+    const second = await startQuorumEdit(sub, projectId, intent.id, 'trends', 'change 2');
+    expect(second.statusCode).toBe(409);
+    expect(JSON.parse(second.body).code).toBe('quorum_edit_active');
+    const put = await putContent(sub, projectId, intent.id, 'mr', 'race');
+    expect(put.statusCode).toBe(409);
+    const start = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/start`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+    expect(start.statusCode).toBe(409);
+    expect(JSON.parse(start.body).code).toBe('quorum_edit_active');
+  });
+
+  it('a parked run (WAITING) can start a Quorum edit, but its gates cannot be answered until it finishes', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    setStatus(intent.id, { status: 'WAITING' });
+    seedGate(intent.id, 'h1', { status: 'pending', callbackId: 'cb-h1' });
+
+    const res = await startQuorumEdit(sub, projectId, intent.id, 'mr', 'Target the EU market');
+    expect(res.statusCode).toBe(202);
+
+    // Answering the gate would resume the parked stage INTO Quorum's writes.
+    const answer = await answerGate(sub, projectId, intent.id, 'h1');
+    expect(answer.statusCode).toBe(409);
+    expect(JSON.parse(answer.body).code).toBe('quorum_edit_active');
+    expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(0);
+
+    // Once the edit is terminal, the gate answers normally.
+    const body = JSON.parse(res.body);
+    procStore.set(keyOf(`EXEC#${intent.id}`, `QEDIT#${body.editId}`), {
+      ...procStore.get(keyOf(`EXEC#${intent.id}`, `QEDIT#${body.editId}`)),
+      state: 'SUCCEEDED',
+    });
+    const answered = await answerGate(sub, projectId, intent.id, 'h1');
+    expect(answered.statusCode).toBe(200);
+  });
+
+  it('requires a change description', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    const res = await startQuorumEdit(sub, projectId, intent.id, 'mr', '');
+    expect(res.statusCode).toBe(400);
+  });
+});
+
+describe('POST /quorum-edits/{editId}/decision', () => {
+  const seedAwaiting = (intentId, editId) => {
+    procStore.set(keyOf(`EXEC#${intentId}`, `QEDIT#${editId}`), {
+      pk: `EXEC#${intentId}`,
+      sk: `QEDIT#${editId}`,
+      type: 'QuorumEdit',
+      executionId: intentId,
+      editId,
+      artifactId: 'mr',
+      state: 'AWAITING_APPROVAL',
+      callbackId: 'cb-decision',
+      plan: {
+        summary: 's',
+        items: [
+          { artifactId: 'trends', action: 'update', rationale: 'r' },
+          { artifactId: 'bvb', action: 'verify-unaffected', rationale: 'ok' },
+        ],
+      },
+    });
+  };
+
+  const decide = (sub, projectId, intentId, editId, body) =>
+    handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intentId}/quorum-edits/${editId}/decision`,
+      pathParameters: { projectId, intentId, editId },
+      body: JSON.stringify(body),
+      ...claims(sub),
+    });
+
+  it('approve narrows to PLAN artifacts, CASes to APPLYING and resumes the callback', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    seedAwaiting(intent.id, 'qe-1');
+    const res = await decide(sub, projectId, intent.id, 'qe-1', {
+      decision: 'approve',
+      approvedArtifactIds: ['trends', 'fabricated'],
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.state).toBe('APPLYING');
+    expect(body.approvedArtifactIds).toEqual(['trends']); // fabricated dropped
+    const cb = lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)[0].args[0].input;
+    expect(cb.CallbackId).toBe('cb-decision');
+    expect(JSON.parse(Buffer.from(cb.Result).toString()).answer).toMatchObject({
+      decision: 'approve',
+      approvedArtifactIds: ['trends'],
+    });
+    // A second decision loses the CAS.
+    const again = await decide(sub, projectId, intent.id, 'qe-1', { decision: 'reject' });
+    expect(again.statusCode).toBe(409);
+  });
+
+  it('reject terminates the session without an apply', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    seedAwaiting(intent.id, 'qe-1');
+    const res = await decide(sub, projectId, intent.id, 'qe-1', { decision: 'reject' });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).state).toBe('REJECTED');
+    // Rejection still wakes the parked orchestrator (it closes the loop).
+    expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(1);
+  });
+
+  it('409s when the session is not awaiting approval', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'QEDIT#qe-1'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'QEDIT#qe-1',
+      editId: 'qe-1',
+      state: 'PLANNING',
+      callbackId: null,
+    });
+    const res = await decide(sub, projectId, intent.id, 'qe-1', { decision: 'approve' });
+    expect(res.statusCode).toBe(409);
   });
 });

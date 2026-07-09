@@ -22,6 +22,7 @@
 //     SK = OUTPUT#<seq>               — agent output chunks (restore-on-reload)
 //     SK = SENSOR#<ts>#<sensorRunId>  — a deterministic sensor verdict for a stage
 //     SK = STEER#<ts>#<steerId>       — a human steering/course-correction message
+//     SK = QEDIT#<editId>             — a Quorum-supported artifact edit session
 //   GSI1PK = PROJECT#<projectId>      GSI1SK = STATUS#<status>#STARTED#<ts>#EXEC#<id>
 //     (list a project's executions by status, newest first)
 //   GSI2PK = EXEC#<executionId>       GSI2SK = TYPE#<type>#STATE#<state>#<id>
@@ -85,6 +86,16 @@ const unitKey = (executionId, slug) => ({
   pk: executionPk(executionId),
   sk: `UNIT#${slug}`,
 });
+// Quorum-supported artifact edit sessions (post-hoc document editing). One row
+// per edit request: the change description, Quorum's structured update plan,
+// the human approval decision, and the apply outcome. The durable orchestrator
+// drives the lifecycle; `callbackId` (stamped while AWAITING_APPROVAL) is the
+// suspended decision callback the intents lambda completes — the same
+// resume-by-callback pattern as HUMAN# gates.
+const quorumEditKey = (executionId, editId) => ({
+  pk: executionPk(executionId),
+  sk: `QEDIT#${editId}`,
+});
 
 // ── Index projections ──
 // GSI1: a project's executions by status, newest first (status board / resume).
@@ -127,7 +138,11 @@ const HUMAN_TASK_STATUSES = ['pending', 'answered', 'approved', 'rejected', 'sup
 //   gate-steer — attached to a gate answer; injected on that gate's resume.
 //   revision   — corrects an already-answered gate; injected at the next point.
 //   rewind     — guidance for a restart-from-stage; injected into that stage.
-const STEERING_KINDS = ['gate-steer', 'revision', 'rewind'];
+//   artifact-edit — a document was edited (human simple edit / Quorum edit)
+//                while the run was parked; tells the resumed conversation to
+//                re-read the changed artifact instead of trusting stale
+//                in-conversation content.
+const STEERING_KINDS = ['gate-steer', 'revision', 'rewind', 'artifact-edit'];
 const STEERING_STATUSES = ['pending', 'consumed', 'superseded'];
 // Per-unit construction lane states (docs/v2-parallel.md rule 4 / WP3).
 //   PENDING  — promoted, dependencies not yet satisfied
@@ -142,6 +157,23 @@ const UNIT_STATES = ['PENDING', 'READY', 'RUNNING', 'MERGING', 'MERGED', 'FAILED
 // gate approves. `gated` = one approval gate per parallel batch; `autonomous` =
 // remaining lanes run without approval gates (failures still halt-and-ask).
 const CONSTRUCTION_AUTONOMY_MODES = ['gated', 'autonomous'];
+// Quorum-supported artifact edit lifecycle (post-hoc document editing):
+//   PLANNING          — Quorum is analyzing downstream impact / drafting a plan
+//   AWAITING_APPROVAL — plan is on the row; parked on the decision callback
+//   APPLYING          — approved; Quorum is updating the approved artifacts
+//   SUCCEEDED/FAILED  — terminal apply outcome
+//   REJECTED          — the human rejected the plan (terminal, nothing changed)
+//   CANCELLED         — retired without a decision (terminal)
+const QUORUM_EDIT_STATES = [
+  'PLANNING',
+  'AWAITING_APPROVAL',
+  'APPLYING',
+  'SUCCEEDED',
+  'FAILED',
+  'REJECTED',
+  'CANCELLED',
+];
+const QUORUM_EDIT_TERMINAL_STATES = ['SUCCEEDED', 'FAILED', 'REJECTED', 'CANCELLED'];
 
 // ── Pure record builders ──
 // Every builder takes injected `now`/ids so callers/tests stay deterministic
@@ -626,6 +658,55 @@ const buildUnitRow = ({
   updatedAt: now,
 });
 
+// One Quorum-supported artifact edit session. GSI2 state = lifecycle state so
+// "any active quorum edit for this execution" is one query. `plan` is Quorum's
+// structured update plan ({ summary, items: [{ artifactId, action, rationale,
+// proposedChange }] }); decision/outcome fields are stamped as the flow
+// progresses. The row is process state — the artifact content itself (and the
+// stale/edit provenance props) live in Neptune.
+const buildQuorumEditRow = ({
+  executionId,
+  editId,
+  artifactId,
+  artifactType = null,
+  artifactTitle = null,
+  changeDescription,
+  state = 'PLANNING',
+  requestedBy = null,
+  requestedByName = null,
+  now,
+}) => ({
+  ...quorumEditKey(executionId, editId),
+  ...executionTypeStateIndex({ executionId, type: 'QEDIT', state, id: editId }),
+  type: 'QuorumEdit',
+  executionId,
+  editId,
+  artifactId,
+  artifactType,
+  artifactTitle,
+  changeDescription,
+  state,
+  requestedBy,
+  requestedByName,
+  // Quorum's structured update plan; null until planning completes.
+  plan: null,
+  // The suspended durable decision callback (set while AWAITING_APPROVAL).
+  callbackId: null,
+  // Human decision.
+  decidedBy: null,
+  decidedByName: null,
+  decidedAt: null,
+  approvedArtifactIds: null,
+  // Apply outcome.
+  updatedArtifactIds: null,
+  verifiedArtifactIds: null,
+  failedArtifactIds: null,
+  failureReason: null,
+  createdAt: now,
+  updatedAt: now,
+  completedAt: null,
+});
+
 export {
   META,
   executionPk,
@@ -642,6 +723,7 @@ export {
   outputSeq,
   unitPlanKey,
   unitKey,
+  quorumEditKey,
   projectStatusIndex,
   executionTypeStateIndex,
   EXECUTION_STATUS,
@@ -652,6 +734,8 @@ export {
   STEERING_STATUSES,
   UNIT_STATES,
   CONSTRUCTION_AUTONOMY_MODES,
+  QUORUM_EDIT_STATES,
+  QUORUM_EDIT_TERMINAL_STATES,
   buildExecutionMeta,
   buildStageRow,
   buildEventRow,
@@ -663,6 +747,7 @@ export {
   buildOutputRow,
   buildUnitPlanRow,
   buildUnitRow,
+  buildQuorumEditRow,
 };
 export default {
   META,
@@ -680,6 +765,7 @@ export default {
   outputSeq,
   unitPlanKey,
   unitKey,
+  quorumEditKey,
   projectStatusIndex,
   executionTypeStateIndex,
   EXECUTION_STATUS,
@@ -690,6 +776,8 @@ export default {
   STEERING_STATUSES,
   UNIT_STATES,
   CONSTRUCTION_AUTONOMY_MODES,
+  QUORUM_EDIT_STATES,
+  QUORUM_EDIT_TERMINAL_STATES,
   buildExecutionMeta,
   buildStageRow,
   buildEventRow,
@@ -701,4 +789,5 @@ export default {
   buildOutputRow,
   buildUnitPlanRow,
   buildUnitRow,
+  buildQuorumEditRow,
 };

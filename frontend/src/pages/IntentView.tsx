@@ -19,6 +19,8 @@ import { CollaborativeTextarea } from '@/components/CollaborativeTextarea';
 import type { Question } from '@/services/questions';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { ArtifactViewer } from '@/components/intent/ArtifactViewer';
+
+import { QuorumEditPanel } from '@/components/intent/QuorumEditPanel';
 import { artifactAccent } from '@/components/intent/artifactAccent';
 import { formatDuration, useTick } from '@/components/intent/stageStyle';
 import { IntentGraphPopover } from '@/components/intent/IntentGraphPopover';
@@ -496,6 +498,8 @@ export default function IntentView() {
               Setting up workspace (cloning repositories, preparing the run)…
             </div>
           )}
+
+          <QuorumEditPanel />
 
           <WorkProductsPanel detail={detail} gates={gates} />
         </>
@@ -1063,6 +1067,12 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
                   >
                     <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                     <span className="min-w-0 flex-1 truncate text-sm">{a.title || a.id}</span>
+                    {a.staleSince && (
+                      <AlertTriangle
+                        aria-label="Possibly stale — an upstream document was edited"
+                        className="h-3 w-3 shrink-0 text-agent-waiting"
+                      />
+                    )}
                     {a.createdAt && (
                       <span className="shrink-0 text-[11px] text-muted-foreground/60">
                         {getTimeAgo(a.createdAt)}

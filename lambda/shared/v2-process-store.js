@@ -24,6 +24,7 @@ import {
   steeringKey,
   unitPlanKey,
   unitKey,
+  quorumEditKey,
   executionPk,
   projectPk,
   projectStatusIndex,
@@ -39,7 +40,9 @@ import {
   buildOutputRow,
   buildUnitPlanRow,
   buildUnitRow,
+  buildQuorumEditRow,
   UNIT_STATES,
+  QUORUM_EDIT_STATES,
   CONSTRUCTION_AUTONOMY_MODES,
 } from './v2-process-keys.js';
 
@@ -1142,6 +1145,99 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return Attributes;
   };
 
+  // ── Quorum-supported artifact edits (post-hoc document editing) ──
+
+  // Open a new quorum edit session (state PLANNING). Conditional so an editId
+  // can never be double-created.
+  const createQuorumEdit = async (input) => {
+    const item = buildQuorumEditRow({ ...input, now: now() });
+    await ddb.send(
+      new PutCommand({
+        TableName: table(),
+        Item: item,
+        ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
+      }),
+    );
+    return item;
+  };
+
+  const getQuorumEdit = async (executionId, editId) => {
+    const { Item } = await ddb.send(
+      new GetCommand({ TableName: table(), Key: quorumEditKey(executionId, editId) }),
+    );
+    return Item ?? null;
+  };
+
+  // Lifecycle transition + field patch, CAS'd on the expected prior state(s)
+  // so the human decision endpoint and the durable orchestrator can never
+  // double-apply a transition (mirrors updateUnitState). `state` optional —
+  // a fields-only patch (e.g. the container persisting the plan) skips the
+  // GSI re-stamp. Returns the new row, or null when the CAS lost.
+  const updateQuorumEdit = async ({
+    executionId,
+    editId,
+    state,
+    fromStates = null,
+    fields = {},
+  }) => {
+    const ts = now();
+    const sets = ['updatedAt = :ts'];
+    const names = {};
+    const values = { ':ts': ts };
+    if (state !== undefined) {
+      if (!QUORUM_EDIT_STATES.includes(state))
+        throw new Error(`invalid quorum edit state: ${state}`);
+      names['#state'] = 'state';
+      sets.push('#state = :state', 'GSI2SK = :g2sk');
+      values[':state'] = state;
+      values[':g2sk'] = executionTypeStateIndex({
+        executionId,
+        type: 'QEDIT',
+        state,
+        id: editId,
+      }).GSI2SK;
+    }
+    for (const [k, v] of Object.entries(fields)) {
+      names[`#f_${k}`] = k;
+      values[`:f_${k}`] = v === true && (k === 'completedAt' || k === 'decidedAt') ? ts : v;
+      sets.push(`#f_${k} = :f_${k}`);
+    }
+    const params = {
+      TableName: table(),
+      Key: quorumEditKey(executionId, editId),
+      UpdateExpression: `SET ${sets.join(', ')}`,
+      ExpressionAttributeValues: values,
+      ReturnValues: 'ALL_NEW',
+    };
+    if (Object.keys(names).length) params.ExpressionAttributeNames = names;
+    const conditions = ['attribute_exists(pk)'];
+    if (Array.isArray(fromStates) && fromStates.length > 0) {
+      params.ExpressionAttributeNames = { ...params.ExpressionAttributeNames, '#state': 'state' };
+      conditions.push(`#state IN (${fromStates.map((_, i) => `:from${i}`).join(', ')})`);
+      fromStates.forEach((s, i) => {
+        params.ExpressionAttributeValues[`:from${i}`] = s;
+      });
+    }
+    params.ConditionExpression = conditions.join(' AND ');
+    try {
+      const { Attributes } = await ddb.send(new UpdateCommand(params));
+      return Attributes;
+    } catch (e) {
+      if (e?.name === 'ConditionalCheckFailedException') return null;
+      throw e;
+    }
+  };
+
+  // All quorum edit sessions for an execution, oldest first by editId sort.
+  const listQuorumEdits = async (executionId) => {
+    const items = await queryAll(ddb, {
+      TableName: table(),
+      KeyConditionExpression: 'pk = :pk AND begins_with(sk, :p)',
+      ExpressionAttributeValues: { ':pk': executionPk(executionId), ':p': 'QEDIT#' },
+    });
+    return items.toSorted((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+  };
+
   // Read every record for an execution, grouped by type (for the resume lambda /
   // admin / restore-on-reload). Fully paginated — see queryAll.
   //
@@ -1183,12 +1279,13 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       outputs: records.filter((r) => r.sk.startsWith('OUTPUT#')),
       unitPlan: records.find((r) => r.sk === 'UNITPLAN') ?? null,
       units: records.filter((r) => r.sk.startsWith('UNIT#')),
+      quorumEdits: records.filter((r) => r.sk.startsWith('QEDIT#')),
     };
   };
 
   // Delete EVERY record for an execution — the whole EXEC#<id> partition
   // (META, STAGE#, EVENT#, HUMAN#, METRIC#, OUTPUT#, SENSOR#, STEER#,
-  // UNITPLAN, UNIT#). Keys-only projection: OUTPUT# rows can be megabytes and
+  // QEDIT#, UNITPLAN, UNIT#). Keys-only projection: OUTPUT# rows can be megabytes and
   // we only need pk/sk to delete them. BatchWrite in chunks of 25 (the API
   // maximum), retrying UnprocessedItems with backoff so a throttled batch
   // never silently leaves rows behind. Idempotent — deleting a missing key is
@@ -1264,6 +1361,10 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     syncUnitRows,
     updateUnitState,
     updateUnitPlanDecisions,
+    createQuorumEdit,
+    getQuorumEdit,
+    updateQuorumEdit,
+    listQuorumEdits,
     getExecutionRecords,
   };
 };

@@ -15,6 +15,7 @@ import {
   steeringKey,
   unitPlanKey,
   unitKey,
+  quorumEditKey,
   buildExecutionMeta,
   buildStageRow,
   buildEventRow,
@@ -25,12 +26,15 @@ import {
   buildSteeringRow,
   buildUnitPlanRow,
   buildUnitRow,
+  buildQuorumEditRow,
   executionTypeStateIndex,
   HUMAN_TASK_STATUSES,
   STEERING_KINDS,
   STEERING_STATUSES,
   UNIT_STATES,
   CONSTRUCTION_AUTONOMY_MODES,
+  QUORUM_EDIT_STATES,
+  QUORUM_EDIT_TERMINAL_STATES,
 } from '../v2-process-keys.js';
 import { createProcessStore } from '../v2-process-store.js';
 
@@ -669,7 +673,7 @@ describe('buildExecutionMeta intent-config + DRAFT', () => {
 
 describe('steering keys + builders', () => {
   it('exposes the steering vocabularies and the superseded gate status', () => {
-    expect(STEERING_KINDS).toEqual(['gate-steer', 'revision', 'rewind']);
+    expect(STEERING_KINDS).toEqual(['gate-steer', 'revision', 'rewind', 'artifact-edit']);
     expect(STEERING_STATUSES).toEqual(['pending', 'consumed', 'superseded']);
     expect(HUMAN_TASK_STATUSES).toContain('superseded');
   });
@@ -1210,5 +1214,119 @@ describe('WP5 META fields', () => {
       store.updateExecution({ executionId: 'e1', constructionAutonomyMode: 'yolo' }),
     ).rejects.toThrow('invalid constructionAutonomyMode');
     ddb.restore();
+  });
+});
+
+// ── Quorum-supported artifact edits (QEDIT rows) ─────────────────────────────
+
+describe('quorum edit rows', () => {
+  const ddb = mockClient(DynamoDBDocumentClient);
+  let store;
+  beforeEach(() => {
+    ddb.reset();
+    store = createProcessStore({ ddb, tableName: 'v2-proc', clock: () => 'T' });
+  });
+
+  it('quorumEditKey namespaces under the execution partition', () => {
+    expect(quorumEditKey('e1', 'qe-1')).toEqual({ pk: 'EXEC#e1', sk: 'QEDIT#qe-1' });
+  });
+
+  it('buildQuorumEditRow starts PLANNING with the GSI2 state projection', () => {
+    const row = buildQuorumEditRow({
+      executionId: 'e1',
+      editId: 'qe-1',
+      artifactId: 'market-research',
+      artifactType: 'competitive-analysis',
+      artifactTitle: 'Market research',
+      changeDescription: 'Target the EU market',
+      requestedBy: 'u1',
+      requestedByName: 'Uma',
+      now: 'T',
+    });
+    expect(row.pk).toBe('EXEC#e1');
+    expect(row.sk).toBe('QEDIT#qe-1');
+    expect(row.GSI2SK).toBe('TYPE#QEDIT#STATE#PLANNING#qe-1');
+    expect(row.state).toBe('PLANNING');
+    expect(row.plan).toBeNull();
+    expect(row.callbackId).toBeNull();
+    expect(row.completedAt).toBeNull();
+    expect(QUORUM_EDIT_STATES).toContain('AWAITING_APPROVAL');
+    expect(QUORUM_EDIT_TERMINAL_STATES).toEqual(['SUCCEEDED', 'FAILED', 'REJECTED', 'CANCELLED']);
+  });
+
+  it('createQuorumEdit guards against editId reuse', async () => {
+    ddb.on(PutCommand).resolves({});
+    await store.createQuorumEdit({
+      executionId: 'e1',
+      editId: 'qe-1',
+      artifactId: 'a1',
+      changeDescription: 'x',
+    });
+    const input = ddb.commandCalls(PutCommand)[0].args[0].input;
+    expect(input.Item.sk).toBe('QEDIT#qe-1');
+    expect(input.ConditionExpression).toContain('attribute_not_exists(pk)');
+  });
+
+  it('updateQuorumEdit CASes on fromStates, re-stamps GSI2, and coerces decidedAt:true → now', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: { state: 'APPLYING' } });
+    await store.updateQuorumEdit({
+      executionId: 'e1',
+      editId: 'qe-1',
+      state: 'APPLYING',
+      fromStates: ['AWAITING_APPROVAL'],
+      fields: { decidedBy: 'u1', decidedAt: true, approvedArtifactIds: ['a2'] },
+    });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ConditionExpression).toBe('attribute_exists(pk) AND #state IN (:from0)');
+    expect(input.ExpressionAttributeValues[':from0']).toBe('AWAITING_APPROVAL');
+    expect(input.ExpressionAttributeValues[':g2sk']).toBe('TYPE#QEDIT#STATE#APPLYING#qe-1');
+    expect(input.ExpressionAttributeValues[':f_decidedAt']).toBe('T'); // true → now
+    expect(input.ExpressionAttributeValues[':f_approvedArtifactIds']).toEqual(['a2']);
+
+    ddb.reset();
+    ddb
+      .on(UpdateCommand)
+      .rejects(Object.assign(new Error('cas'), { name: 'ConditionalCheckFailedException' }));
+    const lost = await store.updateQuorumEdit({
+      executionId: 'e1',
+      editId: 'qe-1',
+      state: 'APPLYING',
+      fromStates: ['AWAITING_APPROVAL'],
+    });
+    expect(lost).toBeNull();
+  });
+
+  it('updateQuorumEdit supports a fields-only patch (no state, no GSI re-stamp)', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: {} });
+    await store.updateQuorumEdit({
+      executionId: 'e1',
+      editId: 'qe-1',
+      fields: { plan: { summary: 's', items: [] } },
+    });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.UpdateExpression).not.toContain(':g2sk');
+    expect(input.ExpressionAttributeValues[':f_plan']).toEqual({ summary: 's', items: [] });
+  });
+
+  it('updateQuorumEdit refuses an unknown lifecycle state', async () => {
+    await expect(
+      store.updateQuorumEdit({ executionId: 'e1', editId: 'qe-1', state: 'DONE' }),
+    ).rejects.toThrow('invalid quorum edit state');
+  });
+
+  it('getExecutionRecords groups QEDIT rows (also with includeOutputs:false)', async () => {
+    const rows = [
+      { pk: 'EXEC#e1', sk: 'META', type: 'Execution' },
+      { pk: 'EXEC#e1', sk: 'QEDIT#qe-1', type: 'QuorumEdit', editId: 'qe-1' },
+    ];
+    ddb.on(QueryCommand).callsFake((input) => {
+      const lo = input.ExpressionAttributeValues[':lo'];
+      const hi = input.ExpressionAttributeValues[':hi'];
+      if (lo) return { Items: rows.filter((r) => r.sk < lo) };
+      if (hi) return { Items: rows.filter((r) => r.sk >= hi) };
+      return { Items: rows };
+    });
+    const records = await store.getExecutionRecords('e1', { includeOutputs: false });
+    expect(records.quorumEdits.map((q) => q.editId)).toEqual(['qe-1']);
   });
 });

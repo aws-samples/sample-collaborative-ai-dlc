@@ -620,6 +620,9 @@ const formatResumeAnswer = (gate) => {
 const steeringLabel = (r) => {
   if (r.kind === 'rewind') return 'rewind guidance — this stage is re-running from scratch';
   if (r.kind === 'revision') return 'a previously given answer was CORRECTED';
+  if (r.kind === 'artifact-edit') {
+    return 'a project document was EDITED while this stage was parked';
+  }
   return 'course correction';
 };
 

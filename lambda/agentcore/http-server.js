@@ -38,6 +38,14 @@
 //   { "command": "discussion-assist-start", ...discussion args }
 //     → accepts in ms, runs Quorum's one-shot discussion answer in a background
 //       job, then updates the pending DiscussionMessage and broadcasts it.
+//   { "command": "quorum-edit-plan-start", ...quorum edit args, callbackId }
+//     → accepts in ms; a background job analyzes the downstream impact of a
+//       requested document edit, produces a structured update plan, and
+//       completes the orchestrator's durable callback with it.
+//   { "command": "quorum-edit-apply-start", ...quorum edit args, callbackId }
+//     → accepts in ms; a background job applies the APPROVED plan (bounded
+//       one-shot rewrites + drift bookkeeping + re-derive) and completes the
+//       orchestrator's durable callback with the outcome.
 //
 // The dispatcher is pure (handlers injected) so it is unit-tested without a
 // socket; createServer wires the real commands + clients.
@@ -82,6 +90,8 @@ export const dispatchInvocation = async ({
     'merge-lane': handlers.mergeLane,
     'resolve-conflict': handlers.resolveConflict,
     'discussion-assist-start': handlers.discussionAssistStart,
+    'quorum-edit-plan-start': handlers.quorumEditPlanStart,
+    'quorum-edit-apply-start': handlers.quorumEditApplyStart,
     inspect: handlers.inspect,
     capabilities: handlers.capabilities,
   }[command];
@@ -163,6 +173,8 @@ const main = async () => {
   const { runStage } = await import('./commands/run-stage.js');
   const { createRunStageStart } = await import('./commands/run-stage-start.js');
   const { createDiscussionAssistStart } = await import('./commands/discussion-assist-start.js');
+  const { createQuorumEditPlanStart } = await import('./commands/quorum-edit-plan-start.js');
+  const { createQuorumEditApplyStart } = await import('./commands/quorum-edit-apply-start.js');
   const { promoteUnits } = await import('./commands/promote-units.js');
   const { deriveArtifacts } = await import('./commands/derive-artifacts.js');
   const { initLane, mergeLane } = await import('./commands/lane.js');
@@ -249,6 +261,30 @@ const main = async () => {
     availableClis,
     env: process.env,
     mcpEntry,
+    busy,
+  });
+  // Quorum-supported artifact edits: plan (impact analysis) + apply (approved
+  // rewrites). Same accept-then-background contract as run-stage-start; the
+  // apply job re-derives through the SAME deriveArtifacts handler stages use.
+  handlers.quorumEditPlanStart = createQuorumEditPlanStart({
+    openGraph,
+    store,
+    broadcast,
+    availableClis,
+    env: process.env,
+    sendCallbackSuccess: sendStageCallbackSuccess,
+    sendCallbackHeartbeat: sendStageCallbackHeartbeat,
+    busy,
+  });
+  handlers.quorumEditApplyStart = createQuorumEditApplyStart({
+    openGraph,
+    store,
+    broadcast,
+    availableClis,
+    env: process.env,
+    deriveArtifacts: (p) => handlers.deriveArtifacts(p),
+    sendCallbackSuccess: sendStageCallbackSuccess,
+    sendCallbackHeartbeat: sendStageCallbackHeartbeat,
     busy,
   });
 

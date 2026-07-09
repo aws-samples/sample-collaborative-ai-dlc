@@ -972,6 +972,11 @@ resource "aws_lambda_permission" "workflows" {
 #   /projects/{projectId}/intents/{intentId}/realtime-token        POST
 #   /projects/{projectId}/intents/{intentId}/gates/{humanTaskId}/answer  POST
 #   /projects/{projectId}/intents/{intentId}/gates/{humanTaskId}/revise  POST
+#   /projects/{projectId}/intents/{intentId}/artifacts/{artifactId}/impact       GET
+#   /projects/{projectId}/intents/{intentId}/artifacts/{artifactId}/content      PUT
+#   /projects/{projectId}/intents/{intentId}/artifacts/{artifactId}/verify       POST
+#   /projects/{projectId}/intents/{intentId}/artifacts/{artifactId}/quorum-edit  POST
+#   /projects/{projectId}/intents/{intentId}/quorum-edits/{editId}/decision      POST
 # All routes hit the single intents Lambda, which routes by path + method.
 # =============================================================================
 
@@ -1078,6 +1083,66 @@ resource "aws_api_gateway_resource" "intent_gate_revise" {
   path_part   = "revise"
 }
 
+# Post-hoc artifact (document) editing:
+#   /intents/{intentId}/artifacts/{artifactId}/impact       GET  — drift warning data
+#   /intents/{intentId}/artifacts/{artifactId}/content      PUT  — human edit
+#   /intents/{intentId}/artifacts/{artifactId}/verify       POST — clear stale marker
+#   /intents/{intentId}/artifacts/{artifactId}/quorum-edit  POST — start a Quorum edit
+#   /intents/{intentId}/quorum-edits/{editId}/decision      POST — approve/reject the plan
+resource "aws_api_gateway_resource" "intent_artifacts" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent.id
+  path_part   = "artifacts"
+}
+
+resource "aws_api_gateway_resource" "intent_artifact" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent_artifacts.id
+  path_part   = "{artifactId}"
+}
+
+resource "aws_api_gateway_resource" "intent_artifact_impact" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent_artifact.id
+  path_part   = "impact"
+}
+
+resource "aws_api_gateway_resource" "intent_artifact_content" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent_artifact.id
+  path_part   = "content"
+}
+
+resource "aws_api_gateway_resource" "intent_artifact_verify" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent_artifact.id
+  path_part   = "verify"
+}
+
+resource "aws_api_gateway_resource" "intent_artifact_quorum_edit" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent_artifact.id
+  path_part   = "quorum-edit"
+}
+
+resource "aws_api_gateway_resource" "intent_quorum_edits" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent.id
+  path_part   = "quorum-edits"
+}
+
+resource "aws_api_gateway_resource" "intent_quorum_edit" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent_quorum_edits.id
+  path_part   = "{editId}"
+}
+
+resource "aws_api_gateway_resource" "intent_quorum_edit_decision" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent_quorum_edit.id
+  path_part   = "decision"
+}
+
 locals {
   intent_routes = {
     collection_get  = { resource = aws_api_gateway_resource.intents.id, method = "GET" }
@@ -1095,6 +1160,12 @@ locals {
     token_post      = { resource = aws_api_gateway_resource.intent_realtime_token.id, method = "POST" }
     answer_post     = { resource = aws_api_gateway_resource.intent_gate_answer.id, method = "POST" }
     revise_post     = { resource = aws_api_gateway_resource.intent_gate_revise.id, method = "POST" }
+    # Post-hoc artifact editing (human + Quorum-supported).
+    artifact_impact_get  = { resource = aws_api_gateway_resource.intent_artifact_impact.id, method = "GET" }
+    artifact_content_put = { resource = aws_api_gateway_resource.intent_artifact_content.id, method = "PUT" }
+    artifact_verify_post = { resource = aws_api_gateway_resource.intent_artifact_verify.id, method = "POST" }
+    artifact_qedit_post  = { resource = aws_api_gateway_resource.intent_artifact_quorum_edit.id, method = "POST" }
+    qedit_decision_post  = { resource = aws_api_gateway_resource.intent_quorum_edit_decision.id, method = "POST" }
   }
 }
 
@@ -1193,6 +1264,36 @@ module "cors_intent_gate_revise" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.intent_gate_revise.id
+}
+
+module "cors_intent_artifact_impact" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_artifact_impact.id
+}
+
+module "cors_intent_artifact_content" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_artifact_content.id
+}
+
+module "cors_intent_artifact_verify" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_artifact_verify.id
+}
+
+module "cors_intent_artifact_quorum_edit" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_artifact_quorum_edit.id
+}
+
+module "cors_intent_quorum_edit_decision" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_quorum_edit_decision.id
 }
 
 resource "aws_lambda_permission" "intents" {

@@ -1529,6 +1529,7 @@ resource "aws_iam_role_policy" "realtime_fanout" {
     neptune_questions   = aws_iam_role.neptune_questions.id # questions lambda
     agents_orchestrator = aws_iam_role.agents_orchestrator.id
     v2_orchestrator     = aws_iam_role.v2_orchestrator.id # durable orchestrator live fan-out
+    intents             = aws_iam_role.intents.id         # artifact edit / quorum-edit reload hints
   }
   name = "realtime-fanout"
   role = each.value
@@ -1701,6 +1702,10 @@ module "intents_lambda" {
     # The AgentCore stage-executor runtime — for the manual derive backfill
     # (POST .../intents/{id}/derive, platform admin).
     AGENTCORE_RUNTIME_ARN = var.agentcore_runtime_arn
+    # Server-origin realtime reload hints (artifact edited/verified, quorum
+    # edit lifecycle) on the intent channel — lambda/shared/ws-fanout.js.
+    CONNECTIONS_TABLE  = var.connections_table_name
+    WEBSOCKET_ENDPOINT = var.websocket_api_endpoint_https
     # Qualified name (function:alias) — durable functions reject $LATEST invokes.
     V2_ORCHESTRATOR_FUNCTION = "${module.v2_orchestrator_lambda.lambda_function_name}:${module.v2_orchestrator_alias.lambda_alias_name}"
   }

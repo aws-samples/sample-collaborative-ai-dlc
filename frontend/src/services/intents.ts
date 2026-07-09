@@ -226,12 +226,108 @@ export interface IntentArtifact {
   // by the re-run (dimmed in the UI).
   supersededAt?: string | null;
   supersededBy?: string | null;
+  // Drift marker: an upstream document was edited after this artifact was
+  // derived/consumed from it. Cleared on the next update or an explicit
+  // verify. UI badges it (possibly stale).
+  staleSince?: string | null;
+  staleReason?: string | null;
+  // Post-hoc edit provenance (human simple edit / Quorum edit).
+  editedBy?: string | null;
+  editedByName?: string | null;
+  editedAt?: string | null;
+  editOrigin?: 'human' | 'quorum' | null;
+  // Verification stamp ("reviewed against the upstream edit, still valid").
+  verifiedBy?: string | null;
+  verifiedByName?: string | null;
+  verifiedAt?: string | null;
   // Optional derive-time LLM enrichment (Admin setting `derive-enrichment=llm`).
   // Used as a review orientation aid; absent when enrichment is off/skipped.
   summaryGist?: string | null;
   summaryClaims?: string[] | null;
   enrichmentModel?: string | null;
   content: string | null;
+}
+
+// ── Post-hoc artifact editing ──
+
+// GET .../artifacts/{id}/impact — the pre-edit drift warning data.
+export interface ArtifactImpactStage {
+  stageId: string;
+  /** How the consumption is evidenced: block frontmatter and/or actual reads. */
+  via: ('declared' | 'read')[];
+}
+
+export interface ArtifactImpactDownstream {
+  id: string;
+  title: string | null;
+  artifactType: string | null;
+  /** 1 = direct consumer/derivation; larger = transitive. */
+  depth: number;
+  /** Edge labels that reach it (CONSUMES / DERIVED_FROM / CITES). */
+  via: string[];
+  /** Already carrying a drift marker from an earlier edit. */
+  stale: boolean;
+}
+
+export interface ArtifactImpact {
+  artifactId: string;
+  artifactType: string | null;
+  consumingStages: ArtifactImpactStage[];
+  downstream: ArtifactImpactDownstream[];
+  executionActive: boolean;
+  editBlocked: boolean;
+  blockReason: 'execution_active' | 'quorum_edit_active' | null;
+  activeQuorumEditId: string | null;
+}
+
+// Quorum-supported edit session (QEDIT row).
+export type QuorumEditState =
+  | 'PLANNING'
+  | 'AWAITING_APPROVAL'
+  | 'APPLYING'
+  | 'SUCCEEDED'
+  | 'FAILED'
+  | 'REJECTED'
+  | 'CANCELLED';
+
+export interface QuorumEditPlanItem {
+  artifactId: string;
+  title: string | null;
+  artifactType: string | null;
+  depth: number;
+  action: 'update' | 'verify-unaffected';
+  rationale: string;
+  proposedChange: string;
+  /** The closure member was not explicitly assessed by Quorum. */
+  unassessed?: boolean;
+}
+
+export interface QuorumEditPlan {
+  summary: string;
+  items: QuorumEditPlanItem[];
+}
+
+export interface QuorumEdit {
+  editId: string;
+  artifactId: string;
+  artifactType: string | null;
+  artifactTitle: string | null;
+  changeDescription: string | null;
+  state: QuorumEditState;
+  plan: QuorumEditPlan | null;
+  requestedBy: string | null;
+  requestedByName: string | null;
+  decidedBy: string | null;
+  decidedByName: string | null;
+  decidedAt: string | null;
+  approvedArtifactIds: string[] | null;
+  updatedArtifactIds: string[] | null;
+  verifiedArtifactIds: string[] | null;
+  failedArtifactIds: string[] | null;
+  failureReason: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  completedAt: string | null;
 }
 
 // A lifecycle event in the intent's activity feed (workspace init, failure,
@@ -299,6 +395,8 @@ export interface IntentDetail {
   outputs: IntentOutput[];
   sensorRuns: IntentSensorRun[];
   artifacts: IntentArtifact[];
+  /** Quorum-supported artifact edit sessions (post-hoc document editing). */
+  quorumEdits?: QuorumEdit[];
   unitPlan?: IntentUnitPlan | null;
   units?: IntentUnit[];
 }
@@ -558,5 +656,63 @@ export const intentsService = {
     api.post<IntentSteering & { delivery: 'next-resume' | 'next-stage-start' }>(
       `/projects/${projectId}/intents/${intentId}/gates/${humanTaskId}/revise`,
       { message },
+    ),
+  // ── Post-hoc artifact editing ──
+  // The pre-edit drift warning data: consuming stages, downstream closure,
+  // and whether editing is currently blocked.
+  artifactImpact: (projectId: string, intentId: string, artifactId: string) =>
+    api.get<ArtifactImpact>(
+      `/projects/${projectId}/intents/${intentId}/artifacts/${encodeURIComponent(artifactId)}/impact`,
+    ),
+  // Human "simple edit": persist the new content (409 while a stage is
+  // actively running or a Quorum edit is active; a parked WAITING run is
+  // editable — the backend records an artifact-edit steering row so the
+  // resumed agent re-reads the document). The backend stamps provenance,
+  // marks the downstream closure stale and re-derives the projection.
+  updateArtifactContent: (
+    projectId: string,
+    intentId: string,
+    artifactId: string,
+    content: string,
+  ) =>
+    api.put<{
+      artifactId: string;
+      editedAt: string;
+      staleMarked: string[];
+      derived: boolean;
+      steering: IntentSteering | null;
+    }>(
+      `/projects/${projectId}/intents/${intentId}/artifacts/${encodeURIComponent(artifactId)}/content`,
+      { content },
+    ),
+  // Clear the drift marker: reviewed against the upstream edit, still valid.
+  verifyArtifact: (projectId: string, intentId: string, artifactId: string, note?: string) =>
+    api.post<{ artifactId: string; verifiedAt: string }>(
+      `/projects/${projectId}/intents/${intentId}/artifacts/${encodeURIComponent(artifactId)}/verify`,
+      note ? { note } : {},
+    ),
+  // Start a Quorum-supported edit: describe the change; Quorum plans the
+  // downstream updates (human-approved), then applies them.
+  startQuorumEdit: (
+    projectId: string,
+    intentId: string,
+    artifactId: string,
+    changeDescription: string,
+  ) =>
+    api.post<QuorumEdit>(
+      `/projects/${projectId}/intents/${intentId}/artifacts/${encodeURIComponent(artifactId)}/quorum-edit`,
+      { changeDescription },
+    ),
+  // Approve (optionally narrowing to a subset of plan artifacts) or reject
+  // Quorum's update plan.
+  decideQuorumEdit: (
+    projectId: string,
+    intentId: string,
+    editId: string,
+    input: { decision: 'approve' | 'reject'; approvedArtifactIds?: string[] },
+  ) =>
+    api.post<QuorumEdit>(
+      `/projects/${projectId}/intents/${intentId}/quorum-edits/${editId}/decision`,
+      input,
     ),
 };

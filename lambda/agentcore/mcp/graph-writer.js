@@ -149,6 +149,22 @@ const RESERVED_PROPS = new Set([
   // agent-settable: it is an existing free-form prop, e.g. 'draft'.)
   'superseded_at',
   'superseded_by',
+  // Post-hoc edit bookkeeping (shared/artifact-edit.js): drift markers, edit
+  // provenance and verification stamps are server-owned trust anchors — an
+  // agent must never spoof "a human edited/verified this" or clear a drift
+  // marker by prop-writing. The stale marker IS cleared on update, but via the
+  // dedicated rehabilitation below, never from the props bag.
+  'stale_since',
+  'stale_reason',
+  'edited_by',
+  'edited_by_name',
+  'edited_at',
+  'edit_origin',
+  'edit_ref',
+  'verified_by',
+  'verified_by_name',
+  'verified_at',
+  'verify_note',
 ]);
 
 export const sanitizeProps = (properties = {}) => {
@@ -330,6 +346,22 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     }
   };
 
+  // Un-stale: an artifact re-created/updated after an upstream document edit
+  // marked it stale (shared/artifact-edit.js) is current again — the same
+  // rehabilitation discipline as `superseded`. Best-effort; a vertex without
+  // the marker is a no-op.
+  const clearStale = async (artifactId) => {
+    try {
+      await vAt(ARTIFACT_LABEL, artifactId)
+        .has('stale_since')
+        .properties('stale_since', 'stale_reason')
+        .drop()
+        .next();
+    } catch {
+      /* drift marker cleanup is best-effort */
+    }
+  };
+
   // Provenance for steering: link every Steering vertex consumed by this stage
   // to the artifacts the stage produced (Steering --INFLUENCES--> Artifact),
   // mirroring the answered-question linking. Called by run-stage on stage
@@ -403,8 +435,10 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       edge: ANCHOR_EDGE,
     });
 
-    // A re-created artifact is current again (rewind rehabilitation).
+    // A re-created artifact is current again (rewind rehabilitation) and no
+    // longer stale (drift rehabilitation).
     await clearSuperseded(id);
+    await clearStale(id);
 
     await linkAnsweredQuestionsToArtifact(id);
 
@@ -427,8 +461,10 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     let q = vAt(ARTIFACT_LABEL, id).property(cardinality.single, 'updated_at', now());
     for (const [k, v] of Object.entries(clean)) q = q.property(cardinality.single, k, v);
     await q.next();
-    // An updated artifact is current again (rewind rehabilitation).
+    // An updated artifact is current again (rewind rehabilitation) and no
+    // longer stale (drift rehabilitation).
     await clearSuperseded(id);
+    await clearStale(id);
     await linkAnsweredQuestionsToArtifact(id);
     return { id, updated: Object.keys(clean) };
   };

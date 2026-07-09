@@ -17,6 +17,8 @@ import { DiscussionsTab } from '@/components/discussion/DiscussionsTab';
 import { DiscussionPanel, useDiscussions } from '@/components/discussion';
 import { INTENT_OUTPUT_KEY, useIntent } from '@/contexts/IntentContext';
 import { artifactAccent } from '@/components/intent/artifactAccent';
+import { ArtifactEditControls, ArtifactStaleBadge } from '@/components/intent/ArtifactEditControls';
+import { ArtifactContentEditor } from '@/components/intent/ArtifactContentEditor';
 import { ArtifactMarkdown } from '@/components/intent/ArtifactMarkdown';
 import type { IntentActivityEvent } from '@/services/intents';
 
@@ -403,6 +405,8 @@ function PreviewTab() {
   const { detail, previewArtifactId } = useIntent();
   const discussions = useDiscussions();
   const artifact = detail?.artifacts.find((a) => a.id === previewArtifactId) ?? null;
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const editing = artifact != null && editingId === artifact.id;
 
   if (!artifact) {
     return (
@@ -427,9 +431,16 @@ function PreviewTab() {
               {artifact.artifactType}
             </span>
           )}
+          <ArtifactStaleBadge artifact={artifact} />
         </div>
         <div className="flex items-center gap-2 mb-3">
           <h3 className="text-sm font-semibold min-w-0 flex-1">{artifact.title || artifact.id}</h3>
+          {!editing && (
+            <ArtifactEditControls
+              artifact={artifact}
+              onStartEdit={() => setEditingId(artifact.id)}
+            />
+          )}
           {discussions && (
             <Button
               variant="ghost"
@@ -447,10 +458,14 @@ function PreviewTab() {
             </Button>
           )}
         </div>
-        {artifact.content && (
-          <div className="prose prose-sm dark:prose-invert max-w-none">
-            <ArtifactMarkdown content={artifact.content} />
-          </div>
+        {editing ? (
+          <ArtifactContentEditor artifact={artifact} onDone={() => setEditingId(null)} />
+        ) : (
+          artifact.content && (
+            <div className="prose prose-sm dark:prose-invert max-w-none">
+              <ArtifactMarkdown content={artifact.content} />
+            </div>
+          )
         )}
       </div>
     </ScrollArea>

@@ -42,6 +42,7 @@ import { getGitHubAuthMode } from '../shared/github-auth-config.js';
 import { getProvider } from '../shared/git-providers.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
 import { awaitEngineGate, parseChoice, runParallelSection } from './section.js';
+import { runQuorumEdit } from './quorum-edit.js';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -320,6 +321,12 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     comparePrBranches,
   } = deps;
   const { intentId, executionId } = event;
+  // Quorum-supported artifact edit (post-hoc document editing): its own small
+  // durable flow — plan → human approval → apply — fully independent of the
+  // stage loop below (an edit is refused while a run is active anyway).
+  if (event.action === 'quorum-edit') {
+    return runQuorumEdit(event, ctx, deps);
+  }
   if (event.action !== 'start') {
     // Resume is handled out-of-band via SendDurableExecutionCallbackSuccess
     // against the suspended callback — there is no separate resume invocation.

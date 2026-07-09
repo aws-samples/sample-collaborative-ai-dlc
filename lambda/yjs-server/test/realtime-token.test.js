@@ -34,6 +34,7 @@ const INTENT_ID = 'b1e0f2a4-1c3d-4e5f-8a9b-0c1d2e3f4a5b';
 //   inception-{projectId}                    frontend/src/hooks/useCollaborativeInception.ts
 //   discussion-{sprintId}-{discussionId}     discussions feature (Yjs chat doc)
 //   intent-review-{intentId}-{humanTaskId}   v2 stage review feedback
+//   intent-artifact-{intentId}-{artifactId}  v2 post-hoc artifact editing
 const YJS_DOC_VECTORS = [
   [`presence-${SPRINT_ID}`, `sprint:${SPRINT_ID}`],
   [`sq-${SPRINT_ID}-${ARTIFACT_ID}`, `sprint:${SPRINT_ID}`],
@@ -49,6 +50,10 @@ const YJS_DOC_VECTORS = [
   [`intent-discussion-${INTENT_ID}-disc-${ARTIFACT_ID}`, `intent:${INTENT_ID}`],
   [`intent-presence-${INTENT_ID}`, `intent:${INTENT_ID}`],
   [`intent-review-${INTENT_ID}-ht-${ARTIFACT_ID}`, `intent:${INTENT_ID}`],
+  // Post-hoc artifact editing (v2 documents). Artifact ids are agent-chosen
+  // slugs, not UUIDs — they ride the free suffix after the intent UUID.
+  [`intent-artifact-${INTENT_ID}-${ARTIFACT_ID}`, `intent:${INTENT_ID}`],
+  [`intent-artifact-${INTENT_ID}-market-research`, `intent:${INTENT_ID}`],
   // Unknown formats → deny (null)
   ['default', null],
   ['', null],

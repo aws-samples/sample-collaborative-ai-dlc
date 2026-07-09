@@ -8,17 +8,23 @@ import { useIntent } from '@/contexts/IntentContext';
 import { artifactAccent } from '@/components/intent/artifactAccent';
 import { IntentGraphPopover } from '@/components/intent/IntentGraphPopover';
 import { DerivedItemCountChip } from '@/components/intent/DerivedItemCountChip';
+import { ArtifactEditControls, ArtifactStaleBadge } from '@/components/intent/ArtifactEditControls';
+import { ArtifactContentEditor } from '@/components/intent/ArtifactContentEditor';
 import { ArtifactMarkdown } from '@/components/intent/ArtifactMarkdown';
 import type { GraphNeighbor } from '@/hooks/useIntentGraph';
 import type { IntentArtifact } from '@/services/intents';
 import { ChevronDown } from 'lucide-react';
 
-// Read-only v2 artifact card, modeled on v1's ArtifactCard visual language
+// V2 artifact card, modeled on v1's ArtifactCard visual language
 // (type-colored left border) but fed by the intent detail DTO. Artifacts are
 // primary run output, so they stay in the main pane. `id` anchors the
 // stage-detail "produced artifact" jump links and the graph popover's in-page
 // navigation. `graphNeighbors`/`derivedItemCount` are supplied by the panel
 // (one shared graph fetch) — both optional so the card renders standalone.
+//
+// Post-hoc editing: the card hosts the drift badge + edit affordances
+// (ArtifactEditControls) and swaps the rendered markdown for the inline
+// collaborative editor while editing.
 
 // Bodies beyond this many characters start collapsed behind a "Show more".
 const COLLAPSE_CHARS = 1200;
@@ -34,6 +40,7 @@ export function ArtifactViewer({
 }) {
   const { detail, setSelectedStageId } = useIntent();
   const [expanded, setExpanded] = useState(false);
+  const [editing, setEditing] = useState(false);
 
   const content = artifact.content ?? '';
   const collapsible = content.length > COLLAPSE_CHARS;
@@ -80,6 +87,7 @@ export function ArtifactViewer({
                   superseded
                 </Badge>
               )}
+              <ArtifactStaleBadge artifact={artifact} />
             </div>
             <p className="mt-0.5 text-[11px] text-muted-foreground">
               {producedBy?.stageId ? (
@@ -102,8 +110,21 @@ export function ArtifactViewer({
                 'produced by this run'
               )}
               {artifact.createdAt && <> · {new Date(artifact.createdAt).toLocaleString()}</>}
+              {artifact.editedAt && (
+                <>
+                  {' '}
+                  · edited by{' '}
+                  {artifact.editOrigin === 'quorum'
+                    ? 'Quorum'
+                    : artifact.editedByName || 'a member'}{' '}
+                  {new Date(artifact.editedAt).toLocaleString()}
+                </>
+              )}
             </p>
           </div>
+          {!editing && (
+            <ArtifactEditControls artifact={artifact} onStartEdit={() => setEditing(true)} />
+          )}
           <DerivedItemCountChip artifactId={artifact.id} count={derivedItemCount} />
           <IntentGraphPopover neighbors={graphNeighbors} className="shrink-0" />
           <DiscussButton
@@ -114,21 +135,29 @@ export function ArtifactViewer({
           />
         </div>
 
-        {content && (
-          <div className="prose prose-sm dark:prose-invert mt-2 max-w-none">
-            <ArtifactMarkdown content={shown} />
-          </div>
-        )}
-        {collapsible && (
-          <Button
-            size="sm"
-            variant="ghost"
-            className="mt-1 h-6 gap-1 px-2 text-[11px] text-muted-foreground"
-            onClick={() => setExpanded((v) => !v)}
-          >
-            <ChevronDown className={cn('h-3 w-3 transition-transform', expanded && 'rotate-180')} />
-            {expanded ? 'Show less' : 'Show more'}
-          </Button>
+        {editing ? (
+          <ArtifactContentEditor artifact={artifact} onDone={() => setEditing(false)} />
+        ) : (
+          <>
+            {content && (
+              <div className="prose prose-sm dark:prose-invert mt-2 max-w-none">
+                <ArtifactMarkdown content={shown} />
+              </div>
+            )}
+            {collapsible && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="mt-1 h-6 gap-1 px-2 text-[11px] text-muted-foreground"
+                onClick={() => setExpanded((v) => !v)}
+              >
+                <ChevronDown
+                  className={cn('h-3 w-3 transition-transform', expanded && 'rotate-180')}
+                />
+                {expanded ? 'Show less' : 'Show more'}
+              </Button>
+            )}
+          </>
         )}
       </CardContent>
     </Card>

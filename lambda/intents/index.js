@@ -28,8 +28,16 @@ import { loadWorkflowScopes, loadExecutionPlan } from '../shared/v2-workflow-pla
 import { stageInstanceId as planStageInstanceId } from '../shared/v2-execution-plan.js';
 import { makePriceResolver, costForMetrics } from '../shared/model-pricing.js';
 import { aggregateMetrics, rollupAggregates } from '../shared/metric-classification.js';
+import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
+import {
+  applyArtifactEdit,
+  verifyArtifact,
+  markArtifactsStale,
+  fetchDownstreamClosure,
+} from '../shared/artifact-edit.js';
 import { fetchKnowledgeGraph } from './knowledge-graph.js';
 import { buildIntentAudit } from './audit.js';
+import { buildArtifactImpact, editBlockReason, activeQuorumEdit } from './impact.js';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -405,11 +413,45 @@ const fetchArtifacts = async (g, intentId) => {
     // artifact and the re-run has not yet rehabilitated it. UI dims it.
     supersededAt: getVal(vm, 'superseded_at') ?? null,
     supersededBy: getVal(vm, 'superseded_by') ?? null,
+    // Drift marker (shared/artifact-edit.js): an upstream document was edited
+    // after this artifact was derived/consumed from it. Cleared on the next
+    // update or an explicit verify. UI badges it.
+    staleSince: getVal(vm, 'stale_since') ?? null,
+    staleReason: getVal(vm, 'stale_reason') ?? null,
+    // Post-hoc edit provenance (human simple edit / Quorum edit).
+    editedBy: getVal(vm, 'edited_by') ?? null,
+    editedByName: getVal(vm, 'edited_by_name') ?? null,
+    editedAt: getVal(vm, 'edited_at') ?? null,
+    editOrigin: getVal(vm, 'edit_origin') ?? null,
+    // Verification stamp ("reviewed against the upstream edit, still valid").
+    verifiedBy: getVal(vm, 'verified_by') ?? null,
+    verifiedByName: getVal(vm, 'verified_by_name') ?? null,
+    verifiedAt: getVal(vm, 'verified_at') ?? null,
     summaryGist: getVal(vm, 'summary_gist') ?? null,
     summaryClaims: safeJsonParse(getVal(vm, 'summary_claims'), []),
     enrichmentModel: getVal(vm, 'enrichment_model') ?? null,
     content: getVal(vm, 'content') ?? null,
   }));
+};
+
+// One artifact by id, scoped to the intent (agent-chosen artifact ids are only
+// unique within an intent — a bare id match could bind to a foreign intent's
+// same-id vertex). Compact shape for the edit routes.
+const fetchArtifactRow = async (g, intentId, artifactId) => {
+  const res = await g
+    .V()
+    .has('Artifact', 'id', artifactId)
+    .has('intent_id', intentId)
+    .valueMap(true)
+    .next();
+  if (res.done || !res.value) return null;
+  const vm = res.value;
+  return {
+    id: getVal(vm, 'id'),
+    artifactType: getVal(vm, 'artifact_type') ?? null,
+    title: getVal(vm, 'title') ?? null,
+    supersededAt: getVal(vm, 'superseded_at') ?? null,
+  };
 };
 
 const fetchInfluencedArtifacts = async (g, questionId) => {
@@ -632,6 +674,30 @@ const mapIntent = (meta) => ({
   completedAt: meta.completedAt ?? null,
 });
 
+// Map a QEDIT# row (Quorum-supported artifact edit session) to the wire shape.
+const mapQuorumEdit = (q) => ({
+  editId: q.editId,
+  artifactId: q.artifactId,
+  artifactType: q.artifactType ?? null,
+  artifactTitle: q.artifactTitle ?? null,
+  changeDescription: q.changeDescription ?? null,
+  state: q.state,
+  plan: q.plan ?? null,
+  requestedBy: q.requestedBy ?? null,
+  requestedByName: q.requestedByName ?? null,
+  decidedBy: q.decidedBy ?? null,
+  decidedByName: q.decidedByName ?? null,
+  decidedAt: q.decidedAt ?? null,
+  approvedArtifactIds: q.approvedArtifactIds ?? null,
+  updatedArtifactIds: q.updatedArtifactIds ?? null,
+  verifiedArtifactIds: q.verifiedArtifactIds ?? null,
+  failedArtifactIds: q.failedArtifactIds ?? null,
+  failureReason: q.failureReason ?? null,
+  createdAt: q.createdAt ?? null,
+  updatedAt: q.updatedAt ?? null,
+  completedAt: q.completedAt ?? null,
+});
+
 // ── Authorization ──
 const authorize = async (g, projectId, sub, response) => {
   if (!sub) return { res: response(401, { error: 'Unauthorized' }) };
@@ -648,6 +714,9 @@ export const handler = async (event) => {
   const projectId = pathParameters?.projectId;
   const intentId = pathParameters?.intentId;
   const humanTaskId = pathParameters?.humanTaskId;
+  // Post-hoc artifact editing routes.
+  const artifactId = pathParameters?.artifactId;
+  const editId = pathParameters?.editId;
   const sub = event.requestContext?.authorizer?.claims?.sub;
 
   let conn;
@@ -681,6 +750,389 @@ export const handler = async (event) => {
       return response(200, { token, exp, scopes });
     }
 
+    // ── Post-hoc artifact (document) editing ─────────────────────────────────
+    // Documents in Neptune stay editable after the stages that produced /
+    // consumed them ran. Every mutation records drift bookkeeping
+    // (shared/artifact-edit.js) and broadcasts a payload-blind reload hint on
+    // the intent channel (handlers refetch the detail DTO).
+
+    // GET .../artifacts/{artifactId}/impact — the pre-edit drift warning data:
+    // consuming stages (declared + actual reads), the transitive downstream
+    // closure, and whether editing is currently blocked.
+    if (intentId && artifactId && httpMethod === 'GET' && path?.endsWith('/impact')) {
+      const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
+      if (!records.meta || records.meta.projectId !== projectId) {
+        return response(404, { error: 'Intent not found' });
+      }
+      const artifact = await fetchArtifactRow(g, intentId, artifactId);
+      if (!artifact) return response(404, { error: 'Artifact not found' });
+      // Declared-consumes evidence needs the resolved plan; degrade to graph +
+      // read evidence when it cannot be resolved (never block the warning).
+      let plan = null;
+      try {
+        const planResult = await loadExecutionPlan({
+          ddb,
+          tableName: BLOCKS_TABLE(),
+          workflowId: records.meta.workflowId,
+          workflowVersion: records.meta.workflowVersion,
+          scope: records.meta.scope,
+        });
+        plan = planResult.valid ? planResult.plan : null;
+      } catch {
+        plan = null;
+      }
+      return response(200, await buildArtifactImpact({ g, intentId, artifact, plan, records }));
+    }
+
+    // PUT .../artifacts/{artifactId}/content — the human "simple edit". Writes
+    // the new content + server-stamped edit provenance, marks the transitive
+    // downstream closure stale (drift), re-derives the graph projection for
+    // the edited document, and broadcasts a reload hint. Refused while an
+    // execution is active or a Quorum edit is in flight (racing the agent's
+    // own update_artifact — or a parked conversation resuming over stale
+    // in-memory context — is never safe).
+    if (intentId && artifactId && httpMethod === 'PUT' && path?.endsWith('/content')) {
+      const data = body ? JSON.parse(body) : {};
+      if (typeof data.content !== 'string' || !data.content.trim()) {
+        return response(400, { error: 'content is required' });
+      }
+      const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
+      if (!records.meta || records.meta.projectId !== projectId) {
+        return response(404, { error: 'Intent not found' });
+      }
+      const blockReason = editBlockReason({
+        meta: records.meta,
+        quorumEdits: records.quorumEdits ?? [],
+      });
+      if (blockReason) {
+        return response(409, {
+          error:
+            blockReason === 'execution_active'
+              ? `Intent is ${records.meta.status} — wait for the stage to park or finish before editing artifacts`
+              : 'A Quorum edit is in progress for this intent — wait for it to finish',
+          code: blockReason,
+        });
+      }
+      const artifact = await fetchArtifactRow(g, intentId, artifactId);
+      if (!artifact) return response(404, { error: 'Artifact not found' });
+      if (artifact.supersededAt) {
+        return response(409, { error: 'Artifact is superseded — edit its replacement instead' });
+      }
+      const responder = getResponder(event);
+      // Closure BEFORE the write (root is excluded by construction either way).
+      const downstream = await fetchDownstreamClosure({ g, intentId, artifactId }).catch((err) => {
+        console.error('Downstream closure failed:', err.message);
+        return [];
+      });
+      const edit = await applyArtifactEdit({
+        g,
+        intentId,
+        artifactId,
+        content: data.content,
+        editedBy: responder.sub,
+        editedByName: responder.displayName,
+        origin: 'human',
+        editRef: `human:${responder.sub}`,
+      });
+      const staleMarked = await markArtifactsStale({
+        g,
+        intentId,
+        artifactIds: downstream.map((d) => d.id),
+        reason: `edit:${artifactId}:${edit.editedAt}`,
+      }).catch((err) => {
+        console.error('Stale marking failed:', err.message);
+        return [];
+      });
+      // Mid-run edit (the run is parked WAITING on a gate): the parked CLI
+      // conversation still holds the OLD document content. Record a steering
+      // row so the next deterministic injection point (this gate's resume or
+      // the next fresh stage start — docs/v2-steering.md) tells the agent to
+      // re-read the edited document instead of trusting stale context.
+      let steer = null;
+      if (records.meta.status === 'WAITING') {
+        steer = await store
+          .createSteering({
+            executionId: intentId,
+            kind: 'artifact-edit',
+            message: `The document "${artifact.title || artifactId}" (artifact id: ${artifactId}) was edited while this run was parked. Re-read it with get_artifact before continuing — its CURRENT content overrides anything you read earlier in this conversation.`,
+            createdBy: responder.sub,
+            createdByName: responder.displayName,
+          })
+          .catch((err) => {
+            console.error('Artifact-edit steering record failed:', err.message);
+            return null;
+          });
+        if (steer) {
+          await mirrorSteeringVertex({ g, intentId, steer }).catch((err) =>
+            console.error('Steering graph mirror failed:', err.message),
+          );
+        }
+      }
+      const summary = `${responder.displayName || 'Someone'} edited "${artifact.title || artifactId}"${
+        staleMarked.length
+          ? ` — ${staleMarked.length} downstream artifact(s) marked possibly stale`
+          : ''
+      }`;
+      await store
+        .appendEvent({
+          executionId: intentId,
+          type: 'v2.artifact.edited',
+          actor: responder.displayName || responder.sub,
+          summary,
+        })
+        .catch((err) => console.error('Edit event append failed:', err.message));
+      await broadcastToIntentChannel(intentId, {
+        action: 'agent.note',
+        intentId,
+        projectId,
+        noteType: 'v2.artifact.edited',
+        summary,
+      });
+      // Re-derive the fine-grained projection for the edited document so
+      // sections/items/citations stay truthful. Best-effort — the canonical
+      // content is already saved; a failed derive is picked up by the next
+      // stage-exit derive or the admin backfill.
+      let derived = false;
+      if (AGENTCORE_RUNTIME_ARN() && artifact.artifactType) {
+        try {
+          const res = await agentcore.send(
+            new InvokeAgentRuntimeCommand({
+              agentRuntimeArn: AGENTCORE_RUNTIME_ARN(),
+              runtimeSessionId: runtimeSessionIdFor(intentId),
+              contentType: 'application/json',
+              accept: 'application/json',
+              payload: Buffer.from(
+                JSON.stringify({
+                  command: 'derive-artifacts',
+                  projectId,
+                  intentId,
+                  executionId: intentId,
+                  artifactTypes: [artifact.artifactType],
+                  enrichment: records.meta.deriveEnrichment === 'llm' ? 'llm' : 'off',
+                  ...(records.meta.agentCli ? { requestedCli: records.meta.agentCli } : {}),
+                  ...(records.meta.cliModels ? { cliModels: records.meta.cliModels } : {}),
+                }),
+              ),
+            }),
+          );
+          const text = res.response ? await res.response.transformToString() : '';
+          derived = text ? JSON.parse(text).ok !== false : false;
+        } catch (err) {
+          console.error('[artifact-edit] derive dispatch failed:', err.message);
+        }
+      }
+      return response(200, {
+        artifactId,
+        editedAt: edit.editedAt,
+        staleMarked,
+        derived,
+        // Set when the run was parked: the correction the resumed agent will
+        // receive at the next deterministic injection point.
+        steering: steer ? mapSteering(steer) : null,
+      });
+    }
+
+    // POST .../artifacts/{artifactId}/verify — clear the drift marker: a human
+    // reviewed the artifact against the upstream edit and judged it still
+    // valid. Metadata-only, so it is allowed regardless of run state.
+    if (intentId && artifactId && httpMethod === 'POST' && path?.endsWith('/verify')) {
+      const data = body ? JSON.parse(body) : {};
+      const meta = await store.getExecution(intentId);
+      if (!meta || meta.projectId !== projectId) {
+        return response(404, { error: 'Intent not found' });
+      }
+      const artifact = await fetchArtifactRow(g, intentId, artifactId);
+      if (!artifact) return response(404, { error: 'Artifact not found' });
+      const responder = getResponder(event);
+      const result = await verifyArtifact({
+        g,
+        intentId,
+        artifactId,
+        verifiedBy: responder.sub,
+        verifiedByName: responder.displayName,
+        note: typeof data.note === 'string' ? data.note : '',
+      });
+      const summary = `${responder.displayName || 'Someone'} verified "${artifact.title || artifactId}" against the upstream edit`;
+      await store
+        .appendEvent({
+          executionId: intentId,
+          type: 'v2.artifact.verified',
+          actor: responder.displayName || responder.sub,
+          summary,
+        })
+        .catch((err) => console.error('Verify event append failed:', err.message));
+      await broadcastToIntentChannel(intentId, {
+        action: 'agent.note',
+        intentId,
+        projectId,
+        noteType: 'v2.artifact.verified',
+        summary,
+      });
+      return response(200, { artifactId, verifiedAt: result.verifiedAt });
+    }
+
+    // POST .../artifacts/{artifactId}/quorum-edit — start a Quorum-supported
+    // edit: the user describes the change; Quorum analyzes the downstream
+    // impact, proposes a per-artifact update plan (human-approved), then
+    // applies it. Driven by a durable orchestrator flow; this endpoint only
+    // records the request and hands off.
+    if (intentId && artifactId && httpMethod === 'POST' && path?.endsWith('/quorum-edit')) {
+      const data = body ? JSON.parse(body) : {};
+      const changeDescription =
+        typeof data.changeDescription === 'string' ? data.changeDescription.trim() : '';
+      if (!changeDescription) {
+        return response(400, { error: 'changeDescription is required' });
+      }
+      const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
+      if (!records.meta || records.meta.projectId !== projectId) {
+        return response(404, { error: 'Intent not found' });
+      }
+      const blockReason = editBlockReason({
+        meta: records.meta,
+        quorumEdits: records.quorumEdits ?? [],
+      });
+      if (blockReason) {
+        return response(409, {
+          error:
+            blockReason === 'execution_active'
+              ? `Intent is ${records.meta.status} — wait for the stage to park or finish before editing artifacts`
+              : 'A Quorum edit is already in progress for this intent',
+          code: blockReason,
+        });
+      }
+      const artifact = await fetchArtifactRow(g, intentId, artifactId);
+      if (!artifact) return response(404, { error: 'Artifact not found' });
+      if (artifact.supersededAt) {
+        return response(409, { error: 'Artifact is superseded — edit its replacement instead' });
+      }
+      if (!ORCHESTRATOR_FN()) {
+        return response(500, { error: 'V2_ORCHESTRATOR_FUNCTION not configured' });
+      }
+      const responder = getResponder(event);
+      const newEditId = `qe-${randomUUID()}`;
+      const row = await store.createQuorumEdit({
+        executionId: intentId,
+        editId: newEditId,
+        artifactId,
+        artifactType: artifact.artifactType,
+        artifactTitle: artifact.title,
+        changeDescription,
+        requestedBy: responder.sub,
+        requestedByName: responder.displayName,
+      });
+      const summary = `${responder.displayName || 'Someone'} asked Quorum to edit "${artifact.title || artifactId}"`;
+      await store
+        .appendEvent({
+          executionId: intentId,
+          type: 'v2.quorum_edit.requested',
+          actor: responder.displayName || responder.sub,
+          summary,
+        })
+        .catch((err) => console.error('Quorum edit event append failed:', err.message));
+      await broadcastToIntentChannel(intentId, {
+        action: 'agent.note',
+        intentId,
+        projectId,
+        noteType: 'v2.quorum_edit.updated',
+        summary,
+      });
+      try {
+        await invokeOrchestrator({
+          action: 'quorum-edit',
+          intentId,
+          executionId: intentId,
+          editId: newEditId,
+        });
+      } catch (err) {
+        // The hand-off never reached a live orchestrator — fail the session so
+        // it doesn't strand in PLANNING (which would block future edits).
+        await store
+          .updateQuorumEdit({
+            executionId: intentId,
+            editId: newEditId,
+            state: 'FAILED',
+            fields: { failureReason: 'orchestrator_dispatch_failed', completedAt: true },
+          })
+          .catch(() => {});
+        throw err;
+      }
+      return response(202, mapQuorumEdit(row));
+    }
+
+    // POST .../quorum-edits/{editId}/decision — approve or reject Quorum's
+    // update plan. Approve optionally narrows the plan to a subset of
+    // artifacts. CAS on AWAITING_APPROVAL (a double decision loses), then the
+    // suspended durable callback is completed — the same resume-by-callback
+    // pattern as gate answers.
+    if (intentId && editId && httpMethod === 'POST' && path?.endsWith('/decision')) {
+      const data = body ? JSON.parse(body) : {};
+      const decision =
+        data.decision === 'approve' ? 'approve' : data.decision === 'reject' ? 'reject' : null;
+      if (!decision) {
+        return response(400, { error: 'decision must be "approve" or "reject"' });
+      }
+      const meta = await store.getExecution(intentId);
+      if (!meta || meta.projectId !== projectId) {
+        return response(404, { error: 'Intent not found' });
+      }
+      const edit = await store.getQuorumEdit(intentId, editId);
+      if (!edit) return response(404, { error: 'Quorum edit not found' });
+      if (edit.state !== 'AWAITING_APPROVAL' || !edit.callbackId) {
+        return response(409, { error: `Quorum edit is ${edit.state}, not awaiting approval` });
+      }
+      const responder = getResponder(event);
+      // Only plan items can be approved — a fabricated id is dropped, never
+      // forwarded to the apply step.
+      const planIds = (edit.plan?.items ?? []).map((i) => i.artifactId);
+      const planIdSet = new Set(planIds);
+      const approvedArtifactIds =
+        decision === 'approve'
+          ? Array.isArray(data.approvedArtifactIds)
+            ? data.approvedArtifactIds.filter((id) => planIdSet.has(id))
+            : planIds
+          : [];
+      const updated = await store.updateQuorumEdit({
+        executionId: intentId,
+        editId,
+        state: decision === 'approve' ? 'APPLYING' : 'REJECTED',
+        fromStates: ['AWAITING_APPROVAL'],
+        fields: {
+          decidedBy: responder.sub,
+          decidedByName: responder.displayName,
+          decidedAt: true,
+          approvedArtifactIds,
+          ...(decision === 'reject' ? { completedAt: true } : {}),
+        },
+      });
+      if (!updated) {
+        return response(409, { error: 'Quorum edit was already decided' });
+      }
+      // Wake the suspended orchestrator with the decision.
+      await resumeDurableCallback(edit.callbackId, {
+        decision,
+        approvedArtifactIds,
+        decidedBy: responder.sub,
+        decidedByName: responder.displayName,
+      });
+      const summary = `${responder.displayName || 'Someone'} ${decision === 'approve' ? `approved Quorum's update plan (${approvedArtifactIds.length} artifact(s))` : "rejected Quorum's update plan"}`;
+      await store
+        .appendEvent({
+          executionId: intentId,
+          type: 'v2.quorum_edit.decided',
+          actor: responder.displayName || responder.sub,
+          summary,
+        })
+        .catch((err) => console.error('Quorum decision event append failed:', err.message));
+      await broadcastToIntentChannel(intentId, {
+        action: 'agent.note',
+        intentId,
+        projectId,
+        noteType: 'v2.quorum_edit.updated',
+        summary,
+      });
+      return response(200, mapQuorumEdit(updated));
+    }
+
     // POST /projects/{projectId}/intents/{intentId}/gates/{humanTaskId}/answer
     if (intentId && humanTaskId && httpMethod === 'POST' && path?.endsWith('/answer')) {
       const data = body ? JSON.parse(body) : {};
@@ -689,6 +1141,20 @@ export const handler = async (event) => {
       const meta = await store.getExecution(intentId);
       if (!meta || meta.projectId !== projectId) {
         return response(404, { error: 'Intent not found' });
+      }
+      // A live Quorum edit is mutating this intent's artifacts; answering the
+      // gate would resume the parked stage RIGHT INTO those writes. The run is
+      // already parked — waiting for the edit to finish costs nothing (mirror
+      // of the /start guard).
+      const answerBlockingEdit = activeQuorumEdit(
+        await store.listQuorumEdits(intentId).catch(() => []),
+      );
+      if (answerBlockingEdit) {
+        return response(409, {
+          error:
+            'A Quorum artifact edit is in progress — wait for it to finish (or reject its plan) before answering, so the resumed stage sees the final documents',
+          code: 'quorum_edit_active',
+        });
       }
       // Answer THIS specific gate (CAS on pending). D3: a stage can leave more
       // than one pending gate; answer the one addressed by the URL, never blindly
@@ -819,6 +1285,17 @@ export const handler = async (event) => {
       const STARTABLE = new Set(['DRAFT', 'FAILED', 'CREATED']);
       if (!STARTABLE.has(meta.status)) {
         return response(409, { error: `Intent is ${meta.status}, cannot start` });
+      }
+      // A live Quorum artifact edit is mutating this intent's artifacts —
+      // starting a run underneath it would race the apply step.
+      const liveQuorumEdit = activeQuorumEdit(
+        await store.listQuorumEdits(intentId).catch(() => []),
+      );
+      if (liveQuorumEdit) {
+        return response(409, {
+          error: 'A Quorum artifact edit is in progress — wait for it to finish before starting',
+          code: 'quorum_edit_active',
+        });
       }
       if (!meta.prompt) {
         return response(400, { error: 'Intent has no prompt; define it before starting' });
@@ -1316,6 +1793,9 @@ export const handler = async (event) => {
           timestamp: s.timestamp,
         })),
         artifacts,
+        // Quorum-supported artifact edit sessions (post-hoc document editing):
+        // plan approval + progress render from these rows.
+        quorumEdits: (records.quorumEdits ?? []).map(mapQuorumEdit),
         // Unit lanes (docs/v2-parallel.md WP4): the promoted UNITPLAN snapshot
         // + the live UNIT lane rows, so the UI can render the lane board and
         // attribute per-unit stage instances. Both null/empty pre-promotion.
