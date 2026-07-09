@@ -8,6 +8,7 @@
 import gremlin from 'gremlin';
 import { runOneShotPrompt } from '../cli/one-shot.js';
 import { closeGraphSource } from '../mcp/graph-writer.js';
+import { materializeKiroAgent, materializeMcpConfig } from '../stage-materializer.js';
 import { parseCliModels } from '../../shared/cli-models.js';
 
 const { cardinality } = gremlin.process;
@@ -17,6 +18,11 @@ const CONTEXT_LIMIT = 32 * 1024;
 const MAX_ARTIFACT_CONTENT = 12 * 1024;
 const MAX_MESSAGE_CONTENT = 2000;
 const MAX_RECENT_MESSAGES = 40;
+const quorumWorkspaceFor = (intentId, discussionId) =>
+  `/tmp/quorum/${String(intentId).replace(/[^A-Za-z0-9._-]/g, '_')}/${String(discussionId).replace(
+    /[^A-Za-z0-9._-]/g,
+    '_',
+  )}`;
 
 const COMMAND_INSTRUCTIONS = {
   summarize:
@@ -296,7 +302,10 @@ export const createDiscussionAssistStart = ({
   broadcast = async () => {},
   availableClis = [],
   oneShot = runOneShotPrompt,
+  materializeMcpConfigFn = materializeMcpConfig,
+  materializeKiroAgentFn = materializeKiroAgent,
   env = process.env,
+  mcpEntry = process.env.V2_MCP_ENTRY || new URL('../mcp/index.js', import.meta.url).pathname,
   busy = null,
   activeJobs = new Map(),
   log = (...args) => console.error('[discussion-assist-start]', ...args),
@@ -347,13 +356,27 @@ export const createDiscussionAssistStart = ({
           selectedMessageIds,
           requestedByName,
         });
+        const cwd = quorumWorkspaceFor(intentId, discussionId);
+        const scope = {
+          executionId: intentId,
+          intentId,
+          projectId,
+          stageInstanceId: null,
+          role: 'reader',
+        };
+        const [mcpConfigPath, agentName] = await Promise.all([
+          materializeMcpConfigFn({ workspaceDir: cwd, mcpEntry, scope, env }),
+          materializeKiroAgentFn({ workspaceDir: cwd, mcpEntry, scope, env }),
+        ]);
         const out = await oneShot({
           prompt,
           requestedCli,
           cliModels,
           availableClis,
           env,
-          cwd: '/tmp',
+          cwd,
+          mcpConfigPath,
+          agentName,
         });
         let message;
         if (out.ok) {

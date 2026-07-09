@@ -1783,6 +1783,7 @@ describe('DELETE /projects/{id}/intents/{intentId}', () => {
     // Intent-scoped realtime docs (+ one unrelated doc that must survive).
     yjsStore.set(`intent-presence-${intentId}`, {});
     yjsStore.set(`intent-sq-${intentId}-h1`, {});
+    yjsStore.set(`intent-review-${intentId}-h1`, {});
     yjsStore.set(`intent-discussion-${intentId}-d-${intentId}`, {});
     yjsStore.set('unrelated-doc', {});
     setStatus(intentId, { status: 'SUCCEEDED' });

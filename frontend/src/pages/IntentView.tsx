@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { simpleDiffStringWithCursor } from 'lib0/diff';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   intentsService,
@@ -12,7 +13,9 @@ import { INTENT_OUTPUT_KEY, useIntent } from '@/contexts/IntentContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProjectCache } from '@/hooks/useProjectsCache';
 import { useIntentGraph } from '@/hooks/useIntentGraph';
+import { useYjsDocument } from '@/hooks/useYjsDocument';
 import QuestionEditor from '@/components/QuestionEditor';
+import { CollaborativeTextarea } from '@/components/CollaborativeTextarea';
 import type { Question } from '@/services/questions';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { ArtifactViewer } from '@/components/intent/ArtifactViewer';
@@ -61,6 +64,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
 import { getTimeAgo } from '@/lib/timeAgo';
+import { generateColor } from '@/utils/colors';
 import {
   Dialog,
   DialogClose,
@@ -436,6 +440,7 @@ export default function IntentView() {
           detail={detail}
           projectId={projectId}
           intentId={intentId}
+          userName={userName}
           onAnswer={answerGate}
           onBack={() => navigate(`/project/${projectId}/intent/${intentId}`)}
         />
@@ -1207,11 +1212,74 @@ function ReviewStat({
   );
 }
 
+function useCollaborativeReviewFeedback({
+  projectId,
+  intentId,
+  humanTaskId,
+  userName,
+  enabled,
+}: {
+  projectId: string;
+  intentId: string;
+  humanTaskId: string;
+  userName: string;
+  enabled: boolean;
+}) {
+  const docId = enabled ? `intent-review-${intentId}-${humanTaskId}` : null;
+  const { doc, remoteUsers, setCursor } = useYjsDocument(
+    docId,
+    userName,
+    generateColor(userName || humanTaskId),
+    { intentId, projectId },
+  );
+  const [feedback, setFeedbackState] = useState('');
+
+  useEffect(() => {
+    setFeedbackState('');
+  }, [docId]);
+
+  useEffect(() => {
+    if (!doc || !docId) return;
+    const text = doc.getText('feedback');
+    const update = () => setFeedbackState(text.toString());
+    text.observe(update);
+    update();
+    return () => text.unobserve(update);
+  }, [doc, docId]);
+
+  const setFeedback = useCallback(
+    (value: string, cursorPos?: number) => {
+      if (!doc || !docId) {
+        setFeedbackState(value);
+        return;
+      }
+      const text = doc.getText('feedback');
+      const current = text.toString();
+      if (current === value) return;
+      const cursor = cursorPos ?? value.length;
+      const diff = simpleDiffStringWithCursor(current, value, cursor);
+      doc.transact(() => {
+        if (diff.remove > 0) text.delete(diff.index, diff.remove);
+        if (diff.insert) text.insert(diff.index, diff.insert);
+      });
+    },
+    [doc, docId],
+  );
+
+  const getFeedback = useCallback(
+    () => (doc && docId ? doc.getText('feedback').toString() : feedback),
+    [doc, docId, feedback],
+  );
+
+  return { feedback, setFeedback, getFeedback, remoteUsers, setCursor };
+}
+
 function StageReviewPanel({
   gate,
   detail,
   projectId,
   intentId,
+  userName,
   onAnswer,
   onBack,
 }: {
@@ -1219,10 +1287,10 @@ function StageReviewPanel({
   detail: IntentDetail;
   projectId: string;
   intentId: string;
+  userName: string;
   onAnswer: (gate: IntentGate, input: GateAnswer) => Promise<void>;
   onBack: () => void;
 }) {
-  const [feedback, setFeedback] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const graph = useIntentGraph(projectId, intentId);
   const stage = detail.stages.find((s) => s.stageInstanceId === gate.stageInstanceId) ?? null;
@@ -1241,12 +1309,22 @@ function StageReviewPanel({
     (artifact) => artifact.summaryGist || (artifact.summaryClaims?.length ?? 0) > 0,
   );
   const pending = gate.status === 'pending';
+  const reviewTitle = `Review ${stage?.stageId ?? gate.humanTaskId}`;
+  const { feedback, setFeedback, getFeedback, remoteUsers, setCursor } =
+    useCollaborativeReviewFeedback({
+      projectId,
+      intentId,
+      humanTaskId: gate.humanTaskId,
+      userName,
+      enabled: pending,
+    });
   const submit = async (decision: 'approve' | 'request-changes') => {
     setSubmitting(true);
     try {
+      const currentFeedback = getFeedback();
       await onAnswer(gate, {
         status: decision === 'approve' ? 'approved' : 'rejected',
-        answer: decision === 'approve' ? { decision } : { decision, feedback },
+        answer: decision === 'approve' ? { decision } : { decision, feedback: currentFeedback },
       });
       onBack();
     } finally {
@@ -1284,17 +1362,42 @@ function StageReviewPanel({
       </CardHeader>
       <CardContent className="space-y-4">
         <section className="space-y-3 rounded-lg border border-agent-waiting/30 bg-agent-waiting/5 p-4">
-          <h2 className="text-sm font-semibold">Decision</h2>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-sm font-semibold">Decision</h2>
+            <DiscussButton
+              entityType="review"
+              entityId={gate.humanTaskId}
+              entityTitle={reviewTitle}
+            />
+          </div>
           {pending ? (
             <div className="space-y-3">
               <Label htmlFor="review-feedback">Request changes feedback</Label>
-              <Textarea
+              <CollaborativeTextarea
                 id="review-feedback"
                 value={feedback}
-                onChange={(e) => setFeedback(e.target.value)}
+                onChange={setFeedback}
+                onCursorChange={setCursor}
+                remoteUsers={remoteUsers}
                 rows={4}
                 placeholder="What should the agent change before this stage can continue?"
+                className="flex min-h-[60px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={submitting}
               />
+              {remoteUsers.size > 0 && (
+                <div className="flex items-center gap-1">
+                  {Array.from(remoteUsers.values()).map((u, i) => (
+                    <div
+                      key={i}
+                      className="flex h-5 w-5 items-center justify-center rounded-full text-[10px] text-white"
+                      style={{ backgroundColor: u.color }}
+                    >
+                      {u.name?.charAt(0)}
+                    </div>
+                  ))}
+                  <span className="text-xs text-primary">collaborating</span>
+                </div>
+              )}
             </div>
           ) : (
             <div className="rounded-lg border bg-background p-3 text-sm text-muted-foreground">
@@ -1409,13 +1512,6 @@ function StageReviewPanel({
               </div>
             </AccordionTrigger>
             <AccordionContent className="space-y-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <DiscussButton
-                  entityType="intent"
-                  entityId={`${intentId}:gate:${gate.humanTaskId}`}
-                  entityTitle={`Review ${stage?.stageId ?? gate.humanTaskId}`}
-                />
-              </div>
               {reviewerRuns.length > 0 ? (
                 <div className="space-y-2 text-sm">
                   {reviewerRuns.map((run) => (

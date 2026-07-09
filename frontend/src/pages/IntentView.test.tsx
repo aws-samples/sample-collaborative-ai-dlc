@@ -3,6 +3,8 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 
+const yjsMock = vi.hoisted(() => ({ docs: new Map<string, unknown>() }));
+
 // Heavy leaf components are stubbed to simple markers — these tests exercise
 // IntentView's OWN rendering logic (DRAFT card, pipeline, gates, artifacts)
 // through a real IntentProvider (mocked services), not Yjs/realtime.
@@ -12,10 +14,39 @@ vi.mock('@/components/QuestionEditor', () => ({
   ),
 }));
 vi.mock('@/components/discussion/DiscussButton', () => ({
-  DiscussButton: ({ entityType }: { entityType: string }) => (
-    <button data-testid="discuss" data-entity={entityType} />
+  DiscussButton: ({
+    entityType,
+    entityId,
+    entityTitle,
+  }: {
+    entityType: string;
+    entityId?: string;
+    entityTitle?: string;
+  }) => (
+    <button
+      data-testid="discuss"
+      data-entity={entityType}
+      data-entity-id={entityId}
+      data-entity-title={entityTitle}
+    />
   ),
 }));
+vi.mock('@/hooks/useYjsDocument', async () => {
+  const Y = await import('yjs');
+  return {
+    useYjsDocument: (documentId: string | null) => {
+      if (!documentId) {
+        return { doc: null, synced: false, remoteUsers: new Map(), setCursor: vi.fn() };
+      }
+      let doc = yjsMock.docs.get(documentId);
+      if (!doc) {
+        doc = new Y.Doc();
+        yjsMock.docs.set(documentId, doc);
+      }
+      return { doc, synced: true, remoteUsers: new Map(), setCursor: vi.fn() };
+    },
+  };
+});
 vi.mock('@/hooks/useIntentEvents', () => ({ useIntentEvents: () => {} }));
 vi.mock('@/contexts/AuthContext', () => ({
   useAuth: () => ({ user: { displayName: 'U', email: 'u@x' } }),
@@ -111,6 +142,7 @@ describe('IntentView', () => {
     answerGate.mockReset();
     graph.mockReset().mockResolvedValue({ nodes: [], edges: [] });
     compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
+    yjsMock.docs.clear();
   });
 
   it('DRAFT renders the review card with a read-only prompt + Start button', async () => {
@@ -235,6 +267,12 @@ describe('IntentView', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Review stage' }));
     expect(await screen.findByText('Review stage stage-a')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Approve stage/i })).toBeInTheDocument();
+    const reviewDiscuss = screen
+      .getAllByTestId('discuss')
+      .find((b) => b.getAttribute('data-entity') === 'review');
+    expect(reviewDiscuss).toBeInTheDocument();
+    expect(reviewDiscuss).toHaveAttribute('data-entity-id', 'eg-validation-si-a-0-run1');
+    expect(reviewDiscuss).toHaveAttribute('data-entity-title', 'Review stage-a');
     const glance = screen.getByRole('button', { name: /At a glance/i });
     expect(glance).toHaveAttribute('aria-expanded', 'false');
     await userEvent.click(glance);
@@ -254,6 +292,45 @@ describe('IntentView', () => {
     expect(answerGate).toHaveBeenCalledWith('p1', 'i1', 'eg-validation-si-a-0-run1', {
       answer: { decision: 'approve' },
       status: 'approved',
+    });
+  });
+
+  it('submits the collaborative review feedback value when requesting changes', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'eg-validation-si-a-0-run1' }),
+      stages: [
+        { stageInstanceId: 'si-a', stageId: 'stage-a', state: 'WAITING_FOR_HUMAN', phase: 'build' },
+      ],
+      gates: [
+        {
+          humanTaskId: 'eg-validation-si-a-0-run1',
+          stageInstanceId: 'si-a',
+          unitSlug: null,
+          kind: 'validation',
+          status: 'pending',
+          prompt: 'Review stage stage-a.',
+          options: ['approve', 'request-changes'],
+          questions: null,
+          answer: null,
+          answeredBy: null,
+          answeredAt: null,
+          createdAt: null,
+        },
+      ],
+    });
+    answerGate.mockResolvedValue({});
+    renderAt('/project/p1/intent/i1/review/eg-validation-si-a-0-run1');
+
+    const feedback = await screen.findByLabelText('Request changes feedback');
+    await userEvent.type(feedback, 'Please tighten the acceptance criteria');
+    await userEvent.click(screen.getByRole('button', { name: 'Request changes' }));
+
+    expect(answerGate).toHaveBeenCalledWith('p1', 'i1', 'eg-validation-si-a-0-run1', {
+      answer: {
+        decision: 'request-changes',
+        feedback: 'Please tighten the acceptance criteria',
+      },
+      status: 'rejected',
     });
   });
 

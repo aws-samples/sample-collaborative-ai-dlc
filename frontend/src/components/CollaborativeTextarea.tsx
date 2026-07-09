@@ -2,6 +2,7 @@ import { useRef, useEffect, useState, useCallback } from 'react';
 import type { AwarenessUser } from '../hooks/useYjsDocument';
 
 interface Props {
+  id?: string;
   value: string;
   onChange: (value: string, cursorPos: number) => void;
   onCursorChange: (index: number, length: number) => void;
@@ -17,6 +18,7 @@ interface Props {
 }
 
 export function CollaborativeTextarea({
+  id,
   value,
   onChange,
   onCursorChange,
@@ -101,6 +103,7 @@ export function CollaborativeTextarea({
   return (
     <div className="relative">
       <textarea
+        id={id}
         ref={textareaRef}
         value={value}
         onChange={handleChange}

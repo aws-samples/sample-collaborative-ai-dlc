@@ -1,13 +1,14 @@
 // One-shot CLI prompt — run a single bounded prompt through an ALREADY
-// CONFIGURED agent CLI (claude/kiro) and capture the text answer. No MCP
-// server, no session persistence, no workspace mutation: this is the
-// inference path for small machine-to-machine calls like derive-time
-// artifact enrichment, reusing the exact CLI + auth + model selection the
-// stage runs use (no separate LLM integration to configure or secure).
+// CONFIGURED agent CLI (claude/kiro) and capture the text answer. MCP is
+// caller-controlled: derive-time enrichment passes no tool surface; Quorum
+// passes a read-only MCP config. There is no stage session persistence or
+// workspace mutation: this is the inference path for small machine-to-machine
+// calls, reusing the exact CLI + auth + model selection the stage runs use (no
+// separate LLM integration to configure or secure).
 //
 // Composition of existing pieces:
 //   selectCli (driver preference) → resolveStageModel (Admin/project model
-//   knobs) → driver.buildInvocation (argv, WITHOUT an mcp-config) →
+//   knobs) → driver.buildInvocation (argv, optionally with an mcp-config) →
 //   captureChild (spawn + capture stdout/stderr).
 //
 // Contract: never throws. Resolves
@@ -101,6 +102,8 @@ export const runOneShotPrompt = async ({
   availableClis = [],
   env = process.env,
   cwd = '/tmp',
+  mcpConfigPath = null,
+  agentName = null,
   timeoutMs = DEFAULT_ONE_SHOT_TIMEOUT_MS,
   spawnFn,
   restoreKiroStore = defaultRestoreKiroStore,
@@ -111,7 +114,7 @@ export const runOneShotPrompt = async ({
 
   const model = resolveStageModel({ cliModels, agentBlock: null, cli, env });
   const driver = getDriver(cli);
-  const invocation = driver.buildInvocation({ prompt, model });
+  const invocation = driver.buildInvocation({ prompt, model, mcpConfigPath, agentName });
   // Kiro's SQLite conversation store: bracket exactly like resolve-conflict —
   // restore (mount → local) before the spawn so we never run against a stale
   // local store after a microVM reap, persist after so lane conversations the

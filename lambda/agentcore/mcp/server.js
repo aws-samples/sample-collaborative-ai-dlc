@@ -224,9 +224,11 @@ export const AUTHOR_TOOLS = [
 
 export const REVIEWER_TOOLS = [...READ_TOOLS, 'collect_metric', 'submit_review'];
 
-// The handler subset for a given role. `reviewer` → read-only; `author` → all.
+// The handler subset for a given role. `reader` → read-only; `reviewer` adds
+// review verdict/metrics; `author` → all.
 export const handlersForRole = (allHandlers, role) => {
-  const names = role === 'reviewer' ? REVIEWER_TOOLS : AUTHOR_TOOLS;
+  const names =
+    role === 'reader' ? READ_TOOLS : role === 'reviewer' ? REVIEWER_TOOLS : AUTHOR_TOOLS;
   return Object.fromEntries(names.map((n) => [n, allHandlers[n]]));
 };
 
@@ -421,7 +423,8 @@ const traceHandler = (name, fn, { enabled }) => {
 // is wrapped in a stderr trace (see traceHandler) unless env disables it.
 export const registerTools = ({ server, handlers, role, z, env = process.env }) => {
   const schemas = toolSchemas(z);
-  const names = role === 'reviewer' ? REVIEWER_TOOLS : AUTHOR_TOOLS;
+  const names =
+    role === 'reader' ? READ_TOOLS : role === 'reviewer' ? REVIEWER_TOOLS : AUTHOR_TOOLS;
   const enabled = env.V2_MCP_TRACE !== 'off';
   for (const name of names) {
     const { description, shape } = schemas[name];

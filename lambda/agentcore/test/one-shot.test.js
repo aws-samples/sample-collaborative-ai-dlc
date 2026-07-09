@@ -98,18 +98,41 @@ describe('runOneShotPrompt', () => {
     expect(argv.args[argv.args.indexOf('--model') + 1]).toBe('us.anthropic.claude-haiku-4-5');
   });
 
+  it('passes an optional claude mcp-config through to the driver', async () => {
+    let argv;
+    const spawnFn = vi.fn((command, args) => {
+      argv = { command, args };
+      return fakeChild({ stdout: '{"type":"result","result":"ok"}' });
+    });
+    const out = await runOneShotPrompt({
+      prompt: 'review',
+      availableClis: ['claude'],
+      mcpConfigPath: '/tmp/quorum/.aidlc/mcp-config.json',
+      spawnFn,
+    });
+
+    expect(out).toMatchObject({ ok: true, text: 'ok' });
+    expect(argv.args).toContain('--mcp-config');
+    expect(argv.args[argv.args.indexOf('--mcp-config') + 1]).toBe(
+      '/tmp/quorum/.aidlc/mcp-config.json',
+    );
+  });
+
   it('runs kiro, strips ANSI from stdout, and captures the credit footer', async () => {
-    const spawnFn = vi.fn(() =>
-      fakeChild({
+    let argv;
+    const spawnFn = vi.fn((command, args) => {
+      argv = { command, args };
+      return fakeChild({
         stdout: '\u001B[38;5;141mThe answer\u001B[0m {"gist":"k"}',
         stderr: ' ▸ Credits: 0.12 • Time: 1s',
-      }),
-    );
+      });
+    });
     const restoreKiroStore = vi.fn(async () => true);
     const persistKiroStore = vi.fn(async () => true);
     const out = await runOneShotPrompt({
       prompt: 'p',
       availableClis: ['kiro'],
+      agentName: 'aidlc',
       spawnFn,
       restoreKiroStore,
       persistKiroStore,
@@ -119,6 +142,8 @@ describe('runOneShotPrompt', () => {
     expect(out.text).toContain('{"gist":"k"}');
     expect(out.text).not.toContain('\u001B');
     expect(out.metrics).toEqual({ credits: 0.12 });
+    expect(argv.args).toContain('--agent');
+    expect(argv.args[argv.args.indexOf('--agent') + 1]).toBe('aidlc');
     // Kiro's SQLite store is bracketed exactly like resolve-conflict.
     expect(restoreKiroStore).toHaveBeenCalledOnce();
     expect(persistKiroStore).toHaveBeenCalledOnce();

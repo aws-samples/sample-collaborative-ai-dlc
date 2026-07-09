@@ -248,6 +248,7 @@ const main = async () => {
     broadcast,
     availableClis,
     env: process.env,
+    mcpEntry,
     busy,
   });
 

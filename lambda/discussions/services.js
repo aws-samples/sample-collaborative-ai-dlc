@@ -125,7 +125,8 @@ export const getSecret = async () => {
   return cachedSecret;
 };
 
-const discussionSessionIdFor = (intentId) => `aidlc-discuss-${intentId}`.padEnd(33, '0');
+const discussionSessionIdFor = (intentId, discussionId) =>
+  `aidlc-discuss-${intentId}-${discussionId}`.padEnd(33, '0');
 
 export const invokeDiscussionAssist = async ({ intentId, payload }) => {
   const runtimeArn = process.env.AGENTCORE_RUNTIME_ARN || '';
@@ -133,7 +134,7 @@ export const invokeDiscussionAssist = async ({ intentId, payload }) => {
   const res = await agentcore.send(
     new InvokeAgentRuntimeCommand({
       agentRuntimeArn: runtimeArn,
-      runtimeSessionId: discussionSessionIdFor(intentId),
+      runtimeSessionId: discussionSessionIdFor(intentId, payload.discussionId),
       contentType: 'application/json',
       accept: 'application/json',
       payload: Buffer.from(JSON.stringify(payload)),

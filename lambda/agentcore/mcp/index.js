@@ -5,7 +5,7 @@
 //
 // ENV (set by the container's run-stage / reviewer path, never by the agent):
 //   V2_EXECUTION_ID, V2_INTENT_ID, V2_PROJECT_ID, V2_STAGE_INSTANCE_ID
-//   V2_MCP_ROLE          author | reviewer   (reviewer → read-only tools)
+//   V2_MCP_ROLE          author | reviewer | reader
 //   V2_PROCESS_TABLE, NEPTUNE_ENDPOINT, CONNECTIONS_TABLE, WEBSOCKET_ENDPOINT
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -34,7 +34,8 @@ const scopeFromEnv = (env = process.env) => ({
 
 export const startMcpServer = async ({ env = process.env } = {}) => {
   const scope = scopeFromEnv(env);
-  const role = env.V2_MCP_ROLE === 'reviewer' ? 'reviewer' : 'author';
+  const role =
+    env.V2_MCP_ROLE === 'reviewer' || env.V2_MCP_ROLE === 'reader' ? env.V2_MCP_ROLE : 'author';
 
   const graph = createGraphManager({
     openGraph,

@@ -26,6 +26,9 @@ export const SPRINT_ANCHOR_LABELS = {
 export const INTENT_ANCHOR_LABELS = {
   // The whole-intent thread self-anchors on the Intent vertex.
   intent: 'Intent',
+  // A whole-stage-review thread is keyed by the humanTaskId but anchored on the
+  // Intent root; human validation gates are not graph vertices.
+  review: 'Intent',
   // A thread per produced artifact (Intent --CONTAINS--> Artifact).
   artifact: 'Artifact',
   // A thread per agent question (Intent --CONTAINS--> Question) — the Neptune
@@ -64,6 +67,7 @@ export const intentScope = (intentId, projectId) => ({
   anchorLabels: INTENT_ANCHOR_LABELS,
   entityTypes: Object.keys(INTENT_ANCHOR_LABELS),
   selfTypes: ['intent'],
+  rootAnchorTypes: ['review'],
   // v2 has no Sprint TimelineEvent; process events live in the v2 process table.
   timeline: false,
   projectId,

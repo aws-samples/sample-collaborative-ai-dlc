@@ -138,9 +138,10 @@ const deleteIntentCascade = async ({
   }
 
   // Collect the derived Yjs document ids BEFORE their sources are deleted:
-  // gate editors (intent-sq-<id>-<humanTaskId>, from HUMAN# rows), discussion
-  // threads (intent-discussion-<id>-<discussionId>, from the Neptune Discussion
-  // vertices) and the presence doc.
+  // gate editors (intent-sq-<id>-<humanTaskId>, from HUMAN# rows), stage review
+  // feedback docs (intent-review-<id>-<humanTaskId>), discussion threads
+  // (intent-discussion-<id>-<discussionId>, from the Neptune Discussion vertices)
+  // and the presence doc.
   const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
   const discussionIds = await g
     .V()
@@ -152,6 +153,7 @@ const deleteIntentCascade = async ({
   const yjsDocIds = [
     `intent-presence-${intentId}`,
     ...(records.humanTasks ?? []).map((h) => `intent-sq-${intentId}-${h.humanTaskId}`),
+    ...(records.humanTasks ?? []).map((h) => `intent-review-${intentId}-${h.humanTaskId}`),
     ...discussionIds.map((d) => `intent-discussion-${intentId}-${d}`),
   ];
 

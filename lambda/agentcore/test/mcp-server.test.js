@@ -3,6 +3,7 @@ import {
   buildToolHandlers,
   handlersForRole,
   registerTools,
+  READ_TOOLS,
   REVIEWER_TOOLS,
   AUTHOR_TOOLS,
   ok,
@@ -288,6 +289,15 @@ describe('buildToolHandlers — routing + envelopes', () => {
 });
 
 describe('role gating', () => {
+  it('reader gets read-only graph and knowledge tools only', () => {
+    const h = buildToolHandlers({ writer: stubWriter(), bridge: stubBridge() });
+    const reader = handlersForRole(h, 'reader');
+    expect(Object.keys(reader).toSorted()).toEqual([...READ_TOOLS].toSorted());
+    expect(reader.create_artifact).toBeUndefined();
+    expect(reader.collect_metric).toBeUndefined();
+    expect(reader.submit_review).toBeUndefined();
+  });
+
   it('reviewer gets the clean-room subset only — reads, metrics, and verdict submit', () => {
     const h = buildToolHandlers({ writer: stubWriter(), bridge: stubBridge() });
     const reviewer = handlersForRole(h, 'reviewer');
@@ -326,7 +336,15 @@ describe('registerTools', () => {
     record: () => ({ optional: () => ({}) }),
   };
 
-  it('registers exactly the read tools for a reviewer', () => {
+  it('registers exactly the read tools for a reader', () => {
+    const registered = [];
+    const server = { tool: (name) => registered.push(name) };
+    const names = registerTools({ server, handlers: {}, role: 'reader', z: fakeZod });
+    expect(registered.toSorted()).toEqual([...READ_TOOLS].toSorted());
+    expect(names).toEqual(READ_TOOLS);
+  });
+
+  it('registers exactly the reviewer tools for a reviewer', () => {
     const registered = [];
     const server = { tool: (name) => registered.push(name) };
     const names = registerTools({ server, handlers: {}, role: 'reviewer', z: fakeZod });

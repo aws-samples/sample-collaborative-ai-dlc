@@ -42,7 +42,7 @@ const PROJECT_DOC_RE = new RegExp(`^inception-(${UUID})$`);
 const SPRINT_CHANNEL_RE = new RegExp(`^sprint:(${UUID})$`);
 // V2 intent realtime — mirrors lambda/shared/realtime-token.js. Intent docs use
 // `intent-`-prefixed names so they don't collide with the v1 sprint doc shapes.
-const INTENT_DOC_RE = new RegExp(`^intent-(?:sq|discussion|presence)-(${UUID})(?:-.+)?$`);
+const INTENT_DOC_RE = new RegExp(`^intent-(?:sq|discussion|presence|review)-(${UUID})(?:-.+)?$`);
 const INTENT_CHANNEL_RE = new RegExp(`^intent:(${UUID})$`);
 
 /**

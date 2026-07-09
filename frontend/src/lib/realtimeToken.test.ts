@@ -32,6 +32,7 @@ describe('scope extractors (client mirror of the backend)', () => {
     expect(scopeTargetForYjsDoc(`discussion-${UUID}-d1`)).toEqual({ sprintId: UUID });
     expect(scopeTargetForYjsDoc(`inception-${UUID}`)).toEqual({ projectId: UUID });
     expect(scopeTargetForYjsDoc(`intent-sq-${UUID}-q1`)).toBeNull();
+    expect(scopeTargetForYjsDoc(`intent-review-${UUID}-h1`)).toBeNull();
   });
 
   it('isIntentDoc / isIntentChannel recognize the intent shapes', () => {
@@ -39,6 +40,7 @@ describe('scope extractors (client mirror of the backend)', () => {
     expect(isIntentChannel(`sprint:${UUID}`)).toBeNull();
     expect(isIntentDoc(`intent-discussion-${UUID}-d1`)).toBe(UUID);
     expect(isIntentDoc(`intent-sq-${UUID}-q1`)).toBe(UUID);
+    expect(isIntentDoc(`intent-review-${UUID}-h1`)).toBe(UUID);
     expect(isIntentDoc(`discussion-${UUID}-d1`)).toBeNull();
   });
 });

@@ -140,6 +140,7 @@ const verifyRealtimeAccess = ({ token, secret, requiredScope, sub, now = Date.no
 //   review-{sprintId}-{artifactId|"pending"}  useCollaborativeArtifact.ts
 //   discussion-{sprintId}-{discussionId}      (added by the discussions feature)
 //   inception-{projectId}                     useCollaborativeInception.ts
+//   intent-review-{intentId}-{humanTaskId}    IntentView.tsx stage review
 //
 // App-WS documentId formats:
 //   sprint:{sprintId}   useSprintEvents.ts / useObservabilityEvents.ts
@@ -158,7 +159,9 @@ const PROJECT_CHANNEL_RE = new RegExp(`^${UUID_PATTERN}$`);
 // use intent-specific prefixes (`intent-sq-…`, `intent-discussion-…`) so the
 // extractor is unambiguous — sprintIds and intentIds are both bare UUIDs, so the
 // shared v1 prefixes (`sq-`, `discussion-`) can't be reused without collision.
-const INTENT_DOC_RE = new RegExp(`^intent-(?:sq|discussion|presence)-(${UUID_PATTERN})(?:-.+)?$`);
+const INTENT_DOC_RE = new RegExp(
+  `^intent-(?:sq|discussion|presence|review)-(${UUID_PATTERN})(?:-.+)?$`,
+);
 const INTENT_CHANNEL_RE = new RegExp(`^intent:(${UUID_PATTERN})$`);
 
 /**

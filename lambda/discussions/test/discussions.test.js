@@ -1428,6 +1428,60 @@ describe('intent-scoped discussions', () => {
     expect(res.statusCode).toBe(404);
   });
 
+  it('creates separate review-scoped threads per human validation gate id', async () => {
+    const { projectId, intentId } = await seedIntent();
+
+    const first = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'review', entityId: 'ht-review-1', entityTitle: 'Review stage-a' },
+    });
+    expect(first.statusCode).toBe(200);
+    expect(json(first)).toMatchObject({
+      entityType: 'review',
+      entityId: 'ht-review-1',
+      entityTitle: 'Review stage-a',
+    });
+
+    const second = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'review', entityId: 'ht-review-2', entityTitle: 'Review stage-b' },
+    });
+    expect(second.statusCode).toBe(200);
+    expect(json(second).id).not.toBe(json(first).id);
+
+    const again = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'review', entityId: 'ht-review-1', entityTitle: 'Review stage-a' },
+    });
+    expect(again.statusCode).toBe(200);
+    expect(json(again).id).toBe(json(first).id);
+
+    const messageId = 'dm-review-aaaaaaaa';
+    const posted = await call('POST', intentPath('/discussions/{discussionId}/messages'), {
+      pathParameters: { projectId, intentId, discussionId: json(first).id },
+      body: { id: messageId, content: 'Review feedback checkpoint' },
+    });
+    expect(posted.statusCode).toBe(201);
+
+    const messages = await call('GET', intentPath('/discussions/{discussionId}/messages'), {
+      pathParameters: { projectId, intentId, discussionId: json(first).id },
+    });
+    expect(messages.statusCode).toBe(200);
+    expect(json(messages).messages.map((m) => m.content)).toContain('Review feedback checkpoint');
+
+    const list = await call('GET', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+    });
+    expect(json(list).filter((d) => d.entityType === 'review')).toHaveLength(2);
+
+    const search = await call('GET', intentPath('/discussions/search'), {
+      pathParameters: { projectId, intentId },
+      query: { q: 'checkpoint', entityType: 'review' },
+    });
+    expect(search.statusCode).toBe(200);
+    expect(json(search).results[0].discussion.id).toBe(json(first).id);
+  });
+
   it('rejects a sprint entityType under an intent scope', async () => {
     const { projectId, intentId } = await seedIntent();
     const res = await call('POST', intentPath('/discussions'), {
@@ -1492,7 +1546,9 @@ describe('intent-scoped discussions', () => {
     });
 
     const invoke = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input;
-    expect(invoke.runtimeSessionId.startsWith(`aidlc-discuss-${intentId}`)).toBe(true);
+    expect(invoke.runtimeSessionId.startsWith(`aidlc-discuss-${intentId}-${created.id}`)).toBe(
+      true,
+    );
     expect(invoke.runtimeSessionId.length).toBeGreaterThanOrEqual(33);
     const payload = JSON.parse(Buffer.from(invoke.payload).toString('utf8'));
     expect(payload).toMatchObject({

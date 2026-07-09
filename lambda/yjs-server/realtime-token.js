@@ -92,7 +92,9 @@ const PROJECT_DOC_RE = new RegExp(`^inception-(${UUID_PATTERN})$`);
 const SPRINT_CHANNEL_RE = new RegExp(`^sprint:(${UUID_PATTERN})$`);
 const PROJECT_CHANNEL_RE = new RegExp(`^${UUID_PATTERN}$`);
 // V2 intent realtime — keep in sync with lambda/shared/realtime-token.js.
-const INTENT_DOC_RE = new RegExp(`^intent-(?:sq|discussion|presence)-(${UUID_PATTERN})(?:-.+)?$`);
+const INTENT_DOC_RE = new RegExp(
+  `^intent-(?:sq|discussion|presence|review)-(${UUID_PATTERN})(?:-.+)?$`,
+);
 const INTENT_CHANNEL_RE = new RegExp(`^intent:(${UUID_PATTERN})$`);
 
 export const requiredScopeForYjsDoc = (docName) => {

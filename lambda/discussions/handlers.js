@@ -229,9 +229,11 @@ export const getOrCreateDiscussion = async (event, res) => {
 
       const id = `disc-${randomUUID()}`;
       const createdAt = new Date().toISOString();
-      const entityTitle =
-        (await query((g) => fetchAnchorTitle(g, anchorLabel, entityId, scope))) ||
-        String(body.entityTitle || '');
+      const fetchedTitle =
+        entityType === 'review'
+          ? ''
+          : await query((g) => fetchAnchorTitle(g, anchorLabel, entityId, scope));
+      const entityTitle = fetchedTitle || String(body.entityTitle || '');
 
       await query((g) =>
         createDiscussionVertex(g, {

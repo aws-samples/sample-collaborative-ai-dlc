@@ -76,6 +76,9 @@ const scopeAnchor = (traversal, scope, anchorLabel) =>
     ? traversal.has('intent_id', scope.rootId)
     : traversal;
 
+const anchorVertexIdFor = (scope, entityType, entityId) =>
+  scope?.rootAnchorTypes?.includes(entityType) ? scope.rootId : entityId;
+
 export const findDiscussionByAnchor = async (
   g,
   anchorLabel,
@@ -83,10 +86,12 @@ export const findDiscussionByAnchor = async (
   entityType,
   scope = null,
 ) => {
-  const r = await scopeAnchor(g.V().has(anchorLabel, 'id', entityId), scope, anchorLabel)
+  const anchorVertexId = anchorVertexIdFor(scope, entityType, entityId);
+  const r = await scopeAnchor(g.V().has(anchorLabel, 'id', anchorVertexId), scope, anchorLabel)
     .in_('DISCUSSES')
     .hasLabel('Discussion')
     .has('entity_type', entityType)
+    .has('entity_id', entityId)
     .order()
     .by('created_at', order.asc)
     .limit(1)
@@ -107,6 +112,7 @@ export const findDiscussionByAnchor = async (
 export const anchorExistsInScope = async (g, scope, entityType, entityId) => {
   if (scope.kind === 'intent') {
     if (entityType === 'intent') return entityId === scope.rootId;
+    if (scope.rootAnchorTypes?.includes(entityType)) return Boolean(entityId);
     if (entityType === 'artifact' || entityType === 'question') {
       return g
         .V()
@@ -144,13 +150,19 @@ export const createDiscussionVertex = async (
   { id, scope, entityType, entityId, entityTitle, createdAt, sub, displayName },
 ) => {
   const anchorLabel = scope.anchorLabels[entityType];
+  const anchorVertexId = anchorVertexIdFor(scope, entityType, entityId);
   // The Discussion vertex carries the scope-root id under its scope-specific
   // property (sprint_id | intent_id) AND hangs off the root via HAS_DISCUSSION,
   // plus a DISCUSSES edge to the concrete anchor. Sprint scope reproduces the
   // original graph exactly. The anchor bind is intent-scoped for artifacts
   // (scopeAnchor) so a same-id artifact in another intent is never targeted.
   await scopeAnchor(
-    g.V().has(scope.rootLabel, 'id', scope.rootId).as('s').V().has(anchorLabel, 'id', entityId),
+    g
+      .V()
+      .has(scope.rootLabel, 'id', scope.rootId)
+      .as('s')
+      .V()
+      .has(anchorLabel, 'id', anchorVertexId),
     scope,
     anchorLabel,
   )
