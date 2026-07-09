@@ -225,8 +225,20 @@ export const fetchMessageInDiscussion = async (g, discussionId, messageId) => {
   return r.done ? null : r.value;
 };
 
+export const fetchMessageByRequestId = async (g, discussionId, requestId) => {
+  const r = await g
+    .V()
+    .has('Discussion', 'id', discussionId)
+    .out('HAS_MESSAGE')
+    .hasLabel('DiscussionMessage')
+    .has('request_id', requestId)
+    .valueMap()
+    .next();
+  return r.done ? null : r.value;
+};
+
 export const createMessageVertex = async (g, { discussionId, scope, message }) => {
-  await g
+  let t = g
     .V()
     .has('Discussion', 'id', discussionId)
     .as('d')
@@ -235,18 +247,39 @@ export const createMessageVertex = async (g, { discussionId, scope, message }) =
     .property('content', message.content)
     .property('author_id', message.authorId)
     .property('author_name', message.authorName)
-    .property('author_type', 'user')
+    .property('author_type', message.authorType || 'user')
     .property('mentions', JSON.stringify(message.mentions))
     .property('created_at', message.createdAt)
     .property('updated_at', message.updatedAt)
     .property('discussion_id', discussionId)
-    .property(scope.idProp, scope.rootId)
+    .property(scope.idProp, scope.rootId);
+  if (message.requestId) t = t.property('request_id', message.requestId);
+  if (message.command) t = t.property('command', message.command);
+  if (message.requestedBy) t = t.property('requested_by', message.requestedBy);
+  if (message.requestedByName) t = t.property('requested_by_name', message.requestedByName);
+  if (message.assistStatus) t = t.property('assist_status', message.assistStatus);
+  await t
     .as('m')
     .addE('HAS_MESSAGE')
     .from_('d')
     .to('m')
     .select('d')
     .property(cardinality.single, 'last_message_at', message.createdAt)
+    .next();
+};
+
+export const updateAssistMessageVertex = async (
+  g,
+  { discussionId, scope, messageId, content, assistStatus, updatedAt },
+) => {
+  await g
+    .V()
+    .has('DiscussionMessage', 'id', messageId)
+    .has('discussion_id', discussionId)
+    .has(scope.idProp, scope.rootId)
+    .property(cardinality.single, 'content', content)
+    .property(cardinality.single, 'assist_status', assistStatus)
+    .property(cardinality.single, 'updated_at', updatedAt)
     .next();
 };
 

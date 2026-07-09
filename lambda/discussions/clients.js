@@ -7,6 +7,7 @@
 import gremlin from 'gremlin';
 import { create } from 'neptune-lambda-client';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { BedrockAgentCoreClient } from '@aws-sdk/client-bedrock-agentcore';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { SSMClient } from '@aws-sdk/client-ssm';
 
@@ -36,6 +37,7 @@ export const { query, close } = create(
 
 export const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 export const ssm = new SSMClient();
+export const agentcore = new BedrockAgentCoreClient({});
 
 export const locksTable = () => process.env.LOCKS_TABLE;
 export const readStateTable = () => process.env.READ_STATE_TABLE;

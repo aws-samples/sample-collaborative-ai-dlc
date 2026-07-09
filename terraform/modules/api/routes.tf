@@ -1207,7 +1207,7 @@ resource "aws_lambda_permission" "intents" {
 # /projects/{projectId}/intents/{intentId}/discussions* — intent-scoped
 # discussion threads, served by the (now scope-neutral) discussions Lambda.
 # Mirrors the sprint discussion routes; the handler resolves the scope from the
-# path params. Assist is sprint-only (the handler 400s for intents).
+# path params. Quorum assist is intent-only and lives under each discussion.
 # =============================================================================
 
 resource "aws_api_gateway_resource" "intent_discussions" {
@@ -1252,6 +1252,12 @@ resource "aws_api_gateway_resource" "intent_discussion_read" {
   path_part   = "read"
 }
 
+resource "aws_api_gateway_resource" "intent_discussion_assist" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent_discussion.id
+  path_part   = "assist"
+}
+
 locals {
   intent_discussion_routes = {
     list_get      = { resource = aws_api_gateway_resource.intent_discussions.id, method = "GET" }
@@ -1262,6 +1268,7 @@ locals {
     messages_get  = { resource = aws_api_gateway_resource.intent_discussion_messages.id, method = "GET" }
     messages_post = { resource = aws_api_gateway_resource.intent_discussion_messages.id, method = "POST" }
     redact_post   = { resource = aws_api_gateway_resource.intent_discussion_message_redact.id, method = "POST" }
+    assist_post   = { resource = aws_api_gateway_resource.intent_discussion_assist.id, method = "POST" }
   }
 }
 
@@ -1318,6 +1325,12 @@ module "cors_intent_discussion_read" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.intent_discussion_read.id
+}
+
+module "cors_intent_discussion_assist" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_discussion_assist.id
 }
 
 # The discussions Lambda already holds a broad ($API/*/*) invoke permission for

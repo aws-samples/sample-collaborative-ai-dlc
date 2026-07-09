@@ -7,9 +7,10 @@ import {
 } from '@aws-sdk/client-apigatewaymanagementapi';
 import { QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
+import { InvokeAgentRuntimeCommand } from '@aws-sdk/client-bedrock-agentcore';
 import { isTokenLive } from '../shared/realtime-token.js';
 import { fetchMembershipRole } from '../shared/trackers.js';
-import { ddb, ssm, query } from './clients.js';
+import { agentcore, ddb, ssm, query } from './clients.js';
 import { fetchProjectIdForSprint, fetchProjectIdForIntent } from './data-access.js';
 
 // ─── Authorization ───
@@ -123,3 +124,23 @@ export const getSecret = async () => {
   if (!cachedSecret) throw new Error(`SSM parameter ${paramName} is empty`);
   return cachedSecret;
 };
+
+const discussionSessionIdFor = (intentId) => `aidlc-discuss-${intentId}`.padEnd(33, '0');
+
+export const invokeDiscussionAssist = async ({ intentId, payload }) => {
+  const runtimeArn = process.env.AGENTCORE_RUNTIME_ARN || '';
+  if (!runtimeArn) throw new Error('AGENTCORE_RUNTIME_ARN is not configured');
+  const res = await agentcore.send(
+    new InvokeAgentRuntimeCommand({
+      agentRuntimeArn: runtimeArn,
+      runtimeSessionId: discussionSessionIdFor(intentId),
+      contentType: 'application/json',
+      accept: 'application/json',
+      payload: Buffer.from(JSON.stringify(payload)),
+    }),
+  );
+  const text = res.response ? await res.response.transformToString() : '';
+  return text ? JSON.parse(text) : {};
+};
+
+export { discussionSessionIdFor };

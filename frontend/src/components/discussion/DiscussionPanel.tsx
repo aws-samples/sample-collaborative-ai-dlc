@@ -1,8 +1,20 @@
 import { useEffect, useRef, useState } from 'react';
+import type React from 'react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Loader2, CheckCircle2, RotateCcw, ArrowLeft, AlertTriangle, X } from 'lucide-react';
+import {
+  Loader2,
+  CheckCircle2,
+  RotateCcw,
+  ArrowLeft,
+  AlertTriangle,
+  X,
+  ListChecks,
+  MessageCircleQuestion,
+  Lightbulb,
+} from 'lucide-react';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useAuth } from '@/contexts/AuthContext';
 import { useDiscussion } from '@/hooks/useDiscussion';
 import { discussionsService } from '@/services/discussions';
@@ -67,6 +79,7 @@ export function DiscussionPanel() {
     loadOlder,
     sendMessage,
     retryMessage,
+    requestAssist,
     setTyping,
     typingUsers,
     remoteUsers,
@@ -153,6 +166,19 @@ export function DiscussionPanel() {
           : "Couldn't redact the message. The content was NOT removed — please try again.",
       );
     }
+  };
+
+  const retryAssist = (messageId: string) => {
+    const message = messages.find((m) => m.id === messageId);
+    if (
+      !message?.requestId ||
+      (message.command !== 'summarize' &&
+        message.command !== 'explain' &&
+        message.command !== 'brainstorm')
+    ) {
+      return;
+    }
+    requestAssist(message.command, '', { requestId: message.requestId });
   };
 
   if (!ctx) return null;
@@ -259,6 +285,7 @@ export function DiscussionPanel() {
               dividerIndex={dividerIndex === -1 ? null : dividerIndex}
               canRedact={canRedact}
               onRedact={redact}
+              onAssistRetry={retryAssist}
               onBottomVisible={markRead}
             />
           </ScrollArea>
@@ -291,7 +318,36 @@ export function DiscussionPanel() {
             </p>
           ) : (
             <>
-              <DiscussionInput onSend={sendMessage} onTyping={setTyping} members={members} />
+              <div className="border-t px-3 py-2">
+                <TooltipProvider>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <AssistButton
+                      label="Summarize"
+                      tooltip="Summarize decisions, agreements, and open questions"
+                      icon={<ListChecks className="h-3.5 w-3.5" />}
+                      onClick={() => requestAssist('summarize')}
+                    />
+                    <AssistButton
+                      label="Explain"
+                      tooltip="Explain this discussion anchor in plain language"
+                      icon={<MessageCircleQuestion className="h-3.5 w-3.5" />}
+                      onClick={() => requestAssist('explain')}
+                    />
+                    <AssistButton
+                      label="Brainstorm"
+                      tooltip="Brainstorm options, tradeoffs, and a next experiment"
+                      icon={<Lightbulb className="h-3.5 w-3.5" />}
+                      onClick={() => requestAssist('brainstorm')}
+                    />
+                  </div>
+                </TooltipProvider>
+              </div>
+              <DiscussionInput
+                onSend={sendMessage}
+                onAssist={requestAssist}
+                onTyping={setTyping}
+                members={members}
+              />
               <ResolveDialog
                 open={resolveOpen}
                 onOpenChange={setResolveOpen}
@@ -303,5 +359,29 @@ export function DiscussionPanel() {
         </>
       )}
     </div>
+  );
+}
+
+function AssistButton({
+  label,
+  tooltip,
+  icon,
+  onClick,
+}: {
+  label: string;
+  tooltip: string;
+  icon: React.ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button variant="outline" size="sm" className="h-7 gap-1.5 px-2 text-xs" onClick={onClick}>
+          {icon}
+          {label}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{tooltip}</TooltipContent>
+    </Tooltip>
   );
 }

@@ -44,6 +44,7 @@ import {
   getOrCreateDiscussion,
   listMessages,
   postMessage,
+  assistDiscussion,
   updateDiscussion,
   redactMessage,
   markRead,
@@ -74,6 +75,9 @@ export const handler = async (event) => {
     if (path.endsWith('/messages')) {
       if (method === 'GET') return await listMessages(event, res);
       if (method === 'POST') return await postMessage(event, res);
+    }
+    if (method === 'POST' && path.endsWith('/assist')) {
+      return await assistDiscussion(event, res);
     }
     if (method === 'PUT' && path.endsWith('/read')) {
       return await markRead(event, res);

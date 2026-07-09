@@ -3,7 +3,7 @@
 // out over WebSocket, and returns a response. The router in index.js dispatches
 // to these by method + path.
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { PutCommand, GetCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { signRealtimeToken } from '../shared/realtime-token.js';
 import { fetchMembershipRole } from '../shared/trackers.js';
@@ -19,6 +19,7 @@ import {
   MENTION_EXCERPT_LENGTH,
   CREATION_GUARD_SECONDS,
   MESSAGE_GUARD_PENDING_SECONDS,
+  MESSAGE_GUARD_COMPLETE_SECONDS,
   POLL_ATTEMPTS,
   POLL_INTERVAL_MS,
 } from './constants.js';
@@ -47,12 +48,37 @@ import {
   createDiscussionVertex,
   fetchDiscussionInScope,
   fetchMessageInDiscussion,
+  fetchMessageByRequestId,
   createMessageVertex,
+  updateAssistMessageVertex,
   fetchProjectMemberIds,
   completeGuard,
 } from './data-access.js';
-import { authorizeScope, broadcastToScope, broadcastToUser, getSecret } from './services.js';
+import {
+  authorizeScope,
+  broadcastToScope,
+  broadcastToUser,
+  getSecret,
+  invokeDiscussionAssist,
+} from './services.js';
 import { resolveScope } from './scope.js';
+
+const ASSIST_COMMANDS = new Set(['summarize', 'explain', 'brainstorm']);
+const REQUEST_ID_RE = /^[A-Za-z0-9._:-]{8,160}$/;
+const MAX_ASSIST_INSTRUCTIONS = 2000;
+const MAX_SELECTED_MESSAGES = 40;
+
+const assistMessageIdFor = (requestId) =>
+  `dm-${createHash('sha256').update(requestId).digest('hex').slice(0, 32)}`;
+
+const failedAssistContent = (command) =>
+  `Quorum could not ${command} this discussion. Retry when the assistant is available.`;
+
+const pendingAssistContent = (command) => {
+  if (command === 'summarize') return 'Quorum is summarizing this discussion...';
+  if (command === 'explain') return 'Quorum is preparing an explanation...';
+  return 'Quorum is brainstorming options...';
+};
 
 export const issueRealtimeToken = async (event, res) => {
   const { sub } = getCaller(event);
@@ -514,6 +540,196 @@ export const postMessage = async (event, res) => {
     // the PutItem condition lets this caller become the new winner.
   }
   return res(409, { reason: 'message_in_progress', retryAfter: 1 });
+};
+
+export const assistDiscussion = async (event, res) => {
+  const { discussionId } = event.pathParameters || {};
+  const scope = resolveScope(event.pathParameters);
+  if (scope?.kind !== 'intent') {
+    return res(400, { error: 'Discussion assist is only available for intent discussions' });
+  }
+  const caller = getCaller(event);
+  const auth = await authorizeScope(scope, caller.sub, res);
+  if (auth.res) return auth.res;
+
+  const discussion = await query((g) => fetchDiscussionInScope(g, scope, discussionId));
+  if (!discussion) return res(404, { error: 'Discussion not found' });
+
+  let body;
+  try {
+    body = JSON.parse(event.body || '{}');
+  } catch {
+    return res(400, { error: 'Invalid JSON body' });
+  }
+
+  const requestId = String(body.requestId || '');
+  if (!REQUEST_ID_RE.test(requestId)) {
+    return res(400, { error: 'Invalid requestId' });
+  }
+  const command = String(body.command || '');
+  if (!ASSIST_COMMANDS.has(command)) {
+    return res(400, { error: 'command must be one of summarize, explain, brainstorm' });
+  }
+  const instructions =
+    typeof body.instructions === 'string'
+      ? body.instructions.trim().slice(0, MAX_ASSIST_INSTRUCTIONS)
+      : '';
+  const selectedMessageIds = Array.isArray(body.selectedMessageIds)
+    ? body.selectedMessageIds
+        .filter((id) => typeof id === 'string' && MESSAGE_ID_RE.test(id))
+        .slice(0, MAX_SELECTED_MESSAGES)
+    : [];
+
+  const messageId = assistMessageIdFor(requestId);
+  const failMessage = async (detail = '') => {
+    const updatedAt = new Date().toISOString();
+    const content = detail
+      ? `${failedAssistContent(command)}\n\n${detail}`
+      : failedAssistContent(command);
+    await query((g) =>
+      updateAssistMessageVertex(g, {
+        discussionId,
+        scope,
+        messageId,
+        content,
+        assistStatus: 'failed',
+        updatedAt,
+      }),
+    );
+    const vertex = await query((g) => fetchMessageInDiscussion(g, discussionId, messageId));
+    const failed = mapMessage(vertex);
+    await broadcastToScope(scope, {
+      action: 'discussion.message',
+      sprintId: scope.rootId,
+      discussionId,
+      message: failed,
+    });
+    return failed;
+  };
+
+  const invokeAssist = async () => {
+    try {
+      const out = await invokeDiscussionAssist({
+        intentId: scope.rootId,
+        payload: {
+          command: 'discussion-assist-start',
+          projectId: auth.projectId,
+          intentId: scope.rootId,
+          discussionId,
+          messageId,
+          requestId,
+          assistCommand: command,
+          instructions,
+          selectedMessageIds,
+          requestedBy: caller.sub,
+          requestedByName: caller.displayName,
+          dispatchedAt: new Date().toISOString(),
+        },
+      });
+      if (out?.ok === false) {
+        return await failMessage(out.reason ? `Reason: ${out.reason}` : '');
+      }
+    } catch (err) {
+      console.error('discussion assist invoke failed:', err.message);
+      return await failMessage('');
+    }
+    return null;
+  };
+
+  const existing = await query((g) => fetchMessageByRequestId(g, discussionId, requestId));
+  if (existing) {
+    const existingMessage = mapMessage(existing);
+    if (existingMessage.assistStatus !== 'failed') {
+      return res(202, { requestId, message: existingMessage });
+    }
+    const updatedAt = new Date().toISOString();
+    await query((g) =>
+      updateAssistMessageVertex(g, {
+        discussionId,
+        scope,
+        messageId,
+        content: pendingAssistContent(command),
+        assistStatus: 'running',
+        updatedAt,
+      }),
+    );
+    const retried = mapMessage(
+      await query((g) => fetchMessageInDiscussion(g, discussionId, messageId)),
+    );
+    await broadcastToScope(scope, {
+      action: 'discussion.message',
+      sprintId: scope.rootId,
+      discussionId,
+      message: retried,
+    });
+    const failed = await invokeAssist();
+    return res(202, { requestId, message: failed || retried });
+  }
+
+  const guardKey = `assist:${discussionId}:${requestId}`;
+  let acquired = false;
+  try {
+    await ddb.send(
+      new PutCommand({
+        TableName: locksTable(),
+        Item: {
+          lockId: guardKey,
+          kind: 'assist',
+          requestId,
+          discussionId,
+          expiresAt: nowSeconds() + MESSAGE_GUARD_COMPLETE_SECONDS,
+        },
+        ConditionExpression: 'attribute_not_exists(lockId) OR expiresAt < :now',
+        ExpressionAttributeValues: { ':now': nowSeconds() },
+      }),
+    );
+    acquired = true;
+  } catch (err) {
+    if (!isConditionalCheckFailed(err)) throw err;
+  }
+
+  if (!acquired) {
+    for (let poll = 0; poll < POLL_ATTEMPTS; poll++) {
+      await sleep(POLL_INTERVAL_MS);
+      const found = await query((g) => fetchMessageByRequestId(g, discussionId, requestId));
+      if (found) return res(202, { requestId, message: mapMessage(found) });
+    }
+    return res(409, { reason: 'assist_in_progress', retryAfter: 1 });
+  }
+
+  const createdAt = new Date().toISOString();
+  const message = {
+    id: messageId,
+    requestId,
+    content: pendingAssistContent(command),
+    authorId: 'quorum',
+    authorName: 'Quorum',
+    authorType: 'agent',
+    command,
+    requestedBy: caller.sub,
+    requestedByName: caller.displayName,
+    assistStatus: 'running',
+    mentions: [],
+    redacted: false,
+    createdAt,
+    updatedAt: createdAt,
+    discussionId,
+    sprintId: scope.rootId,
+  };
+
+  await query((g) => createMessageVertex(g, { discussionId, scope, message }));
+
+  await broadcastToScope(scope, {
+    action: 'discussion.message',
+    sprintId: scope.rootId,
+    discussionId,
+    message,
+  });
+
+  const failed = await invokeAssist();
+  if (failed) return res(202, { requestId, message: failed });
+
+  return res(202, { requestId, message });
 };
 
 export const updateDiscussion = async (event, res) => {

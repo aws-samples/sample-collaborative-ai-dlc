@@ -1212,8 +1212,8 @@ module "timeline_events_lambda" {
 # Role: discussions (1 Lambda — discussions)
 # Neptune CRUD + read access to the realtime doc-token secret (issues HMAC
 # scope tokens after a membership check) + the discussion-locks / read-state
-# tables (creation + message guards) + connections-table fan-out
-# (server-driven discussion.message broadcasts).
+# tables (creation + message/assist guards) + connections-table fan-out
+# (server-driven discussion.message broadcasts) + Quorum AgentCore invocation.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "discussions" {
   name               = "${var.project_name}-discussions-${var.environment}"
@@ -1259,6 +1259,11 @@ resource "aws_iam_role_policy" "discussions" {
         Effect   = "Allow"
         Action   = ["execute-api:ManageConnections"]
         Resource = "${var.websocket_execution_arn}/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["bedrock-agentcore:InvokeAgentRuntime"]
+        Resource = var.agentcore_runtime_arn != "" ? [var.agentcore_runtime_arn, "${var.agentcore_runtime_arn}/*"] : ["*"]
       }
     ]
   })
@@ -1299,6 +1304,7 @@ module "discussions_lambda" {
     READ_STATE_TABLE      = var.discussion_read_state_table_name
     CONNECTIONS_TABLE     = var.connections_table_name
     WEBSOCKET_ENDPOINT    = var.websocket_api_endpoint_https
+    AGENTCORE_RUNTIME_ARN = var.agentcore_runtime_arn
     # Takeover-safety invariant: must match `timeout` above; the
     # lambda asserts message-guard pending window (120 s) > this at init.
     LAMBDA_TIMEOUT_SECONDS = "30"

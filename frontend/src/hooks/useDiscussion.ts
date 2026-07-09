@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useYjsDocument } from './useYjsDocument';
 import { realtimeService } from '../services/realtime';
 import { discussionsService } from '../services/discussions';
-import type { DiscussionMessage, DiscussionScope } from '../services/discussions';
+import type { AssistCommand, DiscussionMessage, DiscussionScope } from '../services/discussions';
 import {
   changeCursorOf,
   displayCursorOf,
@@ -39,6 +39,8 @@ interface UseDiscussionArgs {
 }
 
 const SEED_PAGE_SIZE = 100;
+const makeAssistRequestId = (now: number = Date.now()): string =>
+  `assist-${now}-${Math.random().toString(36).slice(2, 10)}`;
 
 const toPlain = (m: DiscussionMessage): DiscussionMessage => ({ ...m });
 
@@ -260,6 +262,29 @@ export function useDiscussion({ scope, discussionId, open, user }: UseDiscussion
     [discussionId, pending, scope, upsertMessages],
   );
 
+  const requestAssist = useCallback(
+    async (
+      command: AssistCommand,
+      instructions = '',
+      opts: { requestId?: string; selectedMessageIds?: string[] } = {},
+    ) => {
+      if (!discussionId || !scope || scope.kind !== 'intent') return;
+      const requestId = opts.requestId || makeAssistRequestId();
+      try {
+        const { message } = await discussionsService.assist(scope, discussionId, {
+          requestId,
+          command,
+          instructions,
+          selectedMessageIds: opts.selectedMessageIds || [],
+        });
+        upsertMessages([message]);
+      } catch (err) {
+        console.error('Discussion assist failed:', err);
+      }
+    },
+    [discussionId, scope, upsertMessages],
+  );
+
   // ── Typing awareness ──
   const typingTimerRef = useRef<number | null>(null);
   const setTyping = useCallback(
@@ -296,6 +321,7 @@ export function useDiscussion({ scope, discussionId, open, user }: UseDiscussion
     loadOlder,
     sendMessage,
     retryMessage,
+    requestAssist,
     reconcile,
     setTyping,
     typingUsers,

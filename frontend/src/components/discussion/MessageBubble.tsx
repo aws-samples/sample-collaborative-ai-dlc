@@ -4,7 +4,7 @@ import { cn } from '@/lib/utils';
 import { generateColor } from '@/utils/colors';
 import { relativeTime } from '@/lib/discussion';
 import type { MessageGroup } from '@/lib/discussion';
-import { Bot, MoreHorizontal, ShieldOff } from 'lucide-react';
+import { AlertCircle, Bot, Loader2, MoreHorizontal, RotateCcw, ShieldOff } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -25,9 +25,10 @@ interface Props {
   currentUserId: string;
   canRedact?: boolean;
   onRedact?: (messageId: string) => void;
+  onAssistRetry?: (messageId: string) => void;
 }
 
-export function MessageBubble({ group, currentUserId, canRedact, onRedact }: Props) {
+export function MessageBubble({ group, currentUserId, canRedact, onRedact, onAssistRetry }: Props) {
   const isAgent = group.authorType === 'agent';
   const isSelf = group.authorId === currentUserId;
   const color = generateColor(group.authorId || group.authorName);
@@ -88,6 +89,23 @@ export function MessageBubble({ group, currentUserId, canRedact, onRedact }: Pro
                   )}
                 >
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                  {isAgent && m.assistStatus === 'running' && (
+                    <p className="mt-1 flex items-center gap-1 text-[10px] text-muted-foreground">
+                      <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                      running
+                    </p>
+                  )}
+                  {isAgent && m.assistStatus === 'failed' && m.requestId && onAssistRetry && (
+                    <button
+                      type="button"
+                      className="mt-1 inline-flex items-center gap-1 text-[10px] text-destructive hover:underline"
+                      onClick={() => onAssistRetry(m.id)}
+                    >
+                      <AlertCircle className="h-2.5 w-2.5" />
+                      failed - retry
+                      <RotateCcw className="h-2.5 w-2.5" />
+                    </button>
+                  )}
                 </div>
                 {canRedact && onRedact && (
                   <DropdownMenu>

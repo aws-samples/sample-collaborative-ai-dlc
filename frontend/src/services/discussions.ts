@@ -64,6 +64,7 @@ export interface Discussion {
 
 export interface DiscussionMessage {
   id: string;
+  requestId?: string;
   content: string;
   authorId: string;
   authorName: string;
@@ -71,6 +72,7 @@ export interface DiscussionMessage {
   command?: string;
   requestedBy?: string;
   requestedByName?: string;
+  assistStatus?: 'running' | 'completed' | 'failed';
   mentions: string[];
   redacted?: boolean;
   redactedBy?: string;
@@ -91,6 +93,8 @@ export interface SearchResult {
   discussion: Discussion;
   message?: DiscussionMessage;
 }
+
+export type AssistCommand = 'summarize' | 'explain' | 'brainstorm';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -171,6 +175,27 @@ export const discussionsService = {
       `${discussionBasePath(scope)}/discussions/${discussionId}/messages/${messageId}/redact`,
       {},
     ),
+
+  assist: (
+    scope: DiscussionScope,
+    discussionId: string,
+    input: {
+      requestId: string;
+      command: AssistCommand;
+      instructions?: string;
+      selectedMessageIds?: string[];
+    },
+  ) => {
+    if (scope.kind !== 'intent') {
+      return Promise.reject(
+        new Error('Discussion assist is only available for v2 intent discussions'),
+      );
+    }
+    return api.post<{ requestId: string; message: DiscussionMessage }>(
+      `${discussionBasePath(scope)}/discussions/${discussionId}/assist`,
+      input,
+    );
+  },
 
   markRead: (
     scope: DiscussionScope,

@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils';
 import type { Member } from '@/services/projects';
 import { generateColor } from '@/utils/colors';
 import { mentionedUserIds } from '@/lib/discussion';
+import type { AssistCommand } from '@/services/discussions';
 
 // DiscussionInput: auto-growing textarea, Enter = send,
 // Shift+Enter = newline, typing awareness, and the @-mention combobox over
@@ -13,6 +14,7 @@ import { mentionedUserIds } from '@/lib/discussion';
 
 interface Props {
   onSend: (content: string, mentions: string[]) => void;
+  onAssist?: (command: AssistCommand, instructions?: string) => void;
   onTyping: (typing: boolean) => void;
   members: Member[];
   disabled?: boolean;
@@ -20,7 +22,13 @@ interface Props {
 
 const memberLabel = (m: Member): string => m.email?.split('@')[0] || m.userId.slice(0, 8);
 
-export function DiscussionInput({ onSend, onTyping, members, disabled }: Props) {
+const slashCommand = (text: string): { command: AssistCommand; instructions: string } | null => {
+  const match = /^\/(summarize|explain|brainstorm)(?:\s+([\s\S]*))?$/i.exec(text.trim());
+  if (!match) return null;
+  return { command: match[1].toLowerCase() as AssistCommand, instructions: match[2]?.trim() || '' };
+};
+
+export function DiscussionInput({ onSend, onAssist, onTyping, members, disabled }: Props) {
   const [value, setValue] = useState('');
   const [mentioned, setMentioned] = useState<Map<string, string>>(new Map()); // userId → label
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
@@ -82,6 +90,16 @@ export function DiscussionInput({ onSend, onTyping, members, disabled }: Props) 
   const send = useCallback(() => {
     const trimmed = value.trim();
     if (!trimmed || disabled) return;
+    const assist = slashCommand(trimmed);
+    if (assist && onAssist) {
+      onAssist(assist.command, assist.instructions);
+      onTyping(false);
+      setValue('');
+      setMentioned(new Map());
+      setMentionQuery(null);
+      requestAnimationFrame(autoGrow);
+      return;
+    }
     // Only count mentions whose @label text survived editing — matched on a
     // token boundary so a prefix label (john) isn't falsely counted from a
     // longer one (@johnny).
@@ -92,7 +110,7 @@ export function DiscussionInput({ onSend, onTyping, members, disabled }: Props) 
     setMentioned(new Map());
     setMentionQuery(null);
     requestAnimationFrame(autoGrow);
-  }, [value, disabled, mentioned, onSend, onTyping, autoGrow]);
+  }, [value, disabled, mentioned, onSend, onAssist, onTyping, autoGrow]);
 
   return (
     <div className="relative border-t">
@@ -134,7 +152,7 @@ export function DiscussionInput({ onSend, onTyping, members, disabled }: Props) 
           rows={1}
           value={value}
           disabled={disabled}
-          placeholder="Write a message… @ to mention (Enter to send, Shift+Enter for newline)"
+          placeholder="Write a message..."
           className={cn(
             'flex-1 resize-none rounded-md border bg-background px-3 py-2 text-sm leading-5',
             'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',

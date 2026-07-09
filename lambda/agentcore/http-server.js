@@ -35,6 +35,9 @@
 //   { "command": "resolve-conflict", ...resolveConflict args } → WP6: the
 //       scoped conflict-resolution stage (lane session; engine merges +
 //       verifies + concludes, the agent only edits the conflicted files).
+//   { "command": "discussion-assist-start", ...discussion args }
+//     → accepts in ms, runs Quorum's one-shot discussion answer in a background
+//       job, then updates the pending DiscussionMessage and broadcasts it.
 //
 // The dispatcher is pure (handlers injected) so it is unit-tested without a
 // socket; createServer wires the real commands + clients.
@@ -78,6 +81,7 @@ export const dispatchInvocation = async ({
     'init-lane': handlers.initLane,
     'merge-lane': handlers.mergeLane,
     'resolve-conflict': handlers.resolveConflict,
+    'discussion-assist-start': handlers.discussionAssistStart,
     inspect: handlers.inspect,
     capabilities: handlers.capabilities,
   }[command];
@@ -158,6 +162,7 @@ const main = async () => {
   const { initWs } = await import('./commands/init-ws.js');
   const { runStage } = await import('./commands/run-stage.js');
   const { createRunStageStart } = await import('./commands/run-stage-start.js');
+  const { createDiscussionAssistStart } = await import('./commands/discussion-assist-start.js');
   const { promoteUnits } = await import('./commands/promote-units.js');
   const { deriveArtifacts } = await import('./commands/derive-artifacts.js');
   const { initLane, mergeLane } = await import('./commands/lane.js');
@@ -235,6 +240,14 @@ const main = async () => {
     runStage: (p) => handlers.runStage(p),
     sendCallbackSuccess: sendStageCallbackSuccess,
     sendCallbackHeartbeat: sendStageCallbackHeartbeat,
+    busy,
+  });
+  handlers.discussionAssistStart = createDiscussionAssistStart({
+    openGraph,
+    store,
+    broadcast,
+    availableClis,
+    env: process.env,
     busy,
   });
 

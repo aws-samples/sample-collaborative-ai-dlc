@@ -26,6 +26,7 @@ interface Props {
   dividerIndex?: number | null;
   canRedact?: boolean;
   onRedact?: (messageId: string) => void;
+  onAssistRetry?: (messageId: string) => void;
   /** Fires while the bottom of the thread is visible in the viewport. */
   onBottomVisible?: () => void;
 }
@@ -42,6 +43,7 @@ export function DiscussionThread({
   dividerIndex = null,
   canRedact,
   onRedact,
+  onAssistRetry,
   onBottomVisible,
 }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -104,6 +106,7 @@ export function DiscussionThread({
         currentUserId={currentUserId}
         canRedact={canRedact}
         onRedact={onRedact}
+        onAssistRetry={onAssistRetry}
       />
     ));
 

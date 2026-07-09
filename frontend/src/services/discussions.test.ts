@@ -49,7 +49,7 @@ describe('discussionsService routes both scopes through the base path', () => {
     expect(get).toHaveBeenCalledWith('/sprints/s1/discussions/d1/messages');
   });
 
-  it('list/getOrCreate/messages/redact on an intent scope', async () => {
+  it('list/getOrCreate/messages/redact/assist on an intent scope', async () => {
     await discussionsService.list(INTENT);
     expect(get).toHaveBeenCalledWith('/projects/p1/intents/i1/discussions');
     await discussionsService.getOrCreate(INTENT, { entityType: 'artifact', entityId: 'a1' });
@@ -67,6 +67,16 @@ describe('discussionsService routes both scopes through the base path', () => {
       '/projects/p1/intents/i1/discussions/d1/messages/dm-1/redact',
       {},
     );
+    await discussionsService.assist(INTENT, 'd1', {
+      requestId: 'assist-12345678',
+      command: 'summarize',
+      instructions: 'focus',
+    });
+    expect(post).toHaveBeenCalledWith('/projects/p1/intents/i1/discussions/d1/assist', {
+      requestId: 'assist-12345678',
+      command: 'summarize',
+      instructions: 'focus',
+    });
   });
 
   it('markRead stays available for the read-only sprint scope', async () => {
@@ -80,7 +90,12 @@ describe('discussionsService routes both scopes through the base path', () => {
     });
   });
 
-  it('has no assist method anymore (v1 in-thread assist was removed)', () => {
-    expect('assist' in discussionsService).toBe(false);
+  it('assist is v2-only', async () => {
+    await expect(
+      discussionsService.assist(SPRINT, 'd1', {
+        requestId: 'assist-12345678',
+        command: 'summarize',
+      }),
+    ).rejects.toThrow(/v2 intent/);
   });
 });

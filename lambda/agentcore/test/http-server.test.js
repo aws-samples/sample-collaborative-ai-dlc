@@ -83,6 +83,33 @@ describe('dispatchInvocation', () => {
     });
   });
 
+  it('routes discussion-assist-start for Quorum discussion jobs', async () => {
+    const r = await dispatchInvocation({
+      payload: {
+        command: 'discussion-assist-start',
+        intentId: 'i1',
+        discussionId: 'd1',
+        requestId: 'r1',
+      },
+      handlers: {
+        discussionAssistStart: async (p) => ({
+          ok: true,
+          accepted: true,
+          requestId: p.requestId,
+        }),
+      },
+    });
+    expect(r).toMatchObject({
+      statusCode: 200,
+      body: {
+        ok: true,
+        accepted: true,
+        requestId: 'r1',
+        command: 'discussion-assist-start',
+      },
+    });
+  });
+
   it('routes init-lane and merge-lane (WP5 unit lanes)', async () => {
     const laneHandlers = {
       initLane: async (p) => ({ ok: true, unitSlug: p.unitSlug }),

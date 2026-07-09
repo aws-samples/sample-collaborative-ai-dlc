@@ -15,6 +15,10 @@ import {
   ApiGatewayManagementApiClient,
   PostToConnectionCommand,
 } from '@aws-sdk/client-apigatewaymanagementapi';
+import {
+  BedrockAgentCoreClient,
+  InvokeAgentRuntimeCommand,
+} from '@aws-sdk/client-bedrock-agentcore';
 import shared from '../../shared/realtime-token.js';
 
 const { verifyRealtimeToken } = shared;
@@ -30,6 +34,7 @@ const PARTITION = `t-${randomUUID()}`;
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 const apiMock = mockClient(ApiGatewayManagementApiClient);
+const agentcoreMock = mockClient(BedrockAgentCoreClient);
 
 // ─── In-memory DynamoDB conditional-write fake for the locks table ───
 //
@@ -143,6 +148,7 @@ beforeEach(async () => {
   await g.V().drop().next();
   ddbMock.reset();
   apiMock.reset();
+  agentcoreMock.reset();
   lockStore.clear();
   readStateStore.clear();
   connectionItems = [];
@@ -151,6 +157,7 @@ beforeEach(async () => {
   vi.stubEnv('REALTIME_DOC_SECRET', SECRET);
   vi.stubEnv('LOCKS_TABLE', LOCKS_TABLE);
   vi.stubEnv('READ_STATE_TABLE', READ_STATE_TABLE);
+  vi.stubEnv('AGENTCORE_RUNTIME_ARN', 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/test');
   // Pin Date so timestamps/expiries are assertable. Don't fake setTimeout —
   // the guard-poll loops and gremlin's WebSocket driver need real timers.
   vi.useFakeTimers({ toFake: ['Date'] });
@@ -1449,6 +1456,101 @@ describe('intent-scoped discussions', () => {
       pathParameters: { projectId, intentId, discussionId: created.id },
     });
     expect(json(msgs).messages.map((m) => m.content)).toContain('hello intent');
+  });
+
+  it('starts Quorum assist on an intent thread and invokes AgentCore with the discussion session', async () => {
+    agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+      response: { transformToString: async () => JSON.stringify({ ok: true, accepted: true }) },
+    });
+    const { projectId, intentId } = await seedIntent();
+    const created = json(
+      await call('POST', intentPath('/discussions'), {
+        pathParameters: { projectId, intentId },
+        body: { entityType: 'intent' },
+      }),
+    );
+
+    const res = await call('POST', intentPath('/discussions/{discussionId}/assist'), {
+      pathParameters: { projectId, intentId, discussionId: created.id },
+      body: {
+        requestId: 'assist-request-1',
+        command: 'summarize',
+        instructions: 'Focus on decisions',
+      },
+    });
+    expect(res.statusCode).toBe(202);
+    const body = json(res);
+    expect(body.message).toMatchObject({
+      requestId: 'assist-request-1',
+      authorType: 'agent',
+      authorName: 'Quorum',
+      command: 'summarize',
+      requestedBy: MEMBER_SUB,
+      assistStatus: 'running',
+      discussionId: created.id,
+      sprintId: intentId,
+    });
+
+    const invoke = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input;
+    expect(invoke.runtimeSessionId.startsWith(`aidlc-discuss-${intentId}`)).toBe(true);
+    expect(invoke.runtimeSessionId.length).toBeGreaterThanOrEqual(33);
+    const payload = JSON.parse(Buffer.from(invoke.payload).toString('utf8'));
+    expect(payload).toMatchObject({
+      command: 'discussion-assist-start',
+      projectId,
+      intentId,
+      discussionId: created.id,
+      requestId: 'assist-request-1',
+      assistCommand: 'summarize',
+      instructions: 'Focus on decisions',
+    });
+
+    const again = await call('POST', intentPath('/discussions/{discussionId}/assist'), {
+      pathParameters: { projectId, intentId, discussionId: created.id },
+      body: { requestId: 'assist-request-1', command: 'summarize' },
+    });
+    expect(again.statusCode).toBe(202);
+    expect(json(again).message.id).toBe(body.message.id);
+    expect(agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)).toHaveLength(1);
+  });
+
+  it('marks the Quorum message failed when AgentCore invoke fails', async () => {
+    agentcoreMock.on(InvokeAgentRuntimeCommand).rejects(new Error('runtime unavailable'));
+    const { projectId, intentId } = await seedIntent();
+    const created = json(
+      await call('POST', intentPath('/discussions'), {
+        pathParameters: { projectId, intentId },
+        body: { entityType: 'intent' },
+      }),
+    );
+
+    const res = await call('POST', intentPath('/discussions/{discussionId}/assist'), {
+      pathParameters: { projectId, intentId, discussionId: created.id },
+      body: { requestId: 'assist-request-failed', command: 'brainstorm' },
+    });
+    expect(res.statusCode).toBe(202);
+    expect(json(res).message.assistStatus).toBe('failed');
+
+    const stored = json(
+      await call('GET', intentPath('/discussions/{discussionId}/messages'), {
+        pathParameters: { projectId, intentId, discussionId: created.id },
+      }),
+    ).messages[0];
+    expect(stored.assistStatus).toBe('failed');
+    expect(stored.content).toContain('Quorum could not brainstorm');
+
+    agentcoreMock.reset();
+    agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+      response: { transformToString: async () => JSON.stringify({ ok: true, accepted: true }) },
+    });
+    const retry = await call('POST', intentPath('/discussions/{discussionId}/assist'), {
+      pathParameters: { projectId, intentId, discussionId: created.id },
+      body: { requestId: 'assist-request-failed', command: 'brainstorm' },
+    });
+    expect(retry.statusCode).toBe(202);
+    expect(json(retry).message.id).toBe(stored.id);
+    expect(json(retry).message.assistStatus).toBe('running');
+    expect(agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)).toHaveLength(1);
   });
 
   it('issues an intent + project scope realtime token for a member', async () => {
