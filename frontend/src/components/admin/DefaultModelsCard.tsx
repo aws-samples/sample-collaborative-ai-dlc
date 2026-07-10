@@ -1,5 +1,7 @@
 // Default agent models card — per-CLI default model IDs used when a project
-// doesn't set its own override. Extracted from the old monolithic Admin page.
+// doesn't set its own override, plus the agent tier → model grid (what model
+// each upstream agent tier runs, the fallback row, and the Quorum row).
+// Extracted from the old monolithic Admin page.
 
 import { useEffect, useState } from 'react';
 import { Input } from '@/components/ui/input';
@@ -13,9 +15,10 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { Cpu, ExternalLink } from 'lucide-react';
 import { agentsService, type AgentModel } from '@/services/agents';
-import type { CliModels, RuntimeModelCli } from '@/services/projects';
+import type { CliModels, RuntimeModelCli, TierModels } from '@/services/projects';
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import { SaveStatusButton, type SaveResult } from '@/components/settings/SaveStatusButton';
+import { TierModelsSection, canonicalTierModels } from '@/components/settings/TierModelsSection';
 
 const MODEL_CLI_LABELS: Record<RuntimeModelCli, string> = {
   kiro: 'Kiro',
@@ -61,6 +64,8 @@ function canonicalCliModels(models: CliModels = {}) {
 export function DefaultModelsCard() {
   const [savedModels, setSavedModels] = useState<CliModels>({});
   const [cliModels, setCliModels] = useState<CliModels>({});
+  const [savedTierModels, setSavedTierModels] = useState<TierModels>({});
+  const [tierModels, setTierModels] = useState<TierModels>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveResult, setSaveResult] = useState<SaveResult>(null);
@@ -77,6 +82,8 @@ export function DefaultModelsCard() {
       .then((s) => {
         setSavedModels(s.cliModels || {});
         setCliModels(s.cliModels || {});
+        setSavedTierModels(s.tierModels || {});
+        setTierModels(s.tierModels || {});
       })
       .catch((e) => console.error('Failed to load agent settings:', e))
       .finally(() => setLoading(false));
@@ -94,16 +101,23 @@ export function DefaultModelsCard() {
 
   const hasChanges =
     JSON.stringify(canonicalCliModels(cliModels)) !==
-    JSON.stringify(canonicalCliModels(savedModels));
+      JSON.stringify(canonicalCliModels(savedModels)) ||
+    JSON.stringify(canonicalTierModels(tierModels)) !==
+      JSON.stringify(canonicalTierModels(savedTierModels));
 
   const save = async () => {
     setSaving(true);
     setSaveResult(null);
     try {
-      await agentsService.updateSettings({ cliModels });
+      await agentsService.updateSettings({
+        cliModels,
+        tierModels: canonicalTierModels(tierModels),
+      });
       const fresh = await agentsService.getSettings();
       setSavedModels(fresh.cliModels || {});
       setCliModels(fresh.cliModels || {});
+      setSavedTierModels(fresh.tierModels || {});
+      setTierModels(fresh.tierModels || {});
       setSaveResult('saved');
     } catch (e) {
       console.error('Failed to save default models:', e);
@@ -200,6 +214,25 @@ export function DefaultModelsCard() {
                 </div>
               );
             })}
+          </div>
+          <div className="space-y-2 border-t pt-4">
+            <div>
+              <h4 className="text-sm font-medium text-foreground">Agent tier models</h4>
+              <p className="text-xs text-muted-foreground">
+                What model each agent tier runs, per CLI. The flat defaults above win when set;
+                unset tier cells fall back to the Fallback row, then the CLI default. Projects can
+                override any cell.
+              </p>
+            </div>
+            <TierModelsSection
+              value={tierModels}
+              onChange={setTierModels}
+              modelOptions={modelOptions}
+              modelsLoaded={modelsLoaded}
+              disabled={saving}
+              idPrefix="admin"
+              unsetLabel="Not set"
+            />
           </div>
           <SaveStatusButton
             onClick={save}

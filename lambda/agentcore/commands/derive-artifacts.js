@@ -12,6 +12,7 @@
 
 import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
 import { runOneShotPrompt, extractJsonObject } from '../cli/one-shot.js';
+import { machineCliModels } from '../model-resolver.js';
 import { extractArtifactStructure } from '../../shared/artifact-extractors.js';
 
 const artifactTs = (r) => String(r.updated_at ?? r.created_at ?? '');
@@ -98,6 +99,7 @@ export const deriveArtifacts = async (payload, deps) => {
     enrichment: requestedEnrichment = 'off',
     requestedCli = null,
     cliModels = null,
+    tierModels = null,
     // Lane attribution: set on unit-lane dispatches so enrichment metrics and
     // derive events land on the lane in the audit, matching stage metrics.
     unitSlug = null,
@@ -164,7 +166,14 @@ export const deriveArtifacts = async (payload, deps) => {
     const errors = [];
     let enriched = 0;
     const enrichmentSkips = [];
-    const cliArgs = { requestedCli, cliModels, availableClis, env };
+    // Machine one-shot: flat selection backfilled by the fallback row (no
+    // persona → no tier; the quorum row is for conversational surfaces).
+    const cliArgs = {
+      requestedCli,
+      cliModels: machineCliModels({ cliModels, tierModels }),
+      availableClis,
+      env,
+    };
     const enrichmentDeadline = Date.now() + ENRICHMENT_BUDGET_MS;
     for (const artifact of targets) {
       const extraction = extractArtifactStructure({

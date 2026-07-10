@@ -72,6 +72,8 @@ The design body.
 `),
     'core/aidlc-common/stages/construction/functional-design.md': F(`---
 slug: functional-design
+name: Functional Design
+number: 3.1
 phase: construction
 execution: CONDITIONAL
 condition: New data models or business rules need design.
@@ -82,6 +84,17 @@ reviewer: aidlc-architecture-reviewer-agent
 reviewer_max_iterations: 2
 produces:
   - business-logic-model
+optional_produces:
+  - frontend-components
+produces_kinds:
+  business-logic-model:
+    - service
+    - ui
+    - library
+  frontend-components:
+    - ui
+required_sections:
+  - Business Logic Model
 consumes:
   - artifact: requirements
     required: true
@@ -96,7 +109,8 @@ scopes:
 # Functional Design
 `),
 
-    // ── Agents (a builder + a reviewer)
+    // ── Agents (a builder + a reviewer). The model keys exercise every pin
+    // era: `tier` (≥2.3.1), `model` (2.2.15 rename), `modelOverride` (legacy).
     'core/agents/aidlc-product-agent.md': F(`---
 name: aidlc-product-agent
 display_name: Product Agent
@@ -119,7 +133,7 @@ display_name: Architecture Reviewer
 description: >
   Senior solutions architect who reviews technical design artifacts.
 disallowedTools: Task
-modelOverride: sonnet
+tier: balanced
 ---
 
 # Architecture Reviewer
@@ -129,7 +143,7 @@ name: aidlc-architect-agent
 display_name: Architect Agent
 description: Solutions architect.
 disallowedTools: Task
-modelOverride: opus
+tier: judgment
 ---
 
 # Architect Agent
@@ -138,7 +152,7 @@ modelOverride: opus
 name: aidlc-aws-platform-agent
 display_name: AWS Platform Agent
 description: AWS solutions architect.
-modelOverride: opus
+model: sonnet
 ---
 
 # AWS Platform Agent

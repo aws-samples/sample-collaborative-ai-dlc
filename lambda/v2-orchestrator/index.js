@@ -704,6 +704,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // reads the project vertex; the orchestrator is not VPC-attached for Neptune).
     // run-stage applies cliModels[cli] as the authoritative model knob.
     const cliModels = meta.cliModels ?? null;
+    // Tier-model config (merged project-over-global, snapshotted alongside):
+    // maps each agent's tier to a model per CLI + the fallback/quorum rows.
+    const tierModels = meta.tierModels ?? null;
     // The project's explicitly selected agent CLI; forwarded to run-stage as
     // `requestedCli` so the run uses the chosen CLI (selection depends on which
     // CLI is authed). null = let run-stage pick the first installed CLI.
@@ -772,6 +775,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         scope,
         ...(allSkipIds.length ? { skipStageIds: allSkipIds } : {}),
         cliModels,
+        tierModels,
         requestedCli,
         customMcpServers,
         customRules,
@@ -946,6 +950,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       maxParallelUnits: meta.maxParallelUnits ?? 0,
       requestedCli,
       cliModels,
+      tierModels,
       deriveEnrichment,
       stageInstanceIdFor: (stageId, slug) => planStageInstanceId(namespace, stageId, slug),
     };
@@ -996,6 +1001,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                   enrichment: deriveEnrichment,
                   ...(requestedCli ? { requestedCli } : {}),
                   ...(cliModels ? { cliModels } : {}),
+                  ...(tierModels ? { tierModels } : {}),
                 },
                 sessionId,
               ),
@@ -1261,6 +1267,7 @@ const runStage = async (
     // forwarded so the container's plan resolution matches the walk's.
     skipStageIds = null,
     cliModels,
+    tierModels = null,
     requestedCli,
     customMcpServers,
     customRules,
@@ -1302,6 +1309,7 @@ const runStage = async (
         scope,
         ...(skipStageIds?.length ? { skipStageIds } : {}),
         ...(cliModels ? { cliModels } : {}),
+        ...(tierModels ? { tierModels } : {}),
         ...(requestedCli ? { requestedCli } : {}),
         ...(customMcpServers ? { customMcpServers } : {}),
         ...(customRules ? { customRules } : {}),

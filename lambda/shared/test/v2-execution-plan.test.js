@@ -15,6 +15,8 @@ const stage = (id, extra = {}) => ({
   leadAgent: extra.leadAgent ?? 'agent-x',
   supportAgents: extra.supportAgents ?? [],
   produces: extra.produces ?? [],
+  optionalProduces: extra.optionalProduces ?? [],
+  producesKinds: extra.producesKinds ?? null,
   consumes: extra.consumes ?? [],
   requires: extra.requires ?? [],
   blocksOn: extra.blocksOn ?? [],
@@ -724,5 +726,92 @@ describe('buildExecutionPlan — per-intent skip overlay (stage-skip.js)', () =>
     expect(valid).toBe(true);
     expect(warnings.map((w) => w.code)).toContain('scope_absent_unit_dag');
     expect(plan.stages.find((s) => s.stageId === 'fd').forEachDegraded).toBe(true);
+  });
+});
+
+describe('buildExecutionPlan — optional produces + produces kinds', () => {
+  it('an optional producer satisfies a consume edge (ordering + no dangling error)', () => {
+    const lib = baseLibrary({
+      stagesById: {
+        design: stage('design', {
+          produces: ['model'],
+          optionalProduces: ['frontend-components'],
+        }),
+        codegen: stage('codegen', {
+          consumes: [{ artifact: 'frontend-components', required: false }],
+        }),
+      },
+    });
+    const wf = workflow([placement('codegen', 'feature', 0), placement('design', 'feature', 1)]);
+    const { valid, errors, plan } = buildExecutionPlan({
+      workflow: wf,
+      scope: 'feature',
+      library: lib,
+    });
+    expect(valid).toBe(true);
+    expect(errors).toEqual([]);
+    // The consumer is ordered AFTER its optional producer despite the authored order.
+    const order = plan.stages.map((s) => s.stageId);
+    expect(order.indexOf('design')).toBeLessThan(order.indexOf('codegen'));
+  });
+
+  it('flags optional outputs on the instance contract, required ones untouched', () => {
+    const lib = baseLibrary({
+      stagesById: {
+        design: stage('design', {
+          produces: ['model'],
+          optionalProduces: ['frontend-components'],
+        }),
+      },
+    });
+    const wf = workflow([placement('design')]);
+    const { plan } = buildExecutionPlan({ workflow: wf, scope: 'feature', library: lib });
+    const outputs = plan.stages[0].outputArtifacts;
+    expect(outputs).toEqual([
+      { artifact: 'model', terminal: null },
+      { artifact: 'frontend-components', terminal: null, optional: true },
+    ]);
+  });
+
+  it('carries producesKinds onto the stage instance for per-unit pruning', () => {
+    const lib = baseLibrary({
+      stagesById: {
+        design: stage('design', {
+          produces: ['model'],
+          producesKinds: { model: ['service', 'ui'] },
+        }),
+        bare: stage('bare', { produces: ['doc'] }),
+      },
+    });
+    const wf = workflow([placement('design', 'feature', 0), placement('bare', 'feature', 1)]);
+    const { plan } = buildExecutionPlan({ workflow: wf, scope: 'feature', library: lib });
+    expect(plan.stages.find((s) => s.stageId === 'design').producesKinds).toEqual({
+      model: ['service', 'ui'],
+    });
+    expect(plan.stages.find((s) => s.stageId === 'bare').producesKinds).toBeNull();
+  });
+
+  it('an out-of-scope OPTIONAL producer still classifies as a scope shortcut, not dangling', () => {
+    const lib = baseLibrary({
+      stagesById: {
+        design: stage('design', { optionalProduces: ['frontend-components'] }),
+        codegen: stage('codegen', {
+          consumes: [{ artifact: 'frontend-components', required: true }],
+        }),
+      },
+    });
+    // design only runs in mvp; the feature run consumes without a producer.
+    const wf = workflow([
+      { stageId: 'design', order: 0, scopeMembership: { mvp: 'EXECUTE', feature: 'SKIP' } },
+      placement('codegen', 'feature', 1),
+    ]);
+    const { valid, warnings, errors } = buildExecutionPlan({
+      workflow: wf,
+      scope: 'feature',
+      library: lib,
+    });
+    expect(valid).toBe(true);
+    expect(errors).toEqual([]);
+    expect(warnings.map((w) => w.code)).toContain('scope_absent_consume');
   });
 });

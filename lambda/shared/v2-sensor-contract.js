@@ -1,4 +1,5 @@
 import { REGISTRY, extractArtifactStructure } from './artifact-extractors.js';
+import { UNIT_KINDS } from './blocks.js';
 
 // V2 deterministic sensor contract — PURE + shared (no I/O, no AWS, no spawn).
 //
@@ -349,13 +350,22 @@ const parseUnitsBlock = (block) => {
     const nameMatch = line.match(/^\s*-\s+name\s*:\s*(.+?)\s*$/);
     if (nameMatch) {
       if (current) edges.push(current);
-      current = { name: unquoteScalar(nameMatch[1]), depends_on: [] };
+      current = { name: unquoteScalar(nameMatch[1]), depends_on: [], kind: null };
       continue;
     }
     const depMatch = line.match(/^\s*depends_on\s*:\s*(.*)$/);
     if (depMatch) {
       if (!current) throw new Error('depends_on: before any - name: entry');
       current.depends_on = parseInlineDepsList(depMatch[1]);
+      continue;
+    }
+    // Optional per-unit kind (V2 ≥2.2.18): drives produces_kinds pruning.
+    // Parsed here, validated (against UNIT_KINDS) in parseBoltDag so an
+    // invalid value is a loud malformed-DAG error, never a silent full-matrix.
+    const kindMatch = line.match(/^\s*kind\s*:\s*(.+?)\s*$/);
+    if (kindMatch) {
+      if (!current) throw new Error('kind: before any - name: entry');
+      current.kind = unquoteScalar(kindMatch[1]);
       continue;
     }
     const itemMatch = line.match(/^\s*-\s+(.+?)\s*$/);
@@ -414,6 +424,15 @@ const parseBoltDag = (body) => {
         return { ok: false, reason: 'malformed', detail: `${u.name} depends on itself` };
       if (!names.has(dep))
         return { ok: false, reason: 'malformed', detail: `${u.name} → unknown ${dep}` };
+    }
+    // A declared kind must be a known unit kind; an unknown value would make
+    // produces_kinds pruning silently treat the unit as full-matrix.
+    if (u.kind != null && !UNIT_KINDS.includes(u.kind)) {
+      return {
+        ok: false,
+        reason: 'malformed',
+        detail: `${u.name} has unknown kind "${u.kind}" (allowed: ${UNIT_KINDS.join(', ')})`,
+      };
     }
   }
   const batches = computeBatches(edges);

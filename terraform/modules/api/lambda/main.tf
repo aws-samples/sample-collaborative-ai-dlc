@@ -370,6 +370,9 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
         Resource = [
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/bedrock-bearer-token",
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/cli-models",
+          # Agent tier → model configuration (incl. fallback + quorum rows),
+          # merged under a project's tier_models at intent create.
+          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/tier-models",
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/kiro-api-key",
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/derive-enrichment",
           # Platform stage-skipping toggle (per-intent stage skipping;
@@ -1630,6 +1633,9 @@ resource "aws_iam_role_policy" "intents" {
         Resource = [
           var.realtime_doc_secret_param_arn,
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/cli-models",
+          # Admin global tier-models config (agent tier → model rows + fallback
+          # + quorum), merged under the project's tier_models at intent create.
+          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/tier-models",
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/derive-enrichment",
           # Platform stage-skipping toggle (effective value — project override
           # over this — snapshotted onto the execution META at intent create).

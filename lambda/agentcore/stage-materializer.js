@@ -70,8 +70,18 @@ const renderInputs = (inputArtifacts = []) => {
     .join('\n');
 };
 
+// An `optional: true` output (upstream `optional_produces`) MAY be written —
+// the agent produces it only when the work calls for it, and its absence is
+// never an error (the sensors/coverage exempt it too).
 const renderOutputs = (outputArtifacts = []) =>
-  outputArtifacts.length ? outputArtifacts.map((o) => `- ${o.artifact}`).join('\n') : '- none';
+  outputArtifacts.length
+    ? outputArtifacts
+        .map(
+          (o) =>
+            `- ${o.artifact}${o.optional ? ' (conditional — produce it only when this work actually calls for it; omitting it is normal)' : ''}`,
+        )
+        .join('\n')
+    : '- none';
 
 // Render the intent block — the run's north star.
 // PURE. Injected near the top of every fresh stage prompt: early stages work
@@ -91,7 +101,7 @@ export const renderIntentBlock = ({ title, prompt, scope } = {}) => {
 };
 
 // Render the unit-scope block for a `forEach: unit-of-work` lane run
-// (docs/v2-parallel.md WP4). PURE. `unit` = { slug, dependsOn } from the
+// (docs/v2-parallel.md WP4). PURE. `unit` = { slug, dependsOn, kind } from the
 // promoted UNITPLAN — the engine's scheduling truth, never agent-supplied.
 // Injected right before the stage instructions so the fan-out framing is read
 // before the (once-per-workflow-worded) stage prose.
@@ -105,6 +115,7 @@ export const renderUnitScope = (unit) => {
     `**${unit.slug}** only.`,
     '',
     `- Unit: ${unit.slug}`,
+    ...(unit.kind ? [`- Unit kind: ${unit.kind}`] : []),
     `- Depends on (already completed): ${deps.length ? deps.join(', ') : 'none'}`,
     '',
     'Apply the stage instructions to THIS unit alone: only the stories,',

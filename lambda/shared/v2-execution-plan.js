@@ -320,9 +320,12 @@ const buildExecutionPlan = ({
   // (producer exists, but is SKIP for this scope — upstream's documented
   // "required when in scope" semantics) apart from a genuine authoring bug
   // (no stage anywhere produces the artifact — a typo / missing placement).
+  // Optional produces count: an optionally-written artifact still HAS a
+  // producer; its runtime absence is the consume edge's concern.
   const workflowProducers = new Set();
   for (const p of workflow.placements ?? []) {
-    for (const artifact of stagesById[p.stageId]?.produces ?? []) {
+    const st = stagesById[p.stageId];
+    for (const artifact of [...(st?.produces ?? []), ...(st?.optionalProduces ?? [])]) {
       workflowProducers.add(artifact);
     }
   }
@@ -458,10 +461,21 @@ const buildExecutionPlan = ({
         ],
       }));
 
-      const outputArtifacts = (stage.produces ?? []).map((artifact) => ({
-        artifact,
-        terminal: artifactsById[artifact] ? Boolean(artifactsById[artifact].terminal) : null,
-      }));
+      // Output contract: required produces first, then `optionalProduces`
+      // flagged `optional: true` — the runtime resolves paths for BOTH (the
+      // agent may write an optional artifact) but the completion/coverage
+      // check only demands the required ones.
+      const outputArtifacts = [
+        ...(stage.produces ?? []).map((artifact) => ({
+          artifact,
+          terminal: artifactsById[artifact] ? Boolean(artifactsById[artifact].terminal) : null,
+        })),
+        ...(stage.optionalProduces ?? []).map((artifact) => ({
+          artifact,
+          terminal: artifactsById[artifact] ? Boolean(artifactsById[artifact].terminal) : null,
+          optional: true,
+        })),
+      ];
 
       const instance = {
         stageInstanceId: stageInstanceId(namespace, stageId),
@@ -488,6 +502,11 @@ const buildExecutionPlan = ({
         // once-per-workflow because the unit-DAG producer is out of scope.
         forEach: stage.forEach ?? null,
         execution: stage.execution ?? null,
+        // Unit-kind narrowing (V2 ≥2.2.18): artifact → the unit kinds it
+        // applies to. Per-unit dispatch prunes non-matching artifacts from
+        // both the directive's produce paths and the coverage set; null means
+        // every artifact applies to every unit.
+        producesKinds: stage.producesKinds ?? null,
         parallelSection: null,
         forEachDegraded: false,
       };

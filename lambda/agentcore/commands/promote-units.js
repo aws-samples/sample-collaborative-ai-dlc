@@ -99,7 +99,15 @@ export const promoteUnits = async (payload, deps) => {
       return { ok: false, reason: `dag_${dag.reason}`, detail: dag.detail };
     }
 
-    const units = dag.units.map((u) => ({ slug: u.name, dependsOn: u.depends_on }));
+    // `kind` (parsed + validated by parseBoltDag) rides into the scheduling
+    // truth: per-unit dispatch prunes a stage's produces_kinds-narrowed
+    // artifacts for units whose kind is not listed. null = untagged (the unit
+    // gets the full artifact matrix).
+    const units = dag.units.map((u) => ({
+      slug: u.name,
+      dependsOn: u.depends_on,
+      kind: u.kind ?? null,
+    }));
     const batches = dag.batches;
 
     // 3. Scheduling truth: UNITPLAN snapshot + UNIT rows (active lanes safe).

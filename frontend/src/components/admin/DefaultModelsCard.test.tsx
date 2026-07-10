@@ -174,4 +174,50 @@ describe('DefaultModelsCard', () => {
     const saveButton = screen.getByRole('button', { name: /Save Models/ });
     expect(saveButton).not.toBeDisabled();
   });
+
+  it('renders the tier grid (three tiers + fallback + quorum) with saved values', async () => {
+    getSettings.mockResolvedValue(
+      defaultSettings({
+        tierModels: { judgment: { claude: 'us.anthropic.claude-opus-4-6' } },
+      }),
+    );
+    getCapabilities.mockResolvedValue(defaultCapabilities());
+
+    render(<DefaultModelsCard />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('admin-tier-model-judgment-claude')).toBeInTheDocument();
+    });
+    for (const row of ['judgment', 'balanced', 'templated', 'fallback', 'quorum']) {
+      expect(screen.getByTestId(`admin-tier-model-${row}-claude`)).toBeInTheDocument();
+    }
+    expect(screen.getByTestId('admin-tier-model-judgment-claude')).toHaveTextContent(
+      'Claude Opus 4.6',
+    );
+  });
+
+  it('saves the edited tier config (canonicalized) alongside the flat models', async () => {
+    getSettings.mockResolvedValue(defaultSettings());
+    getCapabilities.mockRejectedValue(new Error('no models')); // input mode
+    updateSettings.mockResolvedValue({});
+
+    const user = userEvent.setup();
+    render(<DefaultModelsCard />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('admin-tier-model-quorum-claude')).toBeInTheDocument();
+    });
+    await user.type(
+      screen.getByTestId('admin-tier-model-quorum-claude'),
+      'us.anthropic.claude-sonnet-4-6',
+    );
+    await user.click(screen.getByRole('button', { name: /Save Models/ }));
+
+    await waitFor(() => expect(updateSettings).toHaveBeenCalled());
+    expect(updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tierModels: { quorum: { claude: 'us.anthropic.claude-sonnet-4-6' } },
+      }),
+    );
+  });
 });

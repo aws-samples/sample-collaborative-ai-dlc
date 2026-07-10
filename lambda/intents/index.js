@@ -25,6 +25,7 @@ import { buildResponse } from '../shared/response.js';
 import { fetchMembershipRole, projectTrackersFoldStep, mapBinding } from '../shared/trackers.js';
 import { signRealtimeToken } from '../shared/realtime-token.js';
 import { parseCliModels, mergeCliModels } from '../shared/cli-models.js';
+import { parseTierModels, mergeTierModels } from '../shared/tier-models.js';
 import { mergeMcpServers } from '../shared/mcp-validator.js';
 import { loadWorkflowScopes, loadExecutionPlan } from '../shared/v2-workflow-plan.js';
 import { stageInstanceId as planStageInstanceId } from '../shared/v2-execution-plan.js';
@@ -272,6 +273,22 @@ const fetchGlobalCliModels = async () => {
   }
 };
 
+// Read the Admin GLOBAL tier-model config from SSM (written by the agents
+// lambda): per-agent-tier model rows + the fallback/quorum rows. Same
+// best-effort contract as the flat map above.
+const fetchGlobalTierModels = async () => {
+  const prefix = AGENT_SETTINGS_SSM_PREFIX();
+  if (!prefix) return {};
+  try {
+    const res = await ssm.send(
+      new GetParameterCommand({ Name: `${prefix}/tier-models`, WithDecryption: true }),
+    );
+    return parseTierModels(res.Parameter?.Value || '{}');
+  } catch {
+    return {};
+  }
+};
+
 // Read the Admin global custom MCP servers (raw JSON string) from SSM (written
 // by the agents lambda). Merged UNDER the project's custom MCP servers at
 // intent create (project wins by name). Best-effort: any failure yields '{}'.
@@ -358,6 +375,11 @@ const fetchProjectConfig = async (g, projectId) => {
   // agentBlock override > env default — matching what the settings UI advertises.
   const globalCliModels = await fetchGlobalCliModels();
   const cliModels = mergeCliModels(getVal(v, 'cli_models'), globalCliModels);
+  // Tier-model config, merged the same way (project row/CLI wins, global fills
+  // the gaps) and snapshotted alongside: maps each agent's tier to a model per
+  // CLI plus the fallback and Quorum rows. See shared/tier-models.js.
+  const globalTierModels = await fetchGlobalTierModels();
+  const tierModels = mergeTierModels(getVal(v, 'tier_models'), globalTierModels);
   // Custom MCP servers: merge the Admin global set UNDER the project's set
   // (project wins by name). Snapshotted onto the intent as a name-keyed object
   // ({ "<name>": {…} }) which the runtime transforms into the CLI's mcpServers
@@ -388,6 +410,7 @@ const fetchProjectConfig = async (g, projectId) => {
     // snapshotted onto the intent so the run honours the explicit choice.
     agentCli: getVal(v, 'agent_cli') || null,
     cliModels: Object.keys(cliModels).length ? cliModels : null,
+    tierModels: Object.keys(tierModels).length ? tierModels : null,
     customMcpServers: Object.keys(customMcpServers).length ? customMcpServers : null,
     customRules: customRules.length ? customRules : null,
     repos: ordered,
@@ -687,6 +710,7 @@ const mapIntent = (meta) => ({
   rewindFromStageId: meta.rewindFromStageId ?? null,
   agentCli: meta.agentCli ?? null,
   cliModels: meta.cliModels ?? null,
+  tierModels: meta.tierModels ?? null,
   parkReleaseSeconds: meta.parkReleaseSeconds ?? null,
   maxParallelUnits: meta.maxParallelUnits ?? null,
   constructionAutonomyMode: meta.constructionAutonomyMode ?? null,
@@ -946,6 +970,7 @@ export const handler = async (event) => {
                   enrichment: records.meta.deriveEnrichment === 'llm' ? 'llm' : 'off',
                   ...(records.meta.agentCli ? { requestedCli: records.meta.agentCli } : {}),
                   ...(records.meta.cliModels ? { cliModels: records.meta.cliModels } : {}),
+                  ...(records.meta.tierModels ? { tierModels: records.meta.tierModels } : {}),
                 }),
               ),
             }),
@@ -1584,6 +1609,7 @@ export const handler = async (event) => {
         enrichment: meta.deriveEnrichment === 'llm' ? 'llm' : 'off',
         ...(meta.agentCli ? { requestedCli: meta.agentCli } : {}),
         ...(meta.cliModels ? { cliModels: meta.cliModels } : {}),
+        ...(meta.tierModels ? { tierModels: meta.tierModels } : {}),
       };
       try {
         const res = await agentcore.send(
@@ -2135,6 +2161,7 @@ export const handler = async (event) => {
         gitProvider: cfg.gitProvider,
         agentCli: cfg.agentCli,
         cliModels: cfg.cliModels,
+        tierModels: cfg.tierModels,
         customMcpServers: cfg.customMcpServers,
         customRules: cfg.customRules,
         deriveEnrichment: await fetchDeriveEnrichment(),

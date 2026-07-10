@@ -67,7 +67,16 @@ const compileAutonomyProfile = (placements, stagesById) => {
 // ── Stage graph ──
 // Nodes = placed stages; edges = produces→consumes (data) and requires
 // (ordering). Detects cycles and orphan artifacts.
-const stageProduces = (stage) => stage?.produces ?? [];
+// The full output vocabulary: required produces plus `optionalProduces`
+// (V2 ≥2.2.9 — artifacts a stage MAY write, e.g. frontend-components only when
+// a unit has a UI). Optional outputs are real producer edges: a consumer must
+// still be ordered after the producing stage, and a consumed optional artifact
+// is never "dangling" — its absence at runtime is by-design, which the consume
+// edge's own required/conditionalOn semantics already express.
+const stageAllProduces = (stage) => [
+  ...(stage?.produces ?? []),
+  ...(stage?.optionalProduces ?? []),
+];
 const stageConsumes = (stage) =>
   (stage?.consumes ?? []).map((i) => (typeof i === 'object' ? i.artifact : i));
 const stageRequires = (stage) => stage?.requires ?? [];
@@ -108,10 +117,10 @@ const compileStageGraph = (placements, stagesById, artifactsById = null) => {
   });
   const placed = new Set(placements.map((p) => p.stageId));
 
-  // Producer map: artifact → [stageId].
+  // Producer map: artifact → [stageId] (required + optional produces).
   const producers = {};
   for (const p of placements) {
-    for (const artifact of stageProduces(stagesById[p.stageId])) {
+    for (const artifact of stageAllProduces(stagesById[p.stageId])) {
       (producers[artifact] ??= []).push(p.stageId);
     }
   }
@@ -187,7 +196,7 @@ const compileStageGraph = (placements, stagesById, artifactsById = null) => {
     };
     for (const p of placements) {
       const stage = stagesById[p.stageId];
-      for (const a of stageProduces(stage)) flagUnknown(a, p.stageId, 'produces');
+      for (const a of stageAllProduces(stage)) flagUnknown(a, p.stageId, 'produces');
       for (const a of stageConsumes(stage)) flagUnknown(a, p.stageId, 'consumes');
     }
   }

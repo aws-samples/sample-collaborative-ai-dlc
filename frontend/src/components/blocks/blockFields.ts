@@ -29,7 +29,20 @@ export const SIMPLE_BLOCK_FORMS: Partial<Record<BlockType, BlockTypeForm>> = {
   agent: {
     fields: [
       { key: 'displayName', label: 'Display name', kind: 'text', placeholder: 'Architect Agent' },
-      { key: 'modelOverride', label: 'Model override', kind: 'text', placeholder: 'opus | sonnet' },
+      {
+        key: 'tier',
+        label: 'Tier',
+        kind: 'text',
+        placeholder: 'judgment | balanced | templated',
+        help: 'Work-shaped model class (V2 agent frontmatter). The Admin/project tier-model configuration decides which model each tier runs.',
+      },
+      {
+        key: 'modelOverride',
+        label: 'Model override (legacy)',
+        kind: 'text',
+        placeholder: 'opus | sonnet',
+        help: 'Raw model pin from pre-tier baselines. Beats the fallback row but not a tier row or the flat CLI selection.',
+      },
       { key: 'disallowedTools', label: 'Disallowed tools', kind: 'text', placeholder: 'Task' },
       {
         key: 'tools',

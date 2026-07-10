@@ -271,4 +271,20 @@ describe('parseBoltDag', () => {
     const body = '```yaml\nunits:\n  - name: a\n    depends_on: [ghost]\n```';
     expect(parseBoltDag(body)).toMatchObject({ ok: false, reason: 'malformed' });
   });
+  it('parses the optional per-unit kind (null when absent)', () => {
+    const body =
+      '```yaml\nunits:\n  - name: api\n    kind: service\n    depends_on: []\n  - name: docs\n    depends_on: [api]\n```';
+    const r = parseBoltDag(body);
+    expect(r.ok).toBe(true);
+    expect(r.units).toEqual([
+      { name: 'api', depends_on: [], kind: 'service' },
+      { name: 'docs', depends_on: ['api'], kind: null },
+    ]);
+  });
+  it('rejects an unknown kind loudly (never a silent full-matrix)', () => {
+    const body = '```yaml\nunits:\n  - name: api\n    kind: microservice\n    depends_on: []\n```';
+    const r = parseBoltDag(body);
+    expect(r).toMatchObject({ ok: false, reason: 'malformed' });
+    expect(r.detail).toContain('unknown kind "microservice"');
+  });
 });

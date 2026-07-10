@@ -10,6 +10,8 @@ import { runOneShotPrompt } from '../cli/one-shot.js';
 import { closeGraphSource } from '../mcp/graph-writer.js';
 import { materializeKiroAgent, materializeMcpConfig } from '../stage-materializer.js';
 import { parseCliModels } from '../../shared/cli-models.js';
+import { parseTierModels } from '../../shared/tier-models.js';
+import { quorumCliModels } from '../model-resolver.js';
 
 const { cardinality } = gremlin.process;
 const __ = gremlin.process.statics;
@@ -89,25 +91,48 @@ const appendBounded = (parts, text, limit = CONTEXT_LIMIT) => {
 };
 
 const fetchProjectConfig = async (g, projectId) => {
-  const r = await g.V().has('Project', 'id', projectId).valueMap('agent_cli', 'cli_models').next();
-  if (r.done) return { agentCli: null, cliModels: null };
+  const r = await g
+    .V()
+    .has('Project', 'id', projectId)
+    .valueMap('agent_cli', 'cli_models', 'tier_models')
+    .next();
+  if (r.done) return { agentCli: null, cliModels: null, tierModels: null };
   const cliModels = parseCliModels(getVal(r.value, 'cli_models') || '{}');
+  const tierModels = parseTierModels(getVal(r.value, 'tier_models') || '{}');
   return {
     agentCli: getVal(r.value, 'agent_cli') || null,
     cliModels: Object.keys(cliModels).length ? cliModels : null,
+    tierModels: Object.keys(tierModels).length ? tierModels : null,
   };
 };
 
+// The CLI + model selection for a Quorum one-shot: the intent META snapshot
+// when the discussion belongs to a run, else the live project config. The
+// returned cliModels is the QUORUM-effective map (quorum row > flat selection
+// > fallback row) — Quorum surfaces have no agent persona, hence no tier.
 const resolveCliSelection = async ({ store, g, projectId, intentId }) => {
   const meta = await store?.getExecution?.(intentId).catch(() => null);
-  if (meta?.agentCli || meta?.cliModels) {
-    return { requestedCli: meta.agentCli ?? null, cliModels: meta.cliModels ?? null };
+  if (meta?.agentCli || meta?.cliModels || meta?.tierModels) {
+    return {
+      requestedCli: meta.agentCli ?? null,
+      cliModels: quorumCliModels({
+        cliModels: meta.cliModels ?? null,
+        tierModels: meta.tierModels ?? null,
+      }),
+    };
   }
   const project = await fetchProjectConfig(g, projectId).catch(() => ({
     agentCli: null,
     cliModels: null,
+    tierModels: null,
   }));
-  return { requestedCli: project.agentCli, cliModels: project.cliModels };
+  return {
+    requestedCli: project.agentCli,
+    cliModels: quorumCliModels({
+      cliModels: project.cliModels,
+      tierModels: project.tierModels,
+    }),
+  };
 };
 
 const fetchDiscussion = async (g, intentId, discussionId) => {

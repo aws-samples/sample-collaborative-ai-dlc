@@ -216,6 +216,11 @@ const buildExecutionMeta = ({
   // create; the orchestrator forwards it to run-stage (cliModels[cli] is the
   // authoritative model knob — see v2-agent.md). null = use run-stage defaults.
   cliModels = null,
+  // Tier-model config (shared/tier-models.js flat-row shape) snapshotted from
+  // project-over-global at create: maps each agent's tier (judgment | balanced
+  // | templated) to a model per CLI, plus the fallback and Quorum rows. The
+  // orchestrator forwards it on every model-resolving dispatch. null = none.
+  tierModels = null,
   // Custom MCP servers (name-keyed object) snapshotted at create by
   // merging the Admin global set under the project's set (project wins by
   // name); the orchestrator forwards it to run-stage which merges it into the
@@ -309,6 +314,7 @@ const buildExecutionMeta = ({
   gitProvider,
   agentCli,
   cliModels,
+  tierModels,
   customMcpServers,
   customRules,
   deriveEnrichment,
@@ -619,7 +625,9 @@ const buildSteeringRow = ({
 // The UNITPLAN snapshot (docs/v2-parallel.md WP3): frozen on promotion of the
 // approved unit-of-work-dependency artifact. Everything the scheduler needs is
 // HERE (DDB = scheduling truth; bolt-plan prose is never parsed for execution):
-//   units          — [{ slug, dependsOn: [slug] }] from parseBoltDag
+//   units          — [{ slug, dependsOn: [slug], kind }] from parseBoltDag
+//                    (kind: unit-of-work kind or null — drives produces_kinds
+//                    pruning at per-unit dispatch)
 //   batches        — [[slug]] topological waves (the batch-barrier fallback)
 //   skipMatrix     — { [slug]: [stageId] } per-unit CONDITIONAL stages to skip;
 //                    {} (default) = every unit executes every per-unit stage.
@@ -666,6 +674,7 @@ const buildUnitRow = ({
   executionId,
   slug,
   dependsOn = [],
+  kind = null,
   state = 'PENDING',
   batchIndex = 0,
   now,
@@ -676,6 +685,7 @@ const buildUnitRow = ({
   executionId,
   slug,
   dependsOn,
+  kind,
   state,
   batchIndex,
   branch: null,

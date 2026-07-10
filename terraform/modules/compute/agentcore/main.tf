@@ -327,6 +327,7 @@ resource "aws_iam_role_policy" "agentcore" {
           aws_ssm_parameter.bedrock_bearer_token.arn,
           aws_ssm_parameter.kiro_api_key.arn,
           aws_ssm_parameter.cli_models.arn,
+          aws_ssm_parameter.tier_models.arn,
         ]
       },
       {
@@ -391,6 +392,23 @@ resource "aws_ssm_parameter" "cli_models" {
       opencode = can(regex("^amazon-bedrock/", var.bedrock_model)) ? var.bedrock_model : "amazon-bedrock/${var.bedrock_model}"
     } : {}
   ))
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+
+  tags = var.tags
+}
+
+# Tier-model configuration — per-agent-tier model rows (judgment / balanced /
+# templated) plus the fallback row (no tier resolvable) and the Quorum row
+# (discussion/edit one-shots), each a per-CLI JSON map. Managed by the Admin UI
+# at runtime; merged UNDER a project's tier_models at intent create.
+resource "aws_ssm_parameter" "tier_models" {
+  name        = "/${var.project_name}/${var.environment}/tier-models"
+  description = "Agent tier → model configuration incl. fallback + quorum rows (JSON, Admin UI managed)"
+  type        = "String"
+  value       = "{}"
 
   lifecycle {
     ignore_changes = [value]

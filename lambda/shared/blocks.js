@@ -38,6 +38,23 @@ const BLOCK_TYPES = [
 // learning-loop / team-knowledge write-back seam) and is not seeded.
 const KNOWLEDGE_TIERS = ['methodology', 'team'];
 
+// V2's work-shaped agent model classes (≥2.3.1), ordered high→low: `judgment`
+// gets the strongest model, `balanced` a mid model, `templated` the cheapest.
+// An agent's tier picks the row in the admin/project tier-model tables; the
+// concrete model per CLI is deployment configuration, never authored upstream.
+const AGENT_TIERS = ['judgment', 'balanced', 'templated'];
+
+// V2's unit-of-work kinds (≥2.2.18). A stage's `producesKinds` map narrows an
+// artifact to units of these kinds; a unit's `kind` rides in the
+// unit-of-work-dependency DAG block. An untagged unit gets the full artifact
+// matrix; an unlisted artifact applies to every kind.
+const UNIT_KINDS = ['service', 'spec', 'ui', 'packaging', 'library'];
+
+// The one structured activation predicate V2 admits on a stage's `when`
+// (plugin-era, parsed-not-yet-evaluated upstream): the stage activates only
+// when the named artifact has an in-plan producer.
+const WHEN_PREDICATE_KEYS = ['producer-in-plan'];
+
 // V2's rule resolution chain. The three universal layers (org/team/project)
 // apply to every stage; `phase`/`stage` attach by matching the stage's phase /
 // slug. `team-learnings` + `project-learnings` are the two learnings tiers V2's
@@ -173,6 +190,81 @@ const validateTypeFields = (type, input) => {
     ) {
       errors.push('stage reviewerMaxIterations must be a positive integer');
     }
+    // `number` is display-only ordering (V2 2.3.0): `<int>.<int>`, so a plugin
+    // stage can slot between core stages without renumbering them.
+    if (input.number != null && !/^\d+\.\d+$/.test(String(input.number))) {
+      errors.push('stage number must be "<int>.<int>" (display ordering, e.g. "3.85")');
+    }
+    if (input.bundle != null && typeof input.bundle !== 'string') {
+      errors.push('stage bundle must be a string (the contributing plugin name)');
+    }
+    // `when` is a structured activation predicate: exactly one known key with
+    // a non-empty artifact slug value.
+    if (input.when != null) {
+      const keys =
+        typeof input.when === 'object' && !Array.isArray(input.when)
+          ? Object.keys(input.when)
+          : null;
+      if (
+        !keys ||
+        keys.length !== 1 ||
+        !WHEN_PREDICATE_KEYS.includes(keys[0]) ||
+        typeof input.when[keys[0]] !== 'string' ||
+        input.when[keys[0]].trim() === ''
+      ) {
+        errors.push(
+          `stage when must be an object with exactly one of ${WHEN_PREDICATE_KEYS.join(', ')} naming an artifact`,
+        );
+      }
+    }
+    if (
+      input.requiredSections != null &&
+      (!Array.isArray(input.requiredSections) ||
+        input.requiredSections.some((s) => typeof s !== 'string' || s.trim() === ''))
+    ) {
+      errors.push('stage requiredSections must be an array of non-empty strings');
+    }
+    if (
+      input.optionalProduces != null &&
+      (!Array.isArray(input.optionalProduces) ||
+        input.optionalProduces.some((a) => typeof a !== 'string' || a.trim() === ''))
+    ) {
+      errors.push('stage optionalProduces must be an array of artifact names');
+    }
+    // `producesKinds` narrows artifacts to unit kinds: every key must name a
+    // declared output (produces ∪ optionalProduces — an orphan key is a typo
+    // that would silently never prune) and every value a non-empty list of
+    // known kinds.
+    if (input.producesKinds != null) {
+      if (
+        typeof input.producesKinds !== 'object' ||
+        Array.isArray(input.producesKinds) ||
+        Object.keys(input.producesKinds).length === 0
+      ) {
+        errors.push('stage producesKinds must be a non-empty object of artifact → kinds[]');
+      } else {
+        const declared = new Set([
+          ...(Array.isArray(input.produces) ? input.produces : []),
+          ...(Array.isArray(input.optionalProduces) ? input.optionalProduces : []),
+        ]);
+        for (const [artifact, kinds] of Object.entries(input.producesKinds)) {
+          if (!declared.has(artifact)) {
+            errors.push(
+              `producesKinds names "${artifact}" which is not in produces/optionalProduces`,
+            );
+          }
+          if (
+            !Array.isArray(kinds) ||
+            kinds.length === 0 ||
+            kinds.some((k) => !UNIT_KINDS.includes(k))
+          ) {
+            errors.push(
+              `producesKinds["${artifact}"] must be a non-empty array of ${UNIT_KINDS.join(', ')}`,
+            );
+          }
+        }
+      }
+    }
   }
   if (type === 'SENSOR') {
     // Sensors are deterministic-only (V2 reserves `llm` and rejects it at
@@ -201,6 +293,11 @@ const validateTypeFields = (type, input) => {
     }
   }
   if (type === 'AGENT') {
+    // The tier is optional (pre-2.3.1 baselines and user forks may carry a raw
+    // modelOverride pin instead), but a present value must be a known class.
+    if (input.tier != null && !AGENT_TIERS.includes(input.tier)) {
+      errors.push(`agent tier must be one of ${AGENT_TIERS.join(', ')}`);
+    }
     if (input.examples != null && !Array.isArray(input.examples)) {
       errors.push('agent examples must be an array');
     }
@@ -252,6 +349,9 @@ const validateId = (id) => {
 export {
   BLOCK_TYPES,
   KNOWLEDGE_TIERS,
+  AGENT_TIERS,
+  UNIT_KINDS,
+  WHEN_PREDICATE_KEYS,
   RULE_LAYERS,
   RULE_LAYER_PRIORITY,
   STAGE_MODES,
@@ -273,6 +373,9 @@ export {
 export default {
   BLOCK_TYPES,
   KNOWLEDGE_TIERS,
+  AGENT_TIERS,
+  UNIT_KINDS,
+  WHEN_PREDICATE_KEYS,
   RULE_LAYERS,
   RULE_LAYER_PRIORITY,
   STAGE_MODES,

@@ -242,6 +242,79 @@ describe('building-blocks handler', () => {
     expect(ok.status).toBe(201);
   });
 
+  it('validates the plugin-era stage fields (number, when, requiredSections, producesKinds)', async () => {
+    const post = (body) =>
+      handler(event({ method: 'POST', type: 'stage', body })).then((r) => parse(r));
+
+    // Display-only number must be "<int>.<int>".
+    expect((await post({ id: 's-a', name: 'A', number: 'x.y' })).status).toBe(400);
+    // `when` must carry exactly one known predicate with an artifact value.
+    expect((await post({ id: 's-b', name: 'B', when: { nonsense: 'x' } })).status).toBe(400);
+    // requiredSections must be non-empty strings.
+    expect((await post({ id: 's-c', name: 'C', requiredSections: [''] })).status).toBe(400);
+    // producesKinds: orphan key (not in produces/optionalProduces) → 400.
+    expect(
+      (
+        await post({
+          id: 's-d',
+          name: 'D',
+          produces: ['model'],
+          producesKinds: { ghost: ['service'] },
+        })
+      ).status,
+    ).toBe(400);
+    // producesKinds: unknown kind value → 400.
+    expect(
+      (
+        await post({
+          id: 's-e',
+          name: 'E',
+          produces: ['model'],
+          producesKinds: { model: ['microservice'] },
+        })
+      ).status,
+    ).toBe(400);
+
+    // A fully valid plugin-era stage → 201.
+    const ok = await post({
+      id: 's-ok',
+      name: 'OK',
+      number: '3.85',
+      bundle: 'test-pro',
+      when: { 'producer-in-plan': 'unit-of-work-dependency' },
+      produces: ['model'],
+      optionalProduces: ['ui-notes'],
+      producesKinds: { model: ['service'], 'ui-notes': ['ui'] },
+      requiredSections: ['Model'],
+    });
+    expect(ok.status).toBe(201);
+    expect(ok.body.producesKinds).toEqual({ model: ['service'], 'ui-notes': ['ui'] });
+  });
+
+  it('validates the agent tier against the tier enum', async () => {
+    const bad = parse(
+      await handler(
+        event({
+          method: 'POST',
+          type: 'agent',
+          body: { id: 'a-bad', name: 'Bad', tier: 'genius' },
+        }),
+      ),
+    );
+    expect(bad.status).toBe(400);
+    const ok = parse(
+      await handler(
+        event({
+          method: 'POST',
+          type: 'agent',
+          body: { id: 'a-ok', name: 'OK', tier: 'judgment' },
+        }),
+      ),
+    );
+    expect(ok.status).toBe(201);
+    expect(ok.body.tier).toBe('judgment');
+  });
+
   it('validates scope depth and testStrategy against the depth enum', async () => {
     const badDepth = parse(
       await handler(

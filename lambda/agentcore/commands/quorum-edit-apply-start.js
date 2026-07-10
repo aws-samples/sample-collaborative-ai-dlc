@@ -27,6 +27,7 @@ import {
   fetchDownstreamClosure,
 } from '../../shared/artifact-edit.js';
 import { runOneShotPrompt } from '../cli/one-shot.js';
+import { quorumCliModels } from '../model-resolver.js';
 import {
   PLAN_TARGET_DOC_LIMIT,
   REWRITE_DOC_LIMIT,
@@ -132,6 +133,7 @@ export const createQuorumEditApplyStart = ({
       enrichment = 'off',
       requestedCli = null,
       cliModels = null,
+      tierModels = null,
       callbackId,
     } = payload;
     if (!callbackId) return { ok: false, reason: 'missing_callback_id' };
@@ -167,7 +169,13 @@ export const createQuorumEditApplyStart = ({
           projectId,
           editId,
         });
-        const cliArgs = { requestedCli, cliModels, availableClis, env };
+        // Quorum-effective map: quorum row > flat selection > fallback.
+        const cliArgs = {
+          requestedCli,
+          cliModels: quorumCliModels({ cliModels, tierModels }),
+          availableClis,
+          env,
+        };
         const recordSpend = async (out) => {
           if (!out?.metrics) return;
           await store
@@ -374,6 +382,7 @@ export const createQuorumEditApplyStart = ({
                     enrichment,
                     requestedCli,
                     cliModels,
+                    tierModels,
                   });
                 } catch (err) {
                   log(`derive after apply failed (${key}):`, err?.message ?? err);

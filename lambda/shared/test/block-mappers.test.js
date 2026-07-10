@@ -39,6 +39,34 @@ describe('buildFromFiles', () => {
     expect(byId(blocks, 'STAGE', 'functional-design').forEach).toBe('unit-of-work');
   });
 
+  it('maps the plugin-era authoring fields (name/number, defaults when absent)', () => {
+    const fd = byId(blocks, 'STAGE', 'functional-design');
+    expect(fd.name).toBe('Functional Design'); // authored name wins
+    expect(fd.number).toBe('3.1');
+    expect(fd.bundle).toBeNull();
+    expect(fd.when).toBeNull();
+    expect(fd.requiredSections).toEqual(['Business Logic Model']);
+    // A stage without the new fields keeps the derived name + null defaults.
+    const legacy = byId(blocks, 'STAGE', 'application-design');
+    expect(legacy.name).toBe('Application Design');
+    expect(legacy.number).toBeNull();
+    expect(legacy.requiredSections).toEqual([]);
+  });
+
+  it('splits optional_produces from produces and carries produces_kinds', () => {
+    const fd = byId(blocks, 'STAGE', 'functional-design');
+    expect(fd.produces).toEqual(['business-logic-model']);
+    expect(fd.optionalProduces).toEqual(['frontend-components']);
+    expect(fd.producesKinds).toEqual({
+      'business-logic-model': ['service', 'ui', 'library'],
+      'frontend-components': ['ui'],
+    });
+    // Absent on stages that don't declare them.
+    const legacy = byId(blocks, 'STAGE', 'application-design');
+    expect(legacy.optionalProduces).toEqual([]);
+    expect(legacy.producesKinds).toBeNull();
+  });
+
   it('sets humanValidation none only for initialization stages', () => {
     expect(byId(blocks, 'STAGE', 'intent-capture').humanValidation).toBe('required');
   });
@@ -48,7 +76,21 @@ describe('buildFromFiles', () => {
     expect(agent.displayName).toBe('Product Agent');
     expect(agent.examples).toEqual(['roadmap.md', 'personas.md']);
     expect(agent.modelOverride).toBe('opus');
+    expect(agent.tier).toBeNull(); // legacy pin, no tier authored
     expect(agent.body).toContain('# Product Agent');
+  });
+
+  it('maps the agent tier and every model-key era (tier > model > modelOverride)', () => {
+    // ≥2.3.1: `tier` is the model class; no raw pin ships.
+    const architect = byId(blocks, 'AGENT', 'aidlc-architect-agent');
+    expect(architect.tier).toBe('judgment');
+    expect(architect.modelOverride).toBeNull();
+    expect(byId(blocks, 'AGENT', 'aidlc-architecture-reviewer-agent').tier).toBe('balanced');
+    // 2.2.15 renamed modelOverride → model: the raw pin still lands on
+    // modelOverride so a pin at that era keeps resolving.
+    const aws = byId(blocks, 'AGENT', 'aidlc-aws-platform-agent');
+    expect(aws.tier).toBeNull();
+    expect(aws.modelOverride).toBe('sonnet');
   });
 
   it('maps scopes, defaulting testStrategy to depth unless overridden', () => {
@@ -148,6 +190,18 @@ outputs: none
     expect(ids).not.toContain('requirements');
     const components = artifacts.find((a) => a.id === 'components');
     expect(components.terminal).toBe(true);
+    expect(components.optional).toBe(false);
+  });
+
+  it('includes optional_produces in the vocabulary, flagged optional', () => {
+    const artifacts = byType(blocks, 'ARTIFACT');
+    const fc = artifacts.find((a) => a.id === 'frontend-components');
+    expect(fc).toBeTruthy();
+    expect(fc.optional).toBe(true); // only ever optionally produced
+    expect(fc.producedBy).toEqual(['functional-design']);
+    // A required-produced artifact is never optional, even if some OTHER stage
+    // also lists it optionally.
+    expect(artifacts.find((a) => a.id === 'business-logic-model').optional).toBe(false);
   });
 
   it('builds the aidlc-v2 workflow: 5 phases, one placement per stage, rule refs', () => {

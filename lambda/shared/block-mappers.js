@@ -49,10 +49,21 @@ const memoryRuleId = (path) => {
 // ─── Stages ───
 // Frontmatter mirrors V2 1:1; the body is the stage instructions. `consumes`
 // maps conditional_on → conditionalOn so the compiler reads one shape.
+//
+// V2 ≥2.2.9 splits a stage's outputs: `produces` are per-unit REQUIRED (the
+// coverage check fails a run that omits one), `optional_produces` MAY be
+// written (exempt from coverage — a conditional artifact like
+// frontend-components for a UI-less unit is simply absent). `produces_kinds`
+// (V2 2.2.18) narrows an artifact to specific unit kinds so a fan-out only
+// demands it from matching units. `number`/`name`/`bundle`/`when`/
+// `required_sections` are the plugin-era authoring fields (V2 2.3.0): number
+// is display-only ordering, slug stays identity; bundle names the contributing
+// plugin (absent = core); `when` is a structured activation predicate;
+// required_sections lists the H2 sections the stage output must carry.
 const mapStage = (fm, body) => ({
   type: 'STAGE',
   id: fm.slug,
-  name: titleCase(fm.slug),
+  name: fm.name ?? titleCase(fm.slug),
   body,
   phase: fm.phase,
   condition: fm.condition ?? '',
@@ -62,6 +73,8 @@ const mapStage = (fm, body) => ({
   execution: fm.execution,
   forEach: fm.for_each ?? null,
   produces: fm.produces ?? [],
+  optionalProduces: fm.optional_produces ?? [],
+  producesKinds: fm.produces_kinds ?? null,
   consumes: (fm.consumes ?? []).map((c) => {
     const edge = { artifact: c.artifact, required: Boolean(c.required) };
     if (c.conditional_on) edge.conditionalOn = c.conditional_on;
@@ -74,18 +87,29 @@ const mapStage = (fm, body) => ({
   sensors: fm.sensors ?? [],
   reviewer: fm.reviewer ?? null,
   reviewerMaxIterations: fm.reviewer != null ? (fm.reviewer_max_iterations ?? null) : null,
+  number: fm.number != null ? String(fm.number) : null,
+  bundle: fm.bundle ?? null,
+  when: fm.when ?? null,
+  requiredSections: fm.required_sections ?? [],
   // V2 gates every non-initialization stage on human approval.
   humanValidation: fm.phase === 'initialization' ? 'none' : 'required',
 });
 
 // ─── Agents ───
+// `tier` is V2's work-shaped model class (≥2.3.1: judgment | balanced |
+// templated) — the runtime maps it to a concrete model via the admin/project
+// tier-model tables. The model key history is layered for pin-compatibility:
+// `modelOverride` (≤2.2.14) was renamed to `model` (2.2.15) before both were
+// replaced by `tier`; we keep whichever raw pin the ref ships under
+// `modelOverride` so older baselines and user-forked agents keep resolving.
 const mapAgent = (fm, body, id) => ({
   type: 'AGENT',
   id: fm.name ?? id,
   name: fm.display_name ?? titleCase(fm.name ?? id),
   displayName: fm.display_name ?? titleCase(fm.name ?? id),
   description: fm.description ?? '',
-  modelOverride: fm.modelOverride ?? null,
+  tier: fm.tier ?? null,
+  modelOverride: fm.modelOverride ?? fm.model ?? null,
   disallowedTools: fm.disallowedTools ?? null,
   examples: fm.examples ?? [],
   ...(fm.tools ? { tools: fm.tools } : {}),
@@ -189,17 +213,21 @@ const mapTemplate = (fm, body, id) => ({
 
 // ─── Artifacts ───
 // Derived from the stages so the vocabulary can never drift from the graph:
-// one ARTIFACT per distinct produced name, flagged terminal when consumed by
-// no stage.
+// one ARTIFACT per distinct produced name (required OR optional produces),
+// flagged terminal when consumed by no stage. An artifact only ever written
+// via `optional_produces` carries `optional: true` — consumers must treat its
+// absence as normal, not as a missing output.
 const buildArtifacts = (stages) => {
   const consumed = new Set();
   const producedBy = new Map();
+  const requiredSomewhere = new Set();
   for (const s of stages) {
     for (const c of s.consumes) consumed.add(c.artifact);
-    for (const artifact of s.produces) {
+    for (const artifact of [...s.produces, ...(s.optionalProduces ?? [])]) {
       if (!producedBy.has(artifact)) producedBy.set(artifact, []);
       producedBy.get(artifact).push(s.id);
     }
+    for (const artifact of s.produces) requiredSomewhere.add(artifact);
   }
   return [...producedBy.keys()].toSorted().map((artifact) => ({
     type: 'ARTIFACT',
@@ -207,6 +235,7 @@ const buildArtifacts = (stages) => {
     name: titleCase(artifact),
     producedBy: producedBy.get(artifact),
     terminal: !consumed.has(artifact),
+    optional: !requiredSomewhere.has(artifact),
   }));
 };
 
@@ -241,9 +270,11 @@ const topologicalStageOrder = (stages) => {
   const byId = new Map(stages.map((s) => [s.id, s]));
 
   // Producer map: artifact → [stageId], for the produces→consumes data edges.
+  // Optional produces count as data edges too — a consumer of an artifact that
+  // is only conditionally written must still be ordered after its producer.
   const producers = new Map();
   for (const s of stages) {
-    for (const artifact of s.produces ?? []) {
+    for (const artifact of [...(s.produces ?? []), ...(s.optionalProduces ?? [])]) {
       if (!producers.has(artifact)) producers.set(artifact, []);
       producers.get(artifact).push(s.id);
     }

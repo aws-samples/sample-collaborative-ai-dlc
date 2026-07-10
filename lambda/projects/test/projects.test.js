@@ -189,6 +189,7 @@ describe('POST /projects', () => {
       gitProvider: 'github',
       agentCli: 'kiro',
       cliModels: {},
+      tierModels: {},
       issueIntegrationEnabled: false,
       repos: [],
       createdAt: NOW.toISOString(),
@@ -223,6 +224,7 @@ describe('POST /projects', () => {
       gitProvider: 'github',
       agentCli: 'kiro',
       cliModels: {},
+      tierModels: {},
       issueIntegrationEnabled: false,
       repos: [
         {

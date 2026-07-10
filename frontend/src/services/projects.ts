@@ -5,6 +5,13 @@ export type ProjectRole = 'owner' | 'admin' | 'member';
 export type AgentCli = 'kiro' | 'claude' | 'opencode';
 export type RuntimeModelCli = 'kiro' | 'claude' | 'opencode';
 export type CliModels = Partial<Record<RuntimeModelCli, string>>;
+
+// Agent tier → model configuration (flat-row shape, mirroring the backend's
+// shared/tier-models.js). The three tier rows map upstream agents' authored
+// `tier` to a concrete model per CLI; `fallback` applies when no tier
+// resolves; `quorum` drives the Quorum discussion/edit one-shot surfaces.
+export type TierModelRow = 'judgment' | 'balanced' | 'templated' | 'fallback' | 'quorum';
+export type TierModels = Partial<Record<TierModelRow, CliModels>>;
 export type RepoRole =
   | 'primary'
   | 'secondary'
@@ -50,6 +57,7 @@ export interface Project {
   gitRepo: string;
   agentCli: AgentCli;
   cliModels?: CliModels;
+  tierModels?: TierModels;
   issueIntegrationEnabled?: boolean;
   createdAt: string;
   // Stamped by the backend on every settings PUT; legacy projects fall back to
@@ -95,6 +103,7 @@ export interface CreateProjectInput {
   gitRepo: string;
   agentCli?: AgentCli;
   cliModels?: CliModels;
+  tierModels?: TierModels;
   issueIntegrationEnabled?: boolean;
   repos?: { url: string; provider?: string; role?: RepoRole }[];
   // v2 project options. v2 is the only creatable kind: the backend rejects
@@ -114,6 +123,7 @@ export interface UpdateProjectInput {
   gitProvider?: GitProvider;
   agentCli?: AgentCli;
   cliModels?: CliModels;
+  tierModels?: TierModels;
   issueIntegrationEnabled?: boolean;
   // v2 settings (owner/admin tunable).
   workflowId?: string;

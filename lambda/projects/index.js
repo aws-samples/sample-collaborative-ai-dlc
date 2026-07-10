@@ -32,6 +32,7 @@ import {
   fetchMembershipRole,
 } from '../shared/trackers.js';
 import { normalizeCliModels, parseCliModels } from '../shared/cli-models.js';
+import { normalizeTierModels, parseTierModels } from '../shared/tier-models.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { deleteIntentCascade } from '../shared/intent-deletion.js';
 import { isSafeRepo } from '../shared/repo-validation.js';
@@ -1157,6 +1158,7 @@ export const handler = async (event) => {
             gitRepo: derivePrimaryRepo(repos, legacyGitRepo),
             agentCli: getVal(v, 'agent_cli') || 'kiro',
             cliModels: parseCliModels(getVal(v, 'cli_models')),
+            tierModels: parseTierModels(getVal(v, 'tier_models')),
             issueIntegrationEnabled: getVal(v, 'issue_integration_enabled') === 'true',
             createdAt: getVal(v, 'created_at') || new Date().toISOString(),
             // Legacy projects created before updated_at existed fall back to created_at.
@@ -1207,6 +1209,7 @@ export const handler = async (event) => {
               gitRepo: derivePrimaryRepo(repos, legacyGitRepo),
               agentCli: getVal(v, 'agent_cli') || 'kiro',
               cliModels: parseCliModels(getVal(v, 'cli_models')),
+              tierModels: parseTierModels(getVal(v, 'tier_models')),
               issueIntegrationEnabled: getVal(v, 'issue_integration_enabled') === 'true',
               createdAt: getVal(v, 'created_at') || new Date().toISOString(),
               // Legacy projects created before updated_at existed fall back to created_at.
@@ -1280,6 +1283,17 @@ export const handler = async (event) => {
           });
         }
         const cliModels = cliModelsValidation.value;
+        // Per-project tier-model overrides (shared/tier-models.js): merged OVER
+        // the Admin global tier config at intent create (project wins per row
+        // per CLI).
+        const tierModelsValidation = normalizeTierModels(data.tierModels);
+        if (!tierModelsValidation.valid) {
+          return response(400, {
+            error: 'Invalid tierModels configuration',
+            issues: tierModelsValidation.issues,
+          });
+        }
+        const tierModels = tierModelsValidation.value;
 
         // v2 is the only supported project kind: reject explicit v1 creation,
         // and treat an omitted kind as v2. Existing pre-freeze v1 projects are
@@ -1319,6 +1333,7 @@ export const handler = async (event) => {
           .property('git_repo', primaryUrl)
           .property('agent_cli', data.agentCli || 'kiro')
           .property('cli_models', JSON.stringify(cliModels))
+          .property('tier_models', JSON.stringify(tierModels))
           .property('issue_integration_enabled', issueIntegrationEnabled ? 'true' : 'false')
           .property('kind', kind)
           .property('created_by', userId)
@@ -1394,6 +1409,7 @@ export const handler = async (event) => {
           gitRepo: primaryUrl,
           agentCli: data.agentCli || 'kiro',
           cliModels,
+          tierModels,
           issueIntegrationEnabled,
           createdAt,
           updatedAt: createdAt,
@@ -1476,6 +1492,22 @@ export const handler = async (event) => {
             .V()
             .has('Project', 'id', projectId)
             .property(cardinality.single, 'cli_models', JSON.stringify(normalizedCliModels))
+            .next();
+        }
+        let normalizedTierModels;
+        if (data.tierModels !== undefined) {
+          const validation = normalizeTierModels(data.tierModels);
+          if (!validation.valid) {
+            return response(400, {
+              error: 'Invalid tierModels configuration',
+              issues: validation.issues,
+            });
+          }
+          normalizedTierModels = validation.value;
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .property(cardinality.single, 'tier_models', JSON.stringify(normalizedTierModels))
             .next();
         }
         if (data.issueIntegrationEnabled !== undefined) {
@@ -1572,6 +1604,7 @@ export const handler = async (event) => {
           ...data,
           updatedAt,
           ...(normalizedCliModels !== undefined ? { cliModels: normalizedCliModels } : {}),
+          ...(normalizedTierModels !== undefined ? { tierModels: normalizedTierModels } : {}),
           ...(normalizedParkReleaseSeconds !== undefined
             ? { parkReleaseSeconds: normalizedParkReleaseSeconds }
             : {}),

@@ -20,6 +20,7 @@
 import { closeGraphSource } from '../mcp/graph-writer.js';
 import { fetchDownstreamClosure } from '../../shared/artifact-edit.js';
 import { runOneShotPrompt, extractJsonObject } from '../cli/one-shot.js';
+import { quorumCliModels } from '../model-resolver.js';
 import {
   PLAN_CONTEXT_DOC_LIMIT,
   PLAN_TARGET_DOC_LIMIT,
@@ -97,6 +98,7 @@ export const createQuorumEditPlanStart = ({
       requestedByName = '',
       requestedCli = null,
       cliModels = null,
+      tierModels = null,
       callbackId,
     } = payload;
     if (!callbackId) return { ok: false, reason: 'missing_callback_id' };
@@ -160,7 +162,8 @@ export const createQuorumEditPlanStart = ({
             const out = await oneShot({
               prompt,
               requestedCli,
-              cliModels,
+              // Quorum-effective map: quorum row > flat selection > fallback.
+              cliModels: quorumCliModels({ cliModels, tierModels }),
               availableClis,
               env,
               timeoutMs: PLAN_ONE_SHOT_TIMEOUT_MS,

@@ -41,6 +41,7 @@
 // wakes: a superseded gate (cancel/rewind) retires the run with NO writes.
 
 import processKeysPkg from '../shared/v2-process-keys.js';
+import { stageIsNoopForUnit } from '../shared/unit-kind-pruning.js';
 
 const { CONSTRUCTION_AUTONOMY_MODES } = processKeysPkg;
 
@@ -312,6 +313,7 @@ export const runParallelSection = async (segment, toolkit) => {
     // Forwarded to the conflict-resolution stage's CLI run (WP6).
     requestedCli = null,
     cliModels = null,
+    tierModels = null,
     // Derive-time enrichment mode ('off'|'llm'), snapshotted on META — rides
     // the lane derive-artifacts dispatches like the once-per-workflow hook.
     deriveEnrichment = 'off',
@@ -509,10 +511,18 @@ export const runParallelSection = async (segment, toolkit) => {
 
       // The section's stages, in plan order, per-unit instances (WP4 model).
       for (const stage of segment.stages) {
-        const skipped =
+        // Two deterministic per-unit skips, both recorded as SKIPPED rows:
+        //   - the human-approved skip matrix (CONDITIONAL stages only);
+        //   - kind pruning (produces_kinds): every required output of the
+        //     stage is narrowed to kinds this unit is not — the stage has
+        //     nothing to produce for this unit and never spawns.
+        const matrixSkipped =
           (decisions.skipMatrix[slug] ?? []).includes(stage.stageId) &&
           stage.execution === 'CONDITIONAL';
-        if (skipped) {
+        const kindSkipped =
+          !matrixSkipped &&
+          stageIsNoopForUnit(stage.outputArtifacts, stage.producesKinds, unit?.kind ?? null);
+        if (matrixSkipped || kindSkipped) {
           await laneCtx.step(`skip-${stage.stageId}-u-${slug}${rTag}`, async () => {
             try {
               await store.putStage({
@@ -531,7 +541,9 @@ export const runParallelSection = async (segment, toolkit) => {
             laneCtx,
             `skip-event-${stage.stageId}-u-${slug}${rTag}`,
             'v2.stage.skipped',
-            `Stage ${stage.stageId} skipped for unit ${slug} (approved skip matrix)`,
+            matrixSkipped
+              ? `Stage ${stage.stageId} skipped for unit ${slug} (approved skip matrix)`
+              : `Stage ${stage.stageId} skipped for unit ${slug} (no artifacts apply to kind "${unit?.kind}")`,
             { unitSlug: slug },
           );
           continue;
@@ -574,6 +586,7 @@ export const runParallelSection = async (segment, toolkit) => {
                   unitSlug: slug,
                   ...(requestedCli ? { requestedCli } : {}),
                   ...(cliModels ? { cliModels } : {}),
+                  ...(tierModels ? { tierModels } : {}),
                 },
                 laneSession,
               ),
@@ -663,6 +676,7 @@ export const runParallelSection = async (segment, toolkit) => {
               ...(cloneBase.gitAuthor ? { gitAuthor: cloneBase.gitAuthor } : {}),
               requestedCli,
               ...(cliModels ? { cliModels } : {}),
+              ...(tierModels ? { tierModels } : {}),
             },
             laneSession,
           ),

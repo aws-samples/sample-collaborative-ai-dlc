@@ -2289,6 +2289,56 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
     expect(res).toMatchObject({ ok: false, reason: 'unit_required' });
   });
 
+  it('prunes produces_kinds-narrowed artifacts from the contract for a non-matching unit kind', async () => {
+    // billing is a `service` unit; ui-code only applies to ui units → pruned
+    // from the materialized contract + recorded as a contract_pruned event.
+    let seen = null;
+    const lib = unitLibrary();
+    lib.stagesById['code-generation'].produces = ['service-code', 'ui-code'];
+    lib.stagesById['code-generation'].producesKinds = { 'ui-code': ['ui'] };
+    const deps = unitDeps({
+      store: spyStore({
+        unitPlan: {
+          units: [
+            { slug: 'auth', dependsOn: [], kind: null },
+            { slug: 'billing', dependsOn: ['auth'], kind: 'service' },
+          ],
+        },
+      }),
+      loadLibrary: async () => ({ workflow: unitWorkflow(), library: lib }),
+      materializeStage: async ({ stage }) => {
+        seen = stage.outputArtifacts.map((o) => o.artifact);
+        return { prompt: 'P', mcpConfigPath: '/ws/.aidlc/mcp.json' };
+      },
+    });
+    const res = await runStage(unitArgs, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(seen).toEqual(['service-code']);
+    const pruned = deps.store.calls
+      .filter((c) => c[0] === 'appendEvent')
+      .map((c) => c[1])
+      .find((e) => e.type === 'v2.stage.contract_pruned');
+    expect(pruned.summary).toContain('ui-code');
+  });
+
+  it('an untagged unit keeps the full contract (no pruning, no event)', async () => {
+    let seen = null;
+    const lib = unitLibrary();
+    lib.stagesById['code-generation'].produces = ['service-code', 'ui-code'];
+    lib.stagesById['code-generation'].producesKinds = { 'ui-code': ['ui'] };
+    const deps = unitDeps({
+      loadLibrary: async () => ({ workflow: unitWorkflow(), library: lib }),
+      materializeStage: async ({ stage }) => {
+        seen = stage.outputArtifacts.map((o) => o.artifact);
+        return { prompt: 'P', mcpConfigPath: '/ws/.aidlc/mcp.json' };
+      },
+    });
+    await runStage(unitArgs, deps); // UNIT_PLAN units carry no kind
+    expect(seen).toEqual(['service-code', 'ui-code']);
+    const events = deps.store.calls.filter((c) => c[0] === 'appendEvent').map((c) => c[1]);
+    expect(events.find((e) => e.type === 'v2.stage.contract_pruned')).toBeUndefined();
+  });
+
   it('fails unit_not_applicable when a once-per-workflow stage gets a unit', async () => {
     const deps = unitDeps();
     const res = await runStage(

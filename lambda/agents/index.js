@@ -27,6 +27,7 @@ import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { buildResponse } from '../shared/response.js';
 import { requirePlatformAdmin, isPlatformAdmin } from '../shared/authz.js';
 import { normalizeCliModels, parseCliModels } from '../shared/cli-models.js';
+import { normalizeTierModels, parseTierModels } from '../shared/tier-models.js';
 import { validateMcpServersJson } from '../shared/mcp-validator.js';
 import { listClaudeModels } from '../shared/bedrock-models.js';
 import { refreshPricing } from '../shared/model-pricing.js';
@@ -165,6 +166,7 @@ export const handler = async (event) => {
       const bearerPath = `${prefix}/bedrock-bearer-token`;
       const kiroApiKeyPath = `${prefix}/kiro-api-key`;
       const cliModelsPath = `${prefix}/cli-models`;
+      const tierModelsPath = `${prefix}/tier-models`;
       const deriveEnrichmentPath = `${prefix}/derive-enrichment`;
       const customMcpServersPath = `${prefix}/custom-mcp-servers`;
       const stageSkippingPath = `${prefix}/stage-skipping`;
@@ -175,6 +177,7 @@ export const handler = async (event) => {
               bearerPath,
               kiroApiKeyPath,
               cliModelsPath,
+              tierModelsPath,
               deriveEnrichmentPath,
               customMcpServersPath,
               stageSkippingPath,
@@ -187,6 +190,9 @@ export const handler = async (event) => {
         const bearerToken = byName[bearerPath] || '';
         const kiroApiKey = byName[kiroApiKeyPath] || '';
         const cliModels = parseCliModels(byName[cliModelsPath] || '{}');
+        // Tier-model config: per-agent-tier model rows (judgment/balanced/
+        // templated) + the fallback and Quorum rows (shared/tier-models.js).
+        const tierModels = parseTierModels(byName[tierModelsPath] || '{}');
         const deriveEnrichment = byName[deriveEnrichmentPath] === 'llm' ? 'llm' : 'off';
         // Platform stage-skipping toggle (shared/stage-skip.js): fail-safe to
         // 'disabled' — anything but an explicit 'enabled' means off.
@@ -213,6 +219,7 @@ export const handler = async (event) => {
           bedrockBearerTokenSet: bearerToken !== '' && bearerToken !== 'placeholder',
           kiroApiKeySet: kiroApiKey !== '' && kiroApiKey !== 'placeholder',
           cliModels,
+          tierModels,
           deriveEnrichment,
           stageSkipping,
           customMcpServers,
@@ -287,6 +294,33 @@ export const handler = async (event) => {
         } catch (err) {
           console.error('[settings] Failed to write CLI models:', err.message);
           errors.push('cliModels: ' + err.message);
+        }
+      }
+
+      if (input.tierModels !== undefined) {
+        // Tier-model config: what model each agent tier (judgment/balanced/
+        // templated) runs per CLI, plus the fallback row (no tier resolvable)
+        // and the Quorum row (discussion/edit one-shots). Validated with the
+        // same per-CLI rules as the flat map.
+        const validation = normalizeTierModels(input.tierModels);
+        if (!validation.valid) {
+          return response(400, {
+            error: 'Invalid tier model configuration',
+            issues: validation.issues,
+          });
+        }
+        try {
+          await ssm.send(
+            new PutParameterCommand({
+              Name: `${prefix}/tier-models`,
+              Value: JSON.stringify(validation.value),
+              Type: 'String',
+              Overwrite: true,
+            }),
+          );
+        } catch (err) {
+          console.error('[settings] Failed to write tier models:', err.message);
+          errors.push('tierModels: ' + err.message);
         }
       }
 

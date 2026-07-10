@@ -191,7 +191,9 @@ export const createSensorRunner = ({
       const evalled = evalGraphCoverage(coverage);
       return { result: evalled.result, detail: evalled.detail };
     }
-    const produced = (outputArtifacts ?? []).map((o) => o.artifact).filter(Boolean);
+    const produced = (outputArtifacts ?? [])
+      .map((o) => ({ artifact: o?.artifact ?? o, optional: Boolean(o?.optional) }))
+      .filter((o) => o.artifact);
     if (produced.length === 0) {
       return {
         result: SENSOR_RESULT.INCONCLUSIVE,
@@ -200,12 +202,15 @@ export const createSensorRunner = ({
     }
     const details = [];
     let worst = SENSOR_RESULT.PASS;
-    for (const artifactType of produced) {
+    for (const { artifact: artifactType, optional } of produced) {
       // The agent ids artifacts however it likes; look them all up by type.
       const rows = await graph
         .lookupArtifacts({ artifactType, includeContent: true })
         .catch(() => []);
       if (!rows.length) {
+        // An absent OPTIONAL artifact is by-design (the stage MAY write it) —
+        // no finding, no verdict downgrade. Only required outputs count.
+        if (optional) continue;
         details.push({ artifact: artifactType, reason: 'not found in graph' });
         if (worst === SENSOR_RESULT.PASS) worst = SENSOR_RESULT.INCONCLUSIVE;
         continue;

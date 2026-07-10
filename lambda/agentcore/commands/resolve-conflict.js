@@ -93,6 +93,7 @@ export const resolveConflict = async (
     gitAuthor = null,
     requestedCli,
     cliModels = {},
+    tierModels = null,
     workspaceDir,
   },
   deps,
@@ -177,7 +178,7 @@ export const resolveConflict = async (
           : `available: ${availableClis.join(', ') || 'none'}`,
       };
     }
-    const model = resolveStageModel({ cliModels, agentBlock: null, cli, env });
+    const model = resolveStageModel({ cliModels, tierModels, agentBlock: null, cli, env });
     // role=reviewer: the read-only MCP tool set — no ask_question (a conflict
     // resolution must never park), no artifact writes. Claude REQUIRES an
     // --mcp-config path; Kiro discovers its agent config from the workspace.

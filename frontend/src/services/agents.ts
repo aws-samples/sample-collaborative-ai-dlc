@@ -1,6 +1,6 @@
 import { api } from './api';
 import type { StructuredQuestion, StructuredAnswer } from './questions';
-import type { AgentCli, CliModels } from './projects';
+import type { AgentCli, CliModels, TierModels } from './projects';
 
 export interface AgentExecution {
   executionArn: string;
@@ -82,6 +82,10 @@ export interface AgentSettings {
   kiroApiKeySet: boolean;
   /** Default runtime model overrides by supported CLI */
   cliModels?: CliModels;
+  /** Agent tier → model configuration: judgment/balanced/templated rows plus
+   *  the fallback row (no tier resolvable) and the Quorum row (discussion/edit
+   *  one-shots). Each row is a per-CLI model map. */
+  tierModels?: TierModels;
   /** Derive-time graph enrichment: 'off' = deterministic projection only,
    *  'llm' = one bounded agent-CLI summary call per approved artifact.
    *  Snapshotted per intent at create — flips apply to the NEXT intent. */
@@ -108,6 +112,8 @@ export interface AgentSettingsUpdate {
   kiroApiKey?: string;
   /** Default runtime model overrides by supported CLI */
   cliModels?: CliModels;
+  /** Agent tier → model configuration. Omit to leave unchanged. */
+  tierModels?: TierModels;
   /** Derive-time graph enrichment mode. Omit to leave unchanged. */
   deriveEnrichment?: 'off' | 'llm';
   /** Platform-wide stage skipping mode. Omit to leave unchanged. */

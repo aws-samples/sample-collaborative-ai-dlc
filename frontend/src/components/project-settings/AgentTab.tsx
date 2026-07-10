@@ -20,6 +20,7 @@ import {
   type AgentCli,
   type CliModels,
   type RuntimeModelCli,
+  type TierModels,
 } from '@/services/projects';
 import { agentsService, type AgentModel, type RuntimeCliStatus } from '@/services/agents';
 import { invalidateProjects } from '@/hooks/useProjectsCache';
@@ -28,6 +29,7 @@ import { ConfigStatusBadge } from '@/components/settings/ConfigStatusBadge';
 import { SaveStatusButton, type SaveResult } from '@/components/settings/SaveStatusButton';
 import { CustomMcpServersSection } from '@/components/settings/CustomMcpServersSection';
 import { CustomRulesSection } from '@/components/settings/CustomRulesSection';
+import { TierModelsSection, canonicalTierModels } from '@/components/settings/TierModelsSection';
 import type { CustomRule } from '@/services/projects';
 
 const AGENT_CLI_CONFIG: Record<AgentCli, { label: string; description: string }> = {
@@ -97,6 +99,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
   const [cliError, setCliError] = useState<string | null>(null);
 
   const [editCliModels, setEditCliModels] = useState<CliModels>(project.cliModels || {});
+  const [editTierModels, setEditTierModels] = useState<TierModels>(project.tierModels || {});
   const [savingModels, setSavingModels] = useState(false);
   const [modelsResult, setModelsResult] = useState<SaveResult>(null);
   const [modelsError, setModelsError] = useState<string | null>(null);
@@ -190,10 +193,13 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
     try {
       const saved = await projectsService.update(project.id, {
         cliModels: editCliModels,
+        tierModels: canonicalTierModels(editTierModels),
       });
       const nextModels = saved.cliModels || editCliModels;
+      const nextTierModels = saved.tierModels || canonicalTierModels(editTierModels);
       setEditCliModels(nextModels);
-      onProjectUpdated({ cliModels: nextModels });
+      setEditTierModels(nextTierModels);
+      onProjectUpdated({ cliModels: nextModels, tierModels: nextTierModels });
       setModelsResult('saved');
     } catch (err) {
       setModelsError(err instanceof Error ? err.message : 'Failed to update model override');
@@ -396,6 +402,25 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
             </span>
             <span className="text-muted-foreground"> · </span>
             <span className="font-mono">{effectiveModelFor(editAgentCli)}</span>
+          </div>
+          {/* Per-tier overrides — win row/CLI-wise over the Admin tier config. */}
+          <div className="space-y-2 border-t pt-4">
+            <div>
+              <h4 className="text-sm font-medium text-foreground">Tier model overrides</h4>
+              <p className="text-xs text-muted-foreground">
+                Optional per-tier models for this project — unset cells inherit the Admin tier
+                configuration.
+              </p>
+            </div>
+            <TierModelsSection
+              value={editTierModels}
+              onChange={setEditTierModels}
+              modelOptions={modelOptions}
+              modelsLoaded={runtimeClis !== null || Object.keys(modelOptions).length > 0}
+              disabled={!canEdit || savingModels}
+              idPrefix="project"
+              unsetLabel="Inherit global"
+            />
           </div>
           {canEdit ? (
             <SaveStatusButton

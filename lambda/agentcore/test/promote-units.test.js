@@ -91,9 +91,9 @@ describe('promoteUnits', () => {
       expect.objectContaining({
         executionId: 'e1',
         units: [
-          { slug: 'auth', dependsOn: [] },
-          { slug: 'catalog', dependsOn: [] },
-          { slug: 'checkout', dependsOn: ['auth', 'catalog'] },
+          { slug: 'auth', dependsOn: [], kind: null },
+          { slug: 'catalog', dependsOn: [], kind: null },
+          { slug: 'checkout', dependsOn: ['auth', 'catalog'], kind: null },
         ],
         batches: [['auth', 'catalog'], ['checkout']],
         sourceArtifactId: 'art-dag-1',
@@ -130,9 +130,9 @@ describe('promoteUnits', () => {
     const res = await promoteUnits(basePayload, deps);
     expect(writer.mirrorUnitDag).toHaveBeenCalledWith({
       units: [
-        { slug: 'auth', dependsOn: [] },
-        { slug: 'catalog', dependsOn: [] },
-        { slug: 'checkout', dependsOn: ['auth', 'catalog'] },
+        { slug: 'auth', dependsOn: [], kind: null },
+        { slug: 'catalog', dependsOn: [], kind: null },
+        { slug: 'checkout', dependsOn: ['auth', 'catalog'], kind: null },
       ],
       sourceArtifactId: 'art-dag-1',
     });

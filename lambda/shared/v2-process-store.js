@@ -1093,12 +1093,14 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     for (const u of units) {
       const slug = u.slug ?? u.name;
       const dependsOn = u.dependsOn ?? u.depends_on ?? [];
+      const kind = u.kind ?? null;
       const row = bySlug.get(slug);
       if (!row) {
         const item = buildUnitRow({
           executionId,
           slug,
           dependsOn,
+          kind,
           state: 'PENDING',
           batchIndex: batchIndexOf(slug),
           now: now(),
@@ -1114,10 +1116,11 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
             TableName: table(),
             Key: unitKey(executionId, slug),
             UpdateExpression:
-              'SET dependsOn = :deps, batchIndex = :bi, #state = :state, updatedAt = :ts, GSI2SK = :g2sk',
+              'SET dependsOn = :deps, kind = :kind, batchIndex = :bi, #state = :state, updatedAt = :ts, GSI2SK = :g2sk',
             ExpressionAttributeNames: { '#state': 'state' },
             ExpressionAttributeValues: {
               ':deps': dependsOn,
+              ':kind': kind,
               ':bi': batchIndexOf(slug),
               ':state': 'PENDING',
               ':ts': ts,

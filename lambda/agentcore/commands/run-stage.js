@@ -63,6 +63,7 @@ import {
   stageInstanceId as planStageInstanceId,
   UNIT_FOR_EACH,
 } from '../../shared/v2-execution-plan.js';
+import { pruneOutputArtifactsForUnit } from '../../shared/unit-kind-pruning.js';
 // The typed-extraction registry gates the platform-injected graph-coverage
 // sensor: only stages that produce a registered structured artifact get it.
 import { REGISTRY } from '../../shared/artifact-extractors.js';
@@ -337,6 +338,7 @@ const runReviewer = async ({
   round,
   cli,
   cliModels,
+  tierModels,
   env,
   workspaceDir,
   spawnFn,
@@ -353,7 +355,7 @@ const runReviewer = async ({
   ids,
 }) => {
   const driver = getDriver(cli);
-  const model = resolveStageModel({ cliModels, agentBlock: reviewerBlock, cli, env });
+  const model = resolveStageModel({ cliModels, tierModels, agentBlock: reviewerBlock, cli, env });
   const scope = {
     executionId,
     intentId,
@@ -807,6 +809,11 @@ export const runStage = async (
     skipStageIds = [],
     requestedCli,
     cliModels = {},
+    // Tier-model config (shared/tier-models.js flat-row shape), snapshotted on
+    // the intent META and forwarded by the orchestrator: maps the lead/reviewer
+    // agent's `tier` to a concrete model per CLI, plus the fallback row. The
+    // flat cliModels selection above still wins per CLI (legacy precedence).
+    tierModels = null,
     // Custom MCP servers (name-keyed object) merged into the CLI's mcpServers map,
     // and custom agent rules ([{filename, s3Key}]) fetched from S3 into the
     // agent context. Both snapshotted onto the intent and forwarded by the
@@ -1006,7 +1013,8 @@ export const runStage = async (
 
   const resolved = resolveStage({ workflow, library, scope: { scope }, stageId, skipStageIds });
   if (resolved.error) return fail(null, resolved.error, JSON.stringify(resolved.detail));
-  const { stage, plan } = resolved;
+  const { plan } = resolved;
+  let stage = resolved.stage;
 
   // Unit-lane invariants (docs/v2-parallel.md WP4). A `forEach: unit-of-work`
   // stage exists ONLY as per-unit instances — dispatching it without a unit
@@ -1048,6 +1056,30 @@ export const runStage = async (
         'unit_not_found',
         `unit "${unitSlug}" is not in the promoted unit plan`,
       );
+    }
+    // Kind pruning (produces_kinds): narrow the output contract to what this
+    // unit's kind actually calls for — the pruned artifacts vanish from the
+    // prompt, the sensors, and the reviewer alike, so the agent is never
+    // asked to produce (nor judged on) an artifact that does not apply. The
+    // all-required-pruned case never reaches here: the lane scheduler skips
+    // that dispatch entirely.
+    const prunedContract = pruneOutputArtifactsForUnit(
+      stage.outputArtifacts,
+      stage.producesKinds,
+      unit.kind ?? null,
+    );
+    if (prunedContract.pruned.length > 0) {
+      stage = { ...stage, outputArtifacts: prunedContract.outputs };
+      await store
+        .appendEvent({
+          executionId,
+          type: 'v2.stage.contract_pruned',
+          stageInstanceId,
+          unitSlug,
+          actor: 'agentcore',
+          summary: `Output contract pruned for unit ${unitSlug} (kind "${unit.kind}"): ${prunedContract.pruned.join(', ')} do(es) not apply`,
+        })
+        .catch(() => {});
     }
   }
   // Human-readable stage label for event summaries — carries the lane so the
@@ -1228,11 +1260,12 @@ export const runStage = async (
   const freshRun = !resumeFrom || demotedResume;
 
   // Resolve the model now that `cli` is known: the project's per-CLI Admin
-  // selection wins, then the stage/agent block's modelOverride, then the static
+  // selection wins, then the agent's tier row (tier-models config), then the
+  // agent block's legacy modelOverride, then the fallback row, then the static
   // env default; bare tier aliases (opus/sonnet) resolve to full region-prefixed
   // Bedrock ids. Resolved here (before the RUNNING write) so it's persisted on the
   // stage row + threaded to the MCP scope for read-time token pricing.
-  const model = resolveStageModel({ cliModels, agentBlock, cli, env });
+  const model = resolveStageModel({ cliModels, tierModels, agentBlock, cli, env });
   const stageScope = {
     executionId,
     intentId,
@@ -1897,6 +1930,7 @@ export const runStage = async (
         round,
         cli,
         cliModels,
+        tierModels,
         env,
         workspaceDir,
         spawnFn,
