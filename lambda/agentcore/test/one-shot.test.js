@@ -3,10 +3,13 @@ import { runOneShotPrompt, parseClaudeOneShot, extractJsonObject } from '../cli/
 import { EventEmitter } from 'node:events';
 
 // Fake child factory for captureChild: emits the given stdout/stderr then closes.
+// `stdin.end` records the piped prompt so tests can assert it goes on stdin (not
+// argv) — the ARG_MAX/E2BIG fix.
 const fakeChild = ({ exitCode = 0, stdout = '', stderr = '' } = {}) => {
   const child = new EventEmitter();
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
+  child.stdin = { end: (v) => (child.stdinData = v) };
   setImmediate(() => {
     if (stdout) child.stdout.emit('data', Buffer.from(stdout));
     if (stderr) child.stderr.emit('data', Buffer.from(stderr));
@@ -71,12 +74,14 @@ describe('runOneShotPrompt', () => {
 
   it('runs claude without an mcp-config and parses text + tokens', async () => {
     let argv;
+    let child;
     const spawnFn = vi.fn((command, args) => {
       argv = { command, args };
-      return fakeChild({
+      child = fakeChild({
         stdout:
           '{"type":"result","result":"{\\"gist\\":\\"the gist\\"}","usage":{"input_tokens":50,"output_tokens":10}}',
       });
+      return child;
     });
     const out = await runOneShotPrompt({
       prompt: 'summarize',
@@ -96,6 +101,9 @@ describe('runOneShotPrompt', () => {
     expect(argv.args).toContain('--model');
     // The resolver region-prefixes bare aliases but passes full ids through.
     expect(argv.args[argv.args.indexOf('--model') + 1]).toBe('us.anthropic.claude-haiku-4-5');
+    // The prompt is piped on stdin, never on argv (ARG_MAX / E2BIG fix).
+    expect(argv.args).not.toContain('summarize');
+    expect(child.stdinData).toBe('summarize');
   });
 
   it('passes an optional claude mcp-config through to the driver', async () => {

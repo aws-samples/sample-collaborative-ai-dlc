@@ -220,6 +220,10 @@ export const resolveConflict = async (
         spawnFn,
       });
     } catch (e) {
+      console.error(
+        `[resolve-conflict] cli_error cli=${cli} code=${e?.code ?? '-'} msg=${e?.message}`,
+      );
+      if (e?.stack) console.error(e.stack);
       await abortAll(conflictedByRepo, dirFor);
       return { ok: false, reason: 'cli_error', detail: e.message };
     } finally {

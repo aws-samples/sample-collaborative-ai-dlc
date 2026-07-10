@@ -29,18 +29,29 @@ export const runChild = ({
   onStdout = null,
   spawnFn = spawn,
 }) =>
-  new Promise((resolve) => {
+  new Promise((resolve, reject) => {
     const capture = captureStderrTail > 0;
-    const child = spawnFn(command, args, {
-      cwd,
-      env: { ...process.env, ...env },
-      shell: false,
-      stdio: [
-        promptViaStdin ? 'pipe' : 'ignore',
-        onStdout ? 'pipe' : 'inherit',
-        capture ? 'pipe' : 'inherit',
-      ],
-    });
+    const mergedEnv = { ...process.env, ...env };
+    let child;
+    try {
+      child = spawnFn(command, args, {
+        cwd,
+        env: mergedEnv,
+        shell: false,
+        stdio: [
+          promptViaStdin ? 'pipe' : 'ignore',
+          onStdout ? 'pipe' : 'inherit',
+          capture ? 'pipe' : 'inherit',
+        ],
+      });
+    } catch (e) {
+      // spawn() throws SYNCHRONOUSLY for E2BIG (argv/env too large) — it never
+      // reaches child.on('error'). Log the code loudly, then reject so the
+      // runner's catch maps it to cli_error (was previously an invisible throw).
+      console.error(`[spawn:error] runChild command=${command} code=${e?.code} msg=${e?.message}`);
+      reject(e);
+      return;
+    }
     let stderrTail = '';
     if (onStdout) {
       child.stdout?.on('data', (c) => {
@@ -75,7 +86,9 @@ export const runChild = ({
 // Run a short command and CAPTURE its stdout — used for the Kiro post-run session
 // id capture (`--list-sessions --format json`), which the long-lived runChild
 // can't do (it inherits stdout to the log). `captureStderr` additionally buffers
-// stderr (kiro-cli prints its `/usage` report there). `timeoutMs` (optional)
+// stderr (kiro-cli prints its `/usage` report there). The prompt is either on
+// argv (default) or piped on stdin (promptViaStdin) — the one-shot path pipes it
+// so a large prompt never overflows ARG_MAX (spawn E2BIG). `timeoutMs` (optional)
 // SIGKILLs a hung child — one-shot LLM calls must never wedge the derive
 // command or the backfill route. Resolves { exitCode, stdout, stderr,
 // timedOut }; a spawn error yields { exitCode: null, stdout: '', stderr: '' }
@@ -85,17 +98,31 @@ export const captureChild = ({
   args,
   env,
   cwd,
+  prompt,
+  promptViaStdin = false,
   captureStderr = false,
   timeoutMs = 0,
   spawnFn = spawn,
 }) =>
   new Promise((resolve) => {
-    const child = spawnFn(command, args, {
-      cwd,
-      env: { ...process.env, ...env },
-      shell: false,
-      stdio: ['ignore', 'pipe', captureStderr ? 'pipe' : 'inherit'],
-    });
+    const mergedEnv = { ...process.env, ...env };
+    let child;
+    try {
+      child = spawnFn(command, args, {
+        cwd,
+        env: mergedEnv,
+        shell: false,
+        stdio: [promptViaStdin ? 'pipe' : 'ignore', 'pipe', captureStderr ? 'pipe' : 'inherit'],
+      });
+    } catch (e) {
+      // E2BIG throws synchronously here too. Log + degrade (this path resolves
+      // rather than rejects — the caller treats exitCode null as a soft failure).
+      console.error(
+        `[spawn:error] captureChild command=${command} code=${e?.code} msg=${e?.message}`,
+      );
+      resolve({ exitCode: null, stdout: '', stderr: '', timedOut: false });
+      return;
+    }
     let stdout = '';
     child.stdout?.on('data', (c) => (stdout += c.toString()));
     let stderr = '';
@@ -127,4 +154,11 @@ export const captureChild = ({
     }
     child.on('error', () => finish(null));
     child.on('close', (code) => finish(code));
+    if (promptViaStdin) {
+      try {
+        child.stdin?.end(prompt ?? '');
+      } catch {
+        /* stdin may already be closed */
+      }
+    }
   });

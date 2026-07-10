@@ -1133,12 +1133,15 @@ describe('runStage — resume mode', () => {
     stdin: { end() {} },
   });
 
-  // Capture the argv the resume invocation produced.
+  // Capture the argv AND the prompt piped on stdin the resume invocation produced.
   const captureArgv = () => {
     let captured = null;
     const spawnFn = (command, args) => {
-      captured = { command, args };
-      return { on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)), stdin: { end() {} } };
+      captured = { command, args, prompt: null };
+      return {
+        on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
+        stdin: { end: (v) => (captured.prompt = v) },
+      };
     };
     return { spawnFn, get: () => captured };
   };
@@ -1162,9 +1165,9 @@ describe('runStage — resume mode', () => {
     expect(cap.get().command).toBe('claude');
     expect(cap.get().args).toContain('--resume');
     expect(cap.get().args).toContain('sess-7');
-    // The answer text reached the prompt (-p arg).
-    const pi = cap.get().args.indexOf('-p');
-    expect(cap.get().args[pi + 1]).toMatch(/MVP/);
+    // The answer text reached the prompt — piped on stdin, not argv (E2BIG fix).
+    expect(cap.get().args).toContain('-p');
+    expect(cap.get().prompt).toMatch(/MVP/);
     // A resumed event was recorded.
     expect(
       deps.store.calls.some((c) => c[0] === 'appendEvent' && c[1].type === 'v2.stage.resumed'),
@@ -1707,9 +1710,11 @@ describe('consumePendingSteering — CAS delivery at the injection point', () =>
 });
 
 describe('runStage — steering reaches the agent conversation', () => {
-  const okSpawn = () => ({
+  // The prompt is piped on stdin (E2BIG fix), so steering assertions capture the
+  // stdin write, not argv. This spawn records it into `sink.prompt`.
+  const captureStdinSpawn = (sink) => () => ({
     on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
-    stdin: { end() {} },
+    stdin: { end: (v) => (sink.prompt = v) },
   });
 
   // spyStore + the steering surface: pending rows are handed out once, then
@@ -1730,7 +1735,7 @@ describe('runStage — steering reaches the agent conversation', () => {
   };
 
   it('prepends the correction block to a FRESH stage prompt and marks it consumed', async () => {
-    let argv = null;
+    const sink = {};
     const store = steeringStore({}, [
       {
         steerId: 'st-1',
@@ -1743,14 +1748,11 @@ describe('runStage — steering reaches the agent conversation', () => {
     ]);
     const deps = baseDeps({
       store,
-      spawnFn: (command, args) => {
-        argv = args;
-        return okSpawn();
-      },
+      spawnFn: captureStdinSpawn(sink),
     });
     const res = await runStage(baseArgs, deps);
     expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
-    const prompt = argv[argv.indexOf('-p') + 1];
+    const prompt = sink.prompt;
     // The correction LEADS the prompt, ahead of the materialized stage body.
     expect(prompt.indexOf('COURSE CORRECTION')).toBeGreaterThanOrEqual(0);
     expect(prompt.indexOf('COURSE CORRECTION')).toBeLessThan(
@@ -1767,7 +1769,7 @@ describe('runStage — steering reaches the agent conversation', () => {
   });
 
   it('appends the correction to the RESUME answer message', async () => {
-    let argv = null;
+    const sink = {};
     const store = steeringStore(
       {
         humanTask: {
@@ -1789,14 +1791,11 @@ describe('runStage — steering reaches the agent conversation', () => {
     );
     const deps = baseDeps({
       store,
-      spawnFn: (command, args) => {
-        argv = args;
-        return okSpawn();
-      },
+      spawnFn: captureStdinSpawn(sink),
     });
     const res = await runStage({ ...baseArgs, resumeFrom: 'q-1' }, deps);
     expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
-    const message = argv[argv.indexOf('-p') + 1];
+    const message = sink.prompt;
     // Answer first, then the override block.
     expect(message).toMatch(/MVP/);
     expect(message).toContain('COURSE CORRECTION');
@@ -1805,17 +1804,14 @@ describe('runStage — steering reaches the agent conversation', () => {
   });
 
   it('a run with no pending steering injects nothing', async () => {
-    let argv = null;
+    const sink = {};
     const store = steeringStore({}, []);
     const deps = baseDeps({
       store,
-      spawnFn: (command, args) => {
-        argv = args;
-        return okSpawn();
-      },
+      spawnFn: captureStdinSpawn(sink),
     });
     await runStage(baseArgs, deps);
-    const prompt = argv[argv.indexOf('-p') + 1];
+    const prompt = sink.prompt;
     expect(prompt).not.toContain('COURSE CORRECTION');
     expect(store.calls.filter((c) => c[0] === 'markSteeringConsumed')).toHaveLength(0);
   });

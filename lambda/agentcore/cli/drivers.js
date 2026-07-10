@@ -17,14 +17,21 @@
 export const MCP_SERVER_NAME = 'aidlc';
 
 // ── Claude Code (headless) ──
-// `claude -p <prompt> --mcp-config <file> --permission-mode bypassPermissions
-//  --model <id> --output-format stream-json --verbose`
+// `claude -p --mcp-config <file> --permission-mode bypassPermissions
+//  --model <id> --output-format stream-json --verbose` — prompt piped on STDIN.
 // Bedrock auth via env (CLAUDE_CODE_USE_BEDROCK + AWS_BEARER_TOKEN_BEDROCK),
-// mirroring the v1 claude driver. Prompt on argv (-p).
+// mirroring the v1 claude driver.
+//
+// Prompt on STDIN, not argv: a large materialized prompt (graph context pack)
+// overflows the OS ARG_MAX and makes spawn() throw `E2BIG` (the 2026-07 frontend
+// nfr-design failure). `claude -p` with no prompt argument reads the prompt from
+// stdin (verified: `echo … | claude -p`), so we pass `promptViaStdin: true` and
+// the spawn shell pipes it in (see cli/spawn.js). --input-format defaults to
+// "text", unaffected by the stream-json OUTPUT format.
 const claudeDriver = {
   name: 'claude',
   buildInvocation({ prompt, mcpConfigPath, model, allowedTools = [], sessionId = null }) {
-    const args = ['-p', prompt];
+    const args = ['-p'];
     // MCP config is optional: a plain one-shot prompt (e.g. derive-time
     // enrichment) runs without any tool surface.
     if (mcpConfigPath) args.push('--mcp-config', mcpConfigPath);
@@ -35,17 +42,17 @@ const claudeDriver = {
     if (model) args.push('--model', model);
     if (allowedTools.length) args.push('--allowedTools', allowedTools.join(','));
     args.push('--output-format', 'stream-json', '--verbose');
-    return { command: 'claude', args, env: {}, promptViaStdin: false };
+    return { command: 'claude', args, env: {}, prompt, promptViaStdin: true };
   },
   // Resume the SAME conversation with the human's answer. Re-attach the MCP
   // servers (--mcp-config) so the parked tool surface is live again. Never reuse
   // --session-id here (it errors "already in use") — only --resume <uuid>.
+  // Answer piped on STDIN too, for the same ARG_MAX reason as the fresh run.
   buildResumeInvocation({ sessionId, answerMessage, mcpConfigPath, model }) {
     const args = [
       '--resume',
       sessionId,
       '-p',
-      answerMessage,
       '--mcp-config',
       mcpConfigPath,
       '--permission-mode',
@@ -53,7 +60,7 @@ const claudeDriver = {
     ];
     if (model) args.push('--model', model);
     args.push('--output-format', 'stream-json', '--verbose');
-    return { command: 'claude', args, env: {}, promptViaStdin: false };
+    return { command: 'claude', args, env: {}, prompt: answerMessage, promptViaStdin: true };
   },
   envForAuth(env) {
     const region = env.BEDROCK_REGION || env.AWS_REGION || 'us-east-1';
@@ -69,28 +76,35 @@ const claudeDriver = {
 };
 
 // ── Kiro CLI (headless) ──
-// `kiro-cli chat --no-interactive --trust-all-tools --agent <name> <prompt>`
-// Kiro has NO `--mcp-config` flag (unlike Claude) — it discovers MCP servers from
-// an AGENT config at <cwd>/.kiro/agents/<name>.json (written by the materializer)
-// and is pointed at it with `--agent`. (Kiro reads the model via --model.)
-// API-key auth via env (KIRO_API_KEY). Prompt on argv.
+// `kiro-cli chat --no-interactive --trust-all-tools --agent <name>` — prompt
+// piped on STDIN. Kiro has NO `--mcp-config` flag (unlike Claude) — it discovers
+// MCP servers from an AGENT config at <cwd>/.kiro/agents/<name>.json (written by
+// the materializer) and is pointed at it with `--agent`. (Kiro reads the model
+// via --model.) API-key auth via env (KIRO_API_KEY).
+//
+// Prompt on STDIN, not argv: `kiro-cli chat` takes the prompt as a POSITIONAL
+// arg, and a large materialized prompt overflows ARG_MAX → spawn() throws
+// `E2BIG` (the 2026-07 frontend nfr-design failure). With the positional
+// omitted, Kiro reads the prompt from stdin (verified: `echo … | kiro-cli chat
+// --no-interactive`), so we pass `promptViaStdin: true` and the spawn shell
+// pipes it in (see cli/spawn.js).
 const kiroDriver = {
   name: 'kiro',
   buildInvocation({ prompt, agentName, model }) {
     const args = ['chat', '--no-interactive', '--trust-all-tools'];
     if (agentName) args.push('--agent', agentName);
     if (model) args.push('--model', model);
-    args.push(prompt);
-    return { command: 'kiro-cli', args, env: {}, promptViaStdin: false };
+    return { command: 'kiro-cli', args, env: {}, prompt, promptViaStdin: true };
   },
   // Kiro has NO start-time session-id flag; the orchestrator captures the id after
   // the fresh run (see buildListSessions / parseLatestKiroSession) and resumes by
   // it. `--resume-id <id>` resolves the session regardless of cwd (verified).
+  // Answer piped on STDIN too, for the same ARG_MAX reason as the fresh run.
   buildResumeInvocation({ sessionId, answerMessage, agentName }) {
     const args = ['chat', '--no-interactive', '--trust-all-tools'];
     if (agentName) args.push('--agent', agentName);
-    args.push('--resume-id', sessionId, answerMessage);
-    return { command: 'kiro-cli', args, env: {}, promptViaStdin: false };
+    args.push('--resume-id', sessionId);
+    return { command: 'kiro-cli', args, env: {}, prompt: answerMessage, promptViaStdin: true };
   },
   envForAuth(env) {
     return env.KIRO_API_KEY ? { KIRO_API_KEY: env.KIRO_API_KEY } : {};

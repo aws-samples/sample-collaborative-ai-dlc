@@ -130,11 +130,13 @@ describe('resolveConflict', () => {
     const store = spyStore();
     let promptSeen = null;
     const spawnFn = (command, args, opts) => {
-      promptSeen = args[args.indexOf('-p') + 1];
-      return fakeCliSpawn(async (cwd) => {
+      const child = fakeCliSpawn(async (cwd) => {
         // The "agent" resolves the conflicted file (markers gone, both kept).
         await writeFile(path.join(cwd, 'shared.txt'), 'intent version + unit version\n');
       })(command, args, opts);
+      // The prompt is piped on stdin (E2BIG fix), not on argv.
+      child.stdin = { end: (v) => (promptSeen = v) };
+      return child;
     };
     const res = await resolveConflict(basePayload(ws), baseDeps(remote, store, spawnFn));
     expect(res.ok).toBe(true);
