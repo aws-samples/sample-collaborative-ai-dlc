@@ -5,22 +5,22 @@ export { isExecuteInScope } from '@/lib/scope-utils';
 export const PHASE_PALETTE = ['#94a3b8', '#6366f1', '#f59e0b', '#10b981', '#ec4899'] as const;
 
 export const PHASE_COLORS: Record<string, string> = {
-  '00': '#94a3b8',
-  '01': '#6366f1',
-  '02': '#f59e0b',
-  '03': '#10b981',
-  '04': '#ec4899',
+  '01': '#94a3b8',
+  '02': '#6366f1',
+  '03': '#f59e0b',
+  '04': '#10b981',
+  '05': '#ec4899',
 };
 
 export const PHASE_LABELS: Record<string, string> = {
-  '00': '0 · Init',
-  '01': '1 · Ideation',
-  '02': '2 · Inception',
-  '03': '3 · Construction',
-  '04': '4 · Operation',
+  '01': '1 · Init',
+  '02': '2 · Ideation',
+  '03': '3 · Inception',
+  '04': '4 · Construction',
+  '05': '5 · Operation',
 };
 
-export const PHASE_ORDER = ['00', '01', '02', '03', '04'] as const;
+export const PHASE_ORDER = ['01', '02', '03', '04', '05'] as const;
 
 const COL_W = 320;
 const COL_GAP = 24;

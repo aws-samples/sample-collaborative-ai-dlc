@@ -10,7 +10,17 @@ import {
 // A library Stage block, minimally shaped for the compilers — flat V2 fields.
 const stage = (
   id,
-  { reviewer, sensors, humanValidation, inputs, outputs, requires, blocksOn } = {},
+  {
+    reviewer,
+    sensors,
+    humanValidation,
+    inputs,
+    outputs,
+    requires,
+    blocksOn,
+    forEach,
+    execution,
+  } = {},
 ) => ({
   blockId: id,
   // Verification axes: deterministic sensors, an LLM-judged reviewer agent, the
@@ -23,6 +33,8 @@ const stage = (
   produces: outputs ?? [],
   requires: requires ?? [],
   blocksOn: blocksOn ?? [],
+  forEach: forEach ?? null,
+  execution: execution ?? null,
 });
 
 const placement = (stageId, scopeMembership = {}, extra = {}) => ({
@@ -115,6 +127,27 @@ describe('compileStageGraph', () => {
     expect(graph.acyclic).toBe(true);
     expect(graph.edges).toContainEqual({ from: 'a', to: 'b', artifact: 'doc', kind: 'data' });
     expect(graph.danglingConsumes).toEqual([]);
+  });
+
+  it('adds branch and execution metadata to graph nodes', () => {
+    const stagesById = {
+      a: stage('a', { forEach: 'unit-of-work', execution: 'CONDITIONAL' }),
+      b: stage('b', { forEach: 'unit-of-work', execution: 'ALWAYS' }),
+      c: stage('c', { forEach: 'user-story' }),
+    };
+    const graph = compileStageGraph([placement('a'), placement('b'), placement('c')], stagesById);
+    expect(graph.nodes.find((n) => n.stageId === 'a')).toMatchObject({
+      forEach: 'unit-of-work',
+      execution: 'CONDITIONAL',
+      section: 1,
+      branch: { forEach: 'unit-of-work', supported: true, section: 1 },
+    });
+    expect(graph.nodes.find((n) => n.stageId === 'b').section).toBe(1);
+    expect(graph.nodes.find((n) => n.stageId === 'c')).toMatchObject({
+      forEach: 'user-story',
+      branch: { forEach: 'user-story', supported: false, section: null },
+      section: null,
+    });
   });
 
   it('flags a consumed-but-never-produced artifact', () => {

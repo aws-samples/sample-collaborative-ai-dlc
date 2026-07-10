@@ -824,10 +824,22 @@ resource "aws_api_gateway_resource" "workflow_scope" {
   path_part   = "{scopeId}"
 }
 
+resource "aws_api_gateway_resource" "workflow_scope_membership" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.workflow_scope.id
+  path_part   = "membership"
+}
+
 resource "aws_api_gateway_resource" "workflow_compiled" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.workflow.id
   path_part   = "compiled"
+}
+
+resource "aws_api_gateway_resource" "workflow_execution_preview" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.workflow.id
+  path_part   = "execution-preview"
 }
 
 # Rule refs layer a library rule into a workflow. The item path carries two
@@ -865,9 +877,11 @@ locals {
     placement_delete = { resource = aws_api_gateway_resource.workflow_placement.id, method = "DELETE" }
     scopes_post      = { resource = aws_api_gateway_resource.workflow_scopes.id, method = "POST" }
     scope_delete     = { resource = aws_api_gateway_resource.workflow_scope.id, method = "DELETE" }
+    membership_put   = { resource = aws_api_gateway_resource.workflow_scope_membership.id, method = "PUT" }
     rules_post       = { resource = aws_api_gateway_resource.workflow_rules.id, method = "POST" }
     rule_delete      = { resource = aws_api_gateway_resource.workflow_rule.id, method = "DELETE" }
     compiled_get     = { resource = aws_api_gateway_resource.workflow_compiled.id, method = "GET" }
+    preview_get      = { resource = aws_api_gateway_resource.workflow_execution_preview.id, method = "GET" }
   }
 }
 
@@ -932,10 +946,22 @@ module "cors_workflow_scope" {
   resource_id = aws_api_gateway_resource.workflow_scope.id
 }
 
+module "cors_workflow_scope_membership" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.workflow_scope_membership.id
+}
+
 module "cors_workflow_compiled" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.workflow_compiled.id
+}
+
+module "cors_workflow_execution_preview" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.workflow_execution_preview.id
 }
 
 module "cors_workflow_rules" {

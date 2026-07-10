@@ -13,6 +13,8 @@
 // consumes, requires, blocksOn, sensors, reviewer, humanValidation), keyed by
 // stageId.
 
+const UNIT_FOR_EACH = 'unit-of-work';
+
 // ── Scope grid ──
 // Transpose placements' scopeMembership into { scope → { skill → state } }.
 // Any scope not listed on a placement defaults to SKIP.
@@ -79,11 +81,31 @@ const stageBlocksOn = (stage) => stage?.blocksOn ?? [];
 // artifact no stage consumes) apart from an unregistered name (a likely typo),
 // and flag consumed/produced names that are absent from the vocabulary.
 const compileStageGraph = (placements, stagesById, artifactsById = null) => {
-  const nodes = placements.map((p) => ({
-    stageId: p.stageId,
-    phasePath: p.phasePath ?? null,
-    order: p.order ?? 0,
-  }));
+  let sectionHint = 0;
+  let inForEachSection = false;
+  const nodes = placements.map((p) => {
+    const stage = stagesById[p.stageId];
+    const forEach = stage?.forEach ?? null;
+    const branchSection = forEach === UNIT_FOR_EACH;
+    if (branchSection && !inForEachSection) sectionHint += 1;
+    inForEachSection = branchSection;
+    return {
+      stageId: p.stageId,
+      phasePath: p.phasePath ?? null,
+      order: p.order ?? 0,
+      forEach,
+      execution: stage?.execution ?? null,
+      branch:
+        forEach == null
+          ? null
+          : {
+              forEach,
+              supported: forEach === UNIT_FOR_EACH,
+              section: forEach === UNIT_FOR_EACH ? sectionHint : null,
+            },
+      section: forEach === UNIT_FOR_EACH ? sectionHint : null,
+    };
+  });
   const placed = new Set(placements.map((p) => p.stageId));
 
   // Producer map: artifact → [stageId].

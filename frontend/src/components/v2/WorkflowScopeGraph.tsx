@@ -366,6 +366,28 @@ export function WorkflowScopeGraph({
                     </text>
                   </g>
                 )}
+                {node.forEach && (
+                  <g transform="translate(8, 6)">
+                    <rect
+                      width={node.forEach === 'unit-of-work' ? 42 : 54}
+                      height={15}
+                      rx={7.5}
+                      fill={node.forEach === 'unit-of-work' ? '#0f766e' : '#92400e'}
+                      opacity={0.92}
+                    />
+                    <text
+                      x={node.forEach === 'unit-of-work' ? 21 : 27}
+                      y={11}
+                      textAnchor="middle"
+                      fill="#ffffff"
+                      className="text-[8px] font-semibold"
+                    >
+                      {node.forEach === 'unit-of-work'
+                        ? `BR${node.section ? ` ${node.section}` : ''}`
+                        : 'UNSUPPORTED'}
+                    </text>
+                  </g>
+                )}
               </g>
             );
           })}

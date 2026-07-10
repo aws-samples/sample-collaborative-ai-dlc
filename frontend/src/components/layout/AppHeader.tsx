@@ -220,9 +220,9 @@ function buildBreadcrumbs(
     return [{ label: 'Projects', href: '/dashboard' }, { label: 'Observability' }];
   }
 
-  // Building Blocks library
+  // Block Library
   if (pathname.startsWith('/blocks')) {
-    return [{ label: 'Building Blocks' }];
+    return [{ label: 'Block Library' }];
   }
 
   // Workflows

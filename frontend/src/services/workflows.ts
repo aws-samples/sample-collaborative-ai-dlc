@@ -100,7 +100,15 @@ export interface CompiledWorkflow {
     rollup: { selfHalting: number; mixed: number; humanGated: number; total: number };
   };
   graph: {
-    nodes: { stageId: string; phasePath: string | null; order: number }[];
+    nodes: {
+      stageId: string;
+      phasePath: string | null;
+      order: number;
+      forEach?: string | null;
+      execution?: string | null;
+      branch?: { forEach: string; supported: boolean; section: number | null } | null;
+      section?: number | null;
+    }[];
     edges: { from: string; to: string; artifact?: string; kind: 'data' | 'requires' | 'blocks' }[];
     cycles: string[];
     danglingConsumes: { stageId: string; artifact: string }[];
@@ -117,6 +125,36 @@ export interface CompiledWorkflow {
     perStage: Record<string, { universal: string[]; phase: string[] }>;
     unresolved: string[];
   };
+}
+
+export interface ExecutionPreviewIssue {
+  code: string;
+  message: string;
+  stageId?: string;
+  ref?: unknown;
+}
+
+export interface ExecutionPreview {
+  valid: boolean;
+  errors: ExecutionPreviewIssue[];
+  warnings: ExecutionPreviewIssue[];
+  plan: {
+    workflowId: string;
+    workflowVersion: number;
+    scope: string;
+    namespace: string;
+    sections: { index: number; stageIds: string[] }[];
+    outOfScopeStageIds: string[];
+    stages: {
+      stageId: string;
+      forEach?: string | null;
+      execution?: string | null;
+      parallelSection?: number | null;
+      forEachDegraded?: boolean;
+      inputArtifacts?: { artifact: string; producedBy?: string[]; expectedAbsent?: boolean }[];
+      outputArtifacts?: { artifact: string; terminal?: boolean | null }[];
+    }[];
+  } | null;
 }
 
 export interface CreateWorkflowInput {
@@ -157,6 +195,11 @@ export const workflowsService = {
   addScopeRef: (id: string, scopeId: string, scopeTenant?: string) =>
     api.post<ScopeRef>(`/workflows/${id}/scopes`, { scopeId, scopeTenant }),
   removeScopeRef: (id: string, scopeId: string) => api.delete(`/workflows/${id}/scopes/${scopeId}`),
+  putScopeMembership: (id: string, scopeId: string, stageIds: string[], scopeTenant?: string) =>
+    api.put<Workflow>(`/workflows/${id}/scopes/${scopeId}/membership`, {
+      stageIds,
+      scopeTenant,
+    }),
 
   addRuleRef: (id: string, ruleId: string, layer: RuleLayer, ruleTenant?: string) =>
     api.post<RuleRef>(`/workflows/${id}/rules`, { ruleId, layer, ruleTenant }),
@@ -166,4 +209,9 @@ export const workflowsService = {
   // The derived scope-grid + autonomy + stage-graph for this workflow.
   compiled: (id: string, version?: number) =>
     api.get<CompiledWorkflow>(`/workflows/${id}/compiled${version ? `?version=${version}` : ''}`),
+  executionPreview: (id: string, scope: string, version?: number) => {
+    const params = new URLSearchParams({ scope });
+    if (version) params.set('version', String(version));
+    return api.get<ExecutionPreview>(`/workflows/${id}/execution-preview?${params.toString()}`);
+  },
 };

@@ -88,9 +88,9 @@ export default function BlockLibrary() {
               <BlocksIcon className="h-7 w-7 text-primary" />
             </div>
             <div>
-              <h1 className="text-3xl font-bold tracking-tight">Building Blocks</h1>
+              <h1 className="text-3xl font-bold tracking-tight">Block Library</h1>
               <p className="text-sm text-muted-foreground mt-0.5">
-                The reusable library of workflow blocks
+                Reusable stages, scopes, agents, artifacts, sensors, and rules
               </p>
             </div>
           </div>

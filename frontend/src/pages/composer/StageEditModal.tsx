@@ -10,8 +10,12 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Loader2, Lock, Library } from 'lucide-react';
-import { blocksService } from '@/services/blocks';
-import { StageEditor, type StageForm } from '@/components/blocks/StageEditor';
+import { blocksService, type Block } from '@/services/blocks';
+import {
+  StageEditor,
+  type StageForm,
+  type StageReferenceOptions,
+} from '@/components/blocks/StageEditor';
 
 interface StageEditModalProps {
   stageId: string | null;
@@ -24,6 +28,7 @@ export function StageEditModal({ stageId, onClose, onSaved }: StageEditModalProp
   const [form, setForm] = useState<StageForm>({});
   const [stageName, setStageName] = useState('');
   const [readOnly, setReadOnly] = useState(false);
+  const [referenceOptions, setReferenceOptions] = useState<StageReferenceOptions>({});
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -56,6 +61,31 @@ export function StageEditModal({ stageId, onClose, onSaved }: StageEditModalProp
       })
       .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load stage'))
       .finally(() => setLoading(false));
+  }, [stageId]);
+
+  useEffect(() => {
+    if (!stageId) return;
+    const toOptions = (blocks: Block[]) =>
+      blocks.map((block) => ({
+        id: block.id,
+        label: block.name,
+        description: typeof block.description === 'string' ? block.description : undefined,
+      }));
+    Promise.all([
+      blocksService.list('agent'),
+      blocksService.list('artifact'),
+      blocksService.list('sensor'),
+      blocksService.list('stage'),
+    ])
+      .then(([agents, artifacts, sensors, stages]) =>
+        setReferenceOptions({
+          agents: toOptions(agents.blocks),
+          artifacts: toOptions(artifacts.blocks),
+          sensors: toOptions(sensors.blocks),
+          stages: toOptions(stages.blocks).filter((stage) => stage.id !== stageId),
+        }),
+      )
+      .catch(() => setReferenceOptions({}));
   }, [stageId]);
 
   const handleSave = async () => {
@@ -104,7 +134,7 @@ export function StageEditModal({ stageId, onClose, onSaved }: StageEditModalProp
             <Lock className="h-3.5 w-3.5 shrink-0" />
             <span>
               This is a system stage — read-only. To customize its gates, create your own stage in
-              the Block library.
+              the Block Library.
             </span>
             <Button
               variant="outline"
@@ -116,7 +146,7 @@ export function StageEditModal({ stageId, onClose, onSaved }: StageEditModalProp
               }}
             >
               <Library className="h-3 w-3" />
-              Block library
+              Block Library
             </Button>
           </div>
         )}
@@ -125,7 +155,12 @@ export function StageEditModal({ stageId, onClose, onSaved }: StageEditModalProp
 
         {!loading && (
           <div className="flex-1 overflow-y-auto pr-1">
-            <StageEditor value={form} onChange={setForm} disabled={readOnly} />
+            <StageEditor
+              value={form}
+              onChange={setForm}
+              disabled={readOnly}
+              referenceOptions={referenceOptions}
+            />
           </div>
         )}
 

@@ -13,7 +13,9 @@
 //   POST   /workflows/{workflowId}/placements      add a skill placement
 //   PUT    /workflows/{workflowId}/placements/{skillId}    update a placement
 //   DELETE /workflows/{workflowId}/placements/{skillId}    remove a placement
+//   PUT    /workflows/{workflowId}/scopes/{scopeId}/membership bulk replace membership
 //   GET    /workflows/{workflowId}/compiled[?version=N]    derived views (live or snapshot)
+//   GET    /workflows/{workflowId}/execution-preview?scope=<scope>[&version=N]
 //
 // SYSTEM-owned workflows are the imported baseline: read-only through the API
 // and replaceable by the seed job. User-created or forked workflows live under
@@ -49,6 +51,7 @@ import {
 } from '../shared/workflows.js';
 import { blockPk, catalogGsi1Pk, LATEST, RULE_LAYERS, versionSk } from '../shared/blocks.js';
 import { compileWorkflow } from '../shared/compile.js';
+import { buildExecutionPlan } from '../shared/v2-execution-plan.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const blocksTable = () => process.env.BLOCKS_TABLE;
@@ -468,20 +471,106 @@ const addScopeRef = async (event, res, tenant, workflowId) => {
   return res(201, scopeRefToApi(item));
 };
 
+const putScopeMembership = async (event, res, tenant, workflowId, scopeId) => {
+  if (tenant === SYSTEM_TENANT) return res(403, { error: 'SYSTEM workflows are read-only' });
+  const current = await loadMeta(tenant, workflowId);
+  if (!current) return res(404, { error: 'Not found' });
+  const input = parseBody(event);
+  if (input === undefined) return res(400, { error: 'Invalid JSON body' });
+  if (!Array.isArray(input.stageIds)) {
+    return res(400, { error: 'stageIds must be an array' });
+  }
+  if (typeof scopeId !== 'string' || !scopeId) return res(400, { error: 'scopeId is required' });
+
+  const selected = new Set();
+  for (const stageId of input.stageIds) {
+    if (typeof stageId !== 'string' || !stageId) {
+      return res(400, { error: 'stageIds must contain non-empty strings' });
+    }
+    selected.add(stageId);
+  }
+
+  const placements = await queryLivePartition(tenant, workflowId, { skBeginsWith: 'PLACEMENT#' });
+  const placedIds = new Set(placements.map((p) => p.stageId));
+  const unknown = [...selected].filter((stageId) => !placedIds.has(stageId));
+  if (unknown.length > 0) {
+    return res(400, { error: `stageIds are not placed in this workflow: ${unknown.join(', ')}` });
+  }
+
+  const scopeSk = scopeRefSk(scopeId);
+  const { Item: existingScopeRef } = await ddb.send(
+    new GetCommand({
+      TableName: blocksTable(),
+      Key: { pk: workflowPk(tenant, workflowId), sk: scopeSk },
+    }),
+  );
+
+  const requests = placements.map((placement) => ({
+    PutRequest: {
+      Item: {
+        ...placement,
+        scopeMembership: {
+          ...placement.scopeMembership,
+          [scopeId]: selected.has(placement.stageId) ? 'EXECUTE' : 'SKIP',
+        },
+      },
+    },
+  }));
+  if (!existingScopeRef) {
+    requests.push({
+      PutRequest: {
+        Item: {
+          pk: workflowPk(tenant, workflowId),
+          sk: scopeSk,
+          type: 'ScopeRef',
+          scopeId,
+          scopeTenant: input.scopeTenant ?? SYSTEM_TENANT,
+        },
+      },
+    });
+  }
+
+  await batchWrite(requests);
+  await bumpWorkflowVersion(tenant, workflowId, {
+    defaultScope: current.defaultScope ?? scopeId,
+  });
+  const items = await queryLivePartition(tenant, workflowId);
+  return res(200, composeWorkflow(tenant, items));
+};
+
 const removeScopeRef = async (event, res, tenant, workflowId, scopeId) => {
   if (tenant === SYSTEM_TENANT) return res(403, { error: 'SYSTEM workflows are read-only' });
+  const meta = await loadMeta(tenant, workflowId);
+  if (!meta) return res(404, { error: 'Not found' });
   const sk = scopeRefSk(scopeId);
   const current = await ddb.send(
     new GetCommand({ TableName: blocksTable(), Key: { pk: workflowPk(tenant, workflowId), sk } }),
   );
   if (!current.Item) return res(404, { error: 'Not found' });
-  await ddb.send(
-    new DeleteCommand({
-      TableName: blocksTable(),
-      Key: { pk: workflowPk(tenant, workflowId), sk },
-    }),
-  );
-  await bumpWorkflowVersion(tenant, workflowId);
+
+  const placements = await queryLivePartition(tenant, workflowId, { skBeginsWith: 'PLACEMENT#' });
+  const scopeRefs = await queryLivePartition(tenant, workflowId, { skBeginsWith: 'SCOPEREF#' });
+  const nextDefaultScope =
+    meta.defaultScope === scopeId
+      ? (scopeRefs
+          .map((ref) => ref.scopeId)
+          .filter((id) => id !== scopeId)
+          .toSorted()[0] ?? null)
+      : meta.defaultScope;
+
+  const requests = [
+    { DeleteRequest: { Key: { pk: workflowPk(tenant, workflowId), sk } } },
+    ...placements
+      .filter((placement) => Object.hasOwn(placement.scopeMembership ?? {}, scopeId))
+      .map((placement) => {
+        const scopeMembership = { ...placement.scopeMembership };
+        delete scopeMembership[scopeId];
+        return { PutRequest: { Item: { ...placement, scopeMembership } } };
+      }),
+  ];
+
+  await batchWrite(requests);
+  await bumpWorkflowVersion(tenant, workflowId, { defaultScope: nextDefaultScope });
   return res(204, {});
 };
 
@@ -565,6 +654,72 @@ const getCompiled = async (event, res, tenant, workflowId) => {
     rulesById,
   );
   return res(200, compiled);
+};
+
+const getExecutionPreview = async (event, res, tenant, workflowId) => {
+  const requested = getRequestedVersion(event);
+  if (requested.error) return res(400, { error: requested.error });
+  const scope = event?.queryStringParameters?.scope;
+  if (typeof scope !== 'string' || !scope) {
+    return res(400, { error: 'scope query parameter is required' });
+  }
+
+  const resolved = await resolveWorkflow(tenant, workflowId);
+  if (!resolved) return res(404, { error: 'Not found' });
+  const items = await queryWorkflowItems(resolved.owner, workflowId, requested.version);
+  if (requested.version != null && items.length === 0)
+    return res(404, { error: 'Version not found' });
+
+  const workflow = composeWorkflow(resolved.owner, items);
+  const placements = workflow.placements;
+  const ruleRefs = workflow.ruleRefs;
+  const scopeSlugs = workflow.scopeRefs.map((scopeRef) => scopeRef.scopeId);
+
+  const [stagesById, artifactsById, rulesById, agentsById, sensorsById] = await Promise.all([
+    loadStages(placements),
+    loadArtifacts(resolved.owner),
+    loadRules(ruleRefs),
+    loadCatalogByType(resolved.owner, 'AGENT'),
+    loadCatalogByType(resolved.owner, 'SENSOR'),
+  ]);
+  const compiled = compileWorkflow(
+    placements,
+    scopeSlugs,
+    stagesById,
+    artifactsById,
+    ruleRefs,
+    rulesById,
+  );
+  const preview = buildExecutionPlan({
+    workflow,
+    scope,
+    library: { stagesById, artifactsById, rulesById, agentsById, sensorsById },
+    compiled,
+  });
+  return res(200, preview);
+};
+
+const loadCatalogByType = async (owner, type) => {
+  const tenants = owner === SYSTEM_TENANT ? [SYSTEM_TENANT] : [owner, SYSTEM_TENANT];
+  const results = await Promise.all(
+    tenants.map((t) =>
+      ddb.send(
+        new QueryCommand({
+          TableName: blocksTable(),
+          IndexName: 'GSI1',
+          KeyConditionExpression: 'GSI1PK = :pk',
+          ExpressionAttributeValues: { ':pk': catalogGsi1Pk(t, type) },
+        }),
+      ),
+    ),
+  );
+  const byId = {};
+  for (const r of results) {
+    for (const item of r.Items || []) {
+      if (!(item.blockId in byId)) byId[item.blockId] = item;
+    }
+  }
+  return byId;
 };
 
 // Resolve each rule ref's Rule block from its owning tenant (own or SYSTEM).
@@ -761,6 +916,11 @@ export const handler = async (event) => {
       if (method === 'PUT') return await putPhases(event, res, tenant, workflowId);
       return res(405, { error: 'Method not allowed' });
     }
+    if (path.endsWith('/scopes/{scopeId}/membership')) {
+      if (method === 'PUT')
+        return await putScopeMembership(event, res, tenant, workflowId, scopeId);
+      return res(405, { error: 'Method not allowed' });
+    }
     if (path.endsWith('/scopes/{scopeId}')) {
       if (method === 'DELETE') return await removeScopeRef(event, res, tenant, workflowId, scopeId);
       return res(405, { error: 'Method not allowed' });
@@ -780,6 +940,10 @@ export const handler = async (event) => {
     }
     if (path.endsWith('/compiled')) {
       if (method === 'GET') return await getCompiled(event, res, tenant, workflowId);
+      return res(405, { error: 'Method not allowed' });
+    }
+    if (path.endsWith('/execution-preview')) {
+      if (method === 'GET') return await getExecutionPreview(event, res, tenant, workflowId);
       return res(405, { error: 'Method not allowed' });
     }
     if (workflowId) {

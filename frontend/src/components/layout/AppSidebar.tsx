@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react';
 import {
   Activity,
   ArrowUpDown,
+  Blocks,
   CheckCircle2,
   LayoutDashboard,
   ListFilter,
@@ -143,6 +144,7 @@ export function AppSidebar() {
   const isOnObservability = location.pathname === '/observability';
   const isOnAdmin = location.pathname === '/admin';
   const isOnWorkflows = location.pathname.startsWith('/workflows');
+  const isOnBlocks = location.pathname.startsWith('/blocks');
 
   interface IterationItem {
     key: string;
@@ -366,32 +368,48 @@ export function AppSidebar() {
 
       <div className="border-t border-sidebar-border p-2 flex flex-col gap-0.5">
         {isPlatformAdmin && (
-          <button
-            onClick={() => navigate('/workflows')}
-            className={cn(
-              'flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors rounded-md text-left w-full',
-              isOnWorkflows
-                ? 'bg-sidebar-accent text-sidebar-foreground'
-                : 'text-sidebar-foreground/60 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
-            )}
-          >
-            <Workflow className="h-3.5 w-3.5 shrink-0" />
-            Workflows
-          </button>
-        )}
-        {isPlatformAdmin && (
-          <button
-            onClick={() => navigate('/admin')}
-            className={cn(
-              'flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors rounded-md text-left w-full',
-              isOnAdmin
-                ? 'bg-sidebar-accent text-sidebar-foreground'
-                : 'text-sidebar-foreground/60 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
-            )}
-          >
-            <Settings className="h-3.5 w-3.5 shrink-0" />
-            Admin & Settings
-          </button>
+          <>
+            <div className="px-3 pb-1 pt-1 text-[10px] font-medium uppercase tracking-wide text-sidebar-foreground/35">
+              Authoring
+            </div>
+            <button
+              onClick={() => navigate('/workflows')}
+              className={cn(
+                'flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors rounded-md text-left w-full',
+                isOnWorkflows
+                  ? 'bg-sidebar-accent text-sidebar-foreground'
+                  : 'text-sidebar-foreground/60 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
+              )}
+            >
+              <Workflow className="h-3.5 w-3.5 shrink-0" />
+              Workflows
+            </button>
+            <button
+              onClick={() => navigate('/blocks/stage')}
+              className={cn(
+                'flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors rounded-md text-left w-full',
+                isOnBlocks
+                  ? 'bg-sidebar-accent text-sidebar-foreground'
+                  : 'text-sidebar-foreground/60 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
+              )}
+            >
+              <Blocks className="h-3.5 w-3.5 shrink-0" />
+              Block Library
+            </button>
+            <div className="my-1 h-px bg-sidebar-border" />
+            <button
+              onClick={() => navigate('/admin')}
+              className={cn(
+                'flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors rounded-md text-left w-full',
+                isOnAdmin
+                  ? 'bg-sidebar-accent text-sidebar-foreground'
+                  : 'text-sidebar-foreground/60 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
+              )}
+            >
+              <Settings className="h-3.5 w-3.5 shrink-0" />
+              Admin & Settings
+            </button>
+          </>
         )}
       </div>
 

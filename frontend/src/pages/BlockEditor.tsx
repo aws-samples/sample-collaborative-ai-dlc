@@ -6,15 +6,21 @@ import {
   BLOCK_TYPE_LABELS,
   type BlockInput,
   type BlockType,
+  type Block,
 } from '@/services/blocks';
 import { SIMPLE_BLOCK_FORMS } from '@/components/blocks/blockFields';
-import { StageEditor, type StageForm } from '@/components/blocks/StageEditor';
+import {
+  StageEditor,
+  type StageForm,
+  type StageReferenceOptions,
+} from '@/components/blocks/StageEditor';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ArrowLeft, AlertCircle, CheckCircle2, X, Lock } from 'lucide-react';
 
 const isBlockType = (v: string | undefined): v is BlockType =>
@@ -39,6 +45,7 @@ export default function BlockEditor() {
   const [body, setBody] = useState('');
   const [script, setScript] = useState('');
   const [readOnly, setReadOnly] = useState(false);
+  const [referenceOptions, setReferenceOptions] = useState<StageReferenceOptions>({});
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -72,6 +79,33 @@ export default function BlockEditor() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (!isStage) return;
+    const toOptions = (blocks: Block[]) =>
+      blocks.map((block) => ({
+        id: block.id,
+        label: block.name,
+        description: typeof block.description === 'string' ? block.description : undefined,
+      }));
+    Promise.all([
+      blocksService.list('agent'),
+      blocksService.list('artifact'),
+      blocksService.list('sensor'),
+      blocksService.list('stage'),
+    ])
+      .then(([agents, artifacts, sensors, stages]) =>
+        setReferenceOptions({
+          agents: toOptions(agents.blocks),
+          artifacts: toOptions(artifacts.blocks),
+          sensors: toOptions(sensors.blocks),
+          stages: toOptions(stages.blocks).filter((stage) => stage.id !== id),
+        }),
+      )
+      .catch(() => {
+        setReferenceOptions({});
+      });
+  }, [id, isStage]);
 
   const buildPayload = (): BlockInput => {
     // Drop server-managed fields; keep intrinsic attributes + name/description.
@@ -206,158 +240,176 @@ export default function BlockEditor() {
           </div>
         )}
 
-        {/* Identity */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm">Identity</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {isNew && (
-              <div className="grid gap-2">
-                <Label>Id</Label>
-                <Input
-                  value={str('id')}
-                  onChange={(e) => setField('id', e.target.value)}
-                  placeholder="kebab-case-id"
-                  disabled={readOnly}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Permanent identifier; lowercase letters, digits, hyphens.
-                </p>
-              </div>
-            )}
-            <div className="grid gap-2">
-              <Label>Name</Label>
-              <Input
-                value={str('name')}
-                onChange={(e) => setField('name', e.target.value)}
-                placeholder={`${labels.singular} name`}
-                disabled={readOnly}
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label>Description</Label>
-              <Input
-                value={str('description')}
-                onChange={(e) => setField('description', e.target.value)}
-                placeholder="One-line summary"
-                disabled={readOnly}
-              />
-            </div>
-          </CardContent>
-        </Card>
+        <Tabs defaultValue="overview" className="space-y-4">
+          <TabsList className="flex h-auto flex-wrap">
+            <TabsTrigger value="overview">Overview</TabsTrigger>
+            <TabsTrigger value="configuration">Configuration</TabsTrigger>
+            {(isStage || typeForm?.bodyLabel) && <TabsTrigger value="content">Content</TabsTrigger>}
+            {typeForm?.scriptLabel && <TabsTrigger value="script">Script</TabsTrigger>}
+          </TabsList>
 
-        {/* Type-specific: Stage gets the three-compartment editor; the rest get
-            the data-driven simple-field form. */}
-        {isStage ? (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm">Contract</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <StageEditor
-                value={form as StageForm}
-                onChange={(next) => setForm(next as Record<string, unknown>)}
-                disabled={readOnly}
-              />
-            </CardContent>
-          </Card>
-        ) : (
-          typeForm &&
-          typeForm.fields.length > 0 && (
+          <TabsContent value="overview">
             <Card>
               <CardHeader>
-                <CardTitle className="text-sm">Details</CardTitle>
+                <CardTitle className="text-sm">Overview</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
-                {typeForm.fields.map((field) => {
-                  const raw =
-                    field.kind === 'csv'
-                      ? (Array.isArray(form[field.key]) ? (form[field.key] as string[]) : []).join(
-                          ', ',
-                        )
-                      : str(field.key);
-                  const onChange = (v: string) =>
-                    setField(
-                      field.key,
-                      field.kind === 'csv'
-                        ? v
-                            .split(',')
-                            .map((x) => x.trim())
-                            .filter(Boolean)
-                        : v,
-                    );
-                  return (
-                    <div key={field.key} className="grid gap-2">
-                      <Label>{field.label}</Label>
-                      {field.kind === 'textarea' ? (
-                        <Textarea
-                          value={raw}
-                          onChange={(e) => onChange(e.target.value)}
-                          placeholder={field.placeholder}
-                          disabled={readOnly}
-                        />
-                      ) : (
-                        <Input
-                          value={raw}
-                          onChange={(e) => onChange(e.target.value)}
-                          placeholder={field.placeholder}
-                          disabled={readOnly}
-                        />
-                      )}
-                      {field.help && <p className="text-xs text-muted-foreground">{field.help}</p>}
-                    </div>
-                  );
-                })}
+                {isNew && (
+                  <div className="grid gap-2">
+                    <Label>Id</Label>
+                    <Input
+                      value={str('id')}
+                      onChange={(e) => setField('id', e.target.value)}
+                      placeholder="kebab-case-id"
+                      disabled={readOnly}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Permanent identifier; lowercase letters, digits, hyphens.
+                    </p>
+                  </div>
+                )}
+                <div className="grid gap-2">
+                  <Label>Name</Label>
+                  <Input
+                    value={str('name')}
+                    onChange={(e) => setField('name', e.target.value)}
+                    placeholder={`${labels.singular} name`}
+                    disabled={readOnly}
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label>Description</Label>
+                  <Input
+                    value={str('description')}
+                    onChange={(e) => setField('description', e.target.value)}
+                    placeholder="One-line summary"
+                    disabled={readOnly}
+                  />
+                </div>
               </CardContent>
             </Card>
-          )
-        )}
+          </TabsContent>
 
-        {/* Body — markdown instructions / prose, stored in S3. */}
-        {(isStage || typeForm?.bodyLabel) && (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm">
-                {isStage ? 'Instructions' : typeForm!.bodyLabel}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              <Textarea
-                value={body}
-                onChange={(e) => setBody(e.target.value)}
-                placeholder="Markdown…"
-                className="min-h-[200px] font-mono text-xs"
-                disabled={readOnly}
-              />
-              {!isStage && typeForm?.bodyHelp && (
-                <p className="text-xs text-muted-foreground">{typeForm.bodyHelp}</p>
-              )}
-            </CardContent>
-          </Card>
-        )}
+          <TabsContent value="configuration">
+            {isStage ? (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-sm">Configuration</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <StageEditor
+                    value={form as StageForm}
+                    onChange={(next) => setForm(next as Record<string, unknown>)}
+                    disabled={readOnly}
+                    referenceOptions={referenceOptions}
+                  />
+                </CardContent>
+              </Card>
+            ) : (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-sm">Configuration</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {typeForm && typeForm.fields.length > 0 ? (
+                    typeForm.fields.map((field) => {
+                      const raw =
+                        field.kind === 'csv'
+                          ? (Array.isArray(form[field.key])
+                              ? (form[field.key] as string[])
+                              : []
+                            ).join(', ')
+                          : str(field.key);
+                      const onChange = (v: string) =>
+                        setField(
+                          field.key,
+                          field.kind === 'csv'
+                            ? v
+                                .split(',')
+                                .map((x) => x.trim())
+                                .filter(Boolean)
+                            : v,
+                        );
+                      return (
+                        <div key={field.key} className="grid gap-2">
+                          <Label>{field.label}</Label>
+                          {field.kind === 'textarea' ? (
+                            <Textarea
+                              value={raw}
+                              onChange={(e) => onChange(e.target.value)}
+                              placeholder={field.placeholder}
+                              disabled={readOnly}
+                            />
+                          ) : (
+                            <Input
+                              value={raw}
+                              onChange={(e) => onChange(e.target.value)}
+                              placeholder={field.placeholder}
+                              disabled={readOnly}
+                            />
+                          )}
+                          {field.help && (
+                            <p className="text-xs text-muted-foreground">{field.help}</p>
+                          )}
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      This block type has no additional configuration fields.
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
 
-        {/* Script — a separate executable (SENSOR check), stored in S3 as
-            scriptRef apart from the markdown body. */}
-        {typeForm?.scriptLabel && (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm">{typeForm.scriptLabel}</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              <Textarea
-                value={script}
-                onChange={(e) => setScript(e.target.value)}
-                placeholder="TypeScript…"
-                className="min-h-[200px] font-mono text-xs"
-                disabled={readOnly}
-              />
-              {typeForm.scriptHelp && (
-                <p className="text-xs text-muted-foreground">{typeForm.scriptHelp}</p>
-              )}
-            </CardContent>
-          </Card>
-        )}
+          {(isStage || typeForm?.bodyLabel) && (
+            <TabsContent value="content">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-sm">
+                    {isStage ? 'Instructions' : typeForm!.bodyLabel}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  <Textarea
+                    value={body}
+                    onChange={(e) => setBody(e.target.value)}
+                    placeholder="Markdown..."
+                    className="min-h-[320px] font-mono text-xs"
+                    disabled={readOnly}
+                  />
+                  {!isStage && typeForm?.bodyHelp && (
+                    <p className="text-xs text-muted-foreground">{typeForm.bodyHelp}</p>
+                  )}
+                </CardContent>
+              </Card>
+            </TabsContent>
+          )}
+
+          {typeForm?.scriptLabel && (
+            <TabsContent value="script">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-sm">{typeForm.scriptLabel}</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  <Textarea
+                    value={script}
+                    onChange={(e) => setScript(e.target.value)}
+                    placeholder="TypeScript..."
+                    className="min-h-[320px] font-mono text-xs"
+                    disabled={readOnly}
+                  />
+                  {typeForm.scriptHelp && (
+                    <p className="text-xs text-muted-foreground">{typeForm.scriptHelp}</p>
+                  )}
+                </CardContent>
+              </Card>
+            </TabsContent>
+          )}
+        </Tabs>
 
         {/* Actions */}
         {!readOnly && (

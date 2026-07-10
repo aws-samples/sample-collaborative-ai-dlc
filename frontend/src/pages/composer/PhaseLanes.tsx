@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Trash2, X, Layers, Plus, AlertTriangle } from 'lucide-react';
+import { Trash2, X, Layers, Plus, AlertTriangle, GitBranch } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { AUTONOMY_STYLES } from '@/lib/autonomy';
 import { paletteColorForIndex } from '@/components/v2/scope-graph-utils';
 import type { PhaseNode, Placement, CompiledWorkflow } from '@/services/workflows';
 import type { Block } from '@/services/blocks';
+import { displayPhasePathForPlacement, visibleWorkflowPhases } from './phaseDisplay';
 
 interface PhaseLanesProps {
   phases: PhaseNode[];
@@ -14,6 +15,7 @@ interface PhaseLanesProps {
   stagesById: Record<string, Block>;
   readOnly: boolean;
   compiled: CompiledWorkflow | null;
+  branchIssues?: Record<string, string[]>;
   onDropStage: (stageId: string, phasePath: string | null) => void;
   onReorderPlacement: (
     stageId: string,
@@ -35,12 +37,17 @@ const DRAG_KEY = 'application/x-aidlc-stage';
 
 const laneKey = (phasePath: string | null) => phasePath ?? '__unphased__';
 
+// A placement wired to EXECUTE in no scope can never run in any scope.
+const isUnwired = (p: Placement) =>
+  !Object.values(p.scopeMembership ?? {}).some((v) => v === 'EXECUTE');
+
 export function PhaseLanes({
   phases,
   placements,
   stagesById,
   readOnly,
   compiled,
+  branchIssues = {},
   onDropStage,
   onReorderPlacement,
   onRemovePlacement,
@@ -54,9 +61,9 @@ export function PhaseLanes({
   onOpenStage,
 }: PhaseLanesProps) {
   const [dragOverPath, setDragOverPath] = useState<string | null>(null);
-  const visiblePhases = phases.filter((phase) => phase.phaseId !== 'initialization');
+  const visiblePhases = visibleWorkflowPhases(phases);
 
-  const sortedPhases = visiblePhases.toSorted((a, b) => a.path.localeCompare(b.path));
+  const sortedPhases = visiblePhases;
 
   // Match the graph's colorByPath: sorted-index → paletteColorForIndex
   const phaseColorByPath: Record<string, string> = {};
@@ -70,16 +77,13 @@ export function PhaseLanes({
 
   const placementsByPhase = (phasePath: string | null) =>
     visiblePlacements
-      .filter((p) => (phasePath === null ? !p.phasePath : p.phasePath === phasePath))
+      .filter((p) => {
+        const displayPath = displayPhasePathForPlacement(p, phases, stagesById);
+        return phasePath === null ? !displayPath : displayPath === phasePath;
+      })
       .toSorted((a, b) => a.order - b.order);
 
   const placedStageIdSet = new Set(visiblePlacements.map((p) => p.stageId));
-
-  // A placement wired to EXECUTE in no scope can never run in any scope — the
-  // exact silent-un-wiring the incident hit (reverse-engineering). Surface it
-  // on the chip so the author sees the gap in the composer, not in a dead run.
-  const isUnwired = (p: Placement) =>
-    !Object.values(p.scopeMembership ?? {}).some((v) => v === 'EXECUTE');
 
   const handleDragOver = (e: React.DragEvent, key: string) => {
     e.preventDefault();
@@ -129,6 +133,8 @@ export function PhaseLanes({
           return (
             <div
               key={phase.path}
+              data-phase-id={phase.phaseId}
+              data-phase-path={phase.path}
               className={`shrink-0 min-w-[256px] w-64 border rounded-lg flex flex-col transition-colors ${
                 isOver ? 'border-primary bg-primary/5' : 'border-border'
               }`}
@@ -162,16 +168,15 @@ export function PhaseLanes({
                   onCancelEdit={onCancelPhaseRename}
                   onCommitEdit={onRenamePhase}
                 />
-                {!readOnly && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-5 w-5 ml-auto shrink-0"
-                    onClick={() => onRemovePhase(phase.path)}
-                  >
-                    <Trash2 className="h-3 w-3 text-destructive" />
-                  </Button>
-                )}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-5 w-5 ml-auto shrink-0"
+                  onClick={() => onRemovePhase(phase.path)}
+                  disabled={readOnly}
+                >
+                  <Trash2 className="h-3 w-3 text-destructive" />
+                </Button>
               </div>
               <div
                 className="flex-1 p-1.5 flex flex-col gap-1 min-h-[80px] rounded-b-lg"
@@ -190,6 +195,17 @@ export function PhaseLanes({
                     readOnly={readOnly}
                     autonomyLevel={compiled?.autonomy.perStage[p.stageId]}
                     unwired={isUnwired(p)}
+                    forEach={
+                      typeof stagesById[p.stageId]?.forEach === 'string'
+                        ? (stagesById[p.stageId]?.forEach as string)
+                        : null
+                    }
+                    execution={
+                      typeof stagesById[p.stageId]?.execution === 'string'
+                        ? (stagesById[p.stageId]?.execution as string)
+                        : null
+                    }
+                    branchIssues={branchIssues[p.stageId] ?? []}
                     onRemove={() => onRemovePlacement(p.stageId)}
                     onOpenStage={() => onOpenStage(p.stageId)}
                     index={idx}
@@ -219,30 +235,30 @@ export function PhaseLanes({
             >
               <div className="flex items-center gap-1.5 p-2 border-b border-dashed bg-muted/40 rounded-t-lg">
                 <span className="text-xs font-medium text-muted-foreground">Unphased</span>
-                {!readOnly && (
-                  <span className="ml-auto flex items-center gap-1">
-                    {visiblePhases.length === 0 && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 gap-1 px-2 text-[10px]"
-                        onClick={onApplySkeleton}
-                      >
-                        <Layers className="h-3 w-3" />
-                        Skeleton
-                      </Button>
-                    )}
+                <span className="ml-auto flex items-center gap-1">
+                  {visiblePhases.length === 0 && (
                     <Button
                       variant="ghost"
                       size="sm"
                       className="h-6 gap-1 px-2 text-[10px]"
-                      onClick={() => void onAddPhase()}
+                      onClick={onApplySkeleton}
+                      disabled={readOnly}
                     >
-                      <Plus className="h-3 w-3" />
-                      Add phase
+                      <Layers className="h-3 w-3" />
+                      Skeleton
                     </Button>
-                  </span>
-                )}
+                  )}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 gap-1 px-2 text-[10px]"
+                    onClick={() => void onAddPhase()}
+                    disabled={readOnly}
+                  >
+                    <Plus className="h-3 w-3" />
+                    Add phase
+                  </Button>
+                </span>
               </div>
               <div className="flex-1 p-1.5 flex flex-col gap-1 min-h-[80px] bg-muted/15 rounded-b-lg">
                 {lanePlacements.length === 0 && (
@@ -258,6 +274,17 @@ export function PhaseLanes({
                     readOnly={readOnly}
                     autonomyLevel={compiled?.autonomy.perStage[p.stageId]}
                     unwired={isUnwired(p)}
+                    forEach={
+                      typeof stagesById[p.stageId]?.forEach === 'string'
+                        ? (stagesById[p.stageId]?.forEach as string)
+                        : null
+                    }
+                    execution={
+                      typeof stagesById[p.stageId]?.execution === 'string'
+                        ? (stagesById[p.stageId]?.execution as string)
+                        : null
+                    }
+                    branchIssues={branchIssues[p.stageId] ?? []}
                     onRemove={() => onRemovePlacement(p.stageId)}
                     onOpenStage={() => onOpenStage(p.stageId)}
                     index={idx}
@@ -356,6 +383,9 @@ function PlacementChip({
   readOnly,
   autonomyLevel,
   unwired,
+  forEach,
+  execution,
+  branchIssues = [],
   onRemove,
   onOpenStage,
   index,
@@ -369,6 +399,9 @@ function PlacementChip({
   readOnly: boolean;
   autonomyLevel?: string;
   unwired?: boolean;
+  forEach?: string | null;
+  execution?: string | null;
+  branchIssues?: string[];
   onRemove: () => void;
   onOpenStage: () => void;
   index: number;
@@ -472,21 +505,47 @@ function PlacementChip({
               </span>
             </span>
           )}
+          {forEach === 'unit-of-work' && (
+            <span
+              className="inline-flex items-center gap-1 shrink-0"
+              title={
+                branchIssues.length > 0 ? branchIssues.join('\n') : 'Runs once per unit of work'
+              }
+            >
+              <GitBranch className="h-2.5 w-2.5 text-primary" />
+              <span className="text-[10px] text-primary">
+                Unit branch{execution ? ` · ${execution}` : ''}
+              </span>
+            </span>
+          )}
+          {forEach && forEach !== 'unit-of-work' && (
+            <span className="inline-flex items-center gap-1 shrink-0">
+              <AlertTriangle className="h-2.5 w-2.5 text-amber-500" />
+              <span className="text-[10px] text-amber-600 dark:text-amber-500">
+                Unsupported branch: {forEach}
+              </span>
+            </span>
+          )}
+          {branchIssues.map((issue) => (
+            <span key={issue} className="inline-flex items-center gap-1 shrink-0">
+              <AlertTriangle className="h-2.5 w-2.5 text-amber-500" />
+              <span className="text-[10px] text-amber-600 dark:text-amber-500">{issue}</span>
+            </span>
+          ))}
         </div>
 
         <span className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
-          {!readOnly && (
-            <button
-              type="button"
-              className="hover:text-destructive p-1 rounded hover:bg-destructive/10"
-              onClick={(e) => {
-                e.stopPropagation();
-                onRemove();
-              }}
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          )}
+          <button
+            type="button"
+            className="hover:text-destructive p-1 rounded hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRemove();
+            }}
+            disabled={readOnly}
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
         </span>
       </div>
       {dropEdge === 'bottom' && (

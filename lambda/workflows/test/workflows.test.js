@@ -103,6 +103,10 @@ const event = ({ method, workflowId, stageId, scopeId, layer, ruleId, body, path
     resource = '/workflows/{workflowId}/scopes/{scopeId}';
     pathParameters.scopeId = scopeId;
   }
+  if (path === 'scope-membership') {
+    resource = '/workflows/{workflowId}/scopes/{scopeId}/membership';
+    pathParameters.scopeId = scopeId;
+  }
   if (path === 'rules') resource = '/workflows/{workflowId}/rules';
   if (path === 'rule') {
     resource = '/workflows/{workflowId}/rules/{layer}/{ruleId}';
@@ -110,6 +114,7 @@ const event = ({ method, workflowId, stageId, scopeId, layer, ruleId, body, path
     pathParameters.ruleId = ruleId;
   }
   if (path === 'compiled') resource = '/workflows/{workflowId}/compiled';
+  if (path === 'execution-preview') resource = '/workflows/{workflowId}/execution-preview';
   return {
     httpMethod: method,
     resource,
@@ -549,6 +554,85 @@ describe('workflows handler', () => {
     expect(after.body.scopeRefs).toEqual([]);
   });
 
+  it('bulk writes scope membership as EXECUTE for selected stages and SKIP for the rest', async () => {
+    await createWorkflow({ id: 'wf', name: 'WF' });
+    await handler(
+      event({
+        method: 'POST',
+        workflowId: 'wf',
+        path: 'placements',
+        body: { stageId: 'capture', scopeMembership: { old: 'EXECUTE' } },
+      }),
+    );
+    await handler(
+      event({
+        method: 'POST',
+        workflowId: 'wf',
+        path: 'placements',
+        body: { stageId: 'design', scopeMembership: { old: 'SKIP' } },
+      }),
+    );
+
+    const res = parse(
+      await handler(
+        event({
+          method: 'PUT',
+          workflowId: 'wf',
+          scopeId: 'mvp',
+          path: 'scope-membership',
+          body: { stageIds: ['capture'] },
+        }),
+      ),
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.defaultScope).toBe('mvp');
+    expect(res.body.scopeRefs.map((s) => s.scopeId)).toEqual(['mvp']);
+    expect(res.body.placements.find((p) => p.stageId === 'capture').scopeMembership).toEqual({
+      old: 'EXECUTE',
+      mvp: 'EXECUTE',
+    });
+    expect(res.body.placements.find((p) => p.stageId === 'design').scopeMembership).toEqual({
+      old: 'SKIP',
+      mvp: 'SKIP',
+    });
+  });
+
+  it('scope removal cleans placement membership keys and repairs defaultScope', async () => {
+    await createWorkflow({ id: 'wf', name: 'WF', defaultScope: 'mvp' });
+    await handler(
+      event({ method: 'POST', workflowId: 'wf', path: 'scopes', body: { scopeId: 'mvp' } }),
+    );
+    await handler(
+      event({
+        method: 'POST',
+        workflowId: 'wf',
+        path: 'scopes',
+        body: { scopeId: 'enterprise' },
+      }),
+    );
+    await handler(
+      event({
+        method: 'POST',
+        workflowId: 'wf',
+        path: 'placements',
+        body: {
+          stageId: 'capture',
+          scopeMembership: { mvp: 'EXECUTE', enterprise: 'EXECUTE' },
+        },
+      }),
+    );
+
+    const removed = await handler(
+      event({ method: 'DELETE', workflowId: 'wf', scopeId: 'mvp', path: 'scope' }),
+    );
+    expect(removed.statusCode).toBe(204);
+
+    const after = parse(await handler(event({ method: 'GET', workflowId: 'wf' })));
+    expect(after.body.defaultScope).toBe('enterprise');
+    expect(after.body.scopeRefs.map((s) => s.scopeId)).toEqual(['enterprise']);
+    expect(after.body.placements[0].scopeMembership).toEqual({ enterprise: 'EXECUTE' });
+  });
+
   it('adds and removes rule refs, exposed in the composition and rejecting bad layers', async () => {
     await createWorkflow({ id: 'wf', name: 'WF' });
 
@@ -726,6 +810,183 @@ describe('workflows handler', () => {
       kind: 'data',
     });
     expect(res.body.graph.acyclic).toBe(true);
+  });
+
+  it('execution preview uses the runtime planner for branch sections and validation', async () => {
+    const seedStage = (id, attrs = {}) => {
+      store.set(`BLOCK#SYSTEM#STAGE#${id}|V#latest`, {
+        pk: `BLOCK#SYSTEM#STAGE#${id}`,
+        sk: 'V#latest',
+        tenantId: 'SYSTEM',
+        blockType: 'STAGE',
+        blockId: id,
+        version: 1,
+        phase: 'construction',
+        mode: 'inline',
+        leadAgent: 'orchestrator',
+        supportAgents: [],
+        produces: [],
+        consumes: [],
+        requires: [],
+        blocksOn: [],
+        sensors: [],
+        reviewer: null,
+        humanValidation: 'none',
+        ...attrs,
+      });
+    };
+    seedStage('units-gen', { produces: ['unit-of-work-dependency'] });
+    seedStage('fd', {
+      forEach: 'unit-of-work',
+      consumes: [{ artifact: 'unit-of-work-dependency', required: true }],
+    });
+    seedStage('cg', { forEach: 'unit-of-work', requires: ['fd'] });
+
+    await createWorkflow({ id: 'wf', name: 'WF' });
+    await handler(
+      event({ method: 'POST', workflowId: 'wf', path: 'scopes', body: { scopeId: 'feature' } }),
+    );
+    for (const [stageId, order] of [
+      ['units-gen', 0],
+      ['fd', 1],
+      ['cg', 2],
+    ]) {
+      await handler(
+        event({
+          method: 'POST',
+          workflowId: 'wf',
+          path: 'placements',
+          body: { stageId, order, scopeMembership: { feature: 'EXECUTE' } },
+        }),
+      );
+    }
+
+    const res = parse(
+      await handler(
+        event({
+          method: 'GET',
+          workflowId: 'wf',
+          path: 'execution-preview',
+          query: { scope: 'feature' },
+        }),
+      ),
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.valid).toBe(true);
+    expect(res.body.plan.sections).toEqual([{ index: 1, stageIds: ['fd', 'cg'] }]);
+  });
+
+  it('execution preview reports missing, degraded, and unsupported forEach conditions', async () => {
+    const seedStage = (id, attrs = {}) => {
+      store.set(`BLOCK#SYSTEM#STAGE#${id}|V#latest`, {
+        pk: `BLOCK#SYSTEM#STAGE#${id}`,
+        sk: 'V#latest',
+        tenantId: 'SYSTEM',
+        blockType: 'STAGE',
+        blockId: id,
+        version: 1,
+        phase: 'construction',
+        mode: 'inline',
+        leadAgent: 'orchestrator',
+        supportAgents: [],
+        produces: [],
+        consumes: [],
+        requires: [],
+        blocksOn: [],
+        sensors: [],
+        reviewer: null,
+        humanValidation: 'none',
+        ...attrs,
+      });
+    };
+    seedStage('units-gen', { produces: ['unit-of-work-dependency'] });
+    seedStage('fd', { forEach: 'unit-of-work' });
+    seedStage('unsupported', { forEach: 'user-story' });
+
+    await createWorkflow({ id: 'wf', name: 'WF' });
+    await handler(
+      event({ method: 'POST', workflowId: 'wf', path: 'scopes', body: { scopeId: 'feature' } }),
+    );
+    await handler(
+      event({ method: 'POST', workflowId: 'wf', path: 'scopes', body: { scopeId: 'lean' } }),
+    );
+    await handler(
+      event({
+        method: 'POST',
+        workflowId: 'wf',
+        path: 'placements',
+        body: {
+          stageId: 'units-gen',
+          order: 0,
+          scopeMembership: { feature: 'SKIP', lean: 'SKIP' },
+        },
+      }),
+    );
+    await handler(
+      event({
+        method: 'POST',
+        workflowId: 'wf',
+        path: 'placements',
+        body: { stageId: 'fd', order: 1, scopeMembership: { feature: 'EXECUTE', lean: 'EXECUTE' } },
+      }),
+    );
+    await handler(
+      event({
+        method: 'POST',
+        workflowId: 'wf',
+        path: 'placements',
+        body: { stageId: 'unsupported', order: 2, scopeMembership: { feature: 'EXECUTE' } },
+      }),
+    );
+
+    const degraded = parse(
+      await handler(
+        event({
+          method: 'GET',
+          workflowId: 'wf',
+          path: 'execution-preview',
+          query: { scope: 'lean' },
+        }),
+      ),
+    );
+    expect(degraded.body.valid).toBe(true);
+    expect(degraded.body.warnings.map((w) => w.code)).toContain('scope_absent_unit_dag');
+    expect(degraded.body.plan.stages.find((s) => s.stageId === 'fd').forEachDegraded).toBe(true);
+
+    const unsupported = parse(
+      await handler(
+        event({
+          method: 'GET',
+          workflowId: 'wf',
+          path: 'execution-preview',
+          query: { scope: 'feature' },
+        }),
+      ),
+    );
+    expect(unsupported.body.valid).toBe(false);
+    expect(unsupported.body.errors.map((e) => e.code)).toContain('unsupported_for_each');
+
+    await createWorkflow({ id: 'missing', name: 'Missing Producer' });
+    await handler(
+      event({
+        method: 'POST',
+        workflowId: 'missing',
+        path: 'placements',
+        body: { stageId: 'fd', scopeMembership: { feature: 'EXECUTE' } },
+      }),
+    );
+    const missing = parse(
+      await handler(
+        event({
+          method: 'GET',
+          workflowId: 'missing',
+          path: 'execution-preview',
+          query: { scope: 'feature' },
+        }),
+      ),
+    );
+    expect(missing.body.valid).toBe(false);
+    expect(missing.body.errors.map((e) => e.code)).toContain('no_unit_dag_producer');
   });
 
   it('forks a workflow: copies phases + placements, not META identity', async () => {

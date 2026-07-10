@@ -124,6 +124,24 @@ describe('WorkflowScopeGraph', () => {
     expect(execSkipTexts.length).toBeGreaterThan(0);
   });
 
+  it('renders branch markers from compiled graph metadata', () => {
+    const branched = {
+      ...compiled,
+      graph: {
+        ...compiled.graph,
+        nodes: [
+          { ...compiled.graph.nodes[0], forEach: 'unit-of-work', section: 1 },
+          ...compiled.graph.nodes.slice(1),
+        ],
+      },
+    } as CompiledWorkflow;
+    const { container } = render(
+      <WorkflowScopeGraph compiled={branched} scopes={['feature']} readOnly />,
+    );
+    const labels = Array.from(container.querySelectorAll('text')).map((node) => node.textContent);
+    expect(labels).toContain('BR 1');
+  });
+
   it('SKIPPED status renders dashed stroke and reduced opacity', () => {
     const stageStatus: Record<string, StageState> = { s2: 'SKIPPED' };
     const { container } = render(

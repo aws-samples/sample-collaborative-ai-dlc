@@ -55,7 +55,7 @@ export function BlockPalette({ stages, placedStageIds, readOnly, onAdd }: BlockP
   return (
     <div className="w-full border rounded-lg flex flex-col bg-muted/40">
       <div className="border-b p-2.5 bg-muted/30">
-        <p className="text-xs font-medium">Building blocks</p>
+        <p className="text-xs font-medium">Library stages</p>
         <div className="mt-2 flex items-center gap-2">
           <Select value={phaseFilter} onValueChange={setPhaseFilter}>
             <SelectTrigger className="h-7 w-28 text-xs">
@@ -121,6 +121,8 @@ export function BlockPalette({ stages, placedStageIds, readOnly, onAdd }: BlockP
                     variant="ghost"
                     size="icon"
                     className="h-5 w-5 opacity-0 group-hover:opacity-100 transition-opacity"
+                    title="Open in Block Library"
+                    aria-label={`Open ${stage.name} in Block Library`}
                     onClick={(e) => {
                       e.stopPropagation();
                       navigate(`/blocks/stage/${stage.id}`);
@@ -128,19 +130,20 @@ export function BlockPalette({ stages, placedStageIds, readOnly, onAdd }: BlockP
                   >
                     <Pencil className="h-3 w-3" />
                   </Button>
-                  {draggable && (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-5 w-5"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onAdd(stage.id);
-                      }}
-                    >
-                      <Plus className="h-3 w-3" />
-                    </Button>
-                  )}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-5 w-5"
+                    title="Add to workflow"
+                    aria-label={`Add ${stage.name} to workflow`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onAdd(stage.id);
+                    }}
+                    disabled={!draggable}
+                  >
+                    <Plus className="h-3 w-3" />
+                  </Button>
                 </span>
               </div>
               {defaultGrouping && (
