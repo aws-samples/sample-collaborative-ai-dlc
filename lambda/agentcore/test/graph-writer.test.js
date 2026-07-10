@@ -236,6 +236,88 @@ describe('createArtifact', () => {
   });
 });
 
+describe('recordPullRequest', () => {
+  it('fails when the Intent anchor does not exist', async () => {
+    await expect(writer.recordPullRequest({ repoId: 'owner/repo' })).rejects.toBeInstanceOf(
+      GraphWriteError,
+    );
+  });
+
+  it('creates a PullRequest anchored Intent --HAS_PR--> PullRequest, stamped', async () => {
+    await seedIntent();
+    const res = await writer.recordPullRequest({
+      repoId: 'owner/repo',
+      prUrl: 'https://github.com/owner/repo/pull/7',
+      prNumber: 7,
+      branch: 'aidlc/intent-1',
+      baseBranch: 'main',
+    });
+    expect(res).toEqual({
+      id: 'pr:intent-1:owner/repo',
+      repoId: 'owner/repo',
+      prUrl: 'https://github.com/owner/repo/pull/7',
+      prNumber: '7',
+    });
+
+    const anchored = await g
+      .V()
+      .has('Intent', 'id', 'intent-1')
+      .out('HAS_PR')
+      .has('PullRequest', 'id', 'pr:intent-1:owner/repo')
+      .valueMap(true)
+      .next();
+    const vm = flattenValueMap(anchored.value);
+    expect(vm).toMatchObject({
+      id: 'pr:intent-1:owner/repo',
+      repository: 'owner/repo',
+      pr_url: 'https://github.com/owner/repo/pull/7',
+      pr_number: '7',
+      branch: 'aidlc/intent-1',
+      base_branch: 'main',
+      intent_id: 'intent-1',
+      project_id: 'proj-1',
+    });
+  });
+
+  it('stores an empty base_branch when the base was not resolved', async () => {
+    await seedIntent();
+    await writer.recordPullRequest({
+      repoId: 'owner/repo',
+      prUrl: 'https://example/pr/1',
+      prNumber: 1,
+      branch: 'b',
+      baseBranch: null,
+    });
+    const vm = flattenValueMap(
+      (await g.V().has('PullRequest', 'id', 'pr:intent-1:owner/repo').valueMap(true).next()).value,
+    );
+    expect(vm.base_branch).toBe('');
+  });
+
+  it('is idempotent per (intent, repo): re-record upserts, no duplicate', async () => {
+    await seedIntent();
+    await writer.recordPullRequest({ repoId: 'owner/repo', prUrl: 'u1', prNumber: 1, branch: 'b' });
+    await writer.recordPullRequest({ repoId: 'owner/repo', prUrl: 'u2', prNumber: 2, branch: 'b' });
+    const count = await g.V().hasLabel('PullRequest').count().next();
+    expect(count.value).toBe(1);
+    const vm = flattenValueMap(
+      (await g.V().has('PullRequest', 'id', 'pr:intent-1:owner/repo').valueMap(true).next()).value,
+    );
+    expect(vm.pr_url).toBe('u2');
+    expect(vm.pr_number).toBe('2');
+  });
+
+  it('records one PullRequest per repo (multi-repo)', async () => {
+    await seedIntent();
+    await writer.recordPullRequest({ repoId: 'owner/api', prUrl: 'ua', prNumber: 1, branch: 'b' });
+    await writer.recordPullRequest({ repoId: 'owner/web', prUrl: 'uw', prNumber: 1, branch: 'b' });
+    const ids = (
+      await g.V().has('Intent', 'id', 'intent-1').out('HAS_PR').values('id').toList()
+    ).toSorted();
+    expect(ids).toEqual(['pr:intent-1:owner/api', 'pr:intent-1:owner/web']);
+  });
+});
+
 describe('linkArtifacts', () => {
   beforeEach(async () => {
     await seedIntent();

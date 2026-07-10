@@ -432,3 +432,45 @@ describe('fetchKnowledgeGraph — derived layer', () => {
     expect(edges.some((e) => e.target === stale)).toBe(false);
   });
 });
+
+describe('fetchKnowledgeGraph — pull requests', () => {
+  it('renders PullRequest node(s) anchored Intent --HAS_PR-->, one per repo', async () => {
+    await seedFullGraph();
+    await addV('PullRequest', {
+      id: 'pr:intent-kg:owner/api',
+      repository: 'owner/api',
+      pr_url: 'https://github.com/owner/api/pull/3',
+      pr_number: '3',
+      branch: 'aidlc/intent-kg',
+      base_branch: 'main',
+    });
+    await addV('PullRequest', {
+      id: 'pr:intent-kg:owner/web',
+      repository: 'owner/web',
+      pr_url: 'https://github.com/owner/web/pull/4',
+      pr_number: '4',
+      branch: 'aidlc/intent-kg',
+      base_branch: 'develop',
+    });
+    await addE('Intent', INTENT, 'HAS_PR', 'PullRequest', 'pr:intent-kg:owner/api');
+    await addE('Intent', INTENT, 'HAS_PR', 'PullRequest', 'pr:intent-kg:owner/web');
+
+    const { nodes, edges } = await fetchKnowledgeGraph(g, { projectId: PROJECT, intentId: INTENT });
+
+    expect(byId(nodes, 'pr:intent-kg:owner/api')).toMatchObject({
+      type: 'PullRequest',
+      label: 'PR #3',
+      pr_url: 'https://github.com/owner/api/pull/3',
+      pr_number: '3',
+      repository: 'owner/api',
+      branch: 'aidlc/intent-kg',
+      base_branch: 'main',
+    });
+    expect(byId(nodes, 'pr:intent-kg:owner/web')).toMatchObject({
+      type: 'PullRequest',
+      base_branch: 'develop',
+    });
+    expect(edge(edges, INTENT, 'pr:intent-kg:owner/api', 'HAS_PR')).toBeDefined();
+    expect(edge(edges, INTENT, 'pr:intent-kg:owner/web', 'HAS_PR')).toBeDefined();
+  });
+});

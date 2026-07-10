@@ -124,6 +124,8 @@ export const fetchKnowledgeGraph = async (g, { projectId, intentId }) => {
     .filter(isCurrent)
     .filter((i) => !i.artifact_id || currentArtifactIds.has(i.artifact_id));
   const units = (await flatRows(anchored('UnitOfWork'))).filter(isCurrent);
+  // Fan-in PR record(s), anchored Intent --HAS_PR--> PullRequest.
+  const prs = await flatRows(anchored('PullRequest', 'HAS_PR'));
 
   const nodes = [
     {
@@ -221,6 +223,17 @@ export const fetchKnowledgeGraph = async (g, { projectId, intentId }) => {
       slug: u.slug ?? null,
       createdAt: u.created_at ?? null,
     })),
+    ...prs.map((p) => ({
+      id: p.id,
+      type: 'PullRequest',
+      label: p.pr_number ? `PR #${p.pr_number}` : p.repository || 'Pull Request',
+      pr_url: p.pr_url ?? null,
+      pr_number: p.pr_number ?? null,
+      repository: p.repository ?? null,
+      branch: p.branch ?? null,
+      base_branch: p.base_branch ?? null,
+      createdAt: p.created_at ?? null,
+    })),
   ];
   const nodeIds = new Set(nodes.map((n) => n.id));
 
@@ -266,6 +279,7 @@ export const fetchKnowledgeGraph = async (g, { projectId, intentId }) => {
     ...questions.map((q) => ({ source: intentId, target: q.id, label: 'CONTAINS' })),
     ...steering.map((s) => ({ source: intentId, target: s.id, label: 'CONTAINS' })),
     ...units.map((u) => ({ source: intentId, target: u.id, label: 'CONTAINS' })),
+    ...prs.map((p) => ({ source: intentId, target: p.id, label: 'HAS_PR' })),
     ...businessEdges,
     ...derivedEdges,
     ...unitEdges,

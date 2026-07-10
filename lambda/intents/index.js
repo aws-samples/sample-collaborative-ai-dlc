@@ -434,6 +434,26 @@ const fetchArtifacts = async (g, intentId) => {
   }));
 };
 
+// The fan-in PR record(s), anchored Intent --HAS_PR--> PullRequest.
+const fetchPullRequests = async (g, intentId) => {
+  const rows = await g
+    .V()
+    .has('Intent', 'id', intentId)
+    .out('HAS_PR')
+    .hasLabel('PullRequest')
+    .valueMap(true)
+    .toList();
+  return rows.map((vm) => ({
+    id: getVal(vm, 'id'),
+    repository: getVal(vm, 'repository') ?? null,
+    prUrl: getVal(vm, 'pr_url') ?? null,
+    prNumber: getVal(vm, 'pr_number') ?? null,
+    branch: getVal(vm, 'branch') ?? null,
+    baseBranch: getVal(vm, 'base_branch') ?? null,
+    createdAt: getVal(vm, 'created_at') ?? null,
+  }));
+};
+
 // One artifact by id, scoped to the intent (agent-chosen artifact ids are only
 // unique within an intent — a bare id match could bind to a foreign intent's
 // same-id vertex). Compact shape for the edit routes.
@@ -653,6 +673,7 @@ const mapIntent = (meta) => ({
   baseBranch: meta.baseBranch ?? null,
   baseBranches: meta.baseBranches ?? null,
   repos: meta.repos ?? null,
+  gitProvider: meta.gitProvider ?? null,
   workflowId: meta.workflowId,
   workflowVersion: meta.workflowVersion ?? null,
   scope: meta.scope ?? null,
@@ -1752,6 +1773,7 @@ export const handler = async (event) => {
         return response(404, { error: 'Intent not found' });
       }
       const artifacts = await fetchArtifacts(g, intentId);
+      const pullRequests = await fetchPullRequests(g, intentId);
       const gates = records.humanTasks.map(mapHumanTask);
       const answerEvents = await buildGateAnswerEvents(g, gates);
       const priceFor = await getPriceResolver();
@@ -1793,6 +1815,8 @@ export const handler = async (event) => {
           timestamp: s.timestamp,
         })),
         artifacts,
+        // Fan-in PR record(s) — a run-level output, surfaced as a work product.
+        pullRequests,
         // Quorum-supported artifact edit sessions (post-hoc document editing):
         // plan approval + progress render from these rows.
         quorumEdits: (records.quorumEdits ?? []).map(mapQuorumEdit),

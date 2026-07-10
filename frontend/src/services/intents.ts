@@ -48,6 +48,9 @@ export interface Intent {
   // branch. null when the caller didn't override anything (the common case).
   baseBranches: Record<string, string> | null;
   repos: string[] | null;
+  // Code host the intent's repos live on ('github' | 'gitlab'), used to build
+  // branch/PR web links. null on older executions.
+  gitProvider?: string | null;
   workflowId: string;
   workflowVersion: number | null;
   scope: string | null;
@@ -248,6 +251,18 @@ export interface IntentArtifact {
   content: string | null;
 }
 
+// A fan-in pull/merge request — a run-level output surfaced as a work product.
+// One per repo. `baseBranch` is empty when the repo's default branch was used.
+export interface IntentPullRequest {
+  id: string;
+  repository: string | null;
+  prUrl: string | null;
+  prNumber: string | null;
+  branch: string | null;
+  baseBranch: string | null;
+  createdAt: string | null;
+}
+
 // ── Post-hoc artifact editing ──
 
 // GET .../artifacts/{id}/impact — the pre-edit drift warning data.
@@ -395,6 +410,7 @@ export interface IntentDetail {
   outputs: IntentOutput[];
   sensorRuns: IntentSensorRun[];
   artifacts: IntentArtifact[];
+  pullRequests?: IntentPullRequest[];
   /** Quorum-supported artifact edit sessions (post-hoc document editing). */
   quorumEdits?: QuorumEdit[];
   unitPlan?: IntentUnitPlan | null;

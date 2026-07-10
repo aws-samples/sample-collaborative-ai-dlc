@@ -300,6 +300,9 @@ function eventDotColor(type: string): string {
   // gap (e.g. a required artifact "missing") is scannable in the feed.
   if (type === 'v2.sensor.flagged') return 'bg-agent-waiting';
   if (type === 'v2.stage.resumed') return 'bg-agent-running';
+  if (type === 'v2.pr.opened' || type === 'v2.pr.recorded') return 'bg-agent-success';
+  if (type === 'v2.pr.failed' || type === 'v2.pr.record_failed') return 'bg-agent-error';
+  if (type === 'v2.pr.skipped') return 'bg-agent-waiting';
   if (type.startsWith('v2.workspace.')) return 'bg-phase-inception';
   return 'bg-muted-foreground';
 }

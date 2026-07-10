@@ -471,6 +471,13 @@ export function IntentProvider({
         invalidateIntentGraph(projectId, intentId);
         return;
       }
+      // The fan-in PR(s) were recorded — a new PullRequest node in the graph
+      // and a new work product in the DTO, so refresh both.
+      if (evt.action === 'agent.pr') {
+        invalidateIntentGraph(projectId, intentId);
+        scheduleLoad();
+        return;
+      }
       // Stage/execution/metric/note/steering/unit transitions → refetch the
       // assembled DTO (debounced — lane bursts coalesce into one fetch).
       if (

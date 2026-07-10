@@ -19,10 +19,8 @@ import { CollaborativeTextarea } from '@/components/CollaborativeTextarea';
 import type { Question } from '@/services/questions';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { ArtifactViewer } from '@/components/intent/ArtifactViewer';
-
-import { QuorumEditPanel } from '@/components/intent/QuorumEditPanel';
-import { artifactAccent } from '@/components/intent/artifactAccent';
 import { formatDuration, useTick } from '@/components/intent/stageStyle';
+import { QuorumEditPanel } from '@/components/intent/QuorumEditPanel';
 import { IntentGraphPopover } from '@/components/intent/IntentGraphPopover';
 import { DerivedItemCountChip } from '@/components/intent/DerivedItemCountChip';
 import {
@@ -81,8 +79,11 @@ import {
   CheckCircle2,
   ChevronRight,
   Compass,
+  ExternalLink,
   FileText,
-  HelpCircle,
+  GitBranch,
+  GitPullRequest,
+  FileQuestion,
   Layers,
   Loader2,
   MoreHorizontal,
@@ -468,7 +469,7 @@ export default function IntentView() {
           {pendingGates.length > 0 && (
             <div className="rounded-lg border border-l-4 border-l-agent-waiting bg-agent-waiting/[0.04] p-4 space-y-3">
               <div className="flex items-center gap-2">
-                <HelpCircle className="h-4 w-4 text-agent-waiting" />
+                <FileQuestion className="h-4 w-4 text-agent-waiting" />
                 <h2 className="text-sm font-semibold">Questions for you</h2>
                 <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
                   {pendingGates.length}
@@ -909,6 +910,23 @@ function humanizeType(type: string, count: number): string {
   return label;
 }
 
+// Normalize a repo entry (slug or URL) to its "owner/repo" slug so it matches
+// the `repository` prop stored on a PR record.
+const repoSlug = (r: string) => r.replace(/^https?:\/\/[^/]+\//, '').replace(/\.git$/, '');
+
+// Web link to a branch on the code host. GitHub and GitLab use different paths;
+// null when the provider is unknown (older executions) so the UI shows plain text.
+const branchWebUrl = (
+  provider: string | null | undefined,
+  repo: string,
+  branch: string,
+): string | null => {
+  const enc = branch.split('/').map(encodeURIComponent).join('/');
+  if (provider === 'gitlab') return `https://gitlab.com/${repo}/-/tree/${enc}`;
+  if (provider === 'github') return `https://github.com/${repo}/tree/${enc}`;
+  return null;
+};
+
 function groupArtifacts(artifacts: IntentArtifact[]): {
   itemizedGroups: ArtifactGroup[];
   documents: IntentArtifact[];
@@ -957,7 +975,45 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
   );
 
   const activeArtifacts = detail.artifacts.filter((a) => !a.supersededAt);
-  const { itemizedGroups, documents } = groupArtifacts(activeArtifacts);
+  // Only long-form markdown artifacts render as Documents. Short / unregistered
+  // marker artifacts (e.g. practices-discovery-timestamp) are intentionally
+  // dropped — they are diagnostic telemetry, not work products.
+  const { documents } = groupArtifacts(activeArtifacts);
+  const pullRequests = detail.pullRequests ?? [];
+
+  // A repo enters the Code section only once it has real code on the remote:
+  // either the engine pushed to it (its slug appears in a v2.git.pushed event
+  // summary — same match the orchestrator uses) or a PR opened for it. Before
+  // that the branch is local-only and there is nothing to show.
+  const pushedSummaries = detail.events
+    .filter((e) => e.type === 'v2.git.pushed')
+    .map((e) => e.summary ?? '');
+  const repoPushed = (slug: string) => pushedSummaries.some((s) => s.includes(slug));
+
+  // One entry per pushed repo. A repo shows as its intent BRANCH (name + link)
+  // until a PR opens; the PR then REPLACES the branch entry, adding the number,
+  // link, and the source → target (base) branches. `repository` on a PR record
+  // is the "owner/repo" slug; repos may be slugs or URLs.
+  const prByRepo = new Map(pullRequests.map((pr) => [pr.repository ?? '', pr]));
+  const codeItems = (detail.intent.repos ?? [])
+    .map((repo) => {
+      const slug = repoSlug(repo);
+      const pr = prByRepo.get(slug) ?? prByRepo.get(repo) ?? null;
+      const branch = pr?.branch ?? detail.intent.branch;
+      return {
+        repo: slug,
+        branch,
+        // Base (target) is a PR-only concept — a bare branch has no target.
+        baseBranch: pr?.baseBranch ?? null,
+        branchUrl: branch ? branchWebUrl(detail.intent.gitProvider, slug, branch) : null,
+        prUrl: pr?.prUrl ?? null,
+        prNumber: pr?.prNumber ?? null,
+        // Show this repo only if it pushed code or has a PR.
+        hasCode: pr != null || repoPushed(slug),
+      };
+    })
+    .filter((item) => item.hasCode);
+  const showCode = codeItems.length > 0;
 
   // Controlled accordion: groups open by default (as before), and newly
   // appearing groups auto-open — but a group the user closed stays closed.
@@ -965,7 +1021,7 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
   // target group before scrolling to the anchor. Derived items start closed
   // (a supplementary layer).
   const defaultOpen = [
-    ...itemizedGroups.map((g) => `artifact-${g.type}`),
+    showCode ? 'code' : null,
     documents.length > 0 ? 'documents' : null,
     questionGates.length > 0 ? 'questions' : null,
   ].filter((v): v is string => Boolean(v));
@@ -992,13 +1048,12 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
         if (focus.kind === 'artifact') {
           const artifact = artifactsRef.current.find((a) => a.id === focus.id);
           if (!artifact) return;
+          // Every rendered artifact is a document (short marker artifacts are
+          // not shown); focusing one opens its preview.
           if (isDocumentArtifact(artifact)) {
             openGroup('documents');
             scrollAndFlash(`artifact-${artifact.id}`);
             openArtifactPreview(artifact.id);
-          } else {
-            openGroup(`artifact-${artifact.artifactType ?? 'other'}`);
-            scrollAndFlash(`artifact-${artifact.id}`);
           }
           return;
         }
@@ -1011,7 +1066,12 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
     [openArtifactPreview],
   );
 
-  if (detail.artifacts.length === 0 && questionGates.length === 0 && steering.length === 0) {
+  if (
+    detail.artifacts.length === 0 &&
+    questionGates.length === 0 &&
+    steering.length === 0 &&
+    !showCode
+  ) {
     return null;
   }
 
@@ -1034,45 +1094,78 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
           onValueChange={setOpenGroups}
           className="space-y-2"
         >
-          {itemizedGroups.map((group) => {
-            const accent = artifactAccent(group.type);
-            return (
-              <AccordionItem
-                key={group.type}
-                value={`artifact-${group.type}`}
-                className="rounded-md border px-3"
-              >
-                <AccordionTrigger className="py-3 hover:no-underline">
-                  <div className="flex items-center gap-2">
-                    <span className={cn('h-2 w-2 rounded-full shrink-0', accent.dot)} />
-                    <span className="text-sm font-medium">{group.label}</span>
-                    <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
-                      {group.items.length}
-                    </Badge>
+          {showCode && (
+            <AccordionItem value="code" className="rounded-md border px-3">
+              <AccordionTrigger className="py-3 hover:no-underline">
+                <div className="flex items-center gap-2">
+                  <GitPullRequest className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm font-medium">Code</span>
+                  <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
+                    {codeItems.length}
+                  </Badge>
+                </div>
+              </AccordionTrigger>
+              <AccordionContent className="space-y-1 pb-3">
+                {codeItems.map((item) => (
+                  <div
+                    key={item.repo}
+                    className="flex items-center justify-between gap-3 rounded-md px-2 py-1.5"
+                  >
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex items-center gap-2 text-sm font-medium">
+                        <span className="truncate">{item.repo || 'Repository'}</span>
+                        {item.prNumber && (
+                          <span className="text-muted-foreground">PR #{item.prNumber}</span>
+                        )}
+                      </div>
+                      {item.branch && (
+                        <p className="flex items-center gap-1.5 truncate text-xs text-muted-foreground">
+                          <GitBranch className="h-3 w-3 shrink-0" />
+                          {item.branchUrl ? (
+                            <a
+                              href={item.branchUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="font-mono text-primary hover:underline underline-offset-2"
+                            >
+                              {item.branch}
+                            </a>
+                          ) : (
+                            <code className="font-mono">{item.branch}</code>
+                          )}
+                          {item.baseBranch && (
+                            <>
+                              {' → '}
+                              <code className="font-mono">{item.baseBranch}</code>
+                            </>
+                          )}
+                        </p>
+                      )}
+                    </div>
+                    {item.prUrl && (
+                      <Button asChild size="sm" variant="outline" className="shrink-0">
+                        <a href={item.prUrl} target="_blank" rel="noopener noreferrer">
+                          <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
+                          Open PR
+                        </a>
+                      </Button>
+                    )}
                   </div>
-                </AccordionTrigger>
-                <AccordionContent className="space-y-3 pb-3">
-                  {group.items.map((a) => (
-                    <ArtifactViewer
-                      key={a.id}
-                      artifact={a}
-                      graphNeighbors={getNeighbors(a.id)}
-                      derivedItemCount={itemsByArtifact.get(a.id)?.length ?? 0}
-                    />
-                  ))}
-                </AccordionContent>
-              </AccordionItem>
-            );
-          })}
-
+                ))}
+              </AccordionContent>
+            </AccordionItem>
+          )}
           {documents.length > 0 && (
             <AccordionItem value="documents" className="rounded-md border px-3">
               <AccordionTrigger className="py-3 hover:no-underline">
                 <div className="flex items-center gap-2">
                   <FileText className="h-4 w-4 text-muted-foreground" />
                   <span className="text-sm font-medium">
-                    Document{documents.length > 1 ? 's' : ''} ({documents.length})
+                    Document{documents.length > 1 ? 's' : ''}
                   </span>
+                  <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
+                    {documents.length}
+                  </Badge>
                 </div>
               </AccordionTrigger>
               <AccordionContent className="space-y-1 pb-3">
@@ -1139,7 +1232,13 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
           {questionGates.length > 0 && (
             <AccordionItem value="questions" className="rounded-md border px-3">
               <AccordionTrigger className="py-3 hover:no-underline">
-                <span className="text-sm font-medium">Questions ({questionGates.length})</span>
+                <div className="flex items-center gap-2">
+                  <FileQuestion className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm font-medium">Questions</span>
+                  <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
+                    {questionGates.length}
+                  </Badge>
+                </div>
               </AccordionTrigger>
               <AccordionContent className="space-y-3 pb-3">
                 {questionGates.map((gate) => (
@@ -1156,7 +1255,13 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
           {steering.length > 0 && (
             <AccordionItem value="steering" className="rounded-md border px-3">
               <AccordionTrigger className="py-3 hover:no-underline">
-                <span className="text-sm font-medium">Course corrections ({steering.length})</span>
+                <div className="flex items-center gap-2">
+                  <Compass className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm font-medium">Course corrections</span>
+                  <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
+                    {steering.length}
+                  </Badge>
+                </div>
               </AccordionTrigger>
               <AccordionContent className="space-y-3 pb-3">
                 {steering.map((s) => (
@@ -1741,6 +1846,10 @@ function GateCard({
             </Badge>
           )}
           <p className="whitespace-pre-line text-sm">{gate.prompt || 'Approval required'}</p>
+          {/* TODO: a reject on these engine gates currently terminates the whole
+              run (terminal FAILED on the backend). Consider a softer path: let
+              reject capture free-text feedback describing what to change, then
+              revise the plan / re-ask the gate instead of blocking the workflow. */}
           <div className="flex flex-wrap gap-2">
             {options.length > 0 ? (
               options.map((opt) => (
