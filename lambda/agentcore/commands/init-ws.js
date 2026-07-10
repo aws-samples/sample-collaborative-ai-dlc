@@ -10,6 +10,10 @@
 
 import gremlin from 'gremlin';
 import { closeGraphSource } from '../mcp/graph-writer.js';
+import {
+  pushBranch as defaultPushBranch,
+  remoteBranchExists as defaultRemoteBranchExists,
+} from '../git-engine.js';
 
 const { cardinality } = gremlin.process;
 
@@ -59,6 +63,8 @@ export const initWs = async (
     workspaceDir,
     broadcast = async () => {},
     clock = () => new Date().toISOString(),
+    pushBranch = defaultPushBranch,
+    remoteBranchExists = defaultRemoteBranchExists,
   } = deps;
   const now = clock();
 
@@ -101,6 +107,52 @@ export const initWs = async (
       reason: 'branch_setup_failed',
       detail: `could not create/checkout the intent branch${branch ? ` '${branch}'` : ''} in ${badBranch.join(', ')} — the base branch may not exist and orphan creation failed`,
     };
+  }
+
+  // 1b. Publish the intent branch to the remote NOW. init-ws creates it locally
+  // (off the base HEAD, no commits yet), but parallel construction lanes fork
+  // their unit branch from origin/<intentBranch> and merge back into it — both
+  // require the branch to exist remotely. Nothing else pushes it before then
+  // (pre-construction stages are artifact-only: clean tree, no commit, no push),
+  // so without this a lane merge fails with `intent_branch_missing`. Fatal on
+  // failure: a missing remote branch strands the whole construction phase.
+  //
+  // Skip when the branch ALREADY exists remotely: a rewind/retry re-init may run
+  // after lanes advanced the branch, and re-pushing the base-HEAD local ref over
+  // it would be a non-fast-forward failure. "Establish if missing", never force.
+  if (branch && checkedOut.length > 0) {
+    const pushFailures = [];
+    for (const r of checkedOut) {
+      const existing = await remoteBranchExists({
+        dir: r.targetDir,
+        repo: r.repo,
+        branch,
+        gitToken,
+        gitProvider,
+      }).catch(() => ({ exists: null }));
+      // Already on the remote → nothing to establish.
+      if (existing.exists === true) continue;
+      const res = await pushBranch({
+        dir: r.targetDir,
+        repo: r.repo,
+        branch,
+        gitToken,
+        gitProvider,
+      }).catch((e) => ({ pushed: false, reason: 'push_crashed', detail: e?.message }));
+      // `empty` (no commits — genuinely empty repo) is an accepted no-op.
+      if (res.pushed !== true && res.pushed !== 'empty') {
+        pushFailures.push(
+          `${r.repo} (${res.reason ?? 'unknown'}${res.detail ? `: ${res.detail}` : ''})`,
+        );
+      }
+    }
+    if (pushFailures.length > 0) {
+      return {
+        ok: false,
+        reason: 'intent_branch_push_failed',
+        detail: `could not publish the intent branch '${branch}' to the remote for ${pushFailures.join(', ')} — construction lanes cannot fork/merge without it`,
+      };
+    }
   }
 
   // 2. Create the Intent anchor in Neptune. Close the connection once done —

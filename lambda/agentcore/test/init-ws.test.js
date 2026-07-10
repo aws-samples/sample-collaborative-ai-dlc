@@ -66,9 +66,16 @@ describe('initWs', () => {
     store: spyStore(),
     openGraph: async () => g,
     checkoutRepos: async ({ repos }) =>
-      repos.map((r) => ({ repo: typeof r === 'string' ? r : r.url })),
+      repos.map((r) => ({
+        repo: typeof r === 'string' ? r : r.url,
+        targetDir: `/tmp/ws/${typeof r === 'string' ? r : r.url}`,
+      })),
     workspaceDir: '/tmp/ws',
     clock: () => 'T',
+    // Default: the branch is not yet on the remote, and the publish succeeds.
+    // Overridden per test to assert the call or exercise a failure.
+    remoteBranchExists: async () => ({ exists: false }),
+    pushBranch: async () => ({ pushed: true, sha: 'abc', verified: true }),
     ...overrides,
   });
 
@@ -191,6 +198,112 @@ describe('initWs', () => {
     expect(res.reason).toBe('branch_setup_failed');
     expect(res.detail).toContain('acme/empty');
     expect(res.detail).toContain("'aidlc/i1'");
+  });
+
+  it('publishes the intent branch to the remote (per repo) so lanes can fork/merge it', async () => {
+    const pushed = [];
+    const d = deps({
+      checkoutRepos: async ({ repos }) =>
+        repos.map((r) => ({ repo: r, targetDir: `/tmp/ws/${r}` })),
+      pushBranch: async (args) => {
+        pushed.push(args);
+        return { pushed: true, sha: 'abc', verified: true };
+      },
+    });
+    const res = await initWs(
+      {
+        projectId: 'p1',
+        intentId: 'i1',
+        executionId: 'e1',
+        repos: ['acme/api', 'acme/web'],
+        branch: 'aidlc/i1',
+        baseBranch: 'main',
+        gitToken: 'tok',
+        gitProvider: 'github',
+      },
+      d,
+    );
+    expect(res.ok).toBe(true);
+    // One publish per repo, targeting the intent branch, with the fresh token.
+    expect(pushed).toHaveLength(2);
+    expect(pushed[0]).toMatchObject({
+      dir: '/tmp/ws/acme/api',
+      repo: 'acme/api',
+      branch: 'aidlc/i1',
+      gitToken: 'tok',
+      gitProvider: 'github',
+    });
+    expect(pushed[1]).toMatchObject({ repo: 'acme/web', branch: 'aidlc/i1' });
+  });
+
+  it('FAILS loudly when the intent branch cannot be published (lanes depend on it)', async () => {
+    const d = deps({
+      pushBranch: async () => ({ pushed: false, reason: 'push_failed', detail: 'Access denied' }),
+    });
+    const res = await initWs(
+      {
+        projectId: 'p1',
+        intentId: 'i1',
+        executionId: 'e1',
+        repos: ['acme/api'],
+        branch: 'aidlc/i1',
+        baseBranch: 'main',
+        gitToken: 'tok',
+        gitProvider: 'gitlab',
+      },
+      d,
+    );
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('intent_branch_push_failed');
+    expect(res.detail).toContain('acme/api');
+    expect(res.detail).toContain('aidlc/i1');
+  });
+
+  it("accepts pushed:'empty' (a genuinely empty repo) as a no-op, not a failure", async () => {
+    const d = deps({
+      pushBranch: async () => ({ pushed: 'empty' }),
+    });
+    const res = await initWs(
+      {
+        projectId: 'p1',
+        intentId: 'i1',
+        executionId: 'e1',
+        repos: ['acme/api'],
+        branch: 'aidlc/i1',
+        baseBranch: 'main',
+        gitToken: 'tok',
+        gitProvider: 'github',
+      },
+      d,
+    );
+    expect(res.ok).toBe(true);
+  });
+
+  it('SKIPS the publish when the intent branch already exists remotely (rewind/retry re-init)', async () => {
+    let pushCalls = 0;
+    const d = deps({
+      remoteBranchExists: async () => ({ exists: true }),
+      pushBranch: async () => {
+        pushCalls += 1;
+        return { pushed: true };
+      },
+    });
+    const res = await initWs(
+      {
+        projectId: 'p1',
+        intentId: 'i1',
+        executionId: 'e1',
+        repos: ['acme/api'],
+        branch: 'aidlc/i1',
+        baseBranch: 'main',
+        gitToken: 'tok',
+        gitProvider: 'github',
+      },
+      d,
+    );
+    expect(res.ok).toBe(true);
+    // Already established → no push attempted (avoids non-fast-forward failure).
+    expect(pushCalls).toBe(0);
   });
 });
 

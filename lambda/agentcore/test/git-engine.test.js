@@ -9,6 +9,7 @@ import {
   commitAll,
   isAheadOfRemote,
   pushBranch,
+  remoteBranchExists,
   commitAndPushAll,
 } from '../git-engine.js';
 
@@ -327,6 +328,47 @@ describe('isAheadOfRemote', () => {
     const empty = path.join(root, 'empty');
     await git(['init', empty], root);
     expect(await isAheadOfRemote({ dir: empty, branch: 'main' })).toBe(false);
+  });
+});
+
+describe('remoteBranchExists', () => {
+  it('true for an existing remote branch, false for an absent one', async () => {
+    const { work, remote } = await initRemoteAndClone();
+    const urls = { auth: remote, clean: 'https://github.com/o/r.git' };
+
+    const present = await remoteBranchExists({ dir: work, repo: 'o/r', branch: 'main', urls });
+    expect(present).toEqual({ exists: true });
+
+    const absent = await remoteBranchExists({
+      dir: work,
+      repo: 'o/r',
+      branch: 'aidlc/never',
+      urls,
+    });
+    expect(absent).toEqual({ exists: false });
+  });
+
+  it('restores the clean URL after the check (token window scrubbed)', async () => {
+    const { work, remote } = await initRemoteAndClone();
+    await remoteBranchExists({
+      dir: work,
+      repo: 'o/r',
+      branch: 'main',
+      urls: { auth: remote, clean: 'https://github.com/o/r.git' },
+    });
+    const url = await git(['remote', 'get-url', 'origin'], work);
+    expect(url.stdout.trim()).toBe('https://github.com/o/r.git');
+  });
+
+  it('returns exists:null (undetermined) when the remote is unreachable', async () => {
+    const { work } = await initRemoteAndClone();
+    const res = await remoteBranchExists({
+      dir: work,
+      repo: 'o/r',
+      branch: 'main',
+      urls: { auth: path.join(root, 'does-not-exist.git'), clean: 'https://github.com/o/r.git' },
+    });
+    expect(res.exists).toBeNull();
   });
 });
 

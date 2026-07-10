@@ -392,6 +392,38 @@ export const repoTargetDir = ({ url, workspaceDir, multi }) =>
 // only between the set-url and the finally-scrub. Never throws.
 //   { fetched: true }                    — remote refs are current
 //   { fetched: false, reason, detail }   — set-url or fetch failure
+// Does <branch> exist on the remote? Authenticated `ls-remote` in the same
+// token window pattern as fetchOrigin. Returns:
+//   { exists: true|false }               — definitive answer
+//   { exists: null, reason, detail }     — could not determine (set-url / ls-remote failed)
+// A null result lets the caller decide (init-ws treats "unknown" as "try the
+// push" so a genuinely-missing branch is still established).
+export const remoteBranchExists = async ({
+  dir,
+  repo,
+  branch,
+  gitToken,
+  gitProvider,
+  urls = {},
+  git = runGit,
+}) => {
+  if (!branch) return { exists: null, reason: 'no_branch' };
+  const authUrl = urls.auth ?? buildCloneUrl(gitProvider, repo, gitToken);
+  const setAuth = await git(['remote', 'set-url', 'origin', authUrl], { cwd: dir });
+  if (setAuth.exitCode !== 0) {
+    return { exists: null, reason: 'remote_set_url_failed', detail: setAuth.stderr.trim() };
+  }
+  try {
+    const ls = await git(['ls-remote', '--heads', 'origin', branch], { cwd: dir });
+    if (ls.exitCode !== 0) {
+      return { exists: null, reason: 'ls_remote_failed', detail: ls.stderr.trim().slice(-500) };
+    }
+    return { exists: ls.stdout.trim() !== '' };
+  } finally {
+    await scrubRemote({ dir, repo, gitProvider, urls, git });
+  }
+};
+
 export const fetchOrigin = async ({
   dir,
   repo,
