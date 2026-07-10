@@ -10,11 +10,14 @@ import {
   GetCommand,
   PutCommand,
   QueryCommand,
+  ScanCommand,
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
 import {
   LambdaClient,
+  GetDurableExecutionCommand,
   InvokeCommand,
+  ListDurableExecutionsByFunctionCommand,
   SendDurableExecutionCallbackSuccessCommand,
 } from '@aws-sdk/client-lambda';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
@@ -94,6 +97,14 @@ const installDdbFakes = () => {
     if (input.ScanIndexForward === false) items.reverse();
     return { Items: items.map((i) => ({ ...i })) };
   });
+  ddbMock.on(ScanCommand).callsFake((input) => {
+    const values = input.ExpressionAttributeValues || {};
+    let items = [...procStore.values()];
+    if ((input.FilterExpression || '').includes('sk = :meta')) {
+      items = items.filter((i) => i.sk === values[':meta']);
+    }
+    return { Items: items.map((i) => ({ ...i })) };
+  });
   ddbMock.on(UpdateCommand).callsFake((input) => {
     const k = keyOf(input.Key.pk, input.Key.sk);
     const existing = procStore.get(k);
@@ -159,6 +170,8 @@ const installDdbFakes = () => {
   lambdaMock.reset();
   lambdaMock.on(InvokeCommand).resolves({ StatusCode: 202 });
   lambdaMock.on(SendDurableExecutionCallbackSuccessCommand).resolves({});
+  lambdaMock.on(GetDurableExecutionCommand).resolves({ Status: 'TIMED_OUT' });
+  lambdaMock.on(ListDurableExecutionsByFunctionCommand).resolves({ DurableExecutions: [] });
 };
 
 // Seed a HUMAN# gate row straight into the fake table (the runtime writes these;
@@ -1445,6 +1458,69 @@ describe('POST /gates/{humanTaskId}/answer', () => {
     expect((await answerGate(sub, projectId, intent.id, 'h1')).statusCode).toBe(409);
   });
 
+  it('repairs WAITING to FAILED when the durable callback has expired', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    procStore.set(metaKey, {
+      ...procStore.get(metaKey),
+      status: 'WAITING',
+      pendingHumanTaskId: 'h1',
+      orchestratorRunId: 'run-old',
+    });
+    seedGate(intent.id, 'h1', { status: 'pending', callbackId: 'cb-h1' });
+    const expired = new Error('callback timed out');
+    expired.name = 'CallbackTimeoutException';
+    lambdaMock.on(SendDurableExecutionCallbackSuccessCommand).rejectsOnce(expired);
+
+    const res = await answerGate(sub, projectId, intent.id, 'h1');
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toMatchObject({ code: 'durable_execution_expired' });
+    expect(procStore.get(metaKey)).toMatchObject({
+      status: 'FAILED',
+      pendingHumanTaskId: null,
+      failureReason: 'durable_callback_expired',
+      orchestratorRunId: 'run-old',
+    });
+    expect(
+      [...procStore.values()].some(
+        (row) => row.type === 'Event' && row.eventType === 'v2.execution.repaired',
+      ),
+    ).toBe(true);
+  });
+
+  it('returns 503 and records an event when callback resume fails unexpectedly', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    procStore.set(metaKey, {
+      ...procStore.get(metaKey),
+      status: 'WAITING',
+      pendingHumanTaskId: 'h1',
+    });
+    seedGate(intent.id, 'h1', { status: 'pending', callbackId: 'cb-h1' });
+    lambdaMock
+      .on(SendDurableExecutionCallbackSuccessCommand)
+      .rejectsOnce(Object.assign(new Error('throttled'), { name: 'TooManyRequestsException' }));
+
+    const res = await answerGate(sub, projectId, intent.id, 'h1');
+
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body)).toMatchObject({
+      code: 'durable_callback_resume_failed',
+      retryable: true,
+    });
+    expect(procStore.get(metaKey).status).toBe('WAITING');
+    expect(
+      [...procStore.values()].some(
+        (row) => row.type === 'Event' && row.eventType === 'v2.gate.resume_failed',
+      ),
+    ).toBe(true);
+  });
+
   it('404s an unknown gate', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -1480,6 +1556,79 @@ describe('realtime-token — denial paths', () => {
       ...claims(sub),
     });
     expect(res.statusCode).toBe(404);
+  });
+});
+
+describe('durable execution watchdog', () => {
+  it('repairs stale active intents whose durable execution is terminal', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const stale = JSON.parse(
+      (
+        await createIntent(sub, projectId, {
+          title: 'Stale',
+          prompt: 'Build stale',
+          scope: 'feature',
+        })
+      ).body,
+    );
+    const live = JSON.parse(
+      (
+        await createIntent(sub, projectId, {
+          title: 'Live',
+          prompt: 'Build live',
+          scope: 'feature',
+        })
+      ).body,
+    );
+    const oldExpiry = '2024-01-01T00:00:00.000Z';
+    procStore.set(keyOf(`EXEC#${stale.id}`, 'META'), {
+      ...procStore.get(keyOf(`EXEC#${stale.id}`, 'META')),
+      status: 'WAITING',
+      pendingHumanTaskId: 'h-stale',
+      orchestratorRunId: 'run-stale',
+      orchestratorExpiresAt: oldExpiry,
+      durableExecutionArn: 'arn:aws:lambda:durable:stale',
+    });
+    procStore.set(keyOf(`EXEC#${live.id}`, 'META'), {
+      ...procStore.get(keyOf(`EXEC#${live.id}`, 'META')),
+      status: 'WAITING',
+      pendingHumanTaskId: 'h-live',
+      orchestratorRunId: 'run-live',
+      orchestratorExpiresAt: oldExpiry,
+      durableExecutionArn: 'arn:aws:lambda:durable:live',
+    });
+    ddbMock.on(ScanCommand).callsFake((input) => {
+      const values = input.ExpressionAttributeValues || {};
+      return {
+        Items: [...procStore.values()]
+          .filter((i) => i.sk === values[':meta'])
+          .map((i) => ({ ...i })),
+      };
+    });
+    let durableLookup = 0;
+    lambdaMock.on(GetDurableExecutionCommand).callsFake(() => ({
+      Status: durableLookup++ === 0 ? 'TIMED_OUT' : 'RUNNING',
+    }));
+
+    const out = await handler({
+      action: 'repair-durable-executions',
+      candidates: [
+        procStore.get(keyOf(`EXEC#${stale.id}`, 'META')),
+        procStore.get(keyOf(`EXEC#${live.id}`, 'META')),
+      ],
+    });
+
+    expect(out).toMatchObject({ checked: 2, repaired: 1, skipped: 1 });
+    expect(procStore.get(keyOf(`EXEC#${stale.id}`, 'META'))).toMatchObject({
+      status: 'FAILED',
+      pendingHumanTaskId: null,
+      failureReason: 'durable_callback_expired',
+    });
+    expect(procStore.get(keyOf(`EXEC#${live.id}`, 'META'))).toMatchObject({
+      status: 'WAITING',
+      pendingHumanTaskId: 'h-live',
+    });
   });
 });
 

@@ -1595,6 +1595,7 @@ resource "aws_iam_role_policy" "intents" {
           "dynamodb:PutItem",
           "dynamodb:UpdateItem",
           "dynamodb:Query",
+          "dynamodb:Scan",
           "dynamodb:DeleteItem",
           "dynamodb:BatchWriteItem",
         ]
@@ -1645,13 +1646,23 @@ resource "aws_iam_role_policy" "intents" {
         # Start the orchestrator (Event invoke) + complete a parked durable
         # callback to resume a suspended run.
         Effect = "Allow"
-        Action = ["lambda:InvokeFunction", "lambda:SendDurableExecutionCallbackSuccess"]
+        Action = [
+          "lambda:InvokeFunction",
+          "lambda:SendDurableExecutionCallbackSuccess",
+        ]
         # Both the bare function ARN and its qualified (alias/version) forms —
         # durable invokes target the `live` alias, which is a qualified ARN.
         Resource = [
           "arn:${local.partition}:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}",
           "arn:${local.partition}:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}:*",
         ]
+      },
+      {
+        # Watchdog repair: verify stale local rows against the durable execution
+        # service before marking them failed.
+        Effect   = "Allow"
+        Action   = ["lambda:GetDurableExecution", "lambda:ListDurableExecutionsByFunction"]
+        Resource = "*"
       },
       {
         # Manual graph-projection backfill (POST .../intents/{id}/derive):
@@ -1713,8 +1724,30 @@ module "intents_lambda" {
     CONNECTIONS_TABLE  = var.connections_table_name
     WEBSOCKET_ENDPOINT = var.websocket_api_endpoint_https
     # Qualified name (function:alias) — durable functions reject $LATEST invokes.
-    V2_ORCHESTRATOR_FUNCTION = "${module.v2_orchestrator_lambda.lambda_function_name}:${module.v2_orchestrator_alias.lambda_alias_name}"
+    V2_ORCHESTRATOR_FUNCTION          = "${module.v2_orchestrator_lambda.lambda_function_name}:${module.v2_orchestrator_alias.lambda_alias_name}"
+    DURABLE_EXECUTION_TIMEOUT_SECONDS = "31622400"
   }
+}
+
+resource "aws_cloudwatch_event_rule" "intents_durable_watchdog" {
+  name                = "${var.project_name}-intents-durable-watchdog-${var.environment}"
+  description         = "Repair v2 intents whose durable orchestrator expired while process state remained active"
+  schedule_expression = "rate(1 day)"
+}
+
+resource "aws_cloudwatch_event_target" "intents_durable_watchdog" {
+  rule      = aws_cloudwatch_event_rule.intents_durable_watchdog.name
+  target_id = "intents-durable-watchdog"
+  arn       = module.intents_lambda.lambda_function_arn
+  input     = jsonencode({ action = "repair-durable-executions" })
+}
+
+resource "aws_lambda_permission" "intents_durable_watchdog" {
+  statement_id  = "AllowExecutionFromDurableWatchdog"
+  action        = "lambda:InvokeFunction"
+  function_name = module.intents_lambda.lambda_function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.intents_durable_watchdog.arn
 }
 
 # =============================================================================
@@ -1833,8 +1866,8 @@ module "v2_orchestrator_lambda" {
   timeout = 900
 
   # Enable durable execution (checkpoint/replay + zero-compute waits).
-  durable_config_execution_timeout = 86400
-  durable_config_retention_period  = 7
+  durable_config_execution_timeout = 31622400
+  durable_config_retention_period  = 90
 
   # Durable functions reject invokes against the unqualified ($LATEST) ARN —
   # the caller MUST target a published version or alias. Publish a version on
@@ -1889,8 +1922,10 @@ module "v2_orchestrator_lambda" {
     # it is the only component that owns those transitions (the runtime broadcasts
     # stage-level events). Reaches the connections table over the public DDB
     # endpoint (the orchestrator is not VPC-attached).
-    CONNECTIONS_TABLE  = var.connections_table_name
-    WEBSOCKET_ENDPOINT = var.websocket_api_endpoint_https
+    CONNECTIONS_TABLE                    = var.connections_table_name
+    WEBSOCKET_ENDPOINT                   = var.websocket_api_endpoint_https
+    DURABLE_EXECUTION_TIMEOUT_SECONDS    = "31622400"
+    DURABLE_GATE_DEADLINE_MARGIN_SECONDS = "300"
   }
 }
 

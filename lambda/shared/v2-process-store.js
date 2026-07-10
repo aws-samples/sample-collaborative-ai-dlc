@@ -14,6 +14,7 @@ import {
   GetCommand,
   PutCommand,
   QueryCommand,
+  ScanCommand,
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
 import {
@@ -64,6 +65,17 @@ const queryAll = async (ddb, input) => {
   return items;
 };
 
+const scanAll = async (ddb, input) => {
+  const items = [];
+  let ExclusiveStartKey;
+  do {
+    const page = await ddb.send(new ScanCommand({ ...input, ExclusiveStartKey }));
+    items.push(...(page.Items ?? []));
+    ExclusiveStartKey = page.LastEvaluatedKey;
+  } while (ExclusiveStartKey);
+  return items;
+};
+
 const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   if (!ddb) throw new Error('createProcessStore requires a DynamoDB DocumentClient');
   const table = () => tableName ?? process.env.V2_PROCESS_TABLE;
@@ -104,6 +116,10 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     fromStatus = null,
     ifOrchestratorRunId = null,
     orchestratorRunId,
+    durableExecutionName,
+    durableExecutionArn,
+    orchestratorStartedAt,
+    orchestratorExpiresAt,
     rewindFromStageId,
     currentPhase,
     currentStage,
@@ -174,6 +190,22 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     if (orchestratorRunId !== undefined) {
       sets.push('orchestratorRunId = :orid');
       values[':orid'] = orchestratorRunId;
+    }
+    if (durableExecutionName !== undefined) {
+      sets.push('durableExecutionName = :den');
+      values[':den'] = durableExecutionName;
+    }
+    if (durableExecutionArn !== undefined) {
+      sets.push('durableExecutionArn = :dea');
+      values[':dea'] = durableExecutionArn;
+    }
+    if (orchestratorStartedAt !== undefined) {
+      sets.push('orchestratorStartedAt = :osa');
+      values[':osa'] = orchestratorStartedAt;
+    }
+    if (orchestratorExpiresAt !== undefined) {
+      sets.push('orchestratorExpiresAt = :oea');
+      values[':oea'] = orchestratorExpiresAt;
     }
     if (rewindFromStageId !== undefined) {
       sets.push('rewindFromStageId = :rwf');
@@ -923,6 +955,33 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return items;
   };
 
+  const listStaleActiveExecutions = async ({
+    statuses = ['WAITING', 'RUNNING'],
+    nowIso,
+    timeoutSeconds,
+    limit = 100,
+  } = {}) => {
+    const nowMs = Date.parse(nowIso ?? now());
+    const timeoutMs = Number(timeoutSeconds) * 1000;
+    const legacyCutoff =
+      Number.isFinite(nowMs) && Number.isFinite(timeoutMs)
+        ? new Date(nowMs - timeoutMs).toISOString()
+        : null;
+    const statusSet = new Set(statuses);
+    const rows = await scanAll(ddb, {
+      TableName: table(),
+      FilterExpression: 'sk = :meta',
+      ExpressionAttributeValues: { ':meta': META },
+    });
+    return rows
+      .filter((row) => statusSet.has(row.status))
+      .filter((row) => {
+        if (row.orchestratorExpiresAt) return row.orchestratorExpiresAt <= (nowIso ?? now());
+        return legacyCutoff ? (row.orchestratorStartedAt ?? row.startedAt) <= legacyCutoff : false;
+      })
+      .slice(0, limit);
+  };
+
   // Patch the intent-config fields on an existing META row (prompt/branch/etc.)
   // while it is still a DRAFT. Independent of updateExecution (which owns the
   // lifecycle/status + GSI re-stamp). Used by the intents CRUD edit path.
@@ -1367,6 +1426,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     appendOutput,
     getOutputs,
     listProjectExecutions,
+    listStaleActiveExecutions,
     patchExecutionConfig,
     putUnitPlan,
     getUnitPlan,

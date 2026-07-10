@@ -262,6 +262,14 @@ const buildExecutionMeta = ({
   // durable orchestrator at mark-running and CAS-checked on its terminal writes,
   // so a retired run (cancel/rewind relaunch) can never clobber META.
   orchestratorRunId = null,
+  // Lambda durable execution identity + local soft-deadline metadata. The ARN
+  // lets maintenance verify AWS durable state before repairing a stale run; the
+  // deadline lets the orchestrator avoid parking on a callback that cannot live
+  // long enough to be answered.
+  durableExecutionName = null,
+  durableExecutionArn = null,
+  orchestratorStartedAt = null,
+  orchestratorExpiresAt = null,
   // Set when this run was relaunched from a mid-plan stage (rewind). Purely
   // informational — explains why upstream stages show SUCCEEDED from a prior run.
   rewindFromStageId = null,
@@ -311,6 +319,10 @@ const buildExecutionMeta = ({
   source,
   planWarnings,
   orchestratorRunId,
+  durableExecutionName,
+  durableExecutionArn,
+  orchestratorStartedAt,
+  orchestratorExpiresAt,
   rewindFromStageId,
   stageSkipping,
   skipStageIds,

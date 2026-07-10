@@ -54,6 +54,10 @@ const defaultStore = createProcessStore({ ddb });
 
 const RUNTIME_ARN = () => process.env.AGENTCORE_RUNTIME_ARN;
 const BLOCKS_TABLE = () => process.env.BLOCKS_TABLE;
+const DURABLE_EXECUTION_TIMEOUT_SECONDS = () =>
+  Number(process.env.DURABLE_EXECUTION_TIMEOUT_SECONDS || 31622400);
+const DURABLE_GATE_DEADLINE_MARGIN_SECONDS = () =>
+  Number(process.env.DURABLE_GATE_DEADLINE_MARGIN_SECONDS || 300);
 
 // AgentCore requires a session id >= 33 chars; reuse ONE per intent so the
 // checkout stays warm across init-ws + every run-stage (matches scripts/phaseb.sh).
@@ -364,6 +368,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
   // claim-run below). Terminal META writes CAS on it, so a run retired by a
   // cancel/rewind relaunch can never clobber the new run's state.
   let runId = null;
+  let orchestratorExpiresAt = null;
 
   // Map a stored lifecycle event type to the live realtime payload the UI already
   // Append a timeline event AND fan it out live. Both are best-effort telemetry
@@ -418,6 +423,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           startedAt: meta.startedAt,
           completedAt: nowIso(),
           failureReason: message,
+          pendingHumanTaskId: null,
           ...(runId ? { ifOrchestratorRunId: runId } : {}),
         });
         return true;
@@ -438,11 +444,25 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // Claim the run: stamp this run's ownership token on META before any other
     // write. A later relaunch (rewind/cancel+start) overwrites it; this run's
     // terminal writes then fail their CAS and exit quietly.
-    runId = await ctx.step('mint-run-id', async () => {
+    const claim = await ctx.step('mint-run-id', async () => {
       const token = `run-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-      const updated = await store.updateExecution({ executionId, orchestratorRunId: token });
-      return updated?.orchestratorRunId ?? token;
+      const startedAt = nowIso();
+      const expiresAt = new Date(
+        Date.parse(startedAt) + DURABLE_EXECUTION_TIMEOUT_SECONDS() * 1000,
+      ).toISOString();
+      const updated = await store.updateExecution({
+        executionId,
+        orchestratorRunId: token,
+        orchestratorStartedAt: startedAt,
+        orchestratorExpiresAt: expiresAt,
+      });
+      return {
+        runId: updated?.orchestratorRunId ?? token,
+        orchestratorExpiresAt: updated?.orchestratorExpiresAt ?? expiresAt,
+      };
     });
+    runId = claim.runId;
+    orchestratorExpiresAt = claim.orchestratorExpiresAt;
     // init-ws — clone repos, create the Neptune Intent anchor, seed RUNNING state.
     // Idempotent in the runtime (ConditionalCheckFailed → already initialized), so
     // a replay of this step is safe.
@@ -775,6 +795,35 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         const humanTaskId = result.humanTaskId ?? fresh?.pendingHumanTaskId;
         if (!humanTaskId) {
           return { state: 'TERMINAL', value: await fail('parked_without_gate', label) };
+        }
+
+        const deadline = await ctxArg.step(`gate-deadline-${humanTaskId}`, async () => {
+          const current = await store.getExecution(executionId);
+          const expiresAt = current?.orchestratorExpiresAt ?? orchestratorExpiresAt;
+          const expiryMs = Date.parse(expiresAt ?? '');
+          const marginMs = DURABLE_GATE_DEADLINE_MARGIN_SECONDS() * 1000;
+          return {
+            expiresAt,
+            tooClose:
+              Number.isFinite(expiryMs) &&
+              Date.now() >= expiryMs - (Number.isFinite(marginMs) ? marginMs : 300000),
+          };
+        });
+        if (deadline.tooClose) {
+          await ctxArg.step(`supersede-deadline-gate-${humanTaskId}`, () =>
+            store.supersedeHumanTask({
+              executionId,
+              humanTaskId,
+              supersededBy: 'durable_deadline_expired',
+            }),
+          );
+          return {
+            state: 'TERMINAL',
+            value: await fail(
+              'durable_deadline_expired',
+              `refusing to wait on gate ${humanTaskId}; durable execution expires at ${deadline.expiresAt}`,
+            ),
+          };
         }
 
         // Create a durable callback and stamp it on the gate so the answer path

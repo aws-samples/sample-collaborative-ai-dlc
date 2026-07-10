@@ -111,6 +111,7 @@ beforeEach(() => {
       updateExecution: vi.fn(async () => ({})),
       createHumanTask: vi.fn(async (args) => ({ ...args, status: 'pending' })),
       setGateCallbackId: vi.fn(async () => ({})),
+      supersedeHumanTask: vi.fn(async () => ({})),
       // Default: gate is answered (not pending) by the time we re-read it.
       getHumanTask: vi.fn(async () => ({ status: 'answered' })),
       appendEvent: vi.fn(async () => ({})),
@@ -191,6 +192,43 @@ describe('orchestrator durable handler', () => {
     expect(starts[1].stageCallbackId).not.toBe(starts[0].stageCallbackId);
     // Gate answered before the release deadline → no StopRuntimeSession.
     expect(deps.stopSession).not.toHaveBeenCalled();
+  });
+
+  it('fails instead of binding a human gate callback when the soft deadline is past', async () => {
+    deps.store.getExecution
+      .mockResolvedValueOnce(META) // load-meta
+      .mockResolvedValue({
+        ...META,
+        pendingHumanTaskId: 'h1',
+        orchestratorExpiresAt: '2000-01-01T00:00:00.000Z',
+      });
+    deps.loadPlan.mockResolvedValue({ valid: true, plan: { stages: [{ stageId: 'a' }] } });
+    deps.invokeRuntime = makeRuntime(ctx, (payload, n) => {
+      if (n === 1) return { ok: true };
+      return { ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'h1' };
+    });
+
+    const res = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1' },
+      ctx,
+      deps,
+    );
+
+    expect(res).toMatchObject({ ok: false, reason: 'durable_deadline_expired' });
+    expect(deps.store.supersedeHumanTask).toHaveBeenCalledWith({
+      executionId: 'i1',
+      humanTaskId: 'h1',
+      supersededBy: 'durable_deadline_expired',
+    });
+    expect(deps.store.setGateCallbackId).not.toHaveBeenCalled();
+    expect(
+      deps.store.updateExecution.mock.calls.some(
+        ([input]) =>
+          input.status === 'FAILED' &&
+          input.pendingHumanTaskId === null &&
+          String(input.failureReason).includes('durable_deadline_expired'),
+      ),
+    ).toBe(true);
   });
 
   it('opens a validation gate after a required humanValidation stage', async () => {

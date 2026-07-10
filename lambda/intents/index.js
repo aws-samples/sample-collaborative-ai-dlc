@@ -7,7 +7,9 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
 import {
   LambdaClient,
+  GetDurableExecutionCommand,
   InvokeCommand,
+  ListDurableExecutionsByFunctionCommand,
   SendDurableExecutionCallbackSuccessCommand,
 } from '@aws-sdk/client-lambda';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
@@ -53,6 +55,8 @@ const store = createProcessStore({ ddb });
 
 const BLOCKS_TABLE = () => process.env.BLOCKS_TABLE;
 const ORCHESTRATOR_FN = () => process.env.V2_ORCHESTRATOR_FUNCTION;
+const DURABLE_EXECUTION_TIMEOUT_SECONDS = () =>
+  Number(process.env.DURABLE_EXECUTION_TIMEOUT_SECONDS || 31622400);
 // The AgentCore stage-executor runtime — used for the manual derive backfill
 // (POST .../derive). Same ARN + session-id convention as the orchestrator.
 const AGENTCORE_RUNTIME_ARN = () => process.env.AGENTCORE_RUNTIME_ARN || '';
@@ -730,6 +734,12 @@ const authorize = async (g, projectId, sub, response) => {
 
 export const handler = async (event) => {
   const response = buildResponse(event);
+  if (
+    event?.action === 'repair-durable-executions' ||
+    (event?.source === 'aws.events' && event?.['detail-type'] === 'Scheduled Event')
+  ) {
+    return runDurableExecutionWatchdog(event);
+  }
   if (event.httpMethod === 'OPTIONS') return response(200, {});
 
   const { httpMethod, pathParameters, path, body } = event;
@@ -1241,7 +1251,42 @@ export const handler = async (event) => {
       // different callback. SendDurableExecutionCallbackSuccess resumes the
       // EXISTING execution; a fresh Invoke would start a new one.
       if (gate.callbackId) {
-        await resumeDurableCallback(gate.callbackId, answered.answer);
+        try {
+          await resumeDurableCallback(gate.callbackId, answered.answer);
+        } catch (err) {
+          if (isCallbackTimeoutError(err)) {
+            await repairExpiredDurableExecution({
+              executionId: intentId,
+              projectId,
+              meta,
+              actor: responder.displayName || responder.sub,
+              summary: `${responder.displayName || 'Someone'} answered after the durable execution expired; the run was marked failed and can be restarted`,
+            }).catch((repairErr) =>
+              console.error('Durable callback expiry repair failed:', repairErr.message),
+            );
+            return response(409, {
+              error: 'Durable execution expired before this answer could resume the run',
+              code: 'durable_execution_expired',
+            });
+          }
+          await store
+            .appendEvent({
+              executionId: intentId,
+              type: 'v2.gate.resume_failed',
+              stageInstanceId: gate.stageInstanceId ?? null,
+              actor: responder.displayName || responder.sub,
+              summary: `Gate answer was recorded, but the durable callback could not be completed: ${err?.message ?? 'unknown error'}`,
+            })
+            .catch((eventErr) =>
+              console.error('Gate resume failure event append failed:', eventErr.message),
+            );
+          return response(503, {
+            error:
+              'Gate answer was recorded, but the durable callback could not be completed. Retry after refreshing the intent.',
+            code: 'durable_callback_resume_failed',
+            retryable: true,
+          });
+        }
       }
       return response(200, {
         ...mapHumanTask(answered),
@@ -1373,19 +1418,35 @@ export const handler = async (event) => {
       // plan). If the hand-off throws, roll back to the prior status — otherwise the
       // intent strands in CREATED (the orchestrator never ran) and never retries.
       const priorStatus = meta.status;
+      const durableExecutionName = durableExecutionNameForIntent(intentId);
       const updated = await store.updateExecution({
         executionId: intentId,
         projectId,
         status: 'CREATED',
         fromStatus: priorStatus,
         startedAt: meta.startedAt,
+        durableExecutionName,
+        durableExecutionArn: null,
+        orchestratorStartedAt: null,
+        orchestratorExpiresAt: null,
         // Clear any stale failure from a prior attempt as we re-enter the pipeline.
         failureReason: null,
         // Launch-time skip override (validated above; undefined = untouched).
         ...(skipOverride !== undefined ? { skipStageIds: skipOverride } : {}),
       });
       try {
-        await invokeOrchestrator({ action: 'start', intentId, executionId: intentId });
+        const invoked = await invokeOrchestrator(
+          { action: 'start', intentId, executionId: intentId },
+          { durableExecutionName },
+        );
+        if (invoked?.durableExecutionArn) {
+          await store
+            .updateExecution({
+              executionId: intentId,
+              durableExecutionArn: invoked.durableExecutionArn,
+            })
+            .catch((err) => console.error('Durable execution ARN stamp failed:', err.message));
+        }
       } catch (err) {
         await store.updateExecution({
           executionId: intentId,
@@ -1727,12 +1788,17 @@ export const handler = async (event) => {
         .catch((err) => console.error('Rewind event append failed:', err.message));
       // Relaunch at the rewind point. Same CAS + rollback discipline as /start.
       const priorStatus = meta.status;
+      const durableExecutionName = durableExecutionNameForIntent(intentId);
       const updated = await store.updateExecution({
         executionId: intentId,
         projectId,
         status: 'CREATED',
         fromStatus: priorStatus,
         startedAt: meta.startedAt,
+        durableExecutionName,
+        durableExecutionArn: null,
+        orchestratorStartedAt: null,
+        orchestratorExpiresAt: null,
         pendingHumanTaskId: null,
         failureReason: null,
         completedAt: null,
@@ -1742,12 +1808,23 @@ export const handler = async (event) => {
         ...(unskipping ? { skipStageIds: rewindSkipIds.length ? rewindSkipIds : null } : {}),
       });
       try {
-        await invokeOrchestrator({
-          action: 'start',
-          intentId,
-          executionId: intentId,
-          startAtStageId: fromStageId,
-        });
+        const invoked = await invokeOrchestrator(
+          {
+            action: 'start',
+            intentId,
+            executionId: intentId,
+            startAtStageId: fromStageId,
+          },
+          { durableExecutionName },
+        );
+        if (invoked?.durableExecutionArn) {
+          await store
+            .updateExecution({
+              executionId: intentId,
+              durableExecutionArn: invoked.durableExecutionArn,
+            })
+            .catch((err) => console.error('Durable execution ARN stamp failed:', err.message));
+        }
       } catch (err) {
         await store.updateExecution({
           executionId: intentId,
@@ -2089,19 +2166,23 @@ export const handler = async (event) => {
 
 // Start the orchestrator durable execution. Async (Event) — the orchestrator
 // runs the long stage loop; the HTTP caller returns immediately (202).
-const invokeOrchestrator = async (payload) => {
+const invokeOrchestrator = async (payload, { durableExecutionName = null } = {}) => {
   const fn = ORCHESTRATOR_FN();
   if (!fn) {
     console.error('V2_ORCHESTRATOR_FUNCTION not configured — cannot start');
     return;
   }
-  await lambdaClient.send(
+  const res = await lambdaClient.send(
     new InvokeCommand({
       FunctionName: fn,
       InvocationType: 'Event',
+      ...(durableExecutionName ? { DurableExecutionName: durableExecutionName } : {}),
       Payload: Buffer.from(JSON.stringify(payload)),
     }),
   );
+  return {
+    durableExecutionArn: res?.DurableExecutionArn ?? null,
+  };
 };
 
 // Resume the suspended durable execution by completing the callback it parked on.
@@ -2113,6 +2194,112 @@ const resumeDurableCallback = async (callbackId, answer) => {
       Result: Buffer.from(JSON.stringify({ answer: answer ?? null })),
     }),
   );
+};
+
+const durableExecutionNameForIntent = (intentId) =>
+  `intent-${String(intentId).replace(/[^A-Za-z0-9_-]/g, '-')}-${randomUUID()}`;
+
+const isCallbackTimeoutError = (err) =>
+  err?.name === 'CallbackTimeoutException' ||
+  err?.Code === 'CallbackTimeoutException' ||
+  err?.code === 'CallbackTimeoutException';
+
+const parseFunctionAndQualifier = (functionName) => {
+  if (!functionName) return { FunctionName: functionName };
+  const idx = functionName.lastIndexOf(':');
+  if (idx <= 0) return { FunctionName: functionName };
+  const qualifier = functionName.slice(idx + 1);
+  if (!qualifier || qualifier.includes('/')) return { FunctionName: functionName };
+  return { FunctionName: functionName.slice(0, idx), Qualifier: qualifier };
+};
+
+const lookupDurableExecutionStatus = async (meta) => {
+  if (meta?.durableExecutionArn) {
+    const res = await lambdaClient.send(
+      new GetDurableExecutionCommand({
+        DurableExecutionArn: meta.durableExecutionArn,
+        IncludeExecutionData: false,
+      }),
+    );
+    return res.Status ?? null;
+  }
+  if (meta?.durableExecutionName && ORCHESTRATOR_FN()) {
+    const res = await lambdaClient.send(
+      new ListDurableExecutionsByFunctionCommand({
+        ...parseFunctionAndQualifier(ORCHESTRATOR_FN()),
+        DurableExecutionName: meta.durableExecutionName,
+        MaxItems: 1,
+      }),
+    );
+    return res.DurableExecutions?.[0]?.Status ?? null;
+  }
+  return null;
+};
+
+const DURABLE_TERMINAL_STATUSES = new Set(['SUCCEEDED', 'FAILED', 'TIMED_OUT', 'STOPPED']);
+
+const repairExpiredDurableExecution = async ({
+  executionId,
+  projectId,
+  meta,
+  actor = 'system',
+  eventType = 'v2.execution.repaired',
+  summary = 'Durable execution expired while the intent was waiting',
+}) => {
+  const updated = await store.updateExecution({
+    executionId,
+    projectId,
+    status: 'FAILED',
+    startedAt: meta?.startedAt,
+    completedAt: new Date().toISOString(),
+    failureReason: 'durable_callback_expired',
+    pendingHumanTaskId: null,
+    ...(meta?.orchestratorRunId ? { ifOrchestratorRunId: meta.orchestratorRunId } : {}),
+  });
+  await store
+    .appendEvent({
+      executionId,
+      type: eventType,
+      actor,
+      summary,
+    })
+    .catch((err) => console.error('Durable expiry event append failed:', err.message));
+  return updated;
+};
+
+const runDurableExecutionWatchdog = async ({ candidates: injectedCandidates = null } = {}) => {
+  const nowIso = new Date().toISOString();
+  const candidates =
+    injectedCandidates ??
+    (await store.listStaleActiveExecutions({
+      nowIso,
+      timeoutSeconds: DURABLE_EXECUTION_TIMEOUT_SECONDS(),
+      limit: Number(process.env.DURABLE_WATCHDOG_LIMIT || 100),
+    }));
+  const out = { checked: candidates.length, repaired: 0, skipped: 0, errors: [] };
+  for (const meta of candidates) {
+    try {
+      const durableStatus = await lookupDurableExecutionStatus(meta).catch((err) => {
+        if (err?.name === 'ResourceNotFoundException') return 'TIMED_OUT';
+        throw err;
+      });
+      if (durableStatus && !DURABLE_TERMINAL_STATUSES.has(durableStatus)) {
+        out.skipped += 1;
+        continue;
+      }
+      await repairExpiredDurableExecution({
+        executionId: meta.executionId,
+        projectId: meta.projectId,
+        meta,
+        actor: 'durable-watchdog',
+        summary: `Watchdog repaired stale ${meta.status} intent after durable execution ${durableStatus ?? 'exceeded local timeout'}`,
+      });
+      out.repaired += 1;
+    } catch (err) {
+      out.errors.push({ executionId: meta.executionId, error: err?.message ?? String(err) });
+    }
+  }
+  return out;
 };
 
 // Retire a parked run for cancel/rewind: supersede every still-pending gate
