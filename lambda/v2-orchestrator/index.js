@@ -1030,7 +1030,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // un-succeeds a run whose PR already exists on the remote.
     const openedPrs = prResults.map((r) => r.pr).filter(Boolean);
     if (openedPrs.length > 0) {
-      await ctx.step('record-pr', async () => {
+      const recordResult = await ctx.step('record-pr', async () => {
         try {
           return await invokeRuntime(
             { command: 'record-pr', projectId, intentId, executionId, prs: openedPrs },
@@ -1041,6 +1041,17 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           return { ok: false, reason: 'dispatch_failed' };
         }
       });
+      // Trigger the UI refetch AFTER the vertex is written (the runtime's own
+      // agent.pr broadcast can be missed if its session was cold at fan-in).
+      // This orchestrator event always broadcasts, so the PR appears live.
+      if (recordResult?.ok !== false) {
+        await emitEvent(
+          ctx,
+          'pr-recorded',
+          'v2.pr.recorded',
+          `Recorded ${openedPrs.length} pull request(s)`,
+        );
+      }
     }
     return { ok: true, intentId, stages: runStages.length };
   } catch (err) {

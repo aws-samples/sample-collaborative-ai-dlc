@@ -11,7 +11,7 @@ const pr = (overrides = {}) => ({
 });
 
 describe('recordPr', () => {
-  it('writes one vertex per PR, emits v2.pr.recorded, broadcasts agent.pr', async () => {
+  it('writes one vertex per PR and broadcasts agent.pr (no success event — the orchestrator emits it)', async () => {
     const writer = {
       recordPullRequest: vi.fn(async ({ repoId }) => ({ id: `pr:i:${repoId}`, repoId })),
     };
@@ -24,7 +24,8 @@ describe('recordPr', () => {
     expect(out).toMatchObject({ ok: true });
     expect(out.recorded).toHaveLength(2);
     expect(writer.recordPullRequest).toHaveBeenCalledTimes(2);
-    expect(store.appendEvent.mock.calls[0][0].type).toBe('v2.pr.recorded');
+    // No timeline event on success (dedup: the orchestrator owns v2.pr.recorded).
+    expect(store.appendEvent).not.toHaveBeenCalled();
     expect(broadcast.mock.calls[0][0]).toMatchObject({ action: 'agent.pr' });
   });
 

@@ -1703,6 +1703,16 @@ describe('WP6 — PR opened on SUCCEEDED (intent-pr)', () => {
     });
   });
 
+  it('emits v2.pr.recorded after a successful record-pr (so the UI refetches live)', async () => {
+    deps.openPr = vi.fn(async ({ repoId }) => ({
+      prUrl: `https://github.com/${repoId}/pull/7`,
+      prNumber: 7,
+    }));
+    const res = await start();
+    expect(res.ok).toBe(true);
+    expect(events().some((e) => e.type === 'v2.pr.recorded')).toBe(true);
+  });
+
   it('records the retargeted base when the provider retargets an invalid base', async () => {
     deps.store.getExecution = vi.fn(async () => ({ ...META, repos: ['o/r'], baseBranch: 'gone' }));
     deps.openPr = vi.fn(async ({ repoId }) => ({

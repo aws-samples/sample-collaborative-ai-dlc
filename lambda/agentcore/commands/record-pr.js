@@ -48,7 +48,9 @@ export const recordPr = async (payload, deps) => {
       recorded.push(res);
     }
 
-    await event('v2.pr.recorded', `Recorded ${recorded.length} pull request(s) in the graph`);
+    // Broadcast for a live graph-page update. The success TIMELINE event is
+    // emitted by the orchestrator (after this step), which broadcasts reliably
+    // even when this session is cold at fan-in — so we don't emit it here too.
     await publish({ action: 'agent.pr', prs: recorded });
     return { ok: true, recorded };
   } catch (e) {
