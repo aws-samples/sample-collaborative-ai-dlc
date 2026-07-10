@@ -568,6 +568,29 @@ function AgentProgressCard() {
   const isWaiting = intent?.status === 'WAITING';
 
   const runningRow = stageRows.findLast((s) => s.state === 'RUNNING' && s.stageInstanceId);
+  const parkedRow = stageRows.findLast((s) => s.state === 'WAITING_FOR_HUMAN' && s.stageInstanceId);
+  const activePendingGate =
+    gates.find((g) => g.status === 'pending' && g.humanTaskId === intent?.pendingHumanTaskId) ??
+    gates.findLast((g) => g.status === 'pending') ??
+    null;
+  const lifecycleStageInstanceId =
+    runningRow?.stageInstanceId ?? parkedRow?.stageInstanceId ?? null;
+  const lifecycleSummary =
+    detail?.events
+      .toReversed()
+      .find(
+        (ev) =>
+          [
+            'v2.stage.resuming',
+            'v2.workspace.restoring',
+            'v2.workspace.restored',
+            'v2.stage.resumed',
+            'v2.stage.running',
+          ].includes(ev.type) &&
+          (!lifecycleStageInstanceId ||
+            !ev.stageInstanceId ||
+            ev.stageInstanceId === lifecycleStageInstanceId),
+      )?.summary ?? null;
   const bufferKey = runningRow?.stageInstanceId ?? INTENT_OUTPUT_KEY;
 
   useTick(isRunning ?? false);
@@ -589,8 +612,11 @@ function AgentProgressCard() {
   const elapsed = runningRow?.startedAt ? formatDuration(runningRow.startedAt) : null;
   const stageName = runningRow?.stageInstanceId ? stageNameOf(runningRow.stageInstanceId) : null;
   const phaseName = runningRow?.phase ? phaseNameOf(runningRow.phase) : null;
+  const statusLabel = isWaiting && !activePendingGate ? 'Resuming' : 'Running';
+  const statusSummary =
+    lifecycleSummary ?? (isWaiting && !activePendingGate ? 'Resuming agent session...' : null);
 
-  if (isWaiting) {
+  if (isWaiting && activePendingGate) {
     return (
       <WaitingCard
         intent={intent}
@@ -614,7 +640,7 @@ function AgentProgressCard() {
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm font-medium">Running</span>
+            <span className="text-sm font-medium">{statusLabel}</span>
             <span className="inline-flex items-center gap-0.5">
               <span className="h-1 w-1 rounded-full bg-agent-running animate-bounce [animation-delay:0ms]" />
               <span className="h-1 w-1 rounded-full bg-agent-running animate-bounce [animation-delay:150ms]" />
@@ -632,6 +658,9 @@ function AgentProgressCard() {
             <pre className="mt-2 line-clamp-2 whitespace-pre-wrap break-words font-mono text-[11px] text-muted-foreground">
               {lastLines}
             </pre>
+          )}
+          {!lastLines && statusSummary && (
+            <p className="mt-1 text-xs text-muted-foreground">{statusSummary}</p>
           )}
         </div>
         <Button

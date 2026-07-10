@@ -179,6 +179,44 @@ describe('IntentView', () => {
     expect(editors.map((e) => e.getAttribute('data-gate')).toSorted()).toEqual(['h1', 'h2']);
   });
 
+  it('shows resume progress after a gate is answered but before the stage is running again', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'h1' }),
+      stages: [
+        {
+          stageInstanceId: 'si-a',
+          stageId: 'requirements-analysis',
+          state: 'WAITING_FOR_HUMAN',
+          phase: 'inception',
+        },
+      ],
+      gates: [
+        {
+          humanTaskId: 'h1',
+          stageInstanceId: 'si-a',
+          status: 'answered',
+          kind: 'question',
+          questions: '[{"text":"Scope?"}]',
+          answer: { freeText: 'MVP' },
+        },
+      ],
+      events: [
+        {
+          eventId: 'ev-resuming',
+          type: 'v2.stage.resuming',
+          stageInstanceId: 'si-a',
+          actor: 'agentcore',
+          summary: 'Resuming agent session...',
+          timestamp: '2026-01-01T00:00:00Z',
+        },
+      ],
+    });
+    renderAt();
+    expect(await screen.findByText('Resuming')).toBeInTheDocument();
+    expect(screen.getByText('Resuming agent session...')).toBeInTheDocument();
+    expect(screen.queryByText('Waiting for your input')).not.toBeInTheDocument();
+  });
+
   it('renders a review-verdict gate with its options and answers through the gate endpoint', async () => {
     get.mockResolvedValue({
       ...baseDetail({ status: 'WAITING' }),

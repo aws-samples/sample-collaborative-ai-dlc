@@ -1169,6 +1169,10 @@ describe('runStage — resume mode', () => {
     expect(
       deps.store.calls.some((c) => c[0] === 'appendEvent' && c[1].type === 'v2.stage.resumed'),
     ).toBe(true);
+    const eventTypes = deps.store.calls.filter((c) => c[0] === 'appendEvent').map((c) => c[1].type);
+    expect(eventTypes.indexOf('v2.stage.resuming')).toBeLessThan(
+      eventTypes.indexOf('v2.stage.resumed'),
+    );
     // The RUNNING flip is a PATCH (resumeStageRow) — never a full-row putStage,
     // which would re-stamp startedAt (the "duration resets on answer" bug).
     expect(deps.store.calls.some((c) => c[0] === 'resumeStageRow')).toBe(true);
@@ -1527,6 +1531,35 @@ describe('runStage — source self-heal (wiped /mnt/workspace)', () => {
     expect(
       deps.store.calls.some((c) => c[0] === 'appendEvent' && c[1].type === 'v2.workspace.restored'),
     ).toBe(true);
+  });
+
+  it('emits workspace restoring before a cold resume re-clones the checkout', async () => {
+    const sent = [];
+    const deps = baseDeps({
+      store: spyStore({
+        humanTask: {
+          humanTaskId: 'q-1',
+          status: 'answered',
+          answer: { freeText: 'go' },
+          createdAt: 'T',
+        },
+        stage: { cli: 'claude', cliSessionId: 'sess-7' },
+      }),
+      spawnFn: okSpawn,
+      ensureWorkspaceSource: async ({ repos }) => ({ restored: true, repos, failed: [] }),
+      broadcast: async (p) => sent.push(p),
+    });
+    const res = await runStage({ ...baseArgs, repos: ['acme/api'], resumeFrom: 'q-1' }, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    const eventTypes = deps.store.calls.filter((c) => c[0] === 'appendEvent').map((c) => c[1].type);
+    expect(eventTypes.indexOf('v2.workspace.restoring')).toBeLessThan(
+      eventTypes.indexOf('v2.workspace.restored'),
+    );
+    expect(sent).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ action: 'agent.workspace', state: 'RESTORING' }),
+      ]),
+    );
   });
 
   it('fails workspace_restore_failed and does NOT spawn when a repo cannot be re-cloned', async () => {

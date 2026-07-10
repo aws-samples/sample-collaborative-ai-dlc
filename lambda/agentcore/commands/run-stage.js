@@ -879,6 +879,34 @@ export const runStage = async (
   const publish = (payload) =>
     broadcast({ executionId, intentId, projectId, ...payload }).catch(() => {});
 
+  const emitLifecycleEvent = async ({
+    type,
+    summary,
+    stageInstanceId = null,
+    action = 'agent.note',
+    payload = {},
+  }) => {
+    await store
+      .appendEvent({
+        executionId,
+        type,
+        stageInstanceId,
+        unitSlug,
+        actor: 'agentcore',
+        summary,
+      })
+      .catch(() => {});
+    const livePayload = {
+      action,
+      stageInstanceId,
+      unitSlug,
+      summary,
+      ...payload,
+    };
+    if (action === 'agent.note') livePayload.noteType = type;
+    await publish(livePayload);
+  };
+
   const fail = async (stageInstanceId, reason, detail) => {
     if (stageInstanceId) {
       await store
@@ -1028,6 +1056,15 @@ export const runStage = async (
   // (unreachable/auth) fails the stage rather than letting it proceed on nothing.
   let sourceRestored = false;
   {
+    if (resumeFrom && repos.length > 0) {
+      await emitLifecycleEvent({
+        type: 'v2.workspace.restoring',
+        summary: 'Restoring workspace...',
+        stageInstanceId,
+        action: 'agent.workspace',
+        payload: { state: 'RESTORING' },
+      });
+    }
     const heal = await ensureWorkspaceSource({
       repos,
       branch,
@@ -1046,22 +1083,13 @@ export const runStage = async (
       );
     sourceRestored = Boolean(heal?.restored);
     if (sourceRestored) {
-      await store
-        .appendEvent({
-          executionId,
-          type: 'v2.workspace.restored',
-          stageInstanceId,
-          unitSlug,
-          actor: 'agentcore',
-          summary: `Source checkout re-cloned after a wiped workspace (${heal.repos.join(', ')})`,
-        })
-        .catch(() => {});
-      await publish({
-        action: 'agent.workspace',
-        state: 'RESTORED',
+      const summary = `Source checkout re-cloned after a wiped workspace (${heal.repos.join(', ')})`;
+      await emitLifecycleEvent({
+        type: 'v2.workspace.restored',
+        summary,
         stageInstanceId,
-        unitSlug,
-        repos: heal.repos,
+        action: 'agent.workspace',
+        payload: { state: 'RESTORED', repos: heal.repos },
       });
     }
   }
@@ -1109,6 +1137,11 @@ export const runStage = async (
   // answer injected into the prompt so the agent does not re-ask.
   let demotedResume = false;
   if (resumeFrom) {
+    await emitLifecycleEvent({
+      type: 'v2.stage.resuming',
+      summary: 'Resuming agent session...',
+      stageInstanceId,
+    });
     const gate = await store.getHumanTask(executionId, resumeFrom).catch(() => null);
     if (!gate) return fail(stageInstanceId, 'gate_not_found', resumeFrom);
     if (gate.status === 'pending') return fail(stageInstanceId, 'gate_not_answered', resumeFrom);
