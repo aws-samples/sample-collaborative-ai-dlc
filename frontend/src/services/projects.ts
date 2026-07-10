@@ -70,9 +70,13 @@ export interface Project {
   // PR strategy at fan-in (docs/v2-parallel.md WP6). Only 'intent-pr' is
   // enabled; the other two are visible-but-disabled until WP6b.
   prStrategy?: PrStrategy;
+  // Per-project stage-skipping override: 'default' inherits the platform
+  // Admin setting; enabled/disabled override it for this project's intents.
+  stageSkipping?: StageSkippingOverride;
 }
 
 export type PrStrategy = 'intent-pr' | 'pr-per-unit' | 'stacked';
+export type StageSkippingOverride = 'default' | 'enabled' | 'disabled';
 
 export interface TrackerMigrationResult {
   dryRun: boolean;
@@ -117,6 +121,7 @@ export interface UpdateProjectInput {
   parkReleaseSeconds?: number;
   maxParallelUnits?: number;
   prStrategy?: PrStrategy;
+  stageSkipping?: StageSkippingOverride;
 }
 
 export interface AddRepoInput {

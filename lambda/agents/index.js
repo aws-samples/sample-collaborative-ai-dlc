@@ -167,6 +167,7 @@ export const handler = async (event) => {
       const cliModelsPath = `${prefix}/cli-models`;
       const deriveEnrichmentPath = `${prefix}/derive-enrichment`;
       const customMcpServersPath = `${prefix}/custom-mcp-servers`;
+      const stageSkippingPath = `${prefix}/stage-skipping`;
       try {
         const result = await ssm.send(
           new GetParametersCommand({
@@ -176,6 +177,7 @@ export const handler = async (event) => {
               cliModelsPath,
               deriveEnrichmentPath,
               customMcpServersPath,
+              stageSkippingPath,
             ],
             WithDecryption: true,
           }),
@@ -186,6 +188,9 @@ export const handler = async (event) => {
         const kiroApiKey = byName[kiroApiKeyPath] || '';
         const cliModels = parseCliModels(byName[cliModelsPath] || '{}');
         const deriveEnrichment = byName[deriveEnrichmentPath] === 'llm' ? 'llm' : 'off';
+        // Platform stage-skipping toggle (shared/stage-skip.js): fail-safe to
+        // 'disabled' — anything but an explicit 'enabled' means off.
+        const stageSkipping = byName[stageSkippingPath] === 'enabled' ? 'enabled' : 'disabled';
         // Custom MCP servers may carry secrets in env/headers — only expose the
         // raw config to platform admins (the only ones who can edit it). Others
         // get an empty object so the non-secret settings fields still load.
@@ -209,6 +214,7 @@ export const handler = async (event) => {
           kiroApiKeySet: kiroApiKey !== '' && kiroApiKey !== 'placeholder',
           cliModels,
           deriveEnrichment,
+          stageSkipping,
           customMcpServers,
           customMcpServerNames,
         });
@@ -305,6 +311,32 @@ export const handler = async (event) => {
         } catch (err) {
           console.error('[settings] Failed to write derive enrichment mode:', err.message);
           errors.push('deriveEnrichment: ' + err.message);
+        }
+      }
+
+      if (input.stageSkipping !== undefined) {
+        // Platform stage-skipping toggle (shared/stage-skip.js): gates whether
+        // intents may deselect CONDITIONAL stages at create and whether
+        // validation gates offer "skip to stage X". Snapshotted per intent at
+        // create — flipping this never changes an in-flight run.
+        if (input.stageSkipping !== 'enabled' && input.stageSkipping !== 'disabled') {
+          return response(400, {
+            error: 'Invalid stageSkipping value',
+            issues: ['stageSkipping must be "enabled" or "disabled"'],
+          });
+        }
+        try {
+          await ssm.send(
+            new PutParameterCommand({
+              Name: `${prefix}/stage-skipping`,
+              Value: input.stageSkipping,
+              Type: 'String',
+              Overwrite: true,
+            }),
+          );
+        } catch (err) {
+          console.error('[settings] Failed to write stage skipping mode:', err.message);
+          errors.push('stageSkipping: ' + err.message);
         }
       }
 

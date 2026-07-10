@@ -21,6 +21,7 @@ import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { ArtifactViewer } from '@/components/intent/ArtifactViewer';
 
 import { QuorumEditPanel } from '@/components/intent/QuorumEditPanel';
+import { DraftSkipStages } from '@/components/intent/DraftSkipStages';
 import { artifactAccent } from '@/components/intent/artifactAccent';
 import { formatDuration, useTick } from '@/components/intent/stageStyle';
 import { IntentGraphPopover } from '@/components/intent/IntentGraphPopover';
@@ -64,6 +65,13 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { cn } from '@/lib/utils';
 import { getTimeAgo } from '@/lib/timeAgo';
 import { generateColor } from '@/utils/colors';
@@ -140,6 +148,9 @@ export default function IntentView() {
   const canDelete = project?.userRole === 'owner' || project?.userRole === 'admin';
 
   const [starting, setStarting] = useState(false);
+  // DRAFT skip selection (stage-skip.js): null = untouched → /start sends
+  // nothing and the create-time snapshot holds; an array = full replacement.
+  const [draftSkipIds, setDraftSkipIds] = useState<string[] | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -152,7 +163,14 @@ export default function IntentView() {
     setStarting(true);
     setActionError(null);
     try {
-      await intentsService.start(projectId, intentId);
+      // The skip override is DRAFT-only (the backend 409s otherwise) — a
+      // FAILED/stranded restart re-enters the prior run's pinned plan.
+      const sendSkips = detail?.intent.status === 'DRAFT' && draftSkipIds !== null;
+      await intentsService.start(
+        projectId,
+        intentId,
+        sendSkips ? { skipStageIds: draftSkipIds ?? [] } : undefined,
+      );
       await reload();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to start intent');
@@ -424,6 +442,7 @@ export default function IntentView() {
                 </p>
               </div>
             )}
+            <DraftSkipStages intent={intent} disabled={starting} onChange={setDraftSkipIds} />
             <div className="flex justify-end">
               <Button onClick={handleStart} disabled={starting} className="gap-1.5">
                 {starting ? (
@@ -1331,6 +1350,12 @@ function StageReviewPanel({
   onBack: () => void;
 }) {
   const [submitting, setSubmitting] = useState(false);
+  // Gate-time "skip to stage X" (stage-skip.js): the backend computed the
+  // valid forward targets (every intermediate is CONDITIONAL); '' = none.
+  // Rides the approve answer as { decision: 'approve', skipTo } and is
+  // re-validated server-side.
+  const [skipTo, setSkipTo] = useState('');
+  const skipTargets = gate.skipTargets ?? [];
   const graph = useIntentGraph(projectId, intentId);
   const stage = detail.stages.find((s) => s.stageInstanceId === gate.stageInstanceId) ?? null;
   const artifacts = detail.artifacts.filter(
@@ -1363,7 +1388,10 @@ function StageReviewPanel({
       const currentFeedback = getFeedback();
       await onAnswer(gate, {
         status: decision === 'approve' ? 'approved' : 'rejected',
-        answer: decision === 'approve' ? { decision } : { decision, feedback: currentFeedback },
+        answer:
+          decision === 'approve'
+            ? { decision, ...(skipTo ? { skipTo } : {}) }
+            : { decision, feedback: currentFeedback },
       });
       onBack();
     } finally {
@@ -1444,9 +1472,33 @@ function StageReviewPanel({
               {gate.answeredAt ? ` at ${new Date(gate.answeredAt).toLocaleString()}` : ''}.
             </div>
           )}
-          <div className="flex flex-wrap justify-end gap-2 pt-1">
+          <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
             {pending && (
               <>
+                {skipTargets.length > 0 && (
+                  <div className="mr-auto flex items-center gap-2">
+                    <Label htmlFor="skip-to-select" className="text-xs text-muted-foreground">
+                      After approval
+                    </Label>
+                    <Select
+                      value={skipTo || 'next'}
+                      onValueChange={(v) => setSkipTo(v === 'next' ? '' : v)}
+                      disabled={submitting}
+                    >
+                      <SelectTrigger id="skip-to-select" className="h-8 w-56 text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="next">Continue to the next stage</SelectItem>
+                        {skipTargets.map((t) => (
+                          <SelectItem key={t} value={t}>
+                            Skip ahead to {t}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
                 <Button
                   variant="outline"
                   disabled={submitting || !feedback.trim()}
@@ -1455,11 +1507,18 @@ function StageReviewPanel({
                   Request changes
                 </Button>
                 <Button disabled={submitting} onClick={() => submit('approve')}>
-                  Approve stage
+                  {skipTo ? `Approve & skip to ${skipTo}` : 'Approve stage'}
                 </Button>
               </>
             )}
           </div>
+          {pending && skipTo && (
+            <p className="text-xs text-amber-600 dark:text-amber-500">
+              Every CONDITIONAL stage between this one and {skipTo} will be marked skipped;
+              downstream stages treat their outputs as absent by design. {skipTo} itself runs in
+              full. You can re-add a skipped stage later by rewinding to it.
+            </p>
+          )}
         </section>
 
         <Accordion type="multiple" defaultValue={[]} className="space-y-2">

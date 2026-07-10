@@ -571,3 +571,158 @@ describe('planSegments', () => {
     expect(flat).toEqual([{ kind: 'stages', stages: [{ stageId: 'a', parallelSection: null }] }]);
   });
 });
+
+describe('buildExecutionPlan — per-intent skip overlay (stage-skip.js)', () => {
+  // producer(CONDITIONAL) → consumer(required) → tail(ALWAYS): the shape a
+  // create-time deselection produces.
+  const skipLibrary = () =>
+    baseLibrary({
+      stagesById: {
+        producer: stage('producer', { execution: 'CONDITIONAL', produces: ['doc'] }),
+        consumer: stage('consumer', {
+          execution: 'CONDITIONAL',
+          consumes: [{ artifact: 'doc', required: true }],
+        }),
+        tail: stage('tail', { execution: 'ALWAYS' }),
+        init: stage('init', { phase: 'initialization', execution: 'ALWAYS' }),
+      },
+    });
+  const skipWorkflow = () =>
+    workflow([
+      placement('init', 'feature', 0),
+      placement('producer', 'feature', 1),
+      placement('consumer', 'feature', 2),
+      placement('tail', 'feature', 3),
+    ]);
+
+  it('drops the skipped stage from the plan and reports it on skippedStages with a deterministic instance id', () => {
+    const { valid, errors, plan } = buildExecutionPlan({
+      workflow: skipWorkflow(),
+      scope: 'feature',
+      library: skipLibrary(),
+      settings: { executionId: 'exec-1' },
+      skipStageIds: ['producer'],
+    });
+    expect(valid).toBe(true);
+    expect(errors).toEqual([]);
+    expect(plan.stages.map((s) => s.stageId)).toEqual(['init', 'consumer', 'tail']);
+    expect(plan.skippedStages).toEqual([
+      {
+        stageId: 'producer',
+        phase: 'inception',
+        stageInstanceId: stageInstanceId('exec-1', 'producer'),
+      },
+    ]);
+    // Skipped ≠ out-of-scope: the rewind endpoint tells them apart.
+    expect(plan.outOfScopeStageIds).not.toContain('producer');
+  });
+
+  it('skipping a producer degrades its consumers to the designed expectedAbsent path (never a fatal dangling_consume)', () => {
+    const { valid, errors, warnings, plan } = buildExecutionPlan({
+      workflow: skipWorkflow(),
+      scope: 'feature',
+      library: skipLibrary(),
+      skipStageIds: ['producer'],
+    });
+    expect(valid).toBe(true);
+    expect(errors.map((e) => e.code)).not.toContain('dangling_consume');
+    expect(warnings.map((w) => w.code)).toContain('scope_absent_consume');
+    const consumer = plan.stages.find((s) => s.stageId === 'consumer');
+    expect(consumer.inputArtifacts.find((i) => i.artifact === 'doc').expectedAbsent).toBe(true);
+  });
+
+  it('rejects skipping an ALWAYS stage (skip_not_allowed)', () => {
+    const { valid, errors } = buildExecutionPlan({
+      workflow: skipWorkflow(),
+      scope: 'feature',
+      library: skipLibrary(),
+      skipStageIds: ['tail'],
+    });
+    expect(valid).toBe(false);
+    expect(errors.map((e) => e.code)).toContain('skip_not_allowed');
+  });
+
+  it('rejects skipping an initialization stage (skip_not_allowed)', () => {
+    const { valid, errors } = buildExecutionPlan({
+      workflow: skipWorkflow(),
+      scope: 'feature',
+      library: skipLibrary(),
+      skipStageIds: ['init'],
+    });
+    expect(valid).toBe(false);
+    expect(errors.map((e) => e.code)).toContain('skip_not_allowed');
+  });
+
+  it('rejects skipping a stage that is not in the scope projection (skip_stage_not_in_scope)', () => {
+    const lib = skipLibrary();
+    const wf = workflow([
+      placement('producer', 'feature', 0),
+      // consumer only executes under mvp — skipping it for a feature run is
+      // meaningless and therefore an error, not a silent no-op.
+      { stageId: 'consumer', order: 1, scopeMembership: { feature: 'SKIP', mvp: 'EXECUTE' } },
+      placement('tail', 'feature', 2),
+    ]);
+    const { valid, errors } = buildExecutionPlan({
+      workflow: wf,
+      scope: 'feature',
+      library: lib,
+      skipStageIds: ['consumer'],
+    });
+    expect(valid).toBe(false);
+    expect(errors.map((e) => e.code)).toContain('skip_stage_not_in_scope');
+    // Also catches genuinely unknown ids the same way.
+    const unknown = buildExecutionPlan({
+      workflow: wf,
+      scope: 'feature',
+      library: lib,
+      skipStageIds: ['nope'],
+    });
+    expect(unknown.errors.map((e) => e.code)).toContain('skip_stage_not_in_scope');
+  });
+
+  it('an empty/absent overlay changes nothing', () => {
+    const base = buildExecutionPlan({
+      workflow: skipWorkflow(),
+      scope: 'feature',
+      library: skipLibrary(),
+    });
+    expect(base.valid).toBe(true);
+    expect(base.plan.skippedStages).toEqual([]);
+    const withEmpty = buildExecutionPlan({
+      workflow: skipWorkflow(),
+      scope: 'feature',
+      library: skipLibrary(),
+      skipStageIds: [],
+    });
+    expect(withEmpty.plan.stages.map((s) => s.stageId)).toEqual(
+      base.plan.stages.map((s) => s.stageId),
+    );
+  });
+
+  it('skipping the unit-DAG producer degrades the parallel section (scope_absent_unit_dag), matching the scope-shortcut path', () => {
+    const lib = baseLibrary({
+      stagesById: {
+        'units-gen': stage('units-gen', {
+          execution: 'CONDITIONAL',
+          produces: ['unit-of-work-dependency'],
+        }),
+        fd: stage('fd', {
+          forEach: 'unit-of-work',
+          execution: 'CONDITIONAL',
+          consumes: [{ artifact: 'unit-of-work-dependency', required: true }],
+        }),
+      },
+      artifactsById: { 'unit-of-work-dependency': { id: 'unit-of-work-dependency' } },
+    });
+    const wf = workflow([placement('units-gen', 'feature', 0), placement('fd', 'feature', 1)]);
+    const { valid, warnings, plan } = buildExecutionPlan({
+      workflow: wf,
+      scope: 'feature',
+      library: lib,
+      skipStageIds: ['units-gen'],
+    });
+    expect(valid).toBe(true);
+    expect(warnings.map((w) => w.code)).toContain('scope_absent_unit_dag');
+    expect(plan.stages.find((s) => s.stageId === 'fd').forEachDegraded).toBe(true);
+  });
+});

@@ -112,6 +112,9 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     completedAt,
     failureReason,
     constructionAutonomyMode,
+    // Per-intent skip overlay (stage-skip.js). Only the rewind endpoint writes
+    // this: rewinding TO a skipped stage UN-skips it (list shrinks, or null).
+    skipStageIds,
   }) => {
     const ts = now();
     const sets = ['updatedAt = :ts'];
@@ -188,6 +191,15 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       }
       sets.push('constructionAutonomyMode = :cam');
       values[':cam'] = constructionAutonomyMode;
+    }
+    // Per-intent skip overlay (stage-skip.js): a rewind to a skipped stage
+    // un-skips it. Validated shape only — the plan resolver owns the policy.
+    if (skipStageIds !== undefined) {
+      if (skipStageIds !== null && !Array.isArray(skipStageIds)) {
+        throw new Error('skipStageIds must be an array of stage ids or null');
+      }
+      sets.push('skipStageIds = :ssi');
+      values[':ssi'] = skipStageIds && skipStageIds.length ? skipStageIds : null;
     }
     const params = {
       TableName: table(),
@@ -400,6 +412,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     prompt,
     options,
     questions,
+    skipTargets,
     humanTaskId,
   }) => {
     const id = humanTaskId ?? nextId();
@@ -412,6 +425,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       prompt,
       options,
       questions,
+      skipTargets,
       now: now(),
     });
     await ddb.send(

@@ -15,7 +15,7 @@
 //   DELETE /workflows/{workflowId}/placements/{skillId}    remove a placement
 //   PUT    /workflows/{workflowId}/scopes/{scopeId}/membership bulk replace membership
 //   GET    /workflows/{workflowId}/compiled[?version=N]    derived views (live or snapshot)
-//   GET    /workflows/{workflowId}/execution-preview?scope=<scope>[&version=N]
+//   GET    /workflows/{workflowId}/execution-preview?scope=<scope>[&version=N][&skip=a,b]
 //
 // SYSTEM-owned workflows are the imported baseline: read-only through the API
 // and replaceable by the seed job. User-created or forked workflows live under
@@ -663,6 +663,21 @@ const getExecutionPreview = async (event, res, tenant, workflowId) => {
   if (typeof scope !== 'string' || !scope) {
     return res(400, { error: 'scope query parameter is required' });
   }
+  // Optional per-intent skip overlay preview (`skip=a,b,c`): lets the intent
+  // creation UI dry-run a stage deselection and show the resulting warnings
+  // (expected-absent inputs, degraded sections) BEFORE the intent exists.
+  const skipParam = event?.queryStringParameters?.skip;
+  const skipStageIds =
+    typeof skipParam === 'string' && skipParam.trim()
+      ? [
+          ...new Set(
+            skipParam
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean),
+          ),
+        ]
+      : null;
 
   const resolved = await resolveWorkflow(tenant, workflowId);
   if (!resolved) return res(404, { error: 'Not found' });
@@ -695,6 +710,7 @@ const getExecutionPreview = async (event, res, tenant, workflowId) => {
     scope,
     library: { stagesById, artifactsById, rulesById, agentsById, sensorsById },
     compiled,
+    ...(skipStageIds ? { skipStageIds } : {}),
   });
   return res(200, preview);
 };

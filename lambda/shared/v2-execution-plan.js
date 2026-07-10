@@ -22,6 +22,7 @@
 
 import { createHash } from 'node:crypto';
 import { compileStageGraph, compileRules } from './compile.js';
+import { stageSkipBlockReason } from './stage-skip.js';
 
 // Stage modes the runtime can actually execute. `agent-team` is known but not
 // runnable yet: a stage that declares it is flagged `notImplemented` so it fails
@@ -198,6 +199,15 @@ const buildExecutionPlan = ({
   settings = {},
   library = {},
   compiled = null,
+  // Per-intent skip overlay (stage-skip.js): stage ids deselected at intent
+  // create, applied ON TOP of the scope projection. Skipped placements never
+  // become stage instances, but they stay in the authored workflow for the
+  // producer analysis — so their consumers degrade to the designed
+  // `scope_absent_consume` / `expectedAbsent` path, never a fatal
+  // dangling_consume. Policy violations (ALWAYS / initialization stages) are
+  // plan ERRORS: the create endpoint validated them, so a violation here means
+  // the snapshot and the pinned workflow disagree — fail loudly.
+  skipStageIds = null,
 } = {}) => {
   const errors = [];
   const warnings = [];
@@ -244,7 +254,47 @@ const buildExecutionPlan = ({
   // Project the workflow onto the scope: only EXECUTE placements become stage
   // instances. Cycle/dangling analysis runs over this subset, not the whole
   // authored workflow.
-  const placements = (workflow.placements ?? []).filter((p) => isInScope(p, scope));
+  const inScopePlacements = (workflow.placements ?? []).filter((p) => isInScope(p, scope));
+
+  // Per-intent skip overlay: validate each requested skip against the scope
+  // projection + the skip policy, then drop the surviving placements. The
+  // skipped stages are reported on the plan (`skippedStages`) so the
+  // orchestrator can write their SKIPPED rows and the UI can show them.
+  const requestedSkips = [...new Set(skipStageIds ?? [])];
+  const skippedStages = [];
+  const skipSet = new Set();
+  for (const stageId of requestedSkips) {
+    const placement = inScopePlacements.find((p) => p.stageId === stageId);
+    if (!placement) {
+      errors.push(
+        err(
+          'skip_stage_not_in_scope',
+          `cannot skip stage "${stageId}": it is not executed in scope "${scope}"`,
+          { stageId, ref: stageId },
+        ),
+      );
+      continue;
+    }
+    const blockReason = stageSkipBlockReason(stagesById[stageId]);
+    if (blockReason) {
+      errors.push(
+        err('skip_not_allowed', `cannot skip stage "${stageId}": ${blockReason}`, {
+          stageId,
+          ref: stageId,
+        }),
+      );
+      continue;
+    }
+    skipSet.add(stageId);
+    skippedStages.push({
+      stageId,
+      phase: stagesById[stageId]?.phase ?? null,
+      // Deterministic instance id (same namespace rule as live instances) so
+      // the SKIPPED audit row lines up with what a later un-skip run resolves.
+      stageInstanceId: null, // stamped below once the namespace is known
+    });
+  }
+  const placements = inScopePlacements.filter((p) => !skipSet.has(p.stageId));
   const inScopeIds = new Set(placements.map((p) => p.stageId));
 
   // A placement wired to EXECUTE in NO scope can never run in ANY run of this
@@ -333,6 +383,12 @@ const buildExecutionPlan = ({
   // Namespace for deterministic instance ids: the execution when known, else the
   // immutable workflow pin.
   const namespace = settings.executionId ?? `${workflowId}@${workflowVersion}`;
+
+  // Stamp deterministic instance ids on the overlay-skipped stages so their
+  // SKIPPED audit rows use the exact id a later un-skip run resolves to.
+  for (const s of skippedStages) {
+    s.stageInstanceId = stageInstanceId(namespace, s.stageId);
+  }
 
   const stages = placements
     .map((placement) => {
@@ -569,9 +625,12 @@ const buildExecutionPlan = ({
   // Authored placements the scope projection dropped (SKIP or un-wired) — the
   // rewind endpoint uses this to tell "stage exists but is out of scope for
   // this run" (409, actionable) apart from a genuinely unknown stage id (400).
+  // Intent-level skips are reported separately (`skippedStages`): they are
+  // deliberately skipped for THIS run, not scope-excluded — un-skipping is a
+  // rewind concern, not a composer-wiring one.
   const outOfScopeStageIds = (workflow.placements ?? [])
     .map((p) => p.stageId)
-    .filter((id) => !inScopeIds.has(id));
+    .filter((id) => !inScopeIds.has(id) && !skipSet.has(id));
 
   const plan = {
     workflowId,
@@ -581,6 +640,9 @@ const buildExecutionPlan = ({
     stages: orderedStages,
     sections,
     outOfScopeStageIds,
+    // Per-intent skip overlay applied to this plan (empty when none): the
+    // orchestrator writes one SKIPPED row per entry at run start.
+    skippedStages,
   };
   return { valid: errors.length === 0, errors, warnings, plan };
 };

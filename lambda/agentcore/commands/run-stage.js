@@ -85,9 +85,16 @@ export const OFF_MOUNT_CACHE_ENV = {
 // engine commit are at ENOSPC risk on the 1 GiB mount.
 export const DISK_LOW_FLOOR_BYTES = 100 * 1024 * 1024;
 
-// Resolve the plan and locate the stage instance for `stageId`.
-const resolveStage = ({ workflow, library, scope, stageId }) => {
-  const { valid, errors, plan } = buildExecutionPlan({ workflow, scope: scope.scope, library });
+// Resolve the plan and locate the stage instance for `stageId`. The optional
+// `skipStageIds` overlay (per-intent + gate-time skips, forwarded by the
+// orchestrator) is applied so this resolution matches the walk's plan.
+const resolveStage = ({ workflow, library, scope, stageId, skipStageIds = [] }) => {
+  const { valid, errors, plan } = buildExecutionPlan({
+    workflow,
+    scope: scope.scope,
+    library,
+    ...(skipStageIds.length ? { skipStageIds } : {}),
+  });
   if (!valid) return { error: 'plan_invalid', detail: errors };
   const stage = plan.stages.find((s) => s.stageId === stageId);
   if (!stage)
@@ -792,6 +799,12 @@ export const runStage = async (
     workflowId,
     workflowVersion,
     scope,
+    // Per-run skip overlay (shared/stage-skip.js): intent-level deselections +
+    // accumulated gate-time skips, forwarded by the orchestrator on EVERY
+    // dispatch so this container resolves the same plan the walk executes —
+    // downstream stages then see skipped producers' inputs as expectedAbsent
+    // (prompt: "absence is by design, do NOT fabricate"). Empty = no overlay.
+    skipStageIds = [],
     requestedCli,
     cliModels = {},
     // Custom MCP servers (name-keyed object) merged into the CLI's mcpServers map,
@@ -975,7 +988,7 @@ export const runStage = async (
   if (!loaded.workflow || !loaded.library)
     return fail(null, 'workflow_not_found', `${workflowId}@${workflowVersion}`);
 
-  const probe = resolveStage({ ...loaded, scope: { scope }, stageId });
+  const probe = resolveStage({ ...loaded, scope: { scope }, stageId, skipStageIds });
   if (probe.error) return fail(null, probe.error, JSON.stringify(probe.detail));
 
   const memory = await readProjectMemory({
@@ -991,7 +1004,7 @@ export const runStage = async (
     learningRules: memory.learningRules,
   });
 
-  const resolved = resolveStage({ workflow, library, scope: { scope }, stageId });
+  const resolved = resolveStage({ workflow, library, scope: { scope }, stageId, skipStageIds });
   if (resolved.error) return fail(null, resolved.error, JSON.stringify(resolved.detail));
   const { stage, plan } = resolved;
 

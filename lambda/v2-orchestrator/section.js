@@ -106,7 +106,17 @@ export const laneSessionIdFor = (intentId, sectionIndex, slug) =>
 export const awaitEngineGate = async (
   ctxArg,
   toolkit,
-  { name, prompt, options = null, kind = 'approval', stageInstanceId = null, unitSlug = null },
+  {
+    name,
+    prompt,
+    options = null,
+    kind = 'approval',
+    stageInstanceId = null,
+    unitSlug = null,
+    // Valid "skip to stage X" targets for a validation gate (stage-skip.js).
+    // Advisory for the UI; the orchestrator re-validates the answer.
+    skipTargets = null,
+  },
 ) => {
   const { store, broadcast, ids, runId } = toolkit;
   const { executionId, intentId, projectId } = ids;
@@ -131,6 +141,7 @@ export const awaitEngineGate = async (
         kind,
         prompt,
         options,
+        ...(skipTargets ? { skipTargets } : {}),
       });
     } catch {
       /* already exists from a prior attempt — idempotent open */
@@ -158,6 +169,7 @@ export const awaitEngineGate = async (
         kind,
         prompt,
         options,
+        ...(skipTargets ? { skipTargets } : {}),
       });
     } catch {
       /* live fan-out is best-effort */

@@ -110,8 +110,19 @@ const assembleWorkflow = (items, { workflowId, workflowVersion }) => {
 
 // Build the ordered execution plan for a pinned workflow + scope. Returns the
 // same `{ valid, errors, plan }` shape as buildExecutionPlan; `plan.stages` is
-// the ordered stage list the orchestrator sequences.
-const loadExecutionPlan = async ({ ddb, tableName, workflowId, workflowVersion, scope }) => {
+// the ordered stage list the orchestrator sequences. `skipStageIds` is the
+// per-intent skip overlay snapshotted on the execution META row (see
+// shared/stage-skip.js) — every recompute of the same intent MUST pass the
+// same overlay or the plan drifts between the create check, the orchestrator
+// walk, the rewind slice, and the container's stage resolution.
+const loadExecutionPlan = async ({
+  ddb,
+  tableName,
+  workflowId,
+  workflowVersion,
+  scope,
+  skipStageIds = null,
+}) => {
   const items = await loadWorkflowItems(ddb, tableName, workflowId, workflowVersion);
   if (!items.length) {
     return {
@@ -139,7 +150,7 @@ const loadExecutionPlan = async ({ ddb, tableName, workflowId, workflowVersion, 
     rulesById: keyById(rules),
     artifactsById: keyById(artifacts),
   };
-  return buildExecutionPlan({ workflow, scope, library });
+  return buildExecutionPlan({ workflow, scope, library, skipStageIds });
 };
 
 // List the scopes a pinned workflow offers (the vocabulary the intent scope

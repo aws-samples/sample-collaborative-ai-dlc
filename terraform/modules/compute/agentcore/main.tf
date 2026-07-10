@@ -419,6 +419,27 @@ resource "aws_ssm_parameter" "derive_enrichment" {
   tags = var.tags
 }
 
+# Stage skipping — platform-wide toggle for per-intent stage skipping
+# (create-time deselection of CONDITIONAL stages + gate-time "skip to stage X").
+# Disabled by default: skipping bypasses parts of the methodology, so an
+# operator must opt in. Managed by the Admin UI at runtime; projects may
+# override per-project (Project vertex `stage_skipping`). The EFFECTIVE value
+# is snapshotted onto each execution's META row at intent create, so a toggle
+# flip takes effect on the next intent without a redeploy and never changes a
+# run mid-flight.
+resource "aws_ssm_parameter" "stage_skipping" {
+  name        = "/${var.project_name}/${var.environment}/stage-skipping"
+  description = "Per-intent stage skipping: enabled | disabled (Admin UI managed)"
+  type        = "String"
+  value       = "disabled"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+
+  tags = var.tags
+}
+
 # Kiro API key — stored as SecureString; set via Admin UI.
 # Created with a placeholder; the driver treats "placeholder" as "not configured".
 resource "aws_ssm_parameter" "kiro_api_key" {

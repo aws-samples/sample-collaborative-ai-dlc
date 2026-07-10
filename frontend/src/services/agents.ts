@@ -86,6 +86,11 @@ export interface AgentSettings {
    *  'llm' = one bounded agent-CLI summary call per approved artifact.
    *  Snapshotted per intent at create — flips apply to the NEXT intent. */
   deriveEnrichment?: 'off' | 'llm';
+  /** Platform-wide stage skipping: 'enabled' lets intents deselect
+   *  CONDITIONAL stages at create and offers "skip to stage X" on validation
+   *  gates. Projects may override; the effective value is snapshotted per
+   *  intent at create. */
+  stageSkipping?: 'enabled' | 'disabled';
   /** Global custom MCP servers (raw JSON string, name-keyed JSON object)
    *  injected into every agent session; merged under a project's own set.
    *  Only returned to platform admins. */
@@ -105,6 +110,8 @@ export interface AgentSettingsUpdate {
   cliModels?: CliModels;
   /** Derive-time graph enrichment mode. Omit to leave unchanged. */
   deriveEnrichment?: 'off' | 'llm';
+  /** Platform-wide stage skipping mode. Omit to leave unchanged. */
+  stageSkipping?: 'enabled' | 'disabled';
   /** Global custom MCP servers (raw JSON string). Omit to leave unchanged. */
   customMcpServers?: string;
 }

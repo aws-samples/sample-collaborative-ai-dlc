@@ -26,6 +26,7 @@ import { parseCliModels, mergeCliModels } from '../shared/cli-models.js';
 import { mergeMcpServers } from '../shared/mcp-validator.js';
 import { loadWorkflowScopes, loadExecutionPlan } from '../shared/v2-workflow-plan.js';
 import { stageInstanceId as planStageInstanceId } from '../shared/v2-execution-plan.js';
+import { effectiveStageSkipping, normalizeSkipStageIds } from '../shared/stage-skip.js';
 import { makePriceResolver, costForMetrics } from '../shared/model-pricing.js';
 import { aggregateMetrics, rollupAggregates } from '../shared/metric-classification.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
@@ -298,6 +299,22 @@ const fetchDeriveEnrichment = async () => {
   }
 };
 
+// Read the Admin platform stage-skipping toggle ('enabled'|'disabled') from
+// SSM (written by the agents lambda). The project vertex may override it
+// ('stage_skipping': default|enabled|disabled); the EFFECTIVE value (see
+// shared/stage-skip.js) is snapshotted onto the execution META row at create.
+// Fail-safe: any failure or unknown value yields 'disabled'.
+const fetchPlatformStageSkipping = async () => {
+  const prefix = AGENT_SETTINGS_SSM_PREFIX();
+  if (!prefix) return 'disabled';
+  try {
+    const res = await ssm.send(new GetParameterCommand({ Name: `${prefix}/stage-skipping` }));
+    return res.Parameter?.Value === 'enabled' ? 'enabled' : 'disabled';
+  } catch {
+    return 'disabled';
+  }
+};
+
 // Read the v2 project's run config (workflow pin, repos, park-release). Scope is
 // NOT a project property — it is chosen per-intent at create time.
 // Returns null when the project doesn't exist or isn't a v2 project.
@@ -360,6 +377,9 @@ const fetchProjectConfig = async (g, projectId) => {
     maxParallelUnits: Number(getVal(v, 'max_parallel_units') || 0),
     // PR strategy at fan-in (docs/v2-parallel.md WP6; only intent-pr enabled).
     prStrategy: getVal(v, 'pr_strategy') || 'intent-pr',
+    // Per-project stage-skipping override ('default'|'enabled'|'disabled');
+    // 'default' inherits the platform SSM setting (shared/stage-skip.js).
+    stageSkipping: getVal(v, 'stage_skipping') || 'default',
     // The project's selected agent CLI (defaults to kiro on the project vertex);
     // snapshotted onto the intent so the run honours the explicit choice.
     agentCli: getVal(v, 'agent_cli') || null,
@@ -667,6 +687,8 @@ const mapIntent = (meta) => ({
   maxParallelUnits: meta.maxParallelUnits ?? null,
   constructionAutonomyMode: meta.constructionAutonomyMode ?? null,
   prStrategy: meta.prStrategy ?? null,
+  stageSkipping: meta.stageSkipping ?? null,
+  skipStageIds: meta.skipStageIds ?? null,
   source: meta.source ?? null,
   planWarnings: meta.planWarnings ?? null,
   createdAt: meta.startedAt ?? null,
@@ -776,6 +798,9 @@ export const handler = async (event) => {
           workflowId: records.meta.workflowId,
           workflowVersion: records.meta.workflowVersion,
           scope: records.meta.scope,
+          ...(Array.isArray(records.meta.skipStageIds) && records.meta.skipStageIds.length
+            ? { skipStageIds: records.meta.skipStageIds }
+            : {}),
         });
         plan = planResult.valid ? planResult.plan : null;
       } catch {
@@ -1273,6 +1298,13 @@ export const handler = async (event) => {
     }
 
     // POST /projects/{projectId}/intents/{intentId}/start
+    // Optional body { skipStageIds } (DRAFT only): replace the intent's skip
+    // overlay at the moment of launch — the DRAFT screen is where the user
+    // reviews the run before starting, so it is the natural last chance to
+    // (de)select CONDITIONAL stages. Same validation as create: only accepted
+    // when the run's snapshotted stageSkipping is 'enabled', and the plan must
+    // resolve with the overlay applied. FAILED/CREATED restarts never touch
+    // the overlay (the prior run's plan holds).
     if (intentId && httpMethod === 'POST' && path?.endsWith('/start')) {
       const meta = await store.getExecution(intentId);
       if (!meta || meta.projectId !== projectId) {
@@ -1300,6 +1332,42 @@ export const handler = async (event) => {
       if (!meta.prompt) {
         return response(400, { error: 'Intent has no prompt; define it before starting' });
       }
+      // Skip-overlay override at launch (DRAFT only — a restart re-enters the
+      // prior run's pinned plan). `skipStageIds: []` explicitly clears skips
+      // picked at create; an absent field leaves the create-time snapshot.
+      const startData = body ? JSON.parse(body) : {};
+      let skipOverride; // undefined = untouched
+      if (startData.skipStageIds !== undefined) {
+        if (meta.status !== 'DRAFT') {
+          return response(409, {
+            error: 'skipStageIds can only be changed before the first start (DRAFT)',
+          });
+        }
+        if (!Array.isArray(startData.skipStageIds)) {
+          return response(400, { error: 'skipStageIds must be an array of stage ids' });
+        }
+        const normalized = normalizeSkipStageIds(startData.skipStageIds);
+        if (normalized && meta.stageSkipping !== 'enabled') {
+          return response(400, {
+            error: 'Stage skipping is disabled for this intent — skipStageIds is not accepted',
+          });
+        }
+        const planCheck = await loadExecutionPlan({
+          ddb,
+          tableName: BLOCKS_TABLE(),
+          workflowId: meta.workflowId,
+          workflowVersion: meta.workflowVersion,
+          scope: meta.scope,
+          ...(normalized ? { skipStageIds: normalized } : {}),
+        });
+        if (!planCheck.valid) {
+          return response(400, {
+            error: `The requested stage skips are not runnable for workflow "${meta.workflowId}"`,
+            errors: planCheck.errors ?? [],
+          });
+        }
+        skipOverride = normalized; // null clears, array replaces
+      }
       // Flip <current> → CREATED (CAS on the observed status) so a double-start
       // can't launch two runs, then hand off to the orchestrator (init-ws + run the
       // plan). If the hand-off throws, roll back to the prior status — otherwise the
@@ -1313,6 +1381,8 @@ export const handler = async (event) => {
         startedAt: meta.startedAt,
         // Clear any stale failure from a prior attempt as we re-enter the pipeline.
         failureReason: null,
+        // Launch-time skip override (validated above; undefined = untouched).
+        ...(skipOverride !== undefined ? { skipStageIds: skipOverride } : {}),
       });
       try {
         await invokeOrchestrator({ action: 'start', intentId, executionId: intentId });
@@ -1514,12 +1584,20 @@ export const handler = async (event) => {
         });
       }
       // Resolve the pinned plan to find the rewind point + the downstream set.
+      // The intent's skip overlay rides along — EXCEPT the rewind target
+      // itself: rewinding TO a stage that was deselected at create UN-skips it
+      // (the shrunken overlay is persisted on META below, so every later
+      // recompute agrees). Upstream calls this "Add [Skipped Stage]".
+      const priorSkipIds = Array.isArray(meta.skipStageIds) ? meta.skipStageIds : [];
+      const unskipping = priorSkipIds.includes(fromStageId);
+      const rewindSkipIds = priorSkipIds.filter((id) => id !== fromStageId);
       const planResult = await loadExecutionPlan({
         ddb,
         tableName: BLOCKS_TABLE(),
         workflowId: meta.workflowId,
         workflowVersion: meta.workflowVersion,
         scope: meta.scope,
+        ...(rewindSkipIds.length ? { skipStageIds: rewindSkipIds } : {}),
       });
       if (!planResult.valid || !planResult.plan) {
         return response(409, {
@@ -1644,7 +1722,7 @@ export const handler = async (event) => {
           executionId: intentId,
           type: 'v2.execution.rewound',
           actor: responder.displayName || responder.sub,
-          summary: `${responder.displayName || 'Someone'} ${steer ? 'rewound the run to' : 'retried the run from'} ${fromStageId} (${resetInstances.length} stage instance(s) reset, ${supersededArtifacts.length} artifact(s) superseded)`,
+          summary: `${responder.displayName || 'Someone'} ${steer ? 'rewound the run to' : 'retried the run from'} ${fromStageId}${unskipping ? ' (un-skipped: it was deselected at creation)' : ''} (${resetInstances.length} stage instance(s) reset, ${supersededArtifacts.length} artifact(s) superseded)`,
         })
         .catch((err) => console.error('Rewind event append failed:', err.message));
       // Relaunch at the rewind point. Same CAS + rollback discipline as /start.
@@ -1659,6 +1737,9 @@ export const handler = async (event) => {
         failureReason: null,
         completedAt: null,
         rewindFromStageId: fromStageId,
+        // Un-skip: the rewind target leaves the intent's skip overlay so the
+        // relaunch (and every later plan recompute) actually runs it.
+        ...(unskipping ? { skipStageIds: rewindSkipIds.length ? rewindSkipIds : null } : {}),
       });
       try {
         await invokeOrchestrator({
@@ -1889,11 +1970,28 @@ export const handler = async (event) => {
           scopes,
         });
       }
+      // Per-intent stage deselection (shared/stage-skip.js): only accepted when
+      // stage skipping is EFFECTIVELY enabled (project override over platform
+      // setting), and validated structurally by the plan resolver below
+      // (CONDITIONAL-only, in-scope, never initialization). The effective mode
+      // is snapshotted onto META either way — it also gates the run's
+      // gate-time "skip to stage X" options.
+      const stageSkipping = effectiveStageSkipping(
+        await fetchPlatformStageSkipping(),
+        cfg.stageSkipping,
+      );
+      const skipStageIds = normalizeSkipStageIds(data.skipStageIds);
+      if (skipStageIds && stageSkipping !== 'enabled') {
+        return response(400, {
+          error: 'Stage skipping is disabled for this project — skipStageIds is not accepted',
+        });
+      }
       // Resolve the full execution plan NOW, before any row is written. The
-      // plan is a pure function of (workflow@pinnedVersion, scope), so a pass
-      // here holds for the whole intent lifetime — this turns a structurally
-      // broken scope into a synchronous 400 instead of a post-init-ws
-      // `plan_invalid` failure (after a git clone + Neptune anchor were burnt).
+      // plan is a pure function of (workflow@pinnedVersion, scope, skip
+      // overlay), so a pass here holds for the whole intent lifetime — this
+      // turns a structurally broken scope (or an illegal skip) into a
+      // synchronous 400 instead of a post-init-ws `plan_invalid` failure
+      // (after a git clone + Neptune anchor were burnt).
       // Non-fatal `warnings` (scope-shortcut degradations: inputs whose
       // producer is out of scope, sections downgraded to once-per-workflow)
       // are persisted on the intent so the UI can surface the degraded run.
@@ -1903,10 +2001,13 @@ export const handler = async (event) => {
         workflowId,
         workflowVersion,
         scope,
+        ...(skipStageIds ? { skipStageIds } : {}),
       });
       if (!planCheck.valid) {
         return response(400, {
-          error: `Scope "${scope}" is not runnable for workflow "${workflowId}"`,
+          error: skipStageIds
+            ? `Scope "${scope}" with the requested stage skips is not runnable for workflow "${workflowId}"`
+            : `Scope "${scope}" is not runnable for workflow "${workflowId}"`,
           errors: planCheck.errors ?? [],
         });
       }
@@ -1963,6 +2064,8 @@ export const handler = async (event) => {
         parkReleaseSeconds: cfg.parkReleaseSeconds,
         maxParallelUnits: cfg.maxParallelUnits,
         prStrategy: cfg.prStrategy,
+        stageSkipping,
+        skipStageIds,
         source,
         planWarnings,
       });
@@ -2156,6 +2259,7 @@ const mapHumanTask = (h) => ({
   status: h.status,
   prompt: h.prompt ?? null,
   options: h.options ?? null,
+  skipTargets: h.skipTargets ?? null,
   questions: h.questions ?? null,
   answer: h.answer ?? null,
   answeredBy: h.answeredBy ?? null,

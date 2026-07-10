@@ -63,6 +63,10 @@ export interface Intent {
   // (0/null = unbounded) and the human's autonomy-ladder decision.
   maxParallelUnits?: number | null;
   constructionAutonomyMode?: 'gated' | 'autonomous' | null;
+  // Per-intent stage skipping (shared/stage-skip.js): the effective mode
+  // snapshotted at create and the CONDITIONAL stages deselected at create.
+  stageSkipping?: 'enabled' | 'disabled' | null;
+  skipStageIds?: string[] | null;
   source: IntentSource | null;
   // Non-fatal plan warnings snapshotted at create: the selected scope resolves
   // to a runnable but DEGRADED plan (required inputs whose producer stage is
@@ -120,6 +124,10 @@ export interface IntentGate {
   status: 'pending' | 'answered' | 'approved' | 'rejected' | 'superseded';
   prompt: string | null;
   options: unknown;
+  // Valid "skip to stage X" targets on a validation gate (stage ids the human
+  // may jump to; every intermediate is CONDITIONAL). Null when stage skipping
+  // is disabled for the run or no target qualifies.
+  skipTargets?: string[] | null;
   questions: string | null;
   answer: unknown;
   answeredBy: string | null;
@@ -411,6 +419,9 @@ export interface CreateIntentInput {
   // here falls back to `baseBranch`, then to its own actual default branch.
   baseBranches?: Record<string, string>;
   scope?: string;
+  // Per-intent stage deselection (only accepted when stage skipping is
+  // enabled for the project): CONDITIONAL stage ids to skip for this run.
+  skipStageIds?: string[];
   // Optional tracker provenance when seeded from a GitHub issue / Jira artifact.
   source?: {
     bindingId: string;
@@ -624,8 +635,8 @@ export const intentsService = {
   },
   create: (projectId: string, input: CreateIntentInput) =>
     api.post<Intent>(`/projects/${projectId}/intents`, input),
-  start: (projectId: string, intentId: string) =>
-    api.post<Intent>(`/projects/${projectId}/intents/${intentId}/start`, {}),
+  start: (projectId: string, intentId: string, input?: { skipStageIds?: string[] }) =>
+    api.post<Intent>(`/projects/${projectId}/intents/${intentId}/start`, input ?? {}),
   cancel: (projectId: string, intentId: string) =>
     api.post<Intent>(`/projects/${projectId}/intents/${intentId}/cancel`, {}),
   // Permanent delete: removes the intent's graph data, process state and

@@ -3014,3 +3014,303 @@ describe('POST /quorum-edits/{editId}/decision', () => {
     expect(res.statusCode).toBe(409);
   });
 });
+
+// ── Per-intent stage skipping (shared/stage-skip.js) ──
+
+describe('stage skipping — create-time deselection + rewind un-skip', () => {
+  // Plan for the pinned workflow (version 4, scope 'feature'):
+  // optional (CONDITIONAL) → main (ALWAYS), reserved 'orchestrator' lead.
+  const seedSkippablePlan = () => {
+    const placement = (stageId, order) =>
+      procStore.set(keyOf('WF#default#aidlc-v2', `V#4#PLACEMENT#${stageId}`), {
+        pk: 'WF#default#aidlc-v2',
+        sk: `V#4#PLACEMENT#${stageId}`,
+        stageId,
+        order,
+        scopeMembership: { feature: 'EXECUTE' },
+      });
+    placement('optional', 1);
+    placement('main', 2);
+    const stageBlock = (stageId, execution) =>
+      procStore.set(keyOf(`BLOCK#${stageId}`, 'META'), {
+        pk: `BLOCK#${stageId}`,
+        sk: 'META',
+        GSI1PK: 'TENANT#default#STAGE',
+        GSI1SK: `NAME#${stageId}`,
+        id: stageId,
+        blockId: stageId,
+        type: 'STAGE',
+        version: 1,
+        phase: 'construction',
+        mode: 'inline',
+        leadAgent: 'orchestrator',
+        execution,
+        produces: [],
+        consumes: [],
+      });
+    stageBlock('optional', 'CONDITIONAL');
+    stageBlock('main', 'ALWAYS');
+  };
+
+  const enableProjectSkipping = (projectId) =>
+    g
+      .V()
+      .has('Project', 'id', projectId)
+      .property(gremlin.process.cardinality.single, 'stage_skipping', 'enabled')
+      .next();
+
+  it('rejects skipStageIds when stage skipping is disabled (platform default, no override)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSkippablePlan();
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'X',
+      scope: 'feature',
+      skipStageIds: ['optional'],
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toMatch(/disabled/);
+  });
+
+  it('accepts CONDITIONAL skips under the project override and snapshots them onto the intent', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSkippablePlan();
+    await enableProjectSkipping(projectId);
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'X',
+      scope: 'feature',
+      skipStageIds: ['optional', 'optional'], // deduped
+    });
+    expect(res.statusCode).toBe(201);
+    const intent = JSON.parse(res.body);
+    expect(intent.stageSkipping).toBe('enabled');
+    expect(intent.skipStageIds).toEqual(['optional']);
+    // The snapshot rides META so the orchestrator/rewind recomputes agree.
+    const meta = procStore.get(keyOf(`EXEC#${intent.id}`, 'META'));
+    expect(meta.skipStageIds).toEqual(['optional']);
+    expect(meta.stageSkipping).toBe('enabled');
+  });
+
+  it('a run without skips still snapshots the effective mode (gate-time skips key off it)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSkippablePlan();
+    await enableProjectSkipping(projectId);
+    const res = await createIntent(sub, projectId);
+    expect(res.statusCode).toBe(201);
+    const intent = JSON.parse(res.body);
+    expect(intent.stageSkipping).toBe('enabled');
+    expect(intent.skipStageIds).toBeNull();
+  });
+
+  it('400s an ALWAYS-stage skip with the structured skip_not_allowed error', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSkippablePlan();
+    await enableProjectSkipping(projectId);
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'X',
+      scope: 'feature',
+      skipStageIds: ['main'],
+    });
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.error).toMatch(/not runnable/);
+    expect(body.errors.map((e) => e.code)).toContain('skip_not_allowed');
+    // Nothing was written.
+    const metas = [...procStore.values()].filter(
+      (i) => i.type === 'Execution' && i.projectId === projectId,
+    );
+    expect(metas).toEqual([]);
+  });
+
+  it('rewinding TO a skipped stage un-skips it (overlay shrinks on META, relaunch runs it)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSkippablePlan();
+    await enableProjectSkipping(projectId);
+    const intent = JSON.parse(
+      (
+        await createIntent(sub, projectId, {
+          title: 'I',
+          prompt: 'X',
+          scope: 'feature',
+          skipStageIds: ['optional'],
+        })
+      ).body,
+    );
+    await seedIntentAnchor(intent.id);
+    // The run finished: main SUCCEEDED, optional holds its SKIPPED audit row.
+    const siOf = (stageId) => planStageInstanceId('aidlc-v2@4', stageId);
+    procStore.set(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('optional')}`), {
+      pk: `EXEC#${intent.id}`,
+      sk: `STAGE#${siOf('optional')}`,
+      type: 'Stage',
+      executionId: intent.id,
+      stageInstanceId: siOf('optional'),
+      stageId: 'optional',
+      state: 'SKIPPED',
+      attempt: 0,
+    });
+    setStatus(intent.id, { status: 'SUCCEEDED' });
+
+    const res = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/rewind`,
+      pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ fromStageId: 'optional' }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(202);
+    // The overlay shrank to empty → stored as null (sparse META).
+    const meta = procStore.get(keyOf(`EXEC#${intent.id}`, 'META'));
+    expect(meta.skipStageIds).toBeNull();
+    // The SKIPPED row was reset for the re-run.
+    const row = procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('optional')}`));
+    expect(row).toMatchObject({ state: 'PENDING', attempt: 1 });
+    // Relaunched AT the un-skipped stage.
+    const calls = lambdaMock.commandCalls(InvokeCommand);
+    expect(calls).toHaveLength(1);
+    const payload = JSON.parse(Buffer.from(calls[0].args[0].input.Payload).toString());
+    expect(payload).toMatchObject({ action: 'start', startAtStageId: 'optional' });
+  });
+});
+
+describe('stage skipping — start-time override (DRAFT screen)', () => {
+  const seedSkippablePlan = () => {
+    const placement = (stageId, order) =>
+      procStore.set(keyOf('WF#default#aidlc-v2', `V#4#PLACEMENT#${stageId}`), {
+        pk: 'WF#default#aidlc-v2',
+        sk: `V#4#PLACEMENT#${stageId}`,
+        stageId,
+        order,
+        scopeMembership: { feature: 'EXECUTE' },
+      });
+    placement('optional', 1);
+    placement('main', 2);
+    const stageBlock = (stageId, execution) =>
+      procStore.set(keyOf(`BLOCK#${stageId}`, 'META'), {
+        pk: `BLOCK#${stageId}`,
+        sk: 'META',
+        GSI1PK: 'TENANT#default#STAGE',
+        GSI1SK: `NAME#${stageId}`,
+        id: stageId,
+        blockId: stageId,
+        type: 'STAGE',
+        version: 1,
+        phase: 'construction',
+        mode: 'inline',
+        leadAgent: 'orchestrator',
+        execution,
+        produces: [],
+        consumes: [],
+      });
+    stageBlock('optional', 'CONDITIONAL');
+    stageBlock('main', 'ALWAYS');
+  };
+
+  const enableProjectSkipping = (projectId) =>
+    g
+      .V()
+      .has('Project', 'id', projectId)
+      .property(gremlin.process.cardinality.single, 'stage_skipping', 'enabled')
+      .next();
+
+  const startIntent = (sub, projectId, intentId, bodyObj = {}) =>
+    handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intentId}/start`,
+      pathParameters: { projectId, intentId },
+      body: JSON.stringify(bodyObj),
+      ...claims(sub),
+    });
+
+  it('a DRAFT start may replace the skip overlay (validated + persisted on META)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSkippablePlan();
+    await enableProjectSkipping(projectId);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+
+    const res = await startIntent(sub, projectId, intent.id, { skipStageIds: ['optional'] });
+    expect(res.statusCode).toBe(202);
+    expect(JSON.parse(res.body).skipStageIds).toEqual(['optional']);
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).skipStageIds).toEqual(['optional']);
+  });
+
+  it('a DRAFT start with skipStageIds: [] clears the create-time selection', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSkippablePlan();
+    await enableProjectSkipping(projectId);
+    const intent = JSON.parse(
+      (
+        await createIntent(sub, projectId, {
+          title: 'I',
+          prompt: 'X',
+          scope: 'feature',
+          skipStageIds: ['optional'],
+        })
+      ).body,
+    );
+    const res = await startIntent(sub, projectId, intent.id, { skipStageIds: [] });
+    expect(res.statusCode).toBe(202);
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).skipStageIds).toBeNull();
+  });
+
+  it('an omitted skipStageIds leaves the create-time snapshot untouched', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSkippablePlan();
+    await enableProjectSkipping(projectId);
+    const intent = JSON.parse(
+      (
+        await createIntent(sub, projectId, {
+          title: 'I',
+          prompt: 'X',
+          scope: 'feature',
+          skipStageIds: ['optional'],
+        })
+      ).body,
+    );
+    const res = await startIntent(sub, projectId, intent.id);
+    expect(res.statusCode).toBe(202);
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).skipStageIds).toEqual(['optional']);
+  });
+
+  it('rejects the override when skipping is disabled for the run, or the stage is ALWAYS', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSkippablePlan();
+    // Disabled run (no override, platform default = disabled).
+    const plain = JSON.parse((await createIntent(sub, projectId)).body);
+    const denied = await startIntent(sub, projectId, plain.id, { skipStageIds: ['optional'] });
+    expect(denied.statusCode).toBe(400);
+    expect(JSON.parse(denied.body).error).toMatch(/disabled/);
+    // Enabled run, but an ALWAYS stage → structured plan error.
+    await enableProjectSkipping(projectId);
+    const enabled = JSON.parse((await createIntent(sub, projectId)).body);
+    const bad = await startIntent(sub, projectId, enabled.id, { skipStageIds: ['main'] });
+    expect(bad.statusCode).toBe(400);
+    expect(JSON.parse(bad.body).errors.map((e) => e.code)).toContain('skip_not_allowed');
+  });
+
+  it("409s a skip override on a non-DRAFT restart (the prior run's plan holds)", async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSkippablePlan();
+    await enableProjectSkipping(projectId);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    setStatus(intent.id, { status: 'FAILED' });
+    const res = await startIntent(sub, projectId, intent.id, { skipStageIds: ['optional'] });
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).error).toMatch(/DRAFT/);
+    // A plain restart still works.
+    const retry = await startIntent(sub, projectId, intent.id);
+    expect(retry.statusCode).toBe(202);
+  });
+});

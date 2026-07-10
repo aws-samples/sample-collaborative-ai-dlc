@@ -5,8 +5,20 @@
 import { useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Settings2, SlidersHorizontal } from 'lucide-react';
-import { projectsService, type Project, type PrStrategy } from '@/services/projects';
+import {
+  projectsService,
+  type Project,
+  type PrStrategy,
+  type StageSkippingOverride,
+} from '@/services/projects';
 import { invalidateProjects } from '@/hooks/useProjectsCache';
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import { SaveStatusButton, type SaveResult } from '@/components/settings/SaveStatusButton';
@@ -45,13 +57,17 @@ export function GeneralTab({ project, canEdit, onProjectUpdated }: Props) {
   // --- v2 runtime settings ----------------------------------------------------
   const [parkReleaseSeconds, setParkReleaseSeconds] = useState(project.parkReleaseSeconds ?? 300);
   const [maxParallelUnits, setMaxParallelUnits] = useState(project.maxParallelUnits ?? 0);
+  const [stageSkipping, setStageSkipping] = useState<StageSkippingOverride>(
+    project.stageSkipping ?? 'default',
+  );
   const [savingRuntime, setSavingRuntime] = useState(false);
   const [runtimeResult, setRuntimeResult] = useState<SaveResult>(null);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
 
   const runtimeChanged =
     parkReleaseSeconds !== (project.parkReleaseSeconds ?? 300) ||
-    maxParallelUnits !== (project.maxParallelUnits ?? 0);
+    maxParallelUnits !== (project.maxParallelUnits ?? 0) ||
+    stageSkipping !== (project.stageSkipping ?? 'default');
 
   const saveRuntime = async () => {
     setSavingRuntime(true);
@@ -62,15 +78,19 @@ export function GeneralTab({ project, canEdit, onProjectUpdated }: Props) {
         parkReleaseSeconds,
         maxParallelUnits,
         prStrategy,
+        stageSkipping,
       });
       const next = saved.parkReleaseSeconds ?? parkReleaseSeconds;
       const nextParallel = saved.maxParallelUnits ?? maxParallelUnits;
+      const nextSkipping = saved.stageSkipping ?? stageSkipping;
       setParkReleaseSeconds(next);
       setMaxParallelUnits(nextParallel);
+      setStageSkipping(nextSkipping);
       onProjectUpdated({
         parkReleaseSeconds: next,
         maxParallelUnits: nextParallel,
         prStrategy: saved.prStrategy ?? prStrategy,
+        stageSkipping: nextSkipping,
       });
       setRuntimeResult('saved');
     } catch (err) {
@@ -158,6 +178,29 @@ export function GeneralTab({ project, canEdit, onProjectUpdated }: Props) {
               />
               <p className="text-[11px] text-muted-foreground">
                 Concurrent unit-of-work lanes during construction (0 = unbounded).
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="stage-skipping" className="text-xs">
+                Stage skipping
+              </Label>
+              <Select
+                value={stageSkipping}
+                onValueChange={(v) => setStageSkipping(v as StageSkippingOverride)}
+                disabled={!canEdit || savingRuntime}
+              >
+                <SelectTrigger id="stage-skipping" className="h-9 text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="default">Platform default</SelectItem>
+                  <SelectItem value="enabled">Enabled</SelectItem>
+                  <SelectItem value="disabled">Disabled</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] text-muted-foreground">
+                Skip CONDITIONAL stages per intent — deselect at creation or jump ahead from
+                approval gates. Required stages always run. Applies to new intents.
               </p>
             </div>
           </div>

@@ -145,10 +145,14 @@ export interface ExecutionPreview {
     namespace: string;
     sections: { index: number; stageIds: string[] }[];
     outOfScopeStageIds: string[];
+    // Per-intent skip overlay applied to this preview (empty when none).
+    skippedStages?: { stageId: string; phase: string | null; stageInstanceId: string }[];
     stages: {
       stageId: string;
+      phase?: string | null;
       forEach?: string | null;
       execution?: string | null;
+      humanValidation?: string | null;
       parallelSection?: number | null;
       forEachDegraded?: boolean;
       inputArtifacts?: { artifact: string; producedBy?: string[]; expectedAbsent?: boolean }[];
@@ -209,9 +213,13 @@ export const workflowsService = {
   // The derived scope-grid + autonomy + stage-graph for this workflow.
   compiled: (id: string, version?: number) =>
     api.get<CompiledWorkflow>(`/workflows/${id}/compiled${version ? `?version=${version}` : ''}`),
-  executionPreview: (id: string, scope: string, version?: number) => {
+  executionPreview: (id: string, scope: string, version?: number, skipStageIds?: string[]) => {
     const params = new URLSearchParams({ scope });
     if (version) params.set('version', String(version));
+    // Dry-run a per-intent stage deselection: the preview applies the skip
+    // overlay and returns the resulting warnings (expected-absent inputs,
+    // degraded sections) before any intent exists.
+    if (skipStageIds?.length) params.set('skip', skipStageIds.join(','));
     return api.get<ExecutionPreview>(`/workflows/${id}/execution-preview?${params.toString()}`);
   },
 };

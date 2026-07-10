@@ -265,6 +265,16 @@ const buildExecutionMeta = ({
   // Set when this run was relaunched from a mid-plan stage (rewind). Purely
   // informational — explains why upstream stages show SUCCEEDED from a prior run.
   rewindFromStageId = null,
+  // Effective stage-skipping mode ('enabled'|'disabled') snapshotted at create
+  // (project override over the platform SSM setting — shared/stage-skip.js).
+  // Gates BOTH the create-time skip overlay and the gate-time "skip to stage X"
+  // options; snapshotting keeps a run's behaviour stable across toggle flips.
+  stageSkipping = null,
+  // Per-intent skip overlay: stage ids deselected at create (CONDITIONAL-only,
+  // validated by the plan resolver). Threaded into EVERY plan recompute
+  // (orchestrator load-plan, rewind slice, run-stage resolution) so the plan
+  // never drifts. A rewind to one of these ids UN-skips it (removed here).
+  skipStageIds = null,
 }) => ({
   ...executionMetaKey(executionId),
   ...projectStatusIndex({ projectId, status, startedAt, executionId }),
@@ -302,6 +312,8 @@ const buildExecutionMeta = ({
   planWarnings,
   orchestratorRunId,
   rewindFromStageId,
+  stageSkipping,
+  skipStageIds,
   updatedAt: startedAt,
   completedAt: null,
 });
@@ -404,6 +416,11 @@ const buildHumanTaskRow = ({
   prompt = null,
   options = null,
   questions = null,
+  // Valid "skip to stage X" targets for a validation gate (stage-skip.js):
+  // stage ids the human may jump to, every intermediate being CONDITIONAL.
+  // Null when stage skipping is disabled or no valid target exists. Purely
+  // advisory for the UI — the orchestrator re-validates the answer.
+  skipTargets = null,
   status = 'pending',
   now,
 }) => ({
@@ -418,6 +435,7 @@ const buildHumanTaskRow = ({
   status,
   prompt,
   options,
+  skipTargets,
   // The v1-shaped structured-questions payload (JSON) when kind==='question'.
   questions,
   answer: null,

@@ -36,6 +36,7 @@ import {
   planSegments,
   stageInstanceId as planStageInstanceId,
 } from '../shared/v2-execution-plan.js';
+import { resolveSkipTo, skipTargetsFrom } from '../shared/stage-skip.js';
 import { getGitConnection, putGitConnection } from '../shared/git-connection-store.js';
 import { ensureFreshGitToken, getInstallationTokenFromConfig } from '../shared/git-token.js';
 import { getGitHubAuthMode } from '../shared/github-auth-config.js';
@@ -552,8 +553,24 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     });
 
     // Resolve the ordered stage list once (pure read of pinned block metadata).
+    // The per-intent skip overlay snapshotted at create rides along — every
+    // recompute of this intent's plan (create check, this walk, rewinds, the
+    // container's stage resolution) applies the same overlay or plans drift.
+    const intentSkipIds = Array.isArray(meta.skipStageIds) ? meta.skipStageIds : [];
+    // Gate-time skips ("skip to stage X", stage-skip.js) accumulate here as
+    // the walk progresses (and are re-seeded from prior-run SKIPPED rows on a
+    // rewind); together with the intent-level overlay they ride every
+    // run-stage dispatch so the container resolves the SAME plan (downstream
+    // prompts mark the skipped producers' artifacts expectedAbsent). Replay-
+    // deterministic: the list is rebuilt from the same memoized gate answers.
+    const dynamicSkipIds = [];
     const planResult = await ctx.step('load-plan', () =>
-      loadPlan({ workflowId, workflowVersion, scope }),
+      loadPlan({
+        workflowId,
+        workflowVersion,
+        scope,
+        ...(intentSkipIds.length ? { skipStageIds: intentSkipIds } : {}),
+      }),
     );
     if (!planResult.valid || !planResult.plan) {
       const out = await fail('plan_invalid', JSON.stringify(planResult.errors ?? []));
@@ -577,6 +594,37 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // Instance-id namespace: exposed by the plan so per-unit instance ids here
     // match the ones run-stage computes (defensive fallback for stubbed plans).
     const namespace = planResult.plan.namespace ?? `${workflowId}@${workflowVersion}`;
+
+    // Intent-level skips (deselected at create): write their SKIPPED audit rows
+    // once so the timeline shows a deliberate skip, not a missing stage. The
+    // rows are guarded per stage — a rewind relaunch re-walks this and must not
+    // re-emit the event for a row that is already SKIPPED.
+    for (const skipped of planResult.plan.skippedStages ?? []) {
+      const marked = await ctx.step(`skip-intent-${skipped.stageId}`, async () => {
+        try {
+          const row = await store.getStage(executionId, skipped.stageInstanceId).catch(() => null);
+          if (row?.state === 'SKIPPED') return false;
+          await store.putStage({
+            executionId,
+            stageInstanceId: skipped.stageInstanceId,
+            stageId: skipped.stageId,
+            phase: skipped.phase ?? null,
+            state: 'SKIPPED',
+          });
+          return true;
+        } catch {
+          return false; // the SKIPPED row is audit; never break the run over it
+        }
+      });
+      if (marked) {
+        await emitEvent(
+          ctx,
+          `skip-intent-event-${skipped.stageId}`,
+          'v2.stage.skipped',
+          `Stage ${skipped.stageId} skipped (deselected when the intent was created)`,
+        );
+      }
+    }
     // Rewind relaunch: slice the loop to start at the rewound stage. Upstream
     // stages must hold SUCCEEDED rows from the prior run — a rewind past a
     // never-completed stage would run against missing upstream artifacts.
@@ -587,34 +635,48 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         const out = await fail('rewind_stage_not_found', startAtStageId);
         return out;
       }
-      const upstreamOk = await ctx.step('rewind-upstream-check', async () => {
+      const upstreamCheck = await ctx.step('rewind-upstream-check', async () => {
         // A `forEach: unit-of-work` upstream stage has one instance PER UNIT
         // (docs/v2-parallel.md WP4) — every lane's instance must be terminal
         // (SUCCEEDED, or SKIPPED per the approved skip matrix).
+        // Linear upstream stages that hold a SKIPPED row (gate-time "skip to
+        // stage X" from a prior run) are collected so the relaunch re-seeds
+        // its dispatch overlay — downstream prompts must keep treating their
+        // absent artifacts as by-design.
+        const skippedUpstream = [];
         let unitSlugs = null; // lazy — only needed when a section precedes the rewind point
         for (const s of stages.slice(0, idx)) {
           if (s.parallelSection != null) {
             if (unitSlugs === null) {
               const up = await store.getUnitPlan?.(executionId).catch(() => null);
               unitSlugs = (up?.units ?? []).map((u) => u.slug);
-              if (unitSlugs.length === 0) return s.stageId; // section ran without a promoted plan → incomplete
+              if (unitSlugs.length === 0) return { incomplete: s.stageId }; // section ran without a promoted plan → incomplete
             }
             for (const slug of unitSlugs) {
               const row = await store
                 .getStage(executionId, planStageInstanceId(namespace, s.stageId, slug))
                 .catch(() => null);
               if (!row || (row.state !== 'SUCCEEDED' && row.state !== 'SKIPPED'))
-                return `${s.stageId} [unit ${slug}]`;
+                return { incomplete: `${s.stageId} [unit ${slug}]` };
             }
             continue;
           }
           const row = await store.getStage(executionId, s.stageInstanceId).catch(() => null);
-          if (!row || row.state !== 'SUCCEEDED') return s.stageId;
+          // SKIPPED is terminal for upstream completeness too: a stage skipped
+          // at a validation gate ("skip to stage X") deliberately produced
+          // nothing — rewinding past it must not demand a SUCCEEDED row it was
+          // never meant to have. (Same rule the per-unit branch above applies.)
+          if (!row || (row.state !== 'SUCCEEDED' && row.state !== 'SKIPPED'))
+            return { incomplete: s.stageId };
+          if (row.state === 'SKIPPED') skippedUpstream.push(s.stageId);
         }
-        return null;
+        return { incomplete: null, skippedUpstream };
       });
-      if (upstreamOk) {
-        return await fail('rewind_upstream_incomplete', upstreamOk);
+      if (upstreamCheck?.incomplete) {
+        return await fail('rewind_upstream_incomplete', upstreamCheck.incomplete);
+      }
+      for (const id of upstreamCheck?.skippedUpstream ?? []) {
+        if (!intentSkipIds.includes(id) && !dynamicSkipIds.includes(id)) dynamicSkipIds.push(id);
       }
       runStages = stages.slice(idx);
     }
@@ -679,6 +741,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         initialResumeFrom = null,
       } = opts;
       const label = `${unitSlug ? `${stage.stageId}-u-${unitSlug}` : stage.stageId}${suffix}`;
+      const allSkipIds = [...intentSkipIds, ...dynamicSkipIds];
       const stageOpts = {
         stage,
         unitSlug,
@@ -687,6 +750,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         workflowId,
         workflowVersion,
         scope,
+        ...(allSkipIds.length ? { skipStageIds: allSkipIds } : {}),
         cliModels,
         requestedCli,
         customMcpServers,
@@ -846,7 +910,13 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         if (sectionOut) return sectionOut;
         continue;
       }
-      for (const stage of segment.stages) {
+      for (let stageIdx = 0; stageIdx < segment.stages.length; stageIdx += 1) {
+        const stage = segment.stages[stageIdx];
+        // Gate-time "skip to stage X" (stage-skip.js, upstream stage-protocol
+        // §0.5): set by an approved validation answer below, applied after the
+        // stage's post-hooks — intermediates get SKIPPED rows, the TARGET
+        // stage runs its full ritual.
+        let skipToIndex = null;
         const outputArtifactTypes = (stage.outputArtifacts ?? [])
           .map((o) => o.artifact ?? o)
           .filter(Boolean);
@@ -895,12 +965,18 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
 
           if (stage.humanValidation !== 'required') break;
 
+          // Valid forward-skip targets from THIS gate (empty when the feature
+          // is disabled for the run, or no later stage qualifies). Advisory
+          // for the UI; the answer is re-validated below — never trusted.
+          const gateSkipTargets =
+            meta.stageSkipping === 'enabled' ? skipTargetsFrom(segment.stages, stageIdx) : [];
           const validation = await awaitEngineGate(ctx, sectionToolkit, {
             name: `validation-${stage.stageInstanceId ?? stage.stageId}-${validationRound}`,
             kind: 'validation',
             stageInstanceId: stage.stageInstanceId ?? null,
-            prompt: validationPrompt(stage, outputArtifactTypes, validationRound),
+            prompt: validationPrompt(stage, outputArtifactTypes, validationRound, gateSkipTargets),
             options: ['approve', 'request-changes'],
+            ...(gateSkipTargets.length ? { skipTargets: gateSkipTargets } : {}),
           });
           if (validation.superseded) return { ok: false, reason: 'retired', intentId };
 
@@ -918,6 +994,38 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
               'v2.stage.validated',
               `Stage ${stage.stageId} approved by human validation`,
             );
+            // A skip request rides the approve answer ({ decision: 'approve',
+            // skipTo: '<stageId>' }). Re-validate against the segment + policy;
+            // a rejected skip degrades to the plain approve (the run continues
+            // normally) with the reason on the timeline — never trust, never
+            // silently drop.
+            const requestedSkipTo = validation.gate?.answer?.skipTo;
+            if (requestedSkipTo != null) {
+              if (meta.stageSkipping !== 'enabled') {
+                await emitEvent(
+                  ctx,
+                  `skip-to-rejected-${stage.stageId}-${validationRound}`,
+                  'v2.stage.skip_rejected',
+                  `Skip to "${requestedSkipTo}" ignored: stage skipping is disabled for this run`,
+                );
+              } else {
+                const skip = resolveSkipTo({
+                  skipTo: requestedSkipTo,
+                  segmentStages: segment.stages,
+                  currentIndex: stageIdx,
+                });
+                if (skip.error) {
+                  await emitEvent(
+                    ctx,
+                    `skip-to-rejected-${stage.stageId}-${validationRound}`,
+                    'v2.stage.skip_rejected',
+                    `Skip to "${requestedSkipTo}" ignored: ${skip.error}`,
+                  );
+                } else {
+                  skipToIndex = skip.targetIndex;
+                }
+              }
+            }
             break;
           }
 
@@ -972,6 +1080,40 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             'v2.units.plan_ready',
             `Unit plan ready: ${promotion.unitCount} unit(s), ${promotion.batchCount} wave(s), skeleton ${promotion.walkingSkeleton ?? 'n/a'}`,
           );
+        }
+
+        // Apply an approved "skip to stage X": mark every intermediate SKIPPED
+        // (audit row + timeline event, same shape as the fan-out skip matrix)
+        // and jump the walk to the target. The skipped ids join the dispatch
+        // overlay so downstream stages resolve their absent inputs as
+        // expectedAbsent instead of hallucinating them. Applied AFTER the
+        // post-hooks — the approved stage's own derive/promote work is done.
+        if (skipToIndex != null) {
+          const target = segment.stages[skipToIndex];
+          for (let k = stageIdx + 1; k < skipToIndex; k += 1) {
+            const skipped = segment.stages[k];
+            await ctx.step(`skip-gate-${skipped.stageId}`, async () => {
+              try {
+                await store.putStage({
+                  executionId,
+                  stageInstanceId: skipped.stageInstanceId,
+                  stageId: skipped.stageId,
+                  phase: skipped.phase ?? null,
+                  state: 'SKIPPED',
+                });
+              } catch {
+                /* the SKIPPED row is audit; never break the run over it */
+              }
+            });
+            await emitEvent(
+              ctx,
+              `skip-gate-event-${skipped.stageId}`,
+              'v2.stage.skipped',
+              `Stage ${skipped.stageId} skipped (skip to ${target.stageId} approved at the ${stage.stageId} gate)`,
+            );
+            dynamicSkipIds.push(skipped.stageId);
+          }
+          stageIdx = skipToIndex - 1; // the walk resumes AT the target stage
         }
       }
     }
@@ -1066,6 +1208,9 @@ const runStage = async (
     workflowId,
     workflowVersion,
     scope,
+    // Per-run skip overlay (intent-level + accumulated gate-time skips) —
+    // forwarded so the container's plan resolution matches the walk's.
+    skipStageIds = null,
     cliModels,
     requestedCli,
     customMcpServers,
@@ -1106,6 +1251,7 @@ const runStage = async (
         workflowId,
         workflowVersion,
         scope,
+        ...(skipStageIds?.length ? { skipStageIds } : {}),
         ...(cliModels ? { cliModels } : {}),
         ...(requestedCli ? { requestedCli } : {}),
         ...(customMcpServers ? { customMcpServers } : {}),
@@ -1166,7 +1312,7 @@ const runStage = async (
 
 const nowIso = () => new Date().toISOString();
 
-const validationPrompt = (stage, outputArtifactTypes = [], round = 0) => {
+const validationPrompt = (stage, outputArtifactTypes = [], round = 0, skipTargets = []) => {
   const artifacts = outputArtifactTypes.length
     ? outputArtifactTypes.join(', ')
     : 'no declared artifacts';
@@ -1176,6 +1322,14 @@ const validationPrompt = (stage, outputArtifactTypes = [], round = 0) => {
     `Produced artifacts: ${artifacts}.`,
     '',
     'Choose approve to continue, or request-changes with feedback to send this stage back to the agent.',
+    ...(skipTargets.length
+      ? [
+          '',
+          `Skip ahead (optional): approve may carry { "skipTo": "<stageId>" } to jump to one of [${skipTargets.join(
+            ', ',
+          )}] — every stage in between is CONDITIONAL and will be marked SKIPPED; the target stage runs in full.`,
+        ]
+      : []),
   ].join('\n');
 };
 

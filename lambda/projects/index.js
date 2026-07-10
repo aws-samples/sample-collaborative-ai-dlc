@@ -79,6 +79,12 @@ const MAX_MAX_PARALLEL_UNITS = 64;
 const PR_STRATEGIES = ['intent-pr', 'pr-per-unit', 'stacked'];
 const ENABLED_PR_STRATEGIES = ['intent-pr'];
 const DEFAULT_PR_STRATEGY = 'intent-pr';
+// Per-project stage-skipping override (shared/stage-skip.js): 'default'
+// inherits the platform Admin setting; enabled/disabled override it for
+// intents of THIS project. The effective value is resolved + snapshotted onto
+// each execution META row at intent create.
+const STAGE_SKIPPING_OVERRIDES = ['default', 'enabled', 'disabled'];
+const DEFAULT_STAGE_SKIPPING = 'default';
 
 // Validate + normalize park_release_seconds. Returns { valid, value?, error? }.
 const normalizeParkReleaseSeconds = (raw) => {
@@ -129,6 +135,20 @@ const normalizePrStrategy = (raw) => {
   return { valid: true, value: raw };
 };
 
+// Validate + normalize stage_skipping. Returns { valid, value?, error? }.
+const normalizeStageSkipping = (raw) => {
+  if (raw === undefined || raw === null || raw === '') {
+    return { valid: true, value: DEFAULT_STAGE_SKIPPING };
+  }
+  if (!STAGE_SKIPPING_OVERRIDES.includes(raw)) {
+    return {
+      valid: false,
+      error: `stageSkipping must be one of: ${STAGE_SKIPPING_OVERRIDES.join(', ')}`,
+    };
+  }
+  return { valid: true, value: raw };
+};
+
 // Assemble the v2 settings block returned on a project DTO. Reads are
 // defaulted so a v1 project (no v2 properties) still produces a coherent shape
 // without these fields surfacing.
@@ -148,6 +168,7 @@ const readV2Settings = (v) => {
         ? DEFAULT_MAX_PARALLEL_UNITS
         : Number(getVal(v, 'max_parallel_units')),
     prStrategy: getVal(v, 'pr_strategy') || DEFAULT_PR_STRATEGY,
+    stageSkipping: getVal(v, 'stage_skipping') || DEFAULT_STAGE_SKIPPING,
   };
 };
 
@@ -1275,6 +1296,8 @@ export const handler = async (event) => {
         if (!parallelValidation.valid) return response(400, { error: parallelValidation.error });
         const prValidation = normalizePrStrategy(data.prStrategy);
         if (!prValidation.valid) return response(400, { error: prValidation.error });
+        const skipValidation = normalizeStageSkipping(data.stageSkipping);
+        if (!skipValidation.valid) return response(400, { error: skipValidation.error });
         const v2Settings = {
           kind,
           workflowId: data.workflowId || DEFAULT_V2_WORKFLOW_ID,
@@ -1284,6 +1307,7 @@ export const handler = async (event) => {
           parkReleaseSeconds: parkValidation.value,
           maxParallelUnits: parallelValidation.value,
           prStrategy: prValidation.value,
+          stageSkipping: skipValidation.value,
         };
 
         // Create the project vertex with creator tracking
@@ -1307,7 +1331,8 @@ export const handler = async (event) => {
           )
           .property('park_release_seconds', String(v2Settings.parkReleaseSeconds))
           .property('max_parallel_units', String(v2Settings.maxParallelUnits))
-          .property('pr_strategy', v2Settings.prStrategy);
+          .property('pr_strategy', v2Settings.prStrategy)
+          .property('stage_skipping', v2Settings.stageSkipping);
         await createV.next();
 
         // Create Repository vertices and HAS_REPO edges. Normalize so at most
@@ -1504,6 +1529,18 @@ export const handler = async (event) => {
             .property(cardinality.single, 'pr_strategy', normalizedPrStrategy)
             .next();
         }
+        // Per-project stage-skipping override (shared/stage-skip.js).
+        let normalizedStageSkipping;
+        if (data.stageSkipping !== undefined) {
+          const skipValidation = normalizeStageSkipping(data.stageSkipping);
+          if (!skipValidation.valid) return response(400, { error: skipValidation.error });
+          normalizedStageSkipping = skipValidation.value;
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .property(cardinality.single, 'stage_skipping', normalizedStageSkipping)
+            .next();
+        }
         if (data.workflowId !== undefined) {
           await g
             .V()
@@ -1542,6 +1579,9 @@ export const handler = async (event) => {
             ? { maxParallelUnits: normalizedMaxParallelUnits }
             : {}),
           ...(normalizedPrStrategy !== undefined ? { prStrategy: normalizedPrStrategy } : {}),
+          ...(normalizedStageSkipping !== undefined
+            ? { stageSkipping: normalizedStageSkipping }
+            : {}),
         });
       }
 

@@ -176,6 +176,7 @@ describe('POST /projects', () => {
     parkReleaseSeconds: 300,
     maxParallelUnits: 0,
     prStrategy: 'intent-pr',
+    stageSkipping: 'default',
   };
 
   it('applies defaults when only name is supplied', async () => {
