@@ -217,14 +217,18 @@ resource "aws_api_gateway_deployment" "main" {
     module.cors_intents,
     module.cors_intents_metrics,
     module.cors_migrate_tracker,
+    module.cors_custom_mcp_servers,
+    module.cors_custom_rules,
     module.cors_workflow,
     module.cors_workflow_compiled,
+    module.cors_workflow_execution_preview,
     module.cors_workflow_phases,
     module.cors_workflow_placement,
     module.cors_workflow_placements,
     module.cors_workflow_rule,
     module.cors_workflow_rules,
     module.cors_workflow_scope,
+    module.cors_workflow_scope_membership,
     module.cors_workflow_scopes,
     module.cors_workflows,
   ]
@@ -343,10 +347,19 @@ resource "aws_api_gateway_deployment" "main" {
       aws_api_gateway_resource.workflow_placement.id,
       aws_api_gateway_resource.workflow_scopes.id,
       aws_api_gateway_resource.workflow_scope.id,
+      aws_api_gateway_resource.workflow_scope_membership.id,
       aws_api_gateway_resource.workflow_rules.id,
       aws_api_gateway_resource.workflow_rule_layer.id,
       aws_api_gateway_resource.workflow_rule.id,
       aws_api_gateway_resource.workflow_compiled.id,
+      aws_api_gateway_resource.workflow_execution_preview.id,
+      # Hash the whole workflow route map (like the intent map below) so ANY
+      # future addition to local.workflow_routes forces a stage redeployment.
+      # Field incident: execution-preview was added to the map without a
+      # trigger entry — terraform created the method, but the live stage never
+      # redeployed, so OPTIONS/GET 403'd (surfacing as a CORS preflight error).
+      jsonencode({ for k, v in aws_api_gateway_method.workflow : k => v.id }),
+      jsonencode({ for k, v in aws_api_gateway_integration.workflow : k => v.id }),
       aws_api_gateway_resource.intents.id,
       aws_api_gateway_resource.intents_metrics.id,
       aws_api_gateway_resource.intent.id,
