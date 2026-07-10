@@ -131,12 +131,24 @@ describe('resolveStageModel — agent tiers', () => {
     ).toBe('us.anthropic.claude-sonnet-4-6');
   });
 
-  it('the flat cliModels selection still beats the tier row (legacy precedence)', () => {
+  it('the tier row beats the flat default model (specific beats general)', () => {
     expect(
       resolveStageModel({
         cliModels: { claude: 'us.anthropic.claude-sonnet-4-6-flat' },
         tierModels,
         agentBlock: { tier: 'judgment' },
+        cli: 'claude',
+        env,
+      }),
+    ).toBe('us.anthropic.claude-opus-4-6');
+  });
+
+  it('the flat default covers a tier the config has no row for', () => {
+    expect(
+      resolveStageModel({
+        cliModels: { claude: 'us.anthropic.claude-sonnet-4-6-flat' },
+        tierModels: { judgment: { claude: 'us.anthropic.claude-opus-4-6' } },
+        agentBlock: { tier: 'templated' }, // no templated row configured
         cli: 'claude',
         env,
       }),

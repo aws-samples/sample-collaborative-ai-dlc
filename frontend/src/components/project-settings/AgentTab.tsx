@@ -12,7 +12,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Bot, CheckCircle2, Cpu, ExternalLink } from 'lucide-react';
+import { Bot, CheckCircle2, ChevronRight, Cpu, ExternalLink } from 'lucide-react';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { cn } from '@/lib/utils';
 import {
   projectsService,
@@ -100,6 +101,11 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
 
   const [editCliModels, setEditCliModels] = useState<CliModels>(project.cliModels || {});
   const [editTierModels, setEditTierModels] = useState<TierModels>(project.tierModels || {});
+  // Collapsed by default; opens automatically when the project already carries
+  // tier overrides so existing configuration is never hidden.
+  const [tierOpen, setTierOpen] = useState(
+    Object.keys(canonicalTierModels(project.tierModels || {})).length > 0,
+  );
   const [savingModels, setSavingModels] = useState(false);
   const [modelsResult, setModelsResult] = useState<SaveResult>(null);
   const [modelsError, setModelsError] = useState<string | null>(null);
@@ -168,6 +174,13 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
     editCliModels[cli] ||
     globalCliModels[cli] ||
     (cli === 'kiro' ? 'auto (Kiro default)' : 'Admin/runtime default');
+
+  // How many tier cells this project overrides — shown on the collapsed
+  // disclosure so the deviation from the Admin config is visible at a glance.
+  const tierOverrideCount = Object.values(canonicalTierModels(editTierModels)).reduce(
+    (n, row) => n + Object.keys(row ?? {}).length,
+    0,
+  );
 
   const saveCli = async () => {
     if (editAgentCli === project.agentCli) return;
@@ -404,23 +417,44 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
             <span className="font-mono">{effectiveModelFor(editAgentCli)}</span>
           </div>
           {/* Per-tier overrides — win row/CLI-wise over the Admin tier config. */}
-          <div className="space-y-2 border-t pt-4">
-            <div>
-              <h4 className="text-sm font-medium text-foreground">Tier model overrides</h4>
-              <p className="text-xs text-muted-foreground">
-                Optional per-tier models for this project — unset cells inherit the Admin tier
-                configuration.
-              </p>
-            </div>
-            <TierModelsSection
-              value={editTierModels}
-              onChange={setEditTierModels}
-              modelOptions={modelOptions}
-              modelsLoaded={runtimeClis !== null || Object.keys(modelOptions).length > 0}
-              disabled={!canEdit || savingModels}
-              idPrefix="project"
-              unsetLabel="Inherit global"
-            />
+          <div className="border-t pt-3">
+            <Collapsible open={tierOpen} onOpenChange={setTierOpen}>
+              <CollapsibleTrigger asChild>
+                <button
+                  type="button"
+                  data-testid="project-tier-overrides-toggle"
+                  className="flex w-full items-center gap-1.5 text-left"
+                >
+                  <ChevronRight
+                    className={cn(
+                      'h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform',
+                      tierOpen && 'rotate-90',
+                    )}
+                  />
+                  <span className="text-sm font-medium text-foreground">Per-tier overrides</span>
+                  <span className="text-xs text-muted-foreground">
+                    {tierOverrideCount > 0 ? `${tierOverrideCount} set` : 'optional'}
+                  </span>
+                </button>
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <div className="space-y-2 pt-3">
+                  <p className="text-xs text-muted-foreground">
+                    Pin a different model for a specific agent tier in this project — unset cells
+                    inherit the Admin configuration.
+                  </p>
+                  <TierModelsSection
+                    value={editTierModels}
+                    onChange={setEditTierModels}
+                    modelOptions={modelOptions}
+                    modelsLoaded={runtimeClis !== null || Object.keys(modelOptions).length > 0}
+                    disabled={!canEdit || savingModels}
+                    idPrefix="project"
+                    inheritedModels={{ ...globalCliModels, ...editCliModels }}
+                  />
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
           </div>
           {canEdit ? (
             <SaveStatusButton

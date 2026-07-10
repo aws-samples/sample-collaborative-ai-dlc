@@ -1,14 +1,14 @@
 // Model resolver — picks the Bedrock model id for a stage run and resolves bare
 // tier aliases to full ids.
 //
-// Precedence (decided): the project's per-CLI Admin selection wins, then the
-// agent's TIER row from the tier-model config (upstream ≥2.3.1 agents declare
-// `tier: judgment | balanced | templated` instead of a model pin), then the
+// Precedence (decided): specific beats general. The agent's TIER row from the
+// tier-model config (upstream ≥2.3.1 agents declare `tier: judgment | balanced
+// | templated`) wins, then the flat per-CLI Admin/project selection (the
+// "default model" — it doubles as the fallback for tier-less agents), then the
 // agent block's legacy raw pin (`modelOverride` — older baselines and user
-// forks), then the configured fallback row, then the static env default. The
-// flat Admin knob keeps its historic position so a deployment that never
-// configures tier-models behaves exactly as before; the tier rows engage
-// below it.
+// forks), then the config's fallback row (legacy — the UI no longer authors
+// it, but saved values keep resolving), then the static env default. A
+// deployment that never configures tier rows behaves exactly as before.
 //
 // Alias resolution: legacy agent overrides are bare tiers ('opus'/'sonnet'/
 // 'haiku'), not full Bedrock ids. Claude Code happens to accept them, but that's
@@ -116,13 +116,13 @@ export const machineCliModels = ({ cliModels = null, tierModels = null } = {}) =
 //
 // Bedrock CLIs (claude/opencode) resolve through the full chain, then
 // alias/region resolution:
-//   cliModels[cli]                 — flat project/global Admin selection
-//   > tierModels[agent tier][cli]  — the agent's tier row
+//   tierModels[agent tier][cli]    — the agent's tier row (most specific)
+//   > cliModels[cli]               — flat project/global default model
 //   > agentBlock.modelOverride     — legacy raw pin (older refs, user forks)
-//   > tierModels.fallback[cli]     — configured fallback
+//   > tierModels.fallback[cli]     — legacy fallback row (kept resolving)
 //   > AGENT_MODEL / BEDROCK_MODEL  — static env default
 //
-// Kiro: ONLY explicit configured selections apply (flat, tier, fallback — in
+// Kiro: ONLY explicit configured selections apply (tier, flat, fallback — in
 // the same order), passed through verbatim (no Bedrock alias/region
 // resolution). The bare-alias agent override and the BEDROCK_MODEL/AGENT_MODEL
 // env are Bedrock-shaped and must NOT leak into Kiro. When unset, return
@@ -137,14 +137,14 @@ export const resolveStageModel = ({
   const tier = agentBlock?.tier ?? null;
   if (!BEDROCK_CLIS.has(cli)) {
     const selected =
-      cliModels?.[cli] ||
       tierModelFor({ tierModels, tier, cli }) ||
+      cliModels?.[cli] ||
       fallbackModelFor({ tierModels, cli });
     return selected ? String(selected).trim() : undefined;
   }
   const raw =
-    cliModels?.[cli] ||
     tierModelFor({ tierModels, tier, cli }) ||
+    cliModels?.[cli] ||
     agentBlock?.modelOverride ||
     fallbackModelFor({ tierModels, cli }) ||
     env.AGENT_MODEL ||

@@ -1,7 +1,7 @@
 // Default agent models card — per-CLI default model IDs used when a project
-// doesn't set its own override, plus the agent tier → model grid (what model
-// each upstream agent tier runs, the fallback row, and the Quorum row).
-// Extracted from the old monolithic Admin page.
+// doesn't set its own override, plus a collapsed per-tier override table (pin
+// a different model for a specific agent tier or the Quorum assists; unset
+// cells inherit the defaults). Extracted from the old monolithic Admin page.
 
 import { useEffect, useState } from 'react';
 import { Input } from '@/components/ui/input';
@@ -13,7 +13,8 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Cpu, ExternalLink } from 'lucide-react';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { ChevronRight, Cpu, ExternalLink } from 'lucide-react';
 import { agentsService, type AgentModel } from '@/services/agents';
 import type { CliModels, RuntimeModelCli, TierModels } from '@/services/projects';
 import { SettingsCard } from '@/components/settings/SettingsCard';
@@ -66,6 +67,10 @@ export function DefaultModelsCard() {
   const [cliModels, setCliModels] = useState<CliModels>({});
   const [savedTierModels, setSavedTierModels] = useState<TierModels>({});
   const [tierModels, setTierModels] = useState<TierModels>({});
+  // The override table is collapsed by default (the common case is defaults
+  // only); it opens automatically when the saved config already carries
+  // overrides so existing configuration is never hidden.
+  const [tierOpen, setTierOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveResult, setSaveResult] = useState<SaveResult>(null);
@@ -84,6 +89,7 @@ export function DefaultModelsCard() {
         setCliModels(s.cliModels || {});
         setSavedTierModels(s.tierModels || {});
         setTierModels(s.tierModels || {});
+        if (Object.keys(canonicalTierModels(s.tierModels || {})).length > 0) setTierOpen(true);
       })
       .catch((e) => console.error('Failed to load agent settings:', e))
       .finally(() => setLoading(false));
@@ -104,6 +110,13 @@ export function DefaultModelsCard() {
       JSON.stringify(canonicalCliModels(savedModels)) ||
     JSON.stringify(canonicalTierModels(tierModels)) !==
       JSON.stringify(canonicalTierModels(savedTierModels));
+
+  // How many cells are overridden — shown on the collapsed disclosure so an
+  // admin can tell at a glance whether anything deviates from the defaults.
+  const tierOverrideCount = Object.values(canonicalTierModels(tierModels)).reduce(
+    (n, row) => n + Object.keys(row ?? {}).length,
+    0,
+  );
 
   const save = async () => {
     setSaving(true);
@@ -132,7 +145,7 @@ export function DefaultModelsCard() {
     <SettingsCard
       icon={<Cpu />}
       title="Default Models"
-      description="Fallback model per CLI when a project sets no override — applies to new agent runs."
+      description="Default model per CLI — every agent uses it unless a tier or project override applies."
     >
       {loading ? (
         <div className="space-y-3">
@@ -215,24 +228,44 @@ export function DefaultModelsCard() {
               );
             })}
           </div>
-          <div className="space-y-2 border-t pt-4">
-            <div>
-              <h4 className="text-sm font-medium text-foreground">Agent tier models</h4>
-              <p className="text-xs text-muted-foreground">
-                What model each agent tier runs, per CLI. The flat defaults above win when set;
-                unset tier cells fall back to the Fallback row, then the CLI default. Projects can
-                override any cell.
-              </p>
-            </div>
-            <TierModelsSection
-              value={tierModels}
-              onChange={setTierModels}
-              modelOptions={modelOptions}
-              modelsLoaded={modelsLoaded}
-              disabled={saving}
-              idPrefix="admin"
-              unsetLabel="Not set"
-            />
+          <div className="border-t pt-3">
+            <Collapsible open={tierOpen} onOpenChange={setTierOpen}>
+              <CollapsibleTrigger asChild>
+                <button
+                  type="button"
+                  data-testid="tier-overrides-toggle"
+                  className="flex w-full items-center gap-1.5 text-left"
+                >
+                  <ChevronRight
+                    className={`h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform ${tierOpen ? 'rotate-90' : ''}`}
+                  />
+                  <span className="text-sm font-medium text-foreground">Per-tier overrides</span>
+                  <span className="text-xs text-muted-foreground">
+                    {tierOverrideCount > 0
+                      ? `${tierOverrideCount} set`
+                      : 'optional — every tier uses the defaults above'}
+                  </span>
+                </button>
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <div className="space-y-2 pt-3">
+                  <p className="text-xs text-muted-foreground">
+                    Pin a different model for a specific agent tier (or the Quorum discussion
+                    assists). Unset cells inherit the default model above. Projects can override any
+                    cell.
+                  </p>
+                  <TierModelsSection
+                    value={tierModels}
+                    onChange={setTierModels}
+                    modelOptions={modelOptions}
+                    modelsLoaded={modelsLoaded}
+                    disabled={saving}
+                    idPrefix="admin"
+                    inheritedModels={cliModels}
+                  />
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
           </div>
           <SaveStatusButton
             onClick={save}

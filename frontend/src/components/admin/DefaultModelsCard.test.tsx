@@ -175,7 +175,28 @@ describe('DefaultModelsCard', () => {
     expect(saveButton).not.toBeDisabled();
   });
 
-  it('renders the tier grid (three tiers + fallback + quorum) with saved values', async () => {
+  it('renders the override table (three tiers + quorum, no fallback row) once expanded', async () => {
+    getSettings.mockResolvedValue(defaultSettings());
+    getCapabilities.mockResolvedValue(defaultCapabilities());
+
+    const user = userEvent.setup();
+    render(<DefaultModelsCard />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tier-overrides-toggle')).toBeInTheDocument();
+    });
+    // Collapsed by default when nothing is configured.
+    expect(screen.queryByTestId('admin-tier-model-judgment-claude')).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId('tier-overrides-toggle'));
+    for (const row of ['judgment', 'balanced', 'templated', 'quorum']) {
+      expect(screen.getByTestId(`admin-tier-model-${row}-claude`)).toBeInTheDocument();
+    }
+    // The legacy fallback row is not authored here — the default model is the fallback.
+    expect(screen.queryByTestId('admin-tier-model-fallback-claude')).not.toBeInTheDocument();
+  });
+
+  it('auto-expands when the saved config already carries overrides, and shows them', async () => {
     getSettings.mockResolvedValue(
       defaultSettings({
         tierModels: { judgment: { claude: 'us.anthropic.claude-opus-4-6' } },
@@ -188,11 +209,34 @@ describe('DefaultModelsCard', () => {
     await waitFor(() => {
       expect(screen.getByTestId('admin-tier-model-judgment-claude')).toBeInTheDocument();
     });
-    for (const row of ['judgment', 'balanced', 'templated', 'fallback', 'quorum']) {
-      expect(screen.getByTestId(`admin-tier-model-${row}-claude`)).toBeInTheDocument();
-    }
     expect(screen.getByTestId('admin-tier-model-judgment-claude')).toHaveTextContent(
       'Claude Opus 4.6',
+    );
+    expect(screen.getByTestId('tier-overrides-toggle')).toHaveTextContent('1 set');
+  });
+
+  it('unset cells show the inherited default model as their placeholder', async () => {
+    getSettings.mockResolvedValue(
+      defaultSettings({ cliModels: { claude: 'us.anthropic.claude-sonnet-4-6' } }),
+    );
+    getCapabilities.mockRejectedValue(new Error('no models')); // input mode
+
+    const user = userEvent.setup();
+    render(<DefaultModelsCard />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tier-overrides-toggle')).toBeInTheDocument();
+    });
+    await user.click(screen.getByTestId('tier-overrides-toggle'));
+    // Long ids are truncated for the narrow cell — the prefix is what matters.
+    expect(screen.getByTestId('admin-tier-model-judgment-claude')).toHaveAttribute(
+      'placeholder',
+      expect.stringContaining('Default (us.anthropic.claude-sonnet'),
+    );
+    // No default configured for kiro → generic label.
+    expect(screen.getByTestId('admin-tier-model-judgment-kiro')).toHaveAttribute(
+      'placeholder',
+      'Default',
     );
   });
 
@@ -205,8 +249,9 @@ describe('DefaultModelsCard', () => {
     render(<DefaultModelsCard />);
 
     await waitFor(() => {
-      expect(screen.getByTestId('admin-tier-model-quorum-claude')).toBeInTheDocument();
+      expect(screen.getByTestId('tier-overrides-toggle')).toBeInTheDocument();
     });
+    await user.click(screen.getByTestId('tier-overrides-toggle'));
     await user.type(
       screen.getByTestId('admin-tier-model-quorum-claude'),
       'us.anthropic.claude-sonnet-4-6',

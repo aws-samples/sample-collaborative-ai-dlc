@@ -811,8 +811,8 @@ export const runStage = async (
     cliModels = {},
     // Tier-model config (shared/tier-models.js flat-row shape), snapshotted on
     // the intent META and forwarded by the orchestrator: maps the lead/reviewer
-    // agent's `tier` to a concrete model per CLI, plus the fallback row. The
-    // flat cliModels selection above still wins per CLI (legacy precedence).
+    // agent's `tier` to a concrete model per CLI. A tier row wins over the flat
+    // cliModels default above; the flat default covers everything tier-less.
     tierModels = null,
     // Custom MCP servers (name-keyed object) merged into the CLI's mcpServers map,
     // and custom agent rules ([{filename, s3Key}]) fetched from S3 into the
@@ -1259,9 +1259,9 @@ export const runStage = async (
   // A fresh conversation is spawned for a plain fresh run OR a demoted resume.
   const freshRun = !resumeFrom || demotedResume;
 
-  // Resolve the model now that `cli` is known: the project's per-CLI Admin
-  // selection wins, then the agent's tier row (tier-models config), then the
-  // agent block's legacy modelOverride, then the fallback row, then the static
+  // Resolve the model now that `cli` is known: the agent's tier row (tier-models
+  // config) wins, then the flat project/global default model, then the agent
+  // block's legacy modelOverride, then the legacy fallback row, then the static
   // env default; bare tier aliases (opus/sonnet) resolve to full region-prefixed
   // Bedrock ids. Resolved here (before the RUNNING write) so it's persisted on the
   // stage row + threaded to the MCP scope for read-time token pricing.

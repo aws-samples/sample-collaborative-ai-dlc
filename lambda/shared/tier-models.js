@@ -11,15 +11,16 @@
 //       balanced:  { … },                           // reviewers / mid work
 //       templated: { … },                           // planners / cheapest
 //     },
-//     fallback: { … },   // no tier resolvable (tier-less agent, no legacy pin)
+//     fallback: { … },   // LEGACY row — the flat cliModels default is the
+//                        // fallback now; kept validating/resolving for
+//                        // configs saved before the UI dropped it
 //     quorum:   { … },   // one-shot Quorum surfaces (discussions, edit plans)
 //   }
 //
-// Legacy compatibility: the flat cliModels selection keeps its EXACT position
-// in the runtime precedence (project/global flat selection beats the agent
-// block) — a deployment that never touches tier-models behaves byte-identically
-// to before. The tier rows engage below the flat map; see model-resolver.js
-// for the full chain.
+// Precedence is specific-beats-general: a tier row wins over the flat
+// cliModels default model, which in turn covers every tier-less agent and
+// machine one-shot. A deployment that never authors tier rows behaves exactly
+// as before. See model-resolver.js for the full chain.
 
 import { normalizeCliModels } from './cli-models.js';
 
