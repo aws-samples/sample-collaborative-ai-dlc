@@ -4,7 +4,6 @@ import { useNavigate, useParams } from 'react-router-dom';
 import {
   intentsService,
   type GateAnswer,
-  type IntentArtifact,
   type IntentDetail,
   type IntentGate,
   type IntentSteering,
@@ -21,13 +20,17 @@ import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { ArtifactViewer } from '@/components/intent/ArtifactViewer';
 import { formatDuration, useTick } from '@/components/intent/stageStyle';
 import { QuorumEditPanel } from '@/components/intent/QuorumEditPanel';
-import { IntentGraphPopover } from '@/components/intent/IntentGraphPopover';
-import { DerivedItemCountChip } from '@/components/intent/DerivedItemCountChip';
 import {
   DerivedItemsSection,
   DERIVED_ITEMS_ACCORDION_VALUE,
   DERIVED_ITEMS_SECTION_ID,
 } from '@/components/intent/DerivedItemsSection';
+import {
+  DocumentsSection,
+  DOCUMENTS_ACCORDION_VALUE,
+  isDocumentArtifact,
+} from '@/components/intent/DocumentsSection';
+import { CodeSection, CODE_ACCORDION_VALUE, buildCodeItems } from '@/components/intent/CodeSection';
 import {
   onWorkProductFocus,
   scrollAndFlash,
@@ -77,12 +80,8 @@ import {
 import {
   AlertTriangle,
   CheckCircle2,
-  ChevronRight,
   Compass,
-  ExternalLink,
   FileText,
-  GitBranch,
-  GitPullRequest,
   FileQuestion,
   Layers,
   Loader2,
@@ -887,77 +886,8 @@ function WaitingCard({ intent, gates, stageRows, stageNameOf, rewindIntent }: Wa
   );
 }
 
-// Document heuristic: long-form markdown content (opened in the preview panel
-// instead of expanded inline).
-const DOCUMENT_TYPE_RE = /markdown|document|statement|research|report|notes?/i;
-const MD_HEADING_RE = /^#{1,3}\s/m;
-
-function isDocumentArtifact(a: IntentArtifact): boolean {
-  if (a.artifactType && DOCUMENT_TYPE_RE.test(a.artifactType)) return true;
-  const content = a.content ?? '';
-  return content.length > 600 && MD_HEADING_RE.test(content);
-}
-
-interface ArtifactGroup {
-  type: string;
-  label: string;
-  items: IntentArtifact[];
-}
-
-function humanizeType(type: string, count: number): string {
-  const label = type.replace(/[_-]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-  if (count > 1 && !label.endsWith('s')) return `${label}s`;
-  return label;
-}
-
-// Normalize a repo entry (slug or URL) to its "owner/repo" slug so it matches
-// the `repository` prop stored on a PR record.
-const repoSlug = (r: string) => r.replace(/^https?:\/\/[^/]+\//, '').replace(/\.git$/, '');
-
-// Web link to a branch on the code host. GitHub and GitLab use different paths;
-// null when the provider is unknown (older executions) so the UI shows plain text.
-const branchWebUrl = (
-  provider: string | null | undefined,
-  repo: string,
-  branch: string,
-): string | null => {
-  const enc = branch.split('/').map(encodeURIComponent).join('/');
-  if (provider === 'gitlab') return `https://gitlab.com/${repo}/-/tree/${enc}`;
-  if (provider === 'github') return `https://github.com/${repo}/tree/${enc}`;
-  return null;
-};
-
-function groupArtifacts(artifacts: IntentArtifact[]): {
-  itemizedGroups: ArtifactGroup[];
-  documents: IntentArtifact[];
-} {
-  const documents: IntentArtifact[] = [];
-  const groupMap = new Map<string, IntentArtifact[]>();
-  const groupOrder: string[] = [];
-
-  for (const a of artifacts) {
-    if (isDocumentArtifact(a)) {
-      documents.push(a);
-      continue;
-    }
-    const type = a.artifactType ?? 'other';
-    if (!groupMap.has(type)) {
-      groupMap.set(type, []);
-      groupOrder.push(type);
-    }
-    groupMap.get(type)!.push(a);
-  }
-
-  const itemizedGroups: ArtifactGroup[] = groupOrder.map((type) => {
-    const items = groupMap.get(type)!;
-    return { type, label: humanizeType(type, items.length), items };
-  });
-
-  return { itemizedGroups, documents };
-}
-
 function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: IntentGate[] }) {
-  const { openArtifactPreview, projectId, intentId } = useIntent();
+  const { openArtifactPreview, projectId, intentId, stageRows, phaseNameOf } = useIntent();
   // The knowledge-graph view powers the graph-context popovers, the derived
   // items section, and the per-artifact item chips (shared SWR cache; see
   // useIntentGraph). Fail-soft: while loading / on error everything below
@@ -978,41 +908,9 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
   // Only long-form markdown artifacts render as Documents. Short / unregistered
   // marker artifacts (e.g. practices-discovery-timestamp) are intentionally
   // dropped — they are diagnostic telemetry, not work products.
-  const { documents } = groupArtifacts(activeArtifacts);
-  const pullRequests = detail.pullRequests ?? [];
+  const documents = activeArtifacts.filter(isDocumentArtifact);
 
-  // A repo enters the Code section only once it has real code on the remote:
-  // either the engine pushed to it (its slug appears in a v2.git.pushed event
-  // summary — same match the orchestrator uses) or a PR opened for it. Before
-  // that the branch is local-only and there is nothing to show.
-  const pushedSummaries = detail.events
-    .filter((e) => e.type === 'v2.git.pushed')
-    .map((e) => e.summary ?? '');
-  const repoPushed = (slug: string) => pushedSummaries.some((s) => s.includes(slug));
-
-  // One entry per pushed repo. A repo shows as its intent BRANCH (name + link)
-  // until a PR opens; the PR then REPLACES the branch entry, adding the number,
-  // link, and the source → target (base) branches. `repository` on a PR record
-  // is the "owner/repo" slug; repos may be slugs or URLs.
-  const prByRepo = new Map(pullRequests.map((pr) => [pr.repository ?? '', pr]));
-  const codeItems = (detail.intent.repos ?? [])
-    .map((repo) => {
-      const slug = repoSlug(repo);
-      const pr = prByRepo.get(slug) ?? prByRepo.get(repo) ?? null;
-      const branch = pr?.branch ?? detail.intent.branch;
-      return {
-        repo: slug,
-        branch,
-        // Base (target) is a PR-only concept — a bare branch has no target.
-        baseBranch: pr?.baseBranch ?? null,
-        branchUrl: branch ? branchWebUrl(detail.intent.gitProvider, slug, branch) : null,
-        prUrl: pr?.prUrl ?? null,
-        prNumber: pr?.prNumber ?? null,
-        // Show this repo only if it pushed code or has a PR.
-        hasCode: pr != null || repoPushed(slug),
-      };
-    })
-    .filter((item) => item.hasCode);
+  const codeItems = buildCodeItems(detail);
   const showCode = codeItems.length > 0;
 
   // Controlled accordion: groups open by default (as before), and newly
@@ -1021,8 +919,8 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
   // target group before scrolling to the anchor. Derived items start closed
   // (a supplementary layer).
   const defaultOpen = [
-    showCode ? 'code' : null,
-    documents.length > 0 ? 'documents' : null,
+    showCode ? CODE_ACCORDION_VALUE : null,
+    documents.length > 0 ? DOCUMENTS_ACCORDION_VALUE : null,
     questionGates.length > 0 ? 'questions' : null,
   ].filter((v): v is string => Boolean(v));
   const [openGroups, setOpenGroups] = useState<string[]>(defaultOpen);
@@ -1051,7 +949,7 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
           // Every rendered artifact is a document (short marker artifacts are
           // not shown); focusing one opens its preview.
           if (isDocumentArtifact(artifact)) {
-            openGroup('documents');
+            openGroup(DOCUMENTS_ACCORDION_VALUE);
             scrollAndFlash(`artifact-${artifact.id}`);
             openArtifactPreview(artifact.id);
           }
@@ -1094,132 +992,15 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
           onValueChange={setOpenGroups}
           className="space-y-2"
         >
-          {showCode && (
-            <AccordionItem value="code" className="rounded-md border px-3">
-              <AccordionTrigger className="py-3 hover:no-underline">
-                <div className="flex items-center gap-2">
-                  <GitPullRequest className="h-4 w-4 text-muted-foreground" />
-                  <span className="text-sm font-medium">Code</span>
-                  <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
-                    {codeItems.length}
-                  </Badge>
-                </div>
-              </AccordionTrigger>
-              <AccordionContent className="space-y-1 pb-3">
-                {codeItems.map((item) => (
-                  <div
-                    key={item.repo}
-                    className="flex items-center justify-between gap-3 rounded-md px-2 py-1.5"
-                  >
-                    <div className="min-w-0 space-y-1">
-                      <div className="flex items-center gap-2 text-sm font-medium">
-                        <span className="truncate">{item.repo || 'Repository'}</span>
-                        {item.prNumber && (
-                          <span className="text-muted-foreground">PR #{item.prNumber}</span>
-                        )}
-                      </div>
-                      {item.branch && (
-                        <p className="flex items-center gap-1.5 truncate text-xs text-muted-foreground">
-                          <GitBranch className="h-3 w-3 shrink-0" />
-                          {item.branchUrl ? (
-                            <a
-                              href={item.branchUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="font-mono text-primary hover:underline underline-offset-2"
-                            >
-                              {item.branch}
-                            </a>
-                          ) : (
-                            <code className="font-mono">{item.branch}</code>
-                          )}
-                          {item.baseBranch && (
-                            <>
-                              {' → '}
-                              <code className="font-mono">{item.baseBranch}</code>
-                            </>
-                          )}
-                        </p>
-                      )}
-                    </div>
-                    {item.prUrl && (
-                      <Button asChild size="sm" variant="outline" className="shrink-0">
-                        <a href={item.prUrl} target="_blank" rel="noopener noreferrer">
-                          <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
-                          Open PR
-                        </a>
-                      </Button>
-                    )}
-                  </div>
-                ))}
-              </AccordionContent>
-            </AccordionItem>
-          )}
-          {documents.length > 0 && (
-            <AccordionItem value="documents" className="rounded-md border px-3">
-              <AccordionTrigger className="py-3 hover:no-underline">
-                <div className="flex items-center gap-2">
-                  <FileText className="h-4 w-4 text-muted-foreground" />
-                  <span className="text-sm font-medium">
-                    Document{documents.length > 1 ? 's' : ''}
-                  </span>
-                  <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
-                    {documents.length}
-                  </Badge>
-                </div>
-              </AccordionTrigger>
-              <AccordionContent className="space-y-1 pb-3">
-                {documents.map((a) => (
-                  // role=button div (not <button>): the row hosts interactive
-                  // children (discuss, graph popover, items chip) and nested
-                  // buttons are invalid HTML.
-                  <div
-                    key={a.id}
-                    id={`artifact-${a.id}`}
-                    role="button"
-                    tabIndex={0}
-                    className="group/doc flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left scroll-mt-4 hover:bg-muted/50 transition-colors"
-                    onClick={() => openArtifactPreview(a.id)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        openArtifactPreview(a.id);
-                      }
-                    }}
-                  >
-                    <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 flex-1 truncate text-sm">{a.title || a.id}</span>
-                    {a.staleSince && (
-                      <AlertTriangle
-                        aria-label="Possibly stale — an upstream document was edited"
-                        className="h-3 w-3 shrink-0 text-agent-waiting"
-                      />
-                    )}
-                    {a.createdAt && (
-                      <span className="shrink-0 text-[11px] text-muted-foreground/60">
-                        {getTimeAgo(a.createdAt)}
-                      </span>
-                    )}
-                    <DerivedItemCountChip
-                      artifactId={a.id}
-                      count={itemsByArtifact.get(a.id)?.length ?? 0}
-                    />
-                    <IntentGraphPopover neighbors={getNeighbors(a.id)} className="shrink-0" />
-                    <DiscussButton
-                      entityType="artifact"
-                      entityId={a.id}
-                      entityTitle={a.title || a.id}
-                      className="opacity-0 group-hover/doc:opacity-100 transition-opacity"
-                    />
-                    <ChevronRight
-                      aria-hidden="true"
-                      className="h-3 w-3 shrink-0 text-muted-foreground/40 opacity-0 group-hover/doc:opacity-100 transition-opacity"
-                    />
-                  </div>
-                ))}
-              </AccordionContent>
-            </AccordionItem>
-          )}
+          <CodeSection items={codeItems} />
+          <DocumentsSection
+            documents={documents}
+            stageRows={stageRows}
+            phaseNameOf={phaseNameOf}
+            getNeighbors={getNeighbors}
+            itemsByArtifact={itemsByArtifact}
+            openArtifactPreview={openArtifactPreview}
+          />
 
           <DerivedItemsSection
             items={derivedItems}
