@@ -17,6 +17,7 @@ import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { SSMClient, GetParametersCommand, PutParameterCommand } from '@aws-sdk/client-ssm';
 import { BedrockClient, ListInferenceProfilesCommand } from '@aws-sdk/client-bedrock';
 import { PricingClient, GetProductsCommand } from '@aws-sdk/client-pricing';
+import { randomUUID } from 'node:crypto';
 import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
@@ -28,6 +29,7 @@ import { buildResponse } from '../shared/response.js';
 import { requirePlatformAdmin, isPlatformAdmin } from '../shared/authz.js';
 import { normalizeCliModels, parseCliModels } from '../shared/cli-models.js';
 import { validateMcpServersJson } from '../shared/mcp-validator.js';
+import { fetchMembershipRole } from '../shared/trackers.js';
 import { listClaudeModels } from '../shared/bedrock-models.js';
 import { refreshPricing } from '../shared/model-pricing.js';
 
@@ -78,6 +80,32 @@ const fetchRuntimeCapabilities = async () => {
   } catch (e) {
     console.error('[capabilities] runtime invoke failed:', e.message);
     return null;
+  }
+};
+
+// Probe custom MCP servers by invoking the runtime's `verify-mcp` command IN the
+// AgentCore container (the only place uvx/npx/etc. exist and the config's real
+// egress applies). Returns the runtime's { results } | { error, issues }, or a
+// { error } when no runtime is configured / the invoke fails.
+const verifyMcpServers = async (mcpServers) => {
+  if (!AGENTCORE_RUNTIME_ARN) {
+    return { error: 'AgentCore runtime not configured' };
+  }
+  try {
+    const res = await agentcore.send(
+      new InvokeAgentRuntimeCommand({
+        agentRuntimeArn: AGENTCORE_RUNTIME_ARN,
+        runtimeSessionId: randomUUID(),
+        contentType: 'application/json',
+        accept: 'application/json',
+        payload: Buffer.from(JSON.stringify({ command: 'verify-mcp', mcpServers })),
+      }),
+    );
+    const text = res.response ? await res.response.transformToString() : '';
+    return text ? JSON.parse(text) : { error: 'Empty response from runtime' };
+  } catch (e) {
+    console.error('[verify-mcp] runtime invoke failed:', e.message);
+    return { error: `Runtime invoke failed: ${e.message}` };
   }
 };
 
@@ -351,6 +379,55 @@ export const handler = async (event) => {
     //   runtimeClis                     — per-CLI {installed, authed, available}
     //                                     from the v2 AgentCore runtime
     // The v2 AgentCore runtime is the sole authority for CLI availability.
+    // POST /agents/verify-mcp — probe custom MCP servers in the AgentCore
+    // container (same image/egress the real agent uses). Body: { mcpServers }.
+    // Validates the config first (fast reject), then invokes the runtime.
+    if (httpMethod === 'POST' && path.endsWith('/verify-mcp')) {
+      let input;
+      try {
+        input = JSON.parse(body || '{}');
+      } catch {
+        return response(400, { error: 'Invalid JSON body' });
+      }
+
+      // Authorization — the verifier spawns configured commands and probes
+      // arbitrary URLs from inside the runtime (with its env), so gate it to
+      // exactly who can EDIT the config, using the caller's Cognito identity:
+      //   projectId present → must be owner/admin of that project
+      //   projectId absent  → global config → platform admin
+      const verifyProjectId = input.projectId;
+      if (verifyProjectId) {
+        const userId = event.requestContext?.authorizer?.claims?.sub;
+        if (!userId) return response(401, { error: 'Unauthorized' });
+        const role = await withNeptune((g) => fetchMembershipRole(g, verifyProjectId, userId));
+        if (role !== 'owner' && role !== 'admin') {
+          return response(403, {
+            error: 'Only project owners and admins can verify MCP servers',
+          });
+        }
+      } else {
+        const denied = requirePlatformAdmin(event);
+        if (denied) {
+          return response(denied.statusCode, { error: denied.error, code: denied.code });
+        }
+      }
+
+      const raw =
+        typeof input.mcpServers === 'string'
+          ? input.mcpServers
+          : JSON.stringify(input.mcpServers ?? {});
+      const validation = validateMcpServersJson(raw || '{}');
+      if (!validation.valid) {
+        return response(400, {
+          error: 'Invalid MCP servers configuration',
+          issues: validation.issues,
+        });
+      }
+      const result = await verifyMcpServers(JSON.parse(raw || '{}'));
+      if (result.error) return response(502, result);
+      return response(200, result);
+    }
+
     if (httpMethod === 'GET' && path.endsWith('/capabilities')) {
       if (event.queryStringParameters?.models !== '1') {
         const caps = await fetchRuntimeCapabilities();

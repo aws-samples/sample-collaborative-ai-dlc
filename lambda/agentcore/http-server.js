@@ -101,6 +101,7 @@ export const dispatchInvocation = async ({
     'repair-structure': handlers.repairStructure,
     inspect: handlers.inspect,
     capabilities: handlers.capabilities,
+    'verify-mcp': handlers.verifyMcp,
   }[command];
   if (!handler) return { statusCode: 400, body: { error: `unknown command "${command}"` } };
 
@@ -190,6 +191,7 @@ const main = async () => {
   const { resolveConflict } = await import('./commands/resolve-conflict.js');
   const { inspect } = await import('./commands/inspect.js');
   const { capabilities } = await import('./commands/capabilities.js');
+  const { verifyMcp } = await import('./commands/verify-mcp.js');
   const { loadLibrary, loadBlockBody, loadBlockScript, loadConductor } =
     await import('./block-loader.js');
   const { materializeStage, renderRulesDoc } = await import('./stage-materializer.js');
@@ -235,6 +237,7 @@ const main = async () => {
       ),
     inspect: (p) => inspect(p, { openGraph }),
     capabilities: (p) => capabilities(p, { env: process.env }),
+    verifyMcp: (p) => verifyMcp(p),
     // WP3: freeze the approved unit DAG into UNITPLAN/UNIT rows + the graph
     // mirror. Dispatched by the orchestrator after the producing stage
     // succeeds (docs/v2-parallel.md).

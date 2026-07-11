@@ -5,9 +5,11 @@
 
 import { useState } from 'react';
 import { Textarea } from '@/components/ui/textarea';
-import { Plug, AlertCircle } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Plug, AlertCircle, CheckCircle2, XCircle, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ApiError } from '@/services/api';
+import { agentsService, type McpVerifyResult } from '@/services/agents';
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import { SaveStatusButton, type SaveResult } from '@/components/settings/SaveStatusButton';
 
@@ -31,6 +33,9 @@ interface Props {
   /** Names of servers already provided globally (shown for reference; a project
    *  entry with the same name overrides the global one). Omit at the global tier. */
   globalServerNames?: string[];
+  /** Project id when this is a project-scoped editor; omitted at the global tier
+   *  (the backend authorizes from the caller's identity + this id). */
+  projectId?: string;
 }
 
 const PLACEHOLDER =
@@ -42,17 +47,57 @@ export function CustomMcpServersSection({
   onSave,
   canEdit,
   description,
-  title = 'Custom Agent MCP Servers',
+  title = 'MCP Servers',
   globalServerNames,
+  projectId,
 }: Props) {
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<SaveResult>(null);
   const [error, setError] = useState('');
   const [issues, setIssues] = useState<ValidationIssue[]>([]);
+  const [verifying, setVerifying] = useState(false);
+  const [verifyResults, setVerifyResults] = useState<Record<string, McpVerifyResult> | null>(null);
+  const [verifyError, setVerifyError] = useState('');
 
   const clearErrors = () => {
     setError('');
     setIssues([]);
+    setVerifyResults(null);
+    setVerifyError('');
+  };
+
+  const handleVerify = async () => {
+    setError('');
+    setIssues([]);
+    setVerifyResults(null);
+    setVerifyError('');
+    try {
+      JSON.parse(value || '{}');
+    } catch {
+      setVerifyError('Must be a valid JSON object');
+      return;
+    }
+    setVerifying(true);
+    try {
+      const resp = await agentsService.verifyMcpServers(value || '{}', projectId);
+      if (resp.results) {
+        setVerifyResults(resp.results);
+      } else {
+        if (Array.isArray(resp.issues)) setIssues(resp.issues as ValidationIssue[]);
+        setVerifyError(resp.error || 'Verification failed');
+      }
+    } catch (err) {
+      if (err instanceof ApiError && Array.isArray(err.body?.issues)) {
+        setIssues(err.body.issues as ValidationIssue[]);
+        setVerifyError(
+          (typeof err.body?.error === 'string' && err.body.error) || 'Invalid MCP configuration',
+        );
+      } else {
+        setVerifyError(err instanceof Error ? err.message : 'Verification failed');
+      }
+    } finally {
+      setVerifying(false);
+    }
   };
 
   const handleSave = async () => {
@@ -157,14 +202,58 @@ export function CustomMcpServersSection({
             </span>
           </p>
         )}
+        {verifyError && (
+          <p className="text-[11px] text-destructive flex items-start gap-1">
+            <XCircle className="h-3 w-3 shrink-0 mt-0.5" />
+            <span>{verifyError}</span>
+          </p>
+        )}
+        {verifyResults && (
+          <ul className="text-[11px] space-y-1 rounded-md border bg-muted/30 p-2">
+            {Object.entries(verifyResults).map(([name, r]) => (
+              <li key={name} className="flex items-start gap-1.5">
+                {r.ok ? (
+                  <CheckCircle2 className="h-3.5 w-3.5 shrink-0 mt-px text-agent-success" />
+                ) : (
+                  <XCircle className="h-3.5 w-3.5 shrink-0 mt-px text-destructive" />
+                )}
+                <span>
+                  <code className="font-mono">{name}</code>
+                  {r.ok ? (
+                    <span className="text-muted-foreground">
+                      {' '}
+                      — {r.tools?.length ?? 0} tool{(r.tools?.length ?? 0) === 1 ? '' : 's'}
+                      {r.tools?.length ? `: ${r.tools.join(', ')}` : ''}
+                    </span>
+                  ) : (
+                    <span className="text-destructive"> — {r.error}</span>
+                  )}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
         {canEdit ? (
-          <SaveStatusButton
-            onClick={handleSave}
-            saving={saving}
-            label={`Save ${title}`}
-            result={result}
-            errorMessage={error}
-          />
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleVerify}
+              disabled={verifying || saving}
+              className="gap-1.5"
+            >
+              {verifying && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              {verifying ? 'Testing…' : 'Test MCP servers'}
+            </Button>
+            <SaveStatusButton
+              onClick={handleSave}
+              saving={saving}
+              label={`Save ${title}`}
+              result={result}
+              errorMessage={error}
+            />
+          </div>
         ) : (
           <p className="text-[11px] text-muted-foreground">
             Only owners and admins can change MCP servers.
