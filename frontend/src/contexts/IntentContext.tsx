@@ -309,8 +309,7 @@ export function IntentProvider({
         setLiveGates(new Map(cached.detail.gates.map((g) => [g.humanTaskId, g])));
         setLoading(false);
         if (cached.compiled && cached.detail.intent.workflowId) {
-          const wfKey = `${cached.detail.intent.workflowId}@${cached.detail.intent.workflowVersion ?? ''}`;
-          fetchedWorkflowKeyRef.current = wfKey;
+          fetchedWorkflowKeyRef.current = `${cached.detail.intent.workflowId}@${cached.detail.intent.workflowVersion ?? ''}`;
         }
       } else {
         setDetail(null);
@@ -595,10 +594,23 @@ export function IntentProvider({
       list.push(s);
       byStageId.set(s.stageId, list);
     }
+    // Order fan-out instances by the unit DAG's wave order (batches: wave 0
+    // first — the walking skeleton / roots — then dependents), NOT alphabetically.
+    // Falls back to slug compare for units absent from the plan (e.g. orphans).
+    const unitRank = new Map<string, number>();
+    (detail?.unitPlan?.batches ?? []).flat().forEach((slug, i) => {
+      if (!unitRank.has(slug)) unitRank.set(slug, i);
+    });
+    const rankOf = (slug: string | null) =>
+      slug && unitRank.has(slug) ? (unitRank.get(slug) as number) : Number.MAX_SAFE_INTEGER;
     for (const [key, list] of byStageId) {
       byStageId.set(
         key,
-        list.toSorted((a, b) => (a.unitSlug ?? '').localeCompare(b.unitSlug ?? '')),
+        list.toSorted((a, b) => {
+          const ra = rankOf(a.unitSlug ?? null);
+          const rb = rankOf(b.unitSlug ?? null);
+          return ra !== rb ? ra - rb : (a.unitSlug ?? '').localeCompare(b.unitSlug ?? '');
+        }),
       );
     }
     const scope = detail?.intent.scope ?? null;

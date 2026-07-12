@@ -4,7 +4,7 @@ import { useIntent, stageRowKey, type IntentStageRow } from '@/contexts/IntentCo
 import type { StageState } from '@/services/intents';
 import type { CompiledWorkflow } from '@/services/workflows';
 import { aggregateMetrics, summarizeCost } from '@/lib/metricAggregation';
-import { WorkflowScopeGraph } from '@/components/v2';
+import { WorkflowScopeGraph, UnitLaneGraph, type UnitLanesInput } from '@/components/v2';
 import { UsageMetrics } from '@/components/intent/UsageMetrics';
 import { IntentPhaseDiagram } from '@/components/intent/IntentPhaseDiagram';
 import { IntentStageList } from '@/components/intent/IntentStageList';
@@ -108,10 +108,16 @@ export default function IntentObservabilityPage() {
   );
 
   const handleGraphStageClick = useCallback(
-    (stageId: string) => {
-      const matchingRow = stageRows.find((r) => r.stageId === stageId);
-      if (!matchingRow) return;
-      const key = stageRowKey(matchingRow);
+    (stageId: string, rowKey?: string | null) => {
+      // Per-unit lane nodes pass the exact stageRowKey; plain stage nodes don't,
+      // so fall back to the first row matching the stageId.
+      const key =
+        rowKey ??
+        (() => {
+          const matchingRow = stageRows.find((r) => r.stageId === stageId);
+          return matchingRow ? stageRowKey(matchingRow) : null;
+        })();
+      if (!key) return;
       setSelectedStageId((prev) => (prev === key ? null : key));
     },
     [stageRows, setSelectedStageId],
@@ -153,6 +159,63 @@ export default function IntentObservabilityPage() {
       .filter((p) => !initializationPhasePaths.has(p.path))
       .map((p) => ({ path: p.path, name: phaseNameOf(p.path) }));
   }, [workflowPhases, initializationPhasePaths, phaseNameOf]);
+
+  // Build the per-unit lane grid for the graph from `scopeCompiled` (the scoped
+  // graph the component renders) overlaid with live stageRows.
+  const unitLanes = useMemo<UnitLanesInput | null>(() => {
+    const plan = detail?.unitPlan;
+    if (!scopeCompiled || !plan || plan.unitCount === 0) return null;
+
+    // The whole fan-out block is one section, keyed by forEach + order (node.section
+    // is unreliable — assigned in placement-array order upstream).
+    const sectionNodes = scopeCompiled.graph.nodes
+      .filter((n) => n.forEach === 'unit-of-work')
+      .toSorted((a, b) => a.order - b.order);
+    const sectionStageIds = sectionNodes.map((n) => n.stageId);
+    if (sectionStageIds.length === 0) return null;
+    const conditional = new Set(
+      sectionNodes.filter((n) => n.execution === 'CONDITIONAL').map((n) => n.stageId),
+    );
+
+    const liveByKey = new Map<string, IntentStageRow>();
+    for (const r of stageRows) {
+      if (r.unitSlug && sectionStageIds.includes(r.stageId)) {
+        liveByKey.set(`${r.stageId}::${r.unitSlug}`, r);
+      }
+    }
+
+    const unitState = new Map((detail?.units ?? []).map((u) => [u.slug, u.state as string | null]));
+    // Wave order from batches; fall back to plan.units when batches is absent.
+    const fromBatches = (plan.batches ?? []).flat();
+    const orderedSlugs =
+      fromBatches.length > 0 ? fromBatches : (plan.units ?? []).map((u) => u.slug);
+    const units = orderedSlugs.map((slug) => {
+      const skips = new Set(plan.skipMatrix?.[slug] ?? []);
+      const stages = sectionStageIds.map((stageId) => {
+        const live = liveByKey.get(`${stageId}::${slug}`);
+        if (live) {
+          return {
+            stageId,
+            stageInstanceId: live.stageInstanceId,
+            state: live.state,
+            synthesized: false,
+            rowKey: stageRowKey(live),
+          };
+        }
+        const skipped = skips.has(stageId) && conditional.has(stageId);
+        return {
+          stageId,
+          stageInstanceId: null,
+          state: (skipped ? 'SKIPPED' : 'PENDING') as StageState,
+          synthesized: true,
+          rowKey: null,
+        };
+      });
+      return { slug, state: unitState.get(slug) ?? null, stages };
+    });
+
+    return { units, sectionStageIds };
+  }, [scopeCompiled, detail?.unitPlan, detail?.units, stageRows]);
 
   const { totals, cost } = useMemo(() => {
     if (!detail || detail.metrics.length === 0) return { totals: {}, cost: null };
@@ -284,17 +347,29 @@ export default function IntentObservabilityPage() {
           </CardHeader>
           <CardContent>
             {view === 'diagram' && <IntentPhaseDiagram />}
-            {view === 'graph' && scopeCompiled && scopeCompiled.graph.nodes.length > 0 && (
-              <WorkflowScopeGraph
-                compiled={scopeCompiled}
-                activeScope={intent.scope}
-                phases={graphPhases}
-                hideScopeSelector
-                readOnly
-                stageStatus={filteredStageStatus}
-                onStageClick={handleGraphStageClick}
-              />
-            )}
+            {view === 'graph' &&
+              scopeCompiled &&
+              scopeCompiled.graph.nodes.length > 0 &&
+              // Lanes need the phase list (loaded separately) to place the fan-out band.
+              (unitLanes && graphPhases ? (
+                <UnitLaneGraph
+                  compiled={scopeCompiled}
+                  phases={graphPhases}
+                  unitLanes={unitLanes}
+                  stageStatus={filteredStageStatus}
+                  onStageClick={handleGraphStageClick}
+                />
+              ) : (
+                <WorkflowScopeGraph
+                  compiled={scopeCompiled}
+                  activeScope={intent.scope}
+                  phases={graphPhases}
+                  hideScopeSelector
+                  readOnly
+                  stageStatus={filteredStageStatus}
+                  onStageClick={handleGraphStageClick}
+                />
+              ))}
             {view === 'graph' && (!scopeCompiled || scopeCompiled.graph.nodes.length === 0) && (
               <p className="text-sm text-muted-foreground">No graph data yet.</p>
             )}
