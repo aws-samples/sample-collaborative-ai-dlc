@@ -91,7 +91,9 @@ export function ResolveDialog({ open, onOpenChange, messages, onResolve }: Props
                     )}
                   >
                     <span className="font-medium">{m.authorName}: </span>
-                    <span className="text-muted-foreground line-clamp-2">{m.content}</span>
+                    <span className="text-muted-foreground line-clamp-2 break-words">
+                      {m.content}
+                    </span>
                   </button>
                 ))}
               </div>
