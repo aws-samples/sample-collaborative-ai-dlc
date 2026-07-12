@@ -887,7 +887,8 @@ function WaitingCard({ intent, gates, stageRows, stageNameOf, rewindIntent }: Wa
 }
 
 function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: IntentGate[] }) {
-  const { openArtifactPreview, projectId, intentId, stageRows, phaseNameOf } = useIntent();
+  const { openArtifactPreview, openItemPreview, projectId, intentId, stageRows, phaseNameOf } =
+    useIntent();
   // The knowledge-graph view powers the graph-context popovers, the derived
   // items section, and the per-artifact item chips (shared SWR cache; see
   // useIntentGraph). Fail-soft: while loading / on error everything below
@@ -1005,6 +1006,7 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
           <DerivedItemsSection
             items={derivedItems}
             getNeighbors={getNeighbors}
+            openItemPreview={openItemPreview}
             filterArtifactId={itemsFilter}
             onClearFilter={() => setItemsFilter(null)}
             artifactTitleById={artifactTitleById}

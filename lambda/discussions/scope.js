@@ -36,6 +36,14 @@ export const INTENT_ANCHOR_LABELS = {
   // recordQuestion with the gate's humanTaskId as the vertex id. Parity with
   // v1's question-anchored threads (docs/v2-data-model.md).
   question: 'Question',
+  // A thread per DERIVED typed item (Story/Requirement/Persona/Component/
+  // Decision/StoryMapEntry/Contract) mirrored from an artifact's structured
+  // block. One `item` entity type spans all seven vertex labels: the label here
+  // is a VALIDATION SENTINEL only (handlers gate on scope.entityTypes) — the
+  // real anchor is resolved by data-access's anchorTraversal via the
+  // Intent --CONTAINS--> Artifact --HAS_ITEM--> item path, which is
+  // label-agnostic and current-rows-only.
+  item: 'ArtifactItem',
 };
 
 // Build the scope descriptor for a sprint. `rootId` is the sprintId.

@@ -27,7 +27,9 @@ import { artifactAccent } from '@/components/intent/artifactAccent';
 import { ArtifactEditControls, ArtifactStaleBadge } from '@/components/intent/ArtifactEditControls';
 import { ArtifactContentEditor } from '@/components/intent/ArtifactContentEditor';
 import { ArtifactMarkdown } from '@/components/intent/ArtifactMarkdown';
-import type { IntentActivityEvent, IntentArtifact } from '@/services/intents';
+import { useIntentGraph, type GraphNeighbor } from '@/hooks/useIntentGraph';
+import { nodeTypeBadge, shortNodeType, humanEdgeLabel } from '@/components/graph/nodeStyles';
+import type { IntentActivityEvent, IntentArtifact, IntentGraphNode } from '@/services/intents';
 
 // The v2 intent analog of the sprint ActivityPanel: same 3-tab shell (Agent /
 // Timeline / Discuss) hosted in AppShell's right slot, but fed entirely from
@@ -412,12 +414,37 @@ function IntentTimelineItem({ event }: { event: IntentActivityEvent }) {
 // ---------------------------------------------------------------------------
 
 function PreviewTab() {
-  const { detail, previewArtifactId } = useIntent();
+  const {
+    detail,
+    projectId,
+    intentId,
+    previewArtifactId,
+    previewItemId,
+    openArtifactPreview,
+    openItemPreview,
+  } = useIntent();
   const discussions = useDiscussions();
+  // Shared module-level SWR cache + in-flight dedup → no extra fetch.
+  const { derivedItems, getNeighbors } = useIntentGraph(projectId, intentId);
   const artifact = detail?.artifacts.find((a) => a.id === previewArtifactId) ?? null;
+  const item = previewItemId ? (derivedItems.find((n) => n.id === previewItemId) ?? null) : null;
   const [editingId, setEditingId] = useState<string | null>(null);
   const [overlayOpen, setOverlayOpen] = useState(false);
   const editing = artifact != null && editingId === artifact.id;
+
+  if (item) {
+    return (
+      <ScrollArea className="flex-1">
+        <ItemPreviewContent
+          item={item}
+          neighbors={getNeighbors(item.id)}
+          onOpenArtifact={openArtifactPreview}
+          onOpenItem={openItemPreview}
+          discussions={discussions}
+        />
+      </ScrollArea>
+    );
+  }
 
   if (!artifact) {
     return (
@@ -542,6 +569,213 @@ function ArtifactPreviewContent({
             <ArtifactMarkdown content={artifact.content} />
           </div>
         )
+      )}
+    </div>
+  );
+}
+
+// snake_case field name → Title Case label (acceptance_criteria → "Acceptance Criteria").
+function humanizeFieldName(name: string): string {
+  return name
+    .split('_')
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+}
+
+// Derived-item types that have a previewable node (units are excluded from
+// useIntentGraph.derivedItems, so opening a unit preview would find nothing).
+// Mirrors IntentGraphPopover's navigable split.
+const PREVIEWABLE_ITEM_TYPES = new Set([
+  'Story',
+  'Persona',
+  'Requirement',
+  'Component',
+  'Decision',
+  'StoryMapEntry',
+  'Contract',
+]);
+
+// Type-agnostic preview for a derived typed item. Renders whatever descriptive
+// fields the item carries (from the schema-driven itemFields projection) plus
+// its relationships (from graph edges, clickable). No per-type layout.
+function ItemPreviewContent({
+  item,
+  neighbors,
+  onOpenArtifact,
+  onOpenItem,
+  discussions,
+}: {
+  item: IntentGraphNode;
+  neighbors: GraphNeighbor[];
+  onOpenArtifact: (artifactId: string) => void;
+  onOpenItem: (itemId: string) => void;
+  discussions: ReturnType<typeof useDiscussions>;
+}) {
+  const fields = item.itemFields ?? [];
+
+  // Group relationships by direction + edge label, mirroring the popover. The
+  // incoming HAS_ITEM edge (source artifact → item) is skipped: it's the parent
+  // doc, already surfaced by the dedicated "Open source artifact" button below.
+  const grouped = new Map<string, GraphNeighbor[]>();
+  for (const n of neighbors) {
+    if (n.edgeLabel === 'HAS_ITEM') continue;
+    const key = `${n.direction}:${n.edgeLabel}`;
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key)!.push(n);
+  }
+
+  const openNeighbor = (n: GraphNeighbor) => {
+    if (n.type === 'Artifact') {
+      onOpenArtifact(n.id);
+    } else if (PREVIEWABLE_ITEM_TYPES.has(n.type)) {
+      onOpenItem(n.id);
+    }
+  };
+  const isClickable = (n: GraphNeighbor): boolean =>
+    n.type === 'Artifact' || PREVIEWABLE_ITEM_TYPES.has(n.type);
+
+  return (
+    <div className="px-4 py-3">
+      <div className="flex items-center gap-2 mb-2">
+        <Badge
+          variant="outline"
+          className={cn(
+            'h-5 px-1.5 text-[10px] uppercase tracking-wider',
+            nodeTypeBadge(item.type),
+          )}
+        >
+          {shortNodeType(item.type)}
+        </Badge>
+        {item.slug && (
+          <span className="text-xs font-mono text-muted-foreground/70 truncate">{item.slug}</span>
+        )}
+      </div>
+      <div className="flex items-start gap-2 mb-3">
+        <h3 className="text-base font-semibold min-w-0 flex-1">{item.label}</h3>
+        {discussions && (
+          <Button
+            variant="ghost"
+            className="h-7 px-2 gap-1.5 shrink-0 text-xs"
+            onClick={() =>
+              discussions.openDiscussion({
+                entityType: 'item',
+                entityId: item.id,
+                entityTitle: item.label,
+              })
+            }
+          >
+            <MessageSquare className="h-3 w-3" />
+            Discuss
+          </Button>
+        )}
+      </div>
+
+      {(item.priority || item.status) && (
+        <div className="flex flex-wrap items-center gap-1.5 mb-4">
+          {item.priority && (
+            <Badge variant="secondary" className="h-5 px-1.5 text-xs">
+              {item.priority}
+            </Badge>
+          )}
+          {item.status && (
+            <Badge variant="secondary" className="h-5 px-1.5 text-xs">
+              {item.status}
+            </Badge>
+          )}
+        </div>
+      )}
+
+      {fields.length > 0 && (
+        <div className="space-y-4 mb-5">
+          {fields.map((field) => (
+            <div key={field.name}>
+              <div className="text-[11px] uppercase font-semibold tracking-wider text-muted-foreground mb-1">
+                {humanizeFieldName(field.name)}
+              </div>
+              {field.kind === 'list' && Array.isArray(field.value) ? (
+                <ul className="list-disc pl-5 space-y-1">
+                  {field.value.map((entry, i) => (
+                    <li key={`${field.name}-${i}`} className="text-sm text-foreground">
+                      {entry}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-foreground whitespace-pre-wrap">{String(field.value)}</p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {grouped.size > 0 && (
+        <div className="space-y-3 mb-5">
+          <div className="text-[11px] uppercase font-semibold tracking-wider text-muted-foreground">
+            Relationships
+          </div>
+          {Array.from(grouped.entries()).map(([key, items]) => {
+            const edgeLabel = key.slice(key.indexOf(':') + 1);
+            return (
+              <div key={key}>
+                <div className="text-[11px] uppercase tracking-wider text-muted-foreground/60 mb-1">
+                  {humanEdgeLabel(edgeLabel)}
+                </div>
+                <div className="space-y-0.5 ml-2">
+                  {items.map((neighbor) => {
+                    const rowKey = `${neighbor.id}:${neighbor.edgeLabel}:${neighbor.direction}`;
+                    const badge = (
+                      <Badge
+                        variant="outline"
+                        className={cn(
+                          'h-5 px-1.5 text-[9px] shrink-0',
+                          nodeTypeBadge(neighbor.type),
+                        )}
+                      >
+                        {shortNodeType(neighbor.type)}
+                      </Badge>
+                    );
+                    return isClickable(neighbor) ? (
+                      <button
+                        key={rowKey}
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded px-1 py-1 text-left hover:bg-muted/60 transition-colors"
+                        title={neighbor.label}
+                        onClick={() => openNeighbor(neighbor)}
+                      >
+                        {badge}
+                        <span className="text-sm text-foreground truncate">{neighbor.label}</span>
+                      </button>
+                    ) : (
+                      <div
+                        key={rowKey}
+                        className="flex items-center gap-2 px-1 py-1"
+                        title={neighbor.label}
+                      >
+                        {badge}
+                        <span className="text-sm text-muted-foreground truncate">
+                          {neighbor.label}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {item.artifactId && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8 px-3 gap-1.5 text-sm"
+          onClick={() => onOpenArtifact(item.artifactId as string)}
+        >
+          <Eye className="h-3.5 w-3.5" />
+          Open source artifact
+        </Button>
       )}
     </div>
   );

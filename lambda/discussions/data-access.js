@@ -4,7 +4,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { PutCommand, UpdateCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
-import { ddb, cardinality, order, __, locksTable, readStateTable } from './clients.js';
+import { ddb, cardinality, order, __, P, locksTable, readStateTable } from './clients.js';
 import { MESSAGE_GUARD_COMPLETE_SECONDS } from './constants.js';
 import { getVal, mapDiscussion, nowSeconds, isConditionalCheckFailed } from './mappers.js';
 
@@ -66,18 +66,55 @@ export const fetchProjectIdForIntent = async (g, intentId) => {
 
 // ─── Discussion / anchor graph reads ───
 
-// Scope an anchor-vertex lookup by intent when the anchor's id space is
-// intent-local. Agent-chosen Artifact ids are only unique WITHIN an intent, so
-// a bare `has('Artifact','id',entityId)` can resolve a same-id artifact in a
-// DIFFERENT intent and bind a discussion thread to the wrong vertex. A no-op
-// for sprint scope and for self-anchored roots (Intent/Sprint ids are global).
-const scopeAnchor = (traversal, scope, anchorLabel) =>
-  scope?.kind === 'intent' && anchorLabel === scope.anchorLabels.artifact
-    ? traversal.has('intent_id', scope.rootId)
-    : traversal;
+// Append the per-type anchor-positioning steps to a traversal already at a
+// vertex-start boundary (a fresh `g.V()` or a mid-traversal `.V()`). Factored
+// out so both anchorTraversal (reads/exists/title) and createDiscussionVertex
+// (which must first alias the root) share ONE definition of each anchor bind.
+const anchorSteps = (t, scope, entityType, entityId) => {
+  const anchorLabel = scope.anchorLabels[entityType];
+  if (scope.kind === 'intent') {
+    if (entityType === 'intent' || scope.rootAnchorTypes?.includes(entityType)) {
+      return t.has('Intent', 'id', scope.rootId);
+    }
+    if (entityType === 'item') {
+      // Both hops must be CURRENT: a rewind-superseded parent Artifact hides its
+      // items even when the item row's own superseded_at is still '' — matching
+      // the knowledge-graph read (currentArtifactIds filter in
+      // intents/knowledge-graph.js). "Current" = superseded_at absent OR '',
+      // expressed as "no non-empty value".
+      return t
+        .has('Intent', 'id', scope.rootId)
+        .out('CONTAINS')
+        .hasLabel('Artifact')
+        .not(__.has('superseded_at', P.neq('')))
+        .out('HAS_ITEM')
+        .has('id', entityId)
+        .not(__.has('superseded_at', P.neq('')));
+    }
+    // artifact / question
+    let hop = t.has('Intent', 'id', scope.rootId).out('CONTAINS').hasLabel(anchorLabel);
+    if (anchorLabel === scope.anchorLabels.artifact) hop = hop.has('intent_id', scope.rootId);
+    return hop.has('id', entityId);
+  }
+  // sprint scope
+  if (entityType === 'sprint' || entityType === 'inception') {
+    return t.has('Sprint', 'id', scope.rootId);
+  }
+  const edge = entityType === 'review' ? 'HAS_REVIEW' : 'CONTAINS';
+  return t.has('Sprint', 'id', scope.rootId).out(edge).hasLabel(anchorLabel).has('id', entityId);
+};
 
-const anchorVertexIdFor = (scope, entityType, entityId) =>
-  scope?.rootAnchorTypes?.includes(entityType) ? scope.rootId : entityId;
+// Position a fresh traversal ON the anchor vertex for (entityType, entityId)
+// under this scope's root. ONE place defines every entity type's anchor bind,
+// so the read/exists/create/title ops can never drift. Notable binds:
+// - artifact → Intent --CONTAINS--> Artifact, scoped by intent_id (agent-chosen
+//   Artifact ids are unique only WITHIN an intent).
+// - item → Intent --CONTAINS--> Artifact --HAS_ITEM--> item: walked THROUGH the
+//   root so it can never leave this intent, label-agnostic (all seven derived
+//   labels), CURRENT rows only — "current" = superseded_at absent OR '' (matches
+//   shared/graph-rows.js isCurrentRow), expressed as "no non-empty value".
+const anchorTraversal = (g, scope, entityType, entityId) =>
+  anchorSteps(g.V(), scope, entityType, entityId);
 
 export const findDiscussionByAnchor = async (
   g,
@@ -86,8 +123,7 @@ export const findDiscussionByAnchor = async (
   entityType,
   scope = null,
 ) => {
-  const anchorVertexId = anchorVertexIdFor(scope, entityType, entityId);
-  const r = await scopeAnchor(g.V().has(anchorLabel, 'id', anchorVertexId), scope, anchorLabel)
+  const r = await anchorTraversal(g, scope, entityType, entityId)
     .in_('DISCUSSES')
     .hasLabel('Discussion')
     .has('entity_type', entityType)
@@ -104,43 +140,27 @@ export const findDiscussionByAnchor = async (
 };
 
 // Does the anchor (entityType, entityId) exist under this scope's root vertex?
-// - sprint: `sprint`/`inception` self-anchor on the Sprint; others hang off it
-//   via CONTAINS (or HAS_REVIEW for `review`) — original v1 behaviour verbatim.
-// - intent: `intent` self-anchors on the Intent; `artifact` and `question`
-//   hang off it via CONTAINS (the same edge init-ws/graph-writer use for
-//   produced artifacts and mirrored question gates).
+// Self-anchored roots need only an id match; everything else must resolve via
+// the scoped anchorTraversal (which already applies scope/current-row guards).
 export const anchorExistsInScope = async (g, scope, entityType, entityId) => {
   if (scope.kind === 'intent') {
     if (entityType === 'intent') return entityId === scope.rootId;
     if (scope.rootAnchorTypes?.includes(entityType)) return Boolean(entityId);
-    if (entityType === 'artifact' || entityType === 'question') {
-      return g
-        .V()
-        .has('Intent', 'id', scope.rootId)
-        .out('CONTAINS')
-        .hasLabel(scope.anchorLabels[entityType])
-        .has('id', entityId)
-        .hasNext();
-    }
-    return false;
+    return anchorTraversal(g, scope, entityType, entityId).hasNext();
   }
-  // sprint scope (unchanged)
+  // sprint scope
   if (entityType === 'sprint' || entityType === 'inception') return entityId === scope.rootId;
-  const edge = entityType === 'review' ? 'HAS_REVIEW' : 'CONTAINS';
-  const r = await g
-    .V()
-    .has('Sprint', 'id', scope.rootId)
-    .out(edge)
-    .hasLabel(scope.anchorLabels[entityType])
-    .has('id', entityId)
-    .hasNext();
-  return r;
+  return anchorTraversal(g, scope, entityType, entityId).hasNext();
 };
 
-export const fetchAnchorTitle = async (g, anchorLabel, entityId, scope = null) => {
-  const r = await scopeAnchor(g.V().has(anchorLabel, 'id', entityId), scope, anchorLabel)
-    .valueMap('title', 'name')
-    .next();
+export const fetchAnchorTitle = async (
+  g,
+  anchorLabel,
+  entityId,
+  scope = null,
+  entityType = null,
+) => {
+  const r = await anchorTraversal(g, scope, entityType, entityId).valueMap('title', 'name').next();
   if (r.done || !r.value) return '';
   return getVal(r.value, 'title') || getVal(r.value, 'name') || '';
 };
@@ -149,22 +169,16 @@ export const createDiscussionVertex = async (
   g,
   { id, scope, entityType, entityId, entityTitle, createdAt, sub, displayName },
 ) => {
-  const anchorLabel = scope.anchorLabels[entityType];
-  const anchorVertexId = anchorVertexIdFor(scope, entityType, entityId);
   // The Discussion vertex carries the scope-root id under its scope-specific
   // property (sprint_id | intent_id) AND hangs off the root via HAS_DISCUSSION,
-  // plus a DISCUSSES edge to the concrete anchor. Sprint scope reproduces the
-  // original graph exactly. The anchor bind is intent-scoped for artifacts
-  // (scopeAnchor) so a same-id artifact in another intent is never targeted.
-  await scopeAnchor(
-    g
-      .V()
-      .has(scope.rootLabel, 'id', scope.rootId)
-      .as('s')
-      .V()
-      .has(anchorLabel, 'id', anchorVertexId),
+  // plus a DISCUSSES edge to the concrete anchor. Bind the root as 's', then
+  // re-enter via anchorSteps to position on the anchor as 'a' — the SAME scoped
+  // bind the reads use, so the DISCUSSES edge can never target the wrong vertex.
+  await anchorSteps(
+    g.V().has(scope.rootLabel, 'id', scope.rootId).as('s').V(),
     scope,
-    anchorLabel,
+    entityType,
+    entityId,
   )
     .as('a')
     .addV('Discussion')

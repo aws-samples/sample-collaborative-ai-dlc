@@ -140,9 +140,13 @@ interface IntentContextValue {
 
   /** Preview tab: the artifact currently displayed (null = nothing selected). */
   previewArtifactId: string | null;
+  /** Preview tab: the derived item currently displayed (mutually exclusive with artifact). */
+  previewItemId: string | null;
   previewSeq: number;
   /** Open a document artifact in the right panel's Preview tab. */
   openArtifactPreview: (artifactId: string) => void;
+  /** Open a derived item (Story/Requirement/…) in the right panel's Preview tab. */
+  openItemPreview: (itemId: string) => void;
 
   reload: () => Promise<void>;
   answerGate: (gate: IntentGate, input: GateAnswer) => Promise<void>;
@@ -224,6 +228,7 @@ export function IntentProvider({
   const focusSeq = useRef(0);
 
   const [previewArtifactId, setPreviewArtifactId] = useState<string | null>(null);
+  const [previewItemId, setPreviewItemId] = useState<string | null>(null);
   const [previewSeq, setPreviewSeq] = useState(0);
   const previewSeqRef = useRef(0);
 
@@ -552,6 +557,20 @@ export function IntentProvider({
     (artifactId: string) => {
       previewSeqRef.current += 1;
       setPreviewArtifactId(artifactId);
+      // Artifact and item previews are mutually exclusive.
+      setPreviewItemId(null);
+      setPreviewSeq(previewSeqRef.current);
+      onAgentFocus?.();
+    },
+    [onAgentFocus],
+  );
+
+  const openItemPreview = useCallback(
+    (itemId: string) => {
+      previewSeqRef.current += 1;
+      setPreviewItemId(itemId);
+      // Artifact and item previews are mutually exclusive.
+      setPreviewArtifactId(null);
       setPreviewSeq(previewSeqRef.current);
       onAgentFocus?.();
     },
@@ -755,8 +774,10 @@ export function IntentProvider({
         agentFocus,
         focusOutput,
         previewArtifactId,
+        previewItemId,
         previewSeq,
         openArtifactPreview,
+        openItemPreview,
         reload: load,
         answerGate,
         reviseGate,

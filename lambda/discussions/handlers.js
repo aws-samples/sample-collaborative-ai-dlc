@@ -232,7 +232,7 @@ export const getOrCreateDiscussion = async (event, res) => {
       const fetchedTitle =
         entityType === 'review'
           ? ''
-          : await query((g) => fetchAnchorTitle(g, anchorLabel, entityId, scope));
+          : await query((g) => fetchAnchorTitle(g, anchorLabel, entityId, scope, entityType));
       const entityTitle = fetchedTitle || String(body.entityTitle || '');
 
       await query((g) =>

@@ -445,6 +445,17 @@ export interface GateAnswer {
   steering?: string;
 }
 
+// One descriptive field of a derived item, projected from the extractor
+// REGISTRY doc.fields (name + human description). `kind` distinguishes a single
+// text value from a bulleted list. Relation-backed fields are NOT here — they
+// render as clickable graph edges instead.
+export interface IntentItemField {
+  name: string;
+  description: string;
+  kind: 'text' | 'list';
+  value: string | string[];
+}
+
 // The intent's Neptune knowledge subgraph (GET .../graph): what the run
 // produced and drew on. Generic node bags (same shape family as the v1 sprint
 // graph) — `type` is the vertex label: Intent | Artifact | Question |
@@ -465,6 +476,7 @@ export interface IntentGraphNode {
   artifactType?: string | null;
   priority?: string | null;
   status?: string | null;
+  itemFields?: IntentItemField[];
   [key: string]: unknown;
 }
 

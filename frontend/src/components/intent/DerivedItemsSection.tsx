@@ -7,6 +7,7 @@ import { Layers, X } from 'lucide-react';
 import type { IntentGraphNode } from '@/services/intents';
 import type { GraphNeighbor } from '@/hooks/useIntentGraph';
 import { IntentGraphPopover } from '@/components/intent/IntentGraphPopover';
+import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { nodeTypeBadge } from '@/components/graph/nodeStyles';
 
 // The "Derived items" accordion group on the intent workbench: the granular
@@ -44,6 +45,8 @@ export const DERIVED_ITEMS_SECTION_ID = 'derived-items-section';
 interface DerivedItemsSectionProps {
   items: IntentGraphNode[];
   getNeighbors: (id: string) => GraphNeighbor[];
+  /** Open the item's detail card in the right panel's Preview tab. */
+  openItemPreview: (id: string) => void;
   /** Transient source-artifact filter (set by the per-artifact items chip). */
   filterArtifactId: string | null;
   onClearFilter: () => void;
@@ -54,6 +57,7 @@ interface DerivedItemsSectionProps {
 export function DerivedItemsSection({
   items,
   getNeighbors,
+  openItemPreview,
   filterArtifactId,
   onClearFilter,
   artifactTitleById,
@@ -138,7 +142,16 @@ export function DerivedItemsSection({
                   <div
                     key={item.id}
                     id={`item-${item.id}`}
-                    className="flex items-center gap-2 rounded-md px-2 py-1 scroll-mt-4 hover:bg-muted/40 transition-colors"
+                    role="button"
+                    tabIndex={0}
+                    className="group/item flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 scroll-mt-4 hover:bg-muted/50 transition-colors"
+                    onClick={() => openItemPreview(item.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        openItemPreview(item.id);
+                      }
+                    }}
                   >
                     <Badge
                       variant="outline"
@@ -160,6 +173,12 @@ export function DerivedItemsSection({
                       </Badge>
                     )}
                     <IntentGraphPopover neighbors={getNeighbors(item.id)} className="shrink-0" />
+                    <DiscussButton
+                      entityType="item"
+                      entityId={item.id}
+                      entityTitle={item.label}
+                      className="shrink-0 opacity-0 group-hover/item:opacity-100 transition-opacity"
+                    />
                   </div>
                 ))}
             </div>
