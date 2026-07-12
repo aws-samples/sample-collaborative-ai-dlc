@@ -20,6 +20,7 @@ import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { ArtifactViewer } from '@/components/intent/ArtifactViewer';
 import { formatDuration, useTick } from '@/components/intent/stageStyle';
 import { QuorumEditPanel } from '@/components/intent/QuorumEditPanel';
+import { UnitLaneBoard, isFanoutActive } from '@/components/intent/UnitLaneBoard';
 import {
   DerivedItemsSection,
   DERIVED_ITEMS_ACCORDION_VALUE,
@@ -129,6 +130,7 @@ export default function IntentView() {
     answerGate,
     cancelIntent,
     deleteIntent,
+    focusOutput,
   } = useIntent();
   const navigate = useNavigate();
   const { humanTaskId: reviewGateId } = useParams<{ humanTaskId?: string }>();
@@ -219,6 +221,10 @@ export default function IntentView() {
   // are the only signal the run is doing something (they stream into the
   // sidebar Timeline); this strip keeps the main pane from looking dead.
   const noStageRowsYet = detail.stages.length === 0;
+  // While parallel unit lanes are live, the units board owns the "what's
+  // building" view — suppress the single-stage Running card (it would just echo
+  // one lane's stream). The Running card returns after fan-in.
+  const fanoutActive = isFanoutActive(detail);
   const reviewGate = reviewGateId ? gates.find((g) => g.humanTaskId === reviewGateId) : null;
   // Stalled detection: a CREATED run whose hand-off never reached a live
   // orchestrator strands here (init-ws should flip it to RUNNING within
@@ -488,7 +494,9 @@ export default function IntentView() {
             </div>
           )}
 
-          {pendingGates.length === 0 && !noStageRowsYet && isActive && <AgentProgressCard />}
+          {pendingGates.length === 0 && !noStageRowsYet && isActive && !fanoutActive && (
+            <AgentProgressCard />
+          )}
 
           {/* Workspace setup indicator — init-ws creates no stage row, so without
               this the screen looks idle while repos clone + the anchor is created. */}
@@ -498,6 +506,11 @@ export default function IntentView() {
               Setting up workspace (cloning repositories, preparing the run)…
             </div>
           )}
+
+          {/* Units lane board — parallel unit work after fan-out. Renders null
+              until fan-out is approved; hides again after fan-in. Owns the
+              "View live output" affordance while it replaces the Running card. */}
+          <UnitLaneBoard onViewLiveOutput={(stageInstanceId) => focusOutput(stageInstanceId)} />
 
           <QuorumEditPanel />
 
@@ -1520,7 +1533,7 @@ function GateCard({
   // the human can redirect the agent's direction while answering.
   const [steering, setSteering] = useState('');
   const question = useMemo<Question | null>(() => {
-    let parsed: Question['questions'] = [];
+    let parsed: Question['questions'];
     try {
       parsed = gate.questions ? JSON.parse(gate.questions) : [];
     } catch {
