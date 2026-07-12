@@ -237,6 +237,36 @@ export const commitAll = async ({
   return { committed: false, ...last, dirty };
 };
 
+// Give a genuinely EMPTY repo (unborn HEAD — cloned with zero commits, e.g. a
+// freshly created GitHub repo) a root commit so its branch can be published.
+// A branch is a ref to a COMMIT: with no commit there is nothing to push, so
+// `pushBranch` returns 'empty' and the intent branch never reaches the remote —
+// construction lanes then fail to fork it (`intent_branch_missing`). An
+// `--allow-empty` root commit on the CURRENT branch (init-ws has already
+// checked out the intent branch, via the --orphan rung of ensureBranch) gives
+// the branch a HEAD to push. No-op when HEAD already exists (repo has history).
+// Returns:
+//   { seeded: true,  sha }                  — a root commit was created
+//   { seeded: false, reason: 'not_empty' }  — HEAD exists; nothing to do
+//   { seeded: false, reason, detail }       — commit failed
+export const seedInitialCommit = async ({
+  dir,
+  message = 'aidlc: initialize repository',
+  author = null,
+  git = runGit,
+}) => {
+  const head = await git(['rev-parse', '--verify', 'HEAD'], { cwd: dir });
+  if (head.exitCode === 0) return { seeded: false, reason: 'not_empty' };
+  const commit = await git([...gitIdentity(author), 'commit', '--allow-empty', '-m', message], {
+    cwd: dir,
+  });
+  if (commit.exitCode !== 0) {
+    return { seeded: false, reason: 'commit_failed', detail: commit.stderr.trim() };
+  }
+  const sha = await git(['rev-parse', 'HEAD'], { cwd: dir });
+  return { seeded: true, sha: sha.stdout.trim() || null };
+};
+
 // True when a git failure is caused by a full filesystem (the session mount is
 // a fixed 1 GiB — AgentCore offers no larger size).
 export const isEnospc = (detail) => /no space left on device|enospc/i.test(detail ?? '');

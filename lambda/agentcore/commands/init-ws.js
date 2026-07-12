@@ -13,6 +13,7 @@ import { closeGraphSource } from '../mcp/graph-writer.js';
 import {
   pushBranch as defaultPushBranch,
   remoteBranchExists as defaultRemoteBranchExists,
+  seedInitialCommit as defaultSeedInitialCommit,
 } from '../git-engine.js';
 
 const { cardinality } = gremlin.process;
@@ -65,6 +66,7 @@ export const initWs = async (
     clock = () => new Date().toISOString(),
     pushBranch = defaultPushBranch,
     remoteBranchExists = defaultRemoteBranchExists,
+    seedInitialCommit = defaultSeedInitialCommit,
   } = deps;
   const now = clock();
 
@@ -117,6 +119,14 @@ export const initWs = async (
   // so without this a lane merge fails with `intent_branch_missing`. Fatal on
   // failure: a missing remote branch strands the whole construction phase.
   //
+  // A genuinely EMPTY repo (freshly created, cloned with zero commits) has an
+  // unborn HEAD: ensureBranch landed the intent branch via its --orphan rung,
+  // but a branch with no commit cannot be pushed (nothing to send → the remote
+  // ref is never created). Seed an --allow-empty root commit so the branch has
+  // a HEAD to publish; otherwise construction lanes fail with
+  // `intent_branch_missing` against the still-empty remote (field incident:
+  // jeromevdl/chess-analyzer). No-op for a repo that already has history.
+  //
   // Skip when the branch ALREADY exists remotely: a rewind/retry re-init may run
   // after lanes advanced the branch, and re-pushing the base-HEAD local ref over
   // it would be a non-fast-forward failure. "Establish if missing", never force.
@@ -132,6 +142,18 @@ export const initWs = async (
       }).catch(() => ({ exists: null }));
       // Already on the remote → nothing to establish.
       if (existing.exists === true) continue;
+      // Empty repo → give the intent branch a root commit before the push.
+      const seed = await seedInitialCommit({ dir: r.targetDir }).catch((e) => ({
+        seeded: false,
+        reason: 'seed_crashed',
+        detail: e?.message,
+      }));
+      if (seed.seeded === false && seed.reason !== 'not_empty') {
+        pushFailures.push(
+          `${r.repo} (seed ${seed.reason}${seed.detail ? `: ${seed.detail}` : ''})`,
+        );
+        continue;
+      }
       const res = await pushBranch({
         dir: r.targetDir,
         repo: r.repo,
@@ -139,10 +161,11 @@ export const initWs = async (
         gitToken,
         gitProvider,
       }).catch((e) => ({ pushed: false, reason: 'push_crashed', detail: e?.message }));
-      // `empty` (no commits — genuinely empty repo) is an accepted no-op.
-      if (res.pushed !== true && res.pushed !== 'empty') {
+      // After seeding, `empty` can only mean the repo STILL has no HEAD — the
+      // branch cannot be published, so it is a failure, not an accepted no-op.
+      if (res.pushed !== true) {
         pushFailures.push(
-          `${r.repo} (${res.reason ?? 'unknown'}${res.detail ? `: ${res.detail}` : ''})`,
+          `${r.repo} (${res.reason ?? (res.pushed === 'empty' ? 'no_commit_to_push' : 'unknown')}${res.detail ? `: ${res.detail}` : ''})`,
         );
       }
     }

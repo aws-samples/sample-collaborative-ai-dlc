@@ -11,6 +11,7 @@ import {
   pushBranch,
   remoteBranchExists,
   commitAndPushAll,
+  seedInitialCommit,
 } from '../git-engine.js';
 
 // Real git spawns (~10 per test) can be slow on busy CI machines.
@@ -151,6 +152,34 @@ describe('commitAll', () => {
     const show = await git(['show', '--stat', '--format='], work);
     expect(show.stdout).toContain('new.txt');
     expect(show.stdout).toContain('README.md');
+  });
+});
+
+describe('seedInitialCommit', () => {
+  it('creates a root commit on an EMPTY repo so its branch becomes pushable', async () => {
+    const { work } = await initRemoteAndClone({ withInitialCommit: false });
+    // Empty repo: unborn HEAD, currently on a branch with no commit.
+    expect((await git(['rev-parse', '--verify', 'HEAD'], work)).exitCode).not.toBe(0);
+
+    const res = await seedInitialCommit({ dir: work });
+    expect(res.seeded).toBe(true);
+    expect(res.sha).toMatch(/^[0-9a-f]{40}$/);
+
+    // HEAD now exists → the branch can be pushed to the (bare) remote.
+    const branch = await git(['rev-parse', '--abbrev-ref', 'HEAD'], work);
+    const push = await pushBranch({
+      dir: work,
+      repo: 'o/r',
+      branch: branch.stdout.trim(),
+      urls: { auth: path.join(root, 'remote.git') },
+    });
+    expect(push.pushed).toBe(true);
+  });
+
+  it('is a no-op on a repo that already has history', async () => {
+    const { work } = await initRemoteAndClone({ withInitialCommit: true });
+    const res = await seedInitialCommit({ dir: work });
+    expect(res).toEqual({ seeded: false, reason: 'not_empty' });
   });
 });
 

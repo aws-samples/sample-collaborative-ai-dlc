@@ -76,6 +76,8 @@ describe('initWs', () => {
     // Overridden per test to assert the call or exercise a failure.
     remoteBranchExists: async () => ({ exists: false }),
     pushBranch: async () => ({ pushed: true, sha: 'abc', verified: true }),
+    // Default: the repo has history (not empty) — seeding is a no-op.
+    seedInitialCommit: async () => ({ seeded: false, reason: 'not_empty' }),
     ...overrides,
   });
 
@@ -259,8 +261,41 @@ describe('initWs', () => {
     expect(res.detail).toContain('aidlc/i1');
   });
 
-  it("accepts pushed:'empty' (a genuinely empty repo) as a no-op, not a failure", async () => {
+  it('seeds a root commit for an empty repo, then publishes the intent branch', async () => {
+    const seeded = [];
+    const pushed = [];
     const d = deps({
+      // Empty repo → unborn HEAD; seedInitialCommit gives the branch a commit.
+      seedInitialCommit: async (args) => {
+        seeded.push(args);
+        return { seeded: true, sha: 'root0' };
+      },
+      pushBranch: async (args) => {
+        pushed.push(args);
+        return { pushed: true, sha: 'root0', verified: true };
+      },
+    });
+    const res = await initWs(
+      {
+        projectId: 'p1',
+        intentId: 'i1',
+        executionId: 'e1',
+        repos: ['acme/empty'],
+        branch: 'aidlc/i1',
+        baseBranch: 'main',
+        gitToken: 'tok',
+        gitProvider: 'github',
+      },
+      d,
+    );
+    expect(res.ok).toBe(true);
+    expect(seeded).toHaveLength(1);
+    expect(pushed).toHaveLength(1);
+  });
+
+  it("FAILS when the push is still 'empty' after seeding (branch cannot be published)", async () => {
+    const d = deps({
+      seedInitialCommit: async () => ({ seeded: false, reason: 'not_empty' }),
       pushBranch: async () => ({ pushed: 'empty' }),
     });
     const res = await initWs(
@@ -276,7 +311,8 @@ describe('initWs', () => {
       },
       d,
     );
-    expect(res.ok).toBe(true);
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('intent_branch_push_failed');
   });
 
   it('SKIPS the publish when the intent branch already exists remotely (rewind/retry re-init)', async () => {
