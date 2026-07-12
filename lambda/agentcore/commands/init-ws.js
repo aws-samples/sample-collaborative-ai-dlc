@@ -15,8 +15,20 @@ import {
   remoteBranchExists as defaultRemoteBranchExists,
   seedInitialCommit as defaultSeedInitialCommit,
 } from '../git-engine.js';
+import { getProvider } from '../../shared/git-providers.js';
 
 const { cardinality } = gremlin.process;
+
+// The repo's provider default branch (populated even for an empty repo). Used
+// to root an empty repo on the right base. null on any provider error.
+const providerDefaultBranch = async ({ repo, gitProvider, gitToken }) => {
+  try {
+    const provider = getProvider(gitProvider);
+    return (await provider.getDefaultBranch({ token: gitToken }, repo)) ?? null;
+  } catch {
+    return null;
+  }
+};
 
 // Create (idempotent) the Intent anchor vertex. Artifacts created by stages are
 // CONTAINS-ed by this vertex; the page reads the intent subgraph from here.
@@ -67,6 +79,7 @@ export const initWs = async (
     pushBranch = defaultPushBranch,
     remoteBranchExists = defaultRemoteBranchExists,
     seedInitialCommit = defaultSeedInitialCommit,
+    resolveDefaultBranch = providerDefaultBranch,
   } = deps;
   const now = clock();
 
@@ -120,12 +133,14 @@ export const initWs = async (
   // failure: a missing remote branch strands the whole construction phase.
   //
   // A genuinely EMPTY repo (freshly created, cloned with zero commits) has an
-  // unborn HEAD: ensureBranch landed the intent branch via its --orphan rung,
-  // but a branch with no commit cannot be pushed (nothing to send → the remote
-  // ref is never created). Seed an --allow-empty root commit so the branch has
-  // a HEAD to publish; otherwise construction lanes fail with
-  // `intent_branch_missing` against the still-empty remote (field incident:
-  // jeromevdl/chess-analyzer). No-op for a repo that already has history.
+  // unborn HEAD and no branches at all. It needs a proper shape before the
+  // intent branch can be published: seedInitialCommit roots an --allow-empty
+  // commit on the BASE branch (resolved: selected base → provider default →
+  // 'main') and forks the intent branch off it. We then push the BASE branch
+  // FIRST — the first branch pushed to an empty remote becomes its default, so
+  // this makes BASE (not the intent branch) the default, mirroring a normal
+  // repo. Field incident (jeromevdl/chess-analyzer): seeding on the intent
+  // branch made IT the default branch. No-op for a repo that already has history.
   //
   // Skip when the branch ALREADY exists remotely: a rewind/retry re-init may run
   // after lanes advanced the branch, and re-pushing the base-HEAD local ref over
@@ -142,18 +157,46 @@ export const initWs = async (
       }).catch(() => ({ exists: null }));
       // Already on the remote → nothing to establish.
       if (existing.exists === true) continue;
-      // Empty repo → give the intent branch a root commit before the push.
-      const seed = await seedInitialCommit({ dir: r.targetDir }).catch((e) => ({
-        seeded: false,
-        reason: 'seed_crashed',
-        detail: e?.message,
-      }));
+
+      // Empty repo → root history on the base branch and fork the intent branch
+      // off it. Resolve the base name from the provider so the seeded default
+      // matches what the repo was created with (e.g. main vs master).
+      const base =
+        baseBranches?.[r.repo] ??
+        baseBranch ??
+        (await resolveDefaultBranch({ repo: r.repo, gitProvider, gitToken })) ??
+        'main';
+      const seed = await seedInitialCommit({
+        dir: r.targetDir,
+        branch,
+        baseBranch: base,
+      }).catch((e) => ({ seeded: false, reason: 'seed_crashed', detail: e?.message }));
       if (seed.seeded === false && seed.reason !== 'not_empty') {
         pushFailures.push(
           `${r.repo} (seed ${seed.reason}${seed.detail ? `: ${seed.detail}` : ''})`,
         );
         continue;
       }
+
+      // Freshly-seeded empty repo: push the BASE branch first so it becomes the
+      // remote default, THEN the intent branch (forked off it). A repo with
+      // history (`not_empty`) skips straight to the intent-branch push.
+      if (seed.seeded === true) {
+        const basePush = await pushBranch({
+          dir: r.targetDir,
+          repo: r.repo,
+          branch: seed.baseBranch,
+          gitToken,
+          gitProvider,
+        }).catch((e) => ({ pushed: false, reason: 'push_crashed', detail: e?.message }));
+        if (basePush.pushed !== true) {
+          pushFailures.push(
+            `${r.repo} (base ${seed.baseBranch}: ${basePush.reason ?? 'unknown'}${basePush.detail ? `: ${basePush.detail}` : ''})`,
+          );
+          continue;
+        }
+      }
+
       const res = await pushBranch({
         dir: r.targetDir,
         repo: r.repo,

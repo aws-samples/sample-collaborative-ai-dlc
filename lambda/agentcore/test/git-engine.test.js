@@ -156,29 +156,55 @@ describe('commitAll', () => {
 });
 
 describe('seedInitialCommit', () => {
-  it('creates a root commit on an EMPTY repo so its branch becomes pushable', async () => {
+  it('roots history on the BASE branch and forks the intent branch off it (empty repo)', async () => {
     const { work } = await initRemoteAndClone({ withInitialCommit: false });
     // Empty repo: unborn HEAD, currently on a branch with no commit.
     expect((await git(['rev-parse', '--verify', 'HEAD'], work)).exitCode).not.toBe(0);
 
-    const res = await seedInitialCommit({ dir: work });
+    const res = await seedInitialCommit({
+      dir: work,
+      branch: 'aidlc/i1',
+      baseBranch: 'main',
+    });
     expect(res.seeded).toBe(true);
     expect(res.sha).toMatch(/^[0-9a-f]{40}$/);
+    expect(res.baseBranch).toBe('main');
 
-    // HEAD now exists → the branch can be pushed to the (bare) remote.
-    const branch = await git(['rev-parse', '--abbrev-ref', 'HEAD'], work);
-    const push = await pushBranch({
+    // Working tree ends on the intent branch, forked off the base at the same SHA.
+    const head = await git(['rev-parse', '--abbrev-ref', 'HEAD'], work);
+    expect(head.stdout.trim()).toBe('aidlc/i1');
+    const baseSha = await git(['rev-parse', 'main'], work);
+    const intentSha = await git(['rev-parse', 'aidlc/i1'], work);
+    expect(baseSha.stdout.trim()).toBe(intentSha.stdout.trim());
+
+    // The base branch pushes FIRST (becomes remote default), then the intent one.
+    const basePush = await pushBranch({
       dir: work,
       repo: 'o/r',
-      branch: branch.stdout.trim(),
+      branch: 'main',
       urls: { auth: path.join(root, 'remote.git') },
     });
-    expect(push.pushed).toBe(true);
+    expect(basePush.pushed).toBe(true);
+    const intentPush = await pushBranch({
+      dir: work,
+      repo: 'o/r',
+      branch: 'aidlc/i1',
+      urls: { auth: path.join(root, 'remote.git') },
+    });
+    expect(intentPush.pushed).toBe(true);
+  });
+
+  it('defaults the base branch to main when none is provided', async () => {
+    const { work } = await initRemoteAndClone({ withInitialCommit: false });
+    const res = await seedInitialCommit({ dir: work, branch: 'aidlc/i1' });
+    expect(res.seeded).toBe(true);
+    expect(res.baseBranch).toBe('main');
+    expect((await git(['rev-parse', '--verify', 'main'], work)).exitCode).toBe(0);
   });
 
   it('is a no-op on a repo that already has history', async () => {
     const { work } = await initRemoteAndClone({ withInitialCommit: true });
-    const res = await seedInitialCommit({ dir: work });
+    const res = await seedInitialCommit({ dir: work, branch: 'aidlc/i1', baseBranch: 'main' });
     expect(res).toEqual({ seeded: false, reason: 'not_empty' });
   });
 });

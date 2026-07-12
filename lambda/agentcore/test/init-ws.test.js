@@ -78,6 +78,8 @@ describe('initWs', () => {
     pushBranch: async () => ({ pushed: true, sha: 'abc', verified: true }),
     // Default: the repo has history (not empty) — seeding is a no-op.
     seedInitialCommit: async () => ({ seeded: false, reason: 'not_empty' }),
+    // Default provider default-branch (only consulted for empty repos).
+    resolveDefaultBranch: async () => 'main',
     ...overrides,
   });
 
@@ -261,17 +263,17 @@ describe('initWs', () => {
     expect(res.detail).toContain('aidlc/i1');
   });
 
-  it('seeds a root commit for an empty repo, then publishes the intent branch', async () => {
+  it('for an empty repo, roots the base branch then publishes base FIRST, intent SECOND', async () => {
     const seeded = [];
     const pushed = [];
     const d = deps({
-      // Empty repo → unborn HEAD; seedInitialCommit gives the branch a commit.
+      // Empty repo → seedInitialCommit roots the base branch + forks the intent.
       seedInitialCommit: async (args) => {
         seeded.push(args);
-        return { seeded: true, sha: 'root0' };
+        return { seeded: true, sha: 'root0', baseBranch: args.baseBranch };
       },
       pushBranch: async (args) => {
-        pushed.push(args);
+        pushed.push(args.branch);
         return { pushed: true, sha: 'root0', verified: true };
       },
     });
@@ -290,7 +292,71 @@ describe('initWs', () => {
     );
     expect(res.ok).toBe(true);
     expect(seeded).toHaveLength(1);
-    expect(pushed).toHaveLength(1);
+    expect(seeded[0]).toMatchObject({ branch: 'aidlc/i1', baseBranch: 'main' });
+    // Base branch pushed first (→ remote default), intent branch second.
+    expect(pushed).toEqual(['main', 'aidlc/i1']);
+  });
+
+  it('resolves the base branch from the provider default when none is configured (empty repo)', async () => {
+    const seeded = [];
+    const pushed = [];
+    const d = deps({
+      resolveDefaultBranch: async () => 'master',
+      seedInitialCommit: async (args) => {
+        seeded.push(args);
+        return { seeded: true, sha: 'root0', baseBranch: args.baseBranch };
+      },
+      pushBranch: async (args) => {
+        pushed.push(args.branch);
+        return { pushed: true };
+      },
+    });
+    const res = await initWs(
+      {
+        projectId: 'p1',
+        intentId: 'i1',
+        executionId: 'e1',
+        repos: ['acme/empty'],
+        branch: 'aidlc/i1',
+        // no baseBranch / baseBranches → provider default wins
+        gitToken: 'tok',
+        gitProvider: 'github',
+      },
+      d,
+    );
+    expect(res.ok).toBe(true);
+    expect(seeded[0]).toMatchObject({ baseBranch: 'master' });
+    expect(pushed).toEqual(['master', 'aidlc/i1']);
+  });
+
+  it('FAILS if the base branch cannot be published (empty repo)', async () => {
+    const d = deps({
+      seedInitialCommit: async (args) => ({
+        seeded: true,
+        sha: 'root0',
+        baseBranch: args.baseBranch,
+      }),
+      pushBranch: async (args) =>
+        args.branch === 'main'
+          ? { pushed: false, reason: 'push_failed', detail: 'denied' }
+          : { pushed: true },
+    });
+    const res = await initWs(
+      {
+        projectId: 'p1',
+        intentId: 'i1',
+        executionId: 'e1',
+        repos: ['acme/empty'],
+        branch: 'aidlc/i1',
+        baseBranch: 'main',
+        gitToken: 'tok',
+        gitProvider: 'github',
+      },
+      d,
+    );
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('intent_branch_push_failed');
+    expect(res.detail).toContain('base main');
   });
 
   it("FAILS when the push is still 'empty' after seeding (branch cannot be published)", async () => {
