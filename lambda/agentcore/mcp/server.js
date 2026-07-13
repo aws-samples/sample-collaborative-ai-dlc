@@ -381,7 +381,7 @@ export const toolSchemas = (z) => ({
   },
   submit_review: {
     description:
-      'Reviewer-only: submit your clean-room stage review verdict. Use READY only when the stage artifacts satisfy the stage definition and constraints; use NOT-READY with concrete findings when the builder must revise.',
+      'Reviewer-only: submit your clean-room stage review verdict. Use READY only when the stage artifacts satisfy the stage definition and constraints; use NOT-READY with concrete findings when the builder must revise. Pass your agent name as `reviewer` and start `findings` with the identity marker line `**Reviewer:** <your-agent-name>`.',
     shape: {
       reviewer: z.string().optional(),
       verdict: z.enum(['READY', 'NOT-READY']),

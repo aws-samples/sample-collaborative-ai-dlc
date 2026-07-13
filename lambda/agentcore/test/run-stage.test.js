@@ -902,6 +902,67 @@ describe('runStage — LLM reviewer axis', () => {
   });
 });
 
+// Reviewer prompt contract (upstream stage-protocol §12a, 2.2.16 + 2.2.4):
+// bounded read scope on per-unit reviews + the identity-marker instruction.
+describe('buildReviewerPrompt — read scope + identity marker', () => {
+  const { buildReviewerPrompt, renderReviewerReadScope, SHARED_CONTRACT_ARTIFACTS } = __test;
+  const stage = {
+    stageId: 'functional-design',
+    phase: 'construction',
+    inputArtifacts: [
+      { artifact: 'unit-of-work' },
+      { artifact: 'requirements' },
+      { artifact: 'components' },
+      { artifact: 'component-methods' },
+      { artifact: 'services' },
+    ],
+    outputArtifacts: [{ artifact: 'business-logic-model' }, { artifact: 'domain-entities' }],
+  };
+  const args = {
+    stage,
+    reviewerAgent: 'aidlc-architecture-reviewer-agent',
+    reviewerPersona: 'persona',
+    knowledge: '',
+    round: 1,
+  };
+
+  it('instructs the identity marker: reviewer arg + verbatim first findings line', () => {
+    const prompt = buildReviewerPrompt(args);
+    expect(prompt).toContain('reviewer: "aidlc-architecture-reviewer-agent"');
+    expect(prompt).toContain('**Reviewer:** aidlc-architecture-reviewer-agent');
+  });
+
+  it('bounds a per-unit review to the unit plus the shared inception contracts', () => {
+    const prompt = buildReviewerPrompt({
+      ...args,
+      unit: { slug: 'billing', kind: 'service', dependsOn: [] },
+    });
+    expect(prompt).toContain('## Reviewer read scope');
+    expect(prompt).toContain('Unit under review: billing (kind: service)');
+    // Sibling-lane reads are named as forbidden, glob patterns included.
+    expect(prompt).toContain('construction/*/');
+    // Cross-unit verification is pointed at the shared contracts the stage
+    // actually consumes — never a sweep of sibling design prose.
+    expect(prompt).toContain('components, component-methods, services, unit-of-work');
+  });
+
+  it('adds no read-scope block on a once-per-workflow review', () => {
+    const prompt = buildReviewerPrompt(args);
+    expect(prompt).not.toContain('## Reviewer read scope');
+    expect(prompt).not.toContain('Unit under review');
+  });
+
+  it('renderReviewerReadScope is empty without a unit and names the four upstream contracts', () => {
+    expect(renderReviewerReadScope({ unit: null, contracts: [] })).toBe('');
+    expect(SHARED_CONTRACT_ARTIFACTS).toEqual([
+      'components',
+      'component-methods',
+      'services',
+      'unit-of-work',
+    ]);
+  });
+});
+
 describe('runStage — fresh run persists the CLI session + parks on a pending gate', () => {
   const okSpawn = () => ({
     on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),

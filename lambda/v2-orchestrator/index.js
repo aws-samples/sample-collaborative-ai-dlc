@@ -1025,12 +1025,25 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           // for the UI; the answer is re-validated below — never trusted.
           const gateSkipTargets =
             meta.stageSkipping === 'enabled' ? skipTargetsFrom(segment.stages, stageIdx) : [];
+          // The COMPUTED next stage in the overall run order (upstream 2.2.6:
+          // gate options name it verbatim, never guess). Read from the flat
+          // plan — not the segment — so the last stage before a parallel
+          // section names the section's first stage. null = final stage; the
+          // gate reads as "Complete workflow".
+          const nextStageId = nextStageIdAfter(runStages, stage);
           const validation = await awaitEngineGate(ctx, sectionToolkit, {
             name: `validation-${stage.stageInstanceId ?? stage.stageId}-${validationRound}`,
             kind: 'validation',
             stageInstanceId: stage.stageInstanceId ?? null,
-            prompt: validationPrompt(stage, outputArtifactTypes, validationRound, gateSkipTargets),
+            prompt: validationPrompt(
+              stage,
+              outputArtifactTypes,
+              validationRound,
+              gateSkipTargets,
+              nextStageId,
+            ),
             options: ['approve', 'request-changes'],
+            nextStageId,
             ...(gateSkipTargets.length ? { skipTargets: gateSkipTargets } : {}),
           });
           if (validation.superseded) return { ok: false, reason: 'retired', intentId };
@@ -1369,7 +1382,28 @@ const runStage = async (
 
 const nowIso = () => new Date().toISOString();
 
-const validationPrompt = (stage, outputArtifactTypes = [], round = 0, skipTargets = []) => {
+// The stage that runs after `stage` in the FLAT plan order, or null when this
+// is the run's final stage (upstream 2.2.6: `next_stage: string | null`, the
+// gate names it verbatim — "Complete workflow" when null). Matched by
+// stageInstanceId (unique per plan) with a stageId fallback for the degenerate
+// no-instance-id case; a stage not in the plan yields null rather than a guess.
+const nextStageIdAfter = (runStages = [], stage = {}) => {
+  const ix = runStages.findIndex((s) =>
+    stage.stageInstanceId != null
+      ? s.stageInstanceId === stage.stageInstanceId
+      : s.stageId === stage.stageId,
+  );
+  if (ix < 0) return null;
+  return runStages[ix + 1]?.stageId ?? null;
+};
+
+const validationPrompt = (
+  stage,
+  outputArtifactTypes = [],
+  round = 0,
+  skipTargets = [],
+  nextStageId = null,
+) => {
   const artifacts = outputArtifactTypes.length
     ? outputArtifactTypes.join(', ')
     : 'no declared artifacts';
@@ -1378,7 +1412,10 @@ const validationPrompt = (stage, outputArtifactTypes = [], round = 0, skipTarget
     '',
     `Produced artifacts: ${artifacts}.`,
     '',
-    'Choose approve to continue, or request-changes with feedback to send this stage back to the agent.',
+    // Name the COMPUTED next stage (upstream 2.2.6) — never a guessed one.
+    nextStageId
+      ? `Choose approve to continue to ${nextStageId}, or request-changes with feedback to send this stage back to the agent.`
+      : 'This is the final stage — choose approve to complete the workflow, or request-changes with feedback to send this stage back to the agent.',
     ...(skipTargets.length
       ? [
           '',

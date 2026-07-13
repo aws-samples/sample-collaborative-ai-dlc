@@ -147,6 +147,17 @@ export interface ExecutionPreview {
     outOfScopeStageIds: string[];
     // Per-intent skip overlay applied to this preview (empty when none).
     skippedStages?: { stageId: string; phase: string | null; stageInstanceId: string }[];
+    // Exact run-shape counts (upstream validate-grid `summary`, 2.2.12) — the
+    // scope-confirmation UI renders these verbatim ("N of T stages, G approval
+    // gates" + per-unit fan-out clause) instead of re-deriving them.
+    summary?: {
+      executedStages: number;
+      totalStages: number;
+      approvalGates: number;
+      perUnitStages: number;
+      skippedStages: number;
+      outOfScopeStages: number;
+    };
     stages: {
       stageId: string;
       phase?: string | null;

@@ -260,6 +260,57 @@ describe('gate-time "skip to stage X"', () => {
   });
 });
 
+// Upstream 2.2.6: the validation gate names the COMPUTED next stage — read
+// from the flat plan order, never guessed. string = next stageId, null = this
+// gate completes the workflow. The prompt carries the same name so chat-only
+// surfaces read identically.
+describe('validation gate names the computed next stage (2.2.6)', () => {
+  it('carries nextStageId = the following plan stage on an intermediate gate', async () => {
+    answerValidationGate({ decision: 'approve' });
+    await start();
+    const call = deps.store.createHumanTask.mock.calls.find(
+      (c) => c[0].kind === 'validation' && c[0].stageInstanceId === 'si-a',
+    );
+    expect(call[0].nextStageId).toBe('b');
+    expect(call[0].prompt).toContain('approve to continue to b');
+  });
+
+  it('carries nextStageId = null (complete workflow) on the final gating stage', async () => {
+    // Make the LAST stage the gating one.
+    const stages = linearStages();
+    stages[0].humanValidation = 'none';
+    stages[1].humanValidation = 'none';
+    stages[2].humanValidation = 'required';
+    deps.loadPlan = vi.fn(async () => ({ valid: true, plan: { stages } }));
+    deps.store.getHumanTask = vi
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue({
+        humanTaskId: 'eg-any',
+        status: 'approved',
+        answer: { decision: 'approve' },
+      });
+
+    const res = await start();
+    expect(res.ok).toBe(true);
+    const call = deps.store.createHumanTask.mock.calls.find(
+      (c) => c[0].kind === 'validation' && c[0].stageInstanceId === 'si-c',
+    );
+    expect(call[0].nextStageId).toBeNull();
+    expect(call[0].prompt).toContain('final stage');
+    expect(call[0].prompt).toContain('complete the workflow');
+  });
+
+  it('the live gate broadcast carries the same nextStageId as the row', async () => {
+    answerValidationGate({ decision: 'approve' });
+    await start();
+    const broadcastGate = deps.broadcast.mock.calls
+      .map((c) => c[1])
+      .find((p) => p?.action === 'agent.question' && p.kind === 'validation');
+    expect(broadcastGate.nextStageId).toBe('b');
+  });
+});
+
 describe('rewind over SKIPPED rows', () => {
   it('accepts a SKIPPED linear upstream row and re-seeds the dispatch overlay', async () => {
     deps.store.getStage = vi.fn(async (_e, id) => {

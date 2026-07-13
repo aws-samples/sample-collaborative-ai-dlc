@@ -30,6 +30,9 @@ const scopeFromEnv = (env = process.env) => ({
   // The concrete model run-stage resolved for this stage, stamped onto metric
   // rows so token usage can be priced at read time (empty string → null).
   model: env.V2_RESOLVED_MODEL || null,
+  // Trusted reviewer identity (reviewer role only) — submit_review stamps this
+  // on the verdict row, never the agent's self-report (empty string → null).
+  reviewerAgent: env.V2_REVIEWER_AGENT || null,
 });
 
 export const startMcpServer = async ({ env = process.env } = {}) => {

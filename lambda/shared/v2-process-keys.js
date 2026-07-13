@@ -439,6 +439,12 @@ const buildHumanTaskRow = ({
   // Null when stage skipping is disabled or no valid target exists. Purely
   // advisory for the UI — the orchestrator re-validates the answer.
   skipTargets = null,
+  // The COMPUTED next stage a plain approve continues to (upstream 2.2.6):
+  // string = its stageId, null = approving completes the workflow. The
+  // attribute is written ONLY when the orchestrator computed it (undefined
+  // omits it), so legacy rows / non-validation gates stay distinguishable
+  // from an explicit "final stage". Display-only — never drives routing.
+  nextStageId = undefined,
   status = 'pending',
   now,
 }) => ({
@@ -454,6 +460,7 @@ const buildHumanTaskRow = ({
   prompt,
   options,
   skipTargets,
+  ...(nextStageId !== undefined ? { nextStageId } : {}),
   // The v1-shaped structured-questions payload (JSON) when kind==='question'.
   questions,
   answer: null,

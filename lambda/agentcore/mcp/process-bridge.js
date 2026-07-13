@@ -42,6 +42,7 @@ export const createProcessBridge = ({
     stageInstanceId = null,
     unitSlug = null,
     model = null,
+    reviewerAgent = null,
   } = scope;
 
   // Ask the human team one or more structured questions. Opens a pending gate,
@@ -214,16 +215,32 @@ export const createProcessBridge = ({
       throw new Error('submit_review verdict must be READY or NOT-READY');
     }
     const result = normalized === 'READY' ? 'PASS' : 'FAIL';
+    // Identity: the TRUSTED scope identity (set by run-stage, upstream §12a's
+    // identity marker enforced server-side) wins over the agent's self-report —
+    // a hallucinated or omitted `reviewer` arg can no longer detach the verdict
+    // row from the reviewer round that ran (latestReviewerVerdict matches on
+    // sensorId `reviewer:<agent>`). The self-report is still recorded, and a
+    // mismatch is flagged, so prompt-contract drift stays visible in the audit
+    // trail instead of silently disappearing.
+    const identity = reviewerAgent || reviewer || 'unknown';
+    const reported = reviewer ?? null;
+    const identityMismatch = Boolean(reviewerAgent && reported && reported !== reviewerAgent);
     const row = await store.recordSensorRun({
       executionId,
       stageInstanceId,
       unitSlug,
-      sensorId: `reviewer:${reviewer || 'unknown'}`,
+      sensorId: `reviewer:${identity}`,
       kind: 'reviewer',
       severity: 'advisory',
       result,
       held: false,
-      detail: { verdict: normalized, findings, round, reviewer: reviewer ?? null },
+      detail: {
+        verdict: normalized,
+        findings,
+        round,
+        reviewer: identity,
+        ...(identityMismatch ? { reportedReviewer: reported, identityMismatch: true } : {}),
+      },
     });
     await store
       .appendEvent({
@@ -231,8 +248,8 @@ export const createProcessBridge = ({
         type: normalized === 'READY' ? 'v2.review.ready' : 'v2.review.not_ready',
         stageInstanceId,
         unitSlug,
-        actor: reviewer || 'reviewer',
-        summary: `Reviewer ${reviewer || 'agent'} returned ${normalized}${findings ? `: ${String(findings).slice(0, 240)}` : ''}`,
+        actor: identity,
+        summary: `Reviewer ${identity} returned ${normalized}${findings ? `: ${String(findings).slice(0, 240)}` : ''}`,
       })
       .catch(() => {});
     await broadcast({
@@ -242,7 +259,7 @@ export const createProcessBridge = ({
       stageInstanceId,
       unitSlug,
       noteType: normalized === 'READY' ? 'v2.review.ready' : 'v2.review.not_ready',
-      summary: `Reviewer ${reviewer || 'agent'} returned ${normalized}`,
+      summary: `Reviewer ${identity} returned ${normalized}`,
     });
     return { sensorRunId: row.sensorRunId, verdict: normalized };
   };

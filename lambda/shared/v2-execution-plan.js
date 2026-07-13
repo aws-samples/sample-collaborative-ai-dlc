@@ -662,6 +662,22 @@ const buildExecutionPlan = ({
     // Per-intent skip overlay applied to this plan (empty when none): the
     // orchestrator writes one SKIPPED row per entry at run start.
     skippedStages,
+    // Exact run-shape counts (upstream validate-grid `summary`, 2.2.12): the
+    // scope-confirmation UI reads these VERBATIM instead of re-deriving them —
+    // "N of T stages, G approval gates" plus the per-unit fan-out clause. T is
+    // every authored placement (executed + scope-excluded + intent-skipped);
+    // gates are the human-validation stages that will actually run; perUnit
+    // counts the stages that fan out per unit of work (degraded ones run once
+    // and are not counted).
+    summary: {
+      executedStages: orderedStages.length,
+      totalStages: orderedStages.length + outOfScopeStageIds.length + skippedStages.length,
+      approvalGates: orderedStages.filter((s) => s.humanValidation === 'required').length,
+      perUnitStages: orderedStages.filter((s) => s.forEach === UNIT_FOR_EACH && !s.forEachDegraded)
+        .length,
+      skippedStages: skippedStages.length,
+      outOfScopeStages: outOfScopeStageIds.length,
+    },
   };
   return { valid: errors.length === 0, errors, warnings, plan };
 };

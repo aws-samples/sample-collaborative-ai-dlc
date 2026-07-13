@@ -117,6 +117,11 @@ export const awaitEngineGate = async (
     // Valid "skip to stage X" targets for a validation gate (stage-skip.js).
     // Advisory for the UI; the orchestrator re-validates the answer.
     skipTargets = null,
+    // The COMPUTED next stage after this gate approves (upstream 2.2.6):
+    // string = its stageId, null = approving completes the workflow,
+    // undefined = not computed (non-validation gates) — the UI keeps its
+    // generic labels. Display-only; never drives routing.
+    nextStageId = undefined,
   },
 ) => {
   const { store, broadcast, ids, runId } = toolkit;
@@ -143,6 +148,7 @@ export const awaitEngineGate = async (
         prompt,
         options,
         ...(skipTargets ? { skipTargets } : {}),
+        ...(nextStageId !== undefined ? { nextStageId } : {}),
       });
     } catch {
       /* already exists from a prior attempt — idempotent open */
@@ -171,6 +177,7 @@ export const awaitEngineGate = async (
         prompt,
         options,
         ...(skipTargets ? { skipTargets } : {}),
+        ...(nextStageId !== undefined ? { nextStageId } : {}),
       });
     } catch {
       /* live fan-out is best-effort */

@@ -61,6 +61,20 @@ export default function NewIntentPage() {
   const [skipStagesLoading, setSkipStagesLoading] = useState(false);
   const [skipSelections, setSkipSelections] = useState<Set<string>>(new Set());
   const [skipPreviewNote, setSkipPreviewNote] = useState<string | null>(null);
+  // Exact run-shape counts for the chosen scope (upstream 2.2.12): read
+  // VERBATIM from the plan preview's `summary` — "N of T stages, G approval
+  // gates" — never re-derived client-side. `scopeSummary` is the base scope
+  // shape; `overlaySummary` supersedes it while a skip dry-run is active.
+  type ScopeSummary = {
+    executedStages: number;
+    totalStages: number;
+    approvalGates: number;
+    perUnitStages: number;
+    skippedStages: number;
+    outOfScopeStages: number;
+  };
+  const [scopeSummary, setScopeSummary] = useState<ScopeSummary | null>(null);
+  const [overlaySummary, setOverlaySummary] = useState<ScopeSummary | null>(null);
 
   const hasTrackers = (project?.trackers.length ?? 0) > 0;
   const repos = project?.repos ?? [];
@@ -139,12 +153,17 @@ export default function NewIntentPage() {
     };
   }, [project]);
 
-  // The scope's skippable stages (CONDITIONAL, non-initialization) — fetched
-  // from the plan preview once skipping is enabled and a scope is chosen.
+  // The scope's run-shape summary + skippable stages — one preview fetch per
+  // (workflow, scope). The summary renders for every user at scope confirmation
+  // (upstream 2.2.11: exact stage/gate counts, never guessed); the skippable
+  // list (CONDITIONAL, non-initialization) only feeds the skip UI when the
+  // feature is enabled.
   useEffect(() => {
     setSkipSelections(new Set());
     setSkipPreviewNote(null);
-    if (!skippingEnabled || !workflowId || !scope) {
+    setScopeSummary(null);
+    setOverlaySummary(null);
+    if (!workflowId || !scope) {
       setSkippableStages([]);
       setSkipStagesLoading(false);
       return;
@@ -155,13 +174,18 @@ export default function NewIntentPage() {
       .executionPreview(workflowId, scope, project?.workflowVersion ?? undefined)
       .then((preview) => {
         if (cancelled) return;
+        setScopeSummary(preview.plan?.summary ?? null);
         const stages = (preview.plan?.stages ?? [])
           .filter((s) => s.execution === 'CONDITIONAL' && s.phase !== 'initialization')
           .map((s) => ({ stageId: s.stageId, phase: s.phase ?? null }));
-        setSkippableStages(stages);
+        setSkippableStages(skippingEnabled ? stages : []);
       })
       .catch(() => {
-        if (!cancelled) setSkippableStages([]); // preview is best-effort UI sugar
+        // Preview is best-effort UI sugar — creation still validates server-side.
+        if (!cancelled) {
+          setSkippableStages([]);
+          setScopeSummary(null);
+        }
       })
       .finally(() => {
         if (!cancelled) setSkipStagesLoading(false);
@@ -177,6 +201,7 @@ export default function NewIntentPage() {
   useEffect(() => {
     if (!workflowId || !scope || skipSelections.size === 0) {
       setSkipPreviewNote(null);
+      setOverlaySummary(null);
       return;
     }
     let cancelled = false;
@@ -186,6 +211,8 @@ export default function NewIntentPage() {
       ])
       .then((preview) => {
         if (cancelled) return;
+        // The overlay changes the run shape — keep the confirmation counts honest.
+        setOverlaySummary(preview.plan?.summary ?? null);
         const absent = (preview.warnings ?? []).filter(
           (w) => w.code === 'scope_absent_consume',
         ).length;
@@ -425,6 +452,29 @@ export default function NewIntentPage() {
                 Decides which stages execute (e.g. feature vs. bugfix). Comes from the workflow's
                 compiled scopes.
               </p>
+              {scope && (overlaySummary ?? scopeSummary) && (
+                <p className="mt-1 text-xs text-foreground" data-testid="scope-summary">
+                  {(() => {
+                    // Exact counts read verbatim from the compiled plan
+                    // (upstream 2.2.11) — the user confirms the real run
+                    // shape, not a guess.
+                    const s = (overlaySummary ?? scopeSummary)!;
+                    const parts = [
+                      `Runs ${s.executedStages} of ${s.totalStages} stages`,
+                      `${s.approvalGates} approval gate${s.approvalGates === 1 ? '' : 's'}`,
+                    ];
+                    if (s.perUnitStages > 0) {
+                      parts.push(
+                        `${s.perUnitStages} stage${s.perUnitStages === 1 ? '' : 's'} fan${s.perUnitStages === 1 ? 's' : ''} out per unit of work`,
+                      );
+                    }
+                    if (s.skippedStages > 0) {
+                      parts.push(`${s.skippedStages} deselected`);
+                    }
+                    return parts.join(' · ');
+                  })()}
+                </p>
+              )}
             </div>
 
             {repos.length > 0 && (

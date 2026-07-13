@@ -1489,7 +1489,17 @@ function StageReviewPanel({
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="next">Continue to the next stage</SelectItem>
+                        {/* Name the COMPUTED next stage verbatim (upstream
+                            2.2.6) — "Complete workflow" when this is the last
+                            stage; the generic label only on legacy gates that
+                            never carried the field. */}
+                        <SelectItem value="next">
+                          {gate.nextStageId !== undefined
+                            ? gate.nextStageId
+                              ? `Continue to ${gate.nextStageId}`
+                              : 'Complete workflow'
+                            : 'Continue to the next stage'}
+                        </SelectItem>
                         {skipTargets.map((t) => (
                           <SelectItem key={t} value={t}>
                             Skip ahead to {t}
@@ -1507,7 +1517,13 @@ function StageReviewPanel({
                   Request changes
                 </Button>
                 <Button disabled={submitting} onClick={() => submit('approve')}>
-                  {skipTo ? `Approve & skip to ${skipTo}` : 'Approve stage'}
+                  {skipTo
+                    ? `Approve & skip to ${skipTo}`
+                    : gate.nextStageId !== undefined
+                      ? gate.nextStageId
+                        ? `Approve — continue to ${gate.nextStageId}`
+                        : 'Approve — complete workflow'
+                      : 'Approve stage'}
                 </Button>
               </>
             )}

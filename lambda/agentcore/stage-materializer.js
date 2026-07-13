@@ -224,6 +224,10 @@ export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }
         V2_UNIT_SLUG: scope.unitSlug ?? '',
         V2_RESOLVED_MODEL: scope.model ?? '',
         V2_MCP_ROLE: scope.role ?? 'author',
+        // Trusted reviewer identity (reviewer role only): the bridge stamps this
+        // on the verdict row instead of trusting the agent's self-reported name
+        // (upstream §12a identity marker, enforced server-side). Empty → null.
+        V2_REVIEWER_AGENT: scope.reviewerAgent ?? '',
         V2_PROCESS_TABLE: env.V2_PROCESS_TABLE ?? '',
         NEPTUNE_ENDPOINT: env.NEPTUNE_ENDPOINT ?? '',
         GREMLIN_PROTOCOL: env.GREMLIN_PROTOCOL ?? 'wss',

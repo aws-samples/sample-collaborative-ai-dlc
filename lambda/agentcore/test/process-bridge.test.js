@@ -264,3 +264,85 @@ describe('unit-lane scope (V2_UNIT_SLUG)', () => {
     expect(sent[0].unitSlug).toBeNull();
   });
 });
+
+// The reviewer identity marker (upstream stage-protocol §12a, enforced
+// server-side): the TRUSTED scope identity stamps the verdict row, never the
+// agent's self-report — latestReviewerVerdict matches on sensorId
+// `reviewer:<agent>`, so a hallucinated name must not detach the verdict.
+describe('submitReview', () => {
+  const storeWithSensorRuns = () => {
+    const store = fakeStore();
+    store.sensorRuns = [];
+    store.recordSensorRun = async (row) => {
+      const withId = { ...row, sensorRunId: `sr${store.sensorRuns.length + 1}` };
+      store.sensorRuns.push(withId);
+      return withId;
+    };
+    return store;
+  };
+
+  it('stamps the trusted scope identity over the agent self-report and flags the mismatch', async () => {
+    const store = storeWithSensorRuns();
+    const sent = [];
+    const bridge = createProcessBridge({
+      store,
+      scope: { ...SCOPE, role: 'reviewer', reviewerAgent: 'aidlc-architecture-reviewer-agent' },
+      broadcast: (p) => sent.push(p),
+    });
+    const res = await bridge.submitReview({
+      reviewer: 'some-hallucinated-agent',
+      verdict: 'READY',
+      findings: '**Reviewer:** some-hallucinated-agent\nAll good.',
+      round: 1,
+    });
+    expect(res).toEqual({ sensorRunId: 'sr1', verdict: 'READY' });
+    expect(store.sensorRuns[0]).toMatchObject({
+      sensorId: 'reviewer:aidlc-architecture-reviewer-agent',
+      kind: 'reviewer',
+      result: 'PASS',
+      detail: {
+        verdict: 'READY',
+        reviewer: 'aidlc-architecture-reviewer-agent',
+        reportedReviewer: 'some-hallucinated-agent',
+        identityMismatch: true,
+      },
+    });
+    expect(store.events.find((e) => e.type === 'v2.review.ready')).toMatchObject({
+      actor: 'aidlc-architecture-reviewer-agent',
+    });
+    expect(sent[0]).toMatchObject({ noteType: 'v2.review.ready' });
+  });
+
+  it('keeps the trusted identity when the agent omits its name entirely', async () => {
+    const store = storeWithSensorRuns();
+    const bridge = createProcessBridge({
+      store,
+      scope: { ...SCOPE, role: 'reviewer', reviewerAgent: 'aidlc-product-lead-agent' },
+    });
+    await bridge.submitReview({ verdict: 'NOT-READY', findings: 'missing sections' });
+    expect(store.sensorRuns[0]).toMatchObject({
+      sensorId: 'reviewer:aidlc-product-lead-agent',
+      result: 'FAIL',
+      detail: { verdict: 'NOT-READY', reviewer: 'aidlc-product-lead-agent' },
+    });
+    // No mismatch recorded when there is nothing to mismatch against.
+    expect(store.sensorRuns[0].detail.identityMismatch).toBeUndefined();
+  });
+
+  it('falls back to the self-report on a legacy scope with no trusted identity', async () => {
+    const store = storeWithSensorRuns();
+    const bridge = createProcessBridge({ store, scope: SCOPE });
+    await bridge.submitReview({ reviewer: 'aidlc-reviewer-agent', verdict: 'READY' });
+    expect(store.sensorRuns[0]).toMatchObject({
+      sensorId: 'reviewer:aidlc-reviewer-agent',
+      detail: { reviewer: 'aidlc-reviewer-agent' },
+    });
+  });
+
+  it('rejects a verdict outside READY/NOT-READY', async () => {
+    const store = storeWithSensorRuns();
+    const bridge = createProcessBridge({ store, scope: SCOPE });
+    await expect(bridge.submitReview({ verdict: 'MAYBE' })).rejects.toThrow(/READY or NOT-READY/);
+    expect(store.sensorRuns).toEqual([]);
+  });
+});

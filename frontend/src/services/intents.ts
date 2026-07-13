@@ -128,6 +128,11 @@ export interface IntentGate {
   // may jump to; every intermediate is CONDITIONAL). Null when stage skipping
   // is disabled for the run or no target qualifies.
   skipTargets?: string[] | null;
+  // The COMPUTED next stage a plain approve continues to (upstream 2.2.6):
+  // string = its stageId, null = approving completes the workflow. Absent on
+  // legacy gates / gates where it was never computed — fall back to generic
+  // labels rather than claiming "Complete workflow". Display-only.
+  nextStageId?: string | null;
   questions: string | null;
   answer: unknown;
   answeredBy: string | null;

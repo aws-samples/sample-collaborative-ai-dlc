@@ -333,6 +333,55 @@ describe('IntentView', () => {
     });
   });
 
+  // Upstream 2.2.6: the approve action names the COMPUTED next stage verbatim
+  // ("Complete workflow" when the gate is the final stage). Legacy gates
+  // without the field keep the generic label (previous test).
+  it('names the computed next stage on the approve button when the gate carries it', async () => {
+    const validationDetail = (nextStageId: string | null) => ({
+      ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'eg-validation-si-a-0-run1' }),
+      stages: [
+        { stageInstanceId: 'si-a', stageId: 'stage-a', state: 'WAITING_FOR_HUMAN', phase: 'build' },
+      ],
+      gates: [
+        {
+          humanTaskId: 'eg-validation-si-a-0-run1',
+          stageInstanceId: 'si-a',
+          unitSlug: null,
+          kind: 'validation',
+          status: 'pending',
+          prompt: 'Review stage stage-a.',
+          options: ['approve', 'request-changes'],
+          nextStageId,
+          questions: null,
+          answer: null,
+          answeredBy: null,
+          answeredAt: null,
+          createdAt: null,
+        },
+      ],
+      sensorRuns: [],
+      artifacts: [],
+    });
+    graph.mockResolvedValue({ nodes: [], edges: [] });
+    answerGate.mockResolvedValue({});
+
+    get.mockResolvedValue(validationDetail('stage-b'));
+    const { unmount } = renderAt();
+    await userEvent.click(await screen.findByRole('button', { name: 'Review stage' }));
+    expect(
+      await screen.findByRole('button', { name: 'Approve — continue to stage-b' }),
+    ).toBeInTheDocument();
+    unmount();
+
+    // Final stage: null = approving completes the workflow.
+    get.mockResolvedValue(validationDetail(null));
+    renderAt();
+    await userEvent.click(await screen.findByRole('button', { name: 'Review stage' }));
+    expect(
+      await screen.findByRole('button', { name: 'Approve — complete workflow' }),
+    ).toBeInTheDocument();
+  });
+
   it('submits the collaborative review feedback value when requesting changes', async () => {
     get.mockResolvedValue({
       ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'eg-validation-si-a-0-run1' }),

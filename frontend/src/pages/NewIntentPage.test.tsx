@@ -25,9 +25,11 @@ vi.mock('@/services/intents', () => ({
 }));
 
 const compiled = vi.fn();
+const executionPreview = vi.fn();
 vi.mock('@/services/workflows', () => ({
   workflowsService: {
     compiled: (...a: unknown[]) => compiled(...a),
+    executionPreview: (...a: unknown[]) => executionPreview(...a),
   },
 }));
 
@@ -65,6 +67,12 @@ describe('NewIntentPage — base branch selection', () => {
   beforeEach(() => {
     create.mockReset().mockResolvedValue({ id: 'i1' });
     compiled.mockReset().mockResolvedValue({ scopeGrid: { feature: {} } });
+    executionPreview.mockReset().mockResolvedValue({
+      valid: true,
+      errors: [],
+      warnings: [],
+      plan: { stages: [], summary: null },
+    });
     listBranches
       .mockReset()
       .mockResolvedValue({ branches: ['main', 'develop'], defaultBranch: 'main' });
@@ -151,5 +159,76 @@ describe('NewIntentPage — base branch selection', () => {
     await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
     const payload = create.mock.calls[0][1];
     expect(payload.baseBranches).toEqual({ 'owner/repo': 'develop' });
+  });
+});
+
+// Upstream 2.2.11: scope confirmation shows the EXACT run shape ("N of T
+// stages, G approval gates" + fan-out clause), read verbatim from the plan
+// preview's summary — never re-derived client-side.
+describe('NewIntentPage — scope run-shape summary', () => {
+  beforeEach(() => {
+    create.mockReset().mockResolvedValue({ id: 'i1' });
+    compiled.mockReset().mockResolvedValue({ scopeGrid: { feature: {} } });
+    executionPreview.mockReset();
+    listBranches.mockReset().mockResolvedValue({ branches: ['main'], defaultBranch: 'main' });
+    useProjectCache.mockReset();
+    useProjectCache.mockReturnValue({ project: baseProject({ repos: [] }), loading: false });
+  });
+
+  it('renders the exact stage/gate counts from the preview summary', async () => {
+    executionPreview.mockResolvedValue({
+      valid: true,
+      errors: [],
+      warnings: [],
+      plan: {
+        stages: [],
+        summary: {
+          executedStages: 24,
+          totalStages: 32,
+          approvalGates: 18,
+          perUnitStages: 5,
+          skippedStages: 0,
+          outOfScopeStages: 8,
+        },
+      },
+    });
+    renderPage();
+    const summary = await screen.findByTestId('scope-summary');
+    expect(summary.textContent).toContain('Runs 24 of 32 stages');
+    expect(summary.textContent).toContain('18 approval gates');
+    expect(summary.textContent).toContain('5 stages fan out per unit of work');
+    expect(executionPreview).toHaveBeenCalledWith('aidlc-v2', 'feature', undefined);
+  });
+
+  it('singularizes the counts and drops the fan-out clause when nothing fans out', async () => {
+    executionPreview.mockResolvedValue({
+      valid: true,
+      errors: [],
+      warnings: [],
+      plan: {
+        stages: [],
+        summary: {
+          executedStages: 3,
+          totalStages: 5,
+          approvalGates: 1,
+          perUnitStages: 0,
+          skippedStages: 0,
+          outOfScopeStages: 2,
+        },
+      },
+    });
+    renderPage();
+    const summary = await screen.findByTestId('scope-summary');
+    expect(summary.textContent).toContain('1 approval gate');
+    expect(summary.textContent).not.toContain('approval gates');
+    expect(summary.textContent).not.toContain('per unit of work');
+  });
+
+  it('shows no summary line when the preview fails (best-effort sugar)', async () => {
+    executionPreview.mockRejectedValue(new Error('boom'));
+    renderPage();
+    await screen.findByLabelText('Prompt');
+    await waitFor(() => expect(executionPreview).toHaveBeenCalled());
+    expect(screen.queryByTestId('scope-summary')).not.toBeInTheDocument();
   });
 });

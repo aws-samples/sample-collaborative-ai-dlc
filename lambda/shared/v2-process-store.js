@@ -445,6 +445,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     options,
     questions,
     skipTargets,
+    nextStageId,
     humanTaskId,
   }) => {
     const id = humanTaskId ?? nextId();
@@ -458,6 +459,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       options,
       questions,
       skipTargets,
+      nextStageId,
       now: now(),
     });
     await ddb.send(

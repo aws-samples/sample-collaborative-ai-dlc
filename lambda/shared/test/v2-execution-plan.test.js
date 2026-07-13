@@ -333,6 +333,71 @@ describe('buildExecutionPlan — plan shape', () => {
     const { plan } = buildExecutionPlan({ workflow: wf, scope: 'feature', library: lib });
     expect(plan.stages.map((s) => s.stageId)).toEqual(['a']);
   });
+
+  // Upstream validate-grid `summary` (2.2.12): the scope-confirmation UI reads
+  // the exact run-shape counts verbatim instead of re-deriving them.
+  it('summarizes the run shape: N of T stages, approval gates, per-unit fan-out', () => {
+    const lib = baseLibrary({
+      stagesById: {
+        gen: stage('gen', { produces: ['unit-of-work-dependency'], humanValidation: 'required' }),
+        fan: stage('fan', {
+          forEach: 'unit-of-work',
+          humanValidation: 'none',
+          consumes: [{ artifact: 'unit-of-work-dependency', required: true }],
+        }),
+        quiet: stage('quiet', { humanValidation: 'none' }),
+        out: stage('out'),
+      },
+      artifactsById: { 'unit-of-work-dependency': { id: 'unit-of-work-dependency' } },
+    });
+    const wf = workflow([
+      placement('gen', 'feature', 0),
+      { stageId: 'fan', order: 1, scopeMembership: { feature: 'EXECUTE' } },
+      placement('quiet', 'feature', 2),
+      // Scope-excluded placement → counts toward T, not N.
+      { stageId: 'out', order: 3, scopeMembership: { feature: 'SKIP' } },
+    ]);
+    const { valid, plan } = buildExecutionPlan({ workflow: wf, scope: 'feature', library: lib });
+    expect(valid).toBe(true);
+    expect(plan.summary).toEqual({
+      executedStages: 3,
+      totalStages: 4,
+      approvalGates: 1,
+      perUnitStages: 1,
+      skippedStages: 0,
+      outOfScopeStages: 1,
+    });
+  });
+
+  it('the summary tracks the per-intent skip overlay (skipped stages leave N and the gate count)', () => {
+    const lib = baseLibrary({
+      stagesById: {
+        a: stage('a', { humanValidation: 'required' }),
+        b: stage('b', { humanValidation: 'required', execution: 'CONDITIONAL' }),
+        c: stage('c', { humanValidation: 'none' }),
+      },
+    });
+    const wf = workflow([
+      placement('a', 'feature', 0),
+      placement('b', 'feature', 1),
+      placement('c', 'feature', 2),
+    ]);
+    const { valid, plan } = buildExecutionPlan({
+      workflow: wf,
+      scope: 'feature',
+      library: lib,
+      skipStageIds: ['b'],
+    });
+    expect(valid).toBe(true);
+    expect(plan.summary).toEqual({
+      executedStages: 2,
+      totalStages: 3,
+      approvalGates: 1,
+      perUnitStages: 0,
+      skippedStages: 1,
+      outOfScopeStages: 0,
+    });
+  });
 });
 
 // ── WP4: unit dimension + parallel sections (docs/v2-parallel.md A2) ─────────

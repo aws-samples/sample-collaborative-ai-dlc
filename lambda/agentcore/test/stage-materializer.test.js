@@ -212,6 +212,23 @@ describe('buildMcpConfig', () => {
     expect(cfg.mcpServers.aidlc.env.V2_MCP_ROLE).toBe('author');
   });
 
+  it('passes the trusted reviewer identity on reviewer scopes (empty otherwise)', () => {
+    const reviewerCfg = buildMcpConfig({
+      mcpEntry: 'x',
+      scope: {
+        executionId: 'e',
+        intentId: 'i',
+        role: 'reviewer',
+        reviewerAgent: 'aidlc-architecture-reviewer-agent',
+      },
+    });
+    expect(reviewerCfg.mcpServers.aidlc.env.V2_REVIEWER_AGENT).toBe(
+      'aidlc-architecture-reviewer-agent',
+    );
+    const authorCfg = buildMcpConfig({ mcpEntry: 'x', scope: { executionId: 'e', intentId: 'i' } });
+    expect(authorCfg.mcpServers.aidlc.env.V2_REVIEWER_AGENT).toBe('');
+  });
+
   it('merges custom servers alongside the reserved aidlc server', () => {
     const cfg = buildMcpConfig({
       mcpEntry: 'x',

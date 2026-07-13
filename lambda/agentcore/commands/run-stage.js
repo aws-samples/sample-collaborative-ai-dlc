@@ -300,20 +300,74 @@ const composeKnowledge = (methodology, teamRows) => {
   return parts.join('\n\n---\n\n');
 };
 
-const buildReviewerPrompt = ({ stage, reviewerAgent, reviewerPersona, knowledge, round }) => {
+// The shared inception contracts that pin cross-unit boundaries (upstream
+// stage-protocol §12a names these four). On a per-unit review they are the
+// ONLY sanctioned source for cross-unit verification — the reviewer checks
+// contract claims against them instead of sweeping sibling units' artifacts.
+const SHARED_CONTRACT_ARTIFACTS = ['components', 'component-methods', 'services', 'unit-of-work'];
+
+// Reviewer read scope (upstream stage-protocol §12a, 2.2.16): on a per-unit
+// stage the reviewer is bounded to the unit under review plus the shared
+// contracts. PURE — returns the prompt block, or '' when the run has no unit
+// dimension (once-per-workflow stages review the whole intent as before).
+const renderReviewerReadScope = ({ unit, contracts }) => {
+  if (!unit?.slug) return '';
+  return [
+    '## Reviewer read scope',
+    '',
+    `This review is bounded to the unit **${unit.slug}**${unit.kind ? ` (kind: ${unit.kind})` : ''}.`,
+    'Your scope is this unit\u2019s artifacts plus the input artifacts listed above.',
+    'You MUST NOT read other units\u2019 content through any tool — not by fetching',
+    'their artifacts from the graph, not by opening files, and not via grep, glob,',
+    'or shell patterns that span sibling unit paths (a `construction/*/` glob is a',
+    'sibling read, not a search).',
+    '',
+    `Cross-unit contract verification runs against the shared inception contracts`,
+    `(${contracts.join(', ')}) passed as inputs — not against a sweep of sibling`,
+    'units\u2019 design prose. The single exception: you may spot-check an integration',
+    'point the current unit\u2019s design EXPLICITLY names — and only the owning file,',
+    'resolved via the shared contracts rather than by browsing or searching the',
+    'sibling\u2019s directory.',
+  ].join('\n');
+};
+
+const buildReviewerPrompt = ({
+  stage,
+  unit = null,
+  reviewerAgent,
+  reviewerPersona,
+  knowledge,
+  round,
+}) => {
   const outputs = (stage.outputArtifacts ?? []).map((o) => o.artifact ?? o).filter(Boolean);
   const inputs = (stage.inputArtifacts ?? []).map((i) => i.artifact ?? i).filter(Boolean);
+  // The shared contracts actually resolved for this stage (never invent ids the
+  // stage does not consume) — feeds the per-unit read-scope block.
+  const contracts = SHARED_CONTRACT_ARTIFACTS.filter((id) => inputs.includes(id));
+  const readScope = renderReviewerReadScope({
+    unit,
+    contracts: contracts.length ? contracts : inputs,
+  });
   return [
     `# Clean-room review: ${stage.stageId}`,
     '',
     `You are ${reviewerAgent}, the independent reviewer for this stage.`,
     'Do not modify artifacts. Use only read tools to inspect the intent graph, inputs, and produced artifacts.',
     'When done, call submit_review exactly once with verdict READY or NOT-READY and concrete findings.',
+    // Upstream §12a identity marker: the first finding line names the reviewer
+    // verbatim so the audit trail records which reviewer ran. The runtime also
+    // stamps the trusted identity server-side; this keeps the artifact-visible
+    // contract aligned with upstream.
+    `Pass reviewer: "${reviewerAgent}" to submit_review, and make the FIRST line of your findings the identity marker verbatim: **Reviewer:** ${reviewerAgent}`,
     '',
     `Review round: ${round}`,
     `Stage phase: ${stage.phase ?? 'unknown'}`,
+    ...(unit?.slug
+      ? [`Unit under review: ${unit.slug}${unit.kind ? ` (kind: ${unit.kind})` : ''}`]
+      : []),
     `Expected input artifacts: ${inputs.length ? inputs.join(', ') : 'none'}`,
     `Produced artifacts to review: ${outputs.length ? outputs.join(', ') : 'none'}`,
+    ...(readScope ? ['', readScope] : []),
     '',
     '## Reviewer role',
     reviewerPersona || '(no reviewer persona supplied)',
@@ -331,6 +385,7 @@ const latestReviewerVerdict = async ({ store, executionId, stageInstanceId, revi
 
 const runReviewer = async ({
   stage,
+  unit = null,
   reviewerAgent,
   reviewerBlock,
   reviewerPersona,
@@ -363,9 +418,20 @@ const runReviewer = async ({
     stageInstanceId,
     unitSlug,
     role: 'reviewer',
+    // Trusted reviewer identity: the bridge stamps THIS name on the verdict row
+    // (sensorId `reviewer:<name>`), never the agent's self-report — a hallucinated
+    // or omitted name can no longer detach the verdict from the round that ran.
+    reviewerAgent,
     model,
   };
-  const prompt = buildReviewerPrompt({ stage, reviewerAgent, reviewerPersona, knowledge, round });
+  const prompt = buildReviewerPrompt({
+    stage,
+    unit,
+    reviewerAgent,
+    reviewerPersona,
+    knowledge,
+    round,
+  });
   const mcpKwargs =
     cli === 'kiro'
       ? {
@@ -1923,6 +1989,7 @@ export const runStage = async (
     for (let round = 1; round <= maxIterations; round += 1) {
       verdict = await runReviewer({
         stage,
+        unit,
         reviewerAgent,
         reviewerBlock,
         reviewerPersona,
@@ -2026,4 +2093,7 @@ export const __test = {
   renderSteering,
   consumePendingSteering,
   isBenignKiroEmptyCompletion,
+  buildReviewerPrompt,
+  renderReviewerReadScope,
+  SHARED_CONTRACT_ARTIFACTS,
 };
