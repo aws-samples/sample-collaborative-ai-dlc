@@ -26,6 +26,7 @@ import {
   unitPlanKey,
   unitKey,
   quorumEditKey,
+  composeKey,
   executionPk,
   projectPk,
   projectStatusIndex,
@@ -42,8 +43,10 @@ import {
   buildUnitPlanRow,
   buildUnitRow,
   buildQuorumEditRow,
+  buildComposeRow,
   UNIT_STATES,
   QUORUM_EDIT_STATES,
+  COMPOSE_STATES,
   CONSTRUCTION_AUTONOMY_MODES,
 } from './v2-process-keys.js';
 
@@ -1363,6 +1366,98 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return items.toSorted((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
   };
 
+  // ── Composer sessions (Adaptive Workflows) ──
+  const createCompose = async (input) => {
+    const item = buildComposeRow({ ...input, now: now() });
+    await ddb.send(
+      new PutCommand({
+        TableName: table(),
+        Item: item,
+        ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
+      }),
+    );
+    return item;
+  };
+
+  const getCompose = async (executionId, composeId) => {
+    const { Item } = await ddb.send(
+      new GetCommand({ TableName: table(), Key: composeKey(executionId, composeId) }),
+    );
+    return Item ?? null;
+  };
+
+  // Lifecycle transition + field patch, CAS'd on the expected prior state(s)
+  // (mirrors updateQuorumEdit) so a crashed compose job retried by the
+  // container can never double-complete a row. Returns the new row, or null
+  // when the CAS lost.
+  const updateCompose = async ({
+    executionId,
+    composeId,
+    state,
+    fromStates = null,
+    fields = {},
+  }) => {
+    const ts = now();
+    const sets = ['updatedAt = :ts'];
+    const names = {};
+    const values = { ':ts': ts };
+    if (state !== undefined) {
+      if (!COMPOSE_STATES.includes(state)) throw new Error(`invalid compose state: ${state}`);
+      names['#state'] = 'state';
+      sets.push('#state = :state', 'GSI2SK = :g2sk');
+      values[':state'] = state;
+      values[':g2sk'] = executionTypeStateIndex({
+        executionId,
+        type: 'COMPOSE',
+        state,
+        id: composeId,
+      }).GSI2SK;
+      if (state === 'COMPLETED' || state === 'FAILED') {
+        sets.push('completedAt = :ca');
+        values[':ca'] = ts;
+      }
+    }
+    for (const [k, v] of Object.entries(fields)) {
+      names[`#f_${k}`] = k;
+      values[`:f_${k}`] = v;
+      sets.push(`#f_${k} = :f_${k}`);
+    }
+    const params = {
+      TableName: table(),
+      Key: composeKey(executionId, composeId),
+      UpdateExpression: `SET ${sets.join(', ')}`,
+      ExpressionAttributeValues: values,
+      ReturnValues: 'ALL_NEW',
+    };
+    if (Object.keys(names).length) params.ExpressionAttributeNames = names;
+    const conditions = ['attribute_exists(pk)'];
+    if (Array.isArray(fromStates) && fromStates.length > 0) {
+      params.ExpressionAttributeNames = { ...params.ExpressionAttributeNames, '#state': 'state' };
+      conditions.push(`#state IN (${fromStates.map((_, i) => `:from${i}`).join(', ')})`);
+      fromStates.forEach((s, i) => {
+        params.ExpressionAttributeValues[`:from${i}`] = s;
+      });
+    }
+    params.ConditionExpression = conditions.join(' AND ');
+    try {
+      const { Attributes } = await ddb.send(new UpdateCommand(params));
+      return Attributes;
+    } catch (e) {
+      if (e?.name === 'ConditionalCheckFailedException') return null;
+      throw e;
+    }
+  };
+
+  // All composer sessions for an execution, oldest first.
+  const listComposes = async (executionId) => {
+    const items = await queryAll(ddb, {
+      TableName: table(),
+      KeyConditionExpression: 'pk = :pk AND begins_with(sk, :p)',
+      ExpressionAttributeValues: { ':pk': executionPk(executionId), ':p': 'COMPOSE#' },
+    });
+    return items.toSorted((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+  };
+
   // Read every record for an execution, grouped by type (for the resume lambda /
   // admin / restore-on-reload). Fully paginated — see queryAll.
   //
@@ -1405,6 +1500,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       unitPlan: records.find((r) => r.sk === 'UNITPLAN') ?? null,
       units: records.filter((r) => r.sk.startsWith('UNIT#')),
       quorumEdits: records.filter((r) => r.sk.startsWith('QEDIT#')),
+      composes: records.filter((r) => r.sk.startsWith('COMPOSE#')),
     };
   };
 
@@ -1491,6 +1587,10 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     getQuorumEdit,
     updateQuorumEdit,
     listQuorumEdits,
+    createCompose,
+    getCompose,
+    updateCompose,
+    listComposes,
     getExecutionRecords,
   };
 };

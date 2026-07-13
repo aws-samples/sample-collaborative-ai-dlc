@@ -1093,6 +1093,26 @@ resource "aws_api_gateway_resource" "intent_rewind" {
   path_part   = "rewind"
 }
 
+# Composer sessions (Adaptive Workflows): start a compose (front/report),
+# presign the report upload, and list this intent's sessions.
+resource "aws_api_gateway_resource" "intent_compose" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent.id
+  path_part   = "compose"
+}
+
+resource "aws_api_gateway_resource" "intent_compose_report_upload" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent.id
+  path_part   = "compose-report-upload"
+}
+
+resource "aws_api_gateway_resource" "intent_composes" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent.id
+  path_part   = "composes"
+}
+
 resource "aws_api_gateway_resource" "intent_realtime_token" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.intent.id
@@ -1200,6 +1220,9 @@ locals {
     start_post      = { resource = aws_api_gateway_resource.intent_start.id, method = "POST" }
     cancel_post     = { resource = aws_api_gateway_resource.intent_cancel.id, method = "POST" }
     rewind_post     = { resource = aws_api_gateway_resource.intent_rewind.id, method = "POST" }
+    compose_post    = { resource = aws_api_gateway_resource.intent_compose.id, method = "POST" }
+    compose_upload  = { resource = aws_api_gateway_resource.intent_compose_report_upload.id, method = "POST" }
+    composes_get    = { resource = aws_api_gateway_resource.intent_composes.id, method = "GET" }
     token_post      = { resource = aws_api_gateway_resource.intent_realtime_token.id, method = "POST" }
     answer_post     = { resource = aws_api_gateway_resource.intent_gate_answer.id, method = "POST" }
     revise_post     = { resource = aws_api_gateway_resource.intent_gate_revise.id, method = "POST" }
@@ -1289,6 +1312,24 @@ module "cors_intent_rewind" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.intent_rewind.id
+}
+
+module "cors_intent_compose" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_compose.id
+}
+
+module "cors_intent_compose_report_upload" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_compose_report_upload.id
+}
+
+module "cors_intent_composes" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_composes.id
 }
 
 module "cors_intent_realtime_token" {

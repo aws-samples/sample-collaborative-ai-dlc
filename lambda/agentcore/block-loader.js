@@ -56,7 +56,9 @@ const listBlocks = async (tenant, type) =>
   });
 
 // Merge SYSTEM + default catalogs for a type, default shadowing SYSTEM by id.
-const listMergedBlocks = async (type) => {
+// Exported for callers needing block types outside loadLibrary's bag (the
+// composer reads SCOPE blocks for keyword/description grounding).
+export const listMergedBlocks = async (type) => {
   const [system, user] = await Promise.all([
     listBlocks(SYSTEM_TENANT, type),
     listBlocks(DEFAULT_TENANT, type),

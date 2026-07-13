@@ -13,6 +13,8 @@ import {
   SendDurableExecutionCallbackSuccessCommand,
 } from '@aws-sdk/client-lambda';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
+import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
@@ -27,10 +29,15 @@ import { signRealtimeToken } from '../shared/realtime-token.js';
 import { parseCliModels, mergeCliModels } from '../shared/cli-models.js';
 import { parseTierModels, mergeTierModels } from '../shared/tier-models.js';
 import { mergeMcpServers } from '../shared/mcp-validator.js';
-import { loadWorkflowScopes, loadExecutionPlan } from '../shared/v2-workflow-plan.js';
+import {
+  loadWorkflowScopes,
+  loadExecutionPlan,
+  listMergedBlocks,
+} from '../shared/v2-workflow-plan.js';
 import { stageInstanceId as planStageInstanceId } from '../shared/v2-execution-plan.js';
 import { effectiveStageSkipping, normalizeSkipStageIds } from '../shared/stage-skip.js';
 import { normalizeComposedGrid } from '../shared/composed-grid.js';
+import { matchScopeByKeywords } from '../shared/compose-match.js';
 import { makePriceResolver, costForMetrics } from '../shared/model-pricing.js';
 import { aggregateMetrics, rollupAggregates } from '../shared/metric-classification.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
@@ -51,6 +58,7 @@ const { cardinality, P } = gremlin.process;
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
+const s3 = new S3Client({});
 const lambdaClient = new LambdaClient({});
 const agentcore = new BedrockAgentCoreClient({});
 const store = createProcessStore({ ddb });
@@ -62,6 +70,10 @@ const DURABLE_EXECUTION_TIMEOUT_SECONDS = () =>
 // The AgentCore stage-executor runtime — used for the manual derive backfill
 // (POST .../derive). Same ARN + session-id convention as the orchestrator.
 const AGENTCORE_RUNTIME_ARN = () => process.env.AGENTCORE_RUNTIME_ARN || '';
+// Compose report uploads land here (presigned PUT) and are read back at
+// compose dispatch. Key shape: compose-reports/<intentId>/<uuid>.json.
+const ARTIFACTS_BUCKET = () => process.env.ARTIFACTS_BUCKET || '';
+const composeReportPrefix = (intentId) => `compose-reports/${intentId}/`;
 const runtimeSessionIdFor = (intentId) => `aidlc-intent-${intentId}`.padEnd(33, '0');
 // Unit-lane session ids — must mirror v2-orchestrator/section.js laneSessionIdFor.
 const laneSessionIdFor = (intentId, sectionIndex, slug) =>
@@ -336,6 +348,39 @@ const fetchPlatformStageSkipping = async () => {
     return 'disabled';
   }
 };
+
+// Read the Admin compose-LLM-bypass toggle. When 'enabled' (the default), a
+// CLEAN deterministic keyword match answers a front compose without any LLM
+// call; 'disabled' forces every compose through the composer agent. Fail-open
+// to 'enabled' — the bypass is the cheap, deterministic path.
+const fetchComposeLlmBypass = async () => {
+  const prefix = AGENT_SETTINGS_SSM_PREFIX();
+  if (!prefix) return 'enabled';
+  try {
+    const res = await ssm.send(new GetParameterCommand({ Name: `${prefix}/compose-llm-bypass` }));
+    return res.Parameter?.Value === 'disabled' ? 'disabled' : 'enabled';
+  } catch {
+    return 'enabled';
+  }
+};
+
+// Map a COMPOSE# row (composer session) to the wire shape.
+const mapCompose = (c) => ({
+  composeId: c.composeId,
+  mode: c.mode,
+  state: c.state,
+  source: c.source ?? null,
+  requestedBy: c.requestedBy ?? null,
+  requestedByName: c.requestedByName ?? null,
+  instructions: c.instructions ?? null,
+  reportKey: c.reportKey ?? null,
+  proposal: c.proposal ?? null,
+  validation: c.validation ?? null,
+  failureReason: c.failureReason ?? null,
+  createdAt: c.createdAt ?? null,
+  updatedAt: c.updatedAt ?? null,
+  completedAt: c.completedAt ?? null,
+});
 
 // Read the v2 project's run config (workflow pin, repos, park-release). Scope is
 // NOT a project property — it is chosen per-intent at create time.
@@ -1566,6 +1611,229 @@ export const handler = async (event) => {
     // orchestrator with a cancel sentinel) so nothing resumes afterwards.
     // Deletion order is deliberate: Yjs docs → Neptune → DynamoDB (META last),
     // so a partial failure leaves the intent listed and the delete retryable.
+    // ── Composer (Adaptive Workflows) ────────────────────────────────────────
+    // "LLM proposes, engine disposes": a compose request only ever produces a
+    // COMPOSE row carrying a proposal + the plan resolver's authoritative
+    // verdict. Applying a proposal is a SEPARATE human action (the DRAFT PATCH
+    // above / the recompose path), which validates again.
+
+    // POST .../compose-report-upload — presigned PUT for an external analysis
+    // report (report-mode compose input). DRAFT only; the key is namespaced
+    // under this intent so a report can never be smuggled across intents.
+    if (intentId && httpMethod === 'POST' && path?.endsWith('/compose-report-upload')) {
+      const meta = await store.getExecution(intentId);
+      if (!meta || meta.projectId !== projectId) {
+        return response(404, { error: 'Intent not found' });
+      }
+      if (meta.status !== 'DRAFT') {
+        return response(409, { error: `Intent is ${meta.status}, compose applies to DRAFT only` });
+      }
+      if (!ARTIFACTS_BUCKET()) {
+        return response(503, { error: 'Report uploads are not configured' });
+      }
+      const key = `${composeReportPrefix(intentId)}${randomUUID()}.json`;
+      const uploadUrl = await getSignedUrl(
+        s3,
+        new PutObjectCommand({
+          Bucket: ARTIFACTS_BUCKET(),
+          Key: key,
+          ContentType: 'application/json',
+        }),
+        { expiresIn: 300 },
+      );
+      return response(200, { uploadUrl, key, expiresIn: 300 });
+    }
+
+    // POST .../compose — start a composer session for this DRAFT.
+    // Body: { instructions?, reportKey?, repoSignals? }. Mode is derived:
+    // 'report' when a reportKey rides along, else 'front'. Deterministic-first:
+    // when the Admin bypass is enabled and exactly one stock scope's keywords
+    // match the draft text, the row completes WITHOUT any LLM call.
+    if (intentId && httpMethod === 'POST' && path?.endsWith('/compose')) {
+      const meta = await store.getExecution(intentId);
+      if (!meta || meta.projectId !== projectId) {
+        return response(404, { error: 'Intent not found' });
+      }
+      if (meta.status !== 'DRAFT') {
+        return response(409, { error: `Intent is ${meta.status}, compose applies to DRAFT only` });
+      }
+      if (!meta.prompt && !meta.title) {
+        return response(400, { error: 'Give the intent a prompt (or title) before composing' });
+      }
+      const data = body ? JSON.parse(body) : {};
+      const instructions =
+        typeof data.instructions === 'string' && data.instructions.trim()
+          ? data.instructions.trim().slice(0, 4000)
+          : null;
+      const reportKey =
+        typeof data.reportKey === 'string' && data.reportKey ? data.reportKey : null;
+      if (reportKey && !reportKey.startsWith(composeReportPrefix(intentId))) {
+        return response(400, { error: 'reportKey does not belong to this intent' });
+      }
+      // Advisory workspace signals, gathered client-side through the existing
+      // authenticated git-provider routes (branch lists, trees). Bounded and
+      // shape-checked only — runtime workspace-detection stays authoritative.
+      const repoSignals =
+        data.repoSignals && typeof data.repoSignals === 'object' && !Array.isArray(data.repoSignals)
+          ? JSON.parse(JSON.stringify(data.repoSignals).slice(0, 8192))
+          : null;
+      const mode = reportKey ? 'report' : 'front';
+      const responder = getResponder(event);
+      const composeId = randomUUID();
+      const intentText = [meta.title, meta.prompt].filter(Boolean).join('\n\n');
+
+      // Deterministic pre-pass: a CLEAN single-scope keyword match (front mode,
+      // no steering instructions) resolves without the LLM — unless the Admin
+      // switch forces every compose through the composer agent.
+      if (mode === 'front' && !instructions && (await fetchComposeLlmBypass()) === 'enabled') {
+        const scopeBlocks = await listMergedBlocks(ddb, BLOCKS_TABLE(), 'SCOPE').catch(() => []);
+        const match = matchScopeByKeywords({ text: intentText, scopes: scopeBlocks });
+        if (match) {
+          const planCheck = await loadExecutionPlan({
+            ddb,
+            tableName: BLOCKS_TABLE(),
+            workflowId: meta.workflowId,
+            workflowVersion: meta.workflowVersion,
+            scope: match.scopeId,
+          });
+          if (planCheck.valid) {
+            const row = await store.createCompose({
+              executionId: intentId,
+              composeId,
+              mode,
+              state: 'PENDING',
+              source: 'match',
+              requestedBy: responder.sub,
+              requestedByName: responder.displayName,
+              instructions,
+            });
+            const completed = await store.updateCompose({
+              executionId: intentId,
+              composeId,
+              state: 'COMPLETED',
+              fromStates: ['PENDING'],
+              fields: {
+                proposal: {
+                  mode: 'matched',
+                  scope: match.scopeId,
+                  grid: null,
+                  rationale: [`keyword match: ${match.matched.join(', ')}`],
+                  confidence: 1,
+                },
+                validation: {
+                  valid: true,
+                  errors: [],
+                  warnings: planCheck.warnings ?? [],
+                  summary: planCheck.plan?.summary ?? null,
+                },
+              },
+            });
+            await store
+              .appendEvent({
+                executionId: intentId,
+                type: 'v2.compose.completed',
+                actor: 'composer',
+                summary: `Deterministic keyword match proposed scope "${match.scopeId}"`,
+              })
+              .catch(() => {});
+            await broadcastToIntentChannel(intentId, {
+              action: 'compose.updated',
+              intentId,
+              projectId,
+              compose: mapCompose(completed ?? row),
+            });
+            return response(201, mapCompose(completed ?? row));
+          }
+          // A matched-but-unrunnable scope falls through to the composer.
+        }
+      }
+
+      if (!AGENTCORE_RUNTIME_ARN()) {
+        return response(503, { error: 'Composer runtime is not configured' });
+      }
+      // Report excerpt: read + bound the uploaded report server-side so the
+      // container payload stays small and the container needs no S3 grant.
+      let reportExcerpt = null;
+      if (reportKey) {
+        try {
+          const obj = await s3.send(
+            new GetObjectCommand({ Bucket: ARTIFACTS_BUCKET(), Key: reportKey }),
+          );
+          const text = await obj.Body.transformToString();
+          reportExcerpt = text.slice(0, 24 * 1024);
+        } catch {
+          return response(400, { error: 'Report not found — upload it first' });
+        }
+      }
+      const row = await store.createCompose({
+        executionId: intentId,
+        composeId,
+        mode,
+        state: 'PENDING',
+        source: 'llm',
+        requestedBy: responder.sub,
+        requestedByName: responder.displayName,
+        instructions,
+        reportKey,
+      });
+      try {
+        const res = await agentcore.send(
+          new InvokeAgentRuntimeCommand({
+            agentRuntimeArn: AGENTCORE_RUNTIME_ARN(),
+            runtimeSessionId: runtimeSessionIdFor(intentId),
+            contentType: 'application/json',
+            accept: 'application/json',
+            payload: Buffer.from(
+              JSON.stringify({
+                command: 'compose-plan-start',
+                projectId,
+                intentId,
+                executionId: intentId,
+                composeId,
+                mode,
+                workflowId: meta.workflowId,
+                workflowVersion: meta.workflowVersion,
+                prompt: intentText,
+                ...(instructions ? { instructions } : {}),
+                ...(repoSignals ? { repoSignals } : {}),
+                ...(reportExcerpt ? { reportExcerpt } : {}),
+              }),
+            ),
+          }),
+        );
+        const text = res.response ? await res.response.transformToString() : '';
+        const accepted = text ? JSON.parse(text) : {};
+        if (accepted.ok === false) {
+          throw new Error(accepted.reason ?? 'compose dispatch refused');
+        }
+      } catch (err) {
+        // The accept failed — terminalize the row so the UI never spins on a
+        // compose no container is running.
+        await store
+          .updateCompose({
+            executionId: intentId,
+            composeId,
+            state: 'FAILED',
+            fromStates: ['PENDING'],
+            fields: { failureReason: `dispatch failed: ${err.message}` },
+          })
+          .catch(() => {});
+        return response(503, { error: `Compose dispatch failed: ${err.message}` });
+      }
+      return response(202, mapCompose(row));
+    }
+
+    // GET .../composes — the intent's composer sessions (the compose page
+    // seeds from this, then follows compose.updated broadcasts).
+    if (intentId && httpMethod === 'GET' && path?.endsWith('/composes')) {
+      const meta = await store.getExecution(intentId);
+      if (!meta || meta.projectId !== projectId) {
+        return response(404, { error: 'Intent not found' });
+      }
+      const rows = await store.listComposes(intentId);
+      return response(200, { composes: rows.map(mapCompose) });
+    }
+
     // PATCH /projects/{projectId}/intents/{intentId} — DRAFT-only header edit.
     // The collaborative draft page auto-saves the shared prompt/title and the
     // scope / composed-grid / skip selections here (the Yjs doc is transport;
@@ -2131,6 +2399,9 @@ export const handler = async (event) => {
         // Quorum-supported artifact edit sessions (post-hoc document editing):
         // plan approval + progress render from these rows.
         quorumEdits: (records.quorumEdits ?? []).map(mapQuorumEdit),
+        // Composer sessions (proposal + authoritative validation) — the
+        // compose page renders these; compose.updated broadcasts keep it live.
+        composes: (records.composes ?? []).map(mapCompose),
         // Unit lanes (docs/v2-parallel.md WP4): the promoted UNITPLAN snapshot
         // + the live UNIT lane rows, so the UI can render the lane board and
         // attribute per-unit stage instances. Both null/empty pre-promotion.

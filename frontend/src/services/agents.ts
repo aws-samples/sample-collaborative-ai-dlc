@@ -95,6 +95,10 @@ export interface AgentSettings {
    *  gates. Projects may override; the effective value is snapshotted per
    *  intent at create. */
   stageSkipping?: 'enabled' | 'disabled';
+  /** Composer LLM bypass: 'enabled' (default) lets a clean deterministic
+   *  keyword match answer a front compose without an LLM call; 'disabled'
+   *  routes every compose through the composer agent. */
+  composeLlmBypass?: 'enabled' | 'disabled';
   /** Global custom MCP servers (raw JSON string, name-keyed JSON object)
    *  injected into every agent session; merged under a project's own set.
    *  Only returned to platform admins. */
@@ -118,6 +122,8 @@ export interface AgentSettingsUpdate {
   deriveEnrichment?: 'off' | 'llm';
   /** Platform-wide stage skipping mode. Omit to leave unchanged. */
   stageSkipping?: 'enabled' | 'disabled';
+  /** Composer LLM bypass mode. Omit to leave unchanged. */
+  composeLlmBypass?: 'enabled' | 'disabled';
   /** Global custom MCP servers (raw JSON string). Omit to leave unchanged. */
   customMcpServers?: string;
 }

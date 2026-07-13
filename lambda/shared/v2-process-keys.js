@@ -23,6 +23,7 @@
 //     SK = SENSOR#<ts>#<sensorRunId>  — a deterministic sensor verdict for a stage
 //     SK = STEER#<ts>#<steerId>       — a human steering/course-correction message
 //     SK = QEDIT#<editId>             — a Quorum-supported artifact edit session
+//     SK = COMPOSE#<composeId>        — a composer session (scope/grid proposal)
 //   GSI1PK = PROJECT#<projectId>      GSI1SK = STATUS#<status>#STARTED#<ts>#EXEC#<id>
 //     (list a project's executions by status, newest first)
 //   GSI2PK = EXEC#<executionId>       GSI2SK = TYPE#<type>#STATE#<state>#<id>
@@ -95,6 +96,15 @@ const unitKey = (executionId, slug) => ({
 const quorumEditKey = (executionId, editId) => ({
   pk: executionPk(executionId),
   sk: `QEDIT#${editId}`,
+});
+// Composer sessions (Adaptive Workflows): one row per compose request — the
+// request context, the composer's validated proposal, and the authoritative
+// plan-resolver verdict for it. The proposal is DATA: applying it (writing the
+// intent's scope/composedGrid) is always a separate human action, never done
+// by the compose job itself.
+const composeKey = (executionId, composeId) => ({
+  pk: executionPk(executionId),
+  sk: `COMPOSE#${composeId}`,
 });
 
 // ── Index projections ──
@@ -174,6 +184,14 @@ const QUORUM_EDIT_STATES = [
   'CANCELLED',
 ];
 const QUORUM_EDIT_TERMINAL_STATES = ['SUCCEEDED', 'FAILED', 'REJECTED', 'CANCELLED'];
+
+// Composer session lifecycle:
+//   PENDING   — dispatched (or being answered deterministically)
+//   COMPLETED — a validated proposal is on the row
+//   FAILED    — degraded compose (CLI failure, unparseable output, invalid
+//               grid) — the row carries the structured reason, never a guess
+const COMPOSE_STATES = ['PENDING', 'COMPLETED', 'FAILED'];
+const COMPOSE_MODES = ['front', 'report', 'inflight'];
 
 // ── Pure record builders ──
 // Every builder takes injected `now`/ids so callers/tests stay deterministic
@@ -761,6 +779,45 @@ const buildQuorumEditRow = ({
   completedAt: null,
 });
 
+// One composer session. `source` records HOW the proposal was produced:
+// 'match' (deterministic keyword pre-pass, no LLM) or 'llm' (the composer
+// agent). `proposal` is the parsed contract shape ({ mode, scope, grid,
+// rationale, confidence }); `validation` is the plan resolver's authoritative
+// verdict for it ({ valid, errors, warnings, summary }) — the UI renders the
+// validation numbers, never the composer's own claims.
+const buildComposeRow = ({
+  executionId,
+  composeId,
+  mode = 'front',
+  state = 'PENDING',
+  source = 'llm',
+  requestedBy = null,
+  requestedByName = null,
+  instructions = null,
+  reportKey = null,
+  now,
+}) => ({
+  ...composeKey(executionId, composeId),
+  ...executionTypeStateIndex({ executionId, type: 'COMPOSE', state, id: composeId }),
+  type: 'Compose',
+  executionId,
+  composeId,
+  mode,
+  state,
+  source,
+  requestedBy,
+  requestedByName,
+  instructions,
+  // S3 key of the uploaded report (report mode only).
+  reportKey,
+  proposal: null,
+  validation: null,
+  failureReason: null,
+  createdAt: now,
+  updatedAt: now,
+  completedAt: null,
+});
+
 export {
   META,
   executionPk,
@@ -778,6 +835,7 @@ export {
   unitPlanKey,
   unitKey,
   quorumEditKey,
+  composeKey,
   projectStatusIndex,
   executionTypeStateIndex,
   EXECUTION_STATUS,
@@ -790,6 +848,8 @@ export {
   CONSTRUCTION_AUTONOMY_MODES,
   QUORUM_EDIT_STATES,
   QUORUM_EDIT_TERMINAL_STATES,
+  COMPOSE_STATES,
+  COMPOSE_MODES,
   buildExecutionMeta,
   buildStageRow,
   buildEventRow,
@@ -802,6 +862,7 @@ export {
   buildUnitPlanRow,
   buildUnitRow,
   buildQuorumEditRow,
+  buildComposeRow,
 };
 export default {
   META,
@@ -820,6 +881,7 @@ export default {
   unitPlanKey,
   unitKey,
   quorumEditKey,
+  composeKey,
   projectStatusIndex,
   executionTypeStateIndex,
   EXECUTION_STATUS,
@@ -832,6 +894,8 @@ export default {
   CONSTRUCTION_AUTONOMY_MODES,
   QUORUM_EDIT_STATES,
   QUORUM_EDIT_TERMINAL_STATES,
+  COMPOSE_STATES,
+  COMPOSE_MODES,
   buildExecutionMeta,
   buildStageRow,
   buildEventRow,
@@ -844,4 +908,5 @@ export default {
   buildUnitPlanRow,
   buildUnitRow,
   buildQuorumEditRow,
+  buildComposeRow,
 };

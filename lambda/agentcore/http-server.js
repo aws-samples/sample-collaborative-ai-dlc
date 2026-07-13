@@ -95,6 +95,7 @@ export const dispatchInvocation = async ({
     'merge-lane': handlers.mergeLane,
     'resolve-conflict': handlers.resolveConflict,
     'discussion-assist-start': handlers.discussionAssistStart,
+    'compose-plan-start': handlers.composePlanStart,
     'quorum-edit-plan-start': handlers.quorumEditPlanStart,
     'quorum-edit-apply-start': handlers.quorumEditApplyStart,
     'repair-structure': handlers.repairStructure,
@@ -179,6 +180,7 @@ const main = async () => {
   const { runStage } = await import('./commands/run-stage.js');
   const { createRunStageStart } = await import('./commands/run-stage-start.js');
   const { createDiscussionAssistStart } = await import('./commands/discussion-assist-start.js');
+  const { createComposePlanStart } = await import('./commands/compose-plan-start.js');
   const { createQuorumEditPlanStart } = await import('./commands/quorum-edit-plan-start.js');
   const { createQuorumEditApplyStart } = await import('./commands/quorum-edit-apply-start.js');
   const { repairStructure } = await import('./commands/repair-structure.js');
@@ -268,6 +270,17 @@ const main = async () => {
     availableClis,
     env: process.env,
     mcpEntry,
+    busy,
+  });
+  // Composer proposals (Adaptive Workflows): grounded scope/grid proposals for
+  // a DRAFT intent (front/report) or a parked run (inflight). Proposal-only —
+  // applying it is the intents lambda's job, never this container's.
+  handlers.composePlanStart = createComposePlanStart({
+    openGraph,
+    store,
+    broadcast,
+    availableClis,
+    env: process.env,
     busy,
   });
   // Quorum-supported artifact edits: plan (impact analysis) + apply (approved

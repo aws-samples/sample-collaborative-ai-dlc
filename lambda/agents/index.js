@@ -170,6 +170,7 @@ export const handler = async (event) => {
       const deriveEnrichmentPath = `${prefix}/derive-enrichment`;
       const customMcpServersPath = `${prefix}/custom-mcp-servers`;
       const stageSkippingPath = `${prefix}/stage-skipping`;
+      const composeLlmBypassPath = `${prefix}/compose-llm-bypass`;
       try {
         const result = await ssm.send(
           new GetParametersCommand({
@@ -181,6 +182,7 @@ export const handler = async (event) => {
               deriveEnrichmentPath,
               customMcpServersPath,
               stageSkippingPath,
+              composeLlmBypassPath,
             ],
             WithDecryption: true,
           }),
@@ -197,6 +199,11 @@ export const handler = async (event) => {
         // Platform stage-skipping toggle (shared/stage-skip.js): fail-safe to
         // 'disabled' — anything but an explicit 'enabled' means off.
         const stageSkipping = byName[stageSkippingPath] === 'enabled' ? 'enabled' : 'disabled';
+        // Composer LLM bypass: when 'enabled' (default) a clean keyword match
+        // answers a front compose deterministically without an LLM call;
+        // 'disabled' forces every compose through the composer agent.
+        const composeLlmBypass =
+          byName[composeLlmBypassPath] === 'disabled' ? 'disabled' : 'enabled';
         // Custom MCP servers may carry secrets in env/headers — only expose the
         // raw config to platform admins (the only ones who can edit it). Others
         // get an empty object so the non-secret settings fields still load.
@@ -222,6 +229,7 @@ export const handler = async (event) => {
           tierModels,
           deriveEnrichment,
           stageSkipping,
+          composeLlmBypass,
           customMcpServers,
           customMcpServerNames,
         });
@@ -371,6 +379,31 @@ export const handler = async (event) => {
         } catch (err) {
           console.error('[settings] Failed to write stage skipping mode:', err.message);
           errors.push('stageSkipping: ' + err.message);
+        }
+      }
+
+      if (input.composeLlmBypass !== undefined) {
+        // Composer LLM bypass toggle: 'enabled' lets a clean keyword match
+        // answer a front compose without the LLM; 'disabled' routes every
+        // compose through the composer agent.
+        if (input.composeLlmBypass !== 'enabled' && input.composeLlmBypass !== 'disabled') {
+          return response(400, {
+            error: 'Invalid composeLlmBypass value',
+            issues: ['composeLlmBypass must be "enabled" or "disabled"'],
+          });
+        }
+        try {
+          await ssm.send(
+            new PutParameterCommand({
+              Name: `${prefix}/compose-llm-bypass`,
+              Value: input.composeLlmBypass,
+              Type: 'String',
+              Overwrite: true,
+            }),
+          );
+        } catch (err) {
+          console.error('[settings] Failed to write compose LLM bypass mode:', err.message);
+          errors.push('composeLlmBypass: ' + err.message);
         }
       }
 

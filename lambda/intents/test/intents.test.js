@@ -974,6 +974,239 @@ describe('composed grids + DRAFT PATCH', () => {
   });
 });
 
+describe('POST /compose — composer sessions', () => {
+  // Workflow: bugfix scope EXECUTEs both stages; SCOPE block carries the
+  // keyword that the deterministic bypass matches.
+  const seedComposeFixtures = () => {
+    procStore.set(keyOf('WF#default#aidlc-v2', 'V#4#SCOPEREF#bugfix'), {
+      pk: 'WF#default#aidlc-v2',
+      sk: 'V#4#SCOPEREF#bugfix',
+      scopeId: 'bugfix',
+    });
+    for (const p of [
+      { stageId: 'analyze', order: 0 },
+      { stageId: 'build', order: 1 },
+    ]) {
+      procStore.set(keyOf('WF#default#aidlc-v2', `V#4#PLACEMENT#${p.stageId}`), {
+        pk: 'WF#default#aidlc-v2',
+        sk: `V#4#PLACEMENT#${p.stageId}`,
+        stageId: p.stageId,
+        order: p.order,
+        scopeMembership: { feature: 'EXECUTE', bugfix: 'EXECUTE' },
+      });
+    }
+    for (const s of [
+      { id: 'analyze', produces: ['spec'], consumes: [] },
+      { id: 'build', produces: [], consumes: [{ artifact: 'spec', required: true }] },
+    ]) {
+      procStore.set(keyOf(`BLOCK#SYSTEM#STAGE#${s.id}`, 'V#latest'), {
+        pk: `BLOCK#SYSTEM#STAGE#${s.id}`,
+        sk: 'V#latest',
+        GSI1PK: 'TENANT#SYSTEM#STAGE',
+        GSI1SK: s.id,
+        blockId: s.id,
+        id: s.id,
+        version: 1,
+        phase: 'construction',
+        mode: 'inline',
+        leadAgent: 'orchestrator',
+        produces: s.produces,
+        consumes: s.consumes,
+        sensors: [],
+        humanValidation: 'none',
+      });
+    }
+    procStore.set(keyOf('BLOCK#SYSTEM#SCOPE#bugfix', 'V#latest'), {
+      pk: 'BLOCK#SYSTEM#SCOPE#bugfix',
+      sk: 'V#latest',
+      GSI1PK: 'TENANT#SYSTEM#SCOPE',
+      GSI1SK: 'bugfix',
+      blockId: 'bugfix',
+      id: 'bugfix',
+      keywords: ['hotfix'],
+      description: 'Fix and ship.',
+    });
+  };
+
+  const composeReq = (sub, projectId, intentId, body = {}) =>
+    handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intentId}/compose`,
+      pathParameters: { projectId, intentId },
+      body: JSON.stringify(body),
+      ...claims(sub),
+    });
+
+  it('a clean keyword match completes deterministically without the composer runtime', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedComposeFixtures();
+    const intent = JSON.parse(
+      (await createIntent(sub, projectId, { title: 'I', prompt: 'Ship a hotfix for login' })).body,
+    );
+    const res = await composeReq(sub, projectId, intent.id);
+    expect(res.statusCode).toBe(201);
+    const compose = JSON.parse(res.body);
+    expect(compose.state).toBe('COMPLETED');
+    expect(compose.source).toBe('match');
+    expect(compose.proposal).toMatchObject({ mode: 'matched', scope: 'bugfix' });
+    expect(compose.validation.valid).toBe(true);
+    expect(compose.validation.summary.executedStages).toBe(2);
+    // No LLM dispatch happened.
+    expect(agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)).toHaveLength(0);
+  });
+
+  it('dispatches the composer agent when no clean keyword match exists', async () => {
+    process.env.AGENTCORE_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:eu:1:runtime/x';
+    try {
+      agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+        response: { transformToString: async () => JSON.stringify({ ok: true, accepted: true }) },
+      });
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      seedComposeFixtures();
+      const intent = JSON.parse(
+        (await createIntent(sub, projectId, { title: 'I', prompt: 'Do something ambiguous' })).body,
+      );
+      const res = await composeReq(sub, projectId, intent.id, { instructions: 'be lean' });
+      expect(res.statusCode).toBe(202);
+      const compose = JSON.parse(res.body);
+      expect(compose.state).toBe('PENDING');
+      expect(compose.source).toBe('llm');
+      const call = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input;
+      const payload = JSON.parse(Buffer.from(call.payload).toString());
+      expect(payload).toMatchObject({
+        command: 'compose-plan-start',
+        intentId: intent.id,
+        mode: 'front',
+        workflowId: 'aidlc-v2',
+        instructions: 'be lean',
+      });
+      expect(payload.prompt).toContain('Do something ambiguous');
+    } finally {
+      delete process.env.AGENTCORE_RUNTIME_ARN;
+    }
+  });
+
+  it('the Admin bypass switch forces the LLM path even on a clean match', async () => {
+    process.env.AGENTCORE_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:eu:1:runtime/x';
+    vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', '/collab/dev');
+    try {
+      ssmMock
+        .on(GetParameterCommand, { Name: '/collab/dev/compose-llm-bypass' })
+        .resolves({ Parameter: { Value: 'disabled' } });
+      agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+        response: { transformToString: async () => JSON.stringify({ ok: true }) },
+      });
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      seedComposeFixtures();
+      const intent = JSON.parse(
+        (await createIntent(sub, projectId, { title: 'I', prompt: 'Ship a hotfix' })).body,
+      );
+      const res = await composeReq(sub, projectId, intent.id);
+      expect(res.statusCode).toBe(202);
+      expect(JSON.parse(res.body).source).toBe('llm');
+    } finally {
+      vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', undefined);
+      delete process.env.AGENTCORE_RUNTIME_ARN;
+    }
+  });
+
+  it('marks the row FAILED when the dispatch is refused', async () => {
+    process.env.AGENTCORE_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:eu:1:runtime/x';
+    try {
+      agentcoreMock.on(InvokeAgentRuntimeCommand).rejects(new Error('runtime down'));
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const intent = JSON.parse(
+        (await createIntent(sub, projectId, { title: 'I', prompt: 'Ambiguous ask' })).body,
+      );
+      const res = await composeReq(sub, projectId, intent.id);
+      expect(res.statusCode).toBe(503);
+      const rows = [...procStore.values()].filter((i) => (i.sk || '').startsWith('COMPOSE#'));
+      expect(rows).toHaveLength(1);
+      expect(rows[0].state).toBe('FAILED');
+      expect(rows[0].failureReason).toMatch(/dispatch failed/);
+    } finally {
+      delete process.env.AGENTCORE_RUNTIME_ARN;
+    }
+  });
+
+  it('409s compose on a non-DRAFT intent and 400s an empty draft', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/start`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+    const res = await composeReq(sub, projectId, intent.id);
+    expect(res.statusCode).toBe(409);
+  });
+
+  it('GET /composes lists the intent sessions; detail DTO carries them too', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedComposeFixtures();
+    const intent = JSON.parse(
+      (await createIntent(sub, projectId, { title: 'I', prompt: 'hotfix the crash' })).body,
+    );
+    await composeReq(sub, projectId, intent.id);
+    const list = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}/composes`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+    expect(list.statusCode).toBe(200);
+    const { composes } = JSON.parse(list.body);
+    expect(composes).toHaveLength(1);
+    expect(composes[0].state).toBe('COMPLETED');
+    const detail = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+    expect(JSON.parse(detail.body).composes).toHaveLength(1);
+  });
+
+  it('presigns a namespaced report upload for a DRAFT', async () => {
+    vi.stubEnv('ARTIFACTS_BUCKET', 'artifacts-test');
+    try {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const intent = JSON.parse((await createIntent(sub, projectId)).body);
+      const res = await handler({
+        httpMethod: 'POST',
+        path: `/projects/${projectId}/intents/${intent.id}/compose-report-upload`,
+        pathParameters: { projectId, intentId: intent.id },
+        ...claims(sub),
+      });
+      expect(res.statusCode).toBe(200);
+      const { uploadUrl, key } = JSON.parse(res.body);
+      expect(key).toMatch(new RegExp(`^compose-reports/${intent.id}/`));
+      expect(uploadUrl).toContain('artifacts-test');
+    } finally {
+      vi.stubEnv('ARTIFACTS_BUCKET', undefined);
+    }
+  });
+
+  it('rejects a reportKey outside this intent namespace', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const res = await composeReq(sub, projectId, intent.id, {
+      reportKey: 'compose-reports/other-intent/x.json',
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toMatch(/does not belong/);
+  });
+});
+
 describe('POST /start', () => {
   it('flips DRAFT → CREATED and invokes the orchestrator', async () => {
     const sub = `u-${randomUUID()}`;

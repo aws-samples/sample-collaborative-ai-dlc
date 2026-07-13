@@ -89,6 +89,45 @@ export interface PlanWarning {
   ref?: string | string[];
 }
 
+// A composer session (COMPOSE# row): the proposal is DATA — applying it (via
+// the DRAFT update / recompose endpoints) is always a separate human action.
+export interface ComposeSession {
+  composeId: string;
+  mode: 'front' | 'report' | 'inflight';
+  state: 'PENDING' | 'COMPLETED' | 'FAILED';
+  /** 'match' = deterministic keyword bypass (no LLM); 'llm' = composer agent. */
+  source: 'match' | 'llm' | null;
+  requestedBy: string | null;
+  requestedByName: string | null;
+  instructions: string | null;
+  reportKey: string | null;
+  proposal: {
+    mode: 'matched' | 'custom';
+    scope: string;
+    grid: Record<string, 'EXECUTE' | 'SKIP'> | null;
+    rationale: string[];
+    confidence: number | null;
+  } | null;
+  /** The plan resolver's authoritative verdict — render THESE numbers. */
+  validation: {
+    valid: boolean;
+    errors: PlanWarning[];
+    warnings: PlanWarning[];
+    summary: {
+      executedStages: number;
+      totalStages: number;
+      approvalGates: number;
+      perUnitStages: number;
+      skippedStages: number;
+      outOfScopeStages: number;
+    } | null;
+  } | null;
+  failureReason: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  completedAt: string | null;
+}
+
 export interface IntentStage {
   stageInstanceId: string;
   stageId: string | null;
@@ -413,6 +452,8 @@ export interface IntentDetail {
   artifacts: IntentArtifact[];
   /** Quorum-supported artifact edit sessions (post-hoc document editing). */
   quorumEdits?: QuorumEdit[];
+  /** Composer sessions (scope/grid proposals + authoritative validation). */
+  composes?: ComposeSession[];
   unitPlan?: IntentUnitPlan | null;
   units?: IntentUnit[];
 }
@@ -659,6 +700,26 @@ export const intentsService = {
       skipStageIds?: string[] | null;
     },
   ) => api.patch<Intent>(`/projects/${projectId}/intents/${intentId}`, patch),
+  // ── Composer (Adaptive Workflows) ──
+  // Start a composer session for a DRAFT: front mode from the draft text, or
+  // report mode when a reportKey (from composeReportUpload) rides along.
+  compose: (
+    projectId: string,
+    intentId: string,
+    input: {
+      instructions?: string;
+      reportKey?: string;
+      repoSignals?: Record<string, unknown>;
+    } = {},
+  ) => api.post<ComposeSession>(`/projects/${projectId}/intents/${intentId}/compose`, input),
+  listComposes: (projectId: string, intentId: string) =>
+    api.get<{ composes: ComposeSession[] }>(`/projects/${projectId}/intents/${intentId}/composes`),
+  // Presigned PUT for an external analysis report (report-mode input).
+  composeReportUpload: (projectId: string, intentId: string) =>
+    api.post<{ uploadUrl: string; key: string; expiresIn: number }>(
+      `/projects/${projectId}/intents/${intentId}/compose-report-upload`,
+      {},
+    ),
   start: (
     projectId: string,
     intentId: string,

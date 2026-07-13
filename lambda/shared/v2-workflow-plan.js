@@ -170,5 +170,11 @@ const loadWorkflowScopes = async ({ ddb, tableName, workflowId, workflowVersion 
 };
 
 const __test = { listMergedBlocks };
-export { loadExecutionPlan, loadWorkflowScopes, assembleWorkflow, __test };
-export default { loadExecutionPlan, loadWorkflowScopes, assembleWorkflow, __test };
+export { loadExecutionPlan, loadWorkflowScopes, assembleWorkflow, listMergedBlocks, __test };
+export default {
+  loadExecutionPlan,
+  loadWorkflowScopes,
+  assembleWorkflow,
+  listMergedBlocks,
+  __test,
+};

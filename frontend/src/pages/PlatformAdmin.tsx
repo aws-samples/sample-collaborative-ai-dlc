@@ -20,6 +20,7 @@ import { DefaultModelsCard } from '@/components/admin/DefaultModelsCard';
 import { GlobalMcpServersCard } from '@/components/admin/GlobalMcpServersCard';
 import { GraphEnrichmentCard } from '@/components/admin/GraphEnrichmentCard';
 import { StageSkippingCard } from '@/components/admin/StageSkippingCard';
+import { ComposerCard } from '@/components/admin/ComposerCard';
 import { SourceControlTab } from '@/components/admin/tabs/SourceControlTab';
 import { TrackersTab } from '@/components/admin/tabs/TrackersTab';
 
@@ -86,6 +87,7 @@ export default function PlatformAdmin() {
             <GlobalMcpServersCard />
             <GraphEnrichmentCard />
             <StageSkippingCard />
+            <ComposerCard />
           </TabsContent>
 
           <TabsContent value="source-control" className="mt-5">

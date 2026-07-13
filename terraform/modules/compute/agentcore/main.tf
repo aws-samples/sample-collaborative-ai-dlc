@@ -458,6 +458,22 @@ resource "aws_ssm_parameter" "stage_skipping" {
   tags = var.tags
 }
 
+# Composer LLM bypass — when enabled (the default) a clean deterministic
+# keyword match answers a front compose without any LLM call; disabling it
+# forces every compose through the composer agent. Managed by the Admin UI.
+resource "aws_ssm_parameter" "compose_llm_bypass" {
+  name        = "/${var.project_name}/${var.environment}/compose-llm-bypass"
+  description = "Composer deterministic keyword bypass: enabled | disabled (Admin UI managed)"
+  type        = "String"
+  value       = "enabled"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+
+  tags = var.tags
+}
+
 # Kiro API key — stored as SecureString; set via Admin UI.
 # Created with a placeholder; the driver treats "placeholder" as "not configured".
 resource "aws_ssm_parameter" "kiro_api_key" {

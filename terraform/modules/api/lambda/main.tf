@@ -378,6 +378,8 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
           # Platform stage-skipping toggle (per-intent stage skipping;
           # snapshotted onto the execution META row at intent create).
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/stage-skipping",
+          # Composer LLM-bypass toggle (deterministic keyword match vs always-LLM).
+          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/compose-llm-bypass",
           # Global custom MCP servers injected into every agent session (merged
           # with project-level entries at intent-create).
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/custom-mcp-servers",
@@ -1640,6 +1642,8 @@ resource "aws_iam_role_policy" "intents" {
           # Platform stage-skipping toggle (effective value — project override
           # over this — snapshotted onto the execution META at intent create).
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/stage-skipping",
+          # Composer LLM-bypass toggle (deterministic keyword match vs always-LLM).
+          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/compose-llm-bypass",
           # Global custom MCP servers default (merged under the project's custom
           # MCP servers at intent create, snapshotted onto the execution META).
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/custom-mcp-servers",
@@ -1669,6 +1673,14 @@ resource "aws_iam_role_policy" "intents" {
         Effect   = "Allow"
         Action   = ["lambda:GetDurableExecution", "lambda:ListDurableExecutionsByFunction"]
         Resource = "*"
+      },
+      {
+        # Compose report uploads: presign the PUT (report-mode composer input)
+        # and read the bounded excerpt back at compose dispatch. Namespaced
+        # under compose-reports/ so this grant can't touch artifact bodies.
+        Effect   = "Allow"
+        Action   = ["s3:PutObject", "s3:GetObject"]
+        Resource = "${var.artifacts_bucket_arn}/compose-reports/*"
       },
       {
         # Manual graph-projection backfill (POST .../intents/{id}/derive):
@@ -1725,6 +1737,8 @@ module "intents_lambda" {
     # The AgentCore stage-executor runtime — for the manual derive backfill
     # (POST .../intents/{id}/derive, platform admin).
     AGENTCORE_RUNTIME_ARN = var.agentcore_runtime_arn
+    # Compose report uploads (presigned PUT + bounded read-back at dispatch).
+    ARTIFACTS_BUCKET = var.artifacts_bucket_name
     # Server-origin realtime reload hints (artifact edited/verified, quorum
     # edit lifecycle) on the intent channel — lambda/shared/ws-fanout.js.
     CONNECTIONS_TABLE  = var.connections_table_name
