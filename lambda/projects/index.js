@@ -5,7 +5,7 @@ import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
-import { SSMClient } from '@aws-sdk/client-ssm';
+import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { LambdaClient } from '@aws-sdk/client-lambda';
 import { BedrockAgentCoreClient } from '@aws-sdk/client-bedrock-agentcore';
@@ -35,7 +35,8 @@ import { normalizeCliModels, parseCliModels } from '../shared/cli-models.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { deleteIntentCascade } from '../shared/intent-deletion.js';
 import { isSafeRepo } from '../shared/repo-validation.js';
-import { validateMcpServersJson } from '../shared/mcp-validator.js';
+import { validateMcpServersJson, extractSecretRefs } from '../shared/mcp-validator.js';
+import { listMcpSecrets, putMcpSecrets } from '../shared/mcp-secrets-store.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
@@ -568,7 +569,15 @@ const MAX_CUSTOM_RULES = 20;
 // (CustomRulesSection.tsx MAX_FILE_SIZE) — keep the three in sync.
 const MAX_CUSTOM_RULE_BYTES = 100 * 1024;
 
-const handleProjectCustomMcpServers = async (g, response, httpMethod, projectId, userId, body) => {
+const handleProjectCustomMcpServers = async (
+  g,
+  response,
+  httpMethod,
+  projectId,
+  userId,
+  body,
+  requestPath = '',
+) => {
   if (!userId) return response(401, { error: 'Unauthorized' });
 
   // The config may carry secrets in env/headers, so BOTH read and write are
@@ -577,6 +586,43 @@ const handleProjectCustomMcpServers = async (g, response, httpMethod, projectId,
   if (!role) return response(403, { error: 'Access denied' });
   if (role !== 'owner' && role !== 'admin') {
     return response(403, { error: 'Only project owners and admins can access MCP servers' });
+  }
+
+  // Sub-route: /custom-mcp-servers/secrets — per-var SecureString CRUD under the
+  // project's SSM prefix. GET returns set-state only; PUT rotates/clears.
+  if (/\/custom-mcp-servers\/secrets(\/|$)/.test(requestPath)) {
+    const base = mcpSecretsPrefix();
+    if (!base) return response(500, { error: 'MCP secret store not configured' });
+    if (httpMethod === 'GET') {
+      try {
+        const { set } = await listMcpSecrets(ssm, { base, projectId });
+        return response(200, { mcpSecretsSet: set });
+      } catch (e) {
+        console.error('[project mcp-secrets] list failed:', e.message);
+        return response(500, { error: 'Failed to list MCP secrets' });
+      }
+    }
+    if (httpMethod === 'PUT') {
+      let data;
+      try {
+        data = JSON.parse(body || '{}');
+      } catch {
+        return response(400, { error: 'Invalid JSON body' });
+      }
+      const secretsMap = data.mcpSecrets;
+      if (secretsMap === null || typeof secretsMap !== 'object' || Array.isArray(secretsMap)) {
+        return response(400, { error: 'mcpSecrets must be an object of { VAR: value }' });
+      }
+      try {
+        const { errors } = await putMcpSecrets(ssm, { base, projectId, secrets: secretsMap });
+        if (errors.length) return response(400, { error: errors.join('; ') });
+        return response(200, { saved: true });
+      } catch (e) {
+        console.error('[project mcp-secrets] write failed:', e.message);
+        return response(500, { error: 'Failed to write MCP secrets' });
+      }
+    }
+    return response(405, { error: 'Method not allowed' });
   }
 
   if (httpMethod === 'GET') {
@@ -607,6 +653,14 @@ const handleProjectCustomMcpServers = async (g, response, httpMethod, projectId,
         issues: validation.issues,
       });
     }
+    // Save-time cross-tier collision check (authoritative server-side guard; the
+    // client also does this for fast feedback). The child env is one flat
+    // namespace, so a `${VAR}` name used by a SURVIVING global server (one the
+    // project does NOT override by name) and this project config cannot coexist.
+    const collision = await checkCrossTierRefCollision(projectId, mcpServersJson);
+    if (collision) {
+      return response(400, { error: collision });
+    }
     await g
       .V()
       .has('Project', 'id', projectId)
@@ -616,6 +670,63 @@ const handleProjectCustomMcpServers = async (g, response, httpMethod, projectId,
   }
 
   return response(405, { error: 'Method not allowed' });
+};
+
+// The SSM base prefix for this deployment (`/{project}/{env}`), from which the
+// project mcp-secrets bag is derived. Empty string when unconfigured.
+const mcpSecretsPrefix = () => process.env.MCP_SECRETS_SSM_PREFIX || '';
+
+// Read the Admin GLOBAL custom MCP config from SSM as a parsed object (refs-only).
+// The global config is written by the agents lambda under AGENT_SETTINGS_SSM_PREFIX.
+// Best-effort: any failure yields {}.
+const fetchGlobalMcpConfig = async () => {
+  const prefix = process.env.AGENT_SETTINGS_SSM_PREFIX || '';
+  if (!prefix) return {};
+  try {
+    const res = await ssm.send(
+      new GetParameterCommand({ Name: `${prefix}/custom-mcp-servers`, WithDecryption: true }),
+    );
+    const parsed = JSON.parse(res.Parameter?.Value || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+// Return an error message if the project config's `${VAR}` names collide with a
+// SURVIVING global server's refs (a global server the project does NOT override
+// by name), else null. Mirrors the runtime's flat-env collision guard so a bad
+// save is rejected at authoring time.
+const checkCrossTierRefCollision = async (projectId, projectJson) => {
+  let projectMap = {};
+  try {
+    const p = JSON.parse(projectJson || '{}');
+    if (p && typeof p === 'object' && !Array.isArray(p)) projectMap = p;
+  } catch {
+    return null; // validation already caught this
+  }
+  const globalMap = await fetchGlobalMcpConfig();
+  // Surviving global servers = global entries the project does NOT override.
+  const survivingGlobal = {};
+  for (const [name, server] of Object.entries(globalMap)) {
+    if (!(name in projectMap)) survivingGlobal[name] = server;
+  }
+  const globalRefs = extractSecretRefs(survivingGlobal).refs;
+  const projectRefs = extractSecretRefs(projectMap).refs;
+  for (const name of projectRefs) {
+    if (globalRefs.has(name)) {
+      // Name the platform server using the ref, if we can find one.
+      const owner = Object.keys(survivingGlobal).find((n) =>
+        extractSecretRefs({ [n]: survivingGlobal[n] }).refs.has(name),
+      );
+      return (
+        `\`\${${name}}\` is already used by the platform-wide server ` +
+        `\`${owner ?? 'unknown'}\` — rename your variable or override server ` +
+        `\`${owner ?? name}\` by name.`
+      );
+    }
+  }
+  return null;
 };
 
 // ---------------------------------------------------------------------------
@@ -1087,9 +1198,17 @@ export const handler = async (event) => {
       if (!userId) return response(401, { error: 'Unauthorized' });
       return await handleReposRoute(g, response, event, projectId, userId);
     }
-    // Route: /projects/{projectId}/custom-mcp-servers
+    // Route: /projects/{projectId}/custom-mcp-servers (and .../secrets)
     if (projectId && /\/custom-mcp-servers(\/|$)/.test(requestPath)) {
-      return await handleProjectCustomMcpServers(g, response, httpMethod, projectId, userId, body);
+      return await handleProjectCustomMcpServers(
+        g,
+        response,
+        httpMethod,
+        projectId,
+        userId,
+        body,
+        requestPath,
+      );
     }
     // Route: /projects/{projectId}/custom-rules
     if (projectId && /\/custom-rules(\/|$)/.test(requestPath)) {

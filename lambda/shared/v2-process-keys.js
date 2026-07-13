@@ -216,10 +216,16 @@ const buildExecutionMeta = ({
   // create; the orchestrator forwards it to run-stage (cliModels[cli] is the
   // authoritative model knob — see v2-agent.md). null = use run-stage defaults.
   cliModels = null,
-  // Custom MCP servers (name-keyed object) snapshotted at create by
-  // merging the Admin global set under the project's set (project wins by
-  // name); the orchestrator forwards it to run-stage which merges it into the
-  // CLI's mcpServers map. null = none.
+  // Custom MCP servers — snapshotted at create as TWO SEPARATE name-keyed maps
+  // (global + project), each holding only `${VAR}` references (no secret values).
+  // The tiers are kept apart so the runtime resolves each tier's secrets against
+  // its own SSM prefix (tenant isolation) and merges only AFTER resolution. The
+  // orchestrator forwards `mcpServersByTier` to run-stage. null = none.
+  //   mcpServersByTier = { global: {<name>:{…}}, project: {<name>:{…}} }
+  mcpServersByTier = null,
+  // Legacy pre-tier field: a single merged name-keyed map (secrets inline). Still
+  // read for back-compat when replaying an OLD execution row, but no longer
+  // written. null = none / superseded by mcpServersByTier.
   customMcpServers = null,
   // Custom agent rules metadata ([{ filename, s3Key }]) snapshotted at create
   // from the project; the orchestrator forwards it to run-stage which fetches
@@ -291,6 +297,7 @@ const buildExecutionMeta = ({
   gitProvider,
   agentCli,
   cliModels,
+  mcpServersByTier,
   customMcpServers,
   customRules,
   deriveEnrichment,

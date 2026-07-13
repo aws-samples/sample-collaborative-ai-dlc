@@ -47,6 +47,101 @@ const RESERVED_SERVER_NAMES = new Set([RESERVED_SERVER_NAME, 'workspace']);
 
 const MAX_SERVERS = 20;
 
+// A secret reference uses the plain `${VAR}` syntax every MCP doc example uses.
+// The var name must match SSM's parameter-name charset AND the CLIs' expansion
+// token — env-var names already satisfy this. Refs are allowed ONLY in `env`
+// and `headers` values (the fields BOTH Claude and Kiro confirmedly expand from
+// the child process env); a ref in `command`/`args`/`url` is rejected (Kiro does
+// not expand those / it is unverified). The value lives in SSM, never in config.
+// This is the single source of truth for the ref/var-name charset — the secrets
+// store (mcp-secrets-store.js) imports it so the pattern can never drift.
+const SECRET_VAR_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+// Global (non-anchored) matcher used to find every `${VAR}` token in a string
+// (partial values like `Bearer ${CONTEXT7_API_KEY}` are fine).
+const SECRET_REF_TOKEN = /\$\{([^}]*)\}/g;
+
+// The actionable message steering a `${VAR}` out of an unsupported field into
+// `env`/`headers` (the one genuinely-unsupported case is a secret ONLY accepted
+// via a positional/flag arg — rare and a sign of poor secret handling).
+function unsupportedRefMessage(varName) {
+  return (
+    `Secret references work only in \`env\` and \`headers\`. Move \`\${${varName}}\` into an ` +
+    `\`env\` entry or a header — most servers accept their key that way ` +
+    `(e.g. Context7's \`CONTEXT7_API_KEY\`). If the server accepts its secret ONLY via a ` +
+    `command-line flag, it can't be used with managed secrets.`
+  );
+}
+
+// Collect every `${VAR}` token in a string, validating each var name against the
+// SSM/env-var pattern. Pushes issues (bad name) at `path`; returns the set of
+// well-formed var names found.
+function scanRefsInString(str, path, refs, issues) {
+  if (typeof str !== 'string') return;
+  for (const m of str.matchAll(SECRET_REF_TOKEN)) {
+    const name = m[1];
+    if (!SECRET_VAR_NAME.test(name)) {
+      issues.push({
+        path,
+        message:
+          `Invalid secret reference \`\${${name}}\` — variable names must match ` +
+          `${SECRET_VAR_NAME.source} (letters, digits, underscore; not starting with a digit).`,
+      });
+      continue;
+    }
+    refs.add(name);
+  }
+}
+
+// Reject any `${VAR}` token in a field where the CLIs do not expand it
+// (command/args/url). Pushes an actionable issue per offending ref.
+function rejectRefsInString(str, path, issues) {
+  if (typeof str !== 'string') return;
+  for (const m of str.matchAll(SECRET_REF_TOKEN)) {
+    // The name may be malformed; report the unsupported-field problem regardless
+    // (that is the primary, actionable error here).
+    issues.push({ path, message: unsupportedRefMessage(m[1]) });
+  }
+}
+
+/**
+ * Scan a (parsed) MCP servers OBJECT for `${VAR}` secret references. Refs are
+ * collected from `env` values and `headers` values; a ref in `command`, `args`,
+ * or `url` is an issue (those fields are not expanded by both CLIs). This
+ * function is TIER-AGNOSTIC — it scans whatever server map it is given, so the
+ * runtime runs it on the global map and the project map SEPARATELY (never on a
+ * merged map), letting each tier's refs resolve against that tier's SSM prefix.
+ *
+ * Returns `{ refs: Set<string>, issues: Array<{path,message}> }`.
+ */
+function extractSecretRefs(servers) {
+  const refs = new Set();
+  const issues = [];
+  if (!servers || typeof servers !== 'object' || Array.isArray(servers)) {
+    return { refs, issues };
+  }
+  for (const [name, server] of Object.entries(servers)) {
+    if (!server || typeof server !== 'object' || Array.isArray(server)) continue;
+    // Allowed: env + headers values → collect refs.
+    if (server.env && typeof server.env === 'object' && !Array.isArray(server.env)) {
+      for (const [key, value] of Object.entries(server.env)) {
+        scanRefsInString(value, `${name}.env.${key}`, refs, issues);
+      }
+    }
+    if (server.headers && typeof server.headers === 'object' && !Array.isArray(server.headers)) {
+      for (const [key, value] of Object.entries(server.headers)) {
+        scanRefsInString(value, `${name}.headers.${key}`, refs, issues);
+      }
+    }
+    // Rejected: command / url (scalars) + args (array of strings).
+    rejectRefsInString(server.command, `${name}.command`, issues);
+    rejectRefsInString(server.url, `${name}.url`, issues);
+    if (Array.isArray(server.args)) {
+      server.args.forEach((arg, i) => rejectRefsInString(arg, `${name}.args[${i}]`, issues));
+    }
+  }
+  return { refs, issues };
+}
+
 function describe(value) {
   if (value === null) return 'null';
   if (Array.isArray(value)) return 'array';
@@ -217,6 +312,10 @@ function validateMcpServers(value) {
     }
     validateServer(value[name], name, issues);
   }
+  // Scan for `${VAR}` secret references: collect from env/headers, reject in
+  // command/args/url. Surfaces ref issues at the precise field path.
+  const { issues: refIssues } = extractSecretRefs(value);
+  issues.push(...refIssues);
   return { valid: issues.length === 0, issues };
 }
 
@@ -297,6 +396,8 @@ export {
   validateMcpServersJson,
   toMcpServerMap,
   mergeMcpServers,
+  extractSecretRefs,
+  SECRET_VAR_NAME,
 };
 export default {
   RESERVED_SERVER_NAME,
@@ -307,4 +408,6 @@ export default {
   validateMcpServersJson,
   toMcpServerMap,
   mergeMcpServers,
+  extractSecretRefs,
+  SECRET_VAR_NAME,
 };

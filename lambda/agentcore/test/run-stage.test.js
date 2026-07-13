@@ -603,6 +603,90 @@ describe('runStage — failure paths (always records terminal state)', () => {
   });
 });
 
+describe('runStage — MCP secret resolution + child-env injection', () => {
+  // Capture the env the CLI child is spawned with (3rd arg of spawnFn) + exit 0.
+  const capturingSpawn = () => {
+    const cap = { env: null };
+    const spawnFn = (_command, _args, opts) => {
+      cap.env = opts?.env ?? null;
+      return {
+        on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
+        stdin: { end() {} },
+      };
+    };
+    return { cap, spawnFn };
+  };
+
+  // A project MCP server that references ${MYSERVER_KEY} (env field). The two-tier
+  // shape run-stage now consumes.
+  const serversByTier = {
+    global: {},
+    project: { tool: { command: 'npx', env: { API: '${MYSERVER_KEY}' } } },
+  };
+
+  it('injects the resolved secretEnv into the child spawn env', async () => {
+    const { cap, spawnFn } = capturingSpawn();
+    const res = await runStage(
+      { ...baseArgs, mcpServersByTier: serversByTier },
+      baseDeps({
+        spawnFn,
+        resolveMcpSecrets: async () => ({ secretEnv: { MYSERVER_KEY: 'resolved-secret' } }),
+      }),
+    );
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    // The resolved value reaches the child env — the CLI expands ${MYSERVER_KEY}
+    // from here (the on-disk config keeps the literal ${...}).
+    expect(cap.env.MYSERVER_KEY).toBe('resolved-secret');
+  });
+
+  it('fails the stage closed when the resolver throws (mcp_secret_error), no spawn', async () => {
+    const { cap, spawnFn } = capturingSpawn();
+    const deps = baseDeps({
+      spawnFn,
+      resolveMcpSecrets: async () => {
+        throw new Error('MCP secret `${MYSERVER_KEY}` referenced by a project server is not set.');
+      },
+    });
+    const res = await runStage({ ...baseArgs, mcpServersByTier: serversByTier }, deps);
+    expect(res).toMatchObject({ ok: false, reason: 'mcp_secret_error' });
+    expect(res.detail).toMatch(/MYSERVER_KEY.*not set/);
+    // Fail closed: the CLI is never spawned.
+    expect(cap.env).toBeNull();
+    // Terminal FAILED state recorded.
+    expect(
+      deps.store.calls.some((c) => c[0] === 'updateStageState' && c[1].state === 'FAILED'),
+    ).toBe(true);
+  });
+
+  it('a resolved secret can NEVER shadow driver auth env (auth spread last wins)', async () => {
+    // Defense-in-depth: even if the resolver (buggily) returned a value keyed like
+    // a platform auth var, the driver's envForAuth is spread LAST, so the real
+    // platform token wins in the child env. (The resolver's reserved-name guard
+    // already rejects such refs; this pins the ordering invariant independently.)
+    const { cap, spawnFn } = capturingSpawn();
+    const res = await runStage(
+      { ...baseArgs, mcpServersByTier: serversByTier },
+      baseDeps({
+        spawnFn,
+        // Real platform token present in the runtime env.
+        env: {
+          BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6',
+          AWS_BEARER_TOKEN_BEDROCK: 'REAL-PLATFORM-TOKEN',
+        },
+        // Simulate a resolver bug that tries to return a colliding auth key.
+        resolveMcpSecrets: async () => ({
+          secretEnv: { AWS_BEARER_TOKEN_BEDROCK: 'ATTACKER-VALUE', MYSERVER_KEY: 'x' },
+        }),
+      }),
+    );
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    // The platform token survived — the MCP secret did NOT shadow it.
+    expect(cap.env.AWS_BEARER_TOKEN_BEDROCK).toBe('REAL-PLATFORM-TOKEN');
+    // The non-colliding MCP secret still reached the child.
+    expect(cap.env.MYSERVER_KEY).toBe('x');
+  });
+});
+
 describe('withPlatformSensors — runtime-injected graph-coverage', () => {
   it('appends the advisory graph-coverage sensor when a registered type is produced', () => {
     const merged = withPlatformSensors({

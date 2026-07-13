@@ -531,6 +531,51 @@ describe('POST /projects/{id}/intents', () => {
     }
   });
 
+  it('snapshots MCP servers as two SEPARATE tiers on META (not pre-merged), values-free', async () => {
+    // Global tier: a server referencing a `${VAR}` (no value inline). Project
+    // tier: a distinct server. The META row must carry both tiers apart, so the
+    // runtime can resolve each tier's refs against its own SSM prefix.
+    vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', '/collab/dev');
+    ssmMock.on(GetParameterCommand, { Name: '/collab/dev/custom-mcp-servers' }).resolves({
+      Parameter: {
+        Value: JSON.stringify({
+          globalCtx: { type: 'http', url: 'https://g.example/mcp', headers: { A: 'Bearer ${GK}' } },
+        }),
+      },
+    });
+    try {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      await g
+        .V()
+        .has('Project', 'id', projectId)
+        .property(
+          gremlin.process.cardinality.single,
+          'custom_mcp_servers',
+          JSON.stringify({ projTool: { command: 'npx', env: { K: '${PK}' } } }),
+        )
+        .next();
+      const res = await createIntent(sub, projectId);
+      expect(res.statusCode).toBe(201);
+      const executionId = JSON.parse(res.body).executionId;
+      const meta = procStore.get(keyOf(`EXEC#${executionId}`, 'META'));
+      expect(meta.mcpServersByTier).toEqual({
+        global: {
+          globalCtx: {
+            type: 'http',
+            url: 'https://g.example/mcp',
+            headers: { A: 'Bearer ${GK}' },
+          },
+        },
+        project: { projTool: { command: 'npx', env: { K: '${PK}' } } },
+      });
+      // Old single merged field is no longer written.
+      expect(meta.customMcpServers ?? null).toBeNull();
+    } finally {
+      vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', undefined);
+    }
+  });
+
   it('records a tracker source when seeded from a bound issue', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);

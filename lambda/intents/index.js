@@ -23,7 +23,6 @@ import { buildResponse } from '../shared/response.js';
 import { fetchMembershipRole, projectTrackersFoldStep, mapBinding } from '../shared/trackers.js';
 import { signRealtimeToken } from '../shared/realtime-token.js';
 import { parseCliModels, mergeCliModels } from '../shared/cli-models.js';
-import { mergeMcpServers } from '../shared/mcp-validator.js';
 import { loadWorkflowScopes, loadExecutionPlan } from '../shared/v2-workflow-plan.js';
 import { stageInstanceId as planStageInstanceId } from '../shared/v2-execution-plan.js';
 import { makePriceResolver, costForMetrics } from '../shared/model-pricing.js';
@@ -298,6 +297,18 @@ const fetchDeriveEnrichment = async () => {
   }
 };
 
+// Parse a raw JSON string into a name-keyed server OBJECT (refs-only). Non-object
+// / unparseable input → {}. Used to snapshot each MCP tier separately.
+const parseServerMap = (raw) => {
+  if (!raw) return {};
+  try {
+    const v = JSON.parse(raw);
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+  } catch {
+    return {};
+  }
+};
+
 // Read the v2 project's run config (workflow pin, repos, park-release). Scope is
 // NOT a project property — it is chosen per-intent at create time.
 // Returns null when the project doesn't exist or isn't a v2 project.
@@ -337,13 +348,20 @@ const fetchProjectConfig = async (g, projectId) => {
   // agentBlock override > env default — matching what the settings UI advertises.
   const globalCliModels = await fetchGlobalCliModels();
   const cliModels = mergeCliModels(getVal(v, 'cli_models'), globalCliModels);
-  // Custom MCP servers: merge the Admin global set UNDER the project's set
-  // (project wins by name). Snapshotted onto the intent as a name-keyed object
-  // ({ "<name>": {…} }) which the runtime transforms into the CLI's mcpServers
-  // map. Custom rules are project-scope only (metadata carries the s3Key the
-  // runtime fetches).
+  // Custom MCP servers: keep the Admin GLOBAL set and the PROJECT set as TWO
+  // SEPARATE name-keyed maps (do NOT pre-merge). Each holds only `${VAR}`
+  // references (no secret values). Carrying the tiers apart lets the runtime
+  // resolve each tier's secrets against its own SSM prefix (tenant isolation) and
+  // merge only AFTER resolution (project wins by name). Custom rules are
+  // project-scope only (metadata carries the s3Key the runtime fetches).
   const globalCustomMcp = await fetchGlobalCustomMcpServers();
-  const customMcpServers = mergeMcpServers(globalCustomMcp, getVal(v, 'custom_mcp_servers'));
+  const mcpServersByTier = {
+    global: parseServerMap(globalCustomMcp),
+    project: parseServerMap(getVal(v, 'custom_mcp_servers')),
+  };
+  const hasMcpServers =
+    Object.keys(mcpServersByTier.global).length > 0 ||
+    Object.keys(mcpServersByTier.project).length > 0;
   let customRules = [];
   try {
     const parsed = JSON.parse(getVal(v, 'custom_rules') || '[]');
@@ -364,7 +382,7 @@ const fetchProjectConfig = async (g, projectId) => {
     // snapshotted onto the intent so the run honours the explicit choice.
     agentCli: getVal(v, 'agent_cli') || null,
     cliModels: Object.keys(cliModels).length ? cliModels : null,
-    customMcpServers: Object.keys(customMcpServers).length ? customMcpServers : null,
+    mcpServersByTier: hasMcpServers ? mcpServersByTier : null,
     customRules: customRules.length ? customRules : null,
     repos: ordered,
     trackers,
@@ -1981,7 +1999,7 @@ export const handler = async (event) => {
         gitProvider: cfg.gitProvider,
         agentCli: cfg.agentCli,
         cliModels: cfg.cliModels,
-        customMcpServers: cfg.customMcpServers,
+        mcpServersByTier: cfg.mcpServersByTier,
         customRules: cfg.customRules,
         deriveEnrichment: await fetchDeriveEnrichment(),
         parkReleaseSeconds: cfg.parkReleaseSeconds,

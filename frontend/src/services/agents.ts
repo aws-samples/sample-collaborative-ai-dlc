@@ -94,6 +94,15 @@ export interface AgentSettings {
    *  to any authenticated caller so project-level UI can show what's already
    *  provided globally. */
   customMcpServerNames?: string[];
+  /** Set-state per global MCP secret var name (true = stored). Platform admins
+   *  only; never carries the values. The var names are the keys. */
+  mcpSecretsSet?: Record<string, boolean>;
+  /** The `${VAR}` ref names used by each global MCP server, keyed by global
+   *  server name (names only — not values, not config). Returned to any
+   *  authenticated caller so the project editor can compute survivors (a global
+   *  server the project overrides by name does not survive) and run the same
+   *  cross-tier collision check the backend does. */
+  globalMcpServerSecretRefs?: Record<string, string[]>;
 }
 
 export interface McpVerifyResult {
@@ -121,6 +130,9 @@ export interface AgentSettingsUpdate {
   deriveEnrichment?: 'off' | 'llm';
   /** Global custom MCP servers (raw JSON string). Omit to leave unchanged. */
   customMcpServers?: string;
+  /** Global MCP secret values keyed by `${VAR}` name. A non-empty value rotates;
+   *  an empty string clears. Never echoed back. Platform admins only. */
+  mcpSecrets?: Record<string, string>;
 }
 
 export interface TaskAgentStatus {
@@ -157,8 +169,13 @@ export const agentsService = {
   async verifyMcpServers(
     mcpServers: string | Record<string, unknown>,
     projectId?: string,
+    unsavedSecrets?: Record<string, string>,
   ): Promise<McpVerifyResponse> {
-    return api.post('/agents/verify-mcp', { mcpServers, ...(projectId ? { projectId } : {}) });
+    return api.post('/agents/verify-mcp', {
+      mcpServers,
+      ...(projectId ? { projectId } : {}),
+      ...(unsavedSecrets && Object.keys(unsavedSecrets).length ? { unsavedSecrets } : {}),
+    });
   },
 
   // Project agents (v1 read-only: dispatch/cancel/answer routes are gone —

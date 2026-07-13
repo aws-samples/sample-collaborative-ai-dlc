@@ -6,6 +6,7 @@ import {
   validateMcpServersJson,
   toMcpServerMap,
   mergeMcpServers,
+  extractSecretRefs,
 } from '../mcp-validator.js';
 
 describe('validateMcpServers', () => {
@@ -230,5 +231,99 @@ describe('mergeMcpServers', () => {
   it('treats unparseable / empty inputs as empty', () => {
     expect(mergeMcpServers('', 'nope')).toEqual({});
     expect(mergeMcpServers(undefined, undefined)).toEqual({});
+  });
+});
+
+describe('extractSecretRefs', () => {
+  it('collects refs from env values', () => {
+    const { refs, issues } = extractSecretRefs({
+      s: { command: 'npx', env: { CONTEXT7_API_KEY: '${CONTEXT7_API_KEY}' } },
+    });
+    expect([...refs]).toEqual(['CONTEXT7_API_KEY']);
+    expect(issues).toEqual([]);
+  });
+
+  it('collects refs from headers values (partial values ok)', () => {
+    const { refs, issues } = extractSecretRefs({
+      r: { type: 'http', url: 'https://e.com', headers: { Authorization: 'Bearer ${TOK}' } },
+    });
+    expect([...refs]).toEqual(['TOK']);
+    expect(issues).toEqual([]);
+  });
+
+  it('collects multiple distinct refs across servers', () => {
+    const { refs } = extractSecretRefs({
+      a: { command: 'npx', env: { A: '${K1}', B: '${K2}' } },
+      b: { type: 'sse', url: 'https://e.com', headers: { X: '${K1}' } },
+    });
+    expect([...refs].toSorted()).toEqual(['K1', 'K2']);
+  });
+
+  it('rejects a ref in command with an actionable message', () => {
+    const { issues } = extractSecretRefs({ s: { command: '${CMD}' } });
+    expect(issues).toContainEqual(
+      expect.objectContaining({
+        path: 's.command',
+        message: expect.stringMatching(/only in `env` and `headers`/),
+      }),
+    );
+  });
+
+  it('rejects a ref in args', () => {
+    const { issues } = extractSecretRefs({
+      s: { command: 'npx', args: ['-y', '--api-key', '${KEY}'] },
+    });
+    expect(issues).toContainEqual(
+      expect.objectContaining({ path: 's.args[2]', message: expect.stringMatching(/only in/) }),
+    );
+  });
+
+  it('rejects a ref in url', () => {
+    const { issues } = extractSecretRefs({
+      r: { type: 'http', url: 'https://e.com/${TENANT}/mcp' },
+    });
+    expect(issues).toContainEqual(
+      expect.objectContaining({ path: 'r.url', message: expect.stringMatching(/only in/) }),
+    );
+  });
+
+  it('rejects a malformed var name in env', () => {
+    const { issues } = extractSecretRefs({ s: { command: 'npx', env: { K: '${1BAD}' } } });
+    expect(issues).toContainEqual(
+      expect.objectContaining({
+        path: 's.env.K',
+        message: expect.stringMatching(/Invalid secret reference/),
+      }),
+    );
+  });
+
+  it('returns empty for a values-only config (no refs)', () => {
+    const { refs, issues } = extractSecretRefs({ s: { command: 'npx', env: { K: 'literal' } } });
+    expect([...refs]).toEqual([]);
+    expect(issues).toEqual([]);
+  });
+
+  it('is tolerant of a non-object input', () => {
+    expect(extractSecretRefs(null)).toEqual({ refs: new Set(), issues: [] });
+    expect(extractSecretRefs([])).toEqual({ refs: new Set(), issues: [] });
+  });
+});
+
+describe('validateMcpServers — secret refs', () => {
+  it('accepts refs in env/headers', () => {
+    expect(validateMcpServers({ s: { command: 'npx', env: { K: '${MY_KEY}' } } }).valid).toBe(true);
+    expect(
+      validateMcpServers({
+        r: { type: 'http', url: 'https://e.com', headers: { Authorization: 'Bearer ${T}' } },
+      }).valid,
+    ).toBe(true);
+  });
+
+  it('rejects a ref in args at validation with the field path', () => {
+    const res = validateMcpServers({ s: { command: 'npx', args: ['${KEY}'] } });
+    expect(res.valid).toBe(false);
+    expect(res.issues).toContainEqual(
+      expect.objectContaining({ path: 's.args[0]', message: expect.stringMatching(/only in/) }),
+    );
   });
 });

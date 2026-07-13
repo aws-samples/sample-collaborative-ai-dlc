@@ -204,6 +204,17 @@ export const projectsService = {
       customMcpServers,
     }),
 
+  // Project-level MCP secrets (per-var SecureStrings). GET returns set-state only
+  // (never values); PUT rotates (non-empty value) or clears (empty string).
+  getMcpSecrets: (projectId: string) =>
+    api.get<{ mcpSecretsSet: Record<string, boolean> }>(
+      `/projects/${projectId}/custom-mcp-servers/secrets`,
+    ),
+  updateMcpSecrets: (projectId: string, mcpSecrets: Record<string, string>) =>
+    api.put<{ saved: boolean }>(`/projects/${projectId}/custom-mcp-servers/secrets`, {
+      mcpSecrets,
+    }),
+
   // Project-level custom agent rules (uploaded .md reference docs).
   // Two-phase write so metadata is only persisted for objects that uploaded:
   //   presignCustomRules — get upload URLs (no persist), then upload to S3

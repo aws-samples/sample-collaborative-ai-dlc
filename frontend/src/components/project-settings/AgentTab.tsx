@@ -89,6 +89,12 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
   // Names of the globally-provided MCP servers (shown for reference in the
   // project MCP editor; the config/secrets are not exposed to project admins).
   const [globalMcpServerNames, setGlobalMcpServerNames] = useState<string[]>([]);
+  // The `${VAR}` refs used by each global MCP server, keyed by server name — lets
+  // the project editor compute survivors and run the SAME cross-tier collision
+  // check the backend does (a flat ref list would false-block a same-name override).
+  const [globalMcpServerSecretRefs, setGlobalMcpServerSecretRefs] = useState<
+    Record<string, string[]>
+  >({});
 
   // Form state
   const [editAgentCli, setEditAgentCli] = useState<AgentCli>(project.agentCli ?? 'kiro');
@@ -103,6 +109,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
 
   // Custom MCP servers (raw JSON string) + custom agent rules (uploaded .md).
   const [customMcpServers, setCustomMcpServers] = useState('{}');
+  const [projectMcpSecretsSet, setProjectMcpSecretsSet] = useState<Record<string, boolean>>({});
   const [customRules, setCustomRules] = useState<CustomRule[]>([]);
   const [customMsg, setCustomMsg] = useState<{
     kind: 'success' | 'error';
@@ -126,6 +133,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
       .then((settings) => {
         setGlobalCliModels(settings.cliModels || {});
         setGlobalMcpServerNames(settings.customMcpServerNames || []);
+        setGlobalMcpServerSecretRefs(settings.globalMcpServerSecretRefs || {});
       })
       .catch(() => {
         /* non-fatal — placeholders fall back to generic defaults */
@@ -139,9 +147,11 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
     Promise.all([
       projectsService.getCustomMcpServers(project.id).catch(() => ({ customMcpServers: '{}' })),
       projectsService.getCustomRules(project.id).catch(() => ({ customRules: [] })),
-    ]).then(([mcpResp, rulesResp]) => {
+      projectsService.getMcpSecrets(project.id).catch(() => ({ mcpSecretsSet: {} })),
+    ]).then(([mcpResp, rulesResp, secretsResp]) => {
       setCustomMcpServers(mcpResp.customMcpServers ?? '{}');
       setCustomRules(rulesResp.customRules ?? []);
+      setProjectMcpSecretsSet(secretsResp.mcpSecretsSet ?? {});
     });
   }, [project.id, canEdit]);
 
@@ -207,6 +217,14 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
   const saveCustomMcpServers = async (value: string) => {
     await projectsService.updateCustomMcpServers(project.id, value);
     setCustomMcpServers(value);
+  };
+
+  const saveProjectMcpSecrets = async (secrets: Record<string, string>) => {
+    await projectsService.updateMcpSecrets(project.id, secrets);
+    const fresh = await projectsService
+      .getMcpSecrets(project.id)
+      .catch(() => ({ mcpSecretsSet: {} as Record<string, boolean> }));
+    setProjectMcpSecretsSet(fresh.mcpSecretsSet ?? {});
   };
 
   const presignCustomRules = (docs: Array<{ filename: string }>) =>
@@ -423,6 +441,9 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
             canEdit={canEdit}
             globalServerNames={globalMcpServerNames}
             projectId={project.id}
+            mcpSecretsSet={projectMcpSecretsSet}
+            onSaveSecrets={saveProjectMcpSecrets}
+            globalServerSecretRefs={globalMcpServerSecretRefs}
             description="Custom MCP servers injected into this project's agent sessions."
           />
 
