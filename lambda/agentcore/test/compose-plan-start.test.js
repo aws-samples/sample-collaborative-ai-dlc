@@ -104,12 +104,15 @@ const makeDeps = ({ oneShotText, oneShotOk = true, store = makeStore() } = {}) =
     text: oneShotText ?? '',
     cli: 'claude',
     model: 'model-x',
+    exitCode: oneShotOk ? 0 : 1,
     metrics: { tokensInput: 10, tokensOutput: 5 },
-    reason: oneShotOk ? null : 'cli_unavailable',
+    reason: oneShotOk ? null : 'cli_failed',
+    ...(oneShotOk ? {} : { sample: 'boom: model unavailable' }),
   })),
   loadLibraryFn: vi.fn(async () => ({ workflow: workflow(), library: library() })),
   loadBlockBodyFn: vi.fn(async (b) => (b?.bodyRef?.s3Key === 'persona' ? 'PERSONA' : 'KNOWLEDGE')),
   listMergedBlocksFn: vi.fn(async () => scopeBlocks),
+  mkdirFn: vi.fn(async () => undefined),
   log: vi.fn(),
 });
 
@@ -230,6 +233,23 @@ describe('compose-plan-start', () => {
     const update = await waitForFinish(cli.store);
     expect(update.state).toBe('FAILED');
     expect(update.fields.failureReason).toMatch(/composer CLI failed/);
+    // The one-shot's diagnostics ride the row — reason alone is undebuggable.
+    expect(update.fields.failureReason).toMatch(/exit=1/);
+    expect(update.fields.failureReason).toMatch(/boom: model unavailable/);
+  });
+
+  it('creates the throwaway working directory before spawning the CLI', async () => {
+    const deps = makeDeps({ oneShotText: '{"mode":"matched","scope":"feature"}' });
+    await createComposePlanStart(deps)(basePayload);
+    await waitForFinish(deps.store);
+    expect(deps.mkdirFn).toHaveBeenCalledWith(expect.stringContaining('/tmp/compose/i1'), {
+      recursive: true,
+    });
+    // Ordering: the directory exists before the spawn uses it as cwd.
+    expect(deps.mkdirFn.mock.invocationCallOrder[0]).toBeLessThan(
+      deps.oneShot.mock.invocationCallOrder[0],
+    );
+    expect(deps.oneShot.mock.calls[0][0].cwd).toContain('/tmp/compose/i1');
   });
 
   it('inflight mode enforces frozen stages and strict starvation', async () => {

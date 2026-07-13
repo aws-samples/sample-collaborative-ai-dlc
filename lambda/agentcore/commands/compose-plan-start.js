@@ -14,6 +14,7 @@
 // unparseable output, a grid the resolver rejects) FAILS the row with the
 // structured reason; an unrunnable grid is never presented as a proposal.
 
+import { mkdir } from 'node:fs/promises';
 import { runOneShotPrompt } from '../cli/one-shot.js';
 import { loadLibrary, loadBlockBody, listMergedBlocks } from '../block-loader.js';
 import { buildExecutionPlan } from '../../shared/v2-execution-plan.js';
@@ -153,6 +154,7 @@ export const createComposePlanStart = ({
   loadLibraryFn = loadLibrary,
   loadBlockBodyFn = loadBlockBody,
   listMergedBlocksFn = listMergedBlocks,
+  mkdirFn = mkdir,
   env = process.env,
   busy = null,
   activeJobs = new Map(),
@@ -262,13 +264,19 @@ export const createComposePlanStart = ({
           projectId,
           intentId,
         });
+        // The throwaway working directory MUST exist before the spawn — Node
+        // fires the child's 'error' event on a missing cwd, which surfaces as
+        // an instant cli_failed with no output (field incident: every compose
+        // failed in <500ms because nothing had created /tmp/compose/<id>).
+        const cwd = composeWorkspaceFor(intentId);
+        await mkdirFn(cwd, { recursive: true });
         const out = await oneShot({
           prompt: fullPrompt,
           requestedCli,
           cliModels,
           availableClis,
           env,
-          cwd: composeWorkspaceFor(intentId),
+          cwd,
         });
         if (out.metrics) {
           await store
@@ -281,9 +289,26 @@ export const createComposePlanStart = ({
             .catch(() => {});
         }
         if (!out.ok) {
+          // Carry the one-shot's diagnostics onto the row: the reason alone
+          // ("cli_failed") is undebuggable — the exit code and the captured
+          // output sample say WHY.
+          const detail = [
+            out.cli ? `cli=${out.cli}` : null,
+            out.exitCode != null ? `exit=${out.exitCode}` : null,
+            out.sample ? `output: ${String(out.sample).slice(0, 600)}` : null,
+          ]
+            .filter(Boolean)
+            .join(' — ');
+          log(
+            `one-shot failed (${key}): ${out.reason ?? 'unknown'}${detail ? ` — ${detail}` : ''}`,
+          );
           await finish({
             state: 'FAILED',
-            fields: { failureReason: `composer CLI failed: ${out.reason ?? 'unknown'}` },
+            fields: {
+              failureReason: `composer CLI failed: ${out.reason ?? 'unknown'}${
+                detail ? ` (${detail})` : ''
+              }`,
+            },
           });
           return;
         }
