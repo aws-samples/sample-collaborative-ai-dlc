@@ -67,6 +67,9 @@ export interface Intent {
   // snapshotted at create and the CONDITIONAL stages deselected at create.
   stageSkipping?: 'enabled' | 'disabled' | null;
   skipStageIds?: string[] | null;
+  // Per-intent composed EXECUTE/SKIP grid (Adaptive Workflows): when set it
+  // replaces the named-scope projection and `scope` is the provenance label.
+  composedGrid?: Record<string, 'EXECUTE' | 'SKIP'> | null;
   source: IntentSource | null;
   // Non-fatal plan warnings snapshotted at create: the selected scope resolves
   // to a runnable but DEGRADED plan (required inputs whose producer stage is
@@ -427,6 +430,9 @@ export interface CreateIntentInput {
   // Per-intent stage deselection (only accepted when stage skipping is
   // enabled for the project): CONDITIONAL stage ids to skip for this run.
   skipStageIds?: string[];
+  // Per-intent composed EXECUTE/SKIP grid — replaces the scope projection
+  // (scope becomes a label). Validated server-side by the plan resolver.
+  composedGrid?: Record<string, 'EXECUTE' | 'SKIP'>;
   // Optional tracker provenance when seeded from a GitHub issue / Jira artifact.
   source?: {
     bindingId: string;
@@ -640,8 +646,27 @@ export const intentsService = {
   },
   create: (projectId: string, input: CreateIntentInput) =>
     api.post<Intent>(`/projects/${projectId}/intents`, input),
-  start: (projectId: string, intentId: string, input?: { skipStageIds?: string[] }) =>
-    api.post<Intent>(`/projects/${projectId}/intents/${intentId}/start`, input ?? {}),
+  // DRAFT-only header edit (the collaborative draft page's auto-save target):
+  // title/prompt/scope/composedGrid/skipStageIds. 409 once the intent starts.
+  update: (
+    projectId: string,
+    intentId: string,
+    patch: {
+      title?: string | null;
+      prompt?: string | null;
+      scope?: string;
+      composedGrid?: Record<string, 'EXECUTE' | 'SKIP'> | null;
+      skipStageIds?: string[] | null;
+    },
+  ) => api.patch<Intent>(`/projects/${projectId}/intents/${intentId}`, patch),
+  start: (
+    projectId: string,
+    intentId: string,
+    input?: {
+      skipStageIds?: string[];
+      composedGrid?: Record<string, 'EXECUTE' | 'SKIP'> | null;
+    },
+  ) => api.post<Intent>(`/projects/${projectId}/intents/${intentId}/start`, input ?? {}),
   cancel: (projectId: string, intentId: string) =>
     api.post<Intent>(`/projects/${projectId}/intents/${intentId}/cancel`, {}),
   // Permanent delete: removes the intent's graph data, process state and

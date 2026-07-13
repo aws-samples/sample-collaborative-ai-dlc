@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { simpleDiffStringWithCursor } from 'lib0/diff';
-import { useNavigate, useParams } from 'react-router-dom';
+import { Navigate, useNavigate, useParams } from 'react-router-dom';
 import {
   intentsService,
   type GateAnswer,
@@ -21,7 +21,6 @@ import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { ArtifactViewer } from '@/components/intent/ArtifactViewer';
 
 import { QuorumEditPanel } from '@/components/intent/QuorumEditPanel';
-import { DraftSkipStages } from '@/components/intent/DraftSkipStages';
 import { artifactAccent } from '@/components/intent/artifactAccent';
 import { formatDuration, useTick } from '@/components/intent/stageStyle';
 import { IntentGraphPopover } from '@/components/intent/IntentGraphPopover';
@@ -39,7 +38,6 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
@@ -148,29 +146,20 @@ export default function IntentView() {
   const canDelete = project?.userRole === 'owner' || project?.userRole === 'admin';
 
   const [starting, setStarting] = useState(false);
-  // DRAFT skip selection (stage-skip.js): null = untouched → /start sends
-  // nothing and the create-time snapshot holds; an array = full replacement.
-  const [draftSkipIds, setDraftSkipIds] = useState<string[] | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  // Start (DRAFT) and restart (FAILED / stranded CREATED) share the /start
-  // endpoint, which re-enters the pipeline and clears a prior failureReason.
+  // Restart (FAILED / stranded CREATED) via the /start endpoint, which
+  // re-enters the pipeline and clears a prior failureReason. Fresh DRAFTs
+  // start from the compose page, never from here (the redirect above).
   const handleStart = async () => {
     if (!projectId || !intentId) return;
     setStarting(true);
     setActionError(null);
     try {
-      // The skip override is DRAFT-only (the backend 409s otherwise) — a
-      // FAILED/stranded restart re-enters the prior run's pinned plan.
-      const sendSkips = detail?.intent.status === 'DRAFT' && draftSkipIds !== null;
-      await intentsService.start(
-        projectId,
-        intentId,
-        sendSkips ? { skipStageIds: draftSkipIds ?? [] } : undefined,
-      );
+      await intentsService.start(projectId, intentId);
       await reload();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to start intent');
@@ -227,6 +216,11 @@ export default function IntentView() {
   const intent = detail.intent;
   const error = actionError ?? loadError;
   const isDraft = intent.status === 'DRAFT';
+  // A DRAFT belongs on the collaborative compose page — one canonical draft
+  // experience (shared prompt + projection selection) instead of two UIs.
+  if (isDraft) {
+    return <Navigate to={`/project/${projectId}/intent/${intentId}/compose`} replace />;
+  }
   const isActive = intent.status === 'RUNNING' || intent.status === 'WAITING';
   const isFailed = intent.status === 'FAILED';
   // Cancellable (steering): parked, stranded, or failed — never mid-RUNNING.
@@ -388,74 +382,8 @@ export default function IntentView() {
         </div>
       )}
 
-      {/* DRAFT: review + Start. The prompt is read-only — there is no update
-          endpoint, so an editable field would silently discard changes. */}
-      {isDraft ? (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">Review & start</CardTitle>
-            <p className="text-sm text-muted-foreground">
-              Review the prompt and kick off the run. Stages execute per the workflow's plan.
-            </p>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div>
-              <Label>Prompt</Label>
-              <div className="mt-1.5 max-h-64 overflow-y-auto whitespace-pre-wrap rounded-md border bg-muted/30 px-3 py-2 text-sm">
-                {intent.prompt || '—'}
-              </div>
-              <p className="mt-1 text-[11px] text-muted-foreground">
-                Set when the intent was created — create a new intent to change it.
-              </p>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <Label htmlFor="intent-branch">Branch</Label>
-                <Input
-                  id="intent-branch"
-                  value={intent.branch ?? ''}
-                  disabled
-                  className="mt-1.5 font-mono text-sm"
-                />
-              </div>
-              <div>
-                <Label>Repositories</Label>
-                <p className="mt-2 text-sm text-muted-foreground truncate">
-                  {(intent.repos ?? []).join(', ') || '—'}
-                </p>
-              </div>
-            </div>
-            {(intent.baseBranch || intent.baseBranches) && (
-              <div>
-                <Label>Base branch</Label>
-                <p className="mt-2 text-sm text-muted-foreground">
-                  {intent.baseBranches && Object.keys(intent.baseBranches).length > 0
-                    ? Object.entries(intent.baseBranches)
-                        .map(([repo, branch]) => `${repo} → ${branch}`)
-                        .join(', ')
-                    : intent.baseBranch}
-                  {intent.baseBranches &&
-                  Object.keys(intent.baseBranches).length > 0 &&
-                  intent.baseBranch
-                    ? ` (other repos → ${intent.baseBranch})`
-                    : ''}
-                </p>
-              </div>
-            )}
-            <DraftSkipStages intent={intent} disabled={starting} onChange={setDraftSkipIds} />
-            <div className="flex justify-end">
-              <Button onClick={handleStart} disabled={starting} className="gap-1.5">
-                {starting ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Play className="h-3.5 w-3.5" />
-                )}
-                {starting ? 'Starting…' : 'Start'}
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      ) : reviewGate ? (
+      {/* DRAFT never renders here — it redirects to the compose page above. */}
+      {reviewGate ? (
         <StageReviewPanel
           gate={reviewGate}
           detail={detail}

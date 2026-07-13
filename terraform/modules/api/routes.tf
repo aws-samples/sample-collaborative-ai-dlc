@@ -1191,6 +1191,7 @@ locals {
     collection_post = { resource = aws_api_gateway_resource.intents.id, method = "POST" }
     metrics_get     = { resource = aws_api_gateway_resource.intents_metrics.id, method = "GET" }
     item_get        = { resource = aws_api_gateway_resource.intent.id, method = "GET" }
+    item_patch      = { resource = aws_api_gateway_resource.intent.id, method = "PATCH" }
     item_delete     = { resource = aws_api_gateway_resource.intent.id, method = "DELETE" }
     graph_get       = { resource = aws_api_gateway_resource.intent_graph.id, method = "GET" }
     audit_get       = { resource = aws_api_gateway_resource.intent_audit.id, method = "GET" }

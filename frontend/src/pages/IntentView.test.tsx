@@ -145,15 +145,27 @@ describe('IntentView', () => {
     yjsMock.docs.clear();
   });
 
-  it('DRAFT renders the review card with a read-only prompt + Start button', async () => {
+  it('DRAFT redirects to the collaborative compose page (one canonical draft UI)', async () => {
     get.mockResolvedValue(baseDetail());
-    renderAt();
-    expect(await screen.findByText('Review & start')).toBeInTheDocument();
-    expect(screen.getByText('Build X')).toBeInTheDocument();
-    // Read-only: the prompt is NOT an editable field (edits used to be
-    // silently discarded on Start — no update endpoint exists).
-    expect(screen.queryByRole('textbox', { name: /prompt/i })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /start/i })).toBeInTheDocument();
+    render(
+      <MemoryRouter initialEntries={['/project/p1/intent/i1']}>
+        <Routes>
+          <Route
+            path="/project/:projectId/intent/:intentId"
+            element={
+              <IntentProvider>
+                <IntentView />
+              </IntentProvider>
+            }
+          />
+          <Route
+            path="/project/:projectId/intent/:intentId/compose"
+            element={<div data-testid="compose-page" />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByTestId('compose-page')).toBeInTheDocument();
   });
 
   it('renders one QuestionEditor per pending gate (D3 multi-gate)', async () => {

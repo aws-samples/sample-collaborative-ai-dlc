@@ -591,12 +591,12 @@ describe('POST /projects/{id}/intents', () => {
     expect(res.statusCode).toBe(403);
   });
 
-  it('requires a scope', async () => {
+  it('defaults the scope when absent (DRAFT-first flow) — "feature" when offered', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
     const res = await createIntent(sub, projectId, { title: 'I', prompt: 'Build X' });
-    expect(res.statusCode).toBe(400);
-    expect(JSON.parse(res.body).error).toMatch(/scope is required/);
+    expect(res.statusCode).toBe(201);
+    expect(JSON.parse(res.body).scope).toBe('feature');
   });
 
   it('rejects a scope not offered by the workflow', async () => {
@@ -733,6 +733,244 @@ describe('POST /projects/{id}/intents', () => {
       .next();
     const res = await createIntent(sub, projectId);
     expect(res.statusCode).toBe(400);
+  });
+});
+
+describe('composed grids + DRAFT PATCH', () => {
+  // Two construction stages: analyze produces what build requires — the
+  // starvation fixture for grid validation.
+  const seedGridFixtures = (projectId) => {
+    void projectId;
+    for (const p of [
+      { stageId: 'analyze', order: 0, scopeMembership: { feature: 'EXECUTE' } },
+      { stageId: 'build', order: 1, scopeMembership: { feature: 'EXECUTE' } },
+    ]) {
+      procStore.set(keyOf('WF#default#aidlc-v2', `V#4#PLACEMENT#${p.stageId}`), {
+        pk: 'WF#default#aidlc-v2',
+        sk: `V#4#PLACEMENT#${p.stageId}`,
+        stageId: p.stageId,
+        order: p.order,
+        scopeMembership: p.scopeMembership,
+      });
+    }
+    for (const s of [
+      { id: 'analyze', produces: ['spec'], consumes: [] },
+      { id: 'build', produces: [], consumes: [{ artifact: 'spec', required: true }] },
+    ]) {
+      procStore.set(keyOf(`BLOCK#SYSTEM#STAGE#${s.id}`, 'V#latest'), {
+        pk: `BLOCK#SYSTEM#STAGE#${s.id}`,
+        sk: 'V#latest',
+        GSI1PK: 'TENANT#SYSTEM#STAGE',
+        GSI1SK: s.id,
+        blockId: s.id,
+        id: s.id,
+        version: 1,
+        phase: 'construction',
+        mode: 'inline',
+        leadAgent: 'orchestrator', // reserved ref — no AGENT block needed
+        produces: s.produces,
+        consumes: s.consumes,
+        sensors: [],
+        humanValidation: 'none',
+      });
+    }
+  };
+
+  // Flip a persisted META row's status directly (simulating a run outcome).
+  const procStoreSetStatus = (intentId, status) => {
+    const k = keyOf(`EXEC#${intentId}`, 'META');
+    procStore.set(k, { ...procStore.get(k), status });
+  };
+
+  const patchIntent = (sub, projectId, intentId, body) =>
+    handler({
+      httpMethod: 'PATCH',
+      path: `/projects/${projectId}/intents/${intentId}`,
+      pathParameters: { projectId, intentId },
+      body: JSON.stringify(body),
+      ...claims(sub),
+    });
+
+  it('creates an intent from a composed grid with a custom scope label', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedGridFixtures(projectId);
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'X',
+      scope: 'my-custom-fix',
+      composedGrid: { analyze: 'EXECUTE', build: 'EXECUTE' },
+    });
+    expect(res.statusCode).toBe(201);
+    const intent = JSON.parse(res.body);
+    expect(intent.scope).toBe('my-custom-fix');
+    expect(intent.composedGrid).toEqual({ analyze: 'EXECUTE', build: 'EXECUTE' });
+  });
+
+  it('defaults the scope label to "composed" when a grid arrives without one', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedGridFixtures(projectId);
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'X',
+      composedGrid: { analyze: 'EXECUTE', build: 'EXECUTE' },
+    });
+    expect(res.statusCode).toBe(201);
+    expect(JSON.parse(res.body).scope).toBe('composed');
+  });
+
+  it('rejects a grid naming an unknown stage at create', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedGridFixtures(projectId);
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'X',
+      composedGrid: { analyze: 'EXECUTE', ghost: 'EXECUTE' },
+    });
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.error).toMatch(/not runnable/);
+    expect(body.errors.map((e) => e.code)).toContain('composed_grid_unknown_stage');
+  });
+
+  it('a grid that starves a required input stays creatable (lenient) with the warning persisted', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedGridFixtures(projectId);
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'X',
+      composedGrid: { analyze: 'SKIP', build: 'EXECUTE' },
+    });
+    expect(res.statusCode).toBe(201);
+    const intent = JSON.parse(res.body);
+    expect(intent.planWarnings.map((w) => w.code)).toContain('scope_absent_consume');
+  });
+
+  it('PATCH updates title/prompt on a DRAFT', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const res = await patchIntent(sub, projectId, intent.id, {
+      title: 'New title',
+      prompt: 'Refined prompt',
+    });
+    expect(res.statusCode).toBe(200);
+    const updated = JSON.parse(res.body);
+    expect(updated.title).toBe('New title');
+    expect(updated.prompt).toBe('Refined prompt');
+  });
+
+  it('PATCH sets and clears the composed grid with plan re-validation', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedGridFixtures(projectId);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const set = await patchIntent(sub, projectId, intent.id, {
+      composedGrid: { analyze: 'EXECUTE', build: 'SKIP' },
+      scope: 'composed-lean',
+    });
+    expect(set.statusCode).toBe(200);
+    const afterSet = JSON.parse(set.body);
+    expect(afterSet.composedGrid).toEqual({ analyze: 'EXECUTE', build: 'SKIP' });
+    expect(afterSet.scope).toBe('composed-lean');
+
+    const clear = await patchIntent(sub, projectId, intent.id, {
+      composedGrid: null,
+      scope: 'feature',
+    });
+    expect(clear.statusCode).toBe(200);
+    expect(JSON.parse(clear.body).composedGrid).toBeNull();
+  });
+
+  it('PATCH rejects an invalid grid with the resolver errors', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedGridFixtures(projectId);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const res = await patchIntent(sub, projectId, intent.id, {
+      composedGrid: { ghost: 'EXECUTE' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).errors.map((e) => e.code)).toContain('composed_grid_unknown_stage');
+  });
+
+  it('PATCH rejects a scope the workflow does not offer (no grid in play)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const res = await patchIntent(sub, projectId, intent.id, { scope: 'nonsense' });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toMatch(/Unknown scope/);
+  });
+
+  it('PATCH 409s on a non-DRAFT intent', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/start`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+    const res = await patchIntent(sub, projectId, intent.id, { title: 'Too late' });
+    expect(res.statusCode).toBe(409);
+  });
+
+  it('PATCH 404s across projects and 400s an empty patch', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const otherProject = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const cross = await patchIntent(sub, otherProject, intent.id, { title: 'X' });
+    expect(cross.statusCode).toBe(404);
+    const empty = await patchIntent(sub, projectId, intent.id, {});
+    expect(empty.statusCode).toBe(400);
+  });
+
+  it('start accepts a composedGrid override on a DRAFT and pins it', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedGridFixtures(projectId);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const res = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/start`,
+      pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ composedGrid: { analyze: 'EXECUTE', build: 'EXECUTE' } }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(202);
+    expect(JSON.parse(res.body).composedGrid).toEqual({
+      analyze: 'EXECUTE',
+      build: 'EXECUTE',
+    });
+  });
+
+  it('start rejects a composedGrid override on a restart (non-DRAFT)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedGridFixtures(projectId);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/start`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+    // Flip to FAILED so it is startable again, then try to smuggle a grid in.
+    procStoreSetStatus(intent.id, 'FAILED');
+    const res = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/start`,
+      pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ composedGrid: { analyze: 'EXECUTE', build: 'EXECUTE' } }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(409);
   });
 });
 

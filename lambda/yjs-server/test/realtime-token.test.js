@@ -54,6 +54,8 @@ const YJS_DOC_VECTORS = [
   // slugs, not UUIDs — they ride the free suffix after the intent UUID.
   [`intent-artifact-${INTENT_ID}-${ARTIFACT_ID}`, `intent:${INTENT_ID}`],
   [`intent-artifact-${INTENT_ID}-market-research`, `intent:${INTENT_ID}`],
+  // Collaborative DRAFT compose page (shared prompt + grid selection).
+  [`intent-draft-${INTENT_ID}`, `intent:${INTENT_ID}`],
   // Unknown formats → deny (null)
   ['default', null],
   ['', null],

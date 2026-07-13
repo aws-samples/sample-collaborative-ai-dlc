@@ -1566,6 +1566,125 @@ export const handler = async (event) => {
     // orchestrator with a cancel sentinel) so nothing resumes afterwards.
     // Deletion order is deliberate: Yjs docs → Neptune → DynamoDB (META last),
     // so a partial failure leaves the intent listed and the delete retryable.
+    // PATCH /projects/{projectId}/intents/{intentId} — DRAFT-only header edit.
+    // The collaborative draft page auto-saves the shared prompt/title and the
+    // scope / composed-grid / skip selections here (the Yjs doc is transport;
+    // this row is durability — Yjs docs evaporate ~60s after the last client).
+    // Everything is re-validated exactly like create; a non-DRAFT intent is
+    // immutable through this route (its plan is pinned by the running/finished
+    // execution).
+    if (intentId && httpMethod === 'PATCH') {
+      const meta = await store.getExecution(intentId);
+      if (!meta || meta.projectId !== projectId) {
+        return response(404, { error: 'Intent not found' });
+      }
+      if (meta.status !== 'DRAFT') {
+        return response(409, {
+          error: `Intent is ${meta.status}, only DRAFT intents are editable`,
+        });
+      }
+      const data = body ? JSON.parse(body) : {};
+      const patch = {};
+      if (data.title !== undefined) {
+        if (data.title !== null && typeof data.title !== 'string') {
+          return response(400, { error: 'title must be a string or null' });
+        }
+        patch.title = data.title === null ? null : data.title.trim() || null;
+      }
+      if (data.prompt !== undefined) {
+        if (data.prompt !== null && typeof data.prompt !== 'string') {
+          return response(400, { error: 'prompt must be a string or null' });
+        }
+        patch.prompt = data.prompt === null ? null : data.prompt.trim() || null;
+      }
+      if (data.composedGrid !== undefined) {
+        const { value, error: gridError } = normalizeComposedGrid(data.composedGrid);
+        if (gridError) return response(400, { error: gridError });
+        patch.composedGrid = value; // null clears
+      }
+      if (data.skipStageIds !== undefined) {
+        if (data.skipStageIds !== null && !Array.isArray(data.skipStageIds)) {
+          return response(400, { error: 'skipStageIds must be an array of stage ids or null' });
+        }
+        const normalized = normalizeSkipStageIds(data.skipStageIds ?? []);
+        if (normalized && meta.stageSkipping !== 'enabled') {
+          return response(400, {
+            error: 'Stage skipping is disabled for this intent — skipStageIds is not accepted',
+          });
+        }
+        patch.skipStageIds = normalized; // null clears
+      }
+      if (data.scope !== undefined) {
+        if (typeof data.scope !== 'string' || !data.scope) {
+          return response(400, { error: 'scope must be a non-empty string' });
+        }
+        patch.scope = data.scope;
+      }
+      if (Object.keys(patch).length === 0) {
+        return response(400, { error: 'Nothing to update' });
+      }
+      // Plan re-validation when the projection inputs change. The effective
+      // combination (patched value where supplied, current META otherwise) must
+      // resolve — mirrors create so a broken draft can never reach Start.
+      if (
+        patch.scope !== undefined ||
+        patch.composedGrid !== undefined ||
+        patch.skipStageIds !== undefined
+      ) {
+        const effScope = patch.scope ?? meta.scope;
+        const effGrid =
+          patch.composedGrid !== undefined ? patch.composedGrid : (meta.composedGrid ?? null);
+        const effSkips =
+          patch.skipStageIds !== undefined ? patch.skipStageIds : (meta.skipStageIds ?? null);
+        if (!effGrid) {
+          const scopes = await loadWorkflowScopes({
+            ddb,
+            tableName: BLOCKS_TABLE(),
+            workflowId: meta.workflowId,
+            workflowVersion: meta.workflowVersion,
+          });
+          if (!scopes.includes(effScope)) {
+            return response(400, {
+              error: `Unknown scope "${effScope}" for workflow "${meta.workflowId}"`,
+              scopes,
+            });
+          }
+        }
+        const planCheck = await loadExecutionPlan({
+          ddb,
+          tableName: BLOCKS_TABLE(),
+          workflowId: meta.workflowId,
+          workflowVersion: meta.workflowVersion,
+          scope: effScope,
+          ...(effSkips?.length ? { skipStageIds: effSkips } : {}),
+          ...(effGrid ? { composedGrid: effGrid } : {}),
+        });
+        if (!planCheck.valid) {
+          return response(400, {
+            error: `The requested draft changes are not runnable for workflow "${meta.workflowId}"`,
+            errors: planCheck.errors ?? [],
+          });
+        }
+        patch.planWarnings = planCheck.warnings?.length ? planCheck.warnings : null;
+      }
+      let updated;
+      try {
+        updated = await store.updateExecution({
+          executionId: intentId,
+          // CAS on DRAFT so a concurrent Start can never race a header edit
+          // into a launched run.
+          fromStatus: 'DRAFT',
+          ...patch,
+        });
+      } catch (err) {
+        if (err?.name === 'ConditionalCheckFailedException') {
+          return response(409, { error: 'Intent left DRAFT while editing — reload it' });
+        }
+        throw err;
+      }
+      return response(200, mapIntent(updated));
+    }
+
     if (intentId && httpMethod === 'DELETE') {
       const meta = await store.getExecution(intentId);
       if (!meta || meta.projectId !== projectId) {
@@ -2089,19 +2208,20 @@ export const handler = async (event) => {
       // Scope is chosen per-intent (a project can hold features, bugfixes, …).
       // It must be one of the pinned workflow's offered scopes — a free-typed
       // scope would be rejected by buildExecutionPlan when the orchestrator runs.
-      // EXCEPTION: with a composed grid the grid IS the projection and `scope`
-      // degrades to the provenance label of whatever base it was composed from
-      // (possibly a custom name) — the resolver validates the grid instead.
-      const scope = data.scope;
-      if (!scope) {
-        return response(400, { error: 'scope is required' });
-      }
+      // OPTIONAL at create: the DRAFT-first flow creates the intent as soon as
+      // a title/prompt exists and picks the projection on the draft page, so an
+      // absent scope defaults to the workflow's conventional default ("feature"
+      // when offered, else the first offered scope). With a composed grid the
+      // grid IS the projection and `scope` degrades to the provenance label of
+      // whatever base it was composed from (possibly a custom name) — the
+      // resolver validates the grid instead.
       const { value: composedGrid, error: composedGridError } = normalizeComposedGrid(
         data.composedGrid,
       );
       if (composedGridError) {
         return response(400, { error: composedGridError });
       }
+      let scope = data.scope;
       if (!composedGrid) {
         const scopes = await loadWorkflowScopes({
           ddb,
@@ -2109,12 +2229,21 @@ export const handler = async (event) => {
           workflowId,
           workflowVersion,
         });
-        if (!scopes.includes(scope)) {
+        if (!scope) {
+          scope = scopes.includes('feature') ? 'feature' : (scopes[0] ?? null);
+          if (!scope) {
+            return response(400, {
+              error: `Workflow "${workflowId}" offers no scopes — cannot default one`,
+            });
+          }
+        } else if (!scopes.includes(scope)) {
           return response(400, {
             error: `Unknown scope "${scope}" for workflow "${workflowId}"`,
             scopes,
           });
         }
+      } else if (!scope) {
+        scope = 'composed';
       }
       // Per-intent stage deselection (shared/stage-skip.js): only accepted when
       // stage skipping is EFFECTIVELY enabled (project override over platform

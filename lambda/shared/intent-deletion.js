@@ -152,6 +152,7 @@ const deleteIntentCascade = async ({
     .catch(() => []);
   const yjsDocIds = [
     `intent-presence-${intentId}`,
+    `intent-draft-${intentId}`,
     ...(records.humanTasks ?? []).map((h) => `intent-sq-${intentId}-${h.humanTaskId}`),
     ...(records.humanTasks ?? []).map((h) => `intent-review-${intentId}-${h.humanTaskId}`),
     ...discussionIds.map((d) => `intent-discussion-${intentId}-${d}`),

@@ -135,6 +135,13 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     // override) and by the recompose path (which retires + relaunches the
     // run). Validated shape only — the plan resolver owns grid policy.
     composedGrid,
+    // DRAFT-phase editable header fields (the collaborative draft page's
+    // auto-save writes these). The intents API only routes them while the
+    // intent is DRAFT; the store validates shape, not lifecycle.
+    title,
+    prompt,
+    scope,
+    planWarnings,
   }) => {
     const ts = now();
     const sets = ['updatedAt = :ts'];
@@ -246,6 +253,32 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       }
       sets.push('composedGrid = :cgr');
       values[':cgr'] = composedGrid && Object.keys(composedGrid).length ? composedGrid : null;
+    }
+    if (title !== undefined) {
+      if (title !== null && typeof title !== 'string') {
+        throw new Error('title must be a string or null');
+      }
+      sets.push('title = :ttl');
+      values[':ttl'] = title;
+    }
+    if (prompt !== undefined) {
+      if (prompt !== null && typeof prompt !== 'string') {
+        throw new Error('prompt must be a string or null');
+      }
+      sets.push('prompt = :prm');
+      values[':prm'] = prompt;
+    }
+    if (scope !== undefined) {
+      if (typeof scope !== 'string' || !scope) {
+        throw new Error('scope must be a non-empty string');
+      }
+      sets.push('#scope = :scp');
+      names['#scope'] = 'scope';
+      values[':scp'] = scope;
+    }
+    if (planWarnings !== undefined) {
+      sets.push('planWarnings = :pwn');
+      values[':pwn'] = Array.isArray(planWarnings) && planWarnings.length ? planWarnings : null;
     }
     const params = {
       TableName: table(),

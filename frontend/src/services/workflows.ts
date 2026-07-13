@@ -142,6 +142,9 @@ export interface ExecutionPreview {
     workflowId: string;
     workflowVersion: number;
     scope: string;
+    // True when the plan was projected from a composed EXECUTE/SKIP grid
+    // rather than a named scope (scope is then just the provenance label).
+    composed?: boolean;
     namespace: string;
     sections: { index: number; stageIds: string[] }[];
     outOfScopeStageIds: string[];
@@ -232,5 +235,23 @@ export const workflowsService = {
     // degraded sections) before any intent exists.
     if (skipStageIds?.length) params.set('skip', skipStageIds.join(','));
     return api.get<ExecutionPreview>(`/workflows/${id}/execution-preview?${params.toString()}`);
+  },
+  // Dry-run a composed EXECUTE/SKIP grid (POST — a grid over 30+ stages does
+  // not fit a query string; read-only despite the verb). Returns the same
+  // shape as the execution preview; `strict` promotes starved required inputs
+  // to errors (the in-flight recompose rule).
+  validateGrid: (
+    id: string,
+    input: {
+      composedGrid: Record<string, 'EXECUTE' | 'SKIP'>;
+      scope?: string;
+      skipStageIds?: string[];
+      strict?: boolean;
+      version?: number;
+    },
+  ) => {
+    const { version, ...body } = input;
+    const qs = version ? `?version=${version}` : '';
+    return api.post<ExecutionPreview>(`/workflows/${id}/validate-grid${qs}`, body);
   },
 };

@@ -142,6 +142,7 @@ const verifyRealtimeAccess = ({ token, secret, requiredScope, sub, now = Date.no
 //   inception-{projectId}                     useCollaborativeInception.ts
 //   intent-review-{intentId}-{humanTaskId}    IntentView.tsx stage review
 //   intent-artifact-{intentId}-{artifactId}   useCollaborativeArtifactContent.ts (post-hoc edit)
+//   intent-draft-{intentId}                   useCollaborativeIntentDraft.ts (DRAFT compose page)
 //
 // App-WS documentId formats:
 //   sprint:{sprintId}   useSprintEvents.ts / useObservabilityEvents.ts
@@ -161,7 +162,7 @@ const PROJECT_CHANNEL_RE = new RegExp(`^${UUID_PATTERN}$`);
 // extractor is unambiguous — sprintIds and intentIds are both bare UUIDs, so the
 // shared v1 prefixes (`sq-`, `discussion-`) can't be reused without collision.
 const INTENT_DOC_RE = new RegExp(
-  `^intent-(?:sq|discussion|presence|review|artifact)-(${UUID_PATTERN})(?:-.+)?$`,
+  `^intent-(?:sq|discussion|presence|review|artifact|draft)-(${UUID_PATTERN})(?:-.+)?$`,
 );
 const INTENT_CHANNEL_RE = new RegExp(`^intent:(${UUID_PATTERN})$`);
 

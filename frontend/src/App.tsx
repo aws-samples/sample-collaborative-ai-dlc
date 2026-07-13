@@ -33,6 +33,7 @@ const BlockEditor = lazy(() => import('./pages/BlockEditor'));
 const WorkflowList = lazy(() => import('./pages/WorkflowList'));
 const WorkflowComposer = lazy(() => import('./pages/WorkflowComposer'));
 const NewIntentPage = lazy(() => import('./pages/NewIntentPage'));
+const IntentComposePage = lazy(() => import('./pages/IntentComposePage'));
 const IntentObservabilityPage = lazy(() => import('./pages/IntentObservabilityPage'));
 const IntentGraphPage = lazy(() => import('./pages/IntentGraphPage'));
 const IntentAuditPage = lazy(() => import('./pages/IntentAuditPage'));
@@ -107,6 +108,10 @@ function App() {
                 <Route path="/project/:projectId" element={<Project />} />
                 <Route path="/project/:projectId/settings" element={<ProjectSettings />} />
                 <Route path="/project/:projectId/intent/new" element={<NewIntentPage />} />
+                <Route
+                  path="/project/:projectId/intent/:intentId/compose"
+                  element={<IntentComposePage />}
+                />
                 <Route
                   path="/project/:projectId/intent/:intentId/graph"
                   element={<IntentGraphPage />}

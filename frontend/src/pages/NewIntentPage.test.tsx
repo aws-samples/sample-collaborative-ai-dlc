@@ -24,15 +24,6 @@ vi.mock('@/services/intents', () => ({
   },
 }));
 
-const compiled = vi.fn();
-const executionPreview = vi.fn();
-vi.mock('@/services/workflows', () => ({
-  workflowsService: {
-    compiled: (...a: unknown[]) => compiled(...a),
-    executionPreview: (...a: unknown[]) => executionPreview(...a),
-  },
-}));
-
 const listBranches = vi.fn();
 vi.mock('@/services/gitProvider', () => ({
   getGitProviderService: () => ({
@@ -59,20 +50,53 @@ const renderPage = () =>
     <MemoryRouter initialEntries={['/project/p1/intent/new']}>
       <Routes>
         <Route path="/project/:projectId/intent/new" element={<NewIntentPage />} />
+        <Route
+          path="/project/:projectId/intent/:intentId/compose"
+          element={<div data-testid="compose-page" />}
+        />
       </Routes>
     </MemoryRouter>,
   );
 
+describe('NewIntentPage — DRAFT-first creation', () => {
+  beforeEach(() => {
+    create.mockReset().mockResolvedValue({ id: 'i1' });
+    listBranches
+      .mockReset()
+      .mockResolvedValue({ branches: ['main', 'develop'], defaultBranch: 'main' });
+    useProjectCache.mockReset();
+    useProjectCache.mockReturnValue({ project: baseProject({ repos: [] }), loading: false });
+  });
+
+  it('creates the DRAFT without a scope and lands on the compose page', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await user.type(await screen.findByLabelText('Prompt'), 'Build X');
+    const submit = screen.getByRole('button', { name: /continue to compose/i });
+    await waitFor(() => expect(submit).toBeEnabled());
+    await user.click(submit);
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    // Scope selection moved to the collaborative compose page — the server
+    // defaults it at create.
+    const payload = create.mock.calls[0][1];
+    expect(payload.scope).toBeUndefined();
+    expect(await screen.findByTestId('compose-page')).toBeInTheDocument();
+  });
+
+  it('a title alone is enough to start a draft (prompt is refined collaboratively)', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await user.type(await screen.findByLabelText('Title'), 'Add auth');
+    const submit = screen.getByRole('button', { name: /continue to compose/i });
+    await waitFor(() => expect(submit).toBeEnabled());
+    await user.click(submit);
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+  });
+});
+
 describe('NewIntentPage — base branch selection', () => {
   beforeEach(() => {
     create.mockReset().mockResolvedValue({ id: 'i1' });
-    compiled.mockReset().mockResolvedValue({ scopeGrid: { feature: {} } });
-    executionPreview.mockReset().mockResolvedValue({
-      valid: true,
-      errors: [],
-      warnings: [],
-      plan: { stages: [], summary: null },
-    });
     listBranches
       .mockReset()
       .mockResolvedValue({ branches: ['main', 'develop'], defaultBranch: 'main' });
@@ -124,7 +148,7 @@ describe('NewIntentPage — base branch selection', () => {
     });
     renderPage();
     await user.type(await screen.findByLabelText('Prompt'), 'Build X');
-    const submit = screen.getByRole('button', { name: /create intent/i });
+    const submit = screen.getByRole('button', { name: /continue to compose/i });
     await waitFor(() => expect(submit).toBeEnabled());
     await user.click(submit);
     await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
@@ -153,82 +177,11 @@ describe('NewIntentPage — base branch selection', () => {
     const option = await screen.findByRole('option', { name: /^develop$/ });
     await user.click(option);
 
-    const submit = screen.getByRole('button', { name: /create intent/i });
+    const submit = screen.getByRole('button', { name: /continue to compose/i });
     await waitFor(() => expect(submit).toBeEnabled());
     await user.click(submit);
     await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
     const payload = create.mock.calls[0][1];
     expect(payload.baseBranches).toEqual({ 'owner/repo': 'develop' });
-  });
-});
-
-// Upstream 2.2.11: scope confirmation shows the EXACT run shape ("N of T
-// stages, G approval gates" + fan-out clause), read verbatim from the plan
-// preview's summary — never re-derived client-side.
-describe('NewIntentPage — scope run-shape summary', () => {
-  beforeEach(() => {
-    create.mockReset().mockResolvedValue({ id: 'i1' });
-    compiled.mockReset().mockResolvedValue({ scopeGrid: { feature: {} } });
-    executionPreview.mockReset();
-    listBranches.mockReset().mockResolvedValue({ branches: ['main'], defaultBranch: 'main' });
-    useProjectCache.mockReset();
-    useProjectCache.mockReturnValue({ project: baseProject({ repos: [] }), loading: false });
-  });
-
-  it('renders the exact stage/gate counts from the preview summary', async () => {
-    executionPreview.mockResolvedValue({
-      valid: true,
-      errors: [],
-      warnings: [],
-      plan: {
-        stages: [],
-        summary: {
-          executedStages: 24,
-          totalStages: 32,
-          approvalGates: 18,
-          perUnitStages: 5,
-          skippedStages: 0,
-          outOfScopeStages: 8,
-        },
-      },
-    });
-    renderPage();
-    const summary = await screen.findByTestId('scope-summary');
-    expect(summary.textContent).toContain('Runs 24 of 32 stages');
-    expect(summary.textContent).toContain('18 approval gates');
-    expect(summary.textContent).toContain('5 stages fan out per unit of work');
-    expect(executionPreview).toHaveBeenCalledWith('aidlc-v2', 'feature', undefined);
-  });
-
-  it('singularizes the counts and drops the fan-out clause when nothing fans out', async () => {
-    executionPreview.mockResolvedValue({
-      valid: true,
-      errors: [],
-      warnings: [],
-      plan: {
-        stages: [],
-        summary: {
-          executedStages: 3,
-          totalStages: 5,
-          approvalGates: 1,
-          perUnitStages: 0,
-          skippedStages: 0,
-          outOfScopeStages: 2,
-        },
-      },
-    });
-    renderPage();
-    const summary = await screen.findByTestId('scope-summary');
-    expect(summary.textContent).toContain('1 approval gate');
-    expect(summary.textContent).not.toContain('approval gates');
-    expect(summary.textContent).not.toContain('per unit of work');
-  });
-
-  it('shows no summary line when the preview fails (best-effort sugar)', async () => {
-    executionPreview.mockRejectedValue(new Error('boom'));
-    renderPage();
-    await screen.findByLabelText('Prompt');
-    await waitFor(() => expect(executionPreview).toHaveBeenCalled());
-    expect(screen.queryByTestId('scope-summary')).not.toBeInTheDocument();
   });
 });

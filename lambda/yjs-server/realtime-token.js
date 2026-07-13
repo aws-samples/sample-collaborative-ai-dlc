@@ -93,7 +93,7 @@ const SPRINT_CHANNEL_RE = new RegExp(`^sprint:(${UUID_PATTERN})$`);
 const PROJECT_CHANNEL_RE = new RegExp(`^${UUID_PATTERN}$`);
 // V2 intent realtime — keep in sync with lambda/shared/realtime-token.js.
 const INTENT_DOC_RE = new RegExp(
-  `^intent-(?:sq|discussion|presence|review|artifact)-(${UUID_PATTERN})(?:-.+)?$`,
+  `^intent-(?:sq|discussion|presence|review|artifact|draft)-(${UUID_PATTERN})(?:-.+)?$`,
 );
 const INTENT_CHANNEL_RE = new RegExp(`^intent:(${UUID_PATTERN})$`);
 

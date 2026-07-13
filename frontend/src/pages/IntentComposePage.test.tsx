@@ -1,0 +1,238 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { MemoryRouter, Routes, Route } from 'react-router-dom';
+
+beforeEach(() => {
+  window.HTMLElement.prototype.hasPointerCapture = vi.fn().mockReturnValue(false);
+  window.HTMLElement.prototype.setPointerCapture = vi.fn();
+  window.HTMLElement.prototype.releasePointerCapture = vi.fn();
+  window.HTMLElement.prototype.scrollIntoView = vi.fn();
+});
+
+const useProjectCache = vi.fn();
+vi.mock('@/hooks/useProjectsCache', () => ({
+  useProjectCache: (...a: unknown[]) => useProjectCache(...a),
+}));
+
+vi.mock('@/contexts/AuthContext', () => ({
+  useAuth: () => ({ user: { displayName: 'Alice', email: 'a@x' } }),
+}));
+
+const get = vi.fn();
+const start = vi.fn();
+const update = vi.fn();
+vi.mock('@/services/intents', () => ({
+  intentsService: {
+    get: (...a: unknown[]) => get(...a),
+    start: (...a: unknown[]) => start(...a),
+    update: (...a: unknown[]) => update(...a),
+  },
+}));
+
+const compiled = vi.fn();
+const executionPreview = vi.fn();
+const validateGrid = vi.fn();
+vi.mock('@/services/workflows', () => ({
+  workflowsService: {
+    compiled: (...a: unknown[]) => compiled(...a),
+    executionPreview: (...a: unknown[]) => executionPreview(...a),
+    validateGrid: (...a: unknown[]) => validateGrid(...a),
+  },
+}));
+
+const getSettings = vi.fn();
+vi.mock('@/services/agents', () => ({
+  agentsService: { getSettings: (...a: unknown[]) => getSettings(...a) },
+}));
+
+// The collaborative draft hook drags in the whole Yjs/WebSocket transport —
+// substitute a deterministic local implementation that mirrors its contract.
+const draftState: Record<string, unknown> = {};
+const setSkipStageIds = vi.fn();
+const flushDraft = vi.fn();
+vi.mock('@/hooks/useCollaborativeIntentDraft', () => ({
+  useCollaborativeIntentDraft: () => ({
+    title: (draftState.title as string) ?? '',
+    prompt: (draftState.prompt as string) ?? '',
+    scope: (draftState.scope as string) ?? null,
+    composedGrid: (draftState.composedGrid as Record<string, 'EXECUTE' | 'SKIP'>) ?? null,
+    skipStageIds: (draftState.skipStageIds as string[]) ?? null,
+    synced: true,
+    remoteUsers: new Map(),
+    setCursor: vi.fn(),
+    initFromIntent: vi.fn(),
+    setTitle: vi.fn(),
+    setPrompt: vi.fn(),
+    setScope: vi.fn(),
+    setComposedGrid: vi.fn(),
+    setSkipStageIds: (...a: unknown[]) => setSkipStageIds(...a),
+    flushDraft: (...a: unknown[]) => flushDraft(...a),
+  }),
+}));
+
+import IntentComposePage from './IntentComposePage';
+
+const baseProject = (over: Record<string, unknown> = {}) => ({
+  id: 'p1',
+  name: 'P',
+  gitProvider: 'github',
+  agentCli: 'kiro',
+  createdAt: 'T',
+  trackers: [],
+  repos: [],
+  workflowId: 'aidlc-v2',
+  ...over,
+});
+
+const draftIntent = (over: Record<string, unknown> = {}) => ({
+  intent: {
+    id: 'i1',
+    executionId: 'i1',
+    projectId: 'p1',
+    title: 'My intent',
+    prompt: 'Build X',
+    status: 'DRAFT',
+    workflowId: 'aidlc-v2',
+    workflowVersion: 1,
+    scope: 'feature',
+    ...over,
+  },
+  stages: [],
+  events: [],
+  gates: [],
+  steering: [],
+  metrics: [],
+  outputs: [],
+  sensorRuns: [],
+  artifacts: [],
+});
+
+const renderPage = () =>
+  render(
+    <MemoryRouter initialEntries={['/project/p1/intent/i1/compose']}>
+      <Routes>
+        <Route
+          path="/project/:projectId/intent/:intentId/compose"
+          element={<IntentComposePage />}
+        />
+        <Route
+          path="/project/:projectId/intent/:intentId"
+          element={<div data-testid="intent-view" />}
+        />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+const summaryPlan = (summary: Record<string, number>, stages: unknown[] = []) => ({
+  valid: true,
+  errors: [],
+  warnings: [],
+  plan: { stages, summary },
+});
+
+describe('IntentComposePage', () => {
+  beforeEach(() => {
+    for (const k of Object.keys(draftState)) delete draftState[k];
+    draftState.prompt = 'Build X';
+    draftState.scope = 'feature';
+    get.mockReset().mockResolvedValue(draftIntent());
+    start.mockReset().mockResolvedValue({});
+    update.mockReset().mockResolvedValue({});
+    flushDraft.mockReset().mockResolvedValue(undefined);
+    setSkipStageIds.mockReset();
+    compiled.mockReset().mockResolvedValue({ scopeGrid: { feature: {}, bugfix: {} } });
+    executionPreview.mockReset().mockResolvedValue(
+      summaryPlan({
+        executedStages: 24,
+        totalStages: 32,
+        approvalGates: 18,
+        perUnitStages: 5,
+        skippedStages: 0,
+        outOfScopeStages: 8,
+      }),
+    );
+    validateGrid.mockReset();
+    getSettings.mockReset().mockResolvedValue({ stageSkipping: 'disabled' });
+    useProjectCache.mockReset();
+    useProjectCache.mockReturnValue({ project: baseProject(), loading: false });
+  });
+
+  it('renders the exact stage/gate counts from the preview summary', async () => {
+    renderPage();
+    const summary = await screen.findByTestId('scope-summary');
+    expect(summary.textContent).toContain('Runs 24 of 32 stages');
+    expect(summary.textContent).toContain('18 approval gates');
+    expect(summary.textContent).toContain('5 stages fan out per unit of work');
+  });
+
+  it('previews a composed grid through validate-grid instead of the scope preview', async () => {
+    draftState.composedGrid = { a: 'EXECUTE', b: 'SKIP' };
+    draftState.scope = 'my-custom';
+    validateGrid.mockResolvedValue(
+      summaryPlan({
+        executedStages: 2,
+        totalStages: 3,
+        approvalGates: 1,
+        perUnitStages: 0,
+        skippedStages: 0,
+        outOfScopeStages: 1,
+      }),
+    );
+    renderPage();
+    await waitFor(() => expect(validateGrid).toHaveBeenCalled());
+    expect(validateGrid.mock.calls[0][1]).toMatchObject({
+      composedGrid: { a: 'EXECUTE', b: 'SKIP' },
+      scope: 'my-custom',
+    });
+    expect(executionPreview).not.toHaveBeenCalled();
+    expect(await screen.findByTestId('composed-note')).toBeInTheDocument();
+    const summary = await screen.findByTestId('scope-summary');
+    expect(summary.textContent).toContain('Runs 2 of 3 stages');
+  });
+
+  it('shows the skip-stage grid when stage skipping is enabled and persists toggles to the shared draft', async () => {
+    const user = userEvent.setup();
+    getSettings.mockResolvedValue({ stageSkipping: 'enabled' });
+    executionPreview.mockResolvedValue(
+      summaryPlan(
+        {
+          executedStages: 3,
+          totalStages: 3,
+          approvalGates: 1,
+          perUnitStages: 0,
+          skippedStages: 0,
+          outOfScopeStages: 0,
+        },
+        [
+          { stageId: 'init', phase: 'initialization', execution: 'ALWAYS' },
+          { stageId: 'optional-stage', phase: 'construction', execution: 'CONDITIONAL' },
+          { stageId: 'core-stage', phase: 'construction', execution: 'ALWAYS' },
+        ],
+      ),
+    );
+    renderPage();
+    // Only the CONDITIONAL non-initialization stage is offered.
+    expect(await screen.findByText('optional-stage')).toBeInTheDocument();
+    expect(screen.queryByText('core-stage')).not.toBeInTheDocument();
+    await user.click(screen.getByText('optional-stage'));
+    expect(setSkipStageIds).toHaveBeenCalledWith(['optional-stage']);
+  });
+
+  it('Start flushes the shared draft first, then launches and navigates', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    const startBtn = await screen.findByTestId('start-intent');
+    await waitFor(() => expect(startBtn).toBeEnabled());
+    await user.click(startBtn);
+    await waitFor(() => expect(start).toHaveBeenCalledWith('p1', 'i1'));
+    expect(flushDraft.mock.invocationCallOrder[0]).toBeLessThan(start.mock.invocationCallOrder[0]);
+    expect(await screen.findByTestId('intent-view')).toBeInTheDocument();
+  });
+
+  it('a non-DRAFT intent leaves the compose step for the intent view', async () => {
+    get.mockResolvedValue(draftIntent({ status: 'RUNNING' }));
+    renderPage();
+    expect(await screen.findByTestId('intent-view')).toBeInTheDocument();
+  });
+});

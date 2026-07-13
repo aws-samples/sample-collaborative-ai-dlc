@@ -9,11 +9,11 @@ const allowedOrigin = (headers) => {
  *
  * @param {object} event  – Lambda proxy-integration event
  * @param {object} [opts]
- * @param {string} [opts.methods='GET,POST,PUT,DELETE,OPTIONS'] – Access-Control-Allow-Methods value
+ * @param {string} [opts.methods='GET,POST,PUT,PATCH,DELETE,OPTIONS'] – Access-Control-Allow-Methods value
  * @returns {(statusCode: number, body: any) => object}
  */
 const buildResponse =
-  (event, { methods = 'GET,POST,PUT,DELETE,OPTIONS' } = {}) =>
+  (event, { methods = 'GET,POST,PUT,PATCH,DELETE,OPTIONS' } = {}) =>
   (statusCode, body, extraHeaders = {}) => ({
     statusCode,
     headers: {
