@@ -75,6 +75,10 @@ const AGENTCORE_RUNTIME_ARN = () => process.env.AGENTCORE_RUNTIME_ARN || '';
 const ARTIFACTS_BUCKET = () => process.env.ARTIFACTS_BUCKET || '';
 const composeReportPrefix = (intentId) => `compose-reports/${intentId}/`;
 const runtimeSessionIdFor = (intentId) => `aidlc-intent-${intentId}`.padEnd(33, '0');
+// Composer one-shots run in a THROWAWAY session keyed by the compose id —
+// stateless, so a fresh microVM (on the CURRENT image) per request is exactly
+// right; see the compose dispatch below for the field incident this avoids.
+const composeSessionIdFor = (composeId) => `aidlc-compose-${composeId}`.padEnd(33, '0');
 // Unit-lane session ids — must mirror v2-orchestrator/section.js laneSessionIdFor.
 const laneSessionIdFor = (intentId, sectionIndex, slug) =>
   `aidlc-intent-${intentId}-s${sectionIndex}-${slug}`.padEnd(33, '0');
@@ -1852,7 +1856,15 @@ export const handler = async (event) => {
         const res = await agentcore.send(
           new InvokeAgentRuntimeCommand({
             agentRuntimeArn: AGENTCORE_RUNTIME_ARN(),
-            runtimeSessionId: runtimeSessionIdFor(intentId),
+            // A FRESH throwaway session per compose, never the intent's own
+            // session. Compose is stateless (no workspace/conversation to
+            // preserve), and dispatching it to `aidlc-intent-<id>` had two
+            // failure modes: an EXISTING intent microVM kept serving the
+            // image it was booted with (zombie-session field incident — a
+            // redeploy never reached composes for drafts that had composed
+            // once), and it spawned the intent's long-lived session early,
+            // pinning the future RUN to compose-time code.
+            runtimeSessionId: composeSessionIdFor(composeId),
             contentType: 'application/json',
             accept: 'application/json',
             payload: Buffer.from(

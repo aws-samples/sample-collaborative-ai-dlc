@@ -1205,6 +1205,12 @@ describe('POST /compose — composer sessions', () => {
       expect(compose.state).toBe('PENDING');
       expect(compose.source).toBe('llm');
       const call = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input;
+      // A FRESH throwaway session per compose — never the intent's session
+      // (an existing intent microVM would serve a stale image after a
+      // redeploy, and spawning the intent session early would pin the future
+      // run to compose-time code).
+      expect(call.runtimeSessionId).toBe(`aidlc-compose-${compose.composeId}`.padEnd(33, '0'));
+      expect(call.runtimeSessionId).not.toContain(intent.id);
       const payload = JSON.parse(Buffer.from(call.payload).toString());
       expect(payload).toMatchObject({
         command: 'compose-plan-start',
