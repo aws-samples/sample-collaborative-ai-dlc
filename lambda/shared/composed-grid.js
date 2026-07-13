@@ -46,5 +46,23 @@ const diffComposedGrids = (before = {}, after = {}) => {
   return { skip: skip.toSorted(), unskip: unskip.toSorted() };
 };
 
-export { normalizeComposedGrid, diffComposedGrids };
-export default { normalizeComposedGrid, diffComposedGrids };
+// The grid ABSORBS redundant overlay skips: a skip-overlay entry naming a
+// stage the grid already excludes (SKIP or unlisted — both project out) is
+// dropped. The two mechanisms deliberately coexist — the grid is the pinned
+// projection, the overlay deselects stages the projection WOULD run — but the
+// plan resolver rejects an overlay skip of a non-projected stage
+// (skip_stage_not_in_scope, the same guard that protects scope runs from
+// skipping scope-excluded stages). Every write path that can pair a grid with
+// an overlay (intent create/PATCH/start, recompose, the compose page) prunes
+// through here so the redundant-but-harmless combo can never poison a pinned
+// plan. Returns null when nothing survives (sparse META) and passes the
+// overlay through untouched when there is no grid.
+const pruneSkipsForGrid = (skipStageIds, composedGrid) => {
+  if (!Array.isArray(skipStageIds) || skipStageIds.length === 0) return null;
+  if (!composedGrid || typeof composedGrid !== 'object') return skipStageIds;
+  const pruned = skipStageIds.filter((id) => composedGrid[id] === 'EXECUTE');
+  return pruned.length ? pruned : null;
+};
+
+export { normalizeComposedGrid, diffComposedGrids, pruneSkipsForGrid };
+export default { normalizeComposedGrid, diffComposedGrids, pruneSkipsForGrid };

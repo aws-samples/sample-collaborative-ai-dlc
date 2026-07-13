@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeComposedGrid, diffComposedGrids } from '../composed-grid.js';
+import { normalizeComposedGrid, diffComposedGrids, pruneSkipsForGrid } from '../composed-grid.js';
 
 describe('normalizeComposedGrid', () => {
   it('passes null/undefined through as "no grid"', () => {
@@ -58,5 +58,30 @@ describe('diffComposedGrids', () => {
     expect(
       diffComposedGrids({ z: 'EXECUTE', a: 'EXECUTE' }, { z: 'SKIP', a: 'SKIP' }).skip,
     ).toEqual(['a', 'z']);
+  });
+});
+
+describe('pruneSkipsForGrid', () => {
+  it('drops overlay entries the grid already excludes (SKIP or unlisted)', () => {
+    expect(pruneSkipsForGrid(['a', 'b', 'c'], { a: 'EXECUTE', b: 'SKIP' })).toEqual(['a']); // b grid-SKIPped, c unlisted (= SKIP) — both absorbed
+  });
+
+  it('returns null when nothing survives (sparse META)', () => {
+    expect(pruneSkipsForGrid(['b'], { a: 'EXECUTE', b: 'SKIP' })).toBeNull();
+  });
+
+  it('passes the overlay through untouched when there is no grid', () => {
+    expect(pruneSkipsForGrid(['a', 'b'], null)).toEqual(['a', 'b']);
+    expect(pruneSkipsForGrid(['a', 'b'], undefined)).toEqual(['a', 'b']);
+  });
+
+  it('tolerates empty/absent overlays', () => {
+    expect(pruneSkipsForGrid(null, { a: 'EXECUTE' })).toBeNull();
+    expect(pruneSkipsForGrid([], { a: 'EXECUTE' })).toBeNull();
+    expect(pruneSkipsForGrid(undefined, { a: 'EXECUTE' })).toBeNull();
+  });
+
+  it('keeps overlay skips of grid-EXECUTE stages (the two mechanisms compose)', () => {
+    expect(pruneSkipsForGrid(['a'], { a: 'EXECUTE', b: 'EXECUTE' })).toEqual(['a']);
   });
 });

@@ -143,8 +143,24 @@ export function useCollaborativeIntentDraft(
     (grid: Record<string, 'EXECUTE' | 'SKIP'> | null) => {
       if (!doc) return;
       const config = doc.getMap('config');
-      if (grid && Object.keys(grid).length) config.set('composedGrid', JSON.stringify(grid));
-      else config.delete('composedGrid');
+      doc.transact(() => {
+        if (grid && Object.keys(grid).length) {
+          config.set('composedGrid', JSON.stringify(grid));
+          // The grid absorbs redundant overlay skips (mirrors the server's
+          // pruneSkipsForGrid): a skip of a stage the grid already excludes
+          // would fail plan validation on every later recompute.
+          const skips = parseJson<string[]>(config.get('skipStageIds'));
+          if (skips?.length) {
+            const pruned = skips.filter((id) => grid[id] === 'EXECUTE');
+            if (pruned.length !== skips.length) {
+              if (pruned.length) config.set('skipStageIds', JSON.stringify(pruned));
+              else config.delete('skipStageIds');
+            }
+          }
+        } else {
+          config.delete('composedGrid');
+        }
+      });
     },
     [doc],
   );

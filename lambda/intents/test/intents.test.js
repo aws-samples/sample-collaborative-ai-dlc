@@ -972,6 +972,137 @@ describe('composed grids + DRAFT PATCH', () => {
     });
     expect(res.statusCode).toBe(409);
   });
+
+  // ── Skip overlay × composed grid coexistence ──
+  // The two mechanisms deliberately compose: the grid is the pinned
+  // projection, the overlay deselects stages the projection WOULD run. A
+  // redundant overlay entry (a stage the grid already excludes) is ABSORBED
+  // by the grid at every write path — without the prune the resolver's
+  // skip_stage_not_in_scope guard would poison the pinned combination.
+
+  const seedSkippableGridFixtures = (projectId) => {
+    seedGridFixtures(projectId);
+    // Make analyze CONDITIONAL so the skip overlay may target it, and add a
+    // third CONDITIONAL stage so something remains to absorb.
+    const k = keyOf('BLOCK#SYSTEM#STAGE#analyze', 'V#latest');
+    procStore.set(k, { ...procStore.get(k), execution: 'CONDITIONAL' });
+    procStore.set(keyOf('WF#default#aidlc-v2', 'V#4#PLACEMENT#extra'), {
+      pk: 'WF#default#aidlc-v2',
+      sk: 'V#4#PLACEMENT#extra',
+      stageId: 'extra',
+      order: 2,
+      scopeMembership: { feature: 'EXECUTE' },
+    });
+    procStore.set(keyOf('BLOCK#SYSTEM#STAGE#extra', 'V#latest'), {
+      pk: 'BLOCK#SYSTEM#STAGE#extra',
+      sk: 'V#latest',
+      GSI1PK: 'TENANT#SYSTEM#STAGE',
+      GSI1SK: 'extra',
+      blockId: 'extra',
+      id: 'extra',
+      version: 1,
+      phase: 'construction',
+      mode: 'inline',
+      leadAgent: 'orchestrator',
+      produces: [],
+      consumes: [],
+      execution: 'CONDITIONAL',
+      sensors: [],
+      humanValidation: 'none',
+    });
+  };
+
+  it('create: the grid absorbs an overlay skip of a stage it already excludes', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .property(gremlin.process.cardinality.single, 'stage_skipping', 'enabled')
+      .next();
+    seedSkippableGridFixtures(projectId);
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'X',
+      scope: 'lean',
+      // analyze is grid-SKIPped AND overlay-skipped; extra is a real overlay
+      // skip of a grid-EXECUTE stage.
+      composedGrid: { analyze: 'SKIP', extra: 'EXECUTE', build: 'SKIP' },
+      skipStageIds: ['analyze', 'extra'],
+    });
+    expect(res.statusCode).toBe(201);
+    const intent = JSON.parse(res.body);
+    expect(intent.skipStageIds).toEqual(['extra']); // analyze absorbed
+  });
+
+  it('PATCH: applying a grid prunes now-redundant overlay skips from the draft', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .property(gremlin.process.cardinality.single, 'stage_skipping', 'enabled')
+      .next();
+    seedSkippableGridFixtures(projectId);
+    const intent = JSON.parse(
+      (
+        await createIntent(sub, projectId, {
+          title: 'I',
+          prompt: 'X',
+          scope: 'feature',
+          skipStageIds: ['analyze'],
+        })
+      ).body,
+    );
+    expect(intent.skipStageIds).toEqual(['analyze']);
+    // A grid arrives (e.g. an applied composer proposal) that SKIPs analyze.
+    const res = await patchIntent(sub, projectId, intent.id, {
+      composedGrid: { analyze: 'SKIP', extra: 'EXECUTE', build: 'SKIP' },
+      scope: 'composed-lean',
+    });
+    expect(res.statusCode).toBe(200);
+    const updated = JSON.parse(res.body);
+    expect(updated.composedGrid).toEqual({ analyze: 'SKIP', extra: 'EXECUTE', build: 'SKIP' });
+    expect(updated.skipStageIds).toBeNull(); // absorbed, combination resolves
+  });
+
+  it('start: a launch grid override prunes the pinned overlay before validation', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .property(gremlin.process.cardinality.single, 'stage_skipping', 'enabled')
+      .next();
+    seedSkippableGridFixtures(projectId);
+    const intent = JSON.parse(
+      (
+        await createIntent(sub, projectId, {
+          title: 'I',
+          prompt: 'X',
+          scope: 'feature',
+          skipStageIds: ['analyze', 'extra'],
+        })
+      ).body,
+    );
+    const res = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/start`,
+      pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({
+        composedGrid: { analyze: 'SKIP', extra: 'EXECUTE', build: 'EXECUTE' },
+      }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(202);
+    const updated = JSON.parse(res.body);
+    expect(updated.skipStageIds).toEqual(['extra']);
+    expect(updated.composedGrid).toEqual({
+      analyze: 'SKIP',
+      extra: 'EXECUTE',
+      build: 'EXECUTE',
+    });
+  });
 });
 
 describe('POST /compose — composer sessions', () => {
@@ -1405,6 +1536,39 @@ describe('POST /recompose — in-flight reshape', () => {
     });
     expect(res.statusCode).toBe(409);
     expect(JSON.parse(res.body).error).toMatch(/Nothing left to run/);
+  });
+
+  it('the new grid absorbs a standing create-time skip of the same stage (overlay pruned on META)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedRecomposeFixtures();
+    // The run was created with optional deselected (overlay) — its SKIPPED
+    // row exists; the recomposed grid now expresses the same exclusion.
+    const intent = await seedRun(sub, projectId, {
+      rows: [
+        { stageInstanceId: 'si-analyze', stageId: 'analyze', state: 'SUCCEEDED' },
+        { stageInstanceId: 'si-optional', stageId: 'optional', state: 'SKIPPED' },
+        { stageInstanceId: 'si-build', stageId: 'build', state: 'WAITING_FOR_HUMAN' },
+      ],
+      metaOver: { skipStageIds: ['optional'], stageSkipping: 'enabled' },
+    });
+    const res = await recomposeReq(sub, projectId, intent.id, {
+      composedGrid: { analyze: 'EXECUTE', optional: 'SKIP', build: 'EXECUTE' },
+    });
+    expect(res.statusCode).toBe(202);
+    const updated = JSON.parse(res.body);
+    // The overlay entry is absorbed by the grid — META never pins a skip the
+    // grid already excludes (the resolver would reject the combination).
+    expect(updated.skipStageIds).toBeNull();
+    expect(updated.composedGrid).toEqual({
+      analyze: 'EXECUTE',
+      optional: 'SKIP',
+      build: 'EXECUTE',
+    });
+    // Relaunched at the parked stage.
+    const calls = lambdaMock.commandCalls(InvokeCommand);
+    const payload = JSON.parse(Buffer.from(calls.at(-1).args[0].input.Payload).toString());
+    expect(payload).toMatchObject({ action: 'start', startAtStageId: 'build' });
   });
 
   it('in-flight compose dispatches with the frozen grid + live progress', async () => {

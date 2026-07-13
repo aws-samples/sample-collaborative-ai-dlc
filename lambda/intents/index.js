@@ -36,7 +36,7 @@ import {
 } from '../shared/v2-workflow-plan.js';
 import { stageInstanceId as planStageInstanceId } from '../shared/v2-execution-plan.js';
 import { effectiveStageSkipping, normalizeSkipStageIds } from '../shared/stage-skip.js';
-import { normalizeComposedGrid } from '../shared/composed-grid.js';
+import { normalizeComposedGrid, pruneSkipsForGrid } from '../shared/composed-grid.js';
 import { matchScopeByKeywords } from '../shared/compose-match.js';
 import { makePriceResolver, costForMetrics } from '../shared/model-pricing.js';
 import { aggregateMetrics, rollupAggregates } from '../shared/metric-classification.js';
@@ -1490,8 +1490,15 @@ export const handler = async (event) => {
         skipOverride = normalized; // null clears, array replaces
       }
       if (skipOverride !== undefined || gridOverride !== undefined) {
-        const effectiveSkips = skipOverride !== undefined ? skipOverride : meta.skipStageIds;
         const effectiveGrid = gridOverride !== undefined ? gridOverride : meta.composedGrid;
+        // The grid absorbs redundant overlay skips (composed-grid.js) — the
+        // pruned overlay is what launches, so the pinned combination always
+        // resolves for the orchestrator and the container alike.
+        const effectiveSkips = pruneSkipsForGrid(
+          skipOverride !== undefined ? skipOverride : meta.skipStageIds,
+          effectiveGrid,
+        );
+        if (effectiveGrid) skipOverride = effectiveSkips;
         const planCheck = await loadExecutionPlan({
           ddb,
           tableName: BLOCKS_TABLE(),
@@ -1948,8 +1955,17 @@ export const handler = async (event) => {
         const effScope = patch.scope ?? meta.scope;
         const effGrid =
           patch.composedGrid !== undefined ? patch.composedGrid : (meta.composedGrid ?? null);
-        const effSkips =
-          patch.skipStageIds !== undefined ? patch.skipStageIds : (meta.skipStageIds ?? null);
+        // The grid absorbs redundant overlay skips (composed-grid.js): a
+        // shared-draft flow can legitimately pair "deselect X" with a grid
+        // that later flips X to SKIP — persist the pruned overlay so the
+        // pinned combination always resolves.
+        const effSkips = pruneSkipsForGrid(
+          patch.skipStageIds !== undefined ? patch.skipStageIds : (meta.skipStageIds ?? null),
+          effGrid,
+        );
+        if (effGrid && (patch.skipStageIds !== undefined || patch.composedGrid !== undefined)) {
+          patch.skipStageIds = effSkips;
+        }
         if (!effGrid) {
           const scopes = await loadWorkflowScopes({
             ddb,
@@ -2370,7 +2386,11 @@ export const handler = async (event) => {
       if (!newGrid) return response(400, { error: 'composedGrid is required' });
       const newScope =
         typeof data.scope === 'string' && data.scope ? data.scope : (meta.scope ?? 'composed');
-      const priorSkipIds = Array.isArray(meta.skipStageIds) ? meta.skipStageIds : [];
+      // The grid absorbs redundant overlay skips (composed-grid.js): entries
+      // the new grid already excludes leave the standing overlay — persisted
+      // below with the grid so every later recompute of this run resolves.
+      const priorSkipIds =
+        pruneSkipsForGrid(Array.isArray(meta.skipStageIds) ? meta.skipStageIds : [], newGrid) ?? [];
       // The stages the new projection would run: EXECUTE entries minus the
       // intent's standing skip overlay. Computed straight off the grid so the
       // frozen-past check below can answer BEFORE plan resolution (a frozen
@@ -2520,6 +2540,9 @@ export const handler = async (event) => {
         rewindFromStageId: fromStage.stageId,
         scope: newScope,
         composedGrid: newGrid,
+        // Persist the pruned overlay (see priorSkipIds above) so META never
+        // pins a skip the new grid already excludes.
+        skipStageIds: priorSkipIds.length ? priorSkipIds : null,
         planWarnings: planResult.warnings?.length ? planResult.warnings : null,
       });
       try {
@@ -2793,12 +2816,16 @@ export const handler = async (event) => {
         await fetchPlatformStageSkipping(),
         cfg.stageSkipping,
       );
-      const skipStageIds = normalizeSkipStageIds(data.skipStageIds);
-      if (skipStageIds && stageSkipping !== 'enabled') {
+      const rawSkipStageIds = normalizeSkipStageIds(data.skipStageIds);
+      if (rawSkipStageIds && stageSkipping !== 'enabled') {
         return response(400, {
           error: 'Stage skipping is disabled for this project — skipStageIds is not accepted',
         });
       }
+      // The grid absorbs redundant overlay skips (composed-grid.js): an
+      // overlay entry the grid already excludes would otherwise fail the
+      // resolver's skip_stage_not_in_scope guard on every later recompute.
+      const skipStageIds = pruneSkipsForGrid(rawSkipStageIds, composedGrid);
       // Resolve the full execution plan NOW, before any row is written. The
       // plan is a pure function of (workflow@pinnedVersion, scope, skip
       // overlay), so a pass here holds for the whole intent lifetime — this
