@@ -288,6 +288,12 @@ const buildExecutionMeta = ({
   // (orchestrator load-plan, rewind slice, run-stage resolution) so the plan
   // never drifts. A rewind to one of these ids UN-skips it (removed here).
   skipStageIds = null,
+  // Per-intent composed EXECUTE/SKIP grid (Adaptive Workflows): when set it
+  // replaces the named-scope projection in every plan recompute — `scope`
+  // degrades to the provenance label the grid was composed from. Pinned at
+  // create/start like the skip overlay and threaded identically; mutable only
+  // through the recompose path, which retires + relaunches the run.
+  composedGrid = null,
 }) => ({
   ...executionMetaKey(executionId),
   ...projectStatusIndex({ projectId, status, startedAt, executionId }),
@@ -332,6 +338,7 @@ const buildExecutionMeta = ({
   rewindFromStageId,
   stageSkipping,
   skipStageIds,
+  composedGrid,
   updatedAt: startedAt,
   completedAt: null,
 });

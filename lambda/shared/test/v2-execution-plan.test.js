@@ -880,3 +880,216 @@ describe('buildExecutionPlan — optional produces + produces kinds', () => {
     expect(warnings.map((w) => w.code)).toContain('scope_absent_consume');
   });
 });
+
+describe('buildExecutionPlan — composed grid', () => {
+  // A three-stage workflow: init scaffolds, analyze produces what build needs.
+  const gridLibrary = () =>
+    baseLibrary({
+      stagesById: {
+        init: stage('init', { phase: 'initialization', humanValidation: 'none' }),
+        analyze: stage('analyze', { produces: ['spec'] }),
+        build: stage('build', { consumes: [{ artifact: 'spec', required: true }] }),
+      },
+    });
+  const gridWorkflow = () =>
+    workflow([
+      placement('init', 'feature', 0),
+      placement('analyze', 'feature', 1),
+      placement('build', 'feature', 2),
+    ]);
+
+  it('projects the plan from the grid instead of the scope', () => {
+    const { valid, errors, plan } = buildExecutionPlan({
+      workflow: gridWorkflow(),
+      scope: 'my-composed-label',
+      library: gridLibrary(),
+      composedGrid: { init: 'EXECUTE', analyze: 'EXECUTE', build: 'EXECUTE' },
+    });
+    expect(errors).toEqual([]);
+    expect(valid).toBe(true);
+    expect(plan.composed).toBe(true);
+    expect(plan.scope).toBe('my-composed-label');
+    expect(plan.stages.map((s) => s.stageId)).toEqual(['init', 'analyze', 'build']);
+  });
+
+  it('does not require the scope label to name a workflow scope', () => {
+    const { valid, errors } = buildExecutionPlan({
+      workflow: gridWorkflow(),
+      scope: 'totally-custom',
+      library: gridLibrary(),
+      composedGrid: { init: 'EXECUTE', analyze: 'EXECUTE', build: 'EXECUTE' },
+    });
+    expect(errors.map((e) => e.code)).not.toContain('scope_not_found');
+    expect(valid).toBe(true);
+  });
+
+  it('a grid-SKIPped stage lands in outOfScopeStageIds, not skippedStages', () => {
+    const { valid, plan } = buildExecutionPlan({
+      workflow: gridWorkflow(),
+      scope: 'feature',
+      library: gridLibrary(),
+      composedGrid: { init: 'EXECUTE', analyze: 'EXECUTE', build: 'SKIP' },
+    });
+    expect(valid).toBe(true);
+    expect(plan.stages.map((s) => s.stageId)).toEqual(['init', 'analyze']);
+    expect(plan.outOfScopeStageIds).toContain('build');
+    expect(plan.skippedStages).toEqual([]);
+  });
+
+  it('an UNLISTED placement defaults to SKIP', () => {
+    const { valid, plan } = buildExecutionPlan({
+      workflow: gridWorkflow(),
+      scope: 'feature',
+      library: gridLibrary(),
+      composedGrid: { init: 'EXECUTE', analyze: 'EXECUTE' },
+    });
+    expect(valid).toBe(true);
+    expect(plan.stages.map((s) => s.stageId)).toEqual(['init', 'analyze']);
+    expect(plan.outOfScopeStageIds).toContain('build');
+  });
+
+  it('rejects skipping (or omitting) an initialization stage', () => {
+    const omitted = buildExecutionPlan({
+      workflow: gridWorkflow(),
+      scope: 'feature',
+      library: gridLibrary(),
+      composedGrid: { analyze: 'EXECUTE', build: 'EXECUTE' },
+    });
+    expect(omitted.valid).toBe(false);
+    expect(omitted.errors.map((e) => e.code)).toContain('composed_grid_initialization_skip');
+
+    const skipped = buildExecutionPlan({
+      workflow: gridWorkflow(),
+      scope: 'feature',
+      library: gridLibrary(),
+      composedGrid: { init: 'SKIP', analyze: 'EXECUTE', build: 'EXECUTE' },
+    });
+    expect(skipped.valid).toBe(false);
+    expect(skipped.errors.map((e) => e.code)).toContain('composed_grid_initialization_skip');
+  });
+
+  it('rejects unknown stages, bad values, empty and all-SKIP grids', () => {
+    const unknown = buildExecutionPlan({
+      workflow: gridWorkflow(),
+      scope: 'feature',
+      library: gridLibrary(),
+      composedGrid: { init: 'EXECUTE', ghost: 'EXECUTE' },
+    });
+    expect(unknown.valid).toBe(false);
+    expect(unknown.errors.map((e) => e.code)).toContain('composed_grid_unknown_stage');
+
+    const badValue = buildExecutionPlan({
+      workflow: gridWorkflow(),
+      scope: 'feature',
+      library: gridLibrary(),
+      composedGrid: { init: 'EXECUTE', analyze: 'maybe' },
+    });
+    expect(badValue.valid).toBe(false);
+    expect(badValue.errors.map((e) => e.code)).toContain('composed_grid_invalid');
+
+    const empty = buildExecutionPlan({
+      workflow: gridWorkflow(),
+      scope: 'feature',
+      library: gridLibrary(),
+      composedGrid: {},
+    });
+    expect(empty.valid).toBe(false);
+    expect(empty.errors.map((e) => e.code)).toContain('composed_grid_invalid');
+  });
+
+  it('a starved required input is a lenient warning by default, a strict error on demand', () => {
+    const grid = { init: 'EXECUTE', analyze: 'SKIP', build: 'EXECUTE' };
+    const lenient = buildExecutionPlan({
+      workflow: gridWorkflow(),
+      scope: 'feature',
+      library: gridLibrary(),
+      composedGrid: grid,
+    });
+    expect(lenient.valid).toBe(true);
+    expect(lenient.warnings.map((w) => w.code)).toContain('scope_absent_consume');
+    const buildStage = lenient.plan.stages.find((s) => s.stageId === 'build');
+    expect(buildStage.inputArtifacts.find((i) => i.artifact === 'spec').expectedAbsent).toBe(true);
+
+    const strict = buildExecutionPlan({
+      workflow: gridWorkflow(),
+      scope: 'feature',
+      library: gridLibrary(),
+      composedGrid: grid,
+      strict: true,
+    });
+    expect(strict.valid).toBe(false);
+    expect(strict.errors.map((e) => e.code)).toContain('starved_consume');
+  });
+
+  it('the skip overlay still applies ON TOP of the grid projection', () => {
+    const lib = baseLibrary({
+      stagesById: {
+        init: stage('init', { phase: 'initialization', humanValidation: 'none' }),
+        analyze: stage('analyze', { produces: ['spec'] }),
+        extra: stage('extra', { execution: 'CONDITIONAL' }),
+        build: stage('build', { consumes: [{ artifact: 'spec', required: true }] }),
+      },
+    });
+    const wf = workflow([
+      placement('init', 'feature', 0),
+      placement('analyze', 'feature', 1),
+      placement('extra', 'feature', 2),
+      placement('build', 'feature', 3),
+    ]);
+    const { valid, errors, plan } = buildExecutionPlan({
+      workflow: wf,
+      scope: 'feature',
+      library: lib,
+      composedGrid: { init: 'EXECUTE', analyze: 'EXECUTE', extra: 'EXECUTE', build: 'EXECUTE' },
+      skipStageIds: ['extra'],
+    });
+    expect(errors).toEqual([]);
+    expect(valid).toBe(true);
+    expect(plan.stages.map((s) => s.stageId)).toEqual(['init', 'analyze', 'build']);
+    expect(plan.skippedStages.map((s) => s.stageId)).toEqual(['extra']);
+    expect(plan.summary.skippedStages).toBe(1);
+  });
+
+  it('grid projection keeps instance ids identical to the scope projection', () => {
+    const scoped = buildExecutionPlan({
+      workflow: gridWorkflow(),
+      scope: 'feature',
+      library: gridLibrary(),
+    });
+    const composed = buildExecutionPlan({
+      workflow: gridWorkflow(),
+      scope: 'feature',
+      library: gridLibrary(),
+      composedGrid: { init: 'EXECUTE', analyze: 'EXECUTE', build: 'EXECUTE' },
+    });
+    expect(composed.plan.stages.map((s) => s.stageInstanceId)).toEqual(
+      scoped.plan.stages.map((s) => s.stageInstanceId),
+    );
+  });
+
+  it('summary counts hold under a grid projection', () => {
+    const { plan } = buildExecutionPlan({
+      workflow: gridWorkflow(),
+      scope: 'feature',
+      library: gridLibrary(),
+      composedGrid: { init: 'EXECUTE', analyze: 'EXECUTE', build: 'SKIP' },
+    });
+    expect(plan.summary).toEqual({
+      executedStages: 2,
+      totalStages: 3,
+      approvalGates: 1, // analyze only — init is humanValidation none
+      perUnitStages: 0,
+      skippedStages: 0,
+      outOfScopeStages: 1,
+    });
+  });
+
+  it('plans without a grid stay non-composed', () => {
+    const { plan } = buildExecutionPlan({
+      workflow: gridWorkflow(),
+      scope: 'feature',
+      library: gridLibrary(),
+    });
+    expect(plan.composed).toBe(false);
+  });
+});

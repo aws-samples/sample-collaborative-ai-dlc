@@ -114,7 +114,10 @@ const assembleWorkflow = (items, { workflowId, workflowVersion }) => {
 // per-intent skip overlay snapshotted on the execution META row (see
 // shared/stage-skip.js) — every recompute of the same intent MUST pass the
 // same overlay or the plan drifts between the create check, the orchestrator
-// walk, the rewind slice, and the container's stage resolution.
+// walk, the rewind slice, and the container's stage resolution. The same
+// invariant holds for `composedGrid` (the per-intent EXECUTE/SKIP grid pinned
+// on META): grid consumers must all pass the identical grid. `strict`
+// promotes starved required inputs to errors (recompose dry runs).
 const loadExecutionPlan = async ({
   ddb,
   tableName,
@@ -122,6 +125,8 @@ const loadExecutionPlan = async ({
   workflowVersion,
   scope,
   skipStageIds = null,
+  composedGrid = null,
+  strict = false,
 }) => {
   const items = await loadWorkflowItems(ddb, tableName, workflowId, workflowVersion);
   if (!items.length) {
@@ -150,7 +155,7 @@ const loadExecutionPlan = async ({
     rulesById: keyById(rules),
     artifactsById: keyById(artifacts),
   };
-  return buildExecutionPlan({ workflow, scope, library, skipStageIds });
+  return buildExecutionPlan({ workflow, scope, library, skipStageIds, composedGrid, strict });
 };
 
 // List the scopes a pinned workflow offers (the vocabulary the intent scope

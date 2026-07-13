@@ -82,6 +82,91 @@ const workflowScopes = (workflow) => {
 // A placement is in scope when its membership for the selected scope is EXECUTE.
 const isInScope = (placement, scope) => placement.scopeMembership?.[scope] === 'EXECUTE';
 
+// ── Composed grid ────────────────────────────────────────────────────────────
+// A per-intent EXECUTE/SKIP grid over the workflow's stages (upstream Adaptive
+// Workflows: the composer proposes, this validates). When supplied it REPLACES
+// the named-scope projection: the grid is the single source of which placements
+// run; the `scope` argument degrades to a provenance label. Grid semantics are
+// SCOPE semantics (any stage may be SKIP, subject to the starvation analysis
+// below), NOT the narrower per-intent skip-overlay policy — with one hard
+// policy floor: initialization stages always EXECUTE (they scaffold the
+// workspace/state and stamp the greenfield/brownfield mode that conditionalOn
+// consume edges evaluate against; a grid without them is never runnable).
+//
+// The grid is data proposed by a human or an LLM — validation here is the ONLY
+// gate, so every violation is a structured error, never a throw:
+//   composed_grid_invalid        — not a {stageId: 'EXECUTE'|'SKIP'} object
+//   composed_grid_unknown_stage  — a key naming no authored placement
+//   composed_grid_initialization_skip — the policy floor above
+//   composed_grid_empty          — no EXECUTE stage survives
+const GRID_EXECUTE = 'EXECUTE';
+const GRID_SKIP = 'SKIP';
+const validateComposedGrid = (composedGrid, workflow, stagesById, errors) => {
+  if (
+    typeof composedGrid !== 'object' ||
+    composedGrid === null ||
+    Array.isArray(composedGrid) ||
+    Object.keys(composedGrid).length === 0
+  ) {
+    errors.push(
+      err('composed_grid_invalid', 'composedGrid must be a non-empty {stageId: EXECUTE|SKIP} map'),
+    );
+    return null;
+  }
+  const placementIds = new Set((workflow.placements ?? []).map((p) => p.stageId));
+  let bad = false;
+  for (const [stageId, value] of Object.entries(composedGrid)) {
+    if (value !== GRID_EXECUTE && value !== GRID_SKIP) {
+      errors.push(
+        err(
+          'composed_grid_invalid',
+          `composedGrid["${stageId}"] must be "${GRID_EXECUTE}" or "${GRID_SKIP}", got "${value}"`,
+          { stageId, ref: stageId },
+        ),
+      );
+      bad = true;
+      continue;
+    }
+    if (!placementIds.has(stageId)) {
+      errors.push(
+        err(
+          'composed_grid_unknown_stage',
+          `composedGrid names stage "${stageId}", which is not placed in this workflow`,
+          { stageId, ref: stageId },
+        ),
+      );
+      bad = true;
+    }
+  }
+  // Policy floor: every initialization placement must be EXECUTE. An UNLISTED
+  // placement defaults to SKIP (grids are total by convention but tolerate
+  // omission), so an omitted initialization stage violates the floor too.
+  for (const p of workflow.placements ?? []) {
+    if ((stagesById[p.stageId]?.phase ?? null) !== 'initialization') continue;
+    if (composedGrid[p.stageId] !== GRID_EXECUTE) {
+      errors.push(
+        err(
+          'composed_grid_initialization_skip',
+          `composedGrid must keep initialization stage "${p.stageId}" EXECUTE — initialization stages are runtime prerequisites and always run`,
+          { stageId: p.stageId, ref: p.stageId },
+        ),
+      );
+      bad = true;
+    }
+  }
+  if (bad) return null;
+  const executeIds = new Set(
+    Object.entries(composedGrid)
+      .filter(([, v]) => v === GRID_EXECUTE)
+      .map(([id]) => id),
+  );
+  if (executeIds.size === 0) {
+    errors.push(err('composed_grid_empty', 'composedGrid marks no stage EXECUTE'));
+    return null;
+  }
+  return executeIds;
+};
+
 // Normalize a stage's consume edges to { artifact, required, conditionalOn }.
 // The mapper already emits this shape; tolerate a bare string for safety.
 const stageInputs = (stage) =>
@@ -208,6 +293,18 @@ const buildExecutionPlan = ({
   // plan ERRORS: the create endpoint validated them, so a violation here means
   // the snapshot and the pinned workflow disagree — fail loudly.
   skipStageIds = null,
+  // Per-intent composed EXECUTE/SKIP grid (see validateComposedGrid above).
+  // Replaces the named-scope projection when present; `scope` becomes a
+  // provenance label. `skipStageIds` still applies ON TOP of the grid — the
+  // grid is the pinned create-time selection, the overlay is the runtime one.
+  composedGrid = null,
+  // Strict mode (upstream validate-grid --strict, used by in-flight
+  // recompose): a starved required input — one whose producer exists in the
+  // workflow but not in this projection — is promoted from the advisory
+  // scope-shortcut warning to a hard `starved_consume` error. A front-compose
+  // dry run stays lenient (stock scopes legitimately shortcut); a mid-run
+  // reshape must never park a stage waiting for an input nothing will write.
+  strict = false,
 } = {}) => {
   const errors = [];
   const warnings = [];
@@ -239,22 +336,30 @@ const buildExecutionPlan = ({
     );
   }
 
-  // The selected scope must be one the workflow actually offers.
-  const scopes = workflowScopes(workflow);
-  if (!scope || !scopes.has(scope)) {
-    errors.push(
-      err('scope_not_found', `scope "${scope}" is not defined in workflow "${workflowId}"`, {
-        ref: scope,
-      }),
-    );
-    // Without a resolvable scope there is nothing meaningful to build.
-    return { valid: false, errors, warnings, plan: null };
+  // Project the workflow onto the composed grid (when supplied) or the named
+  // scope: only EXECUTE placements become stage instances. Cycle/dangling
+  // analysis runs over this subset, not the whole authored workflow. With a
+  // grid, `scope` is not required to name a workflow scope — it is kept as the
+  // provenance label of whatever base the grid was composed from.
+  let inScopePlacements;
+  if (composedGrid != null) {
+    const executeIds = validateComposedGrid(composedGrid, workflow, stagesById, errors);
+    if (!executeIds) return { valid: false, errors, warnings, plan: null };
+    inScopePlacements = (workflow.placements ?? []).filter((p) => executeIds.has(p.stageId));
+  } else {
+    // The selected scope must be one the workflow actually offers.
+    const scopes = workflowScopes(workflow);
+    if (!scope || !scopes.has(scope)) {
+      errors.push(
+        err('scope_not_found', `scope "${scope}" is not defined in workflow "${workflowId}"`, {
+          ref: scope,
+        }),
+      );
+      // Without a resolvable scope there is nothing meaningful to build.
+      return { valid: false, errors, warnings, plan: null };
+    }
+    inScopePlacements = (workflow.placements ?? []).filter((p) => isInScope(p, scope));
   }
-
-  // Project the workflow onto the scope: only EXECUTE placements become stage
-  // instances. Cycle/dangling analysis runs over this subset, not the whole
-  // authored workflow.
-  const inScopePlacements = (workflow.placements ?? []).filter((p) => isInScope(p, scope));
 
   // Per-intent skip overlay: validate each requested skip against the scope
   // projection + the skip policy, then drop the surviving placements. The
@@ -358,6 +463,18 @@ const buildExecutionPlan = ({
     const allowed = input && (input.required === false || input.conditionalOn != null);
     if (allowed) continue;
     if (workflowProducers.has(artifact)) {
+      // Strict mode: a mid-run reshape must not create a stage that parks
+      // waiting for an input nothing in the projection will ever write.
+      if (strict) {
+        errors.push(
+          err(
+            'starved_consume',
+            `stage "${stageId}" requires "${artifact}", whose producer is not selected — the composed projection starves it`,
+            { stageId, ref: artifact },
+          ),
+        );
+        continue;
+      }
       warnings.push(
         err(
           'scope_absent_consume',
@@ -654,7 +771,11 @@ const buildExecutionPlan = ({
   const plan = {
     workflowId,
     workflowVersion,
-    scope,
+    scope: scope ?? (composedGrid != null ? 'composed' : null),
+    // True when this plan was projected from a per-intent composed grid rather
+    // than a named workflow scope — consumers that reason about scope
+    // membership (rewind, previews) must consult the grid, not the scope name.
+    composed: composedGrid != null,
     namespace,
     stages: orderedStages,
     sections,

@@ -131,6 +131,10 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     // Per-intent skip overlay (stage-skip.js). Only the rewind endpoint writes
     // this: rewinding TO a skipped stage UN-skips it (list shrinks, or null).
     skipStageIds,
+    // Per-intent composed EXECUTE/SKIP grid. Written at DRAFT start (launch
+    // override) and by the recompose path (which retires + relaunches the
+    // run). Validated shape only — the plan resolver owns grid policy.
+    composedGrid,
   }) => {
     const ts = now();
     const sets = ['updatedAt = :ts'];
@@ -232,6 +236,16 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       }
       sets.push('skipStageIds = :ssi');
       values[':ssi'] = skipStageIds && skipStageIds.length ? skipStageIds : null;
+    }
+    if (composedGrid !== undefined) {
+      if (
+        composedGrid !== null &&
+        (typeof composedGrid !== 'object' || Array.isArray(composedGrid))
+      ) {
+        throw new Error('composedGrid must be a {stageId: EXECUTE|SKIP} object or null');
+      }
+      sets.push('composedGrid = :cgr');
+      values[':cgr'] = composedGrid && Object.keys(composedGrid).length ? composedGrid : null;
     }
     const params = {
       TableName: table(),

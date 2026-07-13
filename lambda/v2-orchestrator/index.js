@@ -577,6 +577,11 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // recompute of this intent's plan (create check, this walk, rewinds, the
     // container's stage resolution) applies the same overlay or plans drift.
     const intentSkipIds = Array.isArray(meta.skipStageIds) ? meta.skipStageIds : [];
+    // Per-intent composed EXECUTE/SKIP grid (Adaptive Workflows): pinned on
+    // META at create/start and threaded into every plan recompute exactly like
+    // the skip overlay — the grid, not the scope name, is the projection.
+    const composedGrid =
+      meta.composedGrid && typeof meta.composedGrid === 'object' ? meta.composedGrid : null;
     // Gate-time skips ("skip to stage X", stage-skip.js) accumulate here as
     // the walk progresses (and are re-seeded from prior-run SKIPPED rows on a
     // rewind); together with the intent-level overlay they ride every
@@ -590,6 +595,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         workflowVersion,
         scope,
         ...(intentSkipIds.length ? { skipStageIds: intentSkipIds } : {}),
+        ...(composedGrid ? { composedGrid } : {}),
       }),
     );
     if (!planResult.valid || !planResult.plan) {
@@ -774,6 +780,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         workflowVersion,
         scope,
         ...(allSkipIds.length ? { skipStageIds: allSkipIds } : {}),
+        ...(composedGrid ? { composedGrid } : {}),
         cliModels,
         tierModels,
         requestedCli,
@@ -1279,6 +1286,8 @@ const runStage = async (
     // Per-run skip overlay (intent-level + accumulated gate-time skips) —
     // forwarded so the container's plan resolution matches the walk's.
     skipStageIds = null,
+    // Per-intent composed grid — forwarded for the same plan-parity reason.
+    composedGrid = null,
     cliModels,
     tierModels = null,
     requestedCli,
@@ -1321,6 +1330,7 @@ const runStage = async (
         workflowVersion,
         scope,
         ...(skipStageIds?.length ? { skipStageIds } : {}),
+        ...(composedGrid ? { composedGrid } : {}),
         ...(cliModels ? { cliModels } : {}),
         ...(tierModels ? { tierModels } : {}),
         ...(requestedCli ? { requestedCli } : {}),

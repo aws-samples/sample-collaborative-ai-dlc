@@ -30,6 +30,7 @@ import { mergeMcpServers } from '../shared/mcp-validator.js';
 import { loadWorkflowScopes, loadExecutionPlan } from '../shared/v2-workflow-plan.js';
 import { stageInstanceId as planStageInstanceId } from '../shared/v2-execution-plan.js';
 import { effectiveStageSkipping, normalizeSkipStageIds } from '../shared/stage-skip.js';
+import { normalizeComposedGrid } from '../shared/composed-grid.js';
 import { makePriceResolver, costForMetrics } from '../shared/model-pricing.js';
 import { aggregateMetrics, rollupAggregates } from '../shared/metric-classification.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
@@ -717,6 +718,7 @@ const mapIntent = (meta) => ({
   prStrategy: meta.prStrategy ?? null,
   stageSkipping: meta.stageSkipping ?? null,
   skipStageIds: meta.skipStageIds ?? null,
+  composedGrid: meta.composedGrid ?? null,
   source: meta.source ?? null,
   planWarnings: meta.planWarnings ?? null,
   createdAt: meta.startedAt ?? null,
@@ -835,6 +837,7 @@ export const handler = async (event) => {
           ...(Array.isArray(records.meta.skipStageIds) && records.meta.skipStageIds.length
             ? { skipStageIds: records.meta.skipStageIds }
             : {}),
+          ...(records.meta.composedGrid ? { composedGrid: records.meta.composedGrid } : {}),
         });
         plan = planResult.valid ? planResult.plan : null;
       } catch {
@@ -1402,11 +1405,28 @@ export const handler = async (event) => {
       if (!meta.prompt) {
         return response(400, { error: 'Intent has no prompt; define it before starting' });
       }
-      // Skip-overlay override at launch (DRAFT only — a restart re-enters the
-      // prior run's pinned plan). `skipStageIds: []` explicitly clears skips
-      // picked at create; an absent field leaves the create-time snapshot.
+      // Skip-overlay / composed-grid override at launch (DRAFT only — a restart
+      // re-enters the prior run's pinned plan). `skipStageIds: []` explicitly
+      // clears skips picked at create; `composedGrid: null` reverts to the
+      // named-scope projection; an absent field leaves the create-time
+      // snapshot. Both overrides are validated TOGETHER against the pinned
+      // plan below — a grid and an overlay that are individually fine can
+      // still starve each other's stages.
       const startData = body ? JSON.parse(body) : {};
       let skipOverride; // undefined = untouched
+      let gridOverride; // undefined = untouched
+      if (startData.composedGrid !== undefined) {
+        if (meta.status !== 'DRAFT') {
+          return response(409, {
+            error: 'composedGrid can only be changed before the first start (DRAFT)',
+          });
+        }
+        const { value, error: gridError } = normalizeComposedGrid(startData.composedGrid);
+        if (gridError) {
+          return response(400, { error: gridError });
+        }
+        gridOverride = value; // null clears, object replaces
+      }
       if (startData.skipStageIds !== undefined) {
         if (meta.status !== 'DRAFT') {
           return response(409, {
@@ -1422,21 +1442,29 @@ export const handler = async (event) => {
             error: 'Stage skipping is disabled for this intent — skipStageIds is not accepted',
           });
         }
+        skipOverride = normalized; // null clears, array replaces
+      }
+      if (skipOverride !== undefined || gridOverride !== undefined) {
+        const effectiveSkips = skipOverride !== undefined ? skipOverride : meta.skipStageIds;
+        const effectiveGrid = gridOverride !== undefined ? gridOverride : meta.composedGrid;
         const planCheck = await loadExecutionPlan({
           ddb,
           tableName: BLOCKS_TABLE(),
           workflowId: meta.workflowId,
           workflowVersion: meta.workflowVersion,
           scope: meta.scope,
-          ...(normalized ? { skipStageIds: normalized } : {}),
+          ...(effectiveSkips?.length ? { skipStageIds: effectiveSkips } : {}),
+          ...(effectiveGrid ? { composedGrid: effectiveGrid } : {}),
         });
         if (!planCheck.valid) {
           return response(400, {
-            error: `The requested stage skips are not runnable for workflow "${meta.workflowId}"`,
+            error:
+              gridOverride !== undefined
+                ? `The composed stage grid is not runnable for workflow "${meta.workflowId}"`
+                : `The requested stage skips are not runnable for workflow "${meta.workflowId}"`,
             errors: planCheck.errors ?? [],
           });
         }
-        skipOverride = normalized; // null clears, array replaces
       }
       // Flip <current> → CREATED (CAS on the observed status) so a double-start
       // can't launch two runs, then hand off to the orchestrator (init-ws + run the
@@ -1458,6 +1486,7 @@ export const handler = async (event) => {
         failureReason: null,
         // Launch-time skip override (validated above; undefined = untouched).
         ...(skipOverride !== undefined ? { skipStageIds: skipOverride } : {}),
+        ...(gridOverride !== undefined ? { composedGrid: gridOverride } : {}),
       });
       try {
         const invoked = await invokeOrchestrator(
@@ -1685,6 +1714,7 @@ export const handler = async (event) => {
         workflowVersion: meta.workflowVersion,
         scope: meta.scope,
         ...(rewindSkipIds.length ? { skipStageIds: rewindSkipIds } : {}),
+        ...(meta.composedGrid ? { composedGrid: meta.composedGrid } : {}),
       });
       if (!planResult.valid || !planResult.plan) {
         return response(409, {
@@ -1702,7 +1732,9 @@ export const handler = async (event) => {
         // pretending the stage does not exist.
         if ((planResult.plan.outOfScopeStageIds ?? []).includes(fromStageId)) {
           return response(409, {
-            error: `Stage "${fromStageId}" is not executed in scope "${meta.scope}" — wire it to EXECUTE for this scope in the workflow composer before rewinding to it`,
+            error: planResult.plan.composed
+              ? `Stage "${fromStageId}" is SKIP in this intent's composed grid — recompose it to EXECUTE before rewinding to it`
+              : `Stage "${fromStageId}" is not executed in scope "${meta.scope}" — wire it to EXECUTE for this scope in the workflow composer before rewinding to it`,
           });
         }
         return response(400, {
@@ -2057,21 +2089,32 @@ export const handler = async (event) => {
       // Scope is chosen per-intent (a project can hold features, bugfixes, …).
       // It must be one of the pinned workflow's offered scopes — a free-typed
       // scope would be rejected by buildExecutionPlan when the orchestrator runs.
+      // EXCEPTION: with a composed grid the grid IS the projection and `scope`
+      // degrades to the provenance label of whatever base it was composed from
+      // (possibly a custom name) — the resolver validates the grid instead.
       const scope = data.scope;
       if (!scope) {
         return response(400, { error: 'scope is required' });
       }
-      const scopes = await loadWorkflowScopes({
-        ddb,
-        tableName: BLOCKS_TABLE(),
-        workflowId,
-        workflowVersion,
-      });
-      if (!scopes.includes(scope)) {
-        return response(400, {
-          error: `Unknown scope "${scope}" for workflow "${workflowId}"`,
-          scopes,
+      const { value: composedGrid, error: composedGridError } = normalizeComposedGrid(
+        data.composedGrid,
+      );
+      if (composedGridError) {
+        return response(400, { error: composedGridError });
+      }
+      if (!composedGrid) {
+        const scopes = await loadWorkflowScopes({
+          ddb,
+          tableName: BLOCKS_TABLE(),
+          workflowId,
+          workflowVersion,
         });
+        if (!scopes.includes(scope)) {
+          return response(400, {
+            error: `Unknown scope "${scope}" for workflow "${workflowId}"`,
+            scopes,
+          });
+        }
       }
       // Per-intent stage deselection (shared/stage-skip.js): only accepted when
       // stage skipping is EFFECTIVELY enabled (project override over platform
@@ -2105,12 +2148,15 @@ export const handler = async (event) => {
         workflowVersion,
         scope,
         ...(skipStageIds ? { skipStageIds } : {}),
+        ...(composedGrid ? { composedGrid } : {}),
       });
       if (!planCheck.valid) {
         return response(400, {
-          error: skipStageIds
-            ? `Scope "${scope}" with the requested stage skips is not runnable for workflow "${workflowId}"`
-            : `Scope "${scope}" is not runnable for workflow "${workflowId}"`,
+          error: composedGrid
+            ? `The composed stage grid is not runnable for workflow "${workflowId}"`
+            : skipStageIds
+              ? `Scope "${scope}" with the requested stage skips is not runnable for workflow "${workflowId}"`
+              : `Scope "${scope}" is not runnable for workflow "${workflowId}"`,
           errors: planCheck.errors ?? [],
         });
       }
@@ -2170,6 +2216,7 @@ export const handler = async (event) => {
         prStrategy: cfg.prStrategy,
         stageSkipping,
         skipStageIds,
+        composedGrid,
         source,
         planWarnings,
       });

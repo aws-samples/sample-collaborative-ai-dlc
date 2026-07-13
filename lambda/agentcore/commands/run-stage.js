@@ -89,12 +89,20 @@ export const DISK_LOW_FLOOR_BYTES = 100 * 1024 * 1024;
 // Resolve the plan and locate the stage instance for `stageId`. The optional
 // `skipStageIds` overlay (per-intent + gate-time skips, forwarded by the
 // orchestrator) is applied so this resolution matches the walk's plan.
-const resolveStage = ({ workflow, library, scope, stageId, skipStageIds = [] }) => {
+const resolveStage = ({
+  workflow,
+  library,
+  scope,
+  stageId,
+  skipStageIds = [],
+  composedGrid = null,
+}) => {
   const { valid, errors, plan } = buildExecutionPlan({
     workflow,
     scope: scope.scope,
     library,
     ...(skipStageIds.length ? { skipStageIds } : {}),
+    ...(composedGrid ? { composedGrid } : {}),
   });
   if (!valid) return { error: 'plan_invalid', detail: errors };
   const stage = plan.stages.find((s) => s.stageId === stageId);
@@ -873,6 +881,10 @@ export const runStage = async (
     // downstream stages then see skipped producers' inputs as expectedAbsent
     // (prompt: "absence is by design, do NOT fabricate"). Empty = no overlay.
     skipStageIds = [],
+    // Per-intent composed EXECUTE/SKIP grid, forwarded by the orchestrator on
+    // every dispatch for the same plan-parity reason as the skip overlay: the
+    // grid — not the scope name — is the projection this run executes.
+    composedGrid = null,
     requestedCli,
     cliModels = {},
     // Tier-model config (shared/tier-models.js flat-row shape), snapshotted on
@@ -1061,7 +1073,7 @@ export const runStage = async (
   if (!loaded.workflow || !loaded.library)
     return fail(null, 'workflow_not_found', `${workflowId}@${workflowVersion}`);
 
-  const probe = resolveStage({ ...loaded, scope: { scope }, stageId, skipStageIds });
+  const probe = resolveStage({ ...loaded, scope: { scope }, stageId, skipStageIds, composedGrid });
   if (probe.error) return fail(null, probe.error, JSON.stringify(probe.detail));
 
   const memory = await readProjectMemory({
@@ -1077,7 +1089,14 @@ export const runStage = async (
     learningRules: memory.learningRules,
   });
 
-  const resolved = resolveStage({ workflow, library, scope: { scope }, stageId, skipStageIds });
+  const resolved = resolveStage({
+    workflow,
+    library,
+    scope: { scope },
+    stageId,
+    skipStageIds,
+    composedGrid,
+  });
   if (resolved.error) return fail(null, resolved.error, JSON.stringify(resolved.detail));
   const { plan } = resolved;
   let stage = resolved.stage;

@@ -842,6 +842,15 @@ resource "aws_api_gateway_resource" "workflow_execution_preview" {
   path_part   = "execution-preview"
 }
 
+# Composed-grid dry run: POST because an EXECUTE/SKIP grid over 30+ stages
+# does not fit a query string. Read-only despite the verb (pure plan
+# resolution, nothing written) — the lambda exempts it from the admin guard.
+resource "aws_api_gateway_resource" "workflow_validate_grid" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.workflow.id
+  path_part   = "validate-grid"
+}
+
 # Rule refs layer a library rule into a workflow. The item path carries two
 # params — the layer and the rule id — so the DELETE key is unambiguous.
 resource "aws_api_gateway_resource" "workflow_rules" {
@@ -882,6 +891,7 @@ locals {
     rule_delete      = { resource = aws_api_gateway_resource.workflow_rule.id, method = "DELETE" }
     compiled_get     = { resource = aws_api_gateway_resource.workflow_compiled.id, method = "GET" }
     preview_get      = { resource = aws_api_gateway_resource.workflow_execution_preview.id, method = "GET" }
+    validate_grid    = { resource = aws_api_gateway_resource.workflow_validate_grid.id, method = "POST" }
   }
 }
 
@@ -962,6 +972,12 @@ module "cors_workflow_execution_preview" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.workflow_execution_preview.id
+}
+
+module "cors_workflow_validate_grid" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.workflow_validate_grid.id
 }
 
 module "cors_workflow_rules" {

@@ -222,6 +222,7 @@ resource "aws_api_gateway_deployment" "main" {
     module.cors_workflow,
     module.cors_workflow_compiled,
     module.cors_workflow_execution_preview,
+    module.cors_workflow_validate_grid,
     module.cors_workflow_phases,
     module.cors_workflow_placement,
     module.cors_workflow_placements,
@@ -353,6 +354,7 @@ resource "aws_api_gateway_deployment" "main" {
       aws_api_gateway_resource.workflow_rule.id,
       aws_api_gateway_resource.workflow_compiled.id,
       aws_api_gateway_resource.workflow_execution_preview.id,
+      aws_api_gateway_resource.workflow_validate_grid.id,
       # Hash the whole workflow route map (like the intent map below) so ANY
       # future addition to local.workflow_routes forces a stage redeployment.
       # Field incident: execution-preview was added to the map without a

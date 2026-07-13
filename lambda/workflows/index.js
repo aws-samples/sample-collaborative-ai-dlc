@@ -52,6 +52,7 @@ import {
 import { blockPk, catalogGsi1Pk, LATEST, RULE_LAYERS, versionSk } from '../shared/blocks.js';
 import { compileWorkflow } from '../shared/compile.js';
 import { buildExecutionPlan } from '../shared/v2-execution-plan.js';
+import { normalizeComposedGrid } from '../shared/composed-grid.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const blocksTable = () => process.env.BLOCKS_TABLE;
@@ -656,34 +657,18 @@ const getCompiled = async (event, res, tenant, workflowId) => {
   return res(200, compiled);
 };
 
-const getExecutionPreview = async (event, res, tenant, workflowId) => {
+// Load everything buildExecutionPlan needs for one workflow version: the
+// assembled composition, the referenced library blocks, and the compiled
+// editor view. Shared by the execution preview (GET, scope+skip query) and
+// the composed-grid dry run (POST, grid in body).
+const loadPlanInputs = async (event, tenant, workflowId) => {
   const requested = getRequestedVersion(event);
-  if (requested.error) return res(400, { error: requested.error });
-  const scope = event?.queryStringParameters?.scope;
-  if (typeof scope !== 'string' || !scope) {
-    return res(400, { error: 'scope query parameter is required' });
-  }
-  // Optional per-intent skip overlay preview (`skip=a,b,c`): lets the intent
-  // creation UI dry-run a stage deselection and show the resulting warnings
-  // (expected-absent inputs, degraded sections) BEFORE the intent exists.
-  const skipParam = event?.queryStringParameters?.skip;
-  const skipStageIds =
-    typeof skipParam === 'string' && skipParam.trim()
-      ? [
-          ...new Set(
-            skipParam
-              .split(',')
-              .map((s) => s.trim())
-              .filter(Boolean),
-          ),
-        ]
-      : null;
-
+  if (requested.error) return { status: 400, body: { error: requested.error } };
   const resolved = await resolveWorkflow(tenant, workflowId);
-  if (!resolved) return res(404, { error: 'Not found' });
+  if (!resolved) return { status: 404, body: { error: 'Not found' } };
   const items = await queryWorkflowItems(resolved.owner, workflowId, requested.version);
   if (requested.version != null && items.length === 0)
-    return res(404, { error: 'Version not found' });
+    return { status: 404, body: { error: 'Version not found' } };
 
   const workflow = composeWorkflow(resolved.owner, items);
   const placements = workflow.placements;
@@ -705,14 +690,82 @@ const getExecutionPreview = async (event, res, tenant, workflowId) => {
     ruleRefs,
     rulesById,
   );
-  const preview = buildExecutionPlan({
+  return {
     workflow,
-    scope,
     library: { stagesById, artifactsById, rulesById, agentsById, sensorsById },
     compiled,
+  };
+};
+
+const getExecutionPreview = async (event, res, tenant, workflowId) => {
+  const scope = event?.queryStringParameters?.scope;
+  if (typeof scope !== 'string' || !scope) {
+    return res(400, { error: 'scope query parameter is required' });
+  }
+  // Optional per-intent skip overlay preview (`skip=a,b,c`): lets the intent
+  // creation UI dry-run a stage deselection and show the resulting warnings
+  // (expected-absent inputs, degraded sections) BEFORE the intent exists.
+  const skipParam = event?.queryStringParameters?.skip;
+  const skipStageIds =
+    typeof skipParam === 'string' && skipParam.trim()
+      ? [
+          ...new Set(
+            skipParam
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean),
+          ),
+        ]
+      : null;
+
+  const inputs = await loadPlanInputs(event, tenant, workflowId);
+  if (inputs.status) return res(inputs.status, inputs.body);
+
+  const preview = buildExecutionPlan({
+    workflow: inputs.workflow,
+    scope,
+    library: inputs.library,
+    compiled: inputs.compiled,
     ...(skipStageIds ? { skipStageIds } : {}),
   });
   return res(200, preview);
+};
+
+// POST /workflows/{id}/validate-grid — dry-run a composed EXECUTE/SKIP grid
+// against the pinned workflow (upstream's validate-grid). Body:
+//   { composedGrid: {stageId: EXECUTE|SKIP}, scope?, skipStageIds?, strict? }
+// `scope` is the provenance label only (defaults to "composed"); `strict`
+// promotes starved required inputs to errors (the in-flight recompose rule).
+// Read-only despite the verb — a grid over 30+ stages does not fit a query
+// string — so it is exempted from the admin guard in the router.
+const validateGrid = async (event, res, tenant, workflowId) => {
+  let data;
+  try {
+    data = event.body ? JSON.parse(event.body) : {};
+  } catch {
+    return res(400, { error: 'Request body must be valid JSON' });
+  }
+  const { value: composedGrid, error: gridError } = normalizeComposedGrid(data.composedGrid);
+  if (gridError) return res(400, { error: gridError });
+  if (!composedGrid) return res(400, { error: 'composedGrid is required' });
+  const skipStageIds =
+    Array.isArray(data.skipStageIds) && data.skipStageIds.length
+      ? [...new Set(data.skipStageIds.filter((s) => typeof s === 'string' && s.trim()))]
+      : null;
+
+  const inputs = await loadPlanInputs(event, tenant, workflowId);
+  if (inputs.status) return res(inputs.status, inputs.body);
+
+  const result = buildExecutionPlan({
+    workflow: inputs.workflow,
+    scope: typeof data.scope === 'string' && data.scope ? data.scope : 'composed',
+    library: inputs.library,
+    compiled: inputs.compiled,
+    composedGrid,
+    ...(skipStageIds ? { skipStageIds } : {}),
+    strict: data.strict === true,
+  });
+  return res(200, result);
 };
 
 const loadCatalogByType = async (owner, type) => {
@@ -904,17 +957,20 @@ export const handler = async (event) => {
 
   try {
     const method = event.httpMethod;
+    const path = event.resource || event.path || '';
 
     // Workflow AUTHORING is platform-admin only: every mutation (create/update/
     // delete workflows, placements, phases, scope/rule refs) requires the
     // Cognito platform-admin group (shared/authz.js). Reads stay open — project
     // creation lists workflows and runs load compiled plans for every user.
-    if (method !== 'GET') {
+    // validate-grid is a POST purely because a composed grid does not fit a
+    // query string: it computes a dry-run plan and writes NOTHING, so it stays
+    // open like the GET reads (the compose UI runs it for every user).
+    if (method !== 'GET' && !path.endsWith('/validate-grid')) {
       const denied = requirePlatformAdmin(event);
       if (denied) return res(denied.statusCode, { error: denied.error, code: denied.code });
     }
 
-    const path = event.resource || event.path || '';
     const { workflowId, stageId, scopeId, layer, ruleId } = event.pathParameters || {};
     const tenant = resolveTenant(getClaims(event));
 
@@ -960,6 +1016,10 @@ export const handler = async (event) => {
     }
     if (path.endsWith('/execution-preview')) {
       if (method === 'GET') return await getExecutionPreview(event, res, tenant, workflowId);
+      return res(405, { error: 'Method not allowed' });
+    }
+    if (path.endsWith('/validate-grid')) {
+      if (method === 'POST') return await validateGrid(event, res, tenant, workflowId);
       return res(405, { error: 'Method not allowed' });
     }
     if (workflowId) {
