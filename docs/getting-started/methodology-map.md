@@ -11,14 +11,14 @@ Use this page as a translation table: if you know AI-DLC, it tells you where eac
 | Intent                           | **Intent**                            | Project page → _New Intent_                                    |
 | Phase / Stage                    | **Phase / Stage**                     | Workflow composer, intent progress view                        |
 | Scope                            | **Scope**                             | Compose page (scope picker)                                    |
-| Scope grid (EXECUTE/SKIP)        | **Composed stage grid**               | Compose page → _Customize stage grid_                          |
+| Scope grid (EXECUTE/SKIP)        | **Stages to run** (stage grid)        | Compose page → _Stages to run_                                 |
 | Composer agent                   | **Compose with AI**                   | Compose page → _Compose_ button                                |
 | Keyword scope inference          | **Deterministic keyword match**       | Automatic; toggle in Admin → _Composer_                        |
 | Report compose                   | **Compose from report**               | Compose page → upload button next to _Compose_                 |
 | Validate-grid / stage counts     | **Run-shape summary**                 | "Runs N of T stages · G approval gates" under the scope picker |
 | Approval gate                    | **Gate** (question / validation)      | Intent view → _Questions for you_                              |
 | "Skip to stage X"                | **Skip option on a gate**             | Validation gate → skip select                                  |
-| Stage deselection                | **Skip stages**                       | Compose page → _Skip stages_ checkboxes                        |
+| Stage deselection                | **Stages to run** (uncheck a stage)   | Same grid — one surface for all stage selection                |
 | In-flight recompose              | **Reshape remaining stages**          | Intent view (parked or failed run)                             |
 | Rewind / "Add skipped stage"     | **Rewind**                            | Intent view → stage list                                       |
 | Unit of work / Bolt              | **Unit lane**                         | Intent view → unit lane board                                  |
@@ -56,13 +56,14 @@ Upstream v2 calls this **Adaptive Workflows**: a composer agent that proposes th
 2. **The composer agent otherwise.** The AI reads your prompt, the compiled run shapes of every stock scope, and (optionally) your steering instructions, then proposes either a stock scope (_matched_) or a custom stage grid (_custom_), with a rationale per skipped stage.
 3. **You decide.** A proposal is never applied automatically. It shows the _validated_ run shape — real numbers from the plan compiler, not the AI's claims — and you press **Apply proposal** (or ignore it).
 
-### Composed stage grid
+### Composed stage grid — "Stages to run"
 
-Upstream custom scopes are new markdown files plus a grid entry. Here a custom selection is a **composed grid** that lives on the intent itself: open **Customize stage grid** on the compose page and flip any stage between run and skip, grouped by phase. Rules the platform enforces for you:
+Upstream custom scopes are new markdown files plus a grid entry; upstream separately supports deselecting individual CONDITIONAL stages at creation. Here both collapse into **one surface**: open **Stages to run** on the compose page and check or uncheck any stage, grouped by phase. Rules the platform enforces for you:
 
 - **Initialization stages always run** (they set up the workspace) — they are locked in the editor.
-- Every change is **re-validated instantly**: the run-shape summary updates, and a grid that would starve a stage of its required inputs blocks Start with a clear error.
-- Picking a stock scope again discards the grid; **reset to scope** does the same from the editor.
+- Every change is **re-validated instantly**: the run-shape summary updates, and a selection that would starve a stage of its required inputs blocks Start with a clear error.
+- Skipped stages' outputs are treated as **absent by design** downstream — agents never invent them.
+- Picking a stock scope again discards your customization; **reset to scope** does the same from the editor.
 
 ### Compose from a report
 
@@ -71,10 +72,6 @@ Upstream's _report compose_ (`/aidlc compose --report`) triages an external anal
 ### Run-shape summary
 
 Upstream's `validate-grid` prints "N of T stages, G approval gates". Here that exact summary — computed by the same plan compiler that will run the intent — appears live under the scope picker: **"Runs 24 of 32 stages · 18 approval gates"**. What you confirm is what runs.
-
-### Skip stages
-
-Independent of grids, you can deselect individual **CONDITIONAL** stages for one intent (upstream's create-time deselection). Only stages the methodology marks optional are offered; required stages and initialization never appear. If a grid later excludes a stage you had deselected, the grid simply absorbs the redundant skip.
 
 ## Steering a running intent
 

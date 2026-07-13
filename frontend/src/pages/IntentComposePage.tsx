@@ -5,7 +5,6 @@ import { useProjectCache } from '@/hooks/useProjectsCache';
 import { useCollaborativeIntentDraft } from '@/hooks/useCollaborativeIntentDraft';
 import { intentsService, type Intent, type ComposeSession } from '@/services/intents';
 import { workflowsService, type CompiledWorkflow, type PhaseNode } from '@/services/workflows';
-import { agentsService } from '@/services/agents';
 import { CollaborativeTextarea } from '@/components/CollaborativeTextarea';
 import { ComposePanel } from '@/components/intent/ComposePanel';
 import { StageGridEditor } from '@/components/intent/StageGridEditor';
@@ -113,30 +112,12 @@ export default function IntentComposePage() {
   }, [workflowId, workflowVersion]);
   const scopeOptions = useMemo(() => Object.keys(compiled?.scopeGrid ?? {}), [compiled]);
 
-  // Effective stage-skipping mode (project override, else platform setting).
-  const [skippingEnabled, setSkippingEnabled] = useState(false);
-  useEffect(() => {
-    if (!project) return;
-    const override = project.stageSkipping;
-    if (override === 'enabled' || override === 'disabled') {
-      setSkippingEnabled(override === 'enabled');
-      return;
-    }
-    let cancelled = false;
-    agentsService
-      .getSettings()
-      .then((s) => {
-        if (!cancelled) setSkippingEnabled(s.stageSkipping === 'enabled');
-      })
-      .catch(() => {
-        if (!cancelled) setSkippingEnabled(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [project]);
-
   const scope = draft.scope ?? intent?.scope ?? null;
+  // Legacy deselections (the per-intent skip overlay, e.g. on drafts created
+  // through the API): rendered as SKIP in the grid editor and ABSORBED into
+  // the composed grid on the first edit — the grid is the ONLY stage-selection
+  // surface on this page. The overlay itself remains a runtime mechanism
+  // (gate-time "skip to stage X", rewind un-skip).
   const skipSelections = useMemo(() => new Set(draft.skipStageIds ?? []), [draft.skipStageIds]);
 
   // Grid editor plumbing: nodes/phase names from the compiled workflow; the
@@ -173,19 +154,28 @@ export default function IntentComposePage() {
     () => (scope && compiled?.scopeGrid?.[scope]) || null,
     [scope, compiled],
   );
-  const effectiveGrid = draft.composedGrid ?? scopeBaselineGrid ?? {};
+  // What the editor shows: the composed grid (or the scope's projection),
+  // with any legacy deselections rendered as SKIP on top.
+  const effectiveGrid = useMemo(() => {
+    const base: Record<string, 'EXECUTE' | 'SKIP'> = {
+      ...(draft.composedGrid ?? scopeBaselineGrid),
+    };
+    for (const id of skipSelections) base[id] = 'SKIP';
+    return base;
+  }, [draft.composedGrid, scopeBaselineGrid, skipSelections]);
   const [showGridEditor, setShowGridEditor] = useState(false);
 
   const toggleGridStage = (stageId: string) => {
     if (lockedStageIds.has(stageId)) return;
     // First customization materializes the scope's projection into a composed
     // grid (initialization pinned EXECUTE) so the flip has a total baseline.
-    const base: Record<string, 'EXECUTE' | 'SKIP'> = draft.composedGrid
-      ? { ...draft.composedGrid }
-      : { ...scopeBaselineGrid };
+    // Legacy deselections are folded into the grid at the same moment — after
+    // this, the grid alone describes the run.
+    const base: Record<string, 'EXECUTE' | 'SKIP'> = { ...effectiveGrid };
     for (const id of lockedStageIds) base[id] = 'EXECUTE';
     base[stageId] = base[stageId] === 'EXECUTE' ? 'SKIP' : 'EXECUTE';
     draft.setComposedGrid(base);
+    if (skipSelections.size) draft.setSkipStageIds(null);
     if (!draft.composedGrid && scope) {
       // Label the customization after its origin so provenance stays readable.
       draft.setScope(`${scope}-custom`);
@@ -195,6 +185,7 @@ export default function IntentComposePage() {
   const resetGridToScope = (nextScope: string) => {
     draft.setScope(nextScope);
     draft.setComposedGrid(null);
+    draft.setSkipStageIds(null);
   };
 
   const applyProposal = (proposal: NonNullable<ComposeSession['proposal']>) => {
@@ -207,22 +198,17 @@ export default function IntentComposePage() {
     }
   };
 
-  // Run-shape preview: authoritative counts + skippable stages for the current
-  // selection, re-fetched whenever the shared selection changes (keyed on the
-  // serialized selection so a peer's grid/skip edit re-previews too).
+  // Run-shape preview: authoritative counts for the current selection,
+  // re-fetched whenever the shared selection changes (keyed on the serialized
+  // selection so a peer's grid edit re-previews too).
   const [summary, setSummary] = useState<ScopeSummary | null>(null);
-  const [skippableStages, setSkippableStages] = useState<
-    { stageId: string; phase: string | null }[]
-  >([]);
   const [previewNote, setPreviewNote] = useState<string | null>(null);
   const [previewErrors, setPreviewErrors] = useState<string[]>([]);
-  const [previewLoading, setPreviewLoading] = useState(false);
   const gridKey = JSON.stringify(draft.composedGrid ?? null);
   const skipsKey = JSON.stringify([...skipSelections].toSorted());
   useEffect(() => {
     if (!workflowId || !scope) return;
     let cancelled = false;
-    setPreviewLoading(true);
     const skips = [...skipSelections];
     const request = draft.composedGrid
       ? workflowsService.validateGrid(workflowId, {
@@ -244,10 +230,6 @@ export default function IntentComposePage() {
         setPreviewErrors(
           preview.valid ? [] : (preview.errors ?? []).map((e) => e.message).slice(0, 6),
         );
-        const stages = (preview.plan?.stages ?? [])
-          .filter((s) => s.execution === 'CONDITIONAL' && s.phase !== 'initialization')
-          .map((s) => ({ stageId: s.stageId, phase: s.phase ?? null }));
-        setSkippableStages(skippingEnabled ? stages : []);
         const absent = (preview.warnings ?? []).filter(
           (w) => w.code === 'scope_absent_consume',
         ).length;
@@ -261,26 +243,15 @@ export default function IntentComposePage() {
       .catch(() => {
         if (!cancelled) {
           setSummary(null);
-          setSkippableStages([]);
           setPreviewNote(null);
           setPreviewErrors([]);
         }
-      })
-      .finally(() => {
-        if (!cancelled) setPreviewLoading(false);
       });
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the serialized selection
-  }, [workflowId, workflowVersion, scope, skippingEnabled, gridKey, skipsKey]);
-
-  const toggleSkip = (stageId: string) => {
-    const next = new Set(skipSelections);
-    if (next.has(stageId)) next.delete(stageId);
-    else next.add(stageId);
-    draft.setSkipStageIds(next.size ? [...next] : null);
-  };
+  }, [workflowId, workflowVersion, scope, gridKey, skipsKey]);
 
   const handleStart = async () => {
     if (!projectId || !intentId) return;
@@ -441,6 +412,15 @@ export default function IntentComposePage() {
                 })()}
               </p>
             )}
+            {previewNote && (
+              <p
+                className="mt-1.5 flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-500"
+                data-testid="preview-note"
+              >
+                <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                {previewNote}
+              </p>
+            )}
             {previewErrors.length > 0 && (
               <div className="mt-1.5 space-y-0.5" data-testid="grid-errors">
                 {previewErrors.map((msg, i) => (
@@ -466,11 +446,11 @@ export default function IntentComposePage() {
                 ) : (
                   <ChevronRight className="h-3.5 w-3.5" />
                 )}
-                Customize stage grid
+                Stages to run
                 <span className="text-xs text-muted-foreground font-normal">
                   {draft.composedGrid
-                    ? '(composed — every EXECUTE/SKIP is yours)'
-                    : `(currently the ${scope ?? '—'} projection)`}
+                    ? '(customized — your own stage selection)'
+                    : `(the ${scope ?? '—'} scope — expand to add or skip stages)`}
                 </span>
                 {draft.composedGrid && scope && (
                   <span
@@ -500,7 +480,13 @@ export default function IntentComposePage() {
                 )}
               </button>
               {showGridEditor && (
-                <div className="px-3 pb-3">
+                <div className="px-3 pb-3 space-y-2">
+                  <p className="text-xs text-muted-foreground">
+                    Every stage this workflow can run, grouped by phase. Checked stages execute;
+                    unchecked ones are skipped, and downstream stages treat their outputs as absent
+                    by design. Initialization always runs. Changes are validated instantly against
+                    the run-shape summary above.
+                  </p>
                   <StageGridEditor
                     stages={gridStages}
                     phaseNames={phaseNames}
@@ -510,62 +496,6 @@ export default function IntentComposePage() {
                     onToggle={toggleGridStage}
                   />
                 </div>
-              )}
-            </div>
-          )}
-
-          {skippingEnabled && (previewLoading || skippableStages.length > 0) && (
-            <div className="border rounded-md p-3 space-y-2">
-              <Label className="text-sm font-medium">
-                Skip stages{' '}
-                <span className="text-xs text-muted-foreground font-normal">
-                  (optional — {skipSelections.size ? `${skipSelections.size} skipped` : 'runs all'})
-                </span>
-              </Label>
-              <p className="text-xs text-muted-foreground">
-                Deselect CONDITIONAL stages this intent should skip. Required stages always run;
-                downstream stages treat a skipped stage's outputs as absent by design.
-              </p>
-              {previewLoading && skippableStages.length === 0 ? (
-                <div className="grid gap-1.5 sm:grid-cols-2">
-                  {[0, 1, 2, 3].map((i) => (
-                    <Skeleton key={i} className="h-8 rounded-md" />
-                  ))}
-                </div>
-              ) : (
-                <div className="grid gap-1.5 sm:grid-cols-2">
-                  {skippableStages.map((s) => (
-                    <label
-                      key={s.stageId}
-                      className="flex items-center gap-2 text-sm rounded-md border px-2.5 py-1.5 cursor-pointer hover:bg-muted/50"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={skipSelections.has(s.stageId)}
-                        onChange={() => toggleSkip(s.stageId)}
-                        className="h-3.5 w-3.5"
-                      />
-                      <span
-                        className={
-                          skipSelections.has(s.stageId) ? 'line-through text-muted-foreground' : ''
-                        }
-                      >
-                        {s.stageId}
-                      </span>
-                      {s.phase && (
-                        <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
-                          {s.phase}
-                        </span>
-                      )}
-                    </label>
-                  ))}
-                </div>
-              )}
-              {previewNote && (
-                <p className="flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-500">
-                  <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-                  {previewNote}
-                </p>
               )}
             </div>
           )}

@@ -49,11 +49,6 @@ vi.mock('@/services/workflows', () => ({
   },
 }));
 
-const getSettings = vi.fn();
-vi.mock('@/services/agents', () => ({
-  agentsService: { getSettings: (...a: unknown[]) => getSettings(...a) },
-}));
-
 // The collaborative draft hook drags in the whole Yjs/WebSocket transport —
 // substitute a deterministic local implementation that mirrors its contract.
 const draftState: Record<string, unknown> = {};
@@ -208,7 +203,6 @@ describe('IntentComposePage', () => {
       }),
     );
     validateGrid.mockReset();
-    getSettings.mockReset().mockResolvedValue({ stageSkipping: 'disabled' });
     useProjectCache.mockReset();
     useProjectCache.mockReturnValue({ project: baseProject(), loading: false });
   });
@@ -246,32 +240,32 @@ describe('IntentComposePage', () => {
     expect(summary.textContent).toContain('Runs 2 of 3 stages');
   });
 
-  it('shows the skip-stage grid when stage skipping is enabled and persists toggles to the shared draft', async () => {
-    const user = userEvent.setup();
-    getSettings.mockResolvedValue({ stageSkipping: 'enabled' });
-    executionPreview.mockResolvedValue(
-      summaryPlan(
-        {
-          executedStages: 3,
-          totalStages: 3,
-          approvalGates: 1,
-          perUnitStages: 0,
-          skippedStages: 0,
-          outOfScopeStages: 0,
-        },
-        [
-          { stageId: 'init', phase: 'initialization', execution: 'ALWAYS' },
-          { stageId: 'optional-stage', phase: 'construction', execution: 'CONDITIONAL' },
-          { stageId: 'core-stage', phase: 'construction', execution: 'ALWAYS' },
-        ],
-      ),
-    );
+  it('shows no skip-checkbox section — the stage grid is the single selection surface', async () => {
     renderPage();
-    // Only the CONDITIONAL non-initialization stage is offered.
-    expect(await screen.findByText('optional-stage')).toBeInTheDocument();
-    expect(screen.queryByText('core-stage')).not.toBeInTheDocument();
-    await user.click(screen.getByText('optional-stage'));
-    expect(setSkipStageIds).toHaveBeenCalledWith(['optional-stage']);
+    await screen.findByTestId('scope-summary');
+    expect(screen.queryByText('Skip stages')).not.toBeInTheDocument();
+    expect(screen.getByTestId('grid-editor-toggle')).toBeInTheDocument();
+  });
+
+  it('legacy deselections render as SKIP in the grid and are absorbed on the first edit', async () => {
+    const user = userEvent.setup();
+    // A draft created through the API with the old skip overlay.
+    draftState.skipStageIds = ['design'];
+    renderPage();
+    await user.click(await screen.findByTestId('grid-editor-toggle'));
+    // The deselected stage shows unchecked even though the scope runs it.
+    const designBox = screen
+      .getByTestId('grid-stage-design')
+      .querySelector('input') as HTMLInputElement;
+    expect(designBox.checked).toBe(false);
+    // Editing any stage folds the deselection into the grid and clears the overlay.
+    await user.click(screen.getByTestId('grid-stage-build').querySelector('input')!);
+    expect(setComposedGrid).toHaveBeenCalledWith({
+      init: 'EXECUTE',
+      design: 'SKIP',
+      build: 'SKIP',
+    });
+    expect(setSkipStageIds).toHaveBeenCalledWith(null);
   });
 
   it('Start flushes the shared draft first, then launches and navigates', async () => {
