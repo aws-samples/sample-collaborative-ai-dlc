@@ -36,7 +36,7 @@ import {
   planSegments,
   stageInstanceId as planStageInstanceId,
 } from '../shared/v2-execution-plan.js';
-import { resolveSkipTo, skipTargetsFrom } from '../shared/stage-skip.js';
+import { resolveSkipTo, skipTargetsFrom, resolveRecomposeSkips } from '../shared/stage-skip.js';
 import { getGitConnection, putGitConnection } from '../shared/git-connection-store.js';
 import { ensureFreshGitToken, getInstallationTokenFromConfig } from '../shared/git-token.js';
 import { getGitHubAuthMode } from '../shared/github-auth-config.js';
@@ -973,11 +973,21 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       }
       for (let stageIdx = 0; stageIdx < segment.stages.length; stageIdx += 1) {
         const stage = segment.stages[stageIdx];
+        // A stage deselected by an earlier gate's recompose delta is passed
+        // over here — its SKIPPED row + timeline event were written when the
+        // flip was approved. Replay-deterministic: dynamicSkipIds is rebuilt
+        // from the same memoized gate answers on every replay.
+        if (dynamicSkipIds.includes(stage.stageId)) continue;
         // Gate-time "skip to stage X" (stage-skip.js, upstream stage-protocol
         // §0.5): set by an approved validation answer below, applied after the
         // stage's post-hooks — intermediates get SKIPPED rows, the TARGET
         // stage runs its full ritual.
         let skipToIndex = null;
+        // Gate-time recompose delta ({ recompose: { skip: [...] } } riding the
+        // approve answer): an ARBITRARY set of later, once-per-workflow,
+        // CONDITIONAL stages to deselect — validated below, applied after the
+        // post-hooks alongside skipTo.
+        let recomposeSkips = [];
         const outputArtifactTypes = (stage.outputArtifacts ?? [])
           .map((o) => o.artifact ?? o)
           .filter(Boolean);
@@ -1101,6 +1111,39 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                 }
               }
             }
+            // A recompose delta may also ride the approve answer
+            // ({ recompose: { skip: [...] } }): arbitrary later stages to
+            // deselect, not just a contiguous jump. Per-entry validation
+            // (stage-skip.js resolveRecomposeSkips) against the FLAT plan;
+            // rejected entries degrade to timeline events — never trusted,
+            // never silently dropped.
+            const requestedRecompose = validation.gate?.answer?.recompose?.skip;
+            if (Array.isArray(requestedRecompose) && requestedRecompose.length > 0) {
+              if (meta.stageSkipping !== 'enabled') {
+                await emitEvent(
+                  ctx,
+                  `recompose-rejected-${stage.stageId}-${validationRound}`,
+                  'v2.stage.recompose_rejected',
+                  `Recompose ignored: stage skipping is disabled for this run`,
+                );
+              } else {
+                const verdict = resolveRecomposeSkips({
+                  stages: runStages,
+                  currentStageId: stage.stageId,
+                  requested: requestedRecompose,
+                  alreadySkipped: [...intentSkipIds, ...dynamicSkipIds],
+                });
+                recomposeSkips = verdict.applied;
+                for (const rej of verdict.rejected) {
+                  await emitEvent(
+                    ctx,
+                    `recompose-rejected-${stage.stageId}-${validationRound}-${rej.stageId}`,
+                    'v2.stage.recompose_rejected',
+                    `Recompose skip of "${rej.stageId}" ignored: ${rej.reason}`,
+                  );
+                }
+              }
+            }
             break;
           }
 
@@ -1189,6 +1232,37 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             dynamicSkipIds.push(skipped.stageId);
           }
           stageIdx = skipToIndex - 1; // the walk resumes AT the target stage
+        }
+
+        // Apply an approved recompose delta: SKIPPED rows + events for every
+        // validated flip, then the ids join the dispatch overlay (downstream
+        // prompts see the deselected producers' artifacts as expectedAbsent)
+        // and the walk-level pass-over above. Deduplicated against skipTo's
+        // intermediates, which may overlap the delta.
+        for (const flippedId of recomposeSkips) {
+          if (dynamicSkipIds.includes(flippedId)) continue;
+          const flipped = runStages.find((s) => s.stageId === flippedId);
+          if (!flipped) continue;
+          await ctx.step(`recompose-skip-${flippedId}`, async () => {
+            try {
+              await store.putStage({
+                executionId,
+                stageInstanceId: flipped.stageInstanceId,
+                stageId: flipped.stageId,
+                phase: flipped.phase ?? null,
+                state: 'SKIPPED',
+              });
+            } catch {
+              /* the SKIPPED row is audit; never break the run over it */
+            }
+          });
+          await emitEvent(
+            ctx,
+            `recompose-skip-event-${flippedId}`,
+            'v2.stage.recomposed',
+            `Stage ${flippedId} deselected (recompose approved at the ${stage.stageId} gate)`,
+          );
+          dynamicSkipIds.push(flippedId);
         }
       }
     }

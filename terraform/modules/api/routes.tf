@@ -1113,6 +1113,14 @@ resource "aws_api_gateway_resource" "intent_composes" {
   path_part   = "composes"
 }
 
+# In-flight reshape: replace the run's projection with a new composed grid and
+# relaunch at the first not-yet-done stage (retire-and-relaunch, like rewind).
+resource "aws_api_gateway_resource" "intent_recompose" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent.id
+  path_part   = "recompose"
+}
+
 resource "aws_api_gateway_resource" "intent_realtime_token" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.intent.id
@@ -1223,6 +1231,7 @@ locals {
     compose_post    = { resource = aws_api_gateway_resource.intent_compose.id, method = "POST" }
     compose_upload  = { resource = aws_api_gateway_resource.intent_compose_report_upload.id, method = "POST" }
     composes_get    = { resource = aws_api_gateway_resource.intent_composes.id, method = "GET" }
+    recompose_post  = { resource = aws_api_gateway_resource.intent_recompose.id, method = "POST" }
     token_post      = { resource = aws_api_gateway_resource.intent_realtime_token.id, method = "POST" }
     answer_post     = { resource = aws_api_gateway_resource.intent_gate_answer.id, method = "POST" }
     revise_post     = { resource = aws_api_gateway_resource.intent_gate_revise.id, method = "POST" }
@@ -1330,6 +1339,12 @@ module "cors_intent_composes" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.intent_composes.id
+}
+
+module "cors_intent_recompose" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_recompose.id
 }
 
 module "cors_intent_realtime_token" {

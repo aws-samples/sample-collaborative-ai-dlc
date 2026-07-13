@@ -1644,29 +1644,49 @@ export const handler = async (event) => {
       return response(200, { uploadUrl, key, expiresIn: 300 });
     }
 
-    // POST .../compose — start a composer session for this DRAFT.
-    // Body: { instructions?, reportKey?, repoSignals? }. Mode is derived:
-    // 'report' when a reportKey rides along, else 'front'. Deterministic-first:
-    // when the Admin bypass is enabled and exactly one stock scope's keywords
-    // match the draft text, the row completes WITHOUT any LLM call.
+    // POST .../compose — start a composer session for this intent.
+    // Body: { instructions?, reportKey?, repoSignals?, mode? }. Modes:
+    //   front  (default) — DRAFT only, composed from the draft text;
+    //   report           — DRAFT only, derived when a reportKey rides along;
+    //   inflight         — a parked (WAITING) or FAILED run: propose
+    //                      EXECUTE/SKIP flips for pending stages, with the
+    //                      run's frozen progress enforced by the compose job.
+    //                      The proposal applies via POST .../recompose.
+    // Deterministic-first: when the Admin bypass is enabled and exactly one
+    // stock scope's keywords match the draft text, a front compose completes
+    // WITHOUT any LLM call.
     if (intentId && httpMethod === 'POST' && path?.endsWith('/compose')) {
       const meta = await store.getExecution(intentId);
       if (!meta || meta.projectId !== projectId) {
         return response(404, { error: 'Intent not found' });
       }
-      if (meta.status !== 'DRAFT') {
+      const data = body ? JSON.parse(body) : {};
+      const reportKey =
+        typeof data.reportKey === 'string' && data.reportKey ? data.reportKey : null;
+      const mode = data.mode === 'inflight' ? 'inflight' : reportKey ? 'report' : 'front';
+      if (mode === 'inflight') {
+        if (!['WAITING', 'FAILED'].includes(meta.status)) {
+          return response(409, {
+            error: `Intent is ${meta.status} — in-flight compose needs a parked or failed run`,
+          });
+        }
+        if (meta.constructionAutonomyMode === 'autonomous') {
+          return response(409, {
+            error:
+              'Construction is running autonomously — recompose is disabled until the swarm finishes or autonomy drops back to gated',
+            code: 'autonomous_construction',
+          });
+        }
+      } else if (meta.status !== 'DRAFT') {
         return response(409, { error: `Intent is ${meta.status}, compose applies to DRAFT only` });
       }
       if (!meta.prompt && !meta.title) {
         return response(400, { error: 'Give the intent a prompt (or title) before composing' });
       }
-      const data = body ? JSON.parse(body) : {};
       const instructions =
         typeof data.instructions === 'string' && data.instructions.trim()
           ? data.instructions.trim().slice(0, 4000)
           : null;
-      const reportKey =
-        typeof data.reportKey === 'string' && data.reportKey ? data.reportKey : null;
       if (reportKey && !reportKey.startsWith(composeReportPrefix(intentId))) {
         return response(400, { error: 'reportKey does not belong to this intent' });
       }
@@ -1677,7 +1697,6 @@ export const handler = async (event) => {
         data.repoSignals && typeof data.repoSignals === 'object' && !Array.isArray(data.repoSignals)
           ? JSON.parse(JSON.stringify(data.repoSignals).slice(0, 8192))
           : null;
-      const mode = reportKey ? 'report' : 'front';
       const responder = getResponder(event);
       const composeId = randomUUID();
       const intentText = [meta.title, meta.prompt].filter(Boolean).join('\n\n');
@@ -1765,6 +1784,31 @@ export const handler = async (event) => {
           return response(400, { error: 'Report not found — upload it first' });
         }
       }
+      // In-flight context: the run's frozen progress, computed from its own
+      // stage rows. `frozenGrid` pins what already happened (the compose job
+      // rejects any proposal flipping it); `progressContext` grounds the
+      // composer in the live state instead of letting it guess.
+      let frozenGrid = null;
+      let progressContext = null;
+      if (mode === 'inflight') {
+        const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
+        const byStage = new Map();
+        for (const stageRow of records.stages ?? []) {
+          if (!stageRow.stageId) continue;
+          if (!byStage.has(stageRow.stageId)) byStage.set(stageRow.stageId, new Set());
+          byStage.get(stageRow.stageId).add(stageRow.state);
+        }
+        frozenGrid = {};
+        const lines = [];
+        for (const [stageId, states] of byStage) {
+          const ran = ['SUCCEEDED', 'RUNNING', 'WAITING_FOR_HUMAN', 'FAILED'].some((s) =>
+            states.has(s),
+          );
+          frozenGrid[stageId] = ran ? 'EXECUTE' : 'SKIP';
+          lines.push(`- ${stageId}: ${[...states].join('/')}`);
+        }
+        progressContext = lines.length ? lines.join('\n') : '(no stage has run yet)';
+      }
       const row = await store.createCompose({
         executionId: intentId,
         composeId,
@@ -1797,6 +1841,8 @@ export const handler = async (event) => {
                 ...(instructions ? { instructions } : {}),
                 ...(repoSignals ? { repoSignals } : {}),
                 ...(reportExcerpt ? { reportExcerpt } : {}),
+                ...(frozenGrid && Object.keys(frozenGrid).length ? { frozenGrid } : {}),
+                ...(progressContext ? { progressContext } : {}),
               }),
             ),
           }),
@@ -2284,6 +2330,227 @@ export const handler = async (event) => {
         intent: mapIntent(updated),
         steering: steer ? mapSteering(steer) : null,
       });
+    }
+
+    // POST /projects/{projectId}/intents/{intentId}/recompose
+    // In-flight reshape (Adaptive Workflows): replace the run's projection
+    // with a new composed EXECUTE/SKIP grid and relaunch at the first
+    // not-yet-done stage — the retire-and-relaunch path (rewind mechanics)
+    // that handles BOTH directions (skip and un-skip of pending stages).
+    // Guardrails, mirroring upstream:
+    //   - only a parked (WAITING) or FAILED run — never mid-turn;
+    //   - never while construction runs autonomously (finish the swarm or
+    //     drop back to gated first);
+    //   - the PAST is frozen: completed/skipped stages must keep their fate
+    //     in the new grid (reshaping the past is rewind's job);
+    //   - unit-lane stages are frozen once the unit plan is promoted (lanes
+    //     are reshaped at the fan-out gate's skip matrix);
+    //   - the new grid must resolve STRICTLY (no starved required inputs).
+    if (intentId && httpMethod === 'POST' && path?.endsWith('/recompose')) {
+      const data = body ? JSON.parse(body) : {};
+      const meta = await store.getExecution(intentId);
+      if (!meta || meta.projectId !== projectId) {
+        return response(404, { error: 'Intent not found' });
+      }
+      const RECOMPOSABLE = new Set(['WAITING', 'FAILED']);
+      if (!RECOMPOSABLE.has(meta.status)) {
+        return response(409, {
+          error: `Intent is ${meta.status}, cannot recompose — wait for the run to park or fail`,
+        });
+      }
+      if (meta.constructionAutonomyMode === 'autonomous') {
+        return response(409, {
+          error:
+            'Construction is running autonomously — recompose is disabled until the swarm finishes or autonomy drops back to gated',
+          code: 'autonomous_construction',
+        });
+      }
+      const { value: newGrid, error: gridError } = normalizeComposedGrid(data.composedGrid);
+      if (gridError) return response(400, { error: gridError });
+      if (!newGrid) return response(400, { error: 'composedGrid is required' });
+      const newScope =
+        typeof data.scope === 'string' && data.scope ? data.scope : (meta.scope ?? 'composed');
+      const priorSkipIds = Array.isArray(meta.skipStageIds) ? meta.skipStageIds : [];
+      // The stages the new projection would run: EXECUTE entries minus the
+      // intent's standing skip overlay. Computed straight off the grid so the
+      // frozen-past check below can answer BEFORE plan resolution (a frozen
+      // violation is a clearer verdict than the starvation error it causes).
+      const skipOverlay = new Set(priorSkipIds);
+      const newStageIds = new Set(
+        Object.entries(newGrid)
+          .filter(([id, v]) => v === 'EXECUTE' && !skipOverlay.has(id))
+          .map(([id]) => id),
+      );
+
+      // Frozen-past enforcement, from the run's own stage rows: a stage that
+      // ran (or is running/parked) must stay EXECUTE; a stage the run already
+      // SKIPPED must stay out of the projection. Per-unit rows collapse onto
+      // their stageId — any unit having run the stage freezes it.
+      const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
+      const rowsByStageId = new Map();
+      for (const row of records.stages ?? []) {
+        if (!row.stageId) continue;
+        if (!rowsByStageId.has(row.stageId)) rowsByStageId.set(row.stageId, []);
+        rowsByStageId.get(row.stageId).push(row);
+      }
+      const violations = [];
+      for (const [stageId, rows] of rowsByStageId) {
+        const states = new Set(rows.map((r) => r.state));
+        const ran = ['SUCCEEDED', 'RUNNING', 'WAITING_FOR_HUMAN', 'FAILED'].some((s) =>
+          states.has(s),
+        );
+        if (ran && !newStageIds.has(stageId)) {
+          violations.push(`"${stageId}" already ran — it cannot flip to SKIP (rewind instead)`);
+        }
+        if (!ran && states.has('SKIPPED') && newStageIds.has(stageId)) {
+          violations.push(`"${stageId}" was skipped earlier in this run — rewind to it to un-skip`);
+        }
+      }
+      // Unit lanes: once the unit plan is promoted the per-unit stages are
+      // scheduled state — their membership can only change via rewind.
+      const unitPlan = await store.getUnitPlan(intentId).catch(() => null);
+      if (unitPlan) {
+        const currentPlanResult = await loadExecutionPlan({
+          ddb,
+          tableName: BLOCKS_TABLE(),
+          workflowId: meta.workflowId,
+          workflowVersion: meta.workflowVersion,
+          scope: meta.scope,
+          ...(priorSkipIds.length ? { skipStageIds: priorSkipIds } : {}),
+          ...(meta.composedGrid ? { composedGrid: meta.composedGrid } : {}),
+        });
+        const currentSectionIds = new Set(
+          (currentPlanResult.plan?.stages ?? [])
+            .filter((s) => s.parallelSection != null)
+            .map((s) => s.stageId),
+        );
+        for (const stageId of currentSectionIds) {
+          if (!newStageIds.has(stageId)) {
+            violations.push(
+              `"${stageId}" fans out per unit and the unit plan is already promoted — reshape units at the fan-out gate`,
+            );
+          }
+        }
+      }
+      if (violations.length > 0) {
+        return response(409, {
+          error: 'Recompose violates the run\u2019s frozen state',
+          violations,
+        });
+      }
+
+      // Strict resolution of the NEW projection (starved required inputs are
+      // hard errors mid-run — a stage must never park waiting for an input
+      // nothing will write).
+      const planResult = await loadExecutionPlan({
+        ddb,
+        tableName: BLOCKS_TABLE(),
+        workflowId: meta.workflowId,
+        workflowVersion: meta.workflowVersion,
+        scope: newScope,
+        composedGrid: newGrid,
+        ...(priorSkipIds.length ? { skipStageIds: priorSkipIds } : {}),
+        strict: true,
+      });
+      if (!planResult.valid || !planResult.plan) {
+        return response(400, {
+          error: 'The recomposed grid is not runnable',
+          errors: planResult.errors ?? [],
+        });
+      }
+      const newPlan = planResult.plan;
+
+      // Relaunch point: the first stage of the NEW plan that has neither
+      // succeeded nor been skipped. Nothing pending = nothing to relaunch.
+      const doneStates = new Set(['SUCCEEDED', 'SKIPPED']);
+      const fromStage = newPlan.stages.find((s) => {
+        const rows = rowsByStageId.get(s.stageId) ?? [];
+        return rows.length === 0 || rows.some((r) => !doneStates.has(r.state));
+      });
+      if (!fromStage) {
+        return response(409, {
+          error: 'Nothing left to run under the recomposed grid — every remaining stage is done',
+        });
+      }
+      const responder = getResponder(event);
+      // Retire + fresh microVM, exactly like rewind: the woken orchestrator
+      // exits quietly (superseded gate) instead of racing the relaunch.
+      await retireParkedRun(intentId, `recomposed from ${fromStage.stageId}`);
+      await stopRuntimeSessions(intentId);
+      // Reset the relaunch stage's non-terminal instances (a parked/failed
+      // stage re-runs from scratch, attempt+1) + supersede their artifacts.
+      const resetIds = (rowsByStageId.get(fromStage.stageId) ?? [])
+        .filter((r) => !doneStates.has(r.state))
+        .map((r) => r.stageInstanceId)
+        .filter(Boolean);
+      for (const stageInstanceId of resetIds) {
+        await store.resetStageRow({ executionId: intentId, stageInstanceId }).catch(() => {});
+      }
+      if (resetIds.length) {
+        await supersedeArtifactsForStages(
+          g,
+          intentId,
+          resetIds,
+          `recompose:${fromStage.stageId}`,
+        ).catch((err) => console.error('Recompose artifact supersede failed:', err.message));
+      }
+      await store
+        .appendEvent({
+          executionId: intentId,
+          type: 'v2.execution.recomposed',
+          actor: responder.displayName || responder.sub,
+          summary: `${responder.displayName || 'Someone'} recomposed the run (${newPlan.summary.executedStages} of ${newPlan.summary.totalStages} stages, scope label "${newScope}") — relaunching at ${fromStage.stageId}`,
+        })
+        .catch((err) => console.error('Recompose event append failed:', err.message));
+      const priorStatus = meta.status;
+      const durableExecutionName = durableExecutionNameForIntent(intentId);
+      const updated = await store.updateExecution({
+        executionId: intentId,
+        projectId,
+        status: 'CREATED',
+        fromStatus: priorStatus,
+        startedAt: meta.startedAt,
+        durableExecutionName,
+        durableExecutionArn: null,
+        orchestratorStartedAt: null,
+        orchestratorExpiresAt: null,
+        pendingHumanTaskId: null,
+        failureReason: null,
+        completedAt: null,
+        rewindFromStageId: fromStage.stageId,
+        scope: newScope,
+        composedGrid: newGrid,
+        planWarnings: planResult.warnings?.length ? planResult.warnings : null,
+      });
+      try {
+        const invoked = await invokeOrchestrator(
+          {
+            action: 'start',
+            intentId,
+            executionId: intentId,
+            startAtStageId: fromStage.stageId,
+          },
+          { durableExecutionName },
+        );
+        if (invoked?.durableExecutionArn) {
+          await store
+            .updateExecution({
+              executionId: intentId,
+              durableExecutionArn: invoked.durableExecutionArn,
+            })
+            .catch((err) => console.error('Durable execution ARN stamp failed:', err.message));
+        }
+      } catch (err) {
+        await store.updateExecution({
+          executionId: intentId,
+          projectId,
+          status: priorStatus,
+          fromStatus: 'CREATED',
+          startedAt: meta.startedAt,
+        });
+        throw err;
+      }
+      return response(202, mapIntent(updated));
     }
 
     if (intentId && httpMethod === 'GET') {

@@ -5,6 +5,7 @@ import {
   normalizeSkipStageIds,
   skipTargetsFrom,
   resolveSkipTo,
+  resolveRecomposeSkips,
 } from '../stage-skip.js';
 
 const s = (stageId, execution = 'CONDITIONAL', phase = 'inception') => ({
@@ -116,5 +117,63 @@ describe('resolveSkipTo', () => {
     expect(resolveSkipTo({ skipTo: 42, segmentStages: seg, currentIndex: 0 }).error).toMatch(
       /must be a stage id/,
     );
+  });
+});
+
+describe('resolveRecomposeSkips', () => {
+  const flat = [
+    { stageId: 'a', phase: 'inception', execution: 'ALWAYS' },
+    { stageId: 'b', phase: 'inception', execution: 'CONDITIONAL' },
+    { stageId: 'unit-stage', phase: 'construction', execution: 'CONDITIONAL', parallelSection: 1 },
+    { stageId: 'c', phase: 'construction', execution: 'CONDITIONAL' },
+    { stageId: 'd', phase: 'construction', execution: 'ALWAYS' },
+    { stageId: 'init-x', phase: 'initialization', execution: 'CONDITIONAL' },
+  ];
+
+  it('applies later CONDITIONAL once-per-workflow stages, in request order', () => {
+    const { applied, rejected } = resolveRecomposeSkips({
+      stages: flat,
+      currentStageId: 'a',
+      requested: ['c', 'b'],
+    });
+    expect(applied).toEqual(['c', 'b']);
+    expect(rejected).toEqual([]);
+  });
+
+  it('rejects unknown / behind-cursor / section / policy-blocked / duplicate entries with reasons', () => {
+    const { applied, rejected } = resolveRecomposeSkips({
+      stages: flat,
+      currentStageId: 'b',
+      requested: ['ghost', 'a', 'b', 'unit-stage', 'd', 'c', 'init-x'],
+      alreadySkipped: ['c'],
+    });
+    expect(applied).toEqual([]);
+    const byId = Object.fromEntries(rejected.map((r) => [r.stageId, r.reason]));
+    expect(byId.ghost).toMatch(/not in this run/);
+    expect(byId.a).toMatch(/already reached/);
+    expect(byId.b).toMatch(/already reached/);
+    expect(byId['unit-stage']).toMatch(/fan-out gate/);
+    expect(byId.d).toMatch(/only CONDITIONAL stages/);
+    expect(byId.c).toMatch(/already skipped/);
+    // init-x sits AFTER the cursor in the flat list here, so the policy rule
+    // (initialization never skips) is what rejects it.
+    expect(byId['init-x']).toMatch(/initialization/);
+  });
+
+  it('dedupes and drops non-string entries instead of failing wholesale', () => {
+    const { applied, rejected } = resolveRecomposeSkips({
+      stages: flat,
+      currentStageId: 'a',
+      requested: ['b', 'b', 42, '', null],
+    });
+    expect(applied).toEqual(['b']);
+    expect(rejected).toEqual([]);
+  });
+
+  it('tolerates a null/absent request', () => {
+    expect(resolveRecomposeSkips({ stages: flat, currentStageId: 'a', requested: null })).toEqual({
+      applied: [],
+      rejected: [],
+    });
   });
 });

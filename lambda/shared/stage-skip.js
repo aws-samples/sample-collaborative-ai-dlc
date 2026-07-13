@@ -96,6 +96,58 @@ const resolveSkipTo = ({ skipTo, segmentStages, currentIndex }) => {
   return { targetIndex, skippedStages };
 };
 
+// Validate a gate answer's recompose delta (`recompose: { skip: [...] }`) —
+// an ARBITRARY set of not-yet-reached stages to deselect, unlike skipTo's
+// contiguous jump. Evaluated against the FLAT plan-stage list (skips may name
+// stages in later linear segments too). Per-entry verdicts, never all-or-
+// nothing: the caller applies the valid flips and reports the rejected ones
+// on the timeline (never trust, never silently drop). Rules per stage:
+//   - must exist in the plan and sit strictly AFTER the current stage
+//     (behind-cursor reshapes are rewind's job),
+//   - must not sit in a parallel section (unit lanes are reshaped at the
+//     fan-out gate's skip matrix, not here),
+//   - must pass the skip policy (CONDITIONAL-only, never initialization),
+//   - must not already be skipped.
+const resolveRecomposeSkips = ({ stages, currentStageId, requested, alreadySkipped = [] }) => {
+  const applied = [];
+  const rejected = [];
+  const ids = Array.isArray(requested)
+    ? [...new Set(requested.filter((s) => typeof s === 'string' && s.trim()))]
+    : [];
+  const currentIndex = stages.findIndex((s) => s.stageId === currentStageId);
+  const skippedSet = new Set(alreadySkipped);
+  for (const stageId of ids) {
+    const idx = stages.findIndex((s) => s.stageId === stageId);
+    if (idx < 0) {
+      rejected.push({ stageId, reason: 'not in this run\u2019s plan' });
+      continue;
+    }
+    if (idx <= currentIndex) {
+      rejected.push({ stageId, reason: 'already reached — rewind to reshape the past' });
+      continue;
+    }
+    const stage = stages[idx];
+    if (stage.parallelSection != null) {
+      rejected.push({
+        stageId,
+        reason: 'runs per unit of work — reshape it at the fan-out gate',
+      });
+      continue;
+    }
+    const blockReason = stageSkipBlockReason({ phase: stage.phase, execution: stage.execution });
+    if (blockReason) {
+      rejected.push({ stageId, reason: blockReason });
+      continue;
+    }
+    if (skippedSet.has(stageId)) {
+      rejected.push({ stageId, reason: 'already skipped' });
+      continue;
+    }
+    applied.push(stageId);
+  }
+  return { applied, rejected };
+};
+
 export {
   STAGE_SKIPPING_MODES,
   PROJECT_STAGE_SKIPPING_MODES,
@@ -104,6 +156,7 @@ export {
   normalizeSkipStageIds,
   skipTargetsFrom,
   resolveSkipTo,
+  resolveRecomposeSkips,
 };
 export default {
   STAGE_SKIPPING_MODES,
@@ -113,4 +166,5 @@ export default {
   normalizeSkipStageIds,
   skipTargetsFrom,
   resolveSkipTo,
+  resolveRecomposeSkips,
 };

@@ -16,6 +16,7 @@ import { useIntentGraph } from '@/hooks/useIntentGraph';
 import { useYjsDocument } from '@/hooks/useYjsDocument';
 import QuestionEditor from '@/components/QuestionEditor';
 import { CollaborativeTextarea } from '@/components/CollaborativeTextarea';
+import { RecomposePanel } from '@/components/intent/RecomposePanel';
 import type { Question } from '@/services/questions';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { ArtifactViewer } from '@/components/intent/ArtifactViewer';
@@ -381,6 +382,24 @@ export default function IntentView() {
           </div>
         </div>
       )}
+
+      {/* In-flight reshape (Adaptive Workflows): skip/add PENDING stages on a
+          parked or failed run — composer-assisted or manual, always applied
+          through the validated recompose relaunch. Hidden mid-RUN and while
+          construction runs autonomously (the endpoint rejects both anyway). */}
+      {(intent.status === 'WAITING' || isFailed) &&
+        intent.constructionAutonomyMode !== 'autonomous' &&
+        projectId &&
+        intentId && (
+          <RecomposePanel
+            projectId={projectId}
+            intentId={intentId}
+            intent={intent}
+            stageRows={detail.stages}
+            workflowVersion={intent.workflowVersion ?? undefined}
+            onRelaunched={reload}
+          />
+        )}
 
       {/* DRAFT never renders here — it redirects to the compose page above. */}
       {reviewGate ? (

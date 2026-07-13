@@ -710,6 +710,7 @@ export const intentsService = {
       instructions?: string;
       reportKey?: string;
       repoSignals?: Record<string, unknown>;
+      mode?: 'inflight';
     } = {},
   ) => api.post<ComposeSession>(`/projects/${projectId}/intents/${intentId}/compose`, input),
   listComposes: (projectId: string, intentId: string) =>
@@ -720,6 +721,14 @@ export const intentsService = {
       `/projects/${projectId}/intents/${intentId}/compose-report-upload`,
       {},
     ),
+  // In-flight reshape: replace the run's projection with a new composed grid
+  // and relaunch at the first not-yet-done stage. Accepted only while the run
+  // is parked (WAITING) or FAILED; the past is frozen server-side.
+  recompose: (
+    projectId: string,
+    intentId: string,
+    input: { composedGrid: Record<string, 'EXECUTE' | 'SKIP'>; scope?: string },
+  ) => api.post<Intent>(`/projects/${projectId}/intents/${intentId}/recompose`, input),
   start: (
     projectId: string,
     intentId: string,

@@ -217,6 +217,7 @@ resource "aws_api_gateway_deployment" "main" {
     module.cors_intent_compose,
     module.cors_intent_compose_report_upload,
     module.cors_intent_composes,
+    module.cors_intent_recompose,
     module.cors_intents,
     module.cors_intents_metrics,
     module.cors_migrate_tracker,

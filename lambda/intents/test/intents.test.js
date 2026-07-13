@@ -1207,6 +1207,274 @@ describe('POST /compose — composer sessions', () => {
   });
 });
 
+describe('POST /recompose — in-flight reshape', () => {
+  // analyze (produces spec) → optional (CONDITIONAL, produces extra) →
+  // build (requires spec; optionally consumes extra) — all EXECUTE in feature.
+  const seedRecomposeFixtures = ({ buildRequiresExtra = false } = {}) => {
+    for (const p of [
+      { stageId: 'analyze', order: 0 },
+      { stageId: 'optional', order: 1 },
+      { stageId: 'build', order: 2 },
+    ]) {
+      procStore.set(keyOf('WF#default#aidlc-v2', `V#4#PLACEMENT#${p.stageId}`), {
+        pk: 'WF#default#aidlc-v2',
+        sk: `V#4#PLACEMENT#${p.stageId}`,
+        stageId: p.stageId,
+        order: p.order,
+        scopeMembership: { feature: 'EXECUTE' },
+      });
+    }
+    const stages = [
+      { id: 'analyze', produces: ['spec'], consumes: [], execution: 'ALWAYS' },
+      { id: 'optional', produces: ['extra'], consumes: [], execution: 'CONDITIONAL' },
+      {
+        id: 'build',
+        produces: [],
+        consumes: [
+          { artifact: 'spec', required: true },
+          { artifact: 'extra', required: buildRequiresExtra },
+        ],
+        execution: 'ALWAYS',
+      },
+    ];
+    for (const s of stages) {
+      procStore.set(keyOf(`BLOCK#SYSTEM#STAGE#${s.id}`, 'V#latest'), {
+        pk: `BLOCK#SYSTEM#STAGE#${s.id}`,
+        sk: 'V#latest',
+        GSI1PK: 'TENANT#SYSTEM#STAGE',
+        GSI1SK: s.id,
+        blockId: s.id,
+        id: s.id,
+        version: 1,
+        phase: 'construction',
+        mode: 'inline',
+        leadAgent: 'orchestrator',
+        produces: s.produces,
+        consumes: s.consumes,
+        execution: s.execution,
+        sensors: [],
+        humanValidation: 'none',
+      });
+    }
+  };
+
+  const seedRun = async (sub, projectId, { status = 'WAITING', rows = [], metaOver = {} }) => {
+    const intent = JSON.parse(
+      (await createIntent(sub, projectId, { title: 'I', prompt: 'X', scope: 'feature' })).body,
+    );
+    const k = keyOf(`EXEC#${intent.id}`, 'META');
+    procStore.set(k, { ...procStore.get(k), status, ...metaOver });
+    for (const row of rows) {
+      procStore.set(keyOf(`EXEC#${intent.id}`, `STAGE#${row.stageInstanceId}`), {
+        pk: `EXEC#${intent.id}`,
+        sk: `STAGE#${row.stageInstanceId}`,
+        type: 'Stage',
+        executionId: intent.id,
+        attempt: 0,
+        ...row,
+      });
+    }
+    return intent;
+  };
+
+  const recomposeReq = (sub, projectId, intentId, body) =>
+    handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intentId}/recompose`,
+      pathParameters: { projectId, intentId },
+      body: JSON.stringify(body),
+      ...claims(sub),
+    });
+
+  it('replaces the projection, relaunches at the first not-yet-done stage, pins the grid', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedRecomposeFixtures();
+    const intent = await seedRun(sub, projectId, {
+      rows: [
+        { stageInstanceId: 'si-analyze', stageId: 'analyze', state: 'SUCCEEDED' },
+        { stageInstanceId: 'si-optional', stageId: 'optional', state: 'WAITING_FOR_HUMAN' },
+      ],
+    });
+    const res = await recomposeReq(sub, projectId, intent.id, {
+      composedGrid: { analyze: 'EXECUTE', optional: 'EXECUTE', build: 'SKIP' },
+      scope: 'feature-lean',
+    });
+    expect(res.statusCode).toBe(202);
+    const updated = JSON.parse(res.body);
+    expect(updated.status).toBe('CREATED');
+    expect(updated.scope).toBe('feature-lean');
+    expect(updated.composedGrid).toEqual({
+      analyze: 'EXECUTE',
+      optional: 'EXECUTE',
+      build: 'SKIP',
+    });
+    // Relaunched at the parked stage (the first not-yet-done one).
+    const calls = lambdaMock.commandCalls(InvokeCommand);
+    const payload = JSON.parse(Buffer.from(calls.at(-1).args[0].input.Payload).toString());
+    expect(payload).toMatchObject({ action: 'start', startAtStageId: 'optional' });
+    // The parked instance was reset for its fresh attempt.
+    const row = procStore.get(keyOf(`EXEC#${intent.id}`, 'STAGE#si-optional'));
+    expect(row.state).toBe('PENDING');
+    // Audit trail carries the reshape.
+    const events = [...procStore.values()].filter((i) => (i.sk || '').startsWith('EVENT#'));
+    expect(events.map((e) => e.eventType)).toContain('v2.execution.recomposed');
+  });
+
+  it('freezes the past: a stage that ran cannot flip to SKIP', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedRecomposeFixtures();
+    const intent = await seedRun(sub, projectId, {
+      rows: [{ stageInstanceId: 'si-analyze', stageId: 'analyze', state: 'SUCCEEDED' }],
+    });
+    const res = await recomposeReq(sub, projectId, intent.id, {
+      composedGrid: { analyze: 'SKIP', optional: 'EXECUTE', build: 'EXECUTE' },
+    });
+    expect(res.statusCode).toBe(409);
+    const body = JSON.parse(res.body);
+    expect(body.violations.join(' ')).toMatch(/"analyze" already ran/);
+  });
+
+  it('freezes an already-skipped stage: un-skipping is rewind territory', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedRecomposeFixtures();
+    const intent = await seedRun(sub, projectId, {
+      status: 'FAILED',
+      rows: [
+        { stageInstanceId: 'si-analyze', stageId: 'analyze', state: 'SUCCEEDED' },
+        { stageInstanceId: 'si-optional', stageId: 'optional', state: 'SKIPPED' },
+        { stageInstanceId: 'si-build', stageId: 'build', state: 'FAILED' },
+      ],
+    });
+    const res = await recomposeReq(sub, projectId, intent.id, {
+      composedGrid: { analyze: 'EXECUTE', optional: 'EXECUTE', build: 'EXECUTE' },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).violations.join(' ')).toMatch(/rewind to it to un-skip/);
+  });
+
+  it('rejects a grid that STRICTLY starves a pending required input', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedRecomposeFixtures({ buildRequiresExtra: true });
+    const intent = await seedRun(sub, projectId, {
+      rows: [{ stageInstanceId: 'si-analyze', stageId: 'analyze', state: 'SUCCEEDED' }],
+    });
+    const res = await recomposeReq(sub, projectId, intent.id, {
+      composedGrid: { analyze: 'EXECUTE', optional: 'SKIP', build: 'EXECUTE' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).errors.map((e) => e.code)).toContain('starved_consume');
+  });
+
+  it('refuses recompose under autonomous construction and mid-RUN', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedRecomposeFixtures();
+    const autonomous = await seedRun(sub, projectId, {
+      metaOver: { constructionAutonomyMode: 'autonomous' },
+    });
+    const guard = await recomposeReq(sub, projectId, autonomous.id, {
+      composedGrid: { analyze: 'EXECUTE', optional: 'SKIP', build: 'EXECUTE' },
+    });
+    expect(guard.statusCode).toBe(409);
+    expect(JSON.parse(guard.body).code).toBe('autonomous_construction');
+
+    const running = await seedRun(sub, projectId, { status: 'RUNNING' });
+    const mid = await recomposeReq(sub, projectId, running.id, {
+      composedGrid: { analyze: 'EXECUTE', optional: 'SKIP', build: 'EXECUTE' },
+    });
+    expect(mid.statusCode).toBe(409);
+  });
+
+  it('409s when the recomposed grid leaves nothing to run', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedRecomposeFixtures();
+    const intent = await seedRun(sub, projectId, {
+      status: 'FAILED',
+      rows: [
+        { stageInstanceId: 'si-analyze', stageId: 'analyze', state: 'SUCCEEDED' },
+        { stageInstanceId: 'si-optional', stageId: 'optional', state: 'SUCCEEDED' },
+      ],
+    });
+    const res = await recomposeReq(sub, projectId, intent.id, {
+      composedGrid: { analyze: 'EXECUTE', optional: 'EXECUTE', build: 'SKIP' },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).error).toMatch(/Nothing left to run/);
+  });
+
+  it('in-flight compose dispatches with the frozen grid + live progress', async () => {
+    process.env.AGENTCORE_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:eu:1:runtime/x';
+    try {
+      agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+        response: { transformToString: async () => JSON.stringify({ ok: true }) },
+      });
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      seedRecomposeFixtures();
+      const intent = await seedRun(sub, projectId, {
+        rows: [
+          { stageInstanceId: 'si-analyze', stageId: 'analyze', state: 'SUCCEEDED' },
+          { stageInstanceId: 'si-optional', stageId: 'optional', state: 'SKIPPED' },
+        ],
+      });
+      const res = await handler({
+        httpMethod: 'POST',
+        path: `/projects/${projectId}/intents/${intent.id}/compose`,
+        pathParameters: { projectId, intentId: intent.id },
+        body: JSON.stringify({ mode: 'inflight', instructions: 'trim the tail' }),
+        ...claims(sub),
+      });
+      expect(res.statusCode).toBe(202);
+      expect(JSON.parse(res.body).mode).toBe('inflight');
+      const call = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input;
+      const payload = JSON.parse(Buffer.from(call.payload).toString());
+      expect(payload).toMatchObject({
+        command: 'compose-plan-start',
+        mode: 'inflight',
+        frozenGrid: { analyze: 'EXECUTE', optional: 'SKIP' },
+      });
+      expect(payload.progressContext).toContain('analyze: SUCCEEDED');
+    } finally {
+      delete process.env.AGENTCORE_RUNTIME_ARN;
+    }
+  });
+
+  it('in-flight compose refuses a DRAFT and an autonomous run', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedRecomposeFixtures();
+    const draft = JSON.parse(
+      (await createIntent(sub, projectId, { title: 'I', prompt: 'X', scope: 'feature' })).body,
+    );
+    const onDraft = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${draft.id}/compose`,
+      pathParameters: { projectId, intentId: draft.id },
+      body: JSON.stringify({ mode: 'inflight' }),
+      ...claims(sub),
+    });
+    expect(onDraft.statusCode).toBe(409);
+
+    const autonomous = await seedRun(sub, projectId, {
+      metaOver: { constructionAutonomyMode: 'autonomous' },
+    });
+    const guarded = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${autonomous.id}/compose`,
+      pathParameters: { projectId, intentId: autonomous.id },
+      body: JSON.stringify({ mode: 'inflight' }),
+      ...claims(sub),
+    });
+    expect(guarded.statusCode).toBe(409);
+    expect(JSON.parse(guarded.body).code).toBe('autonomous_construction');
+  });
+});
+
 describe('POST /start', () => {
   it('flips DRAFT → CREATED and invokes the orchestrator', async () => {
     const sub = `u-${randomUUID()}`;

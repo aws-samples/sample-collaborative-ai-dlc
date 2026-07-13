@@ -260,6 +260,71 @@ describe('gate-time "skip to stage X"', () => {
   });
 });
 
+describe('gate-time recompose delta ({ recompose: { skip: [...] } })', () => {
+  it('an approved delta skips an arbitrary later stage (not just a contiguous jump)', async () => {
+    deps.store.getExecution = vi.fn(async () => ({ ...META, stageSkipping: 'enabled' }));
+    // Skip c from a's gate while b still runs — skipTo could not express this
+    // without also skipping b.
+    answerValidationGate({ decision: 'approve', recompose: { skip: ['c'] } });
+
+    const res = await start();
+    expect(res.ok).toBe(true);
+    expect(stageStarts().map((s) => s.stageId)).toEqual(['a', 'b']);
+    expect(deps.store.putStage).toHaveBeenCalledWith(
+      expect.objectContaining({ stageInstanceId: 'si-c', stageId: 'c', state: 'SKIPPED' }),
+    );
+    expect(eventTypes()).toContain('v2.stage.recomposed');
+    // b's dispatch carries the flipped id so its prompt treats c's outputs as
+    // out of play.
+    expect(stageStarts()[1].skipStageIds).toEqual(['c']);
+  });
+
+  it('rejects a delta naming a non-skippable stage, loudly, and the walk continues', async () => {
+    deps.store.getExecution = vi.fn(async () => ({ ...META, stageSkipping: 'enabled' }));
+    const stages = linearStages();
+    stages[2].execution = 'ALWAYS'; // c is methodology backbone now
+    deps.loadPlan = vi.fn(async () => ({ valid: true, plan: { stages } }));
+    answerValidationGate({ decision: 'approve', recompose: { skip: ['c'] } });
+
+    const res = await start();
+    expect(res.ok).toBe(true);
+    expect(eventTypes()).toContain('v2.stage.recompose_rejected');
+    expect(stageStarts().map((s) => s.stageId)).toContain('c');
+    expect(deps.store.putStage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ state: 'SKIPPED' }),
+    );
+  });
+
+  it('rejects the current/earlier stage (the past is rewind territory)', async () => {
+    deps.store.getExecution = vi.fn(async () => ({ ...META, stageSkipping: 'enabled' }));
+    answerValidationGate({ decision: 'approve', recompose: { skip: ['a'] } });
+    const res = await start();
+    expect(res.ok).toBe(true);
+    expect(eventTypes()).toContain('v2.stage.recompose_rejected');
+  });
+
+  it('ignores the delta entirely when stage skipping is disabled for the run', async () => {
+    answerValidationGate({ decision: 'approve', recompose: { skip: ['c'] } });
+    const res = await start();
+    expect(res.ok).toBe(true);
+    expect(eventTypes()).toContain('v2.stage.recompose_rejected');
+    expect(stageStarts().map((s) => s.stageId)).toContain('c');
+  });
+
+  it('a delta and a skipTo can ride the same approve without double-marking', async () => {
+    deps.store.getExecution = vi.fn(async () => ({ ...META, stageSkipping: 'enabled' }));
+    // skipTo c already marks b; the delta names b too — must not double-write.
+    answerValidationGate({ decision: 'approve', skipTo: 'c', recompose: { skip: ['b'] } });
+    const res = await start();
+    expect(res.ok).toBe(true);
+    const skippedWrites = deps.store.putStage.mock.calls.filter(
+      (c) => c[0].state === 'SKIPPED' && c[0].stageId === 'b',
+    );
+    expect(skippedWrites).toHaveLength(1);
+    expect(stageStarts().map((s) => s.stageId)).toEqual(['a', 'c']);
+  });
+});
+
 // Upstream 2.2.6: the validation gate names the COMPUTED next stage — read
 // from the flat plan order, never guessed. string = next stageId, null = this
 // gate completes the workflow. The prompt carries the same name so chat-only
