@@ -11,7 +11,7 @@ import { BedrockAgentCoreClient } from '@aws-sdk/client-bedrock-agentcore';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { SSMClient } from '@aws-sdk/client-ssm';
 
-export const { cardinality, order, TextP } = gremlin.process;
+export const { cardinality, order, TextP, P } = gremlin.process;
 export const __ = gremlin.process.statics;
 
 // Tests point GREMLIN_PROTOCOL at a plain ws:// gremlin-server (no IAM); Neptune

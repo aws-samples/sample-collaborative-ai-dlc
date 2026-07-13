@@ -237,6 +237,50 @@ export const commitAll = async ({
   return { committed: false, ...last, dirty };
 };
 
+// Bootstrap an EMPTY repo (unborn HEAD, zero commits) so the intent branch can
+// be published. Roots an --allow-empty commit on the BASE branch (pushed first
+// → becomes the remote default) and forks the intent branch off it, so an empty
+// repo ends up shaped like a normal one. Seeding on the intent branch instead
+// would wrongly make IT the default. No-op when HEAD exists (`not_empty`).
+//   { seeded: true,  sha, baseBranch }      — base seeded + intent forked off it
+//   { seeded: false, reason: 'not_empty' }  — HEAD exists; nothing to do
+//   { seeded: false, reason, detail }       — a git step failed
+export const seedInitialCommit = async ({
+  dir,
+  branch, // the intent branch
+  baseBranch, // resolved base name (selected → provider default → 'main')
+  message = 'aidlc: initialize repository',
+  author = null,
+  git = runGit,
+}) => {
+  const head = await git(['rev-parse', '--verify', 'HEAD'], { cwd: dir });
+  if (head.exitCode === 0) return { seeded: false, reason: 'not_empty' };
+  const base = baseBranch || 'main';
+  // Root the history on the BASE branch so it — not the intent branch — becomes
+  // the remote default. `checkout -B` (re)points the current unborn HEAD at the
+  // base name without needing a start-point (there are no commits yet).
+  const onBase = await git(['checkout', '-B', base], { cwd: dir });
+  if (onBase.exitCode !== 0) {
+    return { seeded: false, reason: 'base_checkout_failed', detail: onBase.stderr.trim() };
+  }
+  const commit = await git([...gitIdentity(author), 'commit', '--allow-empty', '-m', message], {
+    cwd: dir,
+  });
+  if (commit.exitCode !== 0) {
+    return { seeded: false, reason: 'commit_failed', detail: commit.stderr.trim() };
+  }
+  const sha = await git(['rev-parse', 'HEAD'], { cwd: dir });
+  // Fork the intent branch off the freshly-rooted base so the working state
+  // matches a normal repo (intent branch = base + zero lane commits).
+  if (branch && branch !== base) {
+    const onIntent = await git(['checkout', '-B', branch, base], { cwd: dir });
+    if (onIntent.exitCode !== 0) {
+      return { seeded: false, reason: 'intent_checkout_failed', detail: onIntent.stderr.trim() };
+    }
+  }
+  return { seeded: true, sha: sha.stdout.trim() || null, baseBranch: base };
+};
+
 // True when a git failure is caused by a full filesystem (the session mount is
 // a fixed 1 GiB — AgentCore offers no larger size).
 export const isEnospc = (detail) => /no space left on device|enospc/i.test(detail ?? '');
@@ -392,6 +436,38 @@ export const repoTargetDir = ({ url, workspaceDir, multi }) =>
 // only between the set-url and the finally-scrub. Never throws.
 //   { fetched: true }                    — remote refs are current
 //   { fetched: false, reason, detail }   — set-url or fetch failure
+// Does <branch> exist on the remote? Authenticated `ls-remote` in the same
+// token window pattern as fetchOrigin. Returns:
+//   { exists: true|false }               — definitive answer
+//   { exists: null, reason, detail }     — could not determine (set-url / ls-remote failed)
+// A null result lets the caller decide (init-ws treats "unknown" as "try the
+// push" so a genuinely-missing branch is still established).
+export const remoteBranchExists = async ({
+  dir,
+  repo,
+  branch,
+  gitToken,
+  gitProvider,
+  urls = {},
+  git = runGit,
+}) => {
+  if (!branch) return { exists: null, reason: 'no_branch' };
+  const authUrl = urls.auth ?? buildCloneUrl(gitProvider, repo, gitToken);
+  const setAuth = await git(['remote', 'set-url', 'origin', authUrl], { cwd: dir });
+  if (setAuth.exitCode !== 0) {
+    return { exists: null, reason: 'remote_set_url_failed', detail: setAuth.stderr.trim() };
+  }
+  try {
+    const ls = await git(['ls-remote', '--heads', 'origin', branch], { cwd: dir });
+    if (ls.exitCode !== 0) {
+      return { exists: null, reason: 'ls_remote_failed', detail: ls.stderr.trim().slice(-500) };
+    }
+    return { exists: ls.stdout.trim() !== '' };
+  } finally {
+    await scrubRemote({ dir, repo, gitProvider, urls, git });
+  }
+};
+
 export const fetchOrigin = async ({
   dir,
   repo,

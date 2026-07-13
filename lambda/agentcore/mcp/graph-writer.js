@@ -77,6 +77,12 @@ export const SECTION_LABEL = 'Section';
 // between UnitOfWork vertices (already an allowlisted business edge).
 export const UNIT_OF_WORK_LABEL = 'UnitOfWork';
 
+// Pull-request record: the run-level output opened at fan-in, anchored
+// Intent --HAS_PR--> PullRequest. One vertex per repo. The id embeds the
+// intentId + repo, so it is globally unique (not intent-scoped).
+export const PULL_REQUEST_LABEL = 'PullRequest';
+export const HAS_PR_EDGE = 'HAS_PR';
+
 // The two runtime learnings layers V2's resolver interleaves. Mirrors the
 // learnings half of shared/blocks.js RULE_LAYERS.
 export const LEARNING_LAYERS = ['team-learnings', 'project-learnings'];
@@ -447,6 +453,24 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       edge: ANCHOR_EDGE,
     });
 
+    // TODO(unit-edge): when this artifact is produced inside a fan-out lane
+    // (scope.unitSlug is set — see mcp/index.js reading V2_UNIT_SLUG), also wire
+    // an edge to that unit's UnitOfWork vertex (id `unit:<intentId>:<slug>`, see
+    // mirrorUnitDag / UNIT_OF_WORK_LABEL), e.g. Artifact --PART_OF--> UnitOfWork.
+    // Today construction artifacts have NO edge and NO property linking them to
+    // their unit; unit membership is only recoverable by string-parsing
+    // created_by_stage_instance_id (which embeds `unit-<slug>`). An explicit edge
+    // would let us traverse "all artifacts in the backend unit" directly.
+    //
+    // TODO(unit-collision): the artifact upsert key is (label, id, intent_id)
+    // with NO unit dimension (see upsertVertex / INTENT_SCOPED_LABELS). Two lanes
+    // in the same intent that produce the same artifactType only stay distinct
+    // because the LLM happens to pick different ids (e.g. business-logic-model-
+    // backend vs -frontend). Nothing enforces this: if two lane agents choose the
+    // same id, the second create_artifact silently OVERWRITES the first. Consider
+    // making the identity/dedup unit-aware (e.g. fold unitSlug into the id or the
+    // upsert scope) so lanes can never clobber each other's artifacts.
+
     // A re-created artifact is current again (rewind rehabilitation) and no
     // longer stale (drift rehabilitation).
     await clearSuperseded(id);
@@ -461,6 +485,39 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     // which on large artifacts can wedge the model turn. Confirm id/type/links
     // only; provenance lives in the graph, re-readable via get_artifact.
     return { id, artifactType, created_at: stamped.created_at, links: links.length };
+  };
+
+  // Record a fan-in PR, anchored Intent --HAS_PR--> PullRequest. Idempotent:
+  // the id is deterministic per (intent, repo), so a re-run upserts in place.
+  const recordPullRequest = async ({ repoId, prUrl, prNumber, branch, baseBranch }) => {
+    const intentExists = await g.V().has(INTENT_LABEL, 'id', scope.intentId).hasNext();
+    if (!intentExists)
+      throw new GraphWriteError(`Intent "${scope.intentId}" not found — run init-ws first`);
+
+    const id = `pr:${scope.intentId}:${repoId}`;
+    const props = {
+      id,
+      repository: String(repoId ?? ''),
+      pr_url: String(prUrl ?? ''),
+      // Neptune single-cardinality props are strings; the reader coerces back.
+      pr_number: prNumber != null ? String(prNumber) : '',
+      branch: String(branch ?? ''),
+      // Empty when the provider resolved the repo's actual default branch.
+      base_branch: baseBranch != null ? String(baseBranch) : '',
+      ...stamp(),
+    };
+    await upsertVertex(PULL_REQUEST_LABEL, id);
+    let q = vAt(PULL_REQUEST_LABEL, id);
+    for (const [k, v] of Object.entries(props)) q = q.property(cardinality.single, k, v);
+    await q.next();
+    await ensureEdge({
+      fromLabel: INTENT_LABEL,
+      fromId: scope.intentId,
+      toLabel: PULL_REQUEST_LABEL,
+      toId: id,
+      edge: HAS_PR_EDGE,
+    });
+    return { id, repoId, prUrl: props.pr_url, prNumber: props.pr_number };
   };
 
   // Update mutable props on an existing artifact. Never touches the provenance
@@ -1306,6 +1363,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
   return {
     createArtifact,
     updateArtifact,
+    recordPullRequest,
     linkArtifacts,
     getArtifact,
     lookupArtifacts,

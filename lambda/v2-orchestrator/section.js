@@ -104,6 +104,14 @@ export const laneSessionIdFor = (intentId, sectionIndex, slug) =>
 // Deterministic id per (run, name): replay-stable within a run; a relaunch
 // (new runId) re-asks rather than reusing a retired run's decision.
 // Returns { gate } (answered/approved/rejected row) or { superseded: true }.
+//
+// TODO: every engine gate here is approve/reject only, and a reject is
+// terminal — it fails the whole run (fan-out → fanout_rejected, skeleton →
+// skeleton_rejected, halt → section_aborted, etc.). The UI (GateCard) offers
+// no free-text field either. Consider a softer path: let a reject carry
+// free-text feedback describing what to change, then revise the plan /
+// re-ask the gate instead of blocking the workflow. Applies to ALL callers of
+// awaitEngineGate; mirror of the frontend TODO in IntentView.tsx GateCard.
 export const awaitEngineGate = async (
   ctxArg,
   toolkit,
@@ -292,8 +300,7 @@ const fanoutPrompt = ({ sectionIndex, unitPlan, sectionStages, skeleton }) => {
         : 'none — every unit runs every stage'
     }.`,
     '',
-    'Approve to fan out. The structured answer may override',
-    '{ "walkingSkeleton": "<slug>", "skipMatrix": { "<slug>": ["<conditional-stage>"] } }.',
+    'Approve to fan out.',
   ];
   return lines.join('\n');
 };

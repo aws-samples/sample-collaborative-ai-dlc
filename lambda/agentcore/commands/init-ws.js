@@ -10,8 +10,25 @@
 
 import gremlin from 'gremlin';
 import { closeGraphSource } from '../mcp/graph-writer.js';
+import {
+  pushBranch as defaultPushBranch,
+  remoteBranchExists as defaultRemoteBranchExists,
+  seedInitialCommit as defaultSeedInitialCommit,
+} from '../git-engine.js';
+import { getProvider } from '../../shared/git-providers.js';
 
 const { cardinality } = gremlin.process;
+
+// The repo's provider default branch (populated even for an empty repo). Used
+// to root an empty repo on the right base. null on any provider error.
+const providerDefaultBranch = async ({ repo, gitProvider, gitToken }) => {
+  try {
+    const provider = getProvider(gitProvider);
+    return (await provider.getDefaultBranch({ token: gitToken }, repo)) ?? null;
+  } catch {
+    return null;
+  }
+};
 
 // Create (idempotent) the Intent anchor vertex. Artifacts created by stages are
 // CONTAINS-ed by this vertex; the page reads the intent subgraph from here.
@@ -59,6 +76,10 @@ export const initWs = async (
     workspaceDir,
     broadcast = async () => {},
     clock = () => new Date().toISOString(),
+    pushBranch = defaultPushBranch,
+    remoteBranchExists = defaultRemoteBranchExists,
+    seedInitialCommit = defaultSeedInitialCommit,
+    resolveDefaultBranch = providerDefaultBranch,
   } = deps;
   const now = clock();
 
@@ -101,6 +122,103 @@ export const initWs = async (
       reason: 'branch_setup_failed',
       detail: `could not create/checkout the intent branch${branch ? ` '${branch}'` : ''} in ${badBranch.join(', ')} — the base branch may not exist and orphan creation failed`,
     };
+  }
+
+  // 1b. Publish the intent branch to the remote NOW. init-ws creates it locally
+  // (off the base HEAD, no commits yet), but parallel construction lanes fork
+  // their unit branch from origin/<intentBranch> and merge back into it — both
+  // require the branch to exist remotely. Nothing else pushes it before then
+  // (pre-construction stages are artifact-only: clean tree, no commit, no push),
+  // so without this a lane merge fails with `intent_branch_missing`. Fatal on
+  // failure: a missing remote branch strands the whole construction phase.
+  //
+  // A genuinely EMPTY repo (freshly created, cloned with zero commits) has an
+  // unborn HEAD and no branches at all. It needs a proper shape before the
+  // intent branch can be published: seedInitialCommit roots an --allow-empty
+  // commit on the BASE branch (resolved: selected base → provider default →
+  // 'main') and forks the intent branch off it. We then push the BASE branch
+  // FIRST — the first branch pushed to an empty remote becomes its default, so
+  // this makes BASE (not the intent branch) the default, mirroring a normal
+  // repo. Field incident (jeromevdl/chess-analyzer): seeding on the intent
+  // branch made IT the default branch. No-op for a repo that already has history.
+  //
+  // Skip when the branch ALREADY exists remotely: a rewind/retry re-init may run
+  // after lanes advanced the branch, and re-pushing the base-HEAD local ref over
+  // it would be a non-fast-forward failure. "Establish if missing", never force.
+  if (branch && checkedOut.length > 0) {
+    const pushFailures = [];
+    for (const r of checkedOut) {
+      const existing = await remoteBranchExists({
+        dir: r.targetDir,
+        repo: r.repo,
+        branch,
+        gitToken,
+        gitProvider,
+      }).catch(() => ({ exists: null }));
+      // Already on the remote → nothing to establish.
+      if (existing.exists === true) continue;
+
+      // Empty repo → root history on the base branch and fork the intent branch
+      // off it. Resolve the base name from the provider so the seeded default
+      // matches what the repo was created with (e.g. main vs master).
+      const base =
+        baseBranches?.[r.repo] ??
+        baseBranch ??
+        (await resolveDefaultBranch({ repo: r.repo, gitProvider, gitToken })) ??
+        'main';
+      const seed = await seedInitialCommit({
+        dir: r.targetDir,
+        branch,
+        baseBranch: base,
+      }).catch((e) => ({ seeded: false, reason: 'seed_crashed', detail: e?.message }));
+      if (seed.seeded === false && seed.reason !== 'not_empty') {
+        pushFailures.push(
+          `${r.repo} (seed ${seed.reason}${seed.detail ? `: ${seed.detail}` : ''})`,
+        );
+        continue;
+      }
+
+      // Freshly-seeded empty repo: push the BASE branch first so it becomes the
+      // remote default, THEN the intent branch (forked off it). A repo with
+      // history (`not_empty`) skips straight to the intent-branch push.
+      if (seed.seeded === true) {
+        const basePush = await pushBranch({
+          dir: r.targetDir,
+          repo: r.repo,
+          branch: seed.baseBranch,
+          gitToken,
+          gitProvider,
+        }).catch((e) => ({ pushed: false, reason: 'push_crashed', detail: e?.message }));
+        if (basePush.pushed !== true) {
+          pushFailures.push(
+            `${r.repo} (base ${seed.baseBranch}: ${basePush.reason ?? 'unknown'}${basePush.detail ? `: ${basePush.detail}` : ''})`,
+          );
+          continue;
+        }
+      }
+
+      const res = await pushBranch({
+        dir: r.targetDir,
+        repo: r.repo,
+        branch,
+        gitToken,
+        gitProvider,
+      }).catch((e) => ({ pushed: false, reason: 'push_crashed', detail: e?.message }));
+      // After seeding, `empty` can only mean the repo STILL has no HEAD — the
+      // branch cannot be published, so it is a failure, not an accepted no-op.
+      if (res.pushed !== true) {
+        pushFailures.push(
+          `${r.repo} (${res.reason ?? (res.pushed === 'empty' ? 'no_commit_to_push' : 'unknown')}${res.detail ? `: ${res.detail}` : ''})`,
+        );
+      }
+    }
+    if (pushFailures.length > 0) {
+      return {
+        ok: false,
+        reason: 'intent_branch_push_failed',
+        detail: `could not publish the intent branch '${branch}' to the remote for ${pushFailures.join(', ')} — construction lanes cannot fork/merge without it`,
+      };
+    }
   }
 
   // 2. Create the Intent anchor in Neptune. Close the connection once done —

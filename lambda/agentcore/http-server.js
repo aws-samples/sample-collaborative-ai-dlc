@@ -91,6 +91,7 @@ export const dispatchInvocation = async ({
     'run-stage-start': handlers.runStageStart,
     'promote-units': handlers.promoteUnits,
     'derive-artifacts': handlers.deriveArtifacts,
+    'record-pr': handlers.recordPr,
     'init-lane': handlers.initLane,
     'merge-lane': handlers.mergeLane,
     'resolve-conflict': handlers.resolveConflict,
@@ -101,6 +102,7 @@ export const dispatchInvocation = async ({
     'repair-structure': handlers.repairStructure,
     inspect: handlers.inspect,
     capabilities: handlers.capabilities,
+    'verify-mcp': handlers.verifyMcp,
   }[command];
   if (!handler) return { statusCode: 400, body: { error: `unknown command "${command}"` } };
 
@@ -186,10 +188,12 @@ const main = async () => {
   const { repairStructure } = await import('./commands/repair-structure.js');
   const { promoteUnits } = await import('./commands/promote-units.js');
   const { deriveArtifacts } = await import('./commands/derive-artifacts.js');
+  const { recordPr } = await import('./commands/record-pr.js');
   const { initLane, mergeLane } = await import('./commands/lane.js');
   const { resolveConflict } = await import('./commands/resolve-conflict.js');
   const { inspect } = await import('./commands/inspect.js');
   const { capabilities } = await import('./commands/capabilities.js');
+  const { verifyMcp } = await import('./commands/verify-mcp.js');
   const { loadLibrary, loadBlockBody, loadBlockScript, loadConductor } =
     await import('./block-loader.js');
   const { materializeStage, renderRulesDoc } = await import('./stage-materializer.js');
@@ -235,12 +239,16 @@ const main = async () => {
       ),
     inspect: (p) => inspect(p, { openGraph }),
     capabilities: (p) => capabilities(p, { env: process.env }),
+    verifyMcp: (p) => verifyMcp(p),
     // WP3: freeze the approved unit DAG into UNITPLAN/UNIT rows + the graph
     // mirror. Dispatched by the orchestrator after the producing stage
     // succeeds (docs/v2-parallel.md).
     promoteUnits: (p) => promoteUnits(p, { store, openGraph, broadcast }),
     deriveArtifacts: (p) =>
       deriveArtifacts(p, { store, openGraph, broadcast, availableClis, env: process.env }),
+    // Fan-in PR record: write the opened PR(s) into the graph (the orchestrator
+    // has no Neptune access, so it forwards the structured PR data here).
+    recordPr: (p) => recordPr(p, { store, openGraph, broadcast }),
     // WP5 unit lanes: engine-owned lane git (docs/v2-parallel.md A3). init-lane
     // runs in the lane's own session; merge-lane in the intent session.
     initLane: (p) => initLane({ ...p, workspaceDir }, { store, broadcast }),

@@ -110,6 +110,24 @@ describe('dispatchInvocation', () => {
     });
   });
 
+  it('routes record-pr (fan-in PR graph record)', async () => {
+    const r = await dispatchInvocation({
+      payload: {
+        command: 'record-pr',
+        intentId: 'i1',
+        executionId: 'e1',
+        prs: [{ repoId: 'o/r' }],
+      },
+      handlers: {
+        recordPr: async (p) => ({ ok: true, recorded: p.prs, executionId: p.executionId }),
+      },
+    });
+    expect(r).toMatchObject({
+      statusCode: 200,
+      body: { ok: true, executionId: 'e1', command: 'record-pr' },
+    });
+  });
+
   it('routes init-lane and merge-lane (WP5 unit lanes)', async () => {
     const laneHandlers = {
       initLane: async (p) => ({ ok: true, unitSlug: p.unitSlug }),

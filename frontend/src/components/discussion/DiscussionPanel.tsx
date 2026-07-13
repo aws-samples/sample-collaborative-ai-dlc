@@ -51,6 +51,7 @@ const ENTITY_LABELS: Record<string, string> = {
   // v2 intent-scoped anchors.
   intent: 'Intent',
   artifact: 'Artifact',
+  item: 'Item',
 };
 
 export function DiscussionPanel() {

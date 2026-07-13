@@ -1716,6 +1716,77 @@ describe('WP6 — PR opened on SUCCEEDED (intent-pr)', () => {
     expect(opened[0].summary).toContain('https://github.com/o/r/pull/7');
   });
 
+  it('dispatches record-pr to the runtime with the structured PR data for each opened PR', async () => {
+    deps.store.getExecution = vi.fn(async () => ({
+      ...META,
+      repos: ['o/r', 'o/web'],
+      baseBranch: 'main',
+    }));
+    deps.openPr = vi.fn(async ({ repoId }) => ({
+      prUrl: `https://github.com/${repoId}/pull/7`,
+      prNumber: 7,
+    }));
+    const res = await start();
+    expect(res.ok).toBe(true);
+    const recordCall = invokes.find((p) => p.command === 'record-pr');
+    expect(recordCall).toBeTruthy();
+    expect(recordCall).toMatchObject({ intentId: 'i1', executionId: 'i1', projectId: 'p1' });
+    expect(recordCall.prs).toHaveLength(2);
+    expect(recordCall.prs[0]).toMatchObject({
+      repoId: 'o/r',
+      prUrl: 'https://github.com/o/r/pull/7',
+      prNumber: 7,
+      branch: 'aidlc/i1',
+      baseBranch: 'main',
+    });
+  });
+
+  it('emits v2.pr.recorded after a successful record-pr (so the UI refetches live)', async () => {
+    deps.openPr = vi.fn(async ({ repoId }) => ({
+      prUrl: `https://github.com/${repoId}/pull/7`,
+      prNumber: 7,
+    }));
+    const res = await start();
+    expect(res.ok).toBe(true);
+    expect(events().some((e) => e.type === 'v2.pr.recorded')).toBe(true);
+  });
+
+  it('records the retargeted base when the provider retargets an invalid base', async () => {
+    deps.store.getExecution = vi.fn(async () => ({ ...META, repos: ['o/r'], baseBranch: 'gone' }));
+    deps.openPr = vi.fn(async ({ repoId }) => ({
+      prUrl: `https://github.com/${repoId}/pull/7`,
+      prNumber: 7,
+      // The requested base was invalid; the provider retargeted to the default.
+      retargetedBase: 'main',
+    }));
+    const res = await start();
+    expect(res.ok).toBe(true);
+    const recordCall = invokes.find((p) => p.command === 'record-pr');
+    expect(recordCall.prs[0]).toMatchObject({ repoId: 'o/r', baseBranch: 'main' });
+  });
+
+  it('does NOT dispatch record-pr when no PR opened (skipped)', async () => {
+    deps.resolveToken = vi.fn(async () => '');
+    deps.openPr = vi.fn();
+    const res = await start();
+    expect(res.ok).toBe(true);
+    expect(invokes.find((p) => p.command === 'record-pr')).toBeUndefined();
+  });
+
+  it('a failed record-pr dispatch never un-succeeds the run', async () => {
+    deps.openPr = vi.fn(async ({ repoId }) => ({
+      prUrl: `https://github.com/${repoId}/pull/7`,
+      prNumber: 7,
+    }));
+    const realRuntime = deps.invokeRuntime;
+    deps.invokeRuntime = vi.fn(async (payload, sessionId) => {
+      if (payload.command === 'record-pr') throw new Error('runtime cold');
+      return realRuntime(payload, sessionId);
+    });
+    const res = await start();
+    expect(res.ok).toBe(true);
+  });
+
   it('resolves each repo base branch from the per-repo baseBranches map, falling back to the legacy single baseBranch', async () => {
     deps.store.getExecution = vi.fn(async () => ({
       ...META,

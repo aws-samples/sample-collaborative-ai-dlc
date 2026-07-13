@@ -20,7 +20,12 @@ export type DiscussionEntityType =
   | 'generalinfo'
   // v2 intent-scoped anchors.
   | 'intent'
-  | 'artifact';
+  | 'artifact'
+  // A derived typed item (Story/Requirement/Persona/Component/Decision/
+  // StoryMapEntry/Contract) mirrored from an artifact's structured block. One
+  // `item` type spans all seven vertex labels; the backend anchors it via
+  // Intent --CONTAINS--> Artifact --HAS_ITEM--> item (current rows only).
+  | 'item';
 
 // A discussion lives under a scope root: a v1 sprint or a v2 intent. The scope
 // decides the REST base path; the intent path is project-scoped.

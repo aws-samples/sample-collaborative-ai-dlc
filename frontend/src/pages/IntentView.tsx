@@ -4,7 +4,6 @@ import { Navigate, useNavigate, useParams } from 'react-router-dom';
 import {
   intentsService,
   type GateAnswer,
-  type IntentArtifact,
   type IntentDetail,
   type IntentGate,
   type IntentSteering,
@@ -20,17 +19,20 @@ import { RecomposePanel } from '@/components/intent/RecomposePanel';
 import type { Question } from '@/services/questions';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { ArtifactViewer } from '@/components/intent/ArtifactViewer';
-
-import { QuorumEditPanel } from '@/components/intent/QuorumEditPanel';
-import { artifactAccent } from '@/components/intent/artifactAccent';
 import { formatDuration, useTick } from '@/components/intent/stageStyle';
-import { IntentGraphPopover } from '@/components/intent/IntentGraphPopover';
-import { DerivedItemCountChip } from '@/components/intent/DerivedItemCountChip';
+import { QuorumEditPanel } from '@/components/intent/QuorumEditPanel';
+import { UnitLaneBoard, isFanoutActive } from '@/components/intent/UnitLaneBoard';
 import {
   DerivedItemsSection,
   DERIVED_ITEMS_ACCORDION_VALUE,
   DERIVED_ITEMS_SECTION_ID,
 } from '@/components/intent/DerivedItemsSection';
+import {
+  DocumentsSection,
+  DOCUMENTS_ACCORDION_VALUE,
+  isDocumentArtifact,
+} from '@/components/intent/DocumentsSection';
+import { CodeSection, CODE_ACCORDION_VALUE, buildCodeItems } from '@/components/intent/CodeSection';
 import {
   onWorkProductFocus,
   scrollAndFlash,
@@ -86,10 +88,9 @@ import {
 import {
   AlertTriangle,
   CheckCircle2,
-  ChevronRight,
   Compass,
   FileText,
-  HelpCircle,
+  FileQuestion,
   Layers,
   Loader2,
   MoreHorizontal,
@@ -136,6 +137,7 @@ export default function IntentView() {
     answerGate,
     cancelIntent,
     deleteIntent,
+    focusOutput,
   } = useIntent();
   const navigate = useNavigate();
   const { humanTaskId: reviewGateId } = useParams<{ humanTaskId?: string }>();
@@ -232,6 +234,10 @@ export default function IntentView() {
   // are the only signal the run is doing something (they stream into the
   // sidebar Timeline); this strip keeps the main pane from looking dead.
   const noStageRowsYet = detail.stages.length === 0;
+  // While parallel unit lanes are live, the units board owns the "what's
+  // building" view — suppress the single-stage Running card (it would just echo
+  // one lane's stream). The Running card returns after fan-in.
+  const fanoutActive = isFanoutActive(detail);
   const reviewGate = reviewGateId ? gates.find((g) => g.humanTaskId === reviewGateId) : null;
   // Stalled detection: a CREATED run whose hand-off never reached a live
   // orchestrator strands here (init-ws should flip it to RUNNING within
@@ -434,7 +440,7 @@ export default function IntentView() {
           {pendingGates.length > 0 && (
             <div className="rounded-lg border border-l-4 border-l-agent-waiting bg-agent-waiting/[0.04] p-4 space-y-3">
               <div className="flex items-center gap-2">
-                <HelpCircle className="h-4 w-4 text-agent-waiting" />
+                <FileQuestion className="h-4 w-4 text-agent-waiting" />
                 <h2 className="text-sm font-semibold">Questions for you</h2>
                 <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
                   {pendingGates.length}
@@ -454,7 +460,9 @@ export default function IntentView() {
             </div>
           )}
 
-          {pendingGates.length === 0 && !noStageRowsYet && isActive && <AgentProgressCard />}
+          {pendingGates.length === 0 && !noStageRowsYet && isActive && !fanoutActive && (
+            <AgentProgressCard />
+          )}
 
           {/* Workspace setup indicator — init-ws creates no stage row, so without
               this the screen looks idle while repos clone + the anchor is created. */}
@@ -464,6 +472,11 @@ export default function IntentView() {
               Setting up workspace (cloning repositories, preparing the run)…
             </div>
           )}
+
+          {/* Units lane board — parallel unit work after fan-out. Renders null
+              until fan-out is approved; hides again after fan-in. Owns the
+              "View live output" affordance while it replaces the Running card. */}
+          <UnitLaneBoard onViewLiveOutput={(stageInstanceId) => focusOutput(stageInstanceId)} />
 
           <QuorumEditPanel />
 
@@ -852,60 +865,9 @@ function WaitingCard({ intent, gates, stageRows, stageNameOf, rewindIntent }: Wa
   );
 }
 
-// Document heuristic: long-form markdown content (opened in the preview panel
-// instead of expanded inline).
-const DOCUMENT_TYPE_RE = /markdown|document|statement|research|report|notes?/i;
-const MD_HEADING_RE = /^#{1,3}\s/m;
-
-function isDocumentArtifact(a: IntentArtifact): boolean {
-  if (a.artifactType && DOCUMENT_TYPE_RE.test(a.artifactType)) return true;
-  const content = a.content ?? '';
-  return content.length > 600 && MD_HEADING_RE.test(content);
-}
-
-interface ArtifactGroup {
-  type: string;
-  label: string;
-  items: IntentArtifact[];
-}
-
-function humanizeType(type: string, count: number): string {
-  const label = type.replace(/[_-]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-  if (count > 1 && !label.endsWith('s')) return `${label}s`;
-  return label;
-}
-
-function groupArtifacts(artifacts: IntentArtifact[]): {
-  itemizedGroups: ArtifactGroup[];
-  documents: IntentArtifact[];
-} {
-  const documents: IntentArtifact[] = [];
-  const groupMap = new Map<string, IntentArtifact[]>();
-  const groupOrder: string[] = [];
-
-  for (const a of artifacts) {
-    if (isDocumentArtifact(a)) {
-      documents.push(a);
-      continue;
-    }
-    const type = a.artifactType ?? 'other';
-    if (!groupMap.has(type)) {
-      groupMap.set(type, []);
-      groupOrder.push(type);
-    }
-    groupMap.get(type)!.push(a);
-  }
-
-  const itemizedGroups: ArtifactGroup[] = groupOrder.map((type) => {
-    const items = groupMap.get(type)!;
-    return { type, label: humanizeType(type, items.length), items };
-  });
-
-  return { itemizedGroups, documents };
-}
-
 function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: IntentGate[] }) {
-  const { openArtifactPreview, projectId, intentId } = useIntent();
+  const { openArtifactPreview, openItemPreview, projectId, intentId, stageRows, phaseNameOf } =
+    useIntent();
   // The knowledge-graph view powers the graph-context popovers, the derived
   // items section, and the per-artifact item chips (shared SWR cache; see
   // useIntentGraph). Fail-soft: while loading / on error everything below
@@ -923,7 +885,13 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
   );
 
   const activeArtifacts = detail.artifacts.filter((a) => !a.supersededAt);
-  const { itemizedGroups, documents } = groupArtifacts(activeArtifacts);
+  // Only long-form markdown artifacts render as Documents. Short / unregistered
+  // marker artifacts (e.g. practices-discovery-timestamp) are intentionally
+  // dropped — they are diagnostic telemetry, not work products.
+  const documents = activeArtifacts.filter(isDocumentArtifact);
+
+  const codeItems = buildCodeItems(detail);
+  const showCode = codeItems.length > 0;
 
   // Controlled accordion: groups open by default (as before), and newly
   // appearing groups auto-open — but a group the user closed stays closed.
@@ -931,8 +899,8 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
   // target group before scrolling to the anchor. Derived items start closed
   // (a supplementary layer).
   const defaultOpen = [
-    ...itemizedGroups.map((g) => `artifact-${g.type}`),
-    documents.length > 0 ? 'documents' : null,
+    showCode ? CODE_ACCORDION_VALUE : null,
+    documents.length > 0 ? DOCUMENTS_ACCORDION_VALUE : null,
     questionGates.length > 0 ? 'questions' : null,
   ].filter((v): v is string => Boolean(v));
   const [openGroups, setOpenGroups] = useState<string[]>(defaultOpen);
@@ -958,13 +926,12 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
         if (focus.kind === 'artifact') {
           const artifact = artifactsRef.current.find((a) => a.id === focus.id);
           if (!artifact) return;
+          // Every rendered artifact is a document (short marker artifacts are
+          // not shown); focusing one opens its preview.
           if (isDocumentArtifact(artifact)) {
-            openGroup('documents');
+            openGroup(DOCUMENTS_ACCORDION_VALUE);
             scrollAndFlash(`artifact-${artifact.id}`);
             openArtifactPreview(artifact.id);
-          } else {
-            openGroup(`artifact-${artifact.artifactType ?? 'other'}`);
-            scrollAndFlash(`artifact-${artifact.id}`);
           }
           return;
         }
@@ -977,7 +944,12 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
     [openArtifactPreview],
   );
 
-  if (detail.artifacts.length === 0 && questionGates.length === 0 && steering.length === 0) {
+  if (
+    detail.artifacts.length === 0 &&
+    questionGates.length === 0 &&
+    steering.length === 0 &&
+    !showCode
+  ) {
     return null;
   }
 
@@ -1000,103 +972,20 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
           onValueChange={setOpenGroups}
           className="space-y-2"
         >
-          {itemizedGroups.map((group) => {
-            const accent = artifactAccent(group.type);
-            return (
-              <AccordionItem
-                key={group.type}
-                value={`artifact-${group.type}`}
-                className="rounded-md border px-3"
-              >
-                <AccordionTrigger className="py-3 hover:no-underline">
-                  <div className="flex items-center gap-2">
-                    <span className={cn('h-2 w-2 rounded-full shrink-0', accent.dot)} />
-                    <span className="text-sm font-medium">{group.label}</span>
-                    <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
-                      {group.items.length}
-                    </Badge>
-                  </div>
-                </AccordionTrigger>
-                <AccordionContent className="space-y-3 pb-3">
-                  {group.items.map((a) => (
-                    <ArtifactViewer
-                      key={a.id}
-                      artifact={a}
-                      graphNeighbors={getNeighbors(a.id)}
-                      derivedItemCount={itemsByArtifact.get(a.id)?.length ?? 0}
-                    />
-                  ))}
-                </AccordionContent>
-              </AccordionItem>
-            );
-          })}
-
-          {documents.length > 0 && (
-            <AccordionItem value="documents" className="rounded-md border px-3">
-              <AccordionTrigger className="py-3 hover:no-underline">
-                <div className="flex items-center gap-2">
-                  <FileText className="h-4 w-4 text-muted-foreground" />
-                  <span className="text-sm font-medium">
-                    Document{documents.length > 1 ? 's' : ''} ({documents.length})
-                  </span>
-                </div>
-              </AccordionTrigger>
-              <AccordionContent className="space-y-1 pb-3">
-                {documents.map((a) => (
-                  // role=button div (not <button>): the row hosts interactive
-                  // children (discuss, graph popover, items chip) and nested
-                  // buttons are invalid HTML.
-                  <div
-                    key={a.id}
-                    id={`artifact-${a.id}`}
-                    role="button"
-                    tabIndex={0}
-                    className="group/doc flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left scroll-mt-4 hover:bg-muted/50 transition-colors"
-                    onClick={() => openArtifactPreview(a.id)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        openArtifactPreview(a.id);
-                      }
-                    }}
-                  >
-                    <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 flex-1 truncate text-sm">{a.title || a.id}</span>
-                    {a.staleSince && (
-                      <AlertTriangle
-                        aria-label="Possibly stale — an upstream document was edited"
-                        className="h-3 w-3 shrink-0 text-agent-waiting"
-                      />
-                    )}
-                    {a.createdAt && (
-                      <span className="shrink-0 text-[11px] text-muted-foreground/60">
-                        {getTimeAgo(a.createdAt)}
-                      </span>
-                    )}
-                    <DerivedItemCountChip
-                      artifactId={a.id}
-                      count={itemsByArtifact.get(a.id)?.length ?? 0}
-                    />
-                    <IntentGraphPopover neighbors={getNeighbors(a.id)} className="shrink-0" />
-                    <DiscussButton
-                      entityType="artifact"
-                      entityId={a.id}
-                      entityTitle={a.title || a.id}
-                      className="opacity-0 group-hover/doc:opacity-100 transition-opacity"
-                    />
-                    <ChevronRight
-                      aria-hidden="true"
-                      className="h-3 w-3 shrink-0 text-muted-foreground/40 opacity-0 group-hover/doc:opacity-100 transition-opacity"
-                    />
-                  </div>
-                ))}
-              </AccordionContent>
-            </AccordionItem>
-          )}
+          <CodeSection items={codeItems} />
+          <DocumentsSection
+            documents={documents}
+            stageRows={stageRows}
+            phaseNameOf={phaseNameOf}
+            getNeighbors={getNeighbors}
+            itemsByArtifact={itemsByArtifact}
+            openArtifactPreview={openArtifactPreview}
+          />
 
           <DerivedItemsSection
             items={derivedItems}
             getNeighbors={getNeighbors}
+            openItemPreview={openItemPreview}
             filterArtifactId={itemsFilter}
             onClearFilter={() => setItemsFilter(null)}
             artifactTitleById={artifactTitleById}
@@ -1105,7 +994,13 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
           {questionGates.length > 0 && (
             <AccordionItem value="questions" className="rounded-md border px-3">
               <AccordionTrigger className="py-3 hover:no-underline">
-                <span className="text-sm font-medium">Questions ({questionGates.length})</span>
+                <div className="flex items-center gap-2">
+                  <FileQuestion className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm font-medium">Questions</span>
+                  <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
+                    {questionGates.length}
+                  </Badge>
+                </div>
               </AccordionTrigger>
               <AccordionContent className="space-y-3 pb-3">
                 {questionGates.map((gate) => (
@@ -1122,7 +1017,13 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
           {steering.length > 0 && (
             <AccordionItem value="steering" className="rounded-md border px-3">
               <AccordionTrigger className="py-3 hover:no-underline">
-                <span className="text-sm font-medium">Course corrections ({steering.length})</span>
+                <div className="flex items-center gap-2">
+                  <Compass className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm font-medium">Course corrections</span>
+                  <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
+                    {steering.length}
+                  </Badge>
+                </div>
               </AccordionTrigger>
               <AccordionContent className="space-y-3 pb-3">
                 {steering.map((s) => (
@@ -1654,7 +1555,7 @@ function GateCard({
   // the human can redirect the agent's direction while answering.
   const [steering, setSteering] = useState('');
   const question = useMemo<Question | null>(() => {
-    let parsed: Question['questions'] = [];
+    let parsed: Question['questions'];
     try {
       parsed = gate.questions ? JSON.parse(gate.questions) : [];
     } catch {
@@ -1763,6 +1664,10 @@ function GateCard({
             </Badge>
           )}
           <p className="whitespace-pre-line text-sm">{gate.prompt || 'Approval required'}</p>
+          {/* TODO: a reject on these engine gates currently terminates the whole
+              run (terminal FAILED on the backend). Consider a softer path: let
+              reject capture free-text feedback describing what to change, then
+              revise the plan / re-ask the gate instead of blocking the workflow. */}
           <div className="flex flex-wrap gap-2">
             {options.length > 0 ? (
               options.map((opt) => (

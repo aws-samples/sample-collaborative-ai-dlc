@@ -240,6 +240,29 @@ describe('IntentContext', () => {
     }
   });
 
+  it('refetches the detail on agent.pr (the fan-in PR was recorded)', async () => {
+    vi.useFakeTimers();
+    try {
+      get.mockResolvedValue(detail());
+      renderProvider();
+      await act(async () => {
+        await vi.runOnlyPendingTimersAsync();
+      });
+      const callsAfterMount = get.mock.calls.length;
+
+      await act(async () => {
+        capturedOnEvent?.({
+          action: 'agent.pr',
+          prs: [{ id: 'pr:i1:owner/repo', repoId: 'owner/repo' }],
+        });
+        await vi.advanceTimersByTimeAsync(300);
+      });
+      expect(get.mock.calls.length).toBe(callsAfterMount + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('coalesces a burst of lane events into ONE refetch (WP7 debounce)', async () => {
     vi.useFakeTimers();
     try {

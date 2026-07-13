@@ -109,6 +109,20 @@ export interface AgentSettings {
   customMcpServerNames?: string[];
 }
 
+export interface McpVerifyResult {
+  ok: boolean;
+  tools?: string[];
+  error?: string;
+}
+
+export interface McpVerifyResponse {
+  /** Per-server result keyed by name (present on success). */
+  results?: Record<string, McpVerifyResult>;
+  /** Set when the config was invalid or the runtime couldn't be reached. */
+  error?: string;
+  issues?: Array<{ path: string; message: string }>;
+}
+
 export interface AgentSettingsUpdate {
   /** New bearer token value. Pass empty string to clear. Omit to leave unchanged. */
   bedrockBearerToken?: string;
@@ -153,6 +167,17 @@ export const agentsService = {
 
   async updateSettings(update: AgentSettingsUpdate): Promise<{ saved: boolean }> {
     return api.put('/agents/settings', update);
+  },
+
+  // Probe custom MCP servers inside the AgentCore container (same image/egress
+  // the real agent uses). `mcpServers` is the name-keyed author object (raw JSON
+  // string or object). Authorization is derived on the backend from the caller's
+  // identity: with `projectId` → project owner/admin; without → platform admin.
+  async verifyMcpServers(
+    mcpServers: string | Record<string, unknown>,
+    projectId?: string,
+  ): Promise<McpVerifyResponse> {
+    return api.post('/agents/verify-mcp', { mcpServers, ...(projectId ? { projectId } : {}) });
   },
 
   // Project agents (v1 read-only: dispatch/cancel/answer routes are gone —

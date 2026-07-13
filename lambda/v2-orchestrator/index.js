@@ -1316,6 +1316,34 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       const r = prResults[i];
       await emitEvent(ctx, `pr-event-${i}`, r.eventType, r.summary);
     }
+    // Write the opened PR(s) into the graph via the VPC-attached runtime (the
+    // orchestrator has no Neptune access). Best-effort: a failure here never
+    // un-succeeds a run whose PR already exists on the remote.
+    const openedPrs = prResults.map((r) => r.pr).filter(Boolean);
+    if (openedPrs.length > 0) {
+      const recordResult = await ctx.step('record-pr', async () => {
+        try {
+          return await invokeRuntime(
+            { command: 'record-pr', projectId, intentId, executionId, prs: openedPrs },
+            sessionId,
+          );
+        } catch (e) {
+          ctx.logger?.error?.('record-pr dispatch failed', { intentId, error: e?.message });
+          return { ok: false, reason: 'dispatch_failed' };
+        }
+      });
+      // Trigger the UI refetch AFTER the vertex is written (the runtime's own
+      // agent.pr broadcast can be missed if its session was cold at fan-in).
+      // This orchestrator event always broadcasts, so the PR appears live.
+      if (recordResult?.ok !== false) {
+        await emitEvent(
+          ctx,
+          'pr-recorded',
+          'v2.pr.recorded',
+          `Recorded ${openedPrs.length} pull request(s)`,
+        );
+      }
+    }
     return { ok: true, intentId, stages: runStages.length };
   } catch (err) {
     // Any unexpected throw (runtime transport error, store write failure) — record
@@ -1662,6 +1690,17 @@ const openIntentPrs = async ({
         results.push({
           eventType: 'v2.pr.opened',
           summary: `${res.existing ? 'PR already open' : 'PR opened'} for ${repoId}: ${res.prUrl}`,
+          // Structured data for record-pr (the graph write happens in the
+          // VPC-attached runtime; the orchestrator has no Neptune access).
+          pr: {
+            repoId,
+            prUrl: res.prUrl,
+            prNumber: res.prNumber ?? null,
+            branch,
+            // The provider retargets to the repo's real default branch when the
+            // requested base was invalid — record the ACTUAL merge target.
+            baseBranch: res.retargetedBase ?? baseFor(repoId),
+          },
         });
       } else if (res?.skipped) {
         // The provider's own "no changes" verdict (compare was unavailable).

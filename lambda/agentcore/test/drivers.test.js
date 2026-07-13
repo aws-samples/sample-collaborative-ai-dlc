@@ -47,7 +47,6 @@ describe('claude driver', () => {
     expect(inv.command).toBe('claude');
     expect(inv.args).toEqual([
       '-p',
-      'do it',
       '--mcp-config',
       '/ws/.aidlc/mcp-config.json',
       '--permission-mode',
@@ -60,7 +59,11 @@ describe('claude driver', () => {
       'stream-json',
       '--verbose',
     ]);
-    expect(inv.promptViaStdin).toBe(false);
+    // Prompt piped on stdin, never on argv — a large prompt on argv overflows
+    // ARG_MAX and makes spawn() throw E2BIG.
+    expect(inv.args).not.toContain('do it');
+    expect(inv.prompt).toBe('do it');
+    expect(inv.promptViaStdin).toBe(true);
   });
 
   it('omits --mcp-config when no path is given (plain one-shot prompt)', () => {
@@ -68,7 +71,6 @@ describe('claude driver', () => {
     expect(inv.args).not.toContain('--mcp-config');
     expect(inv.args).toEqual([
       '-p',
-      'summarize',
       '--permission-mode',
       'bypassPermissions',
       '--model',
@@ -77,6 +79,9 @@ describe('claude driver', () => {
       'stream-json',
       '--verbose',
     ]);
+    expect(inv.args).not.toContain('summarize');
+    expect(inv.prompt).toBe('summarize');
+    expect(inv.promptViaStdin).toBe(true);
   });
 
   it('sets Bedrock auth env, including the bearer token when present', () => {
@@ -126,7 +131,6 @@ describe('claude driver', () => {
       '--resume',
       'sess-uuid-1',
       '-p',
-      'the human said yes',
       '--mcp-config',
       '/cfg.json',
       '--permission-mode',
@@ -138,6 +142,10 @@ describe('claude driver', () => {
       '--verbose',
     ]);
     expect(inv.args).not.toContain('--session-id');
+    // Answer piped on stdin, not argv.
+    expect(inv.args).not.toContain('the human said yes');
+    expect(inv.prompt).toBe('the human said yes');
+    expect(inv.promptViaStdin).toBe(true);
   });
 });
 
@@ -145,16 +153,14 @@ describe('kiro driver', () => {
   it('builds a headless chat invocation with trust-all-tools + --agent (no --mcp-config)', () => {
     const inv = kiroDriver.buildInvocation({ prompt: 'go', agentName: 'aidlc' });
     expect(inv.command).toBe('kiro-cli');
-    expect(inv.args).toEqual([
-      'chat',
-      '--no-interactive',
-      '--trust-all-tools',
-      '--agent',
-      'aidlc',
-      'go',
-    ]);
+    expect(inv.args).toEqual(['chat', '--no-interactive', '--trust-all-tools', '--agent', 'aidlc']);
     // Kiro 2.10 has no --mcp-config flag — must not be emitted.
     expect(inv.args).not.toContain('--mcp-config');
+    // Prompt piped on stdin, never on argv (positional omitted) — a large prompt
+    // as a positional arg overflows ARG_MAX and makes spawn() throw E2BIG.
+    expect(inv.args).not.toContain('go');
+    expect(inv.prompt).toBe('go');
+    expect(inv.promptViaStdin).toBe(true);
   });
   it('passes the API key as auth env', () => {
     expect(kiroDriver.envForAuth({ KIRO_API_KEY: 'k' })).toEqual({ KIRO_API_KEY: 'k' });
@@ -176,9 +182,12 @@ describe('kiro driver', () => {
       'aidlc',
       '--resume-id',
       'kiro-sess-9',
-      'the human said go',
     ]);
     expect(inv.args).not.toContain('--mcp-config');
+    // Answer piped on stdin, not argv.
+    expect(inv.args).not.toContain('the human said go');
+    expect(inv.prompt).toBe('the human said go');
+    expect(inv.promptViaStdin).toBe(true);
   });
 });
 

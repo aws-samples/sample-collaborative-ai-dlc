@@ -1358,7 +1358,26 @@ describe('intent-scoped discussions', () => {
       .from_('i')
       .to('q')
       .next();
-    return { projectId, intentId, artifactId, questionId };
+    // A DERIVED typed item mirrored from the artifact: Artifact --HAS_ITEM-->
+    // Story (id encodes the intent; current rows carry superseded_at='').
+    const itemId = `story:${intentId}:s-login`;
+    await g
+      .V()
+      .has('Artifact', 'id', artifactId)
+      .as('a')
+      .addV('Story')
+      .property('id', itemId)
+      .property('intent_id', intentId)
+      .property('artifact_id', artifactId)
+      .property('slug', 's-login')
+      .property('title', 'User logs in')
+      .property('superseded_at', '')
+      .as('it')
+      .addE('HAS_ITEM')
+      .from_('a')
+      .to('it')
+      .next();
+    return { projectId, intentId, artifactId, questionId, itemId };
   };
 
   const intentPath = (suffix) => `/api/projects/{projectId}/intents/{intentId}${suffix}`;
@@ -1424,6 +1443,82 @@ describe('intent-scoped discussions', () => {
     const res = await call('POST', intentPath('/discussions'), {
       pathParameters: { projectId, intentId },
       body: { entityType: 'question', entityId: 'ht-not-here' },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('creates a thread anchored on a derived item (Artifact --HAS_ITEM--> Story)', async () => {
+    const { projectId, intentId, itemId } = await seedIntent();
+
+    const created = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'item', entityId: itemId, entityTitle: 'User logs in' },
+    });
+    expect(created.statusCode).toBe(200);
+    expect(json(created).entityType).toBe('item');
+    expect(json(created).entityId).toBe(itemId);
+    // The Story vertex carries a title prop → resolved server-side.
+    expect(json(created).entityTitle).toBe('User logs in');
+
+    // Idempotent get-or-create: same item returns the same thread.
+    const again = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'item', entityId: itemId },
+    });
+    expect(again.statusCode).toBe(200);
+    expect(json(again).id).toBe(json(created).id);
+
+    // The item thread lists under the intent.
+    const list = await call('GET', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+    });
+    expect(json(list).filter((d) => d.entityType === 'item')).toHaveLength(1);
+  });
+
+  it('rejects an item that belongs to a DIFFERENT intent', async () => {
+    const a = await seedIntent();
+    const b = await seedIntent();
+    // b.itemId is real, but it hangs off intent b — not reachable from intent a.
+    const res = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId: a.projectId, intentId: a.intentId },
+      body: { entityType: 'item', entityId: b.itemId },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('rejects a SUPERSEDED item (re-derive retired it)', async () => {
+    const { projectId, intentId, itemId } = await seedIntent();
+    await g.V().has('Story', 'id', itemId).property('superseded_at', '2026-01-02T00:00:00Z').next();
+    const res = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'item', entityId: itemId },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('rejects an item whose PARENT ARTIFACT was rewind-superseded', async () => {
+    // The item row itself stays current (superseded_at=''), but the knowledge
+    // graph hides items under a superseded parent — the anchor must too.
+    const { projectId, intentId, artifactId, itemId } = await seedIntent();
+    await g
+      .V()
+      .has('Artifact', 'id', artifactId)
+      .property('superseded_at', '2026-01-02T00:00:00Z')
+      .next();
+    const res = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'item', entityId: itemId },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('rejects an item id that resolves to a non-item vertex', async () => {
+    const { projectId, intentId, artifactId } = await seedIntent();
+    // The artifact id is a real vertex under the intent, but it is NOT reachable
+    // via Artifact --HAS_ITEM--> so the item anchor traversal must miss it.
+    const res = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'item', entityId: artifactId },
     });
     expect(res.statusCode).toBe(404);
   });

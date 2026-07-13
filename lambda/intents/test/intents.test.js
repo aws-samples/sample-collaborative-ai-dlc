@@ -1801,7 +1801,15 @@ describe('GET list + detail', () => {
       ).body,
     );
     // The DTO carries every record bucket the IntentView consumes.
-    for (const key of ['stages', 'gates', 'metrics', 'outputs', 'sensorRuns', 'artifacts']) {
+    for (const key of [
+      'stages',
+      'gates',
+      'metrics',
+      'outputs',
+      'sensorRuns',
+      'artifacts',
+      'pullRequests',
+    ]) {
       expect(Array.isArray(detail[key])).toBe(true);
     }
     expect(detail.intent.cliModels).toEqual({ claude: 'us.anthropic.claude-opus-4-8' });

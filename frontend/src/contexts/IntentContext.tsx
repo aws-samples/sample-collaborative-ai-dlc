@@ -140,9 +140,13 @@ interface IntentContextValue {
 
   /** Preview tab: the artifact currently displayed (null = nothing selected). */
   previewArtifactId: string | null;
+  /** Preview tab: the derived item currently displayed (mutually exclusive with artifact). */
+  previewItemId: string | null;
   previewSeq: number;
   /** Open a document artifact in the right panel's Preview tab. */
   openArtifactPreview: (artifactId: string) => void;
+  /** Open a derived item (Story/Requirement/…) in the right panel's Preview tab. */
+  openItemPreview: (itemId: string) => void;
 
   reload: () => Promise<void>;
   answerGate: (gate: IntentGate, input: GateAnswer) => Promise<void>;
@@ -224,6 +228,7 @@ export function IntentProvider({
   const focusSeq = useRef(0);
 
   const [previewArtifactId, setPreviewArtifactId] = useState<string | null>(null);
+  const [previewItemId, setPreviewItemId] = useState<string | null>(null);
   const [previewSeq, setPreviewSeq] = useState(0);
   const previewSeqRef = useRef(0);
 
@@ -304,8 +309,7 @@ export function IntentProvider({
         setLiveGates(new Map(cached.detail.gates.map((g) => [g.humanTaskId, g])));
         setLoading(false);
         if (cached.compiled && cached.detail.intent.workflowId) {
-          const wfKey = `${cached.detail.intent.workflowId}@${cached.detail.intent.workflowVersion ?? ''}`;
-          fetchedWorkflowKeyRef.current = wfKey;
+          fetchedWorkflowKeyRef.current = `${cached.detail.intent.workflowId}@${cached.detail.intent.workflowVersion ?? ''}`;
         }
       } else {
         setDetail(null);
@@ -471,6 +475,13 @@ export function IntentProvider({
         invalidateIntentGraph(projectId, intentId);
         return;
       }
+      // The fan-in PR(s) were recorded — a new PullRequest node in the graph
+      // and a new work product in the DTO, so refresh both.
+      if (evt.action === 'agent.pr') {
+        invalidateIntentGraph(projectId, intentId);
+        scheduleLoad();
+        return;
+      }
       // Stage/execution/metric/note/steering/unit transitions → refetch the
       // assembled DTO (debounced — lane bursts coalesce into one fetch).
       if (
@@ -545,6 +556,20 @@ export function IntentProvider({
     (artifactId: string) => {
       previewSeqRef.current += 1;
       setPreviewArtifactId(artifactId);
+      // Artifact and item previews are mutually exclusive.
+      setPreviewItemId(null);
+      setPreviewSeq(previewSeqRef.current);
+      onAgentFocus?.();
+    },
+    [onAgentFocus],
+  );
+
+  const openItemPreview = useCallback(
+    (itemId: string) => {
+      previewSeqRef.current += 1;
+      setPreviewItemId(itemId);
+      // Artifact and item previews are mutually exclusive.
+      setPreviewArtifactId(null);
       setPreviewSeq(previewSeqRef.current);
       onAgentFocus?.();
     },
@@ -569,10 +594,23 @@ export function IntentProvider({
       list.push(s);
       byStageId.set(s.stageId, list);
     }
+    // Order fan-out instances by the unit DAG's wave order (batches: wave 0
+    // first — the walking skeleton / roots — then dependents), NOT alphabetically.
+    // Falls back to slug compare for units absent from the plan (e.g. orphans).
+    const unitRank = new Map<string, number>();
+    (detail?.unitPlan?.batches ?? []).flat().forEach((slug, i) => {
+      if (!unitRank.has(slug)) unitRank.set(slug, i);
+    });
+    const rankOf = (slug: string | null) =>
+      slug && unitRank.has(slug) ? (unitRank.get(slug) as number) : Number.MAX_SAFE_INTEGER;
     for (const [key, list] of byStageId) {
       byStageId.set(
         key,
-        list.toSorted((a, b) => (a.unitSlug ?? '').localeCompare(b.unitSlug ?? '')),
+        list.toSorted((a, b) => {
+          const ra = rankOf(a.unitSlug ?? null);
+          const rb = rankOf(b.unitSlug ?? null);
+          return ra !== rb ? ra - rb : (a.unitSlug ?? '').localeCompare(b.unitSlug ?? '');
+        }),
       );
     }
     const scope = detail?.intent.scope ?? null;
@@ -748,8 +786,10 @@ export function IntentProvider({
         agentFocus,
         focusOutput,
         previewArtifactId,
+        previewItemId,
         previewSeq,
         openArtifactPreview,
+        openItemPreview,
         reload: load,
         answerGate,
         reviseGate,

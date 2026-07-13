@@ -17,7 +17,9 @@ export type IntentEventAction =
   | 'agent.unit'
   // A derive run completed — the knowledge graph's derived layer changed
   // (sections/items/edges; docs/v2-granular-graph.md).
-  | 'agent.derived';
+  | 'agent.derived'
+  // The fan-in PR(s) were recorded in the graph — a new work product + node.
+  | 'agent.pr';
 
 export interface IntentEvent {
   action: IntentEventAction;
@@ -66,6 +68,7 @@ const INTENT_EVENTS: IntentEventAction[] = [
   'agent.note',
   'agent.unit',
   'agent.derived',
+  'agent.pr',
 ];
 
 /**

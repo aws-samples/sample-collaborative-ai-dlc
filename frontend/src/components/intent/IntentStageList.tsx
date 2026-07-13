@@ -137,8 +137,36 @@ export function IntentStageList() {
               </div>
             </AccordionTrigger>
             <AccordionContent className="px-2 pb-2 pt-1.5">
-              <div className="space-y-1.5">
-                {g.rows.map((row) => {
+              {(() => {
+                // Preserve plan order. A fan-out section is a CONTIGUOUS run of
+                // unit rows; collapse that run into per-unit groups IN PLACE so
+                // once-per-workflow stages before it (design) and after it
+                // (build & test) keep their position. Grouping by unit only
+                // reorders within the parallel block, not across it.
+                type Segment =
+                  | { kind: 'flat'; rows: IntentStageRow[] }
+                  | { kind: 'units'; order: string[]; byUnit: Map<string, IntentStageRow[]> };
+                const segments: Segment[] = [];
+                for (const row of g.rows) {
+                  if (!row.unitSlug) {
+                    const last = segments[segments.length - 1];
+                    if (last?.kind === 'flat') last.rows.push(row);
+                    else segments.push({ kind: 'flat', rows: [row] });
+                    continue;
+                  }
+                  let last = segments[segments.length - 1];
+                  if (last?.kind !== 'units') {
+                    last = { kind: 'units', order: [], byUnit: new Map() };
+                    segments.push(last);
+                  }
+                  if (!last.byUnit.has(row.unitSlug)) {
+                    last.byUnit.set(row.unitSlug, []);
+                    last.order.push(row.unitSlug);
+                  }
+                  last.byUnit.get(row.unitSlug)!.push(row);
+                }
+
+                const renderRow = (row: IntentStageRow) => {
                   const key = stageRowKey(row);
                   return (
                     <StageRow
@@ -150,10 +178,38 @@ export function IntentStageList() {
                       sensors={
                         row.stageInstanceId ? (sensorsByStage.get(row.stageInstanceId) ?? []) : []
                       }
+                      hideUnitBadge
                     />
                   );
-                })}
-              </div>
+                };
+
+                return (
+                  <div className="space-y-2">
+                    {segments.map((seg, si) =>
+                      seg.kind === 'flat' ? (
+                        <div key={si} className="space-y-1.5">
+                          {seg.rows.map(renderRow)}
+                        </div>
+                      ) : (
+                        <div key={si} className="space-y-2">
+                          {seg.order.map((slug) => (
+                            <div key={slug} className="space-y-1.5">
+                              <div className="flex items-center gap-1.5 px-1">
+                                <span className="h-1 w-1 rounded-full bg-muted-foreground/50" />
+                                <span className="font-mono text-[11px] font-medium text-muted-foreground">
+                                  {slug}
+                                </span>
+                                <span className="h-px flex-1 bg-border" />
+                              </div>
+                              {seg.byUnit.get(slug)!.map(renderRow)}
+                            </div>
+                          ))}
+                        </div>
+                      ),
+                    )}
+                  </div>
+                );
+              })()}
             </AccordionContent>
           </AccordionItem>
         );
@@ -172,12 +228,14 @@ function StageRow({
   selected,
   onToggle,
   sensors,
+  hideUnitBadge = false,
 }: {
   row: IntentStageRow;
   current: boolean;
   selected: boolean;
   onToggle: () => void;
   sensors: IntentSensorRun[];
+  hideUnitBadge?: boolean;
 }) {
   const { detail, rewindIntent } = useIntent();
   useTick(row.state === 'RUNNING');
@@ -218,7 +276,7 @@ function StageRow({
       >
         <span className="min-w-0 flex-1">
           <span className="font-medium">{row.stageId}</span>
-          {row.unitSlug && (
+          {row.unitSlug && !hideUnitBadge && (
             <Badge variant="outline" className="ml-2 px-1 py-0 text-[9px] font-normal">
               {row.unitSlug}
             </Badge>

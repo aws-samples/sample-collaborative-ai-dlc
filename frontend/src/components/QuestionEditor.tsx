@@ -10,7 +10,12 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { Loader2 } from 'lucide-react';
 import { DiscussButton } from '@/components/discussion';
-import type { Question, StructuredQuestion, StructuredAnswer } from '../services/questions';
+import type {
+  Question,
+  StructuredQuestion,
+  StructuredAnswer,
+  QuestionOption,
+} from '../services/questions';
 
 interface Props {
   question: Question;
@@ -163,8 +168,8 @@ export default function QuestionEditor({
  * review actions ("request changes") and catch-all options the agent writes
  * itself ("Other", "Other (please describe)", "please specify", ...).
  */
-function requiresFreeTextOption(label: string): boolean {
-  const l = label.toLowerCase();
+function requiresFreeTextOption(opt: QuestionOption): boolean {
+  const l = `${opt.label} ${opt.description ?? ''}`.toLowerCase();
   return (
     l.includes('request changes') ||
     /(^|[^a-z])other([^a-z]|$)/.test(l) ||
@@ -260,7 +265,7 @@ function StructuredQuestionBlock({
       <div className="space-y-1.5 mb-2">
         {question.options.map((opt, optIdx) => {
           const isSelected = selectedOptions.includes(optIdx);
-          const requiresFreeText = requiresFreeTextOption(opt.label);
+          const requiresFreeText = requiresFreeTextOption(opt);
           return (
             <div key={optIdx}>
               <label
@@ -337,7 +342,7 @@ function StructuredQuestionBlock({
 
         {/* App-injected "Other (free text)" — only when the agent hasn't
             supplied its own free-text-style option (handled inline above). */}
-        {!question.options.some((opt) => requiresFreeTextOption(opt.label)) && (
+        {!question.options.some((opt) => requiresFreeTextOption(opt)) && (
           <div
             className={cn(
               'p-2 rounded-md border transition-colors',

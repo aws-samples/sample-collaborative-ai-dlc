@@ -1679,13 +1679,23 @@ export const runStage = async (
       .catch(() => {});
   };
   const cliOutput = createCliOutputSink({ cli, emit: emitCliOutput });
+  // Correlate the [spawn:size] line below to THIS stage/cli — the diagnostic for
+  // the 2026-07 nfr-design E2BIG (prompt now piped on stdin; this confirms it).
+  console.info(
+    `[run-stage] spawning cli=${cli} stage=${stageId} unit=${unitSlug ?? '-'} ` +
+      `promptBytes=${Buffer.byteLength(prompt ?? invocation.prompt ?? '', 'utf8')} ` +
+      `promptViaStdin=${invocation.promptViaStdin} argc=${invocation.args.length}`,
+  );
   try {
     result = await runChild({
       command: invocation.command,
       args: invocation.args,
       env: childEnv,
       cwd: workspaceDir,
-      prompt,
+      // Fresh runs materialize `prompt` locally; a resume carries it on the
+      // invocation (the answer message). Either way the prompt is piped on stdin
+      // (promptViaStdin) — never on argv, which would overflow ARG_MAX (E2BIG).
+      prompt: prompt ?? invocation.prompt,
       promptViaStdin: invocation.promptViaStdin,
       // Kiro only: tee the stderr tail so we can recognise its benign
       // empty-final-completion crash (see isBenignKiroEmptyCompletion). Claude
@@ -1699,6 +1709,14 @@ export const runStage = async (
   } catch (e) {
     cliOutput.flush();
     await outputQueue;
+    // Log the failure at the catch point — fail() only records it to DynamoDB
+    // (the UI's cli_error), never to the container log. This makes the E2BIG (or
+    // any spawn failure) visible + attributable to THIS stage/cli.
+    console.error(
+      `[run-stage] cli_error cli=${cli} stage=${stageId} unit=${unitSlug ?? '-'} ` +
+        `code=${e?.code ?? '-'} msg=${e?.message}`,
+    );
+    if (e?.stack) console.error(e.stack);
     return fail(stageInstanceId, 'cli_error', e.message);
   }
 

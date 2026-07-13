@@ -66,9 +66,20 @@ describe('initWs', () => {
     store: spyStore(),
     openGraph: async () => g,
     checkoutRepos: async ({ repos }) =>
-      repos.map((r) => ({ repo: typeof r === 'string' ? r : r.url })),
+      repos.map((r) => ({
+        repo: typeof r === 'string' ? r : r.url,
+        targetDir: `/tmp/ws/${typeof r === 'string' ? r : r.url}`,
+      })),
     workspaceDir: '/tmp/ws',
     clock: () => 'T',
+    // Default: the branch is not yet on the remote, and the publish succeeds.
+    // Overridden per test to assert the call or exercise a failure.
+    remoteBranchExists: async () => ({ exists: false }),
+    pushBranch: async () => ({ pushed: true, sha: 'abc', verified: true }),
+    // Default: the repo has history (not empty) — seeding is a no-op.
+    seedInitialCommit: async () => ({ seeded: false, reason: 'not_empty' }),
+    // Default provider default-branch (only consulted for empty repos).
+    resolveDefaultBranch: async () => 'main',
     ...overrides,
   });
 
@@ -191,6 +202,210 @@ describe('initWs', () => {
     expect(res.reason).toBe('branch_setup_failed');
     expect(res.detail).toContain('acme/empty');
     expect(res.detail).toContain("'aidlc/i1'");
+  });
+
+  it('publishes the intent branch to the remote (per repo) so lanes can fork/merge it', async () => {
+    const pushed = [];
+    const d = deps({
+      checkoutRepos: async ({ repos }) =>
+        repos.map((r) => ({ repo: r, targetDir: `/tmp/ws/${r}` })),
+      pushBranch: async (args) => {
+        pushed.push(args);
+        return { pushed: true, sha: 'abc', verified: true };
+      },
+    });
+    const res = await initWs(
+      {
+        projectId: 'p1',
+        intentId: 'i1',
+        executionId: 'e1',
+        repos: ['acme/api', 'acme/web'],
+        branch: 'aidlc/i1',
+        baseBranch: 'main',
+        gitToken: 'tok',
+        gitProvider: 'github',
+      },
+      d,
+    );
+    expect(res.ok).toBe(true);
+    // One publish per repo, targeting the intent branch, with the fresh token.
+    expect(pushed).toHaveLength(2);
+    expect(pushed[0]).toMatchObject({
+      dir: '/tmp/ws/acme/api',
+      repo: 'acme/api',
+      branch: 'aidlc/i1',
+      gitToken: 'tok',
+      gitProvider: 'github',
+    });
+    expect(pushed[1]).toMatchObject({ repo: 'acme/web', branch: 'aidlc/i1' });
+  });
+
+  it('FAILS loudly when the intent branch cannot be published (lanes depend on it)', async () => {
+    const d = deps({
+      pushBranch: async () => ({ pushed: false, reason: 'push_failed', detail: 'Access denied' }),
+    });
+    const res = await initWs(
+      {
+        projectId: 'p1',
+        intentId: 'i1',
+        executionId: 'e1',
+        repos: ['acme/api'],
+        branch: 'aidlc/i1',
+        baseBranch: 'main',
+        gitToken: 'tok',
+        gitProvider: 'gitlab',
+      },
+      d,
+    );
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('intent_branch_push_failed');
+    expect(res.detail).toContain('acme/api');
+    expect(res.detail).toContain('aidlc/i1');
+  });
+
+  it('for an empty repo, roots the base branch then publishes base FIRST, intent SECOND', async () => {
+    const seeded = [];
+    const pushed = [];
+    const d = deps({
+      // Empty repo → seedInitialCommit roots the base branch + forks the intent.
+      seedInitialCommit: async (args) => {
+        seeded.push(args);
+        return { seeded: true, sha: 'root0', baseBranch: args.baseBranch };
+      },
+      pushBranch: async (args) => {
+        pushed.push(args.branch);
+        return { pushed: true, sha: 'root0', verified: true };
+      },
+    });
+    const res = await initWs(
+      {
+        projectId: 'p1',
+        intentId: 'i1',
+        executionId: 'e1',
+        repos: ['acme/empty'],
+        branch: 'aidlc/i1',
+        baseBranch: 'main',
+        gitToken: 'tok',
+        gitProvider: 'github',
+      },
+      d,
+    );
+    expect(res.ok).toBe(true);
+    expect(seeded).toHaveLength(1);
+    expect(seeded[0]).toMatchObject({ branch: 'aidlc/i1', baseBranch: 'main' });
+    // Base branch pushed first (→ remote default), intent branch second.
+    expect(pushed).toEqual(['main', 'aidlc/i1']);
+  });
+
+  it('resolves the base branch from the provider default when none is configured (empty repo)', async () => {
+    const seeded = [];
+    const pushed = [];
+    const d = deps({
+      resolveDefaultBranch: async () => 'master',
+      seedInitialCommit: async (args) => {
+        seeded.push(args);
+        return { seeded: true, sha: 'root0', baseBranch: args.baseBranch };
+      },
+      pushBranch: async (args) => {
+        pushed.push(args.branch);
+        return { pushed: true };
+      },
+    });
+    const res = await initWs(
+      {
+        projectId: 'p1',
+        intentId: 'i1',
+        executionId: 'e1',
+        repos: ['acme/empty'],
+        branch: 'aidlc/i1',
+        // no baseBranch / baseBranches → provider default wins
+        gitToken: 'tok',
+        gitProvider: 'github',
+      },
+      d,
+    );
+    expect(res.ok).toBe(true);
+    expect(seeded[0]).toMatchObject({ baseBranch: 'master' });
+    expect(pushed).toEqual(['master', 'aidlc/i1']);
+  });
+
+  it('FAILS if the base branch cannot be published (empty repo)', async () => {
+    const d = deps({
+      seedInitialCommit: async (args) => ({
+        seeded: true,
+        sha: 'root0',
+        baseBranch: args.baseBranch,
+      }),
+      pushBranch: async (args) =>
+        args.branch === 'main'
+          ? { pushed: false, reason: 'push_failed', detail: 'denied' }
+          : { pushed: true },
+    });
+    const res = await initWs(
+      {
+        projectId: 'p1',
+        intentId: 'i1',
+        executionId: 'e1',
+        repos: ['acme/empty'],
+        branch: 'aidlc/i1',
+        baseBranch: 'main',
+        gitToken: 'tok',
+        gitProvider: 'github',
+      },
+      d,
+    );
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('intent_branch_push_failed');
+    expect(res.detail).toContain('base main');
+  });
+
+  it("FAILS when the push is still 'empty' after seeding (branch cannot be published)", async () => {
+    const d = deps({
+      seedInitialCommit: async () => ({ seeded: false, reason: 'not_empty' }),
+      pushBranch: async () => ({ pushed: 'empty' }),
+    });
+    const res = await initWs(
+      {
+        projectId: 'p1',
+        intentId: 'i1',
+        executionId: 'e1',
+        repos: ['acme/api'],
+        branch: 'aidlc/i1',
+        baseBranch: 'main',
+        gitToken: 'tok',
+        gitProvider: 'github',
+      },
+      d,
+    );
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('intent_branch_push_failed');
+  });
+
+  it('SKIPS the publish when the intent branch already exists remotely (rewind/retry re-init)', async () => {
+    let pushCalls = 0;
+    const d = deps({
+      remoteBranchExists: async () => ({ exists: true }),
+      pushBranch: async () => {
+        pushCalls += 1;
+        return { pushed: true };
+      },
+    });
+    const res = await initWs(
+      {
+        projectId: 'p1',
+        intentId: 'i1',
+        executionId: 'e1',
+        repos: ['acme/api'],
+        branch: 'aidlc/i1',
+        baseBranch: 'main',
+        gitToken: 'tok',
+        gitProvider: 'github',
+      },
+      d,
+    );
+    expect(res.ok).toBe(true);
+    // Already established → no push attempted (avoids non-fast-forward failure).
+    expect(pushCalls).toBe(0);
   });
 });
 

@@ -129,6 +129,8 @@ export const runOneShotPrompt = async ({
       args: invocation.args,
       env: { ...invocation.env, ...driver.envForAuth(env) },
       cwd,
+      prompt: invocation.prompt,
+      promptViaStdin: invocation.promptViaStdin,
       captureStderr: cli === 'kiro',
       timeoutMs,
       ...(spawnFn ? { spawnFn } : {}),

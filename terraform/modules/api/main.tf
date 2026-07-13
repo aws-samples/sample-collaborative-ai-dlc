@@ -80,6 +80,7 @@ resource "aws_api_gateway_deployment" "main" {
     aws_api_gateway_integration.agent_capabilities_get,
     aws_api_gateway_integration.agent_settings_get,
     aws_api_gateway_integration.agent_settings_put,
+    aws_api_gateway_integration.agent_verify_mcp_post,
     aws_api_gateway_integration.admin_tracker_migration_status_get,
     aws_api_gateway_integration.admin_tracker_migration_post,
     module.cors_admin_tracker_migration,
@@ -146,6 +147,7 @@ resource "aws_api_gateway_deployment" "main" {
     module.cors_agent_questions,
     module.cors_agent_capabilities,
     module.cors_agent_settings,
+    module.cors_agent_verify_mcp,
     # Every method must have its integration BEFORE the deployment is
     # created, or the first apply that introduces a route fails with
     # "No integration defined for method" (the deployment races the new
@@ -431,6 +433,7 @@ resource "aws_api_gateway_deployment" "main" {
       aws_api_gateway_resource.agent_questions.id,
       aws_api_gateway_resource.agent_capabilities.id,
       aws_api_gateway_resource.agent_settings.id,
+      aws_api_gateway_resource.agent_verify_mcp.id,
     ]))
   }
 }

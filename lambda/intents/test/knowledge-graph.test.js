@@ -302,9 +302,24 @@ describe('fetchKnowledgeGraph — derived layer', () => {
       slug: 's-login',
       title: 'User logs in',
       priority: 'must-have',
+      persona: 'registered-user',
+      acceptance_criteria: JSON.stringify(['Valid credentials open a session', 'Lockout after 5']),
+      covers: JSON.stringify(['req-user-login']),
       superseded_at: '',
     });
     await addE('Artifact', 'reqs-1', 'HAS_ITEM', 'Story', 'story:intent-kg:s-login');
+    // A second type (Persona) to prove itemFields is schema-driven, not Story-specific.
+    await addV('Persona', {
+      id: 'persona:intent-kg:p-user',
+      artifact_id: 'reqs-1',
+      slug: 'p-user',
+      title: 'Registered User',
+      role: 'Customer with an account',
+      goals: JSON.stringify(['Access the account quickly']),
+      pain_points: JSON.stringify(['Forgotten passwords']),
+      superseded_at: '',
+    });
+    await addE('Artifact', 'reqs-1', 'HAS_ITEM', 'Persona', 'persona:intent-kg:p-user');
     // A superseded item (re-derive removed it) must not render.
     await addV('Story', {
       id: 'story:intent-kg:s-old',
@@ -342,6 +357,43 @@ describe('fetchKnowledgeGraph — derived layer', () => {
       slug: 's-login',
       artifactId: 'reqs-1',
       priority: 'must-have',
+    });
+    // itemFields is schema-driven from the extractor REGISTRY: descriptive text
+    // and list fields are projected; relation-backed fields (persona/covers) are
+    // rendered as edges, so they must be ABSENT from itemFields.
+    const storyFields = byId(nodes, 'story:intent-kg:s-login').itemFields;
+    expect(storyFields).toContainEqual({
+      name: 'acceptance_criteria',
+      description: expect.any(String),
+      kind: 'list',
+      value: ['Valid credentials open a session', 'Lockout after 5'],
+    });
+    expect(storyFields.some((f) => f.name === 'persona')).toBe(false);
+    expect(storyFields.some((f) => f.name === 'covers')).toBe(false);
+    expect(storyFields.some((f) => f.name === 'depends_on')).toBe(false);
+    // priority is a flat node prop (section + preview meta chips) — never
+    // duplicated into itemFields.
+    expect(storyFields.some((f) => f.name === 'priority')).toBe(false);
+
+    // A different type surfaces ITS own field set — proving no Story-specific layout.
+    const personaFields = byId(nodes, 'persona:intent-kg:p-user').itemFields;
+    expect(personaFields).toContainEqual({
+      name: 'role',
+      description: expect.any(String),
+      kind: 'text',
+      value: 'Customer with an account',
+    });
+    expect(personaFields).toContainEqual({
+      name: 'goals',
+      description: expect.any(String),
+      kind: 'list',
+      value: ['Access the account quickly'],
+    });
+    expect(personaFields).toContainEqual({
+      name: 'pain_points',
+      description: expect.any(String),
+      kind: 'list',
+      value: ['Forgotten passwords'],
     });
     expect(byId(nodes, 'story:intent-kg:s-old')).toBeUndefined();
     expect(byId(nodes, 'unit:intent-kg:auth')).toMatchObject({
@@ -430,5 +482,47 @@ describe('fetchKnowledgeGraph — derived layer', () => {
     expect(edge(edges, 'unit:intent-kg:u-auth', contract, 'EXPOSES')).toBeDefined();
     expect(edge(edges, 'unit:intent-kg:u-auth', contract, 'CONSUMES_CONTRACT')).toBeDefined();
     expect(edges.some((e) => e.target === stale)).toBe(false);
+  });
+});
+
+describe('fetchKnowledgeGraph — pull requests', () => {
+  it('renders PullRequest node(s) anchored Intent --HAS_PR-->, one per repo', async () => {
+    await seedFullGraph();
+    await addV('PullRequest', {
+      id: 'pr:intent-kg:owner/api',
+      repository: 'owner/api',
+      pr_url: 'https://github.com/owner/api/pull/3',
+      pr_number: '3',
+      branch: 'aidlc/intent-kg',
+      base_branch: 'main',
+    });
+    await addV('PullRequest', {
+      id: 'pr:intent-kg:owner/web',
+      repository: 'owner/web',
+      pr_url: 'https://github.com/owner/web/pull/4',
+      pr_number: '4',
+      branch: 'aidlc/intent-kg',
+      base_branch: 'develop',
+    });
+    await addE('Intent', INTENT, 'HAS_PR', 'PullRequest', 'pr:intent-kg:owner/api');
+    await addE('Intent', INTENT, 'HAS_PR', 'PullRequest', 'pr:intent-kg:owner/web');
+
+    const { nodes, edges } = await fetchKnowledgeGraph(g, { projectId: PROJECT, intentId: INTENT });
+
+    expect(byId(nodes, 'pr:intent-kg:owner/api')).toMatchObject({
+      type: 'PullRequest',
+      label: 'PR #3',
+      pr_url: 'https://github.com/owner/api/pull/3',
+      pr_number: '3',
+      repository: 'owner/api',
+      branch: 'aidlc/intent-kg',
+      base_branch: 'main',
+    });
+    expect(byId(nodes, 'pr:intent-kg:owner/web')).toMatchObject({
+      type: 'PullRequest',
+      base_branch: 'develop',
+    });
+    expect(edge(edges, INTENT, 'pr:intent-kg:owner/api', 'HAS_PR')).toBeDefined();
+    expect(edge(edges, INTENT, 'pr:intent-kg:owner/web', 'HAS_PR')).toBeDefined();
   });
 });

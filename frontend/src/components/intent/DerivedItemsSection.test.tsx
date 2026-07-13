@@ -39,6 +39,7 @@ const renderSection = (overrides: Partial<Parameters<typeof DerivedItemsSection>
       <DerivedItemsSection
         items={ITEMS}
         getNeighbors={() => []}
+        openItemPreview={() => {}}
         filterArtifactId={null}
         onClearFilter={() => {}}
         artifactTitleById={new Map([['art-stories', 'Stories doc']])}
@@ -83,5 +84,25 @@ describe('DerivedItemsSection', () => {
   it('shows an empty-filter hint when the artifact has no items', () => {
     renderSection({ filterArtifactId: 'art-unknown' });
     expect(screen.getByText('no items from this artifact')).toBeInTheDocument();
+  });
+
+  it('opens the item preview when a row is clicked', async () => {
+    const user = userEvent.setup();
+    const openItemPreview = vi.fn();
+    renderSection({ openItemPreview });
+
+    await user.click(screen.getByText('User logs in'));
+    expect(openItemPreview).toHaveBeenCalledWith('story:i:s-login');
+  });
+
+  it('opens the item preview via keyboard (Enter)', async () => {
+    const user = userEvent.setup();
+    const openItemPreview = vi.fn();
+    renderSection({ openItemPreview });
+
+    const row = document.getElementById('item-story:i:s-login')!;
+    row.focus();
+    await user.keyboard('{Enter}');
+    expect(openItemPreview).toHaveBeenCalledWith('story:i:s-login');
   });
 });

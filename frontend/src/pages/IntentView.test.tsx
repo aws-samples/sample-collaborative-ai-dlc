@@ -57,6 +57,7 @@ const start = vi.fn();
 const answerGate = vi.fn();
 const graph = vi.fn();
 const compiled = vi.fn();
+const workflowGet = vi.fn();
 vi.mock('@/services/intents', () => ({
   intentsService: {
     get: (...a: unknown[]) => get(...a),
@@ -70,7 +71,7 @@ vi.mock('@/services/intents', () => ({
 vi.mock('@/services/workflows', () => ({
   workflowsService: {
     compiled: (...a: unknown[]) => compiled(...a),
-    get: vi.fn().mockResolvedValue({ phases: [] }),
+    get: (...a: unknown[]) => workflowGet(...a),
   },
 }));
 
@@ -112,6 +113,7 @@ const baseDetail = (over: Record<string, unknown> = {}) => ({
     branch: 'aidlc/i1',
     baseBranch: 'main',
     repos: ['owner/repo'],
+    gitProvider: 'github',
     workflowId: 'aidlc-v2',
     workflowVersion: 1,
     scope: 'feature',
@@ -142,6 +144,7 @@ describe('IntentView', () => {
     answerGate.mockReset();
     graph.mockReset().mockResolvedValue({ nodes: [], edges: [] });
     compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
+    workflowGet.mockReset().mockResolvedValue({ phases: [] });
     yjsMock.docs.clear();
   });
 
@@ -442,7 +445,7 @@ describe('IntentView', () => {
           id: 'a1',
           artifactType: 'requirements',
           title: 'Reqs',
-          content: '# hi',
+          content: `# Requirements\n\n${'Long-form requirements body. '.repeat(40)}`,
           createdByStageInstanceId: 'si-a',
           createdByExecutionId: 'i1',
           createdAt: null,
@@ -451,8 +454,6 @@ describe('IntentView', () => {
     });
     renderAt();
     expect(await screen.findByText('Reqs')).toBeInTheDocument();
-    // Provenance links the artifact back to the producing stage.
-    expect(screen.getByText(/produced by/)).toBeInTheDocument();
     const buttons = screen.getAllByTestId('discuss');
     // intent-level + one per artifact.
     expect(buttons.some((b) => b.getAttribute('data-entity') === 'artifact')).toBe(true);
@@ -491,7 +492,7 @@ describe('IntentView', () => {
           id: 'a1',
           artifactType: 'requirements',
           title: 'Reqs',
-          content: '# hi',
+          content: `# Requirements\n\n${'Long-form requirements body. '.repeat(40)}`,
           createdByStageInstanceId: 'si-a',
           createdByExecutionId: 'i1',
           createdAt: null,
@@ -500,11 +501,247 @@ describe('IntentView', () => {
     });
     renderAt();
     expect(await screen.findByText('Work products')).toBeInTheDocument();
-    expect(screen.getByText('Requirements')).toBeInTheDocument();
-    expect(screen.getByText('Questions (1)')).toBeInTheDocument();
+    expect(screen.getByText('Document')).toBeInTheDocument();
+    expect(screen.getByText('Questions')).toBeInTheDocument();
     expect(screen.getByText('Which provider?')).toBeInTheDocument();
     expect(screen.getByText('Q1: Cognito')).toBeInTheDocument();
     expect(screen.getByText('Influenced artifacts:')).toBeInTheDocument();
+  });
+
+  it('groups documents by phase (latest first) then stage order then date desc', async () => {
+    // Compiled plan: two phases (01 Inception, 02 Construction), two stages
+    // each, with canonical plan `order`. Grouping/ordering must follow the plan
+    // vocabulary (phasePath + stage order), NOT raw dates — an earlier stage
+    // whose document was produced LATER must still sort below a later stage.
+    compiled.mockResolvedValue({
+      graph: {
+        nodes: [
+          { stageId: 'intent-capture', phasePath: '01', order: 1 },
+          { stageId: 'requirements-analysis', phasePath: '01', order: 2 },
+          { stageId: 'domain-entities', phasePath: '02', order: 3 },
+          { stageId: 'code-gen', phasePath: '02', order: 4 },
+        ],
+        edges: [],
+      },
+    });
+    workflowGet.mockResolvedValue({
+      phases: [
+        {
+          phaseId: 'inception',
+          name: 'Inception',
+          kind: 'phase',
+          path: '01',
+          parentPath: null,
+          order: 1,
+        },
+        {
+          phaseId: 'construction',
+          name: 'Construction',
+          kind: 'phase',
+          path: '02',
+          parentPath: null,
+          order: 2,
+        },
+      ],
+    });
+
+    const doc = (id: string, title: string, si: string, createdAt: string) => ({
+      id,
+      artifactType: 'requirements',
+      title,
+      content: `# ${title}\n\n${'Long-form body. '.repeat(40)}`,
+      createdByStageInstanceId: si,
+      createdByExecutionId: 'i1',
+      createdAt,
+    });
+
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'SUCCEEDED' }),
+      stages: [
+        {
+          stageInstanceId: 'si-ic',
+          stageId: 'intent-capture',
+          state: 'SUCCEEDED',
+          phase: 'inception',
+        },
+        {
+          stageInstanceId: 'si-ra',
+          stageId: 'requirements-analysis',
+          state: 'SUCCEEDED',
+          phase: 'inception',
+        },
+        {
+          stageInstanceId: 'si-de',
+          stageId: 'domain-entities',
+          state: 'SUCCEEDED',
+          phase: 'construction',
+        },
+        {
+          stageInstanceId: 'si-cg',
+          stageId: 'code-gen',
+          state: 'SUCCEEDED',
+          phase: 'construction',
+        },
+      ],
+      artifacts: [
+        // Intentionally shuffled input order + dates that fight the plan order.
+        doc('d-ic', 'Intent Capture Doc', 'si-ic', '2026-01-01T10:00:00Z'),
+        // code-gen (order 4) produced EARLIER than domain-entities (order 3):
+        // plan order must still put code-gen above domain-entities.
+        doc('d-cg', 'Code Gen Doc', 'si-cg', '2026-01-02T08:00:00Z'),
+        doc('d-de', 'Domain Entities Doc', 'si-de', '2026-01-02T20:00:00Z'),
+        // Two requirements-analysis docs: newest must appear first (date desc
+        // WITHIN a stage).
+        doc('d-ra-old', 'Requirements Doc Old', 'si-ra', '2026-01-01T11:00:00Z'),
+        doc('d-ra-new', 'Requirements Doc New', 'si-ra', '2026-01-01T18:00:00Z'),
+      ],
+    });
+
+    renderAt();
+    expect(await screen.findByText('Construction')).toBeInTheDocument();
+
+    // Collect phase headers + document titles in DOM order and assert the full
+    // top-to-bottom sequence.
+    const labels = [
+      'Construction',
+      'Inception',
+      'Code Gen Doc',
+      'Domain Entities Doc',
+      'Intent Capture Doc',
+      'Requirements Doc Old',
+      'Requirements Doc New',
+    ];
+    const positions = labels.map((t) => ({ t, el: screen.getByText(t) }));
+    const domOrder = positions
+      .toSorted((a, b) =>
+        a.el.compareDocumentPosition(b.el) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1,
+      )
+      .map((p) => p.t);
+
+    expect(domOrder).toEqual([
+      'Construction', //            latest phase first
+      'Code Gen Doc', //            stage order 4 (before order 3 despite earlier date)
+      'Domain Entities Doc', //     stage order 3
+      'Inception', //               earlier phase second
+      'Requirements Doc New', //    stage order 2, newest of its stage first
+      'Requirements Doc Old', //    stage order 2, older second
+      'Intent Capture Doc', //      stage order 1 last
+    ]);
+  });
+
+  it('strips the intent-name suffix from document titles (dash and parenthetical forms)', async () => {
+    const doc = (id: string, title: string) => ({
+      id,
+      artifactType: 'requirements',
+      title,
+      content: `# ${title}\n\n${'Long-form body. '.repeat(40)}`,
+      createdByStageInstanceId: 'si-a',
+      createdByExecutionId: 'i1',
+      createdAt: '2026-01-01T00:00:00Z',
+    });
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'SUCCEEDED', title: 'Plant Identifier MVP' }),
+      stages: [
+        { stageInstanceId: 'si-a', stageId: 'build-and-test', state: 'SUCCEEDED', phase: 'c' },
+      ],
+      artifacts: [
+        doc('d1', 'Build and Test Results — Plant Identifier MVP'),
+        doc('d2', 'Code Summary — Infrastructure (Plant Identifier MVP)'),
+        doc('d3', 'Plant Identifier MVP'),
+      ],
+    });
+    renderAt();
+    expect(await screen.findByText('Work products')).toBeInTheDocument();
+    // Dash suffix removed entirely.
+    expect(screen.getByText('Build and Test Results')).toBeInTheDocument();
+    // Only the trailing parenthetical stripped; the meaningful "— Infrastructure" stays.
+    expect(screen.getByText('Code Summary — Infrastructure')).toBeInTheDocument();
+    // A title that IS just the intent name is left untouched (not blanked): it
+    // appears both as the page heading and as the d3 row — so > 1 occurrence.
+    expect(screen.getAllByText('Plant Identifier MVP').length).toBeGreaterThan(1);
+    // The redundant full form no longer appears in a row.
+    expect(
+      screen.queryByText('Build and Test Results — Plant Identifier MVP'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('Code Summary — Infrastructure (Plant Identifier MVP)'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('renders a PR entry (number, link, source → target) once the PR is recorded', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'SUCCEEDED' }),
+      pullRequests: [
+        {
+          id: 'pr:i1:owner/repo',
+          repository: 'owner/repo',
+          prUrl: 'https://github.com/owner/repo/pull/9',
+          prNumber: '9',
+          branch: 'aidlc/i1',
+          baseBranch: 'main',
+          createdAt: null,
+        },
+      ],
+    });
+    renderAt();
+    expect(await screen.findByText('Work products')).toBeInTheDocument();
+    expect(screen.getByText('Code')).toBeInTheDocument();
+    expect(screen.getByText('owner/repo')).toBeInTheDocument();
+    expect(screen.getByText('PR #9')).toBeInTheDocument();
+    // Source branch is a link; the base (target) is shown only for a PR.
+    const branchLink = screen.getByRole('link', { name: 'aidlc/i1' });
+    expect(branchLink).toHaveAttribute('href', 'https://github.com/owner/repo/tree/aidlc/i1');
+    expect(screen.getByText('main')).toBeInTheDocument();
+    const link = screen.getByRole('link', { name: /open pr/i });
+    expect(link).toHaveAttribute('href', 'https://github.com/owner/repo/pull/9');
+  });
+
+  it('shows the branch (name + link, no base) once code is pushed, before any PR', async () => {
+    // A v2.git.pushed event means the branch has real code on the remote. A
+    // bare branch shows only its name + link — no "→ base" (that is PR-only).
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'RUNNING' }),
+      events: [{ eventId: 'e1', type: 'v2.git.pushed', summary: 'owner/repo@abc12345' }],
+      pullRequests: [],
+    });
+    renderAt();
+    expect(await screen.findByText('Code')).toBeInTheDocument();
+    expect(screen.getByText('owner/repo')).toBeInTheDocument();
+    const branchLink = screen.getByRole('link', { name: 'aidlc/i1' });
+    expect(branchLink).toHaveAttribute('href', 'https://github.com/owner/repo/tree/aidlc/i1');
+    expect(screen.queryByText(/PR #/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /open pr/i })).not.toBeInTheDocument();
+    // No base branch on a bare branch entry.
+    expect(screen.queryByText('main')).not.toBeInTheDocument();
+  });
+
+  it('hides the Code section until code has actually been pushed', async () => {
+    // Mid-run, branch created locally but nothing pushed yet (no v2.git.pushed,
+    // no PR): the Code section must not appear.
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'RUNNING' }),
+      events: [],
+      pullRequests: [],
+    });
+    renderAt();
+    // The workbench renders; the Code section does not.
+    await screen.findByText('My intent');
+    expect(screen.queryByText('Code')).not.toBeInTheDocument();
+  });
+
+  it('shows only the repos that pushed code (multi-repo, per-repo gating)', async () => {
+    const base = baseDetail({ status: 'RUNNING' });
+    get.mockResolvedValue({
+      ...base,
+      intent: { ...base.intent, repos: ['owner/api', 'owner/web'] },
+      // Only owner/api pushed; owner/web has no code yet.
+      events: [{ eventId: 'e1', type: 'v2.git.pushed', summary: 'owner/api@abc12345' }],
+      pullRequests: [],
+    });
+    renderAt();
+    expect(await screen.findByText('Code')).toBeInTheDocument();
+    expect(screen.getByText('owner/api')).toBeInTheDocument();
+    expect(screen.queryByText('owner/web')).not.toBeInTheDocument();
   });
 });
 

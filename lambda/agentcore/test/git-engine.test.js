@@ -9,7 +9,9 @@ import {
   commitAll,
   isAheadOfRemote,
   pushBranch,
+  remoteBranchExists,
   commitAndPushAll,
+  seedInitialCommit,
 } from '../git-engine.js';
 
 // Real git spawns (~10 per test) can be slow on busy CI machines.
@@ -150,6 +152,60 @@ describe('commitAll', () => {
     const show = await git(['show', '--stat', '--format='], work);
     expect(show.stdout).toContain('new.txt');
     expect(show.stdout).toContain('README.md');
+  });
+});
+
+describe('seedInitialCommit', () => {
+  it('roots history on the BASE branch and forks the intent branch off it (empty repo)', async () => {
+    const { work } = await initRemoteAndClone({ withInitialCommit: false });
+    // Empty repo: unborn HEAD, currently on a branch with no commit.
+    expect((await git(['rev-parse', '--verify', 'HEAD'], work)).exitCode).not.toBe(0);
+
+    const res = await seedInitialCommit({
+      dir: work,
+      branch: 'aidlc/i1',
+      baseBranch: 'main',
+    });
+    expect(res.seeded).toBe(true);
+    expect(res.sha).toMatch(/^[0-9a-f]{40}$/);
+    expect(res.baseBranch).toBe('main');
+
+    // Working tree ends on the intent branch, forked off the base at the same SHA.
+    const head = await git(['rev-parse', '--abbrev-ref', 'HEAD'], work);
+    expect(head.stdout.trim()).toBe('aidlc/i1');
+    const baseSha = await git(['rev-parse', 'main'], work);
+    const intentSha = await git(['rev-parse', 'aidlc/i1'], work);
+    expect(baseSha.stdout.trim()).toBe(intentSha.stdout.trim());
+
+    // The base branch pushes FIRST (becomes remote default), then the intent one.
+    const basePush = await pushBranch({
+      dir: work,
+      repo: 'o/r',
+      branch: 'main',
+      urls: { auth: path.join(root, 'remote.git') },
+    });
+    expect(basePush.pushed).toBe(true);
+    const intentPush = await pushBranch({
+      dir: work,
+      repo: 'o/r',
+      branch: 'aidlc/i1',
+      urls: { auth: path.join(root, 'remote.git') },
+    });
+    expect(intentPush.pushed).toBe(true);
+  });
+
+  it('defaults the base branch to main when none is provided', async () => {
+    const { work } = await initRemoteAndClone({ withInitialCommit: false });
+    const res = await seedInitialCommit({ dir: work, branch: 'aidlc/i1' });
+    expect(res.seeded).toBe(true);
+    expect(res.baseBranch).toBe('main');
+    expect((await git(['rev-parse', '--verify', 'main'], work)).exitCode).toBe(0);
+  });
+
+  it('is a no-op on a repo that already has history', async () => {
+    const { work } = await initRemoteAndClone({ withInitialCommit: true });
+    const res = await seedInitialCommit({ dir: work, branch: 'aidlc/i1', baseBranch: 'main' });
+    expect(res).toEqual({ seeded: false, reason: 'not_empty' });
   });
 });
 
@@ -327,6 +383,47 @@ describe('isAheadOfRemote', () => {
     const empty = path.join(root, 'empty');
     await git(['init', empty], root);
     expect(await isAheadOfRemote({ dir: empty, branch: 'main' })).toBe(false);
+  });
+});
+
+describe('remoteBranchExists', () => {
+  it('true for an existing remote branch, false for an absent one', async () => {
+    const { work, remote } = await initRemoteAndClone();
+    const urls = { auth: remote, clean: 'https://github.com/o/r.git' };
+
+    const present = await remoteBranchExists({ dir: work, repo: 'o/r', branch: 'main', urls });
+    expect(present).toEqual({ exists: true });
+
+    const absent = await remoteBranchExists({
+      dir: work,
+      repo: 'o/r',
+      branch: 'aidlc/never',
+      urls,
+    });
+    expect(absent).toEqual({ exists: false });
+  });
+
+  it('restores the clean URL after the check (token window scrubbed)', async () => {
+    const { work, remote } = await initRemoteAndClone();
+    await remoteBranchExists({
+      dir: work,
+      repo: 'o/r',
+      branch: 'main',
+      urls: { auth: remote, clean: 'https://github.com/o/r.git' },
+    });
+    const url = await git(['remote', 'get-url', 'origin'], work);
+    expect(url.stdout.trim()).toBe('https://github.com/o/r.git');
+  });
+
+  it('returns exists:null (undetermined) when the remote is unreachable', async () => {
+    const { work } = await initRemoteAndClone();
+    const res = await remoteBranchExists({
+      dir: work,
+      repo: 'o/r',
+      branch: 'main',
+      urls: { auth: path.join(root, 'does-not-exist.git'), clean: 'https://github.com/o/r.git' },
+    });
+    expect(res.exists).toBeNull();
   });
 });
 

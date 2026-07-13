@@ -26,7 +26,9 @@ import {
   DERIVED_ITEM_LABELS,
   flattenVertexMap,
   isCurrentRow as isCurrent,
+  jsonListProp,
 } from '../shared/graph-rows.js';
+import { REGISTRY } from '../shared/artifact-extractors.js';
 
 const __ = gremlin.process.statics;
 const { t: T } = gremlin.process;
@@ -47,6 +49,58 @@ const flatten = flattenVertexMap;
 // EXPOSES / CONSUMES_CONTRACT Contract.
 export const ITEM_EDGES = ['COVERS', 'FOR_PERSONA', 'DEPENDS_ON', 'IMPLEMENTS'];
 export const UNIT_CONTRACT_EDGES = ['EXPOSES', 'CONSUMES_CONTRACT'];
+
+// Vertex-label → doc.fields lookup, built once from the extraction REGISTRY (the
+// single source of truth for typed-item schemas). Drives the generic itemFields
+// projection so a newly registered artifact type surfaces its fields for free.
+const ITEM_FIELDS_BY_LABEL = Object.freeze(
+  Object.fromEntries(Object.values(REGISTRY).map((spec) => [spec.label, spec.doc.fields])),
+);
+
+// Field names kept OUT of itemFields:
+//  - identity/label (id/title/name) — already carried as the node label; `name`
+//    is never a vertex prop (extractor maps it into title/label), so it's empty.
+//  - meta fields (priority/status) — surfaced as the flat node props the section
+//    chips + preview meta chips read; keeping them here would render them twice.
+//  - relation-backed fields — materialized as graph EDGES and rendered as
+//    clickable relationship rows; showing raw ids here would duplicate them.
+const ITEM_FIELD_EXCLUDE = new Set([
+  'id',
+  'title',
+  'name',
+  'priority',
+  'status',
+  'covers',
+  'depends_on',
+  'persona',
+  'stories',
+  'consumers',
+  'provider',
+  'unit',
+]);
+
+// Build the generic itemFields projection for a derived-item row from its type's
+// doc.fields: list fields (example is an array) parse via jsonListProp; text
+// fields stay strings. Empty values are skipped so the card stays tidy.
+const buildItemFields = (row) => {
+  const fields = ITEM_FIELDS_BY_LABEL[row.label];
+  if (!fields) return [];
+  const out = [];
+  for (const field of fields) {
+    if (ITEM_FIELD_EXCLUDE.has(field.name)) continue;
+    const raw = row[field.name];
+    if (Array.isArray(field.example)) {
+      const value = jsonListProp(raw);
+      if (value.length === 0) continue;
+      out.push({ name: field.name, description: field.description, kind: 'list', value });
+    } else {
+      const value = raw == null ? '' : String(raw);
+      if (!value) continue;
+      out.push({ name: field.name, description: field.description, kind: 'text', value });
+    }
+  }
+  return out;
+};
 
 // Bounded content preview for node payloads (full content stays on the detail DTO).
 const PREVIEW_CHARS = 400;
@@ -124,6 +178,8 @@ export const fetchKnowledgeGraph = async (g, { projectId, intentId }) => {
     .filter(isCurrent)
     .filter((i) => !i.artifact_id || currentArtifactIds.has(i.artifact_id));
   const units = (await flatRows(anchored('UnitOfWork'))).filter(isCurrent);
+  // Fan-in PR record(s), anchored Intent --HAS_PR--> PullRequest.
+  const prs = await flatRows(anchored('PullRequest', 'HAS_PR'));
 
   const nodes = [
     {
@@ -211,6 +267,7 @@ export const fetchKnowledgeGraph = async (g, { projectId, intentId }) => {
       artifactType: i.artifact_type ?? null,
       priority: i.priority ?? null,
       status: i.status ?? null,
+      itemFields: buildItemFields(i),
       createdAt: i.created_at ?? null,
     })),
     ...units.map((u) => ({
@@ -220,6 +277,17 @@ export const fetchKnowledgeGraph = async (g, { projectId, intentId }) => {
       label: u.slug || u.id,
       slug: u.slug ?? null,
       createdAt: u.created_at ?? null,
+    })),
+    ...prs.map((p) => ({
+      id: p.id,
+      type: 'PullRequest',
+      label: p.pr_number ? `PR #${p.pr_number}` : p.repository || 'Pull Request',
+      pr_url: p.pr_url ?? null,
+      pr_number: p.pr_number ?? null,
+      repository: p.repository ?? null,
+      branch: p.branch ?? null,
+      base_branch: p.base_branch ?? null,
+      createdAt: p.created_at ?? null,
     })),
   ];
   const nodeIds = new Set(nodes.map((n) => n.id));
@@ -266,6 +334,7 @@ export const fetchKnowledgeGraph = async (g, { projectId, intentId }) => {
     ...questions.map((q) => ({ source: intentId, target: q.id, label: 'CONTAINS' })),
     ...steering.map((s) => ({ source: intentId, target: s.id, label: 'CONTAINS' })),
     ...units.map((u) => ({ source: intentId, target: u.id, label: 'CONTAINS' })),
+    ...prs.map((p) => ({ source: intentId, target: p.id, label: 'HAS_PR' })),
     ...businessEdges,
     ...derivedEdges,
     ...unitEdges,

@@ -203,6 +203,36 @@ module "cors_agent_capabilities" {
   resource_id = aws_api_gateway_resource.agent_capabilities.id
 }
 
+# /agents/verify-mcp — probe custom MCP servers inside the AgentCore container
+resource "aws_api_gateway_resource" "agent_verify_mcp" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.agents_root.id
+  path_part   = "verify-mcp"
+}
+
+resource "aws_api_gateway_method" "agent_verify_mcp_post" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.agent_verify_mcp.id
+  http_method   = "POST"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "agent_verify_mcp_post" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.agent_verify_mcp.id
+  http_method             = aws_api_gateway_method.agent_verify_mcp_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = module.agents_lambda.lambda_function_invoke_arn
+}
+
+module "cors_agent_verify_mcp" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.agent_verify_mcp.id
+}
+
 # /agents/settings
 resource "aws_api_gateway_resource" "agent_settings" {
   rest_api_id = aws_api_gateway_rest_api.main.id

@@ -481,6 +481,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
             onSave={saveCustomMcpServers}
             canEdit={canEdit}
             globalServerNames={globalMcpServerNames}
+            projectId={project.id}
             description="Custom MCP servers injected into this project's agent sessions."
           />
 
