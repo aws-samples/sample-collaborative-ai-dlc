@@ -41,3 +41,5 @@ At execution time, the runtime assembles each stage's prompt from these blocks. 
 - How reviewer agents and deterministic sensors evaluate output
 
 As the open-source AI-DLC methodology evolves (including autonomous practice guidance), the platform inherits updates by re-pinning the upstream ref, while a binding annex maps the methodology's file-based conventions onto the graph-aware tools that connect agents to the structured datastore.
+
+Already familiar with AI-DLC's own vocabulary — composer, scope grids, Bolt, recompose? See [AI-DLC terms, mapped to the platform](methodology-map.md) for a one-to-one translation of every upstream term to its place in the product.

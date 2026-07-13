@@ -8,6 +8,7 @@ nav = [
   { "Home" = "index.md" },
   { "Getting Started" = [
     "getting-started/methodology.md",
+    "getting-started/methodology-map.md",
     "getting-started/prerequisites.md",
     "getting-started/setup.md",
     "getting-started/first-intent.md",
