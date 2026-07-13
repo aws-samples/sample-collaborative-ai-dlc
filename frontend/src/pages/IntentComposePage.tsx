@@ -3,10 +3,12 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProjectCache } from '@/hooks/useProjectsCache';
 import { useCollaborativeIntentDraft } from '@/hooks/useCollaborativeIntentDraft';
-import { intentsService, type Intent } from '@/services/intents';
-import { workflowsService } from '@/services/workflows';
+import { intentsService, type Intent, type ComposeSession } from '@/services/intents';
+import { workflowsService, type CompiledWorkflow, type PhaseNode } from '@/services/workflows';
 import { agentsService } from '@/services/agents';
 import { CollaborativeTextarea } from '@/components/CollaborativeTextarea';
+import { ComposePanel } from '@/components/intent/ComposePanel';
+import { StageGridEditor } from '@/components/intent/StageGridEditor';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -18,7 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { AlertCircle, ArrowLeft, Loader2, Users, X } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ChevronDown, ChevronRight, Loader2, Users, X } from 'lucide-react';
 
 type ScopeSummary = {
   executedStages: number;
@@ -80,23 +82,36 @@ export default function IntentComposePage() {
   const workflowId = project ? (project.workflowId ?? 'aidlc-v2') : null;
   const workflowVersion = project?.workflowVersion ?? undefined;
 
-  // Scope options from the compiled grid.
-  const [scopeOptions, setScopeOptions] = useState<string[]>([]);
+  // Compiled views: the scope grid (options + per-scope projections for the
+  // grid editor's baseline) and the stage-node list (phase grouping); the
+  // workflow's phase tree supplies the display names + which phase is
+  // initialization (those stages are locked EXECUTE in the editor).
+  const [compiled, setCompiled] = useState<CompiledWorkflow | null>(null);
+  const [phases, setPhases] = useState<PhaseNode[]>([]);
   useEffect(() => {
     if (!workflowId) return;
     let cancelled = false;
     workflowsService
       .compiled(workflowId, workflowVersion)
-      .then((compiled) => {
-        if (!cancelled) setScopeOptions(Object.keys(compiled.scopeGrid ?? {}));
+      .then((c) => {
+        if (!cancelled) setCompiled(c);
       })
       .catch((e) => {
         if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load scopes');
+      });
+    workflowsService
+      .get(workflowId, workflowVersion)
+      .then((wf) => {
+        if (!cancelled) setPhases(wf.phases ?? []);
+      })
+      .catch(() => {
+        /* phase names are display sugar — the editor degrades to raw paths */
       });
     return () => {
       cancelled = true;
     };
   }, [workflowId, workflowVersion]);
+  const scopeOptions = useMemo(() => Object.keys(compiled?.scopeGrid ?? {}), [compiled]);
 
   // Effective stage-skipping mode (project override, else platform setting).
   const [skippingEnabled, setSkippingEnabled] = useState(false);
@@ -124,6 +139,74 @@ export default function IntentComposePage() {
   const scope = draft.scope ?? intent?.scope ?? null;
   const skipSelections = useMemo(() => new Set(draft.skipStageIds ?? []), [draft.skipStageIds]);
 
+  // Grid editor plumbing: nodes/phase names from the compiled workflow; the
+  // initialization phase's stages are locked EXECUTE (the resolver rejects
+  // grids without them). The editor's effective grid is the composed grid, or
+  // the selected scope's projection as a read-through baseline.
+  const phaseNames = useMemo(
+    () => Object.fromEntries(phases.map((p) => [p.path, p.name || p.phaseId])),
+    [phases],
+  );
+  const initPhasePath = useMemo(
+    () => phases.find((p) => p.phaseId === 'initialization')?.path ?? null,
+    [phases],
+  );
+  const gridStages = useMemo(
+    () =>
+      (compiled?.graph.nodes ?? []).map((n) => ({
+        stageId: n.stageId,
+        phasePath: n.phasePath,
+        order: n.order,
+      })),
+    [compiled],
+  );
+  const lockedStageIds = useMemo(
+    () =>
+      new Set(
+        (compiled?.graph.nodes ?? [])
+          .filter((n) => initPhasePath != null && n.phasePath === initPhasePath)
+          .map((n) => n.stageId),
+      ),
+    [compiled, initPhasePath],
+  );
+  const scopeBaselineGrid = useMemo(
+    () => (scope && compiled?.scopeGrid?.[scope]) || null,
+    [scope, compiled],
+  );
+  const effectiveGrid = draft.composedGrid ?? scopeBaselineGrid ?? {};
+  const [showGridEditor, setShowGridEditor] = useState(false);
+
+  const toggleGridStage = (stageId: string) => {
+    if (lockedStageIds.has(stageId)) return;
+    // First customization materializes the scope's projection into a composed
+    // grid (initialization pinned EXECUTE) so the flip has a total baseline.
+    const base: Record<string, 'EXECUTE' | 'SKIP'> = draft.composedGrid
+      ? { ...draft.composedGrid }
+      : { ...scopeBaselineGrid };
+    for (const id of lockedStageIds) base[id] = 'EXECUTE';
+    base[stageId] = base[stageId] === 'EXECUTE' ? 'SKIP' : 'EXECUTE';
+    draft.setComposedGrid(base);
+    if (!draft.composedGrid && scope) {
+      // Label the customization after its origin so provenance stays readable.
+      draft.setScope(`${scope}-custom`);
+    }
+  };
+
+  const resetGridToScope = (nextScope: string) => {
+    draft.setScope(nextScope);
+    draft.setComposedGrid(null);
+  };
+
+  const applyProposal = (proposal: NonNullable<ComposeSession['proposal']>) => {
+    if (proposal.mode === 'matched') {
+      resetGridToScope(proposal.scope);
+    } else if (proposal.grid) {
+      draft.setScope(proposal.scope);
+      draft.setComposedGrid(proposal.grid);
+      setShowGridEditor(true);
+    }
+  };
+
   // Run-shape preview: authoritative counts + skippable stages for the current
   // selection, re-fetched whenever the shared selection changes (keyed on the
   // serialized selection so a peer's grid/skip edit re-previews too).
@@ -132,6 +215,7 @@ export default function IntentComposePage() {
     { stageId: string; phase: string | null }[]
   >([]);
   const [previewNote, setPreviewNote] = useState<string | null>(null);
+  const [previewErrors, setPreviewErrors] = useState<string[]>([]);
   const [previewLoading, setPreviewLoading] = useState(false);
   const gridKey = JSON.stringify(draft.composedGrid ?? null);
   const skipsKey = JSON.stringify([...skipSelections].toSorted());
@@ -157,6 +241,9 @@ export default function IntentComposePage() {
       .then((preview) => {
         if (cancelled) return;
         setSummary(preview.plan?.summary ?? null);
+        setPreviewErrors(
+          preview.valid ? [] : (preview.errors ?? []).map((e) => e.message).slice(0, 6),
+        );
         const stages = (preview.plan?.stages ?? [])
           .filter((s) => s.execution === 'CONDITIONAL' && s.phase !== 'initialization')
           .map((s) => ({ stageId: s.stageId, phase: s.phase ?? null }));
@@ -176,6 +263,7 @@ export default function IntentComposePage() {
           setSummary(null);
           setSkippableStages([]);
           setPreviewNote(null);
+          setPreviewErrors([]);
         }
       })
       .finally(() => {
@@ -299,21 +387,29 @@ export default function IntentComposePage() {
             />
           </div>
 
+          {projectId && intentId && (
+            <ComposePanel
+              projectId={projectId}
+              intentId={intentId}
+              disabled={starting}
+              onApply={applyProposal}
+            />
+          )}
+
           <div>
             <Label htmlFor="draft-scope">Scope</Label>
             <Select
-              value={scope ?? ''}
+              value={draft.composedGrid ? '' : (scope ?? '')}
               onValueChange={(v) => {
-                if (v) {
-                  draft.setScope(v);
-                  // Picking a stock scope leaves any composed grid behind.
-                  draft.setComposedGrid(null);
-                }
+                // Picking a stock scope leaves any composed grid behind.
+                if (v) resetGridToScope(v);
               }}
               disabled={scopeOptions.length === 0}
             >
               <SelectTrigger id="draft-scope" className="mt-1.5">
-                <SelectValue placeholder="Select a scope" />
+                <SelectValue
+                  placeholder={draft.composedGrid ? `composed grid (${scope})` : 'Select a scope'}
+                />
               </SelectTrigger>
               <SelectContent>
                 {scopeOptions.map((s) => (
@@ -345,7 +441,78 @@ export default function IntentComposePage() {
                 })()}
               </p>
             )}
+            {previewErrors.length > 0 && (
+              <div className="mt-1.5 space-y-0.5" data-testid="grid-errors">
+                {previewErrors.map((msg, i) => (
+                  <p key={i} className="flex items-start gap-1.5 text-xs text-destructive">
+                    <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                    {msg}
+                  </p>
+                ))}
+              </div>
+            )}
           </div>
+
+          {gridStages.length > 0 && (
+            <div className="border rounded-md">
+              <button
+                type="button"
+                onClick={() => setShowGridEditor((v) => !v)}
+                className="w-full flex items-center gap-1.5 px-3 py-2 text-sm font-medium"
+                data-testid="grid-editor-toggle"
+              >
+                {showGridEditor ? (
+                  <ChevronDown className="h-3.5 w-3.5" />
+                ) : (
+                  <ChevronRight className="h-3.5 w-3.5" />
+                )}
+                Customize stage grid
+                <span className="text-xs text-muted-foreground font-normal">
+                  {draft.composedGrid
+                    ? '(composed — every EXECUTE/SKIP is yours)'
+                    : `(currently the ${scope ?? '—'} projection)`}
+                </span>
+                {draft.composedGrid && scope && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    className="ml-auto text-xs underline text-muted-foreground hover:text-foreground"
+                    data-testid="grid-reset"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const back = scopeOptions.includes(scope.replace(/-custom$/, ''))
+                        ? scope.replace(/-custom$/, '')
+                        : (scopeOptions[0] ?? scope);
+                      resetGridToScope(back);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.stopPropagation();
+                        const back = scopeOptions.includes(scope.replace(/-custom$/, ''))
+                          ? scope.replace(/-custom$/, '')
+                          : (scopeOptions[0] ?? scope);
+                        resetGridToScope(back);
+                      }
+                    }}
+                  >
+                    reset to scope
+                  </span>
+                )}
+              </button>
+              {showGridEditor && (
+                <div className="px-3 pb-3">
+                  <StageGridEditor
+                    stages={gridStages}
+                    phaseNames={phaseNames}
+                    grid={effectiveGrid}
+                    lockedStageIds={lockedStageIds}
+                    disabled={starting}
+                    onToggle={toggleGridStage}
+                  />
+                </div>
+              )}
+            </div>
+          )}
 
           {skippingEnabled && (previewLoading || skippableStages.length > 0) && (
             <div className="border rounded-md p-3 space-y-2">
@@ -415,7 +582,7 @@ export default function IntentComposePage() {
             <Button
               type="button"
               onClick={handleStart}
-              disabled={starting || !draft.prompt.trim() || !scope}
+              disabled={starting || !draft.prompt.trim() || !scope || previewErrors.length > 0}
               data-testid="start-intent"
             >
               {starting && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />}

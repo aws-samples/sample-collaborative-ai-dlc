@@ -22,22 +22,30 @@ vi.mock('@/contexts/AuthContext', () => ({
 const get = vi.fn();
 const start = vi.fn();
 const update = vi.fn();
+const compose = vi.fn();
+const listComposes = vi.fn();
+const composeReportUpload = vi.fn();
 vi.mock('@/services/intents', () => ({
   intentsService: {
     get: (...a: unknown[]) => get(...a),
     start: (...a: unknown[]) => start(...a),
     update: (...a: unknown[]) => update(...a),
+    compose: (...a: unknown[]) => compose(...a),
+    listComposes: (...a: unknown[]) => listComposes(...a),
+    composeReportUpload: (...a: unknown[]) => composeReportUpload(...a),
   },
 }));
 
 const compiled = vi.fn();
 const executionPreview = vi.fn();
 const validateGrid = vi.fn();
+const getWorkflow = vi.fn();
 vi.mock('@/services/workflows', () => ({
   workflowsService: {
     compiled: (...a: unknown[]) => compiled(...a),
     executionPreview: (...a: unknown[]) => executionPreview(...a),
     validateGrid: (...a: unknown[]) => validateGrid(...a),
+    get: (...a: unknown[]) => getWorkflow(...a),
   },
 }));
 
@@ -50,6 +58,8 @@ vi.mock('@/services/agents', () => ({
 // substitute a deterministic local implementation that mirrors its contract.
 const draftState: Record<string, unknown> = {};
 const setSkipStageIds = vi.fn();
+const setScope = vi.fn();
+const setComposedGrid = vi.fn();
 const flushDraft = vi.fn();
 vi.mock('@/hooks/useCollaborativeIntentDraft', () => ({
   useCollaborativeIntentDraft: () => ({
@@ -64,8 +74,8 @@ vi.mock('@/hooks/useCollaborativeIntentDraft', () => ({
     initFromIntent: vi.fn(),
     setTitle: vi.fn(),
     setPrompt: vi.fn(),
-    setScope: vi.fn(),
-    setComposedGrid: vi.fn(),
+    setScope: (...a: unknown[]) => setScope(...a),
+    setComposedGrid: (...a: unknown[]) => setComposedGrid(...a),
     setSkipStageIds: (...a: unknown[]) => setSkipStageIds(...a),
     flushDraft: (...a: unknown[]) => flushDraft(...a),
   }),
@@ -139,9 +149,54 @@ describe('IntentComposePage', () => {
     get.mockReset().mockResolvedValue(draftIntent());
     start.mockReset().mockResolvedValue({});
     update.mockReset().mockResolvedValue({});
+    compose.mockReset().mockResolvedValue({ composeId: 'c1', state: 'PENDING', mode: 'front' });
+    listComposes.mockReset().mockResolvedValue({ composes: [] });
+    composeReportUpload.mockReset();
     flushDraft.mockReset().mockResolvedValue(undefined);
     setSkipStageIds.mockReset();
-    compiled.mockReset().mockResolvedValue({ scopeGrid: { feature: {}, bugfix: {} } });
+    setScope.mockReset();
+    setComposedGrid.mockReset();
+    compiled.mockReset().mockResolvedValue({
+      scopeGrid: {
+        feature: { init: 'EXECUTE', design: 'EXECUTE', build: 'EXECUTE' },
+        bugfix: { init: 'EXECUTE', design: 'SKIP', build: 'EXECUTE' },
+      },
+      autonomy: { perStage: {}, rollup: { selfHalting: 0, mixed: 0, humanGated: 0, total: 0 } },
+      graph: {
+        nodes: [
+          { stageId: 'init', phasePath: '01', order: 0 },
+          { stageId: 'design', phasePath: '04', order: 1 },
+          { stageId: 'build', phasePath: '04', order: 2 },
+        ],
+        edges: [],
+        cycles: [],
+        danglingConsumes: [],
+        orphanProduces: [],
+        unknownArtifacts: [],
+        acyclic: true,
+      },
+      rules: { universal: [], phaseRules: {}, pairings: [], perStage: {}, unresolved: [] },
+    });
+    getWorkflow.mockReset().mockResolvedValue({
+      phases: [
+        {
+          phaseId: 'initialization',
+          name: 'Initialization',
+          kind: 'phase',
+          path: '01',
+          parentPath: null,
+          order: 0,
+        },
+        {
+          phaseId: 'construction',
+          name: 'Construction',
+          kind: 'phase',
+          path: '04',
+          parentPath: null,
+          order: 3,
+        },
+      ],
+    });
     executionPreview.mockReset().mockResolvedValue(
       summaryPlan({
         executedStages: 24,
@@ -234,5 +289,143 @@ describe('IntentComposePage', () => {
     get.mockResolvedValue(draftIntent({ status: 'RUNNING' }));
     renderPage();
     expect(await screen.findByTestId('intent-view')).toBeInTheDocument();
+  });
+
+  it('starts a compose session with the typed steering instructions', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByTestId('compose-panel');
+    await user.type(screen.getByTestId('compose-instructions'), 'keep it lean');
+    await user.click(screen.getByTestId('compose-start'));
+    await waitFor(() =>
+      expect(compose).toHaveBeenCalledWith('p1', 'i1', { instructions: 'keep it lean' }),
+    );
+  });
+
+  it('applying a matched proposal writes the scope into the shared draft and clears any grid', async () => {
+    const user = userEvent.setup();
+    listComposes.mockResolvedValue({
+      composes: [
+        {
+          composeId: 'c1',
+          mode: 'front',
+          state: 'COMPLETED',
+          source: 'match',
+          proposal: {
+            mode: 'matched',
+            scope: 'bugfix',
+            grid: null,
+            rationale: ['keyword match: hotfix'],
+            confidence: 1,
+          },
+          validation: {
+            valid: true,
+            errors: [],
+            warnings: [],
+            summary: {
+              executedStages: 2,
+              totalStages: 3,
+              approvalGates: 1,
+              perUnitStages: 0,
+              skippedStages: 0,
+              outOfScopeStages: 1,
+            },
+          },
+          failureReason: null,
+        },
+      ],
+    });
+    renderPage();
+    expect(await screen.findByTestId('compose-proposal')).toBeInTheDocument();
+    expect(screen.getByTestId('proposal-summary').textContent).toContain('Runs 2 of 3 stages');
+    await user.click(screen.getByTestId('proposal-apply'));
+    expect(setScope).toHaveBeenCalledWith('bugfix');
+    expect(setComposedGrid).toHaveBeenCalledWith(null);
+  });
+
+  it('applying a custom proposal writes the grid + label into the shared draft', async () => {
+    const user = userEvent.setup();
+    listComposes.mockResolvedValue({
+      composes: [
+        {
+          composeId: 'c2',
+          mode: 'front',
+          state: 'COMPLETED',
+          source: 'llm',
+          proposal: {
+            mode: 'custom',
+            scope: 'lean-fix',
+            grid: { init: 'EXECUTE', design: 'SKIP', build: 'EXECUTE' },
+            rationale: ['design not needed'],
+            confidence: 0.8,
+          },
+          validation: { valid: true, errors: [], warnings: [], summary: null },
+          failureReason: null,
+        },
+      ],
+    });
+    renderPage();
+    await screen.findByTestId('compose-proposal');
+    await user.click(screen.getByTestId('proposal-apply'));
+    expect(setScope).toHaveBeenCalledWith('lean-fix');
+    expect(setComposedGrid).toHaveBeenCalledWith({
+      init: 'EXECUTE',
+      design: 'SKIP',
+      build: 'EXECUTE',
+    });
+  });
+
+  it('surfaces a failed compose with its structured reason', async () => {
+    listComposes.mockResolvedValue({
+      composes: [
+        {
+          composeId: 'c3',
+          mode: 'front',
+          state: 'FAILED',
+          source: 'llm',
+          proposal: null,
+          validation: null,
+          failureReason: 'proposed grid does not resolve',
+        },
+      ],
+    });
+    renderPage();
+    const failed = await screen.findByTestId('compose-failed');
+    expect(failed.textContent).toContain('proposed grid does not resolve');
+  });
+
+  it('customizing the stage grid materializes the scope projection with locked initialization', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByTestId('grid-editor-toggle'));
+    // init is locked (initialization) — toggling it is a no-op.
+    const initBox = screen
+      .getByTestId('grid-stage-init')
+      .querySelector('input') as HTMLInputElement;
+    expect(initBox.disabled).toBe(true);
+    // Toggling design flips the materialized feature projection to a grid.
+    await user.click(screen.getByTestId('grid-stage-design').querySelector('input')!);
+    expect(setComposedGrid).toHaveBeenCalledWith({
+      init: 'EXECUTE',
+      design: 'SKIP',
+      build: 'EXECUTE',
+    });
+    expect(setScope).toHaveBeenCalledWith('feature-custom');
+  });
+
+  it('an invalid grid blocks Start and shows the resolver errors', async () => {
+    draftState.composedGrid = { init: 'EXECUTE', design: 'EXECUTE' };
+    draftState.scope = 'starved';
+    validateGrid.mockResolvedValue({
+      valid: false,
+      errors: [{ code: 'dangling_consume', message: 'stage "build" consumes "x", …' }],
+      warnings: [],
+      plan: null,
+    });
+    renderPage();
+    const errors = await screen.findByTestId('grid-errors');
+    expect(errors.textContent).toContain('consumes');
+    const startBtn = screen.getByTestId('start-intent');
+    expect(startBtn).toBeDisabled();
   });
 });
