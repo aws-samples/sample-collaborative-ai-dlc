@@ -1662,6 +1662,12 @@ describe('POST /start', () => {
     expect(calls).toHaveLength(1);
     const payload = JSON.parse(Buffer.from(calls[0].args[0].input.Payload).toString());
     expect(payload).toMatchObject({ action: 'start', intentId: intent.id });
+    // The durable execution name must satisfy the service's 64-char cap
+    // (field incident: intent-<uuid>-<uuid> was 80 chars and every Start
+    // failed API validation) while staying unique per launch.
+    const durableName = calls[0].args[0].input.DurableExecutionName;
+    expect(durableName).toMatch(new RegExp(`^intent-${intent.id}-[0-9a-f]{16}$`));
+    expect(durableName.length).toBeLessThanOrEqual(64);
   });
 
   it('rolls back to DRAFT when the orchestrator invoke fails, so start can be retried', async () => {

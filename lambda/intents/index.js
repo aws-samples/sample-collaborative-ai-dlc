@@ -1,6 +1,6 @@
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, randomBytes } from 'node:crypto';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
@@ -3000,8 +3000,14 @@ const resumeDurableCallback = async (callbackId, answer) => {
   );
 };
 
+// A UNIQUE durable execution name per launch: durable executions are
+// idempotent by name, so every start/rewind/recompose relaunch needs a fresh
+// one. The service caps DurableExecutionName at 64 chars — `intent-` (7) +
+// intent UUID (36) + `-` + suffix must fit, so the launch suffix is a 16-char
+// random hex (60 total), never a full UUID (80 total — field incident: every
+// Start failed the API's length validation).
 const durableExecutionNameForIntent = (intentId) =>
-  `intent-${String(intentId).replace(/[^A-Za-z0-9_-]/g, '-')}-${randomUUID()}`;
+  `intent-${String(intentId).replace(/[^A-Za-z0-9_-]/g, '-')}-${randomBytes(8).toString('hex')}`;
 
 const isCallbackTimeoutError = (err) =>
   err?.name === 'CallbackTimeoutException' ||
