@@ -87,7 +87,7 @@ import {
 } from '@/components/ui/dialog';
 import {
   AlertTriangle,
-  CheckCircle2,
+  ChevronRight,
   Compass,
   FileText,
   FileQuestion,
@@ -1477,15 +1477,7 @@ function StageReviewPanel({
                           <p className="truncate text-sm font-medium">
                             {artifact.title || artifact.id}
                           </p>
-                          <p className="text-[11px] text-muted-foreground">
-                            {artifact.artifactType || 'artifact'}
-                          </p>
                         </div>
-                        {artifact.enrichmentModel && (
-                          <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[9px]">
-                            {artifact.enrichmentModel}
-                          </Badge>
-                        )}
                       </div>
                       {artifact.summaryGist && (
                         <p className="mt-2 text-sm text-muted-foreground">{artifact.summaryGist}</p>
@@ -1494,7 +1486,10 @@ function StageReviewPanel({
                         <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
                           {artifact.summaryClaims.slice(0, 5).map((claim, idx) => (
                             <li key={`${artifact.id}-claim-${idx}`} className="flex gap-1.5">
-                              <CheckCircle2 className="mt-0.5 h-3 w-3 shrink-0 text-agent-success" />
+                              <ChevronRight
+                                className="mt-0.5 h-3 w-3 shrink-0 text-agent-running"
+                                strokeWidth={3}
+                              />
                               <span>{claim}</span>
                             </li>
                           ))}
