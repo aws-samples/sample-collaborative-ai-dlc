@@ -1,5 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Bot, Clock, Eye, Maximize2, MessageSquare, X } from 'lucide-react';
+import {
+  AlertTriangle,
+  Bot,
+  ChevronDown,
+  Clock,
+  Eye,
+  FileText,
+  Files,
+  HelpCircle,
+  Info,
+  Maximize2,
+  MessageSquare,
+  Terminal,
+  Wrench,
+  X,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getTimeAgo } from '@/lib/timeAgo';
 import { Button } from '@/components/ui/button';
@@ -29,7 +44,13 @@ import { ArtifactContentEditor } from '@/components/intent/ArtifactContentEditor
 import { ArtifactMarkdown } from '@/components/intent/ArtifactMarkdown';
 import { useIntentGraph, type GraphNeighbor } from '@/hooks/useIntentGraph';
 import { nodeTypeBadge, shortNodeType, humanEdgeLabel } from '@/components/graph/nodeStyles';
-import type { IntentActivityEvent, IntentArtifact, IntentGraphNode } from '@/services/intents';
+import type {
+  IntentActivityEvent,
+  IntentArtifact,
+  IntentGraphNode,
+  IntentOutput,
+  IntentOutputDisplay,
+} from '@/services/intents';
 
 // The v2 intent analog of the sprint ActivityPanel: same 3-tab shell (Agent /
 // Timeline / Discuss) hosted in AppShell's right slot, but fed entirely from
@@ -151,8 +172,16 @@ function AgentTab({
   selectedKey: string;
   onSelectKey: (key: string) => void;
 }) {
-  const { outputBuffers, outputVersion, stageRows, stageNameOf, ensureOutputs, outputPaneStatus } =
-    useIntent();
+  const {
+    outputBuffers,
+    outputRows,
+    outputVersion,
+    stageRows,
+    stageNameOf,
+    ensureOutputs,
+    outputPaneStatus,
+  } = useIntent();
+  const [viewMode, setViewMode] = useState<'progress' | 'raw'>('progress');
 
   // Pane keys ordered like the pipeline: workspace setup first, then every
   // STARTED stage instance in plan order (transcripts load lazily, so a pane
@@ -185,6 +214,7 @@ function AgentTab({
 
   const displayKey = selectedKey === FOLLOW_KEY ? followKey : selectedKey;
   const content = displayKey ? (outputBuffers.get(displayKey) ?? '') : '';
+  const rows = displayKey ? (outputRows.get(displayKey) ?? []) : [];
 
   // Lazy transcript: seed the displayed pane's durable history on first show
   // (covers manual selection AND follow-mode advancing to a new stage).
@@ -227,24 +257,58 @@ function AgentTab({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="shrink-0 border-b px-3 py-2">
-        <Select value={selectedKey} onValueChange={onSelectKey}>
-          <SelectTrigger className="h-7 text-xs">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={FOLLOW_KEY} className="text-xs">
-              Follow run{followKey ? ` — ${stageNameOf(followKey)}` : ''}
-            </SelectItem>
-            {orderedKeys.map((key) => (
-              <SelectItem key={key} value={key} className="text-xs">
-                {stageNameOf(key)}
+        <div className="flex items-center gap-2">
+          <Select value={selectedKey} onValueChange={onSelectKey}>
+            <SelectTrigger className="h-7 min-w-0 flex-1 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={FOLLOW_KEY} className="text-xs">
+                Follow run{followKey ? ` — ${stageNameOf(followKey)}` : ''}
               </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+              {orderedKeys.map((key) => (
+                <SelectItem key={key} value={key} className="text-xs">
+                  {stageNameOf(key)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <div className="flex h-7 shrink-0 items-center rounded-md border bg-background p-0.5">
+            <button
+              type="button"
+              onClick={() => setViewMode('progress')}
+              className={cn(
+                'h-6 rounded-sm px-2 text-[11px] font-medium',
+                viewMode === 'progress'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              Progress
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('raw')}
+              className={cn(
+                'h-6 rounded-sm px-2 text-[11px] font-medium',
+                viewMode === 'raw'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              Raw
+            </button>
+          </div>
+        </div>
       </div>
       <div ref={scrollRef} onScroll={handleScroll} className="min-h-0 flex-1 overflow-auto p-3">
-        {content.trim() ? (
+        {viewMode === 'progress' ? (
+          <ProgressTranscript
+            rows={rows}
+            loading={paneLoading}
+            hasRaw={content.trim().length > 0}
+          />
+        ) : content.trim() ? (
           <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">
             {content}
           </pre>
@@ -256,6 +320,97 @@ function AgentTab({
       </div>
     </div>
   );
+}
+
+function ProgressTranscript({
+  rows,
+  loading,
+  hasRaw,
+}: {
+  rows: IntentOutput[];
+  loading: boolean;
+  hasRaw: boolean;
+}) {
+  const visibleRows = rows.filter((row) => !row.display?.hiddenByDefault);
+  if (visibleRows.length === 0) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        {loading
+          ? 'Loading output…'
+          : hasRaw
+            ? 'Routine tool output is hidden in Progress.'
+            : 'Waiting for output…'}
+      </p>
+    );
+  }
+  return (
+    <div className="space-y-2">
+      {visibleRows.map((row, index) => (
+        <ProgressRow key={`${row.seq}-${index}`} row={row} />
+      ))}
+    </div>
+  );
+}
+
+function ProgressRow({ row }: { row: IntentOutput }) {
+  const display = row.display ?? legacyDisplayFor(row);
+  const Icon = iconForDisplay(display);
+  const isProblem = display.level === 'error' || display.level === 'warning';
+  const body = display.title || display.summary || row.content.trim();
+  return (
+    <div
+      className={cn(
+        'rounded-md border bg-background px-2.5 py-2',
+        isProblem ? 'border-destructive/40 bg-destructive/5' : 'border-border',
+      )}
+    >
+      <div className="flex min-w-0 items-start gap-2">
+        <Icon
+          className={cn(
+            'mt-0.5 h-3.5 w-3.5 shrink-0',
+            isProblem ? 'text-destructive' : 'text-muted-foreground',
+          )}
+        />
+        <div className="min-w-0 flex-1">
+          <div className="break-words text-xs font-medium leading-snug">{body}</div>
+          {display.summary && display.summary !== body && (
+            <div className="mt-0.5 break-words text-[11px] text-muted-foreground">
+              {display.summary}
+            </div>
+          )}
+        </div>
+      </div>
+      {display.details && (
+        <details className="group mt-2" open={isProblem}>
+          <summary className="flex cursor-pointer list-none items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground">
+            <ChevronDown className="h-3 w-3 transition-transform group-open:rotate-180" />
+            Details
+          </summary>
+          <pre className="mt-1 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/60 p-2 font-mono text-[11px] leading-relaxed">
+            {display.details}
+          </pre>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function legacyDisplayFor(row: IntentOutput): IntentOutputDisplay {
+  return {
+    type: 'message',
+    level: 'info',
+    summary: row.content.trim() || row.kind,
+  };
+}
+
+function iconForDisplay(display: IntentOutputDisplay) {
+  if (display.level === 'error' || display.level === 'warning') return AlertTriangle;
+  if (display.type === 'tool') return Wrench;
+  if (display.type === 'batch_read') return Files;
+  if (display.type === 'artifact') return FileText;
+  if (display.type === 'question') return HelpCircle;
+  if (display.type === 'raw') return Terminal;
+  return Info;
 }
 
 // ---------------------------------------------------------------------------

@@ -250,6 +250,16 @@ export interface IntentOutput {
   kind: string;
   content: string;
   timestamp: string;
+  display?: IntentOutputDisplay;
+}
+
+export interface IntentOutputDisplay {
+  type: 'message' | 'tool' | 'batch_read' | 'artifact' | 'question' | 'system' | 'raw';
+  level?: 'info' | 'success' | 'warning' | 'error' | string;
+  title?: string;
+  summary?: string;
+  details?: string;
+  hiddenByDefault?: boolean;
 }
 
 export interface IntentSensorRun {

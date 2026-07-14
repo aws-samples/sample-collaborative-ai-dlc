@@ -58,6 +58,7 @@ import { resolveStageModel } from '../model-resolver.js';
 import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
 import { createSensorRunner } from '../sensor-runner.js';
 import { compileContextPack as defaultCompileContextPack } from '../context-compiler.js';
+import { createCliOutputSink, stripTerminalControls } from '../output-normalizer.js';
 import {
   buildExecutionPlan,
   stageInstanceId as planStageInstanceId,
@@ -112,115 +113,6 @@ const resolveStage = ({
       detail: `stage "${stageId}" not in scope "${scope.scope}"`,
     };
   return { plan, stage };
-};
-
-const textFromClaudeStreamEvent = (event) => {
-  if (!event || typeof event !== 'object') return '';
-  if (event.type === 'content_block_delta') return event.delta?.text ?? '';
-  if (event.type === 'content_block_start') return event.content_block?.text ?? '';
-  if (event.type === 'text') return event.text ?? '';
-  if (event.type === 'assistant' && Array.isArray(event.message?.content)) {
-    return event.message.content
-      .filter((part) => part?.type === 'text' && typeof part.text === 'string')
-      .map((part) => part.text)
-      .join('');
-  }
-  return '';
-};
-
-const stripTerminalControls = (text = '') => {
-  const s = String(text);
-  let out = '';
-  for (let i = 0; i < s.length; i += 1) {
-    const code = s.charCodeAt(i);
-    const next = s[i + 1];
-
-    if (code === 27 && next === ']') {
-      i += 2;
-      for (; i < s.length; i += 1) {
-        if (s.charCodeAt(i) === 7) break;
-        if (s.charCodeAt(i) === 27 && s[i + 1] === '\\') {
-          i += 1;
-          break;
-        }
-      }
-      continue;
-    }
-
-    if ((code === 27 && next === '[') || code === 155) {
-      if (code === 27) i += 1;
-      for (i += 1; i < s.length; i += 1) {
-        const final = s.charCodeAt(i);
-        if (final >= 64 && final <= 126) break;
-      }
-      continue;
-    }
-
-    if ((code < 32 && code !== 9 && code !== 10 && code !== 13) || code === 127) continue;
-    out += s[i];
-  }
-
-  // Some CLIs print ANSI CSI fragments through layers that drop ESC but leave
-  // `[38;5;141m` / `[0m` behind. Remove those orphaned color fragments too.
-  return out.replace(/\[(?:\d{1,3}(?:;\d{1,3})*)?m/g, '');
-};
-
-const createCliOutputSink = ({ cli, emit }) => {
-  let pending = '';
-
-  if (cli !== 'claude') {
-    let suppressSendOutputBlock = false;
-    const consumeLine = (line, newline = true) => {
-      const text = stripTerminalControls(`${line}${newline ? '\n' : ''}`);
-      if (/^\s*Running tool\s+send_output\b/.test(text)) {
-        suppressSendOutputBlock = true;
-        return;
-      }
-      if (suppressSendOutputBlock) {
-        if (/Completed in/.test(text)) suppressSendOutputBlock = false;
-        return;
-      }
-      if (text) emit(text);
-    };
-    return {
-      write(chunk) {
-        pending += chunk;
-        const lines = pending.split(/\r?\n/);
-        pending = lines.pop() ?? '';
-        for (const line of lines) consumeLine(line);
-      },
-      flush() {
-        if (pending) consumeLine(pending, false);
-        pending = '';
-      },
-    };
-  }
-
-  // Claude's stream-json is JSONL. Forward only human-readable assistant text,
-  // not the transport/tool metadata lines.
-  const consumeLine = (line) => {
-    if (!line.trim()) return;
-    try {
-      const text = stripTerminalControls(textFromClaudeStreamEvent(JSON.parse(line)));
-      if (text) emit(text);
-    } catch {
-      // If the CLI ever prints non-JSON diagnostics on stdout, keep them visible.
-      emit(stripTerminalControls(`${line}\n`));
-    }
-  };
-
-  return {
-    write(chunk) {
-      pending += chunk;
-      const lines = pending.split(/\r?\n/);
-      pending = lines.pop() ?? '';
-      for (const line of lines) consumeLine(line);
-    },
-    flush() {
-      if (pending) consumeLine(pending);
-      pending = '';
-    },
-  };
 };
 
 // Concatenate the methodology knowledge bodies for an agent (best-effort). This
@@ -1656,7 +1548,7 @@ export const runStage = async (
   await warnIfDiskLow('before the agent run');
   let result;
   let outputQueue = Promise.resolve();
-  const emitCliOutput = (content) => {
+  const emitCliOutput = ({ content, display }) => {
     if (!content) return;
     outputQueue = outputQueue
       .then(async () => {
@@ -1666,6 +1558,7 @@ export const runStage = async (
           unitSlug,
           kind: 'stdout',
           content,
+          display,
         });
         await publish({
           action: 'agent.output',
@@ -1674,6 +1567,7 @@ export const runStage = async (
           seq: row.seq,
           kind: 'stdout',
           content,
+          ...(display ? { display } : {}),
         });
       })
       .catch(() => {});

@@ -16,6 +16,7 @@ import {
   type IntentArtifact,
   type IntentDetail,
   type IntentGate,
+  type IntentOutput,
   type IntentSensorRun,
   type IntentStage,
   type IntentSteering,
@@ -87,12 +88,12 @@ export interface AgentFocusRequest {
 export type OutputPaneStatus = 'unseeded' | 'loading' | 'seeded';
 interface OutputPane {
   status: OutputPaneStatus;
-  /** Durable chunks fetched from the outputs endpoint, concatenated. */
-  seededText: string;
-  /** Highest seq contained in seededText — live chunks at or below are dupes. */
+  /** Durable chunks fetched from the outputs endpoint. */
+  seededRows: IntentOutput[];
+  /** Highest seq contained in seededRows — live chunks at or below are dupes. */
   maxSeededSeq: number;
   /** Live websocket chunks (kept until seeding merges or supersedes them). */
-  live: { seq: number; content: string }[];
+  live: IntentOutput[];
 }
 
 interface IntentContextValue {
@@ -122,6 +123,7 @@ interface IntentContextValue {
   // held in a ref for append performance; `outputVersion` bumps on every
   // append so consumers can subscribe to changes.
   outputBuffers: Map<string, string>;
+  outputRows: Map<string, IntentOutput[]>;
   outputVersion: number;
   /** Human name for a buffer key (stageInstanceId → stageId). */
   stageNameOf: (key: string) => string;
@@ -218,8 +220,10 @@ export function IntentProvider({
 
   // Live streamed output appended per stage instance; durable history is
   // seeded lazily per pane (see ensureOutputs). `outputBufRef` holds the
-  // render-ready string per key; `panesRef` holds the merge bookkeeping.
+  // render-ready string per key; `outputRowsRef` holds structured rows for the
+  // progress view; `panesRef` holds the merge bookkeeping.
   const outputBufRef = useRef<Map<string, string>>(new Map());
+  const outputRowsRef = useRef<Map<string, IntentOutput[]>>(new Map());
   const panesRef = useRef<Map<string, OutputPane>>(new Map());
   const [outputVersion, setOutputVersion] = useState(0);
 
@@ -293,6 +297,7 @@ export function IntentProvider({
 
   useEffect(() => {
     outputBufRef.current = new Map();
+    outputRowsRef.current = new Map();
     panesRef.current = new Map();
     setOutputVersion(0);
     setSelectedStageId(null);
@@ -363,7 +368,7 @@ export function IntentProvider({
   const paneOf = useCallback((key: string): OutputPane => {
     let pane = panesRef.current.get(key);
     if (!pane) {
-      pane = { status: 'unseeded', seededText: '', maxSeededSeq: 0, live: [] };
+      pane = { status: 'unseeded', seededRows: [], maxSeededSeq: 0, live: [] };
       panesRef.current.set(key, pane);
     }
     return pane;
@@ -377,10 +382,10 @@ export function IntentProvider({
       const pane = paneOf(key);
       const tail = pane.live
         .filter((c) => c.seq > pane.maxSeededSeq)
-        .toSorted((a, b) => a.seq - b.seq)
-        .map((c) => c.content)
-        .join('');
-      outputBufRef.current.set(key, pane.seededText + tail);
+        .toSorted((a, b) => a.seq - b.seq);
+      const rows = [...pane.seededRows, ...tail];
+      outputRowsRef.current.set(key, rows);
+      outputBufRef.current.set(key, rows.map((c) => c.content).join(''));
       setOutputVersion((n) => n + 1);
     },
     [paneOf],
@@ -402,7 +407,7 @@ export function IntentProvider({
         .outputs(projectId, intentId, { stageInstanceId: key })
         .then(({ outputs }) => {
           if (activeIntentRef.current !== forIntent) return;
-          pane.seededText = outputs.map((o) => o.content).join('');
+          pane.seededRows = outputs;
           pane.maxSeededSeq = outputs.reduce((m, o) => Math.max(m, o.seq ?? 0), 0);
           pane.live = pane.live.filter((c) => c.seq > pane.maxSeededSeq);
           pane.status = 'seeded';
@@ -462,10 +467,20 @@ export function IntentProvider({
         // treat it as newest so it is never dropped.
         const seq = typeof evt.seq === 'number' ? evt.seq : Number.MAX_SAFE_INTEGER;
         if (pane.status === 'seeded' && seq <= pane.maxSeededSeq) return;
-        pane.live.push({ seq, content: evt.content });
+        const row: IntentOutput = {
+          seq,
+          stageInstanceId: evt.stageInstanceId ?? null,
+          unitSlug: evt.unitSlug ?? null,
+          kind: evt.kind ?? 'stdout',
+          content: evt.content,
+          timestamp: new Date().toISOString(),
+          ...(evt.display ? { display: evt.display } : {}),
+        };
+        pane.live.push(row);
         // Fast path: append to the render string (renderPane would re-join the
         // whole live tail on every streamed token).
         outputBufRef.current.set(key, (outputBufRef.current.get(key) ?? '') + evt.content);
+        outputRowsRef.current.set(key, [...(outputRowsRef.current.get(key) ?? []), row]);
         setOutputVersion((n) => n + 1);
         return;
       }
@@ -777,6 +792,7 @@ export function IntentProvider({
         sensorsByStage,
         artifactsByStage,
         outputBuffers: outputBufRef.current,
+        outputRows: outputRowsRef.current,
         outputVersion,
         stageNameOf,
         ensureOutputs,

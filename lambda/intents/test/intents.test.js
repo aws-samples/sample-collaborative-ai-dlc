@@ -1828,7 +1828,11 @@ describe('GET list + detail', () => {
     expect(detail.intent.parkReleaseSeconds).toBe(120);
   });
 
-  const seedOutput = (intentId, seq, { stageInstanceId = null, content = '' } = {}) => {
+  const seedOutput = (
+    intentId,
+    seq,
+    { stageInstanceId = null, content = '', display = undefined } = {},
+  ) => {
     const sk = `OUTPUT#${String(seq).padStart(12, '0')}`;
     procStore.set(keyOf(`EXEC#${intentId}`, sk), {
       pk: `EXEC#${intentId}`,
@@ -1841,6 +1845,7 @@ describe('GET list + detail', () => {
       kind: 'stdout',
       content,
       timestamp: `2026-01-01T00:00:0${seq}Z`,
+      ...(display ? { display } : {}),
     });
   };
 
@@ -1879,7 +1884,11 @@ describe('GET list + detail', () => {
     const projectId = await seedV2Project(sub);
     const intent = JSON.parse((await createIntent(sub, projectId)).body);
     seedOutput(intent.id, 1, { stageInstanceId: null, content: 'init-ws ' });
-    seedOutput(intent.id, 2, { stageInstanceId: 'si-req', content: 'req-a ' });
+    seedOutput(intent.id, 2, {
+      stageInstanceId: 'si-req',
+      content: 'req-a ',
+      display: { type: 'message', title: 'Req A' },
+    });
     seedOutput(intent.id, 3, { stageInstanceId: 'si-req', content: 'req-b' });
 
     // Unfiltered: everything in seq order.
@@ -1891,6 +1900,8 @@ describe('GET list + detail', () => {
       (await getOutputs(sub, projectId, intent.id, { stageInstanceId: 'si-req' })).body,
     );
     expect(stage.outputs.map((o) => o.content)).toEqual(['req-a ', 'req-b']);
+    expect(stage.outputs[0].display).toEqual({ type: 'message', title: 'Req A' });
+    expect(stage.outputs[1].display).toBeUndefined();
 
     // "intent" selects the stage-less workspace/init bucket.
     const ws = JSON.parse(

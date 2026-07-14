@@ -32,14 +32,26 @@ vi.mock('@/services/workflows', () => ({
 import { IntentProvider, useIntent, clearIntentCache } from './IntentContext';
 
 function Probe() {
-  const { stageRows, pendingGates, outputBuffers, outputVersion, ensureOutputs, currentPhasePath } =
-    useIntent();
+  const {
+    stageRows,
+    pendingGates,
+    outputBuffers,
+    outputRows,
+    outputVersion,
+    ensureOutputs,
+    currentPhasePath,
+  } = useIntent();
   return (
     <div>
       <div data-testid="rows">{stageRows.map((r) => `${r.stageId}:${r.state}`).join(',')}</div>
       <div data-testid="pending">{pendingGates.length}</div>
       <div data-testid="out" data-version={outputVersion}>
         {[...outputBuffers.entries()].map(([k, v]) => `${k}=${v}`).join('|')}
+      </div>
+      <div data-testid="out-rows">
+        {[...outputRows.entries()]
+          .map(([k, rows]) => `${k}=${rows.map((r) => r.display?.title ?? r.content).join(',')}`)
+          .join('|')}
       </div>
       <div data-testid="phase-path">{currentPhasePath ?? 'null'}</div>
       <button data-testid="seed" onClick={() => ensureOutputs('si-1')} />
@@ -149,11 +161,13 @@ describe('IntentContext', () => {
         stageInstanceId: 'si-1',
         seq: 1,
         content: 'more',
+        display: { type: 'message', title: 'More readable' },
       });
       capturedOnEvent?.({ action: 'agent.output', seq: 2, content: 'init-ws log' });
     });
     expect(screen.getByTestId('out')).toHaveTextContent('si-1=more');
     expect(screen.getByTestId('out')).toHaveTextContent('intent=init-ws log');
+    expect(screen.getByTestId('out-rows')).toHaveTextContent('si-1=More readable');
   });
 
   it('ensureOutputs lazily seeds a pane and dedupes live chunks by seq', async () => {
@@ -163,7 +177,13 @@ describe('IntentContext', () => {
     get.mockResolvedValue(detail());
     outputs.mockResolvedValue({
       outputs: [
-        { seq: 1, stageInstanceId: 'si-1', kind: 'text', content: 'seed ' },
+        {
+          seq: 1,
+          stageInstanceId: 'si-1',
+          kind: 'text',
+          content: 'seed ',
+          display: { type: 'message', title: 'Seeded' },
+        },
         { seq: 2, stageInstanceId: 'si-1', kind: 'text', content: 'two ' },
       ],
     });
@@ -192,6 +212,7 @@ describe('IntentContext', () => {
     });
     expect(outputs).toHaveBeenCalledWith('p1', 'i1', { stageInstanceId: 'si-1' });
     expect(screen.getByTestId('out')).toHaveTextContent('si-1=seed two tail');
+    expect(screen.getByTestId('out-rows')).toHaveTextContent('si-1=Seeded,two ,tail');
 
     // Re-selecting the pane never refetches.
     await act(async () => {

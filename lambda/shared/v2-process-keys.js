@@ -518,19 +518,24 @@ const buildOutputRow = ({
   seq,
   kind = 'text',
   content,
+  display = null,
   now,
-}) => ({
-  ...outputKey(executionId, seq),
-  ...executionTypeStateIndex({ executionId, type: 'OUTPUT', state: kind, id: outputSeq(seq) }),
-  type: 'Output',
-  executionId,
-  stageInstanceId,
-  unitSlug,
-  seq,
-  kind,
-  content,
-  timestamp: now,
-});
+}) => {
+  const row = {
+    ...outputKey(executionId, seq),
+    ...executionTypeStateIndex({ executionId, type: 'OUTPUT', state: kind, id: outputSeq(seq) }),
+    type: 'Output',
+    executionId,
+    stageInstanceId,
+    unitSlug,
+    seq,
+    kind,
+    content,
+    timestamp: now,
+  };
+  if (display && typeof display === 'object') row.display = display;
+  return row;
+};
 
 const buildMetricRow = ({
   executionId,

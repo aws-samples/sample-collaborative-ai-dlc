@@ -489,7 +489,101 @@ describe('CLI output sink — UI-safe stdout', () => {
     sink.write('After\n');
     sink.flush();
 
-    expect(emitted.join('')).toBe('Before\nAfter\n');
+    expect(emitted.map((e) => e.content).join('')).toBe('Before\nAfter\n');
+  });
+
+  it('collapses Kiro get_artifact chatter without exposing params in display metadata', () => {
+    const emitted = [];
+    const sink = createCliOutputSink({ cli: 'kiro', emit: (event) => emitted.push(event) });
+    sink.write('Running tool get_artifact with the param\n');
+    sink.write(' ⋮  { "id": "intent-statement", "mode": "full" }\n');
+    sink.write(' - Completed in 0.12s\n');
+    sink.flush();
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].content).toContain('"mode": "full"');
+    expect(emitted[0].display).toMatchObject({
+      type: 'artifact',
+      title: 'Loaded artifact: intent-statement',
+    });
+    expect(JSON.stringify(emitted[0].display)).not.toContain('"mode"');
+  });
+
+  it('collapses consecutive Kiro fs_read tool blocks into one batch_read event', () => {
+    const emitted = [];
+    const sink = createCliOutputSink({ cli: 'kiro', emit: (event) => emitted.push(event) });
+    for (const path of ['Cargo.toml', 'templates/index.md', 'static/app.css']) {
+      sink.write('Running tool fs_read with the param\n');
+      sink.write(` ⋮  { "path": "${path}" }\n`);
+      sink.write(' - Completed in 0.03s\n');
+    }
+    sink.write('Done reading.\n');
+    sink.flush();
+
+    expect(emitted[0].display).toMatchObject({
+      type: 'batch_read',
+      title: 'Read 3 workspace items: Cargo.toml, index.md, app.css',
+    });
+    expect(emitted[0].content).toContain('"path": "Cargo.toml"');
+    expect(emitted[1].display).toMatchObject({ type: 'message', summary: 'Done reading.' });
+  });
+
+  it('hides routine successful Kiro MCP calls but keeps failures visible with details', () => {
+    const emitted = [];
+    const sink = createCliOutputSink({ cli: 'kiro', emit: (event) => emitted.push(event) });
+    sink.write('Running tool link_artifacts with the param\n');
+    sink.write(' ⋮  { "from": "a", "to": "b" }\n');
+    sink.write(' - Completed in 0.08s\n');
+    sink.write('Running tool fs_read with the param\n');
+    sink.write(' ⋮  { "path": "missing.txt" }\n');
+    sink.write(' - Failed in 0.01s\n');
+    sink.flush();
+
+    expect(emitted[0].display).toMatchObject({
+      type: 'tool',
+      title: 'Link Artifacts',
+      hiddenByDefault: true,
+    });
+    expect(emitted[1].display).toMatchObject({
+      type: 'tool',
+      level: 'error',
+      title: 'Fs Read failed',
+    });
+    expect(emitted[1].display.details).toContain('missing.txt');
+  });
+
+  it('suppresses emit_stage_note from progress while retaining raw content', () => {
+    const emitted = [];
+    const sink = createCliOutputSink({ cli: 'kiro', emit: (event) => emitted.push(event) });
+    sink.write('Running tool emit_stage_note with the param\n');
+    sink.write(' ⋮  { "summary": "created artifact" }\n');
+    sink.write(' - Completed in 0.04s\n');
+    sink.flush();
+
+    expect(emitted[0].content).toContain('emit_stage_note');
+    expect(emitted[0].display).toMatchObject({
+      type: 'system',
+      title: 'Stage note recorded',
+      hiddenByDefault: true,
+    });
+  });
+
+  it('passes unknown Kiro lines through as message events', () => {
+    const emitted = [];
+    const sink = createCliOutputSink({ cli: 'kiro', emit: (event) => emitted.push(event) });
+    sink.write('Thinking about requirements.\n');
+    sink.flush();
+
+    expect(emitted).toEqual([
+      {
+        content: 'Thinking about requirements.\n',
+        display: {
+          type: 'message',
+          level: 'info',
+          summary: 'Thinking about requirements.',
+        },
+      },
+    ]);
   });
 });
 

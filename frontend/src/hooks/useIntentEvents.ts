@@ -40,6 +40,14 @@ export interface IntentEvent {
   seq?: number;
   kind?: string;
   content?: string;
+  display?: {
+    type: 'message' | 'tool' | 'batch_read' | 'artifact' | 'question' | 'system' | 'raw';
+    level?: string;
+    title?: string;
+    summary?: string;
+    details?: string;
+    hiddenByDefault?: boolean;
+  };
   // agent.question
   humanTaskId?: string;
   questions?: unknown;

@@ -917,6 +917,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     unitSlug,
     kind = 'text',
     content,
+    display = null,
   }) => {
     const { Attributes } = await ddb.send(
       new UpdateCommand({
@@ -935,6 +936,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       seq,
       kind,
       content,
+      display,
       now: now(),
     });
     await ddb.send(new PutCommand({ TableName: table(), Item: item }));

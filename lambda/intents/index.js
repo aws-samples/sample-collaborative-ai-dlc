@@ -2666,6 +2666,7 @@ export const handler = async (event) => {
             kind: o.kind,
             content: o.content,
             timestamp: o.timestamp,
+            ...(o.display ? { display: o.display } : {}),
           })),
         });
       }

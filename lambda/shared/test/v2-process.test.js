@@ -1154,9 +1154,11 @@ describe('unit dimension through the store', () => {
       stageInstanceId: 'si-1',
       unitSlug: 'auth',
       content: 'hello',
+      display: { type: 'message', title: 'Hello' },
     });
     const items = ddb.commandCalls(PutCommand).map((c) => c.args[0].input.Item);
     expect(items.map((i) => i.unitSlug)).toEqual(['auth', 'auth', 'auth']);
+    expect(items.at(-1).display).toEqual({ type: 'message', title: 'Hello' });
   });
 
   it('omitting unitSlug stays null end-to-end (existing writers untouched)', async () => {
