@@ -23,7 +23,7 @@ export function DerivedItemCountChip({ artifactId, count, className }: DerivedIt
         'text-[10px] text-secondary-foreground hover:bg-secondary/70 transition-colors',
         className,
       )}
-      title={`${count} derived item${count !== 1 ? 's' : ''} — show in Derived items`}
+      title={`${count} identified item${count !== 1 ? 's' : ''} — show in Identified items`}
       onClick={(e) => {
         e.stopPropagation();
         focusWorkProduct({ kind: 'item', id: '', filterArtifactId: artifactId });

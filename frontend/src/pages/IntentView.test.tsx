@@ -496,6 +496,9 @@ describe('IntentView', () => {
       ],
     });
     renderAt();
+    // Documents section is closed on SUCCEEDED intents — expand it.
+    expect(await screen.findByText('Document')).toBeInTheDocument();
+    await userEvent.click(screen.getByText('Document'));
     expect(await screen.findByText('Reqs')).toBeInTheDocument();
     const buttons = screen.getAllByTestId('discuss');
     // intent-level + one per artifact.
@@ -546,6 +549,8 @@ describe('IntentView', () => {
     expect(await screen.findByText('Work products')).toBeInTheDocument();
     expect(screen.getByText('Document')).toBeInTheDocument();
     expect(screen.getByText('Questions')).toBeInTheDocument();
+    // Questions section is closed by default — expand it.
+    await userEvent.click(screen.getByText('Questions'));
     expect(screen.getByText('Which provider?')).toBeInTheDocument();
     expect(screen.getByText('Q1: Cognito')).toBeInTheDocument();
     expect(screen.getByText('Influenced artifacts:')).toBeInTheDocument();
@@ -641,6 +646,9 @@ describe('IntentView', () => {
     });
 
     renderAt();
+    // Documents section is closed on SUCCEEDED intents — expand it.
+    expect(await screen.findByText('Documents')).toBeInTheDocument();
+    await userEvent.click(screen.getByText('Documents'));
     expect(await screen.findByText('Construction')).toBeInTheDocument();
 
     // Collect phase headers + document titles in DOM order and assert the full
@@ -694,9 +702,10 @@ describe('IntentView', () => {
       ],
     });
     renderAt();
+    // Documents section is closed on SUCCEEDED intents — expand it.
     expect(await screen.findByText('Work products')).toBeInTheDocument();
-    // Dash suffix removed entirely.
-    expect(screen.getByText('Build and Test Results')).toBeInTheDocument();
+    await userEvent.click(screen.getByText('Documents'));
+    expect(await screen.findByText('Build and Test Results')).toBeInTheDocument();
     // Only the trailing parenthetical stripped; the meaningful "— Infrastructure" stays.
     expect(screen.getByText('Code Summary — Infrastructure')).toBeInTheDocument();
     // A title that IS just the intent name is left untouched (not blanked): it

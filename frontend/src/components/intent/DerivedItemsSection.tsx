@@ -94,7 +94,7 @@ export function DerivedItemsSection({
       <AccordionTrigger className="py-3 hover:no-underline">
         <div className="flex items-center gap-2">
           <Layers className="h-4 w-4 text-muted-foreground" />
-          <span className="text-sm font-medium">Derived items</span>
+          <span className="text-sm font-medium">Identified items</span>
           <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
             {items.length}
           </Badge>
@@ -102,8 +102,8 @@ export function DerivedItemsSection({
       </AccordionTrigger>
       <AccordionContent className="space-y-3 pb-3">
         <p className="text-[11px] text-muted-foreground">
-          Typed items the runtime derives from the artifacts' structured blocks — the granular layer
-          of the knowledge graph.
+          Requirements, stories, personas, decisions, and other structured items extracted from this
+          intent.
         </p>
         {filterTitle && (
           <div className="flex items-center gap-1.5">

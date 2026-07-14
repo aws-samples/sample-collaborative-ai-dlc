@@ -891,16 +891,16 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
   const codeItems = buildCodeItems(detail);
   const showCode = codeItems.length > 0;
 
-  // Controlled accordion: groups open by default (as before), and newly
-  // appearing groups auto-open — but a group the user closed stays closed.
+  // Controlled accordion: Code always open, Documents open unless the intent
+  // has succeeded (lightweight overview), Questions and Identified items closed.
   // Controlled because in-page navigation (popover/chip) must expand the
-  // target group before scrolling to the anchor. Derived items start closed
-  // (a supplementary layer).
+  // target group before scrolling to the anchor.
+  const isSucceeded = detail.intent.status === 'SUCCEEDED';
   const defaultOpen = [
     showCode ? CODE_ACCORDION_VALUE : null,
-    documents.length > 0 ? DOCUMENTS_ACCORDION_VALUE : null,
-    questionGates.length > 0 ? 'questions' : null,
+    documents.length > 0 && !isSucceeded ? DOCUMENTS_ACCORDION_VALUE : null,
   ].filter((v): v is string => Boolean(v));
+
   const [openGroups, setOpenGroups] = useState<string[]>(defaultOpen);
   const seenGroupsRef = useRef<Set<string>>(new Set(defaultOpen));
   useEffect(() => {

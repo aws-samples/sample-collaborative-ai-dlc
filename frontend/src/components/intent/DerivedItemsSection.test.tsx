@@ -52,14 +52,14 @@ describe('DerivedItemsSection', () => {
   it('renders nothing without items', () => {
     const { container } = renderSection({ items: [] });
     expect(container.querySelector('[id^="item-"]')).toBeNull();
-    expect(screen.queryByText('Derived items')).not.toBeInTheDocument();
+    expect(screen.queryByText('Identified items')).not.toBeInTheDocument();
   });
 
   it('groups items by type in canonical order with counts and anchors', () => {
     renderSection();
-    expect(screen.getByText('Derived items')).toBeInTheDocument();
+    expect(screen.getByText('Identified items')).toBeInTheDocument();
     // Requirement group renders before Stories (canonical order).
-    const headings = screen.getAllByText(/Requirements|Stories/).map((el) => el.textContent);
+    const headings = screen.getAllByText(/^Requirements$|^Stories$/).map((el) => el.textContent);
     expect(headings).toEqual(['Requirements', 'Stories']);
     // Anchor ids for in-page navigation.
     expect(document.getElementById('item-story:i:s-login')).not.toBeNull();
