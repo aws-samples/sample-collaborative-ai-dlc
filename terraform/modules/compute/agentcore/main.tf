@@ -331,6 +331,19 @@ resource "aws_iam_role_policy" "agentcore" {
         ]
       },
       {
+        # MCP secrets: at stage start (and verify) the runtime resolves the
+        # `${VAR}` refs in a config from SSM SecureString, tier-scoped — global at
+        # {prefix}/mcp-secrets/*, project at {prefix}/projects/<id>/mcp-secrets/*.
+        # WithDecryption uses the account-default aws/ssm key, so no explicit
+        # kms:Decrypt statement is needed (implicit for the reader).
+        Effect = "Allow"
+        Action = ["ssm:GetParameter", "ssm:GetParameters"]
+        Resource = [
+          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/mcp-secrets/*",
+          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/mcp-secrets/*",
+        ]
+      },
+      {
         # Async stage invocation (docs/v2-parallel.md WP1): the run-stage-start
         # background job completes/heartbeats the durable callback the
         # orchestrator suspended on. ARN constructed from naming convention
@@ -594,6 +607,9 @@ resource "awscc_bedrockagentcore_runtime" "stage_executor" {
     AWS_REGION                    = var.aws_region
     BEDROCK_BEARER_TOKEN_SSM_PATH = aws_ssm_parameter.bedrock_bearer_token.name
     KIRO_API_KEY_SSM_PATH         = aws_ssm_parameter.kiro_api_key.name
+    # Base SSM prefix for MCP secret resolution ({prefix}/mcp-secrets/<VAR> and
+    # {prefix}/projects/<id>/mcp-secrets/<VAR>).
+    MCP_SECRETS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
   }
 
   tags = var.tags

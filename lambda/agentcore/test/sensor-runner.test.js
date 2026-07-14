@@ -260,4 +260,66 @@ describe('runStageSensors — script kind', () => {
     });
     expect(verdicts[0]).toMatchObject({ result: 'BLOCKED', held: true });
   });
+
+  // Regression for the plan→runner scriptRef contract. The PROD loadBlockScript
+  // reads sensor.scriptRef.s3Key from S3; here we mimic that (return bytes if
+  // the sensor carries a scriptRef) instead of the argument-ignoring stub the
+  // other tests use. A plan sensor that carries its scriptRef must run; one
+  // whose scriptRef was stripped must BLOCK. This is the shape that
+  // v2-execution-plan.resolveSensors now guarantees.
+  it('runs a script sensor whose plan object carries a scriptRef (prod loader semantics)', async () => {
+    await writeFile(path.join(ws, 'a.ts'), 'export const x = 1;');
+    // Mirrors block-loader.loadBlockScript: '' when there is no scriptRef.
+    const loadBlockScript = async (sensor) =>
+      sensor?.scriptRef?.s3Key ? 'SENSOR_SCRIPT_BODY' : '';
+    const runner = createSensorRunner({
+      graph: null,
+      loadBlockScript,
+      workspaceDir: ws,
+      spawnFn: fakeSpawn('{"pass":true,"errorCount":0}'),
+    });
+    const verdicts = await runner.runStageSensors({
+      sensors: [
+        {
+          sensorId: 'linter',
+          severity: 'advisory',
+          runtime: 'bun',
+          command: 'bun x.ts',
+          matches: '**/*.ts',
+          timeoutSeconds: 5,
+          scriptRef: { s3Key: 'blocks/scripts/sha256/abc123' },
+        },
+      ],
+      stageId: 'code-generation',
+    });
+    expect(verdicts[0]).toMatchObject({ kind: 'script', result: 'PASS' });
+  });
+
+  it('BLOCKS a script sensor whose plan object lost its scriptRef (prod loader semantics)', async () => {
+    await writeFile(path.join(ws, 'a.ts'), 'export const x = 1;');
+    const loadBlockScript = async (sensor) =>
+      sensor?.scriptRef?.s3Key ? 'SENSOR_SCRIPT_BODY' : '';
+    const runner = createSensorRunner({
+      graph: null,
+      loadBlockScript,
+      workspaceDir: ws,
+      spawnFn: fakeSpawn('{"pass":true,"errorCount":0}'),
+    });
+    const verdicts = await runner.runStageSensors({
+      sensors: [
+        {
+          sensorId: 'linter',
+          severity: 'advisory',
+          runtime: 'bun',
+          command: 'bun x.ts',
+          matches: '**/*.ts',
+          timeoutSeconds: 5,
+          // scriptRef intentionally absent — the pre-fix regression shape.
+        },
+      ],
+      stageId: 'code-generation',
+    });
+    expect(verdicts[0]).toMatchObject({ result: 'BLOCKED' });
+    expect(verdicts[0].detail.error).toBe('sensor has no script');
+  });
 });

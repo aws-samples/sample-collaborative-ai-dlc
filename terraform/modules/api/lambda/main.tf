@@ -388,6 +388,28 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
           "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/model-pricing",
         ]
       },
+      # GLOBAL-tier MCP secrets (one SecureString per referenced ${VAR}). The
+      # agents lambda lists them (set-state only, no decrypt), rotates (Put) and
+      # clears (Delete) them from the Admin MCP editor. Kept in a SEPARATE
+      # statement because it needs GetParametersByPath + DeleteParameter and a
+      # wildcard path, which the fixed settings params above do not.
+      {
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter",
+          "ssm:GetParameters",
+          "ssm:GetParametersByPath",
+          "ssm:PutParameter",
+          "ssm:DeleteParameter",
+        ]
+        Resource = [
+          # The path NODE itself — GetParametersByPath authorizes against the
+          # queried path, which `/*` (children only) does NOT match.
+          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/mcp-secrets",
+          # The per-var parameters under it (Get/Put/Delete of {VAR}).
+          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/mcp-secrets/*",
+        ]
+      },
       # Model discovery for the project-settings picker (GET /agents/capabilities
       # ?models=1): list the region's Bedrock inference profiles (claude/opencode
       # models) and invoke the v2 runtime's `capabilities` command (Kiro's model
@@ -474,6 +496,27 @@ resource "aws_iam_role_policy" "neptune_artifacts" {
           Condition = {
             StringLike = { "s3:prefix" = ["custom-rules/*"] }
           }
+        },
+        # Project-tier MCP secrets: the projects lambda lists (set-state only),
+        # rotates (Put) and clears (Delete) per-var SecureStrings under
+        # projects/<id>/mcp-secrets/*. It also READS the GLOBAL custom-mcp-servers
+        # config (refs-only) to run the save-time cross-tier collision check.
+        {
+          Effect = "Allow"
+          Action = [
+            "ssm:GetParameter",
+            "ssm:GetParameters",
+            "ssm:GetParametersByPath",
+            "ssm:PutParameter",
+            "ssm:DeleteParameter",
+          ]
+          Resource = [
+            # The path NODE per project — GetParametersByPath authorizes against
+            # the queried path itself, which `/*` (children only) does NOT match.
+            "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/mcp-secrets",
+            "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/mcp-secrets/*",
+            "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/custom-mcp-servers",
+          ]
         },
       ],
       var.github_app_private_key_secret_arn != "" ? [
@@ -659,6 +702,11 @@ module "projects_lambda" {
     V2_PROCESS_TABLE      = var.v2_executions_table_name
     YJS_DOCUMENTS_TABLE   = var.yjs_documents_table_name
     AGENTCORE_RUNTIME_ARN = var.agentcore_runtime_arn
+    # MCP secrets: the base SSM prefix for per-var SecureStrings (project tier at
+    # {prefix}/projects/<id>/mcp-secrets/<VAR>) + the global config read for the
+    # save-time cross-tier collision check.
+    MCP_SECRETS_SSM_PREFIX    = "/${var.project_name}/${var.environment}"
+    AGENT_SETTINGS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
   }
 }
 

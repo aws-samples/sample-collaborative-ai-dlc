@@ -7,6 +7,13 @@ import { DynamoDBDocumentClient, QueryCommand, BatchWriteCommand } from '@aws-sd
 import { LambdaClient } from '@aws-sdk/client-lambda';
 import { BedrockAgentCoreClient } from '@aws-sdk/client-bedrock-agentcore';
 import { S3Client, HeadObjectCommand } from '@aws-sdk/client-s3';
+import {
+  SSMClient,
+  GetParameterCommand,
+  GetParametersByPathCommand,
+  PutParameterCommand,
+  DeleteParameterCommand,
+} from '@aws-sdk/client-ssm';
 
 const NOW = new Date('2026-01-01T00:00:00.000Z');
 
@@ -57,6 +64,42 @@ const s3Mock = mockClient(S3Client);
 const s3Objects = new Map();
 const putObject = (key, size = 10) => s3Objects.set(key, size);
 
+// SSM mock for MCP secrets (project tier) + the global config read used by the
+// save-time cross-tier collision check. `ssmParams` maps parameter Name → Value;
+// PUT/DELETE mutate it, GetParametersByPath lists it, GetParameter reads one.
+const ssmMock = mockClient(SSMClient);
+let ssmParams = new Map();
+const installSsmFakes = () => {
+  ssmMock.reset();
+  ssmMock.on(GetParameterCommand).callsFake((input) => {
+    if (ssmParams.has(input.Name))
+      return { Parameter: { Name: input.Name, Value: ssmParams.get(input.Name) } };
+    const e = new Error('not found');
+    e.name = 'ParameterNotFound';
+    throw e;
+  });
+  ssmMock.on(GetParametersByPathCommand).callsFake((input) => {
+    const prefix = input.Path.replace(/\/+$/, '') + '/';
+    const Parameters = [...ssmParams.keys()]
+      .filter((n) => n.startsWith(prefix))
+      .map((n) => ({ Name: n, Value: ssmParams.get(n) }));
+    return { Parameters };
+  });
+  ssmMock.on(PutParameterCommand).callsFake((input) => {
+    ssmParams.set(input.Name, input.Value);
+    return {};
+  });
+  ssmMock.on(DeleteParameterCommand).callsFake((input) => {
+    if (!ssmParams.has(input.Name)) {
+      const e = new Error('not found');
+      e.name = 'ParameterNotFound';
+      throw e;
+    }
+    ssmParams.delete(input.Name);
+    return {};
+  });
+};
+
 let handler;
 let conn;
 let g;
@@ -71,6 +114,8 @@ beforeAll(async () => {
   vi.stubEnv('V2_PROCESS_TABLE', 'v2-proc-test');
   vi.stubEnv('YJS_DOCUMENTS_TABLE', 'yjs-test');
   vi.stubEnv('ARTIFACTS_BUCKET', 'test-artifacts-bucket');
+  vi.stubEnv('MCP_SECRETS_SSM_PREFIX', '/collab/dev');
+  vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', '/collab/dev');
   ({ handler } = await import('../index.js'));
   // Direct gremlin connection for seeding non-owner member edges. Uses the
   // same partition so writes are visible to the handler under test.
@@ -129,6 +174,9 @@ beforeEach(() => {
     err.name = 'NotFound';
     throw err;
   });
+
+  ssmParams = new Map();
+  installSsmFakes();
 });
 
 afterEach(() => {
@@ -2095,6 +2143,94 @@ describe('GET/PUT /projects/:id/custom-mcp-servers', () => {
     const { id } = await createProject(ownerSub);
     await addMember(id, memberSub, 'member');
     const res = await handler({ ...customMcpEvent('GET', id), ...claims(memberSub) });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('blocks a save whose ${VAR} collides with a surviving global server ref', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    // Global config (SSM): a server `gsrv` referencing ${API_KEY}. The project
+    // does NOT override `gsrv`, so it survives → collision.
+    ssmParams.set(
+      '/collab/dev/custom-mcp-servers',
+      JSON.stringify({ gsrv: { command: 'npx', env: { K: '${API_KEY}' } } }),
+    );
+    const projectJson = JSON.stringify({ psrv: { command: 'npx', env: { K: '${API_KEY}' } } });
+    const res = await handler({
+      ...customMcpEvent('PUT', id, { body: JSON.stringify({ customMcpServers: projectJson }) }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toMatch(/API_KEY.*platform-wide server `gsrv`/);
+  });
+
+  it('allows a save when the project OVERRIDES the global server by name (no collision)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    ssmParams.set(
+      '/collab/dev/custom-mcp-servers',
+      JSON.stringify({ shared: { command: 'npx', env: { K: '${API_KEY}' } } }),
+    );
+    // Project overrides `shared` (same name) and also uses ${API_KEY}. The global
+    // `shared` does not survive → no collision.
+    const projectJson = JSON.stringify({ shared: { command: 'npx', env: { K: '${API_KEY}' } } });
+    const res = await handler({
+      ...customMcpEvent('PUT', id, { body: JSON.stringify({ customMcpServers: projectJson }) }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(200);
+  });
+});
+
+const projectSecretsEvent = (method, projectId, extra = {}) => ({
+  httpMethod: method,
+  path: `/projects/${projectId}/custom-mcp-servers/secrets`,
+  pathParameters: { projectId },
+  ...extra,
+});
+
+describe('GET/PUT /projects/:id/custom-mcp-servers/secrets', () => {
+  it('returns set-state only (never values); PUT rotates and clears', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    // Initially empty.
+    let res = await handler({ ...projectSecretsEvent('GET', id), ...claims(sub) });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ mcpSecretsSet: {} });
+
+    // PUT a value → stored as SecureString under the project prefix.
+    res = await handler({
+      ...projectSecretsEvent('PUT', id, {
+        body: JSON.stringify({ mcpSecrets: { API_KEY: 'super-secret' } }),
+      }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(ssmParams.get(`/collab/dev/projects/${id}/mcp-secrets/API_KEY`)).toBe('super-secret');
+
+    // GET reports it set, but never returns the value.
+    res = await handler({ ...projectSecretsEvent('GET', id), ...claims(sub) });
+    const body = JSON.parse(res.body);
+    expect(body.mcpSecretsSet).toEqual({ API_KEY: true });
+    expect(JSON.stringify(body)).not.toContain('super-secret');
+
+    // Empty string clears (delete).
+    res = await handler({
+      ...projectSecretsEvent('PUT', id, {
+        body: JSON.stringify({ mcpSecrets: { API_KEY: '' } }),
+      }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(ssmParams.has(`/collab/dev/projects/${id}/mcp-secrets/API_KEY`)).toBe(false);
+  });
+
+  it('rejects a plain member', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const memberSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub);
+    await addMember(id, memberSub, 'member');
+    const res = await handler({ ...projectSecretsEvent('GET', id), ...claims(memberSub) });
     expect(res.statusCode).toBe(403);
   });
 });

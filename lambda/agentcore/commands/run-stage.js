@@ -45,6 +45,11 @@ import {
 import { fetchCustomRules as defaultFetchCustomRules } from '../custom-rules.js';
 import { toMcpServerMap } from '../../shared/mcp-validator.js';
 import {
+  computeSurvivors,
+  resolveMcpSecrets as defaultResolveMcpSecrets,
+} from '../mcp-secret-resolver.js';
+import { mcpSecretPaths } from '../mcp-secret-paths.js';
+import {
   restoreKiroStore as defaultRestoreKiroStore,
   persistKiroStore as defaultPersistKiroStore,
   resolveKiroStore,
@@ -787,11 +792,14 @@ export const runStage = async (
     // agent's `tier` to a concrete model per CLI. A tier row wins over the flat
     // cliModels default above; the flat default covers everything tier-less.
     tierModels = null,
-    // Custom MCP servers (name-keyed object) merged into the CLI's mcpServers map,
-    // and custom agent rules ([{filename, s3Key}]) fetched from S3 into the
-    // agent context. Both snapshotted onto the intent and forwarded by the
-    // orchestrator. Empty = none.
-    customMcpServers = {},
+    // Custom MCP servers — carried as TWO SEPARATE tier maps (global + project),
+    // each holding only `${VAR}` references (no secret values). The runtime
+    // computes survivors (project overrides global by name), resolves each tier's
+    // refs against its own SSM prefix, injects the resolved values into the child
+    // env, and materializes the merged map with `${VAR}` kept verbatim. Custom
+    // rules ([{filename, s3Key}]) are fetched from S3 into the agent context.
+    // Both snapshotted onto the intent and forwarded by the orchestrator.
+    mcpServersByTier = null,
     customRules = [],
     workspaceDir,
     // Clone inputs, forwarded by the orchestrator so a stage can self-heal a wiped
@@ -863,6 +871,9 @@ export const runStage = async (
     // Fetch project custom agent rules (.md bodies) from S3 → written into the
     // selected CLI's native rules dir by the materializer. Injected for tests.
     fetchCustomRules = defaultFetchCustomRules,
+    // Resolve `${VAR}` MCP secret refs from SSM into a flat env map (tier-scoped,
+    // fail-closed). Injected for tests.
+    resolveMcpSecrets = defaultResolveMcpSecrets,
   } = deps;
 
   const now = () => clock();
@@ -1363,9 +1374,35 @@ export const runStage = async (
   // conversation already holds the prompt) and feeds the human's answer.
   const driver = getDriver(cli);
 
-  // Custom MCP servers (name-keyed object → per-CLI map, reserved names filtered)
-  // merged into the CLI's mcpServers map by the build* helpers. Computed once.
-  const customServers = toMcpServerMap(customMcpServers);
+  // Custom MCP servers (two tier maps → merged per-CLI map). Authoritative order
+  // (see mcp-secret-resolver.js): compute survivors (project overrides global by
+  // name) → extract refs from survivors only → flat-env collision guard →
+  // resolve each tier's refs against its own SSM prefix (fail closed) → merge.
+  // The merged map keeps `${VAR}` verbatim; the resolved values go into the child
+  // env (below) where the CLI natively expands them — never onto the config file.
+  const { survivingGlobal, survivingProject } = computeSurvivors(
+    mcpServersByTier?.global ?? {},
+    mcpServersByTier?.project ?? {},
+  );
+  const { globalPath, projectPath } = mcpSecretPaths({ projectId });
+  let mcpSecretEnv = {};
+  try {
+    ({ secretEnv: mcpSecretEnv } = await resolveMcpSecrets({
+      survivingGlobal,
+      survivingProject,
+      globalPath,
+      projectPath,
+    }));
+  } catch (e) {
+    // Fail closed: a collision or an unset referenced secret aborts the stage
+    // with a clear, actionable error (never a silent drop / a generic CLI 401).
+    console.error(`[run-stage] mcp secret resolution failed: ${e.message}`);
+    return fail(stageInstanceId, 'mcp_secret_error', e.message);
+  }
+  const customServers = {
+    ...toMcpServerMap(survivingGlobal),
+    ...toMcpServerMap(survivingProject),
+  };
 
   // Materialize the MCP wiring the selected CLI expects: Claude loads a
   // --mcp-config file; Kiro discovers an --agent config at .kiro/agents/. Returns
@@ -1545,8 +1582,25 @@ export const runStage = async (
   // mount — it is a fixed 1 GiB (AgentCore offers no larger size) and the
   // 2026-07 incident filled it with npm state until the engine commit ENOSPC'd.
   // Container-local /tmp is ephemeral but plentiful; the working tree (the
-  // durable part) stays on the mount. Driver/invocation env still wins.
-  const childEnv = { ...OFF_MOUNT_CACHE_ENV, ...invocation.env, ...driver.envForAuth(env) };
+  // durable part) stays on the mount. Driver/invocation env still wins. The MCP
+  // secret env (resolved `${VAR}` values) is injected here so the CLI expands the
+  // `${VAR}` tokens in the (on-disk) MCP config from the child env — the literal
+  // secret never touches the config file. An MCP `${VAR}` can NEVER be a reserved
+  // runtime key (auth/AWS creds/cache): the resolver fails closed on such names
+  // (mcp-secret-resolver RESERVED_MCP_ENV_KEYS), so mcpSecretEnv and the auth env
+  // below are disjoint by construction. Auth env is still spread LAST as
+  // defense-in-depth — even a resolver bug cannot let an MCP value shadow a
+  // platform auth token. NOTE (threat model): the resolved values DO live in this
+  // child process env, so the agent itself can read them and every stdio MCP
+  // server inherits them all (flat namespace). That is an accepted trade-off of
+  // CLI-native `${VAR}` expansion — see the header of mcp-secret-resolver.js for
+  // the full "what this does / does not protect" note.
+  const childEnv = {
+    ...OFF_MOUNT_CACHE_ENV,
+    ...mcpSecretEnv,
+    ...invocation.env,
+    ...driver.envForAuth(env),
+  };
   // Disk preflight — a nearly-full mount is loud BEFORE the CLI burns tokens.
   await warnIfDiskLow('before the agent run');
   let result;

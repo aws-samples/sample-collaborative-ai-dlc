@@ -9,11 +9,15 @@ import { CustomMcpServersSection } from '@/components/settings/CustomMcpServersS
 
 export function GlobalMcpServersCard() {
   const [value, setValue] = useState('{}');
+  const [mcpSecretsSet, setMcpSecretsSet] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     agentsService
       .getSettings()
-      .then((s) => setValue(s.customMcpServers ?? '{}'))
+      .then((s) => {
+        setValue(s.customMcpServers ?? '{}');
+        setMcpSecretsSet(s.mcpSecretsSet ?? {});
+      })
       .catch((e) => console.error('Failed to load global MCP servers:', e));
   }, []);
 
@@ -22,6 +26,13 @@ export function GlobalMcpServersCard() {
     // Reload the canonical stored value from the server.
     const fresh = await agentsService.getSettings();
     setValue(fresh.customMcpServers ?? '{}');
+    setMcpSecretsSet(fresh.mcpSecretsSet ?? {});
+  };
+
+  const saveSecrets = async (secrets: Record<string, string>) => {
+    await agentsService.updateSettings({ mcpSecrets: secrets });
+    const fresh = await agentsService.getSettings();
+    setMcpSecretsSet(fresh.mcpSecretsSet ?? {});
   };
 
   return (
@@ -31,6 +42,8 @@ export function GlobalMcpServersCard() {
       onSave={save}
       canEdit={true}
       description="Custom MCP servers injected into every agent session across all projects. A project's own MCP servers are merged on top (project wins when names collide)."
+      mcpSecretsSet={mcpSecretsSet}
+      onSaveSecrets={saveSecrets}
     />
   );
 }

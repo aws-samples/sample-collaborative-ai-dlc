@@ -724,11 +724,16 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // `requestedCli` so the run uses the chosen CLI (selection depends on which
     // CLI is authed). null = let run-stage pick the first installed CLI.
     const requestedCli = meta.agentCli ?? null;
-    // Custom MCP servers + custom agent rules snapshotted onto META at create
-    // (intents lambda merges Admin global + project). Forwarded to run-stage,
-    // which merges the servers into the CLI's mcpServers map and fetches each
-    // rule's .md from S3 into the agent context. null = none.
-    const customMcpServers = meta.customMcpServers ?? null;
+    // Custom MCP servers + custom agent rules snapshotted onto META at create.
+    // MCP servers are carried as TWO SEPARATE tier maps (global + project),
+    // holding only `${VAR}` references — the runtime resolves each tier's secrets
+    // against its own SSM prefix and merges only AFTER resolution. Forwarded to
+    // run-stage as `mcpServersByTier`. Back-compat: an OLD row carries a single
+    // merged `customMcpServers` map (secrets inline) — treat it as the project
+    // tier so it still resolves (its refs, if any, are legacy inline literals).
+    const mcpServersByTier =
+      meta.mcpServersByTier ??
+      (meta.customMcpServers ? { global: {}, project: meta.customMcpServers } : null);
     const customRules = meta.customRules ?? null;
     // Derive-time graph enrichment mode ('off'|'llm'), snapshotted onto META at
     // create from the Admin SSM setting; forwarded in the derive-artifacts
@@ -791,7 +796,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         cliModels,
         tierModels,
         requestedCli,
-        customMcpServers,
+        mcpServersByTier,
         customRules,
         sessionId: stageSessionId,
         cloneInputs: stageCloneInputs,
@@ -1501,7 +1506,7 @@ const runStage = async (
     cliModels,
     tierModels = null,
     requestedCli,
-    customMcpServers,
+    mcpServersByTier,
     customRules,
     sessionId,
     cloneInputs,
@@ -1544,7 +1549,7 @@ const runStage = async (
         ...(cliModels ? { cliModels } : {}),
         ...(tierModels ? { tierModels } : {}),
         ...(requestedCli ? { requestedCli } : {}),
-        ...(customMcpServers ? { customMcpServers } : {}),
+        ...(mcpServersByTier ? { mcpServersByTier } : {}),
         ...(customRules ? { customRules } : {}),
         // repos/branch/baseBranch/gitToken/gitProvider — for source self-heal.
         // The token is re-resolved at dispatch time (inside this step): a

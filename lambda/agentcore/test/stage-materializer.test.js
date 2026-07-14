@@ -249,6 +249,25 @@ describe('buildMcpConfig', () => {
     expect(cfg.mcpServers.aidlc.command).toBe('node');
     expect(cfg.mcpServers.aidlc.args).toEqual(['/real/mcp.js']);
   });
+
+  it('keeps ${VAR} secret refs VERBATIM (resolved value lives only in the child env)', () => {
+    const cfg = buildMcpConfig({
+      mcpEntry: 'x',
+      scope: { executionId: 'e', intentId: 'i' },
+      customServers: {
+        ctx: {
+          type: 'http',
+          url: 'https://e.com',
+          headers: { Authorization: 'Bearer ${CTX_KEY}' },
+        },
+        tool: { command: 'npx', env: { API: '${API_KEY}' } },
+      },
+    });
+    expect(cfg.mcpServers.ctx.headers.Authorization).toBe('Bearer ${CTX_KEY}');
+    expect(cfg.mcpServers.tool.env.API).toBe('${API_KEY}');
+    // The reserved aidlc entry never carries refs.
+    expect(JSON.stringify(cfg.mcpServers.aidlc)).not.toContain('${');
+  });
 });
 
 describe('renderRulesDoc', () => {

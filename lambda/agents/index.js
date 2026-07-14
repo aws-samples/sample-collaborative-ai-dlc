@@ -29,7 +29,8 @@ import { buildResponse } from '../shared/response.js';
 import { requirePlatformAdmin, isPlatformAdmin } from '../shared/authz.js';
 import { normalizeCliModels, parseCliModels } from '../shared/cli-models.js';
 import { normalizeTierModels, parseTierModels } from '../shared/tier-models.js';
-import { validateMcpServersJson } from '../shared/mcp-validator.js';
+import { validateMcpServersJson, extractSecretRefs } from '../shared/mcp-validator.js';
+import { listMcpSecrets, putMcpSecrets } from '../shared/mcp-secrets-store.js';
 import { fetchMembershipRole } from '../shared/trackers.js';
 import { listClaudeModels } from '../shared/bedrock-models.js';
 import { refreshPricing } from '../shared/model-pricing.js';
@@ -86,9 +87,11 @@ const fetchRuntimeCapabilities = async () => {
 
 // Probe custom MCP servers by invoking the runtime's `verify-mcp` command IN the
 // AgentCore container (the only place uvx/npx/etc. exist and the config's real
-// egress applies). Returns the runtime's { results } | { error, issues }, or a
+// egress applies). Forwards the two-tier config + tier-scoped just-typed secrets
+// so the runtime resolves `${VAR}` refs (tier-bound, fail-closed) exactly as the
+// real agent would. Returns the runtime's { results } | { error, issues }, or a
 // { error } when no runtime is configured / the invoke fails.
-const verifyMcpServers = async (mcpServers) => {
+const verifyMcpServers = async ({ mcpServersByTier, projectId, unsavedSecrets }) => {
   if (!AGENTCORE_RUNTIME_ARN) {
     return { error: 'AgentCore runtime not configured' };
   }
@@ -99,7 +102,14 @@ const verifyMcpServers = async (mcpServers) => {
         runtimeSessionId: randomUUID(),
         contentType: 'application/json',
         accept: 'application/json',
-        payload: Buffer.from(JSON.stringify({ command: 'verify-mcp', mcpServers })),
+        payload: Buffer.from(
+          JSON.stringify({
+            command: 'verify-mcp',
+            mcpServersByTier,
+            ...(projectId ? { projectId } : {}),
+            ...(unsavedSecrets ? { unsavedSecrets } : {}),
+          }),
+        ),
       }),
     );
     const text = res.response ? await res.response.transformToString() : '';
@@ -107,6 +117,24 @@ const verifyMcpServers = async (mcpServers) => {
   } catch (e) {
     console.error('[verify-mcp] runtime invoke failed:', e.message);
     return { error: `Runtime invoke failed: ${e.message}` };
+  }
+};
+
+// Read the Admin global custom MCP servers from SSM as a parsed name-keyed
+// OBJECT (refs-only; no secret values). Used to compute the surviving global
+// servers for a PROJECT verify. Best-effort: any failure yields {}.
+const fetchGlobalCustomMcpServers = async () => {
+  const prefix = process.env.AGENT_SETTINGS_SSM_PREFIX || '';
+  if (!prefix) return {};
+  try {
+    const res = await ssm.send(
+      new GetParametersCommand({ Names: [`${prefix}/custom-mcp-servers`], WithDecryption: true }),
+    );
+    const raw = res.Parameters?.[0]?.Value || '{}';
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
   }
 };
 
@@ -249,6 +277,37 @@ export const handler = async (event) => {
         } catch {
           customMcpServerNames = [];
         }
+        // Global servers' `${VAR}` ref names, keyed by GLOBAL SERVER NAME (not
+        // values, not config) — non-sensitive metadata exposed to any
+        // authenticated caller so the PROJECT MCP editor can compute survivors
+        // (a global server the project overrides by name does NOT survive) and
+        // run the SAME cross-tier collision check the backend does. A flat ref
+        // list would false-block a legitimate same-name override. (A server name
+        // and a var name are both non-secret; only the SSM value is.)
+        let globalMcpServerSecretRefs = {};
+        try {
+          const parsedGlobal = JSON.parse(rawCustomMcp);
+          if (parsedGlobal && typeof parsedGlobal === 'object' && !Array.isArray(parsedGlobal)) {
+            for (const [serverName, server] of Object.entries(parsedGlobal)) {
+              const refs = [...extractSecretRefs({ [serverName]: server }).refs];
+              if (refs.length) globalMcpServerSecretRefs[serverName] = refs;
+            }
+          }
+        } catch {
+          globalMcpServerSecretRefs = {};
+        }
+        // Custom MCP secrets: per-var set-state (never values). Only the platform
+        // admin (who authors the global config) needs the field states; others
+        // get an empty map. Best-effort — a listing failure yields {}. (Var names
+        // are the keys of the map; a separate names array would be redundant.)
+        let mcpSecretsSet = {};
+        if (isPlatformAdmin(event)) {
+          try {
+            ({ set: mcpSecretsSet } = await listMcpSecrets(ssm, { base: prefix }));
+          } catch (e) {
+            console.error('[settings] mcp-secrets list failed:', e.message);
+          }
+        }
         // Return secrets as masked flags (never send the raw values to the browser)
         return response(200, {
           bedrockBearerTokenSet: bearerToken !== '' && bearerToken !== 'placeholder',
@@ -260,6 +319,8 @@ export const handler = async (event) => {
           composeLlmBypass,
           customMcpServers,
           customMcpServerNames,
+          mcpSecretsSet,
+          globalMcpServerSecretRefs,
         });
       } catch (err) {
         console.error('[settings] GET failed:', err.message);
@@ -467,6 +528,29 @@ export const handler = async (event) => {
         }
       }
 
+      if (input.mcpSecrets !== undefined) {
+        // Per-var MCP secret values → SSM SecureString at {prefix}/mcp-secrets/{VAR}.
+        // Empty string clears (DeleteParameter). Never logged. Platform-admin only
+        // (the surrounding PUT is already guarded above).
+        if (
+          input.mcpSecrets === null ||
+          typeof input.mcpSecrets !== 'object' ||
+          Array.isArray(input.mcpSecrets)
+        ) {
+          return response(400, { error: 'mcpSecrets must be an object of { VAR: value }' });
+        }
+        try {
+          const { errors: secretErrors } = await putMcpSecrets(ssm, {
+            base: prefix,
+            secrets: input.mcpSecrets,
+          });
+          errors.push(...secretErrors.map((e) => `mcpSecrets.${e}`));
+        } catch (err) {
+          console.error('[settings] Failed to write MCP secrets:', err.message);
+          errors.push('mcpSecrets: ' + err.message);
+        }
+      }
+
       if (errors.length > 0) return response(500, { error: errors.join('; ') });
       return response(200, { saved: true });
     }
@@ -522,7 +606,33 @@ export const handler = async (event) => {
           issues: validation.issues,
         });
       }
-      const result = await verifyMcpServers(JSON.parse(raw || '{}'));
+      const editedConfig = JSON.parse(raw || '{}');
+
+      // Build the two-tier config the runtime resolves against. A PROJECT verify
+      // is testing the project config; the SURVIVING global servers are included
+      // in the probe and their refs resolve from the SAVED global SSM values. A
+      // GLOBAL verify tests the global config alone (no project tier).
+      let mcpServersByTier;
+      if (verifyProjectId) {
+        mcpServersByTier = { global: await fetchGlobalCustomMcpServers(), project: editedConfig };
+      } else {
+        mcpServersByTier = { global: editedConfig, project: {} };
+      }
+
+      // Just-typed (unsaved) secret values, so a user can Test BEFORE Save. They
+      // are tier-scoped to the caller by the runtime resolver: a project verify's
+      // unsavedSecrets bind to project refs only (never a global-named ref). Never
+      // logged (see below).
+      const unsavedSecrets =
+        input.unsavedSecrets && typeof input.unsavedSecrets === 'object'
+          ? input.unsavedSecrets
+          : undefined;
+
+      const result = await verifyMcpServers({
+        mcpServersByTier,
+        projectId: verifyProjectId,
+        unsavedSecrets,
+      });
       if (result.error) return response(502, result);
       return response(200, result);
     }
