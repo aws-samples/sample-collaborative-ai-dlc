@@ -1200,6 +1200,7 @@ function StageReviewPanel({
   onBack: () => void;
 }) {
   const [submitting, setSubmitting] = useState(false);
+  const { stageNameOf } = useIntent();
   // Gate-time "skip to stage X" (stage-skip.js): the backend computed the
   // valid forward targets (every intermediate is CONDITIONAL); '' = none.
   // Rides the approve answer as { decision: 'approve', skipTo } and is
@@ -1273,11 +1274,10 @@ function StageReviewPanel({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <CardTitle className="text-base">
-              Review stage {stage?.stageId ?? gate.stageInstanceId}
+              Review: {stageNameOf(gate.stageInstanceId ?? gate.humanTaskId)}
             </CardTitle>
             <p className="mt-1 text-sm text-muted-foreground">
-              Durable human validation gate. This page stays open alongside discussions and
-              timeline.
+              Review what the agent produced and approve or send it back with feedback.
             </p>
           </div>
           <Button variant="outline" size="sm" onClick={onBack}>
@@ -1286,13 +1286,19 @@ function StageReviewPanel({
         </div>
         <div className="grid gap-2 sm:grid-cols-4">
           <ReviewStat label="Artifacts" value={artifacts.length} />
-          <ReviewStat label="Derived items" value={derivedItems.length} />
+          <ReviewStat label="Identified items" value={derivedItems.length} />
           <ReviewStat
             label="Reviewer findings"
-            value={reviewerFailCount}
+            value={reviewerFailCount || 'None'}
             tone={reviewerFailCount ? 'warn' : 'ok'}
           />
-          <ReviewStat label="Gate" value={gate.status} tone={pending ? 'warn' : 'ok'} />
+          <ReviewStat
+            label="Status"
+            value={
+              pending ? 'Waiting for review' : gate.status === 'approved' ? 'Approved' : gate.status
+            }
+            tone={pending ? 'warn' : 'ok'}
+          />
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -1307,7 +1313,7 @@ function StageReviewPanel({
           </div>
           {pending ? (
             <div className="space-y-3">
-              <Label htmlFor="review-feedback">Request changes feedback</Label>
+              <Label htmlFor="review-feedback">Feedback for the agent</Label>
               <CollaborativeTextarea
                 id="review-feedback"
                 value={feedback}
@@ -1612,6 +1618,7 @@ function GateCard({
   onAnswer: (gate: IntentGate, input: GateAnswer) => Promise<void>;
 }) {
   const navigate = useNavigate();
+  const { stageNameOf: gateStageNameOf, detail } = useIntent();
   // Steering (docs/v2-steering.md): an optional course correction riding the
   // answer — injected into the resumed agent conversation right after it, so
   // the human can redirect the agent's direction while answering.
@@ -1638,16 +1645,29 @@ function GateCard({
   }, [gate]);
 
   if (gate.kind === 'validation') {
+    const stageArtifacts =
+      detail?.artifacts.filter((a) => a.createdByStageInstanceId === gate.stageInstanceId) ?? [];
     return (
       <Card className={cn(isActiveGate && 'border-agent-waiting/40')}>
         <CardContent className="space-y-3 py-3">
           <div>
-            <p className="text-sm font-medium">Stage output awaits review</p>
-            <p className="mt-1 whitespace-pre-line text-xs text-muted-foreground">
-              {gate.prompt ||
-                'Approve this stage or request changes before the workflow continues.'}
+            <p className="text-sm font-medium">
+              Review the results of {gateStageNameOf(gate.stageInstanceId ?? gate.humanTaskId)}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              The agent finished this stage and produced {stageArtifacts.length} artifact
+              {stageArtifacts.length === 1 ? '' : 's'}. Review them and approve or request changes.
             </p>
           </div>
+          {stageArtifacts.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {stageArtifacts.map((a) => (
+                <Badge key={a.id} variant="secondary" className="text-[11px]">
+                  {a.title || a.id}
+                </Badge>
+              ))}
+            </div>
+          )}
           <div className="flex flex-wrap gap-2">
             <Button
               size="sm"

@@ -318,7 +318,7 @@ describe('IntentView', () => {
     answerGate.mockResolvedValue({});
     renderAt();
     await userEvent.click(await screen.findByRole('button', { name: 'Review stage' }));
-    expect(await screen.findByText('Review stage stage-a')).toBeInTheDocument();
+    expect(await screen.findByText('Review: stage-a')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Approve stage/i })).toBeInTheDocument();
     const reviewDiscuss = screen
       .getAllByTestId('discuss')
@@ -380,7 +380,7 @@ describe('IntentView', () => {
     graph.mockResolvedValue({ nodes: [], edges: [] });
     answerGate.mockResolvedValue({});
     renderAt('/project/p1/intent/i1/review/eg-validation-si-a-0-run1');
-    expect(await screen.findByText('Review stage stage-a')).toBeInTheDocument();
+    expect(await screen.findByText('Review: stage-a')).toBeInTheDocument();
     await userEvent.click(screen.getByTestId('review-reshape-toggle'));
     await userEvent.click(screen.getByTestId('review-reshape-nfr-design').querySelector('input')!);
     const approve = screen.getByRole('button', { name: /Approve & drop 1 stage/ });
@@ -466,7 +466,7 @@ describe('IntentView', () => {
     answerGate.mockResolvedValue({});
     renderAt('/project/p1/intent/i1/review/eg-validation-si-a-0-run1');
 
-    const feedback = await screen.findByLabelText('Request changes feedback');
+    const feedback = await screen.findByLabelText('Feedback for the agent');
     await userEvent.type(feedback, 'Please tighten the acceptance criteria');
     await userEvent.click(screen.getByRole('button', { name: 'Request changes' }));
 
