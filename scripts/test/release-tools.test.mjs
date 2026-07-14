@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,13 +19,41 @@ const run = (file, args, options = {}) =>
 
 const writeJson = (path, value) => writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 
-test('release check accepts preparation metadata but final mode requires a date', () => {
-  const prepared = run('node', ['scripts/release.mjs', 'check', '2.0.0']);
+test('release check accepts prerelease metadata but final mode requires a date', () => {
+  const prepared = run('node', ['scripts/release.mjs', 'check', '2.0.0-preview0']);
   assert.equal(prepared.status, 0, prepared.stderr);
 
-  const final = run('node', ['scripts/release.mjs', 'check', '2.0.0', '--final']);
+  const final = run('node', ['scripts/release.mjs', 'check', '2.0.0-preview0', '--final']);
   assert.equal(final.status, 1);
   assert.match(final.stderr, /still has a TBD date/);
+});
+
+test('release preparation promotes preview metadata without losing changelog notes', () => {
+  const fixture = mkdtempSync(join(tmpdir(), 'aidlc-release-'));
+  mkdirSync(join(fixture, 'scripts'));
+  cpSync(join(root, 'scripts/release.mjs'), join(fixture, 'scripts/release.mjs'));
+  writeJson(join(fixture, 'package.json'), {
+    name: 'aidlc',
+    version: '2.0.0-preview0',
+    private: true,
+  });
+  writeJson(join(fixture, 'package-lock.json'), {
+    name: 'aidlc',
+    version: '2.0.0-preview0',
+    lockfileVersion: 3,
+    packages: { '': { name: 'aidlc', version: '2.0.0-preview0' } },
+  });
+  writeFileSync(
+    join(fixture, 'CHANGELOG.md'),
+    '# Changelog\n\n## [Unreleased]\n\n## [2.0.0-preview0] - 2026-07-14\n\n- Preview notes.\n',
+  );
+
+  execFileSync('node', ['scripts/release.mjs', 'prepare', '2.0.0'], { cwd: fixture });
+
+  assert.equal(JSON.parse(readFileSync(join(fixture, 'package.json'))).version, '2.0.0');
+  const changelog = readFileSync(join(fixture, 'CHANGELOG.md'), 'utf8');
+  assert.match(changelog, /## \[2\.0\.0\] - TBD\n\n- Preview notes\./);
+  assert.doesNotMatch(changelog, /2\.0\.0-preview0/);
 });
 
 test('Terraform plan inspection rejects protected deletion and allows the retired agent pool', () => {
@@ -60,19 +88,19 @@ test('Terraform plan inspection rejects protected deletion and allows the retire
   assert.match(accepted.stdout, /Allowed retired v1 resource removal/);
 });
 
-test('installer excludes prereleases by default', () => {
+test('installer lists prereleases by default in SemVer order', () => {
   const dir = mkdtempSync(join(tmpdir(), 'aidlc-tags-'));
   const tags = join(dir, 'tags');
-  writeFileSync(tags, 'v1.1.0\nv2.0.0-rc.1\nv2.0.0\n');
-  const stable = run('bash', [installer, 'versions'], { env: { AIDLC_TAGS_FILE: tags } });
-  assert.equal(stable.status, 0, stable.stderr);
-  assert.equal(stable.stdout.trim(), '1.1.0\n2.0.0');
+  writeFileSync(tags, 'v2.0.0-preview1\nv1.1.0\nv2.0.0-preview0\nv2.0.0\ninvalid\n');
+  const listed = run('bash', [installer, 'versions'], { env: { AIDLC_TAGS_FILE: tags } });
+  assert.equal(listed.status, 0, listed.stderr);
+  assert.equal(listed.stdout.trim(), '1.1.0\n2.0.0-preview0\n2.0.0-preview1\n2.0.0');
 
-  const all = run('bash', [installer, 'versions', '--include-prereleases'], {
+  const compatibilityFlag = run('bash', [installer, 'versions', '--include-prereleases'], {
     env: { AIDLC_TAGS_FILE: tags },
   });
-  assert.equal(all.status, 0, all.stderr);
-  assert.match(all.stdout, /2\.0\.0-rc\.1/);
+  assert.equal(compatibilityFlag.status, 0, compatibilityFlag.stderr);
+  assert.equal(compatibilityFlag.stdout, listed.stdout);
 });
 
 const createReleaseRepository = () => {
@@ -133,6 +161,27 @@ const managedEnv = (dir, repository) => {
     AIDLC_ADMIN_PASSWORD: 'NotStored123!',
   };
 };
+
+test('installer selects a newer preview release by default', () => {
+  const repository = createReleaseRepository();
+  writeJson(join(repository, 'package.json'), {
+    name: 'aidlc',
+    version: '2.1.0-preview0',
+    private: true,
+  });
+  execFileSync('git', ['add', 'package.json'], { cwd: repository });
+  execFileSync('git', ['commit', '-qm', 'v2.1 preview'], { cwd: repository });
+  execFileSync('git', ['tag', 'v2.1.0-preview0'], { cwd: repository });
+
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-preview-'));
+  const env = managedEnv(dir, repository);
+  const installed = run('bash', [installer, 'install'], { env });
+  assert.equal(installed.status, 0, installed.stderr);
+  assert.match(
+    readlinkSync(join(env.XDG_DATA_HOME, 'collaborative-ai-dlc/current')),
+    /releases\/v2\.1\.0-preview0$/,
+  );
+});
 
 test('installer supports fresh install, v1 adoption, v1-to-v2 update, and recovery', () => {
   const repository = createReleaseRepository();

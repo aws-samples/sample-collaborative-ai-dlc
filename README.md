@@ -56,11 +56,11 @@ bash /tmp/aidlc-install.sh status
 
 ### Versions, Adoption, and Updates
 
-Stable releases are selected by default. Prerelease tags such as `v2.1.0-rc.1` are shown only when requested and are never selected as the default:
+All tagged releases, including previews such as `v2.0.0-preview0`, are shown by default. With no explicit version, install and update select the highest tag by SemVer precedence. A stable `v2.0.0` therefore supersedes `v2.0.0-preview0`:
 
 ```bash
 bash /tmp/aidlc-install.sh versions
-bash /tmp/aidlc-install.sh versions --include-prereleases
+bash /tmp/aidlc-install.sh install --version 2.0.0-preview0 ...
 bash /tmp/aidlc-install.sh install --version 2.0.0 ...
 ```
 

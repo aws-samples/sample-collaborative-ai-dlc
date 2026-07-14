@@ -31,7 +31,7 @@ bash /tmp/aidlc-install.sh versions
 bash /tmp/aidlc-install.sh update
 ```
 
-Prereleases are excluded unless `--include-prereleases` or `--allow-prerelease` is explicit. Downgrades require `--allow-downgrade`.
+Preview and stable tags are listed by default. Install and update select the highest version by SemVer precedence unless `--version` is explicit; stable `2.0.0` supersedes `2.0.0-preview0`. Downgrades still require `--allow-downgrade`.
 
 ### Test an unreleased branch
 

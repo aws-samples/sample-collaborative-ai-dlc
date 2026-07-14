@@ -6,16 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [2.0.0] - TBD
+## [2.0.0-preview0] - TBD
 
 ### Added
 
-- Managed installer with stable-version discovery, immutable tagged checkouts, persistent deployment configuration, existing-v1 adoption, guarded updates, status reporting, Terraform state backups, and downgrade protection.
+- Managed installer with SemVer release discovery, immutable tagged checkouts, persistent deployment configuration, existing-v1 adoption, guarded updates, status reporting, Terraform state backups, and downgrade protection.
 - Composable AI-DLC v2 workflows built from versioned blocks, per-intent execution grids, stage skipping, review gates, deterministic sensors, artifact derivation, and in-flight recomposition.
 - Bedrock AgentCore execution with durable orchestration, resumable human questions, scoped agent credentials and MCP servers, configurable agent tiers and models, and live execution output.
 - Intent-centric workbench, observability, artifact previews and editing, discussions, multi-repository construction, and GitHub, GitLab, and Jira integrations.
 - Platform administration for users, provider credentials, model defaults, migrations, workflows, and building blocks.
-- Canonical application version in the root package, release validation tooling, a guarded stable-release workflow, and version/environment display in the UI.
+- Canonical application version in the root package, release validation tooling, a guarded main-only release workflow, and version/environment display in the UI.
 - Runtime model override for the Claude agent CLI. Projects and the Admin default-models page can now pin a Claude model using a bare Bedrock cross-region inference profile ID (e.g. `us.anthropic.claude-opus-4-8`); the Claude driver injects it as `ANTHROPIC_MODEL` into the `claude-agent-acp` subprocess (stripping any legacy `amazon-bedrock/` prefix). Validation rejects the `amazon-bedrock/` prefix for Claude (the inverse of OpenCode). Previously Claude was pinned to the driver default.
 - Jira Cloud support and a generic tracker provider abstraction (#194). A project can now bind to GitHub Issues and Jira Cloud independently of its code host; sprints can be started from any tracker issue.
 - Phase 4 tracker-migration polish (#198): an Admin → Tracker Migration card surfaces the count of projects + sprints still on the legacy tracker shape and promotes the bulk migration from the CLI-only `migrate-tracker-fields` Lambda to a one-click button. Docs (`using-the-platform/git-integration.md`, `getting-started/setup.md`) gained a "Migrating from legacy issue integration" section.

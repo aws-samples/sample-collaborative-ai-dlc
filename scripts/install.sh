@@ -32,7 +32,6 @@ VERSION_EXPLICIT="${AIDLC_VERSION+x}"
 REF_EXPLICIT="${AIDLC_REF+x}"
 SOURCE=""
 ASSUME_YES="${AIDLC_YES:-0}"
-INCLUDE_PRERELEASES="${AIDLC_INCLUDE_PRERELEASES:-0}"
 ALLOW_DOWNGRADE="${AIDLC_ALLOW_DOWNGRADE:-0}"
 
 usage() {
@@ -47,15 +46,15 @@ Commands:
   status                       Show managed installation status
 
 Options:
-  --version X.Y.Z              Select a release (default: latest stable)
+  --version VERSION            Select a release (default: latest SemVer)
   --ref BRANCH                 Track a branch for non-release testing
   --environment NAME           Terraform environment (default: dev)
   --region REGION              AWS region (default: us-east-1)
   --profile PROFILE            AWS CLI profile
   --admin EMAIL                Initial or existing administrator
   --repo-url URL               Release git repository
-  --include-prereleases        Include prereleases in versions output
-  --allow-prerelease           Permit installing a prerelease
+  --include-prereleases        Compatibility option; prereleases are included
+  --allow-prerelease           Compatibility option; prereleases are allowed
   --allow-downgrade            Permit an explicit downgrade
   --yes                        Accept non-secret prompts
 EOF
@@ -72,7 +71,7 @@ while [[ $# -gt 0 ]]; do
         --repo-url) REPOSITORY_URL="${2:?--repo-url requires a value}"; REPOSITORY_EXPLICIT=1; shift 2 ;;
         --source) SOURCE="${2:?--source requires a path}"; shift 2 ;;
         --yes) ASSUME_YES=1; shift ;;
-        --include-prereleases|--allow-prerelease) INCLUDE_PRERELEASES=1; shift ;;
+        --include-prereleases|--allow-prerelease) shift ;;
         --allow-downgrade) ALLOW_DOWNGRADE=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -90,13 +89,9 @@ is_semver() {
     ' "$1"
 }
 
-is_stable() {
-    [[ "$1" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
-}
-
 remote_versions() {
     if [[ -n "${AIDLC_TAGS_FILE:-}" ]]; then
-        sed -nE 's#^(v)?([0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?)$#\2#p' "$AIDLC_TAGS_FILE"
+        sed -E 's/^v//' "$AIDLC_TAGS_FILE"
         return
     fi
     git ls-remote --tags "$REPOSITORY_URL" |
@@ -104,21 +99,59 @@ remote_versions() {
         sort -u
 }
 
-sorted_stable_versions() {
+sorted_versions() {
     remote_versions |
-        awk '/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/' |
-        sort -t. -k1,1n -k2,2n -k3,3n
+        node -e '
+          const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+          const parse = (version) => {
+            const [withoutBuild] = version.split("+");
+            const separator = withoutBuild.indexOf("-");
+            const core = separator === -1 ? withoutBuild : withoutBuild.slice(0, separator);
+            const prerelease = separator === -1 ? undefined : withoutBuild.slice(separator + 1);
+            return { version, core: core.split(".").map(Number), pre: prerelease?.split(".") };
+          };
+          const compare = (a, b) => {
+            let result = a.core[0] - b.core[0] || a.core[1] - b.core[1] || a.core[2] - b.core[2];
+            if (!result && a.pre && !b.pre) result = -1;
+            if (!result && !a.pre && b.pre) result = 1;
+            if (!result && a.pre && b.pre) {
+              for (let i = 0; i < Math.max(a.pre.length, b.pre.length); i++) {
+                if (a.pre[i] === undefined) { result = -1; break; }
+                if (b.pre[i] === undefined) { result = 1; break; }
+                if (a.pre[i] === b.pre[i]) continue;
+                const an = /^\d+$/.test(a.pre[i]);
+                const bn = /^\d+$/.test(b.pre[i]);
+                result = an && bn
+                  ? Number(a.pre[i]) - Number(b.pre[i])
+                  : an ? -1 : bn ? 1 : a.pre[i].localeCompare(b.pre[i]);
+                break;
+              }
+            }
+            return result;
+          };
+          let input = "";
+          process.stdin.setEncoding("utf8");
+          process.stdin.on("data", (chunk) => { input += chunk; });
+          process.stdin.on("end", () => {
+            const versions = [...new Set(input.split(/\r?\n/).filter((version) => semver.test(version)))];
+            process.stdout.write(versions.map(parse).sort(compare).map(({ version }) => version).join("\n"));
+            if (versions.length) process.stdout.write("\n");
+          });
+        '
 }
 
-latest_stable() {
-    sorted_stable_versions | tail -n 1
+latest_version() {
+    sorted_versions | tail -n 1
 }
 
 version_cmp() {
     node -e '
       const parse = (v) => {
-        const [core, pre] = v.split("+")[0].split("-");
-        return { core: core.split(".").map(Number), pre: pre?.split(".") };
+        const [withoutBuild] = v.split("+");
+        const separator = withoutBuild.indexOf("-");
+        const core = separator === -1 ? withoutBuild : withoutBuild.slice(0, separator);
+        const prerelease = separator === -1 ? undefined : withoutBuild.slice(separator + 1);
+        return { core: core.split(".").map(Number), pre: prerelease?.split(".") };
       };
       const a=parse(process.argv[1]), b=parse(process.argv[2]);
       let result=a.core[0]-b.core[0] || a.core[1]-b.core[1] || a.core[2]-b.core[2];
@@ -232,14 +265,10 @@ prompt_password() {
 
 select_version() {
     if [[ -z "$VERSION" ]]; then
-        VERSION="$(latest_stable)"
+        VERSION="$(latest_version)"
     fi
     if [[ -z "$VERSION" ]] || ! is_semver "$VERSION"; then
         echo "No valid release version selected." >&2
-        exit 1
-    fi
-    if ! is_stable "$VERSION" && [[ "$INCLUDE_PRERELEASES" != 1 ]]; then
-        echo "Prerelease $VERSION requires --allow-prerelease." >&2
         exit 1
     fi
 }
@@ -628,9 +657,7 @@ status_command() {
 
 case "$COMMAND" in
     versions)
-        if [[ "$INCLUDE_PRERELEASES" == 1 ]]; then remote_versions | sort
-        else sorted_stable_versions
-        fi
+        sorted_versions
         ;;
     install) install_command ;;
     adopt) adopt_command ;;

@@ -11,6 +11,7 @@ const strictSemver =
 
 const readJson = (path) => JSON.parse(readFileSync(path, 'utf8'));
 const writeJson = (path, value) => writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const componentManifests = (dir = root) => {
   const ignored = new Set(['.git', '.terraform', 'builds', 'dist', 'node_modules', 'site']);
@@ -27,7 +28,7 @@ const componentManifests = (dir = root) => {
 };
 
 const changelogHeading = (version) =>
-  new RegExp(`^## \\[${version.replaceAll('.', '\\.')}\\] - (TBD|\\d{4}-\\d{2}-\\d{2})$`, 'm');
+  new RegExp(`^## \\[${escapeRegExp(version)}\\] - (TBD|\\d{4}-\\d{2}-\\d{2})$`, 'm');
 
 const validate = (expectedVersion, flags) => {
   const errors = [];
@@ -97,8 +98,15 @@ const prepare = (version) => {
   const changelogPath = join(root, 'CHANGELOG.md');
   const changelog = readFileSync(changelogPath, 'utf8');
   if (!changelogHeading(version).test(changelog)) {
+    const coreVersion = version.split(/[+-]/, 1)[0];
+    const priorPrereleaseHeading = new RegExp(
+      `^## \\[${escapeRegExp(coreVersion)}-[0-9A-Za-z.-]+\\] - (?:TBD|\\d{4}-\\d{2}-\\d{2})$`,
+      'm',
+    );
     const marker = '## [Unreleased]';
-    const next = changelog.replace(marker, `${marker}\n\n## [${version}] - TBD`);
+    const next = priorPrereleaseHeading.test(changelog)
+      ? changelog.replace(priorPrereleaseHeading, `## [${version}] - TBD`)
+      : changelog.replace(marker, `${marker}\n\n## [${version}] - TBD`);
     if (next === changelog) throw new Error(`Could not find ${marker} in CHANGELOG.md`);
     writeFileSync(changelogPath, next);
   }

@@ -1,10 +1,10 @@
-name: Publish Stable Release
+name: Publish Release
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: Stable SemVer without a v prefix
+        description: Strict SemVer without a v prefix (for example, 2.0.0 or 2.0.0-preview0)
         required: true
         type: string
 
@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: stable-release
+  group: release
   cancel-in-progress: false
 
 jobs:
@@ -30,19 +30,14 @@ jobs:
       - name: Validate release branch
         run: |
           if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
-            echo "Stable releases may only be dispatched from main." >&2
+            echo "Releases may only be dispatched from main." >&2
             exit 1
           fi
 
-      - name: Validate stable version
+      - name: Validate release version
         env:
           VERSION: ${{ inputs.version }}
-        run: |
-          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "Stable releases require X.Y.Z without a v prefix or prerelease suffix." >&2
-            exit 1
-          fi
-          npm run release:check -- "$VERSION" --final --tag-must-not-exist
+        run: npm run release:check -- "$VERSION" --final --tag-must-not-exist
 
       - name: Create annotated tag
         env:
@@ -57,4 +52,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
-        run: gh release create "v$VERSION" --verify-tag --generate-notes --title "Collaborative AI-DLC v$VERSION"
+        run: |
+          args=("v$VERSION" --verify-tag --generate-notes --title "Collaborative AI-DLC v$VERSION")
+          if [[ "$VERSION" == *-* ]]; then
+            args+=(--prerelease)
+          fi
+          gh release create "${args[@]}"
