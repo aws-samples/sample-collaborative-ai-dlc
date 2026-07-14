@@ -406,7 +406,8 @@ case "$*" in
   *" show -json "*) printf '{"resource_changes":[]}\\n' ;;
   *" state pull"*) printf '{}\\n' ;;
   *" output -raw application_url"*) printf 'https://example.invalid\\n' ;;
-  *" output -raw user_pool_id"*) printf 'pool-1\\n' ;;
+  *" output -raw user_pool_id"*) printf 'eu-central-1_pool-1\\n' ;;
+  *" output -raw aws_region"*) printf 'eu-central-1\\n' ;;
   *" output -raw user_pool_client_id"*) printf 'client-1\\n' ;;
   *" output -raw cloudfront_domain_name"*) printf 'example.invalid\\n' ;;
   *" output -raw s3_bucket_name"*) printf 'bucket-1\\n' ;;
@@ -418,7 +419,7 @@ esac
   writeFileSync(
     join(bin, 'aws'),
     `#!/usr/bin/env bash
-printf '%s\\n' "$*" >> "$AIDLC_AWS_LOG"
+printf 'profile=%s region=%s %s\\n' "\${AWS_PROFILE:-}" "\${AWS_REGION:-}" "$*" >> "$AIDLC_AWS_LOG"
 [[ "$*" == *"admin-get-user"* ]] && exit 1
 exit 0
 `,
@@ -445,7 +446,10 @@ test('installer creates permanent administrators with v1 and v2 roles', () => {
   const v2Aws = execFileSync('cat', [v2Env.AIDLC_AWS_LOG], { encoding: 'utf8' });
   assert.match(v2Aws, /admin-create-user/);
   assert.match(v2Aws, /admin-set-user-password.*--permanent/);
-  assert.match(v2Aws, /admin-add-user-to-group.*--group-name platform-admin/);
+  assert.match(
+    v2Aws,
+    /admin-add-user-to-group.*--group-name platform-admin.*--region eu-central-1/,
+  );
 
   const currentLink = join(v2Env.XDG_DATA_HOME, 'collaborative-ai-dlc/current');
   const destroyLog = join(v2Dir, 'destroy.log');
@@ -465,6 +469,8 @@ test('installer creates permanent administrators with v1 and v2 roles', () => {
 
   const upgradeDir = mkdtempSync(join(tmpdir(), 'aidlc-v1-admin-'));
   const upgradeEnv = mockedCommandEnv(upgradeDir, repository);
+  upgradeEnv.AIDLC_AWS_PROFILE = 'saved-profile';
+  upgradeEnv.AIDLC_REGION = 'eu-central-1';
   const v1 = run('bash', [installer, 'install', '--version', '1.1.0'], { env: upgradeEnv });
   assert.equal(v1.status, 0, v1.stderr);
   let upgradeAws = execFileSync('cat', [upgradeEnv.AIDLC_AWS_LOG], { encoding: 'utf8' });
@@ -475,6 +481,30 @@ test('installer creates permanent administrators with v1 and v2 roles', () => {
   assert.equal(update.status, 0, update.stderr);
   assert.match(update.stdout, /Application URL:\s+https:\/\/example\.invalid/);
   upgradeAws = execFileSync('cat', [upgradeEnv.AIDLC_AWS_LOG], { encoding: 'utf8' });
-  assert.match(upgradeAws, /admin-add-user-to-group.*--group-name platform-admin/);
+  assert.match(
+    upgradeAws,
+    /admin-add-user-to-group.*--group-name platform-admin.*--region eu-central-1/,
+  );
   assert.doesNotMatch(upgradeAws, /admin-set-user-password/);
+
+  execFileSync('git', ['checkout', '-q', 'aidlc-v2'], { cwd: repository });
+  writeFileSync(join(repository, 'branch-update'), 'next\n');
+  execFileSync('git', ['add', 'branch-update'], { cwd: repository });
+  execFileSync('git', ['commit', '-qm', 'advance branch'], { cwd: repository });
+
+  writeFileSync(upgradeEnv.AIDLC_AWS_LOG, '');
+  const ambientEnv = { ...upgradeEnv };
+  delete ambientEnv.AIDLC_AWS_PROFILE;
+  delete ambientEnv.AIDLC_REGION;
+  const ambientOverride = run('bash', [installer, 'update', '--ref', 'aidlc-v2'], {
+    env: {
+      ...ambientEnv,
+      AWS_PROFILE: 'wrong-ambient-profile',
+      AWS_REGION: 'us-west-2',
+    },
+  });
+  assert.equal(ambientOverride.status, 0, ambientOverride.stderr);
+  upgradeAws = execFileSync('cat', [upgradeEnv.AIDLC_AWS_LOG], { encoding: 'utf8' });
+  assert.match(upgradeAws, /profile=saved-profile region=eu-central-1/);
+  assert.match(upgradeAws, /--region eu-central-1/);
 });

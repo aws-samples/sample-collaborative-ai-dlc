@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Managed installer with SemVer release discovery, immutable tagged checkouts, persistent deployment configuration, existing-v1 adoption, guarded updates, status reporting, Terraform state backups, and downgrade protection.
 - Useful deployment completion summaries with the environment, region, and public CloudFront application URL for managed and standalone installs.
 - Guarded managed and standalone environment destruction with typed confirmation, pre-destroy state backups, custom local environment support, and reliable cleanup of versioned S3 buckets.
+- Cognito administrator configuration now uses the Terraform deployment region and reports actionable AWS account/profile diagnostics when the deployed user pool is inaccessible.
 - Composable AI-DLC v2 workflows built from versioned blocks, per-intent execution grids, stage skipping, review gates, deterministic sensors, artifact derivation, and in-flight recomposition.
 - Bedrock AgentCore execution with durable orchestration, resumable human questions, scoped agent credentials and MCP servers, configurable agent tiers and models, and live execution output.
 - Intent-centric workbench, observability, artifact previews and editing, discussions, multi-repository construction, and GitHub, GitLab, and Jira integrations.

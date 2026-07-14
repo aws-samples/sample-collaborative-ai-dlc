@@ -19,13 +19,13 @@ COMMAND="${1:-}"
 VERSION="${AIDLC_VERSION:-}"
 REF="${AIDLC_REF:-}"
 ENVIRONMENT="${AIDLC_ENVIRONMENT:-dev}"
-REGION="${AWS_REGION:-${AIDLC_REGION:-us-east-1}}"
-PROFILE="${AWS_PROFILE:-${AIDLC_AWS_PROFILE:-}}"
+REGION="${AIDLC_REGION:-${AWS_REGION:-us-east-1}}"
+PROFILE="${AIDLC_AWS_PROFILE:-${AWS_PROFILE:-}}"
 ADMIN_USERNAME="${AIDLC_ADMIN_USERNAME:-}"
 REPOSITORY_URL="${AIDLC_REPOSITORY_URL:-$DEFAULT_REPOSITORY}"
 ENVIRONMENT_EXPLICIT="${AIDLC_ENVIRONMENT+x}"
-REGION_EXPLICIT="${AWS_REGION+x}${AIDLC_REGION+x}"
-PROFILE_EXPLICIT="${AWS_PROFILE+x}${AIDLC_AWS_PROFILE+x}"
+REGION_EXPLICIT="${AIDLC_REGION+x}"
+PROFILE_EXPLICIT="${AIDLC_AWS_PROFILE+x}"
 ADMIN_EXPLICIT="${AIDLC_ADMIN_USERNAME+x}"
 REPOSITORY_EXPLICIT="${AIDLC_REPOSITORY_URL+x}"
 VERSION_EXPLICIT="${AIDLC_VERSION+x}"
@@ -497,21 +497,37 @@ EOF
 }
 
 configure_administrator() {
-    local checkout="$1" role="$2" create_user="$3" pool
+    local checkout="$1" role="$2" create_user="$3" pool pool_region caller_account profile_label
     pool="$(terraform -chdir="$checkout/terraform" output -raw user_pool_id)"
+    pool_region="$(terraform -chdir="$checkout/terraform" output -raw aws_region)"
+    if ! aws cognito-idp describe-user-pool \
+        --user-pool-id "$pool" --region "$pool_region" >/dev/null 2>&1; then
+        caller_account="$(aws sts get-caller-identity --query Account --output text 2>/dev/null || printf 'unknown')"
+        profile_label="${PROFILE:-default credential chain}"
+        echo "Cognito user pool '$pool' from Terraform state is not accessible." >&2
+        echo "  Terraform region: $pool_region" >&2
+        echo "  AWS profile:      $profile_label" >&2
+        echo "  Caller account:   $caller_account" >&2
+        echo "Verify that the installer profile points to the AWS account containing this deployment." >&2
+        return 1
+    fi
     if [[ "$create_user" == 1 ]]; then
-        if ! aws cognito-idp admin-get-user --user-pool-id "$pool" --username "$ADMIN_USERNAME" >/dev/null 2>&1; then
+        if ! aws cognito-idp admin-get-user \
+            --user-pool-id "$pool" --username "$ADMIN_USERNAME" \
+            --region "$pool_region" >/dev/null 2>&1; then
             aws cognito-idp admin-create-user \
                 --user-pool-id "$pool" --username "$ADMIN_USERNAME" \
                 --temporary-password "$ADMIN_PASSWORD" --message-action SUPPRESS \
-                --user-attributes "Name=email,Value=$ADMIN_USERNAME" "Name=email_verified,Value=true" >/dev/null
+                --user-attributes "Name=email,Value=$ADMIN_USERNAME" "Name=email_verified,Value=true" \
+                --region "$pool_region" >/dev/null
         fi
         aws cognito-idp admin-set-user-password \
             --user-pool-id "$pool" --username "$ADMIN_USERNAME" \
-            --password "$ADMIN_PASSWORD" --permanent >/dev/null
+            --password "$ADMIN_PASSWORD" --permanent --region "$pool_region" >/dev/null
     fi
     aws cognito-idp admin-add-user-to-group \
-        --user-pool-id "$pool" --username "$ADMIN_USERNAME" --group-name "$role"
+        --user-pool-id "$pool" --username "$ADMIN_USERNAME" --group-name "$role" \
+        --region "$pool_region"
 }
 
 switch_current() {
