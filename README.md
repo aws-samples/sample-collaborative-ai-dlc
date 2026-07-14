@@ -94,6 +94,14 @@ bash /tmp/aidlc-install.sh update --version 2.0.0
 
 An update backs up Terraform state, rejects unexpected destruction of Cognito, Neptune, S3, or persistent DynamoDB resources, deploys infrastructure, grants the existing administrator `platform-admin`, and deploys the frontend. Removal of the retired v1 ECS agent runtime and agent-pool table is expected. If any step fails, `current` remains on the working version. Application-data backup beyond Terraform state remains the operator's responsibility. Downgrades require `--allow-downgrade`.
 
+To permanently destroy a managed environment:
+
+```bash
+bash /tmp/aidlc-install.sh destroy
+```
+
+The command requires typing the configured environment name. `--yes` is available for deliberate automation. It backs up Terraform state before destroying all application resources and data, then removes the managed `current` link. Local configuration, immutable checkouts, the state backup, and the Terraform state bucket are retained.
+
 ### Advanced Manual Deployment
 
 The environment argument is a logical deployment name such as `dev`; it is not an AWS profile. Set credentials and region through the AWS CLI environment, and use matching backend and tfvars filenames:

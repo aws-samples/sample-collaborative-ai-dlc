@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  readlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,6 +19,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const installer = join(root, 'scripts/install.sh');
 const inspector = join(root, 'scripts/inspect-terraform-plan.mjs');
 const deployTerraform = join(root, 'scripts/deploy-terraform.sh');
+const destroyTerraform = join(root, 'scripts/destroy.sh');
 
 const run = (file, args, options = {}) =>
   spawnSync(file, args, {
@@ -155,6 +165,49 @@ fi
   assert.match(deployed.stdout, /Next step:.*deploy-frontend\.sh summary/);
 });
 
+test('standalone destroy supports custom local environments and backs up state', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-destroy-'));
+  const bin = join(dir, 'bin');
+  const config = join(dir, 'config/environments');
+  const backups = join(dir, 'backups');
+  const terraformLog = join(dir, 'terraform.log');
+  mkdirSync(bin, { recursive: true });
+  mkdirSync(config, { recursive: true });
+  writeFileSync(join(config, 'local-test.tfvars'), 'environment = "local-test"\n');
+  writeFileSync(
+    join(config, 'local-test.s3.tfbackend'),
+    'bucket = "local-test-state"\nkey = "state"\n',
+  );
+  writeFileSync(
+    join(bin, 'terraform'),
+    `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$TERRAFORM_LOG"
+[[ "$*" == *" state pull"* ]] && printf '{"version":4}\\n'
+exit 0
+`,
+    { mode: 0o755 },
+  );
+
+  const destroyed = run('bash', [destroyTerraform, 'local-test', '--yes'], {
+    env: {
+      PATH: `${bin}:${process.env.PATH}`,
+      AIDLC_CONFIG_DIR: join(dir, 'config'),
+      AIDLC_BACKUP_DIR: backups,
+      TERRAFORM_LOG: terraformLog,
+    },
+  });
+
+  assert.equal(destroyed.status, 0, destroyed.stderr);
+  assert.match(destroyed.stdout, /Environment destruction complete/);
+  assert.match(destroyed.stdout, /State bucket:\s+s3:\/\/local-test-state \(retained\)/);
+  assert.equal(readdirSync(backups).length, 1);
+  assert.match(readFileSync(join(backups, readdirSync(backups)[0]), 'utf8'), /"version":4/);
+  const commands = readFileSync(terraformLog, 'utf8');
+  assert.match(commands, /init -reconfigure/);
+  assert.match(commands, /state pull/);
+  assert.match(commands, /destroy .*local-test\.tfvars -auto-approve/);
+});
+
 test('installer lists prereleases by default in SemVer order', () => {
   const dir = mkdtempSync(join(tmpdir(), 'aidlc-tags-'));
   const tags = join(dir, 'tags');
@@ -192,6 +245,11 @@ const createReleaseRepository = () => {
   writeFileSync(join(repository, 'scripts/deploy-frontend.sh'), '#!/usr/bin/env bash\nexit 0\n', {
     mode: 0o755,
   });
+  writeFileSync(
+    join(repository, 'scripts/destroy.sh'),
+    '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$AIDLC_DESTROY_LOG"\nexit "${AIDLC_DESTROY_EXIT:-0}"\n',
+    { mode: 0o755 },
+  );
   writeJson(join(repository, 'package.json'), { name: 'aidlc', private: true });
   execFileSync('git', ['add', '.'], { cwd: repository });
   execFileSync('git', ['commit', '-qm', 'v1'], { cwd: repository });
@@ -388,6 +446,22 @@ test('installer creates permanent administrators with v1 and v2 roles', () => {
   assert.match(v2Aws, /admin-create-user/);
   assert.match(v2Aws, /admin-set-user-password.*--permanent/);
   assert.match(v2Aws, /admin-add-user-to-group.*--group-name platform-admin/);
+
+  const currentLink = join(v2Env.XDG_DATA_HOME, 'collaborative-ai-dlc/current');
+  const destroyLog = join(v2Dir, 'destroy.log');
+  const failedDestroy = run('bash', [installer, 'destroy', '--yes'], {
+    env: { ...v2Env, AIDLC_DESTROY_LOG: destroyLog, AIDLC_DESTROY_EXIT: '1' },
+  });
+  assert.equal(failedDestroy.status, 1);
+  assert.equal(existsSync(currentLink), true);
+
+  const destroyed = run('bash', [installer, 'destroy', '--yes'], {
+    env: { ...v2Env, AIDLC_DESTROY_LOG: destroyLog },
+  });
+  assert.equal(destroyed.status, 0, destroyed.stderr);
+  assert.match(destroyed.stdout, /Managed environment destroyed/);
+  assert.equal(existsSync(currentLink), false);
+  assert.match(readFileSync(destroyLog, 'utf8'), /dev --yes/);
 
   const upgradeDir = mkdtempSync(join(tmpdir(), 'aidlc-v1-admin-'));
   const upgradeEnv = mockedCommandEnv(upgradeDir, repository);

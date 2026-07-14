@@ -281,15 +281,31 @@ Both paths share the same shared core, so the result is identical. Migration is 
 
 ## Destroy infrastructure
 
-To remove all deployed resources:
+For a managed installation:
+
+```bash
+bash /tmp/aidlc-install.sh destroy
+```
+
+For a local/manual checkout, pass any environment with matching `.tfvars` and `.s3.tfbackend` files:
 
 ```bash
 ./scripts/destroy.sh dev
+./scripts/destroy.sh installer-test
 ```
 
 !!! danger "Data loss"
 
-    This permanently deletes all data including DynamoDB tables, Neptune databases, and S3 buckets. This action cannot be undone.
+    These commands permanently delete all application data including DynamoDB tables, Neptune databases, and S3 buckets. This action cannot be undone. Interactive runs require typing the environment name; use `--yes` only for deliberate automation.
+
+Both paths back up Terraform state before destruction. Managed installs store the backup under the XDG data directory. Standalone runs use `${XDG_DATA_HOME:-~/.local/share}/collaborative-ai-dlc/backups` unless `AIDLC_BACKUP_DIR` is set. The backend state bucket is retained.
+
+For standalone deployments whose environment files live outside the checkout:
+
+```bash
+AIDLC_CONFIG_DIR=/path/to/terraform-config \
+  ./scripts/destroy.sh installer-test
+```
 
 To also remove the Terraform state bucket (created during bootstrap):
 

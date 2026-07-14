@@ -44,6 +44,7 @@ Commands:
   adopt --source <path>        Adopt an existing v1 deployment
   update                       Update the managed deployment
   status                       Show managed installation status
+  destroy                      Permanently destroy the managed environment
 
 Options:
   --version VERSION            Select a release (default: latest SemVer)
@@ -226,11 +227,32 @@ require_commands() {
     [[ "$missing" == 0 ]]
 }
 
+require_destroy_commands() {
+    [[ "${AIDLC_TEST_MODE:-0}" == 1 ]] && return
+    if ! command -v terraform >/dev/null 2>&1; then
+        echo "Missing required command: terraform" >&2
+        return 1
+    fi
+}
+
 confirm() {
     local prompt="$1" answer
     [[ "$ASSUME_YES" == 1 ]] && return 0
     read -r -p "$prompt [y/N] " answer
     [[ "$answer" == "y" || "$answer" == "Y" ]]
+}
+
+confirm_destroy() {
+    local answer
+    [[ "$ASSUME_YES" == 1 ]] && return 0
+    if [[ ! -t 0 ]]; then
+        echo "Destruction requires an interactive terminal or --yes." >&2
+        return 1
+    fi
+    echo "WARNING: This permanently destroys all AI-DLC resources and application data"
+    echo "for environment '$ENVIRONMENT'. Local configuration and the state bucket are retained."
+    read -r -p "Type the environment name '$ENVIRONMENT' to continue: " answer
+    [[ "$answer" == "$ENVIRONMENT" ]]
 }
 
 prompt_admin() {
@@ -658,6 +680,45 @@ update_command() {
     print_managed_summary "Update from AI-DLC v$old_version" "$checkout"
 }
 
+destroy_command() {
+    require_destroy_commands
+    load_config
+    aws_environment
+
+    local checkout version destroy_script
+    checkout="$(current_checkout)"
+    [[ -n "$checkout" ]] || {
+        echo "No managed installation to destroy." >&2
+        exit 1
+    }
+    version="$(current_version)"
+    destroy_script="$checkout/scripts/destroy.sh"
+    [[ -f "$destroy_script" ]] || {
+        echo "Release checkout does not provide a destroy script: $destroy_script" >&2
+        exit 1
+    }
+
+    if ! confirm_destroy; then
+        echo "Destruction aborted."
+        exit 0
+    fi
+
+    if [[ "${AIDLC_TEST_MODE:-0}" != 1 ]]; then
+        AIDLC_CONFIG_DIR="$CONFIG_ROOT/terraform" \
+            AIDLC_BACKUP_DIR="$DATA_ROOT/backups" \
+            AIDLC_YES=1 \
+            bash "$destroy_script" "$ENVIRONMENT" --yes
+    fi
+
+    rm -f "$CURRENT_LINK"
+    echo ""
+    echo "Managed environment destroyed"
+    printf '  Release:      AI-DLC v%s\n' "$version"
+    printf '  Environment:  %s\n' "$ENVIRONMENT"
+    printf '  Local config: %s (retained)\n' "$CONFIG_ROOT"
+    printf '  Checkouts:    %s (retained)\n' "$DATA_ROOT"
+}
+
 status_command() {
     load_config
     local checkout version url="" commit
@@ -692,6 +753,7 @@ case "$COMMAND" in
     adopt) adopt_command ;;
     update) update_command ;;
     status) status_command ;;
+    destroy) destroy_command ;;
     ""|-h|--help|help) usage ;;
     *) echo "Unknown command: $COMMAND" >&2; usage >&2; exit 2 ;;
 esac
