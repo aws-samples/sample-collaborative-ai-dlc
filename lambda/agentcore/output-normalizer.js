@@ -88,7 +88,7 @@ const completionOf = (line) => {
 };
 
 const parseToolStart = (line) => {
-  const match = line.match(/^\s*Running tool\s+([A-Za-z0-9_.:-]+)\b/i);
+  const match = line.match(/^\s*Running tool\s+[`'"]?([A-Za-z0-9_.:-]+)\b/i);
   return match?.[1] ?? null;
 };
 
@@ -101,6 +101,16 @@ const extractJson = (text) => {
   } catch {
     return null;
   }
+};
+
+const extractParamString = (text, keys) => {
+  for (const key of keys) {
+    const quoted = new RegExp(`["']${key}["']\\s*:\\s*["']([^"']+)["']`, 'i').exec(text);
+    if (quoted?.[1]) return quoted[1];
+    const bare = new RegExp(`\\b${key}\\b\\s*:\\s*([^,}\\]\\s]+)`, 'i').exec(text);
+    if (bare?.[1]) return bare[1].replace(/^["']|["']$/g, '');
+  }
+  return '';
 };
 
 const basenameish = (value) => {
@@ -131,10 +141,29 @@ const readTargetsFromParams = (params) => {
   return [];
 };
 
+const readTargetsFromTool = (tool, params) => {
+  const fromParams = readTargetsFromParams(params);
+  if (fromParams.length) return fromParams;
+  const value = extractParamString(tool.rawLines.join(''), [
+    'path',
+    'paths',
+    'file',
+    'files',
+    'filename',
+    'pattern',
+    'glob',
+  ]);
+  return value ? [value] : [];
+};
+
 const artifactLabelFromParams = (params) => {
   if (!params || typeof params !== 'object') return '';
   return String(params.id ?? params.artifactId ?? params.artifactType ?? params.name ?? '').trim();
 };
+
+const artifactLabelFromTool = (tool, params) =>
+  artifactLabelFromParams(params) ||
+  extractParamString(tool.rawLines.join(''), ['id', 'artifactId', 'artifactType', 'name']);
 
 const humanizeTool = (name) =>
   String(name || 'tool')
@@ -164,7 +193,7 @@ const displayForTool = (tool) => {
   }
 
   if (tool.name === 'get_artifact' || tool.name === 'get_artifact_toc') {
-    const label = artifactLabelFromParams(params) || 'artifact';
+    const label = artifactLabelFromTool(tool, params) || 'artifact';
     return {
       content,
       display: {
@@ -179,7 +208,7 @@ const displayForTool = (tool) => {
   }
 
   if (tool.name === 'create_artifact') {
-    const label = artifactLabelFromParams(params) || 'artifact';
+    const label = artifactLabelFromTool(tool, params) || 'artifact';
     return {
       content,
       display: {
@@ -223,7 +252,7 @@ const displayForTool = (tool) => {
 
 const displayForReadBatch = (tools) => {
   const content = tools.map((t) => t.rawLines.join('')).join('');
-  const targets = tools.flatMap((t) => readTargetsFromParams(extractJson(t.rawLines.join(''))));
+  const targets = tools.flatMap((t) => readTargetsFromTool(t, extractJson(t.rawLines.join(''))));
   const names = compactList(targets.length ? targets : tools.map((_, i) => `item ${i + 1}`));
   const count = tools.length;
   return {
@@ -236,6 +265,19 @@ const displayForReadBatch = (tools) => {
       hiddenByDefault: false,
     },
   };
+};
+
+const isStructuralNoiseLine = (text) => {
+  const s = String(text ?? '').trim();
+  if (!s) return true;
+  if (/^stdout$/i.test(s)) return true;
+  if (/^Running tool\b/i.test(s)) return true;
+  if (/^[-\s]*(Completed|Failed|Errored|Error)\b/i.test(s)) return true;
+  const stripped = s.replace(/^[.:…⋮\s]+/, '').trim();
+  if (/^[{}[\],]+$/.test(stripped)) return true;
+  if (/^"[^"]+"\s*:/.test(stripped)) return true;
+  if (/^[{[]\s*"[^"]+"\s*:/.test(stripped)) return true;
+  return false;
 };
 
 export const createCliOutputSink = ({ cli, emit }) => {
@@ -307,10 +349,12 @@ export const createCliOutputSink = ({ cli, emit }) => {
 
       if (text.trim()) {
         flushReadBatch();
+        const structural = isStructuralNoiseLine(text);
         emitEvent(emit, text, {
-          type: 'message',
+          type: structural ? 'raw' : 'message',
           level: 'info',
           summary: text.trim(),
+          hiddenByDefault: structural,
         });
       }
     };
@@ -365,4 +409,5 @@ export const __test = {
   displayForTool,
   displayForReadBatch,
   extractJson,
+  isStructuralNoiseLine,
 };

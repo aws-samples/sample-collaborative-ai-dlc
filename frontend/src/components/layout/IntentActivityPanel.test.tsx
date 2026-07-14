@@ -22,7 +22,7 @@ vi.mock('@/contexts/IntentContext', () => ({
     outputBuffers: new Map([
       [
         'si-1',
-        'Running tool get_artifact with the param\n ... { "id": "intent-statement", "mode": "full" }\n - Completed in 0.12s\nRunning tool fs_read with the param\n ... { "path": "missing.txt" }\n - Failed in 0.01s\n',
+        'Running tool get_artifact with the param\n ... { "id": "intent-statement", "mode": "full" }\n - Completed in 0.12s\n: "label": "No enforcement - trust the developer",\n- Completed in 12.76s\nstdout\n> Question parked - stopping now.\nRunning tool fs_read with the param\n ... { "path": "missing.txt" }\n - Failed in 0.01s\n',
       ],
     ]),
     outputRows: new Map([
@@ -58,9 +58,50 @@ vi.mock('@/contexts/IntentContext', () => ({
             seq: 3,
             stageInstanceId: 'si-1',
             kind: 'stdout',
+            content: ': "label": "No enforcement - trust the developer",\n',
+            timestamp: '2026-01-01T00:00:02Z',
+          },
+          {
+            seq: 4,
+            stageInstanceId: 'si-1',
+            kind: 'stdout',
+            content: '- Completed in 12.76s\n',
+            timestamp: '2026-01-01T00:00:03Z',
+          },
+          {
+            seq: 5,
+            stageInstanceId: 'si-1',
+            kind: 'stdout',
+            content: 'stdout\n',
+            timestamp: '2026-01-01T00:00:04Z',
+          },
+          {
+            seq: 6,
+            stageInstanceId: 'si-1',
+            kind: 'stdout',
+            content: '> Question parked - stopping now.\n',
+            timestamp: '2026-01-01T00:00:05Z',
+          },
+          {
+            seq: 7,
+            stageInstanceId: 'si-1',
+            kind: 'stdout',
+            content:
+              'Running tool get_artifact with the param\n ... { "id": "architecture", "mode": "full" }\n - Completed in 0.43s\n',
+            timestamp: '2026-01-01T00:00:06Z',
+            display: {
+              type: 'artifact',
+              title: 'Loaded artifact: artifact',
+              summary: 'Completed in 0.43s',
+            },
+          },
+          {
+            seq: 8,
+            stageInstanceId: 'si-1',
+            kind: 'stdout',
             content:
               'Running tool fs_read with the param\n ... { "path": "missing.txt" }\n - Failed in 0.01s\n',
-            timestamp: '2026-01-01T00:00:02Z',
+            timestamp: '2026-01-01T00:00:07Z',
             display: {
               type: 'tool',
               level: 'error',
@@ -101,12 +142,19 @@ describe('IntentActivityPanel Agent tab', () => {
     await user.click(screen.getByRole('tab', { name: /Agent/i }));
     expect(mocks.ensureOutputs).toHaveBeenCalledWith('si-1');
     expect(screen.getByText('Loaded artifact: intent-statement')).toBeInTheDocument();
+    expect(screen.getByText('Loaded artifact: architecture')).toBeInTheDocument();
     expect(screen.getByText('Fs Read failed')).toBeInTheDocument();
+    expect(screen.getByText('Question parked - stopping now.')).toBeInTheDocument();
+    expect(screen.queryByText('Loaded artifact: artifact')).not.toBeInTheDocument();
     expect(screen.queryByText('Link Artifacts')).not.toBeInTheDocument();
     expect(screen.queryByText(/"mode": "full"/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/No enforcement/)).not.toBeInTheDocument();
+    expect(screen.queryByText('stdout')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Completed in 12.76s/)).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Raw' }));
     expect(screen.getByText(/"mode": "full"/)).toBeInTheDocument();
+    expect(screen.getByText(/No enforcement/)).toBeInTheDocument();
     expect(screen.getByText(/Running tool get_artifact/)).toBeInTheDocument();
   });
 });

@@ -509,6 +509,23 @@ describe('CLI output sink — UI-safe stdout', () => {
     expect(JSON.stringify(emitted[0].display)).not.toContain('"mode"');
   });
 
+  it('recognizes decorated Kiro tool names and recovers artifact ids from malformed params', () => {
+    const emitted = [];
+    const sink = createCliOutputSink({ cli: 'kiro', emit: (event) => emitted.push(event) });
+    sink.write('Running tool `get_artifact` with the param\n');
+    sink.write(': { "id": "architecture",\n');
+    sink.write(': "mode": "full",\n');
+    sink.write(': }\n');
+    sink.write(' - Completed in 0.43s\n');
+    sink.flush();
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].display).toMatchObject({
+      type: 'artifact',
+      title: 'Loaded artifact: architecture',
+    });
+  });
+
   it('collapses consecutive Kiro fs_read tool blocks into one batch_read event', () => {
     const emitted = [];
     const sink = createCliOutputSink({ cli: 'kiro', emit: (event) => emitted.push(event) });
@@ -583,6 +600,22 @@ describe('CLI output sink — UI-safe stdout', () => {
           summary: 'Thinking about requirements.',
         },
       },
+    ]);
+  });
+
+  it('preserves unmatched structural fragments but hides them from Progress by default', () => {
+    const emitted = [];
+    const sink = createCliOutputSink({ cli: 'kiro', emit: (event) => emitted.push(event) });
+    sink.write(': "label": "No enforcement - trust the developer",\n');
+    sink.write('stdout\n');
+    sink.write('- Completed in 12.76s\n');
+    sink.flush();
+
+    expect(emitted.map((e) => e.content).join('')).toContain('No enforcement');
+    expect(emitted.map((e) => e.display)).toEqual([
+      expect.objectContaining({ type: 'raw', hiddenByDefault: true }),
+      expect.objectContaining({ type: 'raw', hiddenByDefault: true }),
+      expect.objectContaining({ type: 'raw', hiddenByDefault: true }),
     ]);
   });
 });

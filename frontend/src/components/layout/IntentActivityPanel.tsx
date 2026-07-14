@@ -331,7 +331,9 @@ function ProgressTranscript({
   loading: boolean;
   hasRaw: boolean;
 }) {
-  const visibleRows = rows.filter((row) => !row.display?.hiddenByDefault);
+  const visibleRows = rows
+    .map((row) => ({ row, display: displayForProgressRow(row) }))
+    .filter(({ display }) => !display.hiddenByDefault);
   if (visibleRows.length === 0) {
     return (
       <p className="text-xs text-muted-foreground">
@@ -346,14 +348,13 @@ function ProgressTranscript({
   return (
     <div className="space-y-2">
       {visibleRows.map((row, index) => (
-        <ProgressRow key={`${row.seq}-${index}`} row={row} />
+        <ProgressRow key={`${row.row.seq}-${index}`} row={row.row} display={row.display} />
       ))}
     </div>
   );
 }
 
-function ProgressRow({ row }: { row: IntentOutput }) {
-  const display = row.display ?? legacyDisplayFor(row);
+function ProgressRow({ row, display }: { row: IntentOutput; display: IntentOutputDisplay }) {
   const Icon = iconForDisplay(display);
   const isProblem = display.level === 'error' || display.level === 'warning';
   const body = display.title || display.summary || row.content.trim();
@@ -395,12 +396,60 @@ function ProgressRow({ row }: { row: IntentOutput }) {
   );
 }
 
+function displayForProgressRow(row: IntentOutput): IntentOutputDisplay {
+  const display = row.display ? { ...row.display } : legacyDisplayFor(row);
+  if (
+    display.type === 'artifact' &&
+    display.title?.match(/:\s*artifact$/i) &&
+    row.content.includes(':')
+  ) {
+    const label = extractLegacyParam(row.content, ['id', 'artifactId', 'artifactType', 'name']);
+    if (label) display.title = display.title.replace(/:\s*artifact$/i, `: ${label}`);
+  }
+  return display;
+}
+
 function legacyDisplayFor(row: IntentOutput): IntentOutputDisplay {
+  const text = row.content.trim();
+  if (isLegacyStructuralNoise(text)) {
+    return {
+      type: 'raw',
+      level: 'info',
+      summary: text || row.kind,
+      hiddenByDefault: true,
+    };
+  }
   return {
     type: 'message',
     level: 'info',
-    summary: row.content.trim() || row.kind,
+    summary: cleanLegacyMessage(text) || row.kind,
   };
+}
+
+function isLegacyStructuralNoise(text: string): boolean {
+  if (!text) return true;
+  if (/^stdout$/i.test(text)) return true;
+  if (/^Running tool\b/i.test(text)) return true;
+  if (/^[-\s]*(Completed|Failed|Errored|Error)\b/i.test(text)) return true;
+  const stripped = text.replace(/^[.:…⋮\s]+/, '').trim();
+  if (/^[{}[\],]+$/.test(stripped)) return true;
+  if (/^"[^"]+"\s*:/.test(stripped)) return true;
+  if (/^[{[]\s*"[^"]+"\s*:/.test(stripped)) return true;
+  return false;
+}
+
+function cleanLegacyMessage(text: string): string {
+  return text.replace(/^>\s*/, '').trim();
+}
+
+function extractLegacyParam(text: string, keys: string[]): string {
+  for (const key of keys) {
+    const quoted = new RegExp(`["']${key}["']\\s*:\\s*["']([^"']+)["']`, 'i').exec(text);
+    if (quoted?.[1]) return quoted[1];
+    const bare = new RegExp(`\\b${key}\\b\\s*:\\s*([^,}\\]\\s]+)`, 'i').exec(text);
+    if (bare?.[1]) return bare[1].replace(/^["']|["']$/g, '');
+  }
+  return '';
 }
 
 function iconForDisplay(display: IntentOutputDisplay) {
