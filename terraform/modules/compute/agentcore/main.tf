@@ -30,7 +30,7 @@ terraform {
 
 provider "docker" {
   registry_auth {
-    address  = format("%v.dkr.ecr.%v.%v", data.aws_caller_identity.current.account_id, data.aws_region.current.id, data.aws_partition.current.dns_suffix)
+    address  = format("%v.dkr.ecr.%v.%v", data.aws_caller_identity.current.account_id, data.aws_region.current.region, data.aws_partition.current.dns_suffix)
     username = data.aws_ecr_authorization_token.token.user_name
     password = data.aws_ecr_authorization_token.token.password
   }
@@ -152,11 +152,11 @@ resource "aws_ecr_lifecycle_policy" "agentcore" {
 
 module "agentcore_docker_build" {
   source  = "terraform-aws-modules/lambda/aws//modules/docker-build"
-  version = "~> 7.0"
+  version = "~> 8.0"
 
   create_ecr_repo = false
   ecr_repo        = aws_ecr_repository.agentcore.name
-  ecr_address     = format("%v.dkr.ecr.%v.%v", data.aws_caller_identity.current.account_id, data.aws_region.current.id, local.dns_suffix)
+  ecr_address     = format("%v.dkr.ecr.%v.%v", data.aws_caller_identity.current.account_id, data.aws_region.current.region, local.dns_suffix)
 
   use_image_tag    = true
   image_tag        = local.agentcore_image_tag
@@ -285,13 +285,13 @@ resource "aws_iam_role_policy" "agentcore" {
       {
         Effect   = "Allow"
         Action   = ["logs:CreateLogStream", "logs:PutLogEvents", "logs:CreateLogGroup"]
-        Resource = "arn:${local.partition}:logs:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:log-group:/aws/bedrock-agentcore/*"
+        Resource = "arn:${local.partition}:logs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/bedrock-agentcore/*"
       },
       {
         # Business graph (Neptune) read + write.
         Effect   = "Allow"
         Action   = ["neptune-db:ReadDataViaQuery", "neptune-db:WriteDataViaQuery", "neptune-db:DeleteDataViaQuery", "neptune-db:connect"]
-        Resource = "arn:${local.partition}:neptune-db:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:${var.neptune_cluster_resource_id}/*"
+        Resource = "arn:${local.partition}:neptune-db:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:${var.neptune_cluster_resource_id}/*"
       },
       {
         # v2 process state table (+ its indexes) and the blocks table (read).
@@ -316,7 +316,7 @@ resource "aws_iam_role_policy" "agentcore" {
         # Push live output/questions to the realtime websocket.
         Effect   = "Allow"
         Action   = ["execute-api:ManageConnections"]
-        Resource = var.websocket_execution_arn != "" ? "${var.websocket_execution_arn}/*" : "arn:${local.partition}:execute-api:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:*"
+        Resource = var.websocket_execution_arn != "" ? "${var.websocket_execution_arn}/*" : "arn:${local.partition}:execute-api:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:*"
       },
       {
         # Read agent model + bearer/api-key settings at startup (no Bedrock IAM —
@@ -339,8 +339,8 @@ resource "aws_iam_role_policy" "agentcore" {
         Effect = "Allow"
         Action = ["ssm:GetParameter", "ssm:GetParameters"]
         Resource = [
-          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/mcp-secrets/*",
-          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/mcp-secrets/*",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/mcp-secrets/*",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/mcp-secrets/*",
         ]
       },
       {
@@ -356,8 +356,8 @@ resource "aws_iam_role_policy" "agentcore" {
           "lambda:SendDurableExecutionCallbackHeartbeat",
         ]
         Resource = [
-          "arn:${local.partition}:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}",
-          "arn:${local.partition}:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}:*",
+          "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}",
+          "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}:*",
         ]
       },
     ]

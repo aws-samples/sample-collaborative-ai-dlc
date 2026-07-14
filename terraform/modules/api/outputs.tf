@@ -30,5 +30,5 @@ output "root_resource_id" {
 
 output "api_gateway_domain_name" {
   description = "Domain name of the API Gateway (used as CloudFront origin for /api/* and /github/callback)."
-  value       = "${aws_api_gateway_rest_api.main.id}.execute-api.${data.aws_region.current.id}.${local.dns_suffix}"
+  value       = "${aws_api_gateway_rest_api.main.id}.execute-api.${data.aws_region.current.region}.${local.dns_suffix}"
 }

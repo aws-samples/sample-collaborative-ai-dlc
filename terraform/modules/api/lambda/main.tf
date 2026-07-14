@@ -20,7 +20,7 @@ locals {
   ]))
 
   # Neptune IAM resource ARN (scoped to the specific cluster only)
-  neptune_resource_arn = "arn:${local.partition}:neptune-db:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:${var.neptune_cluster_resource_id}/*"
+  neptune_resource_arn = "arn:${local.partition}:neptune-db:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:${var.neptune_cluster_resource_id}/*"
 
   # Reusable assume-role policy for Lambda services
   lambda_assume_role_policy = jsonencode({
@@ -171,7 +171,7 @@ resource "aws_iam_role_policy" "github_connector" {
       {
         Effect   = "Allow"
         Action   = ["ssm:PutParameter", "ssm:GetParameter", "ssm:DeleteParameter"]
-        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
+        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
       },
       # Platform GitHub auth mode + App config: read for mode dispatch, write
       # from the Admin card (same endpoint as the private key above).
@@ -229,7 +229,7 @@ resource "aws_iam_role_policy" "trackers" {
         {
           Effect   = "Allow"
           Action   = ["ssm:GetParameter", "ssm:PutParameter", "ssm:DeleteParameter"]
-          Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
+          Resource = "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
         },
         # Jira Cloud (Phase 3 / #197): the trackers lambda owns the Jira OAuth
         # flow end to end — it reads the OAuth credentials from Secrets Manager
@@ -238,7 +238,7 @@ resource "aws_iam_role_policy" "trackers" {
         {
           Effect   = "Allow"
           Action   = ["ssm:PutParameter", "ssm:GetParameter", "ssm:DeleteParameter"]
-          Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/jira-token/*"
+          Resource = "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/jira-token/*"
         },
         # GitHub App auth (read-only): the github-issues provider consults the
         # platform auth mode and, in app mode, mints installation tokens.
@@ -368,24 +368,24 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
         Effect = "Allow"
         Action = ["ssm:GetParameter", "ssm:GetParameters", "ssm:PutParameter"]
         Resource = [
-          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/bedrock-bearer-token",
-          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/cli-models",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/bedrock-bearer-token",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/cli-models",
           # Agent tier → model configuration (incl. fallback + quorum rows),
           # merged under a project's tier_models at intent create.
-          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/tier-models",
-          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/kiro-api-key",
-          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/derive-enrichment",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/tier-models",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/kiro-api-key",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/derive-enrichment",
           # Platform stage-skipping toggle (per-intent stage skipping;
           # snapshotted onto the execution META row at intent create).
-          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/stage-skipping",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/stage-skipping",
           # Composer LLM-bypass toggle (deterministic keyword match vs always-LLM).
-          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/compose-llm-bypass",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/compose-llm-bypass",
           # Global custom MCP servers injected into every agent session (merged
           # with project-level entries at intent-create).
-          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/custom-mcp-servers",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/custom-mcp-servers",
           # Token→USD price table, refreshed from the Price List API on model
           # discovery and read by the intents lambda to compute cost.
-          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/model-pricing",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/model-pricing",
         ]
       },
       # GLOBAL-tier MCP secrets (one SecureString per referenced ${VAR}). The
@@ -405,9 +405,9 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
         Resource = [
           # The path NODE itself — GetParametersByPath authorizes against the
           # queried path, which `/*` (children only) does NOT match.
-          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/mcp-secrets",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/mcp-secrets",
           # The per-var parameters under it (Get/Put/Delete of {VAR}).
-          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/mcp-secrets/*",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/mcp-secrets/*",
         ]
       },
       # Model discovery for the project-settings picker (GET /agents/capabilities
@@ -513,9 +513,9 @@ resource "aws_iam_role_policy" "neptune_artifacts" {
           Resource = [
             # The path NODE per project — GetParametersByPath authorizes against
             # the queried path itself, which `/*` (children only) does NOT match.
-            "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/mcp-secrets",
-            "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/mcp-secrets/*",
-            "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/custom-mcp-servers",
+            "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/mcp-secrets",
+            "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/mcp-secrets/*",
+            "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/custom-mcp-servers",
           ]
         },
       ],
@@ -571,8 +571,8 @@ resource "aws_iam_role_policy" "projects_intent_cascade" {
         Effect = "Allow"
         Action = ["lambda:SendDurableExecutionCallbackSuccess"]
         Resource = [
-          "arn:${local.partition}:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}",
-          "arn:${local.partition}:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}:*",
+          "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}",
+          "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}:*",
         ]
       },
       {
@@ -1134,7 +1134,7 @@ resource "aws_iam_role_policy" "gitlab_connector" {
       {
         Effect   = "Allow"
         Action   = ["ssm:PutParameter", "ssm:GetParameter", "ssm:DeleteParameter"]
-        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
+        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
       }
     ]
   })
@@ -1682,22 +1682,22 @@ resource "aws_iam_role_policy" "intents" {
         Action = ["ssm:GetParameter"]
         Resource = [
           var.realtime_doc_secret_param_arn,
-          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/cli-models",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/cli-models",
           # Admin global tier-models config (agent tier → model rows + fallback
           # + quorum), merged under the project's tier_models at intent create.
-          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/tier-models",
-          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/derive-enrichment",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/tier-models",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/derive-enrichment",
           # Platform stage-skipping toggle (effective value — project override
           # over this — snapshotted onto the execution META at intent create).
-          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/stage-skipping",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/stage-skipping",
           # Composer LLM-bypass toggle (deterministic keyword match vs always-LLM).
-          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/compose-llm-bypass",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/compose-llm-bypass",
           # Global custom MCP servers default (merged under the project's custom
           # MCP servers at intent create, snapshotted onto the execution META).
-          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/custom-mcp-servers",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/custom-mcp-servers",
           # Token→USD price table (written by the agents lambda) — read to attach
           # cost to the intent's metric samples in the detail/rollup DTOs.
-          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/model-pricing",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/model-pricing",
         ]
       },
       {
@@ -1711,8 +1711,8 @@ resource "aws_iam_role_policy" "intents" {
         # Both the bare function ARN and its qualified (alias/version) forms —
         # durable invokes target the `live` alias, which is a qualified ARN.
         Resource = [
-          "arn:${local.partition}:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}",
-          "arn:${local.partition}:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}:*",
+          "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}",
+          "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}:*",
         ]
       },
       {
@@ -1888,7 +1888,7 @@ resource "aws_iam_role_policy" "v2_orchestrator" {
         # empty (unauthenticated) token → "HTTP Basic: Access denied".
         Effect   = "Allow"
         Action   = ["ssm:GetParameter", "ssm:PutParameter"]
-        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
+        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
       },
       {
         # GitHub App auth (read-only): mode dispatch + per-stage installation

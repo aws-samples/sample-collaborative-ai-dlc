@@ -84,7 +84,7 @@ module "connection_lambda" {
 
   environment_variables = {
     CONNECTIONS_TABLE     = var.connections_table_name
-    WEBSOCKET_ENDPOINT    = "https://${aws_apigatewayv2_api.websocket.id}.execute-api.${data.aws_region.current.id}.${local.realtime_dns_suffix}/${var.websocket_stage_name}"
+    WEBSOCKET_ENDPOINT    = "https://${aws_apigatewayv2_api.websocket.id}.execute-api.${data.aws_region.current.region}.${local.realtime_dns_suffix}/${var.websocket_stage_name}"
     REALTIME_SECRET_PARAM = aws_ssm_parameter.realtime_doc_secret.name
     DOC_TOKEN_ENFORCE     = var.doc_token_enforce ? "true" : "false"
   }
@@ -114,7 +114,7 @@ module "message_lambda" {
 
   environment_variables = {
     CONNECTIONS_TABLE  = var.connections_table_name
-    WEBSOCKET_ENDPOINT = "https://${aws_apigatewayv2_api.websocket.id}.execute-api.${data.aws_region.current.id}.${local.realtime_dns_suffix}/${var.websocket_stage_name}"
+    WEBSOCKET_ENDPOINT = "https://${aws_apigatewayv2_api.websocket.id}.execute-api.${data.aws_region.current.region}.${local.realtime_dns_suffix}/${var.websocket_stage_name}"
   }
 }
 
