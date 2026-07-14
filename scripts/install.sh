@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 umask 077
+export AWS_PAGER=""
 
 APP_NAME="collaborative-ai-dlc"
 DEFAULT_REPOSITORY="https://github.com/aws-samples/sample-collaborative-ai-dlc.git"

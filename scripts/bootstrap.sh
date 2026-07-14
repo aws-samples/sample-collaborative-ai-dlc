@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
 
+# Prevent AWS CLI v2 from opening command output in `less`.
+export AWS_PAGER=""
+
 # Bootstrap script: creates Terraform state backend and generates a .s3.tfbackend file.
 # Run this ONCE before the first terraform init.
 #
