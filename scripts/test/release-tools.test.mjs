@@ -105,6 +105,7 @@ const createReleaseRepository = () => {
   writeJson(join(repository, 'package.json'), { name: 'aidlc', version: '2.0.0', private: true });
   execFileSync('git', ['add', 'package.json'], { cwd: repository });
   execFileSync('git', ['commit', '-qm', 'v2'], { cwd: repository });
+  execFileSync('git', ['branch', 'aidlc-v2'], { cwd: repository });
   execFileSync('git', ['tag', 'v2.0.0'], { cwd: repository });
   execFileSync('git', ['tag', 'v2.0.1'], { cwd: repository });
   return repository;
@@ -190,6 +191,33 @@ test('installer refuses downgrades unless explicitly overridden', () => {
   const downgrade = run('bash', [installer, 'update', '--version', '1.1.0'], { env });
   assert.equal(downgrade.status, 1);
   assert.match(downgrade.stderr, /Refusing downgrade/);
+});
+
+test('installer tracks an explicitly selected branch by immutable commit', () => {
+  const repository = createReleaseRepository();
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-ref-'));
+  const env = managedEnv(dir, repository);
+
+  const installed = run('bash', [installer, 'install', '--ref', 'aidlc-v2'], { env });
+  assert.equal(installed.status, 0, installed.stderr);
+  const currentLink = join(env.XDG_DATA_HOME, 'collaborative-ai-dlc/current');
+  const firstCheckout = readlinkSync(currentLink);
+  assert.match(firstCheckout, /checkouts\/[0-9a-f]{40}$/);
+
+  writeFileSync(join(repository, 'branch-update.txt'), 'next\n');
+  execFileSync('git', ['add', 'branch-update.txt'], { cwd: repository });
+  execFileSync('git', ['commit', '-qm', 'branch update'], { cwd: repository });
+  execFileSync('git', ['branch', '-f', 'aidlc-v2', 'HEAD'], { cwd: repository });
+
+  const updated = run('bash', [installer, 'update'], { env });
+  assert.equal(updated.status, 0, updated.stderr);
+  const secondCheckout = readlinkSync(currentLink);
+  assert.notEqual(secondCheckout, firstCheckout);
+  assert.match(secondCheckout, /checkouts\/[0-9a-f]{40}$/);
+
+  const status = run('bash', [installer, 'status'], { env });
+  assert.equal(status.status, 0, status.stderr);
+  assert.match(status.stdout, /Source:\s+aidlc-v2@[0-9a-f]{12} \(non-release\)/);
 });
 
 const mockedCommandEnv = (dir, repository) => {

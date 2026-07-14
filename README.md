@@ -64,6 +64,22 @@ bash /tmp/aidlc-install.sh versions --include-prereleases
 bash /tmp/aidlc-install.sh install --version 2.0.0 ...
 ```
 
+For pre-release testing before a tag exists, download the installer from the test branch and explicitly track that branch:
+
+```bash
+curl -fsSLo /tmp/aidlc-install.sh \
+  https://raw.githubusercontent.com/aws-samples/sample-collaborative-ai-dlc/aidlc-v2/scripts/install.sh
+
+bash /tmp/aidlc-install.sh install \
+  --ref aidlc-v2 \
+  --profile <aws-profile> \
+  --region <aws-region> \
+  --environment v2-test \
+  --admin <administrator-email>
+```
+
+Branch mode is intentionally marked as non-release. It resolves the remote branch to an immutable commit checkout and remembers the branch, so a later `update` follows its newest commit. Tagged installs remain the production path and retain strict tag/version validation.
+
 Adopt an existing v1 deployment before updating it. The source checkout must contain the deployment's `terraform/environments/<environment>.tfvars` and `<environment>.s3.tfbackend` files:
 
 ```bash

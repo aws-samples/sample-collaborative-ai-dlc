@@ -8,6 +8,7 @@ DEFAULT_REPOSITORY="https://github.com/aws-samples/sample-collaborative-ai-dlc.g
 DATA_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/$APP_NAME"
 CONFIG_ROOT="${XDG_CONFIG_HOME:-$HOME/.config}/$APP_NAME"
 RELEASES_DIR="$DATA_ROOT/releases"
+CHECKOUTS_DIR="$DATA_ROOT/checkouts"
 CURRENT_LINK="$DATA_ROOT/current"
 CONFIG_FILE="$CONFIG_ROOT/install.conf"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,6 +17,7 @@ COMMAND="${1:-}"
 [[ -n "$COMMAND" ]] && shift || true
 
 VERSION="${AIDLC_VERSION:-}"
+REF="${AIDLC_REF:-}"
 ENVIRONMENT="${AIDLC_ENVIRONMENT:-dev}"
 REGION="${AWS_REGION:-${AIDLC_REGION:-us-east-1}}"
 PROFILE="${AWS_PROFILE:-${AIDLC_AWS_PROFILE:-}}"
@@ -26,6 +28,8 @@ REGION_EXPLICIT="${AWS_REGION+x}${AIDLC_REGION+x}"
 PROFILE_EXPLICIT="${AWS_PROFILE+x}${AIDLC_AWS_PROFILE+x}"
 ADMIN_EXPLICIT="${AIDLC_ADMIN_USERNAME+x}"
 REPOSITORY_EXPLICIT="${AIDLC_REPOSITORY_URL+x}"
+VERSION_EXPLICIT="${AIDLC_VERSION+x}"
+REF_EXPLICIT="${AIDLC_REF+x}"
 SOURCE=""
 ASSUME_YES="${AIDLC_YES:-0}"
 INCLUDE_PRERELEASES="${AIDLC_INCLUDE_PRERELEASES:-0}"
@@ -44,6 +48,7 @@ Commands:
 
 Options:
   --version X.Y.Z              Select a release (default: latest stable)
+  --ref BRANCH                 Track a branch for non-release testing
   --environment NAME           Terraform environment (default: dev)
   --region REGION              AWS region (default: us-east-1)
   --profile PROFILE            AWS CLI profile
@@ -58,7 +63,8 @@ EOF
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --version) VERSION="${2:?--version requires a value}"; shift 2 ;;
+        --version) VERSION="${2:?--version requires a value}"; VERSION_EXPLICIT=1; shift 2 ;;
+        --ref) REF="${2:?--ref requires a branch name}"; REF_EXPLICIT=1; shift 2 ;;
         --environment) ENVIRONMENT="${2:?--environment requires a value}"; ENVIRONMENT_EXPLICIT=1; shift 2 ;;
         --region) REGION="${2:?--region requires a value}"; REGION_EXPLICIT=1; shift 2 ;;
         --profile) PROFILE="${2:?--profile requires a value}"; PROFILE_EXPLICIT=1; shift 2 ;;
@@ -72,6 +78,10 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
 done
+if [[ -n "$VERSION" && -n "$REF" ]]; then
+    echo "--version and --ref are mutually exclusive." >&2
+    exit 2
+fi
 
 is_semver() {
     node -e '
@@ -130,6 +140,7 @@ version_cmp() {
 
 load_config() {
     if [[ -f "$CONFIG_FILE" ]]; then
+        local requested_ref="$REF"
         local requested_environment="$ENVIRONMENT"
         local requested_region="$REGION"
         local requested_profile="$PROFILE"
@@ -143,11 +154,16 @@ load_config() {
         PROFILE="${AIDLC_AWS_PROFILE:-$requested_profile}"
         ADMIN_USERNAME="${AIDLC_ADMIN_USERNAME:-$requested_admin}"
         REPOSITORY_URL="${AIDLC_REPOSITORY_URL:-$requested_repository}"
+        REF="${AIDLC_REF:-$requested_ref}"
         [[ -n "$ENVIRONMENT_EXPLICIT" ]] && ENVIRONMENT="$requested_environment"
         [[ -n "$REGION_EXPLICIT" ]] && REGION="$requested_region"
         [[ -n "$PROFILE_EXPLICIT" ]] && PROFILE="$requested_profile"
         [[ -n "$ADMIN_EXPLICIT" ]] && ADMIN_USERNAME="$requested_admin"
         [[ -n "$REPOSITORY_EXPLICIT" ]] && REPOSITORY_URL="$requested_repository"
+        [[ -n "$REF_EXPLICIT" ]] && REF="$requested_ref"
+        if [[ -n "$VERSION_EXPLICIT" && -z "$REF_EXPLICIT" ]]; then
+            REF=""
+        fi
     fi
 }
 
@@ -159,6 +175,7 @@ write_config() {
         printf 'AIDLC_AWS_PROFILE=%q\n' "$PROFILE"
         printf 'AIDLC_ADMIN_USERNAME=%q\n' "$ADMIN_USERNAME"
         printf 'AIDLC_REPOSITORY_URL=%q\n' "$REPOSITORY_URL"
+        printf 'AIDLC_REF=%q\n' "$REF"
     } > "$CONFIG_FILE"
     chmod 600 "$CONFIG_FILE"
 }
@@ -258,6 +275,67 @@ checkout_release() {
         exit 1
     fi
     printf '%s\n' "$destination"
+}
+
+checkout_ref() {
+    local ref="$1" commit destination temporary local_commit manifest_version
+    if ! git check-ref-format --branch "$ref" >/dev/null 2>&1; then
+        echo "Invalid branch name: $ref" >&2
+        exit 1
+    fi
+    commit="$(git ls-remote --heads "$REPOSITORY_URL" "refs/heads/$ref" | awk 'NR == 1 { print $1 }')"
+    if [[ -z "$commit" ]]; then
+        echo "Remote branch not found: $ref" >&2
+        exit 1
+    fi
+
+    destination="$CHECKOUTS_DIR/$commit"
+    mkdir -p "$CHECKOUTS_DIR"
+    if [[ ! -d "$destination/.git" ]]; then
+        temporary="$destination.tmp.$$"
+        rm -rf "$temporary"
+        git clone --quiet --depth 1 --branch "$ref" "$REPOSITORY_URL" "$temporary"
+        local_commit="$(git -C "$temporary" rev-parse HEAD)"
+        if [[ "$local_commit" != "$commit" ]]; then
+            echo "Branch $ref changed while cloning; rerun the installer." >&2
+            rm -rf "$temporary"
+            exit 1
+        fi
+        git -C "$temporary" checkout --quiet --detach "$commit"
+        mv "$temporary" "$destination"
+    fi
+    local_commit="$(git -C "$destination" rev-parse HEAD)"
+    if [[ "$local_commit" != "$commit" ]]; then
+        echo "Branch checkout does not match $ref at $commit." >&2
+        exit 1
+    fi
+
+    manifest_version="$(node -p "require(process.argv[1]).version || ''" "$destination/package.json")"
+    if ! is_semver "$manifest_version"; then
+        echo "Branch $ref has no valid root package version." >&2
+        exit 1
+    fi
+    VERSION="$manifest_version"
+    RESOLVED_COMMIT="$commit"
+    TARGET_CHECKOUT="$destination"
+}
+
+select_checkout() {
+    if [[ -n "$REF" ]]; then
+        checkout_ref "$REF"
+        return
+    fi
+    select_version
+    TARGET_CHECKOUT="$(checkout_release "$VERSION")"
+    RESOLVED_COMMIT="$(git -C "$TARGET_CHECKOUT" rev-parse HEAD)"
+}
+
+target_description() {
+    if [[ -n "$REF" ]]; then
+        printf 'AI-DLC v%s from %s@%s' "$VERSION" "$REF" "${RESOLVED_COMMIT:0:12}"
+    else
+        printf 'AI-DLC v%s' "$VERSION"
+    fi
 }
 
 configure_environment() {
@@ -413,15 +491,20 @@ install_command() {
         echo "A managed installation already exists. Use update instead." >&2
         exit 1
     }
-    select_version
     prompt_admin
     aws_environment
-    local checkout plan role
-    checkout="$(checkout_release "$VERSION")"
-    confirm "Install AI-DLC v$VERSION into AWS environment $ENVIRONMENT?" || exit 1
+    local checkout plan role plan_id
+    select_checkout
+    checkout="$TARGET_CHECKOUT"
+    if [[ -n "$REF" ]]; then
+        echo "Warning: --ref tracks mutable branch '$REF'; this is a non-release test deployment."
+    fi
+    confirm "Install $(target_description) into AWS environment $ENVIRONMENT?" || exit 1
     prompt_password
     configure_environment "$checkout"
-    plan="$DATA_ROOT/plans/v$VERSION.tfplan"
+    plan_id="v$VERSION"
+    [[ -n "$REF" ]] && plan_id="${REF//\//-}-${RESOLVED_COMMIT:0:12}"
+    plan="$DATA_ROOT/plans/$plan_id.tfplan"
     if [[ "${AIDLC_TEST_MODE:-0}" != 1 ]]; then
         if [[ "${VERSION%%.*}" -ge 2 ]]; then deploy_v2 "$checkout" "$plan"; else deploy_v1 "$checkout" "$plan"; fi
         role="owner"
@@ -432,7 +515,7 @@ install_command() {
     write_config
     switch_current "$checkout"
     unset ADMIN_PASSWORD AIDLC_ADMIN_PASSWORD || true
-    echo "Installed AI-DLC v$VERSION. Current checkout: $CURRENT_LINK"
+    echo "Installed $(target_description). Current checkout: $CURRENT_LINK"
 }
 
 adopt_command() {
@@ -444,6 +527,7 @@ adopt_command() {
     [[ -n "$SOURCE" ]] || { echo "adopt requires --source <existing-v1-checkout>" >&2; exit 2; }
     SOURCE="$(cd "$SOURCE" && pwd)"
     [[ -d "$SOURCE/terraform" ]] || { echo "Invalid v1 checkout: $SOURCE" >&2; exit 1; }
+    REF=""
     VERSION="${VERSION:-1.1.0}"
     [[ "$VERSION" == 1.* ]] || { echo "adopt only supports a v1 release" >&2; exit 1; }
     prompt_admin
@@ -474,22 +558,35 @@ update_command() {
     require_commands
     load_config
     aws_environment
-    local old_checkout old_version checkout plan cmp
+    local old_checkout old_version old_commit checkout plan cmp plan_id
     old_checkout="$(current_checkout)"
     [[ -n "$old_checkout" ]] || { echo "No managed installation. Run install or adopt first." >&2; exit 1; }
     old_version="$(current_version)"
-    select_version
+    old_commit="$(git -C "$old_checkout" rev-parse HEAD)"
+    select_checkout
+    checkout="$TARGET_CHECKOUT"
     cmp="$(version_cmp "$VERSION" "$old_version")"
     if [[ "$cmp" -lt 0 && "$ALLOW_DOWNGRADE" != 1 ]]; then
         echo "Refusing downgrade from $old_version to $VERSION; pass --allow-downgrade to override." >&2
         exit 1
     fi
-    [[ "$VERSION" != "$old_version" ]] || { echo "Already on AI-DLC v$VERSION."; exit 0; }
+    if [[ -n "$REF" ]]; then
+        [[ "$RESOLVED_COMMIT" != "$old_commit" ]] || {
+            echo "Already on $(target_description)."
+            exit 0
+        }
+    else
+        [[ "$VERSION" != "$old_version" ]] || { echo "Already on AI-DLC v$VERSION."; exit 0; }
+    fi
     prompt_admin
-    checkout="$(checkout_release "$VERSION")"
-    confirm "Update AI-DLC from v$old_version to v$VERSION?" || exit 1
+    if [[ -n "$REF" ]]; then
+        echo "Warning: update is following mutable branch '$REF'."
+    fi
+    confirm "Update AI-DLC from v$old_version to $(target_description)?" || exit 1
     configure_environment "$checkout"
-    plan="$DATA_ROOT/plans/v$old_version-to-v$VERSION.tfplan"
+    plan_id="v$old_version-to-v$VERSION"
+    [[ -n "$REF" ]] && plan_id="${REF//\//-}-${RESOLVED_COMMIT:0:12}"
+    plan="$DATA_ROOT/plans/$plan_id.tfplan"
     if [[ "${AIDLC_TEST_MODE:-0}" != 1 ]]; then
         backup_state "$checkout"
         if [[ "${VERSION%%.*}" -ge 2 ]]; then deploy_v2 "$checkout" "$plan"; else deploy_v1 "$checkout" "$plan"; fi
@@ -500,12 +597,12 @@ update_command() {
     fi
     write_config
     switch_current "$checkout"
-    echo "Updated AI-DLC from v$old_version to v$VERSION."
+    echo "Updated AI-DLC from v$old_version to $(target_description)."
 }
 
 status_command() {
     load_config
-    local checkout version url=""
+    local checkout version url="" commit
     checkout="$(current_checkout)"
     if [[ -z "$checkout" ]]; then
         echo "AI-DLC is not managed on this machine."
@@ -520,6 +617,12 @@ status_command() {
     echo "Region:      $REGION"
     echo "Checkout:    $checkout"
     echo "Config:      $CONFIG_ROOT"
+    if [[ -n "$REF" ]]; then
+        commit="$(git -C "$checkout" rev-parse --short=12 HEAD)"
+        echo "Source:      $REF@$commit (non-release)"
+    else
+        echo "Source:      v$version"
+    fi
     [[ -n "$url" ]] && echo "URL:         https://$url"
 }
 

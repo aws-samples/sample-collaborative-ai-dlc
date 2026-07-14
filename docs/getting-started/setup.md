@@ -33,6 +33,24 @@ bash /tmp/aidlc-install.sh update
 
 Prereleases are excluded unless `--include-prereleases` or `--allow-prerelease` is explicit. Downgrades require `--allow-downgrade`.
 
+### Test an unreleased branch
+
+Testers can explicitly track `aidlc-v2` before a release tag exists:
+
+```bash
+curl -fsSLo /tmp/aidlc-install.sh \
+  https://raw.githubusercontent.com/aws-samples/sample-collaborative-ai-dlc/aidlc-v2/scripts/install.sh
+
+bash /tmp/aidlc-install.sh install \
+  --ref aidlc-v2 \
+  --profile <aws-profile> \
+  --region <aws-region> \
+  --environment v2-test \
+  --admin <administrator-email>
+```
+
+This is a non-release mode. The installer resolves the branch to an immutable commit snapshot, records the tracked branch, and follows newer branch commits when `update` runs. Normal installations continue to require immutable version tags.
+
 ### Adopt an existing v1 deployment
 
 The existing checkout must contain its environment's `.tfvars` and `.s3.tfbackend` files:
