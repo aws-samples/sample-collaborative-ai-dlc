@@ -546,7 +546,7 @@ describe('IntentView', () => {
       ],
     });
     renderAt();
-    expect(await screen.findByText('Work products')).toBeInTheDocument();
+    expect(await screen.findByText('Generated artifacts')).toBeInTheDocument();
     expect(screen.getByText('Document')).toBeInTheDocument();
     expect(screen.getByText('Questions')).toBeInTheDocument();
     // Questions section is closed by default — expand it.
@@ -703,7 +703,7 @@ describe('IntentView', () => {
     });
     renderAt();
     // Documents section is closed on SUCCEEDED intents — expand it.
-    expect(await screen.findByText('Work products')).toBeInTheDocument();
+    expect(await screen.findByText('Generated artifacts')).toBeInTheDocument();
     await userEvent.click(screen.getByText('Documents'));
     expect(await screen.findByText('Build and Test Results')).toBeInTheDocument();
     // Only the trailing parenthetical stripped; the meaningful "— Infrastructure" stays.
@@ -736,7 +736,7 @@ describe('IntentView', () => {
       ],
     });
     renderAt();
-    expect(await screen.findByText('Work products')).toBeInTheDocument();
+    expect(await screen.findByText('Generated artifacts')).toBeInTheDocument();
     expect(screen.getByText('Code')).toBeInTheDocument();
     expect(screen.getByText('owner/repo')).toBeInTheDocument();
     expect(screen.getByText('PR #9')).toBeInTheDocument();

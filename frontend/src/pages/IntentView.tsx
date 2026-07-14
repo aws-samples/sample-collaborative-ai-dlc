@@ -329,25 +329,6 @@ export default function IntentView() {
         </div>
       )}
 
-      {/* Lean-run note: informational only — a narrower scope skips some stages
-          by design. Hidden once the intent has succeeded (the outcome speaks for itself). */}
-      {intent.planWarnings && intent.planWarnings.length > 0 && intent.status !== 'SUCCEEDED' && (
-        <details className="rounded border border-sky-500/20 bg-sky-500/5 px-3 py-2 text-sm">
-          <summary className="flex cursor-pointer list-none items-center gap-1.5 font-medium text-sky-700 dark:text-sky-300">
-            <Info className="h-4 w-4 shrink-0" />
-            Some stages are intentionally excluded from this scope ({intent.scope}) and their
-            outputs won't exist
-          </summary>
-          <ul className="mt-2 space-y-1 pl-6 text-[12px] text-muted-foreground">
-            {intent.planWarnings.map((w, i) => (
-              <li key={`${w.code}-${i}`} className="list-disc">
-                {w.message}
-              </li>
-            ))}
-          </ul>
-        </details>
-      )}
-
       {/* FAILED (or a stalled CREATED hand-off): show the reason + offer a restart
           (re-runs init-ws + the plan; the /start endpoint accepts both states). */}
       {(isFailed || isStalled) && (
@@ -958,10 +939,28 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-sm">Work products</CardTitle>
+        <CardTitle className="text-sm">Generated artifacts</CardTitle>
         <p className="text-xs text-muted-foreground">
-          Artifacts, human questions and course corrections captured during this intent.
+          Everything this intent produced: code, documents, questions, and structured items.
         </p>
+        {detail.intent.planWarnings &&
+          detail.intent.planWarnings.length > 0 &&
+          detail.intent.status !== 'SUCCEEDED' && (
+            <details className="mt-2 rounded border border-sky-500/20 bg-sky-500/5 px-3 py-2 text-sm">
+              <summary className="flex cursor-pointer list-none items-center gap-1.5 font-medium text-sky-700 dark:text-sky-300">
+                <Info className="h-4 w-4 shrink-0" />
+                Some stages are intentionally excluded from this scope ({detail.intent.scope}) and
+                their artifacts won't be generated
+              </summary>
+              <ul className="mt-2 space-y-1 pl-6 text-[12px] text-muted-foreground">
+                {detail.intent.planWarnings.map((w, i) => (
+                  <li key={`${w.code}-${i}`} className="list-disc">
+                    {w.message}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
       </CardHeader>
       <CardContent>
         <Accordion
