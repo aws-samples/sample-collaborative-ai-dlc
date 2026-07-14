@@ -28,7 +28,7 @@ import { useIntentEvents, type IntentEvent } from './useIntentEvents';
 describe('useIntentEvents', () => {
   beforeEach(() => {
     handlers.clear();
-    connect.mockReset();
+    connect.mockReset().mockResolvedValue(undefined);
   });
 
   it('connects to the intent channel with an explicit {intentId,projectId} scope target', () => {

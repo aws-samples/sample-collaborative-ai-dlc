@@ -23,6 +23,7 @@ import {
   type StageState,
 } from '@/services/intents';
 import { workflowsService, type CompiledWorkflow, type PhaseNode } from '@/services/workflows';
+import { realtimeService } from '@/services/realtime';
 import { useIntentEvents, type IntentEvent } from '@/hooks/useIntentEvents';
 import { invalidateIntentGraph } from '@/hooks/useIntentGraph';
 
@@ -391,36 +392,73 @@ export function IntentProvider({
     [paneOf],
   );
 
-  // Fetch a pane's durable transcript once, on first display. Live chunks that
-  // arrived while unseeded/loading are deduped by seq against the fetch result
-  // (every persisted chunk broadcasts its seq). Failure returns the pane to
-  // `unseeded` so the next selection retries.
-  const ensureOutputs = useCallback(
+  // Merge durable output into a pane. This is used both for first display and
+  // incremental catch-up after a reconnect: persistence happens before
+  // broadcast, so REST can fill every frame missed while the socket was down.
+  const syncOutputs = useCallback(
     (key: string) => {
       if (!projectId || !intentId) return;
       const pane = paneOf(key);
-      if (pane.status !== 'unseeded') return;
-      pane.status = 'loading';
-      setOutputVersion((n) => n + 1);
+      if (pane.status === 'loading') return;
+      const initial = pane.status === 'unseeded';
+      if (initial) {
+        pane.status = 'loading';
+        setOutputVersion((n) => n + 1);
+      }
       const forIntent = intentId;
       intentsService
-        .outputs(projectId, intentId, { stageInstanceId: key })
-        .then(({ outputs }) => {
+        .outputs(projectId, intentId, {
+          stageInstanceId: key,
+          ...(initial ? {} : { afterSeq: pane.maxSeededSeq }),
+        })
+        .then(({ outputs: durable }) => {
           if (activeIntentRef.current !== forIntent) return;
-          pane.seededRows = outputs;
-          pane.maxSeededSeq = outputs.reduce((m, o) => Math.max(m, o.seq ?? 0), 0);
+          const bySeq = new Map(pane.seededRows.map((row) => [row.seq, row]));
+          durable.forEach((row) => bySeq.set(row.seq, row));
+          pane.seededRows = [...bySeq.values()].toSorted((a, b) => a.seq - b.seq);
+          pane.maxSeededSeq = pane.seededRows.reduce((m, o) => Math.max(m, o.seq ?? 0), 0);
           pane.live = pane.live.filter((c) => c.seq > pane.maxSeededSeq);
           pane.status = 'seeded';
           renderPane(key);
         })
         .catch(() => {
           if (activeIntentRef.current !== forIntent) return;
-          pane.status = 'unseeded';
+          if (initial) pane.status = 'unseeded';
           setOutputVersion((n) => n + 1);
         });
     },
     [projectId, intentId, paneOf, renderPane],
   );
+
+  // Fetch a pane's durable transcript once on first display.
+  const ensureOutputs = useCallback(
+    (key: string) => {
+      if (paneOf(key).status === 'unseeded') syncOutputs(key);
+    },
+    [paneOf, syncOutputs],
+  );
+
+  const catchUpOutputs = useCallback(() => {
+    for (const [key, pane] of panesRef.current) {
+      if (pane.status !== 'loading') syncOutputs(key);
+    }
+  }, [syncOutputs]);
+
+  // A reconnect cannot replay frames from API Gateway. Catch up every pane
+  // from DynamoDB as soon as the channel returns, and periodically while a run
+  // is active so even a silent intermediary drop heals without user action.
+  useEffect(
+    () =>
+      realtimeService.onStatusChange((status) => {
+        if (status === 'connected') catchUpOutputs();
+      }),
+    [catchUpOutputs],
+  );
+  useEffect(() => {
+    if (!pollStatus || !['CREATED', 'RUNNING', 'WAITING'].includes(pollStatus)) return;
+    const id = setInterval(catchUpOutputs, 8000);
+    return () => clearInterval(id);
+  }, [pollStatus, catchUpOutputs]);
 
   const outputPaneStatus = useCallback(
     (key: string): OutputPaneStatus => panesRef.current.get(key)?.status ?? 'unseeded',

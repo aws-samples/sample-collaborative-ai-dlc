@@ -19,6 +19,11 @@ vi.mock('@/contexts/AuthContext', () => ({
   useAuth: () => ({ user: { displayName: 'Alice', email: 'a@x' } }),
 }));
 
+const reloadIntent = vi.fn();
+vi.mock('@/contexts/IntentContext', () => ({
+  useIntent: () => ({ reload: (...a: unknown[]) => reloadIntent(...a) }),
+}));
+
 const get = vi.fn();
 const start = vi.fn();
 const update = vi.fn();
@@ -148,6 +153,7 @@ describe('IntentComposePage', () => {
     listComposes.mockReset().mockResolvedValue({ composes: [] });
     composeReportUpload.mockReset();
     flushDraft.mockReset().mockResolvedValue(undefined);
+    reloadIntent.mockReset().mockResolvedValue(undefined);
     setSkipStageIds.mockReset();
     setScope.mockReset();
     setComposedGrid.mockReset();
@@ -276,6 +282,9 @@ describe('IntentComposePage', () => {
     await user.click(startBtn);
     await waitFor(() => expect(start).toHaveBeenCalledWith('p1', 'i1'));
     expect(flushDraft.mock.invocationCallOrder[0]).toBeLessThan(start.mock.invocationCallOrder[0]);
+    expect(start.mock.invocationCallOrder[0]).toBeLessThan(
+      reloadIntent.mock.invocationCallOrder[0],
+    );
     expect(await screen.findByTestId('intent-view')).toBeInTheDocument();
   });
 

@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
+import { useIntent } from '@/contexts/IntentContext';
 import { useProjectCache } from '@/hooks/useProjectsCache';
 import { useCollaborativeIntentDraft } from '@/hooks/useCollaborativeIntentDraft';
 import { intentsService, type Intent, type ComposeSession } from '@/services/intents';
@@ -38,6 +39,7 @@ export default function IntentComposePage() {
   const navigate = useNavigate();
   const { projectId, intentId } = useParams<{ projectId: string; intentId: string }>();
   const { user } = useAuth();
+  const { reload } = useIntent();
   const userName = user?.displayName || user?.email || '';
   const { project, loading: projectLoading } = useProjectCache(projectId ?? null);
 
@@ -262,6 +264,10 @@ export default function IntentComposePage() {
       // intent row, not the Yjs doc.
       await draft.flushDraft();
       await intentsService.start(projectId, intentId);
+      // IntentProvider stays mounted across /compose -> /intent and is keyed
+      // by the same ids. Refresh it before navigation so IntentView never sees
+      // the cached DRAFT and redirects back to compose.
+      await reload();
       navigate(`/project/${projectId}/intent/${intentId}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to start intent');

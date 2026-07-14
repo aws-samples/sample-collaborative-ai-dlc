@@ -97,7 +97,9 @@ export function useIntentEvents(
   useEffect(() => {
     if (!projectId || !intentId) return;
 
-    realtimeService.connect(`intent:${intentId}`, { intentId, projectId });
+    realtimeService
+      .connect(`intent:${intentId}`, { intentId, projectId })
+      .catch((error) => console.error('[WebSocket] Initial intent connection failed:', error));
 
     const unsubs = INTENT_EVENTS.map((action) =>
       realtimeService.on(action, (data: IntentEvent) => {

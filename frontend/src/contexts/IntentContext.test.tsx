@@ -4,9 +4,21 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom';
 
 // Capture the realtime callback so tests can push events into the provider.
 let capturedOnEvent: ((e: Record<string, unknown>) => void) | null = null;
+let capturedStatus: ((status: string) => void) | null = null;
 vi.mock('@/hooks/useIntentEvents', () => ({
   useIntentEvents: (_p: string, _i: string, cb: (e: Record<string, unknown>) => void) => {
     capturedOnEvent = cb;
+  },
+}));
+vi.mock('@/services/realtime', () => ({
+  realtimeService: {
+    onStatusChange: (handler: (status: string) => void) => {
+      capturedStatus = handler;
+      handler('disconnected');
+      return () => {
+        if (capturedStatus === handler) capturedStatus = null;
+      };
+    },
   },
 }));
 
@@ -105,6 +117,7 @@ const detail = (over: Record<string, unknown> = {}) => ({
 describe('IntentContext', () => {
   beforeEach(() => {
     capturedOnEvent = null;
+    capturedStatus = null;
     clearIntentCache();
     get.mockReset();
     answerGate.mockReset();
@@ -231,6 +244,34 @@ describe('IntentContext', () => {
       capturedOnEvent?.({ action: 'agent.output', stageInstanceId: 'si-1', seq: 4, content: '!' });
     });
     expect(screen.getByTestId('out')).toHaveTextContent('si-1=seed two tail!');
+  });
+
+  it('catches up durable output missed while the realtime channel was disconnected', async () => {
+    get.mockResolvedValue(detail());
+    outputs
+      .mockResolvedValueOnce({
+        outputs: [{ seq: 1, stageInstanceId: 'si-1', kind: 'text', content: 'before ' }],
+      })
+      .mockResolvedValueOnce({
+        outputs: [{ seq: 2, stageInstanceId: 'si-1', kind: 'text', content: 'missed' }],
+      });
+    renderProvider();
+    await screen.findByTestId('out');
+
+    await act(async () => {
+      screen.getByTestId('seed').click();
+    });
+    expect(screen.getByTestId('out')).toHaveTextContent('si-1=before');
+
+    await act(async () => {
+      capturedStatus?.('connected');
+    });
+
+    expect(outputs).toHaveBeenLastCalledWith('p1', 'i1', {
+      stageInstanceId: 'si-1',
+      afterSeq: 1,
+    });
+    expect(screen.getByTestId('out')).toHaveTextContent('si-1=before missed');
   });
 
   it('refetches the detail on agent.note — debounced (the realtime path for artifact creation)', async () => {

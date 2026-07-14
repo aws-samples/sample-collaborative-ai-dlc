@@ -30,7 +30,9 @@ export function useSprintEvents(sprintId: string, onEvent: (event: SprintEvent) 
     if (!sprintId) return;
 
     // Connect to sprint-specific channel
-    realtimeService.connect(`sprint:${sprintId}`);
+    realtimeService
+      .connect(`sprint:${sprintId}`)
+      .catch((error) => console.error('[WebSocket] Initial sprint connection failed:', error));
 
     const events: SprintEventType[] = [
       'artifact.created',

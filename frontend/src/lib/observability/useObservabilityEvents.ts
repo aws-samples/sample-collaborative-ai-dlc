@@ -32,7 +32,11 @@ export function useObservabilityEvents(cb: Callbacks) {
   // socket when a consumer connects to a different documentId.
   useEffect(() => {
     if (!cb.activeSprintId) return;
-    realtimeService.connect(`sprint:${cb.activeSprintId}`);
+    realtimeService
+      .connect(`sprint:${cb.activeSprintId}`)
+      .catch((error) =>
+        console.error('[WebSocket] Initial observability connection failed:', error),
+      );
   }, [cb.activeSprintId]);
 
   // Register event handlers once on mount. All callbacks accessed via cbRef to avoid stale closures.
