@@ -311,6 +311,42 @@ describe('buildExecutionPlan — plan shape', () => {
     });
   });
 
+  // Regression: a SCRIPT sensor's seeded scriptRef must survive plan
+  // resolution. Dropping it here made the runner's loadBlockScript read
+  // undefined and every linter/type-check verdict came back BLOCKED
+  // "sensor has no script" despite a valid seed.
+  it('carries a script sensor scriptRef through to the plan', () => {
+    const scriptRef = { s3Key: 'blocks/scripts/sha256/abc123', sha256: 'abc123' };
+    const lib = baseLibrary({
+      stagesById: { a: stage('a', { sensors: ['linter'] }) },
+      sensorsById: {
+        linter: {
+          command: 'aidlc-sensor-linter.ts',
+          severity: 'advisory',
+          runtime: 'bun',
+          scriptRef,
+        },
+      },
+    });
+    const { plan } = buildExecutionPlan({
+      workflow: workflow([placement('a')]),
+      scope: 'feature',
+      library: lib,
+    });
+    expect(plan.stages[0].sensors[0].scriptRef).toEqual(scriptRef);
+  });
+
+  // Graph sensors carry no scriptRef; the field is null rather than absent.
+  it('defaults scriptRef to null when the sensor has none', () => {
+    const lib = baseLibrary({ stagesById: { a: stage('a', { sensors: ['linter'] }) } });
+    const { plan } = buildExecutionPlan({
+      workflow: workflow([placement('a')]),
+      scope: 'feature',
+      library: lib,
+    });
+    expect(plan.stages[0].sensors[0].scriptRef).toBeNull();
+  });
+
   it('flags agent-team as not implemented without crashing', () => {
     const lib = baseLibrary({ stagesById: { a: stage('a', { mode: 'agent-team' }) } });
     const { plan } = buildExecutionPlan({

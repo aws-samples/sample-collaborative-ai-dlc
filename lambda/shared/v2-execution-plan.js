@@ -124,6 +124,7 @@ const resolveSensors = (stage, stageId, sensorsById, errors) =>
         timeoutSeconds: sensor.timeoutSeconds ?? null,
         category: sensor.category ?? null,
         matches: sensor.matches ?? null,
+        scriptRef: sensor.scriptRef ?? null,
       };
     })
     .filter(Boolean);
