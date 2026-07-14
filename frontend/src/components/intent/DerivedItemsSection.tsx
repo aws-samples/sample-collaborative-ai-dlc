@@ -177,7 +177,7 @@ export function DerivedItemsSection({
                       entityType="item"
                       entityId={item.id}
                       entityTitle={item.label}
-                      className="shrink-0 opacity-0 group-hover/item:opacity-100 transition-opacity"
+                      className="shrink-0"
                     />
                   </div>
                 ))}

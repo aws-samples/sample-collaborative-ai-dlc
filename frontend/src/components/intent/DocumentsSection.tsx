@@ -344,7 +344,6 @@ export function DocumentsSection({
                   entityType="artifact"
                   entityId={a.id}
                   entityTitle={a.title || a.id}
-                  className="opacity-0 group-hover/doc:opacity-100 transition-opacity"
                 />
                 <ChevronRight
                   aria-hidden="true"

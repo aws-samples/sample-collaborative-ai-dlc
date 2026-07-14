@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Network, ArrowRight, ArrowLeft } from 'lucide-react';
@@ -38,7 +39,18 @@ interface IntentGraphPopoverProps {
 export function IntentGraphPopover({ neighbors, className }: IntentGraphPopoverProps) {
   const [open, setOpen] = useState(false);
 
-  if (neighbors.length === 0) return null;
+  if (neighbors.length === 0)
+    return (
+      <Button
+        variant="ghost"
+        size="icon"
+        className={cn('h-6 w-6 relative pointer-events-none', className)}
+        aria-hidden
+        tabIndex={-1}
+      >
+        <Network className="h-3 w-3" />
+      </Button>
+    );
 
   // Group by direction + edge label ("outgoing covers", "incoming has item"…).
   const grouped = new Map<string, GraphNeighbor[]>();
@@ -57,28 +69,32 @@ export function IntentGraphPopover({ neighbors, className }: IntentGraphPopoverP
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          className={cn('h-6 w-6 relative', className)}
-          aria-label={`Graph context: ${neighbors.length} connections`}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <Network className="h-3 w-3" />
-          <span className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full bg-primary text-[8px] text-primary-foreground flex items-center justify-center">
-            {neighbors.length}
-          </span>
-        </Button>
-      </PopoverTrigger>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className={cn('h-6 w-6 relative', className)}
+              aria-label={`${neighbors.length} connection${neighbors.length !== 1 ? 's' : ''}`}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <Network className="h-3 w-3" />
+              <span className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full bg-primary text-[8px] text-primary-foreground flex items-center justify-center">
+                {neighbors.length}
+              </span>
+            </Button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent>Connections</TooltipContent>
+      </Tooltip>
       <PopoverContent className="w-72 p-0" align="start" onClick={(e) => e.stopPropagation()}>
         <div className="px-3 py-2 border-b">
           <div className="flex items-center gap-1.5">
             <Network className="h-3.5 w-3.5 text-muted-foreground" />
-            <span className="text-xs font-medium">Graph context</span>
-            <Badge variant="secondary" className="h-4 px-1 text-[9px] ml-auto">
+            <span className="text-xs font-medium">
               {neighbors.length} connection{neighbors.length !== 1 ? 's' : ''}
-            </Badge>
+            </span>
           </div>
         </div>
         <div className="max-h-[280px] overflow-y-auto p-2 space-y-2">
