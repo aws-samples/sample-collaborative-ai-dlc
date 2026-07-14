@@ -261,6 +261,24 @@ describe('gate-time "skip to stage X"', () => {
 });
 
 describe('gate-time recompose delta ({ recompose: { skip: [...] } })', () => {
+  it('offers recomposeTargets on the validation gate — computed by the answer validator itself', async () => {
+    deps.store.getExecution = vi.fn(async () => ({ ...META, stageSkipping: 'enabled' }));
+    answerValidationGate({ decision: 'approve' });
+    await start();
+    const call = deps.store.createHumanTask.mock.calls.find(
+      (c) => c[0].kind === 'validation' && c[0].stageInstanceId === 'si-a',
+    );
+    // b and c are later CONDITIONAL once-per-workflow stages; a (current) is not offered.
+    expect(call[0].recomposeTargets).toEqual(['b', 'c']);
+  });
+
+  it('omits recomposeTargets when stage skipping is disabled for the run', async () => {
+    answerValidationGate({ decision: 'approve' });
+    await start();
+    const call = deps.store.createHumanTask.mock.calls.find((c) => c[0].kind === 'validation');
+    expect(call[0].recomposeTargets ?? null).toBeNull();
+  });
+
   it('an approved delta skips an arbitrary later stage (not just a contiguous jump)', async () => {
     deps.store.getExecution = vi.fn(async () => ({ ...META, stageSkipping: 'enabled' }));
     // Skip c from a's gate while b still runs — skipTo could not express this

@@ -495,6 +495,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     options,
     questions,
     skipTargets,
+    recomposeTargets,
     nextStageId,
     humanTaskId,
   }) => {
@@ -509,6 +510,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       options,
       questions,
       skipTargets,
+      recomposeTargets,
       nextStageId,
       now: now(),
     });

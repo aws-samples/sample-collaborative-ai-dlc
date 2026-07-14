@@ -173,6 +173,12 @@ export interface IntentGate {
   // may jump to; every intermediate is CONDITIONAL). Null when stage skipping
   // is disabled for the run or no target qualifies.
   skipTargets?: string[] | null;
+  // Valid recompose-delta targets on a validation gate: LATER once-per-
+  // workflow CONDITIONAL stages the approve answer may flip to SKIP via
+  // `recompose: { skip: [...] }` — an arbitrary selection, unlike skipTargets'
+  // contiguous jump. Null when stage skipping is disabled or nothing
+  // qualifies. Advisory; the engine re-validates every entry.
+  recomposeTargets?: string[] | null;
   // The COMPUTED next stage a plain approve continues to (upstream 2.2.6):
   // string = its stageId, null = approving completes the workflow. Absent on
   // legacy gates / gates where it was never computed — fall back to generic

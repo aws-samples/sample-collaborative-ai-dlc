@@ -3257,6 +3257,7 @@ const mapHumanTask = (h) => ({
   prompt: h.prompt ?? null,
   options: h.options ?? null,
   skipTargets: h.skipTargets ?? null,
+  recomposeTargets: h.recomposeTargets ?? null,
   // The computed next stage a plain approve continues to (upstream 2.2.6):
   // string = stageId, null = approving completes the workflow. Omitted (not
   // null) on legacy rows / gates where it was never computed, so the UI can

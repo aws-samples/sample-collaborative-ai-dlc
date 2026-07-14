@@ -464,6 +464,13 @@ const buildHumanTaskRow = ({
   // Null when stage skipping is disabled or no valid target exists. Purely
   // advisory for the UI — the orchestrator re-validates the answer.
   skipTargets = null,
+  // Valid recompose-delta targets for a validation gate: LATER, once-per-
+  // workflow, CONDITIONAL stages the approve answer may flip to SKIP via
+  // `recompose: { skip: [...] }` (stage-skip.js resolveRecomposeSkips) —
+  // arbitrary selection, unlike skipTargets' contiguous jump. Null when
+  // stage skipping is disabled or nothing qualifies. Advisory only; the
+  // orchestrator re-validates every entry.
+  recomposeTargets = null,
   // The COMPUTED next stage a plain approve continues to (upstream 2.2.6):
   // string = its stageId, null = approving completes the workflow. The
   // attribute is written ONLY when the orchestrator computed it (undefined
@@ -485,6 +492,7 @@ const buildHumanTaskRow = ({
   prompt,
   options,
   skipTargets,
+  recomposeTargets,
   ...(nextStageId !== undefined ? { nextStageId } : {}),
   // The v1-shaped structured-questions payload (JSON) when kind==='question'.
   questions,

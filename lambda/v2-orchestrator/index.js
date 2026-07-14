@@ -1042,6 +1042,22 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           // for the UI; the answer is re-validated below — never trusted.
           const gateSkipTargets =
             meta.stageSkipping === 'enabled' ? skipTargetsFrom(segment.stages, stageIdx) : [];
+          // Valid recompose-delta targets: every later once-per-workflow
+          // CONDITIONAL stage the approve answer may flip to SKIP. Computed by
+          // the SAME validator that judges the answer (resolveRecomposeSkips
+          // with every plan stage as the candidate set), so the offer can
+          // never drift from what the engine accepts. This powers the review
+          // gate's "reshape upcoming stages" — decide right where you review,
+          // in place, without retiring the parked run.
+          const gateRecomposeTargets =
+            meta.stageSkipping === 'enabled'
+              ? resolveRecomposeSkips({
+                  stages: runStages,
+                  currentStageId: stage.stageId,
+                  requested: runStages.map((s) => s.stageId),
+                  alreadySkipped: [...intentSkipIds, ...dynamicSkipIds],
+                }).applied
+              : [];
           // The COMPUTED next stage in the overall run order (upstream 2.2.6:
           // gate options name it verbatim, never guess). Read from the flat
           // plan — not the segment — so the last stage before a parallel
@@ -1058,10 +1074,12 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
               validationRound,
               gateSkipTargets,
               nextStageId,
+              gateRecomposeTargets,
             ),
             options: ['approve', 'request-changes'],
             nextStageId,
             ...(gateSkipTargets.length ? { skipTargets: gateSkipTargets } : {}),
+            ...(gateRecomposeTargets.length ? { recomposeTargets: gateRecomposeTargets } : {}),
           });
           if (validation.superseded) return { ok: false, reason: 'retired', intentId };
 
@@ -1515,6 +1533,7 @@ const validationPrompt = (
   round = 0,
   skipTargets = [],
   nextStageId = null,
+  recomposeTargets = [],
 ) => {
   const artifacts = outputArtifactTypes.length
     ? outputArtifactTypes.join(', ')
@@ -1534,6 +1553,14 @@ const validationPrompt = (
           `Skip ahead (optional): approve may carry { "skipTo": "<stageId>" } to jump to one of [${skipTargets.join(
             ', ',
           )}] — every stage in between is CONDITIONAL and will be marked SKIPPED; the target stage runs in full.`,
+        ]
+      : []),
+    ...(recomposeTargets.length
+      ? [
+          '',
+          `Reshape (optional): approve may carry { "recompose": { "skip": ["<stageId>", …] } } to drop any of [${recomposeTargets.join(
+            ', ',
+          )}] — an arbitrary selection of later CONDITIONAL stages, marked SKIPPED in place; downstream stages treat their outputs as absent by design.`,
         ]
       : []),
   ].join('\n');

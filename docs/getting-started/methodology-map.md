@@ -19,7 +19,7 @@ Use this page as a translation table: if you know AI-DLC, it tells you where eac
 | Approval gate                    | **Gate** (question / validation)      | Intent view → _Questions for you_                              |
 | "Skip to stage X"                | **Skip option on a gate**             | Validation gate → skip select                                  |
 | Stage deselection                | **Stages to run** (uncheck a stage)   | Same grid — one surface for all stage selection                |
-| In-flight recompose              | **Reshape remaining stages**          | Intent view (parked or failed run)                             |
+| In-flight recompose              | **Reshape** (review gate + panel)     | Review a stage → _Reshape upcoming stages_; intent view panel  |
 | Rewind / "Add skipped stage"     | **Rewind**                            | Intent view → stage list                                       |
 | Unit of work / Bolt              | **Unit lane**                         | Intent view → unit lane board                                  |
 | Walking skeleton                 | **Walking skeleton lane**             | First lane of parallel construction, with its own gate         |
@@ -85,13 +85,14 @@ Validation gates also name the **computed next stage** ("approve to continue to 
 
 An approved validation gate can jump ahead: pick a later stage from the skip select and every skippable stage in between is marked skipped. Same rules as upstream — only CONDITIONAL stages can be jumped over, and the target stage always runs in full.
 
-### Reshape remaining stages (in-flight recompose)
+### Reshape (in-flight recompose)
 
-Upstream's in-flight recompose lets you flip pending stages while a workflow runs. Here it is the **Reshape remaining stages** panel, visible when a run is parked or failed:
+Upstream's in-flight recompose lets you flip pending stages while a workflow runs. Here it lives in two places, matched to how big the change is:
 
-- **Ask composer** — the composer agent sees the live progress and proposes flips for pending stages only.
-- **Or edit by hand** — the same grid editor, with everything that already ran locked.
-- Applying **relaunches** the run at the first not-yet-done stage. The past is frozen: completed stages stay completed, and un-skipping something that already got skipped is the job of…
+- **Right on the review gate** — while reviewing a stage's results, open **Reshape upcoming stages**, check the optional stages the results made unnecessary, and they are dropped **with your approval**: applied in place, the run keeps going, nothing relaunches.
+- **The Reshape remaining stages panel** on the intent view (parked or failed runs) — for bigger changes: **Ask composer** (the agent sees the live progress and proposes flips for pending stages only) or **edit the grid by hand** with everything that already ran locked. Applying **relaunches** the run at the first not-yet-done stage.
+
+Either way the past is frozen: completed stages stay completed, and un-skipping something that already got skipped is the job of…
 
 ### Rewind
 
