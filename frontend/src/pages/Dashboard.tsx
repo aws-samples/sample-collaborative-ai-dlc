@@ -40,6 +40,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
   useProjectSort,
   projectComparator,
@@ -308,10 +309,20 @@ export default function Dashboard() {
                                 {project.userRole}
                               </Badge>
                             )}
-                            {project.kind === 'v2' && (
-                              <Badge variant="outline" className="h-4 px-1.5 text-[9px]">
-                                v2
-                              </Badge>
+                            {project.kind !== 'v2' && (
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Badge
+                                    variant="outline"
+                                    className="h-4 px-1.5 text-[9px] text-muted-foreground"
+                                  >
+                                    Legacy
+                                  </Badge>
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                  Created with an older version — migrate to unlock latest features
+                                </TooltipContent>
+                              </Tooltip>
                             )}
                           </div>
                         </div>
