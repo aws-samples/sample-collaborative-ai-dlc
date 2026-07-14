@@ -467,29 +467,6 @@ function IntentsView({
         </Card>
       </div>
 
-      {hasUsage && usage && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm">Usage &amp; cost</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <UsageMetrics
-              metrics={usage.project.metrics}
-              cost={{
-                totalCost: usage.project.cost.totalCost,
-                currency: usage.project.cost.currency,
-                // A project-wide total is "priced" only if no token-spending
-                // intent ran on an unpriceable model.
-                priced: !usage.project.cost.anyUnpriced,
-                // Kiro credit-estimated dollars in the total → show "~" + est.
-                estimated: !!usage.project.cost.anyEstimated,
-              }}
-              contextLabel="Peak context window"
-            />
-          </CardContent>
-        </Card>
-      )}
-
       <Card className="flex flex-col">
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between gap-3 min-h-7">
@@ -631,6 +608,26 @@ function IntentsView({
           )}
         </CardContent>
       </Card>
+
+      {hasUsage && usage && (project.userRole === 'owner' || project.userRole === 'admin') && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm">Usage &amp; cost</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <UsageMetrics
+              metrics={usage.project.metrics}
+              cost={{
+                totalCost: usage.project.cost.totalCost,
+                currency: usage.project.cost.currency,
+                priced: !usage.project.cost.anyUnpriced,
+                estimated: !!usage.project.cost.anyEstimated,
+              }}
+              contextLabel="Peak context window"
+            />
+          </CardContent>
+        </Card>
+      )}
 
       {/* Intent delete confirmation */}
       <AlertDialog
