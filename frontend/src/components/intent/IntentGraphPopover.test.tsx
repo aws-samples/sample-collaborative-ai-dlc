@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { TooltipProvider } from '@/components/ui/tooltip';
 import { IntentGraphPopover } from './IntentGraphPopover';
 import { onWorkProductFocus, type WorkProductFocus } from './workProductsFocus';
 import type { GraphNeighbor } from '@/hooks/useIntentGraph';
@@ -39,16 +40,24 @@ beforeEach(() => {
   unsubscribe = onWorkProductFocus((f) => focused.push(f));
 });
 
+function renderPopover(neighbors: GraphNeighbor[]) {
+  return render(
+    <TooltipProvider>
+      <IntentGraphPopover neighbors={neighbors} />
+    </TooltipProvider>,
+  );
+}
+
 describe('IntentGraphPopover', () => {
-  it('renders nothing without neighbors', () => {
-    const { container } = render(<IntentGraphPopover neighbors={[]} />);
-    expect(container.innerHTML).toBe('');
+  it('renders a placeholder icon without neighbors', () => {
+    renderPopover([]);
+    expect(screen.getByRole('button', { hidden: true })).toHaveAttribute('aria-hidden', 'true');
   });
 
   it('opens a popover with neighbors grouped by direction + humanized edge label', async () => {
     const user = userEvent.setup();
-    render(<IntentGraphPopover neighbors={NEIGHBORS} />);
-    await user.click(screen.getByRole('button', { name: /graph context: 3 connections/i }));
+    renderPopover(NEIGHBORS);
+    await user.click(screen.getByRole('button', { name: /3 connections/i }));
 
     expect(screen.getByText('3 connections')).toBeInTheDocument();
     // Humanized edge labels from the shared map.
@@ -60,8 +69,8 @@ describe('IntentGraphPopover', () => {
 
   it('clicking an item neighbor emits an in-page item focus (never navigates away)', async () => {
     const user = userEvent.setup();
-    render(<IntentGraphPopover neighbors={NEIGHBORS} />);
-    await user.click(screen.getByRole('button', { name: /graph context/i }));
+    renderPopover(NEIGHBORS);
+    await user.click(screen.getByRole('button', { name: /3 connections/i }));
     await user.click(screen.getByRole('button', { name: /Authentication/i }));
 
     expect(focused).toEqual([{ kind: 'item', id: 'requirement:i:req-auth' }]);
@@ -69,8 +78,8 @@ describe('IntentGraphPopover', () => {
 
   it('clicking an artifact neighbor emits an artifact focus', async () => {
     const user = userEvent.setup();
-    render(<IntentGraphPopover neighbors={NEIGHBORS} />);
-    await user.click(screen.getByRole('button', { name: /graph context/i }));
+    renderPopover(NEIGHBORS);
+    await user.click(screen.getByRole('button', { name: /3 connections/i }));
     await user.click(screen.getByRole('button', { name: /Stories doc/i }));
 
     expect(focused).toEqual([{ kind: 'artifact', id: 'art-stories' }]);
@@ -78,8 +87,8 @@ describe('IntentGraphPopover', () => {
 
   it('non-navigable neighbors (Intent hub) render read-only — no button', async () => {
     const user = userEvent.setup();
-    render(<IntentGraphPopover neighbors={NEIGHBORS} />);
-    await user.click(screen.getByRole('button', { name: /graph context/i }));
+    renderPopover(NEIGHBORS);
+    await user.click(screen.getByRole('button', { name: /3 connections/i }));
 
     expect(screen.getByText('The intent')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /The intent/i })).not.toBeInTheDocument();
