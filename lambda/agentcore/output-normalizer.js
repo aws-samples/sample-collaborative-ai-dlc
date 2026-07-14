@@ -78,7 +78,9 @@ const emitEvent = (emit, content, display) => {
 };
 
 const completionOf = (line) => {
-  const match = line.match(/\b(Completed|Failed|Errored|Error)(?:\s+in\s+([0-9.]+\s*[a-z]+))?/i);
+  const match = line.match(
+    /^\s*-?\s*(Completed|Failed|Errored|Error)(?:\s+in\s+([0-9.]+\s*[a-z]+))?\s*$/i,
+  );
   if (!match) return null;
   const word = match[1].toLowerCase();
   return {

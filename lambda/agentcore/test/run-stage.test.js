@@ -569,6 +569,25 @@ describe('CLI output sink — UI-safe stdout', () => {
     expect(emitted[1].display.details).toContain('missing.txt');
   });
 
+  it('does not treat error words inside Kiro tool parameters as failure statuses', () => {
+    const emitted = [];
+    const sink = createCliOutputSink({ cli: 'kiro', emit: (event) => emitted.push(event) });
+    sink.write('Running tool record_learning_rule with the param\n');
+    sink.write(
+      ' ⋮  { "id": "rust-no-unwrap-production", "content": "Use anyhow::Context for error propagation." }\n',
+    );
+    sink.write(' - Completed in 0.15s\n');
+    sink.flush();
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].display).toMatchObject({
+      type: 'tool',
+      level: 'info',
+      title: 'Record Learning Rule',
+      summary: 'Completed in 0.15s',
+    });
+  });
+
   it('suppresses emit_stage_note from progress while retaining raw content', () => {
     const emitted = [];
     const sink = createCliOutputSink({ cli: 'kiro', emit: (event) => emitted.push(event) });
