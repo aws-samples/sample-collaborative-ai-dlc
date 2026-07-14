@@ -86,11 +86,11 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import {
-  AlertTriangle,
   ChevronRight,
   Compass,
   FileText,
   FileQuestion,
+  Info,
   Layers,
   Loader2,
   MoreHorizontal,
@@ -329,16 +329,14 @@ export default function IntentView() {
         </div>
       )}
 
-      {/* Degraded-scope note: the plan resolved with non-fatal scope-shortcut
-          warnings at create (required inputs whose producer stage is out of this
-          scope; per-unit sections downgraded to once-per-workflow). Informational
-          only — the run proceeds; details expand on demand. */}
-      {intent.planWarnings && intent.planWarnings.length > 0 && (
-        <details className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm">
-          <summary className="flex cursor-pointer list-none items-center gap-1.5 font-medium text-amber-600 dark:text-amber-400">
-            <AlertTriangle className="h-4 w-4 shrink-0" />
-            Scope “{intent.scope}” runs degraded — {intent.planWarnings.length} declared input
-            {intent.planWarnings.length === 1 ? '' : 's'} will not be produced in this scope
+      {/* Lean-run note: informational only — a narrower scope skips some stages
+          by design. Hidden once the intent has succeeded (the outcome speaks for itself). */}
+      {intent.planWarnings && intent.planWarnings.length > 0 && intent.status !== 'SUCCEEDED' && (
+        <details className="rounded border border-sky-500/20 bg-sky-500/5 px-3 py-2 text-sm">
+          <summary className="flex cursor-pointer list-none items-center gap-1.5 font-medium text-sky-700 dark:text-sky-300">
+            <Info className="h-4 w-4 shrink-0" />
+            Some stages are intentionally excluded from this scope ({intent.scope}) and their
+            outputs won't exist
           </summary>
           <ul className="mt-2 space-y-1 pl-6 text-[12px] text-muted-foreground">
             {intent.planWarnings.map((w, i) => (

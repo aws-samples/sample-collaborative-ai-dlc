@@ -20,7 +20,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { AlertCircle, ArrowLeft, ChevronDown, ChevronRight, Loader2, Users, X } from 'lucide-react';
+import {
+  AlertCircle,
+  ArrowLeft,
+  ChevronDown,
+  ChevronRight,
+  Info,
+  Loader2,
+  Users,
+  X,
+} from 'lucide-react';
 
 type ScopeSummary = {
   executedStages: number;
@@ -232,15 +241,13 @@ export default function IntentComposePage() {
         setPreviewErrors(
           preview.valid ? [] : (preview.errors ?? []).map((e) => e.message).slice(0, 6),
         );
-        const absent = (preview.warnings ?? []).filter(
-          (w) => w.code === 'scope_absent_consume',
-        ).length;
-        const degraded = (preview.warnings ?? []).some((w) => w.code === 'scope_absent_unit_dag');
-        const parts: string[] = [];
-        if (absent > 0)
-          parts.push(`${absent} downstream input${absent === 1 ? '' : 's'} will be absent`);
-        if (degraded) parts.push('parallel construction degrades to a single lane');
-        setPreviewNote(parts.length ? parts.join('; ') + '.' : null);
+        const excluded =
+          (preview.plan?.summary?.totalStages ?? 0) - (preview.plan?.summary?.executedStages ?? 0);
+        setPreviewNote(
+          excluded > 0
+            ? `${excluded} stage${excluded === 1 ? ' is' : 's are'} intentionally excluded from this scope (${scope}) and their outputs won't exist.`
+            : null,
+        );
       })
       .catch(() => {
         if (!cancelled) {
@@ -420,10 +427,10 @@ export default function IntentComposePage() {
             )}
             {previewNote && (
               <p
-                className="mt-1.5 flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-500"
+                className="mt-1.5 flex items-start gap-1.5 text-xs text-sky-700 dark:text-sky-300"
                 data-testid="preview-note"
               >
-                <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
                 {previewNote}
               </p>
             )}

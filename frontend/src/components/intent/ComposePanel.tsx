@@ -9,7 +9,7 @@ import { intentsService, type ComposeSession } from '@/services/intents';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
-import { AlertCircle, Check, FileUp, Loader2, Sparkles } from 'lucide-react';
+import { AlertCircle, Check, FileUp, Info, Loader2, Sparkles } from 'lucide-react';
 
 interface Props {
   projectId: string;
@@ -210,11 +210,15 @@ export function ComposePanel({ projectId, intentId, disabled, onApply }: Props) 
             </ul>
           )}
           {(latest.validation?.warnings?.length ?? 0) > 0 && (
-            <p className="flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-500">
-              <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-              {latest.validation!.warnings.length} plan warning
-              {latest.validation!.warnings.length === 1 ? '' : 's'} (inputs expected absent /
-              degraded sections) — by design for lean runs.
+            <p className="flex items-start gap-1.5 text-xs text-sky-700 dark:text-sky-300">
+              <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+              {(() => {
+                const s = latest.validation!.summary;
+                const excluded = s ? s.totalStages - s.executedStages : 0;
+                return excluded > 0
+                  ? `${excluded} stage${excluded === 1 ? ' is' : 's are'} intentionally excluded from this scope (${latest.proposal.scope}) and their outputs won't exist.`
+                  : `Some stages are intentionally excluded from this scope (${latest.proposal.scope}) and their outputs won't exist.`;
+              })()}
             </p>
           )}
           <div className="flex items-center gap-2 pt-1">
