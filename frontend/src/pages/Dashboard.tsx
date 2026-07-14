@@ -357,8 +357,8 @@ export default function Dashboard() {
                     )}
 
                     <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground/60">
-                      <span>Created {new Date(project.createdAt).toLocaleDateString()}</span>
-                      <span>Active {formatRelativeTime(project.lastActivityAt)}</span>
+                      <span>Created on {new Date(project.createdAt).toLocaleDateString()}</span>
+                      <span>Last activity {formatRelativeTime(project.lastActivityAt)}</span>
                     </div>
                   </CardContent>
                 </Card>
@@ -408,10 +408,10 @@ export default function Dashboard() {
                       </Badge>
                     )}
                     <span className="text-[11px] text-muted-foreground/60 shrink-0 hidden sm:inline">
-                      Active {formatRelativeTime(project.lastActivityAt)}
+                      Last activity {formatRelativeTime(project.lastActivityAt)}
                     </span>
                     <span className="text-[11px] text-muted-foreground/60 shrink-0">
-                      Created {new Date(project.createdAt).toLocaleDateString()}
+                      Created on {new Date(project.createdAt).toLocaleDateString()}
                     </span>
                     {isDeleting ? (
                       <Loader2 className="h-4 w-4 shrink-0 animate-spin text-destructive" />
