@@ -3,12 +3,12 @@ import { AccordionContent, AccordionItem, AccordionTrigger } from '@/components/
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-import { Layers, X } from 'lucide-react';
+import { ChevronRight, Layers, X } from 'lucide-react';
 import type { IntentGraphNode } from '@/services/intents';
 import type { GraphNeighbor } from '@/hooks/useIntentGraph';
 import { IntentGraphPopover } from '@/components/intent/IntentGraphPopover';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
-import { nodeTypeBadge } from '@/components/graph/nodeStyles';
+import { nodeTypeTextColor } from '@/components/graph/nodeStyles';
 
 // The "Derived items" accordion group on the intent workbench: the granular
 // typed items (Story/Requirement/Persona/…) the derive step mirrors out of
@@ -19,15 +19,11 @@ import { nodeTypeBadge } from '@/components/graph/nodeStyles';
 // walked without opening the graph page.
 
 // Canonical display order; unknown types append alphabetically after these.
-const TYPE_ORDER = [
-  'Requirement',
-  'Story',
-  'Persona',
-  'Component',
-  'Decision',
-  'StoryMapEntry',
-  'Contract',
-];
+// StoryMapEntry is intentionally excluded — it's a view/organization of Stories
+// (often slug-only, no human title), redundant with the Stories group.
+const TYPE_ORDER = ['Requirement', 'Story', 'Persona', 'Component', 'Decision', 'Contract'];
+
+const HIDDEN_TYPES = new Set(['StoryMapEntry']);
 
 const TYPE_GROUP_LABELS: Record<string, string> = {
   Requirement: 'Requirements',
@@ -35,7 +31,6 @@ const TYPE_GROUP_LABELS: Record<string, string> = {
   Persona: 'Personas',
   Component: 'Components',
   Decision: 'Decisions',
-  StoryMapEntry: 'Story map',
   Contract: 'Contracts',
 };
 
@@ -62,9 +57,10 @@ export function DerivedItemsSection({
   onClearFilter,
   artifactTitleById,
 }: DerivedItemsSectionProps) {
-  if (items.length === 0) return null;
+  const shown = items.filter((i) => !HIDDEN_TYPES.has(i.type));
+  if (shown.length === 0) return null;
 
-  const visible = filterArtifactId ? items.filter((i) => i.artifactId === filterArtifactId) : items;
+  const visible = filterArtifactId ? shown.filter((i) => i.artifactId === filterArtifactId) : shown;
 
   // Group by item type in canonical order.
   const byType = new Map<string, IntentGraphNode[]>();
@@ -96,7 +92,7 @@ export function DerivedItemsSection({
           <Layers className="h-4 w-4 text-muted-foreground" />
           <span className="text-sm font-medium">Identified items</span>
           <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
-            {items.length}
+            {shown.length}
           </Badge>
         </div>
       </AccordionTrigger>
@@ -153,13 +149,14 @@ export function DerivedItemsSection({
                       }
                     }}
                   >
-                    <Badge
-                      variant="outline"
-                      className={cn('h-4 px-1 text-[8px] shrink-0', nodeTypeBadge(item.type))}
+                    <ChevronRight
+                      className={cn('h-3 w-3 shrink-0', nodeTypeTextColor(item.type))}
+                      strokeWidth={3}
+                    />
+                    <span
+                      className="min-w-0 flex-1 truncate text-sm"
+                      title={item.slug ? `${item.label}\n${item.slug}` : item.label}
                     >
-                      {item.slug ?? item.type}
-                    </Badge>
-                    <span className="min-w-0 flex-1 truncate text-sm" title={item.label}>
                       {item.label}
                     </span>
                     {item.priority && (

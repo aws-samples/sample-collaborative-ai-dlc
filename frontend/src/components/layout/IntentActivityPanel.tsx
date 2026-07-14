@@ -851,9 +851,6 @@ function ItemPreviewContent({
         >
           {shortNodeType(item.type)}
         </Badge>
-        {item.slug && (
-          <span className="text-xs font-mono text-muted-foreground/70 truncate">{item.slug}</span>
-        )}
       </div>
       <div className="flex items-start gap-2 mb-3">
         <h3 className="text-base font-semibold min-w-0 flex-1">{item.label}</h3>

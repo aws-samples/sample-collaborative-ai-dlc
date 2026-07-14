@@ -28,6 +28,13 @@ export const NODE_TYPE_BADGES: Record<string, string> = {
 export const nodeTypeBadge = (type: string): string =>
   NODE_TYPE_BADGES[type] ?? 'bg-muted text-muted-foreground';
 
+// Just the text-color class from a node type's badge — for standalone glyphs
+// (e.g. the derived-items row chevron) that want the hue without the pill.
+export const nodeTypeTextColor = (type: string): string => {
+  const match = nodeTypeBadge(type).match(/text-\S+/);
+  return match ? match[0] : 'text-muted-foreground';
+};
+
 // Compact display names for narrow badges.
 const SHORT_TYPES: Record<string, string> = {
   StoryMapEntry: 'Map',
