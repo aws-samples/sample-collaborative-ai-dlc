@@ -85,6 +85,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   ChevronRight,
   Compass,
@@ -1843,7 +1845,7 @@ function QuestionHistoryCard({
   gate: IntentGate;
   influencedArtifacts: { id: string; title: string }[];
 }) {
-  const { detail, steering, reviseGate } = useIntent();
+  const { detail, steering, reviseGate, stageNameOf: questionStageNameOf } = useIntent();
   const questions = parseGateQuestions(gate.questions);
   const answer = formatGateAnswer(gate.answer, questions);
   const superseded = gate.status === 'superseded';
@@ -1906,7 +1908,7 @@ function QuestionHistoryCard({
               </Badge>
             )}
             <span className="text-[11px] text-muted-foreground">
-              {gate.stageInstanceId || 'agent question'}
+              {gate.stageInstanceId ? questionStageNameOf(gate.stageInstanceId) : 'agent question'}
             </span>
           </div>
           {(gate.answeredByName || gate.answeredBy || gate.answeredAt) && (
@@ -1926,11 +1928,17 @@ function QuestionHistoryCard({
         />
       </div>
 
-      <div className="mt-3 space-y-2">
+      <div className="mt-3 space-y-3">
         {questions.length > 0 ? (
           questions.map((q, idx) => (
             <div key={idx} className="rounded border bg-muted/20 px-2 py-2">
-              <p className="text-sm font-medium">{q.text || `Question ${idx + 1}`}</p>
+              <div className="text-sm font-medium prose prose-sm dark:prose-invert max-w-none">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {questions.length > 1
+                    ? `**Q${idx + 1}.** ${q.text || `Question ${idx + 1}`}`
+                    : q.text || `Question ${idx + 1}`}
+                </ReactMarkdown>
+              </div>
               {Array.isArray(q.options) && q.options.length > 0 && (
                 <p className="mt-1 text-[11px] text-muted-foreground">
                   Options:{' '}
@@ -1949,7 +1957,7 @@ function QuestionHistoryCard({
         {answered ? (
           <div className="rounded border border-agent-success/20 bg-agent-success/[0.04] px-2 py-2">
             <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              Answer
+              Answer{questions.length > 1 ? 's' : ''}
             </p>
             <p className="mt-1 whitespace-pre-wrap text-sm">{answer || 'Answered'}</p>
           </div>
@@ -2082,7 +2090,11 @@ function formatGateAnswer(answer: unknown, questions: Question['questions']): st
           : '';
         const free = a.freeText?.trim() ?? '';
         const response = [selected, free].filter(Boolean).join(' · ');
-        return response ? `Q${idx + 1}: ${response}` : '';
+        return response
+          ? structured.answers!.length > 1
+            ? `Q${idx + 1}: ${response}`
+            : response
+          : '';
       })
       .filter(Boolean)
       .join('\n');

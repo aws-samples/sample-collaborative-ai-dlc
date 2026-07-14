@@ -552,7 +552,7 @@ describe('IntentView', () => {
     // Questions section is closed by default — expand it.
     await userEvent.click(screen.getByText('Questions'));
     expect(screen.getByText('Which provider?')).toBeInTheDocument();
-    expect(screen.getByText('Q1: Cognito')).toBeInTheDocument();
+    expect(screen.getByText('Cognito')).toBeInTheDocument();
     expect(screen.getByText('Influenced artifacts:')).toBeInTheDocument();
   });
 

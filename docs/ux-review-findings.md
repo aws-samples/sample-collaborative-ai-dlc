@@ -29,8 +29,8 @@ Ordered by value-for-effort. Tier 1 items are individually shippable in hours, n
 | 5 | UX-012 | Work products: Code always open, Documents open (closed on SUCCEEDED), Questions + Identified items closed; rename "Derived items" → "Identified items" + plain description; fix scroll-to-item anchor | Config-level change; unburies the intent screen | ✅ |
 | 6 | UX-018 | Rewrite review-gate card + page copy (stage title, artifact chips, move instructions to actions, fix "pending/none" contradiction) | Copy-only; the gate is the core human touchpoint | ✅ |
 | 7 | UX-009 | Project page: Intents first, metrics below and owner/admin-only | Section reorder + role gate; fixes inverted hierarchy | ✅ |
-| 8 | UX-007 | Sidebar: split "Needs your attention" (questions) from "Observability" | Rename + regroup; makes the key signal findable by POs | |
-| 9 | UX-016 | Render markdown in question bodies; demote `si-…` IDs; number sub-questions | Markdown renderer already exists (artifact viewer); mostly wiring | |
+| 8 | UX-007 | Sidebar: split "Needs your attention" (questions) from "Observability" | Rename + regroup; makes the key signal findable by POs. Deferred — linked to observability rework (UX-029, UX-031); sidebar links should navigate to intent, not observability. | |
+| 9 | UX-016 | Render markdown in question bodies; demote `si-…` IDs; number sub-questions | Markdown renderer already exists (artifact viewer); mostly wiring | ✅ |
 | 10 | UX-010 | Map status enums / stage ids to human labels at display boundary ("SUCCEEDED" → "Completed") | One mapping table, used app-wide | |
 
 ### Tier 2 — Copy & polish batch: low effort, medium impact (bundle into one pass)
