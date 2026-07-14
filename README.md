@@ -225,7 +225,7 @@ Group membership is read from the ID token — users need to sign out and back i
 The application is available at the CloudFront domain:
 
 ```bash
-cd terraform && terraform output cloudfront_domain_name
+terraform -chdir=terraform output -raw application_url
 ```
 
 ## Documentation

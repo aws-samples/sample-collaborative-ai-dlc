@@ -9,6 +9,7 @@ import test from 'node:test';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const installer = join(root, 'scripts/install.sh');
 const inspector = join(root, 'scripts/inspect-terraform-plan.mjs');
+const deployTerraform = join(root, 'scripts/deploy-terraform.sh');
 
 const run = (file, args, options = {}) =>
   spawnSync(file, args, {
@@ -86,6 +87,72 @@ test('Terraform plan inspection rejects protected deletion and allows the retire
   const accepted = run('node', [inspector, retiredPlan]);
   assert.equal(accepted.status, 0, accepted.stderr);
   assert.match(accepted.stdout, /Allowed retired v1 resource removal/);
+});
+
+test('standalone Terraform deployment ends with the application URL', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-deploy-summary-'));
+  const bin = join(dir, 'bin');
+  const config = join(dir, 'config/environments');
+  mkdirSync(bin, { recursive: true });
+  mkdirSync(config, { recursive: true });
+  writeFileSync(
+    join(config, 'summary.tfvars'),
+    'environment = "summary"\nproject_name = "aidlc"\naws_region = "eu-west-1"\n',
+  );
+  writeFileSync(join(config, 'summary.s3.tfbackend'), 'bucket = "state"\nkey = "state"\n');
+  writeFileSync(
+    join(bin, 'terraform'),
+    `#!/usr/bin/env bash
+case "$*" in
+  *"plan "*)
+    for arg in "$@"; do
+      [[ "$arg" == -out=* ]] && : > "\${arg#-out=}"
+    done
+    ;;
+  *"show -json "*) printf '{"resource_changes":[]}\\n' ;;
+  *" output -raw application_url"*) printf 'https://app.example.invalid\\n' ;;
+  *" output -raw aws_region"*) printf 'eu-west-1\\n' ;;
+  *" output -raw environment"*) printf 'summary\\n' ;;
+  *" output -raw seed_blocks_lambda_name"*) printf 'seed-summary\\n' ;;
+esac
+`,
+    { mode: 0o755 },
+  );
+  writeFileSync(
+    join(bin, 'aws'),
+    `#!/usr/bin/env bash
+if [[ "$*" == *"ecs describe-clusters"* ]]; then
+  printf 'None\\n'
+  exit 0
+fi
+if [[ "$*" == *"lambda invoke"* ]]; then
+  for arg in "$@"; do
+    [[ "$arg" == */aidlc-seed.* ]] && printf '{}\\n' > "$arg"
+  done
+  printf 'None\\n'
+fi
+`,
+    { mode: 0o755 },
+  );
+
+  const deployed = run(
+    'bash',
+    [deployTerraform, 'summary', '--plan-file', join(dir, 'summary.tfplan')],
+    {
+      env: {
+        PATH: `${bin}:${process.env.PATH}`,
+        AIDLC_CONFIG_DIR: join(dir, 'config'),
+        AIDLC_SKIP_NPM_CI: '1',
+      },
+    },
+  );
+
+  assert.equal(deployed.status, 0, deployed.stderr);
+  assert.match(deployed.stdout, /Infrastructure deployment complete/);
+  assert.match(deployed.stdout, /Environment:\s+summary/);
+  assert.match(deployed.stdout, /Region:\s+eu-west-1/);
+  assert.match(deployed.stdout, /Application URL:\s+https:\/\/app\.example\.invalid/);
+  assert.match(deployed.stdout, /Next step:.*deploy-frontend\.sh summary/);
 });
 
 test('installer lists prereleases by default in SemVer order', () => {
@@ -280,6 +347,7 @@ const mockedCommandEnv = (dir, repository) => {
 case "$*" in
   *" show -json "*) printf '{"resource_changes":[]}\\n' ;;
   *" state pull"*) printf '{}\\n' ;;
+  *" output -raw application_url"*) printf 'https://example.invalid\\n' ;;
   *" output -raw user_pool_id"*) printf 'pool-1\\n' ;;
   *" output -raw user_pool_client_id"*) printf 'client-1\\n' ;;
   *" output -raw cloudfront_domain_name"*) printf 'example.invalid\\n' ;;
@@ -315,6 +383,7 @@ test('installer creates permanent administrators with v1 and v2 roles', () => {
   const v2Env = mockedCommandEnv(v2Dir, repository);
   const v2 = run('bash', [installer, 'install', '--version', '2.0.0'], { env: v2Env });
   assert.equal(v2.status, 0, v2.stderr);
+  assert.match(v2.stdout, /Application URL:\s+https:\/\/example\.invalid/);
   const v2Aws = execFileSync('cat', [v2Env.AIDLC_AWS_LOG], { encoding: 'utf8' });
   assert.match(v2Aws, /admin-create-user/);
   assert.match(v2Aws, /admin-set-user-password.*--permanent/);
@@ -330,6 +399,7 @@ test('installer creates permanent administrators with v1 and v2 roles', () => {
   writeFileSync(upgradeEnv.AIDLC_AWS_LOG, '');
   const update = run('bash', [installer, 'update', '--version', '2.0.0'], { env: upgradeEnv });
   assert.equal(update.status, 0, update.stderr);
+  assert.match(update.stdout, /Application URL:\s+https:\/\/example\.invalid/);
   upgradeAws = execFileSync('cat', [upgradeEnv.AIDLC_AWS_LOG], { encoding: 'utf8' });
   assert.match(upgradeAws, /admin-add-user-to-group.*--group-name platform-admin/);
   assert.doesNotMatch(upgradeAws, /admin-set-user-password/);

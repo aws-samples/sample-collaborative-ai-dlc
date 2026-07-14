@@ -60,6 +60,28 @@ inspect_plan() {
     rm -f "$plan_json"
 }
 
+tf_output() {
+    terraform -chdir="$TF_DIR" output -raw "$1" 2>/dev/null || true
+}
+
+print_deployment_summary() {
+    local application_url region deployed_environment
+    application_url="$(tf_output application_url)"
+    region="$(tf_output aws_region)"
+    deployed_environment="$(tf_output environment)"
+
+    echo ""
+    echo "Infrastructure deployment complete"
+    printf '  Environment:     %s\n' "${deployed_environment:-$ENVIRONMENT}"
+    printf '  Region:          %s\n' "${region:-unknown}"
+    if [[ -n "$application_url" ]]; then
+        printf '  Application URL: %s\n' "$application_url"
+    else
+        echo "  Application URL: unavailable (run 'terraform -chdir=terraform output -raw application_url')"
+    fi
+    printf '  Next step:       %s/deploy-frontend.sh %s\n' "$SCRIPT_DIR" "$ENVIRONMENT"
+}
+
 stop_retired_agent_tasks() {
     local tfvars_file="$1"
     local env_name project_name region cluster_name cluster_arn tasks services
@@ -167,9 +189,26 @@ echo "Applying AI-DLC default workflow and building blocks (reseed)"
 # Pin --region to the deployed stack's region: without it the AWS CLI falls
 # back to the profile default, which fails with "Function not found" whenever
 # the profile region differs from the deployment region.
-aws lambda invoke --function-name "$(cd "$TF_DIR" && terraform output -raw seed_blocks_lambda_name)" --region "$(cd "$TF_DIR" && terraform output -raw aws_region)" --payload '{"reseed":true}' --cli-binary-format raw-in-base64-out /tmp/out.json
-cat /tmp/out.json
-echo ""
-echo "✅ AI-DLC default workflow & building blocks applied!"
+SEED_RESULT_FILE="$(mktemp "${TMPDIR:-/tmp}/aidlc-seed.XXXXXX")"
+SEED_FUNCTION_ERROR="$(
+    aws lambda invoke \
+        --function-name "$(tf_output seed_blocks_lambda_name)" \
+        --region "$(tf_output aws_region)" \
+        --payload '{"reseed":true}' \
+        --cli-binary-format raw-in-base64-out \
+        "$SEED_RESULT_FILE" \
+        --query FunctionError \
+        --output text
+)"
+if [[ -n "$SEED_FUNCTION_ERROR" && "$SEED_FUNCTION_ERROR" != "None" ]]; then
+    echo "Error: baseline seed Lambda failed ($SEED_FUNCTION_ERROR):" >&2
+    cat "$SEED_RESULT_FILE" >&2
+    rm -f "$SEED_RESULT_FILE"
+    exit 1
+fi
+rm -f "$SEED_RESULT_FILE"
+echo "AI-DLC default workflow and building blocks applied."
 
-echo "✅ Deployment complete!"
+if [[ "${AIDLC_MANAGED_INSTALL:-0}" != "1" ]]; then
+    print_deployment_summary
+fi

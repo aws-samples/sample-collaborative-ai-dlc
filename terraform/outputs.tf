@@ -20,6 +20,11 @@ output "cloudfront_domain_name" {
   value       = module.frontend.cloudfront_domain_name
 }
 
+output "application_url" {
+  description = "Public URL of the AI-DLC application"
+  value       = "https://${module.frontend.cloudfront_domain_name}"
+}
+
 output "s3_bucket_name" {
   description = "Frontend S3 bucket name"
   value       = module.frontend.s3_bucket_name

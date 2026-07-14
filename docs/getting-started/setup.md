@@ -235,7 +235,7 @@ This builds the frontend, uploads it to S3, and invalidates the CloudFront cache
 ### Access the application
 
 ```bash
-terraform -chdir=terraform output cloudfront_domain_name
+terraform -chdir=terraform output -raw application_url
 ```
 
 Open the domain in your browser to reach the sign-in page.

@@ -440,9 +440,9 @@ deploy_v1() {
 
 deploy_v2() {
     local checkout="$1" plan="$2"
-    AIDLC_CONFIG_DIR="$CONFIG_ROOT/terraform" \
+    AIDLC_CONFIG_DIR="$CONFIG_ROOT/terraform" AIDLC_MANAGED_INSTALL=1 \
         "$checkout/scripts/deploy-terraform.sh" "$ENVIRONMENT" --phase plan --plan-file "$plan"
-    AIDLC_CONFIG_DIR="$CONFIG_ROOT/terraform" \
+    AIDLC_CONFIG_DIR="$CONFIG_ROOT/terraform" AIDLC_MANAGED_INSTALL=1 \
         "$checkout/scripts/deploy-terraform.sh" "$ENVIRONMENT" --phase apply --plan-file "$plan"
 }
 
@@ -514,6 +514,35 @@ current_version() {
     fi
 }
 
+application_url() {
+    local checkout="$1" url domain
+    url="$(terraform -chdir="$checkout/terraform" output -raw application_url 2>/dev/null || true)"
+    if [[ -z "$url" ]]; then
+        domain="$(terraform -chdir="$checkout/terraform" output -raw cloudfront_domain_name 2>/dev/null || true)"
+        [[ -n "$domain" ]] && url="https://$domain"
+    fi
+    printf '%s\n' "$url"
+}
+
+print_managed_summary() {
+    local operation="$1" checkout="$2" url=""
+    if [[ "${AIDLC_TEST_MODE:-0}" != 1 ]]; then
+        url="$(application_url "$checkout")"
+    fi
+
+    echo ""
+    echo "$operation complete"
+    printf '  Release:         %s\n' "$(target_description)"
+    printf '  Environment:     %s\n' "$ENVIRONMENT"
+    printf '  Region:          %s\n' "$REGION"
+    if [[ -n "$url" ]]; then
+        printf '  Application URL: %s\n' "$url"
+    else
+        echo "  Application URL: unavailable; run the status command after Terraform is initialized."
+    fi
+    printf '  Status:          bash %q status\n' "$SCRIPT_DIR/install.sh"
+}
+
 install_command() {
     require_commands
     [[ ! -L "$CURRENT_LINK" ]] || {
@@ -544,7 +573,7 @@ install_command() {
     write_config
     switch_current "$checkout"
     unset ADMIN_PASSWORD AIDLC_ADMIN_PASSWORD || true
-    echo "Installed $(target_description). Current checkout: $CURRENT_LINK"
+    print_managed_summary "Installation" "$checkout"
 }
 
 adopt_command() {
@@ -626,7 +655,7 @@ update_command() {
     fi
     write_config
     switch_current "$checkout"
-    echo "Updated AI-DLC from v$old_version to $(target_description)."
+    print_managed_summary "Update from AI-DLC v$old_version" "$checkout"
 }
 
 status_command() {
@@ -639,7 +668,7 @@ status_command() {
     fi
     version="$(current_version)"
     if command -v terraform >/dev/null 2>&1; then
-        url="$(terraform -chdir="$checkout/terraform" output -raw cloudfront_domain_name 2>/dev/null || true)"
+        url="$(application_url "$checkout")"
     fi
     echo "Version:     $version"
     echo "Environment: $ENVIRONMENT"
@@ -652,7 +681,7 @@ status_command() {
     else
         echo "Source:      v$version"
     fi
-    [[ -n "$url" ]] && echo "URL:         https://$url"
+    [[ -n "$url" ]] && echo "URL:         $url"
 }
 
 case "$COMMAND" in
