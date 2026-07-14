@@ -5,6 +5,9 @@
 
 AI-DLC is a platform where humans and AI agents collaborate on software development through a shared, structured workflow. You define what you want built. AI agents plan, implement, and review it. Everything -- requirements, design decisions, tasks, code -- is connected in a graph so nothing gets lost between intent and implementation.
 
+> [!IMPORTANT]
+> V1 sprints are view-only in v2. To continue running an active v1 sprint, use the frozen [v1.1.0 release](https://github.com/aws-samples/sample-collaborative-ai-dlc/releases/tag/v1.1.0). Upgrade after that sprint is complete.
+
 ## Why AI-DLC
 
 **Requirements that trace to code.** Every requirement breaks into user stories, then tasks, then code files -- all linked in a graph database. When you change a requirement, you can see exactly what downstream work is affected.
@@ -30,34 +33,81 @@ You need an AWS account with permissions to manage VPC, ECS, ECR, Lambda, API Ga
 
 ## Getting Started
 
-### 1. Create Terraform State Backend
+The managed installer is the primary deployment path. It keeps tagged source checkouts under `${XDG_DATA_HOME:-~/.local/share}/collaborative-ai-dlc`, persistent Terraform configuration under `${XDG_CONFIG_HOME:-~/.config}/collaborative-ai-dlc`, and switches the `current` link only after a deployment succeeds.
 
-This is a one-time setup. The bootstrap script creates the S3 bucket (with a random suffix for global uniqueness) and writes a `.s3.tfbackend` file:
-
-```bash
-export AWS_PROFILE=<your-profile-name>
-export REGION=<your-region>
-./scripts/bootstrap.sh <your-profile-name>
-```
-
-### 2. Configure Terraform Variables
+Download and inspect the installer, then run it:
 
 ```bash
-cp terraform/environments/dev.tfvars.example terraform/environments/<your-profile-name>.tfvars
-# Edit dev.tfvars with your desired region, etc.
+curl -fsSLo /tmp/aidlc-install.sh \
+  https://raw.githubusercontent.com/aws-samples/sample-collaborative-ai-dlc/main/scripts/install.sh
+less /tmp/aidlc-install.sh
+bash /tmp/aidlc-install.sh install \
+  --profile <aws-profile> \
+  --region <aws-region> \
+  --environment dev \
+  --admin <administrator-email>
 ```
 
-### 3. Deploy Infrastructure
-
-This builds all Lambda packages and provisions the full AWS stack (VPC, Neptune, DynamoDB, Cognito, API Gateway, ECS, Bedrock AgentCore, S3, CloudFront, etc.):
+The password prompt is silent. The permanent Cognito password is sent directly to Cognito and is never written to installer configuration. After installation, sign in at the URL reported by `status`:
 
 ```bash
-./scripts/deploy-terraform.sh <your-profile-name>
+bash /tmp/aidlc-install.sh status
 ```
 
-After deployment, configure agent authentication in the deployed app under **Admin → Agent Settings**: enter a Bedrock bearer token (for Claude Code / OpenCode) or a Kiro API key. The Bedrock AgentCore runtime reads these settings when executing agents.
+### Versions, Adoption, and Updates
 
-### 4. Configure Provider OAuth Apps
+Stable releases are selected by default. Prerelease tags such as `v2.1.0-rc.1` are shown only when requested and are never selected as the default:
+
+```bash
+bash /tmp/aidlc-install.sh versions
+bash /tmp/aidlc-install.sh versions --include-prereleases
+bash /tmp/aidlc-install.sh install --version 2.0.0 ...
+```
+
+Adopt an existing v1 deployment before updating it. The source checkout must contain the deployment's `terraform/environments/<environment>.tfvars` and `<environment>.s3.tfbackend` files:
+
+```bash
+bash /tmp/aidlc-install.sh adopt \
+  --source /path/to/existing-v1-checkout \
+  --environment dev \
+  --profile <aws-profile> \
+  --admin <existing-administrator-email>
+
+bash /tmp/aidlc-install.sh update --version 2.0.0
+```
+
+An update backs up Terraform state, rejects unexpected destruction of Cognito, Neptune, S3, or persistent DynamoDB resources, deploys infrastructure, grants the existing administrator `platform-admin`, and deploys the frontend. Removal of the retired v1 ECS agent runtime and agent-pool table is expected. If any step fails, `current` remains on the working version. Application-data backup beyond Terraform state remains the operator's responsibility. Downgrades require `--allow-downgrade`.
+
+### Advanced Manual Deployment
+
+The environment argument is a logical deployment name such as `dev`; it is not an AWS profile. Set credentials and region through the AWS CLI environment, and use matching backend and tfvars filenames:
+
+```bash
+export AWS_PROFILE=<aws-profile>
+export AWS_REGION=<aws-region>
+
+./scripts/bootstrap.sh dev
+cp terraform/environments/dev.tfvars.example terraform/environments/dev.tfvars
+# Set aws_region = "<aws-region>" in terraform/environments/dev.tfvars.
+
+./scripts/deploy-terraform.sh dev
+./scripts/deploy-frontend.sh dev
+```
+
+`bootstrap.sh` writes `terraform/environments/dev.s3.tfbackend`. Infrastructure deployment reads that backend file and `terraform/environments/dev.tfvars`, regardless of the AWS profile name. For an approval boundary between planning and applying:
+
+```bash
+./scripts/deploy-terraform.sh dev --phase plan --plan-file /tmp/aidlc-dev.tfplan
+./scripts/deploy-terraform.sh dev --phase apply --plan-file /tmp/aidlc-dev.tfplan
+```
+
+### Post-install Configuration
+
+The installer creates the first Cognito user and grants `platform-admin` for v2 (`owner` for v1.1.0). Additional users and administrators are managed in **Admin → User Management**.
+
+Configure agent authentication in **Admin → Agent Settings**: enter a Bedrock bearer token for Claude Code/OpenCode or a Kiro API key. Agent credentials are separate from the Cognito login created during installation.
+
+### Configure Provider OAuth Apps
 
 The platform integrates with external providers as **code hosts** (GitHub, GitLab) and **issue trackers** (GitHub Issues, GitLab Issues, Jira Cloud) so a sprint can be started from a tracker issue. For each provider you want to enable, register an OAuth app with it, then paste the credentials into the **Admin → Tracker OAuth Apps** panel in the deployed app.
 
@@ -135,7 +185,7 @@ aws secretsmanager put-secret-value \
 
 </details>
 
-### 5. Create Users
+### Manual User Creation
 
 Create users in the Cognito User Pool. The User Pool ID is available via `terraform output user_pool_id` from the `terraform/` directory.
 
@@ -150,10 +200,10 @@ aws cognito-idp admin-add-user-to-group \
 
 Group membership is read from the ID token — users need to sign out and back in after being added. Once the first administrator exists, additional admins can be granted or revoked from the UI under **Admin → User Management** (the CLI is only needed to bootstrap the first one).
 
-### 6. Deploy Frontend
+### Manual Frontend Deployment
 
 ```bash
-./scripts/deploy-frontend.sh <your-profile-name>
+./scripts/deploy-frontend.sh dev
 ```
 
 The application is available at the CloudFront domain:

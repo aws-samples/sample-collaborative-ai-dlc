@@ -56,7 +56,10 @@ export function StatusBar() {
 
       {/* Right side: version/env */}
       <div className="ml-auto flex items-center gap-2">
-        <span className="text-muted-foreground/50">AI-DLC</span>
+        <span className="text-muted-foreground/50">
+          AI-DLC v{import.meta.env.VITE_APP_VERSION}
+          {import.meta.env.VITE_ENVIRONMENT ? ` | ${import.meta.env.VITE_ENVIRONMENT}` : ''}
+        </span>
       </div>
     </footer>
   );

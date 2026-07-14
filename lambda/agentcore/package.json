@@ -1,6 +1,5 @@
 {
   "name": "agentcore",
-  "version": "1.0.0",
   "private": true,
   "description": "Bedrock AgentCore Runtime image: executes one AI-DLC v2 stage per invocation, with a clean MCP business-graph server.",
   "type": "module",

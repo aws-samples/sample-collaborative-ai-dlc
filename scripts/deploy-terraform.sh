@@ -1,14 +1,48 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 # Disable the AWS CLI v2 pager so commands like `lambda invoke` print their JSON
 # result and return immediately instead of opening it in `less` (which would
 # otherwise wait for the user to press `q`).
 export AWS_PAGER=""
 
-ENVIRONMENT=${1:-dev}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TF_DIR="$SCRIPT_DIR/../terraform"
+ENVIRONMENT="dev"
+PHASE="all"
+PLAN_FILE="$TF_DIR/tfplan"
+
+if [[ $# -gt 0 && "$1" != --* ]]; then
+    ENVIRONMENT="$1"
+    shift
+fi
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --phase)
+            PHASE="${2:?--phase requires plan, apply, or all}"
+            shift 2
+            ;;
+        --plan-file)
+            PLAN_FILE="${2:?--plan-file requires a path}"
+            shift 2
+            ;;
+        *)
+            echo "Usage: $0 [environment] [--phase plan|apply|all] [--plan-file path]" >&2
+            exit 2
+            ;;
+    esac
+done
+if [[ "$PHASE" != "plan" && "$PHASE" != "apply" && "$PHASE" != "all" ]]; then
+    echo "Error: --phase must be plan, apply, or all" >&2
+    exit 2
+fi
+
+CONFIG_TF_DIR="${AIDLC_CONFIG_DIR:-$TF_DIR}"
+TFVARS_FILE="${AIDLC_TFVARS_FILE:-$CONFIG_TF_DIR/environments/${ENVIRONMENT}.tfvars}"
+BACKEND_FILE="${AIDLC_BACKEND_FILE:-$CONFIG_TF_DIR/environments/${ENVIRONMENT}.s3.tfbackend}"
+if [[ "$PLAN_FILE" != /* ]]; then
+    PLAN_FILE="$(pwd)/$PLAN_FILE"
+fi
 
 tfvar_string() {
     local name="$1"
@@ -16,6 +50,14 @@ tfvar_string() {
     local value
     value=$(awk -F= -v key="$name" '$1 ~ "^[[:space:]]*" key "[[:space:]]*$" { gsub(/[[:space:]\"]/, "", $2); print $2; exit }' "$file")
     printf '%s' "$value"
+}
+
+inspect_plan() {
+    local plan_file="$1"
+    local plan_json="${plan_file}.json"
+    terraform show -json "$plan_file" > "$plan_json"
+    node "$SCRIPT_DIR/inspect-terraform-plan.mjs" "$plan_json"
+    rm -f "$plan_json"
 }
 
 stop_retired_agent_tasks() {
@@ -57,35 +99,64 @@ stop_retired_agent_tasks() {
     done
 }
 
-AVAILABLE_ENVS=$(ls "$TF_DIR/environments/"*.tfvars 2>/dev/null | xargs -n1 basename | sed 's/\.tfvars$//' | tr '\n' ' ')
+AVAILABLE_ENVS=$(find "$CONFIG_TF_DIR/environments" -maxdepth 1 -type f -name '*.tfvars' -exec basename {} .tfvars \; 2>/dev/null | tr '\n' ' ')
 if [[ -z "${AVAILABLE_ENVS// }" ]]; then
     AVAILABLE_ENVS="dev prod"
 fi
 
 if ! echo " $AVAILABLE_ENVS " | grep -q " $ENVIRONMENT "; then
-    echo "Usage: $0 <environment>"
+    echo "Usage: $0 <environment> [--phase plan|apply|all] [--plan-file path]"
     echo "Available environments: $AVAILABLE_ENVS"
     exit 1
 fi
 
-echo "Deploying environment: $ENVIRONMENT"
+if [[ ! -f "$TFVARS_FILE" ]]; then
+    echo "Error: Terraform variables file not found: $TFVARS_FILE" >&2
+    exit 1
+fi
+if [[ ! -f "$BACKEND_FILE" ]]; then
+    echo "Error: Terraform backend file not found: $BACKEND_FILE" >&2
+    exit 1
+fi
 
-echo "Installing root npm dependencies..."
-(cd "$SCRIPT_DIR/.." && npm ci)
+echo "Deploying environment: $ENVIRONMENT ($PHASE)"
+
+if [[ "$PHASE" == "plan" || "$PHASE" == "all" ]]; then
+    if [[ "${AIDLC_SKIP_NPM_CI:-0}" != "1" ]]; then
+        echo "Installing root npm dependencies..."
+        (cd "$SCRIPT_DIR/.." && npm ci)
+    fi
+
+    cd "$TF_DIR"
+    echo "Initializing Terraform..."
+    terraform init -reconfigure -backend-config="$BACKEND_FILE"
+
+    mkdir -p "$(dirname "$PLAN_FILE")"
+    echo "Planning deployment..."
+    terraform plan -var-file="$TFVARS_FILE" -out="$PLAN_FILE"
+    inspect_plan "$PLAN_FILE"
+    if [[ "$PHASE" == "plan" ]]; then
+        echo "Terraform plan ready: $PLAN_FILE"
+        exit 0
+    fi
+fi
+
+if [[ ! -f "$PLAN_FILE" ]]; then
+    echo "Error: Terraform plan not found: $PLAN_FILE" >&2
+    exit 1
+fi
 
 cd "$TF_DIR"
-
-echo "Initializing Terraform..."
-terraform init -reconfigure -backend-config="environments/${ENVIRONMENT}.s3.tfbackend"
-
-echo "Planning deployment..."
-terraform plan -var-file="environments/${ENVIRONMENT}.tfvars" -out=tfplan
-
-stop_retired_agent_tasks "environments/${ENVIRONMENT}.tfvars"
+if [[ "$PHASE" == "apply" ]]; then
+    inspect_plan "$PLAN_FILE"
+fi
+stop_retired_agent_tasks "$TFVARS_FILE"
 
 echo "Applying changes..."
-terraform apply tfplan
-rm -f tfplan
+terraform apply "$PLAN_FILE"
+if [[ "${AIDLC_KEEP_PLAN:-0}" != "1" ]]; then
+    rm -f "$PLAN_FILE"
+fi
 
 # Reseed the SYSTEM baseline (vendor-owned blocks + default workflow). reseed
 # clears the existing SYSTEM partitions and rewrites them from the current

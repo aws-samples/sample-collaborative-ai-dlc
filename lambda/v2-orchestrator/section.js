@@ -930,7 +930,7 @@ export const runParallelSection = async (segment, toolkit) => {
   // request-changes. Request-changes carries feedback, re-runs the skeleton
   // lane (revive + resumeFrom the answered gate), and re-asks; after 3 cycles
   // the accept-as-is escape hatch appears. Never a terminal reject.
-  for (let revision = 0; laneState.get(skeleton) === 'MERGED'; ) {
+  for (let revision = 0; laneState.get(skeleton) === 'MERGED';) {
     const options =
       revision >= 3
         ? ['approve', 'request-changes', 'accept-as-is']
@@ -1053,7 +1053,7 @@ export const runParallelSection = async (segment, toolkit) => {
       if (waveSlugs.length === 0) continue;
       const out = await runUntilResolved(waveSlugs, { tag: `-w${w}` });
       if (out) return out;
-      for (let revision = 0; ; ) {
+      for (let revision = 0; ;) {
         const mergedInWave = waveSlugs.filter((s) => laneState.get(s) === 'MERGED');
         const options =
           revision >= 3

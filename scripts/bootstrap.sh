@@ -11,14 +11,16 @@ ENVIRONMENT=${1:-dev}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 PROJECT_NAME="collaborative-ai-dlc"
-REGION="us-east-1"
+REGION="${AWS_REGION:-${REGION:-us-east-1}}"
+CONFIG_TF_DIR="${AIDLC_CONFIG_DIR:-${ROOT_DIR}/terraform}"
 
 if [[ -z "$ENVIRONMENT" ]]; then
     echo "Usage: $0 <environment>"
     exit 1
 fi
 
-BACKEND_FILE="${ROOT_DIR}/terraform/environments/${ENVIRONMENT}.s3.tfbackend"
+BACKEND_FILE="${CONFIG_TF_DIR}/environments/${ENVIRONMENT}.s3.tfbackend"
+mkdir -p "$(dirname "$BACKEND_FILE")"
 
 # Generate a random 8-char hex suffix for global uniqueness
 SUFFIX=$(openssl rand -hex 4)

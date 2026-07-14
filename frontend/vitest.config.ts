@@ -8,6 +8,10 @@ import path from 'path';
 // vite.config.ts so imports resolve the same way in tests.
 export default defineConfig({
   plugins: [react()],
+  define: {
+    'import.meta.env.VITE_APP_VERSION': JSON.stringify('2.0.0-test'),
+    'import.meta.env.VITE_ENVIRONMENT': JSON.stringify('test'),
+  },
   resolve: {
     alias: { '@': path.resolve(import.meta.dirname, './src') },
   },

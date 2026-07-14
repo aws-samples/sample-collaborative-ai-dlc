@@ -45,6 +45,9 @@
     "audit:prod:frontend": "npm --prefix frontend audit --omit=dev --audit-level=high",
     "audit:prod:all": "npm run audit:prod && npm run audit:prod:frontend",
     "typecheck:frontend": "npm --prefix frontend run typecheck",
+    "release:prepare": "node scripts/release.mjs prepare",
+    "release:check": "node scripts/release.mjs check",
+    "test:release": "node --test scripts/test/*.test.mjs",
     "prepare": "husky"
   },
   "devDependencies": {

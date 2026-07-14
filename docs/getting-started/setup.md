@@ -2,50 +2,81 @@
 
 This guide takes you from zero to a running instance of AIDLC Collaborative. The platform requires AWS infrastructure for authentication, APIs, and agent execution, so setup involves both local configuration and cloud deployment.
 
-## Clone the repository
+!!! warning "V1 sprints in v2"
+
+    V1 sprints are view-only in v2. Continue active v1 work with the frozen [v1.1.0 release](https://github.com/aws-samples/sample-collaborative-ai-dlc/releases/tag/v1.1.0), then upgrade after the sprint is complete.
+
+## Managed installation
+
+Download and inspect the installer, then run it with your AWS profile, region, environment, and first administrator:
+
+```bash
+curl -fsSLo /tmp/aidlc-install.sh \
+  https://raw.githubusercontent.com/aws-samples/sample-collaborative-ai-dlc/main/scripts/install.sh
+less /tmp/aidlc-install.sh
+bash /tmp/aidlc-install.sh install \
+  --profile <aws-profile> \
+  --region <aws-region> \
+  --environment dev \
+  --admin <administrator-email>
+```
+
+The password prompt is silent and the permanent password is never stored. The installer keeps immutable tagged checkouts under the XDG data directory, keeps Terraform configuration under the XDG config directory, and only changes `current` after infrastructure, administrator setup, and frontend deployment all succeed.
+
+Use the same script to inspect or update the deployment:
+
+```bash
+bash /tmp/aidlc-install.sh status
+bash /tmp/aidlc-install.sh versions
+bash /tmp/aidlc-install.sh update
+```
+
+Prereleases are excluded unless `--include-prereleases` or `--allow-prerelease` is explicit. Downgrades require `--allow-downgrade`.
+
+### Adopt an existing v1 deployment
+
+The existing checkout must contain its environment's `.tfvars` and `.s3.tfbackend` files:
+
+```bash
+bash /tmp/aidlc-install.sh adopt \
+  --source /path/to/existing-v1-checkout \
+  --environment dev \
+  --profile <aws-profile> \
+  --admin <existing-administrator-email>
+
+bash /tmp/aidlc-install.sh update --version 2.0.0
+```
+
+The update backs up Terraform state and rejects plans that unexpectedly destroy Cognito, Neptune, S3, or persistent DynamoDB resources. Retiring the v1 ECS agent runtime and agent-pool table is expected. The existing administrator receives `platform-admin`. If an update fails, `current` still points to the previous working release.
+
+## Advanced manual installation
+
+Clone the repository and set the AWS profile and region independently from the logical deployment environment:
 
 ```bash
 git clone https://github.com/aws-samples/sample-collaborative-ai-dlc.git
 cd sample-collaborative-ai-dlc
+export AWS_PROFILE=<aws-profile>
+export AWS_REGION=<aws-region>
 ```
 
-## Deploy the AWS infrastructure
-
-### Bootstrap the Terraform state backend
-
-The bootstrap script creates an Amazon S3 bucket for Terraform state storage. Run it once per environment.
+Bootstrap creates `terraform/environments/dev.s3.tfbackend`. The environment argument is `dev`, not the AWS profile:
 
 ```bash
-export AWS_PROFILE=your-profile-name
 ./scripts/bootstrap.sh dev
-```
-
-This creates an S3 bucket with a unique name and updates `terraform/environments/dev/backend.tf` with the bucket reference.
-
-### Configure the Terraform variables
-
-```bash
-cp terraform/environments/dev/terraform.tfvars.example terraform/environments/dev/terraform.tfvars
-```
-
-Edit `terraform/environments/dev/terraform.tfvars` to set your configuration.
-
-| Variable                 | Description                        |
-| ------------------------ | ---------------------------------- |
-| `project_name`           | Resource naming prefix             |
-| `environment`            | Environment name (`dev` or `prod`) |
-| `vpc_cidr`               | VPC CIDR block                     |
-| `neptune_instance_class` | Neptune instance size              |
-
-### Deploy infrastructure
-
-```bash
+cp terraform/environments/dev.tfvars.example terraform/environments/dev.tfvars
+# Set aws_region = "<aws-region>" in dev.tfvars.
 ./scripts/deploy-terraform.sh dev
 ```
 
-The deployment takes 15-30 minutes. Neptune DB cluster creation takes the longest.
+To review a saved plan before applying:
 
-After deployment, configure agent authentication in the platform UI under **Admin → Agents** by entering either a Kiro CLI API key or a Bedrock bearer token (for Claude Code / OpenCode setups). The Bedrock AgentCore runtime reads these credentials when agents run; the same admin page reports which credentials are set and which CLIs the runtime has available.
+```bash
+./scripts/deploy-terraform.sh dev --phase plan --plan-file /tmp/aidlc-dev.tfplan
+./scripts/deploy-terraform.sh dev --phase apply --plan-file /tmp/aidlc-dev.tfplan
+```
+
+The deployment takes 15-30 minutes. Neptune DB cluster creation takes the longest.
 
 ### Bootstrap the first platform administrator
 
@@ -134,8 +165,7 @@ Rotating credentials later is the same flow — paste new values and **Save** ov
 Get the User Pool ID and create a user:
 
 ```bash
-cd terraform/environments/dev
-terraform output user_pool_id
+terraform -chdir=terraform output user_pool_id
 
 aws cognito-idp admin-create-user \
   --user-pool-id <user-pool-id> \
@@ -187,8 +217,7 @@ This builds the frontend, uploads it to S3, and invalidates the CloudFront cache
 ### Access the application
 
 ```bash
-cd terraform/environments/dev
-terraform output cloudfront_domain_name
+terraform -chdir=terraform output cloudfront_domain_name
 ```
 
 Open the domain in your browser to reach the sign-in page.
@@ -205,6 +234,10 @@ npm run dev
 This starts the Vite development server on `http://localhost:5173`.
 
 ## Updating a deployment
+
+For managed installations, run `bash /tmp/aidlc-install.sh update`. It creates a Terraform state backup and applies the release safeguards automatically.
+
+For advanced manual installations:
 
 | What changed                    | Command                             |
 | ------------------------------- | ----------------------------------- |
@@ -243,7 +276,7 @@ To remove all deployed resources:
 To also remove the Terraform state bucket (created during bootstrap):
 
 ```bash
-grep bucket terraform/environments/dev/backend.tf
+grep bucket terraform/environments/dev.s3.tfbackend
 aws s3 rb s3://<bucket-name> --force
 ```
 
@@ -251,7 +284,7 @@ aws s3 rb s3://<bucket-name> --force
 
 **Terraform init fails with backend errors**
 
-Make sure the bootstrap script completed successfully and that `backend.tf` contains the correct bucket name.
+Make sure the bootstrap script completed successfully and that `terraform/environments/dev.s3.tfbackend` contains the correct bucket name.
 
 **Yjs (ECS) tasks fail to start**
 
