@@ -19,8 +19,9 @@
 //   5. records a v2.units.promoted event + broadcast.
 //
 // Decision fields (skip matrix / walking-skeleton pick / autonomy mode) are
-// frozen with DETERMINISTIC defaults here; the WP5 fan-out gate patches them
-// with the human's choices via store.updateUnitPlanDecisions:
+// frozen with DETERMINISTIC defaults here; the unit-DAG stage's validation
+// gate (which doubles as the fan-out approval) patches them with the human's
+// choices via store.updateUnitPlanDecisions:
 //   skipMatrix      {}                — every unit executes every per-unit stage
 //   walkingSkeleton first slug of the first batch (stable: batches are sorted)
 //   autonomyMode    null              — decided at the autonomy-ladder prompt
@@ -112,7 +113,7 @@ export const promoteUnits = async (payload, deps) => {
 
     // 3. Scheduling truth: UNITPLAN snapshot + UNIT rows (active lanes safe).
     // Deterministic skeleton default: first slug of the first topological
-    // batch (batches are sorted). The WP5 fan-out gate can override.
+    // batch (batches are sorted). The fan-out approval can override.
     const existingPlan = await store.getUnitPlan(executionId);
     const plan = await store.putUnitPlan({
       executionId,
@@ -122,7 +123,7 @@ export const promoteUnits = async (payload, deps) => {
       producedByStageInstanceId: stageInstanceId,
       // Preserve previously captured human decisions across a re-promotion —
       // a rewind re-produces the DAG, not the humans' skip/skeleton/autonomy
-      // answers (WP5 re-opens the gate when the DAG materially changed).
+      // answers (the unit-DAG stage's gate re-confirms them on re-approval).
       skipMatrix: existingPlan?.skipMatrix ?? {},
       walkingSkeleton: existingPlan?.walkingSkeleton ?? batches[0]?.[0] ?? null,
       autonomyMode: existingPlan?.autonomyMode ?? null,

@@ -1258,10 +1258,13 @@ describe('WP5 — parallel sections: lanes, skeleton, ladder, halt-and-ask', () 
       return { ok: true, state: 'SUCCEEDED' };
     });
     const res = await start();
-    // Halt gate auto-answers with NO parseable choice → deterministic
+    // Halt gate auto-answers with NO parseable choice → the gate RE-ASKS a
+    // bounded number of times (abort must be explicit), then the deterministic
     // fallback is ABORT (never silent continuation).
     expect(res).toMatchObject({ ok: false, reason: 'section_aborted' });
     expect(res.detail).toContain('auth');
+    const eventCallsHalt = deps.store.appendEvent.mock.calls.map((c) => c[0]);
+    expect(eventCallsHalt.some((e) => e.type === 'v2.units.halt_reask')).toBe(true);
     // Lane bookkeeping: auth FAILED with the failing stage recorded.
     expect(unitStates.map((u) => `${u.slug}:${u.state}`)).toEqual(['auth:RUNNING', 'auth:FAILED']);
     expect(unitStates[1].fields.failureReason).toContain('cg');
@@ -1346,22 +1349,31 @@ describe('WP5 — parallel sections: lanes, skeleton, ladder, halt-and-ask', () 
 
 describe('WP5 — engine-gate decisions', () => {
   let unitStates;
+  // The UNITPLAN row is the scheduling truth: the fan-out approval patches it
+  // (updateUnitPlanDecisions) and the section runner re-reads it — the mock
+  // mirrors that persistence.
+  let unitPlanRow;
   // Route engine-gate reads (eg-*) by prefix; everything else stays 'answered'
-  // (stage question gates in the park loop).
+  // (stage question gates in the park loop). Rows carry their id — the
+  // orchestrator threads gate.humanTaskId into revision resumes.
   const gateReads = (byPrefix) =>
     vi.fn(async (_e, id) => {
       for (const [prefix, val] of Object.entries(byPrefix)) {
-        if (String(id).startsWith(prefix)) return { status: 'answered', ...val };
+        if (String(id).startsWith(prefix)) return { humanTaskId: id, status: 'answered', ...val };
       }
-      return { status: 'answered' };
+      return { humanTaskId: id, status: 'answered' };
     });
 
   beforeEach(() => {
     unitStates = [];
+    unitPlanRow = UNIT_PLAN();
     deps.loadPlan = vi.fn(async () => SECTION_PLAN());
-    deps.store.getUnitPlan = vi.fn(async () => UNIT_PLAN());
+    deps.store.getUnitPlan = vi.fn(async () => unitPlanRow);
     deps.store.createHumanTask = vi.fn(async (args) => args);
-    deps.store.updateUnitPlanDecisions = vi.fn(async () => ({}));
+    deps.store.updateUnitPlanDecisions = vi.fn(async (patch) => {
+      unitPlanRow = { ...unitPlanRow, ...patch };
+      return unitPlanRow;
+    });
     deps.store.updateUnitState = vi.fn(async (args) => {
       unitStates.push(args);
       return { slug: args.slug, state: args.state };
@@ -1464,19 +1476,22 @@ describe('WP5 — engine-gate decisions', () => {
     );
   });
 
-  it('fan-out gate overrides re-pick the skeleton and extend the skip matrix (validated)', async () => {
-    // Independent units: a dependency-free skeleton override is valid.
-    deps.store.getUnitPlan = vi.fn(async () => ({
+  it('fan-out overrides on the unit-DAG stage gate re-pick the skeleton and extend the skip matrix (validated)', async () => {
+    // Independent units: a dependency-free skeleton override is valid. The
+    // overrides ride the units-gen stage's validation gate (the fan-out
+    // approval) — there is no separate fan-out engine gate.
+    unitPlanRow = {
       units: [
         { slug: 'auth', dependsOn: [] },
         { slug: 'billing', dependsOn: [] },
       ],
       batches: [['auth', 'billing']],
       skipMatrix: {},
-    }));
+    };
     deps.store.getHumanTask = gateReads({
-      'eg-fanout': {
+      'eg-validation-si-units-gen': {
         answer: {
+          decision: 'approve',
           walkingSkeleton: 'billing',
           // fd is CONDITIONAL (skippable); cg is ALWAYS (must be rejected);
           // 'ghost' is not a unit (must be rejected).
@@ -1508,7 +1523,7 @@ describe('WP5 — engine-gate decisions', () => {
     // billing depends on auth (the default UNIT_PLAN) → override invalid,
     // the default (auth) stays the skeleton.
     deps.store.getHumanTask = gateReads({
-      'eg-fanout': { answer: { walkingSkeleton: 'billing' } },
+      'eg-validation-si-units-gen': { answer: { decision: 'approve', walkingSkeleton: 'billing' } },
     });
     const res = await start();
     expect(res.ok).toBe(true);
@@ -1520,21 +1535,109 @@ describe('WP5 — engine-gate decisions', () => {
     );
   });
 
-  it('a rejected fan-out gate fails the run (fanout_rejected) before any lane starts', async () => {
-    deps.store.getHumanTask = gateReads({ 'eg-fanout': { status: 'rejected' } });
+  it('the unit-DAG stage gate is REQUIRED (fan-out approval) even without humanValidation, and request-changes re-runs the stage', async () => {
+    // units-gen carries no humanValidation flag, yet a section consumes its
+    // DAG → the gate opens anyway (A2 rule 2). A rejected round-0 gate is a
+    // request-changes: the stage re-runs with the feedback, re-promotes, and
+    // the round-1 approval fans out — the run never fails on a reject.
+    deps.store.getHumanTask = gateReads({
+      'eg-validation-si-units-gen-0': {
+        status: 'rejected',
+        answer: { decision: 'request-changes', feedback: 'split the auth unit' },
+      },
+      'eg-validation-si-units-gen-1': { answer: { decision: 'approve' } },
+    });
     const res = await start();
-    expect(res).toMatchObject({ ok: false, reason: 'fanout_rejected' });
-    expect(invokes.some((p) => p.command === 'init-lane')).toBe(false);
+    expect(res.ok).toBe(true);
+    // The stage ran twice — the revision leg resumed from the answered gate.
+    const genRuns = stageStarts().filter((p) => p.stageId === 'units-gen');
+    expect(genRuns).toHaveLength(2);
+    expect(genRuns[1].resumeFrom).toContain('eg-validation-si-units-gen-0');
+    // Promotion re-ran for the re-produced DAG (once per round).
+    expect(invokes.filter((p) => p.command === 'promote-units')).toHaveLength(2);
+    const eventCalls = deps.store.appendEvent.mock.calls.map((c) => c[0]);
+    expect(eventCalls.some((e) => e.type === 'v2.stage.revision_requested')).toBe(true);
+    expect(eventCalls.filter((e) => e.type === 'v2.units.fanout_approved')).toHaveLength(1);
+    // Lanes only started after the approval.
+    expect(invokes.some((p) => p.command === 'init-lane')).toBe(true);
   });
 
-  it('a rejected skeleton gate stops the run after the skeleton merged (work preserved)', async () => {
-    deps.store.getHumanTask = gateReads({ 'eg-skeleton': { status: 'rejected' } });
+  it('request-changes on the skeleton gate re-runs the skeleton lane with feedback, then re-asks (never terminal)', async () => {
+    deps.store.getHumanTask = gateReads({
+      // Revision gate (v1) approves; the round-0 gate requests changes.
+      'eg-skeleton-s1-v1': { answer: { decision: 'approve' } },
+      'eg-skeleton-s1': {
+        answer: { decision: 'request-changes', feedback: 'wire real auth, not a stub' },
+      },
+    });
     const res = await start();
-    expect(res).toMatchObject({ ok: false, reason: 'skeleton_rejected' });
-    // The skeleton lane completed and merged before the gate.
-    expect(invokes.filter((p) => p.command === 'merge-lane')).toHaveLength(1);
-    // No further lanes.
-    expect(invokes.filter((p) => p.command === 'init-lane')).toHaveLength(1);
+    expect(res.ok).toBe(true);
+    // The skeleton lane ran twice: original + revision (re-init, re-merge).
+    expect(invokes.filter((p) => p.command === 'init-lane' && p.unitSlug === 'auth')).toHaveLength(
+      2,
+    );
+    expect(invokes.filter((p) => p.command === 'merge-lane' && p.unitSlug === 'auth')).toHaveLength(
+      2,
+    );
+    // Revision stages resumed from the answered skeleton gate (feedback in).
+    const revisionRuns = stageStarts().filter(
+      (p) => p.unitSlug === 'auth' && String(p.resumeFrom ?? '').startsWith('eg-skeleton-s1'),
+    );
+    expect(revisionRuns.length).toBeGreaterThan(0);
+    const eventCalls = deps.store.appendEvent.mock.calls.map((c) => c[0]);
+    expect(eventCalls.some((e) => e.type === 'v2.units.skeleton_revision_requested')).toBe(true);
+    // Approved on the revision gate; the remaining lane then ran.
+    expect(eventCalls.some((e) => e.type === 'v2.units.skeleton_approved')).toBe(true);
+    expect(invokes.some((p) => p.command === 'init-lane' && p.unitSlug === 'billing')).toBe(true);
+  });
+
+  it('request-changes on a batch gate re-runs the batch lanes with feedback, then re-asks (gated mode)', async () => {
+    // Ladder answer unparseable → deterministic 'gated'. Wave 1 = billing:
+    // round-0 batch gate requests changes; the v1 gate approves.
+    deps.store.getHumanTask = gateReads({
+      'eg-batch-s1-w1-v1': { answer: { decision: 'approve' } },
+      'eg-batch-s1-w1': {
+        answer: { decision: 'request-changes', feedback: 'billing misses the refund path' },
+      },
+    });
+    const res = await start();
+    expect(res.ok).toBe(true);
+    // billing's lane ran twice: original + revision (re-init, re-merge).
+    expect(
+      invokes.filter((p) => p.command === 'init-lane' && p.unitSlug === 'billing'),
+    ).toHaveLength(2);
+    expect(
+      invokes.filter((p) => p.command === 'merge-lane' && p.unitSlug === 'billing'),
+    ).toHaveLength(2);
+    // The revision leg resumed from the answered batch gate (feedback in).
+    const revisionRuns = stageStarts().filter(
+      (p) => p.unitSlug === 'billing' && String(p.resumeFrom ?? '').startsWith('eg-batch-s1-w1'),
+    );
+    expect(revisionRuns.length).toBeGreaterThan(0);
+    const eventCalls = deps.store.appendEvent.mock.calls.map((c) => c[0]);
+    expect(eventCalls.some((e) => e.type === 'v2.units.batch_revision_requested')).toBe(true);
+    expect(eventCalls.some((e) => e.type === 'v2.units.batch_approved')).toBe(true);
+  });
+
+  it('an uninterpretable halt-and-ask answer RE-ASKS; the follow-up choice is honored', async () => {
+    deps.store.getHumanTask = gateReads({
+      'eg-halt-s1-r0-a1': { answer: { decision: 'skip' } },
+      'eg-halt-s1-r0': { answer: { decision: 'garbage' } },
+    });
+    deps.invokeRuntime = makeRuntime(ctx, (payload) => {
+      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'promote-units') return { ok: true, unitCount: 2, batchCount: 2 };
+      if (payload.stageId === 'cg' && payload.unitSlug === 'billing')
+        return { ok: false, state: 'FAILED', reason: 'sensor_blocked' };
+      return { ok: true, state: 'SUCCEEDED' };
+    });
+    const res = await start();
+    // The re-asked gate's skip was honored — the run completed without billing.
+    expect(res.ok).toBe(true);
+    const eventCalls = deps.store.appendEvent.mock.calls.map((c) => c[0]);
+    expect(eventCalls.filter((e) => e.type === 'v2.units.halt_reask')).toHaveLength(1);
+    expect(eventCalls.find((e) => e.type === 'v2.units.halt_decision')?.summary).toContain('skip');
+    expect(eventCalls.some((e) => e.type === 'v2.units.lanes_skipped')).toBe(true);
   });
 
   it('a pre-set autonomyMode on the UNITPLAN skips the ladder prompt (deterministic resume)', async () => {
@@ -1551,8 +1654,9 @@ describe('WP5 — engine-gate decisions', () => {
     });
     const res = await start();
     expect(res.ok).toBe(true);
-    // fanout + skeleton gates opened; NO ladder gate, NO batch gates.
-    expect(opened.some((id) => id.startsWith('eg-fanout'))).toBe(true);
+    // The unit-DAG stage's validation gate (fan-out approval) + skeleton gate
+    // opened; NO ladder gate, NO batch gates.
+    expect(opened.some((id) => id.startsWith('eg-validation-si-units-gen'))).toBe(true);
     expect(opened.some((id) => id.startsWith('eg-skeleton'))).toBe(true);
     expect(opened.some((id) => id.startsWith('eg-ladder'))).toBe(false);
     expect(opened.some((id) => id.startsWith('eg-batch'))).toBe(false);

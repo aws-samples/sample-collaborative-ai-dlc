@@ -42,7 +42,14 @@ import { ensureFreshGitToken, getInstallationTokenFromConfig } from '../shared/g
 import { getGitHubAuthMode } from '../shared/github-auth-config.js';
 import { getProvider } from '../shared/git-providers.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
-import { awaitEngineGate, parseChoice, runParallelSection } from './section.js';
+import {
+  awaitEngineGate,
+  parseChoice,
+  runParallelSection,
+  validateFanoutOverrides,
+  defaultSkeletonFor,
+  fanoutGateAddendum,
+} from './section.js';
 import { runQuorumEdit } from './quorum-edit.js';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 
@@ -965,12 +972,19 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
 
     // ── The plan walk: alternating once-per-workflow segments and parallel
     // sections (docs/v2-parallel.md A2; detection is structural via forEach).
-    for (const segment of planSegments(runStages)) {
+    const segments = planSegments(runStages);
+    for (let segIdx = 0; segIdx < segments.length; segIdx += 1) {
+      const segment = segments[segIdx];
       if (segment.kind === 'section') {
         const sectionOut = await runParallelSection(segment, sectionToolkit);
         if (sectionOut) return sectionOut;
         continue;
       }
+      // The parallel section (if any) that consumes this segment's unit DAG:
+      // its validation gate doubles as the FAN-OUT approval (A2 rules 2/7/8) —
+      // one gate approves the artifact AND the fan-out decisions, instead of a
+      // second engine gate at section start.
+      const nextSection = segments.slice(segIdx + 1).find((s) => s.kind === 'section') ?? null;
       for (let stageIdx = 0; stageIdx < segment.stages.length; stageIdx += 1) {
         const stage = segment.stages[stageIdx];
         // A stage deselected by an earlier gate's recompose delta is passed
@@ -991,6 +1005,14 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         const outputArtifactTypes = (stage.outputArtifacts ?? [])
           .map((o) => o.artifact ?? o)
           .filter(Boolean);
+        // Unit DAG promotion trigger (docs/v2-parallel.md WP3): this stage
+        // produces `unit-of-work-dependency`. Promotion runs BEFORE the
+        // validation gate (each revision round re-promotes the re-produced
+        // artifact) so the gate can present the fan-out plan; when a parallel
+        // section consumes the DAG, the gate is REQUIRED regardless of the
+        // stage's humanValidation flag (A2 rule 2: fan-out needs a human gate).
+        const producesUnitDag = outputArtifactTypes.includes('unit-of-work-dependency');
+        const fanoutSection = producesUnitDag ? nextSection : null;
         let validationRound = 0;
         let resumeFromValidation = null;
         for (;;) {
@@ -1035,7 +1057,55 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             }
           }
 
-          if (stage.humanValidation !== 'required') break;
+          // Freeze the (re-)produced DAG into the UNITPLAN/UNIT scheduling
+          // rows via the VPC-attached container (the orchestrator has no
+          // Neptune access). A promotion failure fails the run HERE,
+          // deterministically — discovering a missing UNITPLAN at fan-out
+          // time would be far worse. (The hook only fires for once-per-workflow
+          // stages; a per-unit DAG producer would be a pathological workflow
+          // the plan validator already rejects for its own section.)
+          let unitPlanForGate = null;
+          if (producesUnitDag) {
+            const promotion = await ctx.step(`promote-units-${stage.stageId}${suffix}`, () =>
+              invokeRuntime(
+                {
+                  command: 'promote-units',
+                  projectId,
+                  intentId,
+                  executionId,
+                  stageInstanceId: stage.stageInstanceId ?? null,
+                },
+                sessionId,
+              ),
+            );
+            if (!promotion || promotion.ok === false) {
+              const out = await fail(
+                'units_promotion_failed',
+                `${stage.stageId}: ${promotion?.reason ?? 'no_response'}${
+                  promotion?.detail ? ` (${promotion.detail})` : ''
+                }`,
+              );
+              return { ...out, stageId: stage.stageId };
+            }
+            await emitEvent(
+              ctx,
+              `units-promoted-${stage.stageId}${suffix}`,
+              'v2.units.plan_ready',
+              `Unit plan ready: ${promotion.unitCount} unit(s), ${promotion.batchCount} wave(s), skeleton ${promotion.walkingSkeleton ?? 'n/a'}`,
+            );
+            if (fanoutSection) {
+              unitPlanForGate = await ctx.step(`load-unit-plan-${stage.stageId}${suffix}`, () =>
+                store.getUnitPlan(executionId).catch(() => null),
+              );
+            }
+          }
+
+          // The fan-out approval rides THIS stage's validation gate (one gate,
+          // not two) — so it is mandatory whenever a section consumes the DAG.
+          const fanoutGateNeeded = Boolean(
+            fanoutSection && unitPlanForGate && (unitPlanForGate.units ?? []).length > 0,
+          );
+          if (stage.humanValidation !== 'required' && !fanoutGateNeeded) break;
 
           // Valid forward-skip targets from THIS gate (empty when the feature
           // is disabled for the run, or no later stage qualifies). Advisory
@@ -1068,14 +1138,30 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             name: `validation-${stage.stageInstanceId ?? stage.stageId}-${validationRound}`,
             kind: 'validation',
             stageInstanceId: stage.stageInstanceId ?? null,
-            prompt: validationPrompt(
-              stage,
-              outputArtifactTypes,
-              validationRound,
-              gateSkipTargets,
-              nextStageId,
-              gateRecomposeTargets,
-            ),
+            prompt: [
+              validationPrompt(
+                stage,
+                outputArtifactTypes,
+                validationRound,
+                gateSkipTargets,
+                nextStageId,
+                gateRecomposeTargets,
+              ),
+              // A2 rules 2/7/8: the unit-DAG stage's gate presents the fan-out
+              // plan (units, waves, skeleton pick, skip matrix) and accepts
+              // structured overrides on the approve answer.
+              ...(fanoutGateNeeded
+                ? [
+                    '',
+                    fanoutGateAddendum({
+                      sectionIndex: fanoutSection.index,
+                      unitPlan: unitPlanForGate,
+                      sectionStages: fanoutSection.stages,
+                      skeleton: defaultSkeletonFor(unitPlanForGate),
+                    }),
+                  ]
+                : []),
+            ].join('\n'),
             options: ['approve', 'request-changes'],
             nextStageId,
             ...(gateSkipTargets.length ? { skipTargets: gateSkipTargets } : {}),
@@ -1097,6 +1183,53 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
               'v2.stage.validated',
               `Stage ${stage.stageId} approved by human validation`,
             );
+            // Fan-out approval (A2 rules 2/7/8): freeze the effective
+            // decisions — defaults + validated overrides riding the approve
+            // answer — onto the UNITPLAN so the section runner schedules
+            // exactly what the human approved. Invalid entries are rejected
+            // into a timeline event (never trusted, never silently dropped).
+            if (fanoutGateNeeded) {
+              const decisions = await ctx.step(
+                `fanout-decisions-${stage.stageId}-${validationRound}`,
+                async () => {
+                  const bySlug = new Map((unitPlanForGate.units ?? []).map((u) => [u.slug, u]));
+                  const overrides = validateFanoutOverrides(validation.gate?.answer, {
+                    slugs: new Set(bySlug.keys()),
+                    sectionStages: fanoutSection.stages,
+                    bySlug,
+                  });
+                  const effective = {
+                    walkingSkeleton:
+                      overrides.walkingSkeleton ?? defaultSkeletonFor(unitPlanForGate),
+                    skipMatrix: overrides.skipMatrix ?? unitPlanForGate.skipMatrix ?? {},
+                  };
+                  try {
+                    await store.updateUnitPlanDecisions({ executionId, ...effective });
+                  } catch {
+                    /* promotion defaults stand when the patch write is lost */
+                  }
+                  if (overrides.rejected.length) {
+                    try {
+                      await store.appendEvent({
+                        executionId,
+                        type: 'v2.units.decisions_invalid',
+                        actor: 'orchestrator',
+                        summary: `Fan-out overrides partially rejected: ${overrides.rejected.join('; ')}`,
+                      });
+                    } catch {
+                      /* audit is best-effort */
+                    }
+                  }
+                  return effective;
+                },
+              );
+              await emitEvent(
+                ctx,
+                `fanout-approved-${stage.stageId}-${validationRound}`,
+                'v2.units.fanout_approved',
+                `Fan-out approved for section ${fanoutSection.index}: skeleton ${decisions.walkingSkeleton}, ${(unitPlanForGate.units ?? []).length} unit(s)`,
+              );
+            }
             // A skip request rides the approve answer ({ decision: 'approve',
             // skipTo: '<stageId>' }). Re-validate against the segment + policy;
             // a rejected skip degrades to the plain approve (the run continues
@@ -1172,49 +1305,6 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             `stage-validation-revision-${stage.stageId}-${validationRound}`,
             'v2.stage.revision_requested',
             `Human requested changes for ${stage.stageId}; re-running stage with feedback`,
-          );
-        }
-
-        // Unit DAG promotion (docs/v2-parallel.md WP3): the stage that produces
-        // `unit-of-work-dependency` just SUCCEEDED — its blocking sensors passed
-        // and every question gate it opened was answered. Freeze the approved
-        // DAG into the UNITPLAN/UNIT scheduling rows (+ Neptune mirror) via the
-        // VPC-attached container (the orchestrator has no Neptune access). A
-        // promotion failure fails the run HERE, deterministically — discovering
-        // a missing UNITPLAN at fan-out time would be far worse. (The hook only
-        // fires for once-per-workflow stages; a per-unit DAG producer would be
-        // a pathological workflow the plan validator already rejects for its
-        // own section.)
-        const producesUnitDag = (stage.outputArtifacts ?? []).some(
-          (o) => (o.artifact ?? o) === 'unit-of-work-dependency',
-        );
-        if (producesUnitDag) {
-          const promotion = await ctx.step(`promote-units-${stage.stageId}`, () =>
-            invokeRuntime(
-              {
-                command: 'promote-units',
-                projectId,
-                intentId,
-                executionId,
-                stageInstanceId: stage.stageInstanceId ?? null,
-              },
-              sessionId,
-            ),
-          );
-          if (!promotion || promotion.ok === false) {
-            const out = await fail(
-              'units_promotion_failed',
-              `${stage.stageId}: ${promotion?.reason ?? 'no_response'}${
-                promotion?.detail ? ` (${promotion.detail})` : ''
-              }`,
-            );
-            return { ...out, stageId: stage.stageId };
-          }
-          await emitEvent(
-            ctx,
-            `units-promoted-${stage.stageId}`,
-            'v2.units.plan_ready',
-            `Unit plan ready: ${promotion.unitCount} unit(s), ${promotion.batchCount} wave(s), skeleton ${promotion.walkingSkeleton ?? 'n/a'}`,
           );
         }
 

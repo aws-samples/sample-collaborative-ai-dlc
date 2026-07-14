@@ -40,7 +40,7 @@ Git is deterministic and owned by the engine — **the agent never runs git and 
 
 ## Human gates, park and resume
 
-When an agent needs a decision, it calls the `ask_question` MCP tool; when the engine needs one (fan-out approval, walking-skeleton review, halt-and-ask on a failed lane), it opens an engine gate. Either way:
+When an agent needs a decision, it calls the `ask_question` MCP tool; when the engine needs one (walking-skeleton review, batch review, halt-and-ask on a failed lane), it opens an engine gate. Fan-out is approved on the unit-plan stage's own validation gate — one gate covers the artifact and the fan-out decisions. Either way:
 
 1. The stage parks, the run flips to `WAITING`, and after a configurable grace period (`parkReleaseSeconds`, default 300s) the session is stopped — zero compute while waiting.
 2. The question renders in the UI in real time, with structured options where applicable.

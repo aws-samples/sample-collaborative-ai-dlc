@@ -1241,7 +1241,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     }
   };
 
-  // Patch human decisions captured at the fan-out gate onto the UNITPLAN
+  // Patch human decisions captured at the fan-out approval (the unit-DAG stage gate) onto the UNITPLAN
   // snapshot (skip matrix / walking-skeleton pick / autonomy mode). Partial —
   // only supplied fields are written.
   const updateUnitPlanDecisions = async ({

@@ -573,7 +573,10 @@ const runSensorsWithGraph = async ({
 // / phaseb-answer write (`perQuestion[]`, `freeText`, or a raw string).
 const formatResumeAnswer = (gate) => {
   const a = gate?.answer ?? null;
-  if (gate?.kind === 'validation') {
+  // Validation gates AND engine gates answered request-changes (skeleton /
+  // batch revision loops, docs/v2-parallel.md WP5) both re-enter the stage as
+  // a REVISION with the human's feedback.
+  if (gate?.kind === 'validation' || a?.decision === 'request-changes') {
     const text =
       typeof a === 'string'
         ? a

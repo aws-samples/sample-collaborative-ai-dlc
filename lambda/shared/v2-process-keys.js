@@ -676,7 +676,7 @@ const buildSteeringRow = ({
 //   batches        — [[slug]] topological waves (the batch-barrier fallback)
 //   skipMatrix     — { [slug]: [stageId] } per-unit CONDITIONAL stages to skip;
 //                    {} (default) = every unit executes every per-unit stage.
-//                    Frozen from the human-approved matrix at the fan-out gate.
+//                    Frozen from the human-approved matrix at the fan-out approval (the unit-DAG stage gate).
 //   walkingSkeleton— slug of the lane that runs SOLO first (rule 8)
 //   autonomyMode   — 'gated' | 'autonomous' (rule 9); null until the ladder
 //                    prompt after the skeleton gate

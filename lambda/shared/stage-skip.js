@@ -62,7 +62,7 @@ const normalizeSkipStageIds = (input) => {
 //   - every intermediate stage is skippable per stageSkipBlockReason.
 // The TARGET itself always runs (its ritual is never shortcut), so it carries
 // no skippability constraint. Skips never cross a segment boundary — parallel
-// sections keep their own fan-out gate + per-unit skip matrix.
+// sections keep their own fan-out approval + per-unit skip matrix.
 const skipTargetsFrom = (segmentStages, currentIndex) => {
   const targets = [];
   for (let t = currentIndex + 2; t < segmentStages.length; t += 1) {
@@ -105,7 +105,7 @@ const resolveSkipTo = ({ skipTo, segmentStages, currentIndex }) => {
 //   - must exist in the plan and sit strictly AFTER the current stage
 //     (behind-cursor reshapes are rewind's job),
 //   - must not sit in a parallel section (unit lanes are reshaped at the
-//     fan-out gate's skip matrix, not here),
+//     fan-out approval's skip matrix, not here),
 //   - must pass the skip policy (CONDITIONAL-only, never initialization),
 //   - must not already be skipped.
 const resolveRecomposeSkips = ({ stages, currentStageId, requested, alreadySkipped = [] }) => {
@@ -130,7 +130,7 @@ const resolveRecomposeSkips = ({ stages, currentStageId, requested, alreadySkipp
     if (stage.parallelSection != null) {
       rejected.push({
         stageId,
-        reason: 'runs per unit of work — reshape it at the fan-out gate',
+        reason: 'runs per unit of work — reshape it at the fan-out approval',
       });
       continue;
     }

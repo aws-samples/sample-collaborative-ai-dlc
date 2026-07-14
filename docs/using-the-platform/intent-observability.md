@@ -72,7 +72,7 @@ When an agent asks a question or a stage requires validation, the run parks and 
 
 - **Questions** show the agent's question with structured options as buttons where applicable, plus a free-text answer.
 - **Stage reviews** show the LLM reviewer's findings; approve, or request changes with feedback.
-- **Engine gates** appear at construction fan-out (approve the unit plan and the per-unit skip matrix), after the walking skeleton, on the autonomy choice ("Continue autonomously" vs. "Gate every batch"), and on halt-and-ask when a lane fails (retry / skip / abort).
+- **Engine gates** appear after the walking skeleton, on the autonomy choice ("Continue autonomously" vs. "Gate every batch"), after each gated batch, and on halt-and-ask when a lane fails (retry / skip / abort). The fan-out itself (unit plan + per-unit skip matrix) is approved on the unit-plan stage's own review gate. Skeleton and batch gates offer **approve** or **request changes with feedback** — the engine revises the increment and asks again, so a reject never fails the run.
 
 While parked the run consumes no compute — answers hours or days later resume the same agent conversation with full context.
 

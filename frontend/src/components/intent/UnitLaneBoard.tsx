@@ -337,17 +337,18 @@ function tailOf(buffer: string | undefined): string | null {
 
 // ── Context wrapper (mounted in the workbench) ────────────────────────────────
 
-// The DAG is promoted (unitPlan written) BEFORE the human fan-out gate; lanes
-// only start once that gate is approved, which emits an approval event per
-// section (lambda/v2-orchestrator/section.js:392). Each section completes with a
-// fan-in event (section.js:972). Fan-out is "active" — lanes are live and the
-// board should replace the single-stage Running card — while more sections have
-// been approved than have fanned in.
-const FANOUT_APPROVED_EVENT = 'v2.units.fanout_approved';
+// The DAG is promoted (unitPlan written) at the unit-DAG stage, whose
+// validation gate doubles as the fan-out approval; the section runner emits a
+// section_started event when its lanes actually open
+// (lambda/v2-orchestrator/section.js). Each section completes with a fan-in
+// event. Fan-out is "active" — lanes are live and the board should replace the
+// single-stage Running card — while more sections have started than have
+// fanned in.
+const SECTION_STARTED_EVENT = 'v2.units.section_started';
 const FAN_IN_EVENT = 'v2.units.fan_in';
 
 /**
- * True while parallel unit lanes are live (fan-out approved, not yet fanned in).
+ * True while parallel unit lanes are live (section started, not yet fanned in).
  * Shared by IntentView so it can hide the single-stage Running card and let the
  * units board own the "what's building" view until fan-in.
  */
@@ -355,7 +356,7 @@ export function isFanoutActive(detail: { events?: { type: string }[] } | null): 
   const events = detail?.events ?? [];
   let open = 0;
   for (const e of events) {
-    if (e.type === FANOUT_APPROVED_EVENT) open += 1;
+    if (e.type === SECTION_STARTED_EVENT) open += 1;
     else if (e.type === FAN_IN_EVENT) open -= 1;
   }
   return open > 0;

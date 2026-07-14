@@ -152,7 +152,7 @@ describe('resolveRecomposeSkips', () => {
     expect(byId.ghost).toMatch(/not in this run/);
     expect(byId.a).toMatch(/already reached/);
     expect(byId.b).toMatch(/already reached/);
-    expect(byId['unit-stage']).toMatch(/fan-out gate/);
+    expect(byId['unit-stage']).toMatch(/fan-out approval/);
     expect(byId.d).toMatch(/only CONDITIONAL stages/);
     expect(byId.c).toMatch(/already skipped/);
     // init-x sits AFTER the cursor in the flat list here, so the policy rule

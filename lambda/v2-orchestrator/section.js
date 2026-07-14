@@ -4,14 +4,18 @@
 // One section = one fan-out → lanes → merge cycle over the promoted UNITPLAN
 // (DDB scheduling truth; bolt-plan prose is never parsed):
 //
-//   fan-out gate      — engine-created approval gate confirming the frozen
-//                       decisions (unit × conditional-stage skip matrix +
-//                       walking-skeleton pick, defaults from WP3's promotion;
-//                       structured answer may override — validated, never
-//                       trusted blindly).
+//   fan-out decisions — approved at the unit-DAG stage's validation gate (the
+//                       standard per-stage approval in index.js — ONE gate, no
+//                       separate fan-out gate): the approve answer may carry
+//                       walkingSkeleton / skipMatrix overrides (validated,
+//                       never trusted blindly) that are frozen onto the
+//                       UNITPLAN before the section starts.
 //   walking skeleton  — the picked lane runs SOLO (A2 rule 8), then a
 //                       mandatory Bolt-level approval gate covering its design
-//                       artifacts and generated code together.
+//                       artifacts and generated code together. Request-changes
+//                       (with feedback) re-runs the skeleton lane and re-asks;
+//                       after 3 revision cycles an accept-as-is escape hatch
+//                       appears (upstream stage-protocol §1).
 //   autonomy ladder   — exactly one prompt (A2 rule 9): 'autonomous' (no more
 //                       approval gates; failures still halt-and-ask) vs
 //                       'gated' (one approval gate per parallel batch).
@@ -20,7 +24,10 @@
 //                       DurablePromises — the replay-safe shape proven in
 //                       poc-a) with an app-level semaphore for
 //                       maxParallelUnits. gated: batch barriers (topological
-//                       waves) with a per-batch gate.
+//                       waves) with a per-batch gate — approve /
+//                       request-changes (revision re-runs the batch's merged
+//                       lanes with the feedback, then re-asks), accept-as-is
+//                       after 3 cycles.
 //   lane lifecycle    — own AgentCore session (aidlc-intent-<id>-s<k>-<slug>),
 //                       own workspace, own branch (<intent>--s<k>-unit-<slug>);
 //                       init-lane → section stages (park/resume per lane,
@@ -33,6 +40,8 @@
 //                       branch/worktree, fresh durable round) / skip (audited;
 //                       blocked lanes stay blocked, fan-in proceeds without
 //                       them) / abort (fail the run; pushed work preserved).
+//                       An unparseable answer RE-ASKS — abort is always an
+//                       explicit human choice, never a fallback.
 //
 // REPLAY DISCIPLINE: every side effect lives in a ctx step (lane steps inside
 // the lane's own child context); lane coordination goes through the lanes'
@@ -44,6 +53,12 @@ import processKeysPkg from '../shared/v2-process-keys.js';
 import { stageIsNoopForUnit } from '../shared/unit-kind-pruning.js';
 
 const { CONSTRUCTION_AUTONOMY_MODES } = processKeysPkg;
+
+// Uninterpretable halt-and-ask answers are re-asked at most this many times
+// before the deterministic abort fallback kicks in (each re-ask still costs a
+// fresh human answer — this cap only guards against a client that keeps
+// submitting garbage).
+const HALT_REASK_LIMIT = 5;
 
 // App-level concurrency cap (docs/v2-parallel.md B1 note): the wavefront shape
 // has no built-in maxConcurrency. Replayed (completed) lanes never re-execute
@@ -98,20 +113,20 @@ export const laneSessionIdFor = (intentId, sectionIndex, slug) =>
   `aidlc-intent-${intentId}-s${sectionIndex}-${slug}`.padEnd(33, '0');
 
 // ── engine gates ─────────────────────────────────────────────────────────────
-// An approval gate the ENGINE opens (fan-out / skeleton / ladder / batch /
-// halt) — same HUMAN# row + callback discipline as agent question gates, so
-// the existing answer endpoint, cancel path, and UI all apply unchanged.
+// An approval gate the ENGINE opens (skeleton / ladder / batch / halt / the
+// per-stage validation gate in index.js) — same HUMAN# row + callback
+// discipline as agent question gates, so the existing answer endpoint, cancel
+// path, and UI all apply unchanged.
 // Deterministic id per (run, name): replay-stable within a run; a relaunch
 // (new runId) re-asks rather than reusing a retired run's decision.
 // Returns { gate } (answered/approved/rejected row) or { superseded: true }.
 //
-// TODO: every engine gate here is approve/reject only, and a reject is
-// terminal — it fails the whole run (fan-out → fanout_rejected, skeleton →
-// skeleton_rejected, halt → section_aborted, etc.). The UI (GateCard) offers
-// no free-text field either. Consider a softer path: let a reject carry
-// free-text feedback describing what to change, then revise the plan /
-// re-ask the gate instead of blocking the workflow. Applies to ALL callers of
-// awaitEngineGate; mirror of the frontend TODO in IntentView.tsx GateCard.
+// Reject semantics follow upstream stage-protocol §1: skeleton and batch gates
+// are approve / request-changes (a request-changes answer carries free-text
+// feedback, re-runs the increment, and re-asks — with an accept-as-is escape
+// hatch after 3 cycles); halt-and-ask re-asks on an unparseable answer so
+// abort is always an explicit choice. No engine gate treats a bare reject as
+// a terminal run failure.
 export const awaitEngineGate = async (
   ctxArg,
   toolkit,
@@ -286,11 +301,29 @@ export const validateFanoutOverrides = (answer, { slugs, sectionStages, bySlug }
   return out;
 };
 
-const fanoutPrompt = ({ sectionIndex, unitPlan, sectionStages, skeleton }) => {
+// The deterministic walking-skeleton default: the plan's persisted pick when
+// it is (still) a known unit, else the first slug of the first topological
+// wave. Shared by the fan-out approval (index.js) and the section runner so
+// the gate presents exactly what the section would run.
+export const defaultSkeletonFor = (unitPlan) => {
+  const bySlug = new Map((unitPlan?.units ?? []).map((u) => [u.slug, u]));
+  const waves = (
+    unitPlan?.batches?.length ? unitPlan.batches : [(unitPlan?.units ?? []).map((u) => u.slug)]
+  ).map((w) => w.filter((slug) => bySlug.has(slug)));
+  return unitPlan?.walkingSkeleton && bySlug.has(unitPlan.walkingSkeleton)
+    ? unitPlan.walkingSkeleton
+    : (waves.flat()[0] ?? null);
+};
+
+// The fan-out summary appended to the unit-DAG stage's validation gate (A2
+// rules 2/7/8: ONE human gate approves both the artifact and the fan-out —
+// no separate engine gate). Documents the optional structured overrides the
+// approve answer may carry.
+export const fanoutGateAddendum = ({ sectionIndex, unitPlan, sectionStages, skeleton }) => {
   const lines = [
-    `Fan-out for parallel section ${sectionIndex}: ${unitPlan.units.length} unit(s) across ${
-      (unitPlan.batches ?? []).length
-    } wave(s).`,
+    `Approving this stage also approves the fan-out for parallel section ${sectionIndex}: ${
+      unitPlan.units.length
+    } unit(s) across ${(unitPlan.batches ?? []).length} wave(s).`,
     '',
     ...unitPlan.units.map(
       (u) =>
@@ -305,7 +338,7 @@ const fanoutPrompt = ({ sectionIndex, unitPlan, sectionStages, skeleton }) => {
         : 'none — every unit runs every stage'
     }.`,
     '',
-    'Approve to fan out.',
+    'The approve answer may override { "walkingSkeleton": "<slug>" } (must be dependency-free) and/or { "skipMatrix": { "<unit>": ["<stageId>", …] } } (CONDITIONAL stages only) — invalid entries are rejected and audited.',
   ];
   return lines.join('\n');
 };
@@ -352,71 +385,25 @@ export const runParallelSection = async (segment, toolkit) => {
     );
   }
   const bySlug = new Map(unitPlan.units.map((u) => [u.slug, u]));
-  const slugs = new Set(bySlug.keys());
   const waves = (
     unitPlan.batches?.length ? unitPlan.batches : [unitPlan.units.map((u) => u.slug)]
   ).map((w) => w.filter((slug) => bySlug.has(slug)));
   const laneOrder = waves.flat();
-  const defaultSkeleton =
-    unitPlan.walkingSkeleton && bySlug.has(unitPlan.walkingSkeleton)
-      ? unitPlan.walkingSkeleton
-      : laneOrder[0];
 
-  // ── fan-out gate (A2 rules 2/7/8: human confirmation before any lane) ─────
-  const fanout = await awaitEngineGate(ctx, toolkit, {
-    name: `fanout-${sk}`,
-    prompt: fanoutPrompt({
-      sectionIndex: segment.index,
-      unitPlan,
-      sectionStages: segment.stages,
-      skeleton: defaultSkeleton,
-    }),
-    options: ['approve', 'reject'],
-  });
-  if (fanout.superseded) {
-    ctx.logger?.info?.('run retired at fan-out gate', { intentId, section: segment.index });
-    return { ok: false, reason: 'retired', intentId };
-  }
-  if (fanout.gate.status === 'rejected') {
-    return await fail('fanout_rejected', `section ${segment.index}`);
-  }
-
-  // Freeze the effective decisions (defaults + validated overrides) as a step
-  // result so every replay sees the identical schedule.
-  const decisions = await ctx.step(`fanout-decisions-${sk}`, async () => {
-    const overrides = validateFanoutOverrides(fanout.gate.answer, {
-      slugs,
-      sectionStages: segment.stages,
-      bySlug,
-    });
-    const effective = {
-      walkingSkeleton: overrides.walkingSkeleton ?? defaultSkeleton,
-      skipMatrix: overrides.skipMatrix ?? unitPlan.skipMatrix ?? {},
-    };
-    try {
-      await store.updateUnitPlanDecisions({ executionId, ...effective });
-    } catch {
-      /* the step result is the scheduling truth; the row is the mirror */
-    }
-    if (overrides.rejected.length) {
-      try {
-        await store.appendEvent({
-          executionId,
-          type: 'v2.units.decisions_invalid',
-          actor: 'orchestrator',
-          summary: `Fan-out gate overrides partially rejected: ${overrides.rejected.join('; ')}`,
-        });
-      } catch {
-        /* audit is best-effort */
-      }
-    }
-    return effective;
-  });
+  // ── fan-out decisions (A2 rules 2/7/8) ────────────────────────────────────
+  // The human approved the fan-out at the unit-DAG stage's validation gate
+  // (index.js), which froze any walkingSkeleton/skipMatrix overrides onto the
+  // UNITPLAN via updateUnitPlanDecisions. The plan row read above (a durable
+  // step) is therefore the section's scheduling truth — no second gate here.
+  const decisions = {
+    walkingSkeleton: defaultSkeletonFor(unitPlan),
+    skipMatrix: unitPlan.skipMatrix ?? {},
+  };
   await emitEvent(
     ctx,
-    `fanout-approved-${sk}`,
-    'v2.units.fanout_approved',
-    `Fan-out approved for section ${segment.index}: skeleton ${decisions.walkingSkeleton}, ${laneOrder.length} unit(s)`,
+    `section-start-${sk}`,
+    'v2.units.section_started',
+    `Section ${segment.index} fanning out: skeleton ${decisions.walkingSkeleton}, ${laneOrder.length} unit(s) across ${waves.length} wave(s)`,
   );
 
   // ── shared lane machinery ─────────────────────────────────────────────────
@@ -429,9 +416,18 @@ export const runParallelSection = async (segment, toolkit) => {
 
   // One lane: init-lane → section stages → serialized merge-back. Runs inside
   // its OWN child context; never throws — failure is a state (poc-a).
-  const runLaneBody = async (laneCtx, slug, round) => {
+  // laneOpts (revision runs, upstream stage-protocol §1 request-changes):
+  //   idSuffix       — extra durable-identity component ('' for normal runs;
+  //                    '-v<n>' / '-w<w>v<n>' for revision rounds, so a revised
+  //                    lane's steps/callbacks never collide with the original)
+  //   feedbackTaskId — the answered request-changes gate; injected into every
+  //                    lane stage as resumeFrom so the agent revises with the
+  //                    human's feedback (same mechanism as validation gates)
+  //   revive         — allow re-running an already-MERGED lane (revision)
+  const runLaneBody = async (laneCtx, slug, round, laneOpts = {}) => {
+    const { idSuffix = '', feedbackTaskId = null, revive = false } = laneOpts;
     const unit = bySlug.get(slug);
-    const rTag = round > 0 ? `-r${round}` : '';
+    const rTag = `${idSuffix}${round > 0 ? `-r${round}` : ''}`;
     const laneSession = laneSessionIdFor(intentId, segment.index, slug);
     const unitBranch = unitBranchFor(intentBranch, segment.index, slug);
     const laneCloneInputs = {
@@ -484,9 +480,14 @@ export const runParallelSection = async (segment, toolkit) => {
             executionId,
             slug,
             state: 'RUNNING',
-            // Round 0 starts fresh lanes; retry rounds revive FAILED/BLOCKED.
+            // Round 0 starts fresh lanes; retry rounds revive FAILED/BLOCKED;
+            // revision rounds (request-changes) additionally revive MERGED.
             fromStates:
-              round > 0 ? ['FAILED', 'BLOCKED', 'PENDING', 'READY'] : ['PENDING', 'READY'],
+              round > 0
+                ? ['FAILED', 'BLOCKED', 'PENDING', 'READY', ...(revive ? ['MERGED'] : [])]
+                : revive
+                  ? ['MERGED', 'FAILED', 'BLOCKED', 'PENDING', 'READY']
+                  : ['PENDING', 'READY'],
             fields: { branch: unitBranch, sessionId: laneSession, startedAt: true },
           });
         } catch {
@@ -572,6 +573,9 @@ export const runParallelSection = async (segment, toolkit) => {
           sessionId: laneSession,
           cloneInputs: laneCloneInputs,
           suffix: rTag,
+          // Revision runs re-enter every lane stage with the request-changes
+          // feedback (the answered gate id) — the agent revises, not restarts.
+          ...(feedbackTaskId ? { initialResumeFrom: feedbackTaskId } : {}),
         });
         if (outcome.state === 'TERMINAL') return { slug, state: 'TERMINAL', value: outcome.value };
         if (outcome.state === 'FAILED') {
@@ -781,13 +785,13 @@ export const runParallelSection = async (segment, toolkit) => {
 
   // Run a set of lanes concurrently (the wavefront/barrier core). Returns
   // { terminal } when a lane saw a retire sentinel, else records lane states.
-  const runLanes = async (slugsToRun, { round, tag }) => {
+  const runLanes = async (slugsToRun, { round, tag, laneOpts }) => {
     const ordered = laneOrder.filter((s) => slugsToRun.includes(s));
     for (const slug of ordered) {
       lanePromises.set(
         slug,
         ctx.runInChildContext(`lane-${sk}-${slug}-r${round}${tag ?? ''}`, (laneCtx) =>
-          runLaneBody(laneCtx, slug, round),
+          runLaneBody(laneCtx, slug, round, laneOpts),
         ),
       );
     }
@@ -813,70 +817,99 @@ export const runParallelSection = async (segment, toolkit) => {
 
   // Halt-and-ask (stage-protocol.md): wait for all lanes (done by the caller),
   // preserve successes (pushed work + MERGED lanes), ask retry / skip / abort.
+  // An unparseable answer RE-ASKS (fresh gate, one human answer per attempt)
+  // rather than silently aborting — abort should be an explicit choice. The
+  // re-asks are capped: after HALT_REASK_LIMIT uninterpretable answers the
+  // deterministic fallback is abort (audited), never an unbounded hot loop.
   // Returns 'retry' | 'skip' | a terminal value (abort/retired).
-  const haltAndAsk = async (round, failedSlugs) => {
+  const haltAndAsk = async (round, failedSlugs, idSuffix = '') => {
     const detailLines = failedSlugs.map((slug) => {
       const row = laneState.get(slug);
       return `- ${slug}: ${row === 'FAILED' ? 'failed' : row}`;
     });
-    const halt = await awaitEngineGate(ctx, toolkit, {
-      name: `halt-${sk}-r${round}`,
-      prompt: [
-        `Lane failure in section ${segment.index} (${failedSlugs.length} unit(s) failed, ${blocked().length} blocked, ${
-          [...laneState.values()].filter((s) => s === 'MERGED').length
-        } merged).`,
-        ...detailLines,
-        '',
-        'All pushed work is preserved on the unit branches. Choose:',
-        '- retry: re-run the failed lanes (and their blocked dependents) in place',
-        '- skip: continue without them (their work will be missing downstream)',
-        '- abort: fail the run',
-      ].join('\n'),
-      options: ['retry', 'skip', 'abort'],
-    });
-    if (halt.superseded) {
-      return { terminal: { ok: false, reason: 'retired', intentId } };
+    for (let attempt = 0; ; attempt += 1) {
+      const halt = await awaitEngineGate(ctx, toolkit, {
+        name: `halt-${sk}${idSuffix}-r${round}${attempt ? `-a${attempt}` : ''}`,
+        prompt: [
+          `Lane failure in section ${segment.index} (${failedSlugs.length} unit(s) failed, ${blocked().length} blocked, ${
+            [...laneState.values()].filter((s) => s === 'MERGED').length
+          } merged).`,
+          ...detailLines,
+          '',
+          'All pushed work is preserved on the unit branches. Choose:',
+          '- retry: re-run the failed lanes (and their blocked dependents) in place',
+          '- skip: continue without them (their work will be missing downstream)',
+          '- abort: fail the run',
+          ...(attempt
+            ? [
+                '',
+                'The previous answer could not be interpreted — please choose retry, skip, or abort.',
+              ]
+            : []),
+        ].join('\n'),
+        options: ['retry', 'skip', 'abort'],
+      });
+      if (halt.superseded) {
+        return { terminal: { ok: false, reason: 'retired', intentId } };
+      }
+      let choice = parseChoice(halt.gate.answer, ['retry', 'skip', 'abort']);
+      if (!choice && attempt < HALT_REASK_LIMIT) {
+        await emitEvent(
+          ctx,
+          `halt-reask-${sk}${idSuffix}-r${round}-a${attempt + 1}`,
+          'v2.units.halt_reask',
+          `Halt-and-ask (section ${segment.index}, round ${round}): answer was not one of retry/skip/abort — asking again`,
+        );
+        continue;
+      }
+      choice ??= 'abort';
+      await emitEvent(
+        ctx,
+        `halt-decision-${sk}${idSuffix}-r${round}${attempt ? `-a${attempt}` : ''}`,
+        'v2.units.halt_decision',
+        `Halt-and-ask (section ${segment.index}, round ${round}): human chose ${choice} for [${failedSlugs.join(', ')}]`,
+      );
+      if (choice === 'abort') {
+        return {
+          terminal: await fail(
+            'section_aborted',
+            `section ${segment.index}: units [${failedSlugs.join(', ')}] failed; human aborted`,
+          ),
+        };
+      }
+      return { choice };
     }
-    const choice =
-      halt.gate.status === 'rejected'
-        ? 'abort'
-        : (parseChoice(halt.gate.answer, ['retry', 'skip', 'abort']) ?? 'abort');
-    await emitEvent(
-      ctx,
-      `halt-decision-${sk}-r${round}`,
-      'v2.units.halt_decision',
-      `Halt-and-ask (section ${segment.index}, round ${round}): human chose ${choice} for [${failedSlugs.join(', ')}]`,
-    );
-    if (choice === 'abort') {
-      return {
-        terminal: await fail(
-          'section_aborted',
-          `section ${segment.index}: units [${failedSlugs.join(', ')}] failed; human aborted`,
-        ),
-      };
-    }
-    return { choice };
   };
 
   // Run lanes + halt-and-ask rounds until every requested lane is MERGED, the
   // human skips, or a terminal exit. Returns null | terminal value.
-  const runUntilResolved = async (initialSlugs, { tag }) => {
+  // Revision runs (feedbackTaskId set) revive MERGED lanes and inject the
+  // request-changes feedback into every lane stage; idSuffix keeps their
+  // durable identities distinct from the original run's.
+  const runUntilResolved = async (
+    initialSlugs,
+    { tag, idSuffix = '', feedbackTaskId = null, revive = false },
+  ) => {
     let toRun = initialSlugs;
     let round = 0;
     // A retry round re-runs the previous round's FAILED lanes and revives
     // their BLOCKED dependents. Unbounded by design — each round is one
     // explicit human decision; durable identities carry the round number.
     for (;;) {
-      const { terminal } = await runLanes(toRun, { round, tag });
+      const { terminal } = await runLanes(toRun, {
+        round,
+        tag,
+        laneOpts: { idSuffix, feedbackTaskId, revive },
+      });
       if (terminal) return terminal;
       const failed = toRun.filter((s) => laneState.get(s) === 'FAILED');
       if (failed.length === 0) return null;
-      const decision = await haltAndAsk(round, failed);
+      const decision = await haltAndAsk(round, failed, idSuffix);
       if (decision.terminal) return decision.terminal;
       if (decision.choice === 'skip') {
         await emitEvent(
           ctx,
-          `skip-lanes-${sk}-r${round}`,
+          `skip-lanes-${sk}${idSuffix}-r${round}`,
           'v2.units.lanes_skipped',
           `Continuing section ${segment.index} without [${failed.join(', ')}] (human skip); dependents stay blocked`,
         );
@@ -893,27 +926,64 @@ export const runParallelSection = async (segment, toolkit) => {
   const skeletonOut = await runUntilResolved([skeleton], { tag: '-skel' });
   if (skeletonOut) return skeletonOut;
 
-  if (laneState.get(skeleton) === 'MERGED') {
+  // Bolt-level skeleton gate (upstream stage-protocol §1): approve /
+  // request-changes. Request-changes carries feedback, re-runs the skeleton
+  // lane (revive + resumeFrom the answered gate), and re-asks; after 3 cycles
+  // the accept-as-is escape hatch appears. Never a terminal reject.
+  for (let revision = 0; laneState.get(skeleton) === 'MERGED'; ) {
+    const options =
+      revision >= 3
+        ? ['approve', 'request-changes', 'accept-as-is']
+        : ['approve', 'request-changes'];
     const skeletonGate = await awaitEngineGate(ctx, toolkit, {
-      name: `skeleton-${sk}`,
+      name: revision ? `skeleton-${sk}-v${revision}` : `skeleton-${sk}`,
       prompt: [
-        `Walking skeleton "${skeleton}" completed and merged into ${intentBranch}.`,
+        `Walking skeleton "${skeleton}" completed and merged into ${intentBranch}${revision ? ` (revision ${revision})` : ''}.`,
         `Review its design artifacts and generated code (branch ${unitBranchFor(intentBranch, segment.index, skeleton)}) as ONE increment.`,
-        'Approve to open the remaining lanes; reject to stop the run.',
+        'Approve to open the remaining lanes, or request-changes with feedback to revise the skeleton.',
+        ...(revision === 2
+          ? ['After one more revision, an accept-as-is option will become available.']
+          : []),
+        ...(revision >= 3
+          ? ['Accept-as-is keeps the current increment and moves on despite open feedback.']
+          : []),
       ].join('\n'),
-      options: ['approve', 'reject'],
+      options,
     });
     if (skeletonGate.superseded) return { ok: false, reason: 'retired', intentId };
-    if (skeletonGate.gate.status === 'rejected') {
-      return await fail('skeleton_rejected', `section ${segment.index}: ${skeleton}`);
+    const choice =
+      parseChoice(skeletonGate.gate.answer, options) ??
+      (skeletonGate.gate.status === 'rejected' ? 'request-changes' : 'approve');
+    if (choice !== 'request-changes') {
+      await emitEvent(
+        ctx,
+        `skeleton-approved-${sk}${revision ? `-v${revision}` : ''}`,
+        'v2.units.skeleton_approved',
+        `Walking skeleton ${skeleton} approved${
+          choice === 'accept-as-is' ? ` as-is after ${revision} revision cycle(s)` : ''
+        }`,
+        { unitSlug: skeleton },
+      );
+      break;
     }
+    revision += 1;
     await emitEvent(
       ctx,
-      `skeleton-approved-${sk}`,
-      'v2.units.skeleton_approved',
-      `Walking skeleton ${skeleton} approved`,
+      `skeleton-revision-${sk}-v${revision}`,
+      'v2.units.skeleton_revision_requested',
+      `Human requested changes on walking skeleton ${skeleton} (revision ${revision}); re-running its lane with feedback`,
       { unitSlug: skeleton },
     );
+    const revisionOut = await runUntilResolved([skeleton], {
+      tag: `-skel-v${revision}`,
+      idSuffix: `-v${revision}`,
+      feedbackTaskId: skeletonGate.gate.humanTaskId,
+      revive: true,
+    });
+    if (revisionOut) return revisionOut;
+    // A skipped (failed) revision leaves the previously merged skeleton in
+    // place — the while-condition re-checks MERGED; a lane the human skipped
+    // is FAILED here and the loop exits without re-asking.
   }
 
   // ── phase 2: autonomy ladder (A2 rule 9), then the remaining lanes ───────
@@ -975,30 +1045,64 @@ export const runParallelSection = async (segment, toolkit) => {
     const out = await runUntilResolved(remaining, { tag: '' });
     if (out) return out;
   } else {
-    // GATED: batch barriers over the topological waves, one gate per batch.
+    // GATED: batch barriers over the topological waves, one gate per batch
+    // (upstream: "single gate per batch, not one per Bolt"). Approve /
+    // request-changes with the same revision loop as the skeleton gate.
     for (let w = 0; w < waves.length; w++) {
       const waveSlugs = waves[w].filter((s) => remaining.includes(s));
       if (waveSlugs.length === 0) continue;
       const out = await runUntilResolved(waveSlugs, { tag: `-w${w}` });
       if (out) return out;
-      const batchGate = await awaitEngineGate(ctx, toolkit, {
-        name: `batch-${sk}-w${w}`,
-        prompt: [
-          `Batch ${w + 1}/${waves.length} of section ${segment.index} finished: [${waveSlugs.join(', ')}].`,
-          'Review the merged work on the intent branch. Approve to continue; reject to stop the run.',
-        ].join('\n'),
-        options: ['approve', 'reject'],
-      });
-      if (batchGate.superseded) return { ok: false, reason: 'retired', intentId };
-      if (batchGate.gate.status === 'rejected') {
-        return await fail('batch_rejected', `section ${segment.index}, batch ${w + 1}`);
+      for (let revision = 0; ; ) {
+        const mergedInWave = waveSlugs.filter((s) => laneState.get(s) === 'MERGED');
+        const options =
+          revision >= 3
+            ? ['approve', 'request-changes', 'accept-as-is']
+            : ['approve', 'request-changes'];
+        const batchGate = await awaitEngineGate(ctx, toolkit, {
+          name: revision ? `batch-${sk}-w${w}-v${revision}` : `batch-${sk}-w${w}`,
+          prompt: [
+            `Batch ${w + 1}/${waves.length} of section ${segment.index} finished: [${waveSlugs.join(', ')}]${revision ? ` (revision ${revision})` : ''}.`,
+            'Review the merged work on the intent branch. Approve to continue, or request-changes with feedback to revise this batch.',
+            ...(revision === 2
+              ? ['After one more revision, an accept-as-is option will become available.']
+              : []),
+            ...(revision >= 3
+              ? ['Accept-as-is keeps the current increment and moves on despite open feedback.']
+              : []),
+          ].join('\n'),
+          options,
+        });
+        if (batchGate.superseded) return { ok: false, reason: 'retired', intentId };
+        const choice =
+          parseChoice(batchGate.gate.answer, options) ??
+          (batchGate.gate.status === 'rejected' ? 'request-changes' : 'approve');
+        if (choice !== 'request-changes' || mergedInWave.length === 0) {
+          await emitEvent(
+            ctx,
+            `batch-approved-${sk}-w${w}${revision ? `-v${revision}` : ''}`,
+            'v2.units.batch_approved',
+            `Batch ${w + 1}/${waves.length} of section ${segment.index} approved${
+              choice === 'accept-as-is' ? ` as-is after ${revision} revision cycle(s)` : ''
+            }`,
+          );
+          break;
+        }
+        revision += 1;
+        await emitEvent(
+          ctx,
+          `batch-revision-${sk}-w${w}-v${revision}`,
+          'v2.units.batch_revision_requested',
+          `Human requested changes on batch ${w + 1}/${waves.length} of section ${segment.index} (revision ${revision}); re-running [${mergedInWave.join(', ')}] with feedback`,
+        );
+        const revisionOut = await runUntilResolved(mergedInWave, {
+          tag: `-w${w}-v${revision}`,
+          idSuffix: `-w${w}v${revision}`,
+          feedbackTaskId: batchGate.gate.humanTaskId,
+          revive: true,
+        });
+        if (revisionOut) return revisionOut;
       }
-      await emitEvent(
-        ctx,
-        `batch-approved-${sk}-w${w}`,
-        'v2.units.batch_approved',
-        `Batch ${w + 1}/${waves.length} of section ${segment.index} approved`,
-      );
     }
   }
 

@@ -139,7 +139,7 @@ flowchart TB
 
 **AgentCore runtime.** A Bedrock AgentCore runtime running an ARM64 container image, with a dedicated microVM and filesystem per session. Each stage spawns a headless CLI (Claude Code or Kiro, selected per project) whose only interface to the application is a stdio **MCP server**: business reads and writes go to Neptune as typed, provenance-stamped artifacts; questions, outputs, and metrics go to DynamoDB. The workspace holds the project's real git checkout, but all git operations — branch, commit, push, merge — are engine-owned and deterministic; the agent never runs git and never holds credentials. After each stage, deterministic sensors verify the output before the run advances.
 
-**Human gates.** When an agent calls the `ask_question` MCP tool — or the orchestrator opens an engine gate (fan-out approval, walking-skeleton review, halt-and-ask) — the run parks on a durable callback. The question renders in the UI; the user's answer flows through the `intents` Lambda, which completes the callback and resumes the run exactly where it parked. No polling, no queue.
+**Human gates.** When an agent calls the `ask_question` MCP tool — or the orchestrator opens an engine gate (walking-skeleton review, batch review, halt-and-ask) — the run parks on a durable callback. The question renders in the UI; the user's answer flows through the `intents` Lambda, which completes the callback and resumes the run exactly where it parked. No polling, no queue.
 
 **Pull requests.** When an execution succeeds, the orchestrator opens pull requests in-process through the shared git-provider layer (GitHub / GitLab), from the intent branch onto the base branch.
 

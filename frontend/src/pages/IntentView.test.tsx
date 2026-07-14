@@ -838,7 +838,7 @@ describe('IntentView — WP7 construction UI', () => {
     );
   });
 
-  it('maps approve/reject options to approved/rejected statuses', async () => {
+  it('maps approve/request-changes options to approved/rejected statuses and carries feedback', async () => {
     get.mockResolvedValue({
       ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'eg-skeleton-s1-run1' }),
       gates: [
@@ -849,7 +849,7 @@ describe('IntentView — WP7 construction UI', () => {
           kind: 'approval',
           status: 'pending',
           prompt: 'Walking skeleton "auth" completed.',
-          options: ['approve', 'reject'],
+          options: ['approve', 'request-changes'],
           questions: null,
           answer: null,
           answeredBy: null,
@@ -860,12 +860,20 @@ describe('IntentView — WP7 construction UI', () => {
     });
     answerGate.mockResolvedValue({});
     renderAt();
-    await userEvent.click(await screen.findByRole('button', { name: 'reject' }));
+    // Gates offering request-changes render the free-text feedback field; the
+    // feedback rides the answer so the engine can revise the increment and
+    // re-ask instead of failing the run.
+    const feedback = await screen.findByPlaceholderText(/What should change/);
+    await userEvent.type(feedback, 'wire real auth');
+    await userEvent.click(screen.getByRole('button', { name: 'request-changes' }));
     expect(answerGate).toHaveBeenCalledWith(
       'p1',
       'i1',
       'eg-skeleton-s1-run1',
-      expect.objectContaining({ status: 'rejected' }),
+      expect.objectContaining({
+        answer: { decision: 'request-changes', feedback: 'wire real auth' },
+        status: 'rejected',
+      }),
     );
   });
 });

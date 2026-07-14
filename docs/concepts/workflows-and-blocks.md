@@ -67,12 +67,12 @@ Every stage carries three independent safety nets:
 
 ## Parallel construction
 
-Construction stages that are marked to run **per unit of work** form a parallel section. At the fan-out point, the methodology's own unit-of-work dependency DAG — produced by an inception stage and approved by a human gate — becomes the schedule:
+Construction stages that are marked to run **per unit of work** form a parallel section. At the fan-out point, the methodology's own unit-of-work dependency DAG — produced by an inception stage whose review gate doubles as the fan-out approval (the approve answer may re-pick the walking skeleton or adjust the per-unit skip matrix) — becomes the schedule:
 
 - Each unit runs as a **lane**: its own agent session, its own workspace, its own git branch.
 - A lane starts only when the lanes it depends on have merged.
-- The first lane is the **walking skeleton**: it runs solo, with a mandatory approval gate, before the rest fan out.
-- After the skeleton, you choose the autonomy level once: continue fully autonomously, or gate every batch.
+- The first lane is the **walking skeleton**: it runs solo, with a mandatory approval gate, before the rest fan out. Requesting changes at that gate re-runs the skeleton lane with your feedback and asks again — it never kills the run.
+- After the skeleton, you choose the autonomy level once: continue fully autonomously, or gate every batch. Batch gates work the same way: approve, or request changes to revise the batch (after three revision cycles an accept-as-is option appears, mirroring the upstream methodology's escape hatch).
 - Completed lanes are merged back into the intent branch by the engine — serialized, deterministic, in dependency-safe order. Merge conflicts trigger a scoped conflict-resolution stage; a failed lane blocks only its dependents and surfaces a retry / skip / abort gate.
 
 The scheduling is entirely deterministic — no LLM decides what runs when. Concurrency is capped by the project's `maxParallelUnits` setting.

@@ -173,25 +173,25 @@ describe('isFanoutActive', () => {
     expect(isFanoutActive({ events: [ev('v2.stage.running')] })).toBe(false);
   });
 
-  it('is true after fan-out is approved and before fan-in', () => {
-    expect(isFanoutActive({ events: [ev('v2.units.fanout_approved')] })).toBe(true);
+  it('is true after the section starts and before fan-in', () => {
+    expect(isFanoutActive({ events: [ev('v2.units.section_started')] })).toBe(true);
   });
 
   it('is false again once the section fans in', () => {
     expect(
       isFanoutActive({
-        events: [ev('v2.units.fanout_approved'), ev('v2.units.fan_in')],
+        events: [ev('v2.units.section_started'), ev('v2.units.fan_in')],
       }),
     ).toBe(false);
   });
 
-  it('stays active while a later section is still open (approved > fanned in)', () => {
+  it('stays active while a later section is still open (started > fanned in)', () => {
     expect(
       isFanoutActive({
         events: [
-          ev('v2.units.fanout_approved'),
+          ev('v2.units.section_started'),
           ev('v2.units.fan_in'),
-          ev('v2.units.fanout_approved'),
+          ev('v2.units.section_started'),
         ],
       }),
     ).toBe(true);

@@ -340,7 +340,7 @@ describe('WP8 fixture 1 — 3-unit DAG: a, b ∥ → c sees merged a+b code (rea
       .getOperation('stage-cb-gen')
       .waitForData(WaitingOperationStatus.STARTED);
     await genOp.sendCallbackSuccess(JSON.stringify({ ok: true, state: 'SUCCEEDED' }));
-    await answerEngineGate(world, 'eg-fanout-s1');
+    await answerEngineGate(world, 'eg-validation-si-gen-0');
     await answerEngineGate(world, 'eg-skeleton-s1');
     await answerEngineGate(world, 'eg-ladder-s1', {
       status: 'answered',
@@ -461,7 +461,7 @@ describe('WP8 fixture 2 — forced merge conflict → halt-and-ask SKIP (real gi
       .getOperation('stage-cb-gen')
       .waitForData(WaitingOperationStatus.STARTED);
     await genOp.sendCallbackSuccess(JSON.stringify({ ok: true, state: 'SUCCEEDED' }));
-    await answerEngineGate(world, 'eg-fanout-s1');
+    await answerEngineGate(world, 'eg-validation-si-gen-0');
     await answerEngineGate(world, 'eg-skeleton-s1');
     await answerEngineGate(world, 'eg-ladder-s1', {
       status: 'answered',
@@ -568,7 +568,7 @@ describe('WP6 fixture 3 — conflict RESOLVED by the resolution stage (real git)
       .getOperation('stage-cb-gen')
       .waitForData(WaitingOperationStatus.STARTED);
     await genOp.sendCallbackSuccess(JSON.stringify({ ok: true, state: 'SUCCEEDED' }));
-    await answerEngineGate(world, 'eg-fanout-s1');
+    await answerEngineGate(world, 'eg-validation-si-gen-0');
     await answerEngineGate(world, 'eg-skeleton-s1');
     await answerEngineGate(world, 'eg-ladder-s1', {
       status: 'answered',

@@ -305,7 +305,7 @@ describe('WP5 sections on the real durable runner', () => {
   };
 
   it(
-    'runs fan-out gate → skeleton solo (mid-lane park) → skeleton gate → ladder → remaining lane with exactly-once effects',
+    'runs fan-out approval (units-stage gate) → skeleton solo (mid-lane park) → skeleton gate → ladder → remaining lane with exactly-once effects',
     { timeout: 30_000 },
     async () => {
       const world = makeLaneWorld();
@@ -319,8 +319,9 @@ describe('WP5 sections on the real durable runner', () => {
       });
 
       await completeStage(runner, 'stage-cb-gen', { ok: true, state: 'SUCCEEDED' });
-      // 1. The fan-out gate suspends the run BEFORE any lane starts.
-      await answerEngineGate(runner, world, 'eg-fanout-s1');
+      // 1. The unit-DAG stage's validation gate (which doubles as the fan-out
+      // approval) suspends the run BEFORE any lane starts.
+      await answerEngineGate(runner, world, 'eg-validation-gen-0');
 
       // 2. Skeleton lane (auth): its cg stage parks on a question mid-lane.
       world.gates.set('h7', { humanTaskId: 'h7', status: 'pending' });
@@ -435,7 +436,7 @@ describe('WP5 sections on the real durable runner', () => {
       });
 
       await completeStage(runner, 'stage-cb-gen', { ok: true, state: 'SUCCEEDED' });
-      await answerEngineGate(runner, world, 'eg-fanout-s1');
+      await answerEngineGate(runner, world, 'eg-validation-gen-0');
       await completeStage(runner, 'stage-cb-cg-u-auth', { ok: true, state: 'SUCCEEDED' });
       await answerEngineGate(runner, world, 'eg-skeleton-s1');
       await answerEngineGate(runner, world, 'eg-ladder-s1', {
@@ -497,7 +498,7 @@ describe('WP5 sections on the real durable runner', () => {
       });
 
       await completeStage(runner, 'stage-cb-gen', { ok: true, state: 'SUCCEEDED' });
-      await answerEngineGate(runner, world, 'eg-fanout-s1');
+      await answerEngineGate(runner, world, 'eg-validation-gen-0');
       await completeStage(runner, 'stage-cb-cg-u-auth', { ok: true, state: 'SUCCEEDED' });
       await answerEngineGate(runner, world, 'eg-skeleton-s1');
       await answerEngineGate(runner, world, 'eg-ladder-s1', {

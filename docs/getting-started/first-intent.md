@@ -59,7 +59,7 @@ Agents ask clarifying questions when things are ambiguous, and most stages end w
 - **Observability** (button in the pipeline bar) shows the execution as a diagram, graph, or list, with per-stage durations, sensor verdicts, token usage, and cost.
 - **Graph** shows the traceability graph — from requirements down to units of work.
 
-During construction, independent units of work run in parallel lanes. The first lane (the walking skeleton) pauses for your approval; after that you choose whether the rest runs autonomously or gated per batch.
+During construction, independent units of work run in parallel lanes. The fan-out is approved right on the unit-plan stage's review gate; the first lane (the walking skeleton) then pauses for your approval, and after that you choose whether the rest runs autonomously or gated per batch. At any of these gates you can request changes with feedback instead of approving — the engine revises the work and asks again.
 
 ## Review the result
 

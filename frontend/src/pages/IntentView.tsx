@@ -1091,7 +1091,11 @@ function SteeringCard({ steer }: { steer: IntentSteering }) {
 // options retire the gate as 'rejected'; approve-flavored as 'approved'; the
 // rest (retry/skip/abort/autonomous/gated) are plain answers.
 const engineGateStatusFor = (opt: string): GateAnswer['status'] =>
-  /^reject/i.test(opt) ? 'rejected' : /^approve/i.test(opt) ? 'approved' : 'answered';
+  /^(reject|request-changes)/i.test(opt)
+    ? 'rejected'
+    : /^(approve|accept-as-is)/i.test(opt)
+      ? 'approved'
+      : 'answered';
 
 function ReviewStat({
   label,
@@ -1619,6 +1623,10 @@ function GateCard({
   // answer — injected into the resumed agent conversation right after it, so
   // the human can redirect the agent's direction while answering.
   const [steering, setSteering] = useState('');
+  // Free-text feedback for engine gates offering 'request-changes' (skeleton /
+  // batch revision loops): sent as { decision, feedback } so the engine
+  // re-runs the increment with it and re-asks.
+  const [feedback, setFeedback] = useState('');
   const question = useMemo<Question | null>(() => {
     let parsed: Question['questions'];
     try {
@@ -1711,15 +1719,17 @@ function GateCard({
   }
 
   if (!question) {
-    // A non-structured gate — the engine's construction gates (fan-out /
-    // walking-skeleton / autonomy ladder / batch / halt-and-ask,
-    // docs/v2-parallel.md WP5) arrive as kind 'approval' with a prompt and an
-    // options array; each option submits `{ decision }` (the shape the
-    // orchestrator's parseChoice consumes). Reject-flavored options retire
-    // the gate as 'rejected'; approve-flavored as 'approved'.
+    // A non-structured gate — the engine's construction gates (walking
+    // skeleton / autonomy ladder / batch / halt-and-ask, docs/v2-parallel.md
+    // WP5) arrive as kind 'approval' with a prompt and an options array; each
+    // option submits `{ decision }` (the shape the orchestrator's parseChoice
+    // consumes). Gates offering 'request-changes' carry the free-text feedback
+    // below with the answer — the engine re-runs the increment with it and
+    // re-asks (upstream stage-protocol §1), so a reject never kills the run.
     const options = Array.isArray(gate.options)
       ? gate.options.filter((o): o is string => typeof o === 'string')
       : [];
+    const offersRevision = options.some((o) => /^request-changes/i.test(o));
     return (
       <Card className={cn(isActiveGate && 'border-agent-waiting/40')}>
         <CardContent className="space-y-2 py-3">
@@ -1729,10 +1739,24 @@ function GateCard({
             </Badge>
           )}
           <p className="whitespace-pre-line text-sm">{gate.prompt || 'Approval required'}</p>
-          {/* TODO: a reject on these engine gates currently terminates the whole
-              run (terminal FAILED on the backend). Consider a softer path: let
-              reject capture free-text feedback describing what to change, then
-              revise the plan / re-ask the gate instead of blocking the workflow. */}
+          {offersRevision && (
+            <div className="space-y-1 rounded-md border border-dashed px-3 py-2">
+              <Label
+                htmlFor={`gate-feedback-${gate.humanTaskId}`}
+                className="text-[11px] font-medium text-muted-foreground"
+              >
+                Request-changes feedback (optional)
+              </Label>
+              <Textarea
+                id={`gate-feedback-${gate.humanTaskId}`}
+                value={feedback}
+                onChange={(e) => setFeedback(e.target.value)}
+                placeholder="What should change before you can approve? Sent with 'request-changes' — the engine revises the increment with this feedback and asks again."
+                rows={2}
+                className="text-xs"
+              />
+            </div>
+          )}
           <div className="flex flex-wrap gap-2">
             {options.length > 0 ? (
               options.map((opt) => (
@@ -1741,7 +1765,15 @@ function GateCard({
                   size="sm"
                   variant={engineGateStatusFor(opt) === 'rejected' ? 'outline' : 'default'}
                   onClick={() =>
-                    onAnswer(gate, { answer: { decision: opt }, status: engineGateStatusFor(opt) })
+                    onAnswer(gate, {
+                      answer: {
+                        decision: opt,
+                        ...(/^request-changes/i.test(opt) && feedback.trim()
+                          ? { feedback: feedback.trim() }
+                          : {}),
+                      },
+                      status: engineGateStatusFor(opt),
+                    })
                   }
                 >
                   {opt}

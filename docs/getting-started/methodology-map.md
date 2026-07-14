@@ -77,7 +77,7 @@ Upstream's `validate-grid` prints "N of T stages, G approval gates". Here that e
 
 ### Gates
 
-Upstream stages stop and print numbered options in the terminal. Here every stop is a **gate** in the intent view: structured questions with options and free-text, validation gates with **Approve** / **Request changes**, and engine gates (fan-out approval, autonomy choice, failure handling). A parked intent consumes **zero compute** until someone answers — and gates are answered collaboratively, with shared drafts and steering notes.
+Upstream stages stop and print numbered options in the terminal. Here every stop is a **gate** in the intent view: structured questions with options and free-text, validation gates with **Approve** / **Request changes**, and engine gates (skeleton and batch reviews, autonomy choice, failure handling) that carry the same approve / request-changes loop. A parked intent consumes **zero compute** until someone answers — and gates are answered collaboratively, with shared drafts and steering notes.
 
 Validation gates also name the **computed next stage** ("approve to continue to code-generation"), never a guess — same as upstream 2.2.6.
 
@@ -104,10 +104,10 @@ One guardrail applies everywhere, exactly as upstream: while construction runs *
 
 ### Units of work and lanes
 
-Upstream's Bolt swarm becomes **unit lanes**: the methodology decomposes construction into units of work with a dependency graph, a human approves the fan-out, and then each unit runs in its own agent session, workspace, and git branch. The **unit lane board** in the intent view shows every lane's live state.
+Upstream's Bolt swarm becomes **unit lanes**: the methodology decomposes construction into units of work with a dependency graph, a human approves the fan-out on the unit-plan stage's review gate (one gate covers the artifact and the fan-out decisions), and then each unit runs in its own agent session, workspace, and git branch. The **unit lane board** in the intent view shows every lane's live state.
 
-- The **walking skeleton** — the foundational unit — runs solo first, with its own approval gate.
-- Then you make the **autonomy choice** once: run the remaining lanes fully autonomously, or gate every batch.
+- The **walking skeleton** — the foundational unit — runs solo first, with its own approval gate. Request changes with feedback and the lane re-runs, then the gate asks again.
+- Then you make the **autonomy choice** once: run the remaining lanes fully autonomously, or gate every batch. Batch gates carry the same approve / request-changes loop, with an accept-as-is escape hatch after three revision cycles.
 - The engine merges finished lanes back **deterministically**, in dependency order. No AI decides scheduling.
 
 ## Quality and memory

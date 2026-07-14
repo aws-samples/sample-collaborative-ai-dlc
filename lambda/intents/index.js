@@ -2393,7 +2393,7 @@ export const handler = async (event) => {
     //   - the PAST is frozen: completed/skipped stages must keep their fate
     //     in the new grid (reshaping the past is rewind's job);
     //   - unit-lane stages are frozen once the unit plan is promoted (lanes
-    //     are reshaped at the fan-out gate's skip matrix);
+    //     are reshaped at the fan-out approval's skip matrix);
     //   - the new grid must resolve STRICTLY (no starved required inputs).
     if (intentId && httpMethod === 'POST' && path?.endsWith('/recompose')) {
       const data = body ? JSON.parse(body) : {};
@@ -2480,7 +2480,7 @@ export const handler = async (event) => {
         for (const stageId of currentSectionIds) {
           if (!newStageIds.has(stageId)) {
             violations.push(
-              `"${stageId}" fans out per unit and the unit plan is already promoted — reshape units at the fan-out gate`,
+              `"${stageId}" fans out per unit and the unit plan is already promoted — reshape units at the fan-out approval`,
             );
           }
         }
