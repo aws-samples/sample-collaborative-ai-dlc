@@ -34,10 +34,10 @@ function NewIntentStub() {
 
 const renderProject = () =>
   render(
-    <MemoryRouter initialEntries={['/project/p1']}>
+    <MemoryRouter initialEntries={['/space/p1']}>
       <Routes>
-        <Route path="/project/:projectId" element={<Project />} />
-        <Route path="/project/:projectId/intent/new" element={<NewIntentStub />} />
+        <Route path="/space/:projectId" element={<Project />} />
+        <Route path="/space/:projectId/intent/new" element={<NewIntentStub />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -69,7 +69,7 @@ describe('Project page — v2 routing', () => {
     expect(list).toHaveBeenCalledWith('p1');
   });
 
-  it('navigates to /project/:projectId/intent/new when New Intent is clicked', async () => {
+  it('navigates to /space/:projectId/intent/new when New Intent is clicked', async () => {
     useProjectCache.mockReturnValue({
       project: {
         id: 'p1',

@@ -145,7 +145,7 @@ export function DefaultModelsCard() {
     <SettingsCard
       icon={<Cpu />}
       title="Default Models"
-      description="Default model per CLI — every agent uses it unless a tier or project override applies."
+      description="Default model per CLI — every agent uses it unless a tier or space override applies."
     >
       {loading ? (
         <div className="space-y-3">
@@ -251,7 +251,7 @@ export function DefaultModelsCard() {
                 <div className="space-y-2 pt-3">
                   <p className="text-xs text-muted-foreground">
                     Pin a different model for a specific agent tier (or the Quorum discussion
-                    assists). Unset cells inherit the default model above. Projects can override any
+                    assists). Unset cells inherit the default model above. Spaces can override any
                     cell.
                   </p>
                   <TierModelsSection

@@ -288,7 +288,7 @@ export function CustomMcpServersSection({
           {')'}
         </>
       ) : null}
-      . When names collide, the project entry wins.
+      . When names collide, the space entry wins.
     </>
   ) : (
     description

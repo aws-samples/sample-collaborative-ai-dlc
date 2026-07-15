@@ -53,11 +53,11 @@ export function buildInsights(
   // ── Calm state (no agents running) ──────────────────────────────────────
   if (activeCount === 0) {
     if (totalProjects === 0) {
-      highlights.push({ text: 'No projects yet — create a project to get started' });
+      highlights.push({ text: 'No spaces yet — create a space to get started' });
       return { highlights, lowlights, risks, actions };
     }
     highlights.push({
-      text: `${totalProjects} project${totalProjects > 1 ? 's' : ''} in workspace — no agents running`,
+      text: `${totalProjects} space${totalProjects > 1 ? 's' : ''} in workspace — no agents running`,
     });
     if (completedSprints > 0) {
       highlights.push({

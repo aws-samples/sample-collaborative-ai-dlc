@@ -212,12 +212,12 @@ function buildBreadcrumbs(
 
   // Dashboard - just "Projects"
   if (pathname === '/dashboard') {
-    return [{ label: 'Projects' }];
+    return [{ label: 'Spaces' }];
   }
 
   // Observability
   if (pathname === '/observability') {
-    return [{ label: 'Projects', href: '/dashboard' }, { label: 'Observability' }];
+    return [{ label: 'Spaces', href: '/dashboard' }, { label: 'Observability' }];
   }
 
   // Block Library
@@ -231,18 +231,18 @@ function buildBreadcrumbs(
     return pathname === '/workflows' ? [{ label: 'Workflows' }] : [base, { label: 'Composer' }];
   }
 
-  const crumbs: Breadcrumb[] = [{ label: 'Projects', href: '/dashboard' }];
+  const crumbs: Breadcrumb[] = [{ label: 'Spaces', href: '/dashboard' }];
 
   // Add project name if available
   if (params.projectId && project) {
-    crumbs.push({ label: project.name, href: `/project/${params.projectId}` });
+    crumbs.push({ label: project.name, href: `/space/${params.projectId}` });
   }
 
   // Add sprint name and phase if available
   if (params.sprintId && params.projectId && sprint) {
     crumbs.push({
       label: sprint.name,
-      href: `/project/${params.projectId}/sprint/${params.sprintId}`,
+      href: `/space/${params.projectId}/sprint/${params.sprintId}`,
     });
 
     // Add phase as final crumb

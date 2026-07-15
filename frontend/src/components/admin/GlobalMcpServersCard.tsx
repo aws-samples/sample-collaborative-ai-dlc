@@ -41,7 +41,7 @@ export function GlobalMcpServersCard() {
       onChange={setValue}
       onSave={save}
       canEdit={true}
-      description="Custom MCP servers injected into every agent session across all projects. A project's own MCP servers are merged on top (project wins when names collide)."
+      description="Custom MCP servers injected into every agent session across all spaces. A space's own MCP servers are merged on top (space wins when names collide)."
       mcpSecretsSet={mcpSecretsSet}
       onSaveSecrets={saveSecrets}
     />

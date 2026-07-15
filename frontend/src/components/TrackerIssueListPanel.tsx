@@ -247,7 +247,7 @@ export function TrackerIssueListPanel({ project, binding, sprints }: Props) {
               </p>
               {(errorDetail?.notConnected || errorDetail?.reconnect) && (
                 <p className="mt-1 text-xs text-muted-foreground">
-                  v1 project tracker settings are retired; existing linked sprints remain viewable.
+                  v1 space tracker settings are retired; existing linked sprints remain viewable.
                 </p>
               )}
             </div>
@@ -342,7 +342,7 @@ export function TrackerIssueListPanel({ project, binding, sprints }: Props) {
                       size="sm"
                       variant="outline"
                       className="gap-1.5 shrink-0"
-                      onClick={() => navigate(`/project/${project.id}/sprint/${existingSprint.id}`)}
+                      onClick={() => navigate(`/space/${project.id}/sprint/${existingSprint.id}`)}
                     >
                       Open sprint
                     </Button>

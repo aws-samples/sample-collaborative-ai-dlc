@@ -148,7 +148,7 @@ export function SprintPipelineBar() {
       realtimeService.on('sprint.phaseChanged', (data: { phase?: string }) => {
         refetch();
         if (data.phase && PHASE_URL_SUFFIX[data.phase] !== undefined) {
-          navigate(`/project/${projectId}/sprint/${sprintId}${PHASE_URL_SUFFIX[data.phase]}`);
+          navigate(`/space/${projectId}/sprint/${sprintId}${PHASE_URL_SUFFIX[data.phase]}`);
         }
       }),
     ];
@@ -175,7 +175,7 @@ export function SprintPipelineBar() {
         variant="ghost"
         size="sm"
         className="shrink-0 gap-1.5 h-7 text-xs text-muted-foreground hover:text-foreground"
-        onClick={() => navigate(`/project/${projectId}`)}
+        onClick={() => navigate(`/space/${projectId}`)}
       >
         <ArrowLeft className="h-3 w-3" />
         <span className="hidden sm:inline">Back</span>
@@ -201,9 +201,7 @@ export function SprintPipelineBar() {
               <button
                 disabled={isFuture}
                 aria-label={isFuture ? `${phase.label} (not started yet)` : `Go to ${phase.label}`}
-                onClick={() =>
-                  navigate(`/project/${projectId}/sprint/${sprintId}${phase.urlSuffix}`)
-                }
+                onClick={() => navigate(`/space/${projectId}/sprint/${sprintId}${phase.urlSuffix}`)}
                 className={cn(
                   'flex flex-col gap-1 px-2 py-1 rounded-md text-xs font-medium transition-colors whitespace-nowrap',
                   isCurrent && 'bg-sidebar-accent text-foreground',
@@ -252,7 +250,7 @@ export function SprintPipelineBar() {
               size="sm"
               className="h-7 w-7 p-0"
               aria-label="Graph View"
-              onClick={() => navigate(`/project/${projectId}/sprint/${sprintId}/graph`)}
+              onClick={() => navigate(`/space/${projectId}/sprint/${sprintId}/graph`)}
             >
               <Network className="h-3.5 w-3.5" />
             </Button>
@@ -268,7 +266,7 @@ export function SprintPipelineBar() {
                 size="sm"
                 className="h-7 w-7 p-0"
                 aria-label="Open review"
-                onClick={() => navigate(`/project/${projectId}/sprint/${sprintId}/review`)}
+                onClick={() => navigate(`/space/${projectId}/sprint/${sprintId}/review`)}
               >
                 <ExternalLink className="h-3.5 w-3.5" />
               </Button>

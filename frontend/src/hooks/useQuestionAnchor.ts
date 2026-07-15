@@ -46,7 +46,7 @@ export function useQuestionLink() {
     (questionId: string) => {
       if (scrollToQuestion(questionId)) return;
       if (projectId && sprintId) {
-        navigate(`/project/${projectId}/sprint/${sprintId}#${questionAnchorId(questionId)}`);
+        navigate(`/space/${projectId}/sprint/${sprintId}#${questionAnchorId(questionId)}`);
       }
     },
     [navigate, projectId, sprintId],

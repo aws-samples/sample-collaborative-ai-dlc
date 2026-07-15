@@ -127,7 +127,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
         return;
       }
       if (!workflowId) {
-        setError('Select a workflow for the project.');
+        setError('Select a workflow for the space.');
         setSubmitting(false);
         return;
       }
@@ -160,7 +160,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
       onCreated();
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create project');
+      setError(err instanceof Error ? err.message : 'Failed to create space');
     } finally {
       setSubmitting(false);
     }
@@ -174,7 +174,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
       <div className="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-md w-full mx-4">
         <h2 className="text-xl font-semibold mb-4 text-gray-900 dark:text-white">
-          Create New Project
+          Create New Space
         </h2>
 
         {/* Step Indicator */}
@@ -217,7 +217,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
               Choose Git Provider
             </label>
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
-              A project connects to a single git provider.
+              A space connects to a single git provider.
             </p>
             <Select
               value={formData.gitProvider}
@@ -296,8 +296,8 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
             <h3 className="font-medium mb-1 text-gray-900 dark:text-white">Select Repositories</h3>
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
               {isAppMode
-                ? 'Repositories the GitHub App installation can access. The primary repo drives issue integration and project naming.'
-                : 'Choose one or more repositories. The primary repo drives issue integration and project naming.'}
+                ? 'Repositories the GitHub App installation can access. The primary repo drives issue integration and space naming.'
+                : 'Choose one or more repositories. The primary repo drives issue integration and space naming.'}
             </p>
             <GitRepoSelect
               provider={formData.gitProvider}
@@ -357,10 +357,10 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
         {/* Step 3: Project Details */}
         {step === 3 && formData.gitProvider && (
           <form onSubmit={handleSubmit}>
-            <h3 className="font-medium mb-3 text-gray-900 dark:text-white">Project Details</h3>
+            <h3 className="font-medium mb-3 text-gray-900 dark:text-white">Space Details</h3>
             <div className="mb-4">
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                Project Name
+                Space Name
               </label>
               <input
                 type="text"
@@ -413,7 +413,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                       integration
                     </span>
                     <span className="block text-xs text-gray-500 dark:text-gray-400">
-                      Browse issues on the project page and start intents from them.
+                      Browse issues on the space page and start intents from them.
                       {repoCount > 1 ? ' Applies to the primary repository only.' : ''}
                     </span>
                   </span>
@@ -444,7 +444,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
               </div>
               <p className="text-xs text-gray-500 dark:text-gray-400">
                 Scope is chosen per-intent. Park release and other runtime settings can be tuned
-                later in project settings.
+                later in space settings.
               </p>
             </div>
             <div className="flex justify-end gap-2 mt-6">
@@ -461,7 +461,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                 className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50"
                 disabled={submitting || !workflowId}
               >
-                {submitting ? 'Creating...' : 'Create Project'}
+                {submitting ? 'Creating...' : 'Create Space'}
               </button>
             </div>
           </form>

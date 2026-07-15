@@ -78,7 +78,7 @@ export default function AgentPage() {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Link
-              to={`/project/${projectId}/sprint/${sprintId}${phaseRoute}`}
+              to={`/space/${projectId}/sprint/${sprintId}${phaseRoute}`}
               className="text-muted-foreground hover:text-foreground transition-colors"
             >
               <ArrowLeft className="h-5 w-5" />
@@ -93,8 +93,8 @@ export default function AgentPage() {
         </div>
 
         <div className="rounded-lg border bg-muted/40 px-4 py-3 text-xs text-muted-foreground">
-          This v1 project is read-only — agents can no longer be started and content can no longer
-          be edited.
+          This v1 space is read-only — agents can no longer be started and content can no longer be
+          edited.
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

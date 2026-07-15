@@ -93,7 +93,7 @@ export default function Project() {
   const activeSprints = sprints.filter((s) => isActiveStatus(effectiveSprintStatus(s)));
   const pastSprints = sprints.filter((s) => !isActiveStatus(effectiveSprintStatus(s)));
 
-  if (!projectId) return <div className="p-6">Project not found</div>;
+  if (!projectId) return <div className="p-6">Space not found</div>;
 
   if (!project && projectLoading) {
     return (
@@ -109,7 +109,7 @@ export default function Project() {
     );
   }
 
-  if (!project) return <div className="p-6">Project not found</div>;
+  if (!project) return <div className="p-6">Space not found</div>;
 
   // v2 projects run intents (dynamic phases/stages), not the fixed sprint
   // lifecycle — render the dedicated intents view.
@@ -140,9 +140,9 @@ export default function Project() {
       </div>
 
       <div className="rounded-lg border bg-muted/40 px-4 py-3 text-xs text-muted-foreground">
-        This is a v1 project. The v1 sprint lifecycle has been retired — existing sprints,
-        artifacts, and agent history remain viewable, but nothing new can be created or executed
-        here. New work happens in v2 projects (intents).
+        This is a v1 space. The v1 sprint lifecycle has been retired — existing sprints, artifacts,
+        and agent history remain viewable, but nothing new can be created or executed here. New work
+        happens in v2 spaces (intents).
       </div>
 
       <div className="grid md:grid-cols-2 gap-3">
@@ -249,7 +249,7 @@ export default function Project() {
               <div className="flex flex-col items-center justify-center rounded-lg border border-dashed py-10 text-center">
                 <p className="text-sm text-muted-foreground">No iterations</p>
                 <p className="text-xs text-muted-foreground/60 mt-1">
-                  This v1 project is read-only — sprints can no longer be created.
+                  This v1 space is read-only — sprints can no longer be created.
                 </p>
               </div>
             )}
@@ -284,7 +284,7 @@ function SprintRow({
       )}
     >
       <button
-        onClick={() => onNavigate(`/project/${projectId}/sprint/${sprint.id}${phaseRoute}`)}
+        onClick={() => onNavigate(`/space/${projectId}/sprint/${sprint.id}${phaseRoute}`)}
         className="min-w-0 flex-1 text-left"
       >
         <div className="flex items-center gap-2">
@@ -439,7 +439,7 @@ function IntentsView({
           variant="outline"
           size="sm"
           className="gap-1.5 h-7"
-          onClick={() => onNavigate(`/project/${projectId}/settings`)}
+          onClick={() => onNavigate(`/space/${projectId}/settings`)}
         >
           <Settings className="h-3 w-3" />
           Settings
@@ -493,7 +493,7 @@ function IntentsView({
                 </Select>
               )}
               <Button
-                onClick={() => onNavigate(`/project/${projectId}/intent/new`)}
+                onClick={() => onNavigate(`/space/${projectId}/intent/new`)}
                 size="sm"
                 className="gap-1.5 h-7"
               >
@@ -531,13 +531,13 @@ function IntentsView({
                   aria-busy={isDeleting}
                   onClick={() => {
                     if (isDeleting) return;
-                    onNavigate(`/project/${projectId}/intent/${it.id}`);
+                    onNavigate(`/space/${projectId}/intent/${it.id}`);
                   }}
                   onKeyDown={(e) => {
                     if (isDeleting) return;
                     if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault();
-                      onNavigate(`/project/${projectId}/intent/${it.id}`);
+                      onNavigate(`/space/${projectId}/intent/${it.id}`);
                     }
                   }}
                   className={cn(

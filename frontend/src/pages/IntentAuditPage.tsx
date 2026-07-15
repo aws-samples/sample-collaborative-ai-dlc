@@ -119,14 +119,14 @@ export default function IntentAuditPage() {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3 min-w-0">
             <button
-              onClick={() => navigate(`/project/${projectId}/intent/${intentId}`)}
+              onClick={() => navigate(`/space/${projectId}/intent/${intentId}`)}
               className="text-muted-foreground hover:text-foreground transition-colors"
               aria-label="Back to workbench"
             >
               <ArrowLeft className="h-4 w-4" />
             </button>
             <h1 className="text-lg font-bold tracking-tight truncate">
-              {project?.name ?? 'Project'}
+              {project?.name ?? 'Space'}
             </h1>
             <span className="text-xs text-muted-foreground truncate max-w-[240px]">
               {detail?.intent.title ?? intentId}

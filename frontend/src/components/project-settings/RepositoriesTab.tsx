@@ -132,7 +132,7 @@ export function RepositoriesTab({ project, canEdit, reload }: Props) {
             {repos.length} linked · {providerLabel}
           </span>
         }
-        description="Repos this project's agents can work in — role and tech stack are detected automatically."
+        description="Repos this space's agents can work in — role and tech stack are detected automatically."
         headerAction={
           canEdit && (
             <Button size="sm" className="h-8 gap-1.5 text-xs" onClick={() => setShowAddRepo(true)}>
@@ -239,7 +239,7 @@ export function RepositoriesTab({ project, canEdit, reload }: Props) {
             <DialogHeader>
               <DialogTitle>Add Repositories</DialogTitle>
               <DialogDescription>
-                Select repositories to link to this project. Role and tech stack are detected
+                Select repositories to link to this space. Role and tech stack are detected
                 automatically.
               </DialogDescription>
             </DialogHeader>
@@ -286,12 +286,12 @@ export function RepositoriesTab({ project, canEdit, reload }: Props) {
           <AlertDialogHeader>
             <AlertDialogTitle>Remove Repository</AlertDialogTitle>
             <AlertDialogDescription>
-              Remove <span className="font-mono">{confirmRemoveRepo}</span> from this project?
+              Remove <span className="font-mono">{confirmRemoveRepo}</span> from this space?
               {repos.find((r) => r.url === confirmRemoveRepo)?.role === 'primary' &&
                 repos.length > 1 &&
                 ' This is the primary repository — the oldest remaining repository will be promoted to primary.'}
               {repos.length === 1 &&
-                ' This is the last repository — the project will have no linked repository and sprints cannot run until one is added.'}
+                ' This is the last repository — the space will have no linked repository and sprints cannot run until one is added.'}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

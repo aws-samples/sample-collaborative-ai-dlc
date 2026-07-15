@@ -73,10 +73,10 @@ function Probe() {
 
 const renderProvider = () =>
   render(
-    <MemoryRouter initialEntries={['/project/p1/intent/i1']}>
+    <MemoryRouter initialEntries={['/space/p1/intent/i1']}>
       <Routes>
         <Route
-          path="/project/:projectId/intent/:intentId"
+          path="/space/:projectId/intent/:intentId"
           element={
             <IntentProvider>
               <Probe />

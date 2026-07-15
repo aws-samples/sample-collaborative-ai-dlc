@@ -47,7 +47,7 @@ export function TrackersTab({ providers, providersLoading, onProvidersChanged }:
           icon={<JiraIcon />}
           title={jira.label}
           badge={<ConfigStatusBadge ok={jira.configured} notOkTone="warning" />}
-          description="Users connect their Atlassian accounts from Project Settings → Trackers."
+          description="Users connect their Atlassian accounts from Space Settings → Trackers."
         >
           <OAuthAppConfigForm
             providerId="jira-cloud"

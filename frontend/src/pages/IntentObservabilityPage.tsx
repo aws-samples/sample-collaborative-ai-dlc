@@ -265,9 +265,7 @@ export default function IntentObservabilityPage() {
             <h1 className="text-xl font-bold tracking-tight text-foreground truncate max-w-[480px]">
               {intent.title}
             </h1>
-            <span className="text-xs text-muted-foreground">
-              Project: {project?.name ?? 'Project'}
-            </span>
+            <span className="text-xs text-muted-foreground">Space: {project?.name ?? 'Space'}</span>
             <Badge variant="outline" className="text-[10px] h-5 bg-muted/40">
               {currentPhasePath ? phaseNameOf(currentPhasePath) : intent.status}
             </Badge>
@@ -285,7 +283,7 @@ export default function IntentObservabilityPage() {
             variant="outline"
             size="sm"
             className="gap-1.5 h-7"
-            onClick={() => navigate(`/project/${projectId}/intent/${intentId}`)}
+            onClick={() => navigate(`/space/${projectId}/intent/${intentId}`)}
           >
             <ExternalLink className="h-3 w-3" />
             Open in workbench
