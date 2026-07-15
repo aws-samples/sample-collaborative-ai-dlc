@@ -50,9 +50,9 @@ After deployment, configure agent authentication in the platform UI by entering 
 
 ### Configure provider OAuth apps
 
-The platform integrates with external providers as code hosts (GitHub, GitLab) and issue trackers (GitHub Issues, GitLab Issues, Jira Cloud) so a sprint can be started from a tracker issue. For each provider you want to enable, register an OAuth app and paste the credentials into **Admin → Tracker OAuth Apps** in the deployed app.
+The platform integrates with external providers as code hosts (GitHub, GitLab, Bitbucket) and issue trackers (GitHub Issues, GitLab Issues, Bitbucket Issues, Jira Cloud) so a sprint can be started from a tracker issue. For each provider you want to enable, register an OAuth app and paste the credentials into **Admin → Tracker OAuth Apps** in the deployed app.
 
-For GitHub and GitLab a single OAuth app serves both the code host and that provider's issue tracker. Jira Cloud is a tracker only. All providers are optional — skip a section if you don't need that provider; the corresponding **Connect** buttons in the UI stay disabled with a hint pointing to this admin panel.
+For GitHub, GitLab, and Bitbucket a single OAuth app serves both the code host and that provider's issue tracker. Jira Cloud is a tracker only. All providers are optional — skip a section if you don't need that provider; the corresponding **Connect** buttons in the UI stay disabled with a hint pointing to this admin panel.
 
 #### GitHub (code host + GitHub Issues)
 
@@ -73,6 +73,18 @@ For GitHub and GitLab a single OAuth app serves both the code host and that prov
    - Leave **Confidential** enabled.
 3. Save, then copy the **Application ID** (Client ID) and **Secret**.
 4. In the deployed app, sign in and open **Admin → Tracker OAuth Apps → GitLab Issues**. Paste both values and click **Save**.
+
+#### Bitbucket (code host + Bitbucket Issues)
+
+1. Open [Bitbucket → Workspace settings → OAuth consumers](https://bitbucket.org/account/settings/app-passwords/) → **Add consumer**.
+2. Set:
+   - **Callback URL**: `https://<your-cloudfront-domain>/bitbucket/callback`
+   - **Scopes**: Check `Account`, `Repositories`, and `Pull requests`
+   - Leave the consumer **Private**
+3. Save, then copy the **Key** (Client ID) and **Secret**.
+4. In the deployed app, sign in and open **Admin → Tracker OAuth Apps → Bitbucket Issues**. Paste both values and click **Save**.
+
+**Note**: Bitbucket Cloud only is supported. Self-hosted Bitbucket Server/Data Center is not supported.
 
 #### Jira Cloud
 
@@ -97,6 +109,10 @@ The Admin UI is a wrapper around AWS Secrets Manager. To populate the secrets in
 
     aws secretsmanager put-secret-value \
       --secret-id $(terraform -chdir=terraform output -raw gitlab_oauth_secret_name) \
+      --secret-string '{"client_id":"...","client_secret":"..."}'
+
+    aws secretsmanager put-secret-value \
+      --secret-id $(terraform -chdir=terraform output -raw bitbucket_oauth_secret_name) \
       --secret-string '{"client_id":"...","client_secret":"..."}'
 
     aws secretsmanager put-secret-value \

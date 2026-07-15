@@ -2,12 +2,12 @@
 
 AIDLC Collaborative integrates with external systems on two independent axes:
 
-- **Code host** — GitHub or GitLab. The repository is cloned into the agent workspace and all code changes flow back as a pull request (GitHub) or merge request (GitLab).
-- **Issue trackers** — GitHub Issues, GitLab Issues, and Jira Cloud. A sprint can be started from any tracker issue; the issue's title, body, and comments become the sprint's brief for the agent.
+- **Code host** — GitHub, GitLab, or Bitbucket. The repository is cloned into the agent workspace and all code changes flow back as a pull request (GitHub, Bitbucket) or merge request (GitLab).
+- **Issue trackers** — GitHub Issues, GitLab Issues, Bitbucket Issues, and Jira Cloud. A sprint can be started from any tracker issue; the issue's title, body, and comments become the sprint's brief for the agent.
 
 A project can bind to _one_ code host and to _zero or more_ trackers. Both are configured per project in **Project Settings**.
 
-GitHub and GitLab each span both axes: a single connection serves as the code host **and** backs that provider's issue tracker (GitHub Issues / GitLab Issues), so you authenticate once per provider. Jira Cloud is a tracker only.
+GitHub, GitLab, and Bitbucket each span both axes: a single connection serves as the code host **and** backs that provider's issue tracker (GitHub Issues / GitLab Issues / Bitbucket Issues), so you authenticate once per provider. Jira Cloud is a tracker only.
 
 ## Operator setup (one time per deployment)
 
@@ -17,20 +17,21 @@ The status of each provider is visible in **Admin → Tracker OAuth Apps**. Unti
 
 ## Connecting your account
 
-Each user connects their own GitHub / GitLab / Atlassian account once; the connection is reused across every project that needs that provider.
+Each user connects their own GitHub / GitLab / Bitbucket / Atlassian account once; the connection is reused across every project that needs that provider.
 
 - **GitHub**: from the dashboard (or the project-creation flow), click **Connect GitHub** and approve the OAuth flow. The button stays disabled if your administrator hasn't configured GitHub OAuth credentials yet.
 - **GitLab**: choose **GitLab** as the provider in the project-creation flow, then click **Connect GitLab** and approve the OAuth flow. The button stays disabled until your administrator has configured GitLab OAuth credentials. GitLab access tokens are short-lived; the platform refreshes them automatically using the stored refresh token, so you don't need to reconnect periodically.
+- **Bitbucket**: choose **Bitbucket** as the provider in the project-creation flow, then click **Connect Bitbucket** and approve the OAuth flow. The button stays disabled until your administrator has configured Bitbucket OAuth credentials. Bitbucket access tokens are short-lived (~2 hours); the platform refreshes them automatically using the stored refresh token, so you don't need to reconnect periodically.
 - **Jira Cloud**: open **Project Settings → Trackers → Connect Jira Cloud**. After the Atlassian consent screen, if your account has access to multiple Atlassian sites you'll be asked to pick one. The chosen site is remembered; you can disconnect and reconnect later to change it.
 
-A connection is scoped to its provider: connecting GitHub does not satisfy a GitLab project (and vice versa). Each project uses the connection matching its selected code host.
+A connection is scoped to its provider: connecting GitHub does not satisfy a GitLab or Bitbucket project (and vice versa). Each project uses the connection matching its selected code host.
 
 ## Selecting a code repository
 
 1. Click **Create new Project** in the project overview.
-2. Choose the code host — **GitHub** or **GitLab**.
+2. Choose the code host — **GitHub**, **GitLab**, or **Bitbucket**.
 3. The platform checks for an active connection to that provider and prompts you to connect if one is missing.
-4. Pick the repository (GitHub) or project (GitLab) that should back the collaborative project.
+4. Pick the repository (GitHub, Bitbucket) or project (GitLab) that should back the collaborative project.
 
 The repository is cloned into the agent workspace and becomes available to the LLM assistant and agents during inception, construction, and review.
 
@@ -42,9 +43,10 @@ In **Project Settings → Trackers**:
 
 - **GitHub Issues**: click **Add GitHub Issues for `<owner>/<repo>`**. The repository name comes from the project's code-host setting. Shown for GitHub-backed projects.
 - **GitLab Issues**: click **Add GitLab Issues for `<group>/<project>`**. The project path comes from the project's code-host setting. Shown for GitLab-backed projects.
+- **Bitbucket Issues**: click **Add Bitbucket Issues for `<workspace>/<repo>`**. The repository name comes from the project's code-host setting. Shown for Bitbucket-backed projects.
 - **Jira Cloud**: click **Add Jira project**, pick the Jira project to bind, and confirm. You can repeat this to bind multiple Jira projects to the same collaborative project.
 
-You can also enable the matching git-issues tracker in one step at project creation by checking **Enable GitHub/GitLab issue integration**.
+You can also enable the matching git-issues tracker in one step at project creation by checking **Enable GitHub/GitLab/Bitbucket issue integration**.
 
 When a project has more than one tracker bound, the project page renders a tab strip above the issue list — one tab per binding, labeled with the provider and external project key.
 
