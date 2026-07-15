@@ -120,14 +120,11 @@ const draftIntent = (over: Record<string, unknown> = {}) => ({
 
 const renderPage = () =>
   render(
-    <MemoryRouter initialEntries={['/project/p1/intent/i1/compose']}>
+    <MemoryRouter initialEntries={['/space/p1/intent/i1/compose']}>
       <Routes>
+        <Route path="/space/:projectId/intent/:intentId/compose" element={<IntentComposePage />} />
         <Route
-          path="/project/:projectId/intent/:intentId/compose"
-          element={<IntentComposePage />}
-        />
-        <Route
-          path="/project/:projectId/intent/:intentId"
+          path="/space/:projectId/intent/:intentId"
           element={<div data-testid="intent-view" />}
         />
       </Routes>

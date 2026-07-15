@@ -88,7 +88,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
             {projectsWithSprint.map((p) => (
               <CommandItem
                 key={p.project.id}
-                onSelect={() => runCommand(() => navigate(`/project/${p.project.id}`))}
+                onSelect={() => runCommand(() => navigate(`/space/${p.project.id}`))}
               >
                 <FolderGit2 className="mr-2 h-4 w-4" />
                 {p.project.name}

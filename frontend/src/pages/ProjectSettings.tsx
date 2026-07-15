@@ -67,7 +67,7 @@ export default function ProjectSettings() {
     try {
       const proj = await projectsService.get(projectId);
       if (proj.kind !== 'v2') {
-        navigate(`/project/${projectId}`, { replace: true });
+        navigate(`/space/${projectId}`, { replace: true });
         return;
       }
       setProject(proj);
@@ -101,7 +101,7 @@ export default function ProjectSettings() {
             variant="ghost"
             size="sm"
             className="-ml-2 gap-1.5"
-            onClick={() => navigate(`/project/${projectId}`)}
+            onClick={() => navigate(`/space/${projectId}`)}
           >
             <ArrowLeft className="h-3.5 w-3.5" />
             Back to Space

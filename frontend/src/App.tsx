@@ -1,5 +1,12 @@
 import { Suspense, lazy } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import {
+  BrowserRouter as Router,
+  Routes,
+  Route,
+  Navigate,
+  useLocation,
+  useParams,
+} from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
 import { ThemeProvider } from './components/theme/ThemeProvider';
 import { ProtectedRoute } from './components/ProtectedRoute';
@@ -41,6 +48,16 @@ const IntentAuditPage = lazy(() => import('./pages/IntentAuditPage'));
 // Minimal route-transition fallback — chunk loads are fast (same-origin,
 // HTTP-cached); a spinner flash would be noisier than a brief blank pane.
 const routeFallback = <div className="flex-1" aria-busy="true" />;
+
+// Legacy redirect for the pre-rename /project/* URLs. Rewrites the leading
+// path segment to /space while preserving the rest of the path plus any
+// query string and hash, so old bookmarks and shared links keep working.
+function LegacyProjectRedirect() {
+  const params = useParams();
+  const { search, hash } = useLocation();
+  const rest = params['*'] ?? '';
+  return <Navigate to={`/space/${rest}${search}${hash}`} replace />;
+}
 
 function App() {
   return (
@@ -105,39 +122,43 @@ function App() {
                     element={<ProtectedRoute requirePlatformAdmin>{el}</ProtectedRoute>}
                   />
                 ))}
-                <Route path="/project/:projectId" element={<Project />} />
-                <Route path="/project/:projectId/settings" element={<ProjectSettings />} />
-                <Route path="/project/:projectId/intent/new" element={<NewIntentPage />} />
+                <Route path="/space/:projectId" element={<Project />} />
+                <Route path="/space/:projectId/settings" element={<ProjectSettings />} />
+                <Route path="/space/:projectId/intent/new" element={<NewIntentPage />} />
                 <Route
-                  path="/project/:projectId/intent/:intentId/compose"
+                  path="/space/:projectId/intent/:intentId/compose"
                   element={<IntentComposePage />}
                 />
                 <Route
-                  path="/project/:projectId/intent/:intentId/graph"
+                  path="/space/:projectId/intent/:intentId/graph"
                   element={<IntentGraphPage />}
                 />
                 <Route
-                  path="/project/:projectId/intent/:intentId/observability"
+                  path="/space/:projectId/intent/:intentId/observability"
                   element={<IntentObservabilityPage />}
                 />
                 <Route
-                  path="/project/:projectId/intent/:intentId/audit"
+                  path="/space/:projectId/intent/:intentId/audit"
                   element={<IntentAuditPage />}
                 />
                 <Route
-                  path="/project/:projectId/intent/:intentId/review/:humanTaskId"
+                  path="/space/:projectId/intent/:intentId/review/:humanTaskId"
                   element={<IntentView />}
                 />
-                <Route path="/project/:projectId/intent/:intentId" element={<IntentView />} />
+                <Route path="/space/:projectId/intent/:intentId" element={<IntentView />} />
 
                 {/* Sprint routes wrapped in SprintLayout for shared context */}
-                <Route path="/project/:projectId/sprint/:sprintId" element={<SprintLayout />}>
+                <Route path="/space/:projectId/sprint/:sprintId" element={<SprintLayout />}>
                   <Route index element={<InceptionPage />} />
                   <Route path="construction" element={<ConstructionPage />} />
                   <Route path="review" element={<ReviewPage />} />
                   <Route path="agent" element={<AgentPage />} />
                   <Route path="graph" element={<SprintGraph />} />
                 </Route>
+
+                {/* Legacy redirect: old /project/* bookmarks and links map to
+                    the /space/* equivalent, preserving the sub-path + query. */}
+                <Route path="/project/*" element={<LegacyProjectRedirect />} />
 
                 <Route path="*" element={<Navigate to="/dashboard" replace />} />
               </Route>

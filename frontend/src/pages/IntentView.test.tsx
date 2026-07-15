@@ -78,12 +78,12 @@ vi.mock('@/services/workflows', () => ({
 import IntentView from './IntentView';
 import { IntentProvider, clearIntentCache } from '@/contexts/IntentContext';
 
-const renderAt = (initialEntry = '/project/p1/intent/i1') =>
+const renderAt = (initialEntry = '/space/p1/intent/i1') =>
   render(
     <MemoryRouter initialEntries={[initialEntry]}>
       <Routes>
         <Route
-          path="/project/:projectId/intent/:intentId"
+          path="/space/:projectId/intent/:intentId"
           element={
             <IntentProvider>
               <IntentView />
@@ -91,7 +91,7 @@ const renderAt = (initialEntry = '/project/p1/intent/i1') =>
           }
         />
         <Route
-          path="/project/:projectId/intent/:intentId/review/:humanTaskId"
+          path="/space/:projectId/intent/:intentId/review/:humanTaskId"
           element={
             <IntentProvider>
               <IntentView />
@@ -151,10 +151,10 @@ describe('IntentView', () => {
   it('DRAFT redirects to the collaborative compose page (one canonical draft UI)', async () => {
     get.mockResolvedValue(baseDetail());
     render(
-      <MemoryRouter initialEntries={['/project/p1/intent/i1']}>
+      <MemoryRouter initialEntries={['/space/p1/intent/i1']}>
         <Routes>
           <Route
-            path="/project/:projectId/intent/:intentId"
+            path="/space/:projectId/intent/:intentId"
             element={
               <IntentProvider>
                 <IntentView />
@@ -162,7 +162,7 @@ describe('IntentView', () => {
             }
           />
           <Route
-            path="/project/:projectId/intent/:intentId/compose"
+            path="/space/:projectId/intent/:intentId/compose"
             element={<div data-testid="compose-page" />}
           />
         </Routes>
@@ -379,7 +379,7 @@ describe('IntentView', () => {
     });
     graph.mockResolvedValue({ nodes: [], edges: [] });
     answerGate.mockResolvedValue({});
-    renderAt('/project/p1/intent/i1/review/eg-validation-si-a-0-run1');
+    renderAt('/space/p1/intent/i1/review/eg-validation-si-a-0-run1');
     expect(await screen.findByText('Review: stage-a')).toBeInTheDocument();
     await userEvent.click(screen.getByTestId('review-reshape-toggle'));
     await userEvent.click(screen.getByTestId('review-reshape-nfr-design').querySelector('input')!);
@@ -464,7 +464,7 @@ describe('IntentView', () => {
       ],
     });
     answerGate.mockResolvedValue({});
-    renderAt('/project/p1/intent/i1/review/eg-validation-si-a-0-run1');
+    renderAt('/space/p1/intent/i1/review/eg-validation-si-a-0-run1');
 
     const feedback = await screen.findByLabelText('Feedback for the agent');
     await userEvent.type(feedback, 'Please tighten the acceptance criteria');

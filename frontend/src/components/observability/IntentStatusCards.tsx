@@ -98,7 +98,7 @@ export function IntentStatusCards({ items }: IntentStatusCardsProps) {
             <div
               key={project.id}
               onClick={() =>
-                navigate(`/project/${project.id}/intent/${latestIntent.id}/observability`)
+                navigate(`/space/${project.id}/intent/${latestIntent.id}/observability`)
               }
               className={cn(
                 'flex flex-col overflow-hidden rounded-xl border shadow-sm transition-shadow cursor-pointer hover:shadow-md',

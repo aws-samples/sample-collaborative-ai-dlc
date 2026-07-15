@@ -120,7 +120,7 @@ export function TrackersTab({ project, canEdit, reload }: Props) {
     try {
       // Store the return path so the OAuth callback redirects back here instead
       // of the create-project flow.
-      sessionStorage.setItem('oauth_return_to', `/project/${project.id}/settings?tab=trackers`);
+      sessionStorage.setItem('oauth_return_to', `/space/${project.id}/settings?tab=trackers`);
       // Git-based trackers (github-issues / gitlab-issues) share the git
       // provider's OAuth connection — reconnect via the git auth flow.
       if (binding.provider === 'github-issues' || binding.provider === 'gitlab-issues') {

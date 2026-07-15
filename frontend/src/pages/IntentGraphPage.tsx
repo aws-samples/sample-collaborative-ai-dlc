@@ -60,7 +60,7 @@ export default function IntentGraphPage() {
               variant="ghost"
               size="sm"
               className="gap-1.5 h-7 shrink-0 text-muted-foreground hover:text-foreground"
-              onClick={() => navigate(`/project/${projectId}/intent/${intentId}`)}
+              onClick={() => navigate(`/space/${projectId}/intent/${intentId}`)}
             >
               <ArrowLeft className="h-3.5 w-3.5" />
               Workbench

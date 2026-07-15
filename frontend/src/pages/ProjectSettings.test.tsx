@@ -43,12 +43,12 @@ const V2_PROJECT = {
   repos: [],
 };
 
-const renderAt = (initialEntry = '/project/p1/settings') =>
+const renderAt = (initialEntry = '/space/p1/settings') =>
   render(
     <MemoryRouter initialEntries={[initialEntry]}>
       <Routes>
-        <Route path="/project/:projectId/settings" element={<ProjectSettings />} />
-        <Route path="/project/:projectId" element={<div data-testid="project-page" />} />
+        <Route path="/space/:projectId/settings" element={<ProjectSettings />} />
+        <Route path="/space/:projectId" element={<div data-testid="project-page" />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -75,13 +75,13 @@ describe('ProjectSettings', () => {
   });
 
   it('opens the tab from the ?tab= query param', async () => {
-    renderAt('/project/p1/settings?tab=trackers');
+    renderAt('/space/p1/settings?tab=trackers');
     expect(await screen.findByTestId('trackers-tab')).toBeInTheDocument();
     expect(screen.queryByTestId('general-tab')).not.toBeInTheDocument();
   });
 
   it('falls back to General for an unknown ?tab= value', async () => {
-    renderAt('/project/p1/settings?tab=nonsense');
+    renderAt('/space/p1/settings?tab=nonsense');
     expect(await screen.findByTestId('general-tab')).toBeInTheDocument();
   });
 

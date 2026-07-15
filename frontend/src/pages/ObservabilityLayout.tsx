@@ -41,7 +41,7 @@ export default function ObservabilityLayout() {
   const obs = useObservability();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const urlProjectId = searchParams.get('project');
+  const urlProjectId = searchParams.get('space');
   const urlSprintId = searchParams.get('sprint');
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(urlProjectId);
   const [selectedSprintId, setSelectedSprintId] = useState<string | null>(urlSprintId);
@@ -55,7 +55,7 @@ export default function ObservabilityLayout() {
     (projectId: string, sprintId: string) => {
       setSelectedProjectId(projectId);
       setSelectedSprintId(sprintId);
-      navigate(`/observability?project=${projectId}&sprint=${sprintId}`, { replace: true });
+      navigate(`/observability?space=${projectId}&sprint=${sprintId}`, { replace: true });
     },
     [navigate],
   );
@@ -100,7 +100,7 @@ export default function ObservabilityLayout() {
 
   const resolvedInfo = selectedInfo ?? deepLinkInfo;
 
-  // Unknown ?project= id: drop params once projects have loaded.
+  // Unknown ?space= id: drop params once projects have loaded.
   useEffect(() => {
     if (selectedProjectId && !knownProject && !obs.projectsLoading && obs.projects.length > 0) {
       navigate('/observability', { replace: true });

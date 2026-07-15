@@ -342,7 +342,7 @@ export function TrackerIssueListPanel({ project, binding, sprints }: Props) {
                       size="sm"
                       variant="outline"
                       className="gap-1.5 shrink-0"
-                      onClick={() => navigate(`/project/${project.id}/sprint/${existingSprint.id}`)}
+                      onClick={() => navigate(`/space/${project.id}/sprint/${existingSprint.id}`)}
                     >
                       Open sprint
                     </Button>

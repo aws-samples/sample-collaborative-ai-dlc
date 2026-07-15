@@ -283,7 +283,7 @@ export default function IntentObservabilityPage() {
             variant="outline"
             size="sm"
             className="gap-1.5 h-7"
-            onClick={() => navigate(`/project/${projectId}/intent/${intentId}`)}
+            onClick={() => navigate(`/space/${projectId}/intent/${intentId}`)}
           >
             <ExternalLink className="h-3 w-3" />
             Open in workbench

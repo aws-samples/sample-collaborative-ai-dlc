@@ -235,14 +235,14 @@ function buildBreadcrumbs(
 
   // Add project name if available
   if (params.projectId && project) {
-    crumbs.push({ label: project.name, href: `/project/${params.projectId}` });
+    crumbs.push({ label: project.name, href: `/space/${params.projectId}` });
   }
 
   // Add sprint name and phase if available
   if (params.sprintId && params.projectId && sprint) {
     crumbs.push({
       label: sprint.name,
-      href: `/project/${params.projectId}/sprint/${params.sprintId}`,
+      href: `/space/${params.projectId}/sprint/${params.sprintId}`,
     });
 
     // Add phase as final crumb

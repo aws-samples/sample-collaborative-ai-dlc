@@ -131,7 +131,7 @@ export default function Dashboard() {
   );
 
   useEffect(() => {
-    if (searchParams.get('reopenCreateProject') === '1') {
+    if (searchParams.get('reopenCreateSpace') === '1') {
       const provider = searchParams.get('gitProvider');
       if (provider === 'gitlab' || provider === 'github') {
         setCreateInitialProvider(provider);
@@ -325,7 +325,7 @@ export default function Dashboard() {
                       : 'cursor-pointer hover:shadow-md hover:border-foreground/20',
                   )}
                   onClick={() => {
-                    if (!isDeleting) navigate(`/project/${project.id}`);
+                    if (!isDeleting) navigate(`/space/${project.id}`);
                   }}
                 >
                   <CardContent className="p-5">
@@ -426,7 +426,7 @@ export default function Dashboard() {
                       : 'cursor-pointer hover:bg-accent/50',
                   )}
                   onClick={() => {
-                    if (!isDeleting) navigate(`/project/${project.id}`);
+                    if (!isDeleting) navigate(`/space/${project.id}`);
                   }}
                 >
                   <CardContent className="flex items-center gap-4 p-3 px-4">

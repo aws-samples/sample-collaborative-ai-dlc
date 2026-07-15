@@ -47,11 +47,11 @@ const baseProject = (over: Record<string, unknown> = {}) => ({
 
 const renderPage = () =>
   render(
-    <MemoryRouter initialEntries={['/project/p1/intent/new']}>
+    <MemoryRouter initialEntries={['/space/p1/intent/new']}>
       <Routes>
-        <Route path="/project/:projectId/intent/new" element={<NewIntentPage />} />
+        <Route path="/space/:projectId/intent/new" element={<NewIntentPage />} />
         <Route
-          path="/project/:projectId/intent/:intentId/compose"
+          path="/space/:projectId/intent/:intentId/compose"
           element={<div data-testid="compose-page" />}
         />
       </Routes>

@@ -78,7 +78,7 @@ export default function AgentPage() {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Link
-              to={`/project/${projectId}/sprint/${sprintId}${phaseRoute}`}
+              to={`/space/${projectId}/sprint/${sprintId}${phaseRoute}`}
               className="text-muted-foreground hover:text-foreground transition-colors"
             >
               <ArrowLeft className="h-5 w-5" />

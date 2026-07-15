@@ -52,7 +52,7 @@ export default function SprintGraph() {
             variant="outline"
             size="sm"
             className="mt-2 gap-1.5"
-            onClick={() => navigate(`/project/${projectId}/sprint/${sprintId}`)}
+            onClick={() => navigate(`/space/${projectId}/sprint/${sprintId}`)}
           >
             <ArrowLeft className="h-3 w-3" />
             Go to Inception

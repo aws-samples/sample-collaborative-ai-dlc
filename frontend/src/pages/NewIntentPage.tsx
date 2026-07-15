@@ -134,7 +134,7 @@ export default function NewIntentPage() {
             }
           : undefined,
       });
-      navigate(`/project/${projectId}/intent/${intent.id}/compose`);
+      navigate(`/space/${projectId}/intent/${intent.id}/compose`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create intent');
     } finally {
@@ -167,7 +167,7 @@ export default function NewIntentPage() {
             variant="ghost"
             size="sm"
             className="gap-1.5"
-            onClick={() => navigate(`/project/${projectId}`)}
+            onClick={() => navigate(`/space/${projectId}`)}
           >
             <ArrowLeft className="h-3.5 w-3.5" />
             Back
@@ -340,7 +340,7 @@ export default function NewIntentPage() {
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => navigate(`/project/${projectId}`)}
+                onClick={() => navigate(`/space/${projectId}`)}
                 disabled={creating}
               >
                 Cancel

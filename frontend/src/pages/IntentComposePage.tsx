@@ -70,7 +70,7 @@ export default function IntentComposePage() {
       .then((detail) => {
         if (cancelled) return;
         if (detail.intent.status !== 'DRAFT') {
-          navigate(`/project/${projectId}/intent/${intentId}`, { replace: true });
+          navigate(`/space/${projectId}/intent/${intentId}`, { replace: true });
           return;
         }
         setIntent(detail.intent);
@@ -275,7 +275,7 @@ export default function IntentComposePage() {
       // by the same ids. Refresh it before navigation so IntentView never sees
       // the cached DRAFT and redirects back to compose.
       await reload();
-      navigate(`/project/${projectId}/intent/${intentId}`);
+      navigate(`/space/${projectId}/intent/${intentId}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to start intent');
     } finally {
@@ -310,7 +310,7 @@ export default function IntentComposePage() {
             variant="ghost"
             size="sm"
             className="gap-1.5"
-            onClick={() => navigate(`/project/${projectId}`)}
+            onClick={() => navigate(`/space/${projectId}`)}
           >
             <ArrowLeft className="h-3.5 w-3.5" />
             Back
@@ -517,7 +517,7 @@ export default function IntentComposePage() {
             <Button
               type="button"
               variant="outline"
-              onClick={() => navigate(`/project/${projectId}`)}
+              onClick={() => navigate(`/space/${projectId}`)}
               disabled={starting}
             >
               Close

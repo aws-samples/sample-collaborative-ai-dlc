@@ -284,7 +284,7 @@ function SprintRow({
       )}
     >
       <button
-        onClick={() => onNavigate(`/project/${projectId}/sprint/${sprint.id}${phaseRoute}`)}
+        onClick={() => onNavigate(`/space/${projectId}/sprint/${sprint.id}${phaseRoute}`)}
         className="min-w-0 flex-1 text-left"
       >
         <div className="flex items-center gap-2">
@@ -439,7 +439,7 @@ function IntentsView({
           variant="outline"
           size="sm"
           className="gap-1.5 h-7"
-          onClick={() => onNavigate(`/project/${projectId}/settings`)}
+          onClick={() => onNavigate(`/space/${projectId}/settings`)}
         >
           <Settings className="h-3 w-3" />
           Settings
@@ -493,7 +493,7 @@ function IntentsView({
                 </Select>
               )}
               <Button
-                onClick={() => onNavigate(`/project/${projectId}/intent/new`)}
+                onClick={() => onNavigate(`/space/${projectId}/intent/new`)}
                 size="sm"
                 className="gap-1.5 h-7"
               >
@@ -531,13 +531,13 @@ function IntentsView({
                   aria-busy={isDeleting}
                   onClick={() => {
                     if (isDeleting) return;
-                    onNavigate(`/project/${projectId}/intent/${it.id}`);
+                    onNavigate(`/space/${projectId}/intent/${it.id}`);
                   }}
                   onKeyDown={(e) => {
                     if (isDeleting) return;
                     if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault();
-                      onNavigate(`/project/${projectId}/intent/${it.id}`);
+                      onNavigate(`/space/${projectId}/intent/${it.id}`);
                     }
                   }}
                   className={cn(

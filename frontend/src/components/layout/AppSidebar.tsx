@@ -166,8 +166,7 @@ export function AppSidebar() {
             title: latestIntent.title ?? 'Intent',
             subtitle: project.name,
             status,
-            onClick: () =>
-              navigate(`/project/${project.id}/intent/${latestIntent.id}/observability`),
+            onClick: () => navigate(`/space/${project.id}/intent/${latestIntent.id}/observability`),
           },
         ];
       }
@@ -180,7 +179,7 @@ export function AppSidebar() {
           title: latestSprint.name,
           subtitle: project.name,
           status,
-          onClick: () => navigate(`/observability?project=${project.id}&sprint=${latestSprint.id}`),
+          onClick: () => navigate(`/observability?space=${project.id}&sprint=${latestSprint.id}`),
         },
       ];
     },
@@ -254,7 +253,7 @@ export function AppSidebar() {
             return (
               <button
                 key={project.id}
-                onClick={() => navigate(`/project/${project.id}`)}
+                onClick={() => navigate(`/space/${project.id}`)}
                 title={dotColor ? `${project.name} — ${STATUS_LABEL[status]}` : project.name}
                 className={cn(
                   'flex items-center gap-2.5 px-3 py-1.5 text-[13px] font-medium transition-colors rounded-md text-left w-full min-w-0',

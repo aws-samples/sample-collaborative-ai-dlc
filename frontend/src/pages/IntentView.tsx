@@ -199,7 +199,7 @@ export default function IntentView() {
     setActionError(null);
     try {
       await deleteIntent();
-      navigate(`/project/${projectId}`);
+      navigate(`/space/${projectId}`);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to delete intent');
       setConfirmDelete(false);
@@ -224,7 +224,7 @@ export default function IntentView() {
   // A DRAFT belongs on the collaborative compose page — one canonical draft
   // experience (shared prompt + projection selection) instead of two UIs.
   if (isDraft) {
-    return <Navigate to={`/project/${projectId}/intent/${intentId}/compose`} replace />;
+    return <Navigate to={`/space/${projectId}/intent/${intentId}/compose`} replace />;
   }
   const isActive = intent.status === 'RUNNING' || intent.status === 'WAITING';
   const isFailed = intent.status === 'FAILED';
@@ -397,7 +397,7 @@ export default function IntentView() {
           intentId={intentId}
           userName={userName}
           onAnswer={answerGate}
-          onBack={() => navigate(`/project/${projectId}/intent/${intentId}`)}
+          onBack={() => navigate(`/space/${projectId}/intent/${intentId}`)}
         />
       ) : reviewGateId ? (
         <Card>
@@ -409,7 +409,7 @@ export default function IntentView() {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => navigate(`/project/${projectId}/intent/${intentId}`)}
+              onClick={() => navigate(`/space/${projectId}/intent/${intentId}`)}
             >
               Back to intent
             </Button>
@@ -1673,7 +1673,7 @@ function GateCard({
             <Button
               size="sm"
               onClick={() =>
-                navigate(`/project/${projectId}/intent/${intentId}/review/${gate.humanTaskId}`)
+                navigate(`/space/${projectId}/intent/${intentId}/review/${gate.humanTaskId}`)
               }
             >
               Review stage

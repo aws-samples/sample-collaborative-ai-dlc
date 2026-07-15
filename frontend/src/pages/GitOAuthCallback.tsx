@@ -38,7 +38,7 @@ export function GitOAuthCallback({ trackerProviderId }: Props) {
       .then((data) => {
         if (data.success) {
           setStatus('success');
-          // If a return path was stored (e.g. reconnecting from project settings),
+          // If a return path was stored (e.g. reconnecting from space settings),
           // navigate back there instead of the create-project flow.
           const returnTo = sessionStorage.getItem('oauth_return_to');
           sessionStorage.removeItem('oauth_return_to');
@@ -49,7 +49,7 @@ export function GitOAuthCallback({ trackerProviderId }: Props) {
             // re-selects what the user just connected (gitlab-issues → gitlab).
             const gitProvider = trackerProviderId === 'gitlab-issues' ? 'gitlab' : 'github';
             setTimeout(
-              () => navigate(`/dashboard?reopenCreateProject=1&gitProvider=${gitProvider}`),
+              () => navigate(`/dashboard?reopenCreateSpace=1&gitProvider=${gitProvider}`),
               1500,
             );
           }

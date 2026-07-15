@@ -61,7 +61,7 @@ export function IntentPipelineBar() {
         size="sm"
         className="shrink-0 gap-1.5 h-7 text-xs text-muted-foreground hover:text-foreground"
         aria-label="Back to space"
-        onClick={() => navigate(`/project/${projectId}`)}
+        onClick={() => navigate(`/space/${projectId}`)}
       >
         <ArrowLeft className="h-3 w-3" />
         <span className="hidden sm:inline">Back</span>
@@ -131,7 +131,7 @@ export function IntentPipelineBar() {
               size="sm"
               className="h-7 gap-1.5 px-2 text-xs"
               aria-label="Knowledge graph"
-              onClick={() => navigate(`/project/${projectId}/intent/${intentId}/graph`)}
+              onClick={() => navigate(`/space/${projectId}/intent/${intentId}/graph`)}
             >
               <Network className="h-3.5 w-3.5" />
               Graph
@@ -147,7 +147,7 @@ export function IntentPipelineBar() {
               size="sm"
               className="h-7 gap-1.5 px-2 text-xs"
               aria-label="Observability"
-              onClick={() => navigate(`/project/${projectId}/intent/${intentId}/observability`)}
+              onClick={() => navigate(`/space/${projectId}/intent/${intentId}/observability`)}
             >
               <Activity className="h-3.5 w-3.5" />
               Observability
@@ -163,7 +163,7 @@ export function IntentPipelineBar() {
               size="sm"
               className="h-7 gap-1.5 px-2 text-xs"
               aria-label="Audit"
-              onClick={() => navigate(`/project/${projectId}/intent/${intentId}/audit`)}
+              onClick={() => navigate(`/space/${projectId}/intent/${intentId}/audit`)}
             >
               <ScrollText className="h-3.5 w-3.5" />
               Audit
