@@ -7,17 +7,18 @@ import { api } from './api';
 // The set of supported git providers. Kept as a string-literal union (not a TS
 // enum) because the values are wire strings sent to/from the API and stored in
 // the DB — a union assigns directly from those strings with zero runtime cost.
-export type GitProvider = 'github' | 'gitlab';
+export type GitProvider = 'github' | 'gitlab' | 'bitbucket';
 
 // A git provider and its issue-tracker share one OAuth app/connection, so each
 // git provider maps to exactly one tracker-provider id. Centralized here so the
 // association lives in one place instead of being re-derived with inline
 // ternaries at every call site.
-export type GitTrackerProviderId = 'github-issues' | 'gitlab-issues';
+export type GitTrackerProviderId = 'github-issues' | 'gitlab-issues' | 'bitbucket-issues';
 
 const GIT_PROVIDER_TRACKER_ID: Record<GitProvider, GitTrackerProviderId> = {
   github: 'github-issues',
   gitlab: 'gitlab-issues',
+  bitbucket: 'bitbucket-issues',
 };
 
 export const trackerIdForGitProvider = (provider: GitProvider): GitTrackerProviderId =>
@@ -177,11 +178,63 @@ export const gitlabService: GitProviderService = {
 };
 
 // =============================================================================
+// Bitbucket service implementation — splits the "workspace/repo_slug" repoId
+// into two path segments the Bitbucket routes expect, similar to GitHub.
+// =============================================================================
+
+const splitWorkspaceRepo = (repoId: string): [string, string] => {
+  const [workspace, repo_slug] = repoId.split('/');
+  return [workspace, repo_slug];
+};
+
+export const bitbucketService: GitProviderService = {
+  getAuthUrl: () => api.get<{ url: string }>('/bitbucket/auth'),
+  getStatus: () => api.get<GitProviderStatus>('/bitbucket/status'),
+  listRepos: () => api.get<GitRepo[]>('/bitbucket/repos'),
+  disconnect: () => api.delete('/bitbucket/disconnect'),
+  listBranches: (repoId: string) => {
+    const [workspace, repo_slug] = splitWorkspaceRepo(repoId);
+    return api.get<{ branches: string[] }>(`/bitbucket/repos/${workspace}/${repo_slug}/branches`);
+  },
+  getRepoTree: (repoId: string, branch?: string) => {
+    const [workspace, repo_slug] = splitWorkspaceRepo(repoId);
+    return api.get<{ tree: GitFile[] }>(
+      `/bitbucket/repos/${workspace}/${repo_slug}/tree${branch ? `?branch=${branch}` : ''}`,
+    );
+  },
+  getFileContents: (repoId: string, path: string, branch?: string) => {
+    const [workspace, repo_slug] = splitWorkspaceRepo(repoId);
+    return api.get<GitFileContent>(
+      `/bitbucket/repos/${workspace}/${repo_slug}/contents?path=${encodeURIComponent(path)}${branch ? `&branch=${branch}` : ''}`,
+    );
+  },
+  getPullRequestComments: (repoId: string, prNumber: number) => {
+    const [workspace, repo_slug] = splitWorkspaceRepo(repoId);
+    return api.get<{ comments: GitComment[] }>(
+      `/bitbucket/repos/${workspace}/${repo_slug}/pullrequests/${prNumber}/comments`,
+    );
+  },
+  addPullRequestComment: (
+    repoId: string,
+    prNumber: number,
+    comment: { body: string; path?: string; line?: number; side?: string },
+  ) => {
+    const [workspace, repo_slug] = splitWorkspaceRepo(repoId);
+    return api.post<{ id: number; body: string; createdAt: string }>(
+      `/bitbucket/repos/${workspace}/${repo_slug}/pullrequests/${prNumber}/comments`,
+      comment,
+    );
+  },
+};
+
+// =============================================================================
 // Provider lookup — given a `gitProvider` field, return the matching service.
 // =============================================================================
 
 export const getGitProviderService = (provider: GitProvider): GitProviderService => {
-  return provider === 'gitlab' ? gitlabService : githubService;
+  if (provider === 'gitlab') return gitlabService;
+  if (provider === 'bitbucket') return bitbucketService;
+  return githubService;
 };
 
 // =============================================================================
@@ -201,6 +254,7 @@ export interface GitProviderTerminology {
 const GIT_PROVIDER_TERMINOLOGY: Record<GitProvider, GitProviderTerminology> = {
   github: { label: 'GitHub', changeRequest: 'Pull Request', changeRequestShort: 'PR' },
   gitlab: { label: 'GitLab', changeRequest: 'Merge Request', changeRequestShort: 'MR' },
+  bitbucket: { label: 'Bitbucket', changeRequest: 'Pull Request', changeRequestShort: 'PR' },
 };
 
 export const gitProviderTerminology = (provider: GitProvider): GitProviderTerminology =>
