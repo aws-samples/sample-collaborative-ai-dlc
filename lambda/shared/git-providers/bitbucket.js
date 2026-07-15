@@ -170,19 +170,66 @@ const mapRepo = (r) => ({
   defaultBranch: r.mainbranch?.name || 'main',
 });
 
-// Bitbucket uses paginated responses with a 'next' field for continuation
+// Bitbucket uses paginated responses with a 'next' field for continuation.
+//
+// NOTE (CHANGE-2770): The cross-workspace `GET /2.0/repositories?role=member`
+// endpoint was deprecated and removed by Atlassian (removal 2026-02-27). There
+// is no drop-in cross-workspace replacement, so repositories are enumerated via
+// the supported two-step, workspace-scoped flow:
+//   1. GET /2.0/user/permissions/workspaces  -> the caller's workspaces
+//   2. GET /2.0/repositories/{workspace}?role=member  -> repos per workspace
+// Results are aggregated across all workspaces.
+//
+// A repository-scoped access token CANNOT enumerate workspaces (step 1 returns
+// 401/403). In that case we surface a clear, actionable error: listRepos needs
+// a workspace- or account-scoped token (or OAuth); per-repo operations still
+// work with a repository-scoped token.
 const listRepos = async (ctx) => {
-  let allRepos = [];
-  let url = `${API_BASE}/repositories?role=member&pagelen=100`;
-
-  while (url) {
-    const res = await bbFetch(ctx, url);
-    const data = await res.json();
-    if (data.error || !Array.isArray(data.values)) {
-      throw new ProviderError(400, data.error?.message || 'Failed to fetch repositories');
+  // Step 1: enumerate the caller's workspaces.
+  const workspaces = [];
+  let wsUrl = `${API_BASE}/user/permissions/workspaces?pagelen=100`;
+  while (wsUrl) {
+    const res = await bbFetch(ctx, wsUrl);
+    // A repository- or workspace-scoped token cannot query cross-workspace
+    // endpoints: 401/403 (not authorized) or 410 Gone (CHANGE-2770 blocks the
+    // cross-workspace call for this authentication mechanism).
+    if (res.status === 401 || res.status === 403 || res.status === 410) {
+      throw new ProviderError(
+        res.status === 410 ? 400 : res.status,
+        'Cannot list Bitbucket repositories: this access token cannot enumerate ' +
+          'workspaces. listRepos requires a workspace- or account-scoped token ' +
+          '(or OAuth). Repository-scoped tokens can still use per-repo operations ' +
+          '(branches, tree, file contents, pull requests).',
+      );
     }
-    allRepos = allRepos.concat(data.values.map(mapRepo));
-    url = data.next; // Bitbucket pagination uses 'next' field
+    const data = await res.json().catch(() => ({}));
+    if (data.error || !Array.isArray(data.values)) {
+      throw new ProviderError(400, data.error?.message || 'Failed to list workspaces');
+    }
+    for (const item of data.values) {
+      const slug = item.workspace?.slug;
+      if (slug) workspaces.push(slug);
+    }
+    wsUrl = data.next; // Bitbucket pagination uses 'next' field
+  }
+
+  // Step 2: list repositories for each workspace and aggregate.
+  const allRepos = [];
+  for (const workspace of workspaces) {
+    let repoUrl = `${API_BASE}/repositories/${encodeURIComponent(
+      workspace,
+    )}?role=member&pagelen=100`;
+    while (repoUrl) {
+      const res = await bbFetch(ctx, repoUrl);
+      const data = await res.json().catch(() => ({}));
+      if (data.error || !Array.isArray(data.values)) {
+        throw new ProviderError(400, data.error?.message || 'Failed to fetch repositories');
+      }
+      for (const r of data.values) {
+        allRepos.push(mapRepo(r));
+      }
+      repoUrl = data.next; // Bitbucket pagination uses 'next' field
+    }
   }
 
   return allRepos;
@@ -214,14 +261,30 @@ const getTree = async (ctx, repoId, branch = 'main') => {
   const files = [];
 
   const fetchDirectory = async (path = '') => {
+    // To LIST a directory's contents, request the /src endpoint WITHOUT
+    // `format=meta`. With `format=meta` Bitbucket returns metadata about the
+    // directory itself (a single commit_directory object, no `values`), which
+    // is not what we want here. Without it, Bitbucket returns a paginated
+    // listing { values: [...], next } of the directory entries.
     const url = path
-      ? `${API_BASE}/repositories/${workspace}/${repo_slug}/src/${encodeURIComponent(branch)}/${encodeURIComponent(path)}/?format=meta&pagelen=100`
-      : `${API_BASE}/repositories/${workspace}/${repo_slug}/src/${encodeURIComponent(branch)}/?format=meta&pagelen=100`;
+      ? `${API_BASE}/repositories/${workspace}/${repo_slug}/src/${encodeURIComponent(branch)}/${encodeURIComponent(path)}/?pagelen=100`
+      : `${API_BASE}/repositories/${workspace}/${repo_slug}/src/${encodeURIComponent(branch)}/?pagelen=100`;
 
     let pageUrl = url;
     while (pageUrl) {
       const res = await bbFetch(ctx, pageUrl);
-      const data = await res.json();
+      // A 404 here typically means the ref/branch does not exist (e.g. the
+      // repo's default branch is not "main") or the repo is inaccessible with
+      // the current token. The body may be empty, so guard JSON parsing to
+      // avoid an opaque "Unexpected end of JSON input" error.
+      if (res.status === 404) {
+        throw new ProviderError(
+          404,
+          `Path or ref not found while listing tree (branch "${branch}"). ` +
+            'Verify the branch exists and the token can access this repository.',
+        );
+      }
+      const data = await res.json().catch(() => ({}));
       if (data.error) {
         throw new ProviderError(400, data.error.message || data.error);
       }
