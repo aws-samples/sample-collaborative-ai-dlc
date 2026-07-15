@@ -3,8 +3,18 @@ import { projectsService, type Project } from '@/services/projects';
 import { sprintsService, type Sprint } from '@/services/sprints';
 import { intentsService, type Intent } from '@/services/intents';
 
-const PROJECTS_TTL = 120_000;
+const PROJECTS_TTL = 30_000;
 const SPRINTS_TTL = 60_000;
+
+// Dashboard signals, aggregated across ALL of a project's intents (exact counts
+// from the intent list we already fetch). `attention` is a subset of
+// `inProgress` — they answer different questions:
+//   inProgress = RUNNING + WAITING + CREATED + FAILED — work that isn't done.
+//   attention  = WAITING + FAILED — a human is blocked, or a run broke.
+export interface ProjectActivity {
+  inProgress: number;
+  attention: number;
+}
 
 export interface ProjectWithSprint {
   project: Project;
@@ -13,6 +23,8 @@ export interface ProjectWithSprint {
   // Max updatedAt/completedAt/createdAt across ALL of the project's intents
   // (latestIntent alone can be a stale WAITING intent — see pickIntent).
   lastIntentActivityAt: string | null;
+  // Cross-intent activity counts (v2 only; zeroed on sprint/v1 projects).
+  activity: ProjectActivity;
 }
 
 interface CacheEntry<T> {
@@ -99,6 +111,25 @@ function maxIntentActivity(intents: Intent[]): string | null {
   return max;
 }
 
+export function deriveActivity(intents: Intent[]): ProjectActivity {
+  let inProgress = 0;
+  let attention = 0;
+  for (const i of intents) {
+    if (
+      i.status === 'RUNNING' ||
+      i.status === 'WAITING' ||
+      i.status === 'CREATED' ||
+      i.status === 'FAILED'
+    ) {
+      inProgress++;
+    }
+    if (i.status === 'WAITING' || i.status === 'FAILED') attention++;
+  }
+  return { inProgress, attention };
+}
+
+const NO_ACTIVITY: ProjectActivity = { inProgress: 0, attention: 0 };
+
 async function fetchProjects(): Promise<ProjectWithSprint[]> {
   const projs = await projectsService.list();
   const results = await Promise.allSettled(
@@ -111,9 +142,16 @@ async function fetchProjects(): Promise<ProjectWithSprint[]> {
             latestSprint: null,
             latestIntent: pickIntent(intents),
             lastIntentActivityAt: maxIntentActivity(intents),
+            activity: deriveActivity(intents),
           };
         } catch {
-          return { project, latestSprint: null, latestIntent: null, lastIntentActivityAt: null };
+          return {
+            project,
+            latestSprint: null,
+            latestIntent: null,
+            lastIntentActivityAt: null,
+            activity: NO_ACTIVITY,
+          };
         }
       }
       const cached = sprintsCache.get(project.id);
@@ -123,6 +161,7 @@ async function fetchProjects(): Promise<ProjectWithSprint[]> {
           latestSprint: latestOf(cached.data),
           latestIntent: null,
           lastIntentActivityAt: null,
+          activity: NO_ACTIVITY,
         };
       }
       try {
@@ -134,6 +173,7 @@ async function fetchProjects(): Promise<ProjectWithSprint[]> {
           latestSprint: latestOf(sprints),
           latestIntent: null,
           lastIntentActivityAt: null,
+          activity: NO_ACTIVITY,
         };
       } catch {
         return {
@@ -141,6 +181,7 @@ async function fetchProjects(): Promise<ProjectWithSprint[]> {
           latestSprint: cached ? latestOf(cached.data) : null,
           latestIntent: null,
           lastIntentActivityAt: null,
+          activity: NO_ACTIVITY,
         };
       }
     }),
@@ -246,14 +287,30 @@ function revalidateSprints(projectId: string, force = false): Promise<void> {
   return promise;
 }
 
-// One shared poll timer for all mounted useProjectsCache instances.
+// One shared poll timer for all mounted useProjectsCache instances, plus
+// focus/visibility listeners so the dashboard/sidebar catch up quickly when the
+// user returns to the tab (there is no project-level WS channel — intent status
+// changes are only broadcast per-intent, so this cache is poll/focus-driven).
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let pollRefCount = 0;
+
+// TTL-guarded revalidation: on focus/visibility we ask for fresh data, but
+// isStale() short-circuits when the cache is still within PROJECTS_TTL, so
+// rapid tab switches don't hammer the API.
+const revalidateOnResume = () => {
+  if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+  revalidateProjects();
+};
 
 function retainPolling() {
   pollRefCount++;
   if (!pollTimer) {
     pollTimer = setInterval(() => revalidateProjects(), PROJECTS_TTL);
+    if (typeof window !== 'undefined') {
+      window.addEventListener('focus', revalidateOnResume);
+      window.addEventListener('online', revalidateOnResume);
+      document.addEventListener('visibilitychange', revalidateOnResume);
+    }
   }
 }
 
@@ -262,6 +319,11 @@ function releasePolling() {
   if (pollRefCount === 0 && pollTimer) {
     clearInterval(pollTimer);
     pollTimer = null;
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('focus', revalidateOnResume);
+      window.removeEventListener('online', revalidateOnResume);
+      document.removeEventListener('visibilitychange', revalidateOnResume);
+    }
   }
 }
 
