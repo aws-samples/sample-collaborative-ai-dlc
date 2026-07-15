@@ -169,6 +169,8 @@ module "lambda" {
   github_oauth_secret_arn             = module.git.github_oauth_secret_arn
   gitlab_oauth_secret_name            = module.git.gitlab_oauth_secret_name
   gitlab_oauth_secret_arn             = module.git.gitlab_oauth_secret_arn
+  bitbucket_oauth_secret_name         = module.git.bitbucket_oauth_secret_name
+  bitbucket_oauth_secret_arn          = module.git.bitbucket_oauth_secret_arn
   git_connections_table_name          = module.git.git_connections_table_name
   git_connections_table_arn           = module.git.git_connections_table_arn
   git_provider_connections_table_name = module.git.git_provider_connections_table_name
@@ -177,6 +179,7 @@ module "lambda" {
   tracker_connections_table_arn       = module.git.tracker_connections_table_arn
   github_redirect_uri                 = "https://${module.frontend.cloudfront_domain_name}/github/callback"
   gitlab_redirect_uri                 = "https://${module.frontend.cloudfront_domain_name}/gitlab/callback"
+  bitbucket_redirect_uri              = "https://${module.frontend.cloudfront_domain_name}/bitbucket/callback"
   jira_oauth_secret_name              = module.git.jira_oauth_secret_name
   jira_oauth_secret_arn               = module.git.jira_oauth_secret_arn
   jira_redirect_uri                   = "https://${module.frontend.cloudfront_domain_name}/trackers/callback/jira-cloud"
@@ -242,6 +245,8 @@ module "api" {
   github_lambda_name                  = module.lambda.github_lambda_name
   gitlab_lambda_invoke_arn            = module.lambda.gitlab_lambda_invoke_arn
   gitlab_lambda_name                  = module.lambda.gitlab_lambda_name
+  bitbucket_lambda_invoke_arn         = module.lambda.bitbucket_lambda_invoke_arn
+  bitbucket_lambda_name               = module.lambda.bitbucket_lambda_name
   gitlab_oauth_secret_name            = module.git.gitlab_oauth_secret_name
   gitlab_redirect_uri                 = "https://${module.frontend.cloudfront_domain_name}/gitlab/callback"
   trackers_lambda_invoke_arn          = module.lambda.trackers_lambda_invoke_arn

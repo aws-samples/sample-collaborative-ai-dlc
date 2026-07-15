@@ -155,6 +155,27 @@ resource "aws_api_gateway_deployment" "main" {
     module.cors_agent_question_answer,
     module.cors_agent_capabilities,
     module.cors_agent_settings,
+    # Bitbucket integrations
+    aws_api_gateway_integration.bitbucket_auth_get,
+    aws_api_gateway_integration.bitbucket_callback_get,
+    aws_api_gateway_integration.bitbucket_repos_get,
+    aws_api_gateway_integration.bitbucket_status_get,
+    aws_api_gateway_integration.bitbucket_disconnect_delete,
+    aws_api_gateway_integration.bitbucket_repos_workspace_repo_branches_get,
+    aws_api_gateway_integration.bitbucket_repos_workspace_repo_tree_get,
+    aws_api_gateway_integration.bitbucket_repos_workspace_repo_contents_get,
+    aws_api_gateway_integration.bitbucket_repos_pullrequests_comments_get,
+    aws_api_gateway_integration.bitbucket_repos_pullrequests_comments_post,
+    # Bitbucket CORS modules
+    module.cors_bitbucket_auth,
+    module.cors_bitbucket_callback,
+    module.cors_bitbucket_repos,
+    module.cors_bitbucket_status,
+    module.cors_bitbucket_disconnect,
+    module.cors_bitbucket_repos_workspace_repo_branches,
+    module.cors_bitbucket_repos_workspace_repo_tree,
+    module.cors_bitbucket_repos_workspace_repo_contents,
+    module.cors_bitbucket_repos_pullrequests_comments,
   ]
 
   lifecycle {

@@ -126,8 +126,38 @@ variable "gitlab_oauth_secret_name" {
   default     = ""
 }
 
+variable "bitbucket_oauth_secret_name" {
+  description = "Secrets Manager secret name holding the Bitbucket OAuth client credentials. Used by the agents Lambda's POST /git/refresh-token to refresh expired Bitbucket access tokens for long-running construction jobs."
+  type        = string
+  default     = ""
+}
+
+variable "bitbucket_oauth_secret_arn" {
+  description = "ARN of the Secrets Manager secret holding the Bitbucket OAuth client credentials."
+  type        = string
+  default     = ""
+}
+
+variable "github_oauth_secret_arn" {
+  description = "ARN of the Secrets Manager secret holding the GitHub OAuth client credentials."
+  type        = string
+  default     = ""
+}
+
+variable "gitlab_oauth_secret_arn" {
+  description = "ARN of the Secrets Manager secret holding the GitLab OAuth client credentials."
+  type        = string
+  default     = ""
+}
+
 variable "gitlab_redirect_uri" {
   description = "GitLab OAuth redirect URI. Required on the refresh_token grant (must match the original authorization request) — without it GitLab rejects refresh with invalid_grant. Used by the agents Lambda's POST /git/refresh-token."
+  type        = string
+  default     = ""
+}
+
+variable "bitbucket_redirect_uri" {
+  description = "Bitbucket OAuth redirect URI. Required on the refresh_token grant (must match the original authorization request) — without it Bitbucket rejects refresh with invalid_grant. Used by the agents Lambda's POST /git/refresh-token."
   type        = string
   default     = ""
 }
@@ -152,6 +182,18 @@ variable "gitlab_lambda_invoke_arn" {
 
 variable "gitlab_lambda_name" {
   description = "Name of the gitlab Lambda function"
+  type        = string
+  default     = ""
+}
+
+variable "bitbucket_lambda_invoke_arn" {
+  description = "Invoke ARN of the bitbucket Lambda"
+  type        = string
+  default     = ""
+}
+
+variable "bitbucket_lambda_name" {
+  description = "Name of the bitbucket Lambda function"
   type        = string
   default     = ""
 }

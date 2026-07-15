@@ -241,6 +241,12 @@ output "gitlab_oauth_secret_name" {
   value       = module.git.gitlab_oauth_secret_name
 }
 
+# Bitbucket OAuth
+output "bitbucket_oauth_secret_name" {
+  description = "Name of the Secrets Manager secret holding the Bitbucket OAuth client_id/client_secret"
+  value       = module.git.bitbucket_oauth_secret_name
+}
+
 # Jira Cloud OAuth
 output "jira_oauth_secret_name" {
   description = "Name of the Secrets Manager secret holding the Jira Cloud OAuth client_id/client_secret"
