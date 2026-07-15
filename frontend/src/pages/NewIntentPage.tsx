@@ -154,7 +154,7 @@ export default function NewIntentPage() {
   if (!project) {
     return (
       <div className="mx-auto w-full max-w-5xl px-6 py-6 text-sm text-destructive">
-        Project not found
+        Space not found
       </div>
     );
   }

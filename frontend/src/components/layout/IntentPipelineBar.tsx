@@ -60,7 +60,7 @@ export function IntentPipelineBar() {
         variant="ghost"
         size="sm"
         className="shrink-0 gap-1.5 h-7 text-xs text-muted-foreground hover:text-foreground"
-        aria-label="Back to project"
+        aria-label="Back to space"
         onClick={() => navigate(`/project/${projectId}`)}
       >
         <ArrowLeft className="h-3 w-3" />

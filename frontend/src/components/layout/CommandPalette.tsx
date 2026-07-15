@@ -57,7 +57,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
 
   return (
     <CommandDialog open={open} onOpenChange={onOpenChange}>
-      <CommandInput placeholder="Search projects, navigate, or run actions..." />
+      <CommandInput placeholder="Search spaces, navigate, or run actions..." />
       <CommandList>
         <CommandEmpty>No results found.</CommandEmpty>
 
@@ -84,7 +84,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
 
         {/* Projects */}
         {projectsWithSprint.length > 0 && (
-          <CommandGroup heading="Projects">
+          <CommandGroup heading="Spaces">
             {projectsWithSprint.map((p) => (
               <CommandItem
                 key={p.project.id}
@@ -111,7 +111,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
         <CommandGroup heading="Actions">
           <CommandItem onSelect={() => runCommand(() => navigate('/dashboard'))}>
             <Plus className="mr-2 h-4 w-4" />
-            Create New Project
+            Create New Space
           </CommandItem>
         </CommandGroup>
 

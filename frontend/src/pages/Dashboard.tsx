@@ -198,17 +198,17 @@ export default function Dashboard() {
             className="gap-2"
           >
             <Plus className="h-4 w-4" />
-            New Project
+            New Space
           </Button>
         </div>
 
         {/* Projects sub-header */}
         <div className="flex items-center gap-2 mb-4">
           <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
-            Projects
+            Spaces
           </h2>
           <span className="text-xs text-muted-foreground/60">
-            — {projects.length} project{projects.length !== 1 ? 's' : ''}
+            — {projects.length} space{projects.length !== 1 ? 's' : ''}
           </span>
         </div>
 
@@ -217,7 +217,7 @@ export default function Dashboard() {
           <div className="relative flex-1 max-w-sm">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
-              placeholder="Search projects..."
+              placeholder="Search spaces..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="pl-9 h-9"
@@ -274,7 +274,7 @@ export default function Dashboard() {
         ) : error && projects.length === 0 ? (
           <Card className="border-destructive/40 bg-destructive/5">
             <CardContent className="flex flex-col items-center justify-center py-16">
-              <h3 className="text-lg font-semibold mb-1">Couldn't load projects</h3>
+              <h3 className="text-lg font-semibold mb-1">Couldn't load spaces</h3>
               <p className="text-sm text-muted-foreground mb-6 text-center max-w-sm">{error}</p>
               <Button variant="outline" onClick={() => refresh()} className="gap-2">
                 <RefreshCw className="h-4 w-4" />
@@ -289,10 +289,9 @@ export default function Dashboard() {
               <div className="h-14 w-14 rounded-full bg-muted flex items-center justify-center mb-4">
                 <FolderGit2 className="h-7 w-7 text-muted-foreground" />
               </div>
-              <h3 className="text-lg font-semibold mb-1">No projects yet</h3>
+              <h3 className="text-lg font-semibold mb-1">No spaces yet</h3>
               <p className="text-sm text-muted-foreground mb-6 text-center max-w-sm">
-                Create your first project to start building with AI-powered collaborative
-                development.
+                Create your first space to start building with AI-powered collaborative development.
               </p>
               <Button
                 onClick={() => {
@@ -302,13 +301,13 @@ export default function Dashboard() {
                 className="gap-2"
               >
                 <Plus className="h-4 w-4" />
-                Create Your First Project
+                Create Your First Space
               </Button>
             </CardContent>
           </Card>
         ) : filteredProjects.length === 0 ? (
           <div className="text-center py-12">
-            <p className="text-muted-foreground">No projects match "{searchQuery}"</p>
+            <p className="text-muted-foreground">No spaces match "{searchQuery}"</p>
           </div>
         ) : viewMode === 'grid' ? (
           /* Grid view */
@@ -505,18 +504,18 @@ export default function Dashboard() {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Project</AlertDialogTitle>
+            <AlertDialogTitle>Delete Space</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete this project? This action cannot be undone. Every
-              intent — with all of its artifacts, questions, discussions, run history and usage
-              metrics — will be permanently removed.
+              Are you sure you want to delete this space? This action cannot be undone. Every intent
+              — with all of its artifacts, questions, discussions, run history and usage metrics —
+              will be permanently removed.
             </AlertDialogDescription>
           </AlertDialogHeader>
           {confirmDeleteHasActiveWork && (
             <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
               <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
               <span>
-                This project has running or waiting work. Deleting it will cancel that work before
+                This space has running or waiting work. Deleting it will cancel that work before
                 removing everything.
               </span>
             </div>
@@ -534,7 +533,7 @@ export default function Dashboard() {
                   Deleting…
                 </span>
               ) : (
-                'Delete Project'
+                'Delete Space'
               )}
             </AlertDialogAction>
           </AlertDialogFooter>

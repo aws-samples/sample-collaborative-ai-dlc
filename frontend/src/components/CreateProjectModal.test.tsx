@@ -81,7 +81,7 @@ describe('CreateProjectModal', () => {
     await user.click(screen.getByRole('button', { name: 'select-repo' }));
     await user.click(screen.getByRole('button', { name: 'Next' }));
     // Step 3: the canonical aidlc-v2 workflow is auto-selected once loaded.
-    const createBtn = await screen.findByRole('button', { name: 'Create Project' });
+    const createBtn = await screen.findByRole('button', { name: 'Create Space' });
     await waitFor(() => expect(createBtn).toBeEnabled());
     await user.click(createBtn);
 

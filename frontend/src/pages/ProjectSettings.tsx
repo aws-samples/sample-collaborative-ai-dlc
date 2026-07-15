@@ -72,7 +72,7 @@ export default function ProjectSettings() {
       }
       setProject(proj);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load project');
+      setError(err instanceof Error ? err.message : 'Failed to load space');
     } finally {
       setLoading(false);
     }
@@ -90,7 +90,7 @@ export default function ProjectSettings() {
   const userRole = project?.userRole;
   const canEdit = userRole === 'owner' || userRole === 'admin';
 
-  if (!projectId) return <div className="p-6">Project not found</div>;
+  if (!projectId) return <div className="p-6">Space not found</div>;
 
   return (
     <div className="h-full overflow-y-auto">
@@ -104,14 +104,14 @@ export default function ProjectSettings() {
             onClick={() => navigate(`/project/${projectId}`)}
           >
             <ArrowLeft className="h-3.5 w-3.5" />
-            Back to Project
+            Back to Space
           </Button>
           <div className="h-5 w-px bg-border" />
           <div className="min-w-0">
             <h1 className="truncate text-xl font-bold tracking-tight">
-              {project?.name ?? 'Project Settings'}
+              {project?.name ?? 'Space Settings'}
             </h1>
-            <p className="mt-0.5 text-sm text-muted-foreground">Project settings</p>
+            <p className="mt-0.5 text-sm text-muted-foreground">Space settings</p>
           </div>
           {userRole && (
             <Badge variant="outline" className={cn('ml-auto text-[10px]', ROLE_BADGE[userRole])}>

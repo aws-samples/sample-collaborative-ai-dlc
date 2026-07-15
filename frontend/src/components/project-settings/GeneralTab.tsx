@@ -104,11 +104,11 @@ export function GeneralTab({ project, canEdit, onProjectUpdated }: Props) {
 
   return (
     <div className="space-y-6">
-      <SettingsCard icon={<Settings2 />} title="General" description="Basic project information.">
+      <SettingsCard icon={<Settings2 />} title="General" description="Basic space information.">
         <div className="space-y-4">
           <div className="space-y-1.5">
             <Label htmlFor="proj-name" className="text-xs">
-              Project Name
+              Space Name
             </Label>
             <Input
               id="proj-name"
@@ -140,7 +140,7 @@ export function GeneralTab({ project, canEdit, onProjectUpdated }: Props) {
             {project.workflowId ?? 'aidlc-v2'}
           </span>
         }
-        description="Execution knobs for this project — the workflow is pinned at creation; scope is chosen per-intent."
+        description="Execution knobs for this space — the workflow is pinned at creation; scope is chosen per-intent."
       >
         <div className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-2">

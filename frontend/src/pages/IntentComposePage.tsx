@@ -295,7 +295,7 @@ export default function IntentComposePage() {
   if (!project || loadError) {
     return (
       <div className="mx-auto w-full max-w-5xl px-6 py-6 text-sm text-destructive">
-        {loadError ?? 'Project not found'}
+        {loadError ?? 'Space not found'}
       </div>
     );
   }

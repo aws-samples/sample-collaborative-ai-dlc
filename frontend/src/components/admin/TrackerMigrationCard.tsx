@@ -63,12 +63,12 @@ export function TrackerMigrationCard() {
       <p className="text-xs text-muted-foreground flex items-center gap-1.5 px-1">
         <CheckCircle2 className="h-3.5 w-3.5 text-agent-success" />
         {lastRun
-          ? `Migrated ${lastRun.projects.applied} project binding${
+          ? `Migrated ${lastRun.projects.applied} space binding${
               lastRun.projects.applied === 1 ? '' : 's'
             } and ${lastRun.sprints.applied} sprint${
               lastRun.sprints.applied === 1 ? '' : 's'
-            } — all projects are now on the current tracker model.`
-          : 'Tracker data migration: all projects are on the current tracker model — nothing to migrate.'}
+            } — all spaces are now on the current tracker model.`
+          : 'Tracker data migration: all spaces are on the current tracker model — nothing to migrate.'}
       </p>
     );
   }
@@ -79,7 +79,7 @@ export function TrackerMigrationCard() {
       title="Tracker Migration"
       description={
         <>
-          Backfills the tracker provider abstraction for projects still on the legacy{' '}
+          Backfills the tracker provider abstraction for spaces still on the legacy{' '}
           <code className="rounded bg-muted px-1 text-[10px]">issue_integration_enabled</code>{' '}
           shape. Idempotent — only converts what hasn't been converted yet.
         </>
@@ -103,7 +103,7 @@ export function TrackerMigrationCard() {
                   <span className="font-mono tabular-nums text-foreground">
                     {projectCandidates}
                   </span>{' '}
-                  project{projectCandidates === 1 ? '' : 's'} on the legacy tracker model
+                  space{projectCandidates === 1 ? '' : 's'} on the legacy tracker model
                 </li>
                 <li>
                   <span className="font-mono tabular-nums text-foreground">{sprintCandidates}</span>{' '}
@@ -119,7 +119,7 @@ export function TrackerMigrationCard() {
               {lastRun && !running && (
                 <span className="text-xs text-agent-success flex items-center gap-1">
                   <CheckCircle2 className="h-3.5 w-3.5" />
-                  Migrated {lastRun.projects.applied} project binding
+                  Migrated {lastRun.projects.applied} space binding
                   {lastRun.projects.applied === 1 ? '' : 's'}, {lastRun.sprints.applied} sprint
                   {lastRun.sprints.applied === 1 ? '' : 's'}
                 </span>

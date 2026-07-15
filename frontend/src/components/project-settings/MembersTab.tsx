@@ -43,8 +43,8 @@ const ROLE_LABELS: Record<ProjectRole, string> = {
 };
 
 const ROLE_DESCRIPTIONS: Record<ProjectRole, string> = {
-  owner: 'Full control: manage project, members, and settings',
-  admin: 'Manage members and update the project repository',
+  owner: 'Full control: manage space, members, and settings',
+  admin: 'Manage members and update the space repository',
   member: 'Collaborate on sprints and trigger agents',
 };
 
@@ -211,7 +211,7 @@ export function MembersTab({ projectId, userRole }: Props) {
             </span>
           )
         }
-        description="Who can access this project and what they're allowed to do."
+        description="Who can access this space and what they're allowed to do."
         headerAction={
           canManageMembers && (
             <Button size="sm" className="h-8 gap-1.5 text-xs" onClick={openAddMemberModal}>
@@ -333,7 +333,7 @@ export function MembersTab({ projectId, userRole }: Props) {
             <DialogHeader>
               <DialogTitle>Add Member</DialogTitle>
               <DialogDescription>
-                Pick a confirmed Cognito user and assign them a role on this project.
+                Pick a confirmed Cognito user and assign them a role on this space.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
@@ -488,7 +488,7 @@ export function MembersTab({ projectId, userRole }: Props) {
           <AlertDialogHeader>
             <AlertDialogTitle>Remove Member</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to remove this member from the project? They will lose access
+              Are you sure you want to remove this member from the space? They will lose access
               immediately.
             </AlertDialogDescription>
           </AlertDialogHeader>

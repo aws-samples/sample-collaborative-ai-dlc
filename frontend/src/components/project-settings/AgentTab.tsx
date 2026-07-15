@@ -270,7 +270,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
             notOkTone="warning"
           />
         }
-        description="Which AI agent CLI runs this project's work — only CLIs installed in the deployment are selectable."
+        description="Which AI agent CLI runs this space's work — only CLIs installed in the deployment are selectable."
       >
         <div className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-3">
@@ -334,7 +334,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
       <SettingsCard
         icon={<Cpu />}
         title="Model Override"
-        description="Optional project-specific model — otherwise the Admin global default, then the CLI's own default."
+        description="Optional space-specific model — otherwise the Admin global default, then the CLI's own default."
       >
         <div className="space-y-4">
           <div className="space-y-3">
@@ -427,7 +427,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
           </div>
           {/* Effective readout — what will actually run for the selected CLI. */}
           <div className="rounded-lg bg-muted/40 px-3.5 py-2.5 text-xs">
-            <span className="text-muted-foreground">Effective for this project: </span>
+            <span className="text-muted-foreground">Effective for this space: </span>
             <span className="font-mono font-medium">
               {AGENT_CLI_CONFIG[editAgentCli]?.label ?? editAgentCli}
             </span>
@@ -458,7 +458,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
               <CollapsibleContent>
                 <div className="space-y-2 pt-3">
                   <p className="text-xs text-muted-foreground">
-                    Pin a different model for a specific agent tier in this project — unset cells
+                    Pin a different model for a specific agent tier in this space — unset cells
                     inherit the Admin configuration.
                   </p>
                   <TierModelsSection
@@ -503,7 +503,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
             mcpSecretsSet={projectMcpSecretsSet}
             onSaveSecrets={saveProjectMcpSecrets}
             globalServerSecretRefs={globalMcpServerSecretRefs}
-            description="Custom MCP servers injected into this project's agent sessions."
+            description="Custom MCP servers injected into this space's agent sessions."
           />
 
           {customMsg && (
@@ -522,7 +522,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
             onCommit={commitCustomRules}
             onRefresh={refreshCustomRules}
             canEdit={canEdit}
-            description="Markdown documents loaded into the agent context for every stage in this project (coding standards, API references, framework guidelines, etc.)."
+            description="Markdown documents loaded into the agent context for every stage in this space (coding standards, API references, framework guidelines, etc.)."
             onSuccess={(text) => setCustomMsg({ kind: 'success', text })}
             onError={(text) => setCustomMsg({ kind: 'error', text })}
             onClearMessages={() => setCustomMsg(null)}

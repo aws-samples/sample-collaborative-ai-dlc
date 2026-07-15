@@ -224,7 +224,7 @@ function revalidateProjects(force = false): Promise<void> {
       projectsError = null;
     } catch (err) {
       // Keep stale cache (if any); surface the failure to subscribers.
-      projectsError = err instanceof Error ? err.message : 'Failed to load projects';
+      projectsError = err instanceof Error ? err.message : 'Failed to load spaces';
     } finally {
       projectsFetching = false;
       projectsInflight = null;
@@ -238,7 +238,7 @@ export async function getProjectsWithSprints(): Promise<ProjectWithSprint[]> {
   if (projectsCache && !isStale(projectsCache, PROJECTS_TTL)) return projectsCache.data;
   await revalidateProjects();
   if (projectsCache) return projectsCache.data;
-  throw new Error(projectsError ?? 'Failed to load projects');
+  throw new Error(projectsError ?? 'Failed to load spaces');
 }
 
 function revalidateSprints(projectId: string, force = false): Promise<void> {

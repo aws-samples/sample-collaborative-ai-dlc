@@ -199,13 +199,13 @@ export function AppSidebar() {
           )}
         >
           <LayoutDashboard className="h-4 w-4 shrink-0" />
-          <span className="flex-1 truncate">Projects</span>
+          <span className="flex-1 truncate">Spaces</span>
         </button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
               title={`Sort: ${PROJECT_SORT_LABELS[projectSort]}`}
-              aria-label="Sort projects"
+              aria-label="Sort spaces"
               className="h-6 w-6 shrink-0 flex items-center justify-center rounded text-sidebar-foreground/40 hover:text-sidebar-foreground/70 hover:bg-sidebar-accent/50 transition-colors"
             >
               <ArrowUpDown className="h-3.5 w-3.5" />
@@ -228,8 +228,8 @@ export function AppSidebar() {
         </DropdownMenu>
         <button
           onClick={() => setShowCreateProject(true)}
-          title="New project"
-          aria-label="New project"
+          title="New space"
+          aria-label="New space"
           className="h-6 w-6 shrink-0 flex items-center justify-center rounded text-sidebar-foreground/40 hover:text-sidebar-foreground/70 hover:bg-sidebar-accent/50 transition-colors"
         >
           <Plus className="h-3.5 w-3.5" />

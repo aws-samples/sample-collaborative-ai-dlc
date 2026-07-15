@@ -76,7 +76,7 @@ export function StageSkippingCard() {
                 stages are skippable — required stages (requirements analysis, code generation,
                 build &amp; test, …) and initialization always run; downstream stages treat a
                 skipped stage&apos;s outputs as absent by design. Choosing which stages run in the
-                first place happens on the compose page and is not affected by this toggle. Projects
+                first place happens on the compose page and is not affected by this toggle. Spaces
                 can override this in their settings; applies to intents created after saving.
               </p>
             </div>

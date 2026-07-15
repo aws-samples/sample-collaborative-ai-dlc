@@ -83,7 +83,7 @@ export default function InceptionPage() {
           </div>
 
           <div className="rounded-lg border bg-muted/40 px-4 py-3 text-xs text-muted-foreground">
-            This v1 project is read-only — agents can no longer be started and content can no longer
+            This v1 space is read-only — agents can no longer be started and content can no longer
             be edited.
           </div>
 
@@ -146,8 +146,8 @@ export default function InceptionPage() {
           <Card>
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
-                <CardTitle className="text-sm">Project Description</CardTitle>
-                <DiscussButton entityType="inception" entityTitle="Project Description" />
+                <CardTitle className="text-sm">Space Description</CardTitle>
+                <DiscussButton entityType="inception" entityTitle="Space Description" />
               </div>
             </CardHeader>
             <CardContent>

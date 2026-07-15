@@ -126,7 +126,7 @@ export default function IntentAuditPage() {
               <ArrowLeft className="h-4 w-4" />
             </button>
             <h1 className="text-lg font-bold tracking-tight truncate">
-              {project?.name ?? 'Project'}
+              {project?.name ?? 'Space'}
             </h1>
             <span className="text-xs text-muted-foreground truncate max-w-[240px]">
               {detail?.intent.title ?? intentId}

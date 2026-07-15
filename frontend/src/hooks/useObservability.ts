@@ -154,7 +154,7 @@ export function useObservability() {
       });
     } catch (e) {
       console.error('[Observability] projects fetch failed:', e);
-      setProjectsError(e instanceof Error ? e.message : 'Failed to load projects');
+      setProjectsError(e instanceof Error ? e.message : 'Failed to load spaces');
     } finally {
       setProjectsLoading(false);
     }

@@ -134,7 +134,7 @@ export function IntentSourcePicker({ project, selected, onSelect }: Props) {
   }, [hasNext, loadMore]);
 
   if (!binding || !chrome) {
-    return <p className="text-xs text-muted-foreground">No tracker connected for this project.</p>;
+    return <p className="text-xs text-muted-foreground">No tracker connected for this space.</p>;
   }
 
   return (
