@@ -51,7 +51,11 @@ export function AppShell() {
     location.pathname.endsWith('/graph') ||
     location.pathname.endsWith('/observability') ||
     location.pathname.endsWith('/audit');
-  const showPipelineBar = inIntent && !onIntentSubPage;
+  // The compose page edits a DRAFT (no phase progress yet) and has its own
+  // header Back — the phase-progress pipeline bar would render empty chips and
+  // a duplicate Back, so suppress it there.
+  const onComposePage = location.pathname.endsWith('/compose');
+  const showPipelineBar = inIntent && !onIntentSubPage && !onComposePage;
 
   // Breakpoint (Tailwind lg): below it BOTH side panels render as NON-modal
   // overlays above the content instead of grid columns, so they stay usable
