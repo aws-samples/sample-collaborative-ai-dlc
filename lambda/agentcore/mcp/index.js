@@ -55,6 +55,7 @@ export const startMcpServer = async ({ env = process.env } = {}) => {
     broadcast: (payload) => broadcastToIntent(scope.intentId, payload),
     scope,
     pollIntervalMs: Number(env.V2_QUESTION_POLL_MS) || 3000,
+    parkGraceMs: Number(env.V2_QUESTION_PARK_GRACE_MS) || undefined,
   });
 
   const handlers = buildToolHandlers({ graph, bridge });

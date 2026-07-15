@@ -41,6 +41,7 @@ import { runChild, captureChild } from '../cli/spawn.js';
 import {
   materializeMcpConfig as defaultMaterializeMcpConfig,
   materializeKiroAgent as defaultMaterializeKiroAgent,
+  materializeOpenCodeConfig as defaultMaterializeOpenCodeConfig,
 } from '../stage-materializer.js';
 import { fetchCustomRules as defaultFetchCustomRules } from '../custom-rules.js';
 import { toMcpServerMap } from '../../shared/mcp-validator.js';
@@ -54,6 +55,13 @@ import {
   persistKiroStore as defaultPersistKiroStore,
   resolveKiroStore,
 } from '../cli/kiro-store.js';
+import {
+  hasOpenCodeStore as defaultHasOpenCodeStore,
+  restoreOpenCodeStore as defaultRestoreOpenCodeStore,
+  persistOpenCodeStore as defaultPersistOpenCodeStore,
+  resolveOpenCodeStore,
+  withOpenCodeStore as defaultWithOpenCodeStore,
+} from '../cli/opencode-store.js';
 import {
   ensureWorkspaceSource as defaultEnsureWorkspaceSource,
   redirectHeavyDirs as defaultRedirectHeavyDirs,
@@ -305,6 +313,7 @@ const runReviewer = async ({
   mcpEntry,
   materializeMcpConfig,
   materializeKiroAgent,
+  materializeOpenCodeConfig,
   store,
   executionId,
   projectId,
@@ -342,9 +351,18 @@ const runReviewer = async ({
       ? {
           agentName: await materializeKiroAgent({ workspaceDir, mcpEntry, scope, env }),
         }
-      : {
-          mcpConfigPath: await materializeMcpConfig({ workspaceDir, mcpEntry, scope, env }),
-        };
+      : cli === 'opencode'
+        ? {
+            opencodeConfigContent: await materializeOpenCodeConfig({
+              workspaceDir,
+              mcpEntry,
+              scope,
+              env,
+            }),
+          }
+        : {
+            mcpConfigPath: await materializeMcpConfig({ workspaceDir, mcpEntry, scope, env }),
+          };
   const invocation = driver.buildInvocation({
     prompt,
     model,
@@ -362,15 +380,21 @@ const runReviewer = async ({
       summary: `Reviewer ${reviewerAgent} checking ${stage.stageId}`,
     })
     .catch(() => {});
-  await runChild({
-    command: invocation.command,
-    args: invocation.args,
-    env: { ...OFF_MOUNT_CACHE_ENV, ...invocation.env, ...driver.envForAuth(env) },
-    cwd: workspaceDir,
-    prompt,
-    promptViaStdin: invocation.promptViaStdin,
-    spawnFn,
-  });
+  const execute = () =>
+    runChild({
+      command: invocation.command,
+      args: invocation.args,
+      env: { ...OFF_MOUNT_CACHE_ENV, ...invocation.env, ...driver.envForAuth(env) },
+      cwd: workspaceDir,
+      prompt,
+      promptViaStdin: invocation.promptViaStdin,
+      spawnFn,
+    });
+  if (cli === 'opencode') {
+    await defaultWithOpenCodeStore({ env, operation: execute });
+  } else {
+    await execute();
+  }
   const verdict = await latestReviewerVerdict({
     store,
     executionId,
@@ -846,6 +870,7 @@ export const runStage = async (
     materializeStage,
     materializeMcpConfig = defaultMaterializeMcpConfig,
     materializeKiroAgent = defaultMaterializeKiroAgent,
+    materializeOpenCodeConfig = defaultMaterializeOpenCodeConfig,
     renderRulesDoc,
     mcpEntry,
     openGraph = null,
@@ -859,6 +884,10 @@ export const runStage = async (
     // when the store env is unset. Injected for tests.
     restoreKiroStore = defaultRestoreKiroStore,
     persistKiroStore = defaultPersistKiroStore,
+    hasOpenCodeStore = defaultHasOpenCodeStore,
+    restoreOpenCodeStore = defaultRestoreOpenCodeStore,
+    persistOpenCodeStore = defaultPersistOpenCodeStore,
+    withOpenCodeStore = defaultWithOpenCodeStore,
     // Re-clone a wiped source checkout before the CLI spawns. Injected for tests.
     ensureWorkspaceSource = defaultEnsureWorkspaceSource,
     // Keep node_modules off the session mount via engine-owned symlinks to
@@ -1201,6 +1230,9 @@ export const runStage = async (
       if (!kiroRestored && resolveKiroStore(env)) conversationLost = true;
       else if (!kiroRestored)
         console.error(`[run-stage] kiro store not restored for resume ${stageInstanceId}`);
+    } else if (cli === 'opencode') {
+      const storePresent = await hasOpenCodeStore({ env }).catch(() => false);
+      if (!storePresent && resolveOpenCodeStore(env)) conversationLost = true;
     }
 
     if (conversationLost) {
@@ -1404,9 +1436,8 @@ export const runStage = async (
     ...toMcpServerMap(survivingProject),
   };
 
-  // Materialize the MCP wiring the selected CLI expects: Claude loads a
-  // --mcp-config file; Kiro discovers an --agent config at .kiro/agents/. Returns
-  // the kwargs the driver's build* methods take (mcpConfigPath OR agentName).
+  // Materialize only the selected CLI's MCP context. OpenCode receives inline
+  // config so repository AGENTS.md/.opencode files remain untouched.
   const materializeCliMcp = async () => {
     if (cli === 'kiro') {
       const agentName = await materializeKiroAgent({
@@ -1417,6 +1448,16 @@ export const runStage = async (
         customServers,
       });
       return { agentName };
+    }
+    if (cli === 'opencode') {
+      const opencodeConfigContent = await materializeOpenCodeConfig({
+        workspaceDir,
+        mcpEntry,
+        scope: stageScope,
+        env,
+        customServers,
+      });
+      return { opencodeConfigContent };
     }
     const mcpConfigPath = await materializeMcpConfig({
       workspaceDir,
@@ -1535,9 +1576,17 @@ export const runStage = async (
     if (steeringMessage) {
       prompt = `${steeringMessage}\n\n---\n\n${prompt}`;
     }
-    // materializeStage wrote the Claude --mcp-config; for Kiro we additionally
-    // need its --agent config. materializeCliMcp returns the right driver kwargs.
-    const mcpKwargs = await materializeCliMcp();
+    // The stage materializer already created only the selected CLI's context.
+    // Older injected test materializers may return just the prompt, so retain a
+    // fallback through the shared context helper.
+    const mcpKwargs =
+      cli === 'kiro' && materialized.agentName
+        ? { agentName: materialized.agentName }
+        : cli === 'opencode' && materialized.opencodeConfigContent
+          ? { opencodeConfigContent: materialized.opencodeConfigContent }
+          : cli === 'claude' && materialized.mcpConfigPath
+            ? { mcpConfigPath: materialized.mcpConfigPath }
+            : await materializeCliMcp();
     invocation = driver.buildInvocation({
       prompt,
       model,
@@ -1629,7 +1678,28 @@ export const runStage = async (
       })
       .catch(() => {});
   };
-  const cliOutput = createCliOutputSink({ cli, emit: emitCliOutput });
+  let sessionUpdateQueue = Promise.resolve();
+  const cliOutput = createCliOutputSink({
+    cli,
+    emit: emitCliOutput,
+    onSession: (observedSessionId) => {
+      if (cli !== 'opencode' || cliSessionId) return;
+      cliSessionId = observedSessionId;
+      // Persist the first id immediately; the queue is awaited before the park
+      // check so a WAITING row can never be written ahead of its resume handle.
+      sessionUpdateQueue = sessionUpdateQueue
+        .then(() =>
+          store.updateStageState({
+            executionId,
+            stageInstanceId,
+            state: 'RUNNING',
+            cli,
+            cliSessionId,
+          }),
+        )
+        .catch(() => {});
+    },
+  });
   // Correlate the [spawn:size] line below to THIS stage/cli — the diagnostic for
   // the 2026-07 nfr-design E2BIG (prompt now piped on stdin; this confirms it).
   console.info(
@@ -1637,8 +1707,8 @@ export const runStage = async (
       `promptBytes=${Buffer.byteLength(prompt ?? invocation.prompt ?? '', 'utf8')} ` +
       `promptViaStdin=${invocation.promptViaStdin} argc=${invocation.args.length}`,
   );
-  try {
-    result = await runChild({
+  const spawnCli = () =>
+    runChild({
       command: invocation.command,
       args: invocation.args,
       env: childEnv,
@@ -1655,11 +1725,23 @@ export const runStage = async (
       onStdout: (chunk) => cliOutput.write(chunk),
       spawnFn,
     });
+  try {
+    result =
+      cli === 'opencode'
+        ? await withOpenCodeStore({
+            env,
+            operation: spawnCli,
+            restore: restoreOpenCodeStore,
+            persist: persistOpenCodeStore,
+          })
+        : await spawnCli();
     cliOutput.flush();
     await outputQueue;
+    await sessionUpdateQueue;
   } catch (e) {
     cliOutput.flush();
     await outputQueue;
+    await sessionUpdateQueue;
     // Log the failure at the catch point — fail() only records it to DynamoDB
     // (the UI's cli_error), never to the container log. This makes the E2BIG (or
     // any spawn failure) visible + attributable to THIS stage/cli.
@@ -1827,6 +1909,13 @@ export const runStage = async (
   // human". We therefore check the gate BEFORE treating a non-zero exit as failure,
   // so a Kiro run that parks then errors on its next turn parks rather than fails.
   const parked = await pendingGate({ store, executionId });
+  if (parked && cli === 'opencode' && !cliSessionId) {
+    return fail(
+      stageInstanceId,
+      'opencode_session_missing',
+      'OpenCode parked the stage without emitting a session id; the conversation cannot be resumed',
+    );
+  }
   if (!parked && exitCode !== 0) {
     // Kiro's benign empty-final-completion crash: the turn's work completed, the
     // agent just ended without closing text and kiro-cli's ACP rejected the empty
@@ -1992,6 +2081,7 @@ export const runStage = async (
         mcpEntry,
         materializeMcpConfig,
         materializeKiroAgent,
+        materializeOpenCodeConfig,
         store,
         executionId,
         projectId,

@@ -24,6 +24,8 @@ import {
   restoreKiroStore as defaultRestoreKiroStore,
   persistKiroStore as defaultPersistKiroStore,
 } from './kiro-store.js';
+import { parseOpenCodeJsonl } from './opencode-parser.js';
+import { withOpenCodeStore as defaultWithOpenCodeStore } from './opencode-store.js';
 
 // Extract the assistant text + token usage from Claude's `--output-format
 // stream-json` stdout (one JSON event per line). Per the headless CLI docs the
@@ -104,17 +106,25 @@ export const runOneShotPrompt = async ({
   cwd = '/tmp',
   mcpConfigPath = null,
   agentName = null,
+  opencodeConfigContent = null,
   timeoutMs = DEFAULT_ONE_SHOT_TIMEOUT_MS,
   spawnFn,
   restoreKiroStore = defaultRestoreKiroStore,
   persistKiroStore = defaultPersistKiroStore,
+  withOpenCodeStore = defaultWithOpenCodeStore,
 } = {}) => {
   const cli = selectCli({ requested: requestedCli, availableClis });
   if (!cli) return { ok: false, reason: 'no_cli', text: '', cli: null, model: null, metrics: null };
 
   const model = resolveStageModel({ cliModels, agentBlock: null, cli, env });
   const driver = getDriver(cli);
-  const invocation = driver.buildInvocation({ prompt, model, mcpConfigPath, agentName });
+  const invocation = driver.buildInvocation({
+    prompt,
+    model,
+    mcpConfigPath,
+    agentName,
+    opencodeConfigContent,
+  });
   // Kiro's SQLite conversation store: bracket exactly like resolve-conflict —
   // restore (mount → local) before the spawn so we never run against a stale
   // local store after a microVM reap, persist after so lane conversations the
@@ -122,9 +132,8 @@ export const runOneShotPrompt = async ({
   // one-shot session itself rides along; its distinct cwd keeps it out of the
   // session-capture path (parseLatestKiroSession filters by cwd).
   if (cli === 'kiro') await restoreKiroStore({ env }).catch(() => false);
-  let capture;
-  try {
-    capture = await captureChild({
+  const execute = () =>
+    captureChild({
       command: invocation.command,
       args: invocation.args,
       env: { ...invocation.env, ...driver.envForAuth(env) },
@@ -135,6 +144,10 @@ export const runOneShotPrompt = async ({
       timeoutMs,
       ...(spawnFn ? { spawnFn } : {}),
     });
+  let capture;
+  try {
+    capture =
+      cli === 'opencode' ? await withOpenCodeStore({ env, operation: execute }) : await execute();
   } finally {
     if (cli === 'kiro') await persistKiroStore({ env }).catch(() => false);
   }
@@ -175,6 +188,24 @@ export const runOneShotPrompt = async ({
       exitCode,
       metrics,
       ...(text ? {} : { sample: sampleOf(stdout), resultSubtype }),
+    };
+  }
+  if (cli === 'opencode') {
+    const parsed = parseOpenCodeJsonl(stdout);
+    const text = parsed.text.trim();
+    return {
+      ok: Boolean(text),
+      reason: text ? null : 'empty_answer',
+      text,
+      cli,
+      model: model ?? null,
+      exitCode,
+      metrics: parsed.metrics,
+      ...(text
+        ? {}
+        : {
+            sample: sampleOf(parsed.errors.join('\n') || parsed.diagnostics.join('\n') || stdout),
+          }),
     };
   }
   // Kiro: plain stdout answer (ANSI-stripped); the per-turn credit footer

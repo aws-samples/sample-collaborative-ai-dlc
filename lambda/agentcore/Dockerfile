@@ -19,14 +19,20 @@ RUN apt-get update -o Acquire::AllowInsecureRepositories=true \
     && ln -sf /usr/bin/python3 /usr/local/bin/python \
     && rm -rf /var/lib/apt/lists/*
 
-# Agent CLIs — installed for both supported drivers; selectCli picks what's
-# present at runtime. Kiro (API-key auth) + Claude Code (Bedrock auth).
+# Agent CLIs — installed for all supported drivers; selectCli picks what's
+# present at runtime. Kiro (API-key auth), Claude Code + OpenCode (Bedrock).
 RUN curl -fsSL https://cli.kiro.dev/install | bash \
     && mkdir -p /opt/kiro \
     && cp -a /root/.local/bin /opt/kiro/bin \
     && ln -sf /opt/kiro/bin/kiro-cli /usr/local/bin/kiro-cli \
     && rm -rf /root/.local
 RUN npm install -g @anthropic-ai/claude-code
+ARG OPENCODE_VERSION=1.17.20
+RUN mkdir -p /opt/opencode/bin \
+    && curl -fsSL "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-arm64.tar.gz" \
+    | tar -xz -C /opt/opencode/bin \
+    && chmod +x /opt/opencode/bin/opencode \
+    && /opt/opencode/bin/opencode --version | grep -F "${OPENCODE_VERSION}"
 
 # Bun — the runtime the deterministic CODE sensors (linter, type-check) run on.
 # They shell out to `bunx eslint`/`bunx tsc` against the workspace checkout, so
@@ -66,7 +72,8 @@ RUN ln -s /opt/agentcore/node_modules /opt/shared/node_modules
 # /mnt/workspace is the AgentCore managed-session-storage mount (present only at
 # invocation time). Create a fallback dir for local/non-AgentCore runs; chown so
 # the node user can write the checkout + CLI stores when the mount is absent.
-RUN mkdir -p /mnt/workspace && chown -R node:node /mnt/workspace /opt/agentcore /opt/shared /opt/kiro /opt/bun /opt/uv
+RUN mkdir -p /mnt/workspace \
+    && chown -R node:node /mnt/workspace /opt/agentcore /opt/shared /opt/kiro /opt/opencode /opt/bun /opt/uv
 
 WORKDIR /mnt/workspace
 USER node
@@ -79,12 +86,17 @@ USER node
 #    data.sqlite3* store file between the mount (V2_KIRO_STORE_DIR, durable) and
 #    local XDG around each Kiro spawn so a resume after a microVM reap still
 #    recalls the conversation. See cli/kiro-store.js.
+#  - OpenCode: SQLite — the same copy protocol, but its XDG override is applied
+#    only to OpenCode children so Kiro's global XDG placement is unchanged.
 ENV HOME=/home/node \
-    PATH=/opt/kiro/bin:/opt/bun/bin:/opt/uv/bin:/usr/local/bin:/usr/bin:/bin \
+    PATH=/opt/kiro/bin:/opt/opencode/bin:/opt/bun/bin:/opt/uv/bin:/usr/local/bin:/usr/bin:/bin \
     V2_WORKSPACE_DIR=/mnt/workspace \
     CLAUDE_CONFIG_DIR=/mnt/workspace/.claude \
     XDG_DATA_HOME=/home/node/.kiro-data \
     V2_KIRO_STORE_DIR=/mnt/workspace/.kiro-data \
+    OPENCODE_XDG_DATA_HOME=/home/node/.opencode-data \
+    V2_OPENCODE_STORE_DIR=/mnt/workspace/.opencode-data \
+    OPENCODE_DISABLE_AUTOUPDATE=1 \
     V2_MCP_ENTRY=/opt/agentcore/mcp/index.js
 
 # The AgentCore managed-session-storage mount (/mnt/workspace) is owned by a uid

@@ -157,6 +157,64 @@ describe('runOneShotPrompt', () => {
     expect(persistKiroStore).toHaveBeenCalledOnce();
   });
 
+  it('runs OpenCode with inline config, native usage, and serialized store sync', async () => {
+    let argv;
+    let childEnv;
+    const spawnFn = vi.fn((command, args, options) => {
+      argv = { command, args };
+      childEnv = options.env;
+      return fakeChild({
+        stdout: [
+          JSON.stringify({
+            type: 'text',
+            sessionID: 'ses_1',
+            part: { type: 'text', text: '{"gist":"open"}' },
+          }),
+          JSON.stringify({
+            type: 'step_finish',
+            part: {
+              type: 'step-finish',
+              cost: 0.01,
+              tokens: { input: 40, output: 10, reasoning: 2, cache: { read: 5, write: 1 } },
+            },
+          }),
+        ].join('\n'),
+      });
+    });
+    const withOpenCodeStore = vi.fn(async ({ operation }) => operation());
+    const out = await runOneShotPrompt({
+      prompt: 'p',
+      availableClis: ['opencode'],
+      cliModels: { opencode: 'us.anthropic.claude-sonnet-4-6' },
+      opencodeConfigContent: '{"share":"disabled"}',
+      env: {
+        AWS_REGION: 'us-east-1',
+        AWS_BEARER_TOKEN_BEDROCK: 'secret',
+        OPENCODE_XDG_DATA_HOME: '/tmp/opencode',
+      },
+      spawnFn,
+      withOpenCodeStore,
+    });
+    expect(out).toMatchObject({
+      ok: true,
+      cli: 'opencode',
+      text: '{"gist":"open"}',
+      metrics: {
+        tokensInput: 40,
+        tokensOutput: 10,
+        tokensReasoning: 2,
+        tokensCacheRead: 5,
+        tokensCacheWrite: 1,
+        cost: 0.01,
+      },
+    });
+    expect(argv.command).toBe('opencode');
+    expect(argv.args).toContain('amazon-bedrock/us.anthropic.claude-sonnet-4-6');
+    expect(childEnv.OPENCODE_CONFIG_CONTENT).toBe('{"share":"disabled"}');
+    expect(childEnv.XDG_DATA_HOME).toBe('/tmp/opencode');
+    expect(withOpenCodeStore).toHaveBeenCalledOnce();
+  });
+
   it('claude one-shots never touch the kiro store', async () => {
     const restoreKiroStore = vi.fn();
     const persistKiroStore = vi.fn();

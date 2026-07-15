@@ -21,6 +21,7 @@ import { captureChild as defaultCapture } from '../cli/spawn.js';
 const AUTH_ENV = {
   claude: 'AWS_BEARER_TOKEN_BEDROCK',
   kiro: 'KIRO_API_KEY',
+  opencode: 'AWS_BEARER_TOKEN_BEDROCK',
 };
 
 export const capabilities = async (_payload, deps = {}) => {

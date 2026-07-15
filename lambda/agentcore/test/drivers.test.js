@@ -5,6 +5,7 @@ import {
   getDriver,
   claudeDriver,
   kiroDriver,
+  opencodeDriver,
   SUPPORTED_CLIS,
   buildKiroListSessions,
   parseLatestKiroSession,
@@ -26,13 +27,14 @@ describe('selectCli', () => {
   it('falls back to preference order only when NO CLI is requested', () => {
     expect(selectCli({ availableClis: ['kiro'] })).toBe('kiro');
     expect(selectCli({ availableClis: ['claude', 'kiro'] })).toBe('claude');
+    expect(selectCli({ availableClis: ['opencode'] })).toBe('opencode');
   });
   it('returns null when nothing is installed', () => {
     expect(selectCli({ availableClis: [] })).toBeNull();
     expect(selectCli({ requested: 'claude', availableClis: ['opencode'] })).toBeNull();
   });
-  it('preference order is claude then kiro', () => {
-    expect(SUPPORTED_CLIS).toEqual(['claude', 'kiro']);
+  it('preference order is claude, kiro, then opencode', () => {
+    expect(SUPPORTED_CLIS).toEqual(['claude', 'kiro', 'opencode']);
   });
 });
 
@@ -191,6 +193,67 @@ describe('kiro driver', () => {
   });
 });
 
+describe('opencode driver', () => {
+  it('builds a JSONL auto-approved Bedrock invocation with prompt on stdin', () => {
+    const inv = opencodeDriver.buildInvocation({
+      prompt: 'go',
+      model: 'us.anthropic.claude-sonnet-4-6',
+      opencodeConfigContent: '{"share":"disabled"}',
+    });
+    expect(inv).toMatchObject({
+      command: 'opencode',
+      args: [
+        'run',
+        '--format',
+        'json',
+        '--auto',
+        '--model',
+        'amazon-bedrock/us.anthropic.claude-sonnet-4-6',
+      ],
+      prompt: 'go',
+      promptViaStdin: true,
+      env: { OPENCODE_CONFIG_CONTENT: '{"share":"disabled"}' },
+    });
+    expect(inv.args).not.toContain('go');
+  });
+
+  it('does not double-prefix an already provider-qualified model', () => {
+    const inv = opencodeDriver.buildInvocation({
+      prompt: 'go',
+      model: 'amazon-bedrock/eu.anthropic.claude-sonnet-4-6',
+    });
+    expect(inv.args.at(-1)).toBe('amazon-bedrock/eu.anthropic.claude-sonnet-4-6');
+  });
+
+  it('resumes the same session and pipes the answer through stdin', () => {
+    const inv = opencodeDriver.buildResumeInvocation({
+      sessionId: 'ses_123',
+      answerMessage: 'continue',
+      model: 'us.anthropic.claude-sonnet-4-6',
+      opencodeConfigContent: '{}',
+    });
+    expect(inv.args).toContain('--session');
+    expect(inv.args[inv.args.indexOf('--session') + 1]).toBe('ses_123');
+    expect(inv.prompt).toBe('continue');
+    expect(inv.args).not.toContain('continue');
+  });
+
+  it('uses the Bedrock bearer token and an OpenCode-only XDG directory', () => {
+    expect(
+      opencodeDriver.envForAuth({
+        AWS_REGION: 'eu-central-1',
+        AWS_BEARER_TOKEN_BEDROCK: 'token',
+        OPENCODE_XDG_DATA_HOME: '/local/opencode',
+      }),
+    ).toEqual({
+      AWS_REGION: 'eu-central-1',
+      AWS_BEARER_TOKEN_BEDROCK: 'token',
+      XDG_DATA_HOME: '/local/opencode',
+      OPENCODE_DISABLE_AUTOUPDATE: '1',
+    });
+  });
+});
+
 describe('Kiro session capture', () => {
   it('lists sessions as JSON', () => {
     expect(buildKiroListSessions()).toEqual({
@@ -263,7 +326,7 @@ describe('Kiro credit capture', () => {
 
 describe('getDriver', () => {
   it('throws on an unsupported CLI', () => {
-    expect(() => getDriver('opencode')).toThrow(/unsupported CLI/);
+    expect(() => getDriver('codex')).toThrow(/unsupported CLI/);
   });
 });
 

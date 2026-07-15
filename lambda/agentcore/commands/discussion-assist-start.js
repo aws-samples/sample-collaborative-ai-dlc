@@ -8,7 +8,8 @@
 import gremlin from 'gremlin';
 import { runOneShotPrompt } from '../cli/one-shot.js';
 import { closeGraphSource } from '../mcp/graph-writer.js';
-import { materializeKiroAgent, materializeMcpConfig } from '../stage-materializer.js';
+import { selectCli } from '../cli/drivers.js';
+import { materializeCliContext } from '../stage-materializer.js';
 import { parseCliModels } from '../../shared/cli-models.js';
 import { parseTierModels } from '../../shared/tier-models.js';
 import { quorumCliModels } from '../model-resolver.js';
@@ -327,8 +328,7 @@ export const createDiscussionAssistStart = ({
   broadcast = async () => {},
   availableClis = [],
   oneShot = runOneShotPrompt,
-  materializeMcpConfigFn = materializeMcpConfig,
-  materializeKiroAgentFn = materializeKiroAgent,
+  materializeCliContextFn = materializeCliContext,
   env = process.env,
   mcpEntry = process.env.V2_MCP_ENTRY || new URL('../mcp/index.js', import.meta.url).pathname,
   busy = null,
@@ -389,19 +389,24 @@ export const createDiscussionAssistStart = ({
           stageInstanceId: null,
           role: 'reader',
         };
-        const [mcpConfigPath, agentName] = await Promise.all([
-          materializeMcpConfigFn({ workspaceDir: cwd, mcpEntry, scope, env }),
-          materializeKiroAgentFn({ workspaceDir: cwd, mcpEntry, scope, env }),
-        ]);
+        const cli = selectCli({ requested: requestedCli, availableClis });
+        const cliContext = cli
+          ? await materializeCliContextFn({
+              cli,
+              workspaceDir: cwd,
+              mcpEntry,
+              scope,
+              env,
+            })
+          : {};
         const out = await oneShot({
           prompt,
-          requestedCli,
+          requestedCli: cli ?? requestedCli,
           cliModels,
           availableClis,
           env,
           cwd,
-          mcpConfigPath,
-          agentName,
+          ...cliContext,
         });
         let message;
         if (out.ok) {

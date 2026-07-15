@@ -274,6 +274,13 @@ npm run typecheck:frontend  # tsc -b on the frontend package
 
 A pre-commit hook (managed by Husky + lint-staged) runs these checks plus Terraform formatting/linting and the affected unit tests before each commit. It is installed automatically by `npm install`. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
+AgentCore contributors should also see the [internal testing guide](docs/development/testing.md). It covers the deterministic AgentCore test project and the credentialed local Claude/Kiro/OpenCode lifecycle E2E:
+
+```bash
+npx vitest run --project=agentcore
+BEDROCK_API_KEY=... KIRO_API_KEY=... ./scripts/agent-e2e-testing.sh
+```
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to participate.

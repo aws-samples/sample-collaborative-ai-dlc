@@ -80,6 +80,8 @@ export const RESERVED_MCP_ENV_KEYS = new Set([
   // Bedrock / region control the drivers set.
   'CLAUDE_CODE_USE_BEDROCK',
   'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
+  'OPENCODE_CONFIG_CONTENT',
+  'OPENCODE_DISABLE_AUTOUPDATE',
   'IS_SANDBOX',
   'AWS_REGION',
   'BEDROCK_REGION',
@@ -92,6 +94,8 @@ export const RESERVED_MCP_ENV_KEYS = new Set([
   'AWS_CONTAINER_CREDENTIALS_FULL_URI',
   'AWS_WEB_IDENTITY_TOKEN_FILE',
   'AWS_ROLE_ARN',
+  // Runtime-owned local integration endpoint.
+  'DYNAMODB_LOCAL_ENDPOINT',
   // Package-manager / system env the runtime controls (OFF_MOUNT_CACHE_ENV +
   // the process essentials a hijack could weaponize).
   'npm_config_cache',
@@ -102,6 +106,9 @@ export const RESERVED_MCP_ENV_KEYS = new Set([
   'TMPDIR',
   'PATH',
   'HOME',
+  'XDG_DATA_HOME',
+  'OPENCODE_XDG_DATA_HOME',
+  'V2_OPENCODE_STORE_DIR',
   'LD_PRELOAD',
   'LD_LIBRARY_PATH',
   'NODE_OPTIONS',

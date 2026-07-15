@@ -14,6 +14,9 @@ import {
   buildKiroAgentConfig,
   materializeKiroAgent,
   KIRO_AGENT_NAME,
+  buildOpenCodeConfig,
+  materializeCliContext,
+  OPENCODE_INSTRUCTIONS,
   renderRulesDoc,
   materializeStage,
   materializeCustomRules,
@@ -192,7 +195,12 @@ describe('buildMcpConfig', () => {
         stageInstanceId: 'si1',
         role: 'author',
       },
-      env: { V2_PROCESS_TABLE: 'proc', NEPTUNE_ENDPOINT: 'neptune', AWS_REGION: 'us-east-1' },
+      env: {
+        V2_PROCESS_TABLE: 'proc',
+        DYNAMODB_LOCAL_ENDPOINT: 'http://dynamodb:8000',
+        NEPTUNE_ENDPOINT: 'neptune',
+        AWS_REGION: 'us-east-1',
+      },
     });
     expect(cfg.mcpServers.aidlc.command).toBe('node');
     expect(cfg.mcpServers.aidlc.args).toEqual(['/opt/agentcore/mcp/index.js']);
@@ -203,6 +211,7 @@ describe('buildMcpConfig', () => {
       V2_STAGE_INSTANCE_ID: 'si1',
       V2_MCP_ROLE: 'author',
       V2_PROCESS_TABLE: 'proc',
+      DYNAMODB_LOCAL_ENDPOINT: 'http://dynamodb:8000',
       NEPTUNE_ENDPOINT: 'neptune',
     });
   });
@@ -348,6 +357,27 @@ describe('materializeStage (workspace write)', () => {
     expect(ruleBody).toBe('REST only.');
   });
 
+  it('writes OpenCode instructions under .aidlc without touching repository instruction files', async () => {
+    const ws = await mkdtemp(path.join(tmpdir(), 'aidlc-ws-'));
+    await materializeStage({
+      workspaceDir: ws,
+      stage: stage(),
+      stageBody: 'do it',
+      agentPersona: 'persona',
+      knowledge: '',
+      rulesDoc: 'RUNTIME RULES',
+      mcpEntry: '/opt/agentcore/mcp/index.js',
+      scope: { executionId: 'e1', intentId: 'i1' },
+      cli: 'opencode',
+      customRules: [{ filename: 'api.md', body: 'REST only.' }],
+    });
+    expect(
+      await readFile(path.join(ws, '.aidlc', 'opencode-instructions', 'custom--api.md'), 'utf8'),
+    ).toBe('REST only.');
+    expect(await readFile(path.join(ws, '.aidlc', 'rules.md'), 'utf8')).toBe('RUNTIME RULES');
+    await expect(readFile(path.join(ws, 'AGENTS.md'), 'utf8')).rejects.toThrow();
+  });
+
   it('neutralizes path traversal (basename) and skips non-.md rule filenames', async () => {
     const ws = await mkdtemp(path.join(tmpdir(), 'aidlc-ws-'));
     const written = await materializeCustomRules({
@@ -408,6 +438,62 @@ describe('materializeKiroAgent (workspace write)', () => {
     const cfg = JSON.parse(await readFile(path.join(ws, '.kiro', 'agents', 'aidlc.json'), 'utf8'));
     expect(cfg.name).toBe('aidlc');
     expect(cfg.mcpServers.aidlc.env.V2_EXECUTION_ID).toBe('e1');
+  });
+});
+
+describe('OpenCode inline config', () => {
+  it('converts stdio and remote MCP servers to OpenCode-native transports', () => {
+    const cfg = buildOpenCodeConfig({
+      mcpEntry: '/opt/agentcore/mcp/index.js',
+      scope: { executionId: 'e1', intentId: 'i1' },
+      customServers: {
+        local: {
+          command: 'uvx',
+          args: ['server'],
+          env: { API_KEY: '${LOCAL_KEY}', MIXED: 'Bearer ${LOCAL_KEY}' },
+        },
+        remote: {
+          type: 'sse',
+          url: 'https://mcp.example/sse',
+          headers: { Authorization: 'Bearer ${REMOTE_KEY}' },
+        },
+      },
+    });
+    expect(cfg.share).toBe('disabled');
+    expect(cfg.instructions).toEqual(OPENCODE_INSTRUCTIONS);
+    expect(cfg.mcp.local).toEqual({
+      type: 'local',
+      command: ['uvx', 'server'],
+      environment: { API_KEY: '{env:LOCAL_KEY}', MIXED: 'Bearer {env:LOCAL_KEY}' },
+    });
+    expect(cfg.mcp.remote).toEqual({
+      type: 'remote',
+      url: 'https://mcp.example/sse',
+      headers: { Authorization: 'Bearer {env:REMOTE_KEY}' },
+    });
+  });
+
+  it('merges the reserved aidlc server last', () => {
+    const cfg = buildOpenCodeConfig({
+      mcpEntry: '/real/mcp.js',
+      scope: { executionId: 'e', intentId: 'i' },
+      customServers: { aidlc: { command: 'evil' }, other: { command: 'node' } },
+    });
+    expect(Object.keys(cfg.mcp).at(-1)).toBe('aidlc');
+    expect(cfg.mcp.aidlc.command).toEqual(['node', '/real/mcp.js']);
+  });
+
+  it('materializes only the selected CLI context and never writes .opencode', async () => {
+    const ws = await mkdtemp(path.join(tmpdir(), 'aidlc-opencode-'));
+    const context = await materializeCliContext({
+      cli: 'opencode',
+      workspaceDir: ws,
+      mcpEntry: '/opt/agentcore/mcp/index.js',
+      scope: { executionId: 'e', intentId: 'i' },
+    });
+    expect(JSON.parse(context.opencodeConfigContent).share).toBe('disabled');
+    await expect(readFile(path.join(ws, '.opencode', 'opencode.json'), 'utf8')).rejects.toThrow();
+    await expect(readFile(path.join(ws, 'AGENTS.md'), 'utf8')).rejects.toThrow();
   });
 });
 

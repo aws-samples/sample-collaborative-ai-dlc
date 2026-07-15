@@ -8,6 +8,15 @@ package-lock.json
 test
 **/test
 *.test.js
+# The local container E2E invokes this internal harness from the AgentCore
+# image. Keep its dependency closure while excluding the rest of the tests.
+!agentcore/test/
+agentcore/test/*
+!agentcore/test/local-e2e-config.js
+!agentcore/test/local-e2e-harness.mjs
+!agentcore/test/helpers/
+agentcore/test/helpers/*
+!agentcore/test/helpers/v2-table.js
 .dockerignore
 # Lambda packaging outputs — written DURING terraform apply by the
 # terraform-aws-modules/lambda build commands. Tarring them while they are

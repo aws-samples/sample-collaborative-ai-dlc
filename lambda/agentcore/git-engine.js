@@ -66,6 +66,7 @@ export const gitIdentity = (author = null) => {
 //   .kiro/        engine-materialized Kiro agent config (same env)
 //   .claude/      Claude's conversation store (CLAUDE_CONFIG_DIR)
 //   .kiro-data/   Kiro's durable SQLite store (V2_KIRO_STORE_DIR)
+//   .opencode-data/ OpenCode's durable SQLite store
 //   node_modules  the engine-owned off-mount SYMLINK (workspace.js
 //                 redirectHeavyDirs) — no trailing slash so the pattern
 //                 matches the symlink itself, not only a directory
@@ -73,11 +74,18 @@ export const gitIdentity = (author = null) => {
 // the user's .gitignore) and honored by `git add -A` and status. Excludes do
 // not untrack: a repo that ALREADY tracks such a path keeps it (the user's
 // explicit choice wins over our hygiene default).
-export const RUNTIME_EXCLUDES = ['.aidlc/', '.kiro/', '.claude/', '.kiro-data/', 'node_modules'];
+export const RUNTIME_EXCLUDES = [
+  '.aidlc/',
+  '.kiro/',
+  '.claude/',
+  '.kiro-data/',
+  '.opencode-data/',
+  'node_modules',
+];
 // Marker is VERSIONED: bumping it makes ensureRuntimeExcludes append the new
 // block on warm sessions that already hold an older one (duplicate patterns
 // are harmless to git; a stale block missing an entry is not).
-const EXCLUDE_MARKER = '# aidlc-engine runtime excludes v2 (managed; do not edit this block)';
+const EXCLUDE_MARKER = '# aidlc-engine runtime excludes v3 (managed; do not edit this block)';
 
 export const ensureRuntimeExcludes = async ({ dir }) => {
   try {

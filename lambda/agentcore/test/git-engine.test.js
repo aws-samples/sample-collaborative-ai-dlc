@@ -1195,7 +1195,8 @@ describe('findRemainingConflictMarkers', () => {
 // ── Runtime files must never enter the user's repo ───────────────────────────
 // The workspace mount doubles as the repo checkout (single-repo projects), and
 // it holds engine + CLI runtime state: .aidlc/ (MCP config with infra
-// endpoints), .kiro/, .claude/ and .kiro-data/ (conversation stores). The
+// endpoints), .kiro/, .claude/, .kiro-data/ and .opencode-data/
+// (conversation stores). The
 // stage-exit `git add -A` must leave that runtime state out of user commits,
 // including stages that produce no repo work at all.
 
@@ -1213,6 +1214,8 @@ const seedRuntimeFiles = async (work) => {
   await writeFile(path.join(work, '.claude', 'session.jsonl'), '{"conversation":"private"}');
   await mkdir(path.join(work, '.kiro-data'), { recursive: true });
   await writeFile(path.join(work, '.kiro-data', 'data.sqlite3'), 'db');
+  await mkdir(path.join(work, '.opencode-data', 'opencode'), { recursive: true });
+  await writeFile(path.join(work, '.opencode-data', 'opencode', 'opencode.db-wal'), 'wal');
   await mkdir(path.join(work, '.kiro', 'agents'), { recursive: true });
   await writeFile(path.join(work, '.kiro', 'agents', 'aidlc.json'), '{}');
 };
@@ -1244,7 +1247,7 @@ describe('runtime excludes', () => {
     expect(res.committed).toBe(true);
     const tree = await git(['ls-tree', '-r', '--name-only', 'HEAD'], work);
     expect(tree.stdout).toContain('src.js');
-    for (const bad of ['.aidlc', '.claude', '.kiro-data', '.kiro/']) {
+    for (const bad of ['.aidlc', '.claude', '.kiro-data', '.opencode-data', '.kiro/']) {
       expect(tree.stdout).not.toContain(bad);
     }
   });
@@ -1304,7 +1307,7 @@ describe('runtime excludes', () => {
     expect(tree.stdout).not.toContain('node_modules');
   });
 
-  it('the versioned marker upgrades a warm session holding only the v1 block', async () => {
+  it('the versioned marker upgrades a warm session holding an older block', async () => {
     const { work } = await initRemoteAndClone();
     // A warm mount whose exclude was written by the PRE-node_modules engine.
     await writeFile(
@@ -1313,11 +1316,12 @@ describe('runtime excludes', () => {
     );
     await ensureRuntimeExcludes({ dir: work });
     const exclude = await readFile(path.join(work, '.git', 'info', 'exclude'), 'utf8');
-    expect(exclude).toContain('runtime excludes v2');
+    expect(exclude).toContain('runtime excludes v3');
+    expect(exclude).toContain('.opencode-data/');
     expect(exclude).toContain('node_modules');
     // Idempotent from here on.
     await ensureRuntimeExcludes({ dir: work });
     const again = await readFile(path.join(work, '.git', 'info', 'exclude'), 'utf8');
-    expect(again.match(/runtime excludes v2/g)).toHaveLength(1);
+    expect(again.match(/runtime excludes v3/g)).toHaveLength(1);
   });
 });

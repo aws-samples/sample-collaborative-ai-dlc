@@ -35,7 +35,7 @@ describe('capabilities command', () => {
     const res = await capabilities(
       {},
       {
-        discoverInstalledClis: async () => ['claude', 'kiro'],
+        discoverInstalledClis: async () => ['claude', 'kiro', 'opencode'],
         captureChild: async () => ({ stdout: KIRO_LIST_JSON }),
         env: { KIRO_API_KEY: 'k' }, // claude has NO bearer token → not authed
       },
@@ -44,7 +44,20 @@ describe('capabilities command', () => {
     const byCli = Object.fromEntries(res.clis.map((c) => [c.cli, c]));
     expect(byCli.claude).toMatchObject({ installed: true, authed: false, available: false });
     expect(byCli.kiro).toMatchObject({ installed: true, authed: true, available: true });
+    expect(byCli.opencode).toMatchObject({ installed: true, authed: false, available: false });
     expect(res.kiroModels.models.map((m) => m.id)).toContain('claude-sonnet-4.6');
+  });
+
+  it('uses the same Bedrock bearer token as Claude for OpenCode auth', async () => {
+    const res = await capabilities(
+      {},
+      {
+        discoverInstalledClis: async () => ['opencode'],
+        env: { AWS_BEARER_TOKEN_BEDROCK: 'token' },
+      },
+    );
+    const byCli = Object.fromEntries(res.clis.map((c) => [c.cli, c]));
+    expect(byCli.opencode).toMatchObject({ installed: true, authed: true, available: true });
   });
 
   it('does not probe kiro models when kiro is not installed', async () => {

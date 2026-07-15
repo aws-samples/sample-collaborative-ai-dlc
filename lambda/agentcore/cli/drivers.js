@@ -111,6 +111,55 @@ const kiroDriver = {
   },
 };
 
+// ── OpenCode (headless) ──
+// `opencode run --format json --auto --model amazon-bedrock/<id>` emits JSONL
+// and reads the prompt from stdin. OpenCode chooses the session id; the runtime
+// captures the first `sessionID` event and resumes it with `--session`.
+const openCodeModel = (model) => {
+  if (!model) return null;
+  const value = String(model);
+  return value.includes('/') ? value : `amazon-bedrock/${value}`;
+};
+
+const opencodeDriver = {
+  name: 'opencode',
+  buildInvocation({ prompt, model, opencodeConfigContent = null }) {
+    const args = ['run', '--format', 'json', '--auto'];
+    const resolvedModel = openCodeModel(model);
+    if (resolvedModel) args.push('--model', resolvedModel);
+    return {
+      command: 'opencode',
+      args,
+      env: opencodeConfigContent ? { OPENCODE_CONFIG_CONTENT: opencodeConfigContent } : {},
+      prompt,
+      promptViaStdin: true,
+    };
+  },
+  buildResumeInvocation({ sessionId, answerMessage, model, opencodeConfigContent = null }) {
+    const args = ['run', '--format', 'json', '--auto', '--session', sessionId];
+    const resolvedModel = openCodeModel(model);
+    if (resolvedModel) args.push('--model', resolvedModel);
+    return {
+      command: 'opencode',
+      args,
+      env: opencodeConfigContent ? { OPENCODE_CONFIG_CONTENT: opencodeConfigContent } : {},
+      prompt: answerMessage,
+      promptViaStdin: true,
+    };
+  },
+  envForAuth(env) {
+    const out = {
+      AWS_REGION: env.BEDROCK_REGION || env.AWS_REGION || 'us-east-1',
+      XDG_DATA_HOME: env.OPENCODE_XDG_DATA_HOME || '/home/node/.opencode-data',
+      OPENCODE_DISABLE_AUTOUPDATE: '1',
+    };
+    if (env.AWS_BEARER_TOKEN_BEDROCK) {
+      out.AWS_BEARER_TOKEN_BEDROCK = env.AWS_BEARER_TOKEN_BEDROCK;
+    }
+    return out;
+  },
+};
+
 // The argv that lists Kiro's stored conversations as JSON. Run AFTER a fresh Kiro
 // stage exits to capture the id it created (Kiro can't be told the id up front).
 export const buildKiroListSessions = () => ({
@@ -201,10 +250,10 @@ export const parseLatestKiroSession = (stdout, cwd) => {
   return newest?.sessionId ?? null;
 };
 
-export const DRIVERS = { claude: claudeDriver, kiro: kiroDriver };
+export const DRIVERS = { claude: claudeDriver, kiro: kiroDriver, opencode: opencodeDriver };
 
 // CLIs the runtime can drive, in stable preference order.
-export const SUPPORTED_CLIS = ['claude', 'kiro'];
+export const SUPPORTED_CLIS = ['claude', 'kiro', 'opencode'];
 
 export const getDriver = (cli) => {
   const d = DRIVERS[cli];
@@ -225,4 +274,4 @@ export const selectCli = ({ requested, availableClis = [] } = {}) => {
   return null;
 };
 
-export { claudeDriver, kiroDriver };
+export { claudeDriver, kiroDriver, opencodeDriver };

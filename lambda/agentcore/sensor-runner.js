@@ -75,7 +75,19 @@ const globToRegExp = (glob) => {
 // Recursively list workspace files (relative paths), skipping VCS/dependency
 // dirs that would never be a stage's code output. Best-effort: a missing dir
 // yields []. Bounded by `cap` so a huge monorepo can't run the glob unbounded.
-const SKIP_DIRS = new Set(['.git', 'node_modules', '.aidlc', 'build', 'dist', '.next', 'coverage']);
+const SKIP_DIRS = new Set([
+  '.git',
+  'node_modules',
+  '.aidlc',
+  '.claude',
+  '.kiro',
+  '.kiro-data',
+  '.opencode-data',
+  'build',
+  'dist',
+  '.next',
+  'coverage',
+]);
 const listFiles = async (root, { cap = 5000 } = {}) => {
   const out = [];
   const walk = async (dir, rel) => {

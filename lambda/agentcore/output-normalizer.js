@@ -1,3 +1,5 @@
+import { createOpenCodeJsonlParser } from './cli/opencode-parser.js';
+
 const TOOL_DISPLAY_TYPES = new Set([
   'message',
   'tool',
@@ -282,8 +284,82 @@ const isStructuralNoiseLine = (text) => {
   return false;
 };
 
-export const createCliOutputSink = ({ cli, emit }) => {
+const openCodeToolName = (name) => {
+  const raw = String(name ?? 'tool')
+    .split(/[.:]/)
+    .at(-1);
+  return raw.startsWith('aidlc_') ? raw.slice('aidlc_'.length) : raw;
+};
+
+export const createCliOutputSink = ({
+  cli,
+  emit,
+  onSession = () => {},
+  onUsage = () => {},
+  onError: handleError = () => {},
+}) => {
   let pending = '';
+
+  if (cli === 'opencode') {
+    const parser = createOpenCodeJsonlParser({
+      onSession,
+      onUsage,
+      onText(text) {
+        const content = stripTerminalControls(text);
+        emitEvent(emit, content, {
+          type: 'message',
+          level: 'info',
+          summary: content.trim(),
+        });
+      },
+      onTool(toolEvent) {
+        const name = openCodeToolName(toolEvent.name);
+        // send_output already persists its canonical output through MCP.
+        if (name === 'send_output') return;
+        const rawLines = [
+          `Running tool ${name}\n`,
+          `${JSON.stringify(toolEvent.input ?? {})}\n`,
+          ...(toolEvent.output ? [`${String(toolEvent.output)}\n`] : []),
+          ...(toolEvent.error ? [`${String(toolEvent.error?.message ?? toolEvent.error)}\n`] : []),
+        ];
+        const event = displayForTool({
+          name,
+          rawLines,
+          completion: { ok: toolEvent.status === 'completed', duration: null },
+        });
+        emitEvent(emit, event.content, event.display);
+      },
+      onError(message, event) {
+        handleError(message, event);
+        const content = stripTerminalControls(`${message}\n`);
+        emitEvent(emit, content, {
+          type: 'raw',
+          level: 'error',
+          title: 'OpenCode error',
+          summary: content.trim(),
+          details: content.trim(),
+        });
+      },
+      onDiagnostic(line) {
+        const content = stripTerminalControls(`${line}\n`);
+        emitEvent(emit, content, {
+          type: 'raw',
+          level: 'info',
+          summary: content.trim(),
+          hiddenByDefault: true,
+        });
+      },
+    });
+    return {
+      state: parser.state,
+      write(chunk) {
+        parser.write(chunk);
+      },
+      flush() {
+        return parser.flush();
+      },
+    };
+  }
 
   if (cli !== 'claude') {
     let suppressTool = false;
@@ -412,4 +488,5 @@ export const __test = {
   displayForReadBatch,
   extractJson,
   isStructuralNoiseLine,
+  openCodeToolName,
 };

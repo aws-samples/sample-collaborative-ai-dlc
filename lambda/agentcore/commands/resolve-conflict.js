@@ -39,11 +39,13 @@ import { resolveStageModel } from '../model-resolver.js';
 import {
   materializeMcpConfig as defaultMaterializeMcpConfig,
   materializeKiroAgent as defaultMaterializeKiroAgent,
+  materializeOpenCodeConfig as defaultMaterializeOpenCodeConfig,
 } from '../stage-materializer.js';
 import {
   restoreKiroStore as defaultRestoreKiroStore,
   persistKiroStore as defaultPersistKiroStore,
 } from '../cli/kiro-store.js';
+import { withOpenCodeStore as defaultWithOpenCodeStore } from '../cli/opencode-store.js';
 
 const repoUrl = (repo) => (typeof repo === 'string' ? repo : repo.url);
 
@@ -110,8 +112,10 @@ export const resolveConflict = async (
     concludeConflictMerge = defaultConcludeConflictMerge,
     materializeMcpConfig = defaultMaterializeMcpConfig,
     materializeKiroAgent = defaultMaterializeKiroAgent,
+    materializeOpenCodeConfig = defaultMaterializeOpenCodeConfig,
     restoreKiroStore = defaultRestoreKiroStore,
     persistKiroStore = defaultPersistKiroStore,
+    withOpenCodeStore = defaultWithOpenCodeStore,
     urlsFor = null, // test seam for file:// remotes
   } = deps;
 
@@ -205,13 +209,21 @@ export const resolveConflict = async (
       await restoreKiroStore({ env }).catch(() => false);
       const agentName = await materializeKiroAgent({ workspaceDir, mcpEntry, scope, env });
       invocation = driver.buildInvocation({ prompt, model, agentName });
+    } else if (cli === 'opencode') {
+      const opencodeConfigContent = await materializeOpenCodeConfig({
+        workspaceDir,
+        mcpEntry,
+        scope,
+        env,
+      });
+      invocation = driver.buildInvocation({ prompt, model, opencodeConfigContent });
     } else {
       const mcpConfigPath = await materializeMcpConfig({ workspaceDir, mcpEntry, scope, env });
       invocation = driver.buildInvocation({ prompt, model, allowedTools: [], mcpConfigPath });
     }
     let result;
-    try {
-      result = await runChild({
+    const execute = () =>
+      runChild({
         command: invocation.command,
         args: invocation.args,
         env: { ...invocation.env, ...driver.envForAuth(env) },
@@ -220,6 +232,9 @@ export const resolveConflict = async (
         promptViaStdin: invocation.promptViaStdin,
         spawnFn,
       });
+    try {
+      result =
+        cli === 'opencode' ? await withOpenCodeStore({ env, operation: execute }) : await execute();
     } catch (e) {
       console.error(
         `[resolve-conflict] cli_error cli=${cli} code=${e?.code ?? '-'} msg=${e?.message}`,

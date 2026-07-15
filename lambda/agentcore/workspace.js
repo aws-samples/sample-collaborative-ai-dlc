@@ -236,6 +236,7 @@ const WALK_SKIP = new Set([
   '.kiro',
   '.claude',
   '.kiro-data',
+  '.opencode-data',
   'dist',
   'build',
   'coverage',

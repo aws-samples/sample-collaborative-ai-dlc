@@ -177,8 +177,13 @@ describe('resolveMcpSecrets — reserved-name guard (fail closed)', () => {
     ).rejects.toThrow(/AWS_BEARER_TOKEN_BEDROCK.*reserved/);
   });
 
-  it('rejects a ref that shadows an AWS credential / PATH', async () => {
-    for (const name of ['AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'PATH']) {
+  it('rejects a ref that shadows an AWS credential / runtime endpoint / PATH', async () => {
+    for (const name of [
+      'AWS_SECRET_ACCESS_KEY',
+      'AWS_SESSION_TOKEN',
+      'DYNAMODB_LOCAL_ENDPOINT',
+      'PATH',
+    ]) {
       await expect(
         resolveMcpSecrets({
           survivingGlobal: {},

@@ -24,7 +24,10 @@ import { QueryCommand } from '@aws-sdk/lib-dynamodb';
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 
-export const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const dynamoEndpoint = process.env.DYNAMODB_LOCAL_ENDPOINT || undefined;
+export const ddb = DynamoDBDocumentClient.from(
+  new DynamoDBClient(dynamoEndpoint ? { endpoint: dynamoEndpoint } : {}),
+);
 export const s3 = new S3Client({});
 const lambda = new LambdaClient({});
 

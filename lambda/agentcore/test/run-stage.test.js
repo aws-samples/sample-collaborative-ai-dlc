@@ -165,6 +165,7 @@ const baseDeps = (overrides = {}) => ({
   }),
   materializeMcpConfig: async () => '/ws/.aidlc/mcp.json',
   materializeKiroAgent: async () => 'aidlc',
+  materializeOpenCodeConfig: async () => '{"share":"disabled"}',
   renderRulesDoc,
   mcpEntry: '/opt/agentcore/mcp/index.js',
   availableClis: ['claude'],
@@ -1506,6 +1507,150 @@ describe('runStage — resume mode', () => {
     });
     const res = await runStage({ ...baseArgs, resumeFrom: 'q-1' }, deps);
     expect(res).toMatchObject({ ok: false, reason: 'resume_no_session' });
+  });
+});
+
+describe('runStage — OpenCode park/resume lifecycle', () => {
+  const openCodeSpawn =
+    ({ sessionId = 'ses_open_1', emitSession = true, capture } = {}) =>
+    (command, args) => {
+      capture?.({ command, args });
+      const child = new EventEmitter();
+      child.stdin = { end: (prompt) => capture?.({ prompt }) };
+      child.stdout = new EventEmitter();
+      setImmediate(() => {
+        if (emitSession) {
+          child.stdout.emit(
+            'data',
+            Buffer.from(
+              `${JSON.stringify({
+                type: 'text',
+                sessionID: sessionId,
+                part: { type: 'text', text: 'done' },
+              })}\n`,
+            ),
+          );
+        }
+        child.emit('close', 0);
+      });
+      return child;
+    };
+
+  it('persists the first observed session id before marking a parked stage waiting', async () => {
+    const store = spyStore({
+      execution: { pendingHumanTaskId: 'q-open' },
+      humanTask: {
+        humanTaskId: 'q-open',
+        status: 'pending',
+        createdAt: '2026-07-15T00:00:00Z',
+      },
+    });
+    const res = await runStage(
+      { ...baseArgs, requestedCli: 'opencode' },
+      baseDeps({
+        store,
+        availableClis: ['opencode'],
+        spawnFn: openCodeSpawn(),
+        withOpenCodeStore: async ({ operation }) => operation(),
+      }),
+    );
+    expect(res).toMatchObject({
+      ok: true,
+      state: 'WAITING_FOR_HUMAN',
+      cli: 'opencode',
+      cliSessionId: 'ses_open_1',
+    });
+    const sessionWrite = store.calls.find(
+      (call) => call[0] === 'updateStageState' && call[1].cliSessionId === 'ses_open_1',
+    );
+    const waitingWrite = store.calls.find(
+      (call) => call[0] === 'updateStageState' && call[1].state === 'WAITING_FOR_HUMAN',
+    );
+    expect(store.calls.indexOf(sessionWrite)).toBeLessThan(store.calls.indexOf(waitingWrite));
+  });
+
+  it('fails explicitly when a parked OpenCode run emitted no session id', async () => {
+    const store = spyStore({
+      execution: { pendingHumanTaskId: 'q-open' },
+      humanTask: { humanTaskId: 'q-open', status: 'pending' },
+    });
+    const res = await runStage(
+      { ...baseArgs, requestedCli: 'opencode' },
+      baseDeps({
+        store,
+        availableClis: ['opencode'],
+        spawnFn: openCodeSpawn({ emitSession: false }),
+        withOpenCodeStore: async ({ operation }) => operation(),
+      }),
+    );
+    expect(res).toMatchObject({ ok: false, reason: 'opencode_session_missing' });
+  });
+
+  it('resumes the persisted OpenCode session with the human answer', async () => {
+    const seen = [];
+    const res = await runStage(
+      { ...baseArgs, requestedCli: 'opencode', resumeFrom: 'q-open' },
+      baseDeps({
+        availableClis: ['opencode'],
+        store: spyStore({
+          humanTask: {
+            humanTaskId: 'q-open',
+            status: 'answered',
+            answer: { freeText: 'Proceed' },
+          },
+          stage: { cli: 'opencode', cliSessionId: 'ses_old' },
+        }),
+        spawnFn: openCodeSpawn({ emitSession: false, capture: (value) => seen.push(value) }),
+        withOpenCodeStore: async ({ operation }) => operation(),
+        hasOpenCodeStore: async () => true,
+      }),
+    );
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED', cli: 'opencode' });
+    const argv = seen.find((value) => value.args);
+    expect(argv.args[argv.args.indexOf('--session') + 1]).toBe('ses_old');
+    expect(seen.find((value) => value.prompt)?.prompt).toContain('Proceed');
+  });
+
+  it('demotes a recent resume to a fresh OpenCode session when the durable store is lost', async () => {
+    const seen = [];
+    const store = spyStore({
+      humanTask: {
+        humanTaskId: 'q-open',
+        status: 'answered',
+        answer: { freeText: 'Proceed' },
+      },
+      stage: { cli: 'opencode', cliSessionId: 'ses_old' },
+    });
+    const res = await runStage(
+      { ...baseArgs, requestedCli: 'opencode', resumeFrom: 'q-open' },
+      baseDeps({
+        store,
+        availableClis: ['opencode'],
+        env: {
+          BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6',
+          OPENCODE_XDG_DATA_HOME: '/home/node/.opencode-data',
+          V2_OPENCODE_STORE_DIR: '/mnt/workspace/.opencode-data',
+        },
+        hasOpenCodeStore: async () => false,
+        spawnFn: openCodeSpawn({
+          sessionId: 'ses_new',
+          capture: (value) => seen.push(value),
+        }),
+        withOpenCodeStore: async ({ operation }) => operation(),
+      }),
+    );
+    expect(res).toMatchObject({ ok: true, cli: 'opencode' });
+    expect(
+      store.calls.some(
+        (call) => call[0] === 'updateStageState' && call[1].cliSessionId === 'ses_new',
+      ),
+    ).toBe(true);
+    expect(seen.find((value) => value.args).args).not.toContain('--session');
+    expect(
+      store.calls.some(
+        (call) => call[0] === 'appendEvent' && call[1].type === 'v2.stage.recovered',
+      ),
+    ).toBe(true);
   });
 });
 

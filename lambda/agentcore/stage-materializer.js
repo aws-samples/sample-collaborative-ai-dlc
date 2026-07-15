@@ -229,6 +229,9 @@ export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }
         // (upstream §12a identity marker, enforced server-side). Empty → null.
         V2_REVIEWER_AGENT: scope.reviewerAgent ?? '',
         V2_PROCESS_TABLE: env.V2_PROCESS_TABLE ?? '',
+        // Local E2E only. Production leaves this empty and uses the normal AWS
+        // endpoint; the MCP child does not reliably inherit arbitrary CLI env.
+        DYNAMODB_LOCAL_ENDPOINT: env.DYNAMODB_LOCAL_ENDPOINT ?? '',
         NEPTUNE_ENDPOINT: env.NEPTUNE_ENDPOINT ?? '',
         GREMLIN_PROTOCOL: env.GREMLIN_PROTOCOL ?? 'wss',
         GREMLIN_PORT: env.GREMLIN_PORT ?? '8182',
@@ -236,6 +239,8 @@ export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }
         WEBSOCKET_ENDPOINT: env.WEBSOCKET_ENDPOINT ?? '',
         AWS_REGION: env.AWS_REGION ?? '',
         ARTIFACTS_BUCKET: env.ARTIFACTS_BUCKET ?? '',
+        V2_QUESTION_POLL_MS: env.V2_QUESTION_POLL_MS ?? '',
+        V2_QUESTION_PARK_GRACE_MS: env.V2_QUESTION_PARK_GRACE_MS ?? '',
       },
     },
   },
@@ -313,6 +318,113 @@ export const materializeKiroAgent = async ({
   return KIRO_AGENT_NAME;
 };
 
+const openCodeEnvRef = (value) =>
+  typeof value === 'string' ? value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, '{env:$1}') : value;
+
+const openCodeStringMap = (value = {}) =>
+  Object.fromEntries(Object.entries(value).map(([key, item]) => [key, openCodeEnvRef(item)]));
+
+// Convert the validated common MCP shape to OpenCode's native config:
+// local servers use one command argv array; HTTP and SSE both use the remote
+// transport. OpenCode's env interpolation is `{env:VAR}`, so `${VAR}` refs are
+// translated without exposing their resolved values.
+export const toOpenCodeMcp = (mcpServers = {}) => {
+  const out = {};
+  for (const [name, server] of Object.entries(mcpServers)) {
+    if (!server || typeof server !== 'object') continue;
+    if (server.command) {
+      out[name] = {
+        type: 'local',
+        command: [server.command, ...(server.args ?? [])],
+        ...(server.env ? { environment: openCodeStringMap(server.env) } : {}),
+      };
+    } else if (server.url) {
+      out[name] = {
+        type: 'remote',
+        url: server.url,
+        ...(server.headers ? { headers: openCodeStringMap(server.headers) } : {}),
+      };
+    }
+  }
+  return out;
+};
+
+export const OPENCODE_INSTRUCTIONS = ['.aidlc/rules.md', '.aidlc/opencode-instructions/*.md'];
+
+export const buildOpenCodeConfig = ({
+  mcpEntry,
+  scope,
+  env = {},
+  customServers = {},
+  instructions = OPENCODE_INSTRUCTIONS,
+}) => {
+  // buildMcpConfig writes the reserved server last. Preserve that insertion
+  // order through conversion so repository/user config cannot replace `aidlc`
+  // when this inline config is merged after project configuration.
+  const common = buildMcpConfig({ mcpEntry, scope, env, customServers }).mcpServers;
+  const { aidlc, ...others } = toOpenCodeMcp(common);
+  return {
+    $schema: 'https://opencode.ai/config.json',
+    share: 'disabled',
+    instructions,
+    mcp: { ...others, aidlc },
+  };
+};
+
+// OpenCode reads inline config after repository configuration. Returning the
+// JSON through OPENCODE_CONFIG_CONTENT leaves AGENTS.md and .opencode untouched
+// while retaining non-conflicting repository settings.
+export const materializeOpenCodeConfig = async ({
+  mcpEntry,
+  scope,
+  env = process.env,
+  customServers = {},
+}) => JSON.stringify(buildOpenCodeConfig({ mcpEntry, scope, env, customServers }));
+
+// Materialize only the selected CLI's context and return the kwargs accepted by
+// its driver. This is shared by stages, reviewers, conflict resolution, and
+// one-shot surfaces so no execution writes another CLI's repository files.
+export const materializeCliContext = async ({
+  cli,
+  workspaceDir,
+  mcpEntry,
+  scope,
+  env = process.env,
+  customServers = {},
+}) => {
+  if (cli === 'kiro') {
+    return {
+      agentName: await materializeKiroAgent({
+        workspaceDir,
+        mcpEntry,
+        scope,
+        env,
+        customServers,
+      }),
+    };
+  }
+  if (cli === 'opencode') {
+    return {
+      opencodeConfigContent: await materializeOpenCodeConfig({
+        workspaceDir,
+        mcpEntry,
+        scope,
+        env,
+        customServers,
+      }),
+    };
+  }
+  return {
+    mcpConfigPath: await materializeMcpConfig({
+      workspaceDir,
+      mcpEntry,
+      scope,
+      env,
+      customServers,
+    }),
+  };
+};
+
 // Per-driver NATIVE rules directory (relative to the workspace). The CLI
 // auto-loads markdown here at session start — even headless:
 //   Claude  → .claude/rules/*.md  (https://code.claude.com/docs/en/memory)
@@ -320,6 +432,7 @@ export const materializeKiroAgent = async ({
 const CLI_RULES_DIR = {
   claude: path.join('.claude', 'rules'),
   kiro: path.join('.kiro', 'steering'),
+  opencode: path.join('.aidlc', 'opencode-instructions'),
 };
 
 // Sanitize an uploaded rule filename and resolve its destination inside
@@ -390,7 +503,8 @@ export const materializeStage = async ({
 
   await materializeCustomRules({ workspaceDir, cli, customRules });
 
-  const mcpConfigPath = await materializeMcpConfig({
+  const cliContext = await materializeCliContext({
+    cli: cli ?? 'claude',
     workspaceDir,
     mcpEntry,
     scope,
@@ -408,5 +522,5 @@ export const materializeStage = async ({
     conductor,
     compiledContext,
   });
-  return { prompt, mcpConfigPath, rulesPath: rulesDoc ? path.join(aidlcDir, 'rules.md') : null };
+  return { prompt, ...cliContext, rulesPath: rulesDoc ? path.join(aidlcDir, 'rules.md') : null };
 };

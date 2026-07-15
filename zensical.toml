@@ -29,6 +29,9 @@ nav = [
     "using-the-platform/real-time-collaboration.md",
     "using-the-platform/git-integration.md",
   ] },
+  { "Development" = [
+    "development/testing.md",
+  ] },
   { "Roadmap" = "roadmap/index.md" },
 ]
 
