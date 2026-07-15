@@ -29,9 +29,10 @@
 
 const github = require('./git-providers/github');
 const gitlab = require('./git-providers/gitlab');
+const bitbucket = require('./git-providers/bitbucket');
 const { ProviderError } = require('./git-providers/errors');
 
-const REGISTRY = { github, gitlab };
+const REGISTRY = { github, gitlab, bitbucket };
 
 const DEFAULT_PROVIDER = 'github';
 

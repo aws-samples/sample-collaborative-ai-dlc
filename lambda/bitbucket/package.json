@@ -1,0 +1,12 @@
+{
+  "name": "bitbucket-lambda",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.441.0",
+    "@aws-sdk/client-secrets-manager": "^3.441.0",
+    "@aws-sdk/client-ssm": "^3.441.0",
+    "@aws-sdk/lib-dynamodb": "^3.441.0"
+  }
+}

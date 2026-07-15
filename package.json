@@ -2,6 +2,7 @@
   "name": "sample-collaborative-ai-dlc",
   "private": true,
   "workspaces": [
+    "lambda/bitbucket",
     "lambda/create-pr",
     "lambda/discussions",
     "lambda/github",
