@@ -864,3 +864,8 @@ export function useIntent() {
   }
   return context;
 }
+
+/** Safe variant that returns null when outside an IntentProvider (e.g. tests). */
+export function useIntentOptional(): IntentContextValue | null {
+  return useContext(IntentContext) ?? null;
+}

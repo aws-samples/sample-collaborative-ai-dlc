@@ -26,6 +26,7 @@ import { PresenceAvatars } from '@/components/domain/PresenceAvatars';
 import { type Project } from '@/services/projects';
 import { type Sprint } from '@/services/sprints';
 import { useProjectCache, useProjectSprintsCache } from '@/hooks/useProjectsCache';
+import { useIntent } from '@/contexts/IntentContext';
 
 interface AppHeaderProps {
   onToggleSidebar: () => void;
@@ -51,8 +52,10 @@ export function AppHeader({
     params.projectId && params.sprintId ? params.projectId : null,
   );
   const sprint = params.sprintId ? (sprints.find((s) => s.id === params.sprintId) ?? null) : null;
+  const { detail: intentDetail } = useIntent();
+  const intentTitle = intentDetail?.intent.title ?? null;
 
-  const breadcrumbs = buildBreadcrumbs(location.pathname, params, project, sprint);
+  const breadcrumbs = buildBreadcrumbs(location.pathname, params, project, sprint, intentTitle);
 
   const initials = user?.displayName
     ? user.displayName
@@ -204,6 +207,7 @@ function buildBreadcrumbs(
   params: Record<string, string | undefined>,
   project: Project | null,
   sprint: Sprint | null,
+  intentTitle: string | null,
 ): Breadcrumb[] {
   // Admin panel - just "Platform Admin"
   if (pathname === '/admin') {
@@ -236,6 +240,33 @@ function buildBreadcrumbs(
   // Add project name if available
   if (params.projectId && project) {
     crumbs.push({ label: project.name, href: `/space/${params.projectId}` });
+  }
+
+  // Intent routes: Spaces > Space > Intent > section
+  if (params.intentId && params.projectId) {
+    const intentLabel = intentTitle || 'Intent';
+    const intentHref = `/space/${params.projectId}/intent/${params.intentId}`;
+
+    if (pathname.endsWith('/observability')) {
+      crumbs.push({ label: intentLabel, href: intentHref });
+      crumbs.push({ label: 'Overview' });
+    } else if (pathname.endsWith('/audit')) {
+      crumbs.push({ label: intentLabel, href: intentHref });
+      crumbs.push({ label: 'Audit' });
+    } else if (pathname.endsWith('/graph')) {
+      crumbs.push({ label: intentLabel, href: intentHref });
+      crumbs.push({ label: 'Graph' });
+    } else if (pathname.endsWith('/compose')) {
+      crumbs.push({ label: intentLabel, href: intentHref });
+      crumbs.push({ label: 'Compose' });
+    } else if (pathname.includes('/review/')) {
+      crumbs.push({ label: intentLabel, href: intentHref });
+      crumbs.push({ label: 'Review' });
+    } else {
+      crumbs.push({ label: intentLabel, href: intentHref });
+      crumbs.push({ label: 'Work' });
+    }
+    return crumbs;
   }
 
   // Add sprint name and phase if available
