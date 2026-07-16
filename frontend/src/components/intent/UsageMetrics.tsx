@@ -1,5 +1,7 @@
+import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { formatTokens, formatCost, formatMillis, contextGaugeTone } from '@/lib/metricAggregation';
+import { BarChart3, ChevronDown } from 'lucide-react';
 
 const KNOWN_LABELS: Record<string, string> = {
   artifactsCreated: 'Artifacts created',
@@ -34,6 +36,15 @@ interface UsageMetricsProps {
   // 'peak' relabels the context gauge when rolled up across intents/stages.
   contextLabel?: string;
   className?: string;
+  /** When true, show only core stats (Input/Output/Total tokens + Cost) by
+   *  default; advanced metrics (context gauge, agent launch, extras) are hidden
+   *  behind a "More stats" disclosure. Has no effect when no advanced data exists. */
+  collapsibleAdvanced?: boolean;
+  /** When true, render ONLY core metrics (Input/Output/Total tokens + Cost) —
+   *  advanced metrics (agent launch, context gauge, extras) are never shown,
+   *  even if data exists. Use at Space scope where advanced per-intent stats
+   *  are not meaningful. */
+  coreOnly?: boolean;
 }
 
 // A slim threshold-colored bar for the context-window percentage. Not the shared
@@ -71,46 +82,74 @@ export function UsageMetrics({
   cost,
   contextLabel = 'Context window',
   className,
+  collapsibleAdvanced = false,
+  coreOnly = false,
 }: UsageMetricsProps) {
   const tokensIn = metrics.tokensInput ?? 0;
   const tokensOut = metrics.tokensOutput ?? 0;
   const hasTokens = 'tokensInput' in metrics || 'tokensOutput' in metrics;
-  const ctx = metrics.contextWindowPct;
-  // Agent launching time (cold start), dispatch → job accept. A gauge:max, so
-  // at any rolled-up scope this is the slowest launch leg.
-  const launchMs = metrics.agentLaunchMs;
-  // Any numeric key we don't render explicitly, shown generically so an
-  // agent-chosen key isn't silently dropped.
-  const extras = Object.entries(metrics).filter(
-    ([k]) => !['tokensInput', 'tokensOutput', 'contextWindowPct', 'agentLaunchMs'].includes(k),
-  );
+  const ctx = coreOnly ? undefined : metrics.contextWindowPct;
+  const launchMs = coreOnly ? undefined : metrics.agentLaunchMs;
+  const extras = coreOnly
+    ? []
+    : Object.entries(metrics).filter(
+        ([k]) => !['tokensInput', 'tokensOutput', 'contextWindowPct', 'agentLaunchMs'].includes(k),
+      );
+
+  const hasAdvanced = ctx !== undefined || launchMs !== undefined || extras.length > 0;
+  const [showAdvanced, setShowAdvanced] = useState(!collapsibleAdvanced);
 
   const nothing =
     !hasTokens && ctx === undefined && launchMs === undefined && extras.length === 0 && !cost;
   if (nothing) return null;
 
   return (
-    <div className={cn('space-y-3', className)}>
+    <div className={cn('space-y-3', className)} data-testid="usage-metrics">
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         {hasTokens && <Stat label="Input tokens" value={formatTokens(tokensIn)} />}
         {hasTokens && <Stat label="Output tokens" value={formatTokens(tokensOut)} />}
         {hasTokens && <Stat label="Total tokens" value={formatTokens(tokensIn + tokensOut)} />}
-        {cost && (
+        {(cost || collapsibleAdvanced || coreOnly) && (
           <Stat
-            label={cost.priced && cost.estimated ? 'Cost (est.)' : 'Cost'}
+            label={cost?.priced && cost.estimated ? 'Cost (est.)' : 'Cost'}
             value={
-              cost.priced
+              cost?.priced
                 ? `${cost.estimated ? '~' : ''}${formatCost(cost.totalCost, cost.currency)}`
                 : 'unavailable'
             }
           />
         )}
-        {launchMs !== undefined && <Stat label="Agent launch" value={formatMillis(launchMs)} />}
-        {extras.map(([k, v]) => (
-          <Stat key={k} label={humanizeKey(k)} value={v.toLocaleString()} />
-        ))}
+        {(!collapsibleAdvanced || showAdvanced) && (
+          <>
+            {launchMs !== undefined && <Stat label="Agent launch" value={formatMillis(launchMs)} />}
+            {extras.map(([k, v]) => (
+              <Stat key={k} label={humanizeKey(k)} value={v.toLocaleString()} />
+            ))}
+          </>
+        )}
       </div>
-      {ctx !== undefined && <ContextGauge pct={ctx} label={contextLabel} />}
+      {(!collapsibleAdvanced || showAdvanced) && ctx !== undefined && (
+        <ContextGauge pct={ctx} label={contextLabel} />
+      )}
+      {collapsibleAdvanced && hasAdvanced && (
+        <button
+          type="button"
+          onClick={() => setShowAdvanced((s) => !s)}
+          className={cn(
+            'inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1',
+            'text-[11px] font-medium text-muted-foreground',
+            'hover:bg-accent hover:text-foreground transition-colors',
+          )}
+          aria-expanded={showAdvanced}
+          data-testid="usage-more-stats"
+        >
+          <BarChart3 className="h-3 w-3" />
+          <span>Usage details</span>
+          <ChevronDown
+            className={cn('h-3 w-3 transition-transform', showAdvanced && 'rotate-180')}
+          />
+        </button>
+      )}
     </div>
   );
 }
