@@ -8,6 +8,7 @@ import {
   confirmSignIn,
   updateUserAttributes,
 } from 'aws-amplify/auth';
+import { clearPersistedCache } from '@/lib/persistentCache';
 
 // Configure Amplify
 Amplify.configure({
@@ -100,6 +101,7 @@ export const authService = {
 
   async logout(): Promise<void> {
     try {
+      clearPersistedCache();
       await signOut();
     } catch (error) {
       console.error('Logout error:', error);

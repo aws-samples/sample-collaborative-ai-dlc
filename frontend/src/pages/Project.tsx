@@ -48,6 +48,7 @@ import { GitRepoLink } from '@/components/GitRepoLink';
 import { effectiveSprintStatus, isActiveStatus } from '@/lib/sprintStatus';
 import { intentsService, type Intent, type ProjectMetrics } from '@/services/intents';
 import { UsageMetrics } from '@/components/intent/UsageMetrics';
+import { loadPersisted, persist } from '@/lib/persistentCache';
 
 const STATUS_ICON: Record<string, typeof Loader2> = {
   running: Loader2,
@@ -370,7 +371,20 @@ function IntentsView({
   projectId: string;
   onNavigate: (path: string) => void;
 }) {
-  const cached = intentsCache.get(projectId);
+  let cached = intentsCache.get(projectId);
+  if (!cached) {
+    const persisted = loadPersisted<{ intents: Intent[]; usage: ProjectMetrics | null }>(
+      `intents:${projectId}`,
+    );
+    if (persisted) {
+      cached = {
+        intents: persisted.data.intents,
+        usage: persisted.data.usage,
+        fetchedAt: persisted.fetchedAt,
+      };
+      intentsCache.set(projectId, cached);
+    }
+  }
   const [intents, setIntents] = useState<Intent[]>(cached?.intents ?? []);
   const [loading, setLoading] = useState(!cached);
   const [error, setError] = useState<string | null>(null);
@@ -420,10 +434,15 @@ function IntentsView({
       .list(projectId)
       .then((data) => {
         setIntents(data);
-        intentsCache.set(projectId, {
+        const entry: IntentsCacheEntry = {
           intents: data,
           usage: intentsCache.get(projectId)?.usage ?? null,
           fetchedAt: Date.now(),
+        };
+        intentsCache.set(projectId, entry);
+        persist(`intents:${projectId}`, {
+          data: { intents: entry.intents, usage: entry.usage },
+          fetchedAt: entry.fetchedAt,
         });
       })
       .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load intents'))
@@ -435,6 +454,10 @@ function IntentsView({
         const existing = intentsCache.get(projectId);
         if (existing) {
           existing.usage = data;
+          persist(`intents:${projectId}`, {
+            data: { intents: existing.intents, usage: existing.usage },
+            fetchedAt: existing.fetchedAt,
+          });
         }
       })
       .catch(() => setUsage(null));
