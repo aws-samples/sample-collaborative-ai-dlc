@@ -31,7 +31,7 @@ export default function IntentGraphPage() {
 
   if (contextLoading && !nodes.length) {
     return (
-      <div className="mx-auto w-full max-w-[1600px] px-6 py-6 space-y-4">
+      <div className="space-y-4">
         <Skeleton className="h-8 w-64" />
         <Skeleton className="h-[400px] rounded-lg" />
       </div>
@@ -39,11 +39,7 @@ export default function IntentGraphPage() {
   }
 
   if (contextError) {
-    return (
-      <div className="mx-auto w-full max-w-[1600px] px-6 py-6 text-sm text-destructive">
-        {contextError}
-      </div>
-    );
+    return <div className="text-sm text-destructive">{contextError}</div>;
   }
 
   return (

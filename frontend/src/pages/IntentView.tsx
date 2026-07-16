@@ -213,7 +213,7 @@ export default function IntentView() {
   if (!projectId || !intentId) return <div className="p-6">Intent not found</div>;
   if (loading && !detail) {
     return (
-      <div className="max-w-5xl mx-auto p-6 space-y-4">
+      <div className="space-y-4">
         <Skeleton className="h-8 w-64" />
         <Skeleton className="h-40 rounded-lg" />
       </div>
@@ -254,7 +254,7 @@ export default function IntentView() {
     Date.now() - new Date(lastTouch).getTime() > 120_000;
 
   return (
-    <div className="max-w-5xl mx-auto p-6 space-y-6">
+    <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-3 min-w-0">

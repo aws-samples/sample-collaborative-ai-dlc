@@ -87,7 +87,7 @@ export default function IntentAuditPage() {
 
   if ((contextLoading || loading) && !audit) {
     return (
-      <div className="mx-auto w-full max-w-[1200px] px-6 py-6 space-y-4">
+      <div className="space-y-4">
         <Skeleton className="h-8 w-64" />
         <Skeleton className="h-24 rounded-lg" />
         <Skeleton className="h-48 rounded-lg" />
@@ -97,9 +97,7 @@ export default function IntentAuditPage() {
 
   if (contextError || error || !audit) {
     return (
-      <div className="mx-auto w-full max-w-[1200px] px-6 py-6 text-sm text-destructive">
-        {contextError ?? error ?? 'Audit unavailable'}
-      </div>
+      <div className="text-sm text-destructive">{contextError ?? error ?? 'Audit unavailable'}</div>
     );
   }
 
@@ -114,7 +112,7 @@ export default function IntentAuditPage() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto w-full max-w-[1200px] px-6 py-6 space-y-6">
+      <div className="space-y-6">
         {/* ── HEADER ─────────────────────────────────────────────────── */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3 min-w-0">

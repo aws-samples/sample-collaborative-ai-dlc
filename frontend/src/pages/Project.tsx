@@ -98,7 +98,7 @@ export default function Project() {
 
   if (!project && projectLoading) {
     return (
-      <div className="max-w-5xl mx-auto p-6 space-y-4">
+      <div className="space-y-4">
         <Skeleton className="h-8 w-48" />
         <Skeleton className="h-4 w-64" />
         <div className="grid md:grid-cols-2 gap-3">
@@ -119,7 +119,7 @@ export default function Project() {
   }
 
   return (
-    <div className="max-w-5xl mx-auto p-6 space-y-6">
+    <div className="space-y-6">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-3 min-w-0">
           <FolderGit2 className="h-5 w-5 text-primary shrink-0" />
@@ -427,7 +427,7 @@ function IntentsView({
   };
 
   return (
-    <div className="max-w-5xl mx-auto p-6 space-y-6">
+    <div className="space-y-6">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-3 min-w-0">
           <FolderGit2 className="h-5 w-5 text-primary shrink-0" />

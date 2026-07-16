@@ -673,18 +673,10 @@ export default function WorkflowComposer() {
   }, [preview]);
 
   if (loading) {
-    return (
-      <div className="mx-auto w-full max-w-[1600px] px-6 py-6 text-sm text-muted-foreground">
-        Loading…
-      </div>
-    );
+    return <div className="text-sm text-muted-foreground">Loading…</div>;
   }
   if (!workflow) {
-    return (
-      <div className="mx-auto w-full max-w-[1600px] px-6 py-6 text-sm text-destructive">
-        {error ?? 'Not found'}
-      </div>
-    );
+    return <div className="text-sm text-destructive">{error ?? 'Not found'}</div>;
   }
 
   const placedStageIds = new Set(workflow.placements.map((p) => p.stageId));
@@ -704,7 +696,7 @@ export default function WorkflowComposer() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto flex w-full max-w-[1800px] flex-col gap-4 px-6 py-6">
+      <div className="flex flex-col gap-4">
         <div className="flex items-center gap-3">
           <Button
             variant="ghost"

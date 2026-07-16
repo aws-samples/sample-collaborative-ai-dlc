@@ -229,7 +229,7 @@ export default function IntentObservabilityPage() {
 
   if (loading && !detail) {
     return (
-      <div className="mx-auto w-full max-w-[1600px] px-6 py-6 space-y-4">
+      <div className="space-y-4">
         <Skeleton className="h-8 w-64" />
         <Skeleton className="h-12 rounded-lg" />
         <Skeleton className="h-[300px] rounded-lg" />
@@ -239,11 +239,7 @@ export default function IntentObservabilityPage() {
   }
 
   if (error || !detail) {
-    return (
-      <div className="mx-auto w-full max-w-[1600px] px-6 py-6 text-sm text-destructive">
-        {error ?? 'Intent not found'}
-      </div>
-    );
+    return <div className="text-sm text-destructive">{error ?? 'Intent not found'}</div>;
   }
 
   const intent = detail.intent;
@@ -251,7 +247,7 @@ export default function IntentObservabilityPage() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto w-full max-w-[1600px] px-6 py-6 space-y-6">
+      <div className="space-y-6">
         {/* ── HEADER (v1 drill-down mirror) ──────────────────────────── */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3 min-w-0">
