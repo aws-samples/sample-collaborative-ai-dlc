@@ -11,9 +11,29 @@ import { CommandPalette } from '@/components/layout/CommandPalette';
 import { DiscussionProvider } from '@/components/discussion';
 import { IntentProvider } from '@/contexts/IntentContext';
 import { useProjectSprintsCache } from '@/hooks/useProjectsCache';
-import { useState, useCallback, useMemo, useEffect } from 'react';
+import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { useResizablePanel } from '@/hooks/useResizablePanel';
+
+// ---------------------------------------------------------------------------
+// Route classification: determines whether the activity panel should default
+// open (Work routes) or closed (non-work intent sections, top-level pages).
+// Exported for testing.
+// ---------------------------------------------------------------------------
+
+const NON_WORK_SUFFIXES = ['/graph', '/audit', '/compose', '/observability'];
+
+/** True when the given pathname represents a "work" route where the panel opens. */
+export function shouldDefaultOpen(pathname: string): boolean {
+  // Sprint routes are always work routes.
+  if (/\/sprint\//.test(pathname)) return true;
+  // Intent routes: open unless the path ends with a non-work section.
+  if (/\/intent\//.test(pathname)) {
+    return !NON_WORK_SUFFIXES.some((suffix) => pathname.endsWith(suffix));
+  }
+  // Top-level (dashboard, observability, blocks, etc.) — panel hidden anyway.
+  return false;
+}
 
 // Side panel sizing: user-resizable on large screens (drag the inner edge,
 // double-click to reset), persisted across sessions.
@@ -47,15 +67,14 @@ export function AppShell() {
   // mounted in the same slots as the sprint one and backed by IntentProvider.
   const inIntent = !!intentId;
   const onProjectPage = !!projectId && !inSprint && !inIntent;
-  const onIntentSubPage =
-    location.pathname.endsWith('/graph') ||
-    location.pathname.endsWith('/observability') ||
-    location.pathname.endsWith('/audit');
-  // The compose page edits a DRAFT (no phase progress yet) and has its own
-  // header Back — the phase-progress pipeline bar would render empty chips and
-  // a duplicate Back, so suppress it there.
   const onComposePage = location.pathname.endsWith('/compose');
-  const showPipelineBar = inIntent && !onIntentSubPage && !onComposePage;
+  const onWorkSection =
+    inIntent &&
+    !onComposePage &&
+    !location.pathname.endsWith('/observability') &&
+    !location.pathname.endsWith('/graph') &&
+    !location.pathname.endsWith('/audit');
+  const showPipelineBar = onWorkSection;
 
   // Breakpoint (Tailwind lg): below it BOTH side panels render as NON-modal
   // overlays above the content instead of grid columns, so they stay usable
@@ -74,11 +93,10 @@ export function AppShell() {
     return active?.id ?? projectSprints[0]?.id ?? null;
   }, [inSprint, sprintId, projectSprints]);
 
-  // Small screens start with the panels closed (as overlays they'd cover the
-  // content); large screens keep the previous always-open default.
-  const [activityPanelOpen, setActivityPanelOpen] = useState(
-    () => window.matchMedia('(min-width: 1024px)').matches,
-  );
+  const [activityPanelOpen, setActivityPanelOpen] = useState(() => {
+    if (!window.matchMedia('(min-width: 1024px)').matches) return false;
+    return shouldDefaultOpen(window.location.pathname);
+  });
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     () => !window.matchMedia('(min-width: 1024px)').matches,
   );
@@ -86,9 +104,16 @@ export function AppShell() {
   const activityPanel = useResizablePanel(ACTIVITY_PANEL_SIZING);
   const sidebarPanel = useResizablePanel(SIDEBAR_SIZING);
 
+  // Track the route category so the panel default reapplies on section
+  // navigation but not on every render — preserves manual toggle.
+  const prevRouteDefault = useRef<boolean | null>(null);
   useEffect(() => {
-    setActivityPanelOpen(inSprint || (inIntent && !onIntentSubPage));
-  }, [inSprint, inIntent, onIntentSubPage]);
+    const nextDefault = shouldDefaultOpen(location.pathname);
+    if (prevRouteDefault.current === null || nextDefault !== prevRouteDefault.current) {
+      prevRouteDefault.current = nextDefault;
+      setActivityPanelOpen(nextDefault);
+    }
+  }, [location.pathname]);
 
   const showSidebar = !sidebarCollapsed;
   const showActivity = (inSprint || inIntent || onProjectPage) && activityPanelOpen;
