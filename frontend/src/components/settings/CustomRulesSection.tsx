@@ -224,41 +224,43 @@ export function CustomRulesSection({
       <SettingsCard
         icon={<FileText />}
         title={title}
-        description={`${description} Maximum ${MAX_CUSTOM_RULES} documents, 100 KB each. Only .md files.`}
+        description={
+          canEdit
+            ? `${description} Maximum ${MAX_CUSTOM_RULES} documents, 100 KB each. Only .md files.`
+            : description
+        }
         headerAction={uploadButton}
       >
         {docs.length === 0 ? (
-          <p className="text-sm text-muted-foreground text-center py-4">
-            No custom rules uploaded.
-          </p>
+          <p className="text-sm text-muted-foreground text-center py-4">No custom rules.</p>
         ) : (
           <div className="divide-y divide-border border rounded-md">
             {docs.map((doc) => (
               <div key={doc.filename} className="px-3 py-2 flex items-center justify-between gap-2">
                 <span className="font-mono text-xs truncate">{doc.filename}</span>
-                <div className="flex items-center gap-1 shrink-0">
-                  <Button
-                    asChild={!!doc.downloadUrl}
-                    size="icon"
-                    variant="ghost"
-                    className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                    disabled={!doc.downloadUrl}
-                    title="Download"
-                  >
-                    {doc.downloadUrl ? (
-                      <a
-                        href={doc.downloadUrl}
-                        download={doc.filename}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                      >
+                {canEdit && (
+                  <div className="flex items-center gap-1 shrink-0">
+                    <Button
+                      asChild={!!doc.downloadUrl}
+                      size="icon"
+                      variant="ghost"
+                      className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                      disabled={!doc.downloadUrl}
+                      title="Download"
+                    >
+                      {doc.downloadUrl ? (
+                        <a
+                          href={doc.downloadUrl}
+                          download={doc.filename}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          <Download className="h-3.5 w-3.5" />
+                        </a>
+                      ) : (
                         <Download className="h-3.5 w-3.5" />
-                      </a>
-                    ) : (
-                      <Download className="h-3.5 w-3.5" />
-                    )}
-                  </Button>
-                  {canEdit && (
+                      )}
+                    </Button>
                     <Button
                       size="icon"
                       variant="ghost"
@@ -269,8 +271,8 @@ export function CustomRulesSection({
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
             ))}
           </div>

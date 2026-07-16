@@ -118,7 +118,7 @@ export function GeneralTab({ project, canEdit, onProjectUpdated }: Props) {
               value={editName}
               onChange={(e) => setEditName(e.target.value)}
               disabled={!canEdit || savingName}
-              className="text-sm h-9"
+              className="text-sm h-9 disabled:cursor-default"
               required
             />
           </div>
@@ -158,7 +158,7 @@ export function GeneralTab({ project, canEdit, onProjectUpdated }: Props) {
                 max={900}
                 value={parkReleaseSeconds}
                 onChange={(e) => setParkReleaseSeconds(Number(e.target.value))}
-                className="font-mono text-sm h-9"
+                className="font-mono text-sm h-9 disabled:cursor-default"
                 disabled={!canEdit || savingRuntime}
               />
               <p className="text-[11px] text-muted-foreground">
@@ -176,7 +176,7 @@ export function GeneralTab({ project, canEdit, onProjectUpdated }: Props) {
                 max={64}
                 value={maxParallelUnits}
                 onChange={(e) => setMaxParallelUnits(Number(e.target.value))}
-                className="font-mono text-sm h-9"
+                className="font-mono text-sm h-9 disabled:cursor-default"
                 disabled={!canEdit || savingRuntime}
               />
               <p className="text-[11px] text-muted-foreground">
@@ -192,7 +192,7 @@ export function GeneralTab({ project, canEdit, onProjectUpdated }: Props) {
                 onValueChange={(v) => setStageSkipping(v as StageSkippingOverride)}
                 disabled={!canEdit || savingRuntime}
               >
-                <SelectTrigger id="stage-skipping" className="h-9 text-sm">
+                <SelectTrigger id="stage-skipping" className="h-9 text-sm disabled:cursor-default">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -229,7 +229,7 @@ export function GeneralTab({ project, canEdit, onProjectUpdated }: Props) {
               </p>
             </div>
           </div>
-          {canEdit ? (
+          {canEdit && (
             <SaveStatusButton
               onClick={saveRuntime}
               disabled={!runtimeChanged}
@@ -238,10 +238,6 @@ export function GeneralTab({ project, canEdit, onProjectUpdated }: Props) {
               result={runtimeResult}
               errorMessage={runtimeError}
             />
-          ) : (
-            <p className="text-[11px] text-muted-foreground">
-              Only owners and admins can change runtime settings.
-            </p>
           )}
         </div>
       </SettingsCard>

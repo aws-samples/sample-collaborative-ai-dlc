@@ -2142,13 +2142,27 @@ describe('GET/PUT /projects/:id/custom-mcp-servers', () => {
     expect(res.statusCode).toBe(403);
   });
 
-  it('rejects a plain member on GET (config may carry secrets)', async () => {
+  it('lets a plain member GET server names but not the raw config', async () => {
     const ownerSub = `u-${randomUUID()}`;
     const memberSub = `u-${randomUUID()}`;
     const { id } = await createProject(ownerSub);
     await addMember(id, memberSub, 'member');
+    // Owner stores a config carrying an inline secret in env.
+    const json = JSON.stringify({
+      'my-tool': { command: 'npx', args: ['-y', 'p'], env: { API_KEY: 'super-secret-value' } },
+    });
+    await handler({
+      ...customMcpEvent('PUT', id, { body: JSON.stringify({ customMcpServers: json }) }),
+      ...claims(ownerSub),
+    });
+
     const res = await handler({ ...customMcpEvent('GET', id), ...claims(memberSub) });
-    expect(res.statusCode).toBe(403);
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body).toEqual({ mcpServerNames: ['my-tool'] });
+    // The raw config (and any inline secret) is never sent to a member.
+    expect(body.customMcpServers).toBeUndefined();
+    expect(res.body).not.toContain('super-secret-value');
   });
 
   it('blocks a save whose ${VAR} collides with a surviving global server ref', async () => {
@@ -2408,12 +2422,24 @@ describe('GET/PUT /projects/:id/custom-rules', () => {
     expect(res.statusCode).toBe(403);
   });
 
-  it('rejects a plain member on GET', async () => {
+  it('lets a plain member GET filenames but not download URLs', async () => {
     const ownerSub = `u-${randomUUID()}`;
     const memberSub = `u-${randomUUID()}`;
     const { id } = await createProject(ownerSub);
     await addMember(id, memberSub, 'member');
+    // Owner uploads + commits a rule so there is something to list.
+    putObject(`custom-rules/${id}/standards.md`);
+    await handler({
+      ...customRulesEvent('PUT', id, {
+        body: JSON.stringify({ customRules: [{ filename: 'standards.md' }], mode: 'commit' }),
+      }),
+      ...claims(ownerSub),
+    });
+
     const res = await handler({ ...customRulesEvent('GET', id), ...claims(memberSub) });
-    expect(res.statusCode).toBe(403);
+    expect(res.statusCode).toBe(200);
+    const docs = JSON.parse(res.body).customRules;
+    expect(docs).toEqual([{ filename: 'standards.md' }]);
+    expect(docs.every((d) => d.downloadUrl === undefined)).toBe(true);
   });
 });

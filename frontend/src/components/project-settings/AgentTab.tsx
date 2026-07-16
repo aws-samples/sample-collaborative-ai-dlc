@@ -12,7 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Bot, CheckCircle2, ChevronRight, Cpu, ExternalLink } from 'lucide-react';
+import { Bot, CheckCircle2, ChevronRight, Cpu, ExternalLink, Plug } from 'lucide-react';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { cn } from '@/lib/utils';
 import {
@@ -119,6 +119,8 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
   // Custom MCP servers (raw JSON string) + custom agent rules (uploaded .md).
   const [customMcpServers, setCustomMcpServers] = useState('{}');
   const [projectMcpSecretsSet, setProjectMcpSecretsSet] = useState<Record<string, boolean>>({});
+  // Members can't read the raw config, only the derived server names (read-only).
+  const [mcpServerNames, setMcpServerNames] = useState<string[]>([]);
   const [customRules, setCustomRules] = useState<CustomRule[]>([]);
   const [customMsg, setCustomMsg] = useState<{
     kind: 'success' | 'error';
@@ -149,19 +151,51 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
       });
   }, []);
 
-  // Load the project's custom MCP servers + custom rules (non-blocking).
-  // Restricted to owners/admins on the backend, so only fetch when canEdit.
+  // Custom rules (steering docs) are readable by any member — fetch for all so
+  // members can see which docs the agent runs with. The backend returns
+  // filenames only (no download URL) for non-editors.
+  useEffect(() => {
+    projectsService
+      .getCustomRules(project.id)
+      .then((rulesResp) => setCustomRules(rulesResp.customRules ?? []))
+      .catch(() => setCustomRules([]));
+  }, [project.id]);
+
+  // Custom MCP servers: the GET is role-aware. Owners/admins get the raw config
+  // (editable); members get server names only (read-only list). Fetch for all.
+  useEffect(() => {
+    projectsService
+      .getCustomMcpServers(project.id)
+      .then((resp) => {
+        if (typeof resp.customMcpServers === 'string') {
+          setCustomMcpServers(resp.customMcpServers);
+          try {
+            const parsed = JSON.parse(resp.customMcpServers || '{}');
+            setMcpServerNames(
+              parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+                ? Object.keys(parsed)
+                : [],
+            );
+          } catch {
+            setMcpServerNames([]);
+          }
+        } else {
+          setMcpServerNames(resp.mcpServerNames ?? []);
+        }
+      })
+      .catch(() => {
+        setCustomMcpServers('{}');
+        setMcpServerNames([]);
+      });
+  }, [project.id]);
+
+  // MCP secrets are owner/admin-only on the backend, so only fetch when canEdit.
   useEffect(() => {
     if (!canEdit) return;
-    Promise.all([
-      projectsService.getCustomMcpServers(project.id).catch(() => ({ customMcpServers: '{}' })),
-      projectsService.getCustomRules(project.id).catch(() => ({ customRules: [] })),
-      projectsService.getMcpSecrets(project.id).catch(() => ({ mcpSecretsSet: {} })),
-    ]).then(([mcpResp, rulesResp, secretsResp]) => {
-      setCustomMcpServers(mcpResp.customMcpServers ?? '{}');
-      setCustomRules(rulesResp.customRules ?? []);
-      setProjectMcpSecretsSet(secretsResp.mcpSecretsSet ?? {});
-    });
+    projectsService
+      .getMcpSecrets(project.id)
+      .then((resp) => setProjectMcpSecretsSet(resp.mcpSecretsSet ?? {}))
+      .catch(() => setProjectMcpSecretsSet({}));
   }, [project.id, canEdit]);
 
   // Is a CLI usable for a run? Prefer the v2 runtime's truth (installed + authed);
@@ -294,7 +328,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
                       ? 'border-primary/60 bg-primary/[0.04] shadow-sm ring-1 ring-primary/40'
                       : isSelectable
                         ? 'border-border hover:border-primary/25 hover:bg-muted/40'
-                        : 'border-border bg-muted/40 opacity-60 cursor-not-allowed',
+                        : 'border-border bg-muted/40 opacity-60 cursor-default',
                   )}
                 >
                   {isSelected && (
@@ -314,7 +348,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
               );
             })}
           </div>
-          {canEdit ? (
+          {canEdit && (
             <SaveStatusButton
               onClick={saveCli}
               disabled={editAgentCli === project.agentCli}
@@ -323,10 +357,6 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
               result={cliResult}
               errorMessage={cliError}
             />
-          ) : (
-            <p className="text-[11px] text-muted-foreground">
-              Only owners and admins can change the agent CLI.
-            </p>
           )}
         </div>
       </SettingsCard>
@@ -390,7 +420,10 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
                       }
                       disabled={!isEditable || savingModels}
                     >
-                      <SelectTrigger id={`model-${cli}`} className="text-sm">
+                      <SelectTrigger
+                        id={`model-${cli}`}
+                        className="text-sm disabled:cursor-default"
+                      >
                         <SelectValue placeholder={defaultLabel} />
                       </SelectTrigger>
                       <SelectContent>
@@ -417,7 +450,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
                       placeholder={
                         globalCliModels[cli] ? `Default: ${globalCliModels[cli]}` : 'Default'
                       }
-                      className="font-mono text-sm h-9"
+                      className="font-mono text-sm h-9 disabled:cursor-default"
                       disabled={!isEditable || savingModels}
                     />
                   )}
@@ -474,7 +507,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
               </CollapsibleContent>
             </Collapsible>
           </div>
-          {canEdit ? (
+          {canEdit && (
             <SaveStatusButton
               onClick={saveModels}
               saving={savingModels}
@@ -482,16 +515,13 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
               result={modelsResult}
               errorMessage={modelsError}
             />
-          ) : (
-            <p className="text-[11px] text-muted-foreground">
-              Only owners and admins can change model overrides.
-            </p>
           )}
         </div>
       </SettingsCard>
 
-      {/* Custom MCP servers + rules — owner/admin only (read is restricted). */}
-      {canEdit && (
+      {/* Custom MCP servers — owner/admin get the full editor; members get a
+          read-only list of server names (the raw config may carry secrets). */}
+      {canEdit ? (
         <>
           <CustomMcpServersSection
             value={customMcpServers}
@@ -516,19 +546,40 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
               {customMsg.text}
             </p>
           )}
-          <CustomRulesSection
-            docs={customRules}
-            onPresign={presignCustomRules}
-            onCommit={commitCustomRules}
-            onRefresh={refreshCustomRules}
-            canEdit={canEdit}
-            description="Markdown documents loaded into the agent context for every stage in this space (coding standards, API references, framework guidelines, etc.)."
-            onSuccess={(text) => setCustomMsg({ kind: 'success', text })}
-            onError={(text) => setCustomMsg({ kind: 'error', text })}
-            onClearMessages={() => setCustomMsg(null)}
-          />
         </>
+      ) : (
+        <SettingsCard
+          icon={<Plug />}
+          title="MCP Servers"
+          description="Custom MCP servers injected into this space's agent sessions."
+        >
+          {mcpServerNames.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-4">No MCP servers.</p>
+          ) : (
+            <div className="divide-y divide-border border rounded-md">
+              {mcpServerNames.map((name) => (
+                <div key={name} className="px-3 py-2">
+                  <span className="font-mono text-xs truncate">{name}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </SettingsCard>
       )}
+
+      {/* Custom rules (steering docs) — visible to all members read-only; only
+          owners/admins get upload/delete controls and download URLs. */}
+      <CustomRulesSection
+        docs={customRules}
+        onPresign={presignCustomRules}
+        onCommit={commitCustomRules}
+        onRefresh={refreshCustomRules}
+        canEdit={canEdit}
+        description="Markdown documents loaded into the agent context for every stage in this space (coding standards, API references, framework guidelines, etc.)."
+        onSuccess={(text) => setCustomMsg({ kind: 'success', text })}
+        onError={(text) => setCustomMsg({ kind: 'error', text })}
+        onClearMessages={() => setCustomMsg(null)}
+      />
     </div>
   );
 }

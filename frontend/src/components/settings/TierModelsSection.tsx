@@ -138,7 +138,11 @@ export function TierModelsSection({
                         }
                         disabled={disabled}
                       >
-                        <SelectTrigger id={cellId} data-testid={cellId} className="h-8 text-xs">
+                        <SelectTrigger
+                          id={cellId}
+                          data-testid={cellId}
+                          className="h-8 text-xs disabled:cursor-default"
+                        >
                           <SelectValue placeholder={placeholder} />
                         </SelectTrigger>
                         <SelectContent>
