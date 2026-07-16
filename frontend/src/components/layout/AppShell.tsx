@@ -5,14 +5,23 @@ import { AppSidebar } from '@/components/layout/AppSidebar';
 import { AppHeader } from '@/components/layout/AppHeader';
 import { SprintPipelineBar } from '@/components/layout/SprintPipelineBar';
 import { IntentPipelineBar } from '@/components/layout/IntentPipelineBar';
-import { ActivityPanel } from '@/components/layout/ActivityPanel';
-import { IntentActivityPanel } from '@/components/layout/IntentActivityPanel';
+// Lazy: the activity panels pull react-markdown (+ transitively heavy deps)
+// that don't belong in the eager main chunk — they only render when a side
+// panel is open on sprint/intent routes.
+const ActivityPanel = lazy(() =>
+  import('@/components/layout/ActivityPanel').then((m) => ({ default: m.ActivityPanel })),
+);
+const IntentActivityPanel = lazy(() =>
+  import('@/components/layout/IntentActivityPanel').then((m) => ({
+    default: m.IntentActivityPanel,
+  })),
+);
 import { StatusBar } from '@/components/layout/StatusBar';
 import { CommandPalette } from '@/components/layout/CommandPalette';
 import { DiscussionProvider } from '@/components/discussion';
 import { IntentProvider } from '@/contexts/IntentContext';
 import { useProjectSprintsCache } from '@/hooks/useProjectsCache';
-import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import { useState, useCallback, useMemo, useEffect, useRef, lazy, Suspense } from 'react';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { useResizablePanel } from '@/hooks/useResizablePanel';
 
@@ -208,12 +217,16 @@ export function AppShell() {
                     className="absolute inset-y-0 left-0 z-10 w-1.5 cursor-col-resize touch-none hover:bg-primary/30 active:bg-primary/40 focus-visible:bg-primary/40 focus-visible:outline-none"
                   />
                   {inIntent ? (
-                    <IntentActivityPanel onClose={() => setActivityPanelOpen(false)} />
+                    <Suspense fallback={null}>
+                      <IntentActivityPanel onClose={() => setActivityPanelOpen(false)} />
+                    </Suspense>
                   ) : (
-                    <ActivityPanel
-                      sprintId={inSprint ? sprintId : (latestActiveSprintId ?? undefined)}
-                      onClose={() => setActivityPanelOpen(false)}
-                    />
+                    <Suspense fallback={null}>
+                      <ActivityPanel
+                        sprintId={inSprint ? sprintId : (latestActiveSprintId ?? undefined)}
+                        onClose={() => setActivityPanelOpen(false)}
+                      />
+                    </Suspense>
                   )}
                 </aside>
               )}
@@ -228,12 +241,16 @@ export function AppShell() {
               {showActivity && !panelsInline && (
                 <aside className="absolute inset-y-0 right-0 z-40 flex w-full max-w-md overflow-hidden bg-background shadow-2xl">
                   {inIntent ? (
-                    <IntentActivityPanel onClose={() => setActivityPanelOpen(false)} />
+                    <Suspense fallback={null}>
+                      <IntentActivityPanel onClose={() => setActivityPanelOpen(false)} />
+                    </Suspense>
                   ) : (
-                    <ActivityPanel
-                      sprintId={inSprint ? sprintId : (latestActiveSprintId ?? undefined)}
-                      onClose={() => setActivityPanelOpen(false)}
-                    />
+                    <Suspense fallback={null}>
+                      <ActivityPanel
+                        sprintId={inSprint ? sprintId : (latestActiveSprintId ?? undefined)}
+                        onClose={() => setActivityPanelOpen(false)}
+                      />
+                    </Suspense>
                   )}
                 </aside>
               )}

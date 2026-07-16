@@ -21,7 +21,6 @@ export default function Login() {
     completeNewPassword,
     setDisplayName: saveDisplayName,
     isAuthenticated,
-    isLoading,
     needsNewPassword,
     needsDisplayName,
   } = useAuth();
@@ -32,14 +31,8 @@ export default function Login() {
     if (isAuthenticated && !needsDisplayName) setError('');
   }, [isAuthenticated, needsDisplayName]);
 
-  if (isLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
-
+  // Paint the form immediately while the session check runs; the Navigate
+  // below still redirects as soon as an existing session resolves.
   if (isAuthenticated && !needsDisplayName) return <Navigate to={from} replace />;
 
   const handleSubmit = async (e: React.FormEvent) => {
