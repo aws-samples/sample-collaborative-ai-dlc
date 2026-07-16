@@ -192,7 +192,23 @@ export default function IntentView() {
       </div>
     );
   }
-  if (!detail) return <div className="p-6">Intent not found</div>;
+  if (!detail) {
+    return (
+      <div className="p-6 space-y-3">
+        <p className="text-sm text-muted-foreground">
+          {loadError ?? 'Intent not found — it may have been deleted.'}
+        </p>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => reload()}>
+            Retry
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => navigate(`/space/${projectId}`)}>
+            Back to space
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   const intent = detail.intent;
   const error = actionError ?? loadError;
@@ -570,11 +586,6 @@ function AgentProgressCard() {
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-sm font-medium">{statusLabel}</span>
-            <span className="inline-flex items-center gap-0.5">
-              <span className="h-1 w-1 rounded-full bg-agent-running animate-bounce [animation-delay:0ms]" />
-              <span className="h-1 w-1 rounded-full bg-agent-running animate-bounce [animation-delay:150ms]" />
-              <span className="h-1 w-1 rounded-full bg-agent-running animate-bounce [animation-delay:300ms]" />
-            </span>
             {stageName && <span className="text-xs text-muted-foreground">{stageName}</span>}
             {phaseName && (
               <Badge variant="outline" className="h-4 text-[10px]">

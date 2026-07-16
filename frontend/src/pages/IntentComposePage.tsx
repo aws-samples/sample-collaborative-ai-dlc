@@ -531,6 +531,12 @@ export default function IntentComposePage() {
               {starting && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />}
               {starting ? 'Starting…' : 'Start Intent'}
             </Button>
+            {!starting && !draft.prompt.trim() && (
+              <span className="text-xs text-muted-foreground">Write a prompt to continue</span>
+            )}
+            {!starting && draft.prompt.trim() && !scope && (
+              <span className="text-xs text-muted-foreground">Pick a scope to continue</span>
+            )}
             {!draft.synced && (
               <span className="text-xs text-muted-foreground">connecting live session…</span>
             )}
