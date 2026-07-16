@@ -21,7 +21,7 @@ const ACTIVITY_PANEL_SIZING = {
   storageKey: 'aidlc-activity-panel-width',
   defaultWidth: 380,
   minWidth: 300,
-  maxWidth: 640,
+  maxWidth: 1200,
   viewportFraction: 0.45,
   anchor: 'right',
 } as const;
@@ -155,14 +155,14 @@ export function AppShell() {
               <main className="h-full overflow-hidden min-w-0 flex flex-col">
                 {inSprint && <SprintPipelineBar />}
                 {showPipelineBar && <IntentPipelineBar />}
-                <div className="flex-1 overflow-y-auto min-w-0">
+                <div className="flex-1 overflow-y-auto min-w-0 px-6 py-6">
                   <Outlet />
                 </div>
               </main>
 
               {/* Activity panel - inline column on lg+, with a resize handle */}
               {showActivity && panelsInline && (
-                <aside className="relative flex overflow-hidden border-l border-border shadow-[-4px_0_12px_-4px_rgba(0,0,0,0.08)] dark:shadow-[-4px_0_12px_-4px_rgba(0,0,0,0.4)]">
+                <aside className="relative flex min-w-0 overflow-hidden border-l border-border shadow-[-4px_0_12px_-4px_rgba(0,0,0,0.08)] dark:shadow-[-4px_0_12px_-4px_rgba(0,0,0,0.4)]">
                   <div
                     role="separator"
                     aria-orientation="vertical"

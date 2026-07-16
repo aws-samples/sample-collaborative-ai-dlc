@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 
 interface ResizablePanelOptions {
   storageKey: string;
@@ -43,26 +43,38 @@ export function useResizablePanel({
     return () => clearTimeout(timer);
   }, [storageKey, width]);
 
+  // Teardown for an in-flight drag. Held in a ref so the unmount cleanup below
+  // can remove the window listeners even if the component unmounts mid-drag
+  // (e.g. a route change while dragging), which otherwise leaks the listeners
+  // and keeps calling setWidth after unmount.
+  const dragTeardownRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => dragTeardownRef.current?.(), []);
+
   const handleResizeStart = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       e.preventDefault();
-      const handle = e.currentTarget;
-      handle.setPointerCapture(e.pointerId);
+      // Track a delta from the drag's start, based on the effective (clamped)
+      // width so a shrink-drag responds immediately after the viewport shrank.
+      // Listeners go on `window` (not the handle) so the drag still ends if the
+      // pointer is released off the 6px handle.
+      const startX = e.clientX;
+      const startWidth = clamp(width);
       const onMove = (ev: PointerEvent) => {
-        const raw =
-          anchor === 'right' ? document.documentElement.clientWidth - ev.clientX : ev.clientX;
-        setWidth(clamp(raw));
+        const delta = anchor === 'right' ? startX - ev.clientX : ev.clientX - startX;
+        setWidth(clamp(startWidth + delta));
       };
       const onEnd = () => {
-        handle.removeEventListener('pointermove', onMove);
-        handle.removeEventListener('pointerup', onEnd);
-        handle.removeEventListener('pointercancel', onEnd);
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onEnd);
+        window.removeEventListener('pointercancel', onEnd);
+        dragTeardownRef.current = null;
       };
-      handle.addEventListener('pointermove', onMove);
-      handle.addEventListener('pointerup', onEnd);
-      handle.addEventListener('pointercancel', onEnd);
+      dragTeardownRef.current = onEnd;
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onEnd);
+      window.addEventListener('pointercancel', onEnd);
     },
-    [anchor, clamp],
+    [anchor, clamp, width],
   );
 
   const handleResizeKey = useCallback(

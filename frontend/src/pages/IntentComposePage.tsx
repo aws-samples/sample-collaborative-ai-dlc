@@ -288,7 +288,7 @@ export default function IntentComposePage() {
 
   if (projectLoading || (!intent && !loadError)) {
     return (
-      <div className="mx-auto w-full max-w-5xl px-6 py-6 space-y-4">
+      <div className="space-y-4">
         <Skeleton className="h-8 w-48" />
         <Skeleton className="h-[400px] rounded-lg" />
       </div>
@@ -296,18 +296,14 @@ export default function IntentComposePage() {
   }
 
   if (!project || loadError) {
-    return (
-      <div className="mx-auto w-full max-w-5xl px-6 py-6 text-sm text-destructive">
-        {loadError ?? 'Space not found'}
-      </div>
-    );
+    return <div className="text-sm text-destructive">{loadError ?? 'Space not found'}</div>;
   }
 
   const remoteCount = draft.remoteUsers.size;
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto w-full max-w-5xl px-6 py-6 space-y-6">
+      <div className="space-y-6">
         <div className="flex items-center gap-3">
           <Button
             variant="ghost"

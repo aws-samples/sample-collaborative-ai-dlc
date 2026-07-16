@@ -76,7 +76,7 @@ export default function WorkflowList() {
 
   return (
     <div className="h-full">
-      <div className="max-w-6xl mx-auto p-6">
+      <div>
         <div className="flex items-end justify-between mb-8">
           <div className="flex items-center gap-4">
             <div className="h-14 w-14 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">

@@ -74,7 +74,7 @@ export default function InceptionPage() {
   return (
     <div className="flex flex-col h-full">
       <div className="flex-1 overflow-y-auto">
-        <div className="max-w-4xl mx-auto p-6 space-y-6">
+        <div className="space-y-6">
           <div>
             <h1 className="text-xl font-bold">{sprint?.name || 'Loading...'}</h1>
             <p className="text-sm text-muted-foreground">
