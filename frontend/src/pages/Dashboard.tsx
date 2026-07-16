@@ -38,7 +38,6 @@ import {
   ArrowUpDown,
   AlertTriangle,
   Loader2,
-  CircleAlert,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -62,39 +61,21 @@ function formatRelativeTime(dateStr: string | null | undefined): string {
   return new Date(dateStr).toLocaleDateString();
 }
 
-// UX-002: a single per-project lifecycle badge. Counts come from the intent
-// list useProjectsCache already fetches (no extra requests). One pill, colored
-// by the most important state: amber (warning icon) when anything needs
-// attention (WAITING + FAILED), otherwise green (spinner) for plain progress.
-// In-progress count leads; the attention count trails as a segment.
+// UX-002: a single per-project lifecycle badge. Shows green in-progress count
+// only — Space-level attention (amber) indicators are removed per UX decision;
+// attention signals are surfaced at the individual Intent level instead.
 function ProjectSignals({ activity }: { activity: { inProgress: number; attention: number } }) {
-  if (activity.inProgress === 0 && activity.attention === 0) return null;
-
-  const needsAttention = activity.attention > 0;
+  if (activity.inProgress === 0) return null;
 
   return (
     <span
       className={cn(
         'inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-medium',
-        needsAttention
-          ? 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400'
-          : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
+        'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
       )}
     >
-      {needsAttention ? (
-        <CircleAlert className="h-3 w-3" />
-      ) : (
-        <Loader2 className="h-3 w-3 animate-spin" />
-      )}
-      {activity.inProgress > 0 && <span>{activity.inProgress} in progress</span>}
-      {needsAttention && (
-        <>
-          {activity.inProgress > 0 && <span className="text-amber-500/50">·</span>}
-          <span>
-            {activity.attention} {activity.attention === 1 ? 'needs' : 'need'} attention
-          </span>
-        </>
-      )}
+      <Loader2 className="h-3 w-3 animate-spin" />
+      <span>{activity.inProgress} in progress</span>
     </span>
   );
 }
@@ -184,9 +165,9 @@ export default function Dashboard() {
           <div className="flex items-center gap-4">
             <img src="/logo.svg" alt="AI-DLC" className="h-14 w-14 shrink-0" />
             <div>
-              <h1 className="text-3xl font-bold tracking-tight">AI-DLC</h1>
+              <h1 className="text-3xl font-bold tracking-tight">Spaces</h1>
               <p className="text-sm text-muted-foreground mt-0.5">
-                Collaborative AI Development Lifecycle
+                Shared workspaces where people and AI agents build together
               </p>
             </div>
           </div>
@@ -200,16 +181,6 @@ export default function Dashboard() {
             <Plus className="h-4 w-4" />
             New Space
           </Button>
-        </div>
-
-        {/* Projects sub-header */}
-        <div className="flex items-center gap-2 mb-4">
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
-            Spaces
-          </h2>
-          <span className="text-xs text-muted-foreground/60">
-            — {projects.length} space{projects.length !== 1 ? 's' : ''}
-          </span>
         </div>
 
         {/* Search & view controls */}
@@ -395,7 +366,7 @@ export default function Dashboard() {
                       </div>
                     )}
 
-                    {(project.activity.attention > 0 || project.activity.inProgress > 0) && (
+                    {project.activity.inProgress > 0 && (
                       <div className="mb-2.5">
                         <ProjectSignals activity={project.activity} />
                       </div>
@@ -436,7 +407,7 @@ export default function Dashboard() {
                     <div className="flex-1 min-w-0">
                       <span className="font-medium text-sm">{project.name}</span>
                     </div>
-                    {(project.activity.attention > 0 || project.activity.inProgress > 0) && (
+                    {project.activity.inProgress > 0 && (
                       <div className="hidden md:block shrink-0">
                         <ProjectSignals activity={project.activity} />
                       </div>

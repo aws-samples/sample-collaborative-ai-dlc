@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Bot, Clock, Eye, Maximize2, MessageSquare, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { getTimeAgo } from '@/lib/timeAgo';
+import { formatTimelineTimestamp } from '@/lib/timeAgo';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -81,44 +81,52 @@ export function IntentActivityPanel({ onClose }: { onClose: () => void }) {
   return (
     <div className="flex h-full w-full flex-col bg-sidebar border-l border-border">
       {/* Header */}
-      <div className="flex h-10 items-center justify-between px-3 border-b border-border bg-background/60 shrink-0">
-        <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="h-7 p-0.5">
-            <TabsTrigger value="agent" className="h-6 px-2.5 text-xs gap-1.5">
-              <Bot className="h-3 w-3" />
-              Agent
-              {running && (
-                <span className="relative flex h-1.5 w-1.5 ml-0.5">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-agent-running opacity-75" />
-                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-agent-running" />
-                </span>
-              )}
-            </TabsTrigger>
-            <TabsTrigger value="timeline" className="h-6 px-2.5 text-xs gap-1.5">
-              <Clock className="h-3 w-3" />
-              Timeline
-              {events.length > 0 && (
-                <Badge variant="secondary" className="h-4 px-1 text-[9px] ml-0.5">
-                  {events.length}
-                </Badge>
-              )}
-            </TabsTrigger>
-            <TabsTrigger value="discussions" className="h-6 px-2.5 text-xs gap-1.5">
-              <MessageSquare className="h-3 w-3" />
-              Discuss
-              {totalUnread > 0 && (
-                <Badge className="h-4 px-1 text-[9px] ml-0.5">
-                  {totalUnread > 99 ? '99+' : totalUnread}
-                </Badge>
-              )}
-            </TabsTrigger>
-            <TabsTrigger value="preview" className="h-6 px-2.5 text-xs gap-1.5">
-              <Eye className="h-3 w-3" />
-              Preview
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
-        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onClose}>
+      <div className="flex h-10 items-center gap-1 px-3 border-b border-border bg-background/60 shrink-0">
+        <div className="min-w-0 flex-1 overflow-x-auto [scrollbar-width:none] [-webkit-overflow-scrolling:touch] [&::-webkit-scrollbar]:hidden">
+          <Tabs value={activeTab} onValueChange={setActiveTab}>
+            <TabsList className="h-7 p-0.5 flex-nowrap">
+              <TabsTrigger value="agent" className="h-6 px-2 text-xs gap-1">
+                <Bot className="h-3 w-3 shrink-0" />
+                Agent
+                {running && (
+                  <span className="relative flex h-1.5 w-1.5 ml-0.5">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-agent-running opacity-75" />
+                    <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-agent-running" />
+                  </span>
+                )}
+              </TabsTrigger>
+              <TabsTrigger value="timeline" className="h-6 px-2 text-xs gap-1">
+                <Clock className="h-3 w-3 shrink-0" />
+                Timeline
+                {events.length > 0 && (
+                  <Badge variant="secondary" className="h-4 px-1 text-[9px] ml-0.5">
+                    {events.length}
+                  </Badge>
+                )}
+              </TabsTrigger>
+              <TabsTrigger value="discussions" className="h-6 px-2 text-xs gap-1">
+                <MessageSquare className="h-3 w-3 shrink-0" />
+                Discuss
+                {totalUnread > 0 && (
+                  <Badge className="h-4 px-1 text-[9px] ml-0.5">
+                    {totalUnread > 99 ? '99+' : totalUnread}
+                  </Badge>
+                )}
+              </TabsTrigger>
+              <TabsTrigger value="preview" className="h-6 px-2 text-xs gap-1">
+                <Eye className="h-3 w-3 shrink-0" />
+                Preview
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+        </div>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6 shrink-0"
+          onClick={onClose}
+          aria-label="Close activity panel"
+        >
           <X className="h-3 w-3" />
         </Button>
       </div>
@@ -444,7 +452,7 @@ function IntentTimelineItem({ event }: { event: IntentActivityEvent }) {
           )}
           {event.timestamp && (
             <span className="text-[10px] text-muted-foreground/60">
-              {getTimeAgo(event.timestamp)}
+              {formatTimelineTimestamp(event.timestamp)}
             </span>
           )}
         </div>

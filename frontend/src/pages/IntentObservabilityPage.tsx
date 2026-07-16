@@ -15,7 +15,23 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
-import { ArrowLeft, ExternalLink, X } from 'lucide-react';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { ArrowLeft, Loader2, MoreHorizontal, ScrollText, Trash2, X, XCircle } from 'lucide-react';
 
 type ObsView = 'diagram' | 'graph' | 'list';
 const VALID_VIEWS: ReadonlySet<ObsView> = new Set(['diagram', 'graph', 'list']);
@@ -28,6 +44,24 @@ function readStoredView(): ObsView {
   } catch {
     return 'diagram';
   }
+}
+
+const STATUS_LABELS: Record<string, string> = {
+  SUCCEEDED: 'Completed',
+  CANCELLED: 'Cancelled',
+  FAILED: 'Failed',
+  CREATED: 'Created',
+};
+
+function humanizeStatus(raw: string): string {
+  return (
+    STATUS_LABELS[raw] ??
+    raw
+      .replace(/_/g, ' ')
+      .replace(/\b\w/g, (c) => c.toUpperCase())
+      .toLowerCase()
+      .replace(/^\w/, (c) => c.toUpperCase())
+  );
 }
 
 function aggregateStageStatus(rows: IntentStageRow[]): Record<string, StageState> {
@@ -85,13 +119,52 @@ export default function IntentObservabilityPage() {
     workflowPhases,
     phaseNameOf,
     initializationPhasePaths,
-    currentPhasePath,
     selectedStageId,
     setSelectedStageId,
+    cancelIntent,
+    deleteIntent,
   } = useIntent();
   const navigate = useNavigate();
   const { project } = useProjectCache(projectId);
   const [view, setView] = useState<ObsView>(readStoredView);
+
+  const canDelete = project?.userRole === 'owner' || project?.userRole === 'admin';
+  const [cancelling, setCancelling] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const handleCancel = async () => {
+    const message =
+      detail?.intent.status === 'FAILED'
+        ? 'Cancel this run? The failed run will be closed and any pending questions retired. History and artifacts are preserved.'
+        : 'Cancel this run? The run will stop and pending questions will be retired. History and artifacts are preserved.';
+    if (!window.confirm(message)) {
+      return;
+    }
+    setCancelling(true);
+    setActionError(null);
+    try {
+      await cancelIntent();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to cancel intent');
+    } finally {
+      setCancelling(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    setDeleting(true);
+    setActionError(null);
+    try {
+      await deleteIntent();
+      navigate(`/space/${projectId}`);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to delete intent');
+      setConfirmDelete(false);
+      setDeleting(false);
+    }
+  };
 
   const handleViewChange = useCallback(
     (v: string) => {
@@ -101,7 +174,9 @@ export default function IntentObservabilityPage() {
         setSelectedStageId(null);
         try {
           localStorage.setItem(VIEW_STORAGE_KEY, next);
-        } catch {}
+        } catch (storageError) {
+          void storageError;
+        }
       }
     },
     [setSelectedStageId],
@@ -244,28 +319,27 @@ export default function IntentObservabilityPage() {
 
   const intent = detail.intent;
   const isActive = intent.status === 'RUNNING' || intent.status === 'WAITING';
+  const isCancellable = ['WAITING', 'CREATED', 'FAILED'].includes(intent.status);
+  const isDeletable = canDelete && intent.status !== 'RUNNING';
 
   return (
     <div className="h-full overflow-y-auto">
       <div className="space-y-6">
-        {/* ── HEADER (v1 drill-down mirror) ──────────────────────────── */}
+        {/* ── HEADER ─────────────────────────────────────────────────── */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3 min-w-0">
             <button
-              onClick={() => navigate('/observability')}
+              onClick={() => navigate(`/space/${projectId}`)}
               className="text-muted-foreground hover:text-foreground transition-colors"
-              aria-label="Back to observability"
+              aria-label="Back to space"
             >
               <ArrowLeft className="h-4 w-4" />
             </button>
             <h1 className="text-xl font-bold tracking-tight text-foreground truncate max-w-[480px]">
               {intent.title}
             </h1>
-            <span className="text-xs text-muted-foreground">Space: {project?.name ?? 'Space'}</span>
-            <Badge variant="outline" className="text-[10px] h-5 bg-muted/40">
-              {currentPhasePath ? phaseNameOf(currentPhasePath) : intent.status}
-            </Badge>
-            {isActive && (
+
+            {isActive ? (
               <Badge
                 variant="outline"
                 className="gap-1 text-[10px] bg-agent-running/10 text-agent-running border-agent-running/30"
@@ -273,18 +347,52 @@ export default function IntentObservabilityPage() {
                 <span className="h-1.5 w-1.5 rounded-full bg-agent-running animate-pulse" />
                 Live
               </Badge>
+            ) : (
+              <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                {humanizeStatus(intent.status)}
+              </Badge>
             )}
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            className="gap-1.5 h-7"
-            onClick={() => navigate(`/space/${projectId}/intent/${intentId}`)}
-          >
-            <ExternalLink className="h-3 w-3" />
-            Open in workbench
-          </Button>
+          <div className="flex items-center gap-1.5">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Intent actions">
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  onClick={() => navigate(`/space/${projectId}/intent/${intentId}/audit`)}
+                >
+                  <ScrollText className="mr-2 h-4 w-4" />
+                  Audit
+                </DropdownMenuItem>
+                {isCancellable && (
+                  <DropdownMenuItem disabled={cancelling} onClick={handleCancel}>
+                    <XCircle className="mr-2 h-4 w-4" />
+                    {cancelling ? 'Cancelling…' : 'Cancel run'}
+                  </DropdownMenuItem>
+                )}
+                {isDeletable && (
+                  <DropdownMenuItem
+                    disabled={deleting}
+                    onClick={() => setConfirmDelete(true)}
+                    className="text-destructive"
+                  >
+                    <Trash2 className="mr-2 h-4 w-4" />
+                    {deleting ? 'Deleting…' : 'Delete'}
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
+
+        {actionError && (
+          <div className="rounded border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {actionError}
+          </div>
+        )}
 
         {/* ── USAGE & COST + RUNNING AGENTS ──────────────────────────── */}
         <Card>
@@ -308,7 +416,12 @@ export default function IntentObservabilityPage() {
           </CardHeader>
           <CardContent>
             {Object.keys(totals).length > 0 ? (
-              <UsageMetrics metrics={totals} cost={cost} contextLabel="Peak context window" />
+              <UsageMetrics
+                metrics={totals}
+                cost={cost}
+                contextLabel="Peak context window"
+                collapsibleAdvanced
+              />
             ) : (
               <span className="text-xs text-muted-foreground">No usage yet</span>
             )}
@@ -331,7 +444,7 @@ export default function IntentObservabilityPage() {
                   Diagram
                 </ToggleGroupItem>
                 <ToggleGroupItem value="graph" className="h-6 px-2 text-[11px]">
-                  Graph
+                  Dependencies
                 </ToggleGroupItem>
                 <ToggleGroupItem value="list" className="h-6 px-2 text-[11px]">
                   List
@@ -390,6 +503,42 @@ export default function IntentObservabilityPage() {
             </CardContent>
           )}
         </Card>
+
+        <AlertDialog
+          open={confirmDelete}
+          onOpenChange={(open) => !deleting && setConfirmDelete(open)}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete Intent</AlertDialogTitle>
+              <AlertDialogDescription>
+                Are you sure you want to delete "{intent.title || 'this intent'}"? All of its
+                artifacts, questions, discussions and run history will be permanently removed. This
+                action cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={(e) => {
+                  e.preventDefault();
+                  void handleDelete();
+                }}
+                disabled={deleting}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
+                {deleting ? (
+                  <span className="flex items-center gap-1.5">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Deleting…
+                  </span>
+                ) : (
+                  'Delete Intent'
+                )}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </div>
   );

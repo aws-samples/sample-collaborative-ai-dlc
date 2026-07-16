@@ -76,7 +76,8 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
           )}
           <CommandItem onSelect={() => runCommand(() => navigate('/observability'))}>
             <Activity className="mr-2 h-4 w-4" />
-            Observability
+            Sprint Overview
+            <CommandShortcut>v1</CommandShortcut>
           </CommandItem>
         </CommandGroup>
 

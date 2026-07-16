@@ -175,3 +175,20 @@ describe('IntentActivityPanel Agent tab', () => {
     expect(screen.getByText(/Running tool get_artifact/)).toBeInTheDocument();
   });
 });
+
+describe('IntentActivityPanel header accessibility', () => {
+  it('close button has aria-label and is always in the DOM', () => {
+    render(<IntentActivityPanel onClose={() => {}} />);
+    const closeBtn = screen.getByRole('button', { name: 'Close activity panel' });
+    expect(closeBtn).toBeInTheDocument();
+    expect(closeBtn).toHaveAttribute('aria-label', 'Close activity panel');
+  });
+
+  it('close button fires onClose callback', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    render(<IntentActivityPanel onClose={onClose} />);
+    await user.click(screen.getByRole('button', { name: 'Close activity panel' }));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+});

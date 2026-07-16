@@ -68,6 +68,12 @@ describe('ProjectSettings', () => {
     }
   });
 
+  it('does not render the "Space settings" subtitle', async () => {
+    renderAt();
+    await screen.findByRole('heading', { name: 'My Project' });
+    expect(screen.queryByText('Space settings')).not.toBeInTheDocument();
+  });
+
   it('shows the General tab by default', async () => {
     renderAt();
     expect(await screen.findByTestId('general-tab')).toBeInTheDocument();

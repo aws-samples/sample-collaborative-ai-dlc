@@ -1,16 +1,14 @@
 import { useState, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useIntent } from '@/contexts/IntentContext';
 import { useIntentGraph } from '@/hooks/useIntentGraph';
 import { GraphCanvas } from '@/components/graph/GraphCanvas';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Button } from '@/components/ui/button';
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
-import { ArrowLeft } from 'lucide-react';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { cn } from '@/lib/utils';
+import { Layers, Box } from 'lucide-react';
 
 export default function IntentGraphPage() {
   const { projectId, intentId, loading: contextLoading, error: contextError } = useIntent();
-  const navigate = useNavigate();
 
   // Shared SWR graph cache — the same fetch the workbench popovers and the
   // derived-items section use (see useIntentGraph).
@@ -43,7 +41,7 @@ export default function IntentGraphPage() {
   }
 
   return (
-    <div className="h-full overflow-hidden">
+    <div className="h-full min-w-0 overflow-hidden">
       <GraphCanvas
         nodes={visibleNodes}
         edges={visibleEdges}
@@ -51,33 +49,50 @@ export default function IntentGraphPage() {
         loading={loading}
         error={error}
         headerLeading={
-          <>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="gap-1.5 h-7 shrink-0 text-muted-foreground hover:text-foreground"
-              onClick={() => navigate(`/space/${projectId}/intent/${intentId}`)}
-            >
-              <ArrowLeft className="h-3.5 w-3.5" />
-              Workbench
-            </Button>
-            <ToggleGroup
-              type="single"
-              aria-label="Graph layer"
-              value={layer}
-              onValueChange={(v) => {
-                if (v === 'artifacts' || v === 'all') setLayer(v);
-              }}
-              className="gap-0.5 shrink-0"
-            >
-              <ToggleGroupItem value="artifacts" className="h-6 px-2 text-[11px]">
-                Artifacts
-              </ToggleGroupItem>
-              <ToggleGroupItem value="all" className="h-6 px-2 text-[11px]">
-                + Items & Units
-              </ToggleGroupItem>
-            </ToggleGroup>
-          </>
+          <div
+            role="group"
+            aria-label="Graph layer"
+            className="flex items-center rounded-md border bg-muted/30 p-0.5 shrink-0"
+          >
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => setLayer('artifacts')}
+                  aria-label="Artifacts layer"
+                  aria-pressed={layer === 'artifacts'}
+                  className={cn(
+                    'flex items-center gap-1 rounded-sm px-1.5 sm:px-2 py-1 text-[10px] font-medium transition-all',
+                    layer === 'artifacts'
+                      ? 'bg-background shadow-sm text-foreground'
+                      : 'text-muted-foreground hover:text-foreground',
+                  )}
+                >
+                  <Layers className="h-3 w-3" />
+                  <span className="hidden sm:inline">Artifacts</span>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Artifacts only</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => setLayer('all')}
+                  aria-label="Items and Units layer"
+                  aria-pressed={layer === 'all'}
+                  className={cn(
+                    'flex items-center gap-1 rounded-sm px-1.5 sm:px-2 py-1 text-[10px] font-medium transition-all',
+                    layer === 'all'
+                      ? 'bg-background shadow-sm text-foreground'
+                      : 'text-muted-foreground hover:text-foreground',
+                  )}
+                >
+                  <Box className="h-3 w-3" />
+                  <span className="hidden sm:inline">+ Items &amp; Units</span>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Include derived items &amp; units</TooltipContent>
+            </Tooltip>
+          </div>
         }
       />
     </div>

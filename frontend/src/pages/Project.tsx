@@ -361,6 +361,7 @@ function IntentsView({
   const [confirmDeleteIntent, setConfirmDeleteIntent] = useState<Intent | null>(null);
   const [deletingIntent, setDeletingIntent] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<IntentSort>(loadIntentSort);
+  const [showAll, setShowAll] = useState(false);
   const isOwnerOrAdmin = project.userRole === 'owner' || project.userRole === 'admin';
   const canDeleteIntents = isOwnerOrAdmin;
   const canEditSettings = isOwnerOrAdmin;
@@ -390,6 +391,11 @@ function IntentsView({
       }
     });
   }, [intents, sortBy]);
+
+  const API_INTENT_CAP = 100;
+  const INITIAL_INTENT_CAP = 10;
+  const visibleIntents = showAll ? sortedIntents : sortedIntents.slice(0, INITIAL_INTENT_CAP);
+  const hasMore = sortedIntents.length > INITIAL_INTENT_CAP;
 
   const refresh = useCallback(() => {
     intentsService
@@ -486,11 +492,6 @@ function IntentsView({
           <div className="flex items-center justify-between gap-3 min-h-7">
             <div className="flex items-center gap-2">
               <CardTitle className="text-sm">Intents</CardTitle>
-              {intents.length > 0 && (
-                <Badge variant="secondary" className="text-[10px] h-5">
-                  {intents.length}
-                </Badge>
-              )}
             </div>
             <div className="flex items-center gap-2">
               {intents.length > 1 && (
@@ -529,96 +530,118 @@ function IntentsView({
               </p>
             </div>
           ) : (
-            sortedIntents.map((it) => {
-              const Icon = INTENT_STATUS_ICON[it.status];
-              // The row being purged: dimmed + spinner, navigation disabled while
-              // the (multi-store) cascade runs so it can't be clicked into a
-              // half-deleted intent.
-              const isDeleting = deletingIntent === it.id;
-              // A row is a div-with-role, not a <button>: the delete affordance
-              // nested inside would otherwise be a button-in-button (invalid HTML).
-              return (
-                <div
-                  key={it.id}
-                  role="button"
-                  tabIndex={isDeleting ? -1 : 0}
-                  aria-busy={isDeleting}
-                  onClick={() => {
-                    if (isDeleting) return;
-                    onNavigate(`/space/${projectId}/intent/${it.id}`);
-                  }}
-                  onKeyDown={(e) => {
-                    if (isDeleting) return;
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
+            <>
+              {visibleIntents.map((it) => {
+                const Icon = INTENT_STATUS_ICON[it.status];
+                // The row being purged: dimmed + spinner, navigation disabled while
+                // the (multi-store) cascade runs so it can't be clicked into a
+                // half-deleted intent.
+                const isDeleting = deletingIntent === it.id;
+                // A row is a div-with-role, not a <button>: the delete affordance
+                // nested inside would otherwise be a button-in-button (invalid HTML).
+                return (
+                  <div
+                    key={it.id}
+                    role="button"
+                    tabIndex={isDeleting ? -1 : 0}
+                    aria-busy={isDeleting}
+                    onClick={() => {
+                      if (isDeleting) return;
                       onNavigate(`/space/${projectId}/intent/${it.id}`);
-                    }
-                  }}
-                  className={cn(
-                    'group flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors',
-                    isDeleting
-                      ? 'pointer-events-none opacity-50'
-                      : 'cursor-pointer hover:bg-accent/50',
-                  )}
-                >
-                  <span className="min-w-0 flex-1">
-                    <span className="flex items-center gap-2">
-                      <span className="text-sm font-medium truncate">
-                        {it.title || 'Untitled intent'}
+                    }}
+                    onKeyDown={(e) => {
+                      if (isDeleting) return;
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        onNavigate(`/space/${projectId}/intent/${it.id}`);
+                      }
+                    }}
+                    className={cn(
+                      'group flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors',
+                      isDeleting
+                        ? 'pointer-events-none opacity-50'
+                        : 'cursor-pointer hover:bg-accent/50',
+                    )}
+                  >
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-2">
+                        <span className="text-sm font-medium truncate">
+                          {it.title || 'Untitled intent'}
+                        </span>
+                        <Badge variant="outline" className="text-[9px] h-4 shrink-0">
+                          {isDeleting ? 'DELETING' : it.status}
+                        </Badge>
                       </span>
-                      <Badge variant="outline" className="text-[9px] h-4 shrink-0">
-                        {isDeleting ? 'DELETING' : it.status}
-                      </Badge>
+                      <span className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                        {it.currentStage && <span>stage: {it.currentStage}</span>}
+                        {it.createdAt && (
+                          <span className="text-muted-foreground/60">
+                            created {formatRelativeTime(it.createdAt)}
+                          </span>
+                        )}
+                        {it.updatedAt && it.updatedAt !== it.createdAt && (
+                          <span className="text-muted-foreground/60">
+                            updated {formatRelativeTime(it.updatedAt)}
+                          </span>
+                        )}
+                      </span>
                     </span>
-                    <span className="flex items-center gap-2 text-[11px] text-muted-foreground">
-                      {it.currentStage && <span>stage: {it.currentStage}</span>}
-                      {it.createdAt && (
-                        <span className="text-muted-foreground/60">
-                          created {formatRelativeTime(it.createdAt)}
-                        </span>
-                      )}
-                      {it.updatedAt && it.updatedAt !== it.createdAt && (
-                        <span className="text-muted-foreground/60">
-                          updated {formatRelativeTime(it.updatedAt)}
-                        </span>
-                      )}
-                    </span>
-                  </span>
-                  {isDeleting ? (
-                    <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-destructive" />
-                  ) : (
-                    <>
-                      {Icon && (
-                        <Icon
-                          className={cn(
-                            'h-3.5 w-3.5 shrink-0',
-                            it.status === 'RUNNING' && 'animate-spin text-agent-running',
-                            it.status === 'WAITING' && 'text-agent-waiting',
-                            it.status === 'SUCCEEDED' && 'text-agent-success',
-                            it.status === 'FAILED' && 'text-agent-error',
-                          )}
-                        />
-                      )}
-                      {canDeleteIntents && it.status !== 'RUNNING' && (
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 shrink-0 opacity-0 group-hover:opacity-100"
-                          aria-label="Delete intent"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setConfirmDeleteIntent(it);
-                          }}
-                        >
-                          <Trash2 className="h-3.5 w-3.5 text-destructive" />
-                        </Button>
-                      )}
-                      <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/40 shrink-0" />
-                    </>
-                  )}
-                </div>
-              );
-            })
+                    {isDeleting ? (
+                      <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-destructive" />
+                    ) : (
+                      <>
+                        {Icon && (
+                          <Icon
+                            className={cn(
+                              'h-3.5 w-3.5 shrink-0',
+                              it.status === 'RUNNING' && 'animate-spin text-agent-running',
+                              it.status === 'WAITING' && 'text-agent-waiting',
+                              it.status === 'SUCCEEDED' && 'text-agent-success',
+                              it.status === 'FAILED' && 'text-agent-error',
+                            )}
+                          />
+                        )}
+                        {canDeleteIntents && it.status !== 'RUNNING' && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 shrink-0 opacity-0 group-hover:opacity-100"
+                            aria-label="Delete intent"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setConfirmDeleteIntent(it);
+                            }}
+                          >
+                            <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                          </Button>
+                        )}
+                        <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/40 shrink-0" />
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+              {hasMore && (
+                <button
+                  type="button"
+                  onClick={() => setShowAll((s) => !s)}
+                  className="w-full text-center py-2 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+                  data-testid="intent-show-toggle"
+                >
+                  {showAll
+                    ? `Show recent ${INITIAL_INTENT_CAP}`
+                    : `Show all loaded (${sortedIntents.length})`}
+                </button>
+              )}
+              {intents.length >= API_INTENT_CAP && (
+                <p
+                  className="text-center text-[11px] text-muted-foreground/70 pt-1"
+                  data-testid="intent-api-cap-notice"
+                >
+                  Up to {API_INTENT_CAP} most recent Intents are loaded in this view.
+                </p>
+              )}
+            </>
           )}
         </CardContent>
       </Card>
@@ -637,7 +660,7 @@ function IntentsView({
                 priced: !usage.project.cost.anyUnpriced,
                 estimated: !!usage.project.cost.anyEstimated,
               }}
-              contextLabel="Peak context window"
+              coreOnly
             />
           </CardContent>
         </Card>

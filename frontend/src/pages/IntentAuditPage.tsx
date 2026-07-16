@@ -117,9 +117,9 @@ export default function IntentAuditPage() {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3 min-w-0">
             <button
-              onClick={() => navigate(`/space/${projectId}/intent/${intentId}`)}
+              onClick={() => navigate(`/space/${projectId}/intent/${intentId}/observability`)}
               className="text-muted-foreground hover:text-foreground transition-colors"
-              aria-label="Back to workbench"
+              aria-label="Back to intent overview"
             >
               <ArrowLeft className="h-4 w-4" />
             </button>
