@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { simpleDiffStringWithCursor } from 'lib0/diff';
 import { Navigate, useNavigate, useParams } from 'react-router-dom';
 import {
@@ -7,7 +7,6 @@ import {
   type IntentDetail,
   type IntentGate,
   type IntentGraphNode,
-  type IntentSteering,
 } from '@/services/intents';
 import { INTENT_OUTPUT_KEY, useIntent } from '@/contexts/IntentContext';
 import { useAuth } from '@/contexts/AuthContext';
@@ -23,22 +22,12 @@ import { ArtifactViewer } from '@/components/intent/ArtifactViewer';
 import { formatDuration, useTick } from '@/components/intent/stageStyle';
 import { QuorumEditPanel } from '@/components/intent/QuorumEditPanel';
 import { UnitLaneBoard, isFanoutActive } from '@/components/intent/UnitLaneBoard';
-import {
-  DerivedItemsSection,
-  DERIVED_ITEMS_ACCORDION_VALUE,
-  DERIVED_ITEMS_SECTION_ID,
-} from '@/components/intent/DerivedItemsSection';
-import {
-  DocumentsSection,
-  DOCUMENTS_ACCORDION_VALUE,
-  isDocumentArtifact,
-} from '@/components/intent/DocumentsSection';
-import { CodeSection, CODE_ACCORDION_VALUE, buildCodeItems } from '@/components/intent/CodeSection';
-import {
-  onWorkProductFocus,
-  scrollAndFlash,
-  type WorkProductFocus,
-} from '@/components/intent/workProductsFocus';
+import { buildCodeItems } from '@/components/intent/CodeSection';
+import { humanizeStageId } from '@/components/intent/documentHelpers';
+import { PendingQuestionsTabs } from '@/components/intent/PendingQuestionsTabs';
+import { ProvenanceTree } from '@/components/intent/ProvenanceTree';
+import { HistorySection } from '@/components/intent/HistorySection';
+import { scrollAndFlash } from '@/components/intent/workProductsFocus';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -92,7 +81,6 @@ import {
   ChevronRight,
   Compass,
   FileText,
-  FileQuestion,
   Info,
   Layers,
   Loader2,
@@ -143,6 +131,7 @@ export default function IntentView() {
     cancelIntent,
     deleteIntent,
     focusOutput,
+    stageNameOf,
   } = useIntent();
   const navigate = useNavigate();
   const { humanTaskId: reviewGateId } = useParams<{ humanTaskId?: string }>();
@@ -420,28 +409,29 @@ export default function IntentView() {
         </Card>
       ) : (
         <>
-          {/* Pending human gates (D3: one editor per pending gate) */}
+          {/* Pending human gates — tabs: one GateCard at a time */}
           {pendingGates.length > 0 && (
-            <div className="rounded-lg border border-l-4 border-l-agent-waiting bg-agent-waiting/[0.04] p-4 space-y-3">
-              <div className="flex items-center gap-2">
-                <FileQuestion className="h-4 w-4 text-agent-waiting" />
-                <h2 className="text-sm font-semibold">Questions for you</h2>
-                <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
-                  {pendingGates.length}
-                </Badge>
-              </div>
-              {pendingGates.map((gate) => (
+            <PendingQuestionsTabs
+              gates={pendingGates}
+              activeGateId={intent.pendingHumanTaskId}
+              gateContext={(gate) => {
+                // stageNameOf falls back to the raw instance id when the stage
+                // row is unknown — no prefix beats an opaque id on the tab.
+                const resolved = gate.stageInstanceId ? stageNameOf(gate.stageInstanceId) : null;
+                const stagePart =
+                  resolved && resolved !== gate.stageInstanceId ? humanizeStageId(resolved) : null;
+                return [stagePart, gate.unitSlug ?? null].filter(Boolean).join(' · ') || null;
+              }}
+              renderGateCard={(gate) => (
                 <GateCard
-                  key={gate.humanTaskId}
                   gate={gate}
-                  isActiveGate={gate.humanTaskId === intent.pendingHumanTaskId}
                   projectId={projectId}
                   intentId={intentId}
                   userName={userName}
                   onAnswer={answerGate}
                 />
-              ))}
-            </div>
+              )}
+            />
           )}
 
           {pendingGates.length === 0 && !noStageRowsYet && isActive && !fanoutActive && (
@@ -464,7 +454,7 @@ export default function IntentView() {
 
           <QuorumEditPanel />
 
-          <WorkProductsPanel detail={detail} gates={gates} />
+          <WorkProductsSection detail={detail} gates={gates} />
         </>
       )}
 
@@ -849,105 +839,55 @@ function WaitingCard({ intent, gates, stageRows, stageNameOf, rewindIntent }: Wa
   );
 }
 
-function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: IntentGate[] }) {
+function WorkProductsSection({ detail, gates }: { detail: IntentDetail; gates: IntentGate[] }) {
   const { openArtifactPreview, openItemPreview, projectId, intentId, stageRows, phaseNameOf } =
     useIntent();
-  // The knowledge-graph view powers the graph-context popovers, the derived
-  // items section, and the per-artifact item chips (shared SWR cache; see
-  // useIntentGraph). Fail-soft: while loading / on error everything below
-  // renders without the graph affordances.
   const { getNeighbors, derivedItems, itemsByArtifact } = useIntentGraph(projectId, intentId);
-  const [itemsFilter, setItemsFilter] = useState<string | null>(null);
 
-  const questionGates = gates.filter((g) => g.kind === 'question');
+  const questionGates = useMemo(() => gates.filter((g) => g.kind === 'question'), [gates]);
   const steering = detail.steering ?? [];
 
-  const influencedArtifactsByQuestion = new Map(
-    detail.events
-      .filter((ev) => ev.type === 'v2.question.answered' && ev.humanTaskId)
-      .map((ev) => [ev.humanTaskId as string, ev.artifacts ?? []]),
-  );
-
-  const activeArtifacts = detail.artifacts.filter((a) => !a.supersededAt);
-  // Only long-form markdown artifacts render as Documents. Short / unregistered
-  // marker artifacts (e.g. practices-discovery-timestamp) are intentionally
-  // dropped — they are diagnostic telemetry, not work products.
-  const documents = activeArtifacts.filter(isDocumentArtifact);
-
-  const codeItems = buildCodeItems(detail);
-  const showCode = codeItems.length > 0;
-
-  // Controlled accordion: Code always open, Documents open unless the intent
-  // has succeeded (lightweight overview), Questions and Identified items closed.
-  // Controlled because in-page navigation (popover/chip) must expand the
-  // target group before scrolling to the anchor.
-  const isSucceeded = detail.intent.status === 'SUCCEEDED';
-  const defaultOpen = [
-    showCode ? CODE_ACCORDION_VALUE : null,
-    documents.length > 0 && !isSucceeded ? DOCUMENTS_ACCORDION_VALUE : null,
-  ].filter((v): v is string => Boolean(v));
-
-  const [openGroups, setOpenGroups] = useState<string[]>(defaultOpen);
-  const seenGroupsRef = useRef<Set<string>>(new Set(defaultOpen));
-  useEffect(() => {
-    const fresh = defaultOpen.filter((k) => !seenGroupsRef.current.has(k));
-    if (fresh.length === 0) return;
-    fresh.forEach((k) => seenGroupsRef.current.add(k));
-    setOpenGroups((prev) => [...new Set([...prev, ...fresh])]);
-    // A string signature keeps the effect cheap; defaultOpen is order-stable.
-  }, [defaultOpen.join('|')]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const openGroup = (value: string) =>
-    setOpenGroups((prev) => (prev.includes(value) ? prev : [...prev, value]));
-
-  // In-page navigation target: the graph popover / items chip emits a focus
-  // request; expand the owning group, then scroll-and-flash the anchor.
-  const artifactsRef = useRef(detail.artifacts);
-  artifactsRef.current = detail.artifacts;
-  useEffect(
+  const influencedArtifactsByQuestion = useMemo(
     () =>
-      onWorkProductFocus((focus: WorkProductFocus) => {
-        if (focus.kind === 'artifact') {
-          const artifact = artifactsRef.current.find((a) => a.id === focus.id);
-          if (!artifact) return;
-          // Every rendered artifact is a document (short marker artifacts are
-          // not shown); focusing one opens its preview.
-          if (isDocumentArtifact(artifact)) {
-            openGroup(DOCUMENTS_ACCORDION_VALUE);
-            scrollAndFlash(`artifact-${artifact.id}`);
-            openArtifactPreview(artifact.id);
-          }
-          return;
-        }
-        openGroup(DERIVED_ITEMS_ACCORDION_VALUE);
-        if (focus.filterArtifactId !== undefined) {
-          setItemsFilter(focus.filterArtifactId || null);
-        }
-        scrollAndFlash(focus.id ? `item-${focus.id}` : DERIVED_ITEMS_SECTION_ID);
-      }),
-    [openArtifactPreview],
+      new Map(
+        detail.events
+          .filter((ev) => ev.type === 'v2.question.answered' && ev.humanTaskId)
+          .map((ev) => [ev.humanTaskId as string, ev.artifacts ?? []]),
+      ),
+    [detail.events],
   );
+
+  const codeItems = useMemo(() => buildCodeItems(detail), [detail]);
 
   if (
     detail.artifacts.length === 0 &&
     questionGates.length === 0 &&
     steering.length === 0 &&
-    !showCode
+    codeItems.length === 0
   ) {
-    return null;
+    // Terminal runs with nothing to show render nothing; an in-flight run gets
+    // a placeholder so the pane below the progress card doesn't look broken.
+    if (!['CREATED', 'RUNNING', 'WAITING'].includes(detail.intent.status)) {
+      return null;
+    }
+    return (
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm">Work products</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="py-4 text-center text-sm text-muted-foreground">
+            No work products yet — documents, items and code will appear here as the run progresses.
+          </p>
+        </CardContent>
+      </Card>
+    );
   }
-
-  const artifactTitleById = new Map(
-    activeArtifacts.map((a) => [a.id, a.title || a.id] as [string, string]),
-  );
 
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-sm">Generated artifacts</CardTitle>
-        <p className="text-xs text-muted-foreground">
-          Everything this intent produced: code, documents, questions, and structured items.
-        </p>
+        <CardTitle className="text-sm">Work products</CardTitle>
         {detail.intent.planWarnings &&
           detail.intent.planWarnings.length > 0 &&
           detail.intent.status !== 'SUCCEEDED' && (
@@ -967,120 +907,26 @@ function WorkProductsPanel({ detail, gates }: { detail: IntentDetail; gates: Int
             </details>
           )}
       </CardHeader>
-      <CardContent>
-        <Accordion
-          type="multiple"
-          value={openGroups}
-          onValueChange={setOpenGroups}
-          className="space-y-2"
-        >
-          <CodeSection items={codeItems} />
-          <DocumentsSection
-            documents={documents}
-            stageRows={stageRows}
-            phaseNameOf={phaseNameOf}
-            getNeighbors={getNeighbors}
-            itemsByArtifact={itemsByArtifact}
-            openArtifactPreview={openArtifactPreview}
-          />
+      <CardContent className="space-y-3">
+        <ProvenanceTree
+          detail={detail}
+          stageRows={stageRows}
+          phaseNameOf={phaseNameOf}
+          getNeighbors={getNeighbors}
+          itemsByArtifact={itemsByArtifact}
+          derivedItems={derivedItems}
+          codeItems={codeItems}
+          openArtifactPreview={openArtifactPreview}
+          openItemPreview={openItemPreview}
+        />
 
-          <DerivedItemsSection
-            items={derivedItems}
-            getNeighbors={getNeighbors}
-            openItemPreview={openItemPreview}
-            filterArtifactId={itemsFilter}
-            onClearFilter={() => setItemsFilter(null)}
-            artifactTitleById={artifactTitleById}
-          />
-
-          {questionGates.length > 0 && (
-            <AccordionItem value="questions" className="rounded-md border px-3">
-              <AccordionTrigger className="py-3 hover:no-underline">
-                <div className="flex items-center gap-2">
-                  <FileQuestion className="h-4 w-4 text-muted-foreground" />
-                  <span className="text-sm font-medium">Questions</span>
-                  <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
-                    {questionGates.length}
-                  </Badge>
-                </div>
-              </AccordionTrigger>
-              <AccordionContent className="space-y-3 pb-3">
-                {questionGates.map((gate) => (
-                  <QuestionHistoryCard
-                    key={gate.humanTaskId}
-                    gate={gate}
-                    influencedArtifacts={influencedArtifactsByQuestion.get(gate.humanTaskId) ?? []}
-                  />
-                ))}
-              </AccordionContent>
-            </AccordionItem>
-          )}
-
-          {steering.length > 0 && (
-            <AccordionItem value="steering" className="rounded-md border px-3">
-              <AccordionTrigger className="py-3 hover:no-underline">
-                <div className="flex items-center gap-2">
-                  <Compass className="h-4 w-4 text-muted-foreground" />
-                  <span className="text-sm font-medium">Course corrections</span>
-                  <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
-                    {steering.length}
-                  </Badge>
-                </div>
-              </AccordionTrigger>
-              <AccordionContent className="space-y-3 pb-3">
-                {steering.map((s) => (
-                  <SteeringCard key={s.steerId} steer={s} />
-                ))}
-              </AccordionContent>
-            </AccordionItem>
-          )}
-        </Accordion>
+        <HistorySection
+          questionGates={questionGates}
+          steering={steering}
+          influencedArtifactsByQuestion={influencedArtifactsByQuestion}
+        />
       </CardContent>
     </Card>
-  );
-}
-
-const STEERING_KIND_LABEL: Record<IntentSteering['kind'], string> = {
-  'gate-steer': 'with an answer',
-  revision: 'revised answer',
-  rewind: 'rewind guidance',
-};
-
-function SteeringCard({ steer }: { steer: IntentSteering }) {
-  return (
-    <div className="rounded-md border bg-card px-3 py-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <Compass className="h-3.5 w-3.5 text-agent-waiting" />
-        <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
-          {STEERING_KIND_LABEL[steer.kind] ?? steer.kind}
-        </Badge>
-        <Badge
-          variant="outline"
-          className={cn(
-            'px-1.5 py-0 text-[10px]',
-            steer.status === 'consumed'
-              ? 'bg-agent-success/10 text-agent-success border-agent-success/30'
-              : steer.status === 'pending'
-                ? 'bg-agent-waiting/10 text-agent-waiting border-agent-waiting/30'
-                : 'bg-muted text-muted-foreground',
-          )}
-        >
-          {steer.status === 'consumed'
-            ? 'delivered'
-            : steer.status === 'pending'
-              ? 'queued'
-              : 'superseded'}
-        </Badge>
-        {steer.targetStageId && (
-          <span className="text-[11px] text-muted-foreground">→ {steer.targetStageId}</span>
-        )}
-        <span className="ml-auto text-[11px] text-muted-foreground">
-          {steer.createdByName ? `${steer.createdByName} · ` : ''}
-          {steer.createdAt ? new Date(steer.createdAt).toLocaleString() : ''}
-        </span>
-      </div>
-      <p className="mt-2 whitespace-pre-wrap text-sm">{steer.message}</p>
-    </div>
   );
 }
 
@@ -1721,14 +1567,12 @@ function StageReviewPanel({
 
 function GateCard({
   gate,
-  isActiveGate,
   projectId,
   intentId,
   userName,
   onAnswer,
 }: {
   gate: IntentGate;
-  isActiveGate: boolean;
   projectId: string;
   intentId: string;
   userName: string;
@@ -1765,7 +1609,7 @@ function GateCard({
     const stageArtifacts =
       detail?.artifacts.filter((a) => a.createdByStageInstanceId === gate.stageInstanceId) ?? [];
     return (
-      <Card className={cn(isActiveGate && 'border-agent-waiting/40')}>
+      <Card>
         <CardContent className="space-y-3 py-3">
           <div>
             <p className="text-sm font-medium">
@@ -1805,7 +1649,7 @@ function GateCard({
       ? gate.options.filter((o): o is string => typeof o === 'string')
       : [];
     return (
-      <Card className={cn(isActiveGate && 'border-agent-waiting/40')}>
+      <Card>
         <CardContent className="space-y-2 py-3">
           <p className="text-sm font-medium">{gate.prompt || 'Review verdict required'}</p>
           <div className="flex flex-wrap gap-2">
@@ -1861,7 +1705,7 @@ function GateCard({
       : [];
     const offersRevision = options.some((o) => /^request-changes/i.test(o));
     return (
-      <Card className={cn(isActiveGate && 'border-agent-waiting/40')}>
+      <Card>
         <CardContent className="space-y-2 py-3">
           {gate.unitSlug && (
             <Badge variant="outline" className="px-1.5 py-0 text-[9px] font-normal">
@@ -1924,7 +1768,7 @@ function GateCard({
   }
 
   return (
-    <div className={cn(isActiveGate && 'ring-1 ring-agent-waiting/40 rounded-lg')}>
+    <div>
       <QuestionEditor
         question={question}
         scope={{ kind: 'intent', id: intentId, projectId }}
@@ -1936,284 +1780,21 @@ function GateCard({
           })
         }
       />
-      {/* Optional course correction delivered WITH the answer. */}
-      <div className="mt-1.5 space-y-1 rounded-md border border-dashed px-3 py-2">
-        <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+      {/* Optional course correction delivered WITH the answer — collapsed so
+          the primary path (answer → submit) stays unambiguous. */}
+      <details open className="mt-1.5 rounded-md border border-dashed px-3 py-2">
+        <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
           <Compass className="h-3 w-3" />
-          Course correction (optional)
-        </div>
+          Add a note to the agent (optional)
+        </summary>
         <Textarea
           value={steering}
           onChange={(e) => setSteering(e.target.value)}
           placeholder="Redirect the agent if it is heading the wrong way — e.g. 'Stop building the REST layer; integrate with the existing event bus instead.' Sent with your answer and overrides the agent's current plan."
           rows={2}
-          className="text-xs"
+          className="mt-1.5 text-xs"
         />
-      </div>
+      </details>
     </div>
   );
-}
-
-function QuestionHistoryCard({
-  gate,
-  influencedArtifacts,
-}: {
-  gate: IntentGate;
-  influencedArtifacts: { id: string; title: string }[];
-}) {
-  const { detail, steering, reviseGate, stageNameOf: questionStageNameOf } = useIntent();
-  const questions = parseGateQuestions(gate.questions);
-  const answer = formatGateAnswer(gate.answer, questions);
-  const superseded = gate.status === 'superseded';
-  const answered = !superseded && (gate.status !== 'pending' || Boolean(gate.answeredAt));
-
-  // Steering revision (docs/v2-steering.md): correct an already-given answer.
-  // The original stays; the correction is delivered at the next injection point.
-  const [reviseOpen, setReviseOpen] = useState(false);
-  const [revision, setRevision] = useState('');
-  const [revising, setRevising] = useState(false);
-  const [reviseError, setReviseError] = useState<string | null>(null);
-  const revisionSteer = gate.revisionSteerId
-    ? (steering.find((s) => s.steerId === gate.revisionSteerId) ?? null)
-    : null;
-  const intentStatus = detail?.intent.status ?? '';
-  const canRevise = answered && !['SUCCEEDED', 'CANCELLED'].includes(intentStatus);
-
-  const handleRevise = async () => {
-    if (!revision.trim()) return;
-    setRevising(true);
-    setReviseError(null);
-    try {
-      await reviseGate(gate, revision.trim());
-      setReviseOpen(false);
-      setRevision('');
-    } catch (err) {
-      setReviseError(err instanceof Error ? err.message : 'Failed to revise the answer');
-    } finally {
-      setRevising(false);
-    }
-  };
-
-  return (
-    <div
-      id={`question-${gate.humanTaskId}`}
-      className="scroll-mt-4 rounded-md border bg-card px-3 py-3"
-    >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge
-              variant="outline"
-              className={cn(
-                'px-1.5 py-0 text-[10px]',
-                superseded
-                  ? 'bg-muted text-muted-foreground'
-                  : answered
-                    ? 'bg-agent-success/10 text-agent-success border-agent-success/30'
-                    : 'bg-agent-waiting/10 text-agent-waiting border-agent-waiting/30',
-              )}
-            >
-              {superseded ? 'superseded' : answered ? 'answered' : 'pending'}
-            </Badge>
-            {gate.revisedAt && (
-              <Badge
-                variant="outline"
-                className="border-agent-waiting/30 bg-agent-waiting/10 px-1.5 py-0 text-[10px] text-agent-waiting"
-              >
-                revised
-              </Badge>
-            )}
-            <span className="text-[11px] text-muted-foreground">
-              {gate.stageInstanceId ? questionStageNameOf(gate.stageInstanceId) : 'agent question'}
-            </span>
-          </div>
-          {(gate.answeredByName || gate.answeredBy || gate.answeredAt) && (
-            <p className="mt-1 text-[11px] text-muted-foreground">
-              {gate.answeredByName || gate.answeredBy
-                ? `answered by ${gate.answeredByName || gate.answeredBy}`
-                : ''}
-              {gate.answeredAt ? ` · ${new Date(gate.answeredAt).toLocaleString()}` : ''}
-            </p>
-          )}
-        </div>
-        <DiscussButton
-          entityType="question"
-          entityId={gate.humanTaskId}
-          entityTitle={questions[0]?.text || 'Question'}
-          className="shrink-0"
-        />
-      </div>
-
-      <div className="mt-3 space-y-3">
-        {questions.length > 0 ? (
-          questions.map((q, idx) => (
-            <div key={idx} className="rounded border bg-muted/20 px-2 py-2">
-              <div className="text-sm font-medium prose prose-sm dark:prose-invert max-w-none">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {questions.length > 1
-                    ? `**Q${idx + 1}.** ${q.text || `Question ${idx + 1}`}`
-                    : q.text || `Question ${idx + 1}`}
-                </ReactMarkdown>
-              </div>
-              {Array.isArray(q.options) && q.options.length > 0 && (
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  Options:{' '}
-                  {q.options
-                    .map((o) => o.label)
-                    .filter(Boolean)
-                    .join(', ')}
-                </p>
-              )}
-            </div>
-          ))
-        ) : (
-          <p className="text-sm text-muted-foreground">Question details unavailable.</p>
-        )}
-
-        {answered ? (
-          <div className="rounded border border-agent-success/20 bg-agent-success/[0.04] px-2 py-2">
-            <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              Answer{questions.length > 1 ? 's' : ''}
-            </p>
-            <p className="mt-1 whitespace-pre-wrap text-sm">{answer || 'Answered'}</p>
-          </div>
-        ) : superseded ? (
-          <p className="text-xs text-muted-foreground">
-            Retired unanswered when the run was cancelled or rewound.
-          </p>
-        ) : (
-          <p className="text-xs text-muted-foreground">
-            This question is still open. Use the Open questions section above to answer it.
-          </p>
-        )}
-
-        {/* An existing revision: the correction layered on the original answer. */}
-        {revisionSteer && (
-          <div className="rounded border border-agent-waiting/30 bg-agent-waiting/[0.05] px-2 py-2">
-            <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              Correction{' '}
-              {revisionSteer.status === 'consumed'
-                ? '(delivered to the agent)'
-                : '(queued — delivered at the next stage boundary)'}
-            </p>
-            <p className="mt-1 whitespace-pre-wrap text-sm">{revisionSteer.message}</p>
-          </div>
-        )}
-
-        {canRevise && !reviseOpen && (
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-6 gap-1 px-2 text-[11px]"
-            onClick={() => setReviseOpen(true)}
-          >
-            <Compass className="h-3 w-3" />
-            Revise answer
-          </Button>
-        )}
-        {canRevise && reviseOpen && (
-          <div className="space-y-2 rounded-md border border-agent-waiting/40 bg-agent-waiting/[0.04] p-2">
-            <p className="text-[11px] text-muted-foreground">
-              The original answer stays on record; your correction reaches the agent at its next
-              deterministic point (question resume or stage start) and overrides the old answer.
-            </p>
-            <Textarea
-              value={revision}
-              onChange={(e) => setRevision(e.target.value)}
-              placeholder="What should the agent do differently?"
-              rows={2}
-              className="text-xs"
-            />
-            {reviseError && <p className="text-[11px] text-agent-error">{reviseError}</p>}
-            <div className="flex items-center gap-2">
-              <Button
-                size="sm"
-                className="h-6 px-2 text-[11px]"
-                disabled={!revision.trim() || revising}
-                onClick={handleRevise}
-              >
-                {revising ? 'Sending…' : 'Send correction'}
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-6 px-2 text-[11px]"
-                disabled={revising}
-                onClick={() => {
-                  setReviseOpen(false);
-                  setReviseError(null);
-                }}
-              >
-                Cancel
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {influencedArtifacts.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1.5 pt-1">
-            <span className="text-[11px] text-muted-foreground">Influenced artifacts:</span>
-            {influencedArtifacts.map((artifact) => (
-              <button
-                key={artifact.id}
-                type="button"
-                className="rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
-                onClick={() =>
-                  document
-                    .getElementById(`artifact-${artifact.id}`)
-                    ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-                }
-              >
-                {artifact.title || artifact.id}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function parseGateQuestions(raw: string | null): Question['questions'] {
-  try {
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-function formatGateAnswer(answer: unknown, questions: Question['questions']): string {
-  if (answer == null) return '';
-  if (typeof answer === 'string') return answer;
-  if (typeof answer !== 'object') return String(answer);
-  // Engine-gate answers (WP5 construction gates): a single decision word.
-  const decision = (answer as { decision?: unknown }).decision;
-  if (typeof decision === 'string') return decision;
-  const structured = answer as { answers?: { selectedOptions?: unknown[]; freeText?: string }[] };
-  if (Array.isArray(structured.answers)) {
-    return structured.answers
-      .map((a, idx) => {
-        const selected = Array.isArray(a.selectedOptions)
-          ? a.selectedOptions
-              .map((opt) => {
-                const optionIndex = typeof opt === 'number' ? opt : Number(opt);
-                return Number.isInteger(optionIndex)
-                  ? (questions[idx]?.options?.[optionIndex]?.label ?? String(opt))
-                  : String(opt);
-              })
-              .join(', ')
-          : '';
-        const free = a.freeText?.trim() ?? '';
-        const response = [selected, free].filter(Boolean).join(' · ');
-        return response
-          ? structured.answers!.length > 1
-            ? `Q${idx + 1}: ${response}`
-            : response
-          : '';
-      })
-      .filter(Boolean)
-      .join('\n');
-  }
-  return JSON.stringify(answer);
 }

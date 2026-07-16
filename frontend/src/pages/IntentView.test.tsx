@@ -171,9 +171,9 @@ describe('IntentView', () => {
     expect(await screen.findByTestId('compose-page')).toBeInTheDocument();
   });
 
-  it('renders one QuestionEditor per pending gate (D3 multi-gate)', async () => {
+  it('renders one QuestionEditor for the active gate (exclusive expansion)', async () => {
     get.mockResolvedValue({
-      ...baseDetail({ status: 'WAITING' }),
+      ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'h1' }),
       gates: [
         {
           humanTaskId: 'h1',
@@ -185,13 +185,14 @@ describe('IntentView', () => {
           humanTaskId: 'h2',
           status: 'pending',
           kind: 'question',
-          questions: '[{"text":"?","type":"single","options":[{"label":"Y"}]}]',
+          questions: '[{"text":"Second?","type":"single","options":[{"label":"N"}]}]',
         },
       ],
     });
     renderAt();
     const editors = await screen.findAllByTestId('question-editor');
-    expect(editors.map((e) => e.getAttribute('data-gate')).toSorted()).toEqual(['h1', 'h2']);
+    expect(editors).toHaveLength(1);
+    expect(editors[0].getAttribute('data-gate')).toBe('h1');
   });
 
   it('shows resume progress after a gate is answered but before the stage is running again', async () => {
@@ -620,12 +621,10 @@ describe('IntentView', () => {
       ],
     });
     renderAt();
-    // Documents section is closed on SUCCEEDED intents — expand it.
-    expect(await screen.findByText('Document')).toBeInTheDocument();
-    await userEvent.click(screen.getByText('Document'));
+    // The provenance tree renders phases and stages expanded by default.
+    expect(await screen.findByText('Work products')).toBeInTheDocument();
     expect(await screen.findByText('Reqs')).toBeInTheDocument();
     const buttons = screen.getAllByTestId('discuss');
-    // intent-level + one per artifact.
     expect(buttons.some((b) => b.getAttribute('data-entity') === 'artifact')).toBe(true);
     expect(buttons.some((b) => b.getAttribute('data-entity') === 'intent')).toBe(true);
   });
@@ -670,14 +669,13 @@ describe('IntentView', () => {
       ],
     });
     renderAt();
-    expect(await screen.findByText('Generated artifacts')).toBeInTheDocument();
-    expect(screen.getByText('Document')).toBeInTheDocument();
-    expect(screen.getByText('Questions')).toBeInTheDocument();
-    // Questions section is closed by default — expand it.
-    await userEvent.click(screen.getByText('Questions'));
-    expect(screen.getByText('Which provider?')).toBeInTheDocument();
+    expect(await screen.findByText('Work products')).toBeInTheDocument();
+    const trigger = screen.getByText('Past questions & corrections');
+    await userEvent.click(trigger);
+    // Expand the question row to see answer details
+    await userEvent.click(await screen.findByText('Which provider?'));
     expect(screen.getByText('Cognito')).toBeInTheDocument();
-    expect(screen.getByText('Influenced artifacts:')).toBeInTheDocument();
+    expect(screen.getByText('Influenced:')).toBeInTheDocument();
   });
 
   it('groups documents by phase (latest first) then stage order then date desc', async () => {
@@ -770,10 +768,9 @@ describe('IntentView', () => {
     });
 
     renderAt();
-    // Documents section is closed on SUCCEEDED intents — expand it.
-    expect(await screen.findByText('Documents')).toBeInTheDocument();
-    await userEvent.click(screen.getByText('Documents'));
+    // Phases and stages render expanded by default, in workflow order.
     expect(await screen.findByText('Construction')).toBeInTheDocument();
+    expect(await screen.findByText('Code Gen Doc')).toBeInTheDocument();
 
     // Collect phase headers + document titles in DOM order and assert the full
     // top-to-bottom sequence.
@@ -794,13 +791,13 @@ describe('IntentView', () => {
       .map((p) => p.t);
 
     expect(domOrder).toEqual([
-      'Construction', //            latest phase first
-      'Code Gen Doc', //            stage order 4 (before order 3 despite earlier date)
+      'Inception', //               earliest phase first (workflow order)
+      'Intent Capture Doc', //      stage order 1 first
+      'Requirements Doc Old', //    stage order 2, chronological within stage
+      'Requirements Doc New', //    stage order 2, newer second
+      'Construction', //            later phase second
       'Domain Entities Doc', //     stage order 3
-      'Inception', //               earlier phase second
-      'Requirements Doc New', //    stage order 2, newest of its stage first
-      'Requirements Doc Old', //    stage order 2, older second
-      'Intent Capture Doc', //      stage order 1 last
+      'Code Gen Doc', //            stage order 4 last
     ]);
   });
 
@@ -826,9 +823,8 @@ describe('IntentView', () => {
       ],
     });
     renderAt();
-    // Documents section is closed on SUCCEEDED intents — expand it.
-    expect(await screen.findByText('Generated artifacts')).toBeInTheDocument();
-    await userEvent.click(screen.getByText('Documents'));
+    expect(await screen.findByText('Work products')).toBeInTheDocument();
+    // Stages render expanded by default — documents are directly visible.
     expect(await screen.findByText('Build and Test Results')).toBeInTheDocument();
     // Only the trailing parenthetical stripped; the meaningful "— Infrastructure" stays.
     expect(screen.getByText('Code Summary — Infrastructure')).toBeInTheDocument();
@@ -860,11 +856,10 @@ describe('IntentView', () => {
       ],
     });
     renderAt();
-    expect(await screen.findByText('Generated artifacts')).toBeInTheDocument();
-    expect(screen.getByText('Code')).toBeInTheDocument();
+    expect(await screen.findByText('Work products')).toBeInTheDocument();
+    await userEvent.click(screen.getByText('Code'));
     expect(screen.getByText('owner/repo')).toBeInTheDocument();
     expect(screen.getByText('PR #9')).toBeInTheDocument();
-    // Source branch is a link; the base (target) is shown only for a PR.
     const branchLink = screen.getByRole('link', { name: 'aidlc/i1' });
     expect(branchLink).toHaveAttribute('href', 'https://github.com/owner/repo/tree/aidlc/i1');
     expect(screen.getByText('main')).toBeInTheDocument();
@@ -873,21 +868,18 @@ describe('IntentView', () => {
   });
 
   it('shows the branch (name + link, no base) once code is pushed, before any PR', async () => {
-    // A v2.git.pushed event means the branch has real code on the remote. A
-    // bare branch shows only its name + link — no "→ base" (that is PR-only).
     get.mockResolvedValue({
       ...baseDetail({ status: 'RUNNING' }),
       events: [{ eventId: 'e1', type: 'v2.git.pushed', summary: 'owner/repo@abc12345' }],
       pullRequests: [],
     });
     renderAt();
-    expect(await screen.findByText('Code')).toBeInTheDocument();
+    await userEvent.click(await screen.findByText('Code'));
     expect(screen.getByText('owner/repo')).toBeInTheDocument();
     const branchLink = screen.getByRole('link', { name: 'aidlc/i1' });
     expect(branchLink).toHaveAttribute('href', 'https://github.com/owner/repo/tree/aidlc/i1');
     expect(screen.queryByText(/PR #/)).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /open pr/i })).not.toBeInTheDocument();
-    // No base branch on a bare branch entry.
     expect(screen.queryByText('main')).not.toBeInTheDocument();
   });
 
@@ -915,7 +907,7 @@ describe('IntentView', () => {
       pullRequests: [],
     });
     renderAt();
-    expect(await screen.findByText('Code')).toBeInTheDocument();
+    await userEvent.click(await screen.findByText('Code'));
     expect(screen.getByText('owner/api')).toBeInTheDocument();
     expect(screen.queryByText('owner/web')).not.toBeInTheDocument();
   });
@@ -1008,5 +1000,480 @@ describe('IntentView — WP7 construction UI', () => {
         status: 'rejected',
       }),
     );
+  });
+});
+
+// ── Scalable UX: questions queue, question history, work products header ─────
+
+describe('IntentView — pending questions tabs', () => {
+  beforeEach(() => {
+    clearIntentCache();
+    get.mockReset();
+    start.mockReset();
+    answerGate.mockReset();
+    graph.mockReset().mockResolvedValue({ nodes: [], edges: [] });
+    compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
+    workflowGet.mockReset().mockResolvedValue({ phases: [] });
+    yjsMock.docs.clear();
+  });
+
+  const makeGates = (count: number, activeId?: string) => ({
+    ...baseDetail({
+      status: 'WAITING',
+      pendingHumanTaskId: activeId ?? 'h1',
+    }),
+    gates: Array.from({ length: count }, (_, i) => ({
+      humanTaskId: `h${i + 1}`,
+      stageInstanceId: `si-${i + 1}`,
+      status: 'pending',
+      kind: 'question',
+      questions: `[{"text":"Question ${i + 1}?","type":"single","options":[{"label":"Yes"}]}]`,
+      createdAt: `2026-01-0${i + 1}T00:00:00Z`,
+    })),
+  });
+
+  it('renders only the active gate selected by default (6 gates, tabs with overflow)', async () => {
+    get.mockResolvedValue(makeGates(6, 'h3'));
+    renderAt();
+    expect(await screen.findByText('Questions for you')).toBeInTheDocument();
+    // Only one gate panel is mounted at a time (the selected tab)
+    const panel = screen.getByTestId('gate-panel-h3');
+    expect(panel.querySelector('[data-testid="question-editor"]')).toBeInTheDocument();
+    // Other gates are tabs, not panels
+    expect(screen.queryByTestId('gate-panel-h1')).not.toBeInTheDocument();
+  });
+
+  it('switches tab selection when another tab is clicked', async () => {
+    get.mockResolvedValue(makeGates(3, 'h1'));
+    renderAt();
+    await screen.findByText('Questions for you');
+    expect(
+      screen.getByTestId('gate-panel-h1').querySelector('[data-testid="question-editor"]'),
+    ).toBeInTheDocument();
+    // Click the second tab
+    const h2Tab = screen.getByRole('tab', { name: /Question 2/ });
+    await userEvent.click(h2Tab);
+    expect(screen.queryByTestId('gate-panel-h1')).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId('gate-panel-h2').querySelector('[data-testid="question-editor"]'),
+    ).toBeInTheDocument();
+  });
+
+  it('preserves single-question behavior (1 gate expands immediately in queue)', async () => {
+    get.mockResolvedValue(makeGates(1));
+    renderAt();
+    expect(await screen.findByTestId('question-editor')).toBeInTheDocument();
+  });
+});
+
+describe('IntentView — compact history section', () => {
+  beforeEach(() => {
+    clearIntentCache();
+    get.mockReset();
+    answerGate.mockReset();
+    graph.mockReset().mockResolvedValue({ nodes: [], edges: [] });
+    compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
+    workflowGet.mockReset().mockResolvedValue({ phases: [] });
+    yjsMock.docs.clear();
+  });
+
+  it('groups questions by stage and shows stage headers when 2+ stages', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'SUCCEEDED' }),
+      stages: [
+        { stageInstanceId: 'si-a', stageId: 'requirements', state: 'SUCCEEDED', phase: '01' },
+        { stageInstanceId: 'si-b', stageId: 'design', state: 'SUCCEEDED', phase: '02' },
+      ],
+      gates: [
+        // Later-phase gate arrives FIRST — the section must still order groups
+        // by plan position (Requirements before Design), not arrival order.
+        {
+          humanTaskId: 'h3',
+          stageInstanceId: 'si-b',
+          status: 'superseded',
+          kind: 'question',
+          questions: '[{"text":"Pattern?"}]',
+          answer: null,
+          answeredByName: null,
+          answeredAt: null,
+        },
+        {
+          humanTaskId: 'h1',
+          stageInstanceId: 'si-a',
+          status: 'answered',
+          kind: 'question',
+          questions: '[{"text":"Scope?"}]',
+          answer: { freeText: 'MVP' },
+          answeredByName: 'U',
+          answeredAt: '2026-01-01T00:00:00Z',
+        },
+        {
+          humanTaskId: 'h2',
+          stageInstanceId: 'si-a',
+          status: 'answered',
+          kind: 'question',
+          questions: '[{"text":"Priority?"}]',
+          answer: { freeText: 'High' },
+          answeredByName: 'U',
+          answeredAt: '2026-01-01T01:00:00Z',
+        },
+      ],
+    });
+    renderAt();
+    const trigger = await screen.findByText('Past questions & corrections');
+    await userEvent.click(trigger);
+    const scopeElements = await screen.findAllByText('Scope?');
+    expect(scopeElements.length).toBeGreaterThanOrEqual(1);
+    const reqHeader = screen.getAllByText('Requirements')[0];
+    const designHeader = screen.getAllByText('Design')[0];
+    expect(
+      reqHeader.compareDocumentPosition(designHeader) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it('does not render status filter pills (removed from simpler UX)', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'SUCCEEDED' }),
+      stages: [
+        { stageInstanceId: 'si-a', stageId: 'requirements', state: 'SUCCEEDED', phase: '01' },
+      ],
+      gates: [
+        {
+          humanTaskId: 'h1',
+          stageInstanceId: 'si-a',
+          status: 'answered',
+          kind: 'question',
+          questions: '[{"text":"Scope?"}]',
+          answer: { freeText: 'MVP' },
+          answeredByName: 'U',
+          answeredAt: '2026-01-01T00:00:00Z',
+        },
+        {
+          humanTaskId: 'h2',
+          stageInstanceId: 'si-a',
+          status: 'superseded',
+          kind: 'question',
+          questions: '[{"text":"Priority?"}]',
+          answer: null,
+          answeredByName: null,
+          answeredAt: null,
+        },
+      ],
+    });
+    renderAt();
+    await userEvent.click(await screen.findByText('Past questions & corrections'));
+    expect(screen.getAllByText('Scope?').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('Priority?').length).toBeGreaterThanOrEqual(1);
+    expect(
+      screen.queryByRole('group', { name: /Filter questions by status/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Answered' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Superseded' })).not.toBeInTheDocument();
+  });
+});
+
+describe('IntentView — provenance tree and absence of rejected UI', () => {
+  beforeEach(() => {
+    clearIntentCache();
+    get.mockReset();
+    graph.mockReset().mockResolvedValue({ nodes: [], edges: [] });
+    compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
+    workflowGet.mockReset().mockResolvedValue({ phases: [] });
+    yjsMock.docs.clear();
+  });
+
+  it('does not render artifact count navigation chips (removed from simpler UX)', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'SUCCEEDED' }),
+      stages: [{ stageInstanceId: 'si-a', stageId: 'build', state: 'SUCCEEDED', phase: '01' }],
+      gates: [
+        {
+          humanTaskId: 'h1',
+          stageInstanceId: 'si-a',
+          status: 'answered',
+          kind: 'question',
+          questions: '[{"text":"Q?"}]',
+          answer: { freeText: 'A' },
+          answeredByName: 'U',
+          answeredAt: '2026-01-01T00:00:00Z',
+        },
+      ],
+      artifacts: [
+        {
+          id: 'a1',
+          artifactType: 'requirements',
+          title: 'Reqs',
+          content: `# Reqs\n\n${'body '.repeat(200)}`,
+          createdByStageInstanceId: 'si-a',
+          createdByExecutionId: 'i1',
+          createdAt: null,
+        },
+      ],
+    });
+    renderAt();
+    expect(await screen.findByText('Work products')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /1 doc/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /1 question/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /\d+ code/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /\d+ item/ })).not.toBeInTheDocument();
+  });
+});
+
+describe('IntentView — tabs overflow and roving tabindex', () => {
+  beforeEach(() => {
+    clearIntentCache();
+    get.mockReset();
+    answerGate.mockReset();
+    graph.mockReset().mockResolvedValue({ nodes: [], edges: [] });
+    compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
+    workflowGet.mockReset().mockResolvedValue({ phases: [] });
+    yjsMock.docs.clear();
+  });
+
+  const makeGates = (count: number, activeId?: string) => ({
+    ...baseDetail({
+      status: 'WAITING',
+      pendingHumanTaskId: activeId ?? 'h1',
+    }),
+    gates: Array.from({ length: count }, (_, i) => ({
+      humanTaskId: `h${i + 1}`,
+      stageInstanceId: `si-${i + 1}`,
+      status: 'pending',
+      kind: 'question',
+      questions: `[{"text":"Question ${i + 1}?","type":"single","options":[{"label":"Yes"}]}]`,
+      createdAt: `2026-01-0${(i % 9) + 1}T00:00:00Z`,
+    })),
+  });
+
+  it('renders 20 gates with overflow menu and exactly one editor', async () => {
+    get.mockResolvedValue(makeGates(20, 'h1'));
+    renderAt();
+    expect(await screen.findByText('Questions for you')).toBeInTheDocument();
+    const tabs = screen.getAllByRole('tab');
+    expect(tabs.length).toBeLessThanOrEqual(5);
+    expect(screen.getByLabelText(/more questions/)).toBeInTheDocument();
+    const editors = screen.getAllByTestId('question-editor');
+    expect(editors).toHaveLength(1);
+  });
+
+  it('selecting from overflow moves the gate into visible tabs', async () => {
+    get.mockResolvedValue(makeGates(10, 'h1'));
+    renderAt();
+    await screen.findByText('Questions for you');
+    expect(screen.getByTestId('gate-panel-h1')).toBeInTheDocument();
+    await userEvent.click(screen.getByLabelText(/more questions/));
+    await userEvent.click(await screen.findByText('Question 8?'));
+    expect(screen.getByTestId('gate-panel-h8')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Question 8?' })).toBeInTheDocument();
+  });
+
+  it('applies roving tabindex: selected tab has tabIndex=0, others -1', async () => {
+    get.mockResolvedValue(makeGates(3, 'h2'));
+    renderAt();
+    await screen.findByText('Questions for you');
+    const tabs = screen.getAllByRole('tab');
+    const selected = tabs.find((t) => t.getAttribute('aria-selected') === 'true')!;
+    const others = tabs.filter((t) => t.getAttribute('aria-selected') !== 'true');
+    expect(selected.tabIndex).toBe(0);
+    others.forEach((t) => expect(t.tabIndex).toBe(-1));
+  });
+
+  it('initializes to activeGateId when it differs from first gate', async () => {
+    get.mockResolvedValue(makeGates(4, 'h3'));
+    renderAt();
+    await screen.findByText('Questions for you');
+    expect(screen.getByTestId('gate-panel-h3')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Question 3?' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+  });
+});
+
+describe('IntentView — provenance tree structure', () => {
+  beforeEach(() => {
+    clearIntentCache();
+    get.mockReset();
+    graph.mockReset().mockResolvedValue({ nodes: [], edges: [] });
+    compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
+    workflowGet.mockReset().mockResolvedValue({ phases: [] });
+    yjsMock.docs.clear();
+  });
+
+  it('document with no stage does not crash and appears under Other last', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'SUCCEEDED' }),
+      stages: [],
+      artifacts: [
+        {
+          id: 'orphan-doc',
+          artifactType: 'document',
+          title: 'Orphan Doc',
+          content: `# Orphan\n\n${'body '.repeat(200)}`,
+          createdByStageInstanceId: null,
+          createdByExecutionId: 'i1',
+          createdAt: '2026-01-01T00:00:00Z',
+        },
+      ],
+    });
+    renderAt();
+    expect(await screen.findByText('Work products')).toBeInTheDocument();
+    expect(screen.getByText('Other')).toBeInTheDocument();
+  });
+
+  it('items linked to rendered docs appear under them; hidden types not counted', async () => {
+    graph.mockResolvedValue({
+      nodes: [
+        {
+          id: 'req-1',
+          type: 'Requirement',
+          label: 'MFA Required',
+          graphLayer: 'derived',
+          artifactId: 'a1',
+        },
+        {
+          id: 'sme-1',
+          type: 'StoryMapEntry',
+          label: 'Hidden Entry',
+          graphLayer: 'derived',
+          artifactId: 'a1',
+        },
+      ],
+      edges: [],
+    });
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'SUCCEEDED' }),
+      stages: [{ stageInstanceId: 'si-a', stageId: 'reqs', state: 'SUCCEEDED', phase: '01' }],
+      artifacts: [
+        {
+          id: 'a1',
+          artifactType: 'requirements',
+          title: 'Reqs',
+          content: `# Reqs\n\n${'body '.repeat(200)}`,
+          createdByStageInstanceId: 'si-a',
+          createdByExecutionId: 'i1',
+          createdAt: null,
+        },
+      ],
+    });
+    renderAt();
+    expect(await screen.findByText('Work products')).toBeInTheDocument();
+    await userEvent.click(await screen.findByLabelText(/Expand items for Reqs/));
+    expect(await screen.findByText('MFA Required')).toBeInTheDocument();
+    expect(screen.queryByText('Hidden Entry')).not.toBeInTheDocument();
+  });
+
+  it('item with artifactId pointing to a non-document artifact appears in Other items', async () => {
+    graph.mockResolvedValue({
+      nodes: [
+        {
+          id: 'item-x',
+          type: 'Component',
+          label: 'AuthService',
+          graphLayer: 'derived',
+          artifactId: 'non-doc',
+        },
+      ],
+      edges: [],
+    });
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'SUCCEEDED' }),
+      stages: [{ stageInstanceId: 'si-a', stageId: 'code', state: 'SUCCEEDED', phase: '01' }],
+      artifacts: [
+        {
+          id: 'non-doc',
+          artifactType: 'short-marker',
+          title: 'marker',
+          content: 'x',
+          createdByStageInstanceId: 'si-a',
+          createdByExecutionId: 'i1',
+          createdAt: null,
+        },
+      ],
+    });
+    renderAt();
+    expect(await screen.findByText('Work products')).toBeInTheDocument();
+    await userEvent.click(await screen.findByText('Other items'));
+    expect(await screen.findByText('AuthService')).toBeInTheDocument();
+  });
+
+  it('pending gates are absent from history section', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'h1' }),
+      gates: [
+        {
+          humanTaskId: 'h1',
+          stageInstanceId: 'si-a',
+          status: 'pending',
+          kind: 'question',
+          questions: '[{"text":"Open?"}]',
+        },
+        {
+          humanTaskId: 'h2',
+          stageInstanceId: 'si-a',
+          status: 'answered',
+          kind: 'question',
+          questions: '[{"text":"Closed?"}]',
+          answer: { freeText: 'Done' },
+          answeredAt: '2026-01-01T00:00:00Z',
+        },
+      ],
+    });
+    renderAt();
+    await screen.findByText('Questions for you');
+    const historySection = screen.queryByTestId('history-section');
+    if (historySection) {
+      expect(historySection).not.toHaveTextContent('Open?');
+    }
+  });
+
+  it('compact history row has no nested interactive button', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'SUCCEEDED' }),
+      gates: [
+        {
+          humanTaskId: 'h1',
+          stageInstanceId: 'si-a',
+          status: 'answered',
+          kind: 'question',
+          questions: '[{"text":"Scope?"}]',
+          answer: { freeText: 'MVP' },
+          answeredAt: '2026-01-01T00:00:00Z',
+        },
+      ],
+    });
+    renderAt();
+    await userEvent.click(await screen.findByText('Past questions & corrections'));
+    const row = await screen.findByTestId('history-row-h1');
+    const toggleButton = row.querySelector('[aria-expanded]');
+    expect(toggleButton?.tagName).toBe('BUTTON');
+    const discussButton = row.querySelector('[data-testid="discuss"]');
+    expect(discussButton).toBeInTheDocument();
+    expect(toggleButton?.contains(discussButton!)).toBe(false);
+  });
+
+  it('does not render search input, Active hero, flat queue, filter chips, or category accordion', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'SUCCEEDED' }),
+      stages: [{ stageInstanceId: 'si-a', stageId: 'build', state: 'SUCCEEDED', phase: '01' }],
+      artifacts: [
+        {
+          id: 'a1',
+          artifactType: 'requirements',
+          title: 'Reqs',
+          content: `# Reqs\n\n${'body '.repeat(200)}`,
+          createdByStageInstanceId: 'si-a',
+          createdByExecutionId: 'i1',
+          createdAt: null,
+        },
+      ],
+    });
+    renderAt();
+    expect(await screen.findByText('Work products')).toBeInTheDocument();
+    expect(screen.queryByRole('searchbox')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Active question/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: /Filter/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /1 doc/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /\d+ item/ })).not.toBeInTheDocument();
   });
 });

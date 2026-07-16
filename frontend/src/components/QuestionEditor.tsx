@@ -94,14 +94,6 @@ export default function QuestionEditor({
 
   return (
     <div className="rounded-lg border border-agent-waiting/40 bg-agent-waiting/5 p-3">
-      <div className="flex items-center justify-end mb-1">
-        <DiscussButton
-          entityType="question"
-          entityId={question.id}
-          entityTitle={question.questions[0]?.text || `${question.agent} agent question`}
-        />
-      </div>
-
       {remoteCount > 0 && (
         <div className="flex items-center gap-1 mb-3">
           {Array.from(remoteUsers.values()).map((u, i) => (
@@ -123,7 +115,7 @@ export default function QuestionEditor({
         </div>
       )}
 
-      <div className="space-y-4">
+      <div className="space-y-3">
         {question.questions.map((q, qIdx) => (
           <StructuredQuestionBlock
             key={qIdx}
@@ -139,6 +131,15 @@ export default function QuestionEditor({
             disabled={submitting}
             onFocus={onFocus}
             onBlur={onBlur}
+            trailing={
+              qIdx === 0 ? (
+                <DiscussButton
+                  entityType="question"
+                  entityId={question.id}
+                  entityTitle={question.questions[0]?.text || `${question.agent} agent question`}
+                />
+              ) : undefined
+            }
           />
         ))}
       </div>
@@ -158,6 +159,12 @@ export default function QuestionEditor({
       </Button>
     </div>
   );
+}
+
+function splitLeadingBlock(text: string): [string, string | null] {
+  const idx = text.indexOf('\n\n');
+  if (idx === -1) return [text, null];
+  return [text.slice(0, idx), text.slice(idx + 2).trim() || null];
 }
 
 /**
@@ -191,6 +198,7 @@ function StructuredQuestionBlock({
   disabled,
   onFocus,
   onBlur,
+  trailing,
 }: {
   question: StructuredQuestion;
   questionIndex: number;
@@ -204,9 +212,15 @@ function StructuredQuestionBlock({
   disabled?: boolean;
   onFocus?: () => void;
   onBlur?: () => void;
+  /** Extra control (discuss button) rendered on the title row, right-aligned. */
+  trailing?: React.ReactNode;
 }) {
   const isSingle = question.type === 'single';
   const [otherOpen, setOtherOpen] = useState(freeText.length > 0);
+  const itemized = totalQuestions > 1;
+  // Title row = the markdown's leading block; the rest renders full-width so
+  // body paragraphs stay left-aligned with the option rows below.
+  const [titleMd, bodyMd] = splitLeadingBlock(question.text);
 
   useEffect(() => {
     if (freeText.length > 0) setOtherOpen(true);
@@ -249,12 +263,25 @@ function StructuredQuestionBlock({
   const showTextarea = isOtherActive || (isSingle && selectedOptions.length === 0);
 
   return (
-    <div>
-      <div className="text-sm text-foreground mb-2 prose prose-sm dark:prose-invert max-w-none">
-        {totalQuestions > 1 && (
-          <span className="font-semibold text-primary mr-1">Q{questionIndex + 1}.</span>
+    <div className={cn(itemized && 'rounded-md border bg-background/60 p-3')}>
+      <div className="mb-2 space-y-2">
+        <div className="flex items-center gap-2">
+          {itemized && (
+            <span className="inline-flex h-5 shrink-0 items-center rounded bg-primary/10 px-1.5 text-[11px] font-semibold text-primary">
+              Q{questionIndex + 1}
+              <span className="ml-1 font-normal text-primary/60">/ {totalQuestions}</span>
+            </span>
+          )}
+          <div className="min-w-0 flex-1 text-sm text-foreground prose prose-sm dark:prose-invert max-w-none">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{titleMd}</ReactMarkdown>
+          </div>
+          {trailing && <div className="shrink-0">{trailing}</div>}
+        </div>
+        {bodyMd && (
+          <div className="text-sm text-foreground prose prose-sm dark:prose-invert max-w-none">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{bodyMd}</ReactMarkdown>
+          </div>
         )}
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{question.text}</ReactMarkdown>
       </div>
 
       {question.type === 'multi' && (

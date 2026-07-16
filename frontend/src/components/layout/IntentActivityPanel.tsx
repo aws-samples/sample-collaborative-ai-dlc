@@ -24,6 +24,7 @@ import { DiscussionsTab } from '@/components/discussion/DiscussionsTab';
 import { DiscussionPanel, useDiscussions } from '@/components/discussion';
 import { INTENT_OUTPUT_KEY, useIntent } from '@/contexts/IntentContext';
 import { artifactAccent } from '@/components/intent/artifactAccent';
+import { focusWorkProduct } from '@/components/intent/workProductsFocus';
 import { ArtifactEditControls, ArtifactStaleBadge } from '@/components/intent/ArtifactEditControls';
 import { ArtifactContentEditor } from '@/components/intent/ArtifactContentEditor';
 import { ArtifactMarkdown } from '@/components/intent/ArtifactMarkdown';
@@ -431,11 +432,7 @@ function IntentTimelineItem({ event }: { event: IntentActivityEvent }) {
                     key={artifact.id}
                     type="button"
                     className="rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
-                    onClick={() =>
-                      document
-                        .getElementById(`artifact-${artifact.id}`)
-                        ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-                    }
+                    onClick={() => focusWorkProduct({ kind: 'artifact', id: artifact.id })}
                   >
                     {artifact.title || artifact.id}
                   </button>

@@ -1,11 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
-import { Accordion } from '@/components/ui/accordion';
-import { CodeSection, CODE_ACCORDION_VALUE, buildCodeItems, type CodeItem } from './CodeSection';
+import { buildCodeItems } from './CodeSection';
 import type { IntentDetail } from '@/services/intents';
 
-// Minimal IntentDetail carrying only what buildCodeItems reads (repos, branch,
-// gitProvider, pullRequests, events). Everything else is irrelevant here.
 const detailWith = (over: {
   repos?: string[];
   branch?: string | null;
@@ -29,13 +25,6 @@ const detailWith = (over: {
       timestamp: '2026-01-01T00:00:00Z',
     })),
   }) as unknown as IntentDetail;
-
-const renderSection = (items: CodeItem[]) =>
-  render(
-    <Accordion type="multiple" defaultValue={[CODE_ACCORDION_VALUE]}>
-      <CodeSection items={items} />
-    </Accordion>,
-  );
 
 describe('buildCodeItems', () => {
   it('hides repos that neither pushed nor have a PR', () => {
@@ -111,53 +100,5 @@ describe('buildCodeItems', () => {
       }),
     );
     expect(unknown.branchUrl).toBeNull();
-  });
-});
-
-const item = (over: Partial<CodeItem> = {}): CodeItem => ({
-  repo: 'owner/repo',
-  branch: 'feat/x',
-  baseBranch: null,
-  branchUrl: null,
-  prUrl: null,
-  prNumber: null,
-  ...over,
-});
-
-describe('CodeSection', () => {
-  it('renders nothing without items', () => {
-    renderSection([]);
-    expect(screen.queryByText('Code')).not.toBeInTheDocument();
-  });
-
-  it('renders a bare branch entry (no PR affordances)', () => {
-    renderSection([item()]);
-    expect(screen.getByText('Code')).toBeInTheDocument();
-    expect(screen.getByText('owner/repo')).toBeInTheDocument();
-    expect(screen.getByText('feat/x')).toBeInTheDocument();
-    expect(screen.queryByText(/PR #/)).not.toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: /open pr/i })).not.toBeInTheDocument();
-  });
-
-  it('renders PR number, source → target branches, and an Open PR link', () => {
-    renderSection([
-      item({
-        branch: 'feat/x',
-        baseBranch: 'main',
-        branchUrl: 'https://github.com/owner/repo/tree/feat/x',
-        prUrl: 'https://github.com/owner/repo/pull/9',
-        prNumber: '9',
-      }),
-    ]);
-    expect(screen.getByText('PR #9')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'feat/x' })).toHaveAttribute(
-      'href',
-      'https://github.com/owner/repo/tree/feat/x',
-    );
-    expect(screen.getByText('main')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /open pr/i })).toHaveAttribute(
-      'href',
-      'https://github.com/owner/repo/pull/9',
-    );
   });
 });
