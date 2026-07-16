@@ -39,6 +39,7 @@ import {
   Plus,
   Trash2,
   Settings,
+  Info,
   Archive,
   ArrowUpDown,
 } from 'lucide-react';
@@ -360,7 +361,9 @@ function IntentsView({
   const [confirmDeleteIntent, setConfirmDeleteIntent] = useState<Intent | null>(null);
   const [deletingIntent, setDeletingIntent] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<IntentSort>(loadIntentSort);
-  const canDeleteIntents = project.userRole === 'owner' || project.userRole === 'admin';
+  const isOwnerOrAdmin = project.userRole === 'owner' || project.userRole === 'admin';
+  const canDeleteIntents = isOwnerOrAdmin;
+  const canEditSettings = isOwnerOrAdmin;
 
   const changeSort = (value: IntentSort) => {
     setSortBy(value);
@@ -450,8 +453,9 @@ function IntentsView({
           size="sm"
           className="gap-1.5 h-7"
           onClick={() => onNavigate(`/space/${projectId}/settings`)}
+          title={canEditSettings ? undefined : 'View space settings (read-only for members)'}
         >
-          <Settings className="h-3 w-3" />
+          {canEditSettings ? <Settings className="h-3 w-3" /> : <Info className="h-3 w-3" />}
           Settings
         </Button>
       </div>

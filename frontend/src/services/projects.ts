@@ -211,9 +211,13 @@ export const projectsService = {
   runTrackerMigration: (dryRun = false) =>
     api.post<TrackerMigrationResult>('/admin/tracker-migration', { dryRun }),
 
-  // Project-level custom MCP servers (raw JSON string, name-keyed JSON object)
+  // Project-level custom MCP servers (raw JSON string, name-keyed JSON object).
+  // The GET response is role-dependent: owners/admins get the raw config
+  // (`customMcpServers`); plain members get server names only (`mcpServerNames`).
   getCustomMcpServers: (projectId: string) =>
-    api.get<{ customMcpServers: string }>(`/projects/${projectId}/custom-mcp-servers`),
+    api.get<{ customMcpServers?: string; mcpServerNames?: string[] }>(
+      `/projects/${projectId}/custom-mcp-servers`,
+    ),
   updateCustomMcpServers: (projectId: string, customMcpServers: string) =>
     api.put<{ saved: boolean }>(`/projects/${projectId}/custom-mcp-servers`, {
       customMcpServers,

@@ -602,17 +602,20 @@ const handleProjectCustomMcpServers = async (
 ) => {
   if (!userId) return response(401, { error: 'Unauthorized' });
 
-  // The config may carry secrets in env/headers, so BOTH read and write are
-  // restricted to project owners/admins (a plain member cannot see it).
+  // The config may carry secrets in env/headers, so the RAW config (and the
+  // secrets sub-route) stays owner/admin-only. Plain members may read the
+  // derived server NAMES only (GET on the main route) — see below.
   const role = await fetchMembershipRole(g, projectId, userId);
   if (!role) return response(403, { error: 'Access denied' });
-  if (role !== 'owner' && role !== 'admin') {
-    return response(403, { error: 'Only project owners and admins can access MCP servers' });
-  }
+  const canEdit = role === 'owner' || role === 'admin';
 
   // Sub-route: /custom-mcp-servers/secrets — per-var SecureString CRUD under the
   // project's SSM prefix. GET returns set-state only; PUT rotates/clears.
+  // Owner/admin only (never exposed to members).
   if (/\/custom-mcp-servers\/secrets(\/|$)/.test(requestPath)) {
+    if (!canEdit) {
+      return response(403, { error: 'Only project owners and admins can access MCP secrets' });
+    }
     const base = mcpSecretsPrefix();
     if (!base) return response(500, { error: 'MCP secret store not configured' });
     if (httpMethod === 'GET') {
@@ -654,10 +657,27 @@ const handleProjectCustomMcpServers = async (
       .valueMap('custom_mcp_servers')
       .next();
     const raw = result.value ? getVal(result.value, 'custom_mcp_servers') : '{}';
+    // Members get the server NAMES only — never the raw config, which may carry
+    // inline secrets or internal endpoints. Owners/admins get the full JSON.
+    if (!canEdit) {
+      let names = [];
+      try {
+        const parsed = JSON.parse(raw || '{}');
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          names = Object.keys(parsed);
+        }
+      } catch {
+        names = [];
+      }
+      return response(200, { mcpServerNames: names });
+    }
     return response(200, { customMcpServers: raw || '{}' });
   }
 
   if (httpMethod === 'PUT') {
+    if (!canEdit) {
+      return response(403, { error: 'Only project owners and admins can modify MCP servers' });
+    }
     let data;
     try {
       data = JSON.parse(body || '{}');
@@ -779,12 +799,14 @@ const purgeS3Object = async (s3, bucket, key) => {
 const handleProjectCustomRules = async (g, response, httpMethod, projectId, userId, body) => {
   if (!userId) return response(401, { error: 'Unauthorized' });
 
-  // Restricted to project owners/admins for both read and write (consistent
-  // with the MCP-servers surface; a plain member cannot access custom rules).
+  // Read (GET) is open to any project member so they can see which steering
+  // docs the agent runs with; write (PUT) stays owner/admin-only. Members get
+  // filenames only — no presigned download URL is minted for them (below).
   const role = await fetchMembershipRole(g, projectId, userId);
   if (!role) return response(403, { error: 'Access denied' });
-  if (role !== 'owner' && role !== 'admin') {
-    return response(403, { error: 'Only project owners and admins can access custom rules' });
+  const canEdit = role === 'owner' || role === 'admin';
+  if (httpMethod === 'PUT' && !canEdit) {
+    return response(403, { error: 'Only project owners and admins can modify custom rules' });
   }
 
   const artifactsBucket = process.env.ARTIFACTS_BUCKET;
@@ -803,6 +825,9 @@ const handleProjectCustomRules = async (g, response, httpMethod, projectId, user
 
     const docsWithUrls = await Promise.all(
       docs.map(async (doc) => {
+        // Members see the filename only — never a presigned download URL, so
+        // the doc body stays owner/admin-only even if the UI leaked a button.
+        if (!canEdit) return { filename: doc.filename };
         if (!doc.s3Key || !artifactsBucket) return doc;
         try {
           const downloadUrl = await getSignedUrl(
