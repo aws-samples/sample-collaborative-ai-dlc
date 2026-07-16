@@ -2029,6 +2029,15 @@ export const runParallelSection = async (segment, toolkit) => {
         return null;
       }
       // retry: failed lanes + their blocked dependents from this round.
+      // AgentCore deployments do not replace an existing live session. Stop
+      // each failed lane before retrying so it remounts the preserved
+      // workspace in a fresh session running the currently deployed image.
+      for (const slug of failed) {
+        const sessionId = laneSessionIdFor(intentId, segment.index, slug);
+        await ctx.step(`retry-release-${sk}-${slug}${idSuffix}-r${round}`, () =>
+          stopSession(sessionId),
+        );
+      }
       round += 1;
       toRun = [...failed, ...toRun.filter((s) => laneState.get(s) === 'BLOCKED')];
     }

@@ -1750,6 +1750,19 @@ describe('WP5 — engine-gate decisions', () => {
       'cb-stage-cb-cg-s1-u-billing',
       'cb-stage-cb-cg-s1-u-billing-r1',
     ]);
+    const billingSessionId = 'aidlc-intent-i1-s1-billing'.padEnd(33, '0');
+    const billingSessionStops = deps.stopSession.mock.calls.filter(
+      ([sessionId]) => sessionId === billingSessionId,
+    );
+    expect(billingSessionStops).toHaveLength(2);
+    const retryReleaseOrder = deps.stopSession.mock.invocationCallOrder.find(
+      (_, index) => deps.stopSession.mock.calls[index][0] === billingSessionId,
+    );
+    const retryStageOrder = deps.invokeRuntime.mock.invocationCallOrder.filter((_, index) => {
+      const payload = deps.invokeRuntime.mock.calls[index][0];
+      return payload.stageId === 'cg' && payload.unitSlug === 'billing';
+    })[1];
+    expect(retryReleaseOrder).toBeLessThan(retryStageOrder);
     // Lane states: billing FAILED (round 0) then revived RUNNING → MERGED.
     const billing = unitStates.filter((u) => u.slug === 'billing').map((u) => u.state);
     expect(billing).toEqual(['RUNNING', 'FAILED', 'RUNNING', 'MERGING', 'MERGED']);
