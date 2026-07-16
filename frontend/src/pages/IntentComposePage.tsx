@@ -27,6 +27,7 @@ import {
   ChevronRight,
   Info,
   Loader2,
+  MousePointerClick,
   Users,
   X,
 } from 'lucide-react';
@@ -174,6 +175,8 @@ export default function IntentComposePage() {
     for (const id of skipSelections) base[id] = 'SKIP';
     return base;
   }, [draft.composedGrid, scopeBaselineGrid, skipSelections]);
+  // The stage grid is a collapsible, optional refinement — collapsed by default
+  // (the selected scope already fully describes the run).
   const [showGridEditor, setShowGridEditor] = useState(false);
 
   const toggleGridStage = (stageId: string) => {
@@ -371,157 +374,158 @@ export default function IntentComposePage() {
             />
           </div>
 
-          {projectId && intentId && (
-            <ComposePanel
-              projectId={projectId}
-              intentId={intentId}
-              disabled={starting}
-              onApply={applyProposal}
-            />
-          )}
-
-          <div>
-            <Label htmlFor="draft-scope">Scope</Label>
-            <Select
-              value={draft.composedGrid ? '' : (scope ?? '')}
-              onValueChange={(v) => {
-                // Picking a stock scope leaves any composed grid behind.
-                if (v) resetGridToScope(v);
-              }}
-              disabled={scopeOptions.length === 0}
-            >
-              <SelectTrigger id="draft-scope" className="mt-1.5">
-                <SelectValue
-                  placeholder={draft.composedGrid ? `composed grid (${scope})` : 'Select a scope'}
-                />
-              </SelectTrigger>
-              <SelectContent>
-                {scopeOptions.map((s) => (
-                  <SelectItem key={s} value={s}>
-                    {s}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {draft.composedGrid && (
-              <p className="mt-1.5 text-xs text-muted-foreground" data-testid="composed-note">
-                Using a composed stage grid ({scope}). Picking a scope above discards it.
-              </p>
-            )}
-            {scope && summary && (
-              <p className="mt-1 text-xs text-foreground" data-testid="scope-summary">
-                {(() => {
-                  const parts = [
-                    `Runs ${summary.executedStages} of ${summary.totalStages} stages`,
-                    `${summary.approvalGates} approval gate${summary.approvalGates === 1 ? '' : 's'}`,
-                  ];
-                  if (summary.perUnitStages > 0) {
-                    parts.push(
-                      `${summary.perUnitStages} stage${summary.perUnitStages === 1 ? '' : 's'} fan${summary.perUnitStages === 1 ? 's' : ''} out per unit of work`,
-                    );
-                  }
-                  if (summary.skippedStages > 0) parts.push(`${summary.skippedStages} deselected`);
-                  return parts.join(' · ');
-                })()}
-              </p>
-            )}
-            {previewNote && (
-              <p
-                className="mt-1.5 flex items-start gap-1.5 text-xs text-sky-700 dark:text-sky-300"
-                data-testid="preview-note"
-              >
-                <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-                {previewNote}
-              </p>
-            )}
-            {previewErrors.length > 0 && (
-              <div className="mt-1.5 space-y-0.5" data-testid="grid-errors">
-                {previewErrors.map((msg, i) => (
-                  <p key={i} className="flex items-start gap-1.5 text-xs text-destructive">
-                    <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-                    {msg}
-                  </p>
-                ))}
+          <div className="space-y-2">
+            <Label className="text-sm font-medium">Scope</Label>
+            <div className="grid gap-3 lg:grid-cols-3">
+              {/* Predefined — pick a built-in scope (1/3) */}
+              <div className="lg:col-span-1 border rounded-md p-3 space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <MousePointerClick className="h-4 w-4 text-muted-foreground" />
+                  <Label htmlFor="draft-scope" className="text-sm font-medium">
+                    Predefined
+                  </Label>
+                </div>
+                <p className="text-xs text-muted-foreground">Built-in stage sets for common work</p>
+                <Select
+                  value={draft.composedGrid ? '' : (scope ?? '')}
+                  onValueChange={(v) => {
+                    // Picking a stock scope leaves any composed grid behind.
+                    if (v) resetGridToScope(v);
+                  }}
+                  disabled={scopeOptions.length === 0}
+                >
+                  <SelectTrigger id="draft-scope">
+                    <SelectValue
+                      placeholder={
+                        draft.composedGrid ? `composed grid (${scope})` : 'Select a scope'
+                      }
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {scopeOptions.map((s) => (
+                      <SelectItem key={s} value={s}>
+                        {s}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
-            )}
+
+              {/* Compose with AI — propose a scope/grid from the prompt (2/3) */}
+              {projectId && intentId && (
+                <div className="lg:col-span-2">
+                  <ComposePanel
+                    projectId={projectId}
+                    intentId={intentId}
+                    disabled={starting}
+                    onApply={applyProposal}
+                  />
+                </div>
+              )}
+            </div>
           </div>
 
           {gridStages.length > 0 && (
-            <div className="border rounded-md">
-              <button
-                type="button"
-                onClick={() => setShowGridEditor((v) => !v)}
-                className="w-full flex items-center gap-1.5 px-3 py-2 text-sm font-medium"
-                data-testid="grid-editor-toggle"
-              >
-                {showGridEditor ? (
-                  <ChevronDown className="h-3.5 w-3.5" />
-                ) : (
-                  <ChevronRight className="h-3.5 w-3.5" />
-                )}
-                Stages to run
-                <span className="text-xs text-muted-foreground font-normal">
-                  {draft.composedGrid
-                    ? '(customized — your own stage selection)'
-                    : `(the ${scope ?? '—'} scope — expand to add or skip stages)`}
-                </span>
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Label className="text-sm font-medium">Stages</Label>
                 {draft.composedGrid && scope && (
-                  <span
-                    role="button"
-                    tabIndex={0}
+                  <button
+                    type="button"
                     className="ml-auto text-xs underline text-muted-foreground hover:text-foreground"
                     data-testid="grid-reset"
-                    onClick={(e) => {
-                      e.stopPropagation();
+                    onClick={() => {
                       const back = scopeOptions.includes(scope.replace(/-custom$/, ''))
                         ? scope.replace(/-custom$/, '')
                         : (scopeOptions[0] ?? scope);
                       resetGridToScope(back);
                     }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.stopPropagation();
-                        const back = scopeOptions.includes(scope.replace(/-custom$/, ''))
-                          ? scope.replace(/-custom$/, '')
-                          : (scopeOptions[0] ?? scope);
-                        resetGridToScope(back);
-                      }
-                    }}
                   >
                     reset to scope
-                  </span>
+                  </button>
                 )}
-              </button>
-              {showGridEditor && (
-                <div className="px-3 pb-3 space-y-2">
-                  <p className="text-xs text-muted-foreground">
-                    Every stage this workflow can run, grouped by phase. Checked stages execute;
-                    unchecked ones are skipped, and downstream stages treat their outputs as absent
-                    by design. Initialization always runs. Changes are validated instantly against
-                    the run-shape summary above.
-                  </p>
-                  <StageGridEditor
-                    stages={gridStages}
-                    phaseNames={phaseNames}
-                    grid={effectiveGrid}
-                    lockedStageIds={lockedStageIds}
-                    disabled={starting}
-                    onToggle={toggleGridStage}
-                  />
+              </div>
+
+              {/* Run-shape summary + exclusion note for the current selection */}
+              {scope && summary && (
+                <p className="text-xs text-foreground" data-testid="scope-summary">
+                  {(() => {
+                    const label = draft.composedGrid
+                      ? 'Customized scope'
+                      : `"${scope.charAt(0).toUpperCase() + scope.slice(1)}" scope`;
+                    const parts = [
+                      `Runs ${summary.executedStages} of ${summary.totalStages} stages`,
+                      `${summary.approvalGates} approval gate${summary.approvalGates === 1 ? '' : 's'}`,
+                    ];
+                    if (summary.perUnitStages > 0) {
+                      parts.push(
+                        `${summary.perUnitStages} stage${summary.perUnitStages === 1 ? '' : 's'} fan${summary.perUnitStages === 1 ? 's' : ''} out per unit of work`,
+                      );
+                    }
+                    if (summary.skippedStages > 0)
+                      parts.push(`${summary.skippedStages} deselected`);
+                    return `${label}: ${parts.join(' · ')}`;
+                  })()}
+                </p>
+              )}
+              {previewNote && (
+                <p
+                  className="flex items-start gap-1.5 text-xs text-sky-700 dark:text-sky-300"
+                  data-testid="preview-note"
+                >
+                  <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                  {previewNote}
+                </p>
+              )}
+              {previewErrors.length > 0 && (
+                <div className="space-y-0.5" data-testid="grid-errors">
+                  {previewErrors.map((msg, i) => (
+                    <p key={i} className="flex items-start gap-1.5 text-xs text-destructive">
+                      <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                      {msg}
+                    </p>
+                  ))}
                 </div>
               )}
+
+              {/* Optional stage refinement — collapsed by default */}
+              <div className="border rounded-md">
+                <button
+                  type="button"
+                  onClick={() => setShowGridEditor((v) => !v)}
+                  className="w-full flex items-center gap-1.5 px-3 py-2 text-sm font-medium"
+                  data-testid="grid-editor-toggle"
+                >
+                  {showGridEditor ? (
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  ) : (
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  )}
+                  Customize stages
+                  <span className="text-xs text-muted-foreground font-normal">(optional)</span>
+                </button>
+                {showGridEditor && (
+                  <div className="px-3 pb-3 space-y-2">
+                    <p className="text-xs text-muted-foreground">
+                      Every stage this workflow can run, grouped by phase. Checked stages execute;
+                      unchecked ones are skipped, and downstream stages treat their outputs as
+                      absent by design. Initialization always runs.
+                    </p>
+                    <StageGridEditor
+                      stages={gridStages}
+                      phaseNames={phaseNames}
+                      grid={effectiveGrid}
+                      lockedStageIds={lockedStageIds}
+                      disabled={starting}
+                      onToggle={toggleGridStage}
+                    />
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
           <div className="flex items-center gap-3 pt-2">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => navigate(`/space/${projectId}`)}
-              disabled={starting}
-            >
-              Close
-            </Button>
             <Button
               type="button"
               onClick={handleStart}

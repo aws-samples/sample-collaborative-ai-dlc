@@ -94,8 +94,7 @@ export default function QuestionEditor({
 
   return (
     <div className="rounded-lg border border-agent-waiting/40 bg-agent-waiting/5 p-3">
-      <div className="flex items-center justify-between mb-1">
-        <p className="text-xs text-muted-foreground">{question.agent} agent</p>
+      <div className="flex items-center justify-end mb-1">
         <DiscussButton
           entityType="question"
           entityId={question.id}
@@ -250,7 +249,7 @@ function StructuredQuestionBlock({
   const showTextarea = isOtherActive || (isSingle && selectedOptions.length === 0);
 
   return (
-    <div className="border-l-2 border-primary/30 pl-3">
+    <div>
       <div className="text-sm text-foreground mb-2 prose prose-sm dark:prose-invert max-w-none">
         {totalQuestions > 1 && (
           <span className="font-semibold text-primary mr-1">Q{questionIndex + 1}.</span>

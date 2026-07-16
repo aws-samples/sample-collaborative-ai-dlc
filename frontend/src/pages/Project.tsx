@@ -8,6 +8,7 @@ import { type Sprint } from '@/services/sprints';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import {
@@ -431,9 +432,18 @@ function IntentsView({
         <div className="flex items-center gap-3 min-w-0">
           <FolderGit2 className="h-5 w-5 text-primary shrink-0" />
           <h1 className="text-lg font-bold tracking-tight truncate">{project.name}</h1>
-          <Badge variant="outline" className="text-[10px]">
-            v2
-          </Badge>
+          {project.kind !== 'v2' && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                  Legacy
+                </Badge>
+              </TooltipTrigger>
+              <TooltipContent>
+                Created with an older version — migrate to unlock latest features
+              </TooltipContent>
+            </Tooltip>
+          )}
         </div>
         <Button
           variant="outline"

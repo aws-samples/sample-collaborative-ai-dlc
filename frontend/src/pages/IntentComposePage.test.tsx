@@ -238,8 +238,8 @@ describe('IntentComposePage', () => {
       scope: 'my-custom',
     });
     expect(executionPreview).not.toHaveBeenCalled();
-    expect(await screen.findByTestId('composed-note')).toBeInTheDocument();
     const summary = await screen.findByTestId('scope-summary');
+    expect(summary.textContent).toContain('Customized scope');
     expect(summary.textContent).toContain('Runs 2 of 3 stages');
   });
 

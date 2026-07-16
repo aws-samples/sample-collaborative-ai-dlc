@@ -4,7 +4,6 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
-import { useIntent } from '@/contexts/IntentContext';
 import { artifactAccent } from '@/components/intent/artifactAccent';
 import { IntentGraphPopover } from '@/components/intent/IntentGraphPopover';
 import { DerivedItemCountChip } from '@/components/intent/DerivedItemCountChip';
@@ -38,19 +37,12 @@ export function ArtifactViewer({
   graphNeighbors?: GraphNeighbor[];
   derivedItemCount?: number;
 }) {
-  const { detail, setSelectedStageId } = useIntent();
   const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
 
   const content = artifact.content ?? '';
   const collapsible = content.length > COLLAPSE_CHARS;
   const shown = collapsible && !expanded ? `${content.slice(0, COLLAPSE_CHARS)}…` : content;
-
-  // Provenance: the stage that produced this artifact (jump link selects it in
-  // the pipeline), plus the creation time.
-  const producedBy = artifact.createdByStageInstanceId
-    ? (detail?.stages.find((s) => s.stageInstanceId === artifact.createdByStageInstanceId) ?? null)
-    : null;
 
   // Rewind lineage (docs/v2-steering.md): a superseded artifact came from a
   // rewound stage attempt; it is kept (dimmed) until the re-run rehabilitates
@@ -75,9 +67,6 @@ export function ArtifactViewer({
                   {artifact.artifactType}
                 </span>
               )}
-              <h4 className="min-w-0 truncate text-sm font-medium">
-                {artifact.title || artifact.id}
-              </h4>
               {superseded && (
                 <Badge
                   variant="outline"
@@ -90,26 +79,7 @@ export function ArtifactViewer({
               <ArtifactStaleBadge artifact={artifact} />
             </div>
             <p className="mt-0.5 text-[11px] text-muted-foreground">
-              {producedBy?.stageId ? (
-                <>
-                  produced by{' '}
-                  <button
-                    type="button"
-                    className="font-medium underline-offset-2 hover:underline"
-                    onClick={() => {
-                      setSelectedStageId(producedBy.stageId);
-                      document
-                        .getElementById('intent-stages')
-                        ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                    }}
-                  >
-                    {producedBy.stageId}
-                  </button>
-                </>
-              ) : (
-                'produced by this run'
-              )}
-              {artifact.createdAt && <> · {new Date(artifact.createdAt).toLocaleString()}</>}
+              {artifact.createdAt && new Date(artifact.createdAt).toLocaleString()}
               {artifact.editedAt && (
                 <>
                   {' '}

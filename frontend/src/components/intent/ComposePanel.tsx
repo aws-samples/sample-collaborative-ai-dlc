@@ -104,12 +104,14 @@ export function ComposePanel({ projectId, intentId, disabled, onApply }: Props) 
 
   return (
     <div className="border rounded-md p-3 space-y-3" data-testid="compose-panel">
-      <div className="flex items-center gap-2">
-        <Sparkles className="h-4 w-4 text-muted-foreground" />
-        <Label className="text-sm font-medium">Compose with AI</Label>
-        <span className="text-xs text-muted-foreground font-normal">
-          proposes which stages to run — you approve before anything applies
-        </span>
+      <div className="space-y-1">
+        <div className="flex items-center gap-2">
+          <Sparkles className="h-4 w-4 text-muted-foreground" />
+          <Label className="text-sm font-medium">Compose with AI</Label>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Agent will evaluate and propose most appropriate stages for this intent
+        </p>
       </div>
 
       <div className="flex gap-2">
@@ -121,16 +123,6 @@ export function ComposePanel({ projectId, intentId, disabled, onApply }: Props) 
           disabled={disabled || busy || pending}
           data-testid="compose-instructions"
         />
-        <Button
-          type="button"
-          variant="secondary"
-          onClick={() => startCompose()}
-          disabled={disabled || busy || pending || uploading}
-          data-testid="compose-start"
-        >
-          {busy || pending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" /> : null}
-          {pending ? 'Composing…' : 'Compose'}
-        </Button>
         <input
           ref={fileRef}
           type="file"
@@ -155,6 +147,16 @@ export function ComposePanel({ projectId, intentId, disabled, onApply }: Props) 
           ) : (
             <FileUp className="h-3.5 w-3.5" />
           )}
+        </Button>
+        <Button
+          type="button"
+          variant="secondary"
+          onClick={() => startCompose()}
+          disabled={disabled || busy || pending || uploading}
+          data-testid="compose-start"
+        >
+          {busy || pending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" /> : null}
+          {pending ? 'Composing…' : 'Compose'}
         </Button>
       </div>
 

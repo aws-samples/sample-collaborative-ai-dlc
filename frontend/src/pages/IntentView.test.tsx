@@ -327,18 +327,22 @@ describe('IntentView', () => {
     expect(reviewDiscuss).toHaveAttribute('data-entity-id', 'eg-validation-si-a-0-run1');
     expect(reviewDiscuss).toHaveAttribute('data-entity-title', 'Review stage-a');
     const glance = screen.getByRole('button', { name: /At a glance/i });
-    expect(glance).toHaveAttribute('aria-expanded', 'false');
-    await userEvent.click(glance);
+    expect(glance).toHaveAttribute('aria-expanded', 'true');
     expect(
       screen.getByText('Captures login requirements and MFA acceptance criteria.'),
     ).toBeInTheDocument();
     expect(screen.getByText('Users must authenticate with MFA.')).toBeInTheDocument();
+    const identified = screen
+      .getAllByRole('button', { name: /Identified items/i })
+      .find((b) => b.hasAttribute('aria-expanded'))!;
+    expect(identified).toHaveAttribute('aria-expanded', 'false');
+    await userEvent.click(identified);
     expect(await screen.findByText(/REQ-1:/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /LLM reviewer findings/i })).toHaveAttribute(
+    expect(screen.getByRole('button', { name: /Reviewer Agent findings/i })).toHaveAttribute(
       'aria-expanded',
       'false',
     );
-    await userEvent.click(screen.getByRole('button', { name: /LLM reviewer findings/i }));
+    await userEvent.click(screen.getByRole('button', { name: /Reviewer Agent findings/i }));
     expect(screen.getByText('Looks complete')).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('button', { name: 'Approve stage' }));
@@ -389,6 +393,126 @@ describe('IntentView', () => {
       answer: { decision: 'approve', recompose: { skip: ['nfr-design'] } },
       status: 'approved',
     });
+  });
+
+  // Empty-state consistency: sections with nothing to show are hidden entirely
+  // (no "No … recorded" placeholders), and their stat cards are not clickable.
+  it('hides empty evidence sections and disables their stat cards on the review gate', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'eg-validation-si-a-0-run1' }),
+      stages: [
+        { stageInstanceId: 'si-a', stageId: 'stage-a', state: 'WAITING_FOR_HUMAN', phase: 'build' },
+      ],
+      gates: [
+        {
+          humanTaskId: 'eg-validation-si-a-0-run1',
+          stageInstanceId: 'si-a',
+          unitSlug: null,
+          kind: 'validation',
+          status: 'pending',
+          prompt: 'Review stage stage-a.',
+          options: ['approve', 'request-changes'],
+          questions: null,
+          answer: null,
+          answeredBy: null,
+          answeredAt: null,
+          createdAt: null,
+        },
+      ],
+      sensorRuns: [],
+      artifacts: [],
+    });
+    graph.mockResolvedValue({ nodes: [], edges: [] });
+    renderAt('/space/p1/intent/i1/review/eg-validation-si-a-0-run1');
+    expect(await screen.findByText('Review: stage-a')).toBeInTheDocument();
+
+    // Accordion triggers carry aria-expanded; the empty categories render none.
+    const expandable = (label: RegExp) =>
+      screen.queryAllByRole('button', { name: label }).find((b) => b.hasAttribute('aria-expanded'));
+    expect(expandable(/^Artifacts/)).toBeUndefined();
+    expect(expandable(/Reviewer Agent findings/i)).toBeUndefined();
+    expect(expandable(/Identified items/i)).toBeUndefined();
+    // Only "At a glance" is always present.
+    expect(expandable(/At a glance/i)).toBeDefined();
+
+    // No placeholder copy for the hidden sections.
+    expect(screen.queryByText(/No graph artifacts were produced/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/No reviewer agent findings were recorded/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/were derived\s+from this stage/i)).not.toBeInTheDocument();
+
+    // Stat cards for empty categories are plain (rendered as <div>, not <button>).
+    const statCardButton = (label: string) =>
+      screen
+        .queryAllByRole('button')
+        .find((b) => !b.hasAttribute('aria-expanded') && b.textContent?.startsWith(label));
+    expect(statCardButton('Artifacts')).toBeUndefined();
+    expect(statCardButton('Identified items')).toBeUndefined();
+    expect(statCardButton('Reviewer findings')).toBeUndefined();
+  });
+
+  // Positive counterpart: when a category has data, its stat card is a button
+  // that expands the matching accordion section.
+  it('expands the matching section when a populated stat card is clicked', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'eg-validation-si-a-0-run1' }),
+      stages: [
+        { stageInstanceId: 'si-a', stageId: 'stage-a', state: 'WAITING_FOR_HUMAN', phase: 'build' },
+      ],
+      gates: [
+        {
+          humanTaskId: 'eg-validation-si-a-0-run1',
+          stageInstanceId: 'si-a',
+          unitSlug: null,
+          kind: 'validation',
+          status: 'pending',
+          prompt: 'Review stage stage-a.',
+          options: ['approve', 'request-changes'],
+          questions: null,
+          answer: null,
+          answeredBy: null,
+          answeredAt: null,
+          createdAt: null,
+        },
+      ],
+      sensorRuns: [
+        {
+          sensorRunId: 'sr-1',
+          stageInstanceId: 'si-a',
+          sensorId: 'reviewer:qa',
+          result: 'PASS',
+          detail: { verdict: 'READY', findings: 'Looks complete' },
+        },
+      ],
+      artifacts: [
+        {
+          id: 'a1',
+          artifactType: 'requirements',
+          title: 'Reqs',
+          content: '# hi',
+          summaryGist: null,
+          summaryClaims: [],
+          enrichmentModel: 'claude-sonnet',
+          createdByStageInstanceId: 'si-a',
+          createdByExecutionId: 'i1',
+          createdAt: null,
+        },
+      ],
+    });
+    graph.mockResolvedValue({ nodes: [], edges: [] });
+    renderAt('/space/p1/intent/i1/review/eg-validation-si-a-0-run1');
+    expect(await screen.findByText('Review: stage-a')).toBeInTheDocument();
+
+    const trigger = (label: RegExp) =>
+      screen.getAllByRole('button', { name: label }).find((b) => b.hasAttribute('aria-expanded'))!;
+    const statCard = (label: string) =>
+      screen
+        .getAllByRole('button')
+        .find((b) => !b.hasAttribute('aria-expanded') && b.textContent?.startsWith(label))!;
+
+    // Artifacts section starts collapsed; clicking its stat card expands it.
+    expect(trigger(/^Artifacts/)).toHaveAttribute('aria-expanded', 'false');
+    await userEvent.click(statCard('Artifacts'));
+    expect(trigger(/^Artifacts/)).toHaveAttribute('aria-expanded', 'true');
   });
 
   // Upstream 2.2.6: the approve action names the COMPUTED next stage verbatim

@@ -22,6 +22,17 @@ import {
 } from '@/components/ui/select';
 import { AlertCircle, ArrowLeft, ChevronDown, ChevronRight, Loader2, X } from 'lucide-react';
 
+// Human-readable label for the imported-source badge. GitHub/GitLab expose
+// numeric issue numbers, so we render "Issue #2" (their own convention). Jira
+// keys (e.g. TAS-01) already encode the project and never use '#', so we
+// show the provider subtype instead (e.g. "Task TAS-01").
+function sourceLabel(binding: TrackerBinding, issue: TrackerIssue): string {
+  if (binding.provider === 'jira-cloud') {
+    return issue.entityType ? `${issue.entityType} ${issue.resourceId}` : issue.resourceId;
+  }
+  return `Issue #${issue.resourceId}`;
+}
+
 // Step one of intent creation: capture the seed (title/prompt/tracker import/
 // base branch) and create the intent as a DRAFT immediately. Everything else —
 // the shared prompt refinement, the scope / composed-grid selection, stage
@@ -222,12 +233,12 @@ export default function NewIntentPage() {
                     href={source.issue.resourceUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="underline hover:no-underline"
+                    className="hover:underline"
                   >
-                    {source.issue.resourceId}
+                    {sourceLabel(source.binding, source.issue)}
                   </a>
                 ) : (
-                  source.issue.resourceId
+                  sourceLabel(source.binding, source.issue)
                 )}
                 <button
                   type="button"
