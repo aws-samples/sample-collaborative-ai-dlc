@@ -2425,12 +2425,12 @@ export const handler = async (event) => {
     // prompt), and relaunches the orchestrator at that stage.
     if (intentId && httpMethod === 'POST' && path?.endsWith('/rewind')) {
       const data = body ? JSON.parse(body) : {};
-      const fromStageId = typeof data.fromStageId === 'string' ? data.fromStageId : '';
+      const requestedFromStageId = typeof data.fromStageId === 'string' ? data.fromStageId : '';
       // Guidance is OPTIONAL: with guidance this is a steering rewind (a
       // correction the restarted stage consumes at entry); without it, a plain
       // retry — same reset + relaunch mechanics, no steering row.
       const guidance = typeof data.guidance === 'string' ? data.guidance.trim() : '';
-      if (!fromStageId) return response(400, { error: 'fromStageId is required' });
+      if (!requestedFromStageId) return response(400, { error: 'fromStageId is required' });
       const meta = await store.getExecution(intentId);
       if (!meta || meta.projectId !== projectId) {
         return response(404, { error: 'Intent not found' });
@@ -2447,8 +2447,8 @@ export const handler = async (event) => {
       // (the shrunken overlay is persisted on META below, so every later
       // recompute agrees). Upstream calls this "Add [Skipped Stage]".
       const priorSkipIds = Array.isArray(meta.skipStageIds) ? meta.skipStageIds : [];
-      const unskipping = priorSkipIds.includes(fromStageId);
-      const rewindSkipIds = priorSkipIds.filter((id) => id !== fromStageId);
+      const unskipping = priorSkipIds.includes(requestedFromStageId);
+      const rewindSkipIds = priorSkipIds.filter((id) => id !== requestedFromStageId);
       const planResult = await loadExecutionPlan({
         ddb,
         tableName: BLOCKS_TABLE(),
@@ -2465,24 +2465,71 @@ export const handler = async (event) => {
         });
       }
       const stages = planResult.plan.stages;
-      const idx = stages.findIndex((s) => s.stageId === fromStageId);
+      let idx = stages.findIndex((s) => s.stageId === requestedFromStageId);
       if (idx < 0) {
         // The plan is scope-projected: a stage the workflow places but the
         // run's scope does not EXECUTE is not a rewind target — running it
         // would execute a stage the scope deliberately (or accidentally, see
         // zero_scope_placement) excludes. 409 with the wiring hint instead of
         // pretending the stage does not exist.
-        if ((planResult.plan.outOfScopeStageIds ?? []).includes(fromStageId)) {
+        if ((planResult.plan.outOfScopeStageIds ?? []).includes(requestedFromStageId)) {
           return response(409, {
             error: planResult.plan.composed
-              ? `Stage "${fromStageId}" is SKIP in this intent's composed grid — recompose it to EXECUTE before rewinding to it`
-              : `Stage "${fromStageId}" is not executed in scope "${meta.scope}" — wire it to EXECUTE for this scope in the workflow composer before rewinding to it`,
+              ? `Stage "${requestedFromStageId}" is SKIP in this intent's composed grid — recompose it to EXECUTE before rewinding to it`
+              : `Stage "${requestedFromStageId}" is not executed in scope "${meta.scope}" — wire it to EXECUTE for this scope in the workflow composer before rewinding to it`,
           });
         }
         return response(400, {
-          error: `Unknown stage "${fromStageId}"`,
+          error: `Unknown stage "${requestedFromStageId}"`,
           stages: stages.map((s) => s.stageId),
         });
+      }
+      const planNamespace =
+        planResult.plan.namespace ?? `${meta.workflowId}@${meta.workflowVersion}`;
+      let unitPlan = null;
+      let fromStageId = requestedFromStageId;
+
+      // A partial parallel section cannot be relaunched in its middle when the
+      // walking skeleton is the only lane that reached the requested stage.
+      // The orchestrator's rewind guard correctly requires every earlier
+      // per-unit instance to be terminal, so normalize such retries to the
+      // section's first stage instead of launching a run that immediately
+      // fails rewind_upstream_incomplete.
+      const requestedStage = stages[idx];
+      if (requestedStage.parallelSection != null) {
+        const firstSectionIdx = stages.findIndex(
+          (stage) => stage.parallelSection === requestedStage.parallelSection,
+        );
+        const priorSectionStages = firstSectionIdx >= 0 ? stages.slice(firstSectionIdx, idx) : [];
+        if (priorSectionStages.length > 0) {
+          unitPlan = await store.getUnitPlan(intentId).catch(() => null);
+          const unitSlugs = (unitPlan?.units ?? []).map((unit) => unit.slug);
+          let incomplete = unitSlugs.length === 0;
+          for (const stage of priorSectionStages) {
+            if (incomplete) break;
+            for (const laneSlug of unitSlugs) {
+              const row = await store
+                .getStage(
+                  intentId,
+                  planStageInstanceId(
+                    planNamespace,
+                    stage.stageId,
+                    laneSlug,
+                    stage.parallelSection,
+                  ),
+                )
+                .catch(() => null);
+              if (!row || (row.state !== 'SUCCEEDED' && row.state !== 'SKIPPED')) {
+                incomplete = true;
+                break;
+              }
+            }
+          }
+          if (incomplete && firstSectionIdx >= 0) {
+            idx = firstSectionIdx;
+            fromStageId = stages[firstSectionIdx].stageId;
+          }
+        }
       }
       const resetStages = stages.slice(idx);
       // Per-unit instance expansion (docs/v2-parallel.md WP4): a `forEach:
@@ -2490,22 +2537,20 @@ export const handler = async (event) => {
       // PER UNIT — a rewind must reset every lane's instance, and the touched
       // lanes themselves, or the relaunch would see stale terminal rows.
       const sectionStages = resetStages.filter((s) => s.parallelSection != null);
-      const unitPlan = sectionStages.length
-        ? await store.getUnitPlan(intentId).catch(() => null)
-        : null;
+      if (sectionStages.length && !unitPlan) {
+        unitPlan = await store.getUnitPlan(intentId).catch(() => null);
+      }
       const unitSlugs = (unitPlan?.units ?? []).map((u) => u.slug);
-      const planNamespace =
-        planResult.plan.namespace ?? `${meta.workflowId}@${meta.workflowVersion}`;
       const resetInstances = resetStages.flatMap((stage) =>
         stage.parallelSection != null
-          ? unitSlugs.map((unitSlug) => ({
+          ? unitSlugs.map((laneSlug) => ({
               stage,
-              unitSlug,
+              unitSlug: laneSlug,
               sectionIndex: stage.parallelSection,
               stageInstanceId: planStageInstanceId(
                 planNamespace,
                 stage.stageId,
-                unitSlug,
+                laneSlug,
                 stage.parallelSection,
               ),
             }))
@@ -2543,7 +2588,7 @@ export const handler = async (event) => {
             createdByName: responder.displayName,
           })
         : null;
-      for (const { stage, unitSlug, sectionIndex, stageInstanceId } of resetInstances) {
+      for (const { stage, unitSlug: laneSlug, sectionIndex, stageInstanceId } of resetInstances) {
         const reset = await store.resetStageRow({
           executionId: intentId,
           stageInstanceId,
@@ -2554,10 +2599,10 @@ export const handler = async (event) => {
               executionId: intentId,
               type: 'v2.stage.reset',
               stageInstanceId,
-              unitSlug,
+              unitSlug: laneSlug,
               sectionIndex,
               actor: responder.displayName || responder.sub,
-              summary: `Stage ${stage.stageId}${unitSlug ? ` [unit ${unitSlug}]` : ''} reset for rewind (attempt ${reset.attempt + 1})`,
+              summary: `Stage ${stage.stageId}${laneSlug ? ` [unit ${laneSlug}]` : ''} reset for rewind (attempt ${reset.attempt + 1})`,
             })
             .catch(() => {});
         }
@@ -2603,7 +2648,7 @@ export const handler = async (event) => {
           executionId: intentId,
           type: 'v2.execution.rewound',
           actor: responder.displayName || responder.sub,
-          summary: `${responder.displayName || 'Someone'} ${steer ? 'rewound the run to' : 'retried the run from'} ${fromStageId}${unskipping ? ' (un-skipped: it was deselected at creation)' : ''} (${resetInstances.length} stage instance(s) reset, ${supersededArtifacts.length} artifact(s) superseded)`,
+          summary: `${responder.displayName || 'Someone'} ${steer ? 'rewound the run to' : 'retried the run from'} ${fromStageId}${fromStageId !== requestedFromStageId ? ` (requested ${requestedFromStageId}; restarted the incomplete unit section from its first stage)` : ''}${unskipping ? ' (un-skipped: it was deselected at creation)' : ''} (${resetInstances.length} stage instance(s) reset, ${supersededArtifacts.length} artifact(s) superseded)`,
         })
         .catch((err) => console.error('Rewind event append failed:', err.message));
       // Relaunch at the rewind point. Same CAS + rollback discipline as /start.
@@ -2658,6 +2703,11 @@ export const handler = async (event) => {
       return response(202, {
         intent: mapIntent(updated),
         steering: steer ? mapSteering(steer) : null,
+        restart: {
+          requestedFromStageId,
+          fromStageId,
+          sectionRestarted: fromStageId !== requestedFromStageId,
+        },
       });
     }
 

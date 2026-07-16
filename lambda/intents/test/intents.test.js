@@ -3988,6 +3988,99 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
     expect(events.some((e) => e.unitSlug === 'billing')).toBe(true);
   });
 
+  it('restarts an incomplete unit section from its first stage when a later stage is retried', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSectionPlan();
+    procStore.set(keyOf('WF#default#aidlc-v2', 'V#4#PLACEMENT#design'), {
+      pk: 'WF#default#aidlc-v2',
+      sk: 'V#4#PLACEMENT#design',
+      stageId: 'design',
+      order: 2,
+      scopeMembership: { feature: 'EXECUTE' },
+    });
+    procStore.set(keyOf('WF#default#aidlc-v2', 'V#4#PLACEMENT#cg'), {
+      ...procStore.get(keyOf('WF#default#aidlc-v2', 'V#4#PLACEMENT#cg')),
+      order: 3,
+    });
+    procStore.set(keyOf('WF#default#aidlc-v2', 'V#4#PLACEMENT#bt'), {
+      ...procStore.get(keyOf('WF#default#aidlc-v2', 'V#4#PLACEMENT#bt')),
+      order: 4,
+    });
+    procStore.set(keyOf('BLOCK#design', 'META'), {
+      pk: 'BLOCK#design',
+      sk: 'META',
+      GSI1PK: 'TENANT#default#STAGE',
+      GSI1SK: 'NAME#design',
+      id: 'design',
+      blockId: 'design',
+      type: 'STAGE',
+      version: 1,
+      mode: 'inline',
+      leadAgent: 'orchestrator',
+      produces: [],
+      consumes: [],
+      forEach: 'unit-of-work',
+      requires: ['units-gen'],
+    });
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    setStatus(intent.id, { status: 'WAITING' });
+    seedStageRow(intent.id, 'units-gen');
+    seedStageRow(intent.id, 'design', 'foundation', 'SUCCEEDED', 1);
+    seedStageRow(intent.id, 'cg', 'foundation', 'FAILED', 1);
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'UNITPLAN'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'UNITPLAN',
+      executionId: intent.id,
+      units: [
+        { slug: 'foundation', dependsOn: [] },
+        { slug: 'next-unit', dependsOn: ['foundation'] },
+      ],
+      batches: [['foundation'], ['next-unit']],
+    });
+    for (const [slug, state] of [
+      ['foundation', 'FAILED'],
+      ['next-unit', 'PENDING'],
+    ]) {
+      procStore.set(keyOf(`EXEC#${intent.id}`, `UNIT#S1#${slug}`), {
+        pk: `EXEC#${intent.id}`,
+        sk: `UNIT#S1#${slug}`,
+        executionId: intent.id,
+        sectionIndex: 1,
+        slug,
+        state,
+      });
+    }
+
+    const res = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/rewind`,
+      pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ fromStageId: 'cg' }),
+      ...claims(sub),
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(JSON.parse(res.body)).toMatchObject({
+      intent: { rewindFromStageId: 'design' },
+      restart: {
+        requestedFromStageId: 'cg',
+        fromStageId: 'design',
+        sectionRestarted: true,
+      },
+    });
+    expect(
+      procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('design', 'foundation', 1)}`)),
+    ).toMatchObject({ state: 'PENDING', attempt: 1 });
+    expect(
+      procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('cg', 'foundation', 1)}`)),
+    ).toMatchObject({ state: 'PENDING', attempt: 1 });
+    const calls = lambdaMock.commandCalls(InvokeCommand);
+    expect(calls).toHaveLength(1);
+    const payload = JSON.parse(Buffer.from(calls[0].args[0].input.Payload).toString());
+    expect(payload).toMatchObject({ action: 'start', startAtStageId: 'design' });
+  });
+
   it('rewinding to a post-section stage leaves lanes and lane instances alone', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
