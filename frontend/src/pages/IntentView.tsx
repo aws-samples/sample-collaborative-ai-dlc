@@ -246,23 +246,25 @@ export default function IntentView() {
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-3 min-w-0">
-          <h1 className="text-lg font-bold tracking-tight truncate">{intent.title || 'Intent'}</h1>
-          {intent.scope && <ScopeBadge scope={intent.scope} />}
+        <div className="flex items-center gap-3 min-w-0 flex-1">
+          <h1 className="text-lg font-bold tracking-tight truncate min-w-0">
+            {intent.title || 'Intent'}
+          </h1>
+          {intent.scope && <ScopeBadge scope={intent.scope} className="shrink-0" />}
           {TERMINAL_STATUSES.has(intent.status) && (
-            <Badge variant="outline" className="text-[10px]">
+            <Badge variant="outline" className="text-[10px] shrink-0">
               {intent.status}
             </Badge>
           )}
           {isActive && (
             <span
-              className="h-1.5 w-1.5 rounded-full bg-agent-running animate-pulse"
+              className="h-1.5 w-1.5 rounded-full bg-agent-running animate-pulse shrink-0"
               aria-label="live"
             />
           )}
           <DiscussButton entityType="intent" entityTitle={intent.title || 'Intent'} />
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           {intent.source && (
             <span className="text-xs text-muted-foreground">
               {intent.source.resourceUrl ? (

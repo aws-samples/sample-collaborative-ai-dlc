@@ -1,4 +1,5 @@
 import { Outlet, useParams, useLocation } from 'react-router-dom';
+import { cn } from '@/lib/utils';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { AppSidebar } from '@/components/layout/AppSidebar';
 import { AppHeader } from '@/components/layout/AppHeader';
@@ -75,6 +76,9 @@ export function AppShell() {
     !location.pathname.endsWith('/graph') &&
     !location.pathname.endsWith('/audit');
   const showPipelineBar = onWorkSection;
+  // Graph pages render a full-bleed canvas with their own toolbar: the shell's
+  // content padding would float that toolbar mid-pane, so drop it there.
+  const onGraphPage = location.pathname.endsWith('/graph');
 
   // Breakpoint (Tailwind lg): below it BOTH side panels render as NON-modal
   // overlays above the content instead of grid columns, so they stay usable
@@ -180,7 +184,12 @@ export function AppShell() {
               <main className="h-full overflow-hidden min-w-0 flex flex-col">
                 {inSprint && <SprintPipelineBar />}
                 {showPipelineBar && <IntentPipelineBar />}
-                <div className="flex-1 overflow-y-auto min-w-0 px-6 py-6">
+                <div
+                  className={cn(
+                    'flex-1 overflow-y-auto min-w-0',
+                    onGraphPage ? 'overflow-hidden' : 'px-6 py-6',
+                  )}
+                >
                   <Outlet />
                 </div>
               </main>
