@@ -92,6 +92,7 @@ export function GraphCanvas({
 
   const svgRef = useRef<SVGSVGElement>(null);
   const animRef = useRef<number>(0);
+  const energyRef = useRef<number>(Infinity);
   const particleAnimRef = useRef<number>(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -258,6 +259,11 @@ export function GraphCanvas({
         n.y += n.vy;
       }
 
+      // Recorded here (fresh post-integration values) because the settle loop's
+      // effect closure only sees a stale `nodes` snapshot — reading energy there
+      // reported 0 after a hierarchy switch and killed the re-settle instantly.
+      energyRef.current = next.reduce((sum, n) => sum + n.vx * n.vx + n.vy * n.vy, 0);
+
       return next;
     });
   }, [edges]);
@@ -306,15 +312,17 @@ export function GraphCanvas({
     // Force mode: only run a brief re-settle (e.g. after switching from hierarchical).
     // Early-exit when total kinetic energy drops below threshold — most graphs
     // converge well before the 120-frame cap, saving redundant force iterations.
+    // WARMUP_FRAMES lets repulsion re-inject velocity first: a hierarchy switch
+    // zeroes all velocities, so frame-1 energy is always ~0 and would exit early.
     let frame = 0;
     const ENERGY_THRESHOLD = 0.5;
+    const WARMUP_FRAMES = 15;
+    energyRef.current = Infinity;
     const tick = () => {
       if (frame < 120) {
         simulate();
         frame++;
-        // Sum of squared velocities across all nodes — cheap proxy for kinetic energy.
-        const energy = nodes.reduce((sum, n) => sum + n.vx * n.vx + n.vy * n.vy, 0);
-        if (energy < ENERGY_THRESHOLD) return;
+        if (frame > WARMUP_FRAMES && energyRef.current < ENERGY_THRESHOLD) return;
         animRef.current = requestAnimationFrame(tick);
       }
     };
