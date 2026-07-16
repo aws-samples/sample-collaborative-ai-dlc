@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { MessageSquare, CheckCircle2, Search, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { getTimeAgo } from '@/lib/timeAgo';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -29,15 +30,6 @@ const ENTITY_LABELS: Record<string, string> = {
 };
 
 const EMPTY_DISCUSSIONS: Discussion[] = [];
-
-const timeAgo = (iso: string): string => {
-  const diff = Date.now() - new Date(iso).getTime();
-  if (Number.isNaN(diff)) return '';
-  if (diff < 60000) return 'just now';
-  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
-  return `${Math.floor(diff / 86400000)}d ago`;
-};
 
 type StatusFilter = 'all' | 'open' | 'resolved';
 
@@ -207,7 +199,7 @@ function DiscussionRow({ d, onOpen }: { d: Discussion; onOpen: () => void }) {
           {d.messageCount ?? 0} message{(d.messageCount ?? 0) === 1 ? '' : 's'}
         </span>
         <span>·</span>
-        <span>{timeAgo(d.lastMessageAt)}</span>
+        <span>{getTimeAgo(d.lastMessageAt)}</span>
       </div>
     </button>
   );
