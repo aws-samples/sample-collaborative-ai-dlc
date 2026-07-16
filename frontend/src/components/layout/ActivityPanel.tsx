@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { X, Bot, Clock, ChevronDown, Wrench, Check, AlertTriangle, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { getTimeAgo } from '@/lib/timeAgo';
+import { formatTimelineTimestamp } from '@/lib/timeAgo';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -564,7 +564,7 @@ function TimelineEmptyState() {
 // ---------------------------------------------------------------------------
 
 export function TimelineEventItem({ event }: { event: TimelineEvent }) {
-  const timeAgo = getTimeAgo(event.timestamp);
+  const timeAgo = formatTimelineTimestamp(event.timestamp);
   const { color } = getEventStyle(event.type);
   const openQuestion = useQuestionLink();
   const linkable = !!event.questionId;
