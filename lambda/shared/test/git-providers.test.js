@@ -153,7 +153,8 @@ describe('github provider — repo browse + PR + comments', () => {
         {
           json: [
             {
-              id: 'PR_existing',
+              id: 9009,
+              node_id: 'PR_existing',
               number: 9,
               html_url: 'https://gh/pr/9',
               head: { ref: 'unit/auth', sha: 'head-9' },
@@ -203,7 +204,8 @@ describe('github provider — repo browse + PR + comments', () => {
         {
           json: [
             {
-              id: 'PR_7',
+              id: 7007,
+              node_id: 'PR_7',
               number: 7,
               head: { ref: 'unit/auth', sha: 'head-7' },
               base: { ref: 'intent', sha: 'base-7' },
@@ -223,7 +225,8 @@ describe('github provider — repo browse + PR + comments', () => {
           if (options.method === 'PATCH') state = 'open';
           return {
             json: {
-              id: 'PR_7',
+              id: 7007,
+              node_id: 'PR_7',
               number: 7,
               html_url: 'https://gh/pr/7',
               head: { ref: 'unit/auth', sha: 'head-7' },
@@ -239,7 +242,8 @@ describe('github provider — repo browse + PR + comments', () => {
       [
         '/graphql',
         (_url, options) => {
-          const query = JSON.parse(options.body).query;
+          const { query, variables } = JSON.parse(options.body);
+          expect(variables.id).toBe('PR_7');
           draft = query.includes('convertPullRequestToDraft');
           return { json: { data: { pullRequest: { id: 'PR_7' } } } };
         },
@@ -258,6 +262,7 @@ describe('github provider — repo browse + PR + comments', () => {
       headSha: 'head-7',
       targetSha: 'base-7',
       mergeable: true,
+      providerId: 'PR_7',
     });
     expect(await gh.setPullRequestDraft({ token: 't', fetchImpl }, 'o/r', 7, false)).toMatchObject({
       state: 'open',

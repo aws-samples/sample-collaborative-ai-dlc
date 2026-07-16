@@ -453,6 +453,11 @@ const isBaseInvalid422 = (errorText) => {
   }
 };
 
+// GitHub's REST `id` is a numeric database identifier, while GraphQL
+// mutations require the opaque `node_id`. Keep the provider contract on the
+// GraphQL-safe identity and retain `id` only for reduced test/API payloads.
+const pullRequestProviderId = (pr) => pr?.node_id ?? pr?.id ?? null;
+
 // Find an existing PR for a branch. Tries the owner-qualified head filter first,
 // then falls back to listing PRs and matching on head.ref (fork/org mismatch).
 const findPullRequest = async (
@@ -547,7 +552,7 @@ const createPullRequest = async (
           existing: true,
           ...(draft
             ? {
-                providerId: openPr.id,
+                providerId: pullRequestProviderId(openPr),
                 headSha: openPr.head?.sha ?? null,
                 targetSha: openPr.base?.sha ?? null,
                 draft: Boolean(openPr.draft),
@@ -582,7 +587,7 @@ const createPullRequest = async (
               retargetedBase: defaultBranch,
               ...(draft
                 ? {
-                    providerId: pr.id,
+                    providerId: pullRequestProviderId(pr),
                     headSha: pr.head?.sha ?? null,
                     targetSha: pr.base?.sha ?? null,
                     draft: Boolean(pr.draft),
@@ -604,7 +609,7 @@ const createPullRequest = async (
     prNumber: pr.number,
     ...(draft
       ? {
-          providerId: pr.id,
+          providerId: pullRequestProviderId(pr),
           headSha: pr.head?.sha ?? null,
           targetSha: pr.base?.sha ?? null,
           draft: Boolean(pr.draft),
@@ -662,7 +667,7 @@ const getPullRequestStatus = async (ctx, repoId, prNumber) => {
   if (!res.ok) return null;
   const pr = await res.json();
   return {
-    providerId: pr.id,
+    providerId: pullRequestProviderId(pr),
     number: pr.number,
     url: pr.html_url,
     sourceBranch: pr.head?.ref ?? null,
