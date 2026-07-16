@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { __durableHandler, defaultResolveToken } from '../index.js';
+import { __durableHandler, defaultMintFreshToken, defaultResolveToken } from '../index.js';
 
 // The orchestrator's control flow is driven through an injected `deps` bag and a
 // fake DurableContext — no real AWS/Neptune. This isolates the sequencing logic
@@ -2561,6 +2561,47 @@ describe('defaultResolveToken (app-mode OAuth fallback)', () => {
     const tio = io({ getGitHubAuthMode: vi.fn(async () => 'oauth') });
     const res = await defaultResolveToken({ ...args, startedBy: null }, tio);
     expect(res).toEqual({ token: '', reason: 'no_starter_or_provider' });
+  });
+});
+
+describe('defaultMintFreshToken', () => {
+  const io = (overrides = {}) => ({
+    getGitHubAuthMode: vi.fn(async () => 'oauth'),
+    mintInstallationToken: vi.fn(async () => 'app-token'),
+    getGitConnection: vi.fn(async () => ({ parameterName: '/git/u1' })),
+    resolveGitToken: vi.fn(async () => 'current-oauth-token'),
+    ...overrides,
+  });
+
+  it('re-reads a GitHub OAuth token so active runs pick up reauthorization', async () => {
+    const tio = io();
+
+    const token = await defaultMintFreshToken(
+      { gitProvider: 'github', startedBy: 'user-1', repos: ['acme/api'] },
+      tio,
+    );
+
+    expect(token).toBe('current-oauth-token');
+    expect(tio.getGitConnection).toHaveBeenCalledWith('user-1', 'github');
+    expect(tio.resolveGitToken).toHaveBeenCalledWith({ parameterName: '/git/u1' }, 'github');
+    expect(tio.mintInstallationToken).not.toHaveBeenCalled();
+  });
+
+  it('continues minting repo-scoped tokens in GitHub App mode', async () => {
+    const tio = io({ getGitHubAuthMode: vi.fn(async () => 'app') });
+
+    const token = await defaultMintFreshToken(
+      {
+        gitProvider: 'github',
+        startedBy: 'user-1',
+        repos: ['https://github.com/acme/api.git'],
+      },
+      tio,
+    );
+
+    expect(token).toBe('app-token');
+    expect(tio.mintInstallationToken).toHaveBeenCalledWith(['acme/api']);
+    expect(tio.getGitConnection).not.toHaveBeenCalled();
   });
 });
 

@@ -253,22 +253,26 @@ export const defaultResolveToken = async (
   }
 };
 
-// Per-dispatch fresh git credential. Two providers need re-resolution mid-run:
+// Per-dispatch current git credential. Every provider can need re-resolution
+// mid-run:
 //   - GitHub App mode: installation tokens expire after ~1h (served from the
 //     cache in shared/git-token.js when still valid).
 //   - GitLab OAuth: access tokens live ~2h and must be refreshed just-in-time,
 //     otherwise a long run clones/pushes with a dead token ("HTTP Basic:
 //     Access denied"). ensureFreshGitToken refreshes only when stale.
-// Returns null in GitHub oauth mode (the snapshot token never expires) and null
-// on failure (callers fall back to the run-start snapshot, keeping legacy
-// behaviour intact).
-const defaultMintFreshToken = async ({ gitProvider, startedBy, repos = [] }) => {
+//   - GitHub OAuth tokens do not expire, but reconnect/reauthorize can replace
+//     one during an active run, so the current stored token is re-read.
+// Returns null on failure so callers fall back to the run-start snapshot.
+export const defaultMintFreshToken = async (
+  { gitProvider, startedBy, repos = [] },
+  io = defaultTokenIo(),
+) => {
   if (gitProvider === 'gitlab') {
     try {
       if (!startedBy) return null;
-      const item = await getGitConnection(ddb, startedBy, gitProvider);
+      const item = await io.getGitConnection(startedBy, gitProvider);
       if (!item?.parameterName) return null;
-      return await ensureFreshGitToken({ ssm, secrets, ddb, item, gitProvider });
+      return await io.resolveGitToken(item, gitProvider);
     } catch (e) {
       console.error('[v2-orchestrator] fresh gitlab token refresh failed:', e?.message);
       return null;
@@ -276,13 +280,18 @@ const defaultMintFreshToken = async ({ gitProvider, startedBy, repos = [] }) => 
   }
   if (gitProvider !== 'github') return null;
   try {
-    const mode = await getGitHubAuthMode(ssm);
-    if (mode !== 'app') return null;
-    const repoSlugs = repos.map(toRepoSlug).filter(Boolean);
-    if (repoSlugs.length === 0) return null;
-    return await getInstallationTokenFromConfig({ ssm, secrets, repositories: repoSlugs });
+    const mode = await io.getGitHubAuthMode();
+    if (mode === 'app') {
+      const repoSlugs = repos.map(toRepoSlug).filter(Boolean);
+      if (repoSlugs.length === 0) return null;
+      return await io.mintInstallationToken(repoSlugs);
+    }
+    if (!startedBy) return null;
+    const item = await io.getGitConnection(startedBy, gitProvider);
+    if (!item?.parameterName) return null;
+    return await io.resolveGitToken(item, gitProvider);
   } catch (e) {
-    console.error('[v2-orchestrator] fresh app token mint failed:', e?.message);
+    console.error('[v2-orchestrator] current github token resolution failed:', e?.message);
     return null;
   }
 };
@@ -534,11 +543,11 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           : `No usable git credentials for this run (${tokenResult?.reason ?? 'unknown'}) — private clones and pushes will fail; connect ${gitProvider} for the starting user`,
       );
     }
-    // Fresh-token accessor for every later dispatch that hands git credentials
-    // to the runtime. In GitHub-App mode the run-start snapshot expires after
-    // ~1h, so each dispatch re-resolves (cached mint); in oauth mode this
-    // always returns the snapshot. Called INSIDE durable step bodies only —
-    // replay never re-executes a memoized step, so a re-mint can't fork state.
+    // Current-token accessor for every later dispatch that hands git
+    // credentials to the runtime. App tokens are re-minted when needed and
+    // OAuth connections are re-read so a reconnect during an active run takes
+    // effect. Called INSIDE durable step bodies only; replay never re-executes
+    // a memoized step, so credential refresh cannot fork durable state.
     const freshGitToken = async () => {
       try {
         const fresh = await mintFreshToken?.({
