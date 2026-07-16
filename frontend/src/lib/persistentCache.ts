@@ -1,3 +1,5 @@
+// TODO(#276): fold into the Tanstack Query migration when it replaces the
+// hand-rolled module caches — this sessionStorage layer is preview-era glue.
 const VERSION = 1;
 const PREFIX = `aidlc-cache:v${VERSION}:`;
 const MAX_AGE_MS = 10 * 60 * 1000;
