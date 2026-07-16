@@ -24,6 +24,10 @@
 //     SK = STEER#<ts>#<steerId>       — a human steering/course-correction message
 //     SK = QEDIT#<editId>             — a Quorum-supported artifact edit session
 //     SK = COMPOSE#<composeId>        — a composer session (scope/grid proposal)
+//     SK = UNIT#S<section>#<slug>      — one section-specific unit lane
+//     SK = UNITPR#S<section>#<slug>#<repo> — one repository unit PR/MR
+//     SK = FEEDBACK#S<section>#<slug>#<batch> — authenticated review batch
+//     SK = FEEDBACKCOMMENT#S<section>#<slug>#<comment-version> — exactly-once claim
 //   GSI1PK = PROJECT#<projectId>      GSI1SK = STATUS#<status>#STARTED#<ts>#EXEC#<id>
 //     (list a project's executions by status, newest first)
 //   GSI2PK = EXEC#<executionId>       GSI2SK = TYPE#<type>#STATE#<state>#<id>
@@ -83,9 +87,35 @@ const unitPlanKey = (executionId) => ({
   pk: executionPk(executionId),
   sk: 'UNITPLAN',
 });
-const unitKey = (executionId, slug) => ({
+const encodedKeyPart = (value) => encodeURIComponent(String(value));
+const unitLaneId = (sectionIndex, slug) =>
+  sectionIndex === null || sectionIndex === undefined
+    ? String(slug)
+    : `S${sectionIndex}#${encodedKeyPart(slug)}`;
+// Two-argument calls retain the legacy slug-only key for backward-compatible
+// reads/tests. New writes pass sectionIndex + slug.
+const unitKey = (executionId, sectionIndexOrSlug, maybeSlug) => {
+  const legacy = maybeSlug === undefined;
+  const sectionIndex = legacy ? null : sectionIndexOrSlug;
+  const slug = legacy ? sectionIndexOrSlug : maybeSlug;
+  return {
+    pk: executionPk(executionId),
+    sk: `UNIT#${unitLaneId(sectionIndex, slug)}`,
+  };
+};
+const unitPrKey = (executionId, sectionIndex, slug, repoId) => ({
   pk: executionPk(executionId),
-  sk: `UNIT#${slug}`,
+  sk: `UNITPR#${unitLaneId(sectionIndex, slug)}#${encodedKeyPart(repoId)}`,
+});
+const feedbackBatchKey = (executionId, sectionIndex, slug, batchId) => ({
+  pk: executionPk(executionId),
+  sk: `FEEDBACK#${unitLaneId(sectionIndex, slug)}#${encodedKeyPart(batchId)}`,
+});
+const feedbackCommentKey = (executionId, sectionIndex, slug, comment) => ({
+  pk: executionPk(executionId),
+  sk: `FEEDBACKCOMMENT#${unitLaneId(sectionIndex, slug)}#${encodedKeyPart(
+    `${comment.repository}\u0000${comment.id}\u0000${comment.version}`,
+  )}`,
 });
 // Quorum-supported artifact edit sessions (post-hoc document editing). One row
 // per edit request: the change description, Quorum's structured update plan,
@@ -162,7 +192,32 @@ const STEERING_STATUSES = ['pending', 'consumed', 'superseded'];
 //   MERGED   — lane's work is on the intent branch (terminal success)
 //   FAILED   — a lane stage failed terminally (halt-and-ask)
 //   BLOCKED  — a depends_on lane FAILED/BLOCKED; never started
-const UNIT_STATES = ['PENDING', 'READY', 'RUNNING', 'MERGING', 'MERGED', 'FAILED', 'BLOCKED'];
+const UNIT_STATES = [
+  'PENDING',
+  'READY',
+  'RUNNING',
+  'PR_DRAFT',
+  'RECONCILING',
+  'PR_READY',
+  'ADDRESSING_FEEDBACK',
+  'MERGING',
+  'MERGED',
+  'FAILED',
+  'BLOCKED',
+];
+const UNIT_PR_STATES = [
+  'UNCHANGED',
+  'DRAFT',
+  'RECONCILING',
+  'READY',
+  'CONFLICTED',
+  'ADDRESSING_FEEDBACK',
+  'MERGED',
+  'PARTIALLY_MERGED',
+  'CLOSED',
+  'FAILED',
+];
+const FEEDBACK_STATES = ['QUEUED', 'RUNNING', 'SUCCEEDED', 'FAILED'];
 // Construction autonomy ladder (rule 9): chosen once after the walking-skeleton
 // gate approves. `gated` = one approval gate per parallel batch; `autonomous` =
 // remaining lanes run without approval gates (failures still halt-and-ask).
@@ -397,6 +452,7 @@ const buildStageRow = ({
   // WP4). Null for once-per-workflow stages; set on `forEach: unit-of-work`
   // instances so every stage row is attributable to its lane.
   unitSlug = null,
+  sectionIndex = null,
   now,
 }) => ({
   ...stageKey(executionId, stageInstanceId),
@@ -406,6 +462,7 @@ const buildStageRow = ({
   stageInstanceId,
   stageId: stageId ?? null,
   unitSlug,
+  sectionIndex,
   phase,
   state,
   attempt,
@@ -434,6 +491,7 @@ const buildEventRow = ({
   // Lane attribution (docs/v2-parallel.md WP4): the unit-of-work slug when the
   // event originates inside a unit lane; null for workflow-level events.
   unitSlug = null,
+  sectionIndex = null,
   actor,
   summary,
   payloadRef = null,
@@ -448,6 +506,7 @@ const buildEventRow = ({
   eventType: type,
   stageInstanceId,
   unitSlug,
+  sectionIndex,
   actor,
   summary,
   payloadRef,
@@ -462,6 +521,7 @@ const buildHumanTaskRow = ({
   // gates at once, a gate must name the unit it belongs to or answers are
   // unattributable. Null for once-per-workflow stage gates.
   unitSlug = null,
+  sectionIndex = null,
   kind,
   prompt = null,
   options = null,
@@ -494,6 +554,7 @@ const buildHumanTaskRow = ({
   humanTaskId,
   stageInstanceId,
   unitSlug,
+  sectionIndex,
   kind,
   status,
   prompt,
@@ -522,6 +583,7 @@ const buildOutputRow = ({
   stageInstanceId = null,
   // Lane attribution (docs/v2-parallel.md WP4); null outside unit lanes.
   unitSlug = null,
+  sectionIndex = null,
   seq,
   kind = 'text',
   content,
@@ -535,6 +597,7 @@ const buildOutputRow = ({
     executionId,
     stageInstanceId,
     unitSlug,
+    sectionIndex,
     seq,
     kind,
     content,
@@ -549,6 +612,7 @@ const buildMetricRow = ({
   stageInstanceId = null,
   // Lane attribution (docs/v2-parallel.md WP4); null outside unit lanes.
   unitSlug = null,
+  sectionIndex = null,
   metricId,
   metrics,
   // The model in effect when this sample was recorded, stamped server-side from
@@ -567,6 +631,7 @@ const buildMetricRow = ({
   executionId,
   stageInstanceId,
   unitSlug,
+  sectionIndex,
   metricId,
   resolvedModel,
   creditRate,
@@ -579,6 +644,7 @@ const buildGraphReadRow = ({
   executionId,
   stageInstanceId = null,
   unitSlug = null,
+  sectionIndex = null,
   readId,
   tool,
   bytes = 0,
@@ -592,6 +658,7 @@ const buildGraphReadRow = ({
   executionId,
   stageInstanceId,
   unitSlug,
+  sectionIndex,
   readId,
   tool,
   bytes,
@@ -610,6 +677,7 @@ const buildSensorRow = ({
   stageInstanceId = null,
   // Lane attribution (docs/v2-parallel.md WP4); null outside unit lanes.
   unitSlug = null,
+  sectionIndex = null,
   sensorRunId,
   sensorId,
   kind,
@@ -625,6 +693,7 @@ const buildSensorRow = ({
   executionId,
   stageInstanceId,
   unitSlug,
+  sectionIndex,
   sensorRunId,
   sensorId,
   kind,
@@ -724,6 +793,7 @@ const buildUnitPlanRow = ({
 // are stamped when the lane starts (WP5); terminal fields on merge/fail.
 const buildUnitRow = ({
   executionId,
+  sectionIndex = null,
   slug,
   dependsOn = [],
   kind = null,
@@ -731,10 +801,16 @@ const buildUnitRow = ({
   batchIndex = 0,
   now,
 }) => ({
-  ...unitKey(executionId, slug),
-  ...executionTypeStateIndex({ executionId, type: 'UNIT', state, id: slug }),
+  ...unitKey(executionId, sectionIndex, slug),
+  ...executionTypeStateIndex({
+    executionId,
+    type: 'UNIT',
+    state,
+    id: unitLaneId(sectionIndex, slug),
+  }),
   type: 'Unit',
   executionId,
+  sectionIndex,
   slug,
   dependsOn,
   kind,
@@ -748,6 +824,108 @@ const buildUnitRow = ({
   blockedOn: null,
   createdAt: now,
   updatedAt: now,
+});
+
+const buildUnitPrRow = ({
+  executionId,
+  sectionIndex,
+  slug,
+  repository,
+  provider,
+  providerId = null,
+  number = null,
+  url = null,
+  sourceBranch,
+  targetBranch,
+  headSha = null,
+  readyHeadSha = null,
+  targetSha = null,
+  state = 'DRAFT',
+  mergeable = null,
+  commentCount = 0,
+  createdAt = null,
+  now,
+}) => ({
+  ...unitPrKey(executionId, sectionIndex, slug, repository),
+  ...executionTypeStateIndex({
+    executionId,
+    type: 'UNITPR',
+    state,
+    id: `${unitLaneId(sectionIndex, slug)}#${encodedKeyPart(repository)}`,
+  }),
+  type: 'UnitPullRequest',
+  executionId,
+  sectionIndex,
+  unitSlug: slug,
+  repository,
+  provider,
+  providerId,
+  number,
+  url,
+  sourceBranch,
+  targetBranch,
+  headSha,
+  readyHeadSha,
+  targetSha,
+  state,
+  mergeable,
+  commentCount,
+  repositoryOutcome: null,
+  createdAt: createdAt ?? now,
+  updatedAt: now,
+  mergedAt: null,
+  closedAt: null,
+});
+
+const buildFeedbackBatchRow = ({
+  executionId,
+  sectionIndex,
+  slug,
+  batchId,
+  comments,
+  state = 'QUEUED',
+  requestedBy,
+  requestedByName = null,
+  now,
+}) => ({
+  ...feedbackBatchKey(executionId, sectionIndex, slug, batchId),
+  ...executionTypeStateIndex({
+    executionId,
+    type: 'FEEDBACK',
+    state,
+    id: `${unitLaneId(sectionIndex, slug)}#${batchId}`,
+  }),
+  type: 'FeedbackBatch',
+  executionId,
+  sectionIndex,
+  unitSlug: slug,
+  batchId,
+  comments,
+  state,
+  requestedBy,
+  requestedByName,
+  stageInstanceId: null,
+  output: null,
+  changedFiles: null,
+  verification: null,
+  commitSha: null,
+  failureReason: null,
+  createdAt: now,
+  updatedAt: now,
+  completedAt: null,
+});
+
+const buildFeedbackCommentRow = ({ executionId, sectionIndex, slug, batchId, comment, now }) => ({
+  ...feedbackCommentKey(executionId, sectionIndex, slug, comment),
+  type: 'FeedbackCommentClaim',
+  executionId,
+  sectionIndex,
+  unitSlug: slug,
+  batchId,
+  repository: comment.repository,
+  commentId: String(comment.id),
+  version: String(comment.version),
+  createdAt: now,
 });
 
 // One Quorum-supported artifact edit session. GSI2 state = lifecycle state so
@@ -854,6 +1032,10 @@ export {
   outputSeq,
   unitPlanKey,
   unitKey,
+  unitLaneId,
+  unitPrKey,
+  feedbackBatchKey,
+  feedbackCommentKey,
   quorumEditKey,
   composeKey,
   projectStatusIndex,
@@ -865,6 +1047,8 @@ export {
   STEERING_KINDS,
   STEERING_STATUSES,
   UNIT_STATES,
+  UNIT_PR_STATES,
+  FEEDBACK_STATES,
   CONSTRUCTION_AUTONOMY_MODES,
   QUORUM_EDIT_STATES,
   QUORUM_EDIT_TERMINAL_STATES,
@@ -881,6 +1065,9 @@ export {
   buildOutputRow,
   buildUnitPlanRow,
   buildUnitRow,
+  buildUnitPrRow,
+  buildFeedbackBatchRow,
+  buildFeedbackCommentRow,
   buildQuorumEditRow,
   buildComposeRow,
 };
@@ -900,6 +1087,10 @@ export default {
   outputSeq,
   unitPlanKey,
   unitKey,
+  unitLaneId,
+  unitPrKey,
+  feedbackBatchKey,
+  feedbackCommentKey,
   quorumEditKey,
   composeKey,
   projectStatusIndex,
@@ -911,6 +1102,8 @@ export default {
   STEERING_KINDS,
   STEERING_STATUSES,
   UNIT_STATES,
+  UNIT_PR_STATES,
+  FEEDBACK_STATES,
   CONSTRUCTION_AUTONOMY_MODES,
   QUORUM_EDIT_STATES,
   QUORUM_EDIT_TERMINAL_STATES,
@@ -927,6 +1120,9 @@ export default {
   buildOutputRow,
   buildUnitPlanRow,
   buildUnitRow,
+  buildUnitPrRow,
+  buildFeedbackBatchRow,
+  buildFeedbackCommentRow,
   buildQuorumEditRow,
   buildComposeRow,
 };

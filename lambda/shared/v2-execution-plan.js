@@ -60,9 +60,13 @@ const err = (code, message, extra = {}) => ({ code, message, ...extra });
 // A `forEach: unit-of-work` stage gains the unit dimension: one instance per
 // unit slug (`namespace:stageId:unit-<slug>`), equally deterministic so lanes
 // re-resolve to identical ids across replays (docs/v2-parallel.md A2 rule 3).
-const stageInstanceId = (namespace, stageId, unitSlug = null) =>
+const stageInstanceId = (namespace, stageId, unitSlug = null, sectionIndex = null) =>
   `si-${createHash('sha256')
-    .update(unitSlug ? `${namespace}:${stageId}:unit-${unitSlug}` : `${namespace}:${stageId}`)
+    .update(
+      unitSlug
+        ? `${namespace}:${stageId}:${sectionIndex == null ? '' : `section-${sectionIndex}:`}unit-${unitSlug}`
+        : `${namespace}:${stageId}`,
+    )
     .digest('hex')
     .slice(0, 16)}`;
 

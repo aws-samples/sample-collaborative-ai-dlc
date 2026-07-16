@@ -18,7 +18,13 @@
 //   listBranches(ctx, repoId)           -> string[]
 //   getTree(ctx, repoId, branch)        -> GitFile[]
 //   getFileContents(ctx, repoId, path, branch) -> GitFileContent
-//   listPRComments(ctx, repoId, prRef)  -> GitComment[]
+//   findPullRequest(ctx, repoId, {sourceBranch,targetBranch,state}) -> provider PR | null
+//   createPullRequest(ctx, repoId, {...,draft?}) -> created/existing PR summary
+//   getPullRequestStatus(ctx, repoId, prRef) -> normalized live status
+//   setPullRequestDraft(ctx, repoId, prRef, draft) -> normalized live status
+//   reopenPullRequest(ctx, repoId, prRef) -> normalized live status
+//   isCommitAncestor(ctx, repoId, ancestorSha, descendantRef) -> boolean
+//   listPRComments(ctx, repoId, prRef)  -> paginated GitComment[]
 //   addPRComment(ctx, repoId, prRef, {body, path?, line?, side?}) -> GitComment
 // where ctx = { token, fetchImpl?, onRefresh? }.
 

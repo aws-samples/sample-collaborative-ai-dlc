@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createBusyTracker, dispatchInvocation, createServer } from '../http-server.js';
 
 describe('createBusyTracker', () => {
@@ -126,6 +126,29 @@ describe('dispatchInvocation', () => {
       statusCode: 200,
       body: { ok: true, executionId: 'e1', command: 'record-pr' },
     });
+  });
+
+  it('routes record-unit-pr without using the final PR handler', async () => {
+    const recordPr = vi.fn();
+    const recordUnitPr = vi.fn(async (payload) => ({
+      ok: true,
+      recorded: payload.unitPrs,
+    }));
+    const result = await dispatchInvocation({
+      payload: {
+        command: 'record-unit-pr',
+        intentId: 'i1',
+        executionId: 'e1',
+        unitPrs: [{ unitSlug: 'auth', prNumber: 7 }],
+      },
+      handlers: { recordPr, recordUnitPr },
+    });
+    expect(result).toMatchObject({
+      statusCode: 200,
+      body: { ok: true, command: 'record-unit-pr' },
+    });
+    expect(recordUnitPr).toHaveBeenCalledOnce();
+    expect(recordPr).not.toHaveBeenCalled();
   });
 
   it('routes init-lane and merge-lane (WP5 unit lanes)', async () => {

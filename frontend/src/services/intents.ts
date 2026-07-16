@@ -66,6 +66,7 @@ export interface Intent {
   // (0/null = unbounded) and the human's autonomy-ladder decision.
   maxParallelUnits?: number | null;
   constructionAutonomyMode?: 'gated' | 'autonomous' | null;
+  prStrategy?: 'intent-pr' | 'pr-per-unit' | null;
   // Per-intent stage skipping (shared/stage-skip.js): the effective mode
   // snapshotted at create and the CONDITIONAL stages deselected at create.
   stageSkipping?: 'enabled' | 'disabled' | null;
@@ -137,6 +138,7 @@ export interface IntentStage {
   // Unit lane (docs/v2-parallel.md WP4): set on per-unit instances of a
   // `forEach: unit-of-work` stage; null on once-per-workflow stages.
   unitSlug?: string | null;
+  sectionIndex?: number | null;
   phase: string | null;
   state: StageState;
   attempt: number;
@@ -164,6 +166,7 @@ export interface IntentGate {
   stageInstanceId: string | null;
   // Unit lane attribution (docs/v2-parallel.md WP4); null outside lanes.
   unitSlug?: string | null;
+  sectionIndex?: number | null;
   kind: 'approval' | 'question' | 'review-verdict' | 'validation';
   // `superseded` = the gate was retired unanswered by a cancel/rewind.
   status: 'pending' | 'answered' | 'approved' | 'rejected' | 'superseded';
@@ -247,6 +250,7 @@ export interface IntentOutput {
   seq: number;
   stageInstanceId: string | null;
   unitSlug?: string | null;
+  sectionIndex?: number | null;
   kind: string;
   content: string;
   timestamp: string;
@@ -266,6 +270,7 @@ export interface IntentSensorRun {
   sensorRunId: string;
   stageInstanceId: string | null;
   unitSlug?: string | null;
+  sectionIndex?: number | null;
   sensorId: string;
   result: string;
   severity: string;
@@ -425,6 +430,7 @@ export interface IntentActivityEvent {
   stageInstanceId: string | null;
   // Unit lane attribution (docs/v2-parallel.md WP4); null outside lanes.
   unitSlug?: string | null;
+  sectionIndex?: number | null;
   actor: string | null;
   summary: string | null;
   timestamp: string;
@@ -442,6 +448,10 @@ export type UnitState =
   | 'PENDING'
   | 'READY'
   | 'RUNNING'
+  | 'PR_DRAFT'
+  | 'RECONCILING'
+  | 'PR_READY'
+  | 'ADDRESSING_FEEDBACK'
   | 'MERGING'
   | 'MERGED'
   | 'FAILED'
@@ -458,6 +468,7 @@ export interface IntentUnitPlan {
 }
 
 export interface IntentUnit {
+  sectionIndex?: number | null;
   slug: string;
   dependsOn: string[];
   state: UnitState;
@@ -467,7 +478,82 @@ export interface IntentUnit {
   mergedAt: string | null;
   failureReason: string | null;
   blockedOn: string | null;
+  integrationOwner?: boolean;
+  blockedReason?: string | null;
   updatedAt: string | null;
+}
+
+export type UnitPrState =
+  | 'UNCHANGED'
+  | 'DRAFT'
+  | 'RECONCILING'
+  | 'READY'
+  | 'CONFLICTED'
+  | 'ADDRESSING_FEEDBACK'
+  | 'MERGED'
+  | 'PARTIALLY_MERGED'
+  | 'CLOSED'
+  | 'FAILED';
+
+export interface IntentUnitPr {
+  sectionIndex: number;
+  unitSlug: string;
+  repository: string;
+  provider: string;
+  providerId: string | number | null;
+  number: string | number | null;
+  url: string | null;
+  sourceBranch: string;
+  targetBranch: string;
+  headSha: string | null;
+  readyHeadSha: string | null;
+  targetSha: string | null;
+  state: UnitPrState;
+  mergeable: boolean | null;
+  commentCount: number;
+  repositoryOutcome: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  mergedAt: string | null;
+  closedAt: string | null;
+}
+
+export interface UnitReviewComment {
+  id: string | number;
+  repository: string;
+  prNumber: string | number;
+  type: 'review' | 'issue';
+  body: string;
+  user: { login: string | null; avatarUrl?: string | null };
+  path: string | null;
+  line: number | null;
+  createdAt: string;
+  updatedAt: string;
+  version: string;
+  bot: boolean;
+  system: boolean;
+  previouslySelected?: boolean;
+}
+
+export type FeedbackBatchState = 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED';
+
+export interface IntentFeedbackBatch {
+  sectionIndex: number;
+  unitSlug: string;
+  batchId: string;
+  comments: UnitReviewComment[];
+  state: FeedbackBatchState;
+  requestedBy: string;
+  requestedByName: string | null;
+  stageInstanceId: string | null;
+  output: string | null;
+  changedFiles: string[] | null;
+  verification: string | null;
+  commitSha: string | null;
+  failureReason: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  completedAt: string | null;
 }
 
 // The assembled detail returned by GET /projects/{id}/intents/{intentId}.
@@ -488,6 +574,8 @@ export interface IntentDetail {
   composes?: ComposeSession[];
   unitPlan?: IntentUnitPlan | null;
   units?: IntentUnit[];
+  unitPrs?: IntentUnitPr[];
+  feedbackBatches?: IntentFeedbackBatch[];
 }
 
 export interface CreateIntentInput {
@@ -729,6 +817,26 @@ export const intentsService = {
       `/projects/${projectId}/intents/${intentId}/outputs${suffix}`,
     );
   },
+  unitReviewComments: (
+    projectId: string,
+    intentId: string,
+    sectionIndex: number,
+    unitSlug: string,
+  ) =>
+    api.get<{ comments: UnitReviewComment[] }>(
+      `/projects/${projectId}/intents/${intentId}/units/${sectionIndex}/${encodeURIComponent(unitSlug)}/feedback`,
+    ),
+  addressUnitFeedback: (
+    projectId: string,
+    intentId: string,
+    sectionIndex: number,
+    unitSlug: string,
+    comments: { repository: string; commentId: string | number }[],
+  ) =>
+    api.post<IntentFeedbackBatch>(
+      `/projects/${projectId}/intents/${intentId}/units/${sectionIndex}/${encodeURIComponent(unitSlug)}/feedback`,
+      { comments },
+    ),
   create: (projectId: string, input: CreateIntentInput) =>
     api.post<Intent>(`/projects/${projectId}/intents`, input),
   // DRAFT-only header edit (the collaborative draft page's auto-save target):

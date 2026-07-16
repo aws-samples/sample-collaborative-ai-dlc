@@ -85,6 +85,7 @@ export const resolveConflict = async (
     intentId,
     executionId,
     unitSlug,
+    sectionIndex = null,
     repos = [],
     unitBranch,
     intentBranch,
@@ -123,7 +124,7 @@ export const resolveConflict = async (
     broadcast({ executionId, intentId, projectId, ...payload }).catch(() => {});
   const event = (type, summary) =>
     store
-      ?.appendEvent({ executionId, type, unitSlug, actor: 'agentcore', summary })
+      ?.appendEvent({ executionId, type, unitSlug, sectionIndex, actor: 'agentcore', summary })
       .catch(() => {});
 
   if (!unitSlug) return { ok: false, reason: 'missing_unit_slug' };
@@ -169,7 +170,13 @@ export const resolveConflict = async (
       'v2.conflict.resolving',
       `Conflict-resolution stage for unit ${unitSlug}: ${allConflicts.join(', ')}`,
     );
-    await publish({ action: 'agent.unit', unitSlug, state: 'RESOLVING_CONFLICT', unitBranch });
+    await publish({
+      action: 'agent.unit',
+      unitSlug,
+      sectionIndex,
+      state: 'RESOLVING_CONFLICT',
+      unitBranch,
+    });
 
     const cli = selectCli({ requested: requestedCli, availableClis });
     if (!cli) {
@@ -192,6 +199,7 @@ export const resolveConflict = async (
       projectId,
       stageInstanceId: null,
       unitSlug,
+      sectionIndex,
       role: 'reviewer',
       model,
     };
@@ -289,7 +297,13 @@ export const resolveConflict = async (
       concluded.map((c) => `${c.repo}@${(c.sha ?? '').slice(0, 8)}`).join(', ') || 'no-op'
     })`,
   );
-  await publish({ action: 'agent.unit', unitSlug, state: 'CONFLICT_RESOLVED', unitBranch });
+  await publish({
+    action: 'agent.unit',
+    unitSlug,
+    sectionIndex,
+    state: 'CONFLICT_RESOLVED',
+    unitBranch,
+  });
   return { ok: true, unitSlug, resolvedFiles: allConflicts, repos: concluded };
 };
 

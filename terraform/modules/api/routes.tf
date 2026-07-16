@@ -1011,6 +1011,7 @@ resource "aws_lambda_permission" "workflows" {
 #   /projects/{projectId}/intents/{intentId}/start                 POST
 #   /projects/{projectId}/intents/{intentId}/cancel                POST
 #   /projects/{projectId}/intents/{intentId}/rewind                POST
+#   /projects/{projectId}/intents/{intentId}/units/{sectionIndex}/{unitSlug}/feedback GET, POST
 #   /projects/{projectId}/intents/{intentId}/realtime-token        POST
 #   /projects/{projectId}/intents/{intentId}/gates/{humanTaskId}/answer  POST
 #   /projects/{projectId}/intents/{intentId}/gates/{humanTaskId}/revise  POST
@@ -1127,6 +1128,30 @@ resource "aws_api_gateway_resource" "intent_realtime_token" {
   path_part   = "realtime-token"
 }
 
+resource "aws_api_gateway_resource" "intent_units" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent.id
+  path_part   = "units"
+}
+
+resource "aws_api_gateway_resource" "intent_unit_section" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent_units.id
+  path_part   = "{sectionIndex}"
+}
+
+resource "aws_api_gateway_resource" "intent_unit" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent_unit_section.id
+  path_part   = "{unitSlug}"
+}
+
+resource "aws_api_gateway_resource" "intent_unit_feedback" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent_unit.id
+  path_part   = "feedback"
+}
+
 resource "aws_api_gateway_resource" "intent_gates" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.intent.id
@@ -1233,6 +1258,8 @@ locals {
     composes_get    = { resource = aws_api_gateway_resource.intent_composes.id, method = "GET" }
     recompose_post  = { resource = aws_api_gateway_resource.intent_recompose.id, method = "POST" }
     token_post      = { resource = aws_api_gateway_resource.intent_realtime_token.id, method = "POST" }
+    feedback_get    = { resource = aws_api_gateway_resource.intent_unit_feedback.id, method = "GET" }
+    feedback_post   = { resource = aws_api_gateway_resource.intent_unit_feedback.id, method = "POST" }
     answer_post     = { resource = aws_api_gateway_resource.intent_gate_answer.id, method = "POST" }
     revise_post     = { resource = aws_api_gateway_resource.intent_gate_revise.id, method = "POST" }
     # Post-hoc artifact editing (human + Quorum-supported).
@@ -1351,6 +1378,12 @@ module "cors_intent_realtime_token" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.intent_realtime_token.id
+}
+
+module "cors_intent_unit_feedback" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_unit_feedback.id
 }
 
 module "cors_intent_gate_answer" {

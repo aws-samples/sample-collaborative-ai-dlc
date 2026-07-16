@@ -223,7 +223,7 @@ describe('POST /projects', () => {
     workflowVersion: null,
     parkReleaseSeconds: 300,
     maxParallelUnits: 0,
-    prStrategy: 'intent-pr',
+    prStrategy: 'default',
     stageSkipping: 'default',
   };
 
@@ -374,19 +374,19 @@ describe('POST /projects', () => {
     }
   });
 
-  it('defaults prStrategy to intent-pr and round-trips it', async () => {
+  it('defaults new projects to platform inheritance and round-trips it', async () => {
     const sub = `u-${randomUUID()}`;
     const created = await createProject(sub, { name: 'V2', kind: 'v2' });
-    expect(created.prStrategy).toBe('intent-pr');
+    expect(created.prStrategy).toBe('default');
     const fetched = await handler({
       httpMethod: 'GET',
       pathParameters: { projectId: created.id },
       ...claims(sub),
     });
-    expect(JSON.parse(fetched.body).prStrategy).toBe('intent-pr');
+    expect(JSON.parse(fetched.body).prStrategy).toBe('default');
   });
 
-  it('rejects unknown AND known-but-disabled prStrategy values with distinct errors', async () => {
+  it('accepts pr-per-unit and rejects removed or unknown strategies', async () => {
     const sub = `u-${randomUUID()}`;
     const unknown = await handler({
       httpMethod: 'POST',
@@ -395,14 +395,19 @@ describe('POST /projects', () => {
     });
     expect(unknown.statusCode).toBe(400);
     expect(JSON.parse(unknown.body).error).toContain('must be one of');
-    // pr-per-unit / stacked are DEFINED but staged behind WP6b.
-    const disabled = await handler({
+    const enabled = await handler({
       httpMethod: 'POST',
-      body: JSON.stringify({ name: 'Bad', kind: 'v2', prStrategy: 'pr-per-unit' }),
+      body: JSON.stringify({ name: 'Units', kind: 'v2', prStrategy: 'pr-per-unit' }),
       ...claims(sub),
     });
-    expect(disabled.statusCode).toBe(400);
-    expect(JSON.parse(disabled.body).error).toContain('not enabled yet');
+    expect(enabled.statusCode).toBe(201);
+    expect(JSON.parse(enabled.body).prStrategy).toBe('pr-per-unit');
+    const removed = await handler({
+      httpMethod: 'POST',
+      body: JSON.stringify({ name: 'Bad', kind: 'v2', prStrategy: 'stacked' }),
+      ...claims(sub),
+    });
+    expect(removed.statusCode).toBe(400);
   });
 
   it('creates a v2 project when kind is omitted (v2 is the only kind)', async () => {

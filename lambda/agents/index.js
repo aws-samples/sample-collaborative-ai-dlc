@@ -227,6 +227,7 @@ export const handler = async (event) => {
       const customMcpServersPath = `${prefix}/custom-mcp-servers`;
       const stageSkippingPath = `${prefix}/stage-skipping`;
       const composeLlmBypassPath = `${prefix}/compose-llm-bypass`;
+      const prStrategyPath = `${prefix}/pr-strategy`;
       try {
         const result = await ssm.send(
           new GetParametersCommand({
@@ -239,6 +240,7 @@ export const handler = async (event) => {
               customMcpServersPath,
               stageSkippingPath,
               composeLlmBypassPath,
+              prStrategyPath,
             ],
             WithDecryption: true,
           }),
@@ -260,6 +262,7 @@ export const handler = async (event) => {
         // 'disabled' forces every compose through the composer agent.
         const composeLlmBypass =
           byName[composeLlmBypassPath] === 'disabled' ? 'disabled' : 'enabled';
+        const prStrategy = byName[prStrategyPath] === 'pr-per-unit' ? 'pr-per-unit' : 'intent-pr';
         // Custom MCP servers may carry secrets in env/headers — only expose the
         // raw config to platform admins (the only ones who can edit it). Others
         // get an empty object so the non-secret settings fields still load.
@@ -317,6 +320,7 @@ export const handler = async (event) => {
           deriveEnrichment,
           stageSkipping,
           composeLlmBypass,
+          prStrategy,
           customMcpServers,
           customMcpServerNames,
           mcpSecretsSet,
@@ -493,6 +497,28 @@ export const handler = async (event) => {
         } catch (err) {
           console.error('[settings] Failed to write compose LLM bypass mode:', err.message);
           errors.push('composeLlmBypass: ' + err.message);
+        }
+      }
+
+      if (input.prStrategy !== undefined) {
+        if (input.prStrategy !== 'intent-pr' && input.prStrategy !== 'pr-per-unit') {
+          return response(400, {
+            error: 'Invalid prStrategy value',
+            issues: ['prStrategy must be "intent-pr" or "pr-per-unit"'],
+          });
+        }
+        try {
+          await ssm.send(
+            new PutParameterCommand({
+              Name: `${prefix}/pr-strategy`,
+              Value: input.prStrategy,
+              Type: 'String',
+              Overwrite: true,
+            }),
+          );
+        } catch (err) {
+          console.error('[settings] Failed to write PR strategy:', err.message);
+          errors.push('prStrategy: ' + err.message);
         }
       }
 

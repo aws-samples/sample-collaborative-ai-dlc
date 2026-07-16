@@ -308,6 +308,8 @@ const livePayloadFor = (type, summary) => {
   // route lane transitions without string-matching note types. The caller's
   // `extra` merges unitSlug + the lane state into the payload.
   if (type.startsWith('v2.unit.')) return { action: 'agent.unit', noteType: type, summary };
+  if (type.startsWith('v2.unit_pr.')) return { action: 'agent.unit-pr', noteType: type, summary };
+  if (type.startsWith('v2.feedback.')) return { action: 'agent.feedback', noteType: type, summary };
   return { action: 'agent.note', noteType: type, summary };
 };
 
@@ -335,6 +337,36 @@ const defaultDeps = () => ({
   // a benign "no changes" skip. Injectable so tests never touch provider APIs.
   comparePrBranches: ({ gitProvider, token, repoId, base, head }) =>
     getProvider(gitProvider).compareBranches({ token }, repoId, { base, head }),
+  unitPrProvider: {
+    compare: ({ gitProvider, token, repoId, base, head }) =>
+      getProvider(gitProvider).compareBranches({ token }, repoId, { base, head }),
+    find: ({ gitProvider, token, repoId, sourceBranch, targetBranch, state = 'open' }) =>
+      getProvider(gitProvider).findPullRequest({ token }, repoId, {
+        sourceBranch,
+        targetBranch,
+        state: gitProvider === 'gitlab' && state === 'open' ? 'opened' : state,
+      }),
+    createDraft: ({ gitProvider, token, repoId, branch, baseBranch, title, body }) =>
+      getProvider(gitProvider).createPullRequest({ token }, repoId, {
+        branch,
+        baseBranch,
+        title,
+        body,
+        draft: true,
+      }),
+    status: ({ gitProvider, token, repoId, number }) =>
+      getProvider(gitProvider).getPullRequestStatus({ token }, repoId, number),
+    setDraft: ({ gitProvider, token, repoId, number, draft }) =>
+      getProvider(gitProvider).setPullRequestDraft({ token }, repoId, number, draft),
+    reopen: ({ gitProvider, token, repoId, number }) =>
+      getProvider(gitProvider).reopenPullRequest({ token }, repoId, number),
+    isAncestor: ({ gitProvider, token, repoId, ancestorSha, descendantRef }) =>
+      getProvider(gitProvider).isCommitAncestor({ token }, repoId, ancestorSha, descendantRef),
+    listComments: ({ gitProvider, token, repoId, number }) =>
+      getProvider(gitProvider).listPRComments({ token }, repoId, number),
+    addComment: ({ gitProvider, token, repoId, number, body }) =>
+      getProvider(gitProvider).addPRComment({ token }, repoId, number, { body }),
+  },
 });
 
 const handler = async (event, ctx, deps = defaultDeps()) => {
@@ -348,6 +380,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     broadcast,
     openPr,
     comparePrBranches,
+    unitPrProvider,
   } = deps;
   const { intentId, executionId } = event;
   // Quorum-supported artifact edit (post-hoc document editing): its own small
@@ -395,6 +428,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           actor: 'orchestrator',
           summary,
           ...(extra.unitSlug !== undefined ? { unitSlug: extra.unitSlug } : {}),
+          ...(extra.sectionIndex !== undefined ? { sectionIndex: extra.sectionIndex } : {}),
         });
       } catch {
         /* events are best-effort telemetry */
@@ -687,7 +721,10 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             }
             for (const slug of unitSlugs) {
               const row = await store
-                .getStage(executionId, planStageInstanceId(namespace, s.stageId, slug))
+                .getStage(
+                  executionId,
+                  planStageInstanceId(namespace, s.stageId, slug, s.parallelSection),
+                )
                 .catch(() => null);
               if (!row || (row.state !== 'SUCCEEDED' && row.state !== 'SKIPPED'))
                 return { incomplete: `${s.stageId} [unit ${slug}]` };
@@ -776,16 +813,19 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     const executeStage = async (ctxArg, stage, opts = {}) => {
       const {
         unitSlug = null,
+        sectionIndex = null,
         sessionId: stageSessionId = sessionId,
         cloneInputs: stageCloneInputs = cloneInputs,
         suffix = '',
         initialResumeFrom = null,
+        reviewFeedback = null,
       } = opts;
       const label = `${unitSlug ? `${stage.stageId}-u-${unitSlug}` : stage.stageId}${suffix}`;
       const allSkipIds = [...intentSkipIds, ...dynamicSkipIds];
       const stageOpts = {
         stage,
         unitSlug,
+        sectionIndex,
         suffix,
         ids: { projectId, intentId, executionId },
         workflowId,
@@ -801,6 +841,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         sessionId: stageSessionId,
         cloneInputs: stageCloneInputs,
         freshGitToken,
+        reviewFeedback,
       };
       let result = await runStage(ctxArg, invokeRuntime, {
         ...stageOpts,
@@ -934,8 +975,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         result = await runStage(ctxArg, invokeRuntime, { ...stageOpts, resumeFrom: humanTaskId });
       }
 
-      if (result?.state === 'FAILED') return { state: 'FAILED', reason: result?.reason ?? '' };
-      return { state: 'SUCCEEDED' };
+      if (result?.state === 'FAILED')
+        return { state: 'FAILED', reason: result?.reason ?? '', result };
+      return { state: 'SUCCEEDED', result };
     };
 
     // ── Parallel sections (docs/v2-parallel.md WP5) ────────────────────────
@@ -971,7 +1013,10 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       cliModels,
       tierModels,
       deriveEnrichment,
-      stageInstanceIdFor: (stageId, slug) => planStageInstanceId(namespace, stageId, slug),
+      prStrategy: meta.prStrategy ?? 'intent-pr',
+      unitPrProvider,
+      stageInstanceIdFor: (stageId, slug, sectionIndex = null) =>
+        planStageInstanceId(namespace, stageId, slug, sectionIndex),
     };
     sectionToolkit.runId = runId;
 
@@ -1041,6 +1086,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                   intentId,
                   executionId,
                   stageInstanceId: stage.stageInstanceId ?? null,
+                  sectionIndexes: segments
+                    .filter((candidate) => candidate.kind === 'section')
+                    .map((candidate) => candidate.index),
                   artifactTypes: outputArtifactTypes,
                   enrichment: deriveEnrichment,
                   ...(requestedCli ? { requestedCli } : {}),
@@ -1079,6 +1127,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                   intentId,
                   executionId,
                   stageInstanceId: stage.stageInstanceId ?? null,
+                  sectionIndexes: segments
+                    .filter((candidate) => candidate.kind === 'section')
+                    .map((candidate) => candidate.index),
                 },
                 sessionId,
               ),
@@ -1493,6 +1544,7 @@ const runStage = async (
   {
     stage,
     unitSlug = null,
+    sectionIndex = null,
     suffix = '',
     ids,
     workflowId,
@@ -1512,6 +1564,7 @@ const runStage = async (
     cloneInputs,
     freshGitToken,
     resumeFrom,
+    reviewFeedback = null,
   },
 ) => {
   // The attempt key names every durable identity for this stage attempt. It
@@ -1519,9 +1572,11 @@ const runStage = async (
   // round suffix (WP5) so N lanes' instances — and a lane's retry rounds —
   // are distinct callbacks/steps: a collision would make the durable engine
   // memoize one attempt's verdict as another's.
-  const attemptKey = `${stage.stageId}${unitSlug ? `-u-${unitSlug}` : ''}${suffix}${
+  const attemptKey = `${stage.stageId}${
+    unitSlug ? `-s${sectionIndex ?? 'legacy'}-u-${unitSlug}` : ''
+  }${suffix}${
     resumeFrom ? `-resume-${resumeFrom}` : ''
-  }`;
+  }${reviewFeedback ? `-feedback-${reviewFeedback.batchId ?? 'batch'}` : ''}`;
   const [stageDone, stageCallbackId] = await ctx.createCallback(`stage-cb-${attemptKey}`, {
     timeout: STAGE_CALLBACK_TIMEOUT,
     heartbeatTimeout: STAGE_CALLBACK_HEARTBEAT_TIMEOUT,
@@ -1541,6 +1596,7 @@ const runStage = async (
         // Unit lane (WP4): run-stage derives the per-unit instance id, stamps
         // the slug on every row/event/broadcast, and scopes the prompt.
         unitSlug,
+        sectionIndex,
         workflowId,
         workflowVersion,
         scope,
@@ -1558,6 +1614,13 @@ const runStage = async (
         ...cloneInputs,
         ...(freshGitToken ? { gitToken: await freshGitToken() } : {}),
         resumeFrom: resumeFrom ?? null,
+        reviewFeedback: reviewFeedback
+          ? {
+              batchId: reviewFeedback.batchId ?? null,
+              prompt: reviewFeedback.prompt,
+              targets: reviewFeedback.targets ?? [],
+            }
+          : null,
         stageCallbackId,
       },
       sessionId,

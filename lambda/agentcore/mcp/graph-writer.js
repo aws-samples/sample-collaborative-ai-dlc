@@ -82,6 +82,8 @@ export const UNIT_OF_WORK_LABEL = 'UnitOfWork';
 // intentId + repo, so it is globally unique (not intent-scoped).
 export const PULL_REQUEST_LABEL = 'PullRequest';
 export const HAS_PR_EDGE = 'HAS_PR';
+export const UNIT_PULL_REQUEST_LABEL = 'UnitPullRequest';
+export const HAS_UNIT_PR_EDGE = 'HAS_UNIT_PR';
 
 // The two runtime learnings layers V2's resolver interleaves. Mirrors the
 // learnings half of shared/blocks.js RULE_LAYERS.
@@ -518,6 +520,76 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       edge: HAS_PR_EDGE,
     });
     return { id, repoId, prUrl: props.pr_url, prNumber: props.pr_number };
+  };
+
+  // Unit review PRs are a separate projection from the final intent PR. The
+  // provider number is part of the identity so a closed/replaced review keeps
+  // its own audit node instead of being overwritten by the replacement.
+  const recordUnitPullRequest = async ({
+    sectionIndex,
+    unitSlug,
+    repoId,
+    provider,
+    prUrl,
+    prNumber,
+    sourceBranch,
+    targetBranch,
+    headSha = null,
+    state = null,
+  }) => {
+    const intentExists = await g.V().has(INTENT_LABEL, 'id', scope.intentId).hasNext();
+    if (!intentExists)
+      throw new GraphWriteError(`Intent "${scope.intentId}" not found — run init-ws first`);
+    if (
+      !Number.isInteger(sectionIndex) ||
+      !unitSlug ||
+      !repoId ||
+      !provider ||
+      prNumber === null ||
+      prNumber === undefined
+    ) {
+      throw new GraphWriteError(
+        'Unit pull request requires section, unit, repo, provider, and number',
+      );
+    }
+
+    const id = `unit-pr:${scope.intentId}:s${sectionIndex}:${unitSlug}:${repoId}:${provider}:${prNumber}`;
+    const props = {
+      id,
+      section_index: String(sectionIndex),
+      unit_slug: String(unitSlug),
+      repository: String(repoId),
+      provider: String(provider),
+      pr_url: String(prUrl ?? ''),
+      pr_number: String(prNumber),
+      source_branch: String(sourceBranch ?? ''),
+      target_branch: String(targetBranch ?? ''),
+      head_sha: String(headSha ?? ''),
+      state: String(state ?? ''),
+      ...stamp(),
+    };
+    await upsertVertex(UNIT_PULL_REQUEST_LABEL, id);
+    let q = vAt(UNIT_PULL_REQUEST_LABEL, id);
+    for (const [key, value] of Object.entries(props)) {
+      q = q.property(cardinality.single, key, value);
+    }
+    await q.next();
+    await ensureEdge({
+      fromLabel: INTENT_LABEL,
+      fromId: scope.intentId,
+      toLabel: UNIT_PULL_REQUEST_LABEL,
+      toId: id,
+      edge: HAS_UNIT_PR_EDGE,
+    });
+    return {
+      id,
+      sectionIndex,
+      unitSlug,
+      repoId,
+      provider,
+      prUrl: props.pr_url,
+      prNumber: props.pr_number,
+    };
   };
 
   // Update mutable props on an existing artifact. Never touches the provenance
@@ -1364,6 +1436,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     createArtifact,
     updateArtifact,
     recordPullRequest,
+    recordUnitPullRequest,
     linkArtifacts,
     getArtifact,
     lookupArtifacts,

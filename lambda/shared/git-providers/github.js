@@ -218,10 +218,13 @@ const mapReviewComment = (c) => ({
   type: 'review',
   body: c.body,
   user: { login: c.user?.login, avatarUrl: c.user?.avatar_url },
+  bot: c.user?.type === 'Bot' || String(c.user?.login ?? '').endsWith('[bot]'),
+  system: false,
   path: c.path || null,
   line: c.line || c.original_line || null,
   createdAt: c.created_at,
   updatedAt: c.updated_at,
+  version: c.updated_at || c.created_at,
 });
 
 const mapIssueComment = (c) => ({
@@ -229,24 +232,40 @@ const mapIssueComment = (c) => ({
   type: 'issue',
   body: c.body,
   user: { login: c.user?.login, avatarUrl: c.user?.avatar_url },
+  bot: c.user?.type === 'Bot' || String(c.user?.login ?? '').endsWith('[bot]'),
+  system: false,
   path: null,
   line: null,
   createdAt: c.created_at,
   updatedAt: c.updated_at,
+  version: c.updated_at || c.created_at,
 });
+
+const listPaginated = async (ctx, url) => {
+  const rows = [];
+  for (let page = 1; page <= 100; page += 1) {
+    const separator = url.includes('?') ? '&' : '?';
+    const res = await ghFetch(ctx, `${url}${separator}per_page=100&page=${page}`);
+    const data = await res.json();
+    if (!res.ok) {
+      throw new ProviderError(res.status || 400, data?.message || 'Failed to list comments');
+    }
+    if (!Array.isArray(data)) break;
+    rows.push(...data);
+    if (data.length < 100) break;
+  }
+  return rows;
+};
 
 const listPRComments = async (ctx, repoId, prNumber) => {
   const { owner, repo } = splitOwnerRepo(repoId);
-  const [reviewRes, issueRes] = await Promise.all([
-    ghFetch(ctx, `${API_BASE}/repos/${owner}/${repo}/pulls/${prNumber}/comments`),
-    ghFetch(ctx, `${API_BASE}/repos/${owner}/${repo}/issues/${prNumber}/comments`),
+  const [reviewComments, issueComments] = await Promise.all([
+    listPaginated(ctx, `${API_BASE}/repos/${owner}/${repo}/pulls/${prNumber}/comments`),
+    listPaginated(ctx, `${API_BASE}/repos/${owner}/${repo}/issues/${prNumber}/comments`),
   ]);
-  const reviewComments = await reviewRes.json();
-  const issueComments = await issueRes.json();
-  return [
-    ...(Array.isArray(reviewComments) ? reviewComments.map(mapReviewComment) : []),
-    ...(Array.isArray(issueComments) ? issueComments.map(mapIssueComment) : []),
-  ].toSorted((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  return [...reviewComments.map(mapReviewComment), ...issueComments.map(mapIssueComment)].toSorted(
+    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+  );
 };
 
 const addPRComment = async (ctx, repoId, prNumber, { body, path, line, side }) => {
@@ -435,24 +454,45 @@ const isBaseInvalid422 = (errorText) => {
 
 // Find an existing PR for a branch. Tries the owner-qualified head filter first,
 // then falls back to listing PRs and matching on head.ref (fork/org mismatch).
-const findPRByBranch = async (ctx, repoId, branch, state) => {
+const findPullRequest = async (
+  ctx,
+  repoId,
+  { sourceBranch, targetBranch = null, state = 'open' },
+) => {
   const { owner, repo } = splitOwnerRepo(repoId);
   const headRes = await ghFetch(
     ctx,
-    `${API_BASE}/repos/${owner}/${repo}/pulls?head=${owner}:${branch}&state=${state}`,
+    `${API_BASE}/repos/${owner}/${repo}/pulls?head=${owner}:${encodeURIComponent(
+      sourceBranch,
+    )}&state=${state}&per_page=100`,
   );
   if (headRes.ok) {
     const headPrs = await headRes.json();
-    if (headPrs.length > 0) return headPrs[0];
-  }
-  const listRes = await ghFetch(
-    ctx,
-    `${API_BASE}/repos/${owner}/${repo}/pulls?state=${state}&per_page=100`,
-  );
-  if (listRes.ok) {
-    const prs = await listRes.json();
-    const match = prs.find((p) => p.head?.ref === branch);
+    const match = Array.isArray(headPrs)
+      ? headPrs.find(
+          (pr) =>
+            pr.head?.ref === sourceBranch &&
+            (targetBranch === null || pr.base?.ref === targetBranch),
+        )
+      : null;
     if (match) return match;
+  }
+  for (let page = 1; page <= 10; page += 1) {
+    const listRes = await ghFetch(
+      ctx,
+      `${API_BASE}/repos/${owner}/${repo}/pulls?state=${state}&per_page=100&page=${page}`,
+    );
+    if (!listRes.ok) break;
+    const prs = await listRes.json();
+    const match = Array.isArray(prs)
+      ? prs.find(
+          (pr) =>
+            pr.head?.ref === sourceBranch &&
+            (targetBranch === null || pr.base?.ref === targetBranch),
+        )
+      : null;
+    if (match) return match;
+    if (!Array.isArray(prs) || prs.length < 100) break;
   }
   return null;
 };
@@ -460,7 +500,11 @@ const findPRByBranch = async (ctx, repoId, branch, state) => {
 // Create a PR. Enforces the unmerged-construction-task-branch guard. Returns
 // { prUrl, prNumber } on success, { skipped, reason } for a no-change repo,
 // { unmergedBranches } (409-equivalent) when task branches remain unmerged.
-const createPullRequest = async (ctx, repoId, { branch, baseBranch, title, body }) => {
+const createPullRequest = async (
+  ctx,
+  repoId,
+  { branch, baseBranch, title, body, draft = false },
+) => {
   const { owner, repo } = splitOwnerRepo(repoId);
 
   const unmergedBranches = await getUnmergedConstructionTaskBranches(ctx, repoId, branch);
@@ -476,7 +520,7 @@ const createPullRequest = async (ctx, repoId, { branch, baseBranch, title, body 
     ghFetch(ctx, `${API_BASE}/repos/${owner}/${repo}/pulls`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, body, head: branch, base }),
+      body: JSON.stringify({ title, body, head: branch, base, draft }),
     });
 
   // No explicit base (project-wide legacy default, or a repo the caller left
@@ -489,15 +533,26 @@ const createPullRequest = async (ctx, repoId, { branch, baseBranch, title, body 
   if (!res.ok) {
     let errorText = await res.text();
     if (res.status === 422) {
-      const openPr = await findPRByBranch(ctx, repoId, branch, 'open');
+      const openPr = await findPullRequest(ctx, repoId, {
+        sourceBranch: branch,
+        targetBranch: resolvedBase,
+        state: 'open',
+      });
       if (openPr) {
         await cleanupConstructionTaskBranches(ctx, repoId, branch);
-        return { prUrl: openPr.html_url, prNumber: openPr.number, existing: true };
-      }
-      const anyPr = await findPRByBranch(ctx, repoId, branch, 'all');
-      if (anyPr) {
-        await cleanupConstructionTaskBranches(ctx, repoId, branch);
-        return { prUrl: anyPr.html_url, prNumber: anyPr.number, existing: true };
+        return {
+          prUrl: openPr.html_url,
+          prNumber: openPr.number,
+          existing: true,
+          ...(draft
+            ? {
+                providerId: openPr.id,
+                headSha: openPr.head?.sha ?? null,
+                targetSha: openPr.base?.sha ?? null,
+                draft: Boolean(openPr.draft),
+              }
+            : {}),
+        };
       }
       if (isNoChanges422(errorText)) {
         return { skipped: true, reason: 'no_changes' };
@@ -520,7 +575,19 @@ const createPullRequest = async (ctx, repoId, { branch, baseBranch, title, body 
           if (res.ok) {
             const pr = await res.json();
             await cleanupConstructionTaskBranches(ctx, repoId, branch);
-            return { prUrl: pr.html_url, prNumber: pr.number, retargetedBase: defaultBranch };
+            return {
+              prUrl: pr.html_url,
+              prNumber: pr.number,
+              retargetedBase: defaultBranch,
+              ...(draft
+                ? {
+                    providerId: pr.id,
+                    headSha: pr.head?.sha ?? null,
+                    targetSha: pr.base?.sha ?? null,
+                    draft: Boolean(pr.draft),
+                  }
+                : {}),
+            };
           }
           errorText = await res.text();
         }
@@ -531,7 +598,18 @@ const createPullRequest = async (ctx, repoId, { branch, baseBranch, title, body 
 
   const pr = await res.json();
   await cleanupConstructionTaskBranches(ctx, repoId, branch);
-  return { prUrl: pr.html_url, prNumber: pr.number };
+  return {
+    prUrl: pr.html_url,
+    prNumber: pr.number,
+    ...(draft
+      ? {
+          providerId: pr.id,
+          headSha: pr.head?.sha ?? null,
+          targetSha: pr.base?.sha ?? null,
+          draft: Boolean(pr.draft),
+        }
+      : {}),
+  };
 };
 
 // Compare base...head — the PR fan-in's pre-check that the intent branch
@@ -573,12 +651,81 @@ const compareBranches = async (ctx, repoId, { base, head }) => {
 
 // Get the live state of a PR ('open' | 'closed' | 'merged' | null if not found).
 const getPullRequestState = async (ctx, repoId, prNumber) => {
+  const status = await getPullRequestStatus(ctx, repoId, prNumber);
+  return status?.state ?? null;
+};
+
+const getPullRequestStatus = async (ctx, repoId, prNumber) => {
   const { owner, repo } = splitOwnerRepo(repoId);
   const res = await ghFetch(ctx, `${API_BASE}/repos/${owner}/${repo}/pulls/${prNumber}`);
   if (!res.ok) return null;
   const pr = await res.json();
-  if (pr.state === 'open') return 'open';
-  return pr.merged_at ? 'merged' : 'closed';
+  return {
+    providerId: pr.id,
+    number: pr.number,
+    url: pr.html_url,
+    sourceBranch: pr.head?.ref ?? null,
+    targetBranch: pr.base?.ref ?? null,
+    headSha: pr.head?.sha ?? null,
+    targetSha: pr.base?.sha ?? null,
+    state: pr.state === 'open' ? 'open' : pr.merged_at ? 'merged' : 'closed',
+    draft: Boolean(pr.draft),
+    mergeable: pr.mergeable ?? null,
+    mergeableState: pr.mergeable_state ?? null,
+    mergedAt: pr.merged_at ?? null,
+    closedAt: pr.closed_at ?? null,
+    updatedAt: pr.updated_at ?? null,
+  };
+};
+
+const setPullRequestDraft = async (ctx, repoId, prNumber, draft) => {
+  splitOwnerRepo(repoId);
+  const current = await getPullRequestStatus(ctx, repoId, prNumber);
+  if (!current || current.state !== 'open') return current;
+  if (current.draft === draft) return current;
+  const operation = draft ? 'convertPullRequestToDraft' : 'markPullRequestReadyForReview';
+  const mutation = `mutation($id:ID!){${operation}(input:{pullRequestId:$id}){pullRequest{id}}}`;
+  const res = await ghFetch(ctx, `${API_BASE}/graphql`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: mutation, variables: { id: current.providerId } }),
+  });
+  const data = await res.json();
+  if (!res.ok || data?.errors?.length) {
+    throw new ProviderError(
+      res.status || 400,
+      data?.errors?.[0]?.message ||
+        (draft ? 'Failed to convert PR to draft' : 'Failed to mark PR ready'),
+    );
+  }
+  return getPullRequestStatus(ctx, repoId, prNumber);
+};
+
+const reopenPullRequest = async (ctx, repoId, prNumber) => {
+  const { owner, repo } = splitOwnerRepo(repoId);
+  const res = await ghFetch(ctx, `${API_BASE}/repos/${owner}/${repo}/pulls/${prNumber}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ state: 'open' }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new ProviderError(res.status, data?.message || 'Failed to reopen pull request');
+  }
+  return getPullRequestStatus(ctx, repoId, prNumber);
+};
+
+const isCommitAncestor = async (ctx, repoId, ancestorSha, descendantRef) => {
+  const { owner, repo } = splitOwnerRepo(repoId);
+  const res = await ghFetch(
+    ctx,
+    `${API_BASE}/repos/${owner}/${repo}/compare/${encodeURIComponent(
+      ancestorSha,
+    )}...${encodeURIComponent(descendantRef)}`,
+  );
+  if (!res.ok) return false;
+  const data = await res.json();
+  return data.status === 'ahead' || data.status === 'identical';
 };
 
 // Server-side merge of a task branch into the sprint branch (used to reconcile
@@ -629,9 +776,14 @@ export {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  findPullRequest,
   createPullRequest,
   compareBranches,
   getPullRequestState,
+  getPullRequestStatus,
+  setPullRequestDraft,
+  reopenPullRequest,
+  isCommitAncestor,
   mergeBranch,
   constructionBranchPrefix,
 };
@@ -657,9 +809,14 @@ export default {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  findPullRequest,
   createPullRequest,
   compareBranches,
   getPullRequestState,
+  getPullRequestStatus,
+  setPullRequestDraft,
+  reopenPullRequest,
+  isCommitAncestor,
   mergeBranch,
   constructionBranchPrefix,
 };

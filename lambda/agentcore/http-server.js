@@ -32,9 +32,15 @@
 //   { "command": "merge-lane", ...mergeLane args }  → WP5: serialized --no-ff
 //       merge of a finished lane's branch into the intent branch (runs in the
 //       INTENT session; the orchestrator holds the merge lock).
+//   { "command": "reconcile-lane", ...reconcileLane args } → merge the latest
+//       intent head into a unit branch before making its draft PR ready.
+//   { "command": "refresh-intent", ...refreshIntentWorkspace args } → reset the
+//       intent session checkout to the remote after provider-side integration.
 //   { "command": "resolve-conflict", ...resolveConflict args } → WP6: the
 //       scoped conflict-resolution stage (lane session; engine merges +
 //       verifies + concludes, the agent only edits the conflicted files).
+//   { "command": "record-unit-pr", unitPrs:[...] } → best-effort Neptune
+//       projection for unit review PRs; DDB remains scheduling truth.
 //   { "command": "discussion-assist-start", ...discussion args }
 //     → accepts in ms, runs Quorum's one-shot discussion answer in a background
 //       job, then updates the pending DiscussionMessage and broadcasts it.
@@ -92,8 +98,11 @@ export const dispatchInvocation = async ({
     'promote-units': handlers.promoteUnits,
     'derive-artifacts': handlers.deriveArtifacts,
     'record-pr': handlers.recordPr,
+    'record-unit-pr': handlers.recordUnitPr,
     'init-lane': handlers.initLane,
     'merge-lane': handlers.mergeLane,
+    'reconcile-lane': handlers.reconcileLane,
+    'refresh-intent': handlers.refreshIntent,
     'resolve-conflict': handlers.resolveConflict,
     'discussion-assist-start': handlers.discussionAssistStart,
     'compose-plan-start': handlers.composePlanStart,
@@ -189,7 +198,9 @@ const main = async () => {
   const { promoteUnits } = await import('./commands/promote-units.js');
   const { deriveArtifacts } = await import('./commands/derive-artifacts.js');
   const { recordPr } = await import('./commands/record-pr.js');
-  const { initLane, mergeLane } = await import('./commands/lane.js');
+  const { recordUnitPr } = await import('./commands/record-unit-pr.js');
+  const { initLane, mergeLane, reconcileLane, refreshIntentWorkspace } =
+    await import('./commands/lane.js');
   const { resolveConflict } = await import('./commands/resolve-conflict.js');
   const { inspect } = await import('./commands/inspect.js');
   const { capabilities } = await import('./commands/capabilities.js');
@@ -249,10 +260,13 @@ const main = async () => {
     // Fan-in PR record: write the opened PR(s) into the graph (the orchestrator
     // has no Neptune access, so it forwards the structured PR data here).
     recordPr: (p) => recordPr(p, { store, openGraph, broadcast }),
+    recordUnitPr: (p) => recordUnitPr(p, { store, openGraph, broadcast }),
     // WP5 unit lanes: engine-owned lane git (docs/v2-parallel.md A3). init-lane
     // runs in the lane's own session; merge-lane in the intent session.
     initLane: (p) => initLane({ ...p, workspaceDir }, { store, broadcast }),
     mergeLane: (p) => mergeLane({ ...p, workspaceDir }, { store, broadcast }),
+    reconcileLane: (p) => reconcileLane({ ...p, workspaceDir }, { store, broadcast }),
+    refreshIntent: (p) => refreshIntentWorkspace({ ...p, workspaceDir }, {}),
     // WP6: the scoped conflict-resolution stage (lane session). The engine
     // merges/verifies/concludes; the agent CLI only edits conflicted files.
     resolveConflict: (p) =>

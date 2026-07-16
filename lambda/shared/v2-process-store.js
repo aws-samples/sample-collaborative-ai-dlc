@@ -15,6 +15,7 @@ import {
   PutCommand,
   QueryCommand,
   ScanCommand,
+  TransactWriteCommand,
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
 import {
@@ -25,6 +26,9 @@ import {
   steeringKey,
   unitPlanKey,
   unitKey,
+  unitPrKey,
+  feedbackBatchKey,
+  unitLaneId,
   quorumEditKey,
   composeKey,
   executionPk,
@@ -42,9 +46,14 @@ import {
   buildOutputRow,
   buildUnitPlanRow,
   buildUnitRow,
+  buildUnitPrRow,
+  buildFeedbackBatchRow,
+  buildFeedbackCommentRow,
   buildQuorumEditRow,
   buildComposeRow,
   UNIT_STATES,
+  UNIT_PR_STATES,
+  FEEDBACK_STATES,
   QUORUM_EDIT_STATES,
   COMPOSE_STATES,
   CONSTRUCTION_AUTONOMY_MODES,
@@ -459,6 +468,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     type,
     stageInstanceId,
     unitSlug,
+    sectionIndex,
     actor,
     summary,
     payloadRef,
@@ -468,6 +478,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       type,
       stageInstanceId,
       unitSlug,
+      sectionIndex,
       actor,
       summary,
       payloadRef,
@@ -490,6 +501,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     executionId,
     stageInstanceId,
     unitSlug,
+    sectionIndex,
     kind,
     prompt,
     options,
@@ -505,6 +517,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       humanTaskId: id,
       stageInstanceId,
       unitSlug,
+      sectionIndex,
       kind,
       prompt,
       options,
@@ -825,6 +838,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     executionId,
     stageInstanceId,
     unitSlug,
+    sectionIndex,
     metrics,
     resolvedModel = null,
     creditRate = null,
@@ -833,6 +847,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       executionId,
       stageInstanceId,
       unitSlug,
+      sectionIndex,
       metricId: nextId(),
       metrics,
       resolvedModel,
@@ -847,6 +862,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     executionId,
     stageInstanceId,
     unitSlug,
+    sectionIndex,
     tool,
     bytes = 0,
     resultCount = null,
@@ -856,6 +872,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       executionId,
       stageInstanceId,
       unitSlug,
+      sectionIndex,
       readId: nextId(),
       tool,
       bytes,
@@ -873,6 +890,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     executionId,
     stageInstanceId,
     unitSlug,
+    sectionIndex,
     sensorId,
     kind,
     severity,
@@ -884,6 +902,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       executionId,
       stageInstanceId,
       unitSlug,
+      sectionIndex,
       sensorRunId: nextId(),
       sensorId,
       kind,
@@ -915,6 +934,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     executionId,
     stageInstanceId,
     unitSlug,
+    sectionIndex,
     kind = 'text',
     content,
     display = null,
@@ -933,6 +953,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       executionId,
       stageInstanceId,
       unitSlug,
+      sectionIndex,
       seq,
       kind,
       content,
@@ -1094,11 +1115,26 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return Item ?? null;
   };
 
-  const getUnit = async (executionId, slug) => {
+  const getUnit = async (executionId, sectionIndexOrSlug, maybeSlug) => {
+    // Legacy two-argument form reads the old slug-only key directly.
+    if (maybeSlug === undefined) {
+      const { Item } = await ddb.send(
+        new GetCommand({ TableName: table(), Key: unitKey(executionId, sectionIndexOrSlug) }),
+      );
+      return Item ?? null;
+    }
+    const sectionIndex = sectionIndexOrSlug;
+    const slug = maybeSlug;
     const { Item } = await ddb.send(
+      new GetCommand({ TableName: table(), Key: unitKey(executionId, sectionIndex, slug) }),
+    );
+    if (Item) return Item;
+    // Backward read: executions created before section-aware keys have a
+    // single UNIT#<slug> row. Never rewrite it during a read.
+    const { Item: legacy } = await ddb.send(
       new GetCommand({ TableName: table(), Key: unitKey(executionId, slug) }),
     );
-    return Item ?? null;
+    return legacy ?? null;
   };
 
   // The append-only audit trail (SK prefix EVENT#, time-ordered). The PR
@@ -1136,66 +1172,75 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   //   - row no longer in the DAG → LEFT in place but reported in `orphaned`
   //     (never deleted — it is audit history; the plan snapshot no longer
   //     references it, so the scheduler ignores it)
-  const syncUnitRows = async ({ executionId, units, batches = [] }) => {
+  const syncUnitRows = async ({ executionId, units, batches = [], sectionIndexes = [null] }) => {
     const batchIndexOf = (slug) => {
       const i = batches.findIndex((b) => b.includes(slug));
       return i < 0 ? 0 : i;
     };
     const existing = await listUnits(executionId);
-    const bySlug = new Map(existing.map((r) => [r.slug, r]));
+    const laneIdOf = (row) => unitLaneId(row.sectionIndex ?? null, row.slug);
+    const byLane = new Map(existing.map((r) => [laneIdOf(r), r]));
     const created = [];
     const updated = [];
     const preserved = [];
-    for (const u of units) {
-      const slug = u.slug ?? u.name;
-      const dependsOn = u.dependsOn ?? u.depends_on ?? [];
-      const kind = u.kind ?? null;
-      const row = bySlug.get(slug);
-      if (!row) {
-        const item = buildUnitRow({
-          executionId,
-          slug,
-          dependsOn,
-          kind,
-          state: 'PENDING',
-          batchIndex: batchIndexOf(slug),
-          now: now(),
-        });
-        await ddb.send(new PutCommand({ TableName: table(), Item: item }));
-        created.push(slug);
-        continue;
-      }
-      if (row.state === 'PENDING' || row.state === 'READY') {
-        const ts = now();
-        await ddb.send(
-          new UpdateCommand({
-            TableName: table(),
-            Key: unitKey(executionId, slug),
-            UpdateExpression:
-              'SET dependsOn = :deps, kind = :kind, batchIndex = :bi, #state = :state, updatedAt = :ts, GSI2SK = :g2sk',
-            ExpressionAttributeNames: { '#state': 'state' },
-            ExpressionAttributeValues: {
-              ':deps': dependsOn,
-              ':kind': kind,
-              ':bi': batchIndexOf(slug),
-              ':state': 'PENDING',
-              ':ts': ts,
-              ':g2sk': executionTypeStateIndex({
-                executionId,
-                type: 'UNIT',
-                state: 'PENDING',
-                id: slug,
-              }).GSI2SK,
-            },
-          }),
-        );
-        updated.push(slug);
-      } else {
-        preserved.push(slug);
+    for (const sectionIndex of sectionIndexes.length ? sectionIndexes : [null]) {
+      for (const u of units) {
+        const slug = u.slug ?? u.name;
+        const dependsOn = u.dependsOn ?? u.depends_on ?? [];
+        const kind = u.kind ?? null;
+        const id = unitLaneId(sectionIndex, slug);
+        const row = byLane.get(id);
+        const label = sectionIndex == null ? slug : `s${sectionIndex}:${slug}`;
+        if (!row) {
+          const item = buildUnitRow({
+            executionId,
+            sectionIndex,
+            slug,
+            dependsOn,
+            kind,
+            state: 'PENDING',
+            batchIndex: batchIndexOf(slug),
+            now: now(),
+          });
+          await ddb.send(new PutCommand({ TableName: table(), Item: item }));
+          created.push(label);
+          continue;
+        }
+        if (row.state === 'PENDING' || row.state === 'READY') {
+          const ts = now();
+          await ddb.send(
+            new UpdateCommand({
+              TableName: table(),
+              Key: unitKey(executionId, sectionIndex, slug),
+              UpdateExpression:
+                'SET dependsOn = :deps, kind = :kind, batchIndex = :bi, #state = :state, updatedAt = :ts, GSI2SK = :g2sk',
+              ExpressionAttributeNames: { '#state': 'state' },
+              ExpressionAttributeValues: {
+                ':deps': dependsOn,
+                ':kind': kind,
+                ':bi': batchIndexOf(slug),
+                ':state': 'PENDING',
+                ':ts': ts,
+                ':g2sk': executionTypeStateIndex({
+                  executionId,
+                  type: 'UNIT',
+                  state: 'PENDING',
+                  id,
+                }).GSI2SK,
+              },
+            }),
+          );
+          updated.push(label);
+        } else {
+          preserved.push(label);
+        }
       }
     }
     const dagSlugs = new Set(units.map((u) => u.slug ?? u.name));
-    const orphaned = existing.filter((r) => !dagSlugs.has(r.slug)).map((r) => r.slug);
+    const sections = new Set(sectionIndexes.map((v) => v ?? null));
+    const orphaned = existing
+      .filter((r) => sections.has(r.sectionIndex ?? null) && !dagSlugs.has(r.slug))
+      .map((r) => (r.sectionIndex == null ? r.slug : `s${r.sectionIndex}:${r.slug}`));
     return { created, updated, preserved, orphaned };
   };
 
@@ -1203,7 +1248,14 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   // lanes (WP5) can never double-start or clobber a terminal verdict. Returns
   // the new row, or null when the CAS lost. Extra lifecycle fields are stamped
   // by name (branch, sessionId, startedAt, mergedAt, failureReason, blockedOn).
-  const updateUnitState = async ({ executionId, slug, state, fromStates = null, fields = {} }) => {
+  const updateUnitState = async ({
+    executionId,
+    sectionIndex = null,
+    slug,
+    state,
+    fromStates = null,
+    fields = {},
+  }) => {
     if (!UNIT_STATES.includes(state)) throw new Error(`invalid unit state: ${state}`);
     const ts = now();
     const sets = ['#state = :state', 'updatedAt = :ts', 'GSI2SK = :g2sk'];
@@ -1211,7 +1263,12 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     const values = {
       ':state': state,
       ':ts': ts,
-      ':g2sk': executionTypeStateIndex({ executionId, type: 'UNIT', state, id: slug }).GSI2SK,
+      ':g2sk': executionTypeStateIndex({
+        executionId,
+        type: 'UNIT',
+        state,
+        id: unitLaneId(sectionIndex, slug),
+      }).GSI2SK,
     };
     for (const [k, v] of Object.entries(fields)) {
       names[`#f_${k}`] = k;
@@ -1220,7 +1277,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     }
     const params = {
       TableName: table(),
-      Key: unitKey(executionId, slug),
+      Key: unitKey(executionId, sectionIndex, slug),
       UpdateExpression: `SET ${sets.join(', ')}`,
       ExpressionAttributeNames: names,
       ExpressionAttributeValues: values,
@@ -1230,6 +1287,232 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       params.ConditionExpression = `#state IN (${fromStates.map((_, i) => `:from${i}`).join(', ')})`;
       fromStates.forEach((s, i) => {
         params.ExpressionAttributeValues[`:from${i}`] = s;
+      });
+    }
+    try {
+      const { Attributes } = await ddb.send(new UpdateCommand(params));
+      return Attributes;
+    } catch (e) {
+      if (e?.name === 'ConditionalCheckFailedException') return null;
+      throw e;
+    }
+  };
+
+  // One provider PR/MR per changed repository for a section-specific unit.
+  // Creation is conditional and returns the existing row on replay; callers
+  // recover an exact provider-side PR before retrying this write.
+  const createUnitPr = async (input) => {
+    if (!UNIT_PR_STATES.includes(input.state ?? 'DRAFT')) {
+      throw new Error(`invalid unit PR state: ${input.state}`);
+    }
+    const item = buildUnitPrRow({ ...input, now: now() });
+    try {
+      await ddb.send(
+        new PutCommand({
+          TableName: table(),
+          Item: item,
+          ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
+        }),
+      );
+      return item;
+    } catch (e) {
+      if (e?.name !== 'ConditionalCheckFailedException') throw e;
+      const { Item } = await ddb.send(
+        new GetCommand({
+          TableName: table(),
+          Key: unitPrKey(input.executionId, input.sectionIndex, input.slug, input.repository),
+        }),
+      );
+      return Item ?? null;
+    }
+  };
+
+  const getUnitPr = async (executionId, sectionIndex, slug, repository) => {
+    const { Item } = await ddb.send(
+      new GetCommand({
+        TableName: table(),
+        Key: unitPrKey(executionId, sectionIndex, slug, repository),
+      }),
+    );
+    return Item ?? null;
+  };
+
+  const listUnitPrs = async (executionId, { sectionIndex, slug } = {}) => {
+    const items = await queryAll(ddb, {
+      TableName: table(),
+      KeyConditionExpression: 'pk = :pk AND begins_with(sk, :p)',
+      ExpressionAttributeValues: { ':pk': executionPk(executionId), ':p': 'UNITPR#' },
+    });
+    return items
+      .filter((row) => sectionIndex === undefined || row.sectionIndex === sectionIndex)
+      .filter((row) => slug === undefined || row.unitSlug === slug)
+      .toSorted(bySk);
+  };
+
+  const updateUnitPr = async ({
+    executionId,
+    sectionIndex,
+    slug,
+    repository,
+    state,
+    fromStates = null,
+    fields = {},
+  }) => {
+    if (state !== undefined && !UNIT_PR_STATES.includes(state)) {
+      throw new Error(`invalid unit PR state: ${state}`);
+    }
+    const ts = now();
+    const sets = ['updatedAt = :ts'];
+    const names = {};
+    const values = { ':ts': ts };
+    if (state !== undefined) {
+      names['#state'] = 'state';
+      values[':state'] = state;
+      values[':g2sk'] = executionTypeStateIndex({
+        executionId,
+        type: 'UNITPR',
+        state,
+        id: `${unitLaneId(sectionIndex, slug)}#${encodeURIComponent(repository)}`,
+      }).GSI2SK;
+      sets.push('#state = :state', 'GSI2SK = :g2sk');
+      if (state === 'MERGED') {
+        sets.push('mergedAt = :terminalAt');
+        values[':terminalAt'] = ts;
+      } else if (state === 'CLOSED') {
+        sets.push('closedAt = :terminalAt');
+        values[':terminalAt'] = ts;
+      }
+    }
+    for (const [key, value] of Object.entries(fields)) {
+      names[`#f_${key}`] = key;
+      values[`:f_${key}`] = value;
+      sets.push(`#f_${key} = :f_${key}`);
+    }
+    const params = {
+      TableName: table(),
+      Key: unitPrKey(executionId, sectionIndex, slug, repository),
+      UpdateExpression: `SET ${sets.join(', ')}`,
+      ExpressionAttributeValues: values,
+      ReturnValues: 'ALL_NEW',
+      ConditionExpression: 'attribute_exists(pk)',
+    };
+    if (Object.keys(names).length) params.ExpressionAttributeNames = names;
+    if (Array.isArray(fromStates) && fromStates.length > 0) {
+      params.ExpressionAttributeNames = { ...params.ExpressionAttributeNames, '#state': 'state' };
+      params.ConditionExpression += ` AND #state IN (${fromStates
+        .map((_, index) => `:from${index}`)
+        .join(', ')})`;
+      fromStates.forEach((value, index) => {
+        params.ExpressionAttributeValues[`:from${index}`] = value;
+      });
+    }
+    try {
+      const { Attributes } = await ddb.send(new UpdateCommand(params));
+      return Attributes;
+    } catch (e) {
+      if (e?.name === 'ConditionalCheckFailedException') return null;
+      throw e;
+    }
+  };
+
+  // Authenticated review selections. A deterministic batch id makes retries
+  // idempotent; the row stores provider comment versions used for dispatch.
+  const createFeedbackBatch = async (input) => {
+    const ts = now();
+    const item = buildFeedbackBatchRow({ ...input, now: ts });
+    const claims = (input.comments ?? []).map((comment) =>
+      buildFeedbackCommentRow({ ...input, comment, now: ts }),
+    );
+    try {
+      await ddb.send(
+        new TransactWriteCommand({
+          TransactItems: [item, ...claims].map((row) => ({
+            Put: {
+              TableName: table(),
+              Item: row,
+              ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
+            },
+          })),
+        }),
+      );
+      return { item, created: true };
+    } catch (e) {
+      if (
+        e?.name !== 'TransactionCanceledException' &&
+        e?.name !== 'ConditionalCheckFailedException'
+      ) {
+        throw e;
+      }
+      const { Item } = await ddb.send(
+        new GetCommand({
+          TableName: table(),
+          Key: feedbackBatchKey(input.executionId, input.sectionIndex, input.slug, input.batchId),
+        }),
+      );
+      return { item: Item ?? null, created: false, conflict: !Item };
+    }
+  };
+
+  const listFeedbackBatches = async (executionId, { sectionIndex, slug, state } = {}) => {
+    const items = await queryAll(ddb, {
+      TableName: table(),
+      KeyConditionExpression: 'pk = :pk AND begins_with(sk, :p)',
+      ExpressionAttributeValues: { ':pk': executionPk(executionId), ':p': 'FEEDBACK#' },
+    });
+    return items
+      .filter((row) => sectionIndex === undefined || row.sectionIndex === sectionIndex)
+      .filter((row) => slug === undefined || row.unitSlug === slug)
+      .filter((row) => state === undefined || row.state === state)
+      .toSorted((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+  };
+
+  const updateFeedbackBatch = async ({
+    executionId,
+    sectionIndex,
+    slug,
+    batchId,
+    state,
+    fromStates = null,
+    fields = {},
+  }) => {
+    if (!FEEDBACK_STATES.includes(state)) throw new Error(`invalid feedback state: ${state}`);
+    const ts = now();
+    const sets = ['#state = :state', 'updatedAt = :ts', 'GSI2SK = :g2sk'];
+    const names = { '#state': 'state' };
+    const values = {
+      ':state': state,
+      ':ts': ts,
+      ':g2sk': executionTypeStateIndex({
+        executionId,
+        type: 'FEEDBACK',
+        state,
+        id: `${unitLaneId(sectionIndex, slug)}#${batchId}`,
+      }).GSI2SK,
+    };
+    if (state === 'SUCCEEDED' || state === 'FAILED') {
+      sets.push('completedAt = :completedAt');
+      values[':completedAt'] = ts;
+    }
+    for (const [key, value] of Object.entries(fields)) {
+      names[`#f_${key}`] = key;
+      values[`:f_${key}`] = value;
+      sets.push(`#f_${key} = :f_${key}`);
+    }
+    const params = {
+      TableName: table(),
+      Key: feedbackBatchKey(executionId, sectionIndex, slug, batchId),
+      UpdateExpression: `SET ${sets.join(', ')}`,
+      ExpressionAttributeNames: names,
+      ExpressionAttributeValues: values,
+      ConditionExpression: 'attribute_exists(pk)',
+      ReturnValues: 'ALL_NEW',
+    };
+    if (Array.isArray(fromStates) && fromStates.length > 0) {
+      params.ConditionExpression += ` AND #state IN (${fromStates
+        .map((_, index) => `:from${index}`)
+        .join(', ')})`;
+      fromStates.forEach((value, index) => {
+        values[`:from${index}`] = value;
       });
     }
     try {
@@ -1503,6 +1786,8 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       outputs: records.filter((r) => r.sk.startsWith('OUTPUT#')),
       unitPlan: records.find((r) => r.sk === 'UNITPLAN') ?? null,
       units: records.filter((r) => r.sk.startsWith('UNIT#')),
+      unitPrs: records.filter((r) => r.sk.startsWith('UNITPR#')),
+      feedbackBatches: records.filter((r) => r.sk.startsWith('FEEDBACK#')),
       quorumEdits: records.filter((r) => r.sk.startsWith('QEDIT#')),
       composes: records.filter((r) => r.sk.startsWith('COMPOSE#')),
     };
@@ -1586,6 +1871,13 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     listUnits,
     syncUnitRows,
     updateUnitState,
+    createUnitPr,
+    getUnitPr,
+    listUnitPrs,
+    updateUnitPr,
+    createFeedbackBatch,
+    listFeedbackBatches,
+    updateFeedbackBatch,
     updateUnitPlanDecisions,
     createQuorumEdit,
     getQuorumEdit,

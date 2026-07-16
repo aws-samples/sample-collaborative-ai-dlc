@@ -163,6 +163,80 @@ describe('UnitLaneBoardView', () => {
     fireEvent.click(screen.getByText('View live output'));
     expect(onViewLiveOutput).toHaveBeenCalledWith('si-billing');
   });
+
+  it('keeps repeated unit slugs distinct across sections and shows repository PR state', () => {
+    const repeated = [
+      unit('auth', 'PR_DRAFT', { sectionIndex: 1 }),
+      unit('auth', 'PR_READY', { sectionIndex: 2, integrationOwner: true }),
+    ];
+    renderView({
+      units: repeated,
+      unitPlan: plan({
+        units: [{ slug: 'auth', dependsOn: [] }],
+        batches: [['auth']],
+        unitCount: 1,
+      }),
+      unitPrs: [
+        {
+          sectionIndex: 1,
+          unitSlug: 'auth',
+          repository: 'owner/api',
+          provider: 'github',
+          providerId: '101',
+          number: 7,
+          url: 'https://example.test/pr/7',
+          sourceBranch: 'unit',
+          targetBranch: 'intent',
+          headSha: 'a',
+          readyHeadSha: null,
+          targetSha: 'b',
+          state: 'DRAFT',
+          mergeable: null,
+          commentCount: 2,
+          repositoryOutcome: null,
+          createdAt: null,
+          updatedAt: null,
+          mergedAt: null,
+          closedAt: null,
+        },
+      ],
+    });
+    expect(screen.getByText('Section 1')).toBeInTheDocument();
+    expect(screen.getByText('Section 2')).toBeInTheDocument();
+    expect(screen.getAllByText('auth')).toHaveLength(2);
+    expect(screen.getByText('owner/api')).toBeInTheDocument();
+    expect(screen.getByText('Integration turn')).toBeInTheDocument();
+  });
+
+  it('expands feedback history with revision output, changed files, and verification', () => {
+    renderView({
+      units: units.map((row) => ({ ...row, sectionIndex: 1 })),
+      feedbackBatches: [
+        {
+          sectionIndex: 1,
+          unitSlug: 'auth',
+          batchId: 'batch-1',
+          comments: [{} as never],
+          state: 'SUCCEEDED',
+          requestedBy: 'u1',
+          requestedByName: 'Reviewer',
+          stageInstanceId: 'stage-1',
+          output: 'Handled the empty-token case.',
+          changedFiles: ['src/auth.ts'],
+          verification: 'npm test passed',
+          commitSha: 'abcdef123456',
+          failureReason: null,
+          createdAt: null,
+          updatedAt: null,
+          completedAt: null,
+        },
+      ],
+    });
+    fireEvent.click(screen.getByText(/1 comment · succeeded/));
+    expect(screen.getByText('Handled the empty-token case.')).toBeInTheDocument();
+    expect(screen.getByText(/src\/auth.ts/)).toBeInTheDocument();
+    expect(screen.getByText(/npm test passed/)).toBeInTheDocument();
+  });
 });
 
 describe('isFanoutActive', () => {

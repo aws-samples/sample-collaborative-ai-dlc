@@ -378,6 +378,8 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
           # Platform stage-skipping toggle (per-intent stage skipping;
           # snapshotted onto the execution META row at intent create).
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/stage-skipping",
+          # Platform default for project PR delivery inheritance.
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/pr-strategy",
           # Composer LLM-bypass toggle (deterministic keyword match vs always-LLM).
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/compose-llm-bypass",
           # Global custom MCP servers injected into every agent session (merged
@@ -1651,6 +1653,7 @@ resource "aws_iam_role_policy" "intents" {
           "dynamodb:Scan",
           "dynamodb:DeleteItem",
           "dynamodb:BatchWriteItem",
+          "dynamodb:TransactWriteItems",
         ]
         Resource = [
           var.v2_executions_table_arn,
@@ -1690,6 +1693,8 @@ resource "aws_iam_role_policy" "intents" {
           # Platform stage-skipping toggle (effective value — project override
           # over this — snapshotted onto the execution META at intent create).
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/stage-skipping",
+          # Platform default for project PR delivery inheritance.
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/pr-strategy",
           # Composer LLM-bypass toggle (deterministic keyword match vs always-LLM).
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/compose-llm-bypass",
           # Global custom MCP servers default (merged under the project's custom
@@ -1739,6 +1744,31 @@ resource "aws_iam_role_policy" "intents" {
         Effect   = "Allow"
         Action   = ["bedrock-agentcore:InvokeAgentRuntime", "bedrock-agentcore:StopRuntimeSession"]
         Resource = var.agentcore_runtime_arn != "" ? [var.agentcore_runtime_arn, "${var.agentcore_runtime_arn}/*"] : ["*"]
+      },
+      {
+        # Authenticated unit-review feedback: refresh the starter's provider
+        # credential before refetching selected PR/MR comments.
+        Effect = "Allow"
+        Action = ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:UpdateItem"]
+        Resource = compact([
+          var.git_connections_table_arn,
+          var.git_provider_connections_table_arn,
+        ])
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter", "ssm:PutParameter"]
+        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter"]
+        Resource = compact([var.github_auth_mode_param_arn, var.github_app_config_param_arn])
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = compact([var.github_app_private_key_secret_arn, var.gitlab_oauth_secret_arn])
       }
     ]
   })
@@ -1781,7 +1811,14 @@ module "intents_lambda" {
     YJS_DOCUMENTS_TABLE = var.yjs_documents_table_name
     # Admin global cli-models default lives under this SSM prefix; the intents
     # lambda merges it under the project selection at intent create.
-    AGENT_SETTINGS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
+    AGENT_SETTINGS_SSM_PREFIX          = "/${var.project_name}/${var.environment}"
+    GIT_CONNECTIONS_TABLE              = var.git_connections_table_name
+    GIT_PROVIDER_CONNECTIONS_TABLE     = var.git_provider_connections_table_name
+    GITHUB_AUTH_MODE_PARAM             = var.github_auth_mode_param_name
+    GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
+    GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
+    GITLAB_OAUTH_SECRET_NAME           = var.gitlab_oauth_secret_name
+    GITLAB_REDIRECT_URI                = var.gitlab_redirect_uri
     # The AgentCore stage-executor runtime — for the manual derive backfill
     # (POST .../intents/{id}/derive, platform admin).
     AGENTCORE_RUNTIME_ARN = var.agentcore_runtime_arn

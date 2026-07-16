@@ -326,7 +326,7 @@ describe('WP5 sections on the real durable runner', () => {
       // 2. Skeleton lane (auth): its cg stage parks on a question mid-lane.
       world.gates.set('h7', { humanTaskId: 'h7', status: 'pending' });
       world.pendingHumanTaskId = 'h7';
-      await completeStage(runner, 'stage-cb-cg-u-auth', {
+      await completeStage(runner, 'stage-cb-cg-s1-u-auth', {
         ok: true,
         state: 'WAITING_FOR_HUMAN',
         humanTaskId: 'h7',
@@ -336,7 +336,7 @@ describe('WP5 sections on the real durable runner', () => {
       world.gates.set('h7', { humanTaskId: 'h7', status: 'answered' });
       world.pendingHumanTaskId = null;
       await h7.sendCallbackSuccess(JSON.stringify({ answer: 'approved' }));
-      await completeStage(runner, 'stage-cb-cg-u-auth-resume-h7', {
+      await completeStage(runner, 'stage-cb-cg-s1-u-auth-resume-h7', {
         ok: true,
         state: 'SUCCEEDED',
       });
@@ -349,7 +349,10 @@ describe('WP5 sections on the real durable runner', () => {
       });
 
       // 5. Remaining lane (billing) + fan-in stage.
-      await completeStage(runner, 'stage-cb-cg-u-billing', { ok: true, state: 'SUCCEEDED' });
+      await completeStage(runner, 'stage-cb-cg-s1-u-billing', {
+        ok: true,
+        state: 'SUCCEEDED',
+      });
       await completeStage(runner, 'stage-cb-bt', { ok: true, state: 'SUCCEEDED' });
 
       const execution = await executionPromise;
@@ -437,7 +440,10 @@ describe('WP5 sections on the real durable runner', () => {
 
       await completeStage(runner, 'stage-cb-gen', { ok: true, state: 'SUCCEEDED' });
       await answerEngineGate(runner, world, 'eg-validation-gen-0');
-      await completeStage(runner, 'stage-cb-cg-u-auth', { ok: true, state: 'SUCCEEDED' });
+      await completeStage(runner, 'stage-cb-cg-s1-u-auth', {
+        ok: true,
+        state: 'SUCCEEDED',
+      });
       await answerEngineGate(runner, world, 'eg-skeleton-s1');
       await answerEngineGate(runner, world, 'eg-ladder-s1', {
         status: 'answered',
@@ -447,10 +453,10 @@ describe('WP5 sections on the real durable runner', () => {
       // BOTH lane callbacks must be pending at once (true concurrency) before
       // either is completed — then finish them in REVERSE order.
       const cbC = await runner
-        .getOperation('stage-cb-cg-u-c')
+        .getOperation('stage-cb-cg-s1-u-c')
         .waitForData(WaitingOperationStatus.STARTED);
       const cbB = await runner
-        .getOperation('stage-cb-cg-u-b')
+        .getOperation('stage-cb-cg-s1-u-b')
         .waitForData(WaitingOperationStatus.STARTED);
       await cbC.sendCallbackSuccess(JSON.stringify({ ok: true, state: 'SUCCEEDED' }));
       await cbB.sendCallbackSuccess(JSON.stringify({ ok: true, state: 'SUCCEEDED' }));
@@ -499,14 +505,17 @@ describe('WP5 sections on the real durable runner', () => {
 
       await completeStage(runner, 'stage-cb-gen', { ok: true, state: 'SUCCEEDED' });
       await answerEngineGate(runner, world, 'eg-validation-gen-0');
-      await completeStage(runner, 'stage-cb-cg-u-auth', { ok: true, state: 'SUCCEEDED' });
+      await completeStage(runner, 'stage-cb-cg-s1-u-auth', {
+        ok: true,
+        state: 'SUCCEEDED',
+      });
       await answerEngineGate(runner, world, 'eg-skeleton-s1');
       await answerEngineGate(runner, world, 'eg-ladder-s1', {
         status: 'answered',
         answer: { mode: 'autonomous' },
       });
       // billing's lane fails → halt-and-ask → human aborts.
-      await completeStage(runner, 'stage-cb-cg-u-billing', {
+      await completeStage(runner, 'stage-cb-cg-s1-u-billing', {
         ok: false,
         state: 'FAILED',
         reason: 'sensor_blocked',

@@ -1235,9 +1235,10 @@ describe('WP5 — parallel sections: lanes, skeleton, ladder, halt-and-ask', () 
     expect(stagePuts).toEqual([
       {
         executionId: 'i1',
-        stageInstanceId: planStageInstanceId('aidlc-v2@1', 'fd', 'billing'),
+        stageInstanceId: planStageInstanceId('aidlc-v2@1', 'fd', 'billing', 1),
         stageId: 'fd',
         unitSlug: 'billing',
+        sectionIndex: 1,
         phase: 'construction',
         state: 'SKIPPED',
       },
@@ -1307,8 +1308,8 @@ describe('WP5 — parallel sections: lanes, skeleton, ladder, halt-and-ask', () 
     expect(fdAuth.map((p) => p.resumeFrom)).toEqual([null, 'h9']);
     // The resume leg's callback identity carries the unit dimension.
     expect(fdAuth.map((p) => p.stageCallbackId)).toEqual([
-      'cb-stage-cb-fd-u-auth',
-      'cb-stage-cb-fd-u-auth-resume-h9',
+      'cb-stage-cb-fd-s1-u-auth',
+      'cb-stage-cb-fd-s1-u-auth-resume-h9',
     ]);
   });
 
@@ -1316,9 +1317,9 @@ describe('WP5 — parallel sections: lanes, skeleton, ladder, halt-and-ask', () 
     const doneRow = { state: 'SUCCEEDED' };
     const rows = {
       'si-units-gen': doneRow,
-      [planStageInstanceId('aidlc-v2@1', 'fd', 'auth')]: doneRow,
-      [planStageInstanceId('aidlc-v2@1', 'fd', 'billing')]: { state: 'SKIPPED' },
-      [planStageInstanceId('aidlc-v2@1', 'cg', 'auth')]: doneRow,
+      [planStageInstanceId('aidlc-v2@1', 'fd', 'auth', 1)]: doneRow,
+      [planStageInstanceId('aidlc-v2@1', 'fd', 'billing', 1)]: { state: 'SKIPPED' },
+      [planStageInstanceId('aidlc-v2@1', 'cg', 'auth', 1)]: doneRow,
       // cg/billing missing → incomplete
     };
     deps.store.getStage = vi.fn(async (_e, id) => rows[id] ?? null);
@@ -1331,7 +1332,7 @@ describe('WP5 — parallel sections: lanes, skeleton, ladder, halt-and-ask', () 
     expect(res.detail).toBe('cg [unit billing]');
 
     // Complete the missing lane instance → rewind proceeds straight to bt.
-    rows[planStageInstanceId('aidlc-v2@1', 'cg', 'billing')] = doneRow;
+    rows[planStageInstanceId('aidlc-v2@1', 'cg', 'billing', 1)] = doneRow;
     invokes.length = 0;
     ctx = makeCtx();
     deps.invokeRuntime = makeRuntime(ctx, sectionScript);
@@ -1342,6 +1343,347 @@ describe('WP5 — parallel sections: lanes, skeleton, ladder, halt-and-ask', () 
     );
     expect(res2.ok).toBe(true);
     expect(stageStarts().map((p) => p.stageId)).toEqual(['bt']);
+  });
+});
+
+describe('PR per unit delivery', () => {
+  let unitStates;
+  let unitPrStates;
+  let unitPrRows;
+  let metrics;
+
+  const configure = ({ repos = ['owner/repo'], statusFor }) => {
+    unitStates = [];
+    unitPrStates = [];
+    unitPrRows = new Map();
+    metrics = [];
+    deps.store.getExecution = vi.fn(async () => ({
+      ...META,
+      repos,
+      prStrategy: 'pr-per-unit',
+    }));
+    deps.loadPlan = vi.fn(async () => SECTION_PLAN());
+    deps.store.getUnitPlan = vi.fn(async () =>
+      UNIT_PLAN({
+        units: [{ slug: 'auth', dependsOn: [] }],
+        batches: [['auth']],
+      }),
+    );
+    deps.store.updateUnitState = vi.fn(async (args) => {
+      unitStates.push(args);
+      return { ...args, unitSlug: args.slug };
+    });
+    deps.store.putStage = vi.fn(async (args) => args);
+    deps.store.getStage = vi.fn(async () => ({ state: 'SUCCEEDED' }));
+    deps.store.getUnitPr = vi.fn(async (_executionId, _sectionIndex, _slug, repository) =>
+      unitPrRows.get(repository),
+    );
+    deps.store.createUnitPr = vi.fn(async (args) => {
+      const row = { ...args, unitSlug: args.slug };
+      unitPrRows.set(args.repository, row);
+      return row;
+    });
+    deps.store.updateUnitPr = vi.fn(async (args) => {
+      unitPrStates.push(args);
+      const row = {
+        ...unitPrRows.get(args.repository),
+        ...args,
+        unitSlug: args.slug,
+        ...args.fields,
+      };
+      unitPrRows.set(args.repository, row);
+      return row;
+    });
+    deps.store.listFeedbackBatches = vi.fn(async () => []);
+    deps.store.updateFeedbackBatch = vi.fn(async (args) => args);
+    deps.store.recordMetric = vi.fn(async (args) => {
+      metrics.push(args.metrics);
+      return args;
+    });
+    deps.invokeRuntime = makeRuntime(ctx, sectionScript);
+
+    let nextNumber = 7;
+    deps.unitPrProvider = {
+      compare: vi.fn(async () => ({ status: 'ahead' })),
+      find: vi.fn(async () => null),
+      createDraft: vi.fn(async ({ branch }) => {
+        const number = nextNumber;
+        nextNumber += 1;
+        return {
+          providerId: `provider-${number}`,
+          prNumber: number,
+          prUrl: `https://example.test/pr/${number}`,
+          headSha: `head-${number}`,
+          targetSha: 'intent-before',
+          sourceBranch: branch,
+        };
+      }),
+      status: vi.fn(statusFor),
+      setDraft: vi.fn(async ({ number, draft }) => ({
+        providerId: `provider-${number}`,
+        number,
+        url: `https://example.test/pr/${number}`,
+        sourceBranch: 'aidlc/i1--s1-unit-auth',
+        targetBranch: 'aidlc/i1',
+        headSha: `head-${number}`,
+        targetSha: 'intent-before',
+        state: 'open',
+        draft,
+        mergeable: true,
+      })),
+      reopen: vi.fn(async () => null),
+      isAncestor: vi.fn(async () => true),
+      listComments: vi.fn(async () => []),
+      addComment: vi.fn(async () => ({})),
+    };
+  };
+
+  const start = () =>
+    __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
+
+  it('opens a draft, releases lane compute, reconciles, promotes, and verifies integration', async () => {
+    const calls = new Map();
+    configure({
+      statusFor: async ({ number }) => {
+        const call = (calls.get(number) ?? 0) + 1;
+        calls.set(number, call);
+        return {
+          providerId: `provider-${number}`,
+          number,
+          url: `https://example.test/pr/${number}`,
+          sourceBranch: 'aidlc/i1--s1-unit-auth',
+          targetBranch: 'aidlc/i1',
+          headSha: `head-${number}`,
+          targetSha: 'intent-before',
+          state: call >= 3 ? 'merged' : 'open',
+          draft: call < 3,
+          mergeable: true,
+        };
+      },
+    });
+
+    const result = await start();
+    expect(result.ok).toBe(true);
+    expect(deps.unitPrProvider.createDraft).toHaveBeenCalledOnce();
+    expect(deps.unitPrProvider.setDraft).toHaveBeenCalledWith(
+      expect.objectContaining({ number: 7, draft: false }),
+    );
+    expect(deps.unitPrProvider.isAncestor).toHaveBeenCalledWith(
+      expect.objectContaining({
+        repoId: 'owner/repo',
+        ancestorSha: 'head-7',
+        descendantRef: 'aidlc/i1',
+      }),
+    );
+    expect(invokes.map((payload) => payload.command)).toContain('reconcile-lane');
+    expect(invokes.map((payload) => payload.command)).toContain('refresh-intent');
+    expect(invokes).toContainEqual(
+      expect.objectContaining({
+        command: 'record-unit-pr',
+        unitPrs: [
+          expect.objectContaining({
+            sectionIndex: 1,
+            unitSlug: 'auth',
+            repoId: 'owner/repo',
+            provider: 'github',
+            prNumber: 7,
+          }),
+        ],
+      }),
+    );
+    expect(unitStates.map((row) => row.state)).toEqual(
+      expect.arrayContaining(['PR_DRAFT', 'RECONCILING', 'PR_READY', 'MERGED']),
+    );
+    expect(deps.stopSession).toHaveBeenCalledWith('aidlc-intent-i1-s1-auth'.padEnd(33, '0'));
+  });
+
+  it('claims selected feedback, revises the last successful stage, and posts one summary', async () => {
+    const calls = new Map();
+    configure({
+      statusFor: async ({ number }) => {
+        const call = (calls.get(number) ?? 0) + 1;
+        calls.set(number, call);
+        return {
+          providerId: `provider-${number}`,
+          number,
+          url: `https://example.test/pr/${number}`,
+          sourceBranch: 'aidlc/i1--s1-unit-auth',
+          targetBranch: 'aidlc/i1',
+          headSha: `head-${number}`,
+          targetSha: 'intent-before',
+          state: call >= 5 ? 'merged' : 'open',
+          draft: call < 5,
+          mergeable: true,
+        };
+      },
+    });
+    const batch = {
+      batchId: 'batch-1',
+      state: 'QUEUED',
+      comments: [
+        {
+          repository: 'owner/repo',
+          prNumber: 7,
+          id: '101',
+          version: '2026-01-01T00:00:00Z',
+          path: 'src/auth.js',
+          line: 12,
+          body: 'Handle the empty token',
+          user: { login: 'reviewer' },
+        },
+      ],
+    };
+    deps.store.listFeedbackBatches = vi.fn(async (_executionId, { state }) =>
+      batch.state === state ? [batch] : [],
+    );
+    deps.store.updateFeedbackBatch = vi.fn(async (args) => {
+      batch.state = args.state;
+      Object.assign(batch, args.fields ?? {});
+      return { ...batch };
+    });
+
+    const result = await start();
+    expect(result.ok).toBe(true);
+    expect(deps.store.updateFeedbackBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        batchId: 'batch-1',
+        state: 'RUNNING',
+        fromStates: ['QUEUED'],
+      }),
+    );
+    expect(deps.store.updateFeedbackBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        batchId: 'batch-1',
+        state: 'SUCCEEDED',
+        fromStates: ['RUNNING'],
+      }),
+    );
+    const revision = stageStarts().find((payload) =>
+      payload.stageCallbackId.includes('feedback-batch-1'),
+    );
+    expect(revision).toMatchObject({
+      unitSlug: 'auth',
+      sectionIndex: 1,
+      reviewFeedback: {
+        batchId: 'batch-1',
+        prompt: expect.stringContaining('Handle the empty token'),
+        targets: [
+          expect.objectContaining({
+            repoId: 'owner/repo',
+            number: 7,
+            headSha: 'head-7',
+            targetSha: 'intent-before',
+          }),
+        ],
+      },
+    });
+    expect(deps.unitPrProvider.addComment).toHaveBeenCalledOnce();
+    expect(deps.unitPrProvider.addComment.mock.calls[0][0].body).toContain(
+      'AI-DLC feedback batch: batch-1',
+    );
+    expect(metrics).toContainEqual({ feedbackCycles: 1 });
+  });
+
+  it('preserves a partial multi-repository merge, records outcomes, and halts', async () => {
+    const calls = new Map();
+    configure({
+      repos: ['owner/api', 'owner/web'],
+      statusFor: async ({ number }) => {
+        const call = (calls.get(number) ?? 0) + 1;
+        calls.set(number, call);
+        return {
+          providerId: `provider-${number}`,
+          number,
+          url: `https://example.test/pr/${number}`,
+          sourceBranch: 'aidlc/i1--s1-unit-auth',
+          targetBranch: 'aidlc/i1',
+          headSha: `head-${number}`,
+          targetSha: 'intent-before',
+          state: call >= 3 ? (number === 7 ? 'merged' : 'closed') : 'open',
+          draft: call < 3,
+          mergeable: true,
+        };
+      },
+    });
+
+    const result = await start();
+    expect(result).toMatchObject({ ok: false, reason: 'section_aborted' });
+    expect(unitPrStates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ repository: 'owner/api', state: 'PARTIALLY_MERGED' }),
+        expect.objectContaining({ repository: 'owner/web', state: 'CLOSED' }),
+      ]),
+    );
+    expect(unitStates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          slug: 'auth',
+          state: 'FAILED',
+          fields: expect.objectContaining({
+            failureReason: expect.stringContaining('partial_merge'),
+          }),
+        }),
+      ]),
+    );
+    expect(metrics).toContainEqual({ partialMerges: 1 });
+  });
+
+  it('keeps an already integrated repository out of retry readiness and normalizes its outcome', async () => {
+    const calls = new Map();
+    configure({
+      repos: ['owner/api', 'owner/web'],
+      statusFor: async ({ number }) => {
+        const call = (calls.get(number) ?? 0) + 1;
+        calls.set(number, call);
+        return {
+          providerId: `provider-${number}`,
+          number,
+          url: `https://example.test/pr/${number}`,
+          sourceBranch: 'aidlc/i1--s1-unit-auth',
+          targetBranch: 'aidlc/i1',
+          headSha: `head-${number}`,
+          targetSha: 'intent-before',
+          state: number === 6 || call >= 3 ? 'merged' : 'open',
+          draft: number !== 6 && call < 3,
+          mergeable: true,
+        };
+      },
+    });
+    unitPrRows.set('owner/api', {
+      executionId: 'i1',
+      sectionIndex: 1,
+      unitSlug: 'auth',
+      repository: 'owner/api',
+      provider: 'github',
+      number: 6,
+      sourceBranch: 'aidlc/i1--s1-unit-auth',
+      targetBranch: 'aidlc/i1',
+      headSha: 'head-6',
+      state: 'PARTIALLY_MERGED',
+      repositoryOutcome: 'merged',
+    });
+    deps.unitPrProvider.compare.mockImplementation(async ({ repoId }) => ({
+      status: repoId === 'owner/api' ? 'identical' : 'ahead',
+    }));
+
+    const result = await start();
+    expect(result.ok).toBe(true);
+    expect(deps.unitPrProvider.createDraft).toHaveBeenCalledOnce();
+    expect(deps.unitPrProvider.setDraft).not.toHaveBeenCalledWith(
+      expect.objectContaining({ number: 6, draft: false }),
+    );
+    expect(unitPrStates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          repository: 'owner/api',
+          state: 'MERGED',
+          fields: expect.objectContaining({ repositoryOutcome: 'merged' }),
+        }),
+      ]),
+    );
+    expect(
+      unitPrStates.some((row) => row.repository === 'owner/api' && row.state === 'UNCHANGED'),
+    ).toBe(false);
   });
 });
 
@@ -1405,8 +1747,8 @@ describe('WP5 — engine-gate decisions', () => {
     // under a DISTINCT durable callback identity.
     const cgBilling = stageStarts().filter((p) => p.stageId === 'cg' && p.unitSlug === 'billing');
     expect(cgBilling.map((p) => p.stageCallbackId)).toEqual([
-      'cb-stage-cb-cg-u-billing',
-      'cb-stage-cb-cg-u-billing-r1',
+      'cb-stage-cb-cg-s1-u-billing',
+      'cb-stage-cb-cg-s1-u-billing-r1',
     ]);
     // Lane states: billing FAILED (round 0) then revived RUNNING → MERGED.
     const billing = unitStates.filter((u) => u.slug === 'billing').map((u) => u.state);

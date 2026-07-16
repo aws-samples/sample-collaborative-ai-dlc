@@ -1,11 +1,37 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet';
 import { cn } from '@/lib/utils';
 import { useIntent, type IntentStageRow } from '@/contexts/IntentContext';
 import { formatDuration, useTick } from '@/components/intent/stageStyle';
-import type { IntentUnit, IntentUnitPlan, UnitState } from '@/services/intents';
-import { Hammer } from 'lucide-react';
+import {
+  intentsService,
+  type IntentFeedbackBatch,
+  type IntentUnit,
+  type IntentUnitPlan,
+  type IntentUnitPr,
+  type UnitReviewComment,
+  type UnitState,
+} from '@/services/intents';
+import {
+  CheckCircle2,
+  ExternalLink,
+  GitPullRequest,
+  Hammer,
+  Loader2,
+  MessageSquare,
+  TriangleAlert,
+} from 'lucide-react';
 
 // Units lane board (docs/plans/units-lane-board.md): visualizes the parallel /
 // sequential unit work after fan-out. Columns are the promoted unit DAG's
@@ -21,6 +47,10 @@ const STATE_LABEL: Record<UnitState, string> = {
   PENDING: 'Pending',
   READY: 'Ready',
   RUNNING: 'Building',
+  PR_DRAFT: 'Draft review',
+  RECONCILING: 'Reconciling',
+  PR_READY: 'Ready to merge',
+  ADDRESSING_FEEDBACK: 'Fixing feedback',
   MERGING: 'Merging',
   MERGED: 'Merged',
   BLOCKED: 'Blocked',
@@ -35,6 +65,26 @@ const STATE_STYLES: Record<UnitState, { card: string; badge: string; dot: string
     card: 'border-agent-running/50 bg-agent-running/[0.06] ring-1 ring-agent-running/30',
     badge: 'text-agent-running bg-agent-running/10',
     dot: 'bg-agent-running',
+  },
+  PR_DRAFT: {
+    card: 'border-sky-400/50 bg-sky-400/[0.05]',
+    badge: 'text-sky-700 dark:text-sky-300 bg-sky-400/10',
+    dot: 'bg-sky-400',
+  },
+  RECONCILING: {
+    card: 'border-amber-400/50 bg-amber-400/[0.05]',
+    badge: 'text-amber-700 dark:text-amber-300 bg-amber-400/10',
+    dot: 'bg-amber-400',
+  },
+  PR_READY: {
+    card: 'border-emerald-400/50 bg-emerald-400/[0.05]',
+    badge: 'text-emerald-700 dark:text-emerald-300 bg-emerald-400/10',
+    dot: 'bg-emerald-400',
+  },
+  ADDRESSING_FEEDBACK: {
+    card: 'border-fuchsia-400/50 bg-fuchsia-400/[0.05]',
+    badge: 'text-fuchsia-700 dark:text-fuchsia-300 bg-fuchsia-400/10',
+    dot: 'bg-fuchsia-400',
   },
   MERGING: {
     card: 'border-phase-construction/50 bg-phase-construction/[0.06]',
@@ -72,16 +122,26 @@ const STATE_STYLES: Record<UnitState, { card: string; badge: string; dot: string
 const STATE_ORDER: UnitState[] = [
   'MERGED',
   'RUNNING',
+  'ADDRESSING_FEEDBACK',
+  'RECONCILING',
+  'PR_READY',
+  'PR_DRAFT',
   'MERGING',
   'BLOCKED',
   'FAILED',
   'READY',
   'PENDING',
 ];
+const unitLaneKey = (sectionIndex: number | null | undefined, slug: string) =>
+  `s${sectionIndex ?? 'legacy'}:${slug}`;
+const reviewCommentSelectionKey = (comment: UnitReviewComment) =>
+  `${comment.repository}:${comment.id}`;
 
 // ── Card ─────────────────────────────────────────────────────────────────────
 interface UnitCardProps {
   unit: IntentUnit;
+  prs: IntentUnitPr[];
+  feedbackBatches: IntentFeedbackBatch[];
   isWalkingSkeleton: boolean;
   /** stageInstanceId of the unit's currently RUNNING stage row, if any. */
   runningStageInstanceId: string | null;
@@ -89,14 +149,18 @@ interface UnitCardProps {
   stream: string | null;
   /** Open this lane's full output in the sidebar (only when building). */
   onViewLiveOutput?: (stageInstanceId: string) => void;
+  onAddressFeedback?: (unit: IntentUnit) => void;
 }
 
 function UnitCard({
   unit,
+  prs,
+  feedbackBatches,
   isWalkingSkeleton,
   runningStageInstanceId,
   stream,
   onViewLiveOutput,
+  onAddressFeedback,
 }: UnitCardProps) {
   useTick(unit.state === 'RUNNING' || unit.state === 'MERGING');
   const styles = STATE_STYLES[unit.state];
@@ -157,11 +221,113 @@ function UnitCard({
           &#9203; {unit.blockedOn}
         </p>
       )}
+      {unit.integrationOwner && (
+        <p className="mt-1.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">
+          Integration turn
+        </p>
+      )}
+      {unit.blockedReason && (
+        <p className="mt-1 text-[10px] text-muted-foreground">{unit.blockedReason}</p>
+      )}
       {unit.state === 'MERGING' && (
         <p className="mt-1.5 text-[10px] text-phase-construction">Merging back&hellip;</p>
       )}
       {unit.state === 'FAILED' && unit.failureReason && (
         <p className="mt-1.5 text-[10px] text-agent-error">&#10005; {unit.failureReason}</p>
+      )}
+
+      {prs.length > 0 && (
+        <div className="mt-2 space-y-1 border-t pt-2">
+          {prs.map((pr) => (
+            <div
+              key={`${pr.repository}:${pr.number ?? 'unchanged'}`}
+              className="flex min-w-0 items-center gap-2 text-[10px]"
+            >
+              <GitPullRequest className="h-3 w-3 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate" title={pr.repository}>
+                {pr.repository}
+              </span>
+              <span
+                className={cn(
+                  'shrink-0 font-medium',
+                  pr.state === 'MERGED'
+                    ? 'text-agent-success'
+                    : pr.state === 'CONFLICTED' ||
+                        pr.state === 'FAILED' ||
+                        pr.state === 'CLOSED' ||
+                        pr.state === 'PARTIALLY_MERGED'
+                      ? 'text-agent-error'
+                      : 'text-muted-foreground',
+                )}
+              >
+                {pr.state.toLowerCase().replaceAll('_', ' ')}
+              </span>
+              {pr.commentCount > 0 && (
+                <span className="flex shrink-0 items-center gap-0.5 text-muted-foreground">
+                  <MessageSquare className="h-3 w-3" />
+                  {pr.commentCount}
+                </span>
+              )}
+              {pr.url && (
+                <a
+                  href={pr.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label={`Open ${pr.repository} pull request`}
+                  className="shrink-0 text-muted-foreground hover:text-foreground"
+                >
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {feedbackBatches.length > 0 && (
+        <div className="mt-2 space-y-1 border-t pt-2 text-[10px]">
+          {feedbackBatches.slice(-2).map((batch) => (
+            <details key={batch.batchId} className="group">
+              <summary className="flex cursor-pointer list-none items-start gap-1.5">
+                {batch.state === 'SUCCEEDED' ? (
+                  <CheckCircle2 className="mt-px h-3 w-3 shrink-0 text-agent-success" />
+                ) : batch.state === 'FAILED' ? (
+                  <TriangleAlert className="mt-px h-3 w-3 shrink-0 text-agent-error" />
+                ) : (
+                  <Loader2 className="mt-px h-3 w-3 shrink-0 animate-spin text-agent-running" />
+                )}
+                <span className="min-w-0 text-muted-foreground">
+                  {batch.comments.length} comment{batch.comments.length === 1 ? '' : 's'} ·{' '}
+                  {batch.state.toLowerCase()}
+                  {batch.commitSha ? ` · ${batch.commitSha.slice(0, 8)}` : ''}
+                </span>
+              </summary>
+              {(batch.output ||
+                batch.changedFiles?.length ||
+                batch.verification ||
+                batch.failureReason) && (
+                <div className="ml-4 mt-1 space-y-1 border-l pl-2 text-muted-foreground">
+                  {batch.output && (
+                    <p className="whitespace-pre-wrap break-words">{batch.output}</p>
+                  )}
+                  {batch.changedFiles && batch.changedFiles.length > 0 && (
+                    <p>
+                      <span className="font-medium text-foreground/80">Changed:</span>{' '}
+                      {batch.changedFiles.join(', ')}
+                    </p>
+                  )}
+                  {batch.verification && (
+                    <p>
+                      <span className="font-medium text-foreground/80">Verification:</span>{' '}
+                      {batch.verification}
+                    </p>
+                  )}
+                  {batch.failureReason && <p className="text-agent-error">{batch.failureReason}</p>}
+                </div>
+              )}
+            </details>
+          ))}
+        </div>
       )}
 
       {showStream && (
@@ -182,6 +348,18 @@ function UnitCard({
           View live output
         </button>
       )}
+      {prs.some((pr) => pr.state !== 'UNCHANGED' && pr.state !== 'CLOSED') && onAddressFeedback && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => onAddressFeedback(unit)}
+          className="mt-2 h-7 gap-1.5 px-2 text-[10px]"
+        >
+          <MessageSquare className="h-3 w-3" />
+          Address feedback
+        </Button>
+      )}
     </div>
   );
 }
@@ -194,9 +372,12 @@ export interface UnitLaneBoardViewProps {
   streamsBySlug: Record<string, string | null>;
   /** RUNNING stageInstanceId per unit slug (null when the unit isn't building). */
   runningStageBySlug: Record<string, string | null>;
+  unitPrs?: IntentUnitPr[];
+  feedbackBatches?: IntentFeedbackBatch[];
   /** Open a building lane's full output in the sidebar (per-unit, keyed by
    *  that lane's stageInstanceId — during fan-out each lane streams separately). */
   onViewLiveOutput?: (stageInstanceId: string) => void;
+  onAddressFeedback?: (unit: IntentUnit) => void;
 }
 
 export function UnitLaneBoardView({
@@ -204,13 +385,25 @@ export function UnitLaneBoardView({
   units,
   streamsBySlug,
   runningStageBySlug,
+  unitPrs = [],
+  feedbackBatches = [],
   onViewLiveOutput,
+  onAddressFeedback,
 }: UnitLaneBoardViewProps) {
-  const unitBySlug = useMemo(() => {
+  const unitByLane = useMemo(() => {
     const m = new Map<string, IntentUnit>();
-    for (const u of units) m.set(u.slug, u);
+    for (const u of units) m.set(unitLaneKey(u.sectionIndex, u.slug), u);
     return m;
   }, [units]);
+  const sections = useMemo(
+    () =>
+      [...new Set(units.map((unit) => unit.sectionIndex ?? null))].toSorted((a, b) => {
+        if (a === null) return -1;
+        if (b === null) return 1;
+        return a - b;
+      }),
+    [units],
+  );
 
   // Slugs the board actually renders — the current plan snapshot's units. The
   // backend intentionally keeps ORPHANED unit rows around after a re-promotion /
@@ -272,52 +465,76 @@ export function UnitLaneBoardView({
       <CardContent>
         {/* Horizontal scroll so many waves (or narrow/mobile widths) keep each
             column readable instead of collapsing. */}
-        <div className="overflow-x-auto">
-          <div
-            className="grid gap-4"
-            style={{
-              gridTemplateColumns: `repeat(${Math.max(waves.length, 1)}, minmax(14rem, 1fr))`,
-            }}
-          >
-            {waves.map((slugs, waveIdx) => {
-              const label =
-                waveIdx === 0
-                  ? '· runs first'
-                  : waveIdx === waves.length - 1
-                    ? '· last'
-                    : '· parallel';
-              return (
-                <div key={waveIdx}>
-                  <div className="mb-2 flex items-center gap-2">
-                    <span className="text-[11px] font-semibold">Wave {waveIdx + 1}</span>
-                    <span className="rounded-full border px-1.5 text-[9px] text-muted-foreground">
-                      {slugs.length}
-                    </span>
-                    <span className="text-[10px] text-muted-foreground">{label}</span>
-                  </div>
-                  <div className="flex flex-col gap-2">
-                    {slugs.map((slug) => {
-                      const unit = unitBySlug.get(slug);
-                      if (!unit) return null;
-                      return (
-                        <UnitCard
-                          key={slug}
-                          unit={unit}
-                          isWalkingSkeleton={unitPlan.walkingSkeleton === slug}
-                          runningStageInstanceId={runningStageBySlug[slug] ?? null}
-                          stream={streamsBySlug[slug] ?? null}
-                          onViewLiveOutput={onViewLiveOutput}
-                        />
-                      );
-                    })}
-                    {slugs.length === 0 && (
-                      <p className="py-2 text-[11px] text-muted-foreground">No units</p>
-                    )}
-                  </div>
+        <div className="space-y-5">
+          {sections.map((sectionIndex) => (
+            <section key={sectionIndex ?? 'legacy'}>
+              {sections.length > 1 && (
+                <h3 className="mb-2 text-xs font-semibold">
+                  {sectionIndex === null ? 'Legacy section' : `Section ${sectionIndex}`}
+                </h3>
+              )}
+              <div className="overflow-x-auto">
+                <div
+                  className="grid gap-4"
+                  style={{
+                    gridTemplateColumns: `repeat(${Math.max(waves.length, 1)}, minmax(14rem, 1fr))`,
+                  }}
+                >
+                  {waves.map((slugs, waveIdx) => {
+                    const label =
+                      waveIdx === 0
+                        ? '· runs first'
+                        : waveIdx === waves.length - 1
+                          ? '· last'
+                          : '· parallel';
+                    return (
+                      <div key={waveIdx}>
+                        <div className="mb-2 flex items-center gap-2">
+                          <span className="text-[11px] font-semibold">Wave {waveIdx + 1}</span>
+                          <span className="rounded-full border px-1.5 text-[9px] text-muted-foreground">
+                            {slugs.length}
+                          </span>
+                          <span className="text-[10px] text-muted-foreground">{label}</span>
+                        </div>
+                        <div className="flex flex-col gap-2">
+                          {slugs.map((slug) => {
+                            const key = unitLaneKey(sectionIndex, slug);
+                            const unit = unitByLane.get(key);
+                            if (!unit) return null;
+                            return (
+                              <UnitCard
+                                key={key}
+                                unit={unit}
+                                prs={unitPrs.filter(
+                                  (pr) =>
+                                    pr.sectionIndex === sectionIndex && pr.unitSlug === unit.slug,
+                                )}
+                                feedbackBatches={feedbackBatches.filter(
+                                  (batch) =>
+                                    batch.sectionIndex === sectionIndex &&
+                                    batch.unitSlug === unit.slug,
+                                )}
+                                isWalkingSkeleton={unitPlan.walkingSkeleton === slug}
+                                runningStageInstanceId={
+                                  runningStageBySlug[key] ?? runningStageBySlug[slug] ?? null
+                                }
+                                stream={streamsBySlug[key] ?? streamsBySlug[slug] ?? null}
+                                onViewLiveOutput={onViewLiveOutput}
+                                onAddressFeedback={onAddressFeedback}
+                              />
+                            );
+                          })}
+                          {slugs.length === 0 && (
+                            <p className="py-2 text-[11px] text-muted-foreground">No units</p>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-              );
-            })}
-          </div>
+              </div>
+            </section>
+          ))}
         </div>
       </CardContent>
     </Card>
@@ -368,8 +585,9 @@ export function UnitLaneBoard({
   const { detail, stageRows, outputBuffers, ensureOutputs, outputVersion } = useIntent();
   const unitPlan = detail?.unitPlan ?? null;
   const units = useMemo(() => detail?.units ?? [], [detail?.units]);
-
-  const fanoutActive = useMemo(() => isFanoutActive(detail), [detail]);
+  const unitPrs = useMemo(() => detail?.unitPrs ?? [], [detail?.unitPrs]);
+  const feedbackBatches = useMemo(() => detail?.feedbackBatches ?? [], [detail?.feedbackBatches]);
+  const [reviewUnit, setReviewUnit] = useState<IntentUnit | null>(null);
 
   // Resolve each unit's RUNNING stage instance. findLast + the stageInstanceId
   // guard is the safer default if retries or duplicate live rows appear. Keys on
@@ -378,9 +596,13 @@ export function UnitLaneBoard({
     const out: Record<string, string | null> = {};
     for (const u of units) {
       const row = (stageRows as IntentStageRow[]).findLast(
-        (r) => r.unitSlug === u.slug && r.state === 'RUNNING' && r.stageInstanceId,
+        (r) =>
+          r.unitSlug === u.slug &&
+          (r.sectionIndex ?? null) === (u.sectionIndex ?? null) &&
+          r.state === 'RUNNING' &&
+          r.stageInstanceId,
       );
-      out[u.slug] = row?.stageInstanceId ?? null;
+      out[unitLaneKey(u.sectionIndex, u.slug)] = row?.stageInstanceId ?? null;
     }
     return out;
   }, [units, stageRows]);
@@ -404,18 +626,167 @@ export function UnitLaneBoard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runningStageBySlug, outputBuffers, outputVersion]);
 
-  // Show the board only while fan-out is active: from gate approval (unitPlan is
-  // set earlier, at promotion) until fan-in, when the single-stage Running card
-  // takes over again.
-  if (!unitPlan || !fanoutActive) return null;
+  // Keep the complete unit review history visible after fan-in. IntentView
+  // still uses isFanoutActive to decide whether the single running-stage card
+  // should yield to this board while lanes are live.
+  if (!unitPlan || units.length === 0) return null;
 
   return (
-    <UnitLaneBoardView
-      unitPlan={unitPlan}
-      units={units}
-      streamsBySlug={streamsBySlug}
-      runningStageBySlug={runningStageBySlug}
-      onViewLiveOutput={onViewLiveOutput}
-    />
+    <>
+      <UnitLaneBoardView
+        unitPlan={unitPlan}
+        units={units}
+        streamsBySlug={streamsBySlug}
+        runningStageBySlug={runningStageBySlug}
+        unitPrs={unitPrs}
+        feedbackBatches={feedbackBatches}
+        onViewLiveOutput={onViewLiveOutput}
+        onAddressFeedback={setReviewUnit}
+      />
+      <UnitReviewDrawer unit={reviewUnit} onClose={() => setReviewUnit(null)} />
+    </>
+  );
+}
+
+function UnitReviewDrawer({ unit, onClose }: { unit: IntentUnit | null; onClose: () => void }) {
+  const { projectId, intentId } = useIntent();
+  const [comments, setComments] = useState<UnitReviewComment[]>([]);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [loading, setLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!unit || unit.sectionIndex == null) return;
+    let live = true;
+    setLoading(true);
+    setError(null);
+    setSelected(new Set());
+    intentsService
+      .unitReviewComments(projectId, intentId, unit.sectionIndex, unit.slug)
+      .then(({ comments: rows }) => {
+        if (live) setComments(rows);
+      })
+      .catch((cause: Error) => {
+        if (live) setError(cause.message);
+      })
+      .finally(() => {
+        if (live) setLoading(false);
+      });
+    return () => {
+      live = false;
+    };
+  }, [projectId, intentId, unit]);
+
+  const submit = async () => {
+    if (!unit || unit.sectionIndex == null || selected.size === 0) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await intentsService.addressUnitFeedback(
+        projectId,
+        intentId,
+        unit.sectionIndex,
+        unit.slug,
+        comments
+          .filter((comment) => selected.has(reviewCommentSelectionKey(comment)))
+          .map((comment) => ({
+            repository: comment.repository,
+            commentId: comment.id,
+          })),
+      );
+      onClose();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not queue feedback');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Sheet open={Boolean(unit)} onOpenChange={(open) => !open && onClose()}>
+      <SheetContent className="flex w-full flex-col sm:max-w-lg">
+        <SheetHeader>
+          <SheetTitle>Review feedback</SheetTitle>
+          <SheetDescription>
+            {unit ? `Section ${unit.sectionIndex} · ${unit.slug}` : ''}
+          </SheetDescription>
+        </SheetHeader>
+        <ScrollArea className="min-h-0 flex-1 pr-3">
+          {loading && (
+            <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading comments
+            </div>
+          )}
+          {!loading && comments.length === 0 && !error && (
+            <p className="py-8 text-sm text-muted-foreground">No review comments</p>
+          )}
+          <div className="space-y-2 py-2">
+            {comments.map((comment) => {
+              const key = reviewCommentSelectionKey(comment);
+              return (
+                <label
+                  key={`${key}:${comment.version}`}
+                  className={cn(
+                    'flex cursor-pointer gap-3 rounded-md border p-3',
+                    comment.previouslySelected && 'cursor-default opacity-55',
+                  )}
+                >
+                  <input
+                    type="checkbox"
+                    className="mt-1 h-4 w-4 shrink-0"
+                    checked={selected.has(key)}
+                    disabled={comment.previouslySelected}
+                    onChange={(event) =>
+                      setSelected((current) => {
+                        const next = new Set(current);
+                        if (event.target.checked) next.add(key);
+                        else next.delete(key);
+                        return next;
+                      })
+                    }
+                  />
+                  <span className="min-w-0">
+                    <span className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+                      <span className="font-medium text-foreground">
+                        {comment.user.login ?? 'Unknown'}
+                      </span>
+                      <span>{comment.repository}</span>
+                      {comment.path && (
+                        <code>
+                          {comment.path}
+                          {comment.line ? `:${comment.line}` : ''}
+                        </code>
+                      )}
+                      {comment.previouslySelected && <span>handled</span>}
+                    </span>
+                    <span className="mt-1 block whitespace-pre-wrap break-words text-sm">
+                      {comment.body}
+                    </span>
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+          {error && <p className="py-2 text-sm text-agent-error">{error}</p>}
+        </ScrollArea>
+        <SheetFooter className="pt-3">
+          <Button
+            type="button"
+            onClick={submit}
+            disabled={submitting || selected.size === 0 || selected.size > 20}
+            className="gap-2"
+          >
+            {submitting ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <MessageSquare className="h-4 w-4" />
+            )}
+            Address feedback
+          </Button>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
   );
 }

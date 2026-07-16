@@ -10,6 +10,7 @@ import { SettingsCard } from '@/components/settings/SettingsCard';
 import { ConfigStatusBadge } from '@/components/settings/ConfigStatusBadge';
 import { GitHubSourceControlCard } from '../GitHubSourceControlCard';
 import { OAuthAppConfigForm } from '../OAuthAppConfigForm';
+import { PrStrategyCard } from '../PrStrategyCard';
 
 interface Props {
   providers: TrackerProviderStatus[];
@@ -36,6 +37,7 @@ export function SourceControlTab({ providers, providersLoading, onProvidersChang
 
   return (
     <div className="space-y-6">
+      <PrStrategyCard />
       <GitHubSourceControlCard
         oauthConfigured={isConfigured(providers, 'github-issues')}
         onOAuthSaved={onProvidersChanged}

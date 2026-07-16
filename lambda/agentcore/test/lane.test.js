@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm, writeFile, readFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { initLane, mergeLane } from '../commands/lane.js';
+import { initLane, mergeLane, reconcileLane, refreshIntentWorkspace } from '../commands/lane.js';
 import { runGit, fetchOrigin } from '../git-engine.js';
 
 // WP5 lane commands against REAL git (local bare remotes via the urls seam) —
@@ -244,5 +244,50 @@ describe('merge-lane', () => {
   it('a repo-less lane merge is a successful no-op', async () => {
     const res = await mergeLane(basePayload('/nope', { repos: [] }), { store: spyStore() });
     expect(res).toMatchObject({ ok: true, merged: 'empty' });
+  });
+});
+
+describe('PR-per-unit reconciliation', () => {
+  it('self-heals a wiped lane, merges the latest intent head, and pushes the unit branch', async () => {
+    const remote = await initRemote();
+    await commitOnRemote(remote, 'aidlc/i1--s1-unit-auth', 'auth.txt', 'auth code\n');
+    await commitOnRemote(remote, 'aidlc/i1', 'sibling.txt', 'sibling code\n');
+    const ws = path.join(root, 'wiped-lane');
+    const res = await reconcileLane(basePayload(ws), {
+      store: spyStore(),
+      ensureWorkspaceSource: async ({ branch }) => {
+        await realCheckoutRepo(remote)({ branch, targetDir: ws });
+        return { restored: true, repos: ['o/r'], failed: [] };
+      },
+      urlsFor: () => ({ auth: remote, clean: 'https://github.com/o/r.git' }),
+    });
+    expect(res.ok).toBe(true);
+    expect(await readFile(path.join(ws, 'sibling.txt'), 'utf8')).toBe('sibling code\n');
+
+    const verify = await mkdtemp(path.join(root, 'verify-unit-'));
+    await git(['clone', '--branch', 'aidlc/i1--s1-unit-auth', remote, verify], root);
+    expect(await readFile(path.join(verify, 'sibling.txt'), 'utf8')).toBe('sibling code\n');
+  });
+
+  it('reports restore failure before touching a missing lane checkout', async () => {
+    const res = await reconcileLane(basePayload(path.join(root, 'missing')), {
+      store: spyStore(),
+      ensureWorkspaceSource: async () => ({ restored: false, repos: [], failed: ['o/r'] }),
+    });
+    expect(res).toMatchObject({ ok: false, reason: 'workspace_restore_failed' });
+  });
+
+  it('refreshes the intent workspace to the latest provider-merged remote head', async () => {
+    const remote = await initRemote();
+    const ws = path.join(root, 'intent-refresh');
+    await realCheckoutRepo(remote)({ branch: 'aidlc/i1', targetDir: ws });
+    await commitOnRemote(remote, 'aidlc/i1', 'provider-merge.txt', 'merged remotely\n');
+
+    const res = await refreshIntentWorkspace(basePayload(ws), {
+      ensureWorkspaceSource: async () => ({ restored: false, repos: ['o/r'], failed: [] }),
+      urlsFor: () => ({ auth: remote, clean: 'https://github.com/o/r.git' }),
+    });
+    expect(res.ok).toBe(true);
+    expect(await readFile(path.join(ws, 'provider-merge.txt'), 'utf8')).toBe('merged remotely\n');
   });
 });

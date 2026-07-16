@@ -49,7 +49,7 @@ All git operations are owned by the engine — agents never run git and never ho
 
 - Each intent works on its own branch, `aidlc/<title-slug>`, derived from the intent title.
 - The branch is created off the **base branch** — by default each repository's own default branch, overridable per repository at intent creation (see [Creating intents → Base branch](creating-intents.md#base-branch)).
-- During parallel construction, each unit of work gets a per-unit branch that the engine merges back into the intent branch.
+- During parallel construction, each unit of work gets a section-specific per-unit branch. Intent PR delivery merges it through the engine; PR-per-unit delivery opens draft unit-to-intent reviews and serializes readiness in dependency order.
 - The engine commits and pushes after every stage, so work is durable even if a run is cancelled.
 - On success, the pull/merge request opens from the intent branch onto the base branch.
 
@@ -109,4 +109,11 @@ Why nothing is removed: this is open source. Downstream forks are on their own u
 
 ## Reviews
 
-The platform opens a pull request (GitHub) or merge request (GitLab) on the bound code host when an intent's execution succeeds. Reviews happen on the platform through per-stage verification and human gates. On read-only v1 projects, review results that were posted back as comments on the pull/merge request remain visible there.
+The platform supports two delivery strategies:
+
+- **Intent PR** — completed unit branches are engine-merged into the intent branch. After shared stages pass, one pull request (GitHub) or merge request (GitLab) opens from intent to base.
+- **PR per unit** — every changed repository gets a draft unit-to-intent PR/MR. Draft reviews may happen concurrently, but the platform promotes one dependency-ready unit at a time after reconciling it with the latest intent branch. The final intent-to-base PR/MR still opens after all units and shared stages complete.
+
+In the intent view, each unit card shows repository-specific review state and links. Project members can open **Address feedback**, select up to 20 current human-authored comments, and queue a targeted revision. The backend refetches selected comments by provider ID, records their versions, and ignores provider comments unless a member explicitly selects them. The agent does not automatically resolve discussion threads.
+
+If a unit PR closes without merging, or only part of a multi-repository unit merges, the run enters halt-and-ask with retry, skip, and abort outcomes. Already merged work is preserved.

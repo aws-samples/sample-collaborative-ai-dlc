@@ -81,6 +81,39 @@ import { pruneOutputArtifactsForUnit } from '../../shared/unit-kind-pruning.js';
 // The typed-extraction registry gates the platform-injected graph-coverage
 // sensor: only stages that produce a registered structured artifact get it.
 import { REGISTRY } from '../../shared/artifact-extractors.js';
+import { getProvider } from '../../shared/git-providers.js';
+
+export const verifyReviewTargets = async ({ targets = [], gitProvider, gitToken }) => {
+  const provider = getProvider(gitProvider || 'github');
+  const results = [];
+  for (const target of targets) {
+    let status = await provider.getPullRequestStatus(
+      { token: gitToken },
+      target.repoId,
+      target.number,
+    );
+    // Feedback revisions must never race a provider-side merge button while
+    // the agent is about to push a new head.
+    if (status?.state === 'open' && !status.draft) {
+      status = await provider.setPullRequestDraft(
+        { token: gitToken },
+        target.repoId,
+        target.number,
+        true,
+      );
+    }
+    results.push({
+      repoId: target.repoId,
+      number: target.number,
+      expectedHeadSha: target.headSha ?? null,
+      expectedTargetSha: target.targetSha ?? null,
+      status,
+      headMoved: Boolean(target.headSha && status?.headSha !== target.headSha),
+      targetMoved: Boolean(target.targetSha && status?.targetSha !== target.targetSha),
+    });
+  }
+  return results;
+};
 
 // Package-manager caches and scratch space belong on container-local /tmp,
 // NEVER on the 1 GiB session mount (AgentCore offers no larger size). The
@@ -320,6 +353,7 @@ const runReviewer = async ({
   intentId,
   stageInstanceId,
   unitSlug,
+  sectionIndex,
   publish,
   ids,
 }) => {
@@ -331,6 +365,7 @@ const runReviewer = async ({
     projectId,
     stageInstanceId,
     unitSlug,
+    sectionIndex,
     role: 'reviewer',
     // Trusted reviewer identity: the bridge stamps THIS name on the verdict row
     // (sensorId `reviewer:<name>`), never the agent's self-report — a hallucinated
@@ -376,6 +411,7 @@ const runReviewer = async ({
       type: 'v2.review.running',
       stageInstanceId,
       unitSlug,
+      sectionIndex,
       actor: reviewerAgent,
       summary: `Reviewer ${reviewerAgent} checking ${stage.stageId}`,
     })
@@ -406,6 +442,7 @@ const runReviewer = async ({
       executionId,
       stageInstanceId,
       unitSlug,
+      sectionIndex,
       sensorId: `reviewer:${reviewerAgent}`,
       kind: 'reviewer',
       severity: 'advisory',
@@ -418,6 +455,7 @@ const runReviewer = async ({
       noteType: 'v2.review.inconclusive',
       stageInstanceId,
       unitSlug,
+      sectionIndex,
       summary: `Reviewer ${reviewerAgent} did not submit a verdict`,
       sensorRunId: row.sensorRunId,
     });
@@ -455,6 +493,7 @@ const runStageSensors = async ({
   stage,
   stageInstanceId,
   unitSlug = null,
+  sectionIndex = null,
   executionId,
   projectId,
   intentId,
@@ -482,6 +521,7 @@ const runStageSensors = async ({
       stage,
       stageInstanceId,
       unitSlug,
+      sectionIndex,
       executionId,
       loadBlockScript,
       workspaceDir,
@@ -521,6 +561,7 @@ const runSensorsWithGraph = async ({
   stage,
   stageInstanceId,
   unitSlug = null,
+  sectionIndex = null,
   executionId,
   loadBlockScript,
   workspaceDir,
@@ -556,6 +597,7 @@ const runSensorsWithGraph = async ({
         executionId,
         stageInstanceId,
         unitSlug,
+        sectionIndex,
         sensorId: v.sensorId,
         kind: v.kind,
         severity: v.severity,
@@ -568,6 +610,7 @@ const runSensorsWithGraph = async ({
       action: 'agent.note',
       stageInstanceId,
       unitSlug,
+      sectionIndex,
       note: `sensor ${v.sensorId}: ${v.result}${v.held ? ' (blocking)' : ''}`,
       kind: 'sensor',
     });
@@ -584,6 +627,7 @@ const runSensorsWithGraph = async ({
           type: 'v2.sensor.flagged',
           stageInstanceId,
           unitSlug,
+          sectionIndex,
           actor: 'agentcore',
           summary: `Sensor ${v.sensorId} (${v.severity}) → ${v.result}${
             v.held ? ' — blocking' : ''
@@ -843,12 +887,20 @@ export const runStage = async (
     // human's answer to `resumeFrom` (a humanTaskId) instead of running fresh. The
     // session's persistent /mnt/workspace mount restores the checkout + CLI store.
     resumeFrom = null,
+    // Authenticated provider review selected in the AI-DLC UI. This is review
+    // DATA, never instructions from a trusted actor: the orchestrator supplies
+    // a delimited, scope-constrained message and asks this stage to revise its
+    // own unit branch. Prefer the prior conversation; recover fresh if gone.
+    reviewFeedback = null,
     // Unit lane (docs/v2-parallel.md WP4): the unit-of-work slug this stage
     // instance is scoped to. REQUIRED for `forEach: unit-of-work` stages (the
     // orchestrator dispatches one instance per unit), FORBIDDEN otherwise. The
     // slug joins the stage-instance id, every row/event/broadcast this run
     // writes, the commit message, and the prompt's unit-scope block.
     unitSlug = null,
+    // Section-aware lane identity. Null only for once-per-workflow stages and
+    // legacy dispatches created before section-specific rows existed.
+    sectionIndex = null,
     // Async invocation (run-stage-start): the durable callback id the orchestrator
     // is suspended on for this stage attempt. Stamped on the STAGE row for
     // traceability/operator recovery; the callback itself is completed by
@@ -903,9 +955,16 @@ export const runStage = async (
     // Resolve `${VAR}` MCP secret refs from SSM into a flat env map (tier-scoped,
     // fail-closed). Injected for tests.
     resolveMcpSecrets = defaultResolveMcpSecrets,
+    verifyReviewTargets: recheckReviewTargets = verifyReviewTargets,
   } = deps;
 
   const now = () => clock();
+  const reviewFeedbackPrompt =
+    typeof reviewFeedback === 'string' ? reviewFeedback : reviewFeedback?.prompt;
+  const reviewFeedbackTargets =
+    reviewFeedback && typeof reviewFeedback === 'object' && Array.isArray(reviewFeedback.targets)
+      ? reviewFeedback.targets
+      : [];
   // Publish a process event on the intent's realtime channel. Best-effort: the
   // DynamoDB write is the source of truth, so a failed broadcast must never break
   // a stage (mirrors the process bridge's broadcast contract).
@@ -925,6 +984,7 @@ export const runStage = async (
         type,
         stageInstanceId,
         unitSlug,
+        sectionIndex,
         actor: 'agentcore',
         summary,
       })
@@ -933,6 +993,7 @@ export const runStage = async (
       action,
       stageInstanceId,
       unitSlug,
+      sectionIndex,
       summary,
       ...payload,
     };
@@ -958,6 +1019,7 @@ export const runStage = async (
         type: 'v2.stage.failed',
         stageInstanceId,
         unitSlug,
+        sectionIndex,
         actor: 'agentcore',
         summary: `${reason}${detail ? `: ${detail}` : ''}`,
       })
@@ -967,6 +1029,7 @@ export const runStage = async (
       stageInstanceId,
       stageId,
       unitSlug,
+      sectionIndex,
       state: 'FAILED',
       reason,
     });
@@ -990,6 +1053,7 @@ export const runStage = async (
         type: 'v2.workspace.disk_low',
         stageInstanceId,
         unitSlug,
+        sectionIndex,
         actor: 'agentcore',
         summary,
       })
@@ -1060,7 +1124,7 @@ export const runStage = async (
   // The stage-instance id gains the unit dimension on a lane run — one
   // deterministic instance per (stage, unit), replay-stable across attempts.
   const stageInstanceId = unitSlug
-    ? planStageInstanceId(plan.namespace, stageId, unitSlug)
+    ? planStageInstanceId(plan.namespace, stageId, unitSlug, sectionIndex)
     : stage.stageInstanceId;
 
   // A lane run must reference a unit the promoted UNITPLAN actually knows —
@@ -1096,6 +1160,7 @@ export const runStage = async (
           type: 'v2.stage.contract_pruned',
           stageInstanceId,
           unitSlug,
+          sectionIndex,
           actor: 'agentcore',
           summary: `Output contract pruned for unit ${unitSlug} (kind "${unit.kind}"): ${prunedContract.pruned.join(', ')} do(es) not apply`,
         })
@@ -1121,7 +1186,7 @@ export const runStage = async (
   // (unreachable/auth) fails the stage rather than letting it proceed on nothing.
   let sourceRestored = false;
   {
-    if (resumeFrom && repos.length > 0) {
+    if ((resumeFrom || reviewFeedback) && repos.length > 0) {
       await emitLifecycleEvent({
         type: 'v2.workspace.restoring',
         summary: 'Restoring workspace...',
@@ -1180,6 +1245,7 @@ export const runStage = async (
           type: 'v2.workspace.redirect_failed',
           stageInstanceId,
           unitSlug,
+          sectionIndex,
           actor: 'agentcore',
           summary: `node_modules off-mount redirect failed for ${failedLinks.length} dir(s) — installs will hit the 1 GiB mount (${failedLinks
             .map((l) => l.detail ?? 'unknown')
@@ -1201,36 +1267,59 @@ export const runStage = async (
   // lost with the wiped mount (D2 recoverable path): re-runs fresh with the human's
   // answer injected into the prompt so the agent does not re-ask.
   let demotedResume = false;
-  if (resumeFrom) {
+  if (resumeFrom || reviewFeedback) {
     await emitLifecycleEvent({
-      type: 'v2.stage.resuming',
-      summary: 'Resuming agent session...',
+      type: reviewFeedback ? 'v2.feedback.stage_resuming' : 'v2.stage.resuming',
+      summary: reviewFeedback
+        ? 'Addressing selected review feedback...'
+        : 'Resuming agent session...',
       stageInstanceId,
     });
-    const gate = await store.getHumanTask(executionId, resumeFrom).catch(() => null);
-    if (!gate) return fail(stageInstanceId, 'gate_not_found', resumeFrom);
-    if (gate.status === 'pending') return fail(stageInstanceId, 'gate_not_answered', resumeFrom);
+    const gate = resumeFrom
+      ? await store.getHumanTask(executionId, resumeFrom).catch(() => null)
+      : null;
+    if (resumeFrom && !gate) return fail(stageInstanceId, 'gate_not_found', resumeFrom);
+    if (resumeFrom && gate.status === 'pending')
+      return fail(stageInstanceId, 'gate_not_answered', resumeFrom);
     const row = await store.getStage(executionId, stageInstanceId).catch(() => null);
     cli = row?.cli ?? null;
     const priorSessionId = row?.cliSessionId ?? null;
-    if (!cli || !priorSessionId)
+    if ((!cli || !priorSessionId) && !reviewFeedback) {
       return fail(stageInstanceId, 'resume_no_session', `stage has no persisted CLI session`);
-    if (!availableClis.includes(cli))
-      return fail(stageInstanceId, 'no_cli', `resume CLI "${cli}" not installed`);
-    resumeAnswer = formatResumeAnswer(gate);
+    }
+    if (cli && !availableClis.includes(cli)) {
+      if (!reviewFeedback)
+        return fail(stageInstanceId, 'no_cli', `resume CLI "${cli}" not installed`);
+      cli = null;
+    }
+    resumeAnswer = reviewFeedbackPrompt || formatResumeAnswer(gate);
+    if (!cli || !priorSessionId) {
+      demotedResume = true;
+      cli = selectCli({ requested: requestedCli, availableClis });
+      if (!cli) {
+        return fail(
+          stageInstanceId,
+          'no_cli',
+          `review revision has no usable CLI (requested: ${requestedCli || 'default'})`,
+        );
+      }
+      cliSessionId = cli === 'claude' ? ids() : null;
+    } else {
+      cliSessionId = priorSessionId;
+    }
 
     // Did the parked conversation survive the mount? Both CLIs keep it on
     // /mnt/workspace (Claude JSONL under CLAUDE_CONFIG_DIR, Kiro SQLite under
     // V2_KIRO_STORE_DIR), so a re-cloned source means the conversation is gone too.
     // Kiro additionally copies its store mount→local each run; a failed restore is
     // the same signal even if the source happened to survive.
-    let conversationLost = sourceRestored;
-    if (cli === 'kiro') {
+    let conversationLost = !demotedResume && sourceRestored;
+    if (!demotedResume && cli === 'kiro') {
       const kiroRestored = await restoreKiroStore({ env }).catch(() => false);
       if (!kiroRestored && resolveKiroStore(env)) conversationLost = true;
       else if (!kiroRestored)
         console.error(`[run-stage] kiro store not restored for resume ${stageInstanceId}`);
-    } else if (cli === 'opencode') {
+    } else if (!demotedResume && cli === 'opencode') {
       const storePresent = await hasOpenCodeStore({ env }).catch(() => false);
       if (!storePresent && resolveOpenCodeStore(env)) conversationLost = true;
     }
@@ -1241,8 +1330,8 @@ export const runStage = async (
       // UI can flag a stale project. Inside it — a routine redeploy wipe — re-run
       // the stage FRESH with the answered Q&A injected, so no work is stranded and
       // the agent does not re-ask. (Was a blind resume_store_lost hard-fail before.)
-      const age = gateAgeMs(gate, now());
-      if (age !== null && age >= FOURTEEN_DAYS_MS) {
+      const age = gate ? gateAgeMs(gate, now()) : null;
+      if (!reviewFeedback && age !== null && age >= FOURTEEN_DAYS_MS) {
         return fail(
           stageInstanceId,
           'resume_store_expired',
@@ -1258,12 +1347,11 @@ export const runStage = async (
           type: 'v2.stage.recovered',
           stageInstanceId,
           unitSlug,
+          sectionIndex,
           actor: 'agentcore',
           summary: `Parked conversation lost with the wiped workspace; re-running ${stageLabel} fresh with the answer injected`,
         })
         .catch(() => {});
-    } else {
-      cliSessionId = priorSessionId;
     }
   } else {
     cli = selectCli({ requested: requestedCli, availableClis });
@@ -1280,7 +1368,7 @@ export const runStage = async (
   }
 
   // A fresh conversation is spawned for a plain fresh run OR a demoted resume.
-  const freshRun = !resumeFrom || demotedResume;
+  const freshRun = (!resumeFrom && !reviewFeedback) || demotedResume;
 
   // Resolve the model now that `cli` is known: the agent's tier row (tier-models
   // config) wins, then the flat project/global default model, then the agent
@@ -1295,6 +1383,7 @@ export const runStage = async (
     projectId,
     stageInstanceId,
     unitSlug,
+    sectionIndex,
     role: 'author',
     model,
   };
@@ -1306,7 +1395,7 @@ export const runStage = async (
   // "stage duration resets when a question is answered" bug. A fresh run (or a
   // demoted resume, which genuinely re-runs the stage from scratch) rebuilds
   // the row, carrying forward the attempt counter a rewind reset may have set.
-  if (resumeFrom && !demotedResume) {
+  if ((resumeFrom || reviewFeedback) && !demotedResume) {
     await store.resumeStageRow({
       executionId,
       stageInstanceId,
@@ -1322,6 +1411,7 @@ export const runStage = async (
       stageInstanceId,
       stageId,
       unitSlug,
+      sectionIndex,
       phase: stage.phase,
       state: 'RUNNING',
       attempt: priorRow?.attempt ?? 0,
@@ -1339,12 +1429,21 @@ export const runStage = async (
   });
   await store.appendEvent({
     executionId,
-    type: resumeFrom && !demotedResume ? 'v2.stage.resumed' : 'v2.stage.running',
+    type:
+      reviewFeedback && !demotedResume
+        ? 'v2.feedback.stage_resumed'
+        : resumeFrom && !demotedResume
+          ? 'v2.stage.resumed'
+          : 'v2.stage.running',
     stageInstanceId,
     unitSlug,
+    sectionIndex,
     actor: 'agentcore',
-    summary:
-      resumeFrom && !demotedResume ? `Stage ${stageLabel} resumed` : `Stage ${stageLabel} running`,
+    summary: reviewFeedback
+      ? `Stage ${stageLabel} addressing selected review feedback`
+      : resumeFrom && !demotedResume
+        ? `Stage ${stageLabel} resumed`
+        : `Stage ${stageLabel} running`,
   });
   // Broadcast the stage start + the execution's new phase/stage pointer so the
   // UI reflects the advance in real time.
@@ -1353,6 +1452,7 @@ export const runStage = async (
     stageInstanceId,
     stageId,
     unitSlug,
+    sectionIndex,
     phase: stage.phase,
     state: 'RUNNING',
   });
@@ -1374,12 +1474,14 @@ export const runStage = async (
         executionId,
         stageInstanceId,
         unitSlug,
+        sectionIndex,
         metrics: { agentLaunchMs },
       });
       await publish({
         action: 'agent.metric',
         stageInstanceId,
         unitSlug,
+        sectionIndex,
         metricId: row.metricId,
         metrics: { agentLaunchMs },
       });
@@ -1605,6 +1707,7 @@ export const runStage = async (
         executionId,
         stageInstanceId,
         unitSlug,
+        sectionIndex,
         metrics: {
           promptBytes: Buffer.byteLength(prompt, 'utf8'),
           compiledContextBytes: Buffer.byteLength(compiledContext ?? '', 'utf8'),
@@ -1662,6 +1765,7 @@ export const runStage = async (
           executionId,
           stageInstanceId,
           unitSlug,
+          sectionIndex,
           kind: 'stdout',
           content,
           display,
@@ -1670,6 +1774,7 @@ export const runStage = async (
           action: 'agent.output',
           stageInstanceId,
           unitSlug,
+          sectionIndex,
           seq: row.seq,
           kind: 'stdout',
           content,
@@ -1791,6 +1896,7 @@ export const runStage = async (
           executionId,
           stageInstanceId,
           unitSlug,
+          sectionIndex,
           metrics: { credits },
           resolvedModel: model ?? null,
           creditRate,
@@ -1801,6 +1907,7 @@ export const runStage = async (
           action: 'agent.metric',
           stageInstanceId,
           unitSlug,
+          sectionIndex,
           metricId: row.metricId,
           metrics: { credits },
         });
@@ -1850,6 +1957,55 @@ export const runStage = async (
   // + ssm:GetParameter/PutParameter + the connection lookup), mirroring the
   // orchestrator wiring. Common case (stage < 2h) is already covered by the
   // dispatch-time refresh.
+  let reviewTargetCheck = null;
+  if (reviewFeedbackTargets.length > 0) {
+    try {
+      reviewTargetCheck = await recheckReviewTargets({
+        targets: reviewFeedbackTargets,
+        gitProvider,
+        gitToken,
+      });
+      const changed = reviewTargetCheck.filter(
+        (row) =>
+          row.headMoved ||
+          row.targetMoved ||
+          row.status?.state === 'merged' ||
+          row.status?.state === 'closed',
+      );
+      if (changed.length > 0) {
+        await store
+          .appendEvent({
+            executionId,
+            type: 'v2.feedback.provider_moved_before_push',
+            stageInstanceId,
+            unitSlug,
+            sectionIndex,
+            actor: 'agentcore',
+            summary: changed
+              .map(
+                (row) =>
+                  `${row.repoId} (${row.status?.state ?? 'unknown'}${
+                    row.headMoved ? ', head moved' : ''
+                  }${row.targetMoved ? ', target moved' : ''})`,
+              )
+              .join('; '),
+          })
+          .catch(() => {});
+      }
+    } catch (error) {
+      await store
+        .appendEvent({
+          executionId,
+          type: 'v2.feedback.provider_recheck_failed',
+          stageInstanceId,
+          unitSlug,
+          sectionIndex,
+          actor: 'agentcore',
+          summary: error?.message ?? String(error),
+        })
+        .catch(() => {});
+    }
+  }
   const gitResult = await commitAndPushAll({
     repos,
     workspaceDir,
@@ -1884,6 +2040,7 @@ export const runStage = async (
         type: gitResult.ok ? 'v2.git.pushed' : 'v2.git.push_failed',
         stageInstanceId,
         unitSlug,
+        sectionIndex,
         actor: 'agentcore',
         summary: gitSummary,
       })
@@ -1897,6 +2054,7 @@ export const runStage = async (
         noteType: 'v2.git.push_failed',
         stageInstanceId,
         unitSlug,
+        sectionIndex,
         summary: gitSummary,
       });
     }
@@ -1931,6 +2089,7 @@ export const runStage = async (
           type: 'v2.stage.note',
           stageInstanceId,
           unitSlug,
+          sectionIndex,
           actor: 'agentcore',
           summary: `Kiro exited ${exitCode} with an empty final message after completing work; treated as success (ACP empty-completion).`,
         })
@@ -1959,6 +2118,7 @@ export const runStage = async (
       type: 'v2.stage.parked',
       stageInstanceId,
       unitSlug,
+      sectionIndex,
       actor: 'agentcore',
       summary: `Stage ${stageLabel} parked on question ${parked.humanTaskId}`,
     });
@@ -1967,6 +2127,7 @@ export const runStage = async (
       stageInstanceId,
       stageId,
       unitSlug,
+      sectionIndex,
       state: 'WAITING_FOR_HUMAN',
     });
     return {
@@ -1974,6 +2135,7 @@ export const runStage = async (
       state: 'WAITING_FOR_HUMAN',
       stageInstanceId,
       unitSlug,
+      sectionIndex,
       humanTaskId: parked.humanTaskId,
       cliSessionId,
       cli,
@@ -2031,6 +2193,7 @@ export const runStage = async (
       stage,
       stageInstanceId,
       unitSlug,
+      sectionIndex,
       executionId,
       projectId,
       intentId,
@@ -2088,6 +2251,7 @@ export const runStage = async (
         intentId,
         stageInstanceId,
         unitSlug,
+        sectionIndex,
         publish,
         ids,
       }).catch(async (e) => {
@@ -2097,6 +2261,7 @@ export const runStage = async (
             type: 'v2.review.failed',
             stageInstanceId,
             unitSlug,
+            sectionIndex,
             actor: reviewerAgent,
             summary: `Reviewer ${reviewerAgent} failed: ${e.message}`,
           })
@@ -2152,12 +2317,36 @@ export const runStage = async (
     type: 'v2.stage.succeeded',
     stageInstanceId,
     unitSlug,
+    sectionIndex,
     actor: 'agentcore',
     summary: `Stage ${stageLabel} succeeded`,
     payloadRef: now(),
   });
-  await publish({ action: 'agent.stage', stageInstanceId, stageId, unitSlug, state: 'SUCCEEDED' });
-  return { ok: true, state: 'SUCCEEDED', stageInstanceId, unitSlug, cli };
+  await publish({
+    action: 'agent.stage',
+    stageInstanceId,
+    stageId,
+    unitSlug,
+    sectionIndex,
+    state: 'SUCCEEDED',
+  });
+  const changedFiles = [
+    ...new Set(gitResult.results.flatMap((result) => result.files ?? [])),
+  ].toSorted();
+  const commitSha = gitResult.results.find((result) => result.committed && result.sha)?.sha ?? null;
+  return {
+    ok: true,
+    state: 'SUCCEEDED',
+    stageInstanceId,
+    unitSlug,
+    sectionIndex,
+    cli,
+    changedFiles,
+    commitSha,
+    verification:
+      withPlatformSensors(stage).length > 0 ? 'Stage sensors passed' : 'Stage completed',
+    reviewTargetCheck,
+  };
 };
 
 // Exposed for unit tests (pure helpers; the runStage flow is integration-tested).

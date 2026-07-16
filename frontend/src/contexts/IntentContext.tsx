@@ -47,6 +47,7 @@ export interface IntentStageRow {
   stageInstanceId: string | null;
   /** Unit lane this instance belongs to; null for once-per-workflow stages. */
   unitSlug: string | null;
+  sectionIndex?: number | null;
   runtimeError: string | null;
   startedAt: string | null;
   completedAt: string | null;
@@ -476,6 +477,7 @@ export function IntentProvider({
             humanTaskId: evt.humanTaskId!,
             stageInstanceId: evt.stageInstanceId ?? null,
             unitSlug: evt.unitSlug ?? null,
+            sectionIndex: evt.sectionIndex ?? null,
             kind:
               evt.kind === 'approval' || evt.kind === 'review-verdict' || evt.kind === 'validation'
                 ? evt.kind
@@ -509,6 +511,7 @@ export function IntentProvider({
           seq,
           stageInstanceId: evt.stageInstanceId ?? null,
           unitSlug: evt.unitSlug ?? null,
+          sectionIndex: evt.sectionIndex ?? null,
           kind: evt.kind ?? 'stdout',
           content: evt.content,
           timestamp: new Date().toISOString(),
@@ -544,7 +547,9 @@ export function IntentProvider({
         evt.action === 'agent.metric' ||
         evt.action === 'agent.steering' ||
         evt.action === 'agent.note' ||
-        evt.action === 'agent.unit'
+        evt.action === 'agent.unit' ||
+        evt.action === 'agent.unit-pr' ||
+        evt.action === 'agent.feedback'
       ) {
         scheduleLoad();
       }
@@ -682,6 +687,7 @@ export function IntentProvider({
             state: 'PENDING' as StageState,
             stageInstanceId: null,
             unitSlug: null,
+            sectionIndex: null,
             runtimeError: null,
             startedAt: null,
             completedAt: null,
@@ -704,6 +710,7 @@ export function IntentProvider({
         state: row.state,
         stageInstanceId: row.stageInstanceId,
         unitSlug: row.unitSlug ?? null,
+        sectionIndex: row.sectionIndex ?? null,
         runtimeError: row.runtimeError ?? null,
         startedAt: row.startedAt ?? null,
         completedAt: row.completedAt ?? null,
@@ -728,6 +735,7 @@ export function IntentProvider({
         state: s.state,
         stageInstanceId: s.stageInstanceId,
         unitSlug: s.unitSlug ?? null,
+        sectionIndex: s.sectionIndex ?? null,
         runtimeError: s.runtimeError ?? null,
         startedAt: s.startedAt ?? null,
         completedAt: s.completedAt ?? null,

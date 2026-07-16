@@ -47,6 +47,7 @@ The first platform admin is bootstrapped via the CLI during [setup](../getting-s
 - **Runtime** — the project's execution profile. A badge shows the pinned workflow (default `aidlc-v2`). Settings:
   - **Park release (seconds)** — how long an agent session stays warm after parking on a human question before it is stopped (0–900, default 300). Lower values save compute; higher values make near-instant answers resume faster.
   - **Max parallel units** — concurrency cap for parallel construction lanes (0 = unbounded, limited only by the unit dependency graph).
+  - **PR strategy** — **Platform default**, **Intent PR**, or **PR per unit**. Existing projects remain on explicit Intent PR until changed; new projects inherit the platform default.
 
 ### Members
 
@@ -60,6 +61,7 @@ Add or remove members and assign their project role (owner / admin / member).
 ### Source Control
 
 - **Repositories** — add or remove the repositories that agents check out. Multi-repository projects are supported; at intent creation you can pick a base branch per repository.
+- **PR strategy** — select whether the project inherits the platform delivery default or explicitly uses Intent PR / PR per unit.
 
 ### Trackers
 

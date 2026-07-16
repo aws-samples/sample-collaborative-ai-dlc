@@ -258,7 +258,9 @@ const makeWorld = ({ remote, unitPlan, fileFor, beforeStage = null, conflictAgen
       );
     }
     if (payload.command === 'run-stage-start') {
-      const opName = `stage-cb-${payload.stageId}${payload.unitSlug ? `-u-${payload.unitSlug}` : ''}${payload.resumeFrom ? `-resume-${payload.resumeFrom}` : ''}`;
+      const opName = `stage-cb-${payload.stageId}${
+        payload.unitSlug ? `-s${payload.sectionIndex ?? 'legacy'}-u-${payload.unitSlug}` : ''
+      }${payload.resumeFrom ? `-resume-${payload.resumeFrom}` : ''}`;
       (async () => {
         try {
           const result = await doStageWork(payload, ws);

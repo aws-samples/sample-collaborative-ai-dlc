@@ -38,6 +38,11 @@ import { deleteIntentCascade } from '../shared/intent-deletion.js';
 import { isSafeRepo } from '../shared/repo-validation.js';
 import { validateMcpServersJson, extractSecretRefs } from '../shared/mcp-validator.js';
 import { listMcpSecrets, putMcpSecrets } from '../shared/mcp-secrets-store.js';
+import {
+  PROJECT_PR_STRATEGIES,
+  DEFAULT_PR_STRATEGY,
+  normalizeProjectPrStrategy,
+} from '../shared/pr-strategy.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
@@ -75,12 +80,9 @@ const MAX_PARK_RELEASE_SECONDS = 900;
 // this is a smell, not a need.
 const DEFAULT_MAX_PARALLEL_UNITS = 0;
 const MAX_MAX_PARALLEL_UNITS = 64;
-// PR strategy at fan-in (docs/v2-parallel.md WP6). Staged rollout: intent-pr
-// ships first; pr-per-unit / stacked are DEFINED (the UI shows them disabled)
-// but rejected here until WP8's merge fixtures unlock WP6b.
-const PR_STRATEGIES = ['intent-pr', 'pr-per-unit', 'stacked'];
-const ENABLED_PR_STRATEGIES = ['intent-pr'];
-const DEFAULT_PR_STRATEGY = 'intent-pr';
+// Project PR strategy override. `default` inherits the platform SSM setting;
+// executions snapshot the resolved strategy at intent creation.
+const DEFAULT_PROJECT_PR_STRATEGY = 'default';
 // Per-project stage-skipping override (shared/stage-skip.js): 'default'
 // inherits the platform Admin setting; enabled/disabled override it for
 // intents of THIS project. The effective value is resolved + snapshotted onto
@@ -118,23 +120,21 @@ const normalizeMaxParallelUnits = (raw) => {
   return { valid: true, value: n };
 };
 
-// Validate + normalize pr_strategy. Returns { valid, value?, error? }.
-// A KNOWN-but-disabled strategy gets a distinct error so the UI can explain
-// "coming with WP6b" instead of "unknown value".
-const normalizePrStrategy = (raw) => {
+// Validate + normalize the project-level PR strategy override.
+const normalizePrStrategy = (raw, { legacyDefault = false } = {}) => {
   if (raw === undefined || raw === null || raw === '') {
-    return { valid: true, value: DEFAULT_PR_STRATEGY };
-  }
-  if (!PR_STRATEGIES.includes(raw)) {
-    return { valid: false, error: `prStrategy must be one of: ${PR_STRATEGIES.join(', ')}` };
-  }
-  if (!ENABLED_PR_STRATEGIES.includes(raw)) {
     return {
-      valid: false,
-      error: `prStrategy "${raw}" is not enabled yet (currently available: ${ENABLED_PR_STRATEGIES.join(', ')})`,
+      valid: true,
+      value: legacyDefault ? DEFAULT_PR_STRATEGY : DEFAULT_PROJECT_PR_STRATEGY,
     };
   }
-  return { valid: true, value: raw };
+  const value = normalizeProjectPrStrategy(raw);
+  return value
+    ? { valid: true, value }
+    : {
+        valid: false,
+        error: `prStrategy must be one of: ${PROJECT_PR_STRATEGIES.join(', ')}`,
+      };
 };
 
 // Validate + normalize stage_skipping. Returns { valid, value?, error? }.
@@ -169,7 +169,11 @@ const readV2Settings = (v) => {
       getVal(v, 'max_parallel_units') === undefined || getVal(v, 'max_parallel_units') === ''
         ? DEFAULT_MAX_PARALLEL_UNITS
         : Number(getVal(v, 'max_parallel_units')),
-    prStrategy: getVal(v, 'pr_strategy') || DEFAULT_PR_STRATEGY,
+    // Missing means a pre-inheritance project. Preserve its former explicit
+    // intent-pr behavior instead of silently changing it with the platform.
+    prStrategy:
+      normalizeProjectPrStrategy(getVal(v, 'pr_strategy'), { legacyDefault: true }) ||
+      DEFAULT_PR_STRATEGY,
     stageSkipping: getVal(v, 'stage_skipping') || DEFAULT_STAGE_SKIPPING,
   };
 };
@@ -1668,7 +1672,7 @@ export const handler = async (event) => {
             .property(cardinality.single, 'max_parallel_units', String(normalizedMaxParallelUnits))
             .next();
         }
-        // PR strategy at fan-in (docs/v2-parallel.md WP6; only intent-pr enabled).
+        // PR delivery strategy: explicit override or platform inheritance.
         let normalizedPrStrategy;
         if (data.prStrategy !== undefined) {
           const prValidation = normalizePrStrategy(data.prStrategy);

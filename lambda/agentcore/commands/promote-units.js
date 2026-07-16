@@ -47,7 +47,13 @@ export const pickCurrentArtifact = (rows = []) => {
 };
 
 export const promoteUnits = async (payload, deps) => {
-  const { projectId, intentId, executionId, stageInstanceId = null } = payload ?? {};
+  const {
+    projectId,
+    intentId,
+    executionId,
+    stageInstanceId = null,
+    sectionIndexes = [null],
+  } = payload ?? {};
   const {
     store,
     openGraph,
@@ -128,7 +134,7 @@ export const promoteUnits = async (payload, deps) => {
       walkingSkeleton: existingPlan?.walkingSkeleton ?? batches[0]?.[0] ?? null,
       autonomyMode: existingPlan?.autonomyMode ?? null,
     });
-    const sync = await store.syncUnitRows({ executionId, units, batches });
+    const sync = await store.syncUnitRows({ executionId, units, batches, sectionIndexes });
 
     // 4. Traceability mirror (never blocks promotion outcome — the DDB truth
     // is already written; a mirror failure is recorded and visible).

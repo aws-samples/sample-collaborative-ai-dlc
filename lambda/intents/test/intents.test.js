@@ -11,6 +11,7 @@ import {
   PutCommand,
   QueryCommand,
   ScanCommand,
+  TransactWriteCommand,
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
 import {
@@ -50,7 +51,13 @@ const installDdbFakes = () => {
   procStore.clear();
   yjsStore.clear();
   ddbMock.on(GetCommand).callsFake((input) => {
-    const item = procStore.get(keyOf(input.Key.pk, input.Key.sk));
+    const key =
+      input.Key.pk !== undefined
+        ? keyOf(input.Key.pk, input.Key.sk)
+        : input.Key.providerInstance !== undefined
+          ? `CONN#${input.Key.userId}#${input.Key.providerInstance}`
+          : `CONN#${input.Key.userId}`;
+    const item = procStore.get(key);
     return { Item: item ? { ...item } : undefined };
   });
   ddbMock.on(PutCommand).callsFake((input) => {
@@ -62,6 +69,22 @@ const installDdbFakes = () => {
       throw e;
     }
     procStore.set(k, { ...item });
+    return {};
+  });
+  ddbMock.on(TransactWriteCommand).callsFake((input) => {
+    const puts = (input.TransactItems ?? []).map((item) => item.Put).filter(Boolean);
+    if (
+      puts.some(
+        (put) =>
+          put.ConditionExpression?.includes('attribute_not_exists') &&
+          procStore.has(keyOf(put.Item.pk, put.Item.sk)),
+      )
+    ) {
+      const error = new Error('transaction cancelled');
+      error.name = 'TransactionCanceledException';
+      throw error;
+    }
+    for (const put of puts) procStore.set(keyOf(put.Item.pk, put.Item.sk), { ...put.Item });
     return {};
   });
   ddbMock.on(QueryCommand).callsFake((input) => {
@@ -386,6 +409,35 @@ describe('POST /projects/{id}/intents', () => {
     // Punctuation/em-dash runs collapse to a single hyphen: the `--` separator
     // is reserved for unit-lane branches (`<branch>--s<k>-unit-<slug>`).
     expect(intent.branch).toBe('aidlc/add-user-login-oauth-sso');
+  });
+
+  it('resolves project PR strategy precedence and snapshots it on the intent', async () => {
+    vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', '/collab/dev');
+    ssmMock
+      .on(GetParameterCommand, { Name: '/collab/dev/pr-strategy' })
+      .resolves({ Parameter: { Value: 'pr-per-unit' } });
+    try {
+      const sub = `u-${randomUUID()}`;
+      const inheritedProject = await seedV2Project(sub);
+      await g
+        .V()
+        .has('Project', 'id', inheritedProject)
+        .property(gremlin.process.cardinality.single, 'pr_strategy', 'default')
+        .next();
+      const inherited = JSON.parse((await createIntent(sub, inheritedProject)).body);
+      expect(inherited.prStrategy).toBe('pr-per-unit');
+
+      const explicitProject = await seedV2Project(sub);
+      await g
+        .V()
+        .has('Project', 'id', explicitProject)
+        .property(gremlin.process.cardinality.single, 'pr_strategy', 'intent-pr')
+        .next();
+      const explicit = JSON.parse((await createIntent(sub, explicitProject)).body);
+      expect(explicit.prStrategy).toBe('intent-pr');
+    } finally {
+      vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', undefined);
+    }
   });
 
   it('falls back to the prompt slug when there is no title', async () => {
@@ -778,6 +830,202 @@ describe('POST /projects/{id}/intents', () => {
       .next();
     const res = await createIntent(sub, projectId);
     expect(res.statusCode).toBe(400);
+  });
+});
+
+describe('unit PR review feedback', () => {
+  const seedActiveReview = async (sub) => {
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    procStore.set(metaKey, {
+      ...procStore.get(metaKey),
+      status: 'RUNNING',
+      prStrategy: 'pr-per-unit',
+      startedBy: sub,
+      gitProvider: 'github',
+    });
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'UNIT#S1#auth'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'UNIT#S1#auth',
+      type: 'Unit',
+      executionId: intent.id,
+      sectionIndex: 1,
+      slug: 'auth',
+      state: 'PR_DRAFT',
+    });
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'UNITPR#S1#auth#owner%2Frepo'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'UNITPR#S1#auth#owner%2Frepo',
+      type: 'UnitPullRequest',
+      executionId: intent.id,
+      sectionIndex: 1,
+      unitSlug: 'auth',
+      repository: 'owner/repo',
+      provider: 'github',
+      number: 7,
+      state: 'DRAFT',
+      sourceBranch: 'unit',
+      targetBranch: 'intent',
+    });
+    procStore.set(`CONN#${sub}`, {
+      userId: sub,
+      provider: 'github',
+      parameterName: '/collab/dev/git-token/reviewer',
+    });
+    return { projectId, intent };
+  };
+
+  it('refetches selectable comments and queues an idempotent versioned batch', async () => {
+    vi.stubEnv('GIT_CONNECTIONS_TABLE', 'legacy-git-connections');
+    ssmMock
+      .on(GetParameterCommand, {
+        Name: '/collab/dev/git-token/reviewer',
+        WithDecryption: true,
+      })
+      .resolves({ Parameter: { Value: JSON.stringify({ accessToken: 'token' }) } });
+    const fetchMock = vi.fn(async (url) => {
+      const path = String(url);
+      const rows = path.includes('/pulls/7/comments')
+        ? [
+            {
+              id: 101,
+              body: 'Handle the empty state',
+              user: { login: 'reviewer', type: 'User' },
+              path: 'src/view.tsx',
+              line: 42,
+              created_at: '2026-01-01T00:00:00Z',
+              updated_at: '2026-01-01T00:01:00Z',
+            },
+            {
+              id: 102,
+              body: 'Automated note',
+              user: { login: 'ci[bot]', type: 'Bot' },
+              created_at: '2026-01-01T00:00:00Z',
+              updated_at: '2026-01-01T00:00:00Z',
+            },
+          ]
+        : [];
+      return {
+        ok: true,
+        status: 200,
+        json: async () => rows,
+        text: async () => JSON.stringify(rows),
+        headers: new Headers(),
+      };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const sub = `u-${randomUUID()}`;
+      const { projectId, intent } = await seedActiveReview(sub);
+      const path = `/projects/${projectId}/intents/${intent.id}/units/1/auth/feedback`;
+      const get = await handler({
+        httpMethod: 'GET',
+        path,
+        pathParameters: { projectId, intentId: intent.id, sectionIndex: '1', unitSlug: 'auth' },
+        ...claims(sub),
+      });
+      expect(get.statusCode).toBe(200);
+      expect(JSON.parse(get.body).comments).toHaveLength(1);
+
+      const post = await handler({
+        httpMethod: 'POST',
+        path,
+        pathParameters: { projectId, intentId: intent.id, sectionIndex: '1', unitSlug: 'auth' },
+        body: JSON.stringify({
+          comments: [{ repository: 'owner/repo', commentId: '101' }],
+        }),
+        ...claims(sub),
+      });
+      expect(post.statusCode).toBe(202);
+      const batch = JSON.parse(post.body);
+      expect(batch).toMatchObject({
+        sectionIndex: 1,
+        unitSlug: 'auth',
+        state: 'QUEUED',
+        requestedBy: sub,
+      });
+      expect(batch.comments[0]).toMatchObject({
+        id: '101',
+        repository: 'owner/repo',
+        version: '2026-01-01T00:01:00Z',
+      });
+    } finally {
+      vi.unstubAllGlobals();
+      vi.stubEnv('GIT_CONNECTIONS_TABLE', undefined);
+    }
+  });
+
+  it('atomically rejects concurrent feedback batches that overlap on a comment version', async () => {
+    vi.stubEnv('GIT_CONNECTIONS_TABLE', 'legacy-git-connections');
+    ssmMock
+      .on(GetParameterCommand, {
+        Name: '/collab/dev/git-token/reviewer',
+        WithDecryption: true,
+      })
+      .resolves({ Parameter: { Value: JSON.stringify({ accessToken: 'token' }) } });
+    const rows = [
+      {
+        id: 101,
+        body: 'Handle the empty state',
+        user: { login: 'reviewer', type: 'User' },
+        path: 'src/view.tsx',
+        line: 42,
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:01:00Z',
+      },
+      {
+        id: 103,
+        body: 'Cover the loading state',
+        user: { login: 'reviewer', type: 'User' },
+        path: 'src/view.tsx',
+        line: 51,
+        created_at: '2026-01-01T00:02:00Z',
+        updated_at: '2026-01-01T00:03:00Z',
+      },
+    ];
+    vi.stubGlobal('fetch', async (url) => ({
+      ok: true,
+      status: 200,
+      json: async () => (String(url).includes('/pulls/7/comments') ? rows : []),
+      text: async () => JSON.stringify(rows),
+      headers: new Headers(),
+    }));
+    try {
+      const sub = `u-${randomUUID()}`;
+      const { projectId, intent } = await seedActiveReview(sub);
+      const path = `/projects/${projectId}/intents/${intent.id}/units/1/auth/feedback`;
+      const request = (comments) =>
+        handler({
+          httpMethod: 'POST',
+          path,
+          pathParameters: {
+            projectId,
+            intentId: intent.id,
+            sectionIndex: '1',
+            unitSlug: 'auth',
+          },
+          body: JSON.stringify({ comments }),
+          ...claims(sub),
+        });
+      const responses = await Promise.all([
+        request([{ repository: 'owner/repo', commentId: '101' }]),
+        request([
+          { repository: 'owner/repo', commentId: '101' },
+          { repository: 'owner/repo', commentId: '103' },
+        ]),
+      ]);
+      expect(responses.map((response) => response.statusCode).toSorted()).toEqual([202, 409]);
+      const batches = [...procStore.values()].filter((row) => row.type === 'FeedbackBatch');
+      expect(batches).toHaveLength(1);
+      const claimsFor101 = [...procStore.values()].filter(
+        (row) => row.type === 'FeedbackCommentClaim' && row.commentId === '101',
+      );
+      expect(claimsFor101).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.stubEnv('GIT_CONNECTIONS_TABLE', undefined);
+    }
   });
 });
 
@@ -3639,17 +3887,25 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
     stageBlock('bt', { requires: ['cg'] });
   };
 
-  const siOf = (stageId, unitSlug = null) => planStageInstanceId('aidlc-v2@4', stageId, unitSlug);
+  const siOf = (stageId, unitSlug = null, sectionIndex = null) =>
+    planStageInstanceId('aidlc-v2@4', stageId, unitSlug, sectionIndex);
 
-  const seedStageRow = (intentId, stageId, unitSlug = null, state = 'SUCCEEDED') =>
-    procStore.set(keyOf(`EXEC#${intentId}`, `STAGE#${siOf(stageId, unitSlug)}`), {
+  const seedStageRow = (
+    intentId,
+    stageId,
+    unitSlug = null,
+    state = 'SUCCEEDED',
+    sectionIndex = null,
+  ) =>
+    procStore.set(keyOf(`EXEC#${intentId}`, `STAGE#${siOf(stageId, unitSlug, sectionIndex)}`), {
       pk: `EXEC#${intentId}`,
-      sk: `STAGE#${siOf(stageId, unitSlug)}`,
+      sk: `STAGE#${siOf(stageId, unitSlug, sectionIndex)}`,
       type: 'Stage',
       executionId: intentId,
-      stageInstanceId: siOf(stageId, unitSlug),
+      stageInstanceId: siOf(stageId, unitSlug, sectionIndex),
       stageId,
       unitSlug,
+      sectionIndex,
       state,
       attempt: 0,
       cli: 'claude',
@@ -3664,8 +3920,8 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
     setStatus(intent.id, { status: 'FAILED' });
     await seedIntentAnchor(intent.id);
     seedStageRow(intent.id, 'units-gen');
-    seedStageRow(intent.id, 'cg', 'auth');
-    seedStageRow(intent.id, 'cg', 'billing', 'FAILED');
+    seedStageRow(intent.id, 'cg', 'auth', 'SUCCEEDED', 1);
+    seedStageRow(intent.id, 'cg', 'billing', 'FAILED', 1);
     procStore.set(keyOf(`EXEC#${intent.id}`, 'UNITPLAN'), {
       pk: `EXEC#${intent.id}`,
       sk: 'UNITPLAN',
@@ -3677,10 +3933,11 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
       batches: [['auth'], ['billing']],
     });
     const unitRow = (slug, state, extra = {}) =>
-      procStore.set(keyOf(`EXEC#${intent.id}`, `UNIT#${slug}`), {
+      procStore.set(keyOf(`EXEC#${intent.id}`, `UNIT#S1#${slug}`), {
         pk: `EXEC#${intent.id}`,
-        sk: `UNIT#${slug}`,
+        sk: `UNIT#S1#${slug}`,
         executionId: intent.id,
+        sectionIndex: 1,
         slug,
         state,
         ...extra,
@@ -3701,22 +3958,24 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
     expect(res.statusCode).toBe(202);
 
     // BOTH lane instances of cg were reset; units-gen upstream untouched.
-    expect(procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('cg', 'auth')}`))).toMatchObject({
+    expect(
+      procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('cg', 'auth', 1)}`)),
+    ).toMatchObject({
       state: 'PENDING',
       attempt: 1,
     });
     expect(
-      procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('cg', 'billing')}`)),
+      procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('cg', 'billing', 1)}`)),
     ).toMatchObject({ state: 'PENDING', attempt: 1 });
     expect(procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('units-gen')}`))).toMatchObject({
       state: 'SUCCEEDED',
     });
 
     // The touched lanes were re-opened (PENDING, verdict fields cleared).
-    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'UNIT#auth'))).toMatchObject({
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'UNIT#S1#auth'))).toMatchObject({
       state: 'PENDING',
     });
-    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'UNIT#billing'))).toMatchObject({
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'UNIT#S1#billing'))).toMatchObject({
       state: 'PENDING',
       failureReason: null,
     });

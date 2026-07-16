@@ -41,6 +41,7 @@ export const createProcessBridge = ({
     intentId = null,
     stageInstanceId = null,
     unitSlug = null,
+    sectionIndex = null,
     model = null,
     reviewerAgent = null,
   } = scope;
@@ -60,6 +61,7 @@ export const createProcessBridge = ({
       executionId,
       stageInstanceId,
       unitSlug,
+      sectionIndex,
       kind: 'question',
       questions: questionsJson,
       humanTaskId,
@@ -96,6 +98,7 @@ export const createProcessBridge = ({
       type: 'v2.question.asked',
       stageInstanceId,
       unitSlug,
+      sectionIndex,
       actor: stageInstanceId ?? 'agent',
       summary: `Agent asked ${questions.length} question(s)`,
     });
@@ -105,6 +108,7 @@ export const createProcessBridge = ({
       intentId,
       stageInstanceId,
       unitSlug,
+      sectionIndex,
       humanTaskId,
       questions,
     });
@@ -146,13 +150,21 @@ export const createProcessBridge = ({
 
   // Stream a unit of agent output to the UI and persist it for reload.
   const sendOutput = async ({ content, kind = 'text' }) => {
-    const row = await store.appendOutput({ executionId, stageInstanceId, unitSlug, kind, content });
+    const row = await store.appendOutput({
+      executionId,
+      stageInstanceId,
+      unitSlug,
+      sectionIndex,
+      kind,
+      content,
+    });
     await broadcast({
       action: 'agent.output',
       executionId,
       intentId,
       stageInstanceId,
       unitSlug,
+      sectionIndex,
       seq: row.seq,
       kind,
       content,
@@ -169,6 +181,7 @@ export const createProcessBridge = ({
       executionId,
       stageInstanceId,
       unitSlug,
+      sectionIndex,
       metrics,
       resolvedModel: model,
     });
@@ -178,6 +191,7 @@ export const createProcessBridge = ({
       intentId,
       stageInstanceId,
       unitSlug,
+      sectionIndex,
       metricId: row.metricId,
       metrics,
     });
@@ -191,6 +205,7 @@ export const createProcessBridge = ({
       type,
       stageInstanceId,
       unitSlug,
+      sectionIndex,
       actor: stageInstanceId ?? 'agent',
       summary,
     });
@@ -200,6 +215,7 @@ export const createProcessBridge = ({
       intentId,
       stageInstanceId,
       unitSlug,
+      sectionIndex,
       eventId: row.eventId,
       noteType: type,
       summary,
@@ -229,6 +245,7 @@ export const createProcessBridge = ({
       executionId,
       stageInstanceId,
       unitSlug,
+      sectionIndex,
       sensorId: `reviewer:${identity}`,
       kind: 'reviewer',
       severity: 'advisory',
@@ -248,6 +265,7 @@ export const createProcessBridge = ({
         type: normalized === 'READY' ? 'v2.review.ready' : 'v2.review.not_ready',
         stageInstanceId,
         unitSlug,
+        sectionIndex,
         actor: identity,
         summary: `Reviewer ${identity} returned ${normalized}${findings ? `: ${String(findings).slice(0, 240)}` : ''}`,
       })
@@ -258,6 +276,7 @@ export const createProcessBridge = ({
       intentId,
       stageInstanceId,
       unitSlug,
+      sectionIndex,
       noteType: normalized === 'READY' ? 'v2.review.ready' : 'v2.review.not_ready',
       summary: `Reviewer ${identity} returned ${normalized}`,
     });
@@ -270,6 +289,7 @@ export const createProcessBridge = ({
       executionId,
       stageInstanceId,
       unitSlug,
+      sectionIndex,
       tool,
       bytes,
       resultCount,

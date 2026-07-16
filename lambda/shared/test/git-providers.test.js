@@ -144,6 +144,158 @@ describe('github provider — repo browse + PR + comments', () => {
     expect(out).toEqual({ prUrl: 'https://gh/pr/7', prNumber: 7 });
   });
 
+  it('creates a draft with provider metadata and recovers only an exact open PR', async () => {
+    let posts = 0;
+    const fetchImpl = makeFetch([
+      ['/git/matching-refs/', { json: [] }],
+      [
+        '/pulls?head=o:unit%2Fauth&state=open',
+        {
+          json: [
+            {
+              id: 'PR_existing',
+              number: 9,
+              html_url: 'https://gh/pr/9',
+              head: { ref: 'unit/auth', sha: 'head-9' },
+              base: { ref: 'intent', sha: 'base-9' },
+              draft: true,
+            },
+          ],
+        },
+      ],
+      [
+        '/repos/o/r/pulls',
+        (_url, options) => {
+          if (options.method !== 'POST') return { json: [] };
+          posts += 1;
+          return {
+            status: 422,
+            text: JSON.stringify({ message: 'A pull request already exists' }),
+          };
+        },
+      ],
+    ]);
+    const out = await gh.createPullRequest({ token: 't', fetchImpl }, 'o/r', {
+      branch: 'unit/auth',
+      baseBranch: 'intent',
+      title: 'Auth',
+      body: 'Review',
+      draft: true,
+    });
+    expect(posts).toBe(1);
+    expect(out).toEqual({
+      prUrl: 'https://gh/pr/9',
+      prNumber: 9,
+      existing: true,
+      providerId: 'PR_existing',
+      headSha: 'head-9',
+      targetSha: 'base-9',
+      draft: true,
+    });
+  });
+
+  it('supports exact lookup, status, draft transitions, reopen, and ancestry', async () => {
+    let draft = true;
+    let state = 'open';
+    const fetchImpl = makeFetch([
+      [
+        '/pulls?head=o:unit%2Fauth&state=open',
+        {
+          json: [
+            {
+              id: 'PR_7',
+              number: 7,
+              head: { ref: 'unit/auth', sha: 'head-7' },
+              base: { ref: 'intent', sha: 'base-7' },
+            },
+            {
+              id: 'PR_wrong',
+              number: 8,
+              head: { ref: 'unit/auth', sha: 'head-8' },
+              base: { ref: 'other', sha: 'base-8' },
+            },
+          ],
+        },
+      ],
+      [
+        '/pulls/7',
+        (_url, options) => {
+          if (options.method === 'PATCH') state = 'open';
+          return {
+            json: {
+              id: 'PR_7',
+              number: 7,
+              html_url: 'https://gh/pr/7',
+              head: { ref: 'unit/auth', sha: 'head-7' },
+              base: { ref: 'intent', sha: 'base-7' },
+              state,
+              draft,
+              mergeable: true,
+              mergeable_state: 'clean',
+            },
+          };
+        },
+      ],
+      [
+        '/graphql',
+        (_url, options) => {
+          const query = JSON.parse(options.body).query;
+          draft = query.includes('convertPullRequestToDraft');
+          return { json: { data: { pullRequest: { id: 'PR_7' } } } };
+        },
+      ],
+      ['/compare/head-7...intent', { json: { status: 'ahead' } }],
+    ]);
+    const found = await gh.findPullRequest({ token: 't', fetchImpl }, 'o/r', {
+      sourceBranch: 'unit/auth',
+      targetBranch: 'intent',
+      state: 'open',
+    });
+    expect(found.number).toBe(7);
+    expect(await gh.getPullRequestStatus({ token: 't', fetchImpl }, 'o/r', 7)).toMatchObject({
+      state: 'open',
+      draft: true,
+      headSha: 'head-7',
+      targetSha: 'base-7',
+      mergeable: true,
+    });
+    expect(await gh.setPullRequestDraft({ token: 't', fetchImpl }, 'o/r', 7, false)).toMatchObject({
+      state: 'open',
+      draft: false,
+    });
+    state = 'closed';
+    expect(await gh.reopenPullRequest({ token: 't', fetchImpl }, 'o/r', 7)).toMatchObject({
+      state: 'open',
+    });
+    expect(await gh.isCommitAncestor({ token: 't', fetchImpl }, 'o/r', 'head-7', 'intent')).toBe(
+      true,
+    );
+  });
+
+  it('paginates general and inline review comments with bot attribution', async () => {
+    const page = (url, type) => {
+      const pageNumber = Number(new URL(url).searchParams.get('page'));
+      if (pageNumber > 1) return { json: [] };
+      return {
+        json: Array.from({ length: 100 }, (_, index) => ({
+          id: `${type}-${index}`,
+          body: `comment ${index}`,
+          user: { login: index === 0 ? 'ci[bot]' : 'reviewer', type: index === 0 ? 'Bot' : 'User' },
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-01-01T00:01:00Z',
+        })),
+      };
+    };
+    const fetchImpl = makeFetch([
+      ['/pulls/7/comments', (url) => page(url, 'review')],
+      ['/issues/7/comments', (url) => page(url, 'issue')],
+    ]);
+    const comments = await gh.listPRComments({ token: 't', fetchImpl }, 'o/r', 7);
+    expect(comments).toHaveLength(200);
+    expect(comments.filter((comment) => comment.bot)).toHaveLength(2);
+    expect(fetchImpl.calls.some((call) => call.url.includes('page=2'))).toBe(true);
+  });
+
   it('createPullRequest reports conflict when task branches are unmerged', async () => {
     const fetchImpl = makeFetch([
       ['/git/matching-refs/', { json: [{ ref: 'refs/heads/feat--task-1' }] }],
@@ -417,7 +569,19 @@ describe('gitlab provider — repo browse + MR + token refresh', () => {
   it('createPullRequest returns existing MR when one is already open', async () => {
     const fetchImpl = makeFetch([
       ['/repository/branches?search', { json: [] }],
-      ['/merge_requests?source_branch', { json: [{ web_url: 'https://gl/mr/3', iid: 3 }] }],
+      [
+        '/merge_requests?source_branch',
+        {
+          json: [
+            {
+              web_url: 'https://gl/mr/3',
+              iid: 3,
+              source_branch: 'feat',
+              target_branch: 'main',
+            },
+          ],
+        },
+      ],
     ]);
     const out = await gl.createPullRequest({ token: 't', fetchImpl }, 'g/p', {
       branch: 'feat',
@@ -426,6 +590,108 @@ describe('gitlab provider — repo browse + MR + token refresh', () => {
       body: 'B',
     });
     expect(out).toEqual({ prUrl: 'https://gl/mr/3', prNumber: 3, existing: true });
+  });
+
+  it('findPullRequest rejects rows without exact source and target identity', async () => {
+    const fetchImpl = makeFetch([
+      [
+        '/merge_requests?source_branch=unit%2Fauth',
+        {
+          json: [
+            { iid: 1, target_branch: 'intent' },
+            { iid: 2, source_branch: 'unit/auth' },
+            { iid: 3, source_branch: 'unit/auth', target_branch: 'other' },
+          ],
+        },
+      ],
+    ]);
+    await expect(
+      gl.findPullRequest({ token: 't', fetchImpl }, 'g/p', {
+        sourceBranch: 'unit/auth',
+        targetBranch: 'intent',
+        state: 'opened',
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it('supports exact lookup, draft lifecycle, reopen, status, and ancestry', async () => {
+    let title = 'Draft: Auth';
+    let state = 'opened';
+    const fetchImpl = makeFetch([
+      [
+        '/merge_requests?source_branch=unit%2Fauth',
+        {
+          json: [
+            {
+              id: 70,
+              iid: 7,
+              source_branch: 'unit/auth',
+              target_branch: 'intent',
+            },
+            {
+              id: 80,
+              iid: 8,
+              source_branch: 'unit/auth',
+              target_branch: 'other',
+            },
+          ],
+        },
+      ],
+      [
+        '/merge_requests/7',
+        (_url, options) => {
+          if (options.method === 'PUT') {
+            const body = JSON.parse(options.body);
+            if (body.title) title = body.title;
+            if (body.state_event === 'reopen') state = 'opened';
+          }
+          return {
+            json: {
+              id: 70,
+              iid: 7,
+              web_url: 'https://gl/mr/7',
+              source_branch: 'unit/auth',
+              target_branch: 'intent',
+              sha: 'head-7',
+              diff_refs: { base_sha: 'base-7' },
+              state,
+              title,
+              detailed_merge_status: 'mergeable',
+            },
+          };
+        },
+      ],
+      [
+        '/commits/head-7/refs',
+        {
+          json: [{ type: 'branch', name: 'intent' }],
+        },
+      ],
+    ]);
+    const found = await gl.findPullRequest({ token: 't', fetchImpl }, 'g/p', {
+      sourceBranch: 'unit/auth',
+      targetBranch: 'intent',
+      state: 'opened',
+    });
+    expect(found.iid).toBe(7);
+    expect(await gl.getPullRequestStatus({ token: 't', fetchImpl }, 'g/p', 7)).toMatchObject({
+      state: 'open',
+      draft: true,
+      headSha: 'head-7',
+      targetSha: 'base-7',
+      mergeable: true,
+    });
+    expect(await gl.setPullRequestDraft({ token: 't', fetchImpl }, 'g/p', 7, false)).toMatchObject({
+      state: 'open',
+      draft: false,
+    });
+    state = 'closed';
+    expect(await gl.reopenPullRequest({ token: 't', fetchImpl }, 'g/p', 7)).toMatchObject({
+      state: 'open',
+    });
+    expect(await gl.isCommitAncestor({ token: 't', fetchImpl }, 'g/p', 'head-7', 'intent')).toBe(
+      true,
+    );
   });
 
   it('createPullRequest resolves the project default branch when baseBranch is omitted', async () => {

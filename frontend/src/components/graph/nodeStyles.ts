@@ -23,6 +23,7 @@ export const NODE_TYPE_BADGES: Record<string, string> = {
   StoryMapEntry: 'bg-teal-500/15 text-teal-600 border-teal-500/30',
   Contract: 'bg-indigo-500/15 text-indigo-600 border-indigo-500/30',
   UnitOfWork: 'bg-amber-500/15 text-amber-600 border-amber-500/30',
+  UnitPullRequest: 'bg-cyan-500/15 text-cyan-700 border-cyan-500/30',
 };
 
 export const nodeTypeBadge = (type: string): string =>
@@ -39,6 +40,7 @@ export const nodeTypeTextColor = (type: string): string => {
 const SHORT_TYPES: Record<string, string> = {
   StoryMapEntry: 'Map',
   UnitOfWork: 'Unit',
+  UnitPullRequest: 'Unit PR',
   TeamKnowledge: 'Knowledge',
   LearningRule: 'Rule',
 };
@@ -67,6 +69,7 @@ export const EDGE_LABELS: Record<string, string> = {
   IMPLEMENTS: 'implements',
   EXPOSES: 'exposes',
   CONSUMES_CONTRACT: 'consumes contract',
+  HAS_UNIT_PR: 'has unit PR',
 };
 
 export const humanEdgeLabel = (label: string): string =>

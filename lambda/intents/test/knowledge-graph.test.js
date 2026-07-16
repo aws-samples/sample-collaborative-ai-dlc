@@ -525,4 +525,37 @@ describe('fetchKnowledgeGraph — pull requests', () => {
     expect(edge(edges, INTENT, 'pr:intent-kg:owner/api', 'HAS_PR')).toBeDefined();
     expect(edge(edges, INTENT, 'pr:intent-kg:owner/web', 'HAS_PR')).toBeDefined();
   });
+
+  it('renders unit PRs separately with their section, unit, repository, and provider identity', async () => {
+    await seedFullGraph();
+    const id = 'unit-pr:intent-kg:s2:auth:owner/api:github:7';
+    await addV('UnitPullRequest', {
+      id,
+      section_index: '2',
+      unit_slug: 'auth',
+      repository: 'owner/api',
+      provider: 'github',
+      pr_url: 'https://github.com/owner/api/pull/7',
+      pr_number: '7',
+      source_branch: 'aidlc/intent-kg--s2-unit-auth',
+      target_branch: 'aidlc/intent-kg',
+      state: 'DRAFT',
+    });
+    await addE('Intent', INTENT, 'HAS_UNIT_PR', 'UnitPullRequest', id);
+
+    const { nodes, edges } = await fetchKnowledgeGraph(g, {
+      projectId: PROJECT,
+      intentId: INTENT,
+    });
+    expect(byId(nodes, id)).toMatchObject({
+      type: 'UnitPullRequest',
+      label: 'auth #7',
+      section_index: '2',
+      unit_slug: 'auth',
+      repository: 'owner/api',
+      provider: 'github',
+      state: 'DRAFT',
+    });
+    expect(edge(edges, INTENT, id, 'HAS_UNIT_PR')).toBeDefined();
+  });
 });

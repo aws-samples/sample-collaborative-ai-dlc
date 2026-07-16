@@ -99,6 +99,8 @@ export interface AgentSettings {
    *  keyword match answer a front compose without an LLM call; 'disabled'
    *  routes every compose through the composer agent. */
   composeLlmBypass?: 'enabled' | 'disabled';
+  /** Platform default for spaces that inherit PR delivery policy. */
+  prStrategy?: 'intent-pr' | 'pr-per-unit';
   /** Global custom MCP servers (raw JSON string, name-keyed JSON object)
    *  injected into every agent session; merged under a project's own set.
    *  Only returned to platform admins. */
@@ -147,6 +149,8 @@ export interface AgentSettingsUpdate {
   stageSkipping?: 'enabled' | 'disabled';
   /** Composer LLM bypass mode. Omit to leave unchanged. */
   composeLlmBypass?: 'enabled' | 'disabled';
+  /** Platform default PR delivery strategy. Omit to leave unchanged. */
+  prStrategy?: 'intent-pr' | 'pr-per-unit';
   /** Global custom MCP servers (raw JSON string). Omit to leave unchanged. */
   customMcpServers?: string;
   /** Global MCP secret values keyed by `${VAR}` name. A non-empty value rotates;

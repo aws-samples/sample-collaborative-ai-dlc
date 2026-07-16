@@ -318,6 +318,45 @@ describe('recordPullRequest', () => {
   });
 });
 
+describe('recordUnitPullRequest', () => {
+  it('uses a distinct section/unit/repository/provider/number identity and edge', async () => {
+    await seedIntent();
+    const result = await writer.recordUnitPullRequest({
+      sectionIndex: 2,
+      unitSlug: 'auth',
+      repoId: 'owner/api',
+      provider: 'github',
+      prUrl: 'https://github.com/owner/api/pull/7',
+      prNumber: 7,
+      sourceBranch: 'aidlc/intent-1--s2-unit-auth',
+      targetBranch: 'aidlc/intent-1',
+      headSha: 'abc123',
+      state: 'DRAFT',
+    });
+    const id = 'unit-pr:intent-1:s2:auth:owner/api:github:7';
+    expect(result.id).toBe(id);
+    const vertex = await g
+      .V()
+      .has('Intent', 'id', 'intent-1')
+      .out('HAS_UNIT_PR')
+      .has('UnitPullRequest', 'id', id)
+      .valueMap(true)
+      .next();
+    expect(flattenValueMap(vertex.value)).toMatchObject({
+      id,
+      section_index: '2',
+      unit_slug: 'auth',
+      repository: 'owner/api',
+      provider: 'github',
+      pr_number: '7',
+      source_branch: 'aidlc/intent-1--s2-unit-auth',
+      target_branch: 'aidlc/intent-1',
+      head_sha: 'abc123',
+      state: 'DRAFT',
+    });
+  });
+});
+
 describe('linkArtifacts', () => {
   beforeEach(async () => {
     await seedIntent();

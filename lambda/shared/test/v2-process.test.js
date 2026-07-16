@@ -6,6 +6,7 @@ import {
   GetCommand,
   PutCommand,
   QueryCommand,
+  TransactWriteCommand,
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
 import {
@@ -15,6 +16,8 @@ import {
   steeringKey,
   unitPlanKey,
   unitKey,
+  unitPrKey,
+  feedbackBatchKey,
   quorumEditKey,
   buildExecutionMeta,
   buildStageRow,
@@ -26,6 +29,8 @@ import {
   buildSteeringRow,
   buildUnitPlanRow,
   buildUnitRow,
+  buildUnitPrRow,
+  buildFeedbackBatchRow,
   buildQuorumEditRow,
   executionTypeStateIndex,
   HUMAN_TASK_STATUSES,
@@ -853,6 +858,47 @@ describe('unit keys + builders', () => {
   it('UNITPLAN is a singleton SK; UNIT#<slug> per lane (no prefix collision)', () => {
     expect(unitPlanKey('e1')).toEqual({ pk: 'EXEC#e1', sk: 'UNITPLAN' });
     expect(unitKey('e1', 'auth')).toEqual({ pk: 'EXEC#e1', sk: 'UNIT#auth' });
+    expect(unitKey('e1', 2, 'auth')).toEqual({ pk: 'EXEC#e1', sk: 'UNIT#S2#auth' });
+    expect(unitPrKey('e1', 2, 'auth', 'owner/api')).toEqual({
+      pk: 'EXEC#e1',
+      sk: 'UNITPR#S2#auth#owner%2Fapi',
+    });
+    expect(feedbackBatchKey('e1', 2, 'auth', 'b1')).toEqual({
+      pk: 'EXEC#e1',
+      sk: 'FEEDBACK#S2#auth#b1',
+    });
+  });
+
+  it('builds section-aware unit PR and feedback rows with independent state projections', () => {
+    const pr = buildUnitPrRow({
+      executionId: 'e1',
+      sectionIndex: 2,
+      slug: 'auth',
+      repository: 'owner/api',
+      provider: 'github',
+      sourceBranch: 'unit',
+      targetBranch: 'intent',
+      now: 'T',
+    });
+    const feedback = buildFeedbackBatchRow({
+      executionId: 'e1',
+      sectionIndex: 2,
+      slug: 'auth',
+      batchId: 'b1',
+      comments: [{ id: 'c1', version: 'v1' }],
+      requestedBy: 'u1',
+      now: 'T',
+    });
+    expect(pr).toMatchObject({
+      sk: 'UNITPR#S2#auth#owner%2Fapi',
+      state: 'DRAFT',
+      GSI2SK: 'TYPE#UNITPR#STATE#DRAFT#S2#auth#owner%2Fapi',
+    });
+    expect(feedback).toMatchObject({
+      sk: 'FEEDBACK#S2#auth#b1',
+      state: 'QUEUED',
+      GSI2SK: 'TYPE#FEEDBACK#STATE#QUEUED#S2#auth#b1',
+    });
   });
 
   it('buildUnitPlanRow freezes the scheduling snapshot with decision defaults', () => {
@@ -900,6 +946,10 @@ describe('unit keys + builders', () => {
       'PENDING',
       'READY',
       'RUNNING',
+      'PR_DRAFT',
+      'RECONCILING',
+      'PR_READY',
+      'ADDRESSING_FEEDBACK',
       'MERGING',
       'MERGED',
       'FAILED',
@@ -927,6 +977,79 @@ describe('unit store methods', () => {
     expect(row.sk).toBe('UNITPLAN');
     const input = ddb.commandCalls(PutCommand)[0].args[0].input;
     expect(input.ConditionExpression).toBeUndefined();
+  });
+
+  it('section-aware getUnit falls back to the legacy slug-only row', async () => {
+    ddb
+      .on(GetCommand)
+      .resolvesOnce({})
+      .resolvesOnce({ Item: { sk: 'UNIT#auth', slug: 'auth', state: 'MERGED' } });
+    await expect(store.getUnit('e1', 2, 'auth')).resolves.toMatchObject({
+      sk: 'UNIT#auth',
+      state: 'MERGED',
+    });
+    expect(ddb.commandCalls(GetCommand).map((call) => call.args[0].input.Key.sk)).toEqual([
+      'UNIT#S2#auth',
+      'UNIT#auth',
+    ]);
+  });
+
+  it('feedback lifecycle is conditional and replay-safe', async () => {
+    ddb.on(TransactWriteCommand).resolves({});
+    const created = await store.createFeedbackBatch({
+      executionId: 'e1',
+      sectionIndex: 2,
+      slug: 'auth',
+      batchId: 'b1',
+      comments: [{ id: 'c1', version: 'v1' }],
+      requestedBy: 'u1',
+    });
+    expect(created.created).toBe(true);
+    const writes = ddb.commandCalls(TransactWriteCommand)[0].args[0].input.TransactItems;
+    expect(writes).toHaveLength(2);
+    expect(writes[0].Put.Item.sk).toBe('FEEDBACK#S2#auth#b1');
+    expect(writes[1].Put.Item).toMatchObject({
+      sk: expect.stringMatching(/^FEEDBACKCOMMENT#S2#auth#/),
+      type: 'FeedbackCommentClaim',
+      commentId: 'c1',
+      version: 'v1',
+      batchId: 'b1',
+    });
+    expect(
+      writes.every((write) => write.Put.ConditionExpression.includes('attribute_not_exists')),
+    ).toBe(true);
+
+    ddb.on(UpdateCommand).resolves({ Attributes: { state: 'RUNNING' } });
+    await store.updateFeedbackBatch({
+      executionId: 'e1',
+      sectionIndex: 2,
+      slug: 'auth',
+      batchId: 'b1',
+      state: 'RUNNING',
+      fromStates: ['QUEUED'],
+    });
+    const update = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(update.ConditionExpression).toContain('#state IN (:from0)');
+    expect(update.ExpressionAttributeValues[':g2sk']).toBe(
+      'TYPE#FEEDBACK#STATE#RUNNING#S2#auth#b1',
+    );
+  });
+
+  it('reports an overlapping comment claim without pretending the new batch exists', async () => {
+    const error = new Error('transaction cancelled');
+    error.name = 'TransactionCanceledException';
+    ddb.on(TransactWriteCommand).rejects(error);
+    ddb.on(GetCommand).resolves({});
+    await expect(
+      store.createFeedbackBatch({
+        executionId: 'e1',
+        sectionIndex: 2,
+        slug: 'auth',
+        batchId: 'b2',
+        comments: [{ repository: 'owner/repo', id: 'c1', version: 'v1' }],
+        requestedBy: 'u1',
+      }),
+    ).resolves.toMatchObject({ created: false, conflict: true, item: null });
   });
 
   it('listUnits queries the exact UNIT# prefix (never matches UNITPLAN)', async () => {

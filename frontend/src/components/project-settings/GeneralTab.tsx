@@ -60,6 +60,7 @@ export function GeneralTab({ project, canEdit, onProjectUpdated }: Props) {
   const [stageSkipping, setStageSkipping] = useState<StageSkippingOverride>(
     project.stageSkipping ?? 'default',
   );
+  const [prStrategy, setPrStrategy] = useState<PrStrategy>(project.prStrategy ?? 'intent-pr');
   const [savingRuntime, setSavingRuntime] = useState(false);
   const [runtimeResult, setRuntimeResult] = useState<SaveResult>(null);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
@@ -67,13 +68,13 @@ export function GeneralTab({ project, canEdit, onProjectUpdated }: Props) {
   const runtimeChanged =
     parkReleaseSeconds !== (project.parkReleaseSeconds ?? 300) ||
     maxParallelUnits !== (project.maxParallelUnits ?? 0) ||
-    stageSkipping !== (project.stageSkipping ?? 'default');
+    stageSkipping !== (project.stageSkipping ?? 'default') ||
+    prStrategy !== (project.prStrategy ?? 'intent-pr');
 
   const saveRuntime = async () => {
     setSavingRuntime(true);
     setRuntimeResult(null);
     try {
-      const prStrategy: PrStrategy = project.prStrategy ?? 'intent-pr';
       const saved = await projectsService.update(project.id, {
         parkReleaseSeconds,
         maxParallelUnits,
@@ -83,13 +84,15 @@ export function GeneralTab({ project, canEdit, onProjectUpdated }: Props) {
       const next = saved.parkReleaseSeconds ?? parkReleaseSeconds;
       const nextParallel = saved.maxParallelUnits ?? maxParallelUnits;
       const nextSkipping = saved.stageSkipping ?? stageSkipping;
+      const nextPrStrategy = saved.prStrategy ?? prStrategy;
       setParkReleaseSeconds(next);
       setMaxParallelUnits(nextParallel);
       setStageSkipping(nextSkipping);
+      setPrStrategy(nextPrStrategy);
       onProjectUpdated({
         parkReleaseSeconds: next,
         maxParallelUnits: nextParallel,
-        prStrategy: saved.prStrategy ?? prStrategy,
+        prStrategy: nextPrStrategy,
         stageSkipping: nextSkipping,
       });
       setRuntimeResult('saved');
@@ -201,6 +204,28 @@ export function GeneralTab({ project, canEdit, onProjectUpdated }: Props) {
               <p className="text-[11px] text-muted-foreground">
                 Skip CONDITIONAL stages per intent — deselect at creation or jump ahead from
                 approval gates. Required stages always run. Applies to new intents.
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="pr-strategy" className="text-xs">
+                Pull request delivery
+              </Label>
+              <Select
+                value={prStrategy}
+                onValueChange={(v) => setPrStrategy(v as PrStrategy)}
+                disabled={!canEdit || savingRuntime}
+              >
+                <SelectTrigger id="pr-strategy" className="h-9 text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="default">Platform default</SelectItem>
+                  <SelectItem value="intent-pr">Intent PR</SelectItem>
+                  <SelectItem value="pr-per-unit">PR per unit</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] text-muted-foreground">
+                Applies to new intents. Unit PRs merge into the intent branch before its final PR.
               </p>
             </div>
           </div>

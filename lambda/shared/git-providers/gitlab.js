@@ -255,23 +255,37 @@ const mapNote = (n) => ({
   type: 'issue',
   body: n.body,
   user: { login: n.author?.username, avatarUrl: n.author?.avatar_url },
+  bot: Boolean(n.author?.bot),
+  system: Boolean(n.system),
   path: null,
   line: null,
   createdAt: n.created_at,
   updatedAt: n.updated_at,
+  version: n.updated_at || n.created_at,
 });
+
+const listPaginated = async (ctx, url) => {
+  const rows = [];
+  for (let page = 1; page <= 100; page += 1) {
+    const separator = url.includes('?') ? '&' : '?';
+    const res = await glFetch(ctx, `${url}${separator}per_page=100&page=${page}`);
+    const data = await res.json();
+    if (!res.ok) {
+      throw new ProviderError(res.status || 400, data?.message || 'Failed to list comments');
+    }
+    if (!Array.isArray(data)) break;
+    rows.push(...data);
+    if (data.length < 100) break;
+  }
+  return rows;
+};
 
 const listPRComments = async (ctx, repoId, mrIid) => {
   const project = encodeProject(repoId);
-  const [notesRes, discussionsRes] = await Promise.all([
-    glFetch(ctx, `${API_BASE}/projects/${project}/merge_requests/${mrIid}/notes?per_page=100`),
-    glFetch(
-      ctx,
-      `${API_BASE}/projects/${project}/merge_requests/${mrIid}/discussions?per_page=100`,
-    ),
+  const [notes, discussions] = await Promise.all([
+    listPaginated(ctx, `${API_BASE}/projects/${project}/merge_requests/${mrIid}/notes`),
+    listPaginated(ctx, `${API_BASE}/projects/${project}/merge_requests/${mrIid}/discussions`),
   ]);
-  const notes = await notesRes.json();
-  const discussions = await discussionsRes.json();
 
   const inlineComments = [];
   if (Array.isArray(discussions)) {
@@ -284,19 +298,20 @@ const listPRComments = async (ctx, repoId, mrIid) => {
             type: 'review',
             body: note.body,
             user: { login: note.author?.username, avatarUrl: note.author?.avatar_url },
+            bot: Boolean(note.author?.bot),
+            system: Boolean(note.system),
             path: note.position?.new_path || note.position?.old_path || null,
             line: note.position?.new_line || note.position?.old_line || null,
             createdAt: note.created_at,
             updatedAt: note.updated_at,
+            version: note.updated_at || note.created_at,
           });
         }
       }
     }
   }
 
-  const generalNotes = Array.isArray(notes)
-    ? notes.filter((n) => !n.system && !n.position).map(mapNote)
-    : [];
+  const generalNotes = notes.filter((n) => !n.position).map(mapNote);
 
   return [...generalNotes, ...inlineComments].toSorted(
     (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
@@ -458,35 +473,38 @@ const cleanupConstructionTaskBranches = async (ctx, repoId, branch) => {
   return { deleted, failed, skipped };
 };
 
-const findOpenMR = async (ctx, project, branch) => {
+const findPullRequest = async (
+  ctx,
+  repoId,
+  { sourceBranch, targetBranch = null, state = 'opened' },
+) => {
+  const project = encodeProject(repoId);
   const res = await glFetch(
     ctx,
     `${API_BASE}/projects/${project}/merge_requests?source_branch=${encodeURIComponent(
-      branch,
-    )}&state=opened`,
+      sourceBranch,
+    )}&state=${state}&per_page=100`,
   );
   if (!res.ok) return null;
   const mrs = await res.json();
-  return Array.isArray(mrs) && mrs.length > 0 ? mrs[0] : null;
-};
-
-const findAnyMR = async (ctx, project, branch) => {
-  const res = await glFetch(
-    ctx,
-    `${API_BASE}/projects/${project}/merge_requests?source_branch=${encodeURIComponent(
-      branch,
-    )}&per_page=1`,
-  );
-  if (!res.ok) return null;
-  const mrs = await res.json();
-  return Array.isArray(mrs) && mrs.length > 0 ? mrs[0] : null;
+  return Array.isArray(mrs)
+    ? (mrs.find(
+        (mr) =>
+          mr.source_branch === sourceBranch &&
+          (targetBranch === null || mr.target_branch === targetBranch),
+      ) ?? null)
+    : null;
 };
 
 // Create a merge request. Enforces the unmerged-construction-task-branch guard
 // for parity with GitHub. Returns { prUrl, prNumber } on success,
 // { skipped, reason } for a no-change repo, { conflict, unmergedBranches } when
 // task branches remain unmerged.
-const createPullRequest = async (ctx, repoId, { branch, baseBranch, title, body }) => {
+const createPullRequest = async (
+  ctx,
+  repoId,
+  { branch, baseBranch, title, body, draft = false },
+) => {
   const project = encodeProject(repoId);
 
   const unmergedBranches = await getUnmergedConstructionTaskBranches(ctx, repoId, branch);
@@ -498,16 +516,33 @@ const createPullRequest = async (ctx, repoId, { branch, baseBranch, title, body 
     };
   }
 
-  const existing = await findOpenMR(ctx, project, branch);
+  const resolvedBase = baseBranch || (await getDefaultBranch(ctx, repoId)) || 'main';
+  const existing = await findPullRequest(ctx, repoId, {
+    sourceBranch: branch,
+    targetBranch: resolvedBase,
+    state: 'opened',
+  });
   if (existing) {
-    return { prUrl: existing.web_url, prNumber: existing.iid, existing: true };
+    return {
+      prUrl: existing.web_url,
+      prNumber: existing.iid,
+      existing: true,
+      ...(draft
+        ? {
+            providerId: existing.id,
+            headSha: existing.sha ?? existing.diff_refs?.head_sha ?? null,
+            targetSha: existing.diff_refs?.base_sha ?? null,
+            draft: Boolean(existing.draft || /^draft:/i.test(existing.title ?? '')),
+          }
+        : {}),
+    };
   }
 
   const postMr = (target) =>
     glFetch(ctx, `${API_BASE}/projects/${project}/merge_requests`, {
       method: 'POST',
       body: JSON.stringify({
-        title,
+        title: draft && !/^draft:/i.test(title) ? `Draft: ${title}` : title,
         description: body,
         source_branch: branch,
         target_branch: target,
@@ -517,15 +552,32 @@ const createPullRequest = async (ctx, repoId, { branch, baseBranch, title, body 
   // No explicit base (project-wide legacy default, or a repo the caller left
   // unset in a per-repo baseBranches map) — resolve the project's REAL default
   // branch rather than assuming `main`.
-  const resolvedBase = baseBranch || (await getDefaultBranch(ctx, repoId)) || 'main';
   let res = await postMr(resolvedBase);
 
   if (!res.ok) {
     let errorText = await res.text();
     if (res.status === 409) {
       if (errorText.toLowerCase().includes('already exists')) {
-        const any = await findAnyMR(ctx, project, branch);
-        if (any) return { prUrl: any.web_url, prNumber: any.iid, existing: true };
+        const open = await findPullRequest(ctx, repoId, {
+          sourceBranch: branch,
+          targetBranch: resolvedBase,
+          state: 'opened',
+        });
+        if (open) {
+          return {
+            prUrl: open.web_url,
+            prNumber: open.iid,
+            existing: true,
+            ...(draft
+              ? {
+                  providerId: open.id,
+                  headSha: open.sha ?? open.diff_refs?.head_sha ?? null,
+                  targetSha: open.diff_refs?.base_sha ?? null,
+                  draft: Boolean(open.draft || /^draft:/i.test(open.title ?? '')),
+                }
+              : {}),
+          };
+        }
       }
       return { skipped: true, reason: 'no_changes' };
     }
@@ -559,6 +611,14 @@ const createPullRequest = async (ctx, repoId, { branch, baseBranch, title, body 
               prUrl: mr.web_url,
               prNumber: mr.iid,
               retargetedBase: defaultBranch,
+              ...(draft
+                ? {
+                    providerId: mr.id,
+                    headSha: mr.sha ?? mr.diff_refs?.head_sha ?? null,
+                    targetSha: mr.diff_refs?.base_sha ?? null,
+                    draft: Boolean(mr.draft || /^draft:/i.test(mr.title ?? '')),
+                  }
+                : {}),
             };
           }
           errorText = await res.text();
@@ -570,7 +630,18 @@ const createPullRequest = async (ctx, repoId, { branch, baseBranch, title, body 
 
   await cleanupConstructionTaskBranches(ctx, repoId, branch);
   const mr = await res.json();
-  return { prUrl: mr.web_url, prNumber: mr.iid };
+  return {
+    prUrl: mr.web_url,
+    prNumber: mr.iid,
+    ...(draft
+      ? {
+          providerId: mr.id,
+          headSha: mr.sha ?? mr.diff_refs?.head_sha ?? null,
+          targetSha: mr.diff_refs?.base_sha ?? null,
+          draft: Boolean(mr.draft || /^draft:/i.test(mr.title ?? '')),
+        }
+      : {}),
+  };
 };
 
 // Compare base...head — the MR fan-in's pre-check that the intent branch
@@ -608,13 +679,85 @@ const compareBranches = async (ctx, repoId, { base, head }) => {
 
 // Get the live state of an MR ('open' | 'closed' | 'merged' | null).
 const getPullRequestState = async (ctx, repoId, mrIid) => {
+  const status = await getPullRequestStatus(ctx, repoId, mrIid);
+  return status?.state ?? null;
+};
+
+const getPullRequestStatus = async (ctx, repoId, mrIid) => {
   const project = encodeProject(repoId);
   const res = await glFetch(ctx, `${API_BASE}/projects/${project}/merge_requests/${mrIid}`);
   if (!res.ok) return null;
   const mr = await res.json();
-  if (mr.state === 'opened') return 'open';
-  if (mr.state === 'merged') return 'merged';
-  return 'closed';
+  return {
+    providerId: mr.id,
+    number: mr.iid,
+    url: mr.web_url,
+    sourceBranch: mr.source_branch ?? null,
+    targetBranch: mr.target_branch ?? null,
+    headSha: mr.sha ?? mr.diff_refs?.head_sha ?? null,
+    targetSha: mr.diff_refs?.base_sha ?? null,
+    state: mr.state === 'opened' ? 'open' : mr.state === 'merged' ? 'merged' : 'closed',
+    draft: Boolean(mr.draft || mr.work_in_progress || /^draft:/i.test(mr.title ?? '')),
+    mergeable:
+      mr.merge_status === 'can_be_merged' || mr.detailed_merge_status === 'mergeable'
+        ? true
+        : ['cannot_be_merged', 'conflict'].includes(mr.detailed_merge_status ?? mr.merge_status)
+          ? false
+          : null,
+    mergeableState: mr.detailed_merge_status ?? mr.merge_status ?? null,
+    mergedAt: mr.merged_at ?? null,
+    closedAt: mr.closed_at ?? null,
+    updatedAt: mr.updated_at ?? null,
+    title: mr.title ?? '',
+  };
+};
+
+const setPullRequestDraft = async (ctx, repoId, mrIid, draft) => {
+  const project = encodeProject(repoId);
+  const current = await getPullRequestStatus(ctx, repoId, mrIid);
+  if (!current || current.state !== 'open') return current;
+  if (current.draft === draft) return current;
+  const plainTitle = String(current.title ?? '').replace(/^draft:\s*/i, '');
+  const res = await glFetch(ctx, `${API_BASE}/projects/${project}/merge_requests/${mrIid}`, {
+    method: 'PUT',
+    body: JSON.stringify({ title: draft ? `Draft: ${plainTitle}` : plainTitle }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new ProviderError(res.status, data?.message || 'Failed to change merge request draft');
+  }
+  return getPullRequestStatus(ctx, repoId, mrIid);
+};
+
+const reopenPullRequest = async (ctx, repoId, mrIid) => {
+  const project = encodeProject(repoId);
+  const res = await glFetch(ctx, `${API_BASE}/projects/${project}/merge_requests/${mrIid}`, {
+    method: 'PUT',
+    body: JSON.stringify({ state_event: 'reopen' }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new ProviderError(res.status, data?.message || 'Failed to reopen merge request');
+  }
+  return getPullRequestStatus(ctx, repoId, mrIid);
+};
+
+const isCommitAncestor = async (ctx, repoId, ancestorSha, descendantRef) => {
+  const project = encodeProject(repoId);
+  for (let page = 1; page <= 100; page += 1) {
+    const res = await glFetch(
+      ctx,
+      `${API_BASE}/projects/${project}/repository/commits/${encodeURIComponent(
+        ancestorSha,
+      )}/refs?type=branch&per_page=100&page=${page}`,
+    );
+    if (!res.ok) return false;
+    const refs = await res.json();
+    if (!Array.isArray(refs)) return false;
+    if (refs.some((ref) => ref.type === 'branch' && ref.name === descendantRef)) return true;
+    if (refs.length < 100) break;
+  }
+  return false;
 };
 
 // Server-side merge of a task branch into the sprint branch. GitLab has no
@@ -679,9 +822,14 @@ export {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  findPullRequest,
   createPullRequest,
   compareBranches,
   getPullRequestState,
+  getPullRequestStatus,
+  setPullRequestDraft,
+  reopenPullRequest,
+  isCommitAncestor,
   mergeBranch,
   constructionBranchPrefix,
 };
@@ -705,9 +853,14 @@ export default {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  findPullRequest,
   createPullRequest,
   compareBranches,
   getPullRequestState,
+  getPullRequestStatus,
+  setPullRequestDraft,
+  reopenPullRequest,
+  isCommitAncestor,
   mergeBranch,
   constructionBranchPrefix,
 };

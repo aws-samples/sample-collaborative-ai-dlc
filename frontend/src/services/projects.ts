@@ -75,15 +75,14 @@ export interface Project {
   // Concurrency cap for parallel unit lanes (docs/v2-parallel.md WP5);
   // 0 = unbounded (the unit DAG is the only limit).
   maxParallelUnits?: number;
-  // PR strategy at fan-in (docs/v2-parallel.md WP6). Only 'intent-pr' is
-  // enabled; the other two are visible-but-disabled until WP6b.
+  // Project PR delivery override. `default` inherits the platform setting.
   prStrategy?: PrStrategy;
   // Per-project stage-skipping override: 'default' inherits the platform
   // Admin setting; enabled/disabled override it for this project's intents.
   stageSkipping?: StageSkippingOverride;
 }
 
-export type PrStrategy = 'intent-pr' | 'pr-per-unit' | 'stacked';
+export type PrStrategy = 'default' | 'intent-pr' | 'pr-per-unit';
 export type StageSkippingOverride = 'default' | 'enabled' | 'disabled';
 
 export interface TrackerMigrationResult {

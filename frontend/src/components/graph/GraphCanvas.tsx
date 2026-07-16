@@ -292,6 +292,16 @@ export const NODE_TYPES: Record<
     label: 'Unit of Work',
     shortLabel: 'Unit',
   },
+  UnitPullRequest: {
+    color: '#0891b2',
+    darkColor: '#0e7490',
+    gradientFrom: '#22d3ee',
+    gradientTo: '#0e7490',
+    textColor: '#fff',
+    icon: GitPullRequest,
+    label: 'Unit Pull Request',
+    shortLabel: 'Unit PR',
+  },
 };
 
 const UNKNOWN_NODE_CFG = {
@@ -345,6 +355,7 @@ const TYPE_HIERARCHY: string[] = [
   'Task',
   'Artifact',
   'UnitOfWork',
+  'UnitPullRequest',
   'Story',
   'Persona',
   'Component',
@@ -479,10 +490,11 @@ function deriveNodeLabel(node: GraphNode): string {
       if (typeof status === 'string' && status) return `Review (${status})`;
       return 'Review';
     }
+    case 'UnitPullRequest':
     case 'PullRequest': {
       const num = node.pr_number;
-      if (num) return `PR #${num}`;
-      return 'Pull Request';
+      if (num) return node.type === 'UnitPullRequest' ? `Unit PR #${num}` : `PR #${num}`;
+      return node.type === 'UnitPullRequest' ? 'Unit Pull Request' : 'Pull Request';
     }
     case 'GeneralInfo': {
       const title = node.title;
@@ -2637,13 +2649,31 @@ function NodeDetailContent({ node }: { node: GraphNode }) {
       );
     }
 
+    case 'UnitPullRequest':
     case 'PullRequest': {
       const prUrl = str(node, 'pr_url');
       const prNumber = str(node, 'pr_number');
-      const branch = str(node, 'branch');
-      const baseBranch = str(node, 'base_branch');
+      const branch = str(node, 'branch') || str(node, 'source_branch');
+      const baseBranch = str(node, 'base_branch') || str(node, 'target_branch');
+      const unitSlug = str(node, 'unit_slug');
+      const sectionIndex = str(node, 'section_index');
+      const provider = str(node, 'provider');
+      const state = str(node, 'state');
       return (
         <div className="space-y-3">
+          {unitSlug && (
+            <DetailField label="Unit">
+              <span className="text-xs font-semibold">
+                {unitSlug}
+                {sectionIndex ? ` · section ${sectionIndex}` : ''}
+              </span>
+            </DetailField>
+          )}
+          {(provider || state) && (
+            <DetailField label="Review state">
+              <span className="text-xs">{[provider, state].filter(Boolean).join(' · ')}</span>
+            </DetailField>
+          )}
           {prNumber && (
             <DetailField label="Pull Request">
               <span className="text-xs font-semibold">#{prNumber}</span>

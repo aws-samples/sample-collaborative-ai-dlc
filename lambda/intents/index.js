@@ -1,6 +1,6 @@
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
-import { randomUUID, randomBytes } from 'node:crypto';
+import { createHash, randomUUID, randomBytes } from 'node:crypto';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
@@ -13,6 +13,7 @@ import {
   SendDurableExecutionCallbackSuccessCommand,
 } from '@aws-sdk/client-lambda';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
+import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import {
@@ -35,6 +36,10 @@ import {
 } from '../shared/v2-workflow-plan.js';
 import { stageInstanceId as planStageInstanceId } from '../shared/v2-execution-plan.js';
 import { effectiveStageSkipping, normalizeSkipStageIds } from '../shared/stage-skip.js';
+import { effectivePrStrategy, normalizePlatformPrStrategy } from '../shared/pr-strategy.js';
+import { getGitConnection } from '../shared/git-connection-store.js';
+import { ensureFreshGitToken, resolveGitHubTokenForMode } from '../shared/git-token.js';
+import { getProvider } from '../shared/git-providers.js';
 import { normalizeComposedGrid, pruneSkipsForGrid } from '../shared/composed-grid.js';
 import { matchScopeByKeywords } from '../shared/compose-match.js';
 import { makePriceResolver, costForMetrics } from '../shared/model-pricing.js';
@@ -57,6 +62,7 @@ const { cardinality, P } = gremlin.process;
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
+const secrets = new SecretsManagerClient({});
 const s3 = new S3Client({});
 const lambdaClient = new LambdaClient({});
 const agentcore = new BedrockAgentCoreClient({});
@@ -81,6 +87,60 @@ const composeSessionIdFor = (composeId) => `aidlc-compose-${composeId}`.padEnd(3
 // Unit-lane session ids — must mirror v2-orchestrator/section.js laneSessionIdFor.
 const laneSessionIdFor = (intentId, sectionIndex, slug) =>
   `aidlc-intent-${intentId}-s${sectionIndex}-${slug}`.padEnd(33, '0');
+const toRepoSlug = (repo) =>
+  String(typeof repo === 'string' ? repo : (repo?.url ?? ''))
+    .replace(/^https?:\/\/[^/]+\//, '')
+    .replace(/\.git$/, '')
+    .replace(/^\/+|\/+$/g, '');
+
+const resolveReviewToken = async (meta) => {
+  const provider = meta.gitProvider || 'github';
+  if (provider === 'github') {
+    const { token } = await resolveGitHubTokenForMode(
+      { ssm, secrets, ddb },
+      {
+        userId: meta.startedBy,
+        repositories: (meta.repos ?? []).map(toRepoSlug).filter(Boolean),
+        permissions: {
+          contents: 'read',
+          pull_requests: 'write',
+          issues: 'write',
+        },
+      },
+    );
+    return token || null;
+  }
+  const connection = await getGitConnection(ddb, meta.startedBy, provider);
+  if (!connection?.parameterName) return null;
+  return ensureFreshGitToken({
+    ssm,
+    secrets,
+    ddb,
+    item: connection,
+    gitProvider: provider,
+  });
+};
+
+const isSelectableReviewComment = (comment) => {
+  const author = String(comment?.user?.login ?? '').toLowerCase();
+  return (
+    comment &&
+    !comment.bot &&
+    !comment.system &&
+    !author.includes('ai-dlc') &&
+    typeof comment.body === 'string' &&
+    comment.body.trim().length > 0
+  );
+};
+
+const reviewCommentKey = (comment) =>
+  `${comment.repository}\u0000${comment.id}\u0000${comment.version}`;
+
+const feedbackBatchId = (comments) =>
+  createHash('sha256')
+    .update(comments.map(reviewCommentKey).toSorted().join('\n'))
+    .digest('hex')
+    .slice(0, 24);
 
 // Best-effort: stop the intent's live AgentCore session(s) so a relaunch
 // (rewind) starts a FRESH microVM instead of re-attaching a live one. Field
@@ -352,6 +412,19 @@ const fetchPlatformStageSkipping = async () => {
   }
 };
 
+// Read the platform PR strategy. Fail-safe to intent-pr: an unavailable or
+// malformed setting must never expose the more complex integration workflow.
+const fetchPlatformPrStrategy = async () => {
+  const prefix = AGENT_SETTINGS_SSM_PREFIX();
+  if (!prefix) return 'intent-pr';
+  try {
+    const res = await ssm.send(new GetParameterCommand({ Name: `${prefix}/pr-strategy` }));
+    return normalizePlatformPrStrategy(res.Parameter?.Value);
+  } catch {
+    return 'intent-pr';
+  }
+};
+
 // Read the Admin compose-LLM-bypass toggle. When 'enabled' (the default), a
 // CLEAN deterministic keyword match answers a front compose without any LLM
 // call; 'disabled' forces every compose through the composer agent. Fail-open
@@ -469,7 +542,8 @@ const fetchProjectConfig = async (g, projectId) => {
     // Concurrency cap for parallel unit lanes (docs/v2-parallel.md WP5);
     // 0 = unbounded. `|| 0` is safe: 0 IS the default.
     maxParallelUnits: Number(getVal(v, 'max_parallel_units') || 0),
-    // PR strategy at fan-in (docs/v2-parallel.md WP6; only intent-pr enabled).
+    // Project override. Missing is a legacy project and remains intent-pr;
+    // new projects persist `default` explicitly.
     prStrategy: getVal(v, 'pr_strategy') || 'intent-pr',
     // Per-project stage-skipping override ('default'|'enabled'|'disabled');
     // 'default' inherits the platform SSM setting (shared/stage-skip.js).
@@ -860,6 +934,8 @@ export const handler = async (event) => {
   const projectId = pathParameters?.projectId;
   const intentId = pathParameters?.intentId;
   const humanTaskId = pathParameters?.humanTaskId;
+  const unitSlug = pathParameters?.unitSlug;
+  const rawSectionIndex = pathParameters?.sectionIndex;
   // Post-hoc artifact editing routes.
   const artifactId = pathParameters?.artifactId;
   const editId = pathParameters?.editId;
@@ -881,6 +957,172 @@ export const handler = async (event) => {
 
     const auth = await authorize(g, projectId, sub, response);
     if (auth.res) return auth.res;
+
+    // Authenticated unit-review selection. Provider comments are data only:
+    // no webhook/comment can launch an agent. GET refreshes selectable
+    // comments; POST persists a replay-safe batch that the durable lane claims.
+    if (intentId && unitSlug && rawSectionIndex !== undefined && path?.endsWith('/feedback')) {
+      const sectionIndex = Number(rawSectionIndex);
+      if (!Number.isInteger(sectionIndex) || sectionIndex < 0) {
+        return response(400, { error: 'sectionIndex must be a non-negative integer' });
+      }
+      const meta = await store.getExecution(intentId);
+      if (!meta || meta.projectId !== projectId) {
+        return response(404, { error: 'Intent not found' });
+      }
+      if (meta.prStrategy !== 'pr-per-unit') {
+        return response(409, { error: 'This intent does not use PR per unit' });
+      }
+      const unit = await store.getUnit(intentId, sectionIndex, unitSlug);
+      const activeUnitStates = new Set([
+        'PR_DRAFT',
+        'RECONCILING',
+        'PR_READY',
+        'ADDRESSING_FEEDBACK',
+      ]);
+      if (!unit || !activeUnitStates.has(unit.state)) {
+        return response(409, { error: 'The unit lane is not in active review' });
+      }
+      const prs = (await store.listUnitPrs(intentId, { sectionIndex, slug: unitSlug })).filter(
+        (pr) => pr.state !== 'UNCHANGED' && pr.number != null,
+      );
+      if (prs.length === 0) {
+        return response(409, { error: 'The unit lane has no review pull requests' });
+      }
+      let token;
+      try {
+        token = await resolveReviewToken(meta);
+      } catch (error) {
+        console.error('Review credential resolution failed:', error.message);
+        return response(502, { error: 'Could not refresh source-control credentials' });
+      }
+      if (!token) {
+        return response(409, {
+          error: `No ${meta.gitProvider || 'github'} credential is available`,
+        });
+      }
+      const provider = getProvider(meta.gitProvider || 'github');
+      const fetched = [];
+      for (const pr of prs) {
+        const comments = await provider.listPRComments({ token }, pr.repository, pr.number);
+        const selectable = comments.filter(isSelectableReviewComment).map((comment) => ({
+          ...comment,
+          id: String(comment.id),
+          repository: pr.repository,
+          prNumber: pr.number,
+        }));
+        fetched.push(...selectable);
+        await store
+          .updateUnitPr({
+            executionId: intentId,
+            sectionIndex,
+            slug: unitSlug,
+            repository: pr.repository,
+            fields: { commentCount: selectable.length },
+          })
+          .catch(() => {});
+      }
+      const comments = fetched.toSorted((a, b) =>
+        String(a.createdAt).localeCompare(String(b.createdAt)),
+      );
+      if (httpMethod === 'GET') {
+        const history = await store.listFeedbackBatches(intentId, {
+          sectionIndex,
+          slug: unitSlug,
+        });
+        const handled = new Set(
+          history.flatMap((batch) => (batch.comments ?? []).map(reviewCommentKey)),
+        );
+        return response(200, {
+          comments: comments.map((comment) => ({
+            ...comment,
+            previouslySelected: handled.has(reviewCommentKey(comment)),
+          })),
+        });
+      }
+      if (httpMethod === 'POST') {
+        const data = body ? JSON.parse(body) : {};
+        const selections = Array.isArray(data.comments) ? data.comments : [];
+        if (selections.length < 1 || selections.length > 20) {
+          return response(400, { error: 'Select between 1 and 20 comments' });
+        }
+        const requested = new Map(
+          selections.map((selection) => [
+            `${selection.repository}\u0000${String(selection.commentId)}`,
+            selection,
+          ]),
+        );
+        if (requested.size !== selections.length) {
+          return response(400, { error: 'Duplicate comment selections are not allowed' });
+        }
+        const selected = comments.filter((comment) =>
+          requested.has(`${comment.repository}\u0000${String(comment.id)}`),
+        );
+        if (selected.length !== requested.size) {
+          return response(400, {
+            error: 'One or more selected comments no longer exist or cannot be addressed',
+          });
+        }
+        const bytes = Buffer.byteLength(JSON.stringify(selected), 'utf8');
+        if (bytes > 32 * 1024) {
+          return response(413, { error: 'Selected feedback exceeds 32 KiB' });
+        }
+        const history = await store.listFeedbackBatches(intentId, {
+          sectionIndex,
+          slug: unitSlug,
+        });
+        const prior = new Set(
+          history.flatMap((batch) => (batch.comments ?? []).map(reviewCommentKey)),
+        );
+        const repeated = selected.filter((comment) => prior.has(reviewCommentKey(comment)));
+        if (repeated.length > 0) {
+          return response(409, {
+            error: 'Selected feedback has already been queued or handled',
+            commentIds: repeated.map((comment) => comment.id),
+          });
+        }
+        const responder = getResponder(event);
+        const batchId = feedbackBatchId(selected);
+        const created = await store.createFeedbackBatch({
+          executionId: intentId,
+          sectionIndex,
+          slug: unitSlug,
+          batchId,
+          comments: selected,
+          requestedBy: responder.sub,
+          requestedByName: responder.displayName,
+        });
+        if (created.conflict) {
+          return response(409, {
+            error: 'Selected feedback has already been queued or handled',
+          });
+        }
+        if (created.created) {
+          const summary = `${responder.displayName || 'A project member'} queued ${selected.length} review comment(s) for unit ${unitSlug}`;
+          await store
+            .appendEvent({
+              executionId: intentId,
+              type: 'v2.feedback.queued',
+              unitSlug,
+              sectionIndex,
+              actor: responder.displayName || responder.sub,
+              summary,
+            })
+            .catch(() => {});
+          await broadcastToIntentChannel(intentId, {
+            action: 'agent.feedback',
+            intentId,
+            projectId,
+            unitSlug,
+            sectionIndex,
+            state: 'QUEUED',
+            summary,
+          }).catch(() => {});
+        }
+        return response(created.created ? 202 : 200, mapFeedbackBatch(created.item));
+      }
+      return response(405, { error: 'Method not allowed' });
+    }
 
     // POST /projects/{projectId}/intents/{intentId}/realtime-token
     if (intentId && httpMethod === 'POST' && path?.endsWith('/realtime-token')) {
@@ -2259,9 +2501,22 @@ export const handler = async (event) => {
           ? unitSlugs.map((unitSlug) => ({
               stage,
               unitSlug,
-              stageInstanceId: planStageInstanceId(planNamespace, stage.stageId, unitSlug),
+              sectionIndex: stage.parallelSection,
+              stageInstanceId: planStageInstanceId(
+                planNamespace,
+                stage.stageId,
+                unitSlug,
+                stage.parallelSection,
+              ),
             }))
-          : [{ stage, unitSlug: null, stageInstanceId: stage.stageInstanceId }],
+          : [
+              {
+                stage,
+                unitSlug: null,
+                sectionIndex: null,
+                stageInstanceId: stage.stageInstanceId,
+              },
+            ],
       );
       const responder = getResponder(event);
       // Retire a parked run first so the woken orchestrator exits quietly (its
@@ -2288,7 +2543,7 @@ export const handler = async (event) => {
             createdByName: responder.displayName,
           })
         : null;
-      for (const { stage, unitSlug, stageInstanceId } of resetInstances) {
+      for (const { stage, unitSlug, sectionIndex, stageInstanceId } of resetInstances) {
         const reset = await store.resetStageRow({
           executionId: intentId,
           stageInstanceId,
@@ -2300,6 +2555,7 @@ export const handler = async (event) => {
               type: 'v2.stage.reset',
               stageInstanceId,
               unitSlug,
+              sectionIndex,
               actor: responder.displayName || responder.sub,
               summary: `Stage ${stage.stageId}${unitSlug ? ` [unit ${unitSlug}]` : ''} reset for rewind (attempt ${reset.attempt + 1})`,
             })
@@ -2311,15 +2567,21 @@ export const handler = async (event) => {
       // lane state; the UNIT rows are the lane-level view, never audit (the
       // per-instance STAGE rows + EVENT feed keep the history).
       if (sectionStages.length && unitSlugs.length) {
-        for (const slug of unitSlugs) {
-          await store
-            .updateUnitState({
-              executionId: intentId,
-              slug,
-              state: 'PENDING',
-              fields: { failureReason: null, blockedOn: null },
-            })
-            .catch((err) => console.error(`Unit lane reset failed (${slug}):`, err.message));
+        const sectionIndexes = [...new Set(sectionStages.map((stage) => stage.parallelSection))];
+        for (const sectionIndex of sectionIndexes) {
+          for (const slug of unitSlugs) {
+            await store
+              .updateUnitState({
+                executionId: intentId,
+                sectionIndex,
+                slug,
+                state: 'PENDING',
+                fields: { failureReason: null, blockedOn: null },
+              })
+              .catch((err) =>
+                console.error(`Unit lane reset failed (s${sectionIndex}:${slug}):`, err.message),
+              );
+          }
         }
       }
       const supersededArtifacts = await supersedeArtifactsForStages(
@@ -2681,6 +2943,7 @@ export const handler = async (event) => {
             seq: o.seq,
             stageInstanceId: o.stageInstanceId ?? null,
             unitSlug: o.unitSlug ?? null,
+            sectionIndex: o.sectionIndex ?? null,
             kind: o.kind,
             content: o.content,
             timestamp: o.timestamp,
@@ -2713,6 +2976,7 @@ export const handler = async (event) => {
             type: e.eventType,
             stageInstanceId: e.stageInstanceId ?? null,
             unitSlug: e.unitSlug ?? null,
+            sectionIndex: e.sectionIndex ?? null,
             actor: e.actor ?? null,
             summary: e.summary ?? null,
             timestamp: e.timestamp,
@@ -2727,6 +2991,7 @@ export const handler = async (event) => {
           sensorRunId: s.sensorRunId,
           stageInstanceId: s.stageInstanceId ?? null,
           unitSlug: s.unitSlug ?? null,
+          sectionIndex: s.sectionIndex ?? null,
           sensorId: s.sensorId,
           result: s.result,
           severity: s.severity,
@@ -2752,6 +3017,8 @@ export const handler = async (event) => {
         // attribute per-unit stage instances. Both null/empty pre-promotion.
         unitPlan: mapUnitPlan(records.unitPlan),
         units: (records.units ?? []).map(mapUnit),
+        unitPrs: (records.unitPrs ?? []).map(mapUnitPr),
+        feedbackBatches: (records.feedbackBatches ?? []).map(mapFeedbackBatch),
       });
     }
 
@@ -2962,7 +3229,7 @@ export const handler = async (event) => {
         deriveEnrichment: await fetchDeriveEnrichment(),
         parkReleaseSeconds: cfg.parkReleaseSeconds,
         maxParallelUnits: cfg.maxParallelUnits,
-        prStrategy: cfg.prStrategy,
+        prStrategy: effectivePrStrategy(await fetchPlatformPrStrategy(), cfg.prStrategy),
         stageSkipping,
         skipStageIds,
         composedGrid,
@@ -3168,6 +3435,7 @@ const mapStage = (s) => ({
   stageInstanceId: s.stageInstanceId,
   stageId: s.stageId ?? null,
   unitSlug: s.unitSlug ?? null,
+  sectionIndex: s.sectionIndex ?? null,
   phase: s.phase ?? null,
   state: s.state,
   attempt: s.attempt ?? 0,
@@ -3200,6 +3468,7 @@ const mapUnitPlan = (p) =>
     : null;
 
 const mapUnit = (u) => ({
+  sectionIndex: u.sectionIndex ?? null,
   slug: u.slug,
   dependsOn: u.dependsOn ?? [],
   state: u.state,
@@ -3209,7 +3478,51 @@ const mapUnit = (u) => ({
   mergedAt: u.mergedAt ?? null,
   failureReason: u.failureReason ?? null,
   blockedOn: u.blockedOn ?? null,
+  integrationOwner: Boolean(u.integrationOwner),
+  blockedReason: u.blockedReason ?? null,
   updatedAt: u.updatedAt ?? null,
+});
+
+const mapUnitPr = (pr) => ({
+  sectionIndex: pr.sectionIndex,
+  unitSlug: pr.unitSlug,
+  repository: pr.repository,
+  provider: pr.provider,
+  providerId: pr.providerId ?? null,
+  number: pr.number ?? null,
+  url: pr.url ?? null,
+  sourceBranch: pr.sourceBranch,
+  targetBranch: pr.targetBranch,
+  headSha: pr.headSha ?? null,
+  readyHeadSha: pr.readyHeadSha ?? null,
+  targetSha: pr.targetSha ?? null,
+  state: pr.state,
+  mergeable: pr.mergeable ?? null,
+  commentCount: pr.commentCount ?? 0,
+  repositoryOutcome: pr.repositoryOutcome ?? null,
+  createdAt: pr.createdAt ?? null,
+  updatedAt: pr.updatedAt ?? null,
+  mergedAt: pr.mergedAt ?? null,
+  closedAt: pr.closedAt ?? null,
+});
+
+const mapFeedbackBatch = (batch) => ({
+  sectionIndex: batch.sectionIndex,
+  unitSlug: batch.unitSlug,
+  batchId: batch.batchId,
+  comments: batch.comments ?? [],
+  state: batch.state,
+  requestedBy: batch.requestedBy,
+  requestedByName: batch.requestedByName ?? null,
+  stageInstanceId: batch.stageInstanceId ?? null,
+  output: batch.output ?? null,
+  changedFiles: batch.changedFiles ?? null,
+  verification: batch.verification ?? null,
+  commitSha: batch.commitSha ?? null,
+  failureReason: batch.failureReason ?? null,
+  createdAt: batch.createdAt ?? null,
+  updatedAt: batch.updatedAt ?? null,
+  completedAt: batch.completedAt ?? null,
 });
 
 // Map metric rows to the DTO shape, attaching the model in effect and its cost.
@@ -3271,6 +3584,7 @@ const mapHumanTask = (h) => ({
   humanTaskId: h.humanTaskId,
   stageInstanceId: h.stageInstanceId ?? null,
   unitSlug: h.unitSlug ?? null,
+  sectionIndex: h.sectionIndex ?? null,
   kind: h.kind,
   status: h.status,
   prompt: h.prompt ?? null,

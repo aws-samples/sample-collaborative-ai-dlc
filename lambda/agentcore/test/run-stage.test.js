@@ -2354,6 +2354,63 @@ describe('runStage — engine git hook (docs/v2-parallel.md WP2)', () => {
     expect(calls[0].author).toBeNull();
   });
 
+  it('rechecks structured review targets immediately before the feedback push', async () => {
+    const order = [];
+    const targets = [
+      {
+        repoId: 'owner/repo',
+        number: 7,
+        headSha: 'head-before',
+        targetSha: 'target-before',
+      },
+    ];
+    const deps = baseDeps({
+      ...sourcePresent,
+      spawnFn: () => {
+        order.push('spawn');
+        return okSpawn();
+      },
+      verifyReviewTargets: async (input) => {
+        order.push('provider-recheck');
+        expect(input).toMatchObject({
+          targets,
+          gitProvider: 'github',
+          gitToken: 'tok',
+        });
+        return [
+          {
+            repoId: 'owner/repo',
+            number: 7,
+            status: { state: 'open', draft: true },
+            headMoved: false,
+            targetMoved: false,
+          },
+        ];
+      },
+      commitAndPushAll: async () => {
+        order.push('push');
+        return { ok: true, committed: false, results: [] };
+      },
+    });
+    const result = await runStage(
+      {
+        ...gitArgs,
+        reviewFeedback: {
+          batchId: 'batch-1',
+          prompt: 'Address the selected review comment.',
+          targets,
+        },
+      },
+      deps,
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      state: 'SUCCEEDED',
+      reviewTargetCheck: [expect.objectContaining({ repoId: 'owner/repo', headMoved: false })],
+    });
+    expect(order).toEqual(['spawn', 'provider-recheck', 'push']);
+  });
+
   it('forwards the payload gitAuthor to the engine commit ("on behalf of" attribution)', async () => {
     const calls = [];
     const deps = baseDeps({

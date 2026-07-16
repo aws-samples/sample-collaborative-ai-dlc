@@ -35,8 +35,14 @@ Git is deterministic and owned by the engine — **the agent never runs git and 
 - On start, the engine clones the project's repositories, creates the intent branch `aidlc/<title-slug>` (a readable slug derived from the intent title) off each repository's base branch, and mounts the checkout as the agent's working directory.
 - The engine commits and pushes after **every** stage exit — success, park, or failure — so no work is ever lost to a session expiry.
 - Credentials are injected only inside the engine's push/fetch windows and scrubbed from the checkout otherwise. In GitHub App mode, pushes use installation tokens instead of user tokens.
-- Parallel lanes work on per-unit branches (`aidlc/<intent-slug>--s<k>-unit-<slug>`); the engine merges completed lanes into the intent branch with serialized `--no-ff` merges in dependency-safe order.
-- On success, the orchestrator opens a pull request (GitHub) or merge request (GitLab) from the intent branch onto the base branch — per the project's PR strategy.
+- Parallel lanes work on section-specific per-unit branches (`aidlc/<intent-slug>--s<k>-unit-<slug>`).
+- With **Intent PR**, the engine merges completed lanes into the intent branch with serialized `--no-ff` merges in dependency-safe order.
+- With **PR per unit**, every changed repository gets a draft pull/merge request from the unit branch to the intent branch. Reviews can proceed in parallel, but only the next dependency-ready unit becomes mergeable. Before readiness, the engine reconciles it with the latest intent head. Unchanged repositories are neutral.
+- After all units integrate and shared stages pass, both strategies open the final intent-to-base pull/merge request.
+
+For PR-per-unit delivery, DynamoDB is scheduling truth. A unit is complete only after every changed repository confirms the exact ready head is on the intent branch. A partial multi-repository merge preserves merged work, blocks dependents, and enters halt-and-ask.
+
+Provider comments never launch agents by themselves. A project member selects comments in the intent's review drawer; the API refetches those comments with fresh credentials, rejects bot/system comments, and queues a bounded, audited feedback batch. The lane revisits its last successful stage, runs its normal sensors, commits and pushes the revision, and posts a summary without resolving provider threads.
 
 ## Human gates, park and resume
 

@@ -471,6 +471,22 @@ resource "aws_ssm_parameter" "stage_skipping" {
   tags = var.tags
 }
 
+# Platform-wide pull-request delivery strategy. Projects store either an
+# explicit override or `default`; the effective value is snapshotted onto each
+# new intent. `intent-pr` is the fail-safe deployment default.
+resource "aws_ssm_parameter" "pr_strategy" {
+  name        = "/${var.project_name}/${var.environment}/pr-strategy"
+  description = "Pull-request delivery strategy: intent-pr | pr-per-unit (Admin UI managed)"
+  type        = "String"
+  value       = "intent-pr"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+
+  tags = var.tags
+}
+
 # Composer LLM bypass — when enabled (the default) a clean deterministic
 # keyword match answers a front compose without any LLM call; disabling it
 # forces every compose through the composer agent. Managed by the Admin UI.

@@ -22,6 +22,8 @@
 import {
   ensureLaneBranch as defaultEnsureLaneBranch,
   mergeBranchNoFf as defaultMergeBranchNoFf,
+  fetchOrigin as defaultFetchOrigin,
+  runGit as defaultRunGit,
   repoTargetDir,
 } from '../git-engine.js';
 import {
@@ -128,11 +130,18 @@ export const initLane = async (
       executionId,
       type: 'v2.unit.lane_ready',
       unitSlug,
+      sectionIndex,
       actor: 'agentcore',
       summary: `Lane workspace ready for unit ${unitSlug} on ${unitBranch} (section ${sectionIndex ?? '?'}, ${prepared.length} repo(s))`,
     })
     .catch(() => {});
-  await publish({ action: 'agent.unit', unitSlug, state: 'LANE_READY', unitBranch });
+  await publish({
+    action: 'agent.unit',
+    unitSlug,
+    sectionIndex,
+    state: 'LANE_READY',
+    unitBranch,
+  });
 
   return { ok: true, unitSlug, unitBranch, repos: prepared };
 };
@@ -144,6 +153,7 @@ export const mergeLane = async (
     intentId,
     executionId,
     unitSlug,
+    sectionIndex = null,
     repos = [],
     unitBranch,
     intentBranch,
@@ -225,6 +235,7 @@ export const mergeLane = async (
       executionId,
       type: ok ? 'v2.git.merged' : 'v2.git.merge_failed',
       unitSlug,
+      sectionIndex,
       actor: 'agentcore',
       summary: ok
         ? `Engine merged ${unitBranch} into ${intentBranch} (${results
@@ -241,7 +252,13 @@ export const mergeLane = async (
     })
     .catch(() => {});
   if (!ok) {
-    await publish({ action: 'agent.unit', unitSlug, state: 'MERGE_FAILED', unitBranch });
+    await publish({
+      action: 'agent.unit',
+      unitSlug,
+      sectionIndex,
+      state: 'MERGE_FAILED',
+      unitBranch,
+    });
   }
 
   if (!ok) {
@@ -257,4 +274,173 @@ export const mergeLane = async (
     };
   }
   return { ok: true, unitSlug, results };
+};
+
+// Bring the latest remote intent head into a unit branch before its PR/MR is
+// promoted from draft. Reuses the engine's idempotent remote-reset + no-ff
+// merge primitive with the branch roles reversed.
+export const reconcileLane = async (
+  {
+    projectId,
+    intentId,
+    executionId,
+    unitSlug,
+    sectionIndex = null,
+    repos = [],
+    unitBranch,
+    intentBranch,
+    gitToken,
+    gitProvider,
+    gitAuthor = null,
+    workspaceDir,
+  },
+  deps,
+) => {
+  const {
+    store,
+    broadcast = async () => {},
+    mergeBranchNoFf = defaultMergeBranchNoFf,
+    ensureWorkspaceSource = defaultEnsureWorkspaceSource,
+    urlsFor = null,
+  } = deps;
+  if (!unitSlug) return { ok: false, reason: 'missing_unit_slug' };
+  if (!unitBranch || !intentBranch) return { ok: false, reason: 'missing_branch' };
+  if (repos.length === 0) return { ok: true, unitSlug, results: [] };
+
+  const heal = await ensureWorkspaceSource({
+    repos,
+    branch: unitBranch,
+    baseBranch: intentBranch,
+    gitToken,
+    gitProvider,
+    workspaceDir,
+  }).catch((error) => ({ error: error?.message ?? String(error) }));
+  if (heal?.error || heal?.failed?.length) {
+    return {
+      ok: false,
+      reason: 'workspace_restore_failed',
+      detail: heal?.error ?? `could not re-clone: ${heal.failed.join(', ')}`,
+    };
+  }
+
+  const multi = repos.length > 1;
+  const results = [];
+  for (const repo of repos) {
+    const url = repoUrl(repo);
+    const result = await mergeBranchNoFf({
+      dir: repoTargetDir({ url, workspaceDir, multi }),
+      repo: url,
+      // Reverse merge: latest intent into the unit branch, then push unit.
+      intentBranch: unitBranch,
+      unitBranch: intentBranch,
+      message: `aidlc(reconcile): ${unitSlug} - ${executionId}`,
+      author: gitAuthor,
+      gitToken,
+      gitProvider,
+      urls: urlsFor ? urlsFor(url) : {},
+    });
+    results.push({ repo: url, ...result });
+  }
+  const ok = results.every((row) => row.merged === true || row.merged === 'up_to_date');
+  const conflicts = results.filter((row) => row.reason === 'merge_conflict');
+  await store
+    ?.appendEvent({
+      executionId,
+      type: ok ? 'v2.unit.reconciled' : 'v2.unit.reconcile_failed',
+      unitSlug,
+      sectionIndex,
+      actor: 'agentcore',
+      summary: ok
+        ? `Unit ${unitSlug} reconciled with ${intentBranch}`
+        : `Unit ${unitSlug} reconciliation failed: ${results
+            .filter((row) => row.merged === false)
+            .map((row) => `${row.repo} (${row.reason})`)
+            .join(', ')}`,
+    })
+    .catch(() => {});
+  await broadcast({
+    executionId,
+    intentId,
+    projectId,
+    action: 'agent.unit',
+    unitSlug,
+    sectionIndex,
+    state: ok ? 'RECONCILED' : 'RECONCILE_FAILED',
+  }).catch(() => {});
+  return ok
+    ? { ok: true, unitSlug, results }
+    : {
+        ok: false,
+        reason: conflicts.length
+          ? 'merge_conflict'
+          : (results.find((row) => row.merged === false)?.reason ?? 'reconcile_failed'),
+        conflicts: conflicts.flatMap((row) =>
+          (row.conflicts ?? []).map((file) => `${row.repo}:${file}`),
+        ),
+        results,
+      };
+};
+
+// Reset the intent session's working tree to the latest remote intent head
+// after provider-side unit integration. Shared stages must never run against a
+// stale pre-merge checkout.
+export const refreshIntentWorkspace = async (
+  { repos = [], intentBranch, baseBranch, baseBranches, gitToken, gitProvider, workspaceDir },
+  deps,
+) => {
+  const {
+    ensureWorkspaceSource = defaultEnsureWorkspaceSource,
+    fetchOrigin = defaultFetchOrigin,
+    git = defaultRunGit,
+    urlsFor = null,
+  } = deps;
+  if (repos.length === 0) return { ok: true, results: [] };
+  const heal = await ensureWorkspaceSource({
+    repos,
+    branch: intentBranch,
+    baseBranch: baseBranch ?? intentBranch,
+    baseBranches,
+    gitToken,
+    gitProvider,
+    workspaceDir,
+  }).catch((error) => ({ error: error?.message ?? String(error) }));
+  if (heal?.error || heal?.failed?.length) {
+    return {
+      ok: false,
+      reason: 'workspace_restore_failed',
+      detail: heal?.error ?? heal.failed.join(', '),
+    };
+  }
+  const multi = repos.length > 1;
+  const results = [];
+  for (const repo of repos) {
+    const url = repoUrl(repo);
+    const dir = repoTargetDir({ url, workspaceDir, multi });
+    const fetched = await fetchOrigin({
+      dir,
+      repo: url,
+      gitToken,
+      gitProvider,
+      urls: urlsFor ? urlsFor(url) : {},
+      git,
+    });
+    if (!fetched.fetched) {
+      results.push({ repo: url, refreshed: false, reason: fetched.reason });
+      continue;
+    }
+    const checkout = await git(
+      ['checkout', '-B', intentBranch, `refs/remotes/origin/${intentBranch}`],
+      { cwd: dir },
+    );
+    results.push({
+      repo: url,
+      refreshed: checkout.exitCode === 0,
+      detail: checkout.stderr?.trim() || null,
+    });
+  }
+  return {
+    ok: results.every((row) => row.refreshed),
+    results,
+    ...(!results.every((row) => row.refreshed) ? { reason: 'refresh_failed' } : {}),
+  };
 };

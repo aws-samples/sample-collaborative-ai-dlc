@@ -196,9 +196,18 @@ export const commitAll = async ({
   await ensureRuntimeExcludes({ dir });
 
   const attemptOnce = async () => {
+    const before = await git(['status', '--porcelain'], { cwd: dir });
+    const files =
+      before.exitCode === 0
+        ? before.stdout
+            .split('\n')
+            .filter(Boolean)
+            .map((line) => line.slice(3).trim().split(' -> ').pop())
+            .filter(Boolean)
+        : [];
     const add = await git(['add', '-A'], { cwd: dir });
     if (add.exitCode !== 0) {
-      return { committed: false, reason: 'add_failed', detail: add.stderr.trim() };
+      return { committed: false, reason: 'add_failed', detail: add.stderr.trim(), files };
     }
     const status = await git(['status', '--porcelain'], { cwd: dir });
     if (status.exitCode === 0 && status.stdout.trim() === '') {
@@ -206,10 +215,10 @@ export const commitAll = async ({
     }
     const commit = await git([...gitIdentity(author), 'commit', '-m', message], { cwd: dir });
     if (commit.exitCode !== 0) {
-      return { committed: false, reason: 'commit_failed', detail: commit.stderr.trim() };
+      return { committed: false, reason: 'commit_failed', detail: commit.stderr.trim(), files };
     }
     const head = await git(['rev-parse', 'HEAD'], { cwd: dir });
-    return { committed: true, sha: head.stdout.trim() || null };
+    return { committed: true, sha: head.stdout.trim() || null, files };
   };
 
   let last = null;
