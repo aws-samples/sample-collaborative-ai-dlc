@@ -38,6 +38,18 @@ const ROLE_LABELS: Record<string, string> = {
   member: 'Member',
 };
 
+interface SettingsCacheEntry {
+  data: Project;
+  fetchedAt: number;
+}
+
+const settingsCache = new Map<string, SettingsCacheEntry>();
+
+/** @internal Test-only — reset module cache between test runs. */
+export function clearSettingsCacheForTests() {
+  settingsCache.clear();
+}
+
 export default function ProjectSettings() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
@@ -58,8 +70,9 @@ export default function ProjectSettings() {
     );
   };
 
-  const [project, setProject] = useState<Project | null>(null);
-  const [loading, setLoading] = useState(true);
+  const cached = projectId ? settingsCache.get(projectId) : null;
+  const [project, setProject] = useState<Project | null>(cached?.data ?? null);
+  const [loading, setLoading] = useState(!cached?.data);
   const [error, setError] = useState<string | null>(null);
 
   const loadProject = useCallback(async () => {
@@ -71,6 +84,7 @@ export default function ProjectSettings() {
         return;
       }
       setProject(proj);
+      settingsCache.set(projectId, { data: proj, fetchedAt: Date.now() });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load space');
     } finally {

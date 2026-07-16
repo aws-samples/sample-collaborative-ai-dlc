@@ -29,7 +29,7 @@ vi.mock('@/services/projects', () => ({
   },
 }));
 
-import ProjectSettings from './ProjectSettings';
+import ProjectSettings, { clearSettingsCacheForTests } from './ProjectSettings';
 
 const V2_PROJECT = {
   id: 'p1',
@@ -56,6 +56,7 @@ const renderAt = (initialEntry = '/space/p1/settings') =>
 beforeEach(() => {
   vi.clearAllMocks();
   getProject.mockResolvedValue(V2_PROJECT);
+  clearSettingsCacheForTests();
 });
 
 describe('ProjectSettings', () => {

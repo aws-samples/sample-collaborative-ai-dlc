@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
+import { getTimeAgo } from '@/lib/timeAgo';
 import { useProjectCache, useProjectSprintsCache } from '@/hooks/useProjectsCache';
 import { useSprintEvents } from '@/hooks/useSprintEvents';
 import { type Project as ProjectType } from '@/services/projects';
@@ -66,13 +67,7 @@ const STATUS_LABEL: Record<string, string> = {
 
 function formatRelativeTime(dateStr: string | null): string {
   if (!dateStr) return '';
-  const ms = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(ms / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.floor(hrs / 24)}d ago`;
+  return getTimeAgo(dateStr);
 }
 
 export default function Project() {
@@ -325,6 +320,28 @@ function SprintRow({
 
 // ── v2 projects: intents list + create ──
 
+interface IntentsCacheEntry {
+  intents: Intent[];
+  usage: ProjectMetrics | null;
+  fetchedAt: number;
+}
+
+const intentsCache = new Map<string, IntentsCacheEntry>();
+
+/** @internal Test-only — reset module cache between test runs. */
+export function clearIntentsCacheForTests() {
+  intentsCache.clear();
+}
+
+const INTENT_STATUS_LABEL: Record<string, string> = {
+  RUNNING: 'Running',
+  WAITING: 'Needs input',
+  CREATED: 'Created',
+  SUCCEEDED: 'Done',
+  FAILED: 'Failed',
+  CANCELLED: 'Cancelled',
+};
+
 const INTENT_STATUS_ICON: Record<string, typeof Loader2> = {
   RUNNING: Loader2,
   WAITING: MessageCircleQuestion,
@@ -353,11 +370,12 @@ function IntentsView({
   projectId: string;
   onNavigate: (path: string) => void;
 }) {
-  const [intents, setIntents] = useState<Intent[]>([]);
-  const [loading, setLoading] = useState(true);
+  const cached = intentsCache.get(projectId);
+  const [intents, setIntents] = useState<Intent[]>(cached?.intents ?? []);
+  const [loading, setLoading] = useState(!cached);
   const [error, setError] = useState<string | null>(null);
 
-  const [usage, setUsage] = useState<ProjectMetrics | null>(null);
+  const [usage, setUsage] = useState<ProjectMetrics | null>(cached?.usage ?? null);
   const [confirmDeleteIntent, setConfirmDeleteIntent] = useState<Intent | null>(null);
   const [deletingIntent, setDeletingIntent] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<IntentSort>(loadIntentSort);
@@ -400,13 +418,25 @@ function IntentsView({
   const refresh = useCallback(() => {
     intentsService
       .list(projectId)
-      .then(setIntents)
+      .then((data) => {
+        setIntents(data);
+        intentsCache.set(projectId, {
+          intents: data,
+          usage: intentsCache.get(projectId)?.usage ?? null,
+          fetchedAt: Date.now(),
+        });
+      })
       .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load intents'))
       .finally(() => setLoading(false));
-    // Usage rollup is a best-effort enrichment — a failure just hides the card.
     intentsService
       .projectMetrics(projectId)
-      .then(setUsage)
+      .then((data) => {
+        setUsage(data);
+        const existing = intentsCache.get(projectId);
+        if (existing) {
+          existing.usage = data;
+        }
+      })
       .catch(() => setUsage(null));
   }, [projectId]);
 
@@ -448,9 +478,7 @@ function IntentsView({
                   Legacy
                 </Badge>
               </TooltipTrigger>
-              <TooltipContent>
-                Created with an older version — migrate to unlock latest features
-              </TooltipContent>
+              <TooltipContent>This space is view-only. New work uses v2 intents.</TooltipContent>
             </Tooltip>
           )}
         </div>
@@ -569,7 +597,7 @@ function IntentsView({
                           {it.title || 'Untitled intent'}
                         </span>
                         <Badge variant="outline" className="text-[9px] h-4 shrink-0">
-                          {isDeleting ? 'DELETING' : it.status}
+                          {isDeleting ? 'DELETING' : (INTENT_STATUS_LABEL[it.status] ?? it.status)}
                         </Badge>
                       </span>
                       <span className="flex items-center gap-2 text-[11px] text-muted-foreground">
