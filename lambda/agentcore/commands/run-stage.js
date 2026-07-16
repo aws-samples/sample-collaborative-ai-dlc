@@ -1778,6 +1778,7 @@ export const runStage = async (
           seq: row.seq,
           kind: 'stdout',
           content,
+          timestamp: row.timestamp,
           ...(display ? { display } : {}),
         });
       })
@@ -2331,9 +2332,10 @@ export const runStage = async (
     state: 'SUCCEEDED',
   });
   const changedFiles = [
-    ...new Set(gitResult.results.flatMap((result) => result.files ?? [])),
+    ...new Set(gitResult.results.flatMap((gitChange) => gitChange.files ?? [])),
   ].toSorted();
-  const commitSha = gitResult.results.find((result) => result.committed && result.sha)?.sha ?? null;
+  const commitSha =
+    gitResult.results.find((gitChange) => gitChange.committed && gitChange.sha)?.sha ?? null;
   return {
     ok: true,
     state: 'SUCCEEDED',

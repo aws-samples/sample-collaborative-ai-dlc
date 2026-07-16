@@ -3,6 +3,7 @@ import { createOpenCodeJsonlParser } from './cli/opencode-parser.js';
 const TOOL_DISPLAY_TYPES = new Set([
   'message',
   'tool',
+  'edit',
   'batch_read',
   'artifact',
   'question',
@@ -79,6 +80,26 @@ const emitEvent = (emit, content, display) => {
   emit({ content, display: normalizeDisplay(display) });
 };
 
+const cleanDisplayMessage = (text) =>
+  String(text ?? '')
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*>\s?/, '').replace(/^\s*[\u2713\u2714]\s*/, ''))
+    .join('\n')
+    .trim();
+
+const displayForMessage = (content) => {
+  const summary = cleanDisplayMessage(content);
+  const success =
+    /^Stage complete\b/i.test(summary) ||
+    /^Local \S+ cold resume completed\.?$/i.test(summary) ||
+    /\bfinished successfully\.?$/i.test(summary);
+  return {
+    type: success ? 'system' : 'message',
+    level: success ? 'success' : 'info',
+    ...(success ? { title: summary } : { summary }),
+  };
+};
+
 const completionOf = (line) => {
   const match = line.match(
     /^\s*-?\s*(Completed|Failed|Errored|Error)(?:\s+in\s+([0-9.]+\s*[a-z]+))?\s*$/i,
@@ -94,6 +115,29 @@ const completionOf = (line) => {
 const parseToolStart = (line) => {
   const match = line.match(/^\s*Running tool\s+[`'"]?([A-Za-z0-9_.:-]+)\b/i);
   return match?.[1] ?? null;
+};
+
+const parseNativeFsStart = (line) => {
+  const read = line.match(
+    /^\s*Reading file:\s*(.+?)(?:,\s*all lines)?\s*\(using tool:\s*read\)\s*$/i,
+  );
+  if (read?.[1]) {
+    return {
+      name: 'fs_read',
+      targets: [read[1].trim()],
+    };
+  }
+
+  const write = line.match(
+    /^\s*I'll\s+(create|update|modify|edit|write)\s+the following file:\s*(.+?)\s*\(using tool:\s*(?:write|edit)\)\s*$/i,
+  );
+  if (!write?.[2]) return null;
+  const operation = write[1].toLowerCase();
+  return {
+    name: 'fs_write',
+    targets: [write[2].trim()],
+    editAction: operation === 'create' ? 'Created' : operation === 'write' ? 'Wrote' : 'Updated',
+  };
 };
 
 const extractJson = (text) => {
@@ -137,6 +181,8 @@ const readTargetsFromParams = (params) => {
     params.paths ??
     params.file ??
     params.files ??
+    params.file_path ??
+    params.filePath ??
     params.filename ??
     params.pattern ??
     params.glob;
@@ -146,6 +192,7 @@ const readTargetsFromParams = (params) => {
 };
 
 const readTargetsFromTool = (tool, params) => {
+  if (Array.isArray(tool.targets) && tool.targets.length) return tool.targets;
   const fromParams = readTargetsFromParams(params);
   if (fromParams.length) return fromParams;
   const value = extractParamString(tool.rawLines.join(''), [
@@ -153,6 +200,8 @@ const readTargetsFromTool = (tool, params) => {
     'paths',
     'file',
     'files',
+    'file_path',
+    'filePath',
     'filename',
     'pattern',
     'glob',
@@ -169,10 +218,45 @@ const artifactLabelFromTool = (tool, params) =>
   artifactLabelFromParams(params) ||
   extractParamString(tool.rawLines.join(''), ['id', 'artifactId', 'artifactType', 'name']);
 
+const artifactTitleFromTool = (tool, params) =>
+  String(params?.title ?? '').trim() ||
+  extractParamString(tool.rawLines.join(''), ['title']) ||
+  artifactLabelFromTool(tool, params);
+
+const questionTextFromTool = (tool, params) => {
+  const question = Array.isArray(params?.questions) ? params.questions[0] : null;
+  return (
+    String(question?.text ?? '').trim() ||
+    extractParamString(tool.rawLines.join(''), ['text', 'question'])
+  );
+};
+
 const humanizeTool = (name) =>
   String(name || 'tool')
     .replace(/[_:-]+/g, ' ')
     .replace(/\b\w/g, (c) => c.toUpperCase());
+
+const isEditTool = (name) =>
+  /^(?:fs_)?(?:write|edit|replace|patch)(?:_file)?$/i.test(String(name ?? '')) ||
+  /^(?:apply_patch|str_replace|multi_edit|notebook_edit|create_file)$/i.test(String(name ?? ''));
+
+const patchDelta = (content) => {
+  const lines = String(content ?? '').split(/\r?\n/);
+  const additions = lines.filter((line) => /^\s*\+\s*\d+:\s?/.test(line)).length;
+  const deletions = lines.filter((line) => /^\s*-\s*\d+:\s?/.test(line)).length;
+  if (!additions && !deletions) return '';
+  if (additions && !deletions) return `+${additions} ${additions === 1 ? 'line' : 'lines'}`;
+  if (!additions && deletions) return `-${deletions} ${deletions === 1 ? 'line' : 'lines'}`;
+  return `+${additions}/-${deletions} lines`;
+};
+
+const editActionForTool = (tool, content) => {
+  if (tool.editAction) return tool.editAction;
+  if (/^create_file$/i.test(tool.name)) return 'Created';
+  if (/\bFile created successfully\b|\bCreating:\s/i.test(content)) return 'Created';
+  if (/^(?:fs_)?write(?:_file)?$/i.test(tool.name)) return 'Wrote';
+  return 'Updated';
+};
 
 const displayForTool = (tool) => {
   const content = tool.rawLines.join('');
@@ -212,7 +296,7 @@ const displayForTool = (tool) => {
   }
 
   if (tool.name === 'create_artifact') {
-    const label = artifactLabelFromTool(tool, params) || 'artifact';
+    const label = artifactTitleFromTool(tool, params) || 'artifact';
     return {
       content,
       display: {
@@ -227,14 +311,35 @@ const displayForTool = (tool) => {
   }
 
   if (tool.name === 'ask_question') {
+    const question = questionTextFromTool(tool, params);
     return {
       content,
       display: {
         type: 'question',
         level: failed ? 'error' : 'info',
-        title: failed ? 'Question failed' : 'Asked a question',
+        title: failed ? 'Question failed' : question ? `Question: ${question}` : 'Asked a question',
         summary: failed ? 'The question tool failed.' : duration,
         details,
+        hiddenByDefault: false,
+      },
+    };
+  }
+
+  if (isEditTool(tool.name)) {
+    const targets = readTargetsFromTool(tool, params);
+    const names = compactList(targets);
+    const target = names ? `: ${names}` : '';
+    const delta = patchDelta(content);
+    const deltaSuffix = delta ? ` (${delta})` : '';
+    const action = editActionForTool(tool, content);
+    return {
+      content,
+      display: {
+        type: 'edit',
+        level: failed ? 'error' : 'info',
+        title: failed ? `Edit failed${target}` : `${action}${target}${deltaSuffix}`,
+        summary: failed ? 'Workspace edit failed.' : duration,
+        details: content.trim(),
         hiddenByDefault: false,
       },
     };
@@ -284,11 +389,27 @@ const isStructuralNoiseLine = (text) => {
   return false;
 };
 
+const isPatchLine = (text) => /^\s*[+-]\s*\d+:\s?/.test(String(text ?? ''));
+
 const openCodeToolName = (name) => {
   const raw = String(name ?? 'tool')
     .split(/[.:]/)
     .at(-1);
   return raw.startsWith('aidlc_') ? raw.slice('aidlc_'.length) : raw;
+};
+
+const claudeToolName = (name) => {
+  const raw = String(name ?? 'tool');
+  return raw.startsWith('mcp__') ? raw.split('__').at(-1) : raw;
+};
+
+const claudeResultText = (result) => {
+  if (typeof result?.content === 'string') return result.content;
+  if (!Array.isArray(result?.content)) return '';
+  return result.content
+    .map((part) => (typeof part === 'string' ? part : (part?.text ?? '')))
+    .filter(Boolean)
+    .join('\n');
 };
 
 export const createCliOutputSink = ({
@@ -306,11 +427,7 @@ export const createCliOutputSink = ({
       onUsage,
       onText(text) {
         const content = stripTerminalControls(text);
-        emitEvent(emit, content, {
-          type: 'message',
-          level: 'info',
-          summary: content.trim(),
-        });
+        emitEvent(emit, content, displayForMessage(content));
       },
       onTool(toolEvent) {
         const name = openCodeToolName(toolEvent.name);
@@ -365,12 +482,35 @@ export const createCliOutputSink = ({
     let suppressTool = false;
     let tool = null;
     let readBatch = [];
+    let messageLines = [];
+    let patchLines = [];
 
     const flushReadBatch = () => {
       if (!readBatch.length) return;
       const event = displayForReadBatch(readBatch);
       readBatch = [];
       emitEvent(emit, event.content, event.display);
+    };
+
+    const flushMessage = () => {
+      if (!messageLines.length) return;
+      const content = messageLines.join('');
+      messageLines = [];
+      emitEvent(emit, content, displayForMessage(content));
+    };
+
+    const flushPatch = () => {
+      if (!patchLines.length) return;
+      const content = patchLines.join('');
+      const lineCount = patchLines.length;
+      patchLines = [];
+      emitEvent(emit, content, {
+        type: 'edit',
+        level: 'info',
+        title: `Updated ${lineCount} ${lineCount === 1 ? 'line' : 'lines'}`,
+        details: content.trim(),
+        hiddenByDefault: false,
+      });
     };
 
     const flushToolAsRaw = () => {
@@ -402,19 +542,27 @@ export const createCliOutputSink = ({
     const consumeLine = (line, newline = true) => {
       const text = stripTerminalControls(`${line}${newline ? '\n' : ''}`);
       const toolName = parseToolStart(text);
+      const nativeFs = parseNativeFsStart(text);
 
       if (suppressTool) {
         if (completionOf(text)) suppressTool = false;
         return;
       }
 
-      if (toolName) {
+      if (toolName || nativeFs) {
+        flushMessage();
+        flushPatch();
         flushToolAsRaw();
         if (toolName === 'send_output') {
           suppressTool = true;
           return;
         }
-        tool = { name: toolName, rawLines: [text], completion: null };
+        tool = {
+          name: toolName ?? nativeFs.name,
+          rawLines: [text],
+          completion: null,
+          ...nativeFs,
+        };
         return;
       }
 
@@ -425,15 +573,31 @@ export const createCliOutputSink = ({
         return;
       }
 
-      if (text.trim()) {
-        flushReadBatch();
-        const structural = isStructuralNoiseLine(text);
+      if (!text.trim()) {
+        flushMessage();
+        flushPatch();
+        return;
+      }
+
+      flushReadBatch();
+      if (isPatchLine(text)) {
+        flushMessage();
+        patchLines.push(text);
+        return;
+      }
+
+      flushPatch();
+      const structural = isStructuralNoiseLine(text);
+      if (structural) {
+        flushMessage();
         emitEvent(emit, text, {
-          type: structural ? 'raw' : 'message',
+          type: 'raw',
           level: 'info',
           summary: text.trim(),
-          hiddenByDefault: structural,
+          hiddenByDefault: true,
         });
+      } else {
+        messageLines.push(text);
       }
     };
 
@@ -448,19 +612,54 @@ export const createCliOutputSink = ({
         if (pending) consumeLine(pending, false);
         pending = '';
         flushToolAsRaw();
+        flushMessage();
+        flushPatch();
         flushReadBatch();
       },
     };
   }
 
   // Claude's stream-json is JSONL. Forward only human-readable assistant text,
-  // not the transport/tool metadata lines.
+  // plus completed tool calls paired by tool_use id.
+  const pendingTools = new Map();
   const consumeLine = (line) => {
     if (!line.trim()) return;
     try {
-      const text = stripTerminalControls(textFromClaudeStreamEvent(JSON.parse(line)));
+      const event = JSON.parse(line);
+      const text = stripTerminalControls(textFromClaudeStreamEvent(event));
       if (text) {
-        emitEvent(emit, text, { type: 'message', level: 'info', summary: text.trim() });
+        emitEvent(emit, text, displayForMessage(text));
+      }
+      const parts = Array.isArray(event?.message?.content) ? event.message.content : [];
+      if (event.type === 'assistant') {
+        for (const part of parts) {
+          if (part?.type !== 'tool_use' || !part.id) continue;
+          pendingTools.set(part.id, {
+            name: claudeToolName(part.name),
+            input: part.input ?? {},
+          });
+        }
+      }
+      if (event.type === 'user') {
+        for (const part of parts) {
+          if (part?.type !== 'tool_result' || !part.tool_use_id) continue;
+          const started = pendingTools.get(part.tool_use_id);
+          if (!started) continue;
+          pendingTools.delete(part.tool_use_id);
+          if (started.name === 'send_output') continue;
+          const output = claudeResultText(part);
+          const rawLines = [
+            `Running tool ${started.name}\n`,
+            `${JSON.stringify(started.input)}\n`,
+            ...(output ? [`${output}\n`] : []),
+          ];
+          const normalized = displayForTool({
+            name: started.name,
+            rawLines,
+            completion: { ok: part.is_error !== true, duration: null },
+          });
+          emitEvent(emit, normalized.content, normalized.display);
+        }
       }
     } catch {
       // If the CLI ever prints non-JSON diagnostics on stdout, keep them visible.
@@ -487,6 +686,8 @@ export const __test = {
   displayForTool,
   displayForReadBatch,
   extractJson,
+  isEditTool,
+  isPatchLine,
   isStructuralNoiseLine,
   openCodeToolName,
 };

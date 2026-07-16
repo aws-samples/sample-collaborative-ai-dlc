@@ -1,20 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  AlertTriangle,
-  Bot,
-  ChevronDown,
-  Clock,
-  Eye,
-  FileText,
-  Files,
-  HelpCircle,
-  Info,
-  Maximize2,
-  MessageSquare,
-  Terminal,
-  Wrench,
-  X,
-} from 'lucide-react';
+import { Bot, Clock, Eye, Maximize2, MessageSquare, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getTimeAgo } from '@/lib/timeAgo';
 import { Button } from '@/components/ui/button';
@@ -42,15 +27,10 @@ import { artifactAccent } from '@/components/intent/artifactAccent';
 import { ArtifactEditControls, ArtifactStaleBadge } from '@/components/intent/ArtifactEditControls';
 import { ArtifactContentEditor } from '@/components/intent/ArtifactContentEditor';
 import { ArtifactMarkdown } from '@/components/intent/ArtifactMarkdown';
+import { AgentOutputTranscript } from '@/components/agent-output/AgentOutputTranscript';
 import { useIntentGraph, type GraphNeighbor } from '@/hooks/useIntentGraph';
 import { nodeTypeBadge, shortNodeType, humanEdgeLabel } from '@/components/graph/nodeStyles';
-import type {
-  IntentActivityEvent,
-  IntentArtifact,
-  IntentGraphNode,
-  IntentOutput,
-  IntentOutputDisplay,
-} from '@/services/intents';
+import type { IntentActivityEvent, IntentArtifact, IntentGraphNode } from '@/services/intents';
 
 // The v2 intent analog of the sprint ActivityPanel: same 3-tab shell (Agent /
 // Timeline / Discuss) hosted in AppShell's right slot, but fed entirely from
@@ -303,7 +283,7 @@ function AgentTab({
       </div>
       <div ref={scrollRef} onScroll={handleScroll} className="min-h-0 flex-1 overflow-auto p-3">
         {viewMode === 'progress' ? (
-          <ProgressTranscript
+          <AgentOutputTranscript
             rows={rows}
             loading={paneLoading}
             hasRaw={content.trim().length > 0}
@@ -320,146 +300,6 @@ function AgentTab({
       </div>
     </div>
   );
-}
-
-function ProgressTranscript({
-  rows,
-  loading,
-  hasRaw,
-}: {
-  rows: IntentOutput[];
-  loading: boolean;
-  hasRaw: boolean;
-}) {
-  const visibleRows = rows
-    .map((row) => ({ row, display: displayForProgressRow(row) }))
-    .filter(({ display }) => !display.hiddenByDefault);
-  if (visibleRows.length === 0) {
-    return (
-      <p className="text-xs text-muted-foreground">
-        {loading
-          ? 'Loading output…'
-          : hasRaw
-            ? 'Routine tool output is hidden in Progress.'
-            : 'Waiting for output…'}
-      </p>
-    );
-  }
-  return (
-    <div className="space-y-2">
-      {visibleRows.map((row, index) => (
-        <ProgressRow key={`${row.row.seq}-${index}`} row={row.row} display={row.display} />
-      ))}
-    </div>
-  );
-}
-
-function ProgressRow({ row, display }: { row: IntentOutput; display: IntentOutputDisplay }) {
-  const Icon = iconForDisplay(display);
-  const isProblem = display.level === 'error' || display.level === 'warning';
-  const body = display.title || display.summary || row.content.trim();
-  return (
-    <div
-      className={cn(
-        'rounded-md border bg-background px-2.5 py-2',
-        isProblem ? 'border-destructive/40 bg-destructive/5' : 'border-border',
-      )}
-    >
-      <div className="flex min-w-0 items-start gap-2">
-        <Icon
-          className={cn(
-            'mt-0.5 h-3.5 w-3.5 shrink-0',
-            isProblem ? 'text-destructive' : 'text-muted-foreground',
-          )}
-        />
-        <div className="min-w-0 flex-1">
-          <div className="break-words text-xs font-medium leading-snug">{body}</div>
-          {display.summary && display.summary !== body && (
-            <div className="mt-0.5 break-words text-[11px] text-muted-foreground">
-              {display.summary}
-            </div>
-          )}
-        </div>
-      </div>
-      {display.details && (
-        <details className="group mt-2" open={isProblem}>
-          <summary className="flex cursor-pointer list-none items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground">
-            <ChevronDown className="h-3 w-3 transition-transform group-open:rotate-180" />
-            Details
-          </summary>
-          <pre className="mt-1 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/60 p-2 font-mono text-[11px] leading-relaxed">
-            {display.details}
-          </pre>
-        </details>
-      )}
-    </div>
-  );
-}
-
-function displayForProgressRow(row: IntentOutput): IntentOutputDisplay {
-  const display = row.display ? { ...row.display } : legacyDisplayFor(row);
-  if (
-    display.type === 'artifact' &&
-    display.title?.match(/:\s*artifact$/i) &&
-    row.content.includes(':')
-  ) {
-    const label = extractLegacyParam(row.content, ['id', 'artifactId', 'artifactType', 'name']);
-    if (label) display.title = display.title.replace(/:\s*artifact$/i, `: ${label}`);
-  }
-  return display;
-}
-
-function legacyDisplayFor(row: IntentOutput): IntentOutputDisplay {
-  const text = row.content.trim();
-  if (isLegacyStructuralNoise(text)) {
-    return {
-      type: 'raw',
-      level: 'info',
-      summary: text || row.kind,
-      hiddenByDefault: true,
-    };
-  }
-  return {
-    type: 'message',
-    level: 'info',
-    summary: cleanLegacyMessage(text) || row.kind,
-  };
-}
-
-function isLegacyStructuralNoise(text: string): boolean {
-  if (!text) return true;
-  if (/^stdout$/i.test(text)) return true;
-  if (/^Running tool\b/i.test(text)) return true;
-  if (/^[-\s]*(Completed|Failed|Errored|Error)\b/i.test(text)) return true;
-  const stripped = text.replace(/^[.:…⋮\s]+/, '').trim();
-  if (/^[{}[\],]+$/.test(stripped)) return true;
-  if (/^"[^"]+"\s*:/.test(stripped)) return true;
-  if (/^[{[]\s*"[^"]+"\s*:/.test(stripped)) return true;
-  return false;
-}
-
-function cleanLegacyMessage(text: string): string {
-  return text.replace(/^>\s*/, '').trim();
-}
-
-function extractLegacyParam(text: string, keys: string[]): string {
-  for (const key of keys) {
-    const quoted = new RegExp(`["']${key}["']\\s*:\\s*["']([^"']+)["']`, 'i').exec(text);
-    if (quoted?.[1]) return quoted[1];
-    const bare = new RegExp(`\\b${key}\\b\\s*:\\s*([^,}\\]\\s]+)`, 'i').exec(text);
-    if (bare?.[1]) return bare[1].replace(/^["']|["']$/g, '');
-  }
-  return '';
-}
-
-function iconForDisplay(display: IntentOutputDisplay) {
-  if (display.level === 'error' || display.level === 'warning') return AlertTriangle;
-  if (display.type === 'tool') return Wrench;
-  if (display.type === 'batch_read') return Files;
-  if (display.type === 'artifact') return FileText;
-  if (display.type === 'question') return HelpCircle;
-  if (display.type === 'raw') return Terminal;
-  return Info;
 }
 
 // ---------------------------------------------------------------------------

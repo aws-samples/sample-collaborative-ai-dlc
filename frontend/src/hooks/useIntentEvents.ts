@@ -43,8 +43,9 @@ export interface IntentEvent {
   seq?: number;
   kind?: string;
   content?: string;
+  timestamp?: string;
   display?: {
-    type: 'message' | 'tool' | 'batch_read' | 'artifact' | 'question' | 'system' | 'raw';
+    type: 'message' | 'tool' | 'edit' | 'batch_read' | 'artifact' | 'question' | 'system' | 'raw';
     level?: string;
     title?: string;
     summary?: string;

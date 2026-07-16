@@ -174,6 +174,7 @@ describe('IntentContext', () => {
         stageInstanceId: 'si-1',
         seq: 1,
         content: 'more',
+        timestamp: '2026-07-16T12:34:56.000Z',
         display: { type: 'message', title: 'More readable' },
       });
       capturedOnEvent?.({ action: 'agent.output', seq: 2, content: 'init-ws log' });

@@ -117,7 +117,10 @@ const spyStore = (seed = {}) => {
     appendEvent: rec('appendEvent'),
     async appendOutput(args) {
       calls.push(['appendOutput', args]);
-      return { seq: calls.filter((c) => c[0] === 'appendOutput').length };
+      return {
+        seq: calls.filter((c) => c[0] === 'appendOutput').length,
+        timestamp: '2026-07-16T12:34:56.000Z',
+      };
     },
     recordSensorRun: rec('recordSensorRun'),
     async recordMetric(args) {
@@ -358,7 +361,12 @@ describe('runStage — realtime broadcasts (state mirrors DynamoDB writes)', () 
       expect.objectContaining({ kind: 'stdout', content: 'live text' }),
     ]);
     expect(sent).toContainEqual(
-      expect.objectContaining({ action: 'agent.output', kind: 'stdout', content: 'live text' }),
+      expect.objectContaining({
+        action: 'agent.output',
+        kind: 'stdout',
+        content: 'live text',
+        timestamp: '2026-07-16T12:34:56.000Z',
+      }),
     );
   });
 
@@ -546,6 +554,81 @@ describe('CLI output sink — UI-safe stdout', () => {
     expect(emitted[1].display).toMatchObject({ type: 'message', summary: 'Done reading.' });
   });
 
+  it('groups loose Kiro numbered patch lines into one visible edit event', () => {
+    const emitted = [];
+    const sink = createCliOutputSink({ cli: 'kiro', emit: (event) => emitted.push(event) });
+    sink.write('+ 10: <div class="settings-card">\n');
+    sink.write('+ 11: <h2>Mobile App Pairing</h2>\n');
+    sink.write('+ 12: <p>Scan this QR code</p>\n');
+    sink.write('\n');
+    sink.flush();
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]).toMatchObject({
+      display: {
+        type: 'edit',
+        title: 'Updated 3 lines',
+      },
+    });
+    expect(emitted[0].display.details).toContain('Mobile App Pairing');
+  });
+
+  it('renders a completed Kiro filesystem write as one edit with the target filename', () => {
+    const emitted = [];
+    const sink = createCliOutputSink({ cli: 'kiro', emit: (event) => emitted.push(event) });
+    sink.write('Running tool fs_write with the param\n');
+    sink.write(' ⋮  { "path": "templates/settings.html", "content": "updated" }\n');
+    sink.write(' - Completed in 0.20s\n');
+    sink.flush();
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].display).toMatchObject({
+      type: 'edit',
+      title: 'Wrote: settings.html',
+      summary: 'Completed in 0.20s',
+    });
+  });
+
+  it('coalesces native Kiro read and create output into semantic filesystem events', () => {
+    const emitted = [];
+    const sink = createCliOutputSink({ cli: 'kiro', emit: (event) => emitted.push(event) });
+    sink.write('Reading file: /mnt/workspace/README.md, all lines (using tool: read)\n');
+    sink.write(' \u2713 Successfully read 9 bytes from /mnt/workspace/README.md\n');
+    sink.write(' - Completed in 0.0s\n');
+    sink.write(
+      "I'll create the following file: /mnt/workspace/agent-output-kiro.txt (using tool: write)\n",
+    );
+    sink.write('+    1: agent output parser fixture for kiro\n');
+    sink.write('Creating: /mnt/workspace/agent-output-kiro.txt\n');
+    sink.write(' - Completed in 0.0s\n');
+    sink.flush();
+
+    expect(emitted).toHaveLength(2);
+    expect(emitted[0].display).toMatchObject({
+      type: 'batch_read',
+      title: 'Read 1 workspace item: README.md',
+    });
+    expect(emitted[1].display).toMatchObject({
+      type: 'edit',
+      title: 'Created: agent-output-kiro.txt (+1 line)',
+      summary: 'Completed in 0.0s',
+    });
+  });
+
+  it('groups consecutive Kiro prose lines into one message event', () => {
+    const emitted = [];
+    const sink = createCliOutputSink({ cli: 'kiro', emit: (event) => emitted.push(event) });
+    sink.write('Inspecting the settings template.\n');
+    sink.write('The pairing card needs a clearer state.\n\n');
+    sink.flush();
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].display).toMatchObject({
+      type: 'message',
+      summary: 'Inspecting the settings template.\nThe pairing card needs a clearer state.',
+    });
+  });
+
   it('hides routine successful Kiro MCP calls but keeps failures visible with details', () => {
     const emitted = [];
     const sink = createCliOutputSink({ cli: 'kiro', emit: (event) => emitted.push(event) });
@@ -637,6 +720,51 @@ describe('CLI output sink — UI-safe stdout', () => {
       expect.objectContaining({ type: 'raw', hiddenByDefault: true }),
       expect.objectContaining({ type: 'raw', hiddenByDefault: true }),
     ]);
+  });
+
+  it('pairs Claude tool_use/tool_result events and suppresses send_output duplication', () => {
+    const emitted = [];
+    const sink = createCliOutputSink({ cli: 'claude', emit: (event) => emitted.push(event) });
+    sink.write(
+      `${JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: 'edit-1',
+              name: 'Edit',
+              input: { file_path: 'templates/settings.html', old_string: 'old', new_string: 'new' },
+            },
+            {
+              type: 'tool_use',
+              id: 'output-1',
+              name: 'mcp__aidlc__send_output',
+              input: { content: 'canonical' },
+            },
+          ],
+        },
+      })}\n`,
+    );
+    sink.write(
+      `${JSON.stringify({
+        type: 'user',
+        message: {
+          content: [
+            { type: 'tool_result', tool_use_id: 'edit-1', content: 'updated' },
+            { type: 'tool_result', tool_use_id: 'output-1', content: 'sent' },
+          ],
+        },
+      })}\n`,
+    );
+    sink.flush();
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].display).toMatchObject({
+      type: 'edit',
+      title: 'Updated: settings.html',
+    });
+    expect(emitted.map((event) => event.content).join('')).not.toContain('canonical');
   });
 });
 

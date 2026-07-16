@@ -110,6 +110,20 @@ vi.mock('@/contexts/IntentContext', () => ({
                 'Running tool fs_read with the param\n ... { "path": "missing.txt" }\n - Failed in 0.01s',
             },
           },
+          {
+            seq: 9,
+            stageInstanceId: 'si-1',
+            kind: 'stdout',
+            content: '+ 10: <div class="settings-card">\n',
+            timestamp: '2026-01-01T00:00:08Z',
+          },
+          {
+            seq: 10,
+            stageInstanceId: 'si-1',
+            kind: 'stdout',
+            content: '+ 11: <h2>Mobile App Pairing</h2>\n',
+            timestamp: '2026-01-01T00:00:09Z',
+          },
         ],
       ],
     ]),
@@ -144,6 +158,7 @@ describe('IntentActivityPanel Agent tab', () => {
     expect(screen.getByText('Loaded artifact: intent-statement')).toBeInTheDocument();
     expect(screen.getByText('Loaded artifact: architecture')).toBeInTheDocument();
     expect(screen.getByText('Fs Read failed')).toBeInTheDocument();
+    expect(screen.getByText('Updated (+2 lines)')).toBeInTheDocument();
     expect(screen.getByText('Question parked - stopping now.')).toBeInTheDocument();
     expect(screen.queryByText('Loaded artifact: artifact')).not.toBeInTheDocument();
     expect(screen.queryByText('Link Artifacts')).not.toBeInTheDocument();
@@ -151,6 +166,8 @@ describe('IntentActivityPanel Agent tab', () => {
     expect(screen.queryByText(/No enforcement/)).not.toBeInTheDocument();
     expect(screen.queryByText('stdout')).not.toBeInTheDocument();
     expect(screen.queryByText(/Completed in 12.76s/)).not.toBeInTheDocument();
+    expect(document.querySelectorAll('time[datetime]').length).toBeGreaterThan(0);
+    expect(document.querySelector('time[datetime="2026-01-01T00:00:08Z"]')).not.toBeNull();
 
     await user.click(screen.getByRole('button', { name: 'Raw' }));
     expect(screen.getByText(/"mode": "full"/)).toBeInTheDocument();

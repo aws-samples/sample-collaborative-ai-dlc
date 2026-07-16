@@ -142,9 +142,10 @@ export const createOpenCodeJsonlParser = ({
     if (tool) onTool(tool);
 
     if (
-      type === 'error' ||
-      partType === 'error' ||
-      ['error', 'failed'].includes(String(part?.state?.status ?? '').toLowerCase())
+      !tool &&
+      (type === 'error' ||
+        partType === 'error' ||
+        ['error', 'failed'].includes(String(part?.state?.status ?? '').toLowerCase()))
     ) {
       const message = String(errorMessage(event));
       state.errors.push(message);

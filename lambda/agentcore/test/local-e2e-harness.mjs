@@ -53,6 +53,7 @@ const idsFor = (selectedCli) => ({
   intentId: `local-e2e-intent-${selectedCli}`,
   executionId: `local-e2e-execution-${selectedCli}`,
   artifactId: `local-e2e-${selectedCli}-artifact`,
+  outputFile: `agent-output-${selectedCli}.txt`,
 });
 
 const assertCli = () => {
@@ -127,9 +128,15 @@ const setupWorkspaceGit = async () => {
   await ensureRuntimeExcludes({ dir: workspaceDir });
 };
 
-const stageBody = ({ selectedCli, artifactId }) =>
+const stageBody = ({ selectedCli, artifactId, outputFile }) =>
   `
 This is a controlled two-leg runtime lifecycle test for ${selectedCli}.
+
+Before asking the question:
+1. Read README.md with the CLI's native filesystem read tool.
+2. Create "${outputFile}" with the CLI's native filesystem write or edit tool.
+   Its content must be exactly: "agent output parser fixture for ${selectedCli}"
+Do not use a shell command for either filesystem operation.
 
 On the first turn, call ask_question exactly once with:
 - text: "Should the local E2E continue?"
@@ -187,7 +194,11 @@ const libraryFor = (selectedCli) => {
       artifactsById: { 'e2e-result': { id: 'e2e-result', terminal: true } },
       knowledgeById: {},
     },
-    stageText: stageBody({ selectedCli, artifactId: ids.artifactId }),
+    stageText: stageBody({
+      selectedCli,
+      artifactId: ids.artifactId,
+      outputFile: ids.outputFile,
+    }),
   };
 };
 
@@ -394,8 +405,29 @@ const handlers = {
     if (!records.outputs.some((row) => row.kind === 'text')) {
       throw new Error(`${cli} send_output row is missing`);
     }
+    if (
+      records.outputs.some(
+        (row) => !row.timestamp || !Number.isFinite(new Date(row.timestamp).getTime()),
+      )
+    ) {
+      throw new Error(`${cli} output row has no valid server timestamp`);
+    }
+    if (!records.outputs.some((row) => row.display?.type === 'edit')) {
+      throw new Error(`${cli} native filesystem edit was not normalized as an edit event`);
+    }
+    if (
+      records.outputs.some(
+        (row) => row.display?.type === 'message' && /^\s*[+-]\s*\d+:\s?/.test(row.content ?? ''),
+      )
+    ) {
+      throw new Error(`${cli} numbered patch line leaked through as a message event`);
+    }
     if (!records.metrics.some((row) => Number(row.metrics?.e2eLifecycle) === 1)) {
       throw new Error(`${cli} collect_metric row is missing`);
+    }
+    const outputFile = await readFile(`${workspaceDir}/${ids.outputFile}`, 'utf8');
+    if (outputFile.trim() !== `agent output parser fixture for ${cli}`) {
+      throw new Error(`${cli} native filesystem edit has unexpected content`);
     }
 
     let g;
@@ -430,6 +462,26 @@ const handlers = {
       metrics: records.metrics.length,
       artifactAnchored: true,
       sessionPreserved: true,
+    };
+  },
+
+  async report() {
+    assertCli();
+    const ids = idsFor(cli);
+    const records = await store.getExecutionRecords(ids.executionId);
+    return {
+      cli,
+      generatedAt: new Date().toISOString(),
+      outputs: records.outputs.map((row) => ({
+        seq: row.seq,
+        stageInstanceId: row.stageInstanceId ?? null,
+        unitSlug: row.unitSlug ?? null,
+        sectionIndex: row.sectionIndex ?? null,
+        kind: row.kind,
+        content: row.content,
+        timestamp: row.timestamp,
+        ...(row.display ? { display: row.display } : {}),
+      })),
     };
   },
 

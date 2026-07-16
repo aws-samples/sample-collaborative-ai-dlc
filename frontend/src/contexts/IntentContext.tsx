@@ -514,7 +514,7 @@ export function IntentProvider({
           sectionIndex: evt.sectionIndex ?? null,
           kind: evt.kind ?? 'stdout',
           content: evt.content,
-          timestamp: new Date().toISOString(),
+          timestamp: evt.timestamp ?? new Date().toISOString(),
           ...(evt.display ? { display: evt.display } : {}),
         };
         pane.live.push(row);

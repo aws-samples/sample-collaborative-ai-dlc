@@ -110,6 +110,7 @@ The examples assume the corresponding key was already exported.
 | `E2E_CLIS`                 | `claude,kiro,opencode`           | CLIs to run, in execution order                   |
 | `AGENTCORE_IMAGE`          | none                             | Existing local ARM64 image; skips the image build |
 | `KEEP_E2E`                 | `0`                              | Set to `1` to retain resources after a failed run |
+| `E2E_OUTPUT_DIR`           | per-run path under `test/e2e/artifacts/agent-output` | Normalized output reports |
 
 Do not prefix `BEDROCK_MODEL` with `amazon-bedrock/`. The harness adds that
 provider prefix for OpenCode and passes the bare value to Claude.
@@ -140,7 +141,7 @@ For each selected CLI, the harness:
 6. Resumes the same CLI session.
 7. Requires `create_artifact`, `send_output`, and `collect_metric`.
 8. Verifies the successful stage, graph edge, output, metric, session identity,
-   and Git runtime exclusions.
+   native edit parsing, output timestamps, and Git runtime exclusions.
 
 Starting fresh and resume legs in separate containers exercises Claude's
 durable JSONL state and Kiro/OpenCode SQLite restore and persistence.
@@ -154,6 +155,14 @@ OpenCode: PASS
 ```
 
 It exits nonzero if any selected CLI fails.
+
+Each run also writes one normalized transcript report per selected CLI and
+refreshes the standalone frontend fixture at
+`/agent-output-preview.html`. Start it without model calls with:
+
+```bash
+npm run dev:agent-output
+```
 
 ### Credentials and cleanup
 

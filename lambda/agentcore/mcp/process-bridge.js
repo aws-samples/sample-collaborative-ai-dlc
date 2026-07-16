@@ -168,6 +168,7 @@ export const createProcessBridge = ({
       seq: row.seq,
       kind,
       content,
+      timestamp: row.timestamp,
     });
     return { seq: row.seq, kind };
   };

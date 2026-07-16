@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:agent-output": "node ../scripts/generate-agent-output-fixtures.mjs && vite",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b",
     "test": "vitest run",

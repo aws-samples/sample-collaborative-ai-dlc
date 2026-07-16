@@ -53,6 +53,7 @@ site/
 
 # E2E test run artifacts (generated screenshots, reports, summaries)
 test/e2e/artifacts/
+frontend/public/dev/agent-output-fixtures.json
 
 # Terraform plan files (any environment suffix)
 tfplan*

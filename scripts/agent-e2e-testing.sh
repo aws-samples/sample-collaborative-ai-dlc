@@ -20,6 +20,7 @@ NETWORK="aidlc-e2e-$RUN_ID"
 DDB_CONTAINER="aidlc-e2e-ddb-$RUN_ID"
 GREMLIN_CONTAINER="aidlc-e2e-gremlin-$RUN_ID"
 LOG_DIR="${TMPDIR:-/tmp}/aidlc-e2e-$RUN_ID"
+OUTPUT_DIR="${E2E_OUTPUT_DIR:-$ROOT/test/e2e/artifacts/agent-output/$RUN_ID}"
 SECRET_FILE=""
 OVERALL_FAIL=0
 IMAGE=""
@@ -99,6 +100,7 @@ set_result() {
 preflight() {
   log "Preflight"
   command -v docker >/dev/null 2>&1 || fail "docker is required"
+  command -v node >/dev/null 2>&1 || fail "node is required"
   docker info >/dev/null 2>&1 || fail "Docker daemon is not available"
   docker buildx version >/dev/null 2>&1 || fail "Docker Buildx is required"
   [[ "$BEDROCK_MODEL" =~ ^[^[:space:]/]+$ ]] ||
@@ -118,6 +120,7 @@ preflight() {
     -fsS --connect-timeout 10 --max-time 20 -o /dev/null https://aws.amazon.com/ ||
     fail "containers do not have outbound HTTPS access"
   printf 'Preflight passed for %s\n' "${SELECTED_CLIS[*]}"
+  mkdir -p "$OUTPUT_DIR"
 }
 
 build_image() {
@@ -252,6 +255,13 @@ run_cli() {
     [ "$action" = "setup" ] && setup_ok=1
   done
 
+  if [ "$setup_ok" -eq 1 ]; then
+    if ! run_harness "$cli" report "$volume" >"$OUTPUT_DIR/$cli.json"; then
+      printf '%s output report could not be written\n' "$cli" >&2
+      failed=1
+    fi
+  fi
+
   if [ "$failed" -eq 0 ]; then
     set_result "$cli" "PASS"
   else
@@ -285,4 +295,8 @@ for cli in "${SELECTED_CLIS[@]}"; do
 done
 
 print_summary
+if ! node "$ROOT/scripts/generate-agent-output-fixtures.mjs" --reports "$OUTPUT_DIR" >/dev/null; then
+  printf 'WARNING: local agent output preview fixture generation failed\n' >&2
+fi
+printf 'Output reports: %s\n' "$OUTPUT_DIR"
 exit "$OVERALL_FAIL"

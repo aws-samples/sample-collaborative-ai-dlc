@@ -43,7 +43,7 @@ const fakeStore = () => {
     },
     async appendOutput({ kind, content }) {
       seq += 1;
-      const row = { seq, kind, content };
+      const row = { seq, kind, content, timestamp: '2026-07-16T12:34:56.000Z' };
       outputs.push(row);
       return row;
     },
@@ -70,12 +70,20 @@ describe('sendOutput', () => {
     const bridge = createProcessBridge({ store, scope: SCOPE, broadcast: (p) => sent.push(p) });
     const res = await bridge.sendOutput({ content: 'hello' });
     expect(res).toEqual({ seq: 1, kind: 'text' });
-    expect(store.outputs).toEqual([{ seq: 1, kind: 'text', content: 'hello' }]);
+    expect(store.outputs).toEqual([
+      {
+        seq: 1,
+        kind: 'text',
+        content: 'hello',
+        timestamp: '2026-07-16T12:34:56.000Z',
+      },
+    ]);
     expect(sent[0]).toMatchObject({
       action: 'agent.output',
       executionId: 'exec-1',
       seq: 1,
       content: 'hello',
+      timestamp: '2026-07-16T12:34:56.000Z',
     });
   });
 });

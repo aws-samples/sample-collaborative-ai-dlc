@@ -258,7 +258,7 @@ export interface IntentOutput {
 }
 
 export interface IntentOutputDisplay {
-  type: 'message' | 'tool' | 'batch_read' | 'artifact' | 'question' | 'system' | 'raw';
+  type: 'message' | 'tool' | 'edit' | 'batch_read' | 'artifact' | 'question' | 'system' | 'raw';
   level?: 'info' | 'success' | 'warning' | 'error' | string;
   title?: string;
   summary?: string;

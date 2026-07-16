@@ -79,6 +79,8 @@ describe('local E2E shell safety contract', () => {
     expect(script).toContain('SELECTED_CLI_COUNT=0');
     expect(script).toContain('if [ "$SELECTED_CLI_COUNT" -gt 0 ]; then');
     expect(script).toContain('for cli in "${SELECTED_CLIS[@]}"');
+    expect(script).toContain('run_harness "$cli" report "$volume"');
+    expect(script).toContain('generate-agent-output-fixtures.mjs');
     expect(script).toContain('set_result "$cli" "FAIL"');
     expect(script).toContain('Claude:');
     expect(script).toContain('OpenCode:');
@@ -96,5 +98,12 @@ describe('local E2E shell safety contract', () => {
   it('uses Gremlin 3.7-compatible cleanup terminals', () => {
     expect(harness).toContain('.drop().next()');
     expect(harness).not.toContain('.drop().iterate()');
+  });
+
+  it('verifies parsed edits and server timestamps and exposes normalized reports', () => {
+    expect(harness).toContain("row.display?.type === 'edit'");
+    expect(harness).toContain('output row has no valid server timestamp');
+    expect(harness).toContain('numbered patch line leaked through as a message event');
+    expect(harness).toContain('async report()');
   });
 });

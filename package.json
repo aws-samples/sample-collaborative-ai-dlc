@@ -36,6 +36,7 @@
   "type": "module",
   "scripts": {
     "test": "vitest run",
+    "dev:agent-output": "npm --prefix frontend run dev:agent-output",
     "test:coverage": "vitest run --coverage",
     "lint": "oxlint",
     "format": "oxfmt",
