@@ -747,6 +747,63 @@ describe('ensureLaneBranch', () => {
     expect(file).toBe('lane work\n');
   });
 
+  it('publishes a local commit rejected by the previous push without discarding it', async () => {
+    const { remote, work } = await initRemoteAndClone();
+    await commitOnRemote(remote, 'aidlc/i1', 'intent.txt', 'intent work\n');
+    await fetchOrigin({ dir: work, repo: 'o/r', urls: laneUrls(remote) });
+    await git(['checkout', '-B', 'aidlc/i1--s1-unit-auth', 'refs/remotes/origin/aidlc/i1'], work);
+    await git(['push', remote, 'HEAD:refs/heads/aidlc/i1--s1-unit-auth'], work);
+    await writeFile(path.join(work, 'auth.txt'), 'unpublished lane work\n');
+    await git(['add', '-A'], work);
+    await git(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'lane work'], work);
+    const localSha = (await git(['rev-parse', 'HEAD'], work)).stdout.trim();
+
+    const res = await ensureLaneBranch({
+      dir: work,
+      repo: 'o/r',
+      unitBranch: 'aidlc/i1--s1-unit-auth',
+      intentBranch: 'aidlc/i1',
+      urls: laneUrls(remote),
+      ...quiet,
+    });
+
+    expect(res).toEqual({ ready: true, created: false, sha: localSha });
+    const remoteSha = (
+      await git(['ls-remote', remote, 'refs/heads/aidlc/i1--s1-unit-auth'], root)
+    ).stdout.split(/\s/)[0];
+    expect(remoteSha).toBe(localSha);
+    expect(await readFile(path.join(work, 'auth.txt'), 'utf8')).toBe('unpublished lane work\n');
+  });
+
+  it('publishes an unpublished local unit branch when no remote unit ref exists', async () => {
+    const { remote, work } = await initRemoteAndClone();
+    await commitOnRemote(remote, 'aidlc/i1', 'intent.txt', 'intent work\n');
+    await fetchOrigin({ dir: work, repo: 'o/r', urls: laneUrls(remote) });
+    await git(['checkout', '-B', 'aidlc/i1--s1-unit-auth', 'refs/remotes/origin/aidlc/i1'], work);
+    await writeFile(path.join(work, 'auth.txt'), 'local lane work\n');
+    await git(['add', '-A'], work);
+    await git(
+      ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'local lane work'],
+      work,
+    );
+    const localSha = (await git(['rev-parse', 'HEAD'], work)).stdout.trim();
+
+    const res = await ensureLaneBranch({
+      dir: work,
+      repo: 'o/r',
+      unitBranch: 'aidlc/i1--s1-unit-auth',
+      intentBranch: 'aidlc/i1',
+      urls: laneUrls(remote),
+      ...quiet,
+    });
+
+    expect(res).toEqual({ ready: true, created: true, sha: localSha });
+    const remoteSha = (
+      await git(['ls-remote', remote, 'refs/heads/aidlc/i1--s1-unit-auth'], root)
+    ).stdout.split(/\s/)[0];
+    expect(remoteSha).toBe(localSha);
+  });
+
   it('fails with intent_branch_missing when the fork point does not exist remotely', async () => {
     const { remote, work } = await initRemoteAndClone();
     const res = await ensureLaneBranch({

@@ -60,7 +60,8 @@ const ghFetch = (ctx, url, options = {}) =>
 const oauth = {
   secretEnvName: 'GITHUB_OAUTH_SECRET_NAME',
   redirectUriEnvName: 'GITHUB_REDIRECT_URI',
-  scopes: 'repo read:user',
+  scopes: 'repo workflow read:user',
+  requiredConnectionScopes: ['workflow'],
 
   buildAuthorizeUrl({ clientId, redirectUri, state }) {
     return `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(

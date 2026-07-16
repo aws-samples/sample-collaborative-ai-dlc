@@ -290,7 +290,7 @@ describe('github handler', () => {
       expect(body.url).toContain(`client_id=${CLIENT_ID}`);
       expect(body.url).toContain('state=');
       expect(body.url).toContain(encodeURIComponent(REDIRECT_URI));
-      expect(body.url).toContain(encodeURIComponent('repo read:user'));
+      expect(body.url).toContain(encodeURIComponent('repo workflow read:user'));
     });
   });
 
@@ -503,7 +503,7 @@ describe('github handler', () => {
 
     it('returns connected: true when DynamoDB item exists', async () => {
       ddbMock.on(GetCommand).resolves({
-        Item: { userId: USER_ID, provider: 'github' },
+        Item: { userId: USER_ID, provider: 'github', scope: 'repo, workflow, read:user' },
       });
 
       const handler = await loadHandler();
@@ -512,6 +512,39 @@ describe('github handler', () => {
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.body);
       expect(body).toEqual({ connected: true, provider: 'github', mode: 'oauth' });
+    });
+
+    it('requires reauthorization when the stored token lacks workflow scope', async () => {
+      ddbMock.on(GetCommand).resolves({
+        Item: { userId: USER_ID, provider: 'github', scope: 'repo read:user' },
+      });
+
+      const handler = await loadHandler();
+      const res = await handler(makeEvent('GET', '/github/status'));
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({
+        connected: false,
+        provider: 'github',
+        mode: 'oauth',
+        reauthorizationRequired: true,
+        missingScopes: ['workflow'],
+      });
+    });
+
+    it('accepts comma- and whitespace-delimited stored scopes', async () => {
+      ddbMock.on(GetCommand).resolves({
+        Item: { userId: USER_ID, provider: 'github', scope: 'repo,workflow read:user' },
+      });
+
+      const handler = await loadHandler();
+      const res = await handler(makeEvent('GET', '/github/status'));
+
+      expect(JSON.parse(res.body)).toEqual({
+        connected: true,
+        provider: 'github',
+        mode: 'oauth',
+      });
     });
 
     it('returns connected: false when no DynamoDB item', async () => {

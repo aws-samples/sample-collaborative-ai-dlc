@@ -285,7 +285,7 @@ const getInstallationToken = async ({
   const resolvedPermissions =
     permissions && Object.keys(permissions).length
       ? permissions
-      : { contents: 'write', pull_requests: 'write' };
+      : { contents: 'write', pull_requests: 'write', workflows: 'write' };
   // Cache key includes the permission set so a token minted for one permission
   // profile is never served to a caller requesting a different one.
   const permKey = Object.entries(resolvedPermissions)

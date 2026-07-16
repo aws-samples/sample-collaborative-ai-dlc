@@ -243,9 +243,11 @@ describe('getInstallationToken', () => {
     const mintBody = JSON.parse(mintCall[1].body);
     expect(mintBody.repositories).toEqual(['my-repo']);
     // Default permissions applied
-    expect(mintBody.permissions).toEqual(
-      expect.objectContaining({ contents: 'write', pull_requests: 'write' }),
-    );
+    expect(mintBody.permissions).toEqual({
+      contents: 'write',
+      pull_requests: 'write',
+      workflows: 'write',
+    });
   });
 
   it('applies caller-specified permissions when provided', async () => {

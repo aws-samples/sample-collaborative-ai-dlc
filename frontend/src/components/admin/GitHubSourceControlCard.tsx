@@ -214,8 +214,8 @@ export function GitHubSourceControlCard({ oauthConfigured, onOAuthSaved }: Props
                 <ConfigStatusBadge ok={!!config?.appConfigured} />
               </div>
               <p className="text-[11px] text-muted-foreground">
-                Create a GitHub App with Contents, Pull requests and Issues permissions, install it
-                on your organization, then paste its details.
+                Create a GitHub App with Contents, Pull requests, Workflows and Issues permissions,
+                install it on your organization, then paste its details.
               </p>
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="space-y-1.5">

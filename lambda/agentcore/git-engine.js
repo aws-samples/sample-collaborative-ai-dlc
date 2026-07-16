@@ -510,13 +510,12 @@ export const fetchOrigin = async ({
 };
 
 // Ensure the unit-lane branch exists locally AND remotely, branched from the
-// intent branch's remote HEAD (docs/v2-parallel.md A3: lane start). Remote
-// state is the truth: an existing remote unit branch (lane retry / relaunch /
-// re-init after a wiped mount) is checked out as-is; otherwise the branch is
-// created from origin/<intentBranch> and pushed so every later self-heal can
-// re-clone it. `checkout -B` resets any stale local ref deterministically —
-// init-lane runs only at lane START, when the remote is current (stage-exit
-// pushes keep it so). Never throws.
+// intent branch's remote HEAD (docs/v2-parallel.md A3: lane start). An existing
+// remote unit branch (lane retry / relaunch / re-init after a wiped mount) is
+// checked out as-is. If the first push was rejected but the local branch still
+// exists, retry publishes that local ref without resetting its committed work.
+// Only a lane with neither a remote nor local unit ref is recreated from
+// origin/<intentBranch>. Never throws.
 //   { ready: true,  created, sha }       — checkout on the unit branch
 //   { ready: false, reason, detail? }    — fetch / missing intent branch / git failure
 export const ensureLaneBranch = async ({
@@ -535,18 +534,67 @@ export const ensureLaneBranch = async ({
   const fetch = await fetchOrigin({ dir, repo, gitToken, gitProvider, urls, git });
   if (!fetch.fetched) return { ready: false, ...fetch };
 
-  const remoteUnit = await git(['rev-parse', '--verify', `refs/remotes/origin/${unitBranch}`], {
+  const remoteUnitRef = `refs/remotes/origin/${unitBranch}`;
+  const localUnitRef = `refs/heads/${unitBranch}`;
+  const remoteUnit = await git(['rev-parse', '--verify', remoteUnitRef], {
     cwd: dir,
   });
+  const localUnit = await git(['rev-parse', '--verify', localUnitRef], { cwd: dir });
   if (remoteUnit.exitCode === 0) {
-    const checkout = await git(
-      ['checkout', '-B', unitBranch, `refs/remotes/origin/${unitBranch}`],
-      { cwd: dir },
-    );
+    if (localUnit.exitCode === 0 && localUnit.stdout.trim() !== remoteUnit.stdout.trim()) {
+      const remoteIsAncestor = await git(
+        ['merge-base', '--is-ancestor', remoteUnitRef, localUnitRef],
+        { cwd: dir },
+      );
+      if (remoteIsAncestor.exitCode === 0) {
+        const checkout = await git(['checkout', unitBranch], { cwd: dir });
+        if (checkout.exitCode !== 0) {
+          return { ready: false, reason: 'checkout_failed', detail: checkout.stderr.trim() };
+        }
+        const push = await pushBranch({
+          dir,
+          repo,
+          branch: unitBranch,
+          gitToken,
+          gitProvider,
+          urls,
+          git,
+          sleep,
+          log,
+        });
+        if (push.pushed !== true && push.pushed !== 'empty') {
+          return { ready: false, reason: push.reason ?? 'push_failed', detail: push.detail };
+        }
+        return { ready: true, created: false, sha: localUnit.stdout.trim() };
+      }
+    }
+    const checkout = await git(['checkout', '-B', unitBranch, remoteUnitRef], { cwd: dir });
     if (checkout.exitCode !== 0) {
       return { ready: false, reason: 'checkout_failed', detail: checkout.stderr.trim() };
     }
     return { ready: true, created: false, sha: remoteUnit.stdout.trim() };
+  }
+
+  if (localUnit.exitCode === 0) {
+    const checkout = await git(['checkout', unitBranch], { cwd: dir });
+    if (checkout.exitCode !== 0) {
+      return { ready: false, reason: 'checkout_failed', detail: checkout.stderr.trim() };
+    }
+    const push = await pushBranch({
+      dir,
+      repo,
+      branch: unitBranch,
+      gitToken,
+      gitProvider,
+      urls,
+      git,
+      sleep,
+      log,
+    });
+    if (push.pushed !== true && push.pushed !== 'empty') {
+      return { ready: false, reason: push.reason ?? 'push_failed', detail: push.detail };
+    }
+    return { ready: true, created: true, sha: localUnit.stdout.trim() };
   }
 
   const remoteIntent = await git(['rev-parse', '--verify', `refs/remotes/origin/${intentBranch}`], {

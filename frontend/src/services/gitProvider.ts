@@ -38,6 +38,8 @@ export type GitHubAuthMode = 'oauth' | 'app';
 export interface GitProviderStatus {
   connected: boolean;
   provider?: string;
+  reauthorizationRequired?: boolean;
+  missingScopes?: string[];
   // Present for GitHub (and defaulted to 'oauth' for GitLab). In 'app' mode
   // the connect/disconnect UI is hidden — the platform authenticates as the
   // GitHub App installation.

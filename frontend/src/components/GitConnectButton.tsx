@@ -11,6 +11,8 @@ import { useTrackerProviders } from '@/hooks/useTrackerProviders';
 export interface GitConnectButtonProps {
   provider: GitProvider;
   connected: boolean;
+  reauthorizationRequired?: boolean;
+  missingScopes?: string[];
   onDisconnect: () => void;
 }
 
@@ -35,7 +37,13 @@ const PROVIDER_META = {
   },
 };
 
-export function GitConnectButton({ provider, connected, onDisconnect }: GitConnectButtonProps) {
+export function GitConnectButton({
+  provider,
+  connected,
+  reauthorizationRequired = false,
+  missingScopes = [],
+  onDisconnect,
+}: GitConnectButtonProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const meta = PROVIDER_META[provider];
@@ -122,8 +130,20 @@ export function GitConnectButton({ provider, connected, onDisconnect }: GitConne
         disabled={loading || configured === null}
         className={meta.connectClass}
       >
-        {loading ? 'Connecting...' : `Connect ${meta.label}`}
+        {loading
+          ? reauthorizationRequired
+            ? 'Reauthorizing...'
+            : 'Connecting...'
+          : reauthorizationRequired
+            ? `Reauthorize ${meta.label}`
+            : `Connect ${meta.label}`}
       </button>
+      {reauthorizationRequired && (
+        <p className="text-xs text-amber-700 dark:text-amber-400 max-w-md">
+          Reauthorization is required to grant
+          {missingScopes.length > 0 ? ` ${missingScopes.join(', ')}` : ' the required'} permission.
+        </p>
+      )}
       {error && (
         <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded text-sm">
           {error}

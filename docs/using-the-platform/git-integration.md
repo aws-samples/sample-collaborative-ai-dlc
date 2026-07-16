@@ -28,7 +28,7 @@ Switching modes takes effect for new work right away; in-flight runs finish unde
 
 Each user connects their own GitHub / GitLab / Atlassian account once; the connection is reused across every project that needs that provider. (In GitHub App mode there is nothing to connect for GitHub — the section below applies to OAuth mode.)
 
-- **GitHub**: from the dashboard (or the project-creation flow), click **Connect GitHub** and approve the OAuth flow. The button stays disabled if your administrator hasn't configured GitHub OAuth credentials yet.
+- **GitHub**: from the dashboard (or the project-creation flow), click **Connect GitHub** and approve the OAuth flow. The connection requests `repo`, `workflow`, and `read:user` so the engine can also push workflow-file changes. After upgrading an older connection that lacks `workflow`, click **Reauthorize GitHub** when prompted. The button stays disabled if your administrator hasn't configured GitHub OAuth credentials yet.
 - **GitLab**: choose **GitLab** as the provider in the project-creation flow, then click **Connect GitLab** and approve the OAuth flow. The button stays disabled until your administrator has configured GitLab OAuth credentials. GitLab access tokens are short-lived; the platform refreshes them automatically using the stored refresh token, so you don't need to reconnect periodically.
 - **Jira Cloud**: open **Project Settings → Trackers → Connect Jira Cloud**. After the Atlassian consent screen, if your account has access to multiple Atlassian sites you'll be asked to pick one. The chosen site is remembered; you can disconnect and reconnect later to change it.
 

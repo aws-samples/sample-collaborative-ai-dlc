@@ -246,6 +246,23 @@ export const createGitHandler = (provider, routes) => {
           return response(200, { connected, provider: provider.id, mode });
         }
         const Item = await getConnection(userId);
+        const grantedScopes = new Set(
+          String(Item?.scope ?? '')
+            .split(/[\s,]+/)
+            .filter(Boolean),
+        );
+        const missingScopes = (provider.oauth.requiredConnectionScopes ?? []).filter(
+          (scope) => !grantedScopes.has(scope),
+        );
+        if (Item && missingScopes.length > 0) {
+          return response(200, {
+            connected: false,
+            provider: Item.provider,
+            mode,
+            reauthorizationRequired: true,
+            missingScopes,
+          });
+        }
         return response(200, { connected: !!Item, provider: Item?.provider, mode });
       }
 

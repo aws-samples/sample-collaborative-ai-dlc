@@ -269,6 +269,8 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
               <GitConnectButton
                 provider={formData.gitProvider}
                 connected={gitStatus?.connected || false}
+                reauthorizationRequired={gitStatus?.reauthorizationRequired}
+                missingScopes={gitStatus?.missingScopes}
                 onDisconnect={gitRefresh}
               />
             )}

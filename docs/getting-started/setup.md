@@ -130,9 +130,11 @@ For **OAuth mode**:
 3. Copy the **Client ID** and generate a **Client Secret**.
 4. In the deployed app, sign in and open **Admin → Trackers → GitHub Issues**. Paste both values and click **Save**.
 
+The connection requests `repo`, `workflow`, and `read:user`. Existing users must click **Reauthorize GitHub** after upgrading from a version that did not request `workflow`; GitHub requires that scope before the engine can push changes under `.github/workflows/`.
+
 For **GitHub App mode**:
 
-1. Create a [GitHub App](https://github.com/settings/apps) with repository permissions **Contents: Read & write**, **Pull requests: Read & write**, and **Issues: Read-only**. No callback URL or webhook is needed.
+1. Create a [GitHub App](https://github.com/settings/apps) with repository permissions **Contents: Read & write**, **Pull requests: Read & write**, **Workflows: Read & write**, and **Issues: Read-only**. No callback URL or webhook is needed.
 2. Generate a **private key** (PEM) and note the **App ID**.
 3. Install the App on the organization/repositories the platform should access, and note the **Installation ID** (the number at the end of the installation's settings URL).
 4. In the deployed app, open **Admin → Source Control → GitHub**, paste the App ID, Installation ID and private key, select **GitHub App (bot)** and click **Save**. The platform validates the configuration live against GitHub before the mode switches. Switching back to OAuth mode is the same toggle.
