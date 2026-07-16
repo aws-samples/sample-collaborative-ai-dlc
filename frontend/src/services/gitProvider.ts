@@ -40,6 +40,8 @@ export interface GitProviderStatus {
   provider?: string;
   reauthorizationRequired?: boolean;
   missingScopes?: string[];
+  configurationRequired?: boolean;
+  configurationError?: string;
   // Present for GitHub (and defaulted to 'oauth' for GitLab). In 'app' mode
   // the connect/disconnect UI is hidden — the platform authenticates as the
   // GitHub App installation.
@@ -54,6 +56,7 @@ export interface GitHubAdminConfig {
   installationId: string | null;
   privateKeySet: boolean;
   appConfigured: boolean;
+  appConfigurationError?: string;
   // Returned by PUT when the live installation probe ran successfully.
   installationAccount?: string;
 }

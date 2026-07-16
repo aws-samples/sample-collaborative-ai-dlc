@@ -73,7 +73,18 @@ const stubPrivateKey = (present = true) => {
 const stubInstallationProbe = (login = 'my-org', ok = true) => {
   globalThis.fetch = vi.fn(async () =>
     ok
-      ? { ok: true, json: async () => ({ account: { login } }) }
+      ? {
+          ok: true,
+          json: async () => ({
+            account: { login },
+            permissions: {
+              contents: 'write',
+              pull_requests: 'write',
+              workflows: 'write',
+              issues: 'read',
+            },
+          }),
+        }
       : { ok: false, status: 404, json: async () => ({ message: 'Not Found' }) },
   );
 };
@@ -137,6 +148,7 @@ describe('GET/PUT /github/admin/config', () => {
       stubMode('app');
       stubAppConfig('123', '456');
       stubPrivateKey(true);
+      stubInstallationProbe();
       const handler = await loadHandler();
       const res = await handler(makeEvent('GET'));
       expect(JSON.parse(res.body)).toEqual({
@@ -146,6 +158,30 @@ describe('GET/PUT /github/admin/config', () => {
         privateKeySet: true,
         appConfigured: true,
       });
+    });
+
+    it('reports an App missing workflow permission as not configured', async () => {
+      stubMode('app');
+      stubAppConfig('123', '456');
+      stubPrivateKey(true);
+      globalThis.fetch = vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          account: { login: 'my-org' },
+          permissions: {
+            contents: 'write',
+            pull_requests: 'write',
+            issues: 'read',
+          },
+        }),
+      }));
+
+      const handler = await loadHandler();
+      const res = await handler(makeEvent('GET'));
+      const body = JSON.parse(res.body);
+
+      expect(body.appConfigured).toBe(false);
+      expect(body.appConfigurationError).toContain('workflows:write');
     });
   });
 
@@ -242,6 +278,38 @@ describe('GET/PUT /github/admin/config', () => {
       expect(res.statusCode).toBe(400);
       expect(JSON.parse(res.body).code).toBe('APP_CONFIG_INVALID');
       // Mode must not have been written
+      const modePuts = ssmMock
+        .commandCalls(PutParameterCommand)
+        .filter((c) => c.args[0].input.Name === MODE_PARAM);
+      expect(modePuts).toHaveLength(0);
+    });
+
+    it('does NOT flip the mode when required App permissions are missing', async () => {
+      stubMode('oauth');
+      stubAppConfig();
+      stubPrivateKey(true);
+      globalThis.fetch = vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          account: { login: 'my-org' },
+          permissions: { contents: 'write', pull_requests: 'write', issues: 'read' },
+        }),
+      }));
+      const handler = await loadHandler();
+
+      const res = await handler(
+        makeEvent('PUT', {
+          body: JSON.stringify({
+            mode: 'app',
+            appId: '123',
+            installationId: '456',
+            privateKey: TEST_PEM,
+          }),
+        }),
+      );
+
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toContain('workflows:write');
       const modePuts = ssmMock
         .commandCalls(PutParameterCommand)
         .filter((c) => c.args[0].input.Name === MODE_PARAM);

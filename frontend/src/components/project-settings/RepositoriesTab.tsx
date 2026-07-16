@@ -164,9 +164,21 @@ export function RepositoriesTab({ project, canEdit, reload }: Props) {
             <XCircle className="h-3.5 w-3.5 shrink-0" /> {providerStatusError}
           </p>
         ) : providerManaged ? (
-          <p className="text-xs text-muted-foreground">
-            This platform uses a GitHub App installation. No personal connection is required.
-          </p>
+          providerStatus?.configurationRequired ? (
+            <p className="flex items-start gap-1.5 text-xs text-destructive">
+              <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>
+                {providerStatus.configurationError ||
+                  'The GitHub App installation needs administrator attention.'}{' '}
+                Open <strong>Platform Admin → Source Control</strong> after updating the App
+                permissions in GitHub.
+              </span>
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              This platform uses a GitHub App installation. No personal connection is required.
+            </p>
+          )
         ) : (
           <GitConnectButton
             provider={provider}

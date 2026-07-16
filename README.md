@@ -175,6 +175,8 @@ For **GitHub App mode**:
 3. Save, then copy the **Application ID** (Client ID) and **Secret**.
 4. In the deployed app, sign in and open **Admin → Tracker OAuth Apps → GitLab Issues**. Paste both values and click **Save**.
 
+GitLab's `api` scope includes repository writes, including changes to `.gitlab-ci.yml`; there is no separate workflow-file scope. Connections missing `api` are reported as requiring reauthorization.
+
 #### Jira Cloud
 
 1. Open the [Atlassian Developer Console](https://developer.atlassian.com/console/myapps) and create an **OAuth 2.0 integration**.

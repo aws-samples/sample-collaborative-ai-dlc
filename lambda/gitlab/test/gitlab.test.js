@@ -371,7 +371,7 @@ describe('gitlab handler', () => {
 
     it('returns connected: true when DynamoDB item exists', async () => {
       ddbMock.on(GetCommand).resolves({
-        Item: { userId: USER_ID, provider: 'gitlab' },
+        Item: { userId: USER_ID, provider: 'gitlab', scope: 'api read_user' },
       });
 
       const handler = await loadHandler();
@@ -380,6 +380,24 @@ describe('gitlab handler', () => {
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.body);
       expect(body).toEqual({ connected: true, provider: 'gitlab', mode: 'oauth' });
+    });
+
+    it('requires reauthorization when the stored token lacks api scope', async () => {
+      ddbMock.on(GetCommand).resolves({
+        Item: { userId: USER_ID, provider: 'gitlab', scope: 'read_user' },
+      });
+
+      const handler = await loadHandler();
+      const res = await handler(makeEvent('GET', '/gitlab/status'));
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({
+        connected: false,
+        provider: 'gitlab',
+        mode: 'oauth',
+        reauthorizationRequired: true,
+        missingScopes: ['api'],
+      });
     });
 
     it('returns connected: false when no DynamoDB item', async () => {

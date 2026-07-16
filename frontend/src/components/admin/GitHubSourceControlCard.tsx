@@ -217,6 +217,9 @@ export function GitHubSourceControlCard({ oauthConfigured, onOAuthSaved }: Props
                 Create a GitHub App with Contents, Pull requests, Workflows and Issues permissions,
                 install it on your organization, then paste its details.
               </p>
+              {config?.appConfigurationError && (
+                <p className="text-[11px] text-destructive">{config.appConfigurationError}</p>
+              )}
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="space-y-1.5">
                   <Label htmlFor="github-app-id" className="text-xs">

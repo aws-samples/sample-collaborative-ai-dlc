@@ -21,7 +21,11 @@ import {
 } from './git-oauth.js';
 import { getGitConnection, putGitConnection, deleteGitConnection } from './git-connection-store.js';
 import { getGitHubAuthMode, getGitHubAppConfig } from './github-auth-config.js';
-import { getInstallationTokenFromConfig, getInstallationReadToken } from './git-token.js';
+import {
+  getInstallationTokenFromConfig,
+  getInstallationReadToken,
+  validateGitHubAppInstallation,
+} from './git-token.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const secrets = new SecretsManagerClient({});
@@ -242,8 +246,21 @@ export const createGitHandler = (provider, routes) => {
           // not a per-user one. The frontend uses `mode` to hide the
           // connect/disconnect UI.
           const appConfig = await getGitHubAppConfig(ssm);
-          const connected = Boolean(appConfig.appId && appConfig.installationId);
-          return response(200, { connected, provider: provider.id, mode });
+          if (!appConfig.appId || !appConfig.installationId) {
+            return response(200, { connected: false, provider: provider.id, mode });
+          }
+          try {
+            await validateGitHubAppInstallation(secrets, appConfig.appId, appConfig.installationId);
+            return response(200, { connected: true, provider: provider.id, mode });
+          } catch (error) {
+            return response(200, {
+              connected: false,
+              provider: provider.id,
+              mode,
+              configurationRequired: true,
+              configurationError: error?.message ?? 'GitHub App validation failed',
+            });
+          }
         }
         const Item = await getConnection(userId);
         const grantedScopes = new Set(

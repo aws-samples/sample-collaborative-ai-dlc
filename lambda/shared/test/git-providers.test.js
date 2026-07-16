@@ -819,6 +819,7 @@ describe('OAuth metadata', () => {
     expect(getProvider('gitlab').oauth.secretEnvName).toBe('GITLAB_OAUTH_SECRET_NAME');
     expect(getProvider('github').oauth.scopes).toBe('repo workflow read:user');
     expect(getProvider('github').oauth.requiredConnectionScopes).toEqual(['workflow']);
+    expect(getProvider('gitlab').oauth.requiredConnectionScopes).toEqual(['api']);
     expect(getProvider('gitlab').oauth.refreshAccessToken).toBeTypeOf('function');
     expect(getProvider('github').oauth.refreshAccessToken).toBeUndefined();
   });

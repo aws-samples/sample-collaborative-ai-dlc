@@ -27,7 +27,7 @@ import {
   writeGitHubAuthMode,
   writeGitHubAppConfig,
 } from './github-auth-config.js';
-import { getInstallationAccountLogin, clearAppAuthCaches } from './git-token.js';
+import { validateGitHubAppInstallation, clearAppAuthCaches } from './git-token.js';
 
 const ssm = new SSMClient({});
 const secrets = new SecretsManagerClient({});
@@ -55,12 +55,23 @@ const currentState = async () => {
     getGitHubAppConfig(ssm),
     isPrivateKeySet(),
   ]);
+  let appConfigured = Boolean(appConfig.appId && appConfig.installationId && privateKeySet);
+  let appConfigurationError = null;
+  if (mode === 'app' && appConfigured) {
+    try {
+      await validateGitHubAppInstallation(secrets, appConfig.appId, appConfig.installationId);
+    } catch (error) {
+      appConfigured = false;
+      appConfigurationError = error?.message ?? 'GitHub App validation failed';
+    }
+  }
   return {
     mode,
     appId: appConfig.appId,
     installationId: appConfig.installationId,
     privateKeySet,
-    appConfigured: Boolean(appConfig.appId && appConfig.installationId && privateKeySet),
+    appConfigured,
+    ...(appConfigurationError ? { appConfigurationError } : {}),
   };
 };
 
@@ -75,6 +86,9 @@ export const handleGitHubAdminConfig = async (event) => {
 
   try {
     if (event.httpMethod === 'GET') {
+      // Admin status is a live recheck: App permissions may have been changed
+      // on GitHub since the last request.
+      clearAppAuthCaches();
       return response(200, await currentState());
     }
 
@@ -160,11 +174,12 @@ export const handleGitHubAdminConfig = async (event) => {
       }
       try {
         clearAppAuthCaches();
-        installationAccount = await getInstallationAccountLogin(
+        const validated = await validateGitHubAppInstallation(
           secrets,
           candidate.appId,
           candidate.installationId,
         );
+        installationAccount = validated.accountLogin;
       } catch (e) {
         console.error('[github-admin] app config validation failed:', e.message);
         return response(400, {

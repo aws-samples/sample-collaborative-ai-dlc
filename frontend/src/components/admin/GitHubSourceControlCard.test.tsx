@@ -119,4 +119,23 @@ describe('GitHubSourceControlCard', () => {
     expect(screen.queryByLabelText('App ID')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Switch to OAuth mode' })).toBeInTheDocument();
   });
+
+  it('shows a live GitHub App permission validation error', async () => {
+    getConfig.mockResolvedValue(
+      baseConfig({
+        mode: 'app',
+        appId: '123',
+        installationId: '456',
+        privateKeySet: true,
+        appConfigured: false,
+        appConfigurationError:
+          'GitHub App installation is missing required permissions: workflows:write',
+      }),
+    );
+
+    render(<GitHubSourceControlCard oauthConfigured={false} onOAuthSaved={() => {}} />);
+
+    expect(await screen.findByText(/workflows:write/)).toBeInTheDocument();
+    expect(screen.getByText(/App mode · setup needed/)).toBeInTheDocument();
+  });
 });

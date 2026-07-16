@@ -151,10 +151,17 @@ let _appPrivateKeyPemFetchedAt = 0;
 // is never handed to a request scoped to repo B.
 const _installationTokenCache = new Map();
 
-// Installation account login cache: avoids re-fetching on every mint. Keyed by
-// installationId. Entries expire after PEM_CACHE_TTL_MS.
+// Installation detail cache: avoids re-fetching account + permission metadata
+// on every mint/status check. Keyed by installationId.
 const _installationAccountCache = new Map();
 const PEM_CACHE_TTL_MS = 15 * 60 * 1000;
+const REQUIRED_GITHUB_APP_PERMISSIONS = Object.freeze({
+  contents: 'write',
+  pull_requests: 'write',
+  workflows: 'write',
+  issues: 'read',
+});
+const PERMISSION_RANK = Object.freeze({ read: 1, write: 2 });
 
 // Drop all App-auth caches. Called by the admin config endpoint after the
 // private key / App config changes so the validation probe (and subsequent
@@ -210,10 +217,10 @@ const getAppPrivateKey = async (secrets) => {
   return pem;
 };
 
-const getInstallationAccountLogin = async (secrets, appId, installationId) => {
+const getInstallationDetails = async (secrets, appId, installationId) => {
   const cached = _installationAccountCache.get(installationId);
   if (cached && Date.now() - cached.fetchedAt < PEM_CACHE_TTL_MS) {
-    return cached.login;
+    return cached;
   }
   const privateKeyPem = await getAppPrivateKey(secrets);
   const jwt = buildAppJwt(appId, privateKeyPem);
@@ -235,11 +242,32 @@ const getInstallationAccountLogin = async (secrets, appId, installationId) => {
       `Failed to resolve installation account (HTTP ${res.status}): ${data.message || 'unknown'}`,
     );
   }
-  _installationAccountCache.set(installationId, {
+  const details = {
     login: data.account.login,
+    permissions: data.permissions ?? {},
     fetchedAt: Date.now(),
-  });
-  return data.account.login;
+  };
+  _installationAccountCache.set(installationId, details);
+  return details;
+};
+
+const getInstallationAccountLogin = async (secrets, appId, installationId) =>
+  (await getInstallationDetails(secrets, appId, installationId)).login;
+
+const validateGitHubAppInstallation = async (secrets, appId, installationId) => {
+  const details = await getInstallationDetails(secrets, appId, installationId);
+  const missingPermissions = Object.entries(REQUIRED_GITHUB_APP_PERMISSIONS)
+    .filter(
+      ([permission, required]) =>
+        (PERMISSION_RANK[details.permissions[permission]] ?? 0) < (PERMISSION_RANK[required] ?? 0),
+    )
+    .map(([permission, required]) => `${permission}:${required}`);
+  if (missingPermissions.length > 0) {
+    throw new Error(
+      `GitHub App installation is missing required permissions: ${missingPermissions.join(', ')}`,
+    );
+  }
+  return { accountLogin: details.login, permissions: details.permissions };
 };
 
 const getInstallationToken = async ({
@@ -431,6 +459,8 @@ export {
   getInstallationReadToken,
   resolveGitHubTokenForMode,
   getInstallationAccountLogin,
+  validateGitHubAppInstallation,
+  REQUIRED_GITHUB_APP_PERMISSIONS,
   buildAppJwt,
   getAppPrivateKey,
   clearAppAuthCaches,
@@ -446,6 +476,8 @@ export default {
   getInstallationReadToken,
   resolveGitHubTokenForMode,
   getInstallationAccountLogin,
+  validateGitHubAppInstallation,
+  REQUIRED_GITHUB_APP_PERMISSIONS,
   buildAppJwt,
   getAppPrivateKey,
   clearAppAuthCaches,

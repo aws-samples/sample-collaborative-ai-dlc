@@ -75,6 +75,7 @@ const oauth = {
   secretEnvName: 'GITLAB_OAUTH_SECRET_NAME',
   redirectUriEnvName: 'GITLAB_REDIRECT_URI',
   scopes: 'api read_user',
+  requiredConnectionScopes: ['api'],
 
   buildAuthorizeUrl({ clientId, redirectUri, state }) {
     return `https://gitlab.com/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(

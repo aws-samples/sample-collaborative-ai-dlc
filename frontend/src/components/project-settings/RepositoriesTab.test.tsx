@@ -1,14 +1,15 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { Project } from '@/services/projects';
+import type { GitProviderStatus } from '@/services/gitProvider';
 
 const status = vi.hoisted(() => ({
   value: {
     connected: false,
-    mode: 'oauth' as 'oauth' | 'app',
+    mode: 'oauth',
     reauthorizationRequired: true,
     missingScopes: ['workflow'],
-  },
+  } as GitProviderStatus,
 }));
 
 vi.mock('@/hooks/useGitProviderStatus', () => ({
@@ -58,6 +59,24 @@ describe('RepositoriesTab', () => {
     render(<RepositoriesTab project={project} canEdit reload={vi.fn()} />);
 
     expect(screen.getByText(/uses a GitHub App installation/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /GitHub/ })).not.toBeInTheDocument();
+  });
+
+  it('surfaces missing GitHub App permissions as administrator action', () => {
+    status.value = {
+      connected: false,
+      mode: 'app',
+      reauthorizationRequired: false,
+      missingScopes: [],
+      configurationRequired: true,
+      configurationError:
+        'GitHub App installation is missing required permissions: workflows:write',
+    };
+
+    render(<RepositoriesTab project={project} canEdit reload={vi.fn()} />);
+
+    expect(screen.getByText(/workflows:write/)).toBeInTheDocument();
+    expect(screen.getByText(/Platform Admin/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /GitHub/ })).not.toBeInTheDocument();
   });
 });
