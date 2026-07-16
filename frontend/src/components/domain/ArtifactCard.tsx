@@ -165,10 +165,22 @@ export function ArtifactCard({
             >
               {editing ? (
                 <>
-                  <Button variant="ghost" size="icon" className="h-6 w-6" onClick={saveEdit}>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6"
+                    onClick={saveEdit}
+                    aria-label="Save"
+                  >
                     <Save className="h-3 w-3 text-agent-success" />
                   </Button>
-                  <Button variant="ghost" size="icon" className="h-6 w-6" onClick={cancelEdit}>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6"
+                    onClick={cancelEdit}
+                    aria-label="Cancel"
+                  >
                     <X className="h-3 w-3" />
                   </Button>
                 </>
@@ -197,12 +209,24 @@ export function ArtifactCard({
                     </Tooltip>
                   )}
                   {!readOnly && (
-                    <Button variant="ghost" size="icon" className="h-6 w-6" onClick={startEdit}>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6"
+                      onClick={startEdit}
+                      aria-label="Edit"
+                    >
                       <Pencil className="h-3 w-3" />
                     </Button>
                   )}
                   {!readOnly && onDelete && (
-                    <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onDelete}>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6"
+                      onClick={onDelete}
+                      aria-label="Delete"
+                    >
                       <Trash2 className="h-3 w-3 text-destructive" />
                     </Button>
                   )}

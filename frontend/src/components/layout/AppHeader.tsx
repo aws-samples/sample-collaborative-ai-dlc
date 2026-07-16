@@ -71,7 +71,13 @@ export function AppHeader({
       {/* Sidebar toggle */}
       <Tooltip>
         <TooltipTrigger asChild>
-          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onToggleSidebar}>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            onClick={onToggleSidebar}
+            aria-label="Toggle sidebar"
+          >
             {sidebarCollapsed ? (
               <PanelLeftOpen className="h-4 w-4" />
             ) : (
@@ -149,7 +155,13 @@ export function AppHeader({
       {(params.sprintId || params.intentId) && (
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onToggleActivity}>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={onToggleActivity}
+              aria-label="Toggle activity panel"
+            >
               {activityPanelOpen ? (
                 <PanelRightClose className="h-4 w-4" />
               ) : (
@@ -164,7 +176,7 @@ export function AppHeader({
       {/* User menu */}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="ghost" className="h-7 w-7 rounded-full p-0">
+          <Button variant="ghost" className="h-7 w-7 rounded-full p-0" aria-label="User menu">
             <Avatar className="h-7 w-7">
               <AvatarFallback className="text-[10px] bg-primary text-primary-foreground">
                 {initials}
