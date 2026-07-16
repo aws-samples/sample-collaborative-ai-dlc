@@ -1232,11 +1232,11 @@ export function GraphCanvas({
   return (
     <div className="h-full flex flex-col overflow-hidden">
       {/* ==================== TOOLBAR ==================== */}
-      <div className="flex items-center gap-1.5 sm:gap-2 px-2 sm:px-4 py-2 border-b bg-background/95 backdrop-blur-sm shrink-0 z-10 min-w-0 overflow-x-auto">
+      <div className="flex items-center gap-1.5 sm:gap-2 px-2 sm:px-4 py-1 border-b bg-background/95 backdrop-blur-sm shrink-0 z-10 min-w-0 overflow-x-auto">
         {/* Title */}
         <div className="flex items-center gap-2 mr-1 sm:mr-2 shrink-0">
-          <div className="hidden lg:flex h-7 w-7 items-center justify-center rounded-lg bg-primary/10">
-            <Network className="h-4 w-4 text-primary" />
+          <div className="hidden lg:flex h-6 w-6 items-center justify-center rounded-lg bg-primary/10">
+            <Network className="h-3.5 w-3.5 text-primary" />
           </div>
           <h2 className="text-xs sm:text-sm font-semibold leading-none">
             {title || 'Knowledge graph'}

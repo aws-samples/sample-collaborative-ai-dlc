@@ -8,6 +8,7 @@ import { WorkflowScopeGraph, UnitLaneGraph, type UnitLanesInput } from '@/compon
 import { UsageMetrics } from '@/components/intent/UsageMetrics';
 import { IntentPhaseDiagram } from '@/components/intent/IntentPhaseDiagram';
 import { IntentStageList } from '@/components/intent/IntentStageList';
+import { ScopeBadge } from '@/components/intent/ScopeBadge';
 import { StageDetail } from '@/components/intent/StageDetail';
 import { useProjectCache } from '@/hooks/useProjectsCache';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -338,6 +339,8 @@ export default function IntentObservabilityPage() {
             <h1 className="text-xl font-bold tracking-tight text-foreground truncate max-w-[480px]">
               {intent.title}
             </h1>
+
+            {intent.scope && <ScopeBadge scope={intent.scope} />}
 
             {isActive ? (
               <Badge

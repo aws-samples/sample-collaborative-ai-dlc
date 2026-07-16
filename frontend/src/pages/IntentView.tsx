@@ -27,6 +27,7 @@ import { humanizeStageId } from '@/components/intent/documentHelpers';
 import { PendingQuestionsTabs } from '@/components/intent/PendingQuestionsTabs';
 import { ProvenanceTree } from '@/components/intent/ProvenanceTree';
 import { HistorySection } from '@/components/intent/HistorySection';
+import { ScopeBadge } from '@/components/intent/ScopeBadge';
 import { scrollAndFlash } from '@/components/intent/workProductsFocus';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -99,23 +100,6 @@ import {
 // IntentActivityPanel where output/timeline/discussions render).
 
 const TERMINAL_STATUSES = new Set(['FAILED', 'CANCELLED', 'SUCCEEDED']);
-
-const SCOPE_PALETTE = [
-  'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300',
-  'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300',
-  'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
-  'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
-  'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300',
-  'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300',
-] as const;
-
-function scopeColor(scope: string): string {
-  let hash = 0;
-  for (let i = 0; i < scope.length; i++) {
-    hash = (hash * 31 + scope.charCodeAt(i)) | 0;
-  }
-  return SCOPE_PALETTE[Math.abs(hash) % SCOPE_PALETTE.length];
-}
 
 export default function IntentView() {
   const {
@@ -248,15 +232,7 @@ export default function IntentView() {
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-3 min-w-0">
           <h1 className="text-lg font-bold tracking-tight truncate">{intent.title || 'Intent'}</h1>
-          {intent.scope && (
-            <Badge
-              variant="secondary"
-              className={cn('text-xs font-semibold px-2.5 border-0', scopeColor(intent.scope))}
-              aria-label={`Scope: ${intent.scope}`}
-            >
-              {intent.scope}
-            </Badge>
-          )}
+          {intent.scope && <ScopeBadge scope={intent.scope} />}
           {TERMINAL_STATUSES.has(intent.status) && (
             <Badge variant="outline" className="text-[10px]">
               {intent.status}
