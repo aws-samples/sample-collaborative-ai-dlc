@@ -813,12 +813,18 @@ export function GraphCanvas({
       return;
     }
 
-    // Force mode: only run a brief re-settle (e.g. after switching from hierarchical)
+    // Force mode: only run a brief re-settle (e.g. after switching from hierarchical).
+    // Early-exit when total kinetic energy drops below threshold — most graphs
+    // converge well before the 120-frame cap, saving redundant force iterations.
     let frame = 0;
+    const ENERGY_THRESHOLD = 0.5;
     const tick = () => {
       if (frame < 120) {
         simulate();
         frame++;
+        // Sum of squared velocities across all nodes — cheap proxy for kinetic energy.
+        const energy = nodes.reduce((sum, n) => sum + n.vx * n.vx + n.vy * n.vy, 0);
+        if (energy < ENERGY_THRESHOLD) return;
         animRef.current = requestAnimationFrame(tick);
       }
     };
@@ -827,18 +833,25 @@ export function GraphCanvas({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settled, simulate, layoutMode, applyHierarchicalLayout]);
 
-  // ---- Particle animation loop (paused while the tab is hidden — the loop
-  // re-renders the whole SVG every frame) ----
+  // ---- Particle animation loop ----
+  // Throttled to ~15fps (66ms frame budget) to avoid re-rendering the full SVG
+  // tree at 60fps. Paused entirely while the tab is hidden.
   useEffect(() => {
     if (nodes.length === 0 || !settled) return;
     let time = 0;
-    const tick = () => {
-      time += 0.008;
-      setAnimationTime(time);
+    let lastFrame = 0;
+    const FRAME_BUDGET_MS = 66; // ~15fps
+    const tick = (now: number) => {
+      if (now - lastFrame >= FRAME_BUDGET_MS) {
+        lastFrame = now;
+        time += 0.008;
+        setAnimationTime(time);
+      }
       particleAnimRef.current = requestAnimationFrame(tick);
     };
     const start = () => {
       cancelAnimationFrame(particleAnimRef.current);
+      lastFrame = performance.now();
       particleAnimRef.current = requestAnimationFrame(tick);
     };
     const onVisibility = () => {

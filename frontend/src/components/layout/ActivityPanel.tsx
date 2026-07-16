@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 import { X, Bot, Clock, ChevronDown, Wrench, Check, AlertTriangle, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatTimelineTimestamp } from '@/lib/timeAgo';
+import { SeqDeduplicator } from '@/lib/seqDeduplicator';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -29,34 +30,6 @@ interface ToolCallEntry {
   status: 'pending' | 'running' | 'completed' | 'failed';
   startedAt: number;
   completedAt?: number;
-}
-
-/**
- * Set-based deduplicator — each event type gets its own instance
- * so tool events don't cause text chunks to be dropped.
- */
-class SeqDeduplicator {
-  private seen = new Set<number>();
-  private maxSeen = 0;
-
-  accept(seq: number | null | undefined): boolean {
-    if (seq == null) return true;
-    if (this.seen.has(seq)) return false;
-    this.seen.add(seq);
-    this.maxSeen = Math.max(this.maxSeen, seq);
-    if (this.seen.size > 1000) {
-      const cutoff = this.maxSeen - 500;
-      for (const s of this.seen) {
-        if (s < cutoff) this.seen.delete(s);
-      }
-    }
-    return true;
-  }
-
-  reset() {
-    this.seen.clear();
-    this.maxSeen = 0;
-  }
 }
 
 interface ActivityPanelProps {
