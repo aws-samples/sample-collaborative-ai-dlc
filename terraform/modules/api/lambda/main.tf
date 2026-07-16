@@ -1781,7 +1781,7 @@ module "intents_lambda" {
   function_name = "${var.project_name}-intents-${var.environment}"
   handler       = "index.handler"
   runtime       = "nodejs24.x"
-  timeout       = 30
+  timeout       = 120
 
   source_path = [
     {

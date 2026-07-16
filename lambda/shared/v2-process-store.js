@@ -805,6 +805,17 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   const resetStageRow = async ({ executionId, stageInstanceId }) => {
     const existing = await getStage(executionId, stageInstanceId);
     if (!existing) return null;
+    // A previous rewind attempt may have reset this row before its caller
+    // timed out. Treat a clean PENDING row as already reset so replay does not
+    // inflate the attempt counter or duplicate reset events.
+    if (
+      existing.state === 'PENDING' &&
+      existing.startedAt == null &&
+      existing.cliSessionId == null &&
+      existing.runtimeError == null
+    ) {
+      return null;
+    }
     const ts = now();
     const { Attributes } = await ddb.send(
       new UpdateCommand({

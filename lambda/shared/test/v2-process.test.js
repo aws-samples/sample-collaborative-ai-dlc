@@ -831,6 +831,22 @@ describe('steering store methods', () => {
     expect(ddb.commandCalls(UpdateCommand)).toHaveLength(0);
   });
 
+  it('resetStageRow is idempotent after an interrupted rewind left it cleanly PENDING', async () => {
+    ddb.on(GetCommand).resolves({
+      Item: {
+        stageInstanceId: 'si-1',
+        state: 'PENDING',
+        attempt: 2,
+        startedAt: null,
+        cliSessionId: null,
+        runtimeError: null,
+      },
+    });
+    const reset = await store.resetStageRow({ executionId: 'e1', stageInstanceId: 'si-1' });
+    expect(reset).toBeNull();
+    expect(ddb.commandCalls(UpdateCommand)).toHaveLength(0);
+  });
+
   it('updateExecution supports the orchestrator ownership CAS (ifOrchestratorRunId)', async () => {
     ddb.on(UpdateCommand).resolves({ Attributes: { status: 'SUCCEEDED' } });
     await store.updateExecution({

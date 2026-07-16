@@ -78,6 +78,20 @@ const AGENTCORE_RUNTIME_ARN = () => process.env.AGENTCORE_RUNTIME_ARN || '';
 // Compose report uploads land here (presigned PUT) and are read back at
 // compose dispatch. Key shape: compose-reports/<intentId>/<uuid>.json.
 const ARTIFACTS_BUCKET = () => process.env.ARTIFACTS_BUCKET || '';
+const mapWithConcurrency = async (items, limit, worker) => {
+  const results = Array.from({ length: items.length });
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(Math.max(1, limit), items.length) }, async () => {
+    for (;;) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+};
 const composeReportPrefix = (intentId) => `compose-reports/${intentId}/`;
 const runtimeSessionIdFor = (intentId) => `aidlc-intent-${intentId}`.padEnd(33, '0');
 // Composer one-shots run in a THROWAWAY session keyed by the compose id —
@@ -156,7 +170,7 @@ const stopRuntimeSessions = async (intentId, { sectionIndexes = [], unitSlugs = 
   for (const idx of sectionIndexes) {
     for (const slug of unitSlugs) ids.push(laneSessionIdFor(intentId, idx, slug));
   }
-  for (const id of ids) {
+  await mapWithConcurrency(ids, 8, async (id) => {
     try {
       await agentcore.send(
         new StopRuntimeSessionCommand({
@@ -167,7 +181,7 @@ const stopRuntimeSessions = async (intentId, { sectionIndexes = [], unitSlugs = 
     } catch (err) {
       console.log(`stop-runtime-session best-effort miss (${id}): ${err?.message ?? err}`);
     }
-  }
+  });
 };
 // SSM path of the Admin GLOBAL per-CLI model defaults (written by the agents
 // lambda's PUT /agents/settings). Merged UNDER the project selection at create so
@@ -781,24 +795,16 @@ const mirrorSteeringVertex = async ({ g, intentId, steer }) => {
 const supersedeArtifactsForStages = async (g, intentId, stageInstanceIds, steerId) => {
   if (!stageInstanceIds.length) return [];
   const ts = new Date().toISOString();
-  const ids = await g
+  return g
     .V()
     .has('Intent', 'id', intentId)
     .out('CONTAINS')
     .hasLabel('Artifact')
     .has('created_by_stage_instance_id', P.within(...stageInstanceIds))
+    .property(cardinality.single, 'superseded_at', ts)
+    .property(cardinality.single, 'superseded_by', steerId)
     .values('id')
     .toList();
-  for (const id of ids) {
-    await g
-      .V()
-      .has('Artifact', 'id', id)
-      .has('intent_id', intentId)
-      .property(cardinality.single, 'superseded_at', ts)
-      .property(cardinality.single, 'superseded_by', steerId)
-      .next();
-  }
-  return ids;
 };
 
 const buildGateAnswerEvents = async (g, gates) => {
@@ -2564,6 +2570,24 @@ export const handler = async (event) => {
             ],
       );
       const responder = getResponder(event);
+      const priorStatus = meta.status;
+
+      // Make interrupted cleanup recoverable before touching gates, sessions,
+      // or stage rows. A Lambda timeout used to leave META WAITING on a gate
+      // already superseded by the first cleanup step, with no action capable
+      // of waking it. FAILED remains rewindable, so a repeated request can
+      // safely finish an interrupted reset.
+      await store.updateExecution({
+        executionId: intentId,
+        projectId,
+        status: 'FAILED',
+        fromStatus: priorStatus,
+        startedAt: meta.startedAt,
+        pendingHumanTaskId: null,
+        failureReason: 'rewind_in_progress',
+        completedAt: null,
+        orchestratorRunId: `retired-${randomBytes(8).toString('hex')}`,
+      });
       // Retire a parked run first so the woken orchestrator exits quietly (its
       // gate is superseded) instead of racing the relaunch.
       await retireParkedRun(intentId, `rewound to ${fromStageId}`);
@@ -2588,46 +2612,51 @@ export const handler = async (event) => {
             createdByName: responder.displayName,
           })
         : null;
-      for (const { stage, unitSlug: laneSlug, sectionIndex, stageInstanceId } of resetInstances) {
-        const reset = await store.resetStageRow({
-          executionId: intentId,
-          stageInstanceId,
-        });
-        if (reset) {
-          await store
-            .appendEvent({
-              executionId: intentId,
-              type: 'v2.stage.reset',
-              stageInstanceId,
-              unitSlug: laneSlug,
-              sectionIndex,
-              actor: responder.displayName || responder.sub,
-              summary: `Stage ${stage.stageId}${laneSlug ? ` [unit ${laneSlug}]` : ''} reset for rewind (attempt ${reset.attempt + 1})`,
-            })
-            .catch(() => {});
-        }
-      }
+      await mapWithConcurrency(
+        resetInstances,
+        12,
+        async ({ stage, unitSlug: laneSlug, sectionIndex, stageInstanceId }) => {
+          const reset = await store.resetStageRow({
+            executionId: intentId,
+            stageInstanceId,
+          });
+          if (reset) {
+            await store
+              .appendEvent({
+                executionId: intentId,
+                type: 'v2.stage.reset',
+                stageInstanceId,
+                unitSlug: laneSlug,
+                sectionIndex,
+                actor: responder.displayName || responder.sub,
+                summary: `Stage ${stage.stageId}${laneSlug ? ` [unit ${laneSlug}]` : ''} reset for rewind (attempt ${reset.attempt + 1})`,
+              })
+              .catch(() => {});
+          }
+        },
+      );
       // Reset the touched lanes so the relaunch re-walks them (state PENDING,
       // stale verdict fields cleared). Unconditional — a rewind overrides any
       // lane state; the UNIT rows are the lane-level view, never audit (the
       // per-instance STAGE rows + EVENT feed keep the history).
       if (sectionStages.length && unitSlugs.length) {
         const sectionIndexes = [...new Set(sectionStages.map((stage) => stage.parallelSection))];
-        for (const sectionIndex of sectionIndexes) {
-          for (const slug of unitSlugs) {
-            await store
-              .updateUnitState({
-                executionId: intentId,
-                sectionIndex,
-                slug,
-                state: 'PENDING',
-                fields: { failureReason: null, blockedOn: null },
-              })
-              .catch((err) =>
-                console.error(`Unit lane reset failed (s${sectionIndex}:${slug}):`, err.message),
-              );
-          }
-        }
+        const lanes = sectionIndexes.flatMap((sectionIndex) =>
+          unitSlugs.map((slug) => ({ sectionIndex, slug })),
+        );
+        await mapWithConcurrency(lanes, 12, ({ sectionIndex, slug }) =>
+          store
+            .updateUnitState({
+              executionId: intentId,
+              sectionIndex,
+              slug,
+              state: 'PENDING',
+              fields: { failureReason: null, blockedOn: null },
+            })
+            .catch((err) =>
+              console.error(`Unit lane reset failed (s${sectionIndex}:${slug}):`, err.message),
+            ),
+        );
       }
       const supersededArtifacts = await supersedeArtifactsForStages(
         g,
@@ -2652,13 +2681,12 @@ export const handler = async (event) => {
         })
         .catch((err) => console.error('Rewind event append failed:', err.message));
       // Relaunch at the rewind point. Same CAS + rollback discipline as /start.
-      const priorStatus = meta.status;
       const durableExecutionName = durableExecutionNameForIntent(intentId);
       const updated = await store.updateExecution({
         executionId: intentId,
         projectId,
         status: 'CREATED',
-        fromStatus: priorStatus,
+        fromStatus: 'FAILED',
         startedAt: meta.startedAt,
         durableExecutionName,
         durableExecutionArn: null,
@@ -2694,9 +2722,12 @@ export const handler = async (event) => {
         await store.updateExecution({
           executionId: intentId,
           projectId,
-          status: priorStatus,
+          status: 'FAILED',
           fromStatus: 'CREATED',
           startedAt: meta.startedAt,
+          pendingHumanTaskId: null,
+          failureReason: 'rewind_relaunch_failed',
+          durableExecutionArn: null,
         });
         throw err;
       }

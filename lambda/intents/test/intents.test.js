@@ -3630,20 +3630,26 @@ describe('POST /rewind', () => {
     expect(payload).toMatchObject({ action: 'start', startAtStageId: 'implement' });
   });
 
-  it('rolls back to the prior status when the relaunch invoke fails', async () => {
+  it('leaves a failed relaunch recoverable instead of restoring WAITING on a superseded gate', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
     seedPlan();
     const intent = JSON.parse((await createIntent(sub, projectId)).body);
-    setStatus(intent.id, { status: 'FAILED' });
-    seedStageRow(intent.id, 'implement');
+    setStatus(intent.id, { status: 'WAITING', pendingHumanTaskId: 'h1' });
+    seedStageRow(intent.id, 'implement', 'FAILED');
+    seedGate(intent.id, 'h1', { status: 'pending', callbackId: 'cb-h1' });
     lambdaMock.on(InvokeCommand).rejectsOnce(new Error('invoke failed'));
     const res = await rewind(sub, projectId, intent.id, {
       fromStageId: 'implement',
       guidance: 'x',
     });
     expect(res.statusCode).toBe(500);
-    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).status).toBe('FAILED');
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META'))).toMatchObject({
+      status: 'FAILED',
+      pendingHumanTaskId: null,
+      failureReason: 'rewind_relaunch_failed',
+    });
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'HUMAN#h1')).status).toBe('superseded');
   });
 
   it('stops the intent runtime session BEFORE relaunching (zombie-session fix)', async () => {
@@ -3986,6 +3992,53 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
     );
     expect(events.some((e) => e.unitSlug === 'auth')).toBe(true);
     expect(events.some((e) => e.unitSlug === 'billing')).toBe(true);
+  });
+
+  it('stops intent and lane sessions concurrently during a section rewind', async () => {
+    process.env.AGENTCORE_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:eu:1:runtime/x';
+    let inFlight = 0;
+    let maxInFlight = 0;
+    agentcoreMock.on(StopRuntimeSessionCommand).callsFake(async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      inFlight -= 1;
+      return {};
+    });
+    try {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      seedSectionPlan();
+      const intent = JSON.parse((await createIntent(sub, projectId)).body);
+      setStatus(intent.id, { status: 'FAILED' });
+      seedStageRow(intent.id, 'units-gen');
+      seedStageRow(intent.id, 'cg', 'auth', 'SUCCEEDED', 1);
+      seedStageRow(intent.id, 'cg', 'billing', 'FAILED', 1);
+      procStore.set(keyOf(`EXEC#${intent.id}`, 'UNITPLAN'), {
+        pk: `EXEC#${intent.id}`,
+        sk: 'UNITPLAN',
+        executionId: intent.id,
+        units: [
+          { slug: 'auth', dependsOn: [] },
+          { slug: 'billing', dependsOn: ['auth'] },
+        ],
+        batches: [['auth'], ['billing']],
+      });
+
+      const res = await handler({
+        httpMethod: 'POST',
+        path: `/projects/${projectId}/intents/${intent.id}/rewind`,
+        pathParameters: { projectId, intentId: intent.id },
+        body: JSON.stringify({ fromStageId: 'cg' }),
+        ...claims(sub),
+      });
+
+      expect(res.statusCode).toBe(202);
+      expect(agentcoreMock.commandCalls(StopRuntimeSessionCommand)).toHaveLength(3);
+      expect(maxInFlight).toBeGreaterThan(1);
+    } finally {
+      delete process.env.AGENTCORE_RUNTIME_ARN;
+    }
   });
 
   it('restarts an incomplete unit section from its first stage when a later stage is retried', async () => {
