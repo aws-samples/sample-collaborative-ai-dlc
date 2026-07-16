@@ -245,8 +245,12 @@ describe('createRunStageStart', () => {
       const start = createRunStageStart({ ...deps, heartbeatIntervalMs: 1000 });
       await start(basePayload);
 
+      // One synchronous beat establishes callback liveness before acceptance.
+      expect(beats).toEqual(['cb-123']);
+      expect(start.activeJobs.values().next().value.heartbeatTimer.hasRef()).toBe(true);
+
       await vi.advanceTimersByTimeAsync(3500);
-      expect(beats.length).toBe(3);
+      expect(beats.length).toBe(4);
       expect(beats[0]).toBe('cb-123');
 
       gate.resolve({ ok: true, state: 'SUCCEEDED' });
@@ -257,6 +261,28 @@ describe('createRunStageStart', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('refuses to launch the stage when the initial callback heartbeat cannot be delivered', async () => {
+    const logged = [];
+    const { deps } = makeDeps({
+      sendCallbackHeartbeat: vi.fn(async () => ({
+        delivered: false,
+        error: 'Callback does not exist',
+      })),
+    });
+    const start = createRunStageStart({ ...deps, log: (...a) => logged.push(a.join(' ')) });
+
+    const result = await start(basePayload);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'stage_callback_heartbeat_failed',
+      detail: 'Callback does not exist',
+    });
+    expect(deps.runStage).not.toHaveBeenCalled();
+    expect(start.activeJobs.size).toBe(0);
+    expect(logged.some((line) => line.includes('FAILED to establish'))).toBe(true);
   });
 
   it('logs loudly when the callback cannot be delivered (orchestrator backstop takes over)', async () => {

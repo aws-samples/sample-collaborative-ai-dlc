@@ -77,8 +77,36 @@ export const createRunStageStart = ({
       return { ok: false, reason: 'job_already_running', detail: key };
     }
 
-    activeJobs.set(key, { startedAt: Date.now(), stageCallbackId });
+    // Establish callback liveness before launching an expensive agent. The old
+    // fire-and-forget interval could accept a job even when no heartbeat ever
+    // reached Lambda, leaving useful work to be discarded exactly at the
+    // heartbeat deadline. This first beat makes that failure synchronous and
+    // visible to the orchestrator.
+    let initialHeartbeat;
+    try {
+      initialHeartbeat = await sendCallbackHeartbeat(stageCallbackId);
+    } catch (err) {
+      initialHeartbeat = { delivered: false, error: err?.message ?? String(err) };
+    }
+    if (!initialHeartbeat?.delivered) {
+      log(`FAILED to establish stage callback heartbeat for ${key}:`, initialHeartbeat?.error);
+      return {
+        ok: false,
+        reason: 'stage_callback_heartbeat_failed',
+        detail: initialHeartbeat?.error ?? null,
+      };
+    }
+
+    const jobState = {
+      startedAt: Date.now(),
+      stageCallbackId,
+      heartbeatCount: 1,
+      lastHeartbeatAt: Date.now(),
+      heartbeatTimer: null,
+    };
+    activeJobs.set(key, jobState);
     busy?.enter();
+    log(`stage callback heartbeat established for ${key}`);
 
     // Agent launching time (cold start): orchestrator dispatch → job accepted
     // HERE. Computed at accept (before any workspace/CLI work) and threaded
@@ -94,12 +122,33 @@ export const createRunStageStart = ({
     const job = (async () => {
       let heartbeatTimer = null;
       try {
-        heartbeatTimer = setInterval(() => {
-          sendCallbackHeartbeat(stageCallbackId).catch(() => {});
-        }, heartbeatIntervalMs);
-        // Node may keep the process alive for the interval otherwise; the
-        // container's HTTP server owns process lifetime, not this job.
-        heartbeatTimer.unref?.();
+        const scheduleHeartbeat = () => {
+          heartbeatTimer = setTimeout(async () => {
+            let sent;
+            try {
+              sent = await sendCallbackHeartbeat(stageCallbackId);
+            } catch (err) {
+              sent = { delivered: false, error: err?.message ?? String(err) };
+            }
+            if (sent?.delivered) {
+              jobState.heartbeatCount += 1;
+              jobState.lastHeartbeatAt = Date.now();
+              if (jobState.heartbeatCount % 5 === 0) {
+                log(
+                  `stage callback heartbeat delivered for ${key} (${jobState.heartbeatCount} total)`,
+                );
+              }
+            } else {
+              log(`FAILED stage callback heartbeat for ${key}:`, sent?.error);
+            }
+            if (activeJobs.get(key) === jobState) scheduleHeartbeat();
+          }, heartbeatIntervalMs);
+          // Keep the heartbeat referenced. AgentCore may suspend an invocation
+          // after the accept response; an unreferenced timer is not a reliable
+          // liveness mechanism for the detached stage job.
+          jobState.heartbeatTimer = heartbeatTimer;
+        };
+        scheduleHeartbeat();
 
         let result;
         try {
@@ -125,7 +174,7 @@ export const createRunStageStart = ({
         }
         return result;
       } finally {
-        if (heartbeatTimer) clearInterval(heartbeatTimer);
+        if (heartbeatTimer) clearTimeout(heartbeatTimer);
         activeJobs.delete(key);
         busy?.leave();
       }

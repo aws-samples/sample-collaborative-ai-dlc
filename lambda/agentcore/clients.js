@@ -64,17 +64,31 @@ export const sendStageCallbackSuccess = async (
   return { delivered: false, error: lastErr?.message };
 };
 
-// Heartbeat the stage callback while the background job runs, so the
-// orchestrator's heartbeatTimeout can distinguish "long stage" from "dead
-// container". Best-effort: a missed beat is only fatal if they ALL stop.
-export const sendStageCallbackHeartbeat = async (callbackId) => {
-  try {
-    await lambda.send(new SendDurableExecutionCallbackHeartbeatCommand({ CallbackId: callbackId }));
-    return { delivered: true };
-  } catch (err) {
-    console.error('[agentcore] stage callback heartbeat failed:', err.message);
-    return { delivered: false, error: err.message };
+// Heartbeat the stage callback while the background job runs. Retry transient
+// Lambda API failures: this is also called synchronously before a stage is
+// accepted, so returning delivered:false must mean the callback is genuinely
+// unreachable rather than one request happened to fail.
+export const sendStageCallbackHeartbeat = async (
+  callbackId,
+  { attempts = 3, baseDelayMs = 500, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {},
+) => {
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await lambda.send(
+        new SendDurableExecutionCallbackHeartbeatCommand({ CallbackId: callbackId }),
+      );
+      return { delivered: true };
+    } catch (err) {
+      lastErr = err;
+      console.error(
+        `[agentcore] stage callback heartbeat failed (attempt ${i + 1}/${attempts}):`,
+        err.message,
+      );
+      if (i < attempts - 1) await sleep(baseDelayMs * 2 ** i);
+    }
   }
+  return { delivered: false, error: lastErr?.message };
 };
 
 // Open a Neptune (or local gremlin-server) traversal source. wss+SigV4 in prod;
