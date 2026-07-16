@@ -111,9 +111,11 @@ export default function ProjectSettings() {
             <h1 className="truncate text-xl font-bold tracking-tight">
               {project?.name ?? 'Space Settings'}
             </h1>
-            <p className="mt-0.5 text-sm text-muted-foreground">
-              {canEdit ? 'Space settings' : 'Space settings — only space owner or admin can modify'}
-            </p>
+            {!canEdit && (
+              <p className="mt-0.5 text-sm text-muted-foreground">
+                Only space owners or admins can modify settings.
+              </p>
+            )}
           </div>
           {userRole && (
             <Badge variant="outline" className={cn('ml-auto text-[10px]', ROLE_BADGE[userRole])}>
