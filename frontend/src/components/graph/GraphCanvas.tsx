@@ -24,7 +24,6 @@ import {
   Loader2,
   Network,
   LayoutGrid,
-  Share2,
   Orbit,
   ChevronRight,
   Minus,
@@ -885,7 +884,7 @@ export function GraphCanvas({
           zoomOut();
           break;
         case '0':
-          resetView();
+          fitToContentRef.current();
           break;
         case '?':
           setShowKeyboardHelp((prev) => !prev);
@@ -1062,12 +1061,6 @@ export function GraphCanvas({
     setIsPanning(false);
   };
 
-  const resetView = () => {
-    if (!containerRef.current) return;
-    const { width, height } = containerRef.current.getBoundingClientRect();
-    setViewBox({ x: -width / 2, y: -height / 2, width, height });
-  };
-
   const zoomIn = () => {
     const f = 0.75;
     setViewBox((v) => ({
@@ -1099,6 +1092,10 @@ export function GraphCanvas({
     const maxY = Math.max(...ys) + NODE_H / 2 + pad;
     setViewBox({ x: minX, y: minY, width: maxX - minX, height: maxY - minY });
   }, [nodes]);
+
+  // Ref so the keyboard handler (registered once with []) always calls the latest fitToContent.
+  const fitToContentRef = useRef(fitToContent);
+  fitToContentRef.current = fitToContent;
 
   const toggleTypeFilter = (type: string) => {
     setTypeFilters((prev) => {
@@ -1223,46 +1220,33 @@ export function GraphCanvas({
   return (
     <div className="h-full flex flex-col overflow-hidden">
       {/* ==================== TOOLBAR ==================== */}
-      <div className="flex items-center gap-2 px-4 py-2 border-b bg-background/95 backdrop-blur-sm shrink-0 z-10">
-        {headerLeading}
-        <div className="flex items-center gap-2 mr-2">
-          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary/10">
+      <div className="flex items-center gap-1.5 sm:gap-2 px-2 sm:px-4 py-2 border-b bg-background/95 backdrop-blur-sm shrink-0 z-10 min-w-0 overflow-x-auto">
+        {/* Title */}
+        <div className="flex items-center gap-2 mr-1 sm:mr-2 shrink-0">
+          <div className="hidden lg:flex h-7 w-7 items-center justify-center rounded-lg bg-primary/10">
             <Network className="h-4 w-4 text-primary" />
           </div>
-          <div>
-            <h2 className="text-sm font-semibold leading-none">{title || 'Graph'}</h2>
-            <p className="text-[10px] text-muted-foreground mt-0.5">
-              Knowledge graph visualization
-            </p>
-          </div>
+          <h2 className="text-xs sm:text-sm font-semibold leading-none">
+            {title || 'Knowledge graph'}
+          </h2>
         </div>
 
-        <Badge variant="secondary" className="text-[10px] gap-1">
-          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse-subtle" />
-          {nodes.length} nodes
-        </Badge>
-        <Badge variant="outline" className="text-[10px] gap-1">
-          <Share2 className="h-2.5 w-2.5" />
-          {edges.length} edges
-        </Badge>
-
-        <Separator orientation="vertical" className="h-5 mx-1" />
-
         {/* Layout mode toggle */}
-        <div className="flex items-center rounded-md border bg-muted/30 p-0.5">
+        <div className="flex items-center rounded-md border bg-muted/30 p-0.5 shrink-0">
           <Tooltip>
             <TooltipTrigger asChild>
               <button
                 onClick={() => setLayoutMode('force')}
+                aria-label="Force-directed layout"
                 className={cn(
-                  'flex items-center gap-1 rounded-sm px-2 py-1 text-[10px] font-medium transition-all',
+                  'flex items-center gap-1 rounded-sm px-1.5 sm:px-2 py-1 text-[10px] font-medium transition-all',
                   layoutMode === 'force'
                     ? 'bg-background shadow-sm text-foreground'
                     : 'text-muted-foreground hover:text-foreground',
                 )}
               >
                 <Orbit className="h-3 w-3" />
-                Force
+                <span className="hidden sm:inline">Force</span>
               </button>
             </TooltipTrigger>
             <TooltipContent>Force-directed layout (1)</TooltipContent>
@@ -1271,63 +1255,51 @@ export function GraphCanvas({
             <TooltipTrigger asChild>
               <button
                 onClick={() => setLayoutMode('hierarchical')}
+                aria-label="Hierarchical layout"
                 className={cn(
-                  'flex items-center gap-1 rounded-sm px-2 py-1 text-[10px] font-medium transition-all',
+                  'flex items-center gap-1 rounded-sm px-1.5 sm:px-2 py-1 text-[10px] font-medium transition-all',
                   layoutMode === 'hierarchical'
                     ? 'bg-background shadow-sm text-foreground'
                     : 'text-muted-foreground hover:text-foreground',
                 )}
               >
                 <LayoutGrid className="h-3 w-3" />
-                Hierarchy
+                <span className="hidden sm:inline">Hierarchy</span>
               </button>
             </TooltipTrigger>
             <TooltipContent>Hierarchical layout (2)</TooltipContent>
           </Tooltip>
         </div>
 
-        <Separator orientation="vertical" className="h-5 mx-1" />
-
-        {/* Search */}
-        <div className="relative">
-          <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
-          <Input
-            ref={searchRef}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search nodes... (f)"
-            className="h-7 w-48 pl-7 text-xs"
-          />
-          {search && (
-            <button
-              onClick={() => setSearch('')}
-              className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-            >
-              <X className="h-3 w-3" />
-            </button>
-          )}
-        </div>
+        {/* Intent-specific layer toggle (or other header slot content) */}
+        {headerLeading}
 
         {/* Filter toggle */}
-        <Button
-          variant={showFilters ? 'secondary' : 'ghost'}
-          size="sm"
-          className="h-7 gap-1 text-xs"
-          onClick={() => setShowFilters(!showFilters)}
-        >
-          <Filter className="h-3 w-3" />
-          Filters
-          {typeFilters.size > 0 && (
-            <Badge variant="default" className="h-4 px-1 text-[9px] ml-0.5">
-              {typeFilters.size}
-            </Badge>
-          )}
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant={showFilters ? 'secondary' : 'ghost'}
+              size="sm"
+              className="h-7 gap-1 text-xs shrink-0 px-2 sm:px-3"
+              onClick={() => setShowFilters(!showFilters)}
+              aria-label="Toggle type filters"
+            >
+              <Filter className="h-3 w-3" />
+              <span className="hidden sm:inline">Filters</span>
+              {typeFilters.size > 0 && (
+                <Badge variant="default" className="h-4 px-1 text-[9px] ml-0.5">
+                  {typeFilters.size}
+                </Badge>
+              )}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Toggle type filters</TooltipContent>
+        </Tooltip>
 
-        <div className="flex-1" />
+        <div className="flex-1 min-w-0" />
 
         {/* View toggles */}
-        <div className="flex items-center gap-0.5 mr-1">
+        <div className="flex items-center gap-0.5 shrink-0 mr-0.5 sm:mr-1">
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
@@ -1335,6 +1307,7 @@ export function GraphCanvas({
                 size="icon"
                 className="h-7 w-7"
                 onClick={() => setShowClusters(!showClusters)}
+                aria-label="Toggle clusters"
               >
                 {showClusters ? (
                   <Eye className="h-3.5 w-3.5" />
@@ -1352,6 +1325,7 @@ export function GraphCanvas({
                 size="icon"
                 className="h-7 w-7"
                 onClick={() => setShowMinimap(!showMinimap)}
+                aria-label="Toggle minimap"
               >
                 <MapIcon className="h-3.5 w-3.5" />
               </Button>
@@ -1365,6 +1339,7 @@ export function GraphCanvas({
                 size="icon"
                 className="h-7 w-7"
                 onClick={() => setShowStats(!showStats)}
+                aria-label="Graph statistics"
               >
                 <BarChart3 className="h-3.5 w-3.5" />
               </Button>
@@ -1373,47 +1348,26 @@ export function GraphCanvas({
           </Tooltip>
         </div>
 
-        <Separator orientation="vertical" className="h-5" />
-
-        {/* Zoom controls */}
-        <div className="flex items-center gap-0.5">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={zoomIn}>
-                <Plus className="h-3.5 w-3.5" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Zoom in (+)</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={zoomOut}>
-                <Minus className="h-3.5 w-3.5" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Zoom out (-)</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={fitToContent}>
-                <Maximize2 className="h-3.5 w-3.5" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Fit to content (0)</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7"
-                onClick={() => setShowKeyboardHelp(!showKeyboardHelp)}
-              >
-                <Keyboard className="h-3.5 w-3.5" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Keyboard shortcuts (?)</TooltipContent>
-          </Tooltip>
+        {/* Search */}
+        <div className="relative min-w-0 shrink-0">
+          <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+          <Input
+            ref={searchRef}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search... (f)"
+            aria-label="Search nodes"
+            className="h-7 w-24 sm:w-32 lg:w-48 pl-7 text-xs"
+          />
+          {search && (
+            <button
+              onClick={() => setSearch('')}
+              aria-label="Clear search"
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -1864,14 +1818,15 @@ export function GraphCanvas({
                   })}
               </svg>
 
-              {/* ===== Zoom Slider ===== */}
-              <div className="absolute bottom-[160px] right-3 z-10 flex flex-col items-center gap-1 rounded-lg bg-background/90 backdrop-blur-sm border shadow-sm px-1.5 py-2">
-                <span
-                  className="text-[9px] font-semibold text-muted-foreground select-none"
-                  title="Zoom in"
+              {/* ===== Canvas Zoom Widget ===== */}
+              <div className="absolute bottom-[160px] right-3 z-10 flex flex-col items-center gap-1.5 rounded-xl bg-background/90 backdrop-blur-sm border shadow-md px-2 py-2.5">
+                <button
+                  onClick={zoomIn}
+                  aria-label="Zoom in"
+                  className="flex h-8 w-8 items-center justify-center rounded-lg border bg-background text-foreground/80 shadow-sm hover:bg-muted hover:text-foreground active:scale-95 transition-all focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
                 >
-                  +
-                </span>
+                  <Plus className="h-4 w-4" />
+                </button>
                 <input
                   type="range"
                   min={0}
@@ -1889,14 +1844,23 @@ export function GraphCanvas({
                   }}
                   aria-label="Zoom level"
                   title="Zoom level"
-                  className="h-20 w-4 appearance-none bg-transparent cursor-pointer focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none [writing-mode:vertical-lr] [direction:rtl] [&::-webkit-slider-runnable-track]:w-1 [&::-webkit-slider-runnable-track]:rounded-full [&::-webkit-slider-runnable-track]:bg-muted [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-foreground/70 [&::-webkit-slider-thumb]:border [&::-webkit-slider-thumb]:border-background [&::-webkit-slider-thumb]:shadow-sm [&::-moz-range-track]:w-1 [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-muted [&::-moz-range-thumb]:w-3 [&::-moz-range-thumb]:h-3 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-foreground/70 [&::-moz-range-thumb]:border-0"
+                  className="h-28 w-5 appearance-none bg-transparent cursor-pointer focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none [writing-mode:vertical-lr] [direction:rtl] [&::-webkit-slider-runnable-track]:w-1.5 [&::-webkit-slider-runnable-track]:rounded-full [&::-webkit-slider-runnable-track]:bg-muted [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-foreground/70 [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-background [&::-webkit-slider-thumb]:shadow-md [&::-moz-range-track]:w-1.5 [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-muted [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-foreground/70 [&::-moz-range-thumb]:border-0"
                 />
-                <span
-                  className="text-[9px] font-semibold text-muted-foreground select-none"
-                  title="Zoom out"
+                <button
+                  onClick={zoomOut}
+                  aria-label="Zoom out"
+                  className="flex h-8 w-8 items-center justify-center rounded-lg border bg-background text-foreground/80 shadow-sm hover:bg-muted hover:text-foreground active:scale-95 transition-all focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
                 >
-                  −
-                </span>
+                  <Minus className="h-4 w-4" />
+                </button>
+                <div className="w-full border-t my-0.5" />
+                <button
+                  onClick={fitToContent}
+                  aria-label="Fit to content"
+                  className="flex h-8 w-8 items-center justify-center rounded-lg border bg-background text-foreground/80 shadow-sm hover:bg-muted hover:text-foreground active:scale-95 transition-all focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                >
+                  <Maximize2 className="h-4 w-4" />
+                </button>
               </div>
 
               {/* ===== Minimap ===== */}
