@@ -120,6 +120,24 @@ variable "gitlab_redirect_uri" {
   default     = ""
 }
 
+variable "bitbucket_oauth_secret_name" {
+  description = "Secrets Manager secret name for Bitbucket OAuth credentials"
+  type        = string
+  default     = ""
+}
+
+variable "bitbucket_oauth_secret_arn" {
+  description = "Secrets Manager secret ARN for Bitbucket OAuth credentials"
+  type        = string
+  default     = ""
+}
+
+variable "bitbucket_redirect_uri" {
+  description = "OAuth redirect URI for Bitbucket callback"
+  type        = string
+  default     = ""
+}
+
 variable "jira_oauth_secret_name" {
   description = "Secrets Manager secret name for Jira Cloud OAuth credentials"
   type        = string

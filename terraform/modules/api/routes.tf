@@ -1867,7 +1867,7 @@ resource "aws_api_gateway_integration" "bitbucket_auth_get" {
   http_method             = aws_api_gateway_method.bitbucket_auth_get.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = module.bitbucket_lambda.lambda_function_invoke_arn
+  uri                     = var.bitbucket_lambda_invoke_arn
 }
 
 # -----------------------------------------------------------------------------
@@ -1886,7 +1886,7 @@ resource "aws_api_gateway_integration" "bitbucket_callback_get" {
   http_method             = aws_api_gateway_method.bitbucket_callback_get.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = module.bitbucket_lambda.lambda_function_invoke_arn
+  uri                     = var.bitbucket_lambda_invoke_arn
 }
 
 # -----------------------------------------------------------------------------
@@ -1906,7 +1906,7 @@ resource "aws_api_gateway_integration" "bitbucket_repos_get" {
   http_method             = aws_api_gateway_method.bitbucket_repos_get.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = module.bitbucket_lambda.lambda_function_invoke_arn
+  uri                     = var.bitbucket_lambda_invoke_arn
 }
 
 # -----------------------------------------------------------------------------
@@ -1926,7 +1926,7 @@ resource "aws_api_gateway_integration" "bitbucket_status_get" {
   http_method             = aws_api_gateway_method.bitbucket_status_get.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = module.bitbucket_lambda.lambda_function_invoke_arn
+  uri                     = var.bitbucket_lambda_invoke_arn
 }
 
 # -----------------------------------------------------------------------------
@@ -1946,7 +1946,7 @@ resource "aws_api_gateway_integration" "bitbucket_disconnect_delete" {
   http_method             = aws_api_gateway_method.bitbucket_disconnect_delete.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = module.bitbucket_lambda.lambda_function_invoke_arn
+  uri                     = var.bitbucket_lambda_invoke_arn
 }
 
 # -----------------------------------------------------------------------------
@@ -1966,7 +1966,7 @@ resource "aws_api_gateway_integration" "bitbucket_repos_workspace_repo_branches_
   http_method             = aws_api_gateway_method.bitbucket_repos_workspace_repo_branches_get.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = module.bitbucket_lambda.lambda_function_invoke_arn
+  uri                     = var.bitbucket_lambda_invoke_arn
 }
 
 # -----------------------------------------------------------------------------
@@ -1986,7 +1986,7 @@ resource "aws_api_gateway_integration" "bitbucket_repos_workspace_repo_tree_get"
   http_method             = aws_api_gateway_method.bitbucket_repos_workspace_repo_tree_get.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = module.bitbucket_lambda.lambda_function_invoke_arn
+  uri                     = var.bitbucket_lambda_invoke_arn
 }
 
 # -----------------------------------------------------------------------------
@@ -2006,7 +2006,7 @@ resource "aws_api_gateway_integration" "bitbucket_repos_workspace_repo_contents_
   http_method             = aws_api_gateway_method.bitbucket_repos_workspace_repo_contents_get.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = module.bitbucket_lambda.lambda_function_invoke_arn
+  uri                     = var.bitbucket_lambda_invoke_arn
 }
 
 # -----------------------------------------------------------------------------
@@ -2026,7 +2026,7 @@ resource "aws_api_gateway_integration" "bitbucket_repos_pullrequests_comments_ge
   http_method             = aws_api_gateway_method.bitbucket_repos_pullrequests_comments_get.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = module.bitbucket_lambda.lambda_function_invoke_arn
+  uri                     = var.bitbucket_lambda_invoke_arn
 }
 
 # -----------------------------------------------------------------------------
@@ -2046,7 +2046,7 @@ resource "aws_api_gateway_integration" "bitbucket_repos_pullrequests_comments_po
   http_method             = aws_api_gateway_method.bitbucket_repos_pullrequests_comments_post.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = module.bitbucket_lambda.lambda_function_invoke_arn
+  uri                     = var.bitbucket_lambda_invoke_arn
 }
 
 # -----------------------------------------------------------------------------
