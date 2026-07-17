@@ -101,6 +101,10 @@ const refreshGitlabToken = async ({ ssm, secrets, ddb, item, tokens }) => {
       Name: item.parameterName,
       Value: JSON.stringify(newValue),
       Type: 'SecureString',
+      // Bitbucket access+refresh tokens are JWTs whose combined JSON can exceed
+      // the SSM standard-tier 4096-char cap. Intelligent-Tiering upgrades to the
+      // advanced tier ONLY when needed, so GitLab's short tokens stay standard.
+      Tier: 'Intelligent-Tiering',
       Overwrite: true,
     }),
   );
@@ -168,6 +172,10 @@ const refreshBitbucketToken = async ({ ssm, secrets, ddb, item, tokens }) => {
       Name: item.parameterName,
       Value: JSON.stringify(newValue),
       Type: 'SecureString',
+      // Bitbucket access+refresh tokens are JWTs whose combined JSON can exceed
+      // the SSM standard-tier 4096-char cap. Intelligent-Tiering upgrades to the
+      // advanced tier ONLY when needed, so GitLab's short tokens stay standard.
+      Tier: 'Intelligent-Tiering',
       Overwrite: true,
     }),
   );

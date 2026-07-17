@@ -171,6 +171,11 @@ export const createGitHandler = (provider, routes) => {
             Name: parameterName,
             Value: JSON.stringify(ssmValue),
             Type: 'SecureString',
+            // Bitbucket access+refresh tokens are JWTs; their combined JSON can
+            // exceed the SSM standard-tier 4096-char cap. Intelligent-Tiering
+            // upgrades to the advanced tier ONLY when the value is too large,
+            // so GitHub/GitLab (short opaque tokens) stay on the free standard tier.
+            Tier: 'Intelligent-Tiering',
             Overwrite: true,
           }),
         );
