@@ -1377,6 +1377,7 @@ export const runStage = async (
   // Bedrock ids. Resolved here (before the RUNNING write) so it's persisted on the
   // stage row + threaded to the MCP scope for read-time token pricing.
   const model = resolveStageModel({ cliModels, tierModels, agentBlock, cli, env });
+  const priorStageRow = await store.getStage(executionId, stageInstanceId).catch(() => null);
   const stageScope = {
     executionId,
     intentId,
@@ -1384,6 +1385,7 @@ export const runStage = async (
     stageInstanceId,
     unitSlug,
     sectionIndex,
+    stageAttempt: priorStageRow?.attempt ?? 0,
     role: 'author',
     model,
   };
@@ -1405,7 +1407,6 @@ export const runStage = async (
       stageCallbackId,
     });
   } else {
-    const priorRow = await store.getStage(executionId, stageInstanceId).catch(() => null);
     await store.putStage({
       executionId,
       stageInstanceId,
@@ -1414,7 +1415,7 @@ export const runStage = async (
       sectionIndex,
       phase: stage.phase,
       state: 'RUNNING',
-      attempt: priorRow?.attempt ?? 0,
+      attempt: priorStageRow?.attempt ?? 0,
       cli,
       cliSessionId,
       resolvedModel: model,

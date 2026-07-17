@@ -28,6 +28,7 @@ import {
   isCurrentRow as isCurrent,
   jsonListProp,
 } from '../shared/graph-rows.js';
+import { selectCurrentArtifactHeads } from '../shared/artifact-versioning.js';
 import { REGISTRY } from '../shared/artifact-extractors.js';
 
 const __ = gremlin.process.statics;
@@ -151,7 +152,9 @@ export const fetchKnowledgeGraph = async (g, { projectId, intentId }) => {
   if (intentRes.done || !intentRes.value) return { nodes: [], edges: [] };
   const intentVm = flatten(intentRes.value);
 
-  const artifacts = await flatRows(anchored('Artifact'));
+  // Archived/superseded heads are history-only. Normal graph/context/search
+  // surfaces render current logical heads exclusively.
+  const artifacts = selectCurrentArtifactHeads(await flatRows(anchored('Artifact')), intentId);
   const questions = await flatRows(anchored('Question'));
   // Steering vertices — human course corrections (docs/v2-steering.md): the
   // WHY behind a direction change, with REVISES/INFLUENCES provenance edges.
@@ -197,10 +200,6 @@ export const fetchKnowledgeGraph = async (g, { projectId, intentId }) => {
       createdByStageInstanceId: a.created_by_stage_instance_id ?? null,
       createdAt: a.created_at ?? null,
       updatedAt: a.updated_at ?? null,
-      // Rewind lineage: a superseded artifact came from a rewound stage attempt
-      // and has not (yet) been rehabilitated by the re-run. UI dims it.
-      superseded: Boolean(a.superseded_at),
-      supersededAt: a.superseded_at ?? null,
       contentPreview: preview(a.content),
       contentLength: String(a.content ?? '').length,
     })),

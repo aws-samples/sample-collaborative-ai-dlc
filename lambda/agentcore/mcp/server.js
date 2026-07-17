@@ -149,13 +149,13 @@ export const buildToolHandlers = ({ writer, graph, bridge }) => {
             links: links ?? [],
           }),
         );
-        await notifyArtifact(bridge, { id, title, action: 'created' });
+        await notifyArtifact(bridge, { id: res.id, title, action: 'created' });
         return res;
       }),
     update_artifact: ({ id, props }) =>
       guard(async () => {
         const res = await withWriter((w) => w.updateArtifact({ id, props: props ?? {} }));
-        await notifyArtifact(bridge, { id, title: props?.title, action: 'updated' });
+        await notifyArtifact(bridge, { id: res.id, title: props?.title, action: 'updated' });
         return res;
       }),
     link_artifacts: ({ fromId, toId, edge }) =>

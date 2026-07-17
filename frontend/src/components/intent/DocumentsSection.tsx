@@ -9,6 +9,7 @@ import { getTimeAgo } from '@/lib/timeAgo';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { IntentGraphPopover } from '@/components/intent/IntentGraphPopover';
 import { DerivedItemCountChip } from '@/components/intent/DerivedItemCountChip';
+import { ArtifactHistoryDrawer } from '@/components/intent/ArtifactHistoryDrawer';
 
 // The "Documents" accordion group on the intent workbench: long-form markdown
 // artifacts, grouped by workflow phase (latest first) then stage (latest plan
@@ -335,6 +336,7 @@ export function DocumentsSection({
                     {getTimeAgo(a.createdAt)}
                   </span>
                 )}
+                <ArtifactHistoryDrawer artifact={a} />
                 <DerivedItemCountChip
                   artifactId={a.id}
                   count={itemsByArtifact.get(a.id)?.length ?? 0}

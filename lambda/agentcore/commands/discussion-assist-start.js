@@ -13,6 +13,13 @@ import { materializeCliContext } from '../stage-materializer.js';
 import { parseCliModels } from '../../shared/cli-models.js';
 import { parseTierModels } from '../../shared/tier-models.js';
 import { quorumCliModels } from '../model-resolver.js';
+import {
+  artifactAliases,
+  artifactLogicalKeyFromRow,
+  readIntentArtifactEntries,
+  selectCanonicalArtifact,
+  selectCurrentArtifactHeads,
+} from '../../shared/artifact-versioning.js';
 
 const { cardinality } = gremlin.process;
 const __ = gremlin.process.statics;
@@ -161,15 +168,15 @@ const fetchThreadMessages = async (g, discussionId, pendingMessageId) => {
 };
 
 const fetchArtifactAnchor = async (g, intentId, artifactId) => {
-  const r = await g
-    .V()
-    .has('Intent', 'id', intentId)
-    .out('CONTAINS')
-    .hasLabel('Artifact')
-    .has('id', artifactId)
-    .valueMap()
-    .next();
-  return r.done ? null : valueMapToObject(r.value);
+  const rows = await readIntentArtifactEntries(g, intentId);
+  const logicalKeys = new Set(
+    rows
+      .filter((row) => row.id === artifactId || artifactAliases(row).includes(artifactId))
+      .map((row) => artifactLogicalKeyFromRow(row, intentId)),
+  );
+  return selectCanonicalArtifact(
+    rows.filter((row) => logicalKeys.has(artifactLogicalKeyFromRow(row, intentId))),
+  );
 };
 
 const fetchQuestionAnchor = async (g, intentId, questionId) => {
@@ -185,15 +192,14 @@ const fetchQuestionAnchor = async (g, intentId, questionId) => {
 };
 
 const fetchIntentMap = async (g, intentId) => {
-  const artifacts = await g
-    .V()
-    .has('Intent', 'id', intentId)
-    .out('CONTAINS')
-    .hasLabel('Artifact')
-    .order()
-    .by(__.coalesce(__.values('updated_at'), __.values('created_at'), __.constant('')))
-    .valueMap('id', 'artifact_type', 'title', 'status', 'gist', 'claims')
-    .toList();
+  const artifacts = selectCurrentArtifactHeads(
+    await readIntentArtifactEntries(g, intentId),
+    intentId,
+  ).toSorted((a, b) =>
+    String(a.updated_at ?? a.created_at ?? '').localeCompare(
+      String(b.updated_at ?? b.created_at ?? ''),
+    ),
+  );
   const questions = await g
     .V()
     .has('Intent', 'id', intentId)
@@ -202,7 +208,14 @@ const fetchIntentMap = async (g, intentId) => {
     .valueMap('id', 'title', 'status', 'answer', 'state')
     .toList();
   return {
-    artifacts: artifacts.map(valueMapToObject).slice(-25),
+    artifacts: artifacts.slice(-25).map((artifact) => ({
+      id: artifact.id,
+      artifact_type: artifact.artifact_type,
+      title: artifact.title,
+      status: artifact.status,
+      gist: artifact.gist ?? artifact.summary_gist,
+      claims: artifact.claims ?? artifact.summary_claims,
+    })),
     questions: questions.map(valueMapToObject).slice(-15),
   };
 };

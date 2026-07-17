@@ -193,6 +193,8 @@ describe('buildMcpConfig', () => {
         intentId: 'i1',
         projectId: 'p1',
         stageInstanceId: 'si1',
+        sectionIndex: 2,
+        stageAttempt: 3,
         role: 'author',
       },
       env: {
@@ -209,6 +211,8 @@ describe('buildMcpConfig', () => {
       V2_INTENT_ID: 'i1',
       V2_PROJECT_ID: 'p1',
       V2_STAGE_INSTANCE_ID: 'si1',
+      V2_SECTION_INDEX: '2',
+      V2_STAGE_ATTEMPT: '3',
       V2_MCP_ROLE: 'author',
       V2_PROCESS_TABLE: 'proc',
       DYNAMODB_LOCAL_ENDPOINT: 'http://dynamodb:8000',

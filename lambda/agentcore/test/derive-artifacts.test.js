@@ -23,9 +23,18 @@ describe('currentArtifacts', () => {
       currentArtifacts([
         artifact({ id: 'b', created_at: '2' }),
         artifact({ id: 'x', superseded_at: 'now' }),
-        artifact({ id: 'a', created_at: '1' }),
+        artifact({ id: 'a', created_at: '1', created_by_stage_instance_id: 'si-2' }),
       ]).map((a) => a.id),
     ).toEqual(['a', 'b']);
+  });
+
+  it('selects only the newest legacy row for one logical artifact', () => {
+    expect(
+      currentArtifacts([
+        artifact({ id: 'old', created_at: '1' }),
+        artifact({ id: 'new', created_at: '2' }),
+      ]).map((a) => a.id),
+    ).toEqual(['new']);
   });
 });
 

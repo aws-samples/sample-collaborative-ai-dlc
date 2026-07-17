@@ -23,6 +23,11 @@ const scopeFromEnv = (env = process.env) => ({
   intentId: env.V2_INTENT_ID,
   projectId: env.V2_PROJECT_ID,
   stageInstanceId: env.V2_STAGE_INSTANCE_ID ?? null,
+  sectionIndex:
+    env.V2_SECTION_INDEX === undefined || env.V2_SECTION_INDEX === ''
+      ? null
+      : Number(env.V2_SECTION_INDEX),
+  stageAttempt: Number(env.V2_STAGE_ATTEMPT) || 0,
   // Unit lane attribution (docs/v2-parallel.md WP4): set on `forEach:
   // unit-of-work` stage instances so gates/outputs/metrics/events the bridge
   // writes name their lane (empty string → null).

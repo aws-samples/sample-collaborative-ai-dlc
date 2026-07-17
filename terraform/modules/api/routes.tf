@@ -1183,6 +1183,8 @@ resource "aws_api_gateway_resource" "intent_gate_revise" {
 #   /intents/{intentId}/artifacts/{artifactId}/content      PUT  — human edit
 #   /intents/{intentId}/artifacts/{artifactId}/verify       POST — clear stale marker
 #   /intents/{intentId}/artifacts/{artifactId}/quorum-edit  POST — start a Quorum edit
+#   /intents/{intentId}/artifacts/{artifactId}/versions     GET  — immutable history
+#   /intents/{intentId}/artifacts/{artifactId}/versions/{versionId} GET — archived content
 #   /intents/{intentId}/quorum-edits/{editId}/decision      POST — approve/reject the plan
 resource "aws_api_gateway_resource" "intent_artifacts" {
   rest_api_id = aws_api_gateway_rest_api.main.id
@@ -1218,6 +1220,18 @@ resource "aws_api_gateway_resource" "intent_artifact_quorum_edit" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.intent_artifact.id
   path_part   = "quorum-edit"
+}
+
+resource "aws_api_gateway_resource" "intent_artifact_versions" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent_artifact.id
+  path_part   = "versions"
+}
+
+resource "aws_api_gateway_resource" "intent_artifact_version" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent_artifact_versions.id
+  path_part   = "{versionId}"
 }
 
 resource "aws_api_gateway_resource" "intent_quorum_edits" {
@@ -1263,11 +1277,13 @@ locals {
     answer_post     = { resource = aws_api_gateway_resource.intent_gate_answer.id, method = "POST" }
     revise_post     = { resource = aws_api_gateway_resource.intent_gate_revise.id, method = "POST" }
     # Post-hoc artifact editing (human + Quorum-supported).
-    artifact_impact_get  = { resource = aws_api_gateway_resource.intent_artifact_impact.id, method = "GET" }
-    artifact_content_put = { resource = aws_api_gateway_resource.intent_artifact_content.id, method = "PUT" }
-    artifact_verify_post = { resource = aws_api_gateway_resource.intent_artifact_verify.id, method = "POST" }
-    artifact_qedit_post  = { resource = aws_api_gateway_resource.intent_artifact_quorum_edit.id, method = "POST" }
-    qedit_decision_post  = { resource = aws_api_gateway_resource.intent_quorum_edit_decision.id, method = "POST" }
+    artifact_impact_get   = { resource = aws_api_gateway_resource.intent_artifact_impact.id, method = "GET" }
+    artifact_content_put  = { resource = aws_api_gateway_resource.intent_artifact_content.id, method = "PUT" }
+    artifact_verify_post  = { resource = aws_api_gateway_resource.intent_artifact_verify.id, method = "POST" }
+    artifact_qedit_post   = { resource = aws_api_gateway_resource.intent_artifact_quorum_edit.id, method = "POST" }
+    artifact_versions_get = { resource = aws_api_gateway_resource.intent_artifact_versions.id, method = "GET" }
+    artifact_version_get  = { resource = aws_api_gateway_resource.intent_artifact_version.id, method = "GET" }
+    qedit_decision_post   = { resource = aws_api_gateway_resource.intent_quorum_edit_decision.id, method = "POST" }
   }
 }
 
@@ -1420,6 +1436,18 @@ module "cors_intent_artifact_quorum_edit" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.intent_artifact_quorum_edit.id
+}
+
+module "cors_intent_artifact_versions" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_artifact_versions.id
+}
+
+module "cors_intent_artifact_version" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_artifact_version.id
 }
 
 module "cors_intent_quorum_edit_decision" {

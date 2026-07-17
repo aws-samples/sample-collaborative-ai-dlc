@@ -30,6 +30,18 @@ import {
 // Used to compute the deterministic stage-instance ids the rewind flow resets/supersedes.
 import { stageInstanceId as planStageInstanceId } from '../../shared/v2-execution-plan.js';
 
+const { archiveArtifactsSpy } = vi.hoisted(() => ({
+  archiveArtifactsSpy: vi.fn(),
+}));
+vi.mock('../../shared/artifact-versioning.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  archiveArtifactsSpy.mockImplementation(actual.archiveArtifactsForStages);
+  return {
+    ...actual,
+    archiveArtifactsForStages: archiveArtifactsSpy,
+  };
+});
+
 const PARTITION = `t-${randomUUID()}`;
 
 let handler;
@@ -260,6 +272,7 @@ beforeEach(() => {
   installDdbFakes();
   ssmMock.reset();
   agentcoreMock.reset();
+  archiveArtifactsSpy.mockClear();
 });
 
 const claims = (sub) => ({
@@ -3509,6 +3522,8 @@ describe('POST /rewind', () => {
         .property('intent_id', intent.id)
         .property('artifact_type', 'doc')
         .property('title', id)
+        .property('content', `content:${id}`)
+        .property('created_at', '2026-01-01T00:00:00.000Z')
         .property('created_by_stage_instance_id', siOf(stageId))
         .as('a')
         .V()
@@ -3543,6 +3558,63 @@ describe('POST /rewind', () => {
     const design = await g.V().has('Artifact', 'id', 'a-design').valueMap().next();
     expect(design.value.get('superseded_at')).toBeUndefined();
 
+    // The prior head is immutable history, linked by deterministic generation.
+    const archived = await g
+      .V()
+      .has('Artifact', 'id', 'a-impl')
+      .out('HAS_VERSION')
+      .valueMap()
+      .next();
+    expect(archived.value.get('id')[0]).toBe('a-impl:v1');
+    expect(archived.value.get('content')[0]).toBe('content:a-impl');
+    expect(archived.value.get('generation')[0]).toBe(1);
+
+    // Normal detail excludes the superseded head while history remains
+    // authenticated and read-only.
+    const detail = JSON.parse(
+      (
+        await handler({
+          httpMethod: 'GET',
+          path: `/projects/${projectId}/intents/${intent.id}`,
+          pathParameters: { projectId, intentId: intent.id },
+          ...claims(sub),
+        })
+      ).body,
+    );
+    expect(detail.artifacts.map((artifact) => artifact.id)).toEqual(['a-design']);
+    const versionsRes = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}/artifacts/a-impl/versions`,
+      pathParameters: { projectId, intentId: intent.id, artifactId: 'a-impl' },
+      ...claims(sub),
+    });
+    expect(versionsRes.statusCode).toBe(200);
+    const versions = JSON.parse(versionsRes.body);
+    expect(versions.current).toBeNull();
+    expect(versions.versions[0]).toMatchObject({
+      versionId: 'a-impl:v1',
+      generation: 1,
+      stageAttempt: 0,
+      restartReason: expect.stringContaining('Rewind to implement'),
+    });
+    const versionRes = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}/artifacts/a-impl/versions/a-impl%3Av1`,
+      pathParameters: {
+        projectId,
+        intentId: intent.id,
+        artifactId: 'a-impl',
+        versionId: 'a-impl:v1',
+      },
+      ...claims(sub),
+    });
+    expect(versionRes.statusCode).toBe(200);
+    expect(JSON.parse(versionRes.body)).toMatchObject({
+      versionId: 'a-impl:v1',
+      content: 'content:a-impl',
+      current: false,
+    });
+
     // Relaunched at the rewind point.
     const calls = lambdaMock.commandCalls(InvokeCommand);
     expect(calls).toHaveLength(1);
@@ -3573,6 +3645,39 @@ describe('POST /rewind', () => {
     });
     // META cleared of the pending gate pointer.
     expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).pendingHumanTaskId).toBeNull();
+  });
+
+  it('leaves restart state untouched and does not relaunch when archival fails', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    seedStageRow(intent.id, 'design');
+    seedStageRow(intent.id, 'implement', 'WAITING_FOR_HUMAN');
+    seedGate(intent.id, 'h1', { status: 'pending', callbackId: 'cb-h1' });
+    setStatus(intent.id, { status: 'WAITING', pendingHumanTaskId: 'h1' });
+    const metaBefore = structuredClone(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')));
+    const stageBefore = structuredClone(
+      procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('implement')}`)),
+    );
+    const gateBefore = structuredClone(procStore.get(keyOf(`EXEC#${intent.id}`, 'HUMAN#h1')));
+    archiveArtifactsSpy.mockRejectedValueOnce(new Error('archive unavailable'));
+
+    const res = await rewind(sub, projectId, intent.id, {
+      fromStageId: 'implement',
+      guidance: 'redo it',
+    });
+
+    expect(res.statusCode).toBe(500);
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META'))).toEqual(metaBefore);
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('implement')}`))).toEqual(
+      stageBefore,
+    );
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'HUMAN#h1'))).toEqual(gateBefore);
+    expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(0);
+    expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(0);
+    expect(agentcoreMock.commandCalls(StopRuntimeSessionCommand)).toHaveLength(0);
+    expect([...procStore.keys()].filter((key) => key.includes('|STEER#'))).toHaveLength(0);
   });
 
   it('409s a rewind while RUNNING (steering is deterministic — wait for the stage)', async () => {

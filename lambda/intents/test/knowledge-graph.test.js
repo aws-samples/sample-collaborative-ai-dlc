@@ -230,6 +230,38 @@ describe('fetchKnowledgeGraph', () => {
     expect(edges.some((e) => e.target === 'other-art' || e.source === 'other-art')).toBe(false);
   });
 
+  it('lazily renders only the newest legacy artifact for one logical identity', async () => {
+    await addV('Intent', { id: INTENT, project_id: PROJECT, title: 'T' });
+    await addV('Artifact', {
+      id: 'legacy-old',
+      intent_id: INTENT,
+      artifact_type: 'design',
+      created_by_stage_instance_id: 'si-design',
+      created_at: '2026-01-01T00:00:00Z',
+      content: 'old',
+    });
+    await addV('Artifact', {
+      id: 'legacy-new',
+      intent_id: INTENT,
+      artifact_type: 'design',
+      created_by_stage_instance_id: 'si-design',
+      created_at: '2026-01-02T00:00:00Z',
+      content: 'new',
+    });
+    await addE('Intent', INTENT, 'CONTAINS', 'Artifact', 'legacy-old');
+    await addE('Intent', INTENT, 'CONTAINS', 'Artifact', 'legacy-new');
+
+    const { nodes, edges } = await fetchKnowledgeGraph(g, {
+      projectId: PROJECT,
+      intentId: INTENT,
+    });
+    expect(byId(nodes, 'legacy-new')).toMatchObject({ type: 'Artifact', contentPreview: 'new' });
+    expect(byId(nodes, 'legacy-old')).toBeUndefined();
+    expect(
+      edges.some((candidate) => candidate.source === INTENT && candidate.target === 'legacy-old'),
+    ).toBe(false);
+  });
+
   it('tolerates a missing Project vertex (no knowledge corpus yet)', async () => {
     await addV('Intent', { id: INTENT, project_id: PROJECT, title: 'T' });
     const { nodes, edges } = await fetchKnowledgeGraph(g, {
@@ -244,7 +276,7 @@ describe('fetchKnowledgeGraph', () => {
 // ── Steering (docs/v2-steering.md) ──
 
 describe('fetchKnowledgeGraph — steering + supersede lineage', () => {
-  it('renders Steering nodes with REVISES/INFLUENCES edges and flags superseded artifacts', async () => {
+  it('renders Steering provenance but excludes superseded artifacts and their edges', async () => {
     await seedFullGraph();
     await addV('Steering', {
       id: 'st-1',
@@ -277,16 +309,16 @@ describe('fetchKnowledgeGraph — steering + supersede lineage', () => {
     });
     expect(steering.label).toContain('event bus');
 
-    // Membership + provenance edges all present.
+    // Membership + current-only provenance edges are present.
     expect(graph.edges).toContainEqual({ source: INTENT, target: 'st-1', label: 'CONTAINS' });
     expect(graph.edges).toContainEqual({ source: 'st-1', target: 'q-1', label: 'REVISES' });
-    expect(graph.edges).toContainEqual({ source: 'st-1', target: 'design-1', label: 'INFLUENCES' });
-
-    // Supersede lineage flags surface on artifact nodes.
-    const design = graph.nodes.find((n) => n.id === 'design-1');
-    expect(design.superseded).toBe(true);
-    const reqs = graph.nodes.find((n) => n.id === 'reqs-1');
-    expect(reqs.superseded).toBe(false);
+    expect(graph.edges).not.toContainEqual({
+      source: 'st-1',
+      target: 'design-1',
+      label: 'INFLUENCES',
+    });
+    expect(graph.nodes.find((n) => n.id === 'design-1')).toBeUndefined();
+    expect(graph.nodes.find((n) => n.id === 'reqs-1')).toBeDefined();
   });
 });
 

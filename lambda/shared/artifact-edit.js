@@ -24,7 +24,8 @@
 // graph.
 
 import gremlin from 'gremlin';
-import { flattenVertexMap, isCurrentRow } from './graph-rows.js';
+import { flattenVertexMap } from './graph-rows.js';
+import { selectCurrentArtifactHeads } from './artifact-versioning.js';
 
 const { cardinality } = gremlin.process;
 
@@ -110,9 +111,8 @@ export const makeDownstreamNeighborsFetcher = (g, intentId) => async (artifactId
       .has('intent_id', intentId)
       .valueMap(true)
       .toList();
-    for (const raw of rows) {
-      const row = flattenVertexMap(raw);
-      if (!row.id || !isCurrentRow(row)) continue;
+    for (const row of selectCurrentArtifactHeads(rows.map(flattenVertexMap), intentId)) {
+      if (!row.id) continue;
       const existing = byId.get(row.id);
       if (existing) {
         existing.edges.push(edge);

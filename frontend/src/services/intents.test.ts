@@ -50,4 +50,14 @@ describe('intentsService request paths', () => {
     await intentsService.outputs('p1', 'i1', { stageInstanceId: 'intent' });
     expect(get).toHaveBeenCalledWith('/projects/p1/intents/i1/outputs?stageInstanceId=intent');
   });
+
+  it('loads artifact history and encodes artifact and version ids', async () => {
+    await intentsService.artifactVersions('p1', 'i1', 'design/head');
+    expect(get).toHaveBeenCalledWith('/projects/p1/intents/i1/artifacts/design%2Fhead/versions');
+
+    await intentsService.artifactVersion('p1', 'i1', 'design/head', 'design/head:v1');
+    expect(get).toHaveBeenCalledWith(
+      '/projects/p1/intents/i1/artifacts/design%2Fhead/versions/design%2Fhead%3Av1',
+    );
+  });
 });

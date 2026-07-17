@@ -806,6 +806,25 @@ describe('DELETE /projects/:id', () => {
           .has('intent_id', intentId),
       )
       .next();
+    const versionId = `${intentId}:requirements:v1`;
+    await g
+      .addV('ArtifactVersion')
+      .property('id', versionId)
+      .property('artifact_id', 'requirements')
+      .property('intent_id', intentId)
+      .next();
+    await g
+      .V()
+      .has('Artifact', 'id', 'requirements')
+      .has('intent_id', intentId)
+      .addE('HAS_VERSION')
+      .to(
+        gremlin.process.statics
+          .V()
+          .has('ArtifactVersion', 'id', versionId)
+          .has('intent_id', intentId),
+      )
+      .next();
     const rows = projectExecs.get(projectId) ?? [];
     rows.push({ intentId, executionId: intentId, projectId, status });
     projectExecs.set(projectId, rows);
@@ -847,6 +866,8 @@ describe('DELETE /projects/:id', () => {
     expect(await g.V().has('Intent', 'id', intentA).hasNext()).toBe(false);
     expect(await g.V().has('Intent', 'id', intentB).hasNext()).toBe(false);
     expect(await g.V().hasLabel('Artifact').has('intent_id', intentA).hasNext()).toBe(false);
+    expect(await g.V().hasLabel('ArtifactVersion').has('intent_id', intentA).hasNext()).toBe(false);
+    expect(await g.V().hasLabel('ArtifactVersion').has('intent_id', intentB).hasNext()).toBe(false);
     // Project-scoped knowledge vertices dropped, and the Project itself.
     expect(await g.V().hasLabel('TeamKnowledge').hasNext()).toBe(false);
     expect(await g.V().hasLabel('LearningRule').hasNext()).toBe(false);
@@ -878,6 +899,9 @@ describe('DELETE /projects/:id', () => {
     expect(await g.V().has('Project', 'id', keep).hasNext()).toBe(true);
     expect(await g.V().has('Intent', 'id', keepIntent).hasNext()).toBe(true);
     expect(await g.V().hasLabel('Artifact').has('intent_id', keepIntent).hasNext()).toBe(true);
+    expect(await g.V().hasLabel('ArtifactVersion').has('intent_id', keepIntent).hasNext()).toBe(
+      true,
+    );
     expect(await g.V().hasLabel('TeamKnowledge').hasNext()).toBe(true);
     expect(await g.V().hasLabel('LearningRule').hasNext()).toBe(true);
   });

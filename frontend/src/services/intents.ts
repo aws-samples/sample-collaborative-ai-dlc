@@ -300,6 +300,12 @@ export interface IntentArtifact {
   title: string | null;
   createdByExecutionId: string | null;
   createdByStageInstanceId: string | null;
+  sectionIndex?: number | null;
+  unitSlug?: string | null;
+  stageAttempt?: number;
+  generation?: number;
+  versionCount?: number;
+  aliases?: string[];
   createdAt: string | null;
   // Rewind lineage: set while a rewind's supersede has not been rehabilitated
   // by the re-run (dimmed in the UI).
@@ -325,6 +331,50 @@ export interface IntentArtifact {
   summaryClaims?: string[] | null;
   enrichmentModel?: string | null;
   content: string | null;
+}
+
+export interface ArtifactVersionSummary {
+  versionId: string;
+  artifactId: string;
+  generation: number;
+  artifactType: string | null;
+  title: string | null;
+  stageInstanceId: string | null;
+  stageAttempt: number;
+  sectionIndex: number | null;
+  unitSlug: string | null;
+  archivedAt: string | null;
+  restartId: string | null;
+  restartReason: string | null;
+  actor: string | null;
+  createdAt: string | null;
+  editedAt: string | null;
+  editedByName: string | null;
+  contentLength: number;
+  contentType: string;
+  contentHash: string | null;
+  legacy: boolean;
+  current: boolean;
+}
+
+export interface ArtifactVersions {
+  artifactId: string;
+  current: ArtifactVersionSummary | null;
+  versions: ArtifactVersionSummary[];
+}
+
+export interface ArtifactVersion extends ArtifactVersionSummary {
+  content: string | null;
+  relationships: {
+    direction: 'in' | 'out';
+    edge: string;
+    artifactId: string;
+  }[];
+  editedBy: string | null;
+  editOrigin: 'human' | 'quorum' | null;
+  verifiedBy: string | null;
+  verifiedByName: string | null;
+  verifiedAt: string | null;
 }
 
 // A fan-in pull/merge request — a run-level output surfaced as a work product.
@@ -926,6 +976,14 @@ export const intentsService = {
   artifactImpact: (projectId: string, intentId: string, artifactId: string) =>
     api.get<ArtifactImpact>(
       `/projects/${projectId}/intents/${intentId}/artifacts/${encodeURIComponent(artifactId)}/impact`,
+    ),
+  artifactVersions: (projectId: string, intentId: string, artifactId: string) =>
+    api.get<ArtifactVersions>(
+      `/projects/${projectId}/intents/${intentId}/artifacts/${encodeURIComponent(artifactId)}/versions`,
+    ),
+  artifactVersion: (projectId: string, intentId: string, artifactId: string, versionId: string) =>
+    api.get<ArtifactVersion>(
+      `/projects/${projectId}/intents/${intentId}/artifacts/${encodeURIComponent(artifactId)}/versions/${encodeURIComponent(versionId)}`,
     ),
   // Human "simple edit": persist the new content (409 while a stage is
   // actively running or a Quorum edit is active; a parked WAITING run is

@@ -51,6 +51,14 @@ import {
   markArtifactsStale,
   fetchDownstreamClosure,
 } from '../shared/artifact-edit.js';
+import {
+  archiveArtifactsForStages,
+  artifactAliases,
+  artifactLogicalKeyFromRow,
+  legacyVersionId,
+  readIntentArtifactEntries,
+  selectCanonicalArtifact,
+} from '../shared/artifact-versioning.js';
 import { fetchKnowledgeGraph } from './knowledge-graph.js';
 import { buildIntentAudit } from './audit.js';
 import { buildArtifactImpact, editBlockReason, activeQuorumEdit } from './impact.js';
@@ -58,7 +66,7 @@ import { buildArtifactImpact, editBlockReason, activeQuorumEdit } from './impact
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const __ = gremlin.process.statics;
-const { cardinality, P } = gremlin.process;
+const { cardinality } = gremlin.process;
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
@@ -598,44 +606,47 @@ const resolveWorkflowVersion = async (workflowId) => {
 // Read the intent's artifact subgraph (Intent --CONTAINS--> Artifact). Returns a
 // compact snapshot for the IntentView. Empty when the intent hasn't started.
 const fetchArtifacts = async (g, intentId) => {
-  const rows = await g
-    .V()
-    .has('Intent', 'id', intentId)
-    .out('CONTAINS')
-    .hasLabel('Artifact')
-    .valueMap(true)
-    .toList();
-  return rows.map((vm) => ({
-    id: getVal(vm, 'id'),
-    artifactType: getVal(vm, 'artifact_type') ?? null,
-    title: getVal(vm, 'title') ?? null,
-    createdByExecutionId: getVal(vm, 'created_by_execution_id') ?? null,
-    createdByStageInstanceId: getVal(vm, 'created_by_stage_instance_id') ?? null,
-    createdAt: getVal(vm, 'created_at') ?? null,
-    // Rewind lineage (docs/v2-steering.md): set when a rewind superseded this
-    // artifact and the re-run has not yet rehabilitated it. UI dims it.
-    supersededAt: getVal(vm, 'superseded_at') ?? null,
-    supersededBy: getVal(vm, 'superseded_by') ?? null,
-    // Drift marker (shared/artifact-edit.js): an upstream document was edited
-    // after this artifact was derived/consumed from it. Cleared on the next
-    // update or an explicit verify. UI badges it.
-    staleSince: getVal(vm, 'stale_since') ?? null,
-    staleReason: getVal(vm, 'stale_reason') ?? null,
-    // Post-hoc edit provenance (human simple edit / Quorum edit).
-    editedBy: getVal(vm, 'edited_by') ?? null,
-    editedByName: getVal(vm, 'edited_by_name') ?? null,
-    editedAt: getVal(vm, 'edited_at') ?? null,
-    editOrigin: getVal(vm, 'edit_origin') ?? null,
-    // Verification stamp ("reviewed against the upstream edit, still valid").
-    verifiedBy: getVal(vm, 'verified_by') ?? null,
-    verifiedByName: getVal(vm, 'verified_by_name') ?? null,
-    verifiedAt: getVal(vm, 'verified_at') ?? null,
-    summaryGist: getVal(vm, 'summary_gist') ?? null,
-    summaryClaims: safeJsonParse(getVal(vm, 'summary_claims'), []),
-    enrichmentModel: getVal(vm, 'enrichment_model') ?? null,
-    content: getVal(vm, 'content') ?? null,
-  }));
+  const rows = await readIntentArtifactEntries(g, intentId);
+  const groups = new Map();
+  for (const row of rows) {
+    const key = artifactLogicalKeyFromRow(row, intentId);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(row);
+  }
+  return [...groups.values()]
+    .map((group) => ({ group, head: selectCanonicalArtifact(group) }))
+    .filter(({ head }) => head && !head.superseded_at)
+    .map(({ group, head }) => mapArtifactHead(head, group.length - 1));
 };
+
+const mapArtifactHead = (row, legacyVersionCount = 0) => ({
+  id: row.id,
+  artifactType: row.artifact_type ?? null,
+  title: row.title ?? null,
+  createdByExecutionId: row.created_by_execution_id ?? null,
+  createdByStageInstanceId: row.created_by_stage_instance_id ?? null,
+  sectionIndex:
+    row.section_index === undefined || row.section_index === '' ? null : Number(row.section_index),
+  unitSlug: row.unit_slug || null,
+  stageAttempt: Number(row.stage_attempt) || 0,
+  generation: Math.max(1, Number(row.generation) || 1),
+  versionCount: Math.max(0, Number(row.version_count) || 0) + legacyVersionCount,
+  aliases: artifactAliases(row),
+  createdAt: row.created_at ?? null,
+  staleSince: row.stale_since ?? null,
+  staleReason: row.stale_reason ?? null,
+  editedBy: row.edited_by ?? null,
+  editedByName: row.edited_by_name ?? null,
+  editedAt: row.edited_at ?? null,
+  editOrigin: row.edit_origin ?? null,
+  verifiedBy: row.verified_by ?? null,
+  verifiedByName: row.verified_by_name ?? null,
+  verifiedAt: row.verified_at ?? null,
+  summaryGist: row.summary_gist ?? null,
+  summaryClaims: safeJsonParse(row.summary_claims, []),
+  enrichmentModel: row.enrichment_model ?? null,
+  content: row.content ?? null,
+});
 
 // The fan-in PR record(s), anchored Intent --HAS_PR--> PullRequest.
 const fetchPullRequests = async (g, intentId) => {
@@ -661,20 +672,93 @@ const fetchPullRequests = async (g, intentId) => {
 // unique within an intent — a bare id match could bind to a foreign intent's
 // same-id vertex). Compact shape for the edit routes.
 const fetchArtifactRow = async (g, intentId, artifactId) => {
-  const res = await g
-    .V()
-    .has('Artifact', 'id', artifactId)
-    .has('intent_id', intentId)
-    .valueMap(true)
-    .next();
-  if (res.done || !res.value) return null;
-  const vm = res.value;
+  const rows = await readIntentArtifactEntries(g, intentId);
+  const logicalKeys = new Set(
+    rows
+      .filter((row) => row.id === artifactId || artifactAliases(row).includes(artifactId))
+      .map((row) => artifactLogicalKeyFromRow(row, intentId)),
+  );
+  const row = selectCanonicalArtifact(
+    rows.filter((candidate) => logicalKeys.has(artifactLogicalKeyFromRow(candidate, intentId))),
+  );
+  if (!row) return null;
   return {
-    id: getVal(vm, 'id'),
-    artifactType: getVal(vm, 'artifact_type') ?? null,
-    title: getVal(vm, 'title') ?? null,
-    supersededAt: getVal(vm, 'superseded_at') ?? null,
+    id: row.id,
+    vertexId: row.vertexId,
+    artifactType: row.artifact_type ?? null,
+    title: row.title ?? null,
+    supersededAt: row.superseded_at ?? null,
   };
+};
+
+const versionSummary = (row, { versionId = row.id, legacy = false } = {}) => ({
+  versionId,
+  artifactId: row.artifact_id ?? row.id,
+  generation: Math.max(1, Number(row.generation) || 1),
+  artifactType: row.artifact_type ?? null,
+  title: row.title ?? null,
+  stageInstanceId: row.created_by_stage_instance_id ?? null,
+  stageAttempt: Number(row.stage_attempt) || 0,
+  sectionIndex:
+    row.section_index === undefined || row.section_index === '' ? null : Number(row.section_index),
+  unitSlug: row.unit_slug || null,
+  archivedAt: row.archived_at ?? row.updated_at ?? row.created_at ?? null,
+  restartId: row.restart_id ?? null,
+  restartReason: row.restart_reason ?? (legacy ? 'Legacy artifact record' : null),
+  actor: row.archived_by ?? null,
+  createdAt: row.created_at ?? null,
+  editedAt: row.edited_at ?? null,
+  editedByName: row.edited_by_name ?? null,
+  contentLength: Number(row.content_length) || Buffer.byteLength(String(row.content ?? ''), 'utf8'),
+  contentType: row.content_type ?? 'text/markdown',
+  contentHash: row.content_hash ?? null,
+  legacy,
+});
+
+const fetchArtifactHistory = async (g, intentId, artifactId) => {
+  const rows = await readIntentArtifactEntries(g, intentId);
+  const groups = new Map();
+  for (const row of rows) {
+    const key = artifactLogicalKeyFromRow(row, intentId);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(row);
+  }
+  const candidates = [...groups.values()]
+    .filter((group) =>
+      group.some((row) => row.id === artifactId || artifactAliases(row).includes(artifactId)),
+    )
+    .map((group) => ({ group, head: selectCanonicalArtifact(group) }));
+  const selected = selectCanonicalArtifact(candidates.map(({ head }) => head).filter(Boolean));
+  const entry = candidates.find(({ head }) => head?.vertexId === selected?.vertexId);
+  if (!entry?.head) return null;
+
+  const versionRows = (
+    await g.V(entry.head.vertexId).out('HAS_VERSION').valueMap(true).toList()
+  ).map((row) => {
+    const flat = {};
+    for (const [key, value] of row.entries()) {
+      if (typeof key === 'string') flat[key] = Array.isArray(value) ? value[0] : value;
+    }
+    return flat;
+  });
+  const legacyRows = entry.group.filter((row) => row.vertexId !== entry.head.vertexId);
+  const versions = [
+    ...versionRows.map((row) => ({
+      summary: versionSummary(row),
+      row,
+    })),
+    ...legacyRows.map((row) => {
+      const versionId = legacyVersionId(row);
+      return {
+        summary: versionSummary(row, { versionId, legacy: true }),
+        row: { ...row, id: versionId, artifact_id: entry.head.id },
+      };
+    }),
+  ].toSorted((a, b) => {
+    const byGeneration = b.summary.generation - a.summary.generation;
+    return byGeneration || String(b.summary.archivedAt).localeCompare(String(a.summary.archivedAt));
+  });
+  return { head: entry.head, versions };
 };
 
 const fetchInfluencedArtifacts = async (g, questionId) => {
@@ -784,27 +868,6 @@ const mirrorSteeringVertex = async ({ g, intentId, steer }) => {
       }
     }
   }
-};
-
-// Rewind graph cleanup: mark every artifact produced by the reset stages as
-// superseded (kept for lineage, dimmed in the UI). The marker is the dedicated
-// `superseded_at`/`superseded_by` prop pair — NOT the free-form `status` prop
-// agents may set. The re-run's create/update_artifact clears the marker; a
-// replacement artifact links DERIVED_FROM instead. Returns the superseded
-// artifact ids (for the audit event).
-const supersedeArtifactsForStages = async (g, intentId, stageInstanceIds, steerId) => {
-  if (!stageInstanceIds.length) return [];
-  const ts = new Date().toISOString();
-  return g
-    .V()
-    .has('Intent', 'id', intentId)
-    .out('CONTAINS')
-    .hasLabel('Artifact')
-    .has('created_by_stage_instance_id', P.within(...stageInstanceIds))
-    .property(cardinality.single, 'superseded_at', ts)
-    .property(cardinality.single, 'superseded_by', steerId)
-    .values('id')
-    .toList();
 };
 
 const buildGateAnswerEvents = async (g, gates) => {
@@ -944,6 +1007,7 @@ export const handler = async (event) => {
   const rawSectionIndex = pathParameters?.sectionIndex;
   // Post-hoc artifact editing routes.
   const artifactId = pathParameters?.artifactId;
+  const versionId = pathParameters?.versionId;
   const editId = pathParameters?.editId;
   const sub = event.requestContext?.authorizer?.claims?.sub;
 
@@ -1150,6 +1214,76 @@ export const handler = async (event) => {
     // (shared/artifact-edit.js) and broadcasts a payload-blind reload hint on
     // the intent channel (handlers refetch the detail DTO).
 
+    // Read-only artifact history. Archived versions are never returned by the
+    // normal intent DTO and never receive collaborative document ids.
+    if (intentId && artifactId && httpMethod === 'GET' && path?.endsWith('/versions')) {
+      const meta = await store.getExecution(intentId);
+      if (!meta || meta.projectId !== projectId) {
+        return response(404, { error: 'Intent not found' });
+      }
+      const history = await fetchArtifactHistory(g, intentId, artifactId);
+      if (!history) return response(404, { error: 'Artifact not found' });
+      const current = mapArtifactHead(history.head);
+      return response(200, {
+        artifactId: history.head.id,
+        current: history.head.superseded_at
+          ? null
+          : {
+              versionId: 'current',
+              artifactId: history.head.id,
+              generation: current.generation,
+              artifactType: current.artifactType,
+              title: current.title,
+              stageInstanceId: current.createdByStageInstanceId,
+              stageAttempt: current.stageAttempt,
+              sectionIndex: current.sectionIndex,
+              unitSlug: current.unitSlug,
+              archivedAt: null,
+              restartId: null,
+              restartReason: null,
+              actor: null,
+              createdAt: current.createdAt,
+              editedAt: current.editedAt,
+              editedByName: current.editedByName,
+              contentLength: Buffer.byteLength(String(current.content ?? ''), 'utf8'),
+              contentType: 'text/markdown',
+              contentHash: createHash('sha256')
+                .update(String(current.content ?? ''))
+                .digest('hex'),
+              legacy: false,
+              current: true,
+            },
+        versions: history.versions.map(({ summary }) => ({ ...summary, current: false })),
+      });
+    }
+
+    if (
+      intentId &&
+      artifactId &&
+      versionId &&
+      httpMethod === 'GET' &&
+      path?.includes('/versions/')
+    ) {
+      const meta = await store.getExecution(intentId);
+      if (!meta || meta.projectId !== projectId) {
+        return response(404, { error: 'Intent not found' });
+      }
+      const history = await fetchArtifactHistory(g, intentId, artifactId);
+      const archived = history?.versions.find(({ summary }) => summary.versionId === versionId);
+      if (!archived) return response(404, { error: 'Artifact version not found' });
+      return response(200, {
+        ...archived.summary,
+        current: false,
+        content: archived.row.content ?? null,
+        relationships: safeJsonParse(archived.row.relationships, []),
+        editedBy: archived.row.edited_by ?? null,
+        editOrigin: archived.row.edit_origin ?? null,
+        verifiedBy: archived.row.verified_by ?? null,
+        verifiedByName: archived.row.verified_by_name ?? null,
+        verifiedAt: archived.row.verified_at ?? null,
+      });
+    }
+
     // GET .../artifacts/{artifactId}/impact — the pre-edit drift warning data:
     // consuming stages (declared + actual reads), the transitive downstream
     // closure, and whether editing is currently blocked.
@@ -1216,16 +1350,21 @@ export const handler = async (event) => {
       if (artifact.supersededAt) {
         return response(409, { error: 'Artifact is superseded — edit its replacement instead' });
       }
+      const canonicalArtifactId = artifact.id;
       const responder = getResponder(event);
       // Closure BEFORE the write (root is excluded by construction either way).
-      const downstream = await fetchDownstreamClosure({ g, intentId, artifactId }).catch((err) => {
+      const downstream = await fetchDownstreamClosure({
+        g,
+        intentId,
+        artifactId: canonicalArtifactId,
+      }).catch((err) => {
         console.error('Downstream closure failed:', err.message);
         return [];
       });
       const edit = await applyArtifactEdit({
         g,
         intentId,
-        artifactId,
+        artifactId: canonicalArtifactId,
         content: data.content,
         editedBy: responder.sub,
         editedByName: responder.displayName,
@@ -1236,7 +1375,7 @@ export const handler = async (event) => {
         g,
         intentId,
         artifactIds: downstream.map((d) => d.id),
-        reason: `edit:${artifactId}:${edit.editedAt}`,
+        reason: `edit:${canonicalArtifactId}:${edit.editedAt}`,
       }).catch((err) => {
         console.error('Stale marking failed:', err.message);
         return [];
@@ -1252,7 +1391,7 @@ export const handler = async (event) => {
           .createSteering({
             executionId: intentId,
             kind: 'artifact-edit',
-            message: `The document "${artifact.title || artifactId}" (artifact id: ${artifactId}) was edited while this run was parked. Re-read it with get_artifact before continuing — its CURRENT content overrides anything you read earlier in this conversation.`,
+            message: `The document "${artifact.title || canonicalArtifactId}" (artifact id: ${canonicalArtifactId}) was edited while this run was parked. Re-read it with get_artifact before continuing — its CURRENT content overrides anything you read earlier in this conversation.`,
             createdBy: responder.sub,
             createdByName: responder.displayName,
           })
@@ -1266,7 +1405,7 @@ export const handler = async (event) => {
           );
         }
       }
-      const summary = `${responder.displayName || 'Someone'} edited "${artifact.title || artifactId}"${
+      const summary = `${responder.displayName || 'Someone'} edited "${artifact.title || canonicalArtifactId}"${
         staleMarked.length
           ? ` — ${staleMarked.length} downstream artifact(s) marked possibly stale`
           : ''
@@ -1321,7 +1460,7 @@ export const handler = async (event) => {
         }
       }
       return response(200, {
-        artifactId,
+        artifactId: canonicalArtifactId,
         editedAt: edit.editedAt,
         staleMarked,
         derived,
@@ -1346,12 +1485,12 @@ export const handler = async (event) => {
       const result = await verifyArtifact({
         g,
         intentId,
-        artifactId,
+        artifactId: artifact.id,
         verifiedBy: responder.sub,
         verifiedByName: responder.displayName,
         note: typeof data.note === 'string' ? data.note : '',
       });
-      const summary = `${responder.displayName || 'Someone'} verified "${artifact.title || artifactId}" against the upstream edit`;
+      const summary = `${responder.displayName || 'Someone'} verified "${artifact.title || artifact.id}" against the upstream edit`;
       await store
         .appendEvent({
           executionId: intentId,
@@ -1367,7 +1506,7 @@ export const handler = async (event) => {
         noteType: 'v2.artifact.verified',
         summary,
       });
-      return response(200, { artifactId, verifiedAt: result.verifiedAt });
+      return response(200, { artifactId: artifact.id, verifiedAt: result.verifiedAt });
     }
 
     // POST .../artifacts/{artifactId}/quorum-edit — start a Quorum-supported
@@ -1412,14 +1551,14 @@ export const handler = async (event) => {
       const row = await store.createQuorumEdit({
         executionId: intentId,
         editId: newEditId,
-        artifactId,
+        artifactId: artifact.id,
         artifactType: artifact.artifactType,
         artifactTitle: artifact.title,
         changeDescription,
         requestedBy: responder.sub,
         requestedByName: responder.displayName,
       });
-      const summary = `${responder.displayName || 'Someone'} asked Quorum to edit "${artifact.title || artifactId}"`;
+      const summary = `${responder.displayName || 'Someone'} asked Quorum to edit "${artifact.title || artifact.id}"`;
       await store
         .appendEvent({
           executionId: intentId,
@@ -2571,6 +2710,22 @@ export const handler = async (event) => {
       );
       const responder = getResponder(event);
       const priorStatus = meta.status;
+      const restartId = `restart-${randomUUID()}`;
+      const restartReason = guidance
+        ? `Rewind to ${fromStageId}: ${guidance}`
+        : `Retry from ${fromStageId}`;
+
+      // Artifact history is a hard precondition for a restart. Snapshot before
+      // META, gates, stage rows, lanes, or sessions are touched; a Neptune
+      // failure leaves the run exactly where it was and no relaunch occurs.
+      const archivedArtifacts = await archiveArtifactsForStages({
+        g,
+        intentId,
+        stageInstanceIds: resetInstances.map((instance) => instance.stageInstanceId),
+        restartId,
+        reason: restartReason,
+        actor: responder.displayName || responder.sub,
+      });
 
       // Make interrupted cleanup recoverable before touching gates, sessions,
       // or stage rows. A Lambda timeout used to leave META WAITING on a gate
@@ -2658,15 +2813,6 @@ export const handler = async (event) => {
             ),
         );
       }
-      const supersededArtifacts = await supersedeArtifactsForStages(
-        g,
-        intentId,
-        resetInstances.map((i) => i.stageInstanceId),
-        steer ? steer.steerId : `retry:${fromStageId}`,
-      ).catch((err) => {
-        console.error('Artifact supersede failed:', err.message);
-        return [];
-      });
       if (steer) {
         await mirrorSteeringVertex({ g, intentId, steer }).catch((err) =>
           console.error('Steering graph mirror failed:', err.message),
@@ -2677,7 +2823,7 @@ export const handler = async (event) => {
           executionId: intentId,
           type: 'v2.execution.rewound',
           actor: responder.displayName || responder.sub,
-          summary: `${responder.displayName || 'Someone'} ${steer ? 'rewound the run to' : 'retried the run from'} ${fromStageId}${fromStageId !== requestedFromStageId ? ` (requested ${requestedFromStageId}; restarted the incomplete unit section from its first stage)` : ''}${unskipping ? ' (un-skipped: it was deselected at creation)' : ''} (${resetInstances.length} stage instance(s) reset, ${supersededArtifacts.length} artifact(s) superseded)`,
+          summary: `${responder.displayName || 'Someone'} ${steer ? 'rewound the run to' : 'retried the run from'} ${fromStageId}${fromStageId !== requestedFromStageId ? ` (requested ${requestedFromStageId}; restarted the incomplete unit section from its first stage)` : ''}${unskipping ? ' (un-skipped: it was deselected at creation)' : ''} (${resetInstances.length} stage instance(s) reset, ${archivedArtifacts.length} artifact(s) archived)`,
         })
         .catch((err) => console.error('Rewind event append failed:', err.message));
       // Relaunch at the rewind point. Same CAS + rollback discipline as /start.
@@ -2887,26 +3033,27 @@ export const handler = async (event) => {
         });
       }
       const responder = getResponder(event);
-      // Retire + fresh microVM, exactly like rewind: the woken orchestrator
-      // exits quietly (superseded gate) instead of racing the relaunch.
-      await retireParkedRun(intentId, `recomposed from ${fromStage.stageId}`);
-      await stopRuntimeSessions(intentId);
       // Reset the relaunch stage's non-terminal instances (a parked/failed
-      // stage re-runs from scratch, attempt+1) + supersede their artifacts.
+      // stage re-runs from scratch, attempt+1).
       const resetIds = (rowsByStageId.get(fromStage.stageId) ?? [])
         .filter((r) => !doneStates.has(r.state))
         .map((r) => r.stageInstanceId)
         .filter(Boolean);
+      const recomposeRestartId = `restart-${randomUUID()}`;
+      await archiveArtifactsForStages({
+        g,
+        intentId,
+        stageInstanceIds: resetIds,
+        restartId: recomposeRestartId,
+        reason: `Recompose from ${fromStage.stageId}`,
+        actor: responder.displayName || responder.sub,
+      });
+
+      // Retire only after every affected artifact was durably snapshotted.
+      await retireParkedRun(intentId, `recomposed from ${fromStage.stageId}`);
+      await stopRuntimeSessions(intentId);
       for (const stageInstanceId of resetIds) {
         await store.resetStageRow({ executionId: intentId, stageInstanceId }).catch(() => {});
-      }
-      if (resetIds.length) {
-        await supersedeArtifactsForStages(
-          g,
-          intentId,
-          resetIds,
-          `recompose:${fromStage.stageId}`,
-        ).catch((err) => console.error('Recompose artifact supersede failed:', err.message));
       }
       await store
         .appendEvent({

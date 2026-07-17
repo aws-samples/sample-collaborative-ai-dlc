@@ -24,6 +24,16 @@ import {
   isCurrentRow,
   jsonListProp as jsonList,
 } from '../../shared/graph-rows.js';
+import {
+  artifactAliases,
+  artifactLogicalKey,
+  artifactLogicalKeyFromRow,
+  readIntentArtifactEntries,
+  sameLogicalArtifact,
+  selectCanonicalArtifact,
+  selectCurrentArtifactHeads,
+  VERSIONED_RELATIONSHIP_EDGES,
+} from '../../shared/artifact-versioning.js';
 import { validateStructuredBlock } from '../../shared/artifact-extractors.js';
 
 const __ = gremlin.process.statics;
@@ -151,6 +161,13 @@ const RESERVED_PROPS = new Set([
   'intent_id',
   'created_by_execution_id',
   'created_by_stage_instance_id',
+  'section_index',
+  'unit_slug',
+  'stage_attempt',
+  'artifact_logical_key',
+  'artifact_aliases',
+  'generation',
+  'version_count',
   'created_at',
   'updated_at',
   // Supersede bookkeeping is owned by the rewind flow (intents lambda) + the
@@ -175,6 +192,24 @@ const RESERVED_PROPS = new Set([
   'verified_at',
   'verify_note',
 ]);
+
+const GENERATION_METADATA_PROPS = [
+  'restart_reason',
+  'edited_by',
+  'edited_by_name',
+  'edited_at',
+  'edit_origin',
+  'edit_ref',
+  'verified_by',
+  'verified_by_name',
+  'verified_at',
+  'verify_note',
+  'summary_gist',
+  'summary_claims',
+  'enrichment_model',
+  'enrichment_source_hash',
+  'enriched_at',
+];
 
 export const sanitizeProps = (properties = {}) => {
   const clean = {};
@@ -248,7 +283,8 @@ export const closeGraphSource = async (g) => {
 };
 
 // `scope` is the trusted execution context from ENV:
-//   { projectId, intentId, executionId, stageInstanceId }
+//   { projectId, intentId, executionId, stageInstanceId, sectionIndex,
+//     unitSlug, stageAttempt }
 // `clock` is injectable for deterministic tests.
 export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
   if (!g) throw new Error('createGraphWriter requires a gremlin traversal source');
@@ -262,6 +298,9 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     intent_id: scope.intentId,
     created_by_execution_id: scope.executionId ?? '',
     created_by_stage_instance_id: scope.stageInstanceId ?? '',
+    section_index: scope.sectionIndex ?? '',
+    unit_slug: scope.unitSlug ?? '',
+    stage_attempt: Number(scope.stageAttempt) || 0,
     created_at: now(),
   });
 
@@ -293,6 +332,41 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
   // — an id collision across intents must never let a write cross over.
   const vDerivedById = (id) => g.V().has('id', id).has('intent_id', scope.intentId);
 
+  const logicalIdentity = (artifactType) => ({
+    intentId: scope.intentId,
+    sectionIndex: scope.sectionIndex,
+    unitSlug: scope.unitSlug,
+    stageInstanceId: scope.stageInstanceId,
+    artifactType,
+  });
+
+  const resolveArtifactEntry = async (id, { preferCurrentScope = true } = {}) => {
+    const rows = await readIntentArtifactEntries(g, scope.intentId);
+    const matching = rows.filter(
+      (row) => row.id === id || artifactAliases(row).includes(String(id)),
+    );
+    if (preferCurrentScope) {
+      const scopedKeys = new Set(
+        matching
+          .filter((row) => sameLogicalArtifact(row, logicalIdentity(row.artifact_type)))
+          .map((row) => artifactLogicalKeyFromRow(row, scope.intentId)),
+      );
+      const currentScoped = selectCanonicalArtifact(
+        rows.filter((row) => scopedKeys.has(artifactLogicalKeyFromRow(row, scope.intentId))),
+      );
+      if (currentScoped) return currentScoped;
+    }
+    const logicalKeys = new Set(
+      matching.map((row) => artifactLogicalKeyFromRow(row, scope.intentId)),
+    );
+    if (logicalKeys.size > 1) {
+      throw new GraphWriteError(`Artifact "${id}" is ambiguous across stage or unit outputs`);
+    }
+    return selectCanonicalArtifact(
+      rows.filter((row) => logicalKeys.has(artifactLogicalKeyFromRow(row, scope.intentId))),
+    );
+  };
+
   const upsertVertex = async (label, id) => {
     const scoped = INTENT_SCOPED_LABELS.has(label);
     // The coalesce key must include intent_id for scoped labels so a second
@@ -319,20 +393,25 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     }
   };
 
-  const linkAnsweredQuestionsToArtifact = async (artifactId) => {
-    const questionIds = await g
+  const ensureVertexEdge = async ({ fromVertexId, toVertexId, edge }) => {
+    const exists = await g.V(fromVertexId).outE(edge).where(__.inV().hasId(toVertexId)).hasNext();
+    if (!exists) {
+      await g.V(fromVertexId).addE(edge).to(__.V(toVertexId)).next();
+    }
+  };
+
+  const linkAnsweredQuestionsToArtifact = async (artifactVertexId) => {
+    const questionVertexIds = await g
       .V()
       .has(QUESTION_LABEL, 'intent_id', scope.intentId)
       .has('stage_instance_id', scope.stageInstanceId ?? '')
       .has('answered_at')
-      .values('id')
+      .id()
       .toList();
-    for (const questionId of questionIds) {
-      await ensureEdge({
-        fromLabel: QUESTION_LABEL,
-        fromId: questionId,
-        toLabel: ARTIFACT_LABEL,
-        toId: artifactId,
+    for (const questionVertexId of questionVertexIds) {
+      await ensureVertexEdge({
+        fromVertexId: questionVertexId,
+        toVertexId: artifactVertexId,
         edge: INFLUENCES_EDGE,
       });
     }
@@ -343,11 +422,11 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
   // (docs/v2-steering.md). The marker is the dedicated `superseded_at`/
   // `superseded_by` prop pair (NOT the free-form `status` prop agents may set).
   // Best-effort; a vertex without the marker is a no-op.
-  const clearSuperseded = async (artifactId) => {
+  const clearSuperseded = async (artifactId, vertexId = null) => {
     try {
-      await vAt(ARTIFACT_LABEL, artifactId)
+      await (vertexId == null ? vAt(ARTIFACT_LABEL, artifactId) : g.V(vertexId))
         .has('superseded_at')
-        .properties('superseded_at', 'superseded_by')
+        .properties('superseded_at', 'superseded_by', 'restart_reason')
         .drop()
         .next();
     } catch {
@@ -359,9 +438,9 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
   // marked it stale (shared/artifact-edit.js) is current again — the same
   // rehabilitation discipline as `superseded`. Best-effort; a vertex without
   // the marker is a no-op.
-  const clearStale = async (artifactId) => {
+  const clearStale = async (artifactId, vertexId = null) => {
     try {
-      await vAt(ARTIFACT_LABEL, artifactId)
+      await (vertexId == null ? vAt(ARTIFACT_LABEL, artifactId) : g.V(vertexId))
         .has('stale_since')
         .properties('stale_since', 'stale_reason')
         .drop()
@@ -371,6 +450,14 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     }
   };
 
+  const clearGenerationMetadata = async (vertexId) => {
+    await g
+      .V(vertexId)
+      .properties(...GENERATION_METADATA_PROPS)
+      .drop()
+      .next();
+  };
+
   // Provenance for steering: link every Steering vertex consumed by this stage
   // to the artifacts the stage produced (Steering --INFLUENCES--> Artifact),
   // mirroring the answered-question linking. Called by run-stage on stage
@@ -378,24 +465,22 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
   const linkSteeringInfluences = async ({ steerIds = [], stageInstanceId }) => {
     const sid = stageInstanceId ?? scope.stageInstanceId ?? '';
     if (!steerIds.length || !sid) return { linked: 0 };
-    const artifactIds = await g
+    const artifactVertexIds = await g
       .V()
       .has(INTENT_LABEL, 'id', scope.intentId)
       .out(ANCHOR_EDGE)
       .hasLabel(ARTIFACT_LABEL)
       .has('created_by_stage_instance_id', sid)
-      .values('id')
+      .id()
       .toList();
     let linked = 0;
     for (const steerId of steerIds) {
-      const exists = await g.V().has(STEERING_LABEL, 'id', steerId).hasNext();
-      if (!exists) continue;
-      for (const artifactId of artifactIds) {
-        await ensureEdge({
-          fromLabel: STEERING_LABEL,
-          fromId: steerId,
-          toLabel: ARTIFACT_LABEL,
-          toId: artifactId,
+      const steeringVertexIds = await g.V().has(STEERING_LABEL, 'id', steerId).id().toList();
+      if (!steeringVertexIds.length) continue;
+      for (const artifactVertexId of artifactVertexIds) {
+        await ensureVertexEdge({
+          fromVertexId: steeringVertexIds[0],
+          toVertexId: artifactVertexId,
           edge: INFLUENCES_EDGE,
         });
         linked += 1;
@@ -433,60 +518,155 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     if (!intentExists)
       throw new GraphWriteError(`Intent "${scope.intentId}" not found — run init-ws first`);
 
+    const identity = logicalIdentity(artifactType);
+    const baseLogicalKey = artifactLogicalKey(identity);
+    let logicalKey = baseLogicalKey;
+    const rows = await readIntentArtifactEntries(g, scope.intentId);
+    let logicalRows = rows.filter((row) => sameLogicalArtifact(row, identity));
+    const sameTupleRows = rows.filter(
+      (row) =>
+        String(row.created_by_stage_instance_id ?? '') === String(scope.stageInstanceId ?? '') &&
+        String(row.artifact_type ?? '') === artifactType &&
+        (row.section_index === undefined ||
+          row.section_index === null ||
+          String(row.section_index) === String(scope.sectionIndex ?? '')) &&
+        (row.unit_slug === undefined ||
+          row.unit_slug === null ||
+          String(row.unit_slug) === String(scope.unitSlug ?? '')),
+    );
+    const requestedRows = sameTupleRows.filter(
+      (row) => row.id === id || artifactAliases(row).includes(id),
+    );
+    const requestedLogicalKeys = new Set(
+      requestedRows.map((row) => artifactLogicalKeyFromRow(row, scope.intentId)),
+    );
+    let head = selectCanonicalArtifact(
+      rows.filter((row) =>
+        requestedLogicalKeys.has(artifactLogicalKeyFromRow(row, scope.intentId)),
+      ),
+    );
+    if (!head) {
+      const baseHead = selectCanonicalArtifact(logicalRows);
+      if (baseHead?.superseded_at) {
+        // A rerun may choose a new id. With one superseded logical head, that
+        // id becomes an alias and the stable public head is reused.
+        head = baseHead;
+      } else if (baseHead) {
+        // Compatibility: one stage attempt may deliberately emit multiple
+        // documents of the same artifact type. Keep those current siblings in
+        // deterministic slots; restart canonicalization still applies to each.
+        logicalKey = `${baseLogicalKey}#${id}`;
+        logicalRows = rows.filter((row) => row.artifact_logical_key === logicalKey);
+        head = selectCanonicalArtifact(logicalRows);
+      }
+    }
+    if (!head) {
+      await g
+        .addV(ARTIFACT_LABEL)
+        .property(cardinality.single, 'id', id)
+        .property(cardinality.single, 'intent_id', scope.intentId)
+        .property(cardinality.single, 'artifact_logical_key', logicalKey)
+        .next();
+      const createdId = (
+        await g
+          .V()
+          .has(ARTIFACT_LABEL, 'intent_id', scope.intentId)
+          .has('artifact_logical_key', logicalKey)
+          .has('id', id)
+          .id()
+          .next()
+      ).value;
+      const createdProps = await g.V(createdId).valueMap(true).next();
+      head = { vertexId: createdId, ...flattenValueMap(createdProps.value) };
+    }
+    if (!head) throw new GraphWriteError(`Artifact "${id}" could not be created`);
+    logicalKey = head.artifact_logical_key || logicalKey;
+
+    const canonicalId = head.id;
+    const aliases = new Set(artifactAliases(head));
+    if (id !== canonicalId) {
+      const headLogicalKey = artifactLogicalKeyFromRow(head, scope.intentId);
+      const collision = rows.find(
+        (row) =>
+          artifactLogicalKeyFromRow(row, scope.intentId) !== headLogicalKey &&
+          (row.id === id || artifactAliases(row).includes(id)),
+      );
+      if (collision) {
+        throw new GraphWriteError(
+          `artifact alias "${id}" already belongs to logical artifact "${collision.id}"`,
+        );
+      }
+      aliases.add(id);
+    }
+    const rehabilitating = Boolean(head.superseded_at);
+    const generation = Math.max(1, Number(head.generation) || 1) + (rehabilitating ? 1 : 0);
     const stamped = {
       ...sanitizeProps(props),
       title: String(title ?? ''),
       content: String(content ?? ''),
       ...stamp(),
-      id,
+      id: canonicalId,
       artifact_type: artifactType,
+      artifact_logical_key: logicalKey,
+      artifact_aliases: JSON.stringify([...aliases]),
+      generation,
+      version_count: Number(head.version_count) || 0,
     };
 
-    await upsertVertex(ARTIFACT_LABEL, id);
-    let q = vAt(ARTIFACT_LABEL, id);
+    if (rehabilitating) {
+      await g
+        .V(head.vertexId)
+        .bothE(...VERSIONED_RELATIONSHIP_EDGES)
+        .drop()
+        .next();
+      await clearGenerationMetadata(head.vertexId);
+    }
+    let q = g.V(head.vertexId);
     for (const [k, v] of Object.entries(stamped)) q = q.property(cardinality.single, k, v);
     await q.next();
 
-    await ensureEdge({
-      fromLabel: INTENT_LABEL,
-      fromId: scope.intentId,
-      toLabel: ARTIFACT_LABEL,
-      toId: id,
-      edge: ANCHOR_EDGE,
-    });
-
-    // TODO(unit-edge): when this artifact is produced inside a fan-out lane
-    // (scope.unitSlug is set — see mcp/index.js reading V2_UNIT_SLUG), also wire
-    // an edge to that unit's UnitOfWork vertex (id `unit:<intentId>:<slug>`, see
-    // mirrorUnitDag / UNIT_OF_WORK_LABEL), e.g. Artifact --PART_OF--> UnitOfWork.
-    // Today construction artifacts have NO edge and NO property linking them to
-    // their unit; unit membership is only recoverable by string-parsing
-    // created_by_stage_instance_id (which embeds `unit-<slug>`). An explicit edge
-    // would let us traverse "all artifacts in the backend unit" directly.
-    //
-    // TODO(unit-collision): the artifact upsert key is (label, id, intent_id)
-    // with NO unit dimension (see upsertVertex / INTENT_SCOPED_LABELS). Two lanes
-    // in the same intent that produce the same artifactType only stay distinct
-    // because the LLM happens to pick different ids (e.g. business-logic-model-
-    // backend vs -frontend). Nothing enforces this: if two lane agents choose the
-    // same id, the second create_artifact silently OVERWRITES the first. Consider
-    // making the identity/dedup unit-aware (e.g. fold unitSlug into the id or the
-    // upsert scope) so lanes can never clobber each other's artifacts.
+    const anchored = await g
+      .V()
+      .has(INTENT_LABEL, 'id', scope.intentId)
+      .outE(ANCHOR_EDGE)
+      .where(__.inV().hasId(head.vertexId))
+      .hasNext();
+    if (!anchored) {
+      await g
+        .V()
+        .has(INTENT_LABEL, 'id', scope.intentId)
+        .addE(ANCHOR_EDGE)
+        .to(__.V(head.vertexId))
+        .next();
+    }
 
     // A re-created artifact is current again (rewind rehabilitation) and no
     // longer stale (drift rehabilitation).
-    await clearSuperseded(id);
-    await clearStale(id);
+    await clearSuperseded(canonicalId, head.vertexId);
+    await clearStale(canonicalId, head.vertexId);
 
-    await linkAnsweredQuestionsToArtifact(id);
+    await linkAnsweredQuestionsToArtifact(head.vertexId);
 
-    for (const l of links) await linkArtifacts({ fromId: id, toId: l.toId, edge: l.edge });
+    for (const l of links) {
+      const target = await resolveArtifactEntry(l.toId, { preferCurrentScope: false });
+      if (!target) throw new GraphWriteError(`edge target artifact "${l.toId}" not found`);
+      await ensureVertexEdge({
+        fromVertexId: head.vertexId,
+        toVertexId: target.vertexId,
+        edge: l.edge,
+      });
+    }
     // Return a COMPACT ack, not the full stamped record. The agent just sent
     // `content` (potentially many KB) — echoing it back into the tool_result
     // bloats the CLI's next request with a duplicate of what it already holds,
     // which on large artifacts can wedge the model turn. Confirm id/type/links
     // only; provenance lives in the graph, re-readable via get_artifact.
-    return { id, artifactType, created_at: stamped.created_at, links: links.length };
+    return {
+      id: canonicalId,
+      artifactType,
+      created_at: stamped.created_at,
+      links: links.length,
+    };
   };
 
   // Record a fan-in PR, anchored Intent --HAS_PR--> PullRequest. Idempotent:
@@ -555,6 +735,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
 
     const id = `unit-pr:${scope.intentId}:s${sectionIndex}:${unitSlug}:${repoId}:${provider}:${prNumber}`;
     const props = {
+      ...stamp(),
       id,
       section_index: String(sectionIndex),
       unit_slug: String(unitSlug),
@@ -566,7 +747,6 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       target_branch: String(targetBranch ?? ''),
       head_sha: String(headSha ?? ''),
       state: String(state ?? ''),
-      ...stamp(),
     };
     await upsertVertex(UNIT_PULL_REQUEST_LABEL, id);
     let q = vAt(UNIT_PULL_REQUEST_LABEL, id);
@@ -596,35 +776,55 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
   // stamp or artifact_type; refuses reserved props. Errors if absent.
   const updateArtifact = async ({ id, props = {} }) => {
     assertId(id);
-    const exists = await vAt(ARTIFACT_LABEL, id).hasNext();
-    if (!exists) throw new GraphWriteError(`Artifact "${id}" not found`);
+    const head = await resolveArtifactEntry(id);
+    if (!head) throw new GraphWriteError(`Artifact "${id}" not found`);
     const clean = sanitizeProps(props);
-    let q = vAt(ARTIFACT_LABEL, id).property(cardinality.single, 'updated_at', now());
+    const rehabilitating = Boolean(head.superseded_at);
+    const generation = Math.max(1, Number(head.generation) || 1) + (rehabilitating ? 1 : 0);
+    if (rehabilitating) {
+      await g
+        .V(head.vertexId)
+        .bothE(...VERSIONED_RELATIONSHIP_EDGES)
+        .drop()
+        .next();
+      await clearGenerationMetadata(head.vertexId);
+    }
+    let q = g
+      .V(head.vertexId)
+      .property(cardinality.single, 'updated_at', now())
+      .property(cardinality.single, 'stage_attempt', Number(scope.stageAttempt) || 0)
+      .property(cardinality.single, 'generation', generation);
     for (const [k, v] of Object.entries(clean)) q = q.property(cardinality.single, k, v);
     await q.next();
     // An updated artifact is current again (rewind rehabilitation) and no
     // longer stale (drift rehabilitation).
-    await clearSuperseded(id);
-    await clearStale(id);
-    await linkAnsweredQuestionsToArtifact(id);
-    return { id, updated: Object.keys(clean) };
+    await clearSuperseded(head.id, head.vertexId);
+    await clearStale(head.id, head.vertexId);
+    await linkAnsweredQuestionsToArtifact(head.vertexId);
+    return { id: head.id, updated: Object.keys(clean) };
   };
 
   const linkArtifacts = async ({ fromId, toId, edge }) => {
     assertEdge(edge);
     assertId(fromId);
     assertId(toId);
-    const fromExists = await vAt(ARTIFACT_LABEL, fromId).hasNext();
-    if (!fromExists) throw new GraphWriteError(`edge source artifact "${fromId}" not found`);
-    const toExists = await vAt(ARTIFACT_LABEL, toId).hasNext();
-    if (!toExists) throw new GraphWriteError(`edge target artifact "${toId}" not found`);
-    await ensureEdge({ fromLabel: ARTIFACT_LABEL, fromId, toLabel: ARTIFACT_LABEL, toId, edge });
-    return { fromId, toId, edge };
+    const from = await resolveArtifactEntry(fromId);
+    if (!from) throw new GraphWriteError(`edge source artifact "${fromId}" not found`);
+    const to = await resolveArtifactEntry(toId, { preferCurrentScope: false });
+    if (!to) throw new GraphWriteError(`edge target artifact "${toId}" not found`);
+    await ensureVertexEdge({
+      fromVertexId: from.vertexId,
+      toVertexId: to.vertexId,
+      edge,
+    });
+    return { fromId: from.id, toId: to.id, edge };
   };
 
   const getArtifact = async ({ id, mode = 'full' }) => {
     assertId(id);
-    const res = await vAt(ARTIFACT_LABEL, id).valueMap(true).next();
+    const head = await resolveArtifactEntry(id);
+    if (!head) return null;
+    const res = await g.V(head.vertexId).valueMap(true).next();
     if (!res.value) return null;
     const artifact = flattenValueMap(res.value);
     if (mode === 'summary') return compactArtifact(artifact);
@@ -648,7 +848,8 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       .has('artifact_type', artifactType)
       .valueMap(true)
       .toList();
-    const rows = list.map(flattenValueMap).filter((r) => includeSuperseded || isCurrentRow(r));
+    const allRows = list.map(flattenValueMap);
+    const rows = includeSuperseded ? allRows : selectCurrentArtifactHeads(allRows, scope.intentId);
     return includeContent ? rows : rows.map(compactArtifact);
   };
 
@@ -662,7 +863,8 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       .hasLabel(ARTIFACT_LABEL)
       .valueMap(true)
       .toList();
-    const rows = list.map(flattenValueMap).filter((r) => includeSuperseded || isCurrentRow(r));
+    const allRows = list.map(flattenValueMap);
+    const rows = includeSuperseded ? allRows : selectCurrentArtifactHeads(allRows, scope.intentId);
     return includeContent ? rows : rows.map(compactArtifact);
   };
 
@@ -670,11 +872,13 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
   const getNeighbors = async ({ id, edge = null, direction = 'both', includeContent = false }) => {
     assertId(id);
     if (edge) assertEdge(edge);
-    let q = vAt(ARTIFACT_LABEL, id);
+    const head = await resolveArtifactEntry(id);
+    if (!head) return [];
+    let q = g.V(head.vertexId);
     const step = direction === 'in' ? 'in_' : direction === 'out' ? 'out' : 'both';
     q = edge ? q[step](edge) : q[step]();
     const list = await q.hasLabel(ARTIFACT_LABEL).valueMap(true).toList();
-    const rows = list.map(flattenValueMap).filter(isCurrentRow);
+    const rows = selectCurrentArtifactHeads(list.map(flattenValueMap), scope.intentId);
     return includeContent ? rows : rows.map(compactArtifact);
   };
 
@@ -689,9 +893,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     if (artifactType) q = q.has('artifact_type', artifactType);
     const all = await q.valueMap(true).toList();
     const needle = query.toLowerCase();
-    return all
-      .map(flattenValueMap)
-      .filter(isCurrentRow)
+    return selectCurrentArtifactHeads(all.map(flattenValueMap), scope.intentId)
       .filter((a) => searchCorpus(a).toLowerCase().includes(needle))
       .map((a) => ({
         ...compactArtifact(a),

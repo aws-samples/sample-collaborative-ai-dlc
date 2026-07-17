@@ -26,6 +26,7 @@ import { INTENT_OUTPUT_KEY, useIntent } from '@/contexts/IntentContext';
 import { artifactAccent } from '@/components/intent/artifactAccent';
 import { ArtifactEditControls, ArtifactStaleBadge } from '@/components/intent/ArtifactEditControls';
 import { ArtifactContentEditor } from '@/components/intent/ArtifactContentEditor';
+import { ArtifactHistoryDrawer } from '@/components/intent/ArtifactHistoryDrawer';
 import { ArtifactMarkdown } from '@/components/intent/ArtifactMarkdown';
 import { AgentOutputTranscript } from '@/components/agent-output/AgentOutputTranscript';
 import { useIntentGraph, type GraphNeighbor } from '@/hooks/useIntentGraph';
@@ -596,6 +597,7 @@ function ArtifactPreviewContent({
           </Button>
         )}
         {!editing && <ArtifactEditControls artifact={artifact} onStartEdit={onStartEdit} />}
+        <ArtifactHistoryDrawer artifact={artifact} />
         {discussions && (
           <Button
             variant="ghost"

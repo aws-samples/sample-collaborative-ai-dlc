@@ -9,6 +9,7 @@ import { IntentGraphPopover } from '@/components/intent/IntentGraphPopover';
 import { DerivedItemCountChip } from '@/components/intent/DerivedItemCountChip';
 import { ArtifactEditControls, ArtifactStaleBadge } from '@/components/intent/ArtifactEditControls';
 import { ArtifactContentEditor } from '@/components/intent/ArtifactContentEditor';
+import { ArtifactHistoryDrawer } from '@/components/intent/ArtifactHistoryDrawer';
 import { ArtifactMarkdown } from '@/components/intent/ArtifactMarkdown';
 import type { GraphNeighbor } from '@/hooks/useIntentGraph';
 import type { IntentArtifact } from '@/services/intents';
@@ -95,6 +96,7 @@ export function ArtifactViewer({
           {!editing && (
             <ArtifactEditControls artifact={artifact} onStartEdit={() => setEditing(true)} />
           )}
+          <ArtifactHistoryDrawer artifact={artifact} />
           <DerivedItemCountChip artifactId={artifact.id} count={derivedItemCount} />
           <IntentGraphPopover neighbors={graphNeighbors} className="shrink-0" />
           <DiscussButton

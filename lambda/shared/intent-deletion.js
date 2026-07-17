@@ -186,9 +186,21 @@ const deleteIntentCascade = async ({
   // grandchild reached THROUGH a vertex that the same traversal also drops can
   // become unreachable mid-drop (its edge is already gone).
   //
-  // Pass 1 — the derived layer: Section / typed items hanging off this intent's
-  // artifacts (HAS_SECTION / HAS_ITEM). intent_id-guarded so a legacy shared
-  // vertex is never dropped for a sibling that owns it.
+  // Pass 1 — immutable artifact versions plus the derived layer. Versions are
+  // reached through their stable head and must be removed before that head;
+  // sections/items are similarly reached through the artifact.
+  await g
+    .V()
+    .has('Intent', 'id', intentId)
+    .out('CONTAINS')
+    .has('intent_id', intentId)
+    .hasLabel('Artifact')
+    .out('HAS_VERSION')
+    .hasLabel('ArtifactVersion')
+    .has('intent_id', intentId)
+    .drop()
+    .next();
+
   await g
     .V()
     .has('Intent', 'id', intentId)

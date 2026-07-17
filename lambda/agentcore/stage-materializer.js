@@ -219,6 +219,14 @@ export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }
         V2_INTENT_ID: scope.intentId,
         V2_PROJECT_ID: scope.projectId ?? '',
         V2_STAGE_INSTANCE_ID: scope.stageInstanceId ?? '',
+        V2_SECTION_INDEX:
+          scope.sectionIndex === undefined || scope.sectionIndex === null
+            ? ''
+            : String(scope.sectionIndex),
+        V2_STAGE_ATTEMPT:
+          scope.stageAttempt === undefined || scope.stageAttempt === null
+            ? '0'
+            : String(scope.stageAttempt),
         // Unit lane attribution (docs/v2-parallel.md WP4): the bridge stamps
         // this on every gate/output/metric/event row it writes. Empty → null.
         V2_UNIT_SLUG: scope.unitSlug ?? '',

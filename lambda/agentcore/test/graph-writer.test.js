@@ -3,6 +3,7 @@ import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { createGraphWriter, GraphWriteError, flattenValueMap } from '../mcp/graph-writer.js';
 import { extractArtifactStructure } from '../../shared/artifact-extractors.js';
+import { archiveArtifactsForStages } from '../../shared/artifact-versioning.js';
 
 const PARTITION = 'agentcore-graph-writer';
 
@@ -965,6 +966,343 @@ describe('rewind supersede lifecycle', () => {
       (await writer.supersedeDerivationsForArtifacts({ artifactIds: ['old-art'] })).superseded,
     ).toBe(0);
     expect(await writer.getArtifactToc({ id: 'old-art' })).toEqual([]);
+  });
+});
+
+describe('restart artifact versions', () => {
+  const archiveStage = (reason = 'Retry from requirements') =>
+    archiveArtifactsForStages({
+      g,
+      intentId: SCOPE.intentId,
+      stageInstanceIds: [SCOPE.stageInstanceId],
+      restartId: 'restart-1',
+      reason,
+      actor: 'Ada',
+      clock: () => '2026-01-02T00:00:00.000Z',
+    });
+
+  it('same-id rerun keeps one head, archives immutable content, and increments once', async () => {
+    await seedIntent();
+    await writer.createArtifact({
+      artifactType: 'design',
+      id: 'design-head',
+      title: 'Design v1',
+      content: 'old content',
+    });
+
+    await archiveStage();
+    await archiveStage(); // replay-safe: deterministic version id + edge
+    const rerun = createGraphWriter({
+      g,
+      scope: { ...SCOPE, stageAttempt: 1 },
+      clock: () => '2026-01-03T00:00:00.000Z',
+    });
+    await rerun.createArtifact({
+      artifactType: 'design',
+      id: 'design-head',
+      title: 'Design v2',
+      content: 'new content',
+    });
+    await rerun.createArtifact({
+      artifactType: 'design',
+      id: 'design-head',
+      title: 'Design v2 final',
+      content: 'new content final',
+    });
+
+    expect((await g.V().hasLabel('Artifact').has('id', 'design-head').count().next()).value).toBe(
+      1,
+    );
+    expect(await rerun.getArtifact({ id: 'design-head' })).toMatchObject({
+      content: 'new content final',
+      generation: 2,
+      stage_attempt: 1,
+    });
+    const versions = await g
+      .V()
+      .has('Artifact', 'id', 'design-head')
+      .out('HAS_VERSION')
+      .valueMap(true)
+      .toList();
+    expect(versions).toHaveLength(1);
+    expect(flattenValueMap(versions[0])).toMatchObject({
+      id: 'design-head:v1',
+      artifact_id: 'design-head',
+      generation: 1,
+      content: 'old content',
+      restart_id: 'restart-1',
+      restart_reason: 'Retry from requirements',
+      archived_by: 'Ada',
+    });
+  });
+
+  it('different-id rerun returns the canonical id, records an alias, and keeps relationship history', async () => {
+    await seedIntent();
+    await writer.createArtifact({
+      artifactType: 'requirements',
+      id: 'reqs',
+      content: 'requirements',
+    });
+    await writer.createArtifact({
+      artifactType: 'design',
+      id: 'design-head',
+      content: 'old design',
+      links: [{ toId: 'reqs', edge: 'DERIVED_FROM' }],
+    });
+
+    await archiveStage('Rewind to design');
+    const rerun = createGraphWriter({
+      g,
+      scope: { ...SCOPE, stageAttempt: 1 },
+      clock: () => '2026-01-03T00:00:00.000Z',
+    });
+    const result = await rerun.createArtifact({
+      artifactType: 'design',
+      id: 'agent-new-id',
+      content: 'new design',
+    });
+
+    expect(result.id).toBe('design-head');
+    expect(await rerun.getArtifact({ id: 'agent-new-id' })).toMatchObject({
+      id: 'design-head',
+      content: 'new design',
+      generation: 2,
+    });
+    const head = await rerun.getArtifact({ id: 'design-head' });
+    expect(JSON.parse(head.artifact_aliases)).toEqual(['agent-new-id']);
+    expect(await g.V().has('Artifact', 'id', 'design-head').outE('DERIVED_FROM').hasNext()).toBe(
+      false,
+    );
+    const version = flattenValueMap(
+      (await g.V().has('Artifact', 'id', 'design-head').out('HAS_VERSION').valueMap(true).next())
+        .value,
+    );
+    expect(JSON.parse(version.relationships)).toContainEqual({
+      direction: 'out',
+      edge: 'DERIVED_FROM',
+      artifactId: 'reqs',
+    });
+  });
+
+  it('archives every derived projection and keeps prior edit metadata only on the version', async () => {
+    await seedIntent();
+    await writer.createArtifact({
+      artifactType: 'stories',
+      id: 'stories-head',
+      content: [
+        '## First',
+        '```yaml',
+        'stories:',
+        '  - id: first',
+        '    title: First',
+        '```',
+        '## Second',
+        '```yaml',
+        'stories:',
+        '  - id: second',
+        '    title: Second',
+        '```',
+      ].join('\n'),
+    });
+    const artifact = await writer.getArtifact({ id: 'stories-head' });
+    await writer.mirrorArtifactDerivations({
+      artifact,
+      extraction: extractArtifactStructure({
+        artifactType: 'stories',
+        artifactId: 'stories-head',
+        content: artifact.content,
+      }),
+    });
+    await g
+      .V()
+      .has('Artifact', 'id', 'stories-head')
+      .property('edited_by', 'u-1')
+      .property('edited_by_name', 'Ada')
+      .property('edited_at', '2026-01-01T12:00:00.000Z')
+      .property('edit_origin', 'human')
+      .property('verified_by', 'u-2')
+      .property('verified_at', '2026-01-01T13:00:00.000Z')
+      .next();
+
+    await archiveStage();
+    const projections = await g
+      .V()
+      .has('Artifact', 'id', 'stories-head')
+      .out('HAS_SECTION', 'HAS_ITEM')
+      .valueMap(true)
+      .toList();
+    expect(projections.length).toBeGreaterThan(1);
+    expect(projections.map(flattenValueMap).every((row) => row.superseded_at)).toBe(true);
+
+    const rerun = createGraphWriter({
+      g,
+      scope: { ...SCOPE, stageAttempt: 1 },
+      clock: () => '2026-01-03T00:00:00.000Z',
+    });
+    await rerun.createArtifact({
+      artifactType: 'stories',
+      id: 'stories-head',
+      content: '## Replacement',
+    });
+
+    expect(await rerun.getArtifact({ id: 'stories-head' })).not.toMatchObject({
+      edited_by: expect.anything(),
+      verified_by: expect.anything(),
+    });
+    const version = flattenValueMap(
+      (await g.V().has('Artifact', 'id', 'stories-head').out('HAS_VERSION').valueMap(true).next())
+        .value,
+    );
+    expect(version).toMatchObject({
+      edited_by: 'u-1',
+      edited_by_name: 'Ada',
+      edit_origin: 'human',
+      verified_by: 'u-2',
+    });
+  });
+
+  it('rejects a rerun alias already owned by another logical artifact', async () => {
+    await seedIntent();
+    await writer.createArtifact({ artifactType: 'design', id: 'design-head', content: 'v1' });
+    await writer.createArtifact({ artifactType: 'requirements', id: 'taken', content: 'reqs' });
+    await archiveStage();
+    const rerun = createGraphWriter({
+      g,
+      scope: { ...SCOPE, stageAttempt: 1 },
+      clock: () => '2026-01-03T00:00:00.000Z',
+    });
+
+    await expect(
+      rerun.createArtifact({ artifactType: 'design', id: 'taken', content: 'v2' }),
+    ).rejects.toThrow(/alias "taken" already belongs/);
+  });
+
+  it('isolates identical ids and types in separate unit lanes', async () => {
+    await seedIntent();
+    const auth = createGraphWriter({
+      g,
+      scope: {
+        ...SCOPE,
+        stageInstanceId: 'si-code-auth',
+        sectionIndex: 1,
+        unitSlug: 'auth',
+      },
+    });
+    const billing = createGraphWriter({
+      g,
+      scope: {
+        ...SCOPE,
+        stageInstanceId: 'si-code-billing',
+        sectionIndex: 1,
+        unitSlug: 'billing',
+      },
+    });
+    await auth.createArtifact({ artifactType: 'code-design', id: 'design', content: 'auth' });
+    await billing.createArtifact({ artifactType: 'code-design', id: 'design', content: 'billing' });
+
+    expect((await g.V().has('Artifact', 'id', 'design').count().next()).value).toBe(2);
+    expect((await auth.getArtifact({ id: 'design' })).content).toBe('auth');
+    expect((await billing.getArtifact({ id: 'design' })).content).toBe('billing');
+  });
+
+  it('lazily exposes only the newest legacy head in context, lookup, and search', async () => {
+    await seedIntent();
+    const seedLegacy = async (id, createdAt, content) => {
+      await g
+        .addV('Artifact')
+        .property('id', id)
+        .property('intent_id', SCOPE.intentId)
+        .property('artifact_type', 'design')
+        .property('created_by_stage_instance_id', SCOPE.stageInstanceId)
+        .property('created_at', createdAt)
+        .property('content', content)
+        .as('a')
+        .V()
+        .has('Intent', 'id', SCOPE.intentId)
+        .addE('CONTAINS')
+        .to('a')
+        .next();
+    };
+    await seedLegacy('legacy-old', '2026-01-01T00:00:00.000Z', 'old searchable content');
+    await seedLegacy('legacy-new', '2026-01-02T00:00:00.000Z', 'new searchable content');
+
+    expect((await writer.lookupArtifacts({ artifactType: 'design' })).map((row) => row.id)).toEqual(
+      ['legacy-new'],
+    );
+    expect((await writer.getIntentGraph()).map((row) => row.id)).toEqual(['legacy-new']);
+    expect((await writer.searchGraph({ query: 'searchable' })).map((row) => row.id)).toEqual([
+      'legacy-new',
+    ]);
+    expect(await writer.getArtifact({ id: 'legacy-old' })).toMatchObject({
+      id: 'legacy-new',
+      content: 'new searchable content',
+    });
+  });
+
+  it('rehabilitates the canonical legacy head when a rerun supplies an older sibling id', async () => {
+    await seedIntent();
+    const seedLegacy = async (id, createdAt, content) => {
+      await g
+        .addV('Artifact')
+        .property('id', id)
+        .property('intent_id', SCOPE.intentId)
+        .property('artifact_type', 'design')
+        .property('created_by_stage_instance_id', SCOPE.stageInstanceId)
+        .property('created_at', createdAt)
+        .property('content', content)
+        .as('a')
+        .V()
+        .has('Intent', 'id', SCOPE.intentId)
+        .addE('CONTAINS')
+        .to('a')
+        .next();
+    };
+    await seedLegacy('legacy-old', '2026-01-01T00:00:00.000Z', 'old');
+    await seedLegacy('legacy-new', '2026-01-02T00:00:00.000Z', 'new');
+    await archiveStage();
+
+    const rerun = createGraphWriter({
+      g,
+      scope: { ...SCOPE, stageAttempt: 1 },
+      clock: () => '2026-01-03T00:00:00.000Z',
+    });
+    const result = await rerun.createArtifact({
+      artifactType: 'design',
+      id: 'legacy-old',
+      content: 'replacement',
+    });
+
+    expect(result.id).toBe('legacy-new');
+    expect(await rerun.getArtifact({ id: 'legacy-old' })).toMatchObject({
+      id: 'legacy-new',
+      content: 'replacement',
+      generation: 2,
+    });
+    expect(
+      (
+        await g
+          .V()
+          .hasLabel('Artifact')
+          .has('intent_id', SCOPE.intentId)
+          .hasNot('superseded_at')
+          .count()
+          .next()
+      ).value,
+    ).toBe(1);
+  });
+
+  it('preserves compatibility slots when a stage rewrites multiple artifacts of one type', async () => {
+    await seedIntent();
+    await writer.createArtifact({ artifactType: 'design', id: 'design-a', content: 'a1' });
+    await writer.createArtifact({ artifactType: 'design', id: 'design-b', content: 'b1' });
+    await writer.createArtifact({ artifactType: 'design', id: 'design-b', content: 'b2' });
+
+    const rows = await writer.lookupArtifacts({ artifactType: 'design', includeContent: true });
+    expect(rows.map((row) => [row.id, row.content]).toSorted()).toEqual([
+      ['design-a', 'a1'],
+      ['design-b', 'b2'],
+    ]);
+    expect(new Set(rows.map((row) => row.artifact_logical_key)).size).toBe(2);
   });
 });
 

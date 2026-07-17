@@ -14,15 +14,14 @@ import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
 import { runOneShotPrompt, extractJsonObject } from '../cli/one-shot.js';
 import { machineCliModels } from '../model-resolver.js';
 import { extractArtifactStructure } from '../../shared/artifact-extractors.js';
+import { selectCurrentArtifactHeads } from '../../shared/artifact-versioning.js';
 
 const artifactTs = (r) => String(r.updated_at ?? r.created_at ?? '');
 export const currentArtifacts = (rows = []) =>
-  rows
-    .filter((r) => !r.superseded_at)
-    .toSorted(
-      (a, b) =>
-        artifactTs(a).localeCompare(artifactTs(b)) || String(a.id).localeCompare(String(b.id)),
-    );
+  selectCurrentArtifactHeads(rows).toSorted(
+    (a, b) =>
+      artifactTs(a).localeCompare(artifactTs(b)) || String(a.id).localeCompare(String(b.id)),
+  );
 
 // Enrichment mode arrives IN THE PAYLOAD (snapshotted onto the execution META
 // row at intent create from the Admin SSM setting and forwarded by the
