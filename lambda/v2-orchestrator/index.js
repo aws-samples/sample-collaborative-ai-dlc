@@ -114,10 +114,12 @@ const streamToString = async (body) => {
 // slug — the shape both the provider layer and installation-token minting use.
 const toRepoSlug = (repo) => {
   const raw = typeof repo === 'string' ? repo : (repo?.url ?? '');
-  return raw
-    .replace(/^https?:\/\/[^/]+\//, '')
-    .replace(/\.git$/, '')
-    .replace(/^\/+|\/+$/g, '');
+  const slug = raw.replace(/^https?:\/\/[^/]+\//, '').replace(/\.git$/, '');
+  let start = 0;
+  let end = slug.length;
+  while (start < end && slug[start] === '/') start += 1;
+  while (end > start && slug[end - 1] === '/') end -= 1;
+  return slug.slice(start, end);
 };
 
 // Resolve the git token for the intent's run. Mode-aware for GitHub (see

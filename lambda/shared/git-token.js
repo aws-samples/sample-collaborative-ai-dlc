@@ -174,8 +174,7 @@ const clearAppAuthCaches = () => {
   clearGitHubAuthConfigCache();
 };
 
-const base64url = (buf) =>
-  Buffer.from(buf).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+const base64url = (buf) => Buffer.from(buf).toString('base64url');
 
 // Build a short-lived RS256 JWT signed with the App private key. Per GitHub's
 // requirements: iat backdated 60s for clock skew, exp <= 10min (we use 9), and
