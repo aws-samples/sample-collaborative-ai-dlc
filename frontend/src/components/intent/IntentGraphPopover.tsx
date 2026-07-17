@@ -86,7 +86,7 @@ export function IntentGraphPopover({ neighbors, className }: IntentGraphPopoverP
             </Button>
           </PopoverTrigger>
         </TooltipTrigger>
-        <TooltipContent>Connections</TooltipContent>
+        <TooltipContent>Related items</TooltipContent>
       </Tooltip>
       <PopoverContent className="w-72 p-0" align="start" onClick={(e) => e.stopPropagation()}>
         <div className="px-3 py-2 border-b">

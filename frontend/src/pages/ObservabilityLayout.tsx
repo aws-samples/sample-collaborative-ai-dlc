@@ -90,9 +90,13 @@ export default function ObservabilityLayout() {
     }
     let cancelled = false;
     setDeepLinkInfo(null);
-    void fetchSprintInfo(knownProject, selectedSprintId).then((info) => {
-      if (!cancelled) setDeepLinkInfo(info);
-    });
+    void fetchSprintInfo(knownProject, selectedSprintId)
+      .then((info) => {
+        if (!cancelled) setDeepLinkInfo(info);
+      })
+      .catch((err) => {
+        console.error('[ObservabilityLayout] fetchSprintInfo failed:', err);
+      });
     return () => {
       cancelled = true;
     };

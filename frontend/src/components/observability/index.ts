@@ -6,7 +6,6 @@ export { ActivityFeed } from './ActivityFeed';
 export { TaskStatusRow } from './TaskStatusRow';
 export { StuckAlert } from './StuckAlert';
 export { BusinessView } from './BusinessView';
-export { AgentTeamSummary } from './AgentTeamSummary';
 export { AgentStatusCards } from './AgentStatusCards';
 export { IntentStatusCards } from './IntentStatusCards';
 export { IterationDetailView } from './IterationDetailView';

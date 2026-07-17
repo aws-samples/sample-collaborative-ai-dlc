@@ -151,10 +151,11 @@ beforeEach(() => {
 });
 
 describe('AppShell panel default behavior', () => {
-  it('opens panel on intent work root', () => {
+  it('opens panel on intent work root', async () => {
     renderAtRoute('/space/p1/intent/i1');
     expect(screen.getByTestId('panel-state').textContent).toBe('open');
-    expect(screen.getByTestId('intent-activity-panel')).toBeInTheDocument();
+    // The panel is lazy-loaded — wait for the chunk to resolve.
+    expect(await screen.findByTestId('intent-activity-panel')).toBeInTheDocument();
   });
 
   it('closes panel on intent graph', () => {

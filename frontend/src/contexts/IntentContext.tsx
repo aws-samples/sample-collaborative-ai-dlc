@@ -169,6 +169,7 @@ interface IntentContextValue {
 // ── Module-level stale-while-revalidate cache ───────────────────────────────
 // Mirrors the pattern in src/hooks/useProjectsCache.ts: show last-known data
 // instantly on revisit, refetch in the background, update if changed.
+// Uses LRU eviction (delete+re-insert on access moves key to Map iteration end).
 const INTENT_CACHE_MAX = 20;
 
 interface IntentCacheEntry {
@@ -181,6 +182,16 @@ const intentCache = new Map<string, IntentCacheEntry>();
 
 function intentCacheKey(projectId: string, intentId: string): string {
   return `${projectId}#${intentId}`;
+}
+
+function intentCacheGet(key: string): IntentCacheEntry | undefined {
+  const entry = intentCache.get(key);
+  if (entry) {
+    // LRU promotion: move to end of Map iteration order
+    intentCache.delete(key);
+    intentCache.set(key, entry);
+  }
+  return entry;
 }
 
 function trimIntentCache() {
@@ -308,7 +319,7 @@ export function IntentProvider({
     fetchedWorkflowKeyRef.current = null;
 
     if (projectId && intentId) {
-      const cached = intentCache.get(intentCacheKey(projectId, intentId));
+      const cached = intentCacheGet(intentCacheKey(projectId, intentId));
       if (cached) {
         setDetail(cached.detail);
         setCompiled(cached.compiled);
@@ -518,10 +529,20 @@ export function IntentProvider({
           ...(evt.display ? { display: evt.display } : {}),
         };
         pane.live.push(row);
+        // Cap live rows to prevent unbounded memory growth on long-running intents.
+        // Slice to 4000 (not 5000) to amortize the copy across ~1000 appends.
+        if (pane.live.length > 5000) {
+          pane.live = pane.live.slice(-4000);
+        }
         // Fast path: append to the render string (renderPane would re-join the
         // whole live tail on every streamed token).
         outputBufRef.current.set(key, (outputBufRef.current.get(key) ?? '') + evt.content);
-        outputRowsRef.current.set(key, [...(outputRowsRef.current.get(key) ?? []), row]);
+        const rows = outputRowsRef.current.get(key);
+        if (rows) {
+          rows.push(row);
+        } else {
+          outputRowsRef.current.set(key, [row]);
+        }
         setOutputVersion((n) => n + 1);
         return;
       }

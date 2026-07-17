@@ -103,7 +103,7 @@ export class RealtimeService {
     if (!this.isCurrent(request)) return;
 
     const url = `${WS_URL}?token=${session.idToken}&documentId=${encodeURIComponent(request.documentId)}&docToken=${encodeURIComponent(docToken.token)}`;
-    console.log('[WebSocket] Connecting to:', request.documentId);
+    if (import.meta.env.DEV) console.log('[WebSocket] Connecting to:', request.documentId);
     const ws = new WebSocket(url);
     this.ws = ws;
 
@@ -135,7 +135,7 @@ export class RealtimeService {
           return;
         }
         opened = true;
-        console.log('[WebSocket] Connected to:', request.documentId);
+        if (import.meta.env.DEV) console.log('[WebSocket] Connected to:', request.documentId);
         this.setStatus('connected');
         this.reconnectAttempts = 0;
         this.tokenExp = docToken.exp;
@@ -191,7 +191,7 @@ export class RealtimeService {
 
   send(action: string, data: any): void {
     if (this.ws?.readyState !== WebSocket.OPEN) {
-      console.log('WebSocket not open, cannot send:', action);
+      if (import.meta.env.DEV) console.log('WebSocket not open, cannot send:', action);
       return;
     }
     const message = JSON.stringify({
@@ -250,7 +250,8 @@ export class RealtimeService {
       this.tokenRefreshTimer = null;
       if (!this.isCurrent(request)) return;
       invalidateRealtimeToken(request.scopeTarget);
-      console.log('[WebSocket] Scope token expiring - reconnecting:', request.documentId);
+      if (import.meta.env.DEV)
+        console.log('[WebSocket] Scope token expiring - reconnecting:', request.documentId);
       this.startConnection(request.documentId, request.scopeTarget).catch((error) =>
         console.error('[WebSocket] Token-refresh reconnect failed:', error),
       );

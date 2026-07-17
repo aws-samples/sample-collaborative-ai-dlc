@@ -63,18 +63,10 @@ export function useAgentStatus({
   // Initial check for execution when component mounts, sprintId changes,
   // or sprint status transitions to 'running' (detected via background polling)
   useEffect(() => {
-    console.log('[useAgentStatus] Initial check:', {
-      projectId,
-      sprintId,
-      executionArn,
-      sprintAgentStatus,
-    });
     if (projectId && sprintId) {
-      console.log('[useAgentStatus] Calling getCurrentExecution with:', projectId, sprintId);
       agentsService
         .getCurrentExecution(projectId, sprintId)
         .then((res) => {
-          console.log('[useAgentStatus] getCurrentExecution response:', res);
           if (res.executionArn) {
             setCurrentArn(res.executionArn);
             if (res.status) {
@@ -234,6 +226,11 @@ export function useAgentStatus({
         if (data.agentTaskId) return;
         if (data.text) {
           streamBuffer.current += data.text;
+          // Cap buffer to prevent unbounded memory growth on long agent runs.
+          // Slice to 256KB (not 512KB) to amortize the trim across ~256KB of appends.
+          if (streamBuffer.current.length > 512 * 1024) {
+            streamBuffer.current = streamBuffer.current.slice(-256 * 1024);
+          }
           setStreamingText(streamBuffer.current);
         }
       }),

@@ -36,6 +36,15 @@ export function useYjsDocument(
   // though the factory doesn't read documentId (the rule flags it as unnecessary).
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const doc = useMemo(() => new Y.Doc(), [documentId]);
+  // Destroy the Y.Doc when it is replaced (documentId change) or on unmount.
+  // The effect below (keyed on [documentId, doc, …]) handles ws/listener cleanup
+  // separately — this only prevents the orphaned Y.Doc memory leak.
+  useEffect(
+    () => () => {
+      doc.destroy();
+    },
+    [doc],
+  );
   const [synced, setSynced] = useState(false);
   const [awareness, setAwareness] = useState<awarenessProtocol.Awareness | null>(null);
   const [remoteUsers, setRemoteUsers] = useState<Map<number, AwarenessUser>>(new Map());
@@ -110,7 +119,7 @@ export function useYjsDocument(
       // unicorn/prefer-add-event-listener is disabled for this file in
       // .oxlintrc.json for that reason.
       ws.onopen = () => {
-        console.log('Yjs WebSocket connected');
+        if (import.meta.env.DEV) console.log('Yjs WebSocket connected');
         reconnectAttempts = 0;
 
         // Proactively reconnect shortly before the scope token expires — the
@@ -129,7 +138,7 @@ export function useYjsDocument(
           tokenRefreshRef.current = null;
           if (cancelled || wsRef.current !== ws) return;
           invalidateRealtimeToken(target);
-          console.log('Yjs: scope token expiring — reconnecting');
+          if (import.meta.env.DEV) console.log('Yjs: scope token expiring — reconnecting');
           ws.close();
         }, msUntilRefresh(docToken.exp));
 
@@ -179,12 +188,12 @@ export function useYjsDocument(
             );
           }
         } catch (e) {
-          console.log('Yjs message error:', e);
+          if (import.meta.env.DEV) console.log('Yjs message error:', e);
         }
       };
 
       ws.onclose = (event) => {
-        console.log('Yjs WebSocket closed:', event.code, event.reason);
+        if (import.meta.env.DEV) console.log('Yjs WebSocket closed:', event.code, event.reason);
         setSynced(false);
         if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
         if (tokenRefreshRef.current) {
@@ -201,7 +210,8 @@ export function useYjsDocument(
         if (reconnectAttempts < maxReconnectAttempts) {
           const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
           reconnectAttempts++;
-          console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
+          if (import.meta.env.DEV)
+            console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
           reconnectTimeoutRef.current = window.setTimeout(() => {
             connect().catch((e) => console.error('Yjs reconnect failed:', e));
           }, delay);
@@ -267,7 +277,7 @@ export function useYjsDocument(
         tokenRefreshRef.current = null;
       }
       invalidateRealtimeToken(target);
-      console.log('Yjs: scope token stale on resume — reconnecting');
+      if (import.meta.env.DEV) console.log('Yjs: scope token stale on resume — reconnecting');
       ws.close();
     };
 

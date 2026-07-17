@@ -23,7 +23,7 @@ vi.mock('@/services/intents', () => ({
 }));
 vi.mock('@/services/projects', () => ({ projectsService: {} }));
 
-import Project from './Project';
+import Project, { clearIntentsCacheForTests } from './Project';
 
 function NewIntentStub() {
   return <span data-testid="new-intent-page">NewIntentPage</span>;
@@ -53,6 +53,7 @@ describe('Project page — v2 routing', () => {
   beforeEach(() => {
     useProjectCache.mockReset();
     list.mockReset().mockResolvedValue([]);
+    clearIntentsCacheForTests();
   });
 
   it('renders IntentsView (not the sprint UI) for a v2 project', async () => {
@@ -96,6 +97,7 @@ describe('Project page — Intent list scalability', () => {
       perIntent: [],
       project: { metrics: {}, cost: { totalCost: 0, currency: 'USD', anyUnpriced: false } },
     });
+    clearIntentsCacheForTests();
   });
 
   function makeIntents(count: number) {
@@ -170,6 +172,7 @@ describe('Project page — Space-scoped usage (coreOnly)', () => {
   beforeEach(() => {
     useProjectCache.mockReset();
     list.mockReset().mockResolvedValue([]);
+    clearIntentsCacheForTests();
   });
 
   it('renders usage without advanced metrics (agent launch, context gauge hidden)', async () => {

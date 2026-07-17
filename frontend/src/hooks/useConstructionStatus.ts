@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { agentsService } from '../services/agents';
 import type { TaskAgentStatus, AgentQuestion } from '../services/agents';
 import { realtimeService } from '../services/realtime';
+import { SeqDeduplicator } from '../lib/seqDeduplicator';
 import type { ToolCallEvent } from './useAgentStatus';
 
 interface UseConstructionStatusOptions {
@@ -15,34 +16,6 @@ interface TaskStream {
   text: string;
   activeToolCall: string | null;
   toolCalls: ToolCallEvent[];
-}
-
-/**
- * Set-based deduplicator to prevent dropping events across different types.
- * Each event type gets its own instance.
- */
-class SeqDeduplicator {
-  private seen = new Set<number>();
-  private maxSeen = 0;
-
-  accept(seq: number | null | undefined): boolean {
-    if (seq == null) return true;
-    if (this.seen.has(seq)) return false;
-    this.seen.add(seq);
-    this.maxSeen = Math.max(this.maxSeen, seq);
-    if (this.seen.size > 1000) {
-      const cutoff = this.maxSeen - 500;
-      for (const s of this.seen) {
-        if (s < cutoff) this.seen.delete(s);
-      }
-    }
-    return true;
-  }
-
-  reset() {
-    this.seen.clear();
-    this.maxSeen = 0;
-  }
 }
 
 function formatAgentErrorMessage(message?: string) {
@@ -221,6 +194,11 @@ export function useConstructionStatus({
         }
       }),
       realtimeService.on('agent.completed', () => {
+        // Release completed per-task stream buffers to reclaim memory.
+        // Keep orchestrator buffer — it stays visible in the UI.
+        for (const key of Object.keys(streamBuffers.current)) {
+          if (key !== 'orchestrator') delete streamBuffers.current[key];
+        }
         refreshTasks();
         refreshOrchestrator();
       }),

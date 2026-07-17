@@ -330,7 +330,8 @@ export default function Dashboard() {
                                   </Badge>
                                 </TooltipTrigger>
                                 <TooltipContent>
-                                  Created with an older version — migrate to unlock latest features
+                                  Created with v1 — this space is view-only. New work uses v2
+                                  intents.
                                 </TooltipContent>
                               </Tooltip>
                             )}

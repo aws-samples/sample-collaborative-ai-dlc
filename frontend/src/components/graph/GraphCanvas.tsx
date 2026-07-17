@@ -1,544 +1,34 @@
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from 'react';
 import { type GraphNode, type GraphEdge } from '@/services/sprintGraph';
 import { cn } from '@/lib/utils';
-import { Card, CardContent } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { Input } from '@/components/ui/input';
-import { Separator } from '@/components/ui/separator';
-import { ScrollArea } from '@/components/ui/scroll-area';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Network, Loader2, Sparkles } from 'lucide-react';
 import {
-  Search,
-  Maximize2,
-  X,
-  Filter,
-  FileText,
-  BookOpen,
-  ListChecks,
-  Code2,
-  HelpCircle,
-  ShieldCheck,
-  Info,
-  GitPullRequest,
-  Loader2,
-  Network,
-  LayoutGrid,
-  Orbit,
-  ChevronRight,
-  Minus,
-  Plus,
-  Eye,
-  EyeOff,
-  Sparkles,
-  ArrowRight,
-  ArrowLeft,
-  Map as MapIcon,
-  BarChart3,
-  Keyboard,
-  Bot,
-  MessageSquare,
-  Target,
-  Layers,
-  Compass,
-  Brain,
-  Lightbulb,
-  CircleDot,
-  User,
-  Box,
-  Scale,
-  FileSignature,
-  Package,
-} from 'lucide-react';
+  NODE_TYPES,
+  NODE_W,
+  NODE_H,
+  NODE_RX,
+  ICON_SIZE,
+  TYPE_HIERARCHY,
+  EDGE_LABELS,
+  getNodeCfg,
+  hullPath,
+  deriveNodeLabel,
+  splitLabelTwoLines,
+  type LayoutNode,
+  type ViewBox,
+  type LayoutMode,
+} from './graphTypes';
+import { GraphToolbar } from './GraphToolbar';
+import { GraphFilterBar } from './GraphFilterBar';
+import { GraphNodePanel } from './GraphNodePanel';
+import { GraphStatsPanel, type GraphStats } from './GraphStatsPanel';
+import { GraphLegend } from './GraphLegend';
+import { GraphMinimap } from './GraphMinimap';
+import { GraphZoomControls } from './GraphZoomControls';
+import { GraphKeyboardHelp } from './GraphKeyboardHelp';
 
-// ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
-
-export const NODE_TYPES: Record<
-  string,
-  {
-    color: string;
-    darkColor: string;
-    gradientFrom: string;
-    gradientTo: string;
-    textColor: string;
-    icon: React.ComponentType<{ className?: string }>;
-    label: string;
-    shortLabel: string;
-  }
-> = {
-  Requirement: {
-    color: '#f97316',
-    darkColor: '#ea580c',
-    gradientFrom: '#fb923c',
-    gradientTo: '#ea580c',
-    textColor: '#fff',
-    icon: FileText,
-    label: 'Requirement',
-    shortLabel: 'Req',
-  },
-  UserStory: {
-    color: '#22c55e',
-    darkColor: '#16a34a',
-    gradientFrom: '#4ade80',
-    gradientTo: '#16a34a',
-    textColor: '#fff',
-    icon: BookOpen,
-    label: 'User Story',
-    shortLabel: 'Story',
-  },
-  Task: {
-    color: '#eab308',
-    darkColor: '#ca8a04',
-    gradientFrom: '#facc15',
-    gradientTo: '#ca8a04',
-    textColor: '#000',
-    icon: ListChecks,
-    label: 'Task',
-    shortLabel: 'Task',
-  },
-  CodeFile: {
-    color: '#ef4444',
-    darkColor: '#dc2626',
-    gradientFrom: '#f87171',
-    gradientTo: '#dc2626',
-    textColor: '#fff',
-    icon: Code2,
-    label: 'Code File',
-    shortLabel: 'Code',
-  },
-  Review: {
-    color: '#a855f7',
-    darkColor: '#9333ea',
-    gradientFrom: '#c084fc',
-    gradientTo: '#9333ea',
-    textColor: '#fff',
-    icon: ShieldCheck,
-    label: 'Review',
-    shortLabel: 'Rev',
-  },
-  Question: {
-    color: '#0ea5e9',
-    darkColor: '#0284c7',
-    gradientFrom: '#38bdf8',
-    gradientTo: '#0284c7',
-    textColor: '#fff',
-    icon: HelpCircle,
-    label: 'Question',
-    shortLabel: 'Q',
-  },
-  GeneralInfo: {
-    color: '#3b82f6',
-    darkColor: '#2563eb',
-    gradientFrom: '#60a5fa',
-    gradientTo: '#2563eb',
-    textColor: '#fff',
-    icon: Info,
-    label: 'General Info',
-    shortLabel: 'Info',
-  },
-  PullRequest: {
-    color: '#6366f1',
-    darkColor: '#4f46e5',
-    gradientFrom: '#818cf8',
-    gradientTo: '#4f46e5',
-    textColor: '#fff',
-    icon: GitPullRequest,
-    label: 'Pull Request',
-    shortLabel: 'PR',
-  },
-  AgentRun: {
-    color: '#64748b',
-    darkColor: '#475569',
-    gradientFrom: '#94a3b8',
-    gradientTo: '#475569',
-    textColor: '#fff',
-    icon: Bot,
-    label: 'Agent Run',
-    shortLabel: 'Run',
-  },
-  Discussion: {
-    color: '#14b8a6',
-    darkColor: '#0d9488',
-    gradientFrom: '#2dd4bf',
-    gradientTo: '#0d9488',
-    textColor: '#fff',
-    icon: MessageSquare,
-    label: 'Discussion',
-    shortLabel: 'Disc',
-  },
-  // -- v2 intent-graph types --
-  Intent: {
-    color: '#f43f5e',
-    darkColor: '#e11d48',
-    gradientFrom: '#fb7185',
-    gradientTo: '#e11d48',
-    textColor: '#fff',
-    icon: Target,
-    label: 'Intent',
-    shortLabel: 'Int',
-  },
-  Artifact: {
-    color: '#06b6d4',
-    darkColor: '#0891b2',
-    gradientFrom: '#22d3ee',
-    gradientTo: '#0891b2',
-    textColor: '#fff',
-    icon: Layers,
-    label: 'Artifact',
-    shortLabel: 'Art',
-  },
-  Steering: {
-    color: '#d97706',
-    darkColor: '#b45309',
-    gradientFrom: '#fbbf24',
-    gradientTo: '#b45309',
-    textColor: '#fff',
-    icon: Compass,
-    label: 'Steering',
-    shortLabel: 'Steer',
-  },
-  TeamKnowledge: {
-    color: '#65a30d',
-    darkColor: '#4d7c0f',
-    gradientFrom: '#a3e635',
-    gradientTo: '#4d7c0f',
-    textColor: '#fff',
-    icon: Brain,
-    label: 'Team Knowledge',
-    shortLabel: 'TK',
-  },
-  LearningRule: {
-    color: '#ec4899',
-    darkColor: '#db2777',
-    gradientFrom: '#f472b6',
-    gradientTo: '#db2777',
-    textColor: '#fff',
-    icon: Lightbulb,
-    label: 'Learning Rule',
-    shortLabel: 'Rule',
-  },
-  // -- v2 derived layer (typed items mirrored from artifact structured blocks
-  //    + the unit-of-work DAG mirror; nodes carry graphLayer='derived') --
-  Story: {
-    color: '#22c55e',
-    darkColor: '#16a34a',
-    gradientFrom: '#4ade80',
-    gradientTo: '#16a34a',
-    textColor: '#fff',
-    icon: BookOpen,
-    label: 'Story',
-    shortLabel: 'Story',
-  },
-  Persona: {
-    color: '#8b5cf6',
-    darkColor: '#7c3aed',
-    gradientFrom: '#a78bfa',
-    gradientTo: '#7c3aed',
-    textColor: '#fff',
-    icon: User,
-    label: 'Persona',
-    shortLabel: 'Pers',
-  },
-  Component: {
-    color: '#0ea5e9',
-    darkColor: '#0284c7',
-    gradientFrom: '#38bdf8',
-    gradientTo: '#0284c7',
-    textColor: '#fff',
-    icon: Box,
-    label: 'Component',
-    shortLabel: 'Comp',
-  },
-  Decision: {
-    color: '#eab308',
-    darkColor: '#ca8a04',
-    gradientFrom: '#facc15',
-    gradientTo: '#ca8a04',
-    textColor: '#000',
-    icon: Scale,
-    label: 'Decision',
-    shortLabel: 'Dec',
-  },
-  StoryMapEntry: {
-    color: '#14b8a6',
-    darkColor: '#0d9488',
-    gradientFrom: '#2dd4bf',
-    gradientTo: '#0d9488',
-    textColor: '#fff',
-    icon: MapIcon,
-    label: 'Story Mapping',
-    shortLabel: 'Map',
-  },
-  Contract: {
-    color: '#6366f1',
-    darkColor: '#4f46e5',
-    gradientFrom: '#818cf8',
-    gradientTo: '#4f46e5',
-    textColor: '#fff',
-    icon: FileSignature,
-    label: 'Contract',
-    shortLabel: 'Ctr',
-  },
-  UnitOfWork: {
-    color: '#f59e0b',
-    darkColor: '#d97706',
-    gradientFrom: '#fbbf24',
-    gradientTo: '#d97706',
-    textColor: '#000',
-    icon: Package,
-    label: 'Unit of Work',
-    shortLabel: 'Unit',
-  },
-  UnitPullRequest: {
-    color: '#0891b2',
-    darkColor: '#0e7490',
-    gradientFrom: '#22d3ee',
-    gradientTo: '#0e7490',
-    textColor: '#fff',
-    icon: GitPullRequest,
-    label: 'Unit Pull Request',
-    shortLabel: 'Unit PR',
-  },
-};
-
-const UNKNOWN_NODE_CFG = {
-  color: '#78716c',
-  darkColor: '#57534e',
-  gradientFrom: '#a8a29e',
-  gradientTo: '#57534e',
-  textColor: '#fff',
-  icon: CircleDot,
-  label: 'Unknown',
-  shortLabel: '?',
-} as const;
-
-function getNodeCfg(type: string) {
-  return NODE_TYPES[type] ?? UNKNOWN_NODE_CFG;
-}
-
-const EDGE_LABELS: Record<string, string> = {
-  BREAKS_INTO: 'breaks into',
-  IMPLEMENTED_BY: 'implemented by',
-  DEPENDS_ON: 'depends on',
-  REVIEWS: 'reviews',
-  VALIDATES: 'validates',
-  INFLUENCES: 'influences',
-  RELATES_TO: 'relates to',
-  CARRIED_FROM: 'carried from',
-  DISCUSSES: 'discusses',
-  CONTAINS: 'contains',
-  PRODUCES: 'produces',
-  CONSUMES: 'consumes',
-  DERIVED_FROM: 'derived from',
-  INFORMS: 'informs',
-  HAS_ITEM: 'has item',
-  CITES: 'cites',
-};
-
-const NODE_W = 156;
-const NODE_H = 56;
-const NODE_RX = 12;
-const ICON_SIZE = 14;
-
-const TYPE_HIERARCHY: string[] = [
-  'AgentRun',
-  'Intent',
-  'Requirement',
-  'GeneralInfo',
-  'Steering',
-  'UserStory',
-  'TeamKnowledge',
-  'LearningRule',
-  'Task',
-  'Artifact',
-  'UnitOfWork',
-  'UnitPullRequest',
-  'Story',
-  'Persona',
-  'Component',
-  'Decision',
-  'StoryMapEntry',
-  'Contract',
-  'CodeFile',
-  'Review',
-  'Question',
-  'PullRequest',
-  'Discussion',
-];
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-interface LayoutNode extends GraphNode {
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  pinned?: boolean;
-}
-
-interface ViewBox {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-type LayoutMode = 'force' | 'hierarchical';
-
-// ---------------------------------------------------------------------------
-// Utility: Convex hull (Andrew's monotone chain)
-// ---------------------------------------------------------------------------
-
-const cross = (
-  O: { x: number; y: number },
-  A: { x: number; y: number },
-  B: { x: number; y: number },
-) => (A.x - O.x) * (B.y - O.y) - (A.y - O.y) * (B.x - O.x);
-
-function convexHull(points: { x: number; y: number }[]): { x: number; y: number }[] {
-  if (points.length < 3) return points;
-  const pts = [...points].toSorted((a, b) => a.x - b.x || a.y - b.y);
-
-  const lower: { x: number; y: number }[] = [];
-  for (const p of pts) {
-    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0)
-      lower.pop();
-    lower.push(p);
-  }
-  const upper: { x: number; y: number }[] = [];
-  for (let i = pts.length - 1; i >= 0; i--) {
-    const p = pts[i];
-    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0)
-      upper.pop();
-    upper.push(p);
-  }
-  lower.pop();
-  upper.pop();
-  return lower.concat(upper);
-}
-
-function hullPath(nodes: LayoutNode[], padding: number): string {
-  if (nodes.length === 0) return '';
-  if (nodes.length === 1) {
-    const n = nodes[0];
-    return `M ${n.x - padding} ${n.y} a ${padding} ${padding} 0 1 0 ${padding * 2} 0 a ${padding} ${padding} 0 1 0 ${-padding * 2} 0`;
-  }
-  if (nodes.length === 2) {
-    const [a, b] = nodes;
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const len = Math.sqrt(dx * dx + dy * dy) || 1;
-    const nx = (-dy / len) * padding;
-    const ny = (dx / len) * padding;
-    return `M ${a.x + nx} ${a.y + ny} L ${b.x + nx} ${b.y + ny} A ${padding} ${padding} 0 0 1 ${b.x - nx} ${b.y - ny} L ${a.x - nx} ${a.y - ny} A ${padding} ${padding} 0 0 1 ${a.x + nx} ${a.y + ny} Z`;
-  }
-
-  const hull = convexHull(nodes.map((n) => ({ x: n.x, y: n.y })));
-  const expanded = hull.map((p) => {
-    const cx = hull.reduce((s, h) => s + h.x, 0) / hull.length;
-    const cy = hull.reduce((s, h) => s + h.y, 0) / hull.length;
-    const dx = p.x - cx;
-    const dy = p.y - cy;
-    const len = Math.sqrt(dx * dx + dy * dy) || 1;
-    return { x: p.x + (dx / len) * padding, y: p.y + (dy / len) * padding };
-  });
-
-  if (expanded.length === 0) return '';
-  return (
-    `M ${expanded[0].x} ${expanded[0].y} ` +
-    expanded
-      .slice(1)
-      .map((p) => `L ${p.x} ${p.y}`)
-      .join(' ') +
-    ' Z'
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Derive a human-readable label for nodes that come through as "(unnamed)"
-// ---------------------------------------------------------------------------
-
-function deriveNodeLabel(node: GraphNode): string {
-  if (node.label && node.label !== '(unnamed)') return node.label;
-
-  switch (node.type) {
-    case 'Question': {
-      const raw = node.questions;
-      if (typeof raw === 'string' && raw) {
-        try {
-          const parsed = JSON.parse(raw);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            const first = parsed[0]?.text || parsed[0]?.question || '';
-            if (first) {
-              const truncated = first.length > 50 ? first.slice(0, 48) + '...' : first;
-              return parsed.length > 1 ? `${truncated} (+${parsed.length - 1})` : truncated;
-            }
-          }
-        } catch {
-          /* fall through */
-        }
-      }
-      return 'Question';
-    }
-    case 'Review': {
-      const status = node.status;
-      if (typeof status === 'string' && status) return `Review (${status})`;
-      return 'Review';
-    }
-    case 'UnitPullRequest':
-    case 'PullRequest': {
-      const num = node.pr_number;
-      if (num) return node.type === 'UnitPullRequest' ? `Unit PR #${num}` : `PR #${num}`;
-      return node.type === 'UnitPullRequest' ? 'Unit Pull Request' : 'Pull Request';
-    }
-    case 'GeneralInfo': {
-      const title = node.title;
-      if (typeof title === 'string' && title) return title;
-      const content = node.content;
-      if (typeof content === 'string' && content) {
-        return content.length > 50 ? content.slice(0, 48) + '...' : content;
-      }
-      return 'General Info';
-    }
-    default:
-      return node.label || node.type;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Utility: two-line word-aware label wrapping
-// ---------------------------------------------------------------------------
-
-function splitLabelTwoLines(label: string): [string, string | null] {
-  if (!label) return ['', null];
-  if (label.length <= 17) return [label, null];
-  const breakIdx = label.lastIndexOf(' ', 17);
-  const line1 = breakIdx > 0 ? label.slice(0, breakIdx) : label.slice(0, 17);
-  const rest = breakIdx > 0 ? label.slice(breakIdx + 1) : label.slice(17);
-  if (!rest) return [line1, null];
-  const line2 = rest.length > 17 ? rest.slice(0, 15) + '...' : rest;
-  return [line1, line2];
-}
-
-// ---------------------------------------------------------------------------
-// Zoom log-scale helpers: t ∈ [0,1] → width = 12000*(300/12000)^t
-// ---------------------------------------------------------------------------
-
-const ZOOM_MIN_W = 300;
-const ZOOM_MAX_W = 12000;
-const ZOOM_LOG_RATIO = Math.log(ZOOM_MIN_W / ZOOM_MAX_W);
-
-function widthToSliderT(w: number): number {
-  return Math.log(w / ZOOM_MAX_W) / ZOOM_LOG_RATIO;
-}
-
-function sliderTToWidth(t: number): number {
-  return ZOOM_MAX_W * Math.pow(ZOOM_MIN_W / ZOOM_MAX_W, t);
-}
+// Re-export for consumers that imported NODE_TYPES from GraphCanvas
+export { NODE_TYPES };
 
 // ---------------------------------------------------------------------------
 // Props
@@ -602,6 +92,7 @@ export function GraphCanvas({
 
   const svgRef = useRef<SVGSVGElement>(null);
   const animRef = useRef<number>(0);
+  const energyRef = useRef<number>(Infinity);
   const particleAnimRef = useRef<number>(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -768,6 +259,11 @@ export function GraphCanvas({
         n.y += n.vy;
       }
 
+      // Recorded here (fresh post-integration values) because the settle loop's
+      // effect closure only sees a stale `nodes` snapshot — reading energy there
+      // reported 0 after a hierarchy switch and killed the re-settle instantly.
+      energyRef.current = next.reduce((sum, n) => sum + n.vx * n.vx + n.vy * n.vy, 0);
+
       return next;
     });
   }, [edges]);
@@ -813,12 +309,20 @@ export function GraphCanvas({
       return;
     }
 
-    // Force mode: only run a brief re-settle (e.g. after switching from hierarchical)
+    // Force mode: only run a brief re-settle (e.g. after switching from hierarchical).
+    // Early-exit when total kinetic energy drops below threshold — most graphs
+    // converge well before the 120-frame cap, saving redundant force iterations.
+    // WARMUP_FRAMES lets repulsion re-inject velocity first: a hierarchy switch
+    // zeroes all velocities, so frame-1 energy is always ~0 and would exit early.
     let frame = 0;
+    const ENERGY_THRESHOLD = 0.5;
+    const WARMUP_FRAMES = 15;
+    energyRef.current = Infinity;
     const tick = () => {
       if (frame < 120) {
         simulate();
         frame++;
+        if (frame > WARMUP_FRAMES && energyRef.current < ENERGY_THRESHOLD) return;
         animRef.current = requestAnimationFrame(tick);
       }
     };
@@ -827,18 +331,25 @@ export function GraphCanvas({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settled, simulate, layoutMode, applyHierarchicalLayout]);
 
-  // ---- Particle animation loop (paused while the tab is hidden — the loop
-  // re-renders the whole SVG every frame) ----
+  // ---- Particle animation loop ----
+  // Throttled to ~15fps (66ms frame budget) to avoid re-rendering the full SVG
+  // tree at 60fps. Paused entirely while the tab is hidden.
   useEffect(() => {
     if (nodes.length === 0 || !settled) return;
     let time = 0;
-    const tick = () => {
-      time += 0.008;
-      setAnimationTime(time);
+    let lastFrame = 0;
+    const FRAME_BUDGET_MS = 66; // ~15fps
+    const tick = (now: number) => {
+      if (now - lastFrame >= FRAME_BUDGET_MS) {
+        lastFrame = now;
+        time += 0.008;
+        setAnimationTime(time);
+      }
       particleAnimRef.current = requestAnimationFrame(tick);
     };
     const start = () => {
       cancelAnimationFrame(particleAnimRef.current);
+      lastFrame = performance.now();
       particleAnimRef.current = requestAnimationFrame(tick);
     };
     const onVisibility = () => {
@@ -1160,7 +671,7 @@ export function GraphCanvas({
     return ids;
   }, [edges, highlightNodeId]);
 
-  const graphStats = useMemo(() => {
+  const graphStats: GraphStats | null = useMemo(() => {
     if (nodes.length === 0) return null;
     const degreeMap: Record<string, number> = {};
     edges.forEach((e) => {
@@ -1232,197 +743,34 @@ export function GraphCanvas({
   return (
     <div className="h-full flex flex-col overflow-hidden">
       {/* ==================== TOOLBAR ==================== */}
-      <div className="flex items-center gap-1.5 sm:gap-2 px-2 sm:px-4 py-2 border-b bg-background/95 backdrop-blur-sm shrink-0 z-10 min-w-0 overflow-x-auto">
-        {/* Title */}
-        <div className="flex items-center gap-2 mr-1 sm:mr-2 shrink-0">
-          <div className="hidden lg:flex h-7 w-7 items-center justify-center rounded-lg bg-primary/10">
-            <Network className="h-4 w-4 text-primary" />
-          </div>
-          <h2 className="text-xs sm:text-sm font-semibold leading-none">
-            {title || 'Knowledge graph'}
-          </h2>
-        </div>
-
-        {/* Layout mode toggle */}
-        <div className="flex items-center rounded-md border bg-muted/30 p-0.5 shrink-0">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={() => setLayoutMode('force')}
-                aria-label="Force-directed layout"
-                className={cn(
-                  'flex items-center gap-1 rounded-sm px-1.5 sm:px-2 py-1 text-[10px] font-medium transition-all',
-                  layoutMode === 'force'
-                    ? 'bg-background shadow-sm text-foreground'
-                    : 'text-muted-foreground hover:text-foreground',
-                )}
-              >
-                <Orbit className="h-3 w-3" />
-                <span className="hidden sm:inline">Force</span>
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>Force-directed layout (1)</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={() => setLayoutMode('hierarchical')}
-                aria-label="Hierarchical layout"
-                className={cn(
-                  'flex items-center gap-1 rounded-sm px-1.5 sm:px-2 py-1 text-[10px] font-medium transition-all',
-                  layoutMode === 'hierarchical'
-                    ? 'bg-background shadow-sm text-foreground'
-                    : 'text-muted-foreground hover:text-foreground',
-                )}
-              >
-                <LayoutGrid className="h-3 w-3" />
-                <span className="hidden sm:inline">Hierarchy</span>
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>Hierarchical layout (2)</TooltipContent>
-          </Tooltip>
-        </div>
-
-        {/* Intent-specific layer toggle (or other header slot content) */}
-        {headerLeading}
-
-        {/* Filter toggle */}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant={showFilters ? 'secondary' : 'ghost'}
-              size="sm"
-              className="h-7 gap-1 text-xs shrink-0 px-2 sm:px-3"
-              onClick={() => setShowFilters(!showFilters)}
-              aria-label="Toggle type filters"
-            >
-              <Filter className="h-3 w-3" />
-              <span className="hidden sm:inline">Filters</span>
-              {typeFilters.size > 0 && (
-                <Badge variant="default" className="h-4 px-1 text-[9px] ml-0.5">
-                  {typeFilters.size}
-                </Badge>
-              )}
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Toggle type filters</TooltipContent>
-        </Tooltip>
-
-        <div className="flex-1 min-w-0" />
-
-        {/* View toggles */}
-        <div className="flex items-center gap-0.5 shrink-0 mr-0.5 sm:mr-1">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant={showClusters ? 'secondary' : 'ghost'}
-                size="icon"
-                className="h-7 w-7"
-                onClick={() => setShowClusters(!showClusters)}
-                aria-label="Toggle clusters"
-              >
-                {showClusters ? (
-                  <Eye className="h-3.5 w-3.5" />
-                ) : (
-                  <EyeOff className="h-3.5 w-3.5" />
-                )}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Toggle clusters (c)</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant={showMinimap ? 'secondary' : 'ghost'}
-                size="icon"
-                className="h-7 w-7"
-                onClick={() => setShowMinimap(!showMinimap)}
-                aria-label="Toggle minimap"
-              >
-                <MapIcon className="h-3.5 w-3.5" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Toggle minimap (m)</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant={showStats ? 'secondary' : 'ghost'}
-                size="icon"
-                className="h-7 w-7"
-                onClick={() => setShowStats(!showStats)}
-                aria-label="Graph statistics"
-              >
-                <BarChart3 className="h-3.5 w-3.5" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Graph statistics (s)</TooltipContent>
-          </Tooltip>
-        </div>
-
-        {/* Search */}
-        <div className="relative min-w-0 shrink-0">
-          <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
-          <Input
-            ref={searchRef}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search... (f)"
-            aria-label="Search nodes"
-            className="h-7 w-24 sm:w-32 lg:w-48 pl-7 text-xs"
-          />
-          {search && (
-            <button
-              onClick={() => setSearch('')}
-              aria-label="Clear search"
-              className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-            >
-              <X className="h-3 w-3" />
-            </button>
-          )}
-        </div>
-      </div>
+      <GraphToolbar
+        title={title}
+        headerLeading={headerLeading}
+        layoutMode={layoutMode}
+        onLayoutModeChange={setLayoutMode}
+        showFilters={showFilters}
+        onToggleFilters={() => setShowFilters(!showFilters)}
+        typeFilterCount={typeFilters.size}
+        showClusters={showClusters}
+        onToggleClusters={() => setShowClusters(!showClusters)}
+        showMinimap={showMinimap}
+        onToggleMinimap={() => setShowMinimap(!showMinimap)}
+        showStats={showStats}
+        onToggleStats={() => setShowStats(!showStats)}
+        search={search}
+        onSearchChange={setSearch}
+        searchRef={searchRef}
+      />
 
       {/* ==================== FILTER BAR ==================== */}
       {showFilters && (
-        <div className="flex items-center gap-1.5 px-4 py-1.5 border-b bg-muted/20 shrink-0 flex-wrap">
-          <span className="text-[10px] uppercase font-medium text-muted-foreground mr-1">
-            Type:
-          </span>
-          {[...presentTypes].map((type) => {
-            const cfg = getNodeCfg(type);
-            const active = typeFilters.has(type);
-            const count = typeCounts[type] || 0;
-            if (count === 0) return null;
-            return (
-              <button
-                key={type}
-                onClick={() => toggleTypeFilter(type)}
-                className={cn(
-                  'flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium border transition-all',
-                  active
-                    ? 'border-foreground/20 bg-foreground/8 text-foreground shadow-sm'
-                    : 'border-transparent bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground',
-                )}
-              >
-                <span
-                  className="h-2.5 w-2.5 rounded-full shrink-0 ring-1 ring-black/10"
-                  style={{ backgroundColor: cfg.color }}
-                />
-                {cfg.label}
-                <span className="text-muted-foreground/50 tabular-nums">{count}</span>
-              </button>
-            );
-          })}
-          {typeFilters.size > 0 && (
-            <button
-              onClick={() => setTypeFilters(new Set())}
-              className="text-[10px] text-muted-foreground hover:text-foreground ml-2 underline underline-offset-2"
-            >
-              Clear all
-            </button>
-          )}
-        </div>
+        <GraphFilterBar
+          presentTypes={presentTypes}
+          typeCounts={typeCounts}
+          typeFilters={typeFilters}
+          onToggleTypeFilter={toggleTypeFilter}
+          onClearAll={() => setTypeFilters(new Set())}
+        />
       )}
 
       {/* ==================== MAIN GRAPH AREA ==================== */}
@@ -1831,885 +1179,59 @@ export function GraphCanvas({
               </svg>
 
               {/* ===== Canvas Zoom Widget ===== */}
-              <div className="absolute bottom-[160px] right-3 z-10 flex flex-col items-center gap-1.5 rounded-xl bg-background/90 backdrop-blur-sm border shadow-md px-2 py-2.5">
-                <button
-                  onClick={zoomIn}
-                  aria-label="Zoom in"
-                  className="flex h-8 w-8 items-center justify-center rounded-lg border bg-background text-foreground/80 shadow-sm hover:bg-muted hover:text-foreground active:scale-95 transition-all focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-                >
-                  <Plus className="h-4 w-4" />
-                </button>
-                <input
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.005}
-                  value={widthToSliderT(viewBox.width)}
-                  onChange={(e) => {
-                    const t = parseFloat(e.target.value);
-                    const newW = sliderTToWidth(t);
-                    const aspect = viewBox.height / viewBox.width;
-                    const newH = newW * aspect;
-                    const cx = viewBox.x + viewBox.width / 2;
-                    const cy = viewBox.y + viewBox.height / 2;
-                    setViewBox({ x: cx - newW / 2, y: cy - newH / 2, width: newW, height: newH });
-                  }}
-                  aria-label="Zoom level"
-                  title="Zoom level"
-                  className="h-28 w-5 appearance-none bg-transparent cursor-pointer focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none [writing-mode:vertical-lr] [direction:rtl] [&::-webkit-slider-runnable-track]:w-1.5 [&::-webkit-slider-runnable-track]:rounded-full [&::-webkit-slider-runnable-track]:bg-muted [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-foreground/70 [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-background [&::-webkit-slider-thumb]:shadow-md [&::-moz-range-track]:w-1.5 [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-muted [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-foreground/70 [&::-moz-range-thumb]:border-0"
-                />
-                <button
-                  onClick={zoomOut}
-                  aria-label="Zoom out"
-                  className="flex h-8 w-8 items-center justify-center rounded-lg border bg-background text-foreground/80 shadow-sm hover:bg-muted hover:text-foreground active:scale-95 transition-all focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-                >
-                  <Minus className="h-4 w-4" />
-                </button>
-                <div className="w-full border-t my-0.5" />
-                <button
-                  onClick={fitToContent}
-                  aria-label="Fit to content"
-                  className="flex h-8 w-8 items-center justify-center rounded-lg border bg-background text-foreground/80 shadow-sm hover:bg-muted hover:text-foreground active:scale-95 transition-all focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-                >
-                  <Maximize2 className="h-4 w-4" />
-                </button>
-              </div>
+              <GraphZoomControls
+                viewBox={viewBox}
+                onViewBoxChange={setViewBox}
+                onZoomIn={zoomIn}
+                onZoomOut={zoomOut}
+                onFitToContent={fitToContent}
+              />
 
               {/* ===== Minimap ===== */}
               {showMinimap && minimapData && nodes.length > 3 && (
-                <div className="absolute bottom-3 right-3 z-10">
-                  <Card className="bg-background/90 backdrop-blur-sm shadow-lg overflow-hidden">
-                    <div className="px-2 py-1 border-b flex items-center gap-1.5">
-                      <MapIcon className="h-2.5 w-2.5 text-muted-foreground" />
-                      <span className="text-[9px] font-medium text-muted-foreground">Minimap</span>
-                    </div>
-                    <CardContent className="p-1.5">
-                      <svg
-                        width="160"
-                        height="100"
-                        viewBox={`${minimapData.worldBox.x} ${minimapData.worldBox.y} ${minimapData.worldBox.width} ${minimapData.worldBox.height}`}
-                        className="bg-muted/30 rounded"
-                      >
-                        {filteredEdges.map((edge, i) => {
-                          const s = nodeMap.get(edge.source);
-                          const t = nodeMap.get(edge.target);
-                          if (!s || !t) return null;
-                          return (
-                            <line
-                              key={`me-${i}`}
-                              x1={s.x}
-                              y1={s.y}
-                              x2={t.x}
-                              y2={t.y}
-                              stroke="currentColor"
-                              className="text-muted-foreground/15"
-                              strokeWidth={Math.max(minimapData.worldBox.width / 200, 1)}
-                            />
-                          );
-                        })}
-                        {nodes
-                          .filter((n) => filteredNodeIds.has(n.id))
-                          .map((node) => {
-                            const cfg = getNodeCfg(node.type);
-                            const r = Math.max(minimapData.worldBox.width / 100, 3);
-                            return (
-                              <circle
-                                key={`mn-${node.id}`}
-                                cx={node.x}
-                                cy={node.y}
-                                r={r}
-                                fill={cfg.color}
-                                opacity={selectedNode === node.id ? 1 : 0.7}
-                                stroke={selectedNode === node.id ? '#fff' : 'none'}
-                                strokeWidth={r * 0.5}
-                              />
-                            );
-                          })}
-                        <rect
-                          x={viewBox.x}
-                          y={viewBox.y}
-                          width={viewBox.width}
-                          height={viewBox.height}
-                          fill="none"
-                          stroke="currentColor"
-                          className="text-foreground/40"
-                          strokeWidth={Math.max(minimapData.worldBox.width / 200, 1.5)}
-                          strokeDasharray="6 3"
-                        />
-                      </svg>
-                    </CardContent>
-                  </Card>
-                </div>
+                <GraphMinimap
+                  nodes={nodes}
+                  filteredEdges={filteredEdges}
+                  filteredNodeIds={filteredNodeIds}
+                  nodeMap={nodeMap}
+                  viewBox={viewBox}
+                  selectedNode={selectedNode}
+                  worldBox={minimapData.worldBox}
+                />
               )}
 
               {/* ===== Legend (bottom-left) ===== */}
               {!loading && nodes.length > 0 && (
-                <div className="absolute bottom-3 left-3 z-10">
-                  <Card className="bg-background/90 backdrop-blur-sm shadow-lg">
-                    <div className="px-2.5 py-1.5 border-b">
-                      <span className="text-[9px] font-semibold text-muted-foreground uppercase tracking-wider">
-                        Legend
-                      </span>
-                    </div>
-                    <CardContent className="p-2 space-y-1">
-                      {[...presentTypes].map((type) => {
-                        const cfg = getNodeCfg(type);
-                        const count = typeCounts[type] || 0;
-                        if (count === 0) return null;
-                        const Icon = cfg.icon;
-                        return (
-                          <button
-                            key={type}
-                            className={cn(
-                              'flex items-center gap-2 w-full text-left rounded px-1 py-0.5 transition-colors hover:bg-muted/50',
-                              typeFilters.has(type) && 'bg-muted',
-                            )}
-                            onClick={() => toggleTypeFilter(type)}
-                          >
-                            <span
-                              className="h-3 w-3 rounded shrink-0 shadow-sm ring-1 ring-black/5"
-                              style={{
-                                background: `linear-gradient(135deg, ${cfg.gradientFrom}, ${cfg.gradientTo})`,
-                              }}
-                            />
-                            <Icon className="h-3 w-3 text-muted-foreground" />
-                            <span className="text-[10px] text-foreground/80 flex-1">
-                              {cfg.label}
-                            </span>
-                            <span className="text-[10px] tabular-nums font-medium text-muted-foreground/60">
-                              {count}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </CardContent>
-                  </Card>
-                </div>
+                <GraphLegend
+                  presentTypes={presentTypes}
+                  typeCounts={typeCounts}
+                  typeFilters={typeFilters}
+                  onToggleTypeFilter={toggleTypeFilter}
+                />
               )}
 
               {/* ===== Statistics Panel (top-left) ===== */}
               {showStats && graphStats && (
-                <div className="absolute top-3 left-3 z-10 w-56">
-                  <Card className="bg-background/90 backdrop-blur-sm shadow-lg">
-                    <div className="px-3 py-2 border-b flex items-center justify-between">
-                      <div className="flex items-center gap-1.5">
-                        <BarChart3 className="h-3 w-3 text-muted-foreground" />
-                        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                          Graph Statistics
-                        </span>
-                      </div>
-                      <button
-                        onClick={() => setShowStats(false)}
-                        className="text-muted-foreground hover:text-foreground"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    </div>
-                    <CardContent className="p-3 space-y-2.5">
-                      <div className="grid grid-cols-2 gap-2">
-                        <StatItem label="Nodes" value={String(graphStats.nodeCount)} />
-                        <StatItem label="Edges" value={String(graphStats.edgeCount)} />
-                        <StatItem label="Types" value={String(graphStats.typeCount)} />
-                        <StatItem label="Density" value={graphStats.density} />
-                        <StatItem label="Max Degree" value={String(graphStats.maxDegree)} />
-                        <StatItem label="Avg Degree" value={graphStats.avgDegree} />
-                      </div>
-                      {graphStats.hubNode && (
-                        <>
-                          <Separator />
-                          <div>
-                            <span className="text-[9px] uppercase font-medium text-muted-foreground tracking-wider">
-                              Hub Node
-                            </span>
-                            <div className="flex items-center gap-1.5 mt-1">
-                              <span
-                                className="h-2.5 w-2.5 rounded shrink-0"
-                                style={{
-                                  backgroundColor: getNodeCfg(graphStats.hubNode.type).color,
-                                }}
-                              />
-                              <span className="text-[11px] font-medium truncate">
-                                {graphStats.hubNode.label}
-                              </span>
-                              <Badge
-                                variant="secondary"
-                                className="h-4 px-1 text-[8px] ml-auto shrink-0"
-                              >
-                                {graphStats.hubDegree} links
-                              </Badge>
-                            </div>
-                          </div>
-                        </>
-                      )}
-                      <Separator />
-                      <div>
-                        <span className="text-[9px] uppercase font-medium text-muted-foreground tracking-wider">
-                          Edge Types
-                        </span>
-                        <div className="mt-1 space-y-0.5">
-                          {Object.entries(graphStats.edgeLabelCounts)
-                            .toSorted((a, b) => b[1] - a[1])
-                            .map(([label, count]) => (
-                              <div key={label} className="flex items-center justify-between">
-                                <span className="text-[10px] text-muted-foreground">
-                                  {EDGE_LABELS[label] || label}
-                                </span>
-                                <span className="text-[10px] tabular-nums font-medium">
-                                  {count}
-                                </span>
-                              </div>
-                            ))}
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </div>
+                <GraphStatsPanel graphStats={graphStats} onClose={() => setShowStats(false)} />
               )}
 
               {/* ===== Keyboard shortcuts help ===== */}
-              {showKeyboardHelp && (
-                <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20">
-                  <Card className="bg-background/95 backdrop-blur-sm shadow-xl">
-                    <div className="px-4 py-2 border-b flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <Keyboard className="h-3.5 w-3.5 text-muted-foreground" />
-                        <span className="text-xs font-semibold">Keyboard Shortcuts</span>
-                      </div>
-                      <button
-                        onClick={() => setShowKeyboardHelp(false)}
-                        className="text-muted-foreground hover:text-foreground"
-                      >
-                        <X className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                    <CardContent className="p-3">
-                      <div className="grid grid-cols-2 gap-x-8 gap-y-1">
-                        {[
-                          ['f or /', 'Search nodes'],
-                          ['1', 'Force layout'],
-                          ['2', 'Hierarchical layout'],
-                          ['c', 'Toggle clusters'],
-                          ['m', 'Toggle minimap'],
-                          ['s', 'Toggle statistics'],
-                          ['+ / -', 'Zoom in / out'],
-                          ['0', 'Fit to content'],
-                          ['Esc', 'Clear selection'],
-                          ['?', 'This help'],
-                        ].map(([key, desc]) => (
-                          <div key={key} className="flex items-center gap-2 py-0.5">
-                            <kbd className="inline-flex h-5 items-center rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground min-w-[28px] justify-center">
-                              {key}
-                            </kbd>
-                            <span className="text-[11px] text-muted-foreground">{desc}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </CardContent>
-                  </Card>
-                </div>
-              )}
+              {showKeyboardHelp && <GraphKeyboardHelp onClose={() => setShowKeyboardHelp(false)} />}
             </>
           )
         )}
 
         {/* ==================== DETAIL PANEL ==================== */}
-        {selectedNodeData &&
-          (() => {
-            const cfg = getNodeCfg(selectedNodeData.type);
-            const nodeEdges = edges.filter(
-              (e) => e.source === selectedNode || e.target === selectedNode,
-            );
-            const outgoing = nodeEdges.filter((e) => e.source === selectedNode);
-            const incoming = nodeEdges.filter((e) => e.target === selectedNode);
-
-            return (
-              <div className="absolute top-0 right-0 bottom-0 w-80 z-20 border-l bg-background/95 backdrop-blur-sm shadow-2xl flex flex-col">
-                <div
-                  className="shrink-0 px-4 pt-4 pb-3"
-                  style={{ borderBottom: `2px solid ${cfg.color}` }}
-                >
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-start gap-3 min-w-0 flex-1">
-                      <div
-                        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl shadow-md"
-                        style={{
-                          background: `linear-gradient(135deg, ${cfg.gradientFrom}, ${cfg.gradientTo})`,
-                        }}
-                      >
-                        {(() => {
-                          const Icon = cfg.icon;
-                          return <Icon className="h-5 w-5 text-white" />;
-                        })()}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <span
-                          className="text-[10px] font-medium uppercase tracking-wider"
-                          style={{ color: cfg.color }}
-                        >
-                          {cfg.label}
-                        </span>
-                        <h3 className="text-sm font-semibold mt-0.5 leading-snug">
-                          {selectedNodeData.label}
-                        </h3>
-                      </div>
-                    </div>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 shrink-0 -mt-1 -mr-1"
-                      onClick={() => setSelectedNode(null)}
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-
-                  <div className="flex items-center gap-3 mt-3">
-                    <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                      <ArrowRight className="h-3 w-3" />
-                      <span>{outgoing.length} outgoing</span>
-                    </div>
-                    <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                      <ArrowLeft className="h-3 w-3" />
-                      <span>{incoming.length} incoming</span>
-                    </div>
-                  </div>
-                </div>
-
-                <ScrollArea className="flex-1">
-                  <div className="p-4 space-y-5">
-                    <NodeDetailContent node={selectedNodeData} />
-
-                    {nodeEdges.length > 0 && (
-                      <div>
-                        <span className="text-[10px] uppercase font-semibold text-muted-foreground tracking-wider">
-                          Relationships
-                        </span>
-
-                        {outgoing.length > 0 && (
-                          <div className="mt-2">
-                            <span className="text-[9px] uppercase text-muted-foreground/60 tracking-wider font-medium flex items-center gap-1 mb-1">
-                              <ArrowRight className="h-2.5 w-2.5" /> Outgoing
-                            </span>
-                            <div className="space-y-0.5">
-                              {outgoing.map((edge, i) => {
-                                const other = nodeMap.get(edge.target);
-                                if (!other) return null;
-                                const otherCfg = getNodeCfg(other.type);
-                                return (
-                                  <button
-                                    key={`o-${i}`}
-                                    className="flex items-center gap-2 w-full text-left rounded-lg px-2 py-1.5 hover:bg-muted/50 transition-colors group"
-                                    onClick={() => setSelectedNode(edge.target)}
-                                  >
-                                    <span
-                                      className="h-2.5 w-2.5 rounded shrink-0 ring-1 ring-black/5"
-                                      style={{ backgroundColor: otherCfg.color }}
-                                    />
-                                    <div className="flex-1 min-w-0">
-                                      <span className="text-[11px] truncate block font-medium">
-                                        {other.label}
-                                      </span>
-                                      <span className="text-[9px] text-muted-foreground/60">
-                                        {EDGE_LABELS[edge.label] || edge.label} &middot;{' '}
-                                        {otherCfg.label}
-                                      </span>
-                                    </div>
-                                    <ChevronRight className="h-3 w-3 text-muted-foreground/30 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        )}
-
-                        {incoming.length > 0 && (
-                          <div className="mt-2">
-                            <span className="text-[9px] uppercase text-muted-foreground/60 tracking-wider font-medium flex items-center gap-1 mb-1">
-                              <ArrowLeft className="h-2.5 w-2.5" /> Incoming
-                            </span>
-                            <div className="space-y-0.5">
-                              {incoming.map((edge, i) => {
-                                const other = nodeMap.get(edge.source);
-                                if (!other) return null;
-                                const otherCfg = getNodeCfg(other.type);
-                                return (
-                                  <button
-                                    key={`i-${i}`}
-                                    className="flex items-center gap-2 w-full text-left rounded-lg px-2 py-1.5 hover:bg-muted/50 transition-colors group"
-                                    onClick={() => setSelectedNode(edge.source)}
-                                  >
-                                    <span
-                                      className="h-2.5 w-2.5 rounded shrink-0 ring-1 ring-black/5"
-                                      style={{ backgroundColor: otherCfg.color }}
-                                    />
-                                    <div className="flex-1 min-w-0">
-                                      <span className="text-[11px] truncate block font-medium">
-                                        {other.label}
-                                      </span>
-                                      <span className="text-[9px] text-muted-foreground/60">
-                                        {EDGE_LABELS[edge.label] || edge.label} &middot;{' '}
-                                        {otherCfg.label}
-                                      </span>
-                                    </div>
-                                    <ChevronRight className="h-3 w-3 text-muted-foreground/30 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {nodeEdges.length === 0 && (
-                      <div className="rounded-lg border border-dashed p-3 text-center">
-                        <p className="text-[11px] text-muted-foreground">No relationships yet</p>
-                      </div>
-                    )}
-                  </div>
-                </ScrollArea>
-              </div>
-            );
-          })()}
+        {selectedNodeData && (
+          <GraphNodePanel
+            selectedNodeData={selectedNodeData}
+            edges={edges}
+            nodeMap={nodeMap}
+            selectedNode={selectedNode!}
+            onSelectNode={setSelectedNode}
+          />
+        )}
       </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Stat Item
-// ---------------------------------------------------------------------------
-
-function StatItem({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-md bg-muted/30 px-2 py-1.5">
-      <span className="text-[9px] uppercase text-muted-foreground/60 tracking-wider">{label}</span>
-      <p className="text-sm font-bold tabular-nums leading-none mt-0.5">{value}</p>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Helper: safely get a string property from a node
-// ---------------------------------------------------------------------------
-
-function str(node: GraphNode, key: string): string {
-  const v = node[key];
-  if (v == null || v === '') return '';
-  return String(v);
-}
-
-function tryParseJson(raw: string): unknown | null {
-  if (!raw || typeof raw !== 'string') return null;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Status badge component
-// ---------------------------------------------------------------------------
-
-const STATUS_STYLES: Record<string, string> = {
-  todo: 'bg-muted text-muted-foreground',
-  in_progress: 'bg-amber-500/15 text-amber-700 dark:text-amber-400',
-  done: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400',
-  PENDING: 'bg-amber-500/15 text-amber-700 dark:text-amber-400',
-  PASSED: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400',
-  FAILED: 'bg-red-500/15 text-red-700 dark:text-red-400',
-};
-
-function StatusBadge({ status }: { status: string }) {
-  const display = status.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-  return (
-    <span
-      className={cn(
-        'inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold',
-        STATUS_STYLES[status] || 'bg-muted text-muted-foreground',
-      )}
-    >
-      {display}
-    </span>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Detail field helper
-// ---------------------------------------------------------------------------
-
-function DetailField({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <span className="text-[10px] uppercase font-medium text-muted-foreground/60 tracking-wider">
-        {label}
-      </span>
-      <div className="mt-1">{children}</div>
-    </div>
-  );
-}
-
-function DetailText({ value, limit = 600 }: { value: string; limit?: number }) {
-  if (!value) return <p className="text-[11px] text-muted-foreground/40 italic">Not provided</p>;
-  const display = value.length > limit ? value.slice(0, limit) + '...' : value;
-  return <p className="text-xs text-foreground leading-relaxed whitespace-pre-wrap">{display}</p>;
-}
-
-// ---------------------------------------------------------------------------
-// Node Detail Content -- type-aware rendering
-// ---------------------------------------------------------------------------
-
-function NodeDetailContent({ node }: { node: GraphNode }) {
-  const type = node.type;
-
-  switch (type) {
-    case 'Requirement': {
-      const description = str(node, 'description');
-      const criteria = str(node, 'acceptance_criteria');
-      return (
-        <div className="space-y-3">
-          {description && (
-            <DetailField label="Description">
-              <DetailText value={description} />
-            </DetailField>
-          )}
-          {criteria && (
-            <DetailField label="Acceptance Criteria">
-              <DetailText value={criteria} />
-            </DetailField>
-          )}
-          {!description && !criteria && <EmptyContent />}
-        </div>
-      );
-    }
-
-    case 'UserStory': {
-      const description = str(node, 'description');
-      const points = str(node, 'story_points');
-      return (
-        <div className="space-y-3">
-          {points && points !== '0' && (
-            <DetailField label="Story Points">
-              <div className="flex items-center gap-1.5">
-                <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
-                  {points}
-                </span>
-                <span className="text-[11px] text-muted-foreground">
-                  point{points !== '1' ? 's' : ''} estimated
-                </span>
-              </div>
-            </DetailField>
-          )}
-          {description && (
-            <DetailField label="Description">
-              <DetailText value={description} />
-            </DetailField>
-          )}
-          {!description && (!points || points === '0') && <EmptyContent />}
-        </div>
-      );
-    }
-
-    case 'Task': {
-      const status = str(node, 'status');
-      const description = str(node, 'description');
-      const deps = str(node, 'dependencies');
-      const depList = tryParseJson(deps);
-      const depCount = Array.isArray(depList) ? depList.length : 0;
-      return (
-        <div className="space-y-3">
-          {status && (
-            <DetailField label="Status">
-              <StatusBadge status={status} />
-            </DetailField>
-          )}
-          {description && (
-            <DetailField label="Description">
-              <DetailText value={description} />
-            </DetailField>
-          )}
-          {depCount > 0 && (
-            <DetailField label="Dependencies">
-              <span className="text-xs text-muted-foreground">
-                {depCount} task{depCount !== 1 ? 's' : ''} must complete first
-              </span>
-            </DetailField>
-          )}
-          {!status && !description && <EmptyContent />}
-        </div>
-      );
-    }
-
-    case 'CodeFile': {
-      const filePath = str(node, 'file_path');
-      const summary = str(node, 'summary');
-      const commitRef = str(node, 'commit_ref');
-      return (
-        <div className="space-y-3">
-          {filePath && (
-            <DetailField label="File Path">
-              <code className="text-[11px] font-mono bg-muted/40 rounded px-1.5 py-0.5 break-all">
-                {filePath}
-              </code>
-            </DetailField>
-          )}
-          {summary && (
-            <DetailField label="Summary">
-              <DetailText value={summary} />
-            </DetailField>
-          )}
-          {commitRef && (
-            <DetailField label="Commit">
-              <code className="text-[10px] font-mono text-muted-foreground bg-muted/40 rounded px-1.5 py-0.5">
-                {commitRef.slice(0, 12)}
-              </code>
-            </DetailField>
-          )}
-          {!filePath && !summary && <EmptyContent />}
-        </div>
-      );
-    }
-
-    case 'Review': {
-      const status = str(node, 'status');
-      const comments = str(node, 'comments');
-      const blindReview = str(node, 'blind_review');
-      const fullReview = str(node, 'full_review');
-      return (
-        <div className="space-y-3">
-          {status && (
-            <DetailField label="Review Status">
-              <StatusBadge status={status} />
-            </DetailField>
-          )}
-          {comments && (
-            <DetailField label="Comments">
-              <DetailText value={comments} />
-            </DetailField>
-          )}
-          {blindReview && (
-            <DetailField label="Technical Review">
-              <DetailText value={blindReview} />
-            </DetailField>
-          )}
-          {fullReview && (
-            <DetailField label="Business Review">
-              <DetailText value={fullReview} />
-            </DetailField>
-          )}
-          {!status && !comments && !blindReview && !fullReview && <EmptyContent />}
-        </div>
-      );
-    }
-
-    case 'Question': {
-      const rawQuestions = str(node, 'questions');
-      const agent = str(node, 'agent');
-      const rawAnswer = str(node, 'structured_answer');
-      const parsedQuestions = tryParseJson(rawQuestions) as Array<{
-        text?: string;
-        question?: string;
-        type?: string;
-        options?: Array<{ label: string; description?: string }>;
-      }> | null;
-      const parsedAnswer = tryParseJson(rawAnswer) as {
-        answers?: Array<{ selectedOptions?: number[]; freeText?: string }>;
-      } | null;
-      const answerItems = parsedAnswer?.answers;
-
-      return (
-        <div className="space-y-3">
-          {agent && (
-            <DetailField label="Asked by">
-              <span className="text-xs font-medium capitalize">{agent} agent</span>
-            </DetailField>
-          )}
-          {Array.isArray(parsedQuestions) && parsedQuestions.length > 0 && (
-            <div className="space-y-3">
-              {parsedQuestions.map((q, i) => {
-                const questionText = q?.text || q?.question || '';
-                const options = q?.options;
-                const a = Array.isArray(answerItems) ? answerItems[i] : null;
-                const selectedIdxs = a?.selectedOptions || [];
-                const freeText = a?.freeText || '';
-                const hasAnswer = selectedIdxs.length > 0 || !!freeText;
-
-                return (
-                  <div key={i} className="rounded-lg border overflow-hidden">
-                    <div className="bg-muted/30 px-3 py-2">
-                      <span className="text-[9px] uppercase font-medium text-muted-foreground/60 tracking-wider">
-                        Question {parsedQuestions.length > 1 ? i + 1 : ''}
-                      </span>
-                      <p className="text-xs leading-relaxed mt-0.5 font-medium">{questionText}</p>
-                    </div>
-
-                    {hasAnswer && (
-                      <div className="px-3 py-2 bg-emerald-500/5">
-                        <span className="text-[9px] uppercase font-medium text-emerald-600 dark:text-emerald-400 tracking-wider">
-                          Answer
-                        </span>
-                        {selectedIdxs.length > 0 && Array.isArray(options) && (
-                          <div className="mt-1 space-y-0.5">
-                            {selectedIdxs.map((idx) => {
-                              const opt = options[idx];
-                              return (
-                                <div key={idx} className="flex items-start gap-1.5">
-                                  <span className="text-emerald-600 dark:text-emerald-400 text-xs mt-0.5 shrink-0">
-                                    &#10003;
-                                  </span>
-                                  <span className="text-xs">
-                                    {opt?.label || `Option ${idx + 1}`}
-                                  </span>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
-                        {freeText && (
-                          <p className="text-xs leading-relaxed mt-1 text-foreground/80 italic">
-                            {freeText}
-                          </p>
-                        )}
-                      </div>
-                    )}
-
-                    {!hasAnswer && (
-                      <div className="px-3 py-2">
-                        <span className="text-[10px] text-muted-foreground/50 italic">
-                          Awaiting answer
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-          {!Array.isArray(parsedQuestions) && !agent && <EmptyContent />}
-        </div>
-      );
-    }
-
-    case 'GeneralInfo': {
-      const infoType = str(node, 'type');
-      const content = str(node, 'content');
-      return (
-        <div className="space-y-3">
-          {infoType && infoType !== 'GeneralInfo' && (
-            <DetailField label="Category">
-              <Badge variant="outline" className="text-[10px]">
-                {infoType}
-              </Badge>
-            </DetailField>
-          )}
-          {content && (
-            <DetailField label="Content">
-              <DetailText value={content} />
-            </DetailField>
-          )}
-          {!content && <EmptyContent />}
-        </div>
-      );
-    }
-
-    case 'UnitPullRequest':
-    case 'PullRequest': {
-      const prUrl = str(node, 'pr_url');
-      const prNumber = str(node, 'pr_number');
-      const branch = str(node, 'branch') || str(node, 'source_branch');
-      const baseBranch = str(node, 'base_branch') || str(node, 'target_branch');
-      const unitSlug = str(node, 'unit_slug');
-      const sectionIndex = str(node, 'section_index');
-      const provider = str(node, 'provider');
-      const state = str(node, 'state');
-      return (
-        <div className="space-y-3">
-          {unitSlug && (
-            <DetailField label="Unit">
-              <span className="text-xs font-semibold">
-                {unitSlug}
-                {sectionIndex ? ` · section ${sectionIndex}` : ''}
-              </span>
-            </DetailField>
-          )}
-          {(provider || state) && (
-            <DetailField label="Review state">
-              <span className="text-xs">{[provider, state].filter(Boolean).join(' · ')}</span>
-            </DetailField>
-          )}
-          {prNumber && (
-            <DetailField label="Pull Request">
-              <span className="text-xs font-semibold">#{prNumber}</span>
-            </DetailField>
-          )}
-          {branch && (
-            <DetailField label="Branch">
-              <div className="flex items-center gap-1.5 text-[11px]">
-                <code className="font-mono bg-muted/40 rounded px-1.5 py-0.5">{branch}</code>
-                {baseBranch && (
-                  <>
-                    <ArrowRight className="h-3 w-3 text-muted-foreground/40" />
-                    <code className="font-mono bg-muted/40 rounded px-1.5 py-0.5">
-                      {baseBranch}
-                    </code>
-                  </>
-                )}
-              </div>
-            </DetailField>
-          )}
-          {prUrl && (
-            <DetailField label="Link">
-              <a
-                href={prUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-xs text-primary hover:underline underline-offset-2 break-all"
-              >
-                Open link
-              </a>
-            </DetailField>
-          )}
-          {!prNumber && !prUrl && <EmptyContent />}
-        </div>
-      );
-    }
-
-    default: {
-      const internalKeys = new Set([
-        'id',
-        'type',
-        'label',
-        'x',
-        'y',
-        'vx',
-        'vy',
-        'pinned',
-        'sprint_id',
-        'createdAt',
-        'created_at',
-      ]);
-      const entries = Object.entries(node)
-        .filter(([k]) => !internalKeys.has(k))
-        .filter(([, v]) => v != null && v !== '');
-      if (entries.length === 0) return <EmptyContent />;
-      return (
-        <div className="space-y-3">
-          {entries.map(([key, value]) => (
-            <DetailField key={key} label={key.replace(/([A-Z])/g, ' $1').replace(/_/g, ' ')}>
-              <DetailText value={String(value)} />
-            </DetailField>
-          ))}
-        </div>
-      );
-    }
-  }
-}
-
-function EmptyContent() {
-  return (
-    <div className="rounded-lg border border-dashed p-3 text-center">
-      <p className="text-[11px] text-muted-foreground">No details available yet</p>
     </div>
   );
 }

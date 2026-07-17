@@ -1,4 +1,5 @@
 import { Suspense, lazy } from 'react';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import {
   BrowserRouter as Router,
   Routes,
@@ -64,108 +65,110 @@ function App() {
     <ThemeProvider>
       <AuthProvider>
         <Router>
-          <Suspense fallback={routeFallback}>
-            <Routes>
-              {/* Public routes (no shell) */}
-              <Route path="/login" element={<Login />} />
-              {/* Git provider OAuth callbacks (GitHub, GitLab) — same shape,
+          <ErrorBoundary>
+            <Suspense fallback={routeFallback}>
+              <Routes>
+                {/* Public routes (no shell) */}
+                <Route path="/login" element={<Login />} />
+                {/* Git provider OAuth callbacks (GitHub, GitLab) — same shape,
                   driven from the tracker registry. Jira differs (auth-gated +
                   its own component) so it stays a separate route below. */}
-              {(['github-issues', 'gitlab-issues'] as const).map((id) => (
+                {(['github-issues', 'gitlab-issues'] as const).map((id) => (
+                  <Route
+                    key={id}
+                    path={TRACKER_PROVIDERS[id].callbackPath}
+                    element={<GitOAuthCallback trackerProviderId={id} />}
+                  />
+                ))}
                 <Route
-                  key={id}
-                  path={TRACKER_PROVIDERS[id].callbackPath}
-                  element={<GitOAuthCallback trackerProviderId={id} />}
-                />
-              ))}
-              <Route
-                path={TRACKER_PROVIDERS['jira-cloud'].callbackPath}
-                element={
-                  <ProtectedRoute>
-                    <JiraCallback />
-                  </ProtectedRoute>
-                }
-              />
-
-              {/* Protected routes with AppShell layout */}
-              <Route
-                element={
-                  <ProtectedRoute>
-                    <AppShell />
-                  </ProtectedRoute>
-                }
-              >
-                <Route path="/dashboard" element={<Dashboard />} />
-                <Route
-                  path="/admin"
+                  path={TRACKER_PROVIDERS['jira-cloud'].callbackPath}
                   element={
-                    <ProtectedRoute requirePlatformAdmin>
-                      <PlatformAdmin />
+                    <ProtectedRoute>
+                      <JiraCallback />
                     </ProtectedRoute>
                   }
                 />
-                <Route path="/observability" element={<ObservabilityLayout />} />
-                {/* Block + workflow authoring is platform-admin only (the
+
+                {/* Protected routes with AppShell layout */}
+                <Route
+                  element={
+                    <ProtectedRoute>
+                      <AppShell />
+                    </ProtectedRoute>
+                  }
+                >
+                  <Route path="/dashboard" element={<Dashboard />} />
+                  <Route
+                    path="/admin"
+                    element={
+                      <ProtectedRoute requirePlatformAdmin>
+                        <PlatformAdmin />
+                      </ProtectedRoute>
+                    }
+                  />
+                  <Route path="/observability" element={<ObservabilityLayout />} />
+                  {/* Block + workflow authoring is platform-admin only (the
                     backend rejects mutations for everyone else; these are
                     editor pages, so the whole route is soft-gated). */}
-                {[
-                  { path: '/blocks', el: <BlockLibrary /> },
-                  { path: '/blocks/:type', el: <BlockLibrary /> },
-                  { path: '/blocks/:type/new', el: <BlockEditor /> },
-                  { path: '/blocks/:type/:id', el: <BlockEditor /> },
-                  { path: '/workflows', el: <WorkflowList /> },
-                  { path: '/workflows/:workflowId', el: <WorkflowComposer /> },
-                ].map(({ path, el }) => (
+                  {[
+                    { path: '/blocks', el: <BlockLibrary /> },
+                    { path: '/blocks/:type', el: <BlockLibrary /> },
+                    { path: '/blocks/:type/new', el: <BlockEditor /> },
+                    { path: '/blocks/:type/:id', el: <BlockEditor /> },
+                    { path: '/workflows', el: <WorkflowList /> },
+                    { path: '/workflows/:workflowId', el: <WorkflowComposer /> },
+                  ].map(({ path, el }) => (
+                    <Route
+                      key={path}
+                      path={path}
+                      element={<ProtectedRoute requirePlatformAdmin>{el}</ProtectedRoute>}
+                    />
+                  ))}
+                  <Route path="/space/:projectId" element={<Project />} />
+                  <Route path="/space/:projectId/settings" element={<ProjectSettings />} />
+                  <Route path="/space/:projectId/intent/new" element={<NewIntentPage />} />
                   <Route
-                    key={path}
-                    path={path}
-                    element={<ProtectedRoute requirePlatformAdmin>{el}</ProtectedRoute>}
+                    path="/space/:projectId/intent/:intentId/compose"
+                    element={<IntentComposePage />}
                   />
-                ))}
-                <Route path="/space/:projectId" element={<Project />} />
-                <Route path="/space/:projectId/settings" element={<ProjectSettings />} />
-                <Route path="/space/:projectId/intent/new" element={<NewIntentPage />} />
-                <Route
-                  path="/space/:projectId/intent/:intentId/compose"
-                  element={<IntentComposePage />}
-                />
-                <Route
-                  path="/space/:projectId/intent/:intentId/graph"
-                  element={<IntentGraphPage />}
-                />
-                <Route
-                  path="/space/:projectId/intent/:intentId/observability"
-                  element={<IntentObservabilityPage />}
-                />
-                <Route
-                  path="/space/:projectId/intent/:intentId/audit"
-                  element={<IntentAuditPage />}
-                />
-                <Route
-                  path="/space/:projectId/intent/:intentId/review/:humanTaskId"
-                  element={<IntentView />}
-                />
-                <Route path="/space/:projectId/intent/:intentId" element={<IntentView />} />
+                  <Route
+                    path="/space/:projectId/intent/:intentId/graph"
+                    element={<IntentGraphPage />}
+                  />
+                  <Route
+                    path="/space/:projectId/intent/:intentId/observability"
+                    element={<IntentObservabilityPage />}
+                  />
+                  <Route
+                    path="/space/:projectId/intent/:intentId/audit"
+                    element={<IntentAuditPage />}
+                  />
+                  <Route
+                    path="/space/:projectId/intent/:intentId/review/:humanTaskId"
+                    element={<IntentView />}
+                  />
+                  <Route path="/space/:projectId/intent/:intentId" element={<IntentView />} />
 
-                {/* Sprint routes wrapped in SprintLayout for shared context */}
-                <Route path="/space/:projectId/sprint/:sprintId" element={<SprintLayout />}>
-                  <Route index element={<InceptionPage />} />
-                  <Route path="construction" element={<ConstructionPage />} />
-                  <Route path="review" element={<ReviewPage />} />
-                  <Route path="agent" element={<AgentPage />} />
-                  <Route path="graph" element={<SprintGraph />} />
+                  {/* Sprint routes wrapped in SprintLayout for shared context */}
+                  <Route path="/space/:projectId/sprint/:sprintId" element={<SprintLayout />}>
+                    <Route index element={<InceptionPage />} />
+                    <Route path="construction" element={<ConstructionPage />} />
+                    <Route path="review" element={<ReviewPage />} />
+                    <Route path="agent" element={<AgentPage />} />
+                    <Route path="graph" element={<SprintGraph />} />
+                  </Route>
+
+                  {/* Legacy redirect: old /project/* bookmarks and links map to
+                    the /space/* equivalent, preserving the sub-path + query. */}
+                  <Route path="/project/*" element={<LegacyProjectRedirect />} />
+
+                  <Route path="*" element={<Navigate to="/dashboard" replace />} />
                 </Route>
 
-                {/* Legacy redirect: old /project/* bookmarks and links map to
-                    the /space/* equivalent, preserving the sub-path + query. */}
-                <Route path="/project/*" element={<LegacyProjectRedirect />} />
-
-                <Route path="*" element={<Navigate to="/dashboard" replace />} />
-              </Route>
-
-              <Route path="/" element={<Navigate to="/dashboard" replace />} />
-            </Routes>
-          </Suspense>
+                <Route path="/" element={<Navigate to="/dashboard" replace />} />
+              </Routes>
+            </Suspense>
+          </ErrorBoundary>
         </Router>
       </AuthProvider>
     </ThemeProvider>

@@ -2,6 +2,7 @@ import { useEffect, useCallback, useSyncExternalStore } from 'react';
 import { projectsService, type Project } from '@/services/projects';
 import { sprintsService, type Sprint } from '@/services/sprints';
 import { intentsService, type Intent } from '@/services/intents';
+import { loadPersisted, persist } from '@/lib/persistentCache';
 
 const PROJECTS_TTL = 30_000;
 const SPRINTS_TTL = 60_000;
@@ -37,6 +38,7 @@ let projectsFetching = false;
 let projectsError: string | null = null;
 const projectsListeners = new Set<() => void>();
 let projectsVersion = 0;
+let projectsHydrated = false;
 
 const sprintsCache = new Map<string, CacheEntry<Sprint[]>>();
 const sprintsFetching = new Set<string>();
@@ -195,6 +197,13 @@ let projectsInflight: Promise<void> | null = null;
 let projectsQueuedRefetch: Promise<void> | null = null;
 
 function revalidateProjects(force = false): Promise<void> {
+  if (!projectsHydrated) {
+    projectsHydrated = true;
+    const persisted = loadPersisted<ProjectWithSprint[]>('projects');
+    if (persisted && !projectsCache) {
+      projectsCache = persisted;
+    }
+  }
   if (projectsInflight) {
     if (!force) return projectsInflight;
     // Forced refresh (after create/delete/update) while a fetch is in flight:
@@ -222,6 +231,7 @@ function revalidateProjects(force = false): Promise<void> {
       const data = await fetchProjects();
       projectsCache = { data, fetchedAt: Date.now() };
       projectsError = null;
+      persist('projects', projectsCache);
     } catch (err) {
       // Keep stale cache (if any); surface the failure to subscribers.
       projectsError = err instanceof Error ? err.message : 'Failed to load spaces';
@@ -242,6 +252,12 @@ export async function getProjectsWithSprints(): Promise<ProjectWithSprint[]> {
 }
 
 function revalidateSprints(projectId: string, force = false): Promise<void> {
+  if (!sprintsCache.has(projectId)) {
+    const persisted = loadPersisted<Sprint[]>(`sprints:${projectId}`);
+    if (persisted) {
+      sprintsCache.set(projectId, persisted);
+    }
+  }
   const inflight = sprintsInflight.get(projectId);
   if (inflight) {
     if (!force) return inflight;
@@ -265,7 +281,9 @@ function revalidateSprints(projectId: string, force = false): Promise<void> {
   const promise = (async () => {
     try {
       const sprints = await sprintsService.list(projectId);
-      sprintsCache.set(projectId, { data: sprints, fetchedAt: Date.now() });
+      const entry = { data: sprints, fetchedAt: Date.now() };
+      sprintsCache.set(projectId, entry);
+      persist(`sprints:${projectId}`, entry);
       if (projectsCache) {
         const updated = projectsCache.data.map((p) =>
           p.project.id === projectId ? { ...p, latestSprint: latestOf(sprints) } : p,

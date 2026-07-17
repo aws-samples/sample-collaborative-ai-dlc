@@ -8,6 +8,7 @@ import { WorkflowScopeGraph, UnitLaneGraph, type UnitLanesInput } from '@/compon
 import { UsageMetrics } from '@/components/intent/UsageMetrics';
 import { IntentPhaseDiagram } from '@/components/intent/IntentPhaseDiagram';
 import { IntentStageList } from '@/components/intent/IntentStageList';
+import { ScopeBadge } from '@/components/intent/ScopeBadge';
 import { StageDetail } from '@/components/intent/StageDetail';
 import { useProjectCache } from '@/hooks/useProjectsCache';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -327,33 +328,35 @@ export default function IntentObservabilityPage() {
       <div className="space-y-6">
         {/* ── HEADER ─────────────────────────────────────────────────── */}
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3 min-w-0">
+          <div className="flex items-center gap-3 min-w-0 flex-1">
             <button
               onClick={() => navigate(`/space/${projectId}`)}
-              className="text-muted-foreground hover:text-foreground transition-colors"
+              className="text-muted-foreground hover:text-foreground transition-colors shrink-0"
               aria-label="Back to space"
             >
               <ArrowLeft className="h-4 w-4" />
             </button>
-            <h1 className="text-xl font-bold tracking-tight text-foreground truncate max-w-[480px]">
+            <h1 className="text-xl font-bold tracking-tight text-foreground truncate min-w-0">
               {intent.title}
             </h1>
+
+            {intent.scope && <ScopeBadge scope={intent.scope} className="shrink-0" />}
 
             {isActive ? (
               <Badge
                 variant="outline"
-                className="gap-1 text-[10px] bg-agent-running/10 text-agent-running border-agent-running/30"
+                className="gap-1 text-[10px] bg-agent-running/10 text-agent-running border-agent-running/30 shrink-0"
               >
                 <span className="h-1.5 w-1.5 rounded-full bg-agent-running animate-pulse" />
                 Live
               </Badge>
             ) : (
-              <Badge variant="outline" className="text-[10px] text-muted-foreground">
+              <Badge variant="outline" className="text-[10px] text-muted-foreground shrink-0">
                 {humanizeStatus(intent.status)}
               </Badge>
             )}
           </div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 shrink-0">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Intent actions">

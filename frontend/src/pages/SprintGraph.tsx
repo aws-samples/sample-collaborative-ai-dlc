@@ -6,23 +6,37 @@ import { GraphCanvas } from '@/components/graph/GraphCanvas';
 import { Button } from '@/components/ui/button';
 import { Sparkles, ArrowLeft } from 'lucide-react';
 
+interface GraphCacheEntry {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  fetchedAt: number;
+}
+
+const graphCache = new Map<string, GraphCacheEntry>();
+
+/** @internal Test-only — reset module cache between test runs. */
+export function clearGraphCacheForTests() {
+  graphCache.clear();
+}
+
 export default function SprintGraph() {
   const { sprintId, projectId } = useParams<{ projectId: string; sprintId: string }>();
   const { sprint } = useSprint();
   const navigate = useNavigate();
 
-  const [nodes, setNodes] = useState<GraphNode[]>([]);
-  const [edges, setEdges] = useState<GraphEdge[]>([]);
-  const [loading, setLoading] = useState(true);
+  const cached = sprintId ? graphCache.get(sprintId) : null;
+  const [nodes, setNodes] = useState<GraphNode[]>(cached?.nodes ?? []);
+  const [edges, setEdges] = useState<GraphEdge[]>(cached?.edges ?? []);
+  const [loading, setLoading] = useState(!cached);
 
   useEffect(() => {
     if (!sprintId) return;
-    setLoading(true);
     sprintGraphService
       .get(sprintId)
       .then(({ nodes: n, edges: e }) => {
         setNodes(n);
         setEdges(e);
+        graphCache.set(sprintId, { nodes: n, edges: e, fetchedAt: Date.now() });
       })
       .catch(() => {})
       .finally(() => setLoading(false));

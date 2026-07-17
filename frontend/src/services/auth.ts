@@ -8,6 +8,7 @@ import {
   confirmSignIn,
   updateUserAttributes,
 } from 'aws-amplify/auth';
+import { clearPersistedCache } from '@/lib/persistentCache';
 
 // Configure Amplify
 Amplify.configure({
@@ -100,6 +101,7 @@ export const authService = {
 
   async logout(): Promise<void> {
     try {
+      clearPersistedCache();
       await signOut();
     } catch (error) {
       console.error('Logout error:', error);
@@ -109,18 +111,19 @@ export const authService = {
 
   async getCurrentUser(): Promise<User> {
     try {
-      const user = await getCurrentUser();
-      const attributes = await fetchUserAttributes();
-      // Groups ride on the ID token (same token the API receives), so the
-      // frontend's soft-gating always matches the backend's authz decision.
-      let groups: string[] = [];
-      try {
-        const session = await fetchAuthSession();
-        const raw = session.tokens?.idToken?.payload?.['cognito:groups'];
-        if (Array.isArray(raw)) groups = raw.map(String);
-      } catch {
+      // The three Cognito reads are independent — run them in parallel to cut
+      // the auth gate's serial round-trips on every cold page load.
+      const [user, attributes, sessionResult] = await Promise.all([
+        getCurrentUser(),
+        fetchUserAttributes(),
+        // Groups ride on the ID token (same token the API receives), so the
+        // frontend's soft-gating always matches the backend's authz decision.
         // Best-effort: missing groups only hides admin UI; backend still enforces.
-      }
+        fetchAuthSession().catch(() => null),
+      ]);
+      let groups: string[] = [];
+      const raw = sessionResult?.tokens?.idToken?.payload?.['cognito:groups'];
+      if (Array.isArray(raw)) groups = raw.map(String);
       return {
         username: user.username,
         email: attributes.email,
