@@ -5,6 +5,7 @@ import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 
 const NOW = new Date('2026-05-28T00:00:00.000Z');
 const PARTITION = `t-${randomUUID()}`;
+const USER_ID = `u-${randomUUID()}`;
 
 let handler;
 let conn;
@@ -53,9 +54,21 @@ const seedProject = async ({ gitRepo = 'acme/widgets' } = {}) => {
     .property('agent_cli', 'kiro')
     .property('issue_integration_enabled', 'true')
     .property('created_at', NOW.toISOString())
+    .as('p')
+    .addV('User')
+    .property('id', USER_ID)
+    .as('u')
+    .addE('HAS_MEMBER')
+    .from_('p')
+    .to('u')
+    .property('role', 'owner')
     .next();
   return id;
 };
+
+const claims = (sub = USER_ID) => ({
+  requestContext: { authorizer: { claims: { sub } } },
+});
 
 // Seeds a Sprint vertex on the legacy shape (issue_number/issue_url only,
 // no tracker_*) — simulates pre-#194 data that hasn't been migrated yet.
@@ -118,10 +131,11 @@ const seedTrackerSprint = async (projectId, tracker) => {
   return id;
 };
 
-const getSprint = async (sprintId) => {
+const getSprint = async (projectId, sprintId) => {
   const res = await handler({
     httpMethod: 'GET',
-    pathParameters: { sprintId },
+    pathParameters: { projectId, sprintId },
+    ...claims(),
   });
   expect(res.statusCode).toBe(200);
   return JSON.parse(res.body);
@@ -133,7 +147,11 @@ describe('GET /projects/:projectId/sprints (list)', () => {
     const a = await seedLegacySprint(projectId);
     const b = await seedLegacySprint(projectId);
 
-    const res = await handler({ httpMethod: 'GET', pathParameters: { projectId } });
+    const res = await handler({
+      httpMethod: 'GET',
+      pathParameters: { projectId },
+      ...claims(),
+    });
     expect(res.statusCode).toBe(200);
     const list = JSON.parse(res.body);
     expect(list.map((s) => s.id).toSorted()).toEqual([a, b].toSorted());
@@ -144,16 +162,44 @@ describe('GET /projects/:projectId/sprints (list)', () => {
     const otherProjectId = await seedProject();
     await seedLegacySprint(otherProjectId);
 
-    const res = await handler({ httpMethod: 'GET', pathParameters: { projectId } });
+    const res = await handler({
+      httpMethod: 'GET',
+      pathParameters: { projectId },
+      ...claims(),
+    });
     expect(JSON.parse(res.body)).toEqual([]);
+  });
+
+  it('rejects a signed-in non-member', async () => {
+    const projectId = await seedProject();
+    const res = await handler({
+      httpMethod: 'GET',
+      pathParameters: { projectId },
+      ...claims('outsider'),
+    });
+    expect(res.statusCode).toBe(403);
   });
 });
 
 describe('GET /sprints/:id (single)', () => {
   it('returns 404 for an unknown sprint', async () => {
+    const projectId = await seedProject();
     const res = await handler({
       httpMethod: 'GET',
-      pathParameters: { sprintId: 'nope' },
+      pathParameters: { projectId, sprintId: 'nope' },
+      ...claims(),
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('does not accept a sprint from another project', async () => {
+    const projectId = await seedProject();
+    const otherProjectId = await seedProject();
+    const sprintId = await seedLegacySprint(otherProjectId);
+    const res = await handler({
+      httpMethod: 'GET',
+      pathParameters: { projectId, sprintId },
+      ...claims(),
     });
     expect(res.statusCode).toBe(404);
   });
@@ -165,7 +211,7 @@ describe('GET /sprints/:id (single)', () => {
       issueUrl: 'https://github.com/foo/bar/issues/42',
     });
 
-    const fetched = await getSprint(sprintId);
+    const fetched = await getSprint(projectId, sprintId);
     // Legacy data path: tracker is null because the migration hasn't run,
     // but issueNumber/issueUrl render exactly as before #194.
     expect(fetched.tracker).toBeNull();
@@ -184,7 +230,7 @@ describe('GET /sprints/:id (single)', () => {
       resourceUrl: 'https://github.com/octo/repo/issues/7',
     });
 
-    const fetched = await getSprint(sprintId);
+    const fetched = await getSprint(projectId, sprintId);
     expect(fetched.tracker).toEqual({
       provider: 'github-issues',
       instance: 'public',
@@ -208,7 +254,7 @@ describe('GET /sprints/:id (single)', () => {
       resourceUrl: 'https://acme.atlassian.net/browse/PROJ-123',
     });
 
-    const fetched = await getSprint(sprintId);
+    const fetched = await getSprint(projectId, sprintId);
     expect(fetched.tracker).toMatchObject({
       provider: 'jira-cloud',
       externalProjectKey: 'PROJ',

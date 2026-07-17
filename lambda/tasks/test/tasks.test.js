@@ -4,6 +4,7 @@ import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 
 const PARTITION = `t-${randomUUID()}`;
+const USER_ID = `u-${randomUUID()}`;
 
 let handler;
 let conn;
@@ -38,10 +39,40 @@ afterAll(async () => {
 // ---------------------------------------------------------------------------
 
 const seedSprint = async () => {
+  const projectId = randomUUID();
   const sprintId = randomUUID();
-  await g.addV('Sprint').property('id', sprintId).property('name', 'Sprint 1').next();
+  await g.addV('Project').property('id', projectId).next();
+  await g.addV('User').property('id', USER_ID).next();
+  await g
+    .V()
+    .has('Project', 'id', projectId)
+    .as('p')
+    .V()
+    .has('User', 'id', USER_ID)
+    .as('u')
+    .addE('HAS_MEMBER')
+    .from_('p')
+    .to('u')
+    .property('role', 'owner')
+    .next();
+  await g
+    .V()
+    .has('Project', 'id', projectId)
+    .as('p')
+    .addV('Sprint')
+    .property('id', sprintId)
+    .property('name', 'Sprint 1')
+    .as('s')
+    .addE('HAS_SPRINT')
+    .from_('p')
+    .to('s')
+    .next();
   return sprintId;
 };
+
+const claims = (sub = USER_ID) => ({
+  requestContext: { authorizer: { claims: { sub } } },
+});
 
 const seedTask = async (
   sprintId,
@@ -87,6 +118,7 @@ describe('GET /sprints/:sprintId/tasks', () => {
     const res = await handler({
       httpMethod: 'GET',
       pathParameters: { sprintId },
+      ...claims(),
     });
     expect(res.statusCode).toBe(200);
     const tasks = JSON.parse(res.body);
@@ -102,8 +134,19 @@ describe('GET /sprints/:sprintId/tasks', () => {
     const res = await handler({
       httpMethod: 'GET',
       pathParameters: { sprintId },
+      ...claims(),
     });
     expect(JSON.parse(res.body)).toEqual([]);
+  });
+
+  it('rejects a signed-in non-member', async () => {
+    const sprintId = await seedSprint();
+    const res = await handler({
+      httpMethod: 'GET',
+      pathParameters: { sprintId },
+      ...claims('outsider'),
+    });
+    expect(res.statusCode).toBe(403);
   });
 
   it('returns a single task by id with all fields mapped', async () => {
@@ -119,6 +162,7 @@ describe('GET /sprints/:sprintId/tasks', () => {
     const res = await handler({
       httpMethod: 'GET',
       pathParameters: { sprintId, taskId: id },
+      ...claims(),
     });
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toEqual({
@@ -136,6 +180,19 @@ describe('GET /sprints/:sprintId/tasks', () => {
     const res = await handler({
       httpMethod: 'GET',
       pathParameters: { sprintId, taskId: 'nonexistent' },
+      ...claims(),
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('does not accept a task from another sprint', async () => {
+    const sprintId = await seedSprint();
+    const otherSprintId = await seedSprint();
+    const taskId = await seedTask(otherSprintId);
+    const res = await handler({
+      httpMethod: 'GET',
+      pathParameters: { sprintId, taskId },
+      ...claims(),
     });
     expect(res.statusCode).toBe(404);
   });

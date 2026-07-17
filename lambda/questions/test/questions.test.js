@@ -5,6 +5,7 @@ import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 
 // File-level partition: every test in this file shares it.
 const PARTITION = `t-${randomUUID()}`;
+const USER_ID = `u-${randomUUID()}`;
 
 let handler;
 let close;
@@ -52,7 +53,34 @@ const STRUCTURED_QUESTIONS = [{ text: 'Which database?', type: 'single', options
 
 const ANSWER = { answers: [{ selectedOptions: [0], freeText: 'PostgreSQL' }] };
 
-const addSprint = async (sprintId) => g.addV('Sprint').property('id', sprintId).next();
+const addSprint = async (sprintId) => {
+  const projectId = `p-${randomUUID()}`;
+  await g.addV('Project').property('id', projectId).next();
+  await g.addV('User').property('id', USER_ID).next();
+  await g
+    .V()
+    .has('Project', 'id', projectId)
+    .as('p')
+    .V()
+    .has('User', 'id', USER_ID)
+    .as('u')
+    .addE('HAS_MEMBER')
+    .from_('p')
+    .to('u')
+    .property('role', 'owner')
+    .next();
+  await g
+    .V()
+    .has('Project', 'id', projectId)
+    .as('p')
+    .addV('Sprint')
+    .property('id', sprintId)
+    .as('s')
+    .addE('HAS_SPRINT')
+    .from_('p')
+    .to('s')
+    .next();
+};
 
 const addQuestion = async (sprintId, id, { structuredAnswer = '', answeredBy = '' } = {}) =>
   g
@@ -74,8 +102,12 @@ const addQuestion = async (sprintId, id, { structuredAnswer = '', answeredBy = '
     .to('q')
     .next();
 
-const get = (sprintId, questionId) =>
-  handler({ httpMethod: 'GET', pathParameters: { sprintId, questionId } });
+const get = (sprintId, questionId, sub = USER_ID) =>
+  handler({
+    httpMethod: 'GET',
+    pathParameters: { sprintId, questionId },
+    requestContext: { authorizer: { claims: { sub } } },
+  });
 
 describe('OPTIONS', () => {
   it('short-circuits with 200', async () => {
@@ -116,6 +148,13 @@ describe('GET /sprints/:sprintId/questions', () => {
 
     const res = await get(sprintId);
     expect(JSON.parse(res.body)).toEqual([]);
+  });
+
+  it('rejects a signed-in non-member', async () => {
+    const sprintId = `s-${randomUUID()}`;
+    await addSprint(sprintId);
+    const res = await get(sprintId, undefined, 'outsider');
+    expect(res.statusCode).toBe(403);
   });
 
   it('returns a single answered question with the parsed structuredAnswer', async () => {

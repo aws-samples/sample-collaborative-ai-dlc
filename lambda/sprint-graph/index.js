@@ -3,6 +3,7 @@ import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { buildResponse } from '../shared/response.js';
+import { authorizeLegacySprintRead } from '../shared/legacy-authz.js';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -38,6 +39,8 @@ export const handler = async (event) => {
       );
     }
     const { sprintId } = event.pathParameters || {};
+    const auth = await authorizeLegacySprintRead(g, event, sprintId);
+    if (auth.denied) return res(auth.statusCode, { error: auth.error });
 
     // Get all vertices contained in this sprint (CONTAINS + HAS_REVIEW + HAS_PR
     // + HAS_AGENT_RUN + HAS_DISCUSSION). Discussion threads are shown (linked

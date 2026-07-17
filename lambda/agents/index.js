@@ -23,6 +23,7 @@ import {
   InvokeAgentRuntimeCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
 import gremlin from 'gremlin';
+import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { buildResponse } from '../shared/response.js';
@@ -34,6 +35,11 @@ import { listMcpSecrets, putMcpSecrets } from '../shared/mcp-secrets-store.js';
 import { fetchMembershipRole } from '../shared/trackers.js';
 import { listClaudeModels } from '../shared/bedrock-models.js';
 import { refreshPricing } from '../shared/model-pricing.js';
+import {
+  authorizeLegacyProjectRead,
+  authorizeLegacySprintRead,
+  fetchProjectIdForExecution,
+} from '../shared/legacy-authz.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({ region: process.env.AWS_REGION || 'us-east-1' });
@@ -140,23 +146,65 @@ const fetchGlobalCustomMcpServers = async () => {
 
 const getConnection = async () => {
   const host = process.env.NEPTUNE_ENDPOINT;
-  const port = '8182';
+  const port = process.env.GREMLIN_PORT || '8182';
+  const protocol = process.env.GREMLIN_PROTOCOL || 'wss';
+  if (protocol !== 'wss') {
+    return new DriverRemoteConnection(`${protocol}://${host}:${port}/gremlin`);
+  }
   const region = process.env.AWS_REGION || 'us-east-1';
   const credentials = await fromNodeProviderChain()();
   credentials.region = region;
-  const connInfo = getUrlAndHeaders(host, port, credentials, '/gremlin', 'wss');
+  const connInfo = getUrlAndHeaders(host, port, credentials, '/gremlin', protocol);
   return new DriverRemoteConnection(connInfo.url, { headers: connInfo.headers });
 };
 
 async function withNeptune(fn) {
   const conn = await getConnection();
   try {
-    const g = traversal().withRemote(conn);
+    let g = traversal().withRemote(conn);
+    if (process.env.GREMLIN_PARTITION) {
+      g = g.withStrategies(
+        new PartitionStrategy({
+          partitionKey: '_partition',
+          writePartition: process.env.GREMLIN_PARTITION,
+          readPartitions: [process.env.GREMLIN_PARTITION],
+        }),
+      );
+    }
     return await fn(g);
   } finally {
     await conn.close();
   }
 }
+
+const authorizeExecutionRead = async (event, storedProjectId, executionIds) =>
+  withNeptune(async (g) => {
+    const projectId =
+      storedProjectId || (await fetchProjectIdForExecution(g, executionIds.filter(Boolean)));
+    if (!projectId) {
+      return { denied: true, statusCode: 404, error: 'Agent execution not found' };
+    }
+    return authorizeLegacyProjectRead(g, event, projectId);
+  });
+
+const PUBLIC_AGENT_QUESTION_FIELDS = [
+  'questionId',
+  'agentTaskId',
+  'questions',
+  'status',
+  'structuredAnswer',
+  'answeredBy',
+  'answeredByName',
+  'answeredAt',
+  'createdAt',
+];
+
+const publicAgentQuestion = (item) =>
+  Object.fromEntries(
+    PUBLIC_AGENT_QUESTION_FIELDS.filter((field) =>
+      Object.prototype.hasOwnProperty.call(item, field),
+    ).map((field) => [field, item[field]]),
+  );
 
 function modelPricingPath() {
   const prefix = process.env.AGENT_SETTINGS_SSM_PREFIX || '';
@@ -720,8 +768,12 @@ export const handler = async (event) => {
       const sprintId = event.queryStringParameters?.sprintId;
       if (!sprintId) return response(400, { error: 'sprintId query parameter required' });
       return await withNeptune(async (g) => {
+        const auth = await authorizeLegacySprintRead(g, event, sprintId, projectId);
+        if (auth.denied) return response(auth.statusCode, { error: auth.error });
         const tasks = await g
           .V()
+          .has('Project', 'id', projectId)
+          .out('HAS_SPRINT')
           .has('Sprint', 'id', sprintId)
           .out('CONTAINS')
           .hasLabel('Task')
@@ -756,11 +808,18 @@ export const handler = async (event) => {
       const sprintId = event.queryStringParameters?.sprintId;
 
       return await withNeptune(async (g) => {
-        // Use Sprint vertex if sprintId provided, otherwise fallback to Project
-        const vertexLabel = sprintId ? 'Sprint' : 'Project';
-        const vertexId = sprintId || projectId;
+        const auth = sprintId
+          ? await authorizeLegacySprintRead(g, event, sprintId, projectId)
+          : await authorizeLegacyProjectRead(g, event, projectId);
+        if (auth.denied) return response(auth.statusCode, { error: auth.error });
 
-        const result = await g.V().has(vertexLabel, 'id', vertexId).valueMap().next();
+        // Use Sprint vertex if sprintId provided, otherwise fallback to Project.
+        const scopedVertex = () =>
+          sprintId
+            ? g.V().has('Project', 'id', projectId).out('HAS_SPRINT').has('Sprint', 'id', sprintId)
+            : g.V().has('Project', 'id', projectId);
+
+        const result = await scopedVertex().valueMap().next();
         const v = result.value;
         if (!v) return response(200, { executionArn: null, executionId: null, status: null });
 
@@ -773,15 +832,15 @@ export const handler = async (event) => {
         // Helper to write terminal status to Sprint and AgentRun nodes
         const writeTerminalStatus = async (statusStr, execIdForRun) => {
           const completedAt = new Date().toISOString();
-          await g
-            .V()
-            .has(vertexLabel, 'id', vertexId)
+          await scopedVertex()
             .property(cardinality.single, 'current_agent_status', statusStr)
             .property(cardinality.single, 'agent_completed_at', completedAt)
             .next();
           if (execIdForRun) {
-            await g
-              .V()
+            const runs = sprintId
+              ? scopedVertex().out('HAS_AGENT_RUN')
+              : scopedVertex().out('HAS_SPRINT').out('HAS_AGENT_RUN');
+            await runs
               .hasLabel('AgentRun')
               .has('execution_id', execIdForRun)
               .property(cardinality.single, 'status', statusStr)
@@ -838,7 +897,16 @@ export const handler = async (event) => {
           ExpressionAttributeValues: { ':taskId': taskId },
         }),
       );
-      return response(200, { questions: result.Items });
+      const projectIds = [
+        ...new Set((result.Items || []).map((item) => item.projectId).filter(Boolean)),
+      ];
+      if (projectIds.length > 1) {
+        console.error(`[agents] Questions for execution ${taskId} span multiple projects`);
+        return response(500, { error: 'Internal server error' });
+      }
+      const auth = await authorizeExecutionRead(event, projectIds[0], [taskId]);
+      if (auth.denied) return response(auth.statusCode, { error: auth.error });
+      return response(200, { questions: (result.Items || []).map(publicAgentQuestion) });
     }
 
     // GET /agents/{taskId}
@@ -866,6 +934,12 @@ export const handler = async (event) => {
           );
         }
         const outputItem = outputQuery.Items?.[0];
+        const requestedExecutionId = event.queryStringParameters?.executionId;
+        const auth = await authorizeExecutionRead(event, outputItem?.projectId, [
+          taskId,
+          requestedExecutionId,
+        ]);
+        if (auth.denied) return response(auth.statusCode, { error: auth.error });
         if (outputItem) {
           const s = outputItem.status;
           const mapped = s === 'completed' ? 'SUCCEEDED' : s === 'failed' ? 'FAILED' : 'FAILED';
@@ -876,6 +950,12 @@ export const handler = async (event) => {
             errorMessage: outputItem.errorMessage,
           });
         }
+      } else {
+        const auth = await authorizeExecutionRead(event, null, [
+          taskId,
+          event.queryStringParameters?.executionId,
+        ]);
+        if (auth.denied) return response(auth.statusCode, { error: auth.error });
       }
       // No recorded output — the run predates output tracking or was lost with
       // the retired engine. Nothing can be running anymore.

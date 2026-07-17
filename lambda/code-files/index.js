@@ -2,6 +2,7 @@ import gremlin from 'gremlin';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { buildResponse } from '../shared/response.js';
+import { authorizeLegacySprintRead } from '../shared/legacy-authz.js';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -38,8 +39,16 @@ export const handler = async (event) => {
     // the v1 execution engine, so only the GET routes remain.
     switch (httpMethod) {
       case 'GET': {
+        const auth = await authorizeLegacySprintRead(g, event, sprintId);
+        if (auth.denied) return res(auth.statusCode, { error: auth.error });
         if (codeFileId) {
-          const r = await g.V().has('CodeFile', 'id', codeFileId).valueMap().next();
+          const r = await g
+            .V()
+            .has('Sprint', 'id', sprintId)
+            .out('CONTAINS')
+            .has('CodeFile', 'id', codeFileId)
+            .valueMap()
+            .next();
           if (!r.value) return res(404, { error: 'Code file not found' });
           return res(200, mapCodeFile(r.value));
         }
