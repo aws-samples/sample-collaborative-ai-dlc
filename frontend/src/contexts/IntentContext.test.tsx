@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, act } from '@testing-library/react';
+import { render, screen, act, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 
 // Capture the realtime callback so tests can push events into the provider.
@@ -143,7 +143,9 @@ describe('IntentContext', () => {
       },
     });
     renderProvider();
-    expect(await screen.findByTestId('rows')).toHaveTextContent('stage-a:PENDING,stage-c:RUNNING');
+    await waitFor(() =>
+      expect(screen.getByTestId('rows')).toHaveTextContent('stage-a:PENDING,stage-c:RUNNING'),
+    );
   });
 
   it('accumulates agent.question events by humanTaskId (upsert, never replace)', async () => {
@@ -365,7 +367,9 @@ describe('IntentContext', () => {
       graph: { nodes: [{ stageId: 'cg', phasePath: 'construction', order: 0 }], edges: [] },
     });
     renderProvider();
-    expect(await screen.findByTestId('rows')).toHaveTextContent('cg:SUCCEEDED,cg:RUNNING');
+    await waitFor(() =>
+      expect(screen.getByTestId('rows')).toHaveTextContent('cg:SUCCEEDED,cg:RUNNING'),
+    );
   });
 
   it('currentPhasePath maps a phaseId to its workflow path', async () => {
@@ -377,13 +381,15 @@ describe('IntentContext', () => {
       ],
     });
     renderProvider();
-    expect(await screen.findByTestId('phase-path')).toHaveTextContent('01');
+    await waitFor(() => expect(screen.getByTestId('phase-path')).toHaveTextContent('01'));
   });
 
   it('currentPhasePath falls back to raw value when workflowPhases lacks the id', async () => {
     get.mockResolvedValue(detail({ currentPhase: 'unknown-phase' }));
     workflowGet.mockResolvedValue({ phases: [] });
     renderProvider();
-    expect(await screen.findByTestId('phase-path')).toHaveTextContent('unknown-phase');
+    await waitFor(() =>
+      expect(screen.getByTestId('phase-path')).toHaveTextContent('unknown-phase'),
+    );
   });
 });
