@@ -22,6 +22,12 @@ locals {
   # Neptune IAM resource ARN (scoped to the specific cluster only)
   neptune_resource_arn = "arn:${local.partition}:neptune-db:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:${var.neptune_cluster_resource_id}/*"
 
+  # Both forms are needed because durable invocations target the `live` alias.
+  v2_orchestrator_function_arns = [
+    "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}",
+    "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}:*",
+  ]
+
   # Reusable assume-role policy for Lambda services
   lambda_assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -432,14 +438,14 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
       {
         Effect   = "Allow"
         Action   = ["bedrock-agentcore:InvokeAgentRuntime"]
-        Resource = var.agentcore_runtime_arn != "" ? [var.agentcore_runtime_arn, "${var.agentcore_runtime_arn}/*"] : ["*"]
+        Resource = [var.agentcore_runtime_arn, "${var.agentcore_runtime_arn}/*"]
       }
     ]
   })
 }
 
 # -----------------------------------------------------------------------------
-# Role 6: neptune-artifacts (2 Lambdas — projects, tasks)
+# Role 6: neptune-artifacts (Projects Lambda)
 # Neptune CRUD + S3 presign for project custom agent rules (custom-rules/
 # prefix): the projects lambda mints presigned PUT/GET URLs so the browser
 # uploads/downloads the .md bodies directly.
@@ -536,9 +542,8 @@ resource "aws_iam_role_policy" "neptune_artifacts" {
 # hardened deletion (shared/intent-deletion.js). That needs, beyond Neptune:
 # drain each EXEC#<id> partition in the v2 process table (incl. METRIC# rows),
 # remove intent-scoped Yjs docs, stop live AgentCore sessions, and wake parked
-# durable callbacks with a cancel sentinel. Scoped to the projects lambda's role
-# (shared with the read-only tasks lambda — an unused over-grant there, but the
-# cascade only fires from the projects DELETE path).
+# durable callbacks with a cancel sentinel. The role is assumed only by the
+# Projects Lambda; Tasks uses its own Neptune-only role below.
 resource "aws_iam_role_policy" "projects_intent_cascade" {
   name = "projects-intent-cascade"
   role = aws_iam_role.neptune_artifacts.id
@@ -570,20 +575,46 @@ resource "aws_iam_role_policy" "projects_intent_cascade" {
       {
         # Wake a parked run's suspended durable callback with a cancel sentinel
         # so nothing resumes into a deleted partition.
-        Effect = "Allow"
-        Action = ["lambda:SendDurableExecutionCallbackSuccess"]
-        Resource = [
-          "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}",
-          "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}:*",
-        ]
+        Effect   = "Allow"
+        Action   = ["lambda:SendDurableExecutionCallbackSuccess"]
+        Resource = local.v2_orchestrator_function_arns
       },
       {
         # Stop a deleted intent's live AgentCore session(s).
         Effect   = "Allow"
         Action   = ["bedrock-agentcore:StopRuntimeSession"]
-        Resource = var.agentcore_runtime_arn != "" ? [var.agentcore_runtime_arn, "${var.agentcore_runtime_arn}/*"] : ["*"]
+        Resource = [var.agentcore_runtime_arn, "${var.agentcore_runtime_arn}/*"]
       },
     ]
+  })
+}
+
+# -----------------------------------------------------------------------------
+# Role 6b: neptune-tasks (Tasks Lambda)
+# Tasks only need direct Neptune access. Keeping this separate prevents a task
+# handler from inheriting project deletion, S3, SSM, or AgentCore permissions.
+# -----------------------------------------------------------------------------
+resource "aws_iam_role" "neptune_tasks" {
+  name               = "${var.project_name}-neptune-tasks-${var.environment}"
+  assume_role_policy = local.lambda_assume_role_policy
+}
+
+resource "aws_iam_role_policy_attachment" "neptune_tasks_basic" {
+  role       = aws_iam_role.neptune_tasks.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "neptune_tasks_vpc" {
+  role       = aws_iam_role.neptune_tasks.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+resource "aws_iam_role_policy" "neptune_tasks" {
+  name = "neptune-access"
+  role = aws_iam_role.neptune_tasks.id
+  policy = jsonencode({
+    Version   = "2012-10-17"
+    Statement = [local.neptune_statement]
   })
 }
 
@@ -874,7 +905,7 @@ module "tasks_lambda" {
   ]
 
   create_role = false
-  lambda_role = aws_iam_role.neptune_artifacts.arn
+  lambda_role = aws_iam_role.neptune_tasks.arn
 
   vpc_subnet_ids         = var.private_subnet_ids
   vpc_security_group_ids = [aws_security_group.lambda.id]
@@ -1321,7 +1352,7 @@ resource "aws_iam_role_policy" "discussions" {
       {
         Effect   = "Allow"
         Action   = ["bedrock-agentcore:InvokeAgentRuntime"]
-        Resource = var.agentcore_runtime_arn != "" ? [var.agentcore_runtime_arn, "${var.agentcore_runtime_arn}/*"] : ["*"]
+        Resource = [var.agentcore_runtime_arn, "${var.agentcore_runtime_arn}/*"]
       }
     ]
   })
@@ -1713,12 +1744,7 @@ resource "aws_iam_role_policy" "intents" {
           "lambda:InvokeFunction",
           "lambda:SendDurableExecutionCallbackSuccess",
         ]
-        # Both the bare function ARN and its qualified (alias/version) forms —
-        # durable invokes target the `live` alias, which is a qualified ARN.
-        Resource = [
-          "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}",
-          "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}:*",
-        ]
+        Resource = local.v2_orchestrator_function_arns
       },
       {
         # Watchdog repair: verify stale local rows against the durable execution
@@ -1726,7 +1752,7 @@ resource "aws_iam_role_policy" "intents" {
         # endpoint also stops an orphaned durable run before relaunching it.
         Effect   = "Allow"
         Action   = ["lambda:GetDurableExecution", "lambda:ListDurableExecutionsByFunction", "lambda:StopDurableExecution"]
-        Resource = "*"
+        Resource = local.v2_orchestrator_function_arns
       },
       {
         # Compose report uploads: presign the PUT (report-mode composer input)
@@ -1744,7 +1770,7 @@ resource "aws_iam_role_policy" "intents" {
         # (zombie-session field incident) and a cancelled run frees compute.
         Effect   = "Allow"
         Action   = ["bedrock-agentcore:InvokeAgentRuntime", "bedrock-agentcore:StopRuntimeSession"]
-        Resource = var.agentcore_runtime_arn != "" ? [var.agentcore_runtime_arn, "${var.agentcore_runtime_arn}/*"] : ["*"]
+        Resource = [var.agentcore_runtime_arn, "${var.agentcore_runtime_arn}/*"]
       },
       {
         # Authenticated unit-review feedback: refresh the starter's provider
@@ -1885,7 +1911,7 @@ resource "aws_iam_role_policy" "v2_orchestrator" {
         # Durable execution: checkpoint + replay state.
         Effect   = "Allow"
         Action   = ["lambda:CheckpointDurableExecution", "lambda:GetDurableExecutionState"]
-        Resource = "*"
+        Resource = local.v2_orchestrator_function_arns
       },
       {
         # Invoke the AgentCore stage-executor runtime (init-ws / run-stage) and
