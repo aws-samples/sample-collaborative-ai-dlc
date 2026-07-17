@@ -46,11 +46,12 @@ describe('git-providers registry', () => {
   it('isKnownProvider treats undefined as the default (github)', () => {
     expect(isKnownProvider(undefined)).toBe(true);
     expect(isKnownProvider('gitlab')).toBe(true);
-    expect(isKnownProvider('bitbucket')).toBe(false);
+    expect(isKnownProvider('bitbucket')).toBe(true);
+    expect(isKnownProvider('nope')).toBe(false);
   });
 
   it('throws ProviderError for an unknown provider', () => {
-    expect(() => getProvider('bitbucket')).toThrow(ProviderError);
+    expect(() => getProvider('nope')).toThrow(ProviderError);
   });
 });
 
