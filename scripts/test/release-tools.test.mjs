@@ -442,7 +442,7 @@ test('installer creates permanent administrators with v1 and v2 roles', () => {
   const v2 = run('bash', [installer, 'install', '--version', '2.0.0'], { env: v2Env });
   assert.equal(v2.status, 0, v2.stderr);
   assert.match(v2.stdout, /Application URL:\s+https:\/\/example\.invalid/);
-  const v2Aws = execFileSync('cat', [v2Env.AIDLC_AWS_LOG], { encoding: 'utf8' });
+  const v2Aws = readFileSync(v2Env.AIDLC_AWS_LOG, 'utf8');
   assert.match(v2Aws, /admin-create-user/);
   assert.match(v2Aws, /admin-set-user-password.*--permanent/);
   assert.match(
