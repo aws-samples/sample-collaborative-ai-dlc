@@ -79,10 +79,10 @@ Bitbucket Provider Integration Test Harness
 PREREQUISITES:
 1. Create a test repository in your Bitbucket workspace
 2. Generate a repository access token with scopes:
-   - repositories
-   - repositories:write 
-   - pullrequests
-   - pullrequests:write
+   - repository
+   - repository:write
+   - pullrequest
+   - pullrequest:write
 
 REQUIRED ENVIRONMENT VARIABLES:
 - BITBUCKET_ACCESS_TOKEN: Your Bitbucket repository access token

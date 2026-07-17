@@ -81,7 +81,7 @@ const bbFetch = async (ctx, url, options = {}) => {
 const oauth = {
   secretEnvName: 'BITBUCKET_OAUTH_SECRET_NAME',
   redirectUriEnvName: 'BITBUCKET_REDIRECT_URI',
-  scopes: 'account repositories repositories:write pullrequests pullrequests:write',
+  scopes: 'account repository repository:write pullrequest pullrequest:write',
 
   buildAuthorizeUrl({ clientId, redirectUri, state }) {
     return `https://bitbucket.org/site/oauth2/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(
@@ -173,11 +173,12 @@ const mapRepo = (r) => ({
 // Bitbucket uses paginated responses with a 'next' field for continuation.
 //
 // NOTE (CHANGE-2770): The cross-workspace `GET /2.0/repositories?role=member`
-// endpoint was deprecated and removed by Atlassian (removal 2026-02-27). There
-// is no drop-in cross-workspace replacement, so repositories are enumerated via
-// the supported two-step, workspace-scoped flow:
-//   1. GET /2.0/user/permissions/workspaces  -> the caller's workspaces
-//   2. GET /2.0/repositories/{workspace}?role=member  -> repos per workspace
+// endpoint AND `GET /2.0/user/permissions/workspaces` were both removed by
+// Atlassian under CHANGE-2770 (removal 2026-02-27). Per Atlassian engineering,
+// the ONLY supported cross-workspace endpoint going forward is
+// `GET /2.0/user/workspaces`. Repositories are therefore enumerated via:
+//   1. GET /2.0/user/workspaces                        -> the caller's workspaces
+//   2. GET /2.0/repositories/{workspace}?role=member   -> repos per workspace
 // Results are aggregated across all workspaces.
 //
 // A repository-scoped access token CANNOT enumerate workspaces (step 1 returns
@@ -186,16 +187,22 @@ const mapRepo = (r) => ({
 // work with a repository-scoped token.
 const listRepos = async (ctx) => {
   // Step 1: enumerate the caller's workspaces.
+  //
+  // CHANGE-2770 removed BOTH the cross-workspace `GET /2.0/repositories?role=member`
+  // AND the `GET /2.0/user/permissions/workspaces` endpoint. Per Atlassian
+  // engineering (community post 3183815, 2026-01-29), the ONLY supported
+  // cross-workspace endpoint going forward is `GET /2.0/user/workspaces`.
+  // Its values[] are workspace objects directly (slug at top level), unlike the
+  // old permissions endpoint which nested them under `.workspace.slug`.
   const workspaces = [];
-  let wsUrl = `${API_BASE}/user/permissions/workspaces?pagelen=100`;
+  let wsUrl = `${API_BASE}/user/workspaces?pagelen=100`;
   while (wsUrl) {
     const res = await bbFetch(ctx, wsUrl);
-    // A repository- or workspace-scoped token cannot query cross-workspace
-    // endpoints: 401/403 (not authorized) or 410 Gone (CHANGE-2770 blocks the
-    // cross-workspace call for this authentication mechanism).
-    if (res.status === 401 || res.status === 403 || res.status === 410) {
+    // A repository-scoped token cannot enumerate workspaces (401/403). Surface a
+    // clear, actionable error; per-repo operations still work on such a token.
+    if (res.status === 401 || res.status === 403) {
       throw new ProviderError(
-        res.status === 410 ? 400 : res.status,
+        res.status,
         'Cannot list Bitbucket repositories: this access token cannot enumerate ' +
           'workspaces. listRepos requires a workspace- or account-scoped token ' +
           '(or OAuth). Repository-scoped tokens can still use per-repo operations ' +
@@ -207,7 +214,9 @@ const listRepos = async (ctx) => {
       throw new ProviderError(400, data.error?.message || 'Failed to list workspaces');
     }
     for (const item of data.values) {
-      const slug = item.workspace?.slug;
+      // GET /2.0/user/workspaces returns workspace objects directly; slug is at
+      // the top level (older permissions endpoint nested it under .workspace).
+      const slug = item.slug || item.workspace?.slug;
       if (slug) workspaces.push(slug);
     }
     wsUrl = data.next; // Bitbucket pagination uses 'next' field
@@ -448,8 +457,13 @@ const listConstructionTaskRefs = async (ctx, repoId, branch) => {
 const isBranchMergedInto = async (ctx, repoId, sourceBranch, targetBranch) => {
   const { workspace, repo_slug } = splitWorkspaceRepo(repoId);
 
-  // Bitbucket doesn't have a direct compare endpoint like GitHub,
-  // so we'll check if the source branch's head commit exists in target branch's history
+  // A task branch counts as "merged into" the sprint branch when its HEAD commit
+  // is an ANCESTOR of the sprint branch — NOT only when the two HEADs are equal.
+  // After merging a task branch, the sprint branch HEAD advances (merge commit or
+  // further task merges), so the HEADs differ even though the task branch is fully
+  // contained. The old HEAD-equality check therefore reported freshly-merged
+  // branches as "not merged" and blocked PR creation. We instead walk the sprint
+  // branch's commit history and check whether the task branch HEAD appears in it.
   try {
     const sourceRes = await bbFetch(
       ctx,
@@ -479,8 +493,33 @@ const isBranchMergedInto = async (ctx, repoId, sourceBranch, targetBranch) => {
       return true;
     }
 
-    // For a more thorough check, we'd need to traverse the commit history,
-    // but for simplicity, we'll assume branches with different HEADs are unmerged
+    // Ancestry check: is sourceCommit reachable from the target branch HEAD?
+    // Bitbucket's commits endpoint lists commits reachable from a revision,
+    // newest first, paginated. A just-merged task branch HEAD sits near the top
+    // of the sprint branch history, so we find it within a few pages. Cap the
+    // walk to bound cost on very long histories.
+    const MAX_PAGES = 10; // up to ~1000 commits at pagelen=100
+    let url =
+      `${API_BASE}/repositories/${workspace}/${repo_slug}/commits/` +
+      `${encodeURIComponent(targetBranch)}?pagelen=100`;
+    for (let page = 0; page < MAX_PAGES && url; page++) {
+      const res = await bbFetch(ctx, url);
+      if (!res.ok) {
+        console.error(
+          `[bitbucket:isBranchMergedInto] commits walk failed (status ${res.status}) for ${targetBranch}`,
+        );
+        return false;
+      }
+      const data = await res.json().catch(() => ({}));
+      if (!Array.isArray(data.values)) return false;
+      for (const commit of data.values) {
+        if (commit.hash === sourceCommit || commit.hash?.startsWith(sourceCommit)) {
+          return true; // sourceCommit is an ancestor of targetBranch → merged
+        }
+      }
+      url = data.next; // Bitbucket pagination
+    }
+    // Not found within the scanned window → treat as unmerged.
     return false;
   } catch (err) {
     console.error(`Failed to compare ${sourceBranch} against ${targetBranch}:`, err.message);
