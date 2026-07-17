@@ -3765,8 +3765,8 @@ export const handler = async (event) => {
     }
 
     return response(405, { error: 'Method not allowed' });
-  } catch (err) {
-    console.error('intents handler error:', err?.name || 'error');
+  } catch {
+    console.error('intents handler error');
     return response(500, { error: 'Internal server error' });
   } finally {
     if (conn) {
