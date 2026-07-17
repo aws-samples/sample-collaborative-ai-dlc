@@ -472,15 +472,14 @@ test('installer creates permanent administrators with v1 and v2 roles', () => {
   upgradeEnv.AIDLC_REGION = 'eu-central-1';
   const v1 = run('bash', [installer, 'install', '--version', '1.1.0'], { env: upgradeEnv });
   assert.equal(v1.status, 0, v1.stderr);
-  let upgradeAws = execFileSync('cat', [upgradeEnv.AIDLC_AWS_LOG], { encoding: 'utf8' });
   let upgradeAws = readFileSync(upgradeEnv.AIDLC_AWS_LOG, 'utf8');
 
   writeFileSync(upgradeEnv.AIDLC_AWS_LOG, '');
   const update = run('bash', [installer, 'update', '--version', '2.0.0'], { env: upgradeEnv });
   assert.equal(update.status, 0, update.stderr);
   assert.match(update.stdout, /Application URL:\s+https:\/\/example\.invalid/);
-  upgradeAws = execFileSync('cat', [upgradeEnv.AIDLC_AWS_LOG], { encoding: 'utf8' });
   upgradeAws = readFileSync(upgradeEnv.AIDLC_AWS_LOG, 'utf8');
+  assert.match(
     upgradeAws,
     /admin-add-user-to-group.*--group-name platform-admin.*--region eu-central-1/,
   );
@@ -503,7 +502,6 @@ test('installer creates permanent administrators with v1 and v2 roles', () => {
     },
   });
   assert.equal(ambientOverride.status, 0, ambientOverride.stderr);
-  upgradeAws = execFileSync('cat', [upgradeEnv.AIDLC_AWS_LOG], { encoding: 'utf8' });
   upgradeAws = readFileSync(upgradeEnv.AIDLC_AWS_LOG, 'utf8');
   assert.match(upgradeAws, /--region eu-central-1/);
 });

@@ -6,7 +6,6 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const semverNumericIdentifier = /^(?:0|[1-9]\d*)$/;
 const semverCore = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
 const semverBuildIdentifier = /^[0-9A-Za-z-]+$/;
 const semverPrereleaseIdentifier = /^(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)$/;
@@ -62,7 +61,7 @@ const validate = (expectedVersion, flags) => {
   const lock = readJson(join(root, 'package-lock.json'));
   const version = expectedVersion || pkg.version;
 
-  if (!strictSemver.test(version || ''))
+  if (!isStrictSemver(version || ''))
     errors.push(`Invalid strict SemVer: ${version || '(missing)'}`);
   if (pkg.version !== version) {
     errors.push(`package.json version ${pkg.version} does not match expected ${version}`);
