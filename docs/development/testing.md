@@ -99,18 +99,18 @@ The examples assume the corresponding key was already exported.
 
 ### Configuration
 
-| Variable                   | Default                          | Purpose                                           |
-| -------------------------- | -------------------------------- | ------------------------------------------------- |
-| `BEDROCK_API_KEY`          | none                             | Bedrock authentication for Claude and OpenCode    |
-| `AWS_BEARER_TOKEN_BEDROCK` | none                             | Alias used when `BEDROCK_API_KEY` is absent       |
-| `KIRO_API_KEY`             | none                             | Kiro authentication                               |
-| `AWS_REGION`               | `us-east-1`                      | Bedrock region                                    |
-| `BEDROCK_MODEL`            | `us.anthropic.claude-sonnet-4-6` | Bare Bedrock model or inference-profile ID        |
-| `KIRO_MODEL`               | `auto`                           | Kiro model ID                                     |
-| `E2E_CLIS`                 | `claude,kiro,opencode`           | CLIs to run, in execution order                   |
-| `AGENTCORE_IMAGE`          | none                             | Existing local ARM64 image; skips the image build |
-| `KEEP_E2E`                 | `0`                              | Set to `1` to retain resources after a failed run |
-| `E2E_OUTPUT_DIR`           | per-run path under `test/e2e/artifacts/agent-output` | Normalized output reports |
+| Variable                   | Default                                              | Purpose                                           |
+| -------------------------- | ---------------------------------------------------- | ------------------------------------------------- |
+| `BEDROCK_API_KEY`          | none                                                 | Bedrock authentication for Claude and OpenCode    |
+| `AWS_BEARER_TOKEN_BEDROCK` | none                                                 | Alias used when `BEDROCK_API_KEY` is absent       |
+| `KIRO_API_KEY`             | none                                                 | Kiro authentication                               |
+| `AWS_REGION`               | `us-east-1`                                          | Bedrock region                                    |
+| `BEDROCK_MODEL`            | `us.anthropic.claude-sonnet-4-6`                     | Bare Bedrock model or inference-profile ID        |
+| `KIRO_MODEL`               | `auto`                                               | Kiro model ID                                     |
+| `E2E_CLIS`                 | `claude,kiro,opencode`                               | CLIs to run, in execution order                   |
+| `AGENTCORE_IMAGE`          | none                                                 | Existing local ARM64 image; skips the image build |
+| `KEEP_E2E`                 | `0`                                                  | Set to `1` to retain resources after a failed run |
+| `E2E_OUTPUT_DIR`           | per-run path under `test/e2e/artifacts/agent-output` | Normalized output reports                         |
 
 Do not prefix `BEDROCK_MODEL` with `amazon-bedrock/`. The harness adds that
 provider prefix for OpenCode and passes the bare value to Claude.
