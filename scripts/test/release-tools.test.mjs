@@ -317,10 +317,9 @@ test('installer supports fresh install, v1 adoption, v1-to-v2 update, and recove
   assert.equal(fresh.status, 0, fresh.stderr);
   const freshCurrent = readlinkSync(join(freshEnv.XDG_DATA_HOME, 'collaborative-ai-dlc/current'));
   assert.match(freshCurrent, /releases\/v2\.0\.0$/);
-  const configText = execFileSync(
-    'cat',
-    [join(freshEnv.XDG_CONFIG_HOME, 'collaborative-ai-dlc/install.conf')],
-    { encoding: 'utf8' },
+  const configText = readFileSync(
+    join(freshEnv.XDG_CONFIG_HOME, 'collaborative-ai-dlc/install.conf'),
+    'utf8',
   );
   assert.doesNotMatch(configText, /NotStored123/);
 
