@@ -6,8 +6,34 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const strictSemver =
-  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+const semverNumericIdentifier = /^(?:0|[1-9]\d*)$/;
+const semverCore = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
+const semverBuildIdentifier = /^[0-9A-Za-z-]+$/;
+const semverPrereleaseIdentifier = /^(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)$/;
+
+const isStrictSemver = (version) => {
+  if (typeof version !== 'string' || version.length === 0) return false;
+
+  const plusIndex = version.indexOf('+');
+  const mainAndPre = plusIndex === -1 ? version : version.slice(0, plusIndex);
+  const build = plusIndex === -1 ? '' : version.slice(plusIndex + 1);
+  if (plusIndex !== -1) {
+    if (build.length === 0) return false;
+    const buildIdentifiers = build.split('.');
+    if (buildIdentifiers.some((id) => !semverBuildIdentifier.test(id))) return false;
+  }
+
+  const dashIndex = mainAndPre.indexOf('-');
+  const core = dashIndex === -1 ? mainAndPre : mainAndPre.slice(0, dashIndex);
+  const prerelease = dashIndex === -1 ? '' : mainAndPre.slice(dashIndex + 1);
+
+  if (!semverCore.test(core)) return false;
+  if (dashIndex === -1) return true;
+  if (prerelease.length === 0) return false;
+
+  const prereleaseIdentifiers = prerelease.split('.');
+  return prereleaseIdentifiers.every((id) => semverPrereleaseIdentifier.test(id));
+};
 
 const readJson = (path) => JSON.parse(readFileSync(path, 'utf8'));
 const writeJson = (path, value) => writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
@@ -82,7 +108,7 @@ const validate = (expectedVersion, flags) => {
 };
 
 const prepare = (version) => {
-  if (!strictSemver.test(version || '')) {
+  if (!isStrictSemver(version || '')) {
     throw new Error('Usage: npm run release:prepare -- <strict-semver>');
   }
   const pkgPath = join(root, 'package.json');
