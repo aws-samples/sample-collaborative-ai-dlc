@@ -1,5 +1,6 @@
 import { create } from 'neptune-lambda-client';
 import { buildResponse } from '../shared/response.js';
+import { authorizeLegacySprintRead } from '../shared/legacy-authz.js';
 
 // Tests point GREMLIN_PROTOCOL at a plain ws:// gremlin-server (no IAM); Neptune
 // in production is wss:// + SigV4. Tying useIam to the protocol keeps the test
@@ -77,8 +78,18 @@ export const handler = async (event) => {
     // the GET routes (list + single) remain.
     switch (httpMethod) {
       case 'GET': {
+        const auth = await query((g) => authorizeLegacySprintRead(g, event, sprintId));
+        if (auth.denied) return res(auth.statusCode, { error: auth.error });
         if (questionId) {
-          const r = await query((g) => g.V().has('Question', 'id', questionId).valueMap().next());
+          const r = await query((g) =>
+            g
+              .V()
+              .has('Sprint', 'id', sprintId)
+              .out('CONTAINS')
+              .has('Question', 'id', questionId)
+              .valueMap()
+              .next(),
+          );
           if (!r.value) return res(404, { error: 'Question not found' });
           return res(200, mapQuestion(r.value));
         }

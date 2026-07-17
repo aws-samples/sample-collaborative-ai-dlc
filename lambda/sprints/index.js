@@ -3,6 +3,7 @@ import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { buildResponse } from '../shared/response.js';
+import { authorizeLegacyProjectRead, authorizeLegacySprintRead } from '../shared/legacy-authz.js';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -111,10 +112,20 @@ export const handler = async (event) => {
     switch (httpMethod) {
       case 'GET': {
         if (sprintId) {
-          const r = await g.V().has('Sprint', 'id', sprintId).valueMap().next();
+          const auth = await authorizeLegacySprintRead(g, event, sprintId, projectId);
+          if (auth.denied) return res(auth.statusCode, { error: auth.error });
+          const r = await g
+            .V()
+            .has('Project', 'id', projectId)
+            .out('HAS_SPRINT')
+            .has('Sprint', 'id', sprintId)
+            .valueMap()
+            .next();
           if (!r.value) return res(404, { error: 'Sprint not found' });
           return res(200, mapSprint(r.value));
         }
+        const auth = await authorizeLegacyProjectRead(g, event, projectId);
+        if (auth.denied) return res(auth.statusCode, { error: auth.error });
         const list = await g
           .V()
           .has('Project', 'id', projectId)

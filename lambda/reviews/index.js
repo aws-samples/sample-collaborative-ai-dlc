@@ -2,6 +2,7 @@ import gremlin from 'gremlin';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { buildResponse } from '../shared/response.js';
+import { authorizeLegacySprintRead } from '../shared/legacy-authz.js';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -52,6 +53,8 @@ export const handler = async (event) => {
     // v1 execution engine, so only the GET route remains.
     switch (httpMethod) {
       case 'GET': {
+        const auth = await authorizeLegacySprintRead(g, event, sprintId);
+        if (auth.denied) return res(auth.statusCode, { error: auth.error });
         // Return the active (non-stale) review. If all are stale, return the most
         // recent one. valueMap().toList() order is NOT guaranteed by the graph
         // engine, so order by stale_at desc. The active review has no stale_at, so

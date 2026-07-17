@@ -3,6 +3,7 @@ import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { buildResponse } from '../shared/response.js';
+import { authorizeLegacySprintRead } from '../shared/legacy-authz.js';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -53,8 +54,16 @@ export const handler = async (event) => {
     // ECS runtime) were removed, so only the GET routes (list + single) remain.
     switch (httpMethod) {
       case 'GET': {
+        const auth = await authorizeLegacySprintRead(g, event, sprintId);
+        if (auth.denied) return res(auth.statusCode, { error: auth.error });
         if (taskId) {
-          const r = await g.V().has('Task', 'id', taskId).valueMap().next();
+          const r = await g
+            .V()
+            .has('Sprint', 'id', sprintId)
+            .out('CONTAINS')
+            .has('Task', 'id', taskId)
+            .valueMap()
+            .next();
           if (!r.value) return res(404, { error: 'Task not found' });
           return res(200, mapTask(r.value));
         }

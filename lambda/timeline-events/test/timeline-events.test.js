@@ -5,6 +5,7 @@ import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 
 // File-level partition: every test in this file shares it.
 const PARTITION = `t-${randomUUID()}`;
+const USER_ID = `u-${randomUUID()}`;
 
 let handler;
 let close;
@@ -48,7 +49,34 @@ beforeEach(async () => {
   await g.V().drop().next();
 });
 
-const addSprint = async (sprintId) => g.addV('Sprint').property('id', sprintId).next();
+const addSprint = async (sprintId) => {
+  const projectId = `p-${randomUUID()}`;
+  await g.addV('Project').property('id', projectId).next();
+  await g.addV('User').property('id', USER_ID).next();
+  await g
+    .V()
+    .has('Project', 'id', projectId)
+    .as('p')
+    .V()
+    .has('User', 'id', USER_ID)
+    .as('u')
+    .addE('HAS_MEMBER')
+    .from_('p')
+    .to('u')
+    .property('role', 'owner')
+    .next();
+  await g
+    .V()
+    .has('Project', 'id', projectId)
+    .as('p')
+    .addV('Sprint')
+    .property('id', sprintId)
+    .as('s')
+    .addE('HAS_SPRINT')
+    .from_('p')
+    .to('s')
+    .next();
+};
 
 // Seeds a TimelineEvent with the same property shape the removed POST handler
 // used to write.
@@ -76,7 +104,12 @@ const addEvent = async (sprintId, data) => {
   return id;
 };
 
-const get = (sprintId) => handler({ httpMethod: 'GET', pathParameters: { sprintId } });
+const get = (sprintId, sub = USER_ID) =>
+  handler({
+    httpMethod: 'GET',
+    pathParameters: { sprintId },
+    requestContext: { authorizer: { claims: { sub } } },
+  });
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -160,6 +193,13 @@ describe('GET /sprints/:sprintId/timeline', () => {
 
     const res = await get(sprintId);
     expect(JSON.parse(res.body)).toEqual([]);
+  });
+
+  it('rejects a signed-in non-member', async () => {
+    const sprintId = `s-${randomUUID()}`;
+    await addSprint(sprintId);
+    const res = await get(sprintId, 'outsider');
+    expect(res.statusCode).toBe(403);
   });
 });
 
