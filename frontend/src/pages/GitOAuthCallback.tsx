@@ -47,7 +47,12 @@ export function GitOAuthCallback({ trackerProviderId }: Props) {
           } else {
             // Default: carry the git provider back so the reopened create-project modal
             // re-selects what the user just connected (gitlab-issues → gitlab).
-            const gitProvider = trackerProviderId === 'gitlab-issues' ? 'gitlab' : 'github';
+            const gitProvider =
+              trackerProviderId === 'gitlab-issues'
+                ? 'gitlab'
+                : trackerProviderId === 'bitbucket-issues'
+                  ? 'bitbucket'
+                  : 'github';
             setTimeout(
               () => navigate(`/dashboard?reopenCreateProject=1&gitProvider=${gitProvider}`),
               1500,

@@ -13,6 +13,7 @@ interface RepoLinkProps {
 const PROVIDER_URL: Record<GitProvider, string> = {
   github: 'https://github.com',
   gitlab: 'https://gitlab.com',
+  bitbucket: 'https://bitbucket.org',
 };
 
 const PROVIDER_ICON: Record<GitProvider, typeof GitHubIcon> = {
