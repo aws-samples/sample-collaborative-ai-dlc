@@ -4,15 +4,18 @@ const { InvokeCommand } = require('@aws-sdk/client-lambda');
 
 /**
  * Refresh a git provider access token via the agents Lambda /git/refresh-token endpoint.
- * Currently only GitLab tokens expire (~2 h) and need refreshing; GitHub OAuth-App
- * tokens are long-lived so this is a no-op for GitHub.
+ * GitLab AND Bitbucket OAuth access tokens expire (~2 h) and need refreshing via their
+ * stored refresh token; GitHub OAuth-App tokens are long-lived so this is a no-op for
+ * GitHub. The agents Lambda's /git/refresh-token endpoint (ensureFreshGitToken) already
+ * handles both gitlab and bitbucket — this wrapper just has to not short-circuit them.
  *
  * @param {import('@aws-sdk/client-lambda').LambdaClient} lambdaClient
  * @param {{ userId: string, gitProvider: string }} params
  * @returns {Promise<string|null>} New access token, or null if skipped/failed.
  */
 async function refreshGitToken(lambdaClient, { userId, gitProvider }) {
-  if ((gitProvider || 'github') !== 'gitlab') return null;
+  const provider = gitProvider || 'github';
+  if (provider !== 'gitlab' && provider !== 'bitbucket') return null;
   if (!userId || !process.env.AGENTS_LAMBDA_NAME) return null;
 
   try {
