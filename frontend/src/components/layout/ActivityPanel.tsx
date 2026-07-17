@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { X, Bot, Clock, ChevronDown, Wrench, Check, AlertTriangle, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { formatTimelineTimestamp } from '@/lib/timeAgo';
+import { SeqDeduplicator } from '@/lib/seqDeduplicator';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -28,34 +30,6 @@ interface ToolCallEntry {
   status: 'pending' | 'running' | 'completed' | 'failed';
   startedAt: number;
   completedAt?: number;
-}
-
-/**
- * Set-based deduplicator — each event type gets its own instance
- * so tool events don't cause text chunks to be dropped.
- */
-class SeqDeduplicator {
-  private seen = new Set<number>();
-  private maxSeen = 0;
-
-  accept(seq: number | null | undefined): boolean {
-    if (seq == null) return true;
-    if (this.seen.has(seq)) return false;
-    this.seen.add(seq);
-    this.maxSeen = Math.max(this.maxSeen, seq);
-    if (this.seen.size > 1000) {
-      const cutoff = this.maxSeen - 500;
-      for (const s of this.seen) {
-        if (s < cutoff) this.seen.delete(s);
-      }
-    }
-    return true;
-  }
-
-  reset() {
-    this.seen.clear();
-    this.maxSeen = 0;
-  }
 }
 
 interface ActivityPanelProps {
@@ -219,7 +193,8 @@ export function ActivityPanel({ sprintId, onClose }: ActivityPanelProps) {
       // Refresh timeline when artifacts change
       realtimeService.on('artifact.created', () => fetchTimeline()),
       realtimeService.on('agent.question', () => {
-        // Timeline event is created server-side in submit-question Lambda (once, not per-client)
+        // Historical v1 event — nothing emits it anymore, but replayed/old
+        // connections may still deliver it; refreshing is harmless.
         fetchTimeline();
       }),
     ];
@@ -242,9 +217,9 @@ export function ActivityPanel({ sprintId, onClose }: ActivityPanelProps) {
   }, [sprintId]);
 
   return (
-    <div className="flex h-full w-full flex-col bg-background border-l">
+    <div className="flex h-full w-full flex-col bg-sidebar border-l border-border">
       {/* Header */}
-      <div className="flex h-10 items-center justify-between px-3 border-b shrink-0">
+      <div className="flex h-10 items-center justify-between px-3 border-b border-border bg-background/60 shrink-0">
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList className="h-7 p-0.5">
             <TabsTrigger value="agent" className="h-6 px-2.5 text-xs gap-1.5">
@@ -298,7 +273,7 @@ export function ActivityPanel({ sprintId, onClose }: ActivityPanelProps) {
               agentStatus={agentStatus}
             />
           ) : activeTab === 'discussions' ? (
-            <DiscussionsTab sprintId={sprintId || ''} />
+            <DiscussionsTab />
           ) : (
             <TimelineTab events={timelineEvents} loading={timelineLoading} />
           )}
@@ -562,7 +537,7 @@ function TimelineEmptyState() {
 // ---------------------------------------------------------------------------
 
 export function TimelineEventItem({ event }: { event: TimelineEvent }) {
-  const timeAgo = getTimeAgo(event.timestamp);
+  const timeAgo = formatTimelineTimestamp(event.timestamp);
   const { color } = getEventStyle(event.type);
   const openQuestion = useQuestionLink();
   const linkable = !!event.questionId;
@@ -603,16 +578,6 @@ export function TimelineEventItem({ event }: { event: TimelineEvent }) {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function getTimeAgo(timestamp: string): string {
-  const now = Date.now();
-  const then = new Date(timestamp).getTime();
-  const diff = now - then;
-  if (diff < 60000) return 'just now';
-  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
-  return `${Math.floor(diff / 86400000)}d ago`;
-}
 
 function getEventStyle(type: string): { color: string } {
   switch (type) {

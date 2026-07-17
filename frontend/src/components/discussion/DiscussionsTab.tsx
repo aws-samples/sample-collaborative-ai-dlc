@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { MessageSquare, CheckCircle2, Search, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { getTimeAgo } from '@/lib/timeAgo';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -22,23 +23,19 @@ const ENTITY_LABELS: Record<string, string> = {
   task: 'Task',
   review: 'Review',
   generalinfo: 'Info',
+  // v2 intent-scoped anchors.
+  intent: 'Intent',
+  artifact: 'Artifact',
+  item: 'Item',
 };
 
 const EMPTY_DISCUSSIONS: Discussion[] = [];
 
-const timeAgo = (iso: string): string => {
-  const diff = Date.now() - new Date(iso).getTime();
-  if (Number.isNaN(diff)) return '';
-  if (diff < 60000) return 'just now';
-  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
-  return `${Math.floor(diff / 86400000)}d ago`;
-};
-
 type StatusFilter = 'all' | 'open' | 'resolved';
 
-export function DiscussionsTab({ sprintId }: { sprintId: string }) {
+export function DiscussionsTab() {
   const ctx = useDiscussions();
+  const scope = ctx?.scope ?? null;
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [searchResults, setSearchResults] = useState<SearchResult[] | null>(null);
@@ -48,7 +45,7 @@ export function DiscussionsTab({ sprintId }: { sprintId: string }) {
   // shorter queries fall back to the local list.
   useEffect(() => {
     const q = query.trim();
-    if (q.length < 3) {
+    if (q.length < 3 || !scope) {
       setSearchResults(null);
       setSearching(false);
       return;
@@ -56,7 +53,7 @@ export function DiscussionsTab({ sprintId }: { sprintId: string }) {
     setSearching(true);
     const timer = setTimeout(() => {
       discussionsService
-        .search(sprintId, {
+        .search(scope, {
           q,
           status: statusFilter === 'all' ? undefined : statusFilter,
         })
@@ -65,7 +62,7 @@ export function DiscussionsTab({ sprintId }: { sprintId: string }) {
         .finally(() => setSearching(false));
     }, 350);
     return () => clearTimeout(timer);
-  }, [query, statusFilter, sprintId]);
+  }, [query, statusFilter, scope]);
 
   const discussions = ctx?.discussions ?? EMPTY_DISCUSSIONS;
   const filtered = useMemo(
@@ -148,7 +145,9 @@ export function DiscussionsTab({ sprintId }: { sprintId: string }) {
               <MessageSquare className="h-5 w-5 text-muted-foreground mb-2" />
               <p className="text-xs text-muted-foreground">No discussions yet</p>
               <p className="text-[10px] text-muted-foreground/60 mt-0.5">
-                Open one from any question, artifact or the sprint
+                {scope?.kind === 'sprint'
+                  ? 'v1 discussions are read-only.'
+                  : 'Open one from any question, artifact or the sprint'}
               </p>
             </div>
           )}
@@ -200,7 +199,7 @@ function DiscussionRow({ d, onOpen }: { d: Discussion; onOpen: () => void }) {
           {d.messageCount ?? 0} message{(d.messageCount ?? 0) === 1 ? '' : 's'}
         </span>
         <span>·</span>
-        <span>{timeAgo(d.lastMessageAt)}</span>
+        <span>{getTimeAgo(d.lastMessageAt)}</span>
       </div>
     </button>
   );

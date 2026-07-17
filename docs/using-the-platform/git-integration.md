@@ -3,7 +3,7 @@
 AIDLC Collaborative integrates with external systems on two independent axes:
 
 - **Code host** — GitHub or GitLab. The repository is cloned into the agent workspace and all code changes flow back as a pull request (GitHub) or merge request (GitLab).
-- **Issue trackers** — GitHub Issues, GitLab Issues, and Jira Cloud. A sprint can be started from any tracker issue; the issue's title, body, and comments become the sprint's brief for the agent.
+- **Issue trackers** — GitHub Issues, GitLab Issues, and Jira Cloud. An intent can be started from any tracker issue; the issue's title, body, and comments become the intent's brief for the agent.
 
 A project can bind to _one_ code host and to _zero or more_ trackers. Both are configured per project in **Project Settings**.
 
@@ -11,16 +11,25 @@ GitHub and GitLab each span both axes: a single connection serves as the code ho
 
 ## Operator setup (one time per deployment)
 
-Before users can connect their accounts, an administrator registers OAuth apps with each provider and pastes the credentials into the platform. See [Setup → Configure provider OAuth apps](../getting-started/setup.md#configure-provider-oauth-apps) for the full walkthrough.
+Before users can connect their accounts, an administrator registers OAuth apps with each provider and pastes the credentials into the platform. See [Setup → Configure provider OAuth apps](../getting-started/setup.md#configure-provider-oauth-apps) for the full walkthrough. Admin pages require the Cognito `platform-admin` group.
 
-The status of each provider is visible in **Admin → Tracker OAuth Apps**. Until a provider shows **Configured**, the corresponding **Connect** button in Project Settings stays disabled with a hint pointing back to the admin panel.
+The status of each provider is visible in **Admin → Trackers**. Until a provider shows **Configured**, the corresponding **Connect** button in Project Settings stays disabled with a hint pointing back to the admin panel.
+
+### GitHub authentication mode
+
+GitHub supports two platform-wide authentication modes, switchable at runtime by a platform admin in **Admin → Source Control → GitHub**:
+
+- **OAuth mode** (default) — each user connects their own GitHub account (described below). All git activity is attributed to the individual user.
+- **GitHub App mode** — the platform authenticates as a GitHub App installation (a bot). Users don't connect personal GitHub accounts at all; the repo picker lists the repositories the App is installed on, and commits/PRs/comments are attributed to the App. Which repositories are reachable is controlled by the App installation on GitHub — installing/uninstalling repos there takes effect immediately.
+
+Switching modes takes effect for new work right away; in-flight runs finish under the mode they started with. Switching to App mode is validated live against GitHub (App ID + installation + private key) before it lands, so a broken configuration can never strand the platform.
 
 ## Connecting your account
 
-Each user connects their own GitHub / GitLab / Atlassian account once; the connection is reused across every project that needs that provider.
+Each user connects their own GitHub / GitLab / Atlassian account once; the connection is reused across every project that needs that provider. (In GitHub App mode there is nothing to connect for GitHub — the section below applies to OAuth mode.)
 
-- **GitHub**: from the dashboard (or the project-creation flow), click **Connect GitHub** and approve the OAuth flow. The button stays disabled if your administrator hasn't configured GitHub OAuth credentials yet.
-- **GitLab**: choose **GitLab** as the provider in the project-creation flow, then click **Connect GitLab** and approve the OAuth flow. The button stays disabled until your administrator has configured GitLab OAuth credentials. GitLab access tokens are short-lived; the platform refreshes them automatically using the stored refresh token, so you don't need to reconnect periodically.
+- **GitHub**: from the dashboard (or the project-creation flow), click **Connect GitHub** and approve the OAuth flow. The connection requests `repo`, `workflow`, and `read:user` so the engine can also push workflow-file changes. After upgrading an older connection that lacks `workflow`, click **Reauthorize GitHub** when prompted. The button stays disabled if your administrator hasn't configured GitHub OAuth credentials yet.
+- **GitLab**: choose **GitLab** as the provider in the project-creation flow, then click **Connect GitLab** and approve the OAuth flow. The required `api` scope covers repository writes, including `.gitlab-ci.yml`; GitLab has no separate workflow-file scope. The button stays disabled until your administrator has configured GitLab OAuth credentials. GitLab access tokens are short-lived; the platform refreshes them automatically using the stored refresh token, so you don't need to reconnect periodically.
 - **Jira Cloud**: open **Project Settings → Trackers → Connect Jira Cloud**. After the Atlassian consent screen, if your account has access to multiple Atlassian sites you'll be asked to pick one. The chosen site is remembered; you can disconnect and reconnect later to change it.
 
 A connection is scoped to its provider: connecting GitHub does not satisfy a GitLab project (and vice versa). Each project uses the connection matching its selected code host.
@@ -32,11 +41,21 @@ A connection is scoped to its provider: connecting GitHub does not satisfy a Git
 3. The platform checks for an active connection to that provider and prompts you to connect if one is missing.
 4. Pick the repository (GitHub) or project (GitLab) that should back the collaborative project.
 
-The repository is cloned into the agent workspace and becomes available to the LLM assistant and agents during inception, construction, and review.
+The repository is cloned into the agent workspace and becomes available to the agents while an intent executes. Additional repositories can be added later in **Project Settings → Source Control**.
+
+## Branches
+
+All git operations are owned by the engine — agents never run git and never hold credentials:
+
+- Each intent works on its own branch, `aidlc/<title-slug>`, derived from the intent title.
+- The branch is created off the **base branch** — by default each repository's own default branch, overridable per repository at intent creation (see [Creating intents → Base branch](creating-intents.md#base-branch)).
+- During parallel construction, each unit of work gets a section-specific per-unit branch. Intent PR delivery merges it through the engine; PR-per-unit delivery opens draft unit-to-intent reviews and serializes readiness in dependency order.
+- The engine commits and pushes after every stage, so work is durable even if a run is cancelled.
+- On success, the pull/merge request opens from the intent branch onto the base branch.
 
 ## Binding a tracker to a project
 
-A tracker binding tells the platform which external project to list issues from when starting a sprint. The same collaborative project can be bound to multiple trackers — for example, GitHub Issues for the platform's own bug tracker plus Jira Cloud for the team's product backlog.
+A tracker binding tells the platform which external project to list issues from when starting an intent. The same collaborative project can be bound to multiple trackers — for example, GitHub Issues for the platform's own bug tracker plus Jira Cloud for the team's product backlog.
 
 In **Project Settings → Trackers**:
 
@@ -48,17 +67,17 @@ You can also enable the matching git-issues tracker in one step at project creat
 
 When a project has more than one tracker bound, the project page renders a tab strip above the issue list — one tab per binding, labeled with the provider and external project key.
 
-## Starting a sprint from an issue
+## Starting an intent from an issue
 
-On the project page, the **Start a sprint from a … issue** panel lists open issues from the bound tracker. Click **Start sprint** on any issue. The sprint is created with:
+On the **New Intent** page, use the **Import from tracker** panel to browse open issues from the bound tracker(s). Selecting an issue seeds the intent:
 
-- The issue title as its name
-- The issue body and any comments rendered as Markdown into the sprint description (Jira's ADF body is converted to Markdown server-side; comments are appended in chronological order)
-- A polymorphic link back to the originating tracker resource so the agent can reference it
+- The issue title becomes the intent title
+- The issue body and any comments are imported into the intent prompt (Jira's ADF body is converted to Markdown server-side; comments are appended in chronological order)
+- A polymorphic link back to the originating tracker resource is stored so the intent can reference it
 
-Issues already linked to an existing sprint show **Open sprint** instead of **Start sprint**, scoped per binding so the same numeric ID across two trackers (`PROJ-1` vs `OTHER-1`) doesn't collide.
+On read-only v1 projects, issues that were already linked to a sprint keep their **Open sprint** link, scoped per binding so the same numeric ID across two trackers (`PROJ-1` vs `OTHER-1`) doesn't collide. New sprints can no longer be started from issues.
 
-The Jira and GitLab Issues integrations are **read-only** — the agent never writes back issue comments or status changes. (On the code-host side, the agent does open a pull request / merge request and posts review results back to it — see [Reviews](#reviews).)
+The Jira and GitLab Issues integrations are **read-only** — the agent never writes back issue comments or status changes. (On the code-host side, the platform does open a pull request / merge request — see [Reviews](#reviews).)
 
 ## Reconnecting a tracker
 
@@ -75,7 +94,7 @@ Migration is **always optional** and **fully reversible-by-omission**: nothing i
 Three paths exist, all idempotent and equivalent:
 
 - **Per project, in-product**: open the affected project's page or settings. A "Migrate to the new tracker data model" banner appears for owners and admins. Click **Migrate now**. The banner self-dismisses on success.
-- **Bulk, from the Admin page**: open **Admin → Tracker Migration**. The card displays a count of projects + sprints still on the legacy shape; click **Migrate all** to convert everything in one shot. Re-clicking is a no-op.
+- **Bulk, from the Admin page**: open **Admin → Trackers → Tracker Migration**. The card displays a count of projects + sprints still on the legacy shape; click **Migrate all** to convert everything in one shot. Re-clicking is a no-op.
 - **Bulk, from the CLI**: invoke the `migrate-tracker-fields` Lambda directly for installs that prefer shell access. Supports a `{"dryRun": true}` payload for previewing.
 
   ```bash
@@ -90,4 +109,11 @@ Why nothing is removed: this is open source. Downstream forks are on their own u
 
 ## Reviews
 
-The platform opens a pull request (GitHub) or merge request (GitLab) on the bound code host once construction finishes. You can start a review on the platform; the review results are written back as a comment on that pull/merge request.
+The platform supports two delivery strategies:
+
+- **Intent PR** — completed unit branches are engine-merged into the intent branch. After shared stages pass, one pull request (GitHub) or merge request (GitLab) opens from intent to base.
+- **PR per unit** — every changed repository gets a draft unit-to-intent PR/MR. Draft reviews may happen concurrently, but the platform promotes one dependency-ready unit at a time after reconciling it with the latest intent branch. The final intent-to-base PR/MR still opens after all units and shared stages complete.
+
+In the intent view, each unit card shows repository-specific review state and links. Project members can open **Address feedback**, select up to 20 current human-authored comments, and queue a targeted revision. The backend refetches selected comments by provider ID, records their versions, and ignores provider comments unless a member explicitly selects them. The agent does not automatically resolve discussion threads.
+
+If a unit PR closes without merging, or only part of a multi-repository unit merges, the run enters halt-and-ask with retry, skip, and abort outcomes. Already merged work is preserved.

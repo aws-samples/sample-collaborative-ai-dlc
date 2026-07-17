@@ -1,0 +1,1053 @@
+import { api } from './api';
+
+// AI-DLC v2 intents — the v2 unit of work (the v1 sprint analog). An intent
+// runs a compiled workflow's stages through dynamic phases. Process/runtime
+// state lives in the v2 process table (DynamoDB); business artifacts live in
+// Neptune. This service is the typed client over lambda/intents.
+
+export type IntentStatus =
+  | 'DRAFT'
+  | 'CREATED'
+  | 'RUNNING'
+  | 'WAITING'
+  | 'SUCCEEDED'
+  | 'FAILED'
+  | 'CANCELLED';
+
+export type StageState =
+  | 'PENDING'
+  | 'RUNNING'
+  | 'WAITING_FOR_HUMAN'
+  | 'SUCCEEDED'
+  | 'FAILED'
+  | 'SKIPPED';
+
+// The tracker issue/artifact an intent was kicked off from. The imported text
+// lives in `prompt`; this is the provenance back-link surfaced in the UI. null
+// when the prompt was typed by hand.
+export interface IntentSource {
+  bindingId: string;
+  provider: string;
+  instance: string | null;
+  resourceType: string;
+  resourceId: string;
+  resourceUrl: string | null;
+}
+
+export interface Intent {
+  id: string;
+  executionId: string;
+  projectId: string;
+  title: string | null;
+  prompt: string | null;
+  status: IntentStatus;
+  branch: string | null;
+  baseBranch: string | null;
+  // Per-repo base-branch override ({ [repoUrl]: branchName }); a repo absent
+  // from this map falls back to `baseBranch`, then to its own actual default
+  // branch. null when the caller didn't override anything (the common case).
+  baseBranches: Record<string, string> | null;
+  repos: string[] | null;
+  // Code host the intent's repos live on ('github' | 'gitlab'), used to build
+  // branch/PR web links. null on older executions.
+  gitProvider?: string | null;
+  workflowId: string;
+  workflowVersion: number | null;
+  scope: string | null;
+  currentPhase: string | null;
+  currentStage: string | null;
+  pendingHumanTaskId: string | null;
+  failureReason: string | null;
+  // Set when the run was relaunched from a mid-plan stage (steering rewind).
+  rewindFromStageId?: string | null;
+  cliModels: Record<string, string> | null;
+  parkReleaseSeconds: number | null;
+  // WP5 (docs/v2-parallel.md): lane concurrency cap snapshotted at create
+  // (0/null = unbounded) and the human's autonomy-ladder decision.
+  maxParallelUnits?: number | null;
+  constructionAutonomyMode?: 'gated' | 'autonomous' | null;
+  prStrategy?: 'intent-pr' | 'pr-per-unit' | null;
+  // Per-intent stage skipping (shared/stage-skip.js): the effective mode
+  // snapshotted at create and the CONDITIONAL stages deselected at create.
+  stageSkipping?: 'enabled' | 'disabled' | null;
+  skipStageIds?: string[] | null;
+  // Per-intent composed EXECUTE/SKIP grid (Adaptive Workflows): when set it
+  // replaces the named-scope projection and `scope` is the provenance label.
+  composedGrid?: Record<string, 'EXECUTE' | 'SKIP'> | null;
+  source: IntentSource | null;
+  // Non-fatal plan warnings snapshotted at create: the selected scope resolves
+  // to a runnable but DEGRADED plan (required inputs whose producer stage is
+  // out of scope, parallel sections downgraded to once-per-workflow). Null
+  // when the plan is clean.
+  planWarnings?: PlanWarning[] | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  completedAt: string | null;
+}
+
+// Shape mirrors the plan resolver's error objects (lambda/shared/v2-execution-plan.js).
+export interface PlanWarning {
+  code: string;
+  message: string;
+  stageId?: string;
+  ref?: string | string[];
+}
+
+// A composer session (COMPOSE# row): the proposal is DATA — applying it (via
+// the DRAFT update / recompose endpoints) is always a separate human action.
+export interface ComposeSession {
+  composeId: string;
+  mode: 'front' | 'report' | 'inflight';
+  state: 'PENDING' | 'COMPLETED' | 'FAILED';
+  /** 'match' = deterministic keyword bypass (no LLM); 'llm' = composer agent. */
+  source: 'match' | 'llm' | null;
+  requestedBy: string | null;
+  requestedByName: string | null;
+  instructions: string | null;
+  reportKey: string | null;
+  proposal: {
+    mode: 'matched' | 'custom';
+    scope: string;
+    grid: Record<string, 'EXECUTE' | 'SKIP'> | null;
+    rationale: string[];
+    confidence: number | null;
+  } | null;
+  /** The plan resolver's authoritative verdict — render THESE numbers. */
+  validation: {
+    valid: boolean;
+    errors: PlanWarning[];
+    warnings: PlanWarning[];
+    summary: {
+      executedStages: number;
+      totalStages: number;
+      approvalGates: number;
+      perUnitStages: number;
+      skippedStages: number;
+      outOfScopeStages: number;
+    } | null;
+  } | null;
+  failureReason: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  completedAt: string | null;
+}
+
+export interface IntentStage {
+  stageInstanceId: string;
+  stageId: string | null;
+  // Unit lane (docs/v2-parallel.md WP4): set on per-unit instances of a
+  // `forEach: unit-of-work` stage; null on once-per-workflow stages.
+  unitSlug?: string | null;
+  sectionIndex?: number | null;
+  phase: string | null;
+  state: StageState;
+  attempt: number;
+  cli: string | null;
+  runtimeError: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  updatedAt: string | null;
+  // The model the orchestrator resolved for this stage (Bedrock region-prefixed
+  // id like `us.anthropic.claude-sonnet-4-6`). Null when the stage ran
+  // without model attribution (legacy rows, non-LLM stages).
+  resolvedModel?: string | null;
+  // Human-wait accounting: accumulated parked milliseconds across park/resume
+  // cycles, and the open park's start (null unless WAITING_FOR_HUMAN). Active
+  // duration = (completedAt ?? now) − startedAt − waitMs − open park window.
+  waitMs?: number;
+  parkedAt?: string | null;
+  pendingHumanTaskId?: string | null;
+}
+
+// A human gate (HUMAN# row). `questions` is the v1-shaped structured-questions
+// JSON string when kind === 'question' — parsed into the QuestionEditor shape
+// by the IntentView.
+export interface IntentGate {
+  humanTaskId: string;
+  stageInstanceId: string | null;
+  // Unit lane attribution (docs/v2-parallel.md WP4); null outside lanes.
+  unitSlug?: string | null;
+  sectionIndex?: number | null;
+  kind: 'approval' | 'question' | 'review-verdict' | 'validation';
+  // `superseded` = the gate was retired unanswered by a cancel/rewind.
+  status: 'pending' | 'answered' | 'approved' | 'rejected' | 'superseded';
+  prompt: string | null;
+  options: unknown;
+  // Valid "skip to stage X" targets on a validation gate (stage ids the human
+  // may jump to; every intermediate is CONDITIONAL). Null when stage skipping
+  // is disabled for the run or no target qualifies.
+  skipTargets?: string[] | null;
+  // Valid recompose-delta targets on a validation gate: LATER once-per-
+  // workflow CONDITIONAL stages the approve answer may flip to SKIP via
+  // `recompose: { skip: [...] }` — an arbitrary selection, unlike skipTargets'
+  // contiguous jump. Null when stage skipping is disabled or nothing
+  // qualifies. Advisory; the engine re-validates every entry.
+  recomposeTargets?: string[] | null;
+  // The COMPUTED next stage a plain approve continues to (upstream 2.2.6):
+  // string = its stageId, null = approving completes the workflow. Absent on
+  // legacy gates / gates where it was never computed — fall back to generic
+  // labels rather than claiming "Complete workflow". Display-only.
+  nextStageId?: string | null;
+  questions: string | null;
+  answer: unknown;
+  answeredBy: string | null;
+  answeredByName?: string | null;
+  answeredAt: string | null;
+  createdAt: string | null;
+  // Steering: set when a later correction revised this gate's answer. The
+  // original answer stays; the correction is the referenced STEER row.
+  revisedAt?: string | null;
+  revisionSteerId?: string | null;
+  supersededAt?: string | null;
+  supersededBy?: string | null;
+}
+
+// A human steering / course-correction message (docs/v2-steering.md).
+// Human-initiated (the inverse of a gate); delivered to the agent only at a
+// deterministic injection point (gate resume / fresh stage start).
+export interface IntentSteering {
+  steerId: string;
+  kind: 'gate-steer' | 'revision' | 'rewind';
+  status: 'pending' | 'consumed' | 'superseded';
+  message: string | null;
+  targetGateId: string | null;
+  targetStageId: string | null;
+  createdBy: string | null;
+  createdByName: string | null;
+  createdAt: string | null;
+  consumedAt: string | null;
+  consumedByStageInstanceId: string | null;
+}
+
+// Cost attributed to one metric sample, computed server-side (pricing lives on
+// the backend). `priced: false` means the sample's model has no price entry
+// (a newer model, or a Kiro credit-based run without a captured rate) — the UI
+// shows "cost unavailable" rather than a misleading $0. `estimated: true` means
+// the dollars come from Kiro credits priced at the plan's $/credit overage rate
+// (an estimate, not billing truth) — the UI caveats it.
+export interface MetricCost {
+  model: string | null;
+  currency: string;
+  inputCost: number;
+  outputCost: number;
+  creditCost?: number;
+  totalCost: number;
+  priced: boolean;
+  estimated?: boolean;
+}
+
+export interface IntentMetric {
+  metricId: string;
+  stageInstanceId: string | null;
+  metrics: Record<string, number>;
+  timestamp: string;
+  // The model attributed to this sample (metric-row stamp, else joined from the
+  // stage row) and its computed cost. Absent on legacy rows without a model.
+  model?: string | null;
+  cost?: MetricCost | null;
+}
+
+export interface IntentOutput {
+  seq: number;
+  stageInstanceId: string | null;
+  unitSlug?: string | null;
+  sectionIndex?: number | null;
+  kind: string;
+  content: string;
+  timestamp: string;
+  display?: IntentOutputDisplay;
+}
+
+export interface IntentOutputDisplay {
+  type: 'message' | 'tool' | 'edit' | 'batch_read' | 'artifact' | 'question' | 'system' | 'raw';
+  level?: 'info' | 'success' | 'warning' | 'error' | string;
+  title?: string;
+  summary?: string;
+  details?: string;
+  hiddenByDefault?: boolean;
+}
+
+export interface IntentSensorRun {
+  sensorRunId: string;
+  stageInstanceId: string | null;
+  unitSlug?: string | null;
+  sectionIndex?: number | null;
+  sensorId: string;
+  result: string;
+  severity: string;
+  held: boolean;
+  // The sensor's structured verdict (e.g. { artifacts: [{ artifact, reason }] },
+  // { unreferenced: [...] }, { reason }, { error }). Shape varies per sensor
+  // kind; rendered best-effort into a human explanation in the UI.
+  detail: SensorDetail | null;
+  timestamp: string;
+}
+
+// Loosely-typed sensor verdict detail — the fields any evaluator may emit. All
+// optional; the UI reads whichever are present.
+export interface SensorDetail {
+  artifacts?: { artifact: string; reason?: string; id?: string | null }[];
+  unreferenced?: string[];
+  consumes?: string[];
+  reason?: string;
+  error?: string;
+  findings_count?: number;
+  [key: string]: unknown;
+}
+
+export interface IntentArtifact {
+  id: string;
+  artifactType: string | null;
+  title: string | null;
+  createdByExecutionId: string | null;
+  createdByStageInstanceId: string | null;
+  sectionIndex?: number | null;
+  unitSlug?: string | null;
+  stageAttempt?: number;
+  generation?: number;
+  versionCount?: number;
+  aliases?: string[];
+  createdAt: string | null;
+  // Rewind lineage: set while a rewind's supersede has not been rehabilitated
+  // by the re-run (dimmed in the UI).
+  supersededAt?: string | null;
+  supersededBy?: string | null;
+  // Drift marker: an upstream document was edited after this artifact was
+  // derived/consumed from it. Cleared on the next update or an explicit
+  // verify. UI badges it (possibly stale).
+  staleSince?: string | null;
+  staleReason?: string | null;
+  // Post-hoc edit provenance (human simple edit / Quorum edit).
+  editedBy?: string | null;
+  editedByName?: string | null;
+  editedAt?: string | null;
+  editOrigin?: 'human' | 'quorum' | null;
+  // Verification stamp ("reviewed against the upstream edit, still valid").
+  verifiedBy?: string | null;
+  verifiedByName?: string | null;
+  verifiedAt?: string | null;
+  // Optional derive-time LLM enrichment (Admin setting `derive-enrichment=llm`).
+  // Used as a review orientation aid; absent when enrichment is off/skipped.
+  summaryGist?: string | null;
+  summaryClaims?: string[] | null;
+  enrichmentModel?: string | null;
+  content: string | null;
+}
+
+export interface ArtifactVersionSummary {
+  versionId: string;
+  artifactId: string;
+  generation: number;
+  artifactType: string | null;
+  title: string | null;
+  stageInstanceId: string | null;
+  stageAttempt: number;
+  sectionIndex: number | null;
+  unitSlug: string | null;
+  archivedAt: string | null;
+  restartId: string | null;
+  restartReason: string | null;
+  actor: string | null;
+  createdAt: string | null;
+  editedAt: string | null;
+  editedByName: string | null;
+  contentLength: number;
+  contentType: string;
+  contentHash: string | null;
+  legacy: boolean;
+  current: boolean;
+}
+
+export interface ArtifactVersions {
+  artifactId: string;
+  current: ArtifactVersionSummary | null;
+  versions: ArtifactVersionSummary[];
+}
+
+export interface ArtifactVersion extends ArtifactVersionSummary {
+  content: string | null;
+  relationships: {
+    direction: 'in' | 'out';
+    edge: string;
+    artifactId: string;
+  }[];
+  editedBy: string | null;
+  editOrigin: 'human' | 'quorum' | null;
+  verifiedBy: string | null;
+  verifiedByName: string | null;
+  verifiedAt: string | null;
+}
+
+// A fan-in pull/merge request — a run-level output surfaced as a work product.
+// One per repo. `baseBranch` is empty when the repo's default branch was used.
+export interface IntentPullRequest {
+  id: string;
+  repository: string | null;
+  prUrl: string | null;
+  prNumber: string | null;
+  branch: string | null;
+  baseBranch: string | null;
+  createdAt: string | null;
+}
+
+// ── Post-hoc artifact editing ──
+
+// GET .../artifacts/{id}/impact — the pre-edit drift warning data.
+export interface ArtifactImpactStage {
+  stageId: string;
+  /** How the consumption is evidenced: block frontmatter and/or actual reads. */
+  via: ('declared' | 'read')[];
+}
+
+export interface ArtifactImpactDownstream {
+  id: string;
+  title: string | null;
+  artifactType: string | null;
+  /** 1 = direct consumer/derivation; larger = transitive. */
+  depth: number;
+  /** Edge labels that reach it (CONSUMES / DERIVED_FROM / CITES). */
+  via: string[];
+  /** Already carrying a drift marker from an earlier edit. */
+  stale: boolean;
+}
+
+export interface ArtifactImpact {
+  artifactId: string;
+  artifactType: string | null;
+  consumingStages: ArtifactImpactStage[];
+  downstream: ArtifactImpactDownstream[];
+  executionActive: boolean;
+  editBlocked: boolean;
+  blockReason: 'execution_active' | 'quorum_edit_active' | null;
+  activeQuorumEditId: string | null;
+}
+
+// Quorum-supported edit session (QEDIT row).
+export type QuorumEditState =
+  | 'PLANNING'
+  | 'AWAITING_APPROVAL'
+  | 'APPLYING'
+  | 'SUCCEEDED'
+  | 'FAILED'
+  | 'REJECTED'
+  | 'CANCELLED';
+
+export interface QuorumEditPlanItem {
+  artifactId: string;
+  title: string | null;
+  artifactType: string | null;
+  depth: number;
+  action: 'update' | 'verify-unaffected';
+  rationale: string;
+  proposedChange: string;
+  /** The closure member was not explicitly assessed by Quorum. */
+  unassessed?: boolean;
+}
+
+export interface QuorumEditPlan {
+  summary: string;
+  items: QuorumEditPlanItem[];
+}
+
+export interface QuorumEdit {
+  editId: string;
+  artifactId: string;
+  artifactType: string | null;
+  artifactTitle: string | null;
+  changeDescription: string | null;
+  state: QuorumEditState;
+  plan: QuorumEditPlan | null;
+  requestedBy: string | null;
+  requestedByName: string | null;
+  decidedBy: string | null;
+  decidedByName: string | null;
+  decidedAt: string | null;
+  approvedArtifactIds: string[] | null;
+  updatedArtifactIds: string[] | null;
+  verifiedArtifactIds: string[] | null;
+  failedArtifactIds: string[] | null;
+  failureReason: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  completedAt: string | null;
+}
+
+// A lifecycle event in the intent's activity feed (workspace init, failure,
+// completion). Emitted by the orchestrator; init-ws progress is otherwise
+// invisible because it creates no stage row.
+export interface IntentActivityEvent {
+  eventId: string;
+  type: string;
+  stageInstanceId: string | null;
+  // Unit lane attribution (docs/v2-parallel.md WP4); null outside lanes.
+  unitSlug?: string | null;
+  sectionIndex?: number | null;
+  actor: string | null;
+  summary: string | null;
+  timestamp: string;
+  humanTaskId?: string;
+  questions?: string | null;
+  answer?: unknown;
+  answeredBy?: string | null;
+  answeredByName?: string | null;
+  artifacts?: { id: string; title: string }[];
+}
+
+// Unit lanes (docs/v2-parallel.md WP4): the promoted UNITPLAN scheduling
+// snapshot and the live per-lane rows. Both empty pre-promotion.
+export type UnitState =
+  | 'PENDING'
+  | 'READY'
+  | 'RUNNING'
+  | 'PR_DRAFT'
+  | 'RECONCILING'
+  | 'PR_READY'
+  | 'ADDRESSING_FEEDBACK'
+  | 'MERGING'
+  | 'MERGED'
+  | 'FAILED'
+  | 'BLOCKED';
+
+export interface IntentUnitPlan {
+  units: { slug: string; dependsOn: string[] }[];
+  batches: string[][];
+  unitCount: number;
+  skipMatrix: Record<string, string[]>;
+  walkingSkeleton: string | null;
+  autonomyMode: 'gated' | 'autonomous' | null;
+  promotedAt: string | null;
+}
+
+export interface IntentUnit {
+  sectionIndex?: number | null;
+  slug: string;
+  dependsOn: string[];
+  state: UnitState;
+  batchIndex: number;
+  branch: string | null;
+  startedAt: string | null;
+  mergedAt: string | null;
+  failureReason: string | null;
+  blockedOn: string | null;
+  integrationOwner?: boolean;
+  blockedReason?: string | null;
+  updatedAt: string | null;
+}
+
+export type UnitPrState =
+  | 'UNCHANGED'
+  | 'DRAFT'
+  | 'RECONCILING'
+  | 'READY'
+  | 'CONFLICTED'
+  | 'ADDRESSING_FEEDBACK'
+  | 'MERGED'
+  | 'PARTIALLY_MERGED'
+  | 'CLOSED'
+  | 'FAILED';
+
+export interface IntentUnitPr {
+  sectionIndex: number;
+  unitSlug: string;
+  repository: string;
+  provider: string;
+  providerId: string | number | null;
+  number: string | number | null;
+  url: string | null;
+  sourceBranch: string;
+  targetBranch: string;
+  headSha: string | null;
+  readyHeadSha: string | null;
+  targetSha: string | null;
+  state: UnitPrState;
+  mergeable: boolean | null;
+  commentCount: number;
+  repositoryOutcome: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  mergedAt: string | null;
+  closedAt: string | null;
+}
+
+export interface UnitReviewComment {
+  id: string | number;
+  repository: string;
+  prNumber: string | number;
+  type: 'review' | 'issue';
+  body: string;
+  user: { login: string | null; avatarUrl?: string | null };
+  path: string | null;
+  line: number | null;
+  createdAt: string;
+  updatedAt: string;
+  version: string;
+  bot: boolean;
+  system: boolean;
+  previouslySelected?: boolean;
+}
+
+export type FeedbackBatchState = 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED';
+
+export interface IntentFeedbackBatch {
+  sectionIndex: number;
+  unitSlug: string;
+  batchId: string;
+  comments: UnitReviewComment[];
+  state: FeedbackBatchState;
+  requestedBy: string;
+  requestedByName: string | null;
+  stageInstanceId: string | null;
+  output: string | null;
+  changedFiles: string[] | null;
+  verification: string | null;
+  commitSha: string | null;
+  failureReason: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  completedAt: string | null;
+}
+
+// The assembled detail returned by GET /projects/{id}/intents/{intentId}.
+export interface IntentDetail {
+  intent: Intent;
+  stages: IntentStage[];
+  events: IntentActivityEvent[];
+  gates: IntentGate[];
+  steering: IntentSteering[];
+  metrics: IntentMetric[];
+  outputs: IntentOutput[];
+  sensorRuns: IntentSensorRun[];
+  artifacts: IntentArtifact[];
+  pullRequests?: IntentPullRequest[];
+  /** Quorum-supported artifact edit sessions (post-hoc document editing). */
+  quorumEdits?: QuorumEdit[];
+  /** Composer sessions (scope/grid proposals + authoritative validation). */
+  composes?: ComposeSession[];
+  unitPlan?: IntentUnitPlan | null;
+  units?: IntentUnit[];
+  unitPrs?: IntentUnitPr[];
+  feedbackBatches?: IntentFeedbackBatch[];
+}
+
+export interface IntentRepairResult {
+  intent: Intent;
+  repair: {
+    repairId: string;
+    sectionIndex: number;
+    laneSlugs: string[];
+    archivedArtifactCount: number;
+    fromStageId: string;
+  };
+}
+
+export interface CreateIntentInput {
+  title?: string;
+  prompt?: string;
+  branch?: string;
+  baseBranch?: string;
+  // Per-repo base-branch override ({ [repoUrl]: branchName }) — lets a caller
+  // pick a different base per repo on a multi-repo project. A repo omitted
+  // here falls back to `baseBranch`, then to its own actual default branch.
+  baseBranches?: Record<string, string>;
+  scope?: string;
+  // Per-intent stage deselection (only accepted when stage skipping is
+  // enabled for the project): CONDITIONAL stage ids to skip for this run.
+  skipStageIds?: string[];
+  // Per-intent composed EXECUTE/SKIP grid — replaces the scope projection
+  // (scope becomes a label). Validated server-side by the plan resolver.
+  composedGrid?: Record<string, 'EXECUTE' | 'SKIP'>;
+  // Optional tracker provenance when seeded from a GitHub issue / Jira artifact.
+  source?: {
+    bindingId: string;
+    resourceType?: string;
+    resourceId: string;
+    resourceUrl?: string;
+  };
+}
+
+// The structured answer the QuestionEditor produces, matching what the runtime's
+// formatResumeAnswer parses. `steering` optionally rides a course correction on
+// the answer — injected into the resumed conversation right after it.
+export interface GateAnswer {
+  status?: 'answered' | 'approved' | 'rejected';
+  answer?: unknown;
+  steering?: string;
+}
+
+// One descriptive field of a derived item, projected from the extractor
+// REGISTRY doc.fields (name + human description). `kind` distinguishes a single
+// text value from a bulleted list. Relation-backed fields are NOT here — they
+// render as clickable graph edges instead.
+export interface IntentItemField {
+  name: string;
+  description: string;
+  kind: 'text' | 'list';
+  value: string | string[];
+}
+
+// The intent's Neptune knowledge subgraph (GET .../graph): what the run
+// produced and drew on. Generic node bags (same shape family as the v1 sprint
+// graph) — `type` is the vertex label: Intent | Artifact | Question |
+// Discussion | TeamKnowledge | LearningRule, plus the derived layer (Story |
+// Requirement | Persona | Component | Decision | StoryMapEntry | Contract |
+// UnitOfWork, tagged graphLayer='derived'). Artifact/knowledge nodes carry a
+// bounded `contentPreview` (+ `contentLength`), never the full content.
+export interface IntentGraphNode {
+  id: string;
+  type: string;
+  label: string;
+  // Derived-layer fields (typed items mirrored from artifact structured
+  // blocks — docs/v2-granular-graph.md). `artifactId` joins an item back to
+  // its source artifact node/card.
+  graphLayer?: 'derived';
+  slug?: string | null;
+  artifactId?: string | null;
+  artifactType?: string | null;
+  priority?: string | null;
+  status?: string | null;
+  itemFields?: IntentItemField[];
+  [key: string]: unknown;
+}
+
+export interface IntentGraphEdge {
+  source: string;
+  target: string;
+  // CONTAINS | PRODUCES | CONSUMES | DERIVED_FROM | RELATES_TO | DEPENDS_ON |
+  // INFLUENCES | DISCUSSES | INFORMS (synthesized: project knowledge → this run).
+  label: string;
+}
+
+export interface IntentKnowledgeGraph {
+  nodes: IntentGraphNode[];
+  edges: IntentGraphEdge[];
+}
+
+// Per-intent usage+cost summary within a project rollup.
+export interface ProjectIntentMetrics {
+  intentId: string;
+  title: string | null;
+  status: IntentStatus | null;
+  metrics: Record<string, number>;
+  cost: {
+    totalCost: number;
+    currency: string;
+    priced: boolean;
+    estimated?: boolean;
+    hasCostedSamples: boolean;
+  };
+}
+
+// GET /projects/{id}/intents/metrics — usage + cost rolled up across every
+// intent. `anyUnpriced` warns that a token-spending intent ran on a model we
+// couldn't price (a newer model, or a Kiro run without a captured credit rate);
+// `anyEstimated` warns that Kiro credit-estimated dollars are in the total.
+export interface ProjectMetrics {
+  perIntent: ProjectIntentMetrics[];
+  project: {
+    metrics: Record<string, number>;
+    cost: { totalCost: number; currency: string; anyUnpriced: boolean; anyEstimated?: boolean };
+  };
+}
+
+// ── Intent audit (GET /projects/{id}/intents/{id}/audit) ──
+// Aggregated process evidence for one intent: what the agents READ from the
+// graph (the attention ledger), what enrichment cost, and what the sensors
+// found — the data for judging whether the graph/enrichment mechanisms are
+// paying off. Server shape: lambda/intents/audit.js.
+export interface IntentAuditReadTool {
+  tool: string;
+  calls: number;
+  bytes: number;
+  resultCount: number;
+}
+
+export interface IntentAuditEnrichment {
+  /** Enrichment mode this execution ran with (snapshotted at intent create). */
+  mode: 'off' | 'llm';
+  /** One-shot summary calls made by derive-artifacts. */
+  calls: number;
+  tokensInput: number;
+  tokensOutput: number;
+  credits: number;
+  /** Compact-read adoption: targeted graph reads vs full-document reads. */
+  reads: {
+    compactCalls: number;
+    compactBytes: number;
+    fullCalls: number;
+    fullBytes: number;
+    /** compactBytes / (compactBytes+fullBytes), 0..1; null with no reads. */
+    compactShare: number | null;
+  };
+}
+
+export interface IntentAuditAdvisory {
+  kind: string;
+  severity: string;
+  summary: string;
+  stageInstanceId?: string | null;
+}
+
+/** Derivation health + structure-contract compliance for the intent. */
+export interface IntentAuditDerivation {
+  /** Successful (incl. partial) derive runs. */
+  runs: number;
+  failures: number;
+  partial: number;
+  enrichmentSkips: number;
+  structuredBlocks: {
+    checked: number;
+    present: number;
+    absent: number;
+    malformed: number;
+    /** present / checked, 0..1; null when nothing was checked. */
+    complianceRate: number | null;
+  };
+}
+
+/** Per-unit-lane read/spend rollup. */
+export interface IntentAuditUnit {
+  unitSlug: string;
+  readCalls: number;
+  readBytes: number;
+  tokensInput: number;
+  tokensOutput: number;
+}
+
+/** Write-side context ledger: what the runtime pushed into fresh stage prompts. */
+export interface IntentAuditPromptContext {
+  samples: number;
+  promptBytes: number;
+  compiledContextBytes: number;
+  avgPromptBytes: number | null;
+}
+
+export interface IntentAudit {
+  summary: {
+    stageCount: number;
+    eventCount: number;
+    humanTaskCount: number;
+    metricSamples: number;
+    graphReadCalls: number;
+    graphReadBytes: number;
+    sensorRuns: number;
+    sensorFindings: number;
+  };
+  graphReads: { totalBytes: number; byTool: IntentAuditReadTool[] };
+  enrichment: IntentAuditEnrichment;
+  derivation: IntentAuditDerivation;
+  promptContext: IntentAuditPromptContext;
+  units: IntentAuditUnit[];
+  metrics: { key: string; samples: number; total: number; max: number }[];
+  sensors: {
+    runs: number;
+    findings: {
+      sensorId?: string;
+      result?: string;
+      severity?: string;
+      held: boolean;
+      stageInstanceId: string | null;
+      detail: unknown;
+    }[];
+  };
+  advisories: IntentAuditAdvisory[];
+}
+
+export const intentsService = {
+  list: (projectId: string, status?: IntentStatus) =>
+    api.get<Intent[]>(`/projects/${projectId}/intents${status ? `?status=${status}` : ''}`),
+  get: (projectId: string, intentId: string) =>
+    api.get<IntentDetail>(`/projects/${projectId}/intents/${intentId}`),
+  projectMetrics: (projectId: string) =>
+    api.get<ProjectMetrics>(`/projects/${projectId}/intents/metrics`),
+  graph: (projectId: string, intentId: string) =>
+    api.get<IntentKnowledgeGraph>(`/projects/${projectId}/intents/${intentId}/graph`),
+  audit: (projectId: string, intentId: string) =>
+    api.get<IntentAudit>(`/projects/${projectId}/intents/${intentId}/audit`),
+  // Lazy agent transcript (the detail DTO carries no outputs). `stageInstanceId`
+  // scopes to one pane — the literal "intent" is the stage-less workspace/init
+  // bucket; `afterSeq` fetches only chunks emitted after a known sequence.
+  outputs: (
+    projectId: string,
+    intentId: string,
+    params: { stageInstanceId?: string; afterSeq?: number } = {},
+  ) => {
+    const qs = new URLSearchParams();
+    if (params.stageInstanceId !== undefined) qs.set('stageInstanceId', params.stageInstanceId);
+    if (params.afterSeq !== undefined) qs.set('afterSeq', String(params.afterSeq));
+    const suffix = qs.size > 0 ? `?${qs.toString()}` : '';
+    return api.get<{ outputs: IntentOutput[] }>(
+      `/projects/${projectId}/intents/${intentId}/outputs${suffix}`,
+    );
+  },
+  unitReviewComments: (
+    projectId: string,
+    intentId: string,
+    sectionIndex: number,
+    unitSlug: string,
+  ) =>
+    api.get<{ comments: UnitReviewComment[] }>(
+      `/projects/${projectId}/intents/${intentId}/units/${sectionIndex}/${encodeURIComponent(unitSlug)}/feedback`,
+    ),
+  addressUnitFeedback: (
+    projectId: string,
+    intentId: string,
+    sectionIndex: number,
+    unitSlug: string,
+    comments: { repository: string; commentId: string | number }[],
+  ) =>
+    api.post<IntentFeedbackBatch>(
+      `/projects/${projectId}/intents/${intentId}/units/${sectionIndex}/${encodeURIComponent(unitSlug)}/feedback`,
+      { comments },
+    ),
+  create: (projectId: string, input: CreateIntentInput) =>
+    api.post<Intent>(`/projects/${projectId}/intents`, input),
+  // DRAFT-only header edit (the collaborative draft page's auto-save target):
+  // title/prompt/scope/composedGrid/skipStageIds. 409 once the intent starts.
+  update: (
+    projectId: string,
+    intentId: string,
+    patch: {
+      title?: string | null;
+      prompt?: string | null;
+      scope?: string;
+      composedGrid?: Record<string, 'EXECUTE' | 'SKIP'> | null;
+      skipStageIds?: string[] | null;
+    },
+  ) => api.patch<Intent>(`/projects/${projectId}/intents/${intentId}`, patch),
+  // ── Composer (Adaptive Workflows) ──
+  // Start a composer session for a DRAFT: front mode from the draft text, or
+  // report mode when a reportKey (from composeReportUpload) rides along.
+  compose: (
+    projectId: string,
+    intentId: string,
+    input: {
+      instructions?: string;
+      reportKey?: string;
+      repoSignals?: Record<string, unknown>;
+      mode?: 'inflight';
+    } = {},
+  ) => api.post<ComposeSession>(`/projects/${projectId}/intents/${intentId}/compose`, input),
+  listComposes: (projectId: string, intentId: string) =>
+    api.get<{ composes: ComposeSession[] }>(`/projects/${projectId}/intents/${intentId}/composes`),
+  // Presigned PUT for an external analysis report (report-mode input).
+  composeReportUpload: (projectId: string, intentId: string) =>
+    api.post<{ uploadUrl: string; key: string; expiresIn: number }>(
+      `/projects/${projectId}/intents/${intentId}/compose-report-upload`,
+      {},
+    ),
+  // In-flight reshape: replace the run's projection with a new composed grid
+  // and relaunch at the first not-yet-done stage. Accepted only while the run
+  // is parked (WAITING) or FAILED; the past is frozen server-side.
+  recompose: (
+    projectId: string,
+    intentId: string,
+    input: { composedGrid: Record<string, 'EXECUTE' | 'SKIP'>; scope?: string },
+  ) => api.post<Intent>(`/projects/${projectId}/intents/${intentId}/recompose`, input),
+  start: (
+    projectId: string,
+    intentId: string,
+    input?: {
+      skipStageIds?: string[];
+      composedGrid?: Record<string, 'EXECUTE' | 'SKIP'> | null;
+    },
+  ) => api.post<Intent>(`/projects/${projectId}/intents/${intentId}/start`, input ?? {}),
+  cancel: (projectId: string, intentId: string) =>
+    api.post<Intent>(`/projects/${projectId}/intents/${intentId}/cancel`, {}),
+  // Permanent delete: removes the intent's graph data, process state and
+  // realtime docs. Owner/admin only; refused (409) while RUNNING.
+  delete: (projectId: string, intentId: string) =>
+    api.delete(`/projects/${projectId}/intents/${intentId}`),
+  // Steering rewind: restart the run from `fromStageId` (409 while RUNNING —
+  // wait for the stage to park or finish). Guidance is optional: with it this
+  // is a corrective rewind (a steering row the restarted stage consumes);
+  // without it, a plain retry of the stage + everything after it.
+  rewind: (
+    projectId: string,
+    intentId: string,
+    input: { fromStageId: string; guidance?: string },
+  ) =>
+    api.post<{ intent: Intent; steering: IntentSteering | null }>(
+      `/projects/${projectId}/intents/${intentId}/rewind`,
+      input,
+    ),
+  repair: (projectId: string, intentId: string) =>
+    api.post<IntentRepairResult>(`/projects/${projectId}/intents/${intentId}/repair`, {}),
+  answerGate: (projectId: string, intentId: string, humanTaskId: string, input: GateAnswer) =>
+    api.post<IntentGate>(
+      `/projects/${projectId}/intents/${intentId}/gates/${humanTaskId}/answer`,
+      input,
+    ),
+  // Steering revision: correct an already-given answer. Delivered at the next
+  // deterministic injection point (`delivery` says which).
+  reviseGate: (projectId: string, intentId: string, humanTaskId: string, message: string) =>
+    api.post<IntentSteering & { delivery: 'next-resume' | 'next-stage-start' }>(
+      `/projects/${projectId}/intents/${intentId}/gates/${humanTaskId}/revise`,
+      { message },
+    ),
+  // ── Post-hoc artifact editing ──
+  // The pre-edit drift warning data: consuming stages, downstream closure,
+  // and whether editing is currently blocked.
+  artifactImpact: (projectId: string, intentId: string, artifactId: string) =>
+    api.get<ArtifactImpact>(
+      `/projects/${projectId}/intents/${intentId}/artifacts/${encodeURIComponent(artifactId)}/impact`,
+    ),
+  artifactVersions: (projectId: string, intentId: string, artifactId: string) =>
+    api.get<ArtifactVersions>(
+      `/projects/${projectId}/intents/${intentId}/artifacts/${encodeURIComponent(artifactId)}/versions`,
+    ),
+  artifactVersion: (projectId: string, intentId: string, artifactId: string, versionId: string) =>
+    api.get<ArtifactVersion>(
+      `/projects/${projectId}/intents/${intentId}/artifacts/${encodeURIComponent(artifactId)}/versions/${encodeURIComponent(versionId)}`,
+    ),
+  // Human "simple edit": persist the new content (409 while a stage is
+  // actively running or a Quorum edit is active; a parked WAITING run is
+  // editable — the backend records an artifact-edit steering row so the
+  // resumed agent re-reads the document). The backend stamps provenance,
+  // marks the downstream closure stale and re-derives the projection.
+  updateArtifactContent: (
+    projectId: string,
+    intentId: string,
+    artifactId: string,
+    content: string,
+  ) =>
+    api.put<{
+      artifactId: string;
+      editedAt: string;
+      staleMarked: string[];
+      derived: boolean;
+      steering: IntentSteering | null;
+    }>(
+      `/projects/${projectId}/intents/${intentId}/artifacts/${encodeURIComponent(artifactId)}/content`,
+      { content },
+    ),
+  // Clear the drift marker: reviewed against the upstream edit, still valid.
+  verifyArtifact: (projectId: string, intentId: string, artifactId: string, note?: string) =>
+    api.post<{ artifactId: string; verifiedAt: string }>(
+      `/projects/${projectId}/intents/${intentId}/artifacts/${encodeURIComponent(artifactId)}/verify`,
+      note ? { note } : {},
+    ),
+  // Start a Quorum-supported edit: describe the change; Quorum plans the
+  // downstream updates (human-approved), then applies them.
+  startQuorumEdit: (
+    projectId: string,
+    intentId: string,
+    artifactId: string,
+    changeDescription: string,
+  ) =>
+    api.post<QuorumEdit>(
+      `/projects/${projectId}/intents/${intentId}/artifacts/${encodeURIComponent(artifactId)}/quorum-edit`,
+      { changeDescription },
+    ),
+  // Approve (optionally narrowing to a subset of plan artifacts) or reject
+  // Quorum's update plan.
+  decideQuorumEdit: (
+    projectId: string,
+    intentId: string,
+    editId: string,
+    input: { decision: 'approve' | 'reject'; approvedArtifactIds?: string[] },
+  ) =>
+    api.post<QuorumEdit>(
+      `/projects/${projectId}/intents/${intentId}/quorum-edits/${editId}/decision`,
+      input,
+    ),
+};

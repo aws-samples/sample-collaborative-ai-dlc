@@ -4,8 +4,10 @@ data "aws_partition" "current" {}
 data "aws_ecr_authorization_token" "token" {}
 
 locals {
-  partition  = data.aws_partition.current.partition
-  dns_suffix = data.aws_partition.current.dns_suffix
+  partition       = data.aws_partition.current.partition
+  dns_suffix      = data.aws_partition.current.dns_suffix
+  yjs_lb_name_raw = "${var.project_name}-yjs-${var.environment}"
+  yjs_lb_name     = length(local.yjs_lb_name_raw) <= 32 ? local.yjs_lb_name_raw : "${substr(local.yjs_lb_name_raw, 0, 23)}-${substr(sha1(local.yjs_lb_name_raw), 0, 8)}"
 }
 
 terraform {
@@ -21,7 +23,7 @@ provider "docker" {
   # Support for Podman via DOCKER_HOST environment variable (e.g., unix:///path/to/podman.sock)
   # If DOCKER_HOST is not set, defaults to the standard Docker socket
   registry_auth {
-    address  = format("%v.dkr.ecr.%v.%v", data.aws_caller_identity.current.account_id, data.aws_region.current.id, local.dns_suffix)
+    address  = format("%v.dkr.ecr.%v.%v", data.aws_caller_identity.current.account_id, data.aws_region.current.region, local.dns_suffix)
     username = data.aws_ecr_authorization_token.token.user_name
     password = data.aws_ecr_authorization_token.token.password
   }
@@ -75,11 +77,11 @@ resource "aws_ecr_lifecycle_policy" "yjs_server" {
 # Docker build module
 module "yjs_docker_build" {
   source  = "terraform-aws-modules/lambda/aws//modules/docker-build"
-  version = "~> 7.0"
+  version = "~> 8.0"
 
   create_ecr_repo = false
   ecr_repo        = aws_ecr_repository.yjs_server.name
-  ecr_address     = format("%v.dkr.ecr.%v.%v", data.aws_caller_identity.current.account_id, data.aws_region.current.id, local.dns_suffix)
+  ecr_address     = format("%v.dkr.ecr.%v.%v", data.aws_caller_identity.current.account_id, data.aws_region.current.region, local.dns_suffix)
 
   use_image_tag = true
   # substr(var.build_after, 0, 0) is always "" — it exists only to create a
@@ -299,23 +301,16 @@ resource "aws_security_group" "alb" {
 
 # Application Load Balancer
 resource "aws_lb" "yjs_server" {
-  name               = "${var.project_name}-yjs-${var.environment}"
+  name               = local.yjs_lb_name
   internal           = true
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb.id]
   subnets            = var.private_subnet_ids
-
-  lifecycle {
-    precondition {
-      condition     = length("${var.project_name}-yjs-${var.environment}") <= 32
-      error_message = "ALB name '${var.project_name}-yjs-${var.environment}' exceeds the AWS 32-character limit. Shorten project_name or environment."
-    }
-  }
 }
 
 # Target Group
 resource "aws_lb_target_group" "yjs_server" {
-  name        = "${var.project_name}-yjs-${var.environment}"
+  name        = local.yjs_lb_name
   port        = 1234
   protocol    = "HTTP"
   vpc_id      = var.vpc_id

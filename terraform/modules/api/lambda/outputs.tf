@@ -1,5 +1,5 @@
 output "agents_orchestrator_role_arn" {
-  description = "ARN of the IAM role for the agents Lambda (most privileged: Neptune + DDB + SSM + ECS RunTask + IAM PassRole). Consumed by the api module to wire the agents_lambda created in api/agents.tf."
+  description = "ARN of the IAM role for the agents Lambda (most privileged: Neptune + DDB + SSM + AgentCore invoke). Consumed by the api module to wire the agents_lambda created in api/agents.tf."
   value       = aws_iam_role.agents_orchestrator.arn
 }
 
@@ -192,6 +192,31 @@ output "migrate_tracker_fields_lambda_name" {
   value       = module.migrate_tracker_fields_lambda.lambda_function_name
 }
 
+output "building_blocks_lambda_invoke_arn" {
+  description = "Invoke ARN of the building-blocks CRUD Lambda"
+  value       = module.building_blocks_lambda.lambda_function_invoke_arn
+}
+
+output "building_blocks_lambda_name" {
+  description = "Name of the building-blocks CRUD Lambda"
+  value       = module.building_blocks_lambda.lambda_function_name
+}
+
+output "seed_blocks_lambda_name" {
+  description = "Name of the one-shot baseline seed Lambda. Invoke via `aws lambda invoke` after deploy; see lambda/seed-blocks/index.js for the payload contract."
+  value       = module.seed_blocks_lambda.lambda_function_name
+}
+
+output "workflows_lambda_invoke_arn" {
+  description = "Invoke ARN of the workflows composition Lambda"
+  value       = module.workflows_lambda.lambda_function_invoke_arn
+}
+
+output "workflows_lambda_name" {
+  description = "Name of the workflows composition Lambda"
+  value       = module.workflows_lambda.lambda_function_name
+}
+
 output "cognito_users_lambda_arn" {
   description = "ARN of the cognito-users Lambda function"
   value       = module.cognito_users_lambda.lambda_function_arn
@@ -216,12 +241,22 @@ output "discussions_lambda_name" {
   value       = module.discussions_lambda.lambda_function_name
 }
 
-output "create_pr_lambda_arn" {
-  description = "ARN of the create PR Lambda"
-  value       = module.create_pr_lambda.lambda_function_arn
+output "intents_lambda_invoke_arn" {
+  description = "Invoke ARN of the v2 intents Lambda"
+  value       = module.intents_lambda.lambda_function_invoke_arn
 }
 
-output "create_pr_lambda_name" {
-  description = "Name of the create PR Lambda"
-  value       = module.create_pr_lambda.lambda_function_name
+output "intents_lambda_name" {
+  description = "Name of the v2 intents Lambda"
+  value       = module.intents_lambda.lambda_function_name
+}
+
+output "v2_orchestrator_lambda_arn" {
+  description = "ARN of the v2 orchestrator durable Lambda"
+  value       = module.v2_orchestrator_lambda.lambda_function_arn
+}
+
+output "v2_orchestrator_lambda_name" {
+  description = "Name of the v2 orchestrator durable Lambda"
+  value       = module.v2_orchestrator_lambda.lambda_function_name
 }

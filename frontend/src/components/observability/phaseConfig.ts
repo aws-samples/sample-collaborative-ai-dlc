@@ -55,10 +55,10 @@ export const PHASE_CONFIGS: PhaseConfig[] = [
     key: 'INCEPTION',
     label: 'INCEPTION PHASE',
     icon: '🔵',
-    headerBg: 'bg-blue-100 dark:bg-blue-950/60',
-    headerText: 'text-blue-800 dark:text-blue-200',
-    blockBg: 'bg-blue-50 dark:bg-blue-950/30',
-    blockBorder: 'border-blue-200 dark:border-blue-800',
+    headerBg: 'bg-blue-100/80 dark:bg-blue-950/70',
+    headerText: 'text-blue-900 dark:text-blue-100',
+    blockBg: 'bg-blue-50/60 dark:bg-blue-950/40',
+    blockBorder: 'border-blue-300 dark:border-blue-700',
     mandatoryBg: 'bg-green-200 dark:bg-green-900/60 border-green-400 dark:border-green-600',
     conditionalBg:
       'bg-yellow-100 dark:bg-yellow-900/40 border-yellow-400 dark:border-yellow-600 border-dashed',
@@ -70,10 +70,10 @@ export const PHASE_CONFIGS: PhaseConfig[] = [
     key: 'CONSTRUCTION',
     label: 'CONSTRUCTION PHASE',
     icon: '🟢',
-    headerBg: 'bg-green-100 dark:bg-green-950/60',
-    headerText: 'text-green-800 dark:text-green-200',
-    blockBg: 'bg-green-50 dark:bg-green-950/30',
-    blockBorder: 'border-green-200 dark:border-green-800',
+    headerBg: 'bg-emerald-100/80 dark:bg-emerald-950/70',
+    headerText: 'text-emerald-900 dark:text-emerald-100',
+    blockBg: 'bg-emerald-50/60 dark:bg-emerald-950/40',
+    blockBorder: 'border-emerald-300 dark:border-emerald-700',
     mandatoryBg: 'bg-green-200 dark:bg-green-900/60 border-green-400 dark:border-green-600',
     conditionalBg:
       'bg-yellow-100 dark:bg-yellow-900/40 border-yellow-400 dark:border-yellow-600 border-dashed',
@@ -85,10 +85,10 @@ export const PHASE_CONFIGS: PhaseConfig[] = [
     key: 'REVIEW',
     label: 'REVIEW PHASE',
     icon: '🟣',
-    headerBg: 'bg-purple-100 dark:bg-purple-950/60',
-    headerText: 'text-purple-800 dark:text-purple-200',
-    blockBg: 'bg-purple-50 dark:bg-purple-950/30',
-    blockBorder: 'border-purple-200 dark:border-purple-800',
+    headerBg: 'bg-violet-100/80 dark:bg-violet-950/70',
+    headerText: 'text-violet-900 dark:text-violet-100',
+    blockBg: 'bg-violet-50/60 dark:bg-violet-950/40',
+    blockBorder: 'border-violet-300 dark:border-violet-700',
     mandatoryBg: 'bg-green-200 dark:bg-green-900/60 border-green-400 dark:border-green-600',
     conditionalBg:
       'bg-yellow-100 dark:bg-yellow-900/40 border-yellow-400 dark:border-yellow-600 border-dashed',
@@ -100,10 +100,10 @@ export const PHASE_CONFIGS: PhaseConfig[] = [
     key: 'OPERATIONS',
     label: 'OPERATIONS PHASE',
     icon: '🟠',
-    headerBg: 'bg-orange-100 dark:bg-orange-950/60',
-    headerText: 'text-orange-800 dark:text-orange-200',
-    blockBg: 'bg-orange-50 dark:bg-orange-950/30',
-    blockBorder: 'border-orange-200 dark:border-orange-800',
+    headerBg: 'bg-amber-100/80 dark:bg-amber-950/70',
+    headerText: 'text-amber-900 dark:text-amber-100',
+    blockBg: 'bg-amber-50/60 dark:bg-amber-950/40',
+    blockBorder: 'border-amber-300 dark:border-amber-700',
     mandatoryBg: 'bg-green-200 dark:bg-green-900/60 border-green-400 dark:border-green-600',
     conditionalBg:
       'bg-yellow-100 dark:bg-yellow-900/40 border-yellow-400 dark:border-yellow-600 border-dashed',
@@ -112,3 +112,15 @@ export const PHASE_CONFIGS: PhaseConfig[] = [
     subSteps: [],
   },
 ];
+
+export function phaseColorAt(index: number) {
+  const cfg = PHASE_CONFIGS[index % PHASE_CONFIGS.length];
+  return {
+    headerBg: cfg.headerBg,
+    headerText: cfg.headerText,
+    blockBg: cfg.blockBg,
+    blockBorder: cfg.blockBorder,
+    mandatoryBg: cfg.mandatoryBg,
+    conditionalBg: cfg.conditionalBg,
+  };
+}

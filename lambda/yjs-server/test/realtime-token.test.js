@@ -22,6 +22,7 @@ import sharedImpl from '../../shared/realtime-token.js';
 const SPRINT_ID = '0f8fad5b-d9cb-469f-a165-70867728950e';
 const PROJECT_ID = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
 const ARTIFACT_ID = 'a3bb189e-8bf9-3888-9912-ace4e6543002';
+const INTENT_ID = 'b1e0f2a4-1c3d-4e5f-8a9b-0c1d2e3f4a5b';
 
 // Inventory: every doc-name format in the codebase → expected scope.
 // Sources (grep-verified):
@@ -32,6 +33,8 @@ const ARTIFACT_ID = 'a3bb189e-8bf9-3888-9912-ace4e6543002';
 //   review-{sprintId}-{artifactId|"pending"} frontend/src/components/ReviewEditor.tsx
 //   inception-{projectId}                    frontend/src/hooks/useCollaborativeInception.ts
 //   discussion-{sprintId}-{discussionId}     discussions feature (Yjs chat doc)
+//   intent-review-{intentId}-{humanTaskId}   v2 stage review feedback
+//   intent-artifact-{intentId}-{artifactId}  v2 post-hoc artifact editing
 const YJS_DOC_VECTORS = [
   [`presence-${SPRINT_ID}`, `sprint:${SPRINT_ID}`],
   [`sq-${SPRINT_ID}-${ARTIFACT_ID}`, `sprint:${SPRINT_ID}`],
@@ -42,25 +45,41 @@ const YJS_DOC_VECTORS = [
   [`review-${SPRINT_ID}-pending`, `sprint:${SPRINT_ID}`],
   [`discussion-${SPRINT_ID}-disc-${ARTIFACT_ID}`, `sprint:${SPRINT_ID}`],
   [`inception-${PROJECT_ID}`, `project:${PROJECT_ID}`],
+  // V2 intent collaboration docs use intent-specific prefixes.
+  [`intent-sq-${INTENT_ID}-${ARTIFACT_ID}`, `intent:${INTENT_ID}`],
+  [`intent-discussion-${INTENT_ID}-disc-${ARTIFACT_ID}`, `intent:${INTENT_ID}`],
+  [`intent-presence-${INTENT_ID}`, `intent:${INTENT_ID}`],
+  [`intent-review-${INTENT_ID}-ht-${ARTIFACT_ID}`, `intent:${INTENT_ID}`],
+  // Post-hoc artifact editing (v2 documents). Artifact ids are agent-chosen
+  // slugs, not UUIDs — they ride the free suffix after the intent UUID.
+  [`intent-artifact-${INTENT_ID}-${ARTIFACT_ID}`, `intent:${INTENT_ID}`],
+  [`intent-artifact-${INTENT_ID}-market-research`, `intent:${INTENT_ID}`],
+  // Collaborative DRAFT compose page (shared prompt + grid selection).
+  [`intent-draft-${INTENT_ID}`, `intent:${INTENT_ID}`],
   // Unknown formats → deny (null)
   ['default', null],
   ['', null],
   [`sprint:${SPRINT_ID}`, null], // app-WS channel format is NOT a Yjs doc name
+  [`intent:${INTENT_ID}`, null], // app-WS channel format is NOT a Yjs doc name
   [`presence-`, null],
   [`presence-not-a-uuid`, null],
   [`inception-${PROJECT_ID}-extra`, null],
+  [`intent-sq-not-a-uuid`, null],
   [`evil-${SPRINT_ID}`, null],
   [SPRINT_ID, null],
 ];
 
 const CHANNEL_VECTORS = [
   [`sprint:${SPRINT_ID}`, `sprint:${SPRINT_ID}`],
+  [`intent:${INTENT_ID}`, `intent:${INTENT_ID}`],
   [PROJECT_ID, `project:${PROJECT_ID}`],
   // Unknown formats → deny (null)
   ['default', null],
   ['', null],
   [`sprint:not-a-uuid`, null],
+  [`intent:not-a-uuid`, null],
   [`sprint:`, null],
+  [`intent:`, null],
   [`project:${PROJECT_ID}`, null], // channels use the bare projectId, not a prefix
   [`presence-${SPRINT_ID}`, null],
 ];

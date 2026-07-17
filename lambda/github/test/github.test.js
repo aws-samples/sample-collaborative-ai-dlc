@@ -27,6 +27,14 @@ const SSM_PREFIX = 'test/git/tokens';
 const CLIENT_ID = 'test-client-id';
 const CLIENT_SECRET = 'test-client-secret';
 const USER_ID = 'user-123';
+const GITHUB_MODE_PARAM = '/test/github-auth-mode';
+const GITHUB_APP_CONFIG_PARAM = '/test/github-app-config';
+const GITHUB_APP_KEY_SECRET = 'test/github-app-key';
+const { privateKey: GITHUB_APP_PRIVATE_KEY } = crypto.generateKeyPairSync('rsa', {
+  modulusLength: 2048,
+  privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
+  publicKeyEncoding: { type: 'spki', format: 'pem' },
+});
 
 const loadHandler = async () => {
   vi.resetModules();
@@ -62,6 +70,26 @@ const mockResolveGitToken = (token = 'ghp_test-token') => {
   });
 };
 
+const mockGitHubAppMode = (permissions) => {
+  vi.stubEnv('GITHUB_AUTH_MODE_PARAM', GITHUB_MODE_PARAM);
+  vi.stubEnv('GITHUB_APP_CONFIG_PARAM', GITHUB_APP_CONFIG_PARAM);
+  vi.stubEnv('GITHUB_APP_PRIVATE_KEY_SECRET_NAME', GITHUB_APP_KEY_SECRET);
+  ssmMock
+    .on(GetParameterCommand, { Name: GITHUB_MODE_PARAM })
+    .resolves({ Parameter: { Value: 'app' } });
+  ssmMock.on(GetParameterCommand, { Name: GITHUB_APP_CONFIG_PARAM }).resolves({
+    Parameter: { Value: JSON.stringify({ appId: '123', installationId: '456' }) },
+  });
+  secretsMock.on(GetSecretValueCommand, { SecretId: GITHUB_APP_KEY_SECRET }).resolves({
+    SecretString: GITHUB_APP_PRIVATE_KEY,
+  });
+  globalThis.fetch = vi.fn(async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ account: { login: 'acme' }, permissions }),
+  }));
+};
+
 const mockFetch = (responses = []) => {
   const mock = vi.fn();
   let callIndex = 0;
@@ -70,6 +98,7 @@ const mockFetch = (responses = []) => {
     callIndex++;
     return Promise.resolve({
       status: res.status || 200,
+      ok: (res.status || 200) >= 200 && (res.status || 200) < 300,
       json: () => Promise.resolve(res.body),
     });
   });
@@ -289,7 +318,7 @@ describe('github handler', () => {
       expect(body.url).toContain(`client_id=${CLIENT_ID}`);
       expect(body.url).toContain('state=');
       expect(body.url).toContain(encodeURIComponent(REDIRECT_URI));
-      expect(body.url).toContain(encodeURIComponent('repo read:user'));
+      expect(body.url).toContain(encodeURIComponent('repo workflow read:user'));
     });
   });
 
@@ -379,6 +408,62 @@ describe('github handler', () => {
       });
     });
 
+    it('enriches the connection row with the commit-attribution identity from GET /user', async () => {
+      mockOAuthSecret();
+      ssmMock.on(PutParameterCommand).resolves({});
+      ddbMock.on(PutCommand).resolves({});
+
+      const validState = createSignedState({ userId: USER_ID, ts: Date.now() }, CLIENT_SECRET);
+      mockFetch([
+        { body: { access_token: 'ghp_new', token_type: 'bearer', scope: 'repo' } },
+        // GET /user — private email → noreply fallback.
+        { body: { login: 'janedev', id: 123, name: 'Jane Dev', email: null } },
+      ]);
+
+      const handler = await loadHandler();
+      const res = await handler(
+        makeEvent('GET', '/github/callback', {
+          queryStringParameters: { code: 'valid-code', state: validState },
+        }),
+      );
+
+      expect(res.statusCode).toBe(200);
+      expect(ddbMock).toHaveReceivedCommandWith(PutCommand, {
+        TableName: PROVIDER_CONNECTIONS_TABLE,
+        Item: expect.objectContaining({
+          userId: USER_ID,
+          githubLogin: 'janedev',
+          authorName: 'Jane Dev',
+          authorEmail: '123+janedev@users.noreply.github.com',
+        }),
+      });
+    });
+
+    it('a failed GET /user never breaks the connect flow — the row is stored without author fields', async () => {
+      mockOAuthSecret();
+      ssmMock.on(PutParameterCommand).resolves({});
+      ddbMock.on(PutCommand).resolves({});
+
+      const validState = createSignedState({ userId: USER_ID, ts: Date.now() }, CLIENT_SECRET);
+      mockFetch([
+        { body: { access_token: 'ghp_new', token_type: 'bearer', scope: 'repo' } },
+        { status: 500, body: { message: 'boom' } },
+      ]);
+
+      const handler = await loadHandler();
+      const res = await handler(
+        makeEvent('GET', '/github/callback', {
+          queryStringParameters: { code: 'valid-code', state: validState },
+        }),
+      );
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ success: true });
+      const put = ddbMock.commandCalls(PutCommand)[0].args[0].input;
+      expect(put.Item.authorEmail).toBeUndefined();
+      expect(put.Item.githubLogin).toBeUndefined();
+    });
+
     it('returns 400 when queryStringParameters is null', async () => {
       const handler = await loadHandler();
       const res = await handler(
@@ -446,7 +531,7 @@ describe('github handler', () => {
 
     it('returns connected: true when DynamoDB item exists', async () => {
       ddbMock.on(GetCommand).resolves({
-        Item: { userId: USER_ID, provider: 'github' },
+        Item: { userId: USER_ID, provider: 'github', scope: 'repo, workflow, read:user' },
       });
 
       const handler = await loadHandler();
@@ -454,7 +539,40 @@ describe('github handler', () => {
 
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.body);
-      expect(body).toEqual({ connected: true, provider: 'github' });
+      expect(body).toEqual({ connected: true, provider: 'github', mode: 'oauth' });
+    });
+
+    it('requires reauthorization when the stored token lacks workflow scope', async () => {
+      ddbMock.on(GetCommand).resolves({
+        Item: { userId: USER_ID, provider: 'github', scope: 'repo read:user' },
+      });
+
+      const handler = await loadHandler();
+      const res = await handler(makeEvent('GET', '/github/status'));
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({
+        connected: false,
+        provider: 'github',
+        mode: 'oauth',
+        reauthorizationRequired: true,
+        missingScopes: ['workflow'],
+      });
+    });
+
+    it('accepts comma- and whitespace-delimited stored scopes', async () => {
+      ddbMock.on(GetCommand).resolves({
+        Item: { userId: USER_ID, provider: 'github', scope: 'repo,workflow read:user' },
+      });
+
+      const handler = await loadHandler();
+      const res = await handler(makeEvent('GET', '/github/status'));
+
+      expect(JSON.parse(res.body)).toEqual({
+        connected: true,
+        provider: 'github',
+        mode: 'oauth',
+      });
     });
 
     it('returns connected: false when no DynamoDB item', async () => {
@@ -465,7 +583,28 @@ describe('github handler', () => {
 
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.body);
-      expect(body).toEqual({ connected: false, provider: undefined });
+      expect(body).toEqual({ connected: false, provider: undefined, mode: 'oauth' });
+    });
+
+    it('reports missing GitHub App workflow permission as configuration required', async () => {
+      mockGitHubAppMode({
+        contents: 'write',
+        pull_requests: 'write',
+        issues: 'read',
+      });
+
+      const handler = await loadHandler();
+      const res = await handler(makeEvent('GET', '/github/status'));
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({
+        connected: false,
+        provider: 'github',
+        mode: 'app',
+        configurationRequired: true,
+        configurationError:
+          'GitHub App installation is missing required permissions: workflows:write',
+      });
     });
   });
 
@@ -577,6 +716,24 @@ describe('github handler', () => {
 
       expect(res.statusCode).toBe(400);
       expect(JSON.parse(res.body).error).toBe('GitHub not connected');
+    });
+
+    it('includes the repo default branch when available', async () => {
+      mockGitConnection();
+      mockResolveGitToken();
+      mockFetch([
+        { body: [{ name: 'main' }, { name: 'develop' }] },
+        { body: { default_branch: 'develop' } },
+      ]);
+
+      const handler = await loadHandler();
+      const res = await handler(makeEvent('GET', '/github/repos/org/repo/branches'));
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({
+        branches: ['main', 'develop'],
+        defaultBranch: 'develop',
+      });
     });
 
     it('returns 400 when GitHub returns non-array response', async () => {

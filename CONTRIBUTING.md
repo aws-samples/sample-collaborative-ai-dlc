@@ -60,6 +60,10 @@ Real SAST runs in CI via GitHub's [CodeQL default setup](https://docs.github.com
 
 If you want a fast inner-loop preview locally, install [`semgrep`](https://semgrep.dev/) or [`opengrep`](https://github.com/opengrep/opengrep) on your `PATH`. The pre-commit hook detects them automatically and runs `p/javascript` + `p/typescript` rule packs against staged JS/TS files. If neither is installed, the SAST step is silently skipped — CodeQL still catches everything in CI.
 
+## AgentCore runtime testing
+
+The [internal testing guide](docs/development/testing.md) documents the deterministic AgentCore test project and the manual, credentialed local E2E for Claude, Kiro, and OpenCode. The E2E runs real models and is not part of CI.
+
 ## Contributing via Pull Requests
 
 Contributions via pull requests are much appreciated. Before sending us a pull request, please ensure that:

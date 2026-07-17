@@ -1,21 +1,13 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useSprint } from '@/contexts/SprintContext';
-import { useAuth } from '@/contexts/AuthContext';
-import { usePresence } from '@/hooks/usePresence';
 import { useAgentStatus } from '@/hooks/useAgentStatus';
 import { useConstructionStatus } from '@/hooks/useConstructionStatus';
 import { useSprintEvents } from '@/hooks/useSprintEvents';
 import { useQuestionAnchor } from '@/hooks/useQuestionAnchor';
-import { useAnswerQuestion } from '@/hooks/useAnswerQuestion';
 import { questionAnchorId } from '@/lib/questionAnchor';
-import { sprintsService } from '@/services/sprints';
 import { gitProviderTerminology } from '@/services/gitProvider';
-import { useProjectCache, refreshProjectSprints } from '@/hooks/useProjectsCache';
+import { useProjectCache } from '@/hooks/useProjectsCache';
 import { agentsService } from '@/services/agents';
-import { questionsService } from '@/services/questions';
-import { tasksService } from '@/services/tasks';
-import { realtimeService } from '@/services/realtime';
-import { timelineEventsService } from '@/services/timelineEvents';
 import { Button } from '@/components/ui/button';
 import { PrCheckoutCommand } from '@/components/PrCheckoutCommand';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -26,66 +18,37 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from '@/components/ui/accordion';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from '@/components/ui/dialog';
-import { Textarea } from '@/components/ui/textarea';
 import { AgentStatusBadge } from '@/components/domain/AgentStatusBadge';
 import { ArtifactCard } from '@/components/domain/ArtifactCard';
-import QuestionEditor from '@/components/QuestionEditor';
-import { BranchSelector } from '@/components/BranchSelector';
 import CodeFileViewer from '@/components/CodeFileViewer';
 import { GitFileBrowser } from '@/components/GitFileBrowser';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
-  Hammer,
-  Loader2,
-  ExternalLink,
-  RefreshCw,
-  ListChecks,
   Code2,
-  MessageCircleQuestion,
-  GitBranch,
+  ExternalLink,
   Eye,
-  Wrench,
-  ArrowRight,
   Folder,
-  X,
+  GitBranch,
+  ListChecks,
+  Loader2,
+  MessageCircleQuestion,
+  Wrench,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { TaskSettingsDialog } from '@/components/settings/TaskSettingsDialog';
-import { TaskActionsMenu } from '@/components/domain/TaskActionsMenu';
-import type { Task } from '@/services/tasks';
+import { DiscussButton } from '@/components/discussion';
 
+// v1 projects are read-only: the v1 execution engine has been retired, so this
+// page keeps all display functionality (task board, streams of past runs, code
+// files, PR banner) but no write affordances (no kick-offs, PR creation, task
+// resets, settings, or answers).
 export default function ConstructionPage() {
-  const { user } = useAuth();
   const { sprint, tasks, codeFiles, questions, projectId, sprintId, reload } = useSprint();
 
   const { project } = useProjectCache(projectId ?? null);
-  const [showBranchSelector, setShowBranchSelector] = useState(false);
-  const [branchSelectorMode, setBranchSelectorMode] = useState<'construction' | 'create-pr'>(
-    'construction',
-  );
   const [showFileBrowser, setShowFileBrowser] = useState(false);
-  const [startingConstruction, setStartingConstruction] = useState(false);
   const [executionArn, setExecutionArn] = useState<string | null>(null);
   const [executionId, setExecutionId] = useState<string | null>(null);
-  const [showRerunModal, setShowRerunModal] = useState(false);
-  const [changeRequest, setChangeRequest] = useState('');
-
-  const currentUser = {
-    id: user?.username || '',
-    name: user?.displayName || user?.email || '',
-    color: '#f59e0b',
-  };
-  const userName = user?.displayName || user?.email || '';
-  const { setActivity } = usePresence(sprintId, currentUser);
 
   const agentStatus = useAgentStatus({
     executionArn,
@@ -107,7 +70,7 @@ export default function ConstructionPage() {
     }, [reload]),
   );
 
-  // Restore execution (only when sprint is in CONSTRUCTION phase)
+  // Restore the last execution (read-only status/stream display)
   useEffect(() => {
     if (!projectId || !sprintId || sprint?.phase !== 'CONSTRUCTION') return;
     agentsService
@@ -121,32 +84,8 @@ export default function ConstructionPage() {
       .catch(() => {});
   }, [projectId, sprintId, sprint?.phase]);
 
-  // Reload on agent artifacts
-  useEffect(() => {
-    if (agentStatus.artifactsUpdated > 0) reload();
-  }, [agentStatus.artifactsUpdated, reload]);
-
-  // PR created event
-  useEffect(() => {
-    const unsub = realtimeService.on('pr.created', () => {
-      reload();
-    });
-    return () => {
-      unsub?.();
-    };
-  }, [reload]);
-
   const allTasksDone =
     tasks.length > 0 && tasks.every((t) => t.status === 'done' || t.status === 'failed');
-  const constructionComplete =
-    allTasksDone && (!agentStatus.status?.status || agentStatus.status.status !== 'RUNNING');
-
-  // Reload when new questions from the agent arrive
-  useEffect(() => {
-    if (agentStatus.questions.length > 0) {
-      reload();
-    }
-  }, [agentStatus.questions.length, reload]);
 
   const pendingQuestions = questions
     .filter((q) => !q.structuredAnswer)
@@ -155,151 +94,7 @@ export default function ConstructionPage() {
   // Scroll to a question referenced by a #question-{id} URL hash (timeline links)
   useQuestionAnchor(questions.length > 0);
 
-  // Branch is stored on the sprint after first kick-off — skip BranchSelector on re-runs
   const storedBranch = sprint?.branch || null;
-  const storedBaseBranch = sprint?.baseBranch || 'main';
-
-  const handleStartConstruction = async (
-    branch: string,
-    baseBranch: string,
-    additionalContext?: string,
-  ) => {
-    setStartingConstruction(true);
-    setShowBranchSelector(false);
-    try {
-      // Persist branch on sprint so subsequent runs skip the BranchSelector
-      await sprintsService.update(projectId, sprintId, { branch, baseBranch });
-      refreshProjectSprints(projectId);
-      const result = await agentsService.startWorkflow(projectId, {
-        phase: 'construction-orchestrator',
-        sprintId,
-        branch,
-        baseBranch,
-        changeRequest: additionalContext || '',
-        event: { event: 'start' },
-      });
-      setExecutionArn(result.executionArn);
-      setExecutionId(result.executionId || null);
-      const title = additionalContext
-        ? `Construction re-run: ${additionalContext.slice(0, 60)}`
-        : 'Construction agent launched';
-      timelineEventsService
-        .create(sprintId, { type: 'agent_started', title, detail: `Branch: ${branch}`, userName })
-        .catch(() => {});
-      await reload();
-    } catch (err) {
-      console.error('Failed to start construction:', err);
-    } finally {
-      setStartingConstruction(false);
-    }
-  };
-
-  const handleKickOffConstruction = () => {
-    if (storedBranch) {
-      // Has previous runs — open re-run modal for optional context
-      setShowRerunModal(true);
-    } else {
-      setBranchSelectorMode('construction');
-      setShowBranchSelector(true);
-    }
-  };
-
-  const handleConfirmRerun = () => {
-    setShowRerunModal(false);
-    handleStartConstruction(storedBranch!, storedBaseBranch, changeRequest.trim() || undefined);
-    setChangeRequest('');
-  };
-
-  const handleCreatePr = async (branch: string, baseBranch: string) => {
-    setStartingConstruction(true);
-    setShowBranchSelector(false);
-    try {
-      // Re-kick the orchestrator — it will see all tasks done and call trigger_pr_creation
-      const result = await agentsService.startWorkflow(projectId, {
-        phase: 'construction-orchestrator',
-        sprintId,
-        branch,
-        baseBranch,
-        event: { event: 'start' },
-      });
-      setExecutionArn(result.executionArn);
-      setExecutionId(result.executionId || null);
-      timelineEventsService
-        .create(sprintId, {
-          type: 'agent_started',
-          title: 'PR creation triggered',
-          detail: `Branch: ${branch}`,
-          userName,
-        })
-        .catch(() => {});
-      await reload();
-    } catch (err) {
-      console.error('Failed to trigger PR creation:', err);
-    } finally {
-      setStartingConstruction(false);
-    }
-  };
-
-  const handleKickOffCreatePr = () => {
-    if (storedBranch) {
-      handleCreatePr(storedBranch, storedBaseBranch);
-    } else {
-      setBranchSelectorMode('create-pr');
-      setShowBranchSelector(true);
-    }
-  };
-
-  const { answerQuestion: handleAnswerQuestion, dismissQuestion: handleDismissQuestion } =
-    useAnswerQuestion({ sprintId, reload });
-
-  const [approvingPhase, setApprovingPhase] = useState(false);
-
-  const handleApprovePhase = async () => {
-    setApprovingPhase(true);
-    try {
-      await sprintsService.update(projectId, sprintId, { phase: 'REVIEW' });
-      // sprint.phaseChanged is a server-origin event emitted by the sprints
-      // lambda on the phase update — clients never broadcast it.
-      refreshProjectSprints(projectId);
-      timelineEventsService
-        .create(sprintId, { type: 'phase_changed', title: 'Moved to Review phase', userName })
-        .catch(() => {});
-      await reload();
-    } catch (err) {
-      console.error('Failed to approve phase:', err);
-    } finally {
-      setApprovingPhase(false);
-    }
-  };
-
-  const [resettingTaskId, setResettingTaskId] = useState<string | null>(null);
-  const [settingsTask, setSettingsTask] = useState<Task | null>(null);
-
-  const handleResetTask = async (taskId: string, taskTitle: string) => {
-    if (
-      !confirm(
-        `Reset "${taskTitle}" back to To Do? This will allow it to be re-dispatched on the next construction run.`,
-      )
-    )
-      return;
-    setResettingTaskId(taskId);
-    try {
-      await tasksService.update(sprintId, taskId, { status: 'todo' });
-      timelineEventsService
-        .create(sprintId, {
-          type: 'task_reset',
-          title: `Reset task: ${taskTitle}`,
-          detail: 'Task reset to todo for re-dispatch',
-          userName,
-        })
-        .catch(() => {});
-      await reload();
-    } catch (err) {
-      console.error('Failed to reset task:', err);
-    } finally {
-      setResettingTaskId(null);
-    }
-  };
 
   // Group tasks by status
   const tasksByStatus = {
@@ -314,7 +109,7 @@ export default function ConstructionPage() {
   return (
     <div className="flex flex-col h-full">
       <div className="flex-1 overflow-y-auto">
-        <div className="max-w-4xl mx-auto p-6 space-y-6">
+        <div className="space-y-6">
           <div>
             <h1 className="text-xl font-bold">{sprint?.name || 'Loading...'}</h1>
             <p className="text-sm text-muted-foreground">
@@ -328,7 +123,12 @@ export default function ConstructionPage() {
             </p>
           </div>
 
-          {/* Pending questions */}
+          <div className="rounded-lg border bg-muted/40 px-4 py-3 text-xs text-muted-foreground">
+            This v1 space is read-only — agents can no longer be started and content can no longer
+            be edited.
+          </div>
+
+          {/* Pending questions (static — answers can no longer be submitted) */}
           {pendingQuestions.map((pq) => (
             <Card
               key={pq.id}
@@ -340,38 +140,43 @@ export default function ConstructionPage() {
                   <div className="flex items-center gap-2">
                     <MessageCircleQuestion className="h-4 w-4 text-agent-waiting" />
                     <CardTitle className="text-sm">Agent Question</CardTitle>
-                    <Badge
-                      variant="outline"
-                      className="text-[10px] bg-agent-waiting/10 border-agent-waiting/30"
-                    >
-                      Needs your input
+                    <Badge variant="outline" className="text-[10px]">
+                      Unanswered
                     </Badge>
                   </div>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-6 w-6 text-muted-foreground hover:text-destructive"
-                    onClick={() => handleDismissQuestion(pq.id)}
-                    title="Dismiss question"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </Button>
+                  <DiscussButton
+                    entityType="question"
+                    entityId={pq.id}
+                    entityTitle={pq.questions[0]?.text || `${pq.agent} agent question`}
+                  />
                 </div>
               </CardHeader>
-              <CardContent>
-                <QuestionEditor
-                  question={pq}
-                  sprintId={sprintId}
-                  userName={user?.displayName || user?.email || ''}
-                  onAnswer={(answer) => handleAnswerQuestion(pq.id, answer)}
-                  onAutoSave={async (draft) => {
-                    questionsService
-                      .update(sprintId, pq.id, { draftAnswer: draft })
-                      .catch(() => {});
-                  }}
-                  onFocus={() => setActivity('question', pq.id)}
-                  onBlur={() => setActivity('idle')}
-                />
+              <CardContent className="space-y-3">
+                <p className="text-xs text-muted-foreground">
+                  Asked by the {pq.agent} agent. The run has ended and answers can no longer be
+                  submitted.
+                </p>
+                {pq.questions.map((sq, i) => (
+                  <div key={i} className="border-l-2 border-primary/30 pl-3">
+                    <div className="prose prose-sm dark:prose-invert max-w-none text-sm">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{sq.text}</ReactMarkdown>
+                    </div>
+                    {sq.options.length > 0 && (
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {sq.options.map((opt, oi) => (
+                          <Badge
+                            key={oi}
+                            variant="outline"
+                            className="text-[10px] text-muted-foreground"
+                            title={opt.description}
+                          >
+                            {opt.label}
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
               </CardContent>
             </Card>
           ))}
@@ -414,77 +219,8 @@ export default function ConstructionPage() {
             </Card>
           )}
 
-          {/* Controls */}
+          {/* Read-only controls */}
           <div className="flex items-center gap-3 flex-wrap">
-            {!constructionComplete ? (
-              // In-progress: show primary kick-off button
-              <Button
-                onClick={handleKickOffConstruction}
-                disabled={
-                  tasks.length === 0 ||
-                  startingConstruction ||
-                  agentStatus.status?.status === 'RUNNING'
-                }
-                className="gap-2"
-              >
-                {startingConstruction ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Hammer className="h-4 w-4" />
-                )}
-                {startingConstruction
-                  ? 'Starting...'
-                  : storedBranch
-                    ? 'Re-run Construction'
-                    : 'Kick-Off Construction'}
-              </Button>
-            ) : (
-              // Complete: show re-run as outline button so it doesn't dominate
-              <Button
-                variant="outline"
-                onClick={handleKickOffConstruction}
-                disabled={startingConstruction || agentStatus.status?.status === 'RUNNING'}
-                className="gap-2"
-              >
-                {startingConstruction ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <RefreshCw className="h-4 w-4" />
-                )}
-                {startingConstruction ? 'Starting...' : 'Re-run Construction'}
-              </Button>
-            )}
-
-            {/* Create PR button — only when no PR yet and construction is complete */}
-            {constructionComplete && !sprint?.prUrl && (
-              <Button
-                onClick={handleKickOffCreatePr}
-                disabled={startingConstruction || agentStatus.status?.status === 'RUNNING'}
-                className="gap-2"
-              >
-                {startingConstruction ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <GitBranch className="h-4 w-4" />
-                )}
-                {startingConstruction
-                  ? `Creating ${prTerm.changeRequestShort}...`
-                  : `Create ${prTerm.changeRequestShort}`}
-              </Button>
-            )}
-
-            {/* Move to Review button — when construction complete, PR exists, and still in CONSTRUCTION phase */}
-            {constructionComplete && sprint?.prUrl && sprint?.phase === 'CONSTRUCTION' && (
-              <Button onClick={handleApprovePhase} disabled={approvingPhase} className="gap-2">
-                {approvingPhase ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <ArrowRight className="h-4 w-4" />
-                )}
-                {approvingPhase ? 'Ending Construction...' : 'End Construction & Move to Review'}
-              </Button>
-            )}
-
             {agentStatus.status?.status === 'RUNNING' && (
               <AgentStatusBadge status="running" agentType="construction" />
             )}
@@ -498,18 +234,6 @@ export default function ConstructionPage() {
               <Eye className="h-3.5 w-3.5" /> View Repo Files
             </Button>
           </div>
-
-          {/* Warning when construction done but PR missing */}
-          {constructionComplete && !sprint?.prUrl && agentStatus.status?.status !== 'RUNNING' && (
-            <Card className="border-amber-500/50 bg-amber-500/5">
-              <CardContent className="p-3 text-sm text-amber-600 dark:text-amber-400">
-                Construction is complete but no {prTerm.changeRequest} was created. Click{' '}
-                <strong>Create {prTerm.changeRequestShort}</strong> to have the orchestrator create
-                one now, or advance to Review and link a {prTerm.changeRequestShort} manually from
-                there.
-              </CardContent>
-            </Card>
-          )}
 
           {/* Task board */}
           <div className="space-y-4">
@@ -584,16 +308,6 @@ export default function ConstructionPage() {
                                     </p>
                                   )}
                                 </div>
-                                <TaskActionsMenu
-                                  task={task}
-                                  isResetting={
-                                    task.status === 'done' && resettingTaskId === task.id
-                                  }
-                                  onOpenSettings={setSettingsTask}
-                                  onReset={handleResetTask}
-                                  variant="compact"
-                                  disableReset={task.status !== 'done'}
-                                />
                               </div>
                               {stream?.text && task.status === 'in_progress' && (
                                 <div className="mt-2 space-y-1.5">
@@ -656,31 +370,22 @@ export default function ConstructionPage() {
                 </span>
                 <div className="space-y-2 mt-2">
                   {tasksByStatus.failed.map((task) => (
-                    <div key={task.id} className="flex items-start gap-2">
-                      <div className="flex-1">
-                        <ArtifactCard
-                          id={task.id}
-                          type="task"
-                          title={task.title}
-                          status="failed"
-                          fields={[
-                            {
-                              key: 'description',
-                              label: 'Description',
-                              value: task.description,
-                              multiline: true,
-                            },
-                          ]}
-                          readOnly
-                        />
-                      </div>
-                      <TaskActionsMenu
-                        task={task}
-                        isResetting={resettingTaskId === task.id}
-                        onOpenSettings={setSettingsTask}
-                        onReset={handleResetTask}
-                      />
-                    </div>
+                    <ArtifactCard
+                      key={task.id}
+                      id={task.id}
+                      type="task"
+                      title={task.title}
+                      status="failed"
+                      fields={[
+                        {
+                          key: 'description',
+                          label: 'Description',
+                          value: task.description,
+                          multiline: true,
+                        },
+                      ]}
+                      readOnly
+                    />
                   ))}
                 </div>
               </div>
@@ -751,82 +456,6 @@ export default function ConstructionPage() {
         </div>
       </div>
 
-      {/* Re-run Construction Modal */}
-      <Dialog open={showRerunModal} onOpenChange={setShowRerunModal}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Re-run Construction Agent</DialogTitle>
-            <DialogDescription>
-              {constructionComplete
-                ? 'All tasks are done. Describe what you want to build or fix — the agent will create new tasks and implement them on the existing branch.'
-                : 'The agent will pick up any tasks still in "To Do". You can optionally provide additional context.'}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="flex items-center gap-2 text-xs text-muted-foreground bg-muted rounded-md px-3 py-2">
-              <GitBranch className="h-3.5 w-3.5 shrink-0" />
-              <span className="font-mono">{storedBranch}</span>
-            </div>
-            <div>
-              <p className="text-xs font-medium mb-1">
-                {constructionComplete ? 'What do you want to build or fix?' : 'Additional context'}
-                {!constructionComplete && (
-                  <span className="text-muted-foreground font-normal"> (optional)</span>
-                )}
-              </p>
-              <Textarea
-                placeholder={
-                  constructionComplete
-                    ? 'e.g., Add input validation to all forms, fix the 404 error on the profile page, add a dark mode toggle...'
-                    : 'e.g., Focus on the failing tasks, use PostgreSQL instead of SQLite...'
-                }
-                value={changeRequest}
-                onChange={(e) => setChangeRequest(e.target.value)}
-                rows={4}
-                autoFocus
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setShowRerunModal(false);
-                setChangeRequest('');
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleConfirmRerun}
-              disabled={startingConstruction || (constructionComplete && !changeRequest.trim())}
-              className="gap-2"
-            >
-              {startingConstruction ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <RefreshCw className="h-4 w-4" />
-              )}
-              Launch Agent
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Branch selector modal (only shown when branch not yet stored) */}
-      {showBranchSelector && project && (
-        <BranchSelector
-          provider={project.gitProvider}
-          gitRepo={project.gitRepo}
-          onSelect={(branch, baseBranch) =>
-            branchSelectorMode === 'create-pr'
-              ? handleCreatePr(branch, baseBranch)
-              : handleStartConstruction(branch, baseBranch)
-          }
-          onCancel={() => setShowBranchSelector(false)}
-        />
-      )}
-
       {/* Repository file browser */}
       {showFileBrowser && project && (
         <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-8">
@@ -842,20 +471,6 @@ export default function ConstructionPage() {
             </CardContent>
           </Card>
         </div>
-      )}
-
-      {/* Task Settings */}
-      {sprintId && settingsTask && (
-        <TaskSettingsDialog
-          open={!!settingsTask}
-          onOpenChange={(open) => {
-            if (!open) setSettingsTask(null);
-          }}
-          sprintId={sprintId}
-          taskId={settingsTask.id}
-          taskTitle={settingsTask.title}
-          canEdit={settingsTask.status === 'todo'}
-        />
       )}
     </div>
   );

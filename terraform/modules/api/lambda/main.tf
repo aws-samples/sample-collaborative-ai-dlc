@@ -6,8 +6,8 @@ locals {
   partition  = data.aws_partition.current.partition
   dns_suffix = data.aws_partition.current.dns_suffix
 
-  # Lambdas that bundle code from lambda/shared/** via esbuild (gitlab, github,
-  # projects, trackers) are packaged by the terraform-aws-modules/lambda module,
+  # Lambdas that bundle code from lambda/shared/** via esbuild are packaged by
+  # the terraform-aws-modules/lambda module,
   # which only hashes each Lambda's OWN source_path directory. A change in a
   # bundled shared file therefore does NOT change the package hash and the Lambda
   # is silently NOT redeployed. To fix this, we fold a hash of the entire shared
@@ -20,7 +20,7 @@ locals {
   ]))
 
   # Neptune IAM resource ARN (scoped to the specific cluster only)
-  neptune_resource_arn = "arn:${local.partition}:neptune-db:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:${var.neptune_cluster_resource_id}/*"
+  neptune_resource_arn = "arn:${local.partition}:neptune-db:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:${var.neptune_cluster_resource_id}/*"
 
   # Reusable assume-role policy for Lambda services
   lambda_assume_role_policy = jsonencode({
@@ -97,7 +97,8 @@ resource "aws_iam_role_policy" "neptune_reader" {
 
 # -----------------------------------------------------------------------------
 # Role 2: neptune-questions (1 Lambda — questions)
-# Adds DynamoDB UpdateItem/GetItem on the agent-questions table.
+# Read-only sprint Q&A history: plain Neptune access. (The DynamoDB
+# agent-questions statement went with the retired v1 answer/resume path.)
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "neptune_questions" {
   name               = "${var.project_name}-neptune-questions-${var.environment}"
@@ -120,12 +121,7 @@ resource "aws_iam_role_policy" "neptune_questions" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-      local.neptune_statement,
-      {
-        Effect   = "Allow"
-        Action   = ["dynamodb:GetItem", "dynamodb:UpdateItem"]
-        Resource = [var.agent_questions_table_arn]
-      }
+      local.neptune_statement
     ]
   })
 }
@@ -164,10 +160,28 @@ resource "aws_iam_role_policy" "github_connector" {
         Action   = ["secretsmanager:GetSecretValue"]
         Resource = [var.github_oauth_secret_arn]
       },
+      # GitHub App auth: read the private key for installation-token minting
+      # and validation probes; write it from the Admin "GitHub Integration"
+      # card (PUT /github/admin/config, platform-admin gated).
+      {
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue"]
+        Resource = [var.github_app_private_key_secret_arn]
+      },
       {
         Effect   = "Allow"
         Action   = ["ssm:PutParameter", "ssm:GetParameter", "ssm:DeleteParameter"]
-        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
+        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
+      },
+      # Platform GitHub auth mode + App config: read for mode dispatch, write
+      # from the Admin card (same endpoint as the private key above).
+      {
+        Effect = "Allow"
+        Action = ["ssm:GetParameter", "ssm:PutParameter"]
+        Resource = compact([
+          var.github_auth_mode_param_arn,
+          var.github_app_config_param_arn,
+        ])
       }
     ]
   })
@@ -215,7 +229,7 @@ resource "aws_iam_role_policy" "trackers" {
         {
           Effect   = "Allow"
           Action   = ["ssm:GetParameter", "ssm:PutParameter", "ssm:DeleteParameter"]
-          Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
+          Resource = "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
         },
         # Jira Cloud (Phase 3 / #197): the trackers lambda owns the Jira OAuth
         # flow end to end — it reads the OAuth credentials from Secrets Manager
@@ -224,9 +238,26 @@ resource "aws_iam_role_policy" "trackers" {
         {
           Effect   = "Allow"
           Action   = ["ssm:PutParameter", "ssm:GetParameter", "ssm:DeleteParameter"]
-          Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/jira-token/*"
+          Resource = "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/jira-token/*"
+        },
+        # GitHub App auth (read-only): the github-issues provider consults the
+        # platform auth mode and, in app mode, mints installation tokens.
+        {
+          Effect = "Allow"
+          Action = ["ssm:GetParameter"]
+          Resource = compact([
+            var.github_auth_mode_param_arn,
+            var.github_app_config_param_arn,
+          ])
         },
       ],
+      var.github_app_private_key_secret_arn != "" ? [
+        {
+          Effect   = "Allow"
+          Action   = ["secretsmanager:GetSecretValue"]
+          Resource = [var.github_app_private_key_secret_arn]
+        }
+      ] : [],
       # Tracker OAuth secrets — read for OAuth flows, write from the
       # Admin "Tracker OAuth Apps" panel. Jira, GitHub and GitLab all flow
       # through the trackers Lambda's admin endpoints.
@@ -257,7 +288,9 @@ resource "aws_iam_role_policy" "trackers" {
 
 # -----------------------------------------------------------------------------
 # Role 4: cognito-reader (1 Lambda — cognito-users)
-# Only ListUsers on the project's user pool.
+# ListUsers (user directory) + platform-admin group management (list members,
+# add/remove — the Admin page's User Management card; the Lambda enforces the
+# platform-admin gate before any group mutation).
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "cognito_reader" {
   name               = "${var.project_name}-cognito-reader-${var.environment}"
@@ -276,8 +309,13 @@ resource "aws_iam_role_policy" "cognito_reader" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect   = "Allow"
-        Action   = ["cognito-idp:ListUsers"]
+        Effect = "Allow"
+        Action = [
+          "cognito-idp:ListUsers",
+          "cognito-idp:ListUsersInGroup",
+          "cognito-idp:AdminAddUserToGroup",
+          "cognito-idp:AdminRemoveUserFromGroup",
+        ]
         Resource = var.cognito_user_pool_arn
       }
     ]
@@ -287,9 +325,9 @@ resource "aws_iam_role_policy" "cognito_reader" {
 # -----------------------------------------------------------------------------
 # Role 5: agents-orchestrator (1 Lambda — agents)
 # Superset role: Neptune + multiple DynamoDB tables + SSM agent-settings +
-# ECS RunTask/DescribeTasks/StopTask (scoped to this cluster and the agent
-# task-definition family) + iam:PassRole (scoped to the two ECS task roles).
-# This is the most privileged Lambda role — intentionally isolated.
+# AgentCore runtime invoke (v2 model discovery). The v1 ECS dispatch perms
+# (RunTask/StopTask/DescribeTasks + iam:PassRole) were removed with the v1
+# execution engine. Still intentionally isolated from the other Lambda roles.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "agents_orchestrator" {
   name               = "${var.project_name}-agents-orchestrator-${var.environment}"
@@ -322,76 +360,79 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
         Resource = concat(
           var.dynamodb_table_arns,
           [for arn in var.dynamodb_table_arns : "${arn}/index/*"],
-          compact([
-            var.git_connections_table_arn,
-            var.git_connections_table_arn != "" ? "${var.git_connections_table_arn}/index/*" : "",
-            var.git_provider_connections_table_arn,
-            var.git_provider_connections_table_arn != "" ? "${var.git_provider_connections_table_arn}/index/*" : ""
-          ])
         )
       },
-      # SSM: read and write agent settings (bearer token + MCP servers) via Admin UI
+      # SSM: read and write agent settings (bearer token, CLI models, Kiro API
+      # key, derive enrichment mode, model pricing) via Admin UI
       {
         Effect = "Allow"
         Action = ["ssm:GetParameter", "ssm:GetParameters", "ssm:PutParameter"]
         Resource = [
-          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/bedrock-bearer-token",
-          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/mcp-servers",
-          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/cli-models",
-          "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/kiro-api-key",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/bedrock-bearer-token",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/cli-models",
+          # Agent tier → model configuration (incl. fallback + quorum rows),
+          # merged under a project's tier_models at intent create.
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/tier-models",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/kiro-api-key",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/derive-enrichment",
+          # Platform stage-skipping toggle (per-intent stage skipping;
+          # snapshotted onto the execution META row at intent create).
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/stage-skipping",
+          # Platform default for project PR delivery inheritance.
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/pr-strategy",
+          # Composer LLM-bypass toggle (deterministic keyword match vs always-LLM).
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/compose-llm-bypass",
+          # Global custom MCP servers injected into every agent session (merged
+          # with project-level entries at intent-create).
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/custom-mcp-servers",
+          # Token→USD price table, refreshed from the Price List API on model
+          # discovery and read by the intents lambda to compute cost.
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/model-pricing",
         ]
       },
+      # GLOBAL-tier MCP secrets (one SecureString per referenced ${VAR}). The
+      # agents lambda lists them (set-state only, no decrypt), rotates (Put) and
+      # clears (Delete) them from the Admin MCP editor. Kept in a SEPARATE
+      # statement because it needs GetParametersByPath + DeleteParameter and a
+      # wildcard path, which the fixed settings params above do not.
       {
-        Effect   = "Allow"
-        Action   = ["ssm:GetParameter"]
-        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter",
+          "ssm:GetParameters",
+          "ssm:GetParametersByPath",
+          "ssm:PutParameter",
+          "ssm:DeleteParameter",
+        ]
+        Resource = [
+          # The path NODE itself — GetParametersByPath authorizes against the
+          # queried path, which `/*` (children only) does NOT match.
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/mcp-secrets",
+          # The per-var parameters under it (Get/Put/Delete of {VAR}).
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/mcp-secrets/*",
+        ]
       },
-      # Just-in-time GitLab token refresh (POST /git/refresh-token): rotate the
-      # stored access token using the refresh token + GitLab OAuth secret so
-      # long-running construction jobs don't push/MR with an expired token.
-      # PutParameter writes the rotated token back; GetSecretValue reads the
-      # GitLab OAuth client credentials. GitHub needs neither (tokens don't
-      # expire). The gitlab secret ARN is empty when GitLab OAuth isn't
-      # provisioned, so the statement is dropped via compact().
+      # Model discovery for the project-settings picker (GET /agents/capabilities
+      # ?models=1): list the region's Bedrock inference profiles (claude/opencode
+      # models) and invoke the v2 runtime's `capabilities` command (Kiro's model
+      # list + per-CLI auth state). ListInferenceProfiles is not resource-scopable.
       {
         Effect   = "Allow"
-        Action   = ["ssm:PutParameter"]
-        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
+        Action   = ["bedrock:ListInferenceProfiles"]
+        Resource = "*"
       },
+      # Token→USD pricing: read published Bedrock model prices from the AWS Price
+      # List API on model discovery, to refresh the model-pricing SSM table.
+      # pricing:GetProducts is not resource-scopable.
       {
         Effect   = "Allow"
-        Action   = ["secretsmanager:GetSecretValue"]
-        Resource = var.gitlab_oauth_secret_arn != "" ? [var.gitlab_oauth_secret_arn] : ["arn:${local.partition}:secretsmanager:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:secret:nonexistent-gitlab-oauth-*"]
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["ecs:RunTask"]
-        Resource = "${var.agent_task_definition_family_arn}:*"
-        Condition = {
-          ArnEquals = {
-            "ecs:cluster" = var.ecs_cluster_arn
-          }
-        }
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["ecs:DescribeTasks", "ecs:StopTask"]
-        Resource = "arn:${local.partition}:ecs:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:task/*/*"
-        Condition = {
-          ArnEquals = {
-            "ecs:cluster" = var.ecs_cluster_arn
-          }
-        }
+        Action   = ["pricing:GetProducts"]
+        Resource = "*"
       },
       {
         Effect   = "Allow"
-        Action   = ["iam:PassRole"]
-        Resource = compact([var.agent_task_role_arn, var.agent_execution_role_arn])
-        Condition = {
-          StringEquals = {
-            "iam:PassedToService" = "ecs-tasks.${local.dns_suffix}"
-          }
-        }
+        Action   = ["bedrock-agentcore:InvokeAgentRuntime"]
+        Resource = var.agentcore_runtime_arn != "" ? [var.agentcore_runtime_arn, "${var.agentcore_runtime_arn}/*"] : ["*"]
       }
     ]
   })
@@ -399,8 +440,9 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
 
 # -----------------------------------------------------------------------------
 # Role 6: neptune-artifacts (2 Lambdas — projects, tasks)
-# Neptune CRUD + S3 GetObject/PutObject on the artifacts bucket
-# (used to sign presigned URLs for steering-rule docs).
+# Neptune CRUD + S3 presign for project custom agent rules (custom-rules/
+# prefix): the projects lambda mints presigned PUT/GET URLs so the browser
+# uploads/downloads the .md bodies directly.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "neptune_artifacts" {
   name               = "${var.project_name}-neptune-artifacts-${var.environment}"
@@ -422,12 +464,175 @@ resource "aws_iam_role_policy" "neptune_artifacts" {
   role = aws_iam_role.neptune_artifacts.id
   policy = jsonencode({
     Version = "2012-10-17"
+    Statement = concat(
+      [
+        local.neptune_statement,
+        # GitHub App auth (read-only): repo stack detection in the projects
+        # lambda mints a contents:read installation token in app mode.
+        {
+          Effect = "Allow"
+          Action = ["ssm:GetParameter"]
+          Resource = compact([
+            var.github_auth_mode_param_arn,
+            var.github_app_config_param_arn,
+          ])
+        },
+        # Project custom agent rules: presign PUT/GET for the .md bodies under
+        # the custom-rules/ prefix, and permanently purge on delete — the bucket
+        # is versioned, so we delete all versions (DeleteObjectVersion +
+        # ListBucketVersions) rather than leave a retrievable delete marker.
+        {
+          Effect = "Allow"
+          Action = [
+            "s3:GetObject",
+            "s3:PutObject",
+            "s3:DeleteObject",
+            "s3:DeleteObjectVersion",
+          ]
+          Resource = ["${var.artifacts_bucket_arn}/custom-rules/*"]
+        },
+        {
+          Effect   = "Allow"
+          Action   = ["s3:ListBucketVersions"]
+          Resource = [var.artifacts_bucket_arn]
+          Condition = {
+            StringLike = { "s3:prefix" = ["custom-rules/*"] }
+          }
+        },
+        # Project-tier MCP secrets: the projects lambda lists (set-state only),
+        # rotates (Put) and clears (Delete) per-var SecureStrings under
+        # projects/<id>/mcp-secrets/*. It also READS the GLOBAL custom-mcp-servers
+        # config (refs-only) to run the save-time cross-tier collision check.
+        {
+          Effect = "Allow"
+          Action = [
+            "ssm:GetParameter",
+            "ssm:GetParameters",
+            "ssm:GetParametersByPath",
+            "ssm:PutParameter",
+            "ssm:DeleteParameter",
+          ]
+          Resource = [
+            # The path NODE per project — GetParametersByPath authorizes against
+            # the queried path itself, which `/*` (children only) does NOT match.
+            "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/mcp-secrets",
+            "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/mcp-secrets/*",
+            "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/custom-mcp-servers",
+          ]
+        },
+      ],
+      var.github_app_private_key_secret_arn != "" ? [
+        {
+          Effect   = "Allow"
+          Action   = ["secretsmanager:GetSecretValue"]
+          Resource = [var.github_app_private_key_secret_arn]
+        }
+      ] : [],
+    )
+  })
+}
+
+# Project delete cascades into every child intent, reusing the intents lambda's
+# hardened deletion (shared/intent-deletion.js). That needs, beyond Neptune:
+# drain each EXEC#<id> partition in the v2 process table (incl. METRIC# rows),
+# remove intent-scoped Yjs docs, stop live AgentCore sessions, and wake parked
+# durable callbacks with a cancel sentinel. Scoped to the projects lambda's role
+# (shared with the read-only tasks lambda — an unused over-grant there, but the
+# cascade only fires from the projects DELETE path).
+resource "aws_iam_role_policy" "projects_intent_cascade" {
+  name = "projects-intent-cascade"
+  role = aws_iam_role.neptune_artifacts.id
+  policy = jsonencode({
+    Version = "2012-10-17"
     Statement = [
-      local.neptune_statement,
       {
+        # v2 process table: enumerate a project's executions (GSI1) then drain
+        # each EXEC#<id> partition (Query + BatchWrite delete).
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:Query",
+          "dynamodb:DeleteItem",
+          "dynamodb:BatchWriteItem",
+        ]
+        Resource = [
+          var.v2_executions_table_arn,
+          "${var.v2_executions_table_arn}/index/*",
+        ]
+      },
+      {
+        # Yjs documents: remove the intent-scoped realtime docs (gate editors,
+        # discussion threads, presence) for each deleted intent.
         Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:PutObject"]
-        Resource = ["${var.artifacts_bucket_arn}/steering/*"]
+        Action   = ["dynamodb:DeleteItem"]
+        Resource = [var.yjs_documents_table_arn]
+      },
+      {
+        # Wake a parked run's suspended durable callback with a cancel sentinel
+        # so nothing resumes into a deleted partition.
+        Effect = "Allow"
+        Action = ["lambda:SendDurableExecutionCallbackSuccess"]
+        Resource = [
+          "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}",
+          "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}:*",
+        ]
+      },
+      {
+        # Stop a deleted intent's live AgentCore session(s).
+        Effect   = "Allow"
+        Action   = ["bedrock-agentcore:StopRuntimeSession"]
+        Resource = var.agentcore_runtime_arn != "" ? [var.agentcore_runtime_arn, "${var.agentcore_runtime_arn}/*"] : ["*"]
+      },
+    ]
+  })
+}
+
+# -----------------------------------------------------------------------------
+# Role 7: blocks (2 Lambdas — building-blocks CRUD + seed-blocks)
+# DynamoDB RW on the blocks table + its GSI1, plus S3 RW scoped to the blocks/
+# prefix (content-addressed block bodies/scripts) and the aidlc-runtime/ prefix
+# (the seed job's commit-pinned internal runtime snapshot) of the artifacts
+# bucket. No Neptune, no VPC — pure DDB + S3.
+# -----------------------------------------------------------------------------
+resource "aws_iam_role" "blocks" {
+  name               = "${var.project_name}-blocks-${var.environment}"
+  assume_role_policy = local.lambda_assume_role_policy
+}
+
+resource "aws_iam_role_policy_attachment" "blocks_basic" {
+  role       = aws_iam_role.blocks.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy" "blocks" {
+  name = "blocks-table-and-bucket"
+  role = aws_iam_role.blocks.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:Query",
+          # Scan: the seed-blocks reseed mode scans for SYSTEM-owned partitions
+          # to clear before rewriting the baseline (rare admin op, small table).
+          "dynamodb:Scan",
+          "dynamodb:BatchGetItem",
+          "dynamodb:BatchWriteItem",
+        ]
+        Resource = [var.blocks_table_arn, "${var.blocks_table_arn}/index/*"]
+      },
+      {
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:PutObject"]
+        Resource = [
+          "${var.artifacts_bucket_arn}/blocks/*",
+          "${var.artifacts_bucket_arn}/aidlc-runtime/*",
+        ]
       }
     ]
   })
@@ -456,7 +661,12 @@ module "projects_lambda" {
   function_name = "${var.project_name}-projects-${var.environment}"
   handler       = "index.handler"
   runtime       = "nodejs24.x"
-  timeout       = 30
+  # Project delete cascades sequentially through every child intent (each a
+  # multi-store purge), so give it more headroom than the 30s CRUD default. API
+  # Gateway still caps the synchronous response at 29s, but the cascade drops the
+  # Project vertex LAST, so a client-side timeout on a big project leaves it
+  # listed and the delete simply re-runs to completion.
+  timeout = 300
 
   source_path = [
     {
@@ -484,6 +694,21 @@ module "projects_lambda" {
     GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
     GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
     ARTIFACTS_BUCKET               = var.artifacts_bucket_name
+    # GitHub App auth (mode-aware stack detection)
+    GITHUB_AUTH_MODE_PARAM             = var.github_auth_mode_param_name
+    GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
+    GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
+    # Project delete fans out into the intents' process state: the v2 process
+    # table (drained per intent, incl. metrics), the intent-scoped Yjs docs, and
+    # the AgentCore runtime (stop live sessions of deleted intents).
+    V2_PROCESS_TABLE      = var.v2_executions_table_name
+    YJS_DOCUMENTS_TABLE   = var.yjs_documents_table_name
+    AGENTCORE_RUNTIME_ARN = var.agentcore_runtime_arn
+    # MCP secrets: the base SSM prefix for per-var SecureStrings (project tier at
+    # {prefix}/projects/<id>/mcp-secrets/<VAR>) + the global config read for the
+    # save-time cross-tier collision check.
+    MCP_SECRETS_SSM_PREFIX    = "/${var.project_name}/${var.environment}"
+    AGENT_SETTINGS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
   }
 }
 
@@ -499,14 +724,16 @@ module "users_lambda" {
 
   source_path = [
     {
-      path             = "${path.module}/../../../../lambda/users"
-      npm_requirements = true
-    },
-    {
-      path          = "${path.module}/../../../../lambda/shared"
-      prefix_in_zip = "shared"
+      path = "${path.module}/../../../../lambda/users"
+      commands = [
+        "cd ../.. && npm run build -w users",
+        ":zip lambda/users/.build",
+      ]
     }
   ]
+
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.neptune_reader.arn
@@ -551,10 +778,6 @@ module "sprints_lambda" {
     NEPTUNE_ENDPOINT     = var.neptune_endpoint
     ENVIRONMENT          = var.environment
     CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
-    # Server-origin sprint.phaseChanged fanout: the sprints lambda pushes the
-    # event to sprint-channel WS connections.
-    CONNECTIONS_TABLE  = var.connections_table_name
-    WEBSOCKET_ENDPOINT = var.websocket_api_endpoint_https
   }
 }
 
@@ -570,14 +793,16 @@ module "requirements_lambda" {
 
   source_path = [
     {
-      path             = "${path.module}/../../../../lambda/requirements"
-      npm_requirements = true
-    },
-    {
-      path          = "${path.module}/../../../../lambda/shared"
-      prefix_in_zip = "shared"
+      path = "${path.module}/../../../../lambda/requirements"
+      commands = [
+        "cd ../.. && npm run build -w requirements",
+        ":zip lambda/requirements/.build",
+      ]
     }
   ]
+
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.neptune_reader.arn
@@ -604,14 +829,16 @@ module "user_stories_lambda" {
 
   source_path = [
     {
-      path             = "${path.module}/../../../../lambda/user-stories"
-      npm_requirements = true
-    },
-    {
-      path          = "${path.module}/../../../../lambda/shared"
-      prefix_in_zip = "shared"
+      path = "${path.module}/../../../../lambda/user-stories"
+      commands = [
+        "cd ../.. && npm run build -w user-stories",
+        ":zip lambda/user-stories/.build",
+      ]
     }
   ]
+
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.neptune_reader.arn
@@ -666,19 +893,21 @@ module "code_files_lambda" {
 
   function_name = "${var.project_name}-code-files-${var.environment}"
   handler       = "index.handler"
-  runtime       = "nodejs18.x"
+  runtime       = "nodejs24.x"
   timeout       = 30
 
   source_path = [
     {
-      path             = "${path.module}/../../../../lambda/code-files"
-      npm_requirements = true
-    },
-    {
-      path          = "${path.module}/../../../../lambda/shared"
-      prefix_in_zip = "shared"
+      path = "${path.module}/../../../../lambda/code-files"
+      commands = [
+        "cd ../.. && npm run build -w code-files",
+        ":zip lambda/code-files/.build",
+      ]
     }
   ]
+
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.neptune_reader.arn
@@ -700,19 +929,21 @@ module "reviews_lambda" {
 
   function_name = "${var.project_name}-reviews-${var.environment}"
   handler       = "index.handler"
-  runtime       = "nodejs18.x"
+  runtime       = "nodejs24.x"
   timeout       = 30
 
   source_path = [
     {
-      path             = "${path.module}/../../../../lambda/reviews"
-      npm_requirements = true
-    },
-    {
-      path          = "${path.module}/../../../../lambda/shared"
-      prefix_in_zip = "shared"
+      path = "${path.module}/../../../../lambda/reviews"
+      commands = [
+        "cd ../.. && npm run build -w reviews",
+        ":zip lambda/reviews/.build",
+      ]
     }
   ]
+
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.neptune_reader.arn
@@ -756,14 +987,9 @@ module "questions_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT      = var.neptune_endpoint
-    ENVIRONMENT           = var.environment
-    AGENT_QUESTIONS_TABLE = var.agent_questions_table_name
-    CORS_ALLOWED_ORIGINS  = var.cors_allowed_origins
-    # Server-origin question.answered fanout: the questions lambda pushes the
-    # event to sprint-channel WS connections.
-    CONNECTIONS_TABLE  = var.connections_table_name
-    WEBSOCKET_ENDPOINT = var.websocket_api_endpoint_https
+    NEPTUNE_ENDPOINT     = var.neptune_endpoint
+    ENVIRONMENT          = var.environment
+    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
   }
 }
 
@@ -807,19 +1033,21 @@ module "general_info_lambda" {
 
   function_name = "${var.project_name}-general-info-${var.environment}"
   handler       = "index.handler"
-  runtime       = "nodejs18.x"
+  runtime       = "nodejs24.x"
   timeout       = 30
 
   source_path = [
     {
-      path             = "${path.module}/../../../../lambda/general-info"
-      npm_requirements = true
-    },
-    {
-      path          = "${path.module}/../../../../lambda/shared"
-      prefix_in_zip = "shared"
+      path = "${path.module}/../../../../lambda/general-info"
+      commands = [
+        "cd ../.. && npm run build -w general-info",
+        ":zip lambda/general-info/.build",
+      ]
     }
   ]
+
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.neptune_reader.arn
@@ -866,8 +1094,12 @@ module "github_lambda" {
     GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
     GIT_TOKEN_SSM_PREFIX           = "${var.project_name}/${var.environment}/git-token"
     GITHUB_REDIRECT_URI            = var.github_redirect_uri
-    ENVIRONMENT                    = var.environment
-    CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
+    # GitHub App auth (mode switch + config + installation-token minting)
+    GITHUB_AUTH_MODE_PARAM             = var.github_auth_mode_param_name
+    GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
+    GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
+    ENVIRONMENT                        = var.environment
+    CORS_ALLOWED_ORIGINS               = var.cors_allowed_origins
   }
 }
 
@@ -904,7 +1136,7 @@ resource "aws_iam_role_policy" "gitlab_connector" {
       {
         Effect   = "Allow"
         Action   = ["ssm:PutParameter", "ssm:GetParameter", "ssm:DeleteParameter"]
-        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
+        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
       }
     ]
   })
@@ -992,8 +1224,12 @@ module "trackers_lambda" {
     GITHUB_OAUTH_SECRET_NAME       = var.github_oauth_secret_name
     GITLAB_OAUTH_SECRET_NAME       = var.gitlab_oauth_secret_name
     GITLAB_REDIRECT_URI            = var.gitlab_redirect_uri
-    ENVIRONMENT                    = var.environment
-    CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
+    # GitHub App auth (mode-aware token resolution for github-issues)
+    GITHUB_AUTH_MODE_PARAM             = var.github_auth_mode_param_name
+    GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
+    GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
+    ENVIRONMENT                        = var.environment
+    CORS_ALLOWED_ORIGINS               = var.cors_allowed_origins
   }
 }
 
@@ -1034,9 +1270,8 @@ module "timeline_events_lambda" {
 # Role: discussions (1 Lambda — discussions)
 # Neptune CRUD + read access to the realtime doc-token secret (issues HMAC
 # scope tokens after a membership check) + the discussion-locks / read-state
-# tables (creation + message guards) + connections-table fan-out
-# (server-driven discussion.message broadcasts) + a synchronous invoke of the
-# agents lambda for assist dispatch.
+# tables (creation + message/assist guards) + connections-table fan-out
+# (server-driven discussion.message broadcasts) + Quorum AgentCore invocation.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "discussions" {
   name               = "${var.project_name}-discussions-${var.environment}"
@@ -1084,11 +1319,9 @@ resource "aws_iam_role_policy" "discussions" {
         Resource = "${var.websocket_execution_arn}/*"
       },
       {
-        # Assist dispatch: synchronous invoke of the agents lambda with
-        # phase:'discussion' (assist runs as a pool-worker 'discussion' phase).
         Effect   = "Allow"
-        Action   = ["lambda:InvokeFunction"]
-        Resource = "arn:${local.partition}:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-agents-${var.environment}"
+        Action   = ["bedrock-agentcore:InvokeAgentRuntime"]
+        Resource = var.agentcore_runtime_arn != "" ? [var.agentcore_runtime_arn, "${var.agentcore_runtime_arn}/*"] : ["*"]
       }
     ]
   })
@@ -1129,7 +1362,7 @@ module "discussions_lambda" {
     READ_STATE_TABLE      = var.discussion_read_state_table_name
     CONNECTIONS_TABLE     = var.connections_table_name
     WEBSOCKET_ENDPOINT    = var.websocket_api_endpoint_https
-    AGENTS_LAMBDA         = "${var.project_name}-agents-${var.environment}"
+    AGENTCORE_RUNTIME_ARN = var.agentcore_runtime_arn
     # Takeover-safety invariant: must match `timeout` above; the
     # lambda asserts message-guard pending window (120 s) > this at init.
     LAMBDA_TIMEOUT_SECONDS = "30"
@@ -1142,21 +1375,23 @@ module "cognito_users_lambda" {
   version = "~> 8.0"
 
   function_name = "${var.project_name}-cognito-users-${var.environment}"
-  description   = "Lists users from Cognito User Pool"
+  description   = "Cognito user directory + platform-admin role management"
   handler       = "index.handler"
-  runtime       = "nodejs18.x"
+  runtime       = "nodejs24.x"
   timeout       = 15
 
   source_path = [
     {
-      path             = "${path.module}/../../../../lambda/cognito-users"
-      npm_requirements = true
-    },
-    {
-      path          = "${path.module}/../../../../lambda/shared"
-      prefix_in_zip = "shared"
+      path = "${path.module}/../../../../lambda/cognito-users"
+      commands = [
+        "cd ../.. && npm run build -w cognito-users-lambda",
+        ":zip lambda/cognito-users/.build",
+      ]
     }
   ]
+
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.cognito_reader.arn
@@ -1237,6 +1472,107 @@ module "migrate_tracker_fields_lambda" {
   }
 }
 
+# Building Blocks Lambda — CRUD over the reusable-block library. DynamoDB + S3
+# only, so no VPC config. Generic over all block types; block metadata lives in
+# the blocks table, bodies/scripts in the artifacts bucket under blocks/.
+module "building_blocks_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-building-blocks-${var.environment}"
+  handler       = "index.handler"
+  runtime       = "nodejs24.x"
+  timeout       = 30
+
+  source_path = [
+    {
+      path = "${path.module}/../../../../lambda/building-blocks"
+      commands = [
+        "cd ../.. && npm run build -w building-blocks",
+        ":zip lambda/building-blocks/.build",
+      ]
+    }
+  ]
+
+  create_role = false
+  lambda_role = aws_iam_role.blocks.arn
+
+  environment_variables = {
+    BLOCKS_TABLE         = var.blocks_table_name
+    ARTIFACTS_BUCKET     = var.artifacts_bucket_name
+    ENVIRONMENT          = var.environment
+    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+  }
+}
+
+# Seed-blocks Lambda (admin one-shot, invoked directly via CLI). Writes the
+# SYSTEM baseline library blocks into the blocks table + artifacts bucket.
+# Idempotent (attribute_not_exists guard); supports {dryRun:true}. Mirrors the
+# migrate-tracker-fields operational-job pattern. Reuses the blocks IAM role.
+# Stays deployed permanently — OSS forks are on their own upgrade timelines.
+module "seed_blocks_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-seed-blocks-${var.environment}"
+  handler       = "index.handler"
+  runtime       = "nodejs24.x"
+  timeout       = 300
+
+  source_path = [
+    {
+      path = "${path.module}/../../../../lambda/seed-blocks"
+      commands = [
+        "cd ../.. && npm run build -w seed-blocks",
+        ":zip lambda/seed-blocks/.build",
+      ]
+    }
+  ]
+
+  create_role = false
+  lambda_role = aws_iam_role.blocks.arn
+
+  environment_variables = {
+    BLOCKS_TABLE     = var.blocks_table_name
+    ARTIFACTS_BUCKET = var.artifacts_bucket_name
+    ENVIRONMENT      = var.environment
+    AIDLC_REPO_REF   = var.aidlc_repo_ref
+  }
+}
+
+# Workflows Lambda — composition over the block library: a workflow references
+# and arranges library blocks (grouping tree + skill placements + scope/
+# guardrail refs). Workflows share the blocks table (WF#… partitions) and the
+# blocks IAM role; no S3 (workflows carry no bodies), so no VPC config.
+module "workflows_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-workflows-${var.environment}"
+  handler       = "index.handler"
+  runtime       = "nodejs24.x"
+  timeout       = 30
+
+  source_path = [
+    {
+      path = "${path.module}/../../../../lambda/workflows"
+      commands = [
+        "cd ../.. && npm run build -w workflows",
+        ":zip lambda/workflows/.build",
+      ]
+    }
+  ]
+
+  create_role = false
+  lambda_role = aws_iam_role.blocks.arn
+
+  environment_variables = {
+    BLOCKS_TABLE         = var.blocks_table_name
+    ENVIRONMENT          = var.environment
+    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+  }
+}
+
 # -----------------------------------------------------------------------------
 # Server-origin realtime fanout.
 #
@@ -1250,6 +1586,8 @@ resource "aws_iam_role_policy" "realtime_fanout" {
     neptune_reader      = aws_iam_role.neptune_reader.id    # sprints lambda
     neptune_questions   = aws_iam_role.neptune_questions.id # questions lambda
     agents_orchestrator = aws_iam_role.agents_orchestrator.id
+    v2_orchestrator     = aws_iam_role.v2_orchestrator.id # durable orchestrator live fan-out
+    intents             = aws_iam_role.intents.id         # artifact edit / quorum-edit reload hints
   }
   name = "realtime-fanout"
   role = each.value
@@ -1271,37 +1609,444 @@ resource "aws_iam_role_policy" "realtime_fanout" {
 }
 
 # =============================================================================
-# Create PR Lambda — invoked by the construction MCP server (trigger_pr_creation)
+# v2 intents API Lambda
+#
+# CRUD over v2 intents: reads/writes the v2 process table (DynamoDB), reads
+# project membership + artifacts from Neptune (VPC), mints intent realtime scope
+# tokens (realtime doc secret), reads the blocks table to pin a workflow version,
+# starts the orchestrator durable execution (lambda:InvokeFunction), and resumes
+# a parked run by completing its durable callback
+# (lambda:SendDurableExecutionCallbackSuccess).
 # =============================================================================
-module "create_pr_lambda" {
-  source  = "terraform-aws-modules/lambda/aws"
-  version = "~> 8.0"
 
-  function_name = "${var.project_name}-create-pull-request-${var.environment}"
-  handler       = "create-pr.handler"
-  runtime       = "nodejs24.x"
-  timeout       = 30
-
-  source_path = [
-    {
-      path = "${path.module}/../../../../lambda/create-pr"
-      commands = [
-        "cd ../.. && npm run build -w create-pr",
-        ":zip lambda/create-pr/.build",
-      ]
-    }
-  ]
-
-  create_role = false
-  lambda_role = aws_iam_role.create_pr.arn
-}
-
-resource "aws_iam_role" "create_pr" {
-  name               = "${var.project_name}-create-pull-request-${var.environment}"
+resource "aws_iam_role" "intents" {
+  name               = "${var.project_name}-intents-${var.environment}"
   assume_role_policy = local.lambda_assume_role_policy
 }
 
-resource "aws_iam_role_policy_attachment" "create_pr_basic" {
-  role       = aws_iam_role.create_pr.name
+resource "aws_iam_role_policy_attachment" "intents_basic" {
+  role       = aws_iam_role.intents.name
   policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "intents_vpc" {
+  role       = aws_iam_role.intents.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+resource "aws_iam_role_policy" "intents" {
+  name = "v2-intents"
+  role = aws_iam_role.intents.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      local.neptune_statement,
+      {
+        # v2 process table: read/write execution state + GSI1 list. Delete /
+        # BatchWrite drain the whole EXEC#<id> partition on intent delete.
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Query",
+          "dynamodb:Scan",
+          "dynamodb:DeleteItem",
+          "dynamodb:BatchWriteItem",
+          "dynamodb:TransactWriteItems",
+        ]
+        Resource = [
+          var.v2_executions_table_arn,
+          "${var.v2_executions_table_arn}/index/*",
+        ]
+      },
+      {
+        # Yjs documents: remove the intent-scoped realtime docs (gate editors,
+        # discussion threads, presence) when an intent is deleted.
+        Effect   = "Allow"
+        Action   = ["dynamodb:DeleteItem"]
+        Resource = [var.yjs_documents_table_arn]
+      },
+      {
+        # Blocks table: resolve a workflow's latest version to pin at create
+        # (GetItem on the META row) and validate the intent's scope against the
+        # pinned workflow snapshot (Query on the base table + GSI1).
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:Query"]
+        Resource = [var.blocks_table_arn, "${var.blocks_table_arn}/index/*"]
+      },
+      {
+        # Realtime scope-token signing secret + the Admin global cli-models
+        # default (merged under the project selection at intent create, so the
+        # runtime model precedence is project > global > agentBlock > env) +
+        # the derive-enrichment mode (snapshotted onto the execution META row
+        # at intent create so the toggle needs no redeploy).
+        Effect = "Allow"
+        Action = ["ssm:GetParameter"]
+        Resource = [
+          var.realtime_doc_secret_param_arn,
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/cli-models",
+          # Admin global tier-models config (agent tier → model rows + fallback
+          # + quorum), merged under the project's tier_models at intent create.
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/tier-models",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/derive-enrichment",
+          # Platform stage-skipping toggle (effective value — project override
+          # over this — snapshotted onto the execution META at intent create).
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/stage-skipping",
+          # Platform default for project PR delivery inheritance.
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/pr-strategy",
+          # Composer LLM-bypass toggle (deterministic keyword match vs always-LLM).
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/compose-llm-bypass",
+          # Global custom MCP servers default (merged under the project's custom
+          # MCP servers at intent create, snapshotted onto the execution META).
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/custom-mcp-servers",
+          # Token→USD price table (written by the agents lambda) — read to attach
+          # cost to the intent's metric samples in the detail/rollup DTOs.
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/model-pricing",
+        ]
+      },
+      {
+        # Start the orchestrator (Event invoke) + complete a parked durable
+        # callback to resume a suspended run.
+        Effect = "Allow"
+        Action = [
+          "lambda:InvokeFunction",
+          "lambda:SendDurableExecutionCallbackSuccess",
+        ]
+        # Both the bare function ARN and its qualified (alias/version) forms —
+        # durable invokes target the `live` alias, which is a qualified ARN.
+        Resource = [
+          "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}",
+          "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}:*",
+        ]
+      },
+      {
+        # Watchdog repair: verify stale local rows against the durable execution
+        # service before marking them failed. The authenticated lane repair
+        # endpoint also stops an orphaned durable run before relaunching it.
+        Effect   = "Allow"
+        Action   = ["lambda:GetDurableExecution", "lambda:ListDurableExecutionsByFunction", "lambda:StopDurableExecution"]
+        Resource = "*"
+      },
+      {
+        # Compose report uploads: presign the PUT (report-mode composer input)
+        # and read the bounded excerpt back at compose dispatch. Namespaced
+        # under compose-reports/ so this grant can't touch artifact bodies.
+        Effect   = "Allow"
+        Action   = ["s3:PutObject", "s3:GetObject"]
+        Resource = "${var.artifacts_bucket_arn}/compose-reports/*"
+      },
+      {
+        # Manual graph-projection backfill (POST .../intents/{id}/derive):
+        # dispatch the derive-artifacts command to the AgentCore runtime.
+        # StopRuntimeSession: rewind/cancel/delete stop the intent's live
+        # session so a relaunch starts a fresh microVM on the CURRENT image
+        # (zombie-session field incident) and a cancelled run frees compute.
+        Effect   = "Allow"
+        Action   = ["bedrock-agentcore:InvokeAgentRuntime", "bedrock-agentcore:StopRuntimeSession"]
+        Resource = var.agentcore_runtime_arn != "" ? [var.agentcore_runtime_arn, "${var.agentcore_runtime_arn}/*"] : ["*"]
+      },
+      {
+        # Authenticated unit-review feedback: refresh the starter's provider
+        # credential before refetching selected PR/MR comments.
+        Effect = "Allow"
+        Action = ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:UpdateItem"]
+        Resource = compact([
+          var.git_connections_table_arn,
+          var.git_provider_connections_table_arn,
+        ])
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter", "ssm:PutParameter"]
+        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter"]
+        Resource = compact([var.github_auth_mode_param_arn, var.github_app_config_param_arn])
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = compact([var.github_app_private_key_secret_arn, var.gitlab_oauth_secret_arn])
+      }
+    ]
+  })
+}
+
+module "intents_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-intents-${var.environment}"
+  handler       = "index.handler"
+  runtime       = "nodejs24.x"
+  timeout       = 120
+
+  source_path = [
+    {
+      path = "${path.module}/../../../../lambda/intents"
+      commands = [
+        "cd ../.. && npm run build -w intents",
+        ":zip lambda/intents/.build",
+      ]
+    }
+  ]
+  hash_extra = local.shared_sources_hash
+
+  create_role = false
+  lambda_role = aws_iam_role.intents.arn
+
+  vpc_subnet_ids         = var.private_subnet_ids
+  vpc_security_group_ids = [aws_security_group.lambda.id]
+
+  environment_variables = {
+    NEPTUNE_ENDPOINT      = var.neptune_endpoint
+    ENVIRONMENT           = var.environment
+    CORS_ALLOWED_ORIGINS  = var.cors_allowed_origins
+    V2_PROCESS_TABLE      = var.v2_executions_table_name
+    BLOCKS_TABLE          = var.blocks_table_name
+    REALTIME_SECRET_PARAM = var.realtime_doc_secret_param_name
+    # Intent-scoped realtime docs are removed on intent delete.
+    YJS_DOCUMENTS_TABLE = var.yjs_documents_table_name
+    # Admin global cli-models default lives under this SSM prefix; the intents
+    # lambda merges it under the project selection at intent create.
+    AGENT_SETTINGS_SSM_PREFIX          = "/${var.project_name}/${var.environment}"
+    GIT_CONNECTIONS_TABLE              = var.git_connections_table_name
+    GIT_PROVIDER_CONNECTIONS_TABLE     = var.git_provider_connections_table_name
+    GITHUB_AUTH_MODE_PARAM             = var.github_auth_mode_param_name
+    GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
+    GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
+    GITLAB_OAUTH_SECRET_NAME           = var.gitlab_oauth_secret_name
+    GITLAB_REDIRECT_URI                = var.gitlab_redirect_uri
+    # The AgentCore stage-executor runtime — for the manual derive backfill
+    # (POST .../intents/{id}/derive, platform admin).
+    AGENTCORE_RUNTIME_ARN = var.agentcore_runtime_arn
+    # Compose report uploads (presigned PUT + bounded read-back at dispatch).
+    ARTIFACTS_BUCKET = var.artifacts_bucket_name
+    # Server-origin realtime reload hints (artifact edited/verified, quorum
+    # edit lifecycle) on the intent channel — lambda/shared/ws-fanout.js.
+    CONNECTIONS_TABLE  = var.connections_table_name
+    WEBSOCKET_ENDPOINT = var.websocket_api_endpoint_https
+    # Qualified name (function:alias) — durable functions reject $LATEST invokes.
+    V2_ORCHESTRATOR_FUNCTION          = "${module.v2_orchestrator_lambda.lambda_function_name}:${module.v2_orchestrator_alias.lambda_alias_name}"
+    DURABLE_EXECUTION_TIMEOUT_SECONDS = "31622400"
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "intents_durable_watchdog" {
+  name                = "${var.project_name}-intents-durable-watchdog-${var.environment}"
+  description         = "Repair v2 intents whose durable orchestrator expired while process state remained active"
+  schedule_expression = "rate(1 day)"
+}
+
+resource "aws_cloudwatch_event_target" "intents_durable_watchdog" {
+  rule      = aws_cloudwatch_event_rule.intents_durable_watchdog.name
+  target_id = "intents-durable-watchdog"
+  arn       = module.intents_lambda.lambda_function_arn
+  input     = jsonencode({ action = "repair-durable-executions" })
+}
+
+resource "aws_lambda_permission" "intents_durable_watchdog" {
+  statement_id  = "AllowExecutionFromDurableWatchdog"
+  action        = "lambda:InvokeFunction"
+  function_name = module.intents_lambda.lambda_function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.intents_durable_watchdog.arn
+}
+
+# =============================================================================
+# v2 orchestrator Lambda (durable function)
+#
+# Sequences an intent's stages end to end. NOT VPC-attached: it reaches Neptune
+# only THROUGH the AgentCore runtime (init-ws/run-stage), and reads the v2
+# process + blocks tables over the public DynamoDB endpoint. Durable execution
+# checkpoints each run-stage and suspends on human-gate callbacks.
+# =============================================================================
+
+resource "aws_iam_role" "v2_orchestrator" {
+  name               = "${var.project_name}-v2-orchestrator-${var.environment}"
+  assume_role_policy = local.lambda_assume_role_policy
+}
+
+resource "aws_iam_role_policy_attachment" "v2_orchestrator_basic" {
+  role       = aws_iam_role.v2_orchestrator.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy" "v2_orchestrator" {
+  name = "v2-orchestrator"
+  role = aws_iam_role.v2_orchestrator.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        # Durable execution: checkpoint + replay state.
+        Effect   = "Allow"
+        Action   = ["lambda:CheckpointDurableExecution", "lambda:GetDurableExecutionState"]
+        Resource = "*"
+      },
+      {
+        # Invoke the AgentCore stage-executor runtime (init-ws / run-stage) and
+        # release a parked session's warm compute (D1 release-on-park).
+        Effect   = "Allow"
+        Action   = ["bedrock-agentcore:InvokeAgentRuntime", "bedrock-agentcore:StopRuntimeSession"]
+        Resource = ["${var.agentcore_runtime_arn}", "${var.agentcore_runtime_arn}/*"]
+      },
+      {
+        # v2 process table: drive execution + stage + gate state.
+        Effect = "Allow"
+        Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]
+        Resource = [
+          var.v2_executions_table_arn,
+          "${var.v2_executions_table_arn}/index/*",
+        ]
+      },
+      {
+        # Blocks table: load the pinned workflow + block metadata for the plan.
+        Effect   = "Allow"
+        Action   = ["dynamodb:Query"]
+        Resource = [var.blocks_table_arn, "${var.blocks_table_arn}/index/*"]
+      },
+      {
+        # Git connections + token for init-ws clone.
+        Effect = "Allow"
+        Action = ["dynamodb:GetItem", "dynamodb:Query"]
+        Resource = compact([
+          var.git_connections_table_arn,
+          var.git_provider_connections_table_arn,
+        ])
+      },
+      {
+        # Read the starter's git token AND write it back: GitLab OAuth access
+        # tokens live ~2h, so init-ws refreshes an expired token just-in-time
+        # (ensureFreshGitToken) and PutParameter persists the rotated token —
+        # without PutParameter the refresh throws and the clone falls back to an
+        # empty (unauthenticated) token → "HTTP Basic: Access denied".
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter", "ssm:PutParameter"]
+        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
+      },
+      {
+        # GitHub App auth (read-only): mode dispatch + per-stage installation
+        # token minting when the platform runs in app mode.
+        Effect = "Allow"
+        Action = ["ssm:GetParameter"]
+        Resource = compact([
+          var.github_auth_mode_param_arn,
+          var.github_app_config_param_arn,
+        ])
+      },
+      {
+        # Best-effort persist of refreshed GitLab connection metadata (the token
+        # itself lives in SSM above; this only rotates the row's scope/updatedAt).
+        Effect = "Allow"
+        Action = ["dynamodb:PutItem", "dynamodb:UpdateItem"]
+        Resource = compact([
+          var.git_connections_table_arn,
+          var.git_provider_connections_table_arn,
+        ])
+      },
+      {
+        # GitHub App private key AND the GitLab OAuth app credentials — the
+        # latter is needed to exchange a refresh token for a fresh GitLab access
+        # token during init-ws (refreshGitlabToken → getGitlabOAuthCredentials).
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = compact([var.github_app_private_key_secret_arn, var.gitlab_oauth_secret_arn])
+      }
+    ]
+  })
+}
+
+module "v2_orchestrator_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-v2-orchestrator-${var.environment}"
+  handler       = "index.lambdaHandler"
+  runtime       = "nodejs24.x"
+  # A single run-stage invoke can be long; the durable runtime suspends across
+  # waits, but one step (a stage) must fit the function timeout.
+  timeout = 900
+
+  # Enable durable execution (checkpoint/replay + zero-compute waits).
+  durable_config_execution_timeout = 31622400
+  durable_config_retention_period  = 90
+
+  # Durable functions reject invokes against the unqualified ($LATEST) ARN —
+  # the caller MUST target a published version or alias. Publish a version on
+  # every deploy; the `live` alias below pins the invocable qualified name.
+  publish = true
+
+  # Durable functions only support structured (JSON) CloudWatch logs.
+  logging_log_format = "JSON"
+
+  source_path = [
+    {
+      path = "${path.module}/../../../../lambda/v2-orchestrator"
+      commands = [
+        "cd ../.. && npm run build -w v2-orchestrator",
+        ":zip lambda/v2-orchestrator/.build",
+      ]
+    }
+  ]
+  hash_extra = local.shared_sources_hash
+
+  create_role = false
+  lambda_role = aws_iam_role.v2_orchestrator.arn
+
+  environment_variables = {
+    ENVIRONMENT           = var.environment
+    V2_PROCESS_TABLE      = var.v2_executions_table_name
+    BLOCKS_TABLE          = var.blocks_table_name
+    AGENTCORE_RUNTIME_ARN = var.agentcore_runtime_arn
+    GIT_TOKEN_SSM_PREFIX  = "${var.project_name}/${var.environment}/git-token"
+    # Git-token resolution: resolveToken reads the starter's
+    # connection row from these tables, then the SSM token. The IAM statements
+    # were wired from day one but these env vars were MISSING — getGitConnection
+    # threw on TableName undefined, resolveToken degraded to an empty token, and
+    # a private-repo clone silently fell back to `git init` (see init-ws).
+    GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
+    GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
+    # GitHub App auth: the orchestrator consults the platform auth mode and, in
+    # app mode, mints repo-scoped installation tokens per stage dispatch
+    # (installation tokens live ~1h, shorter than a long run).
+    GITHUB_AUTH_MODE_PARAM             = var.github_auth_mode_param_name
+    GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
+    GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
+    # GitLab OAuth: access tokens live ~2h, so init-ws refreshes an expired
+    # token just-in-time (ensureFreshGitToken → refreshGitlabToken). The refresh
+    # exchange needs the OAuth app credentials (secret) and the same redirect_uri
+    # used at authorization time; without these the refresh throws and the clone
+    # degrades to an unauthenticated "Access denied".
+    GITLAB_OAUTH_SECRET_NAME = var.gitlab_oauth_secret_name
+    GITLAB_REDIRECT_URI      = var.gitlab_redirect_uri
+    # Live realtime fan-out (lambda/shared/ws-fanout.js) — the orchestrator emits
+    # execution/workspace lifecycle events on the intent:<id> channel itself, since
+    # it is the only component that owns those transitions (the runtime broadcasts
+    # stage-level events). Reaches the connections table over the public DDB
+    # endpoint (the orchestrator is not VPC-attached).
+    CONNECTIONS_TABLE                    = var.connections_table_name
+    WEBSOCKET_ENDPOINT                   = var.websocket_api_endpoint_https
+    DURABLE_EXECUTION_TIMEOUT_SECONDS    = "31622400"
+    DURABLE_GATE_DEADLINE_MARGIN_SECONDS = "300"
+  }
+}
+
+# `live` alias for the orchestrator — durable functions are invocable only via a
+# qualified name (version or alias). lambda/intents targets this alias so the
+# version it invokes tracks each deploy without the caller hardcoding a number.
+module "v2_orchestrator_alias" {
+  source  = "terraform-aws-modules/lambda/aws//modules/alias"
+  version = "~> 8.0"
+
+  name             = "live"
+  function_name    = module.v2_orchestrator_lambda.lambda_function_name
+  function_version = module.v2_orchestrator_lambda.lambda_function_version
+
+  # The function's own resource policy already grants the intents role invoke;
+  # no extra alias-scoped triggers needed.
+  create_async_event_config = false
 }

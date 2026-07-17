@@ -1,0 +1,6 @@
+{"type":"text","sessionID":"ses_fixture","part":{"type":"text","text":"Reviewing the current settings implementation."}}
+{"type":"tool_use","sessionID":"ses_fixture","part":{"type":"tool","tool":"read","state":{"status":"completed","input":{"filePath":"templates/settings.html"},"output":"existing settings markup"}}}
+{"type":"tool_use","sessionID":"ses_fixture","part":{"type":"tool","tool":"edit","state":{"status":"completed","input":{"filePath":"templates/settings.html","oldString":"System","newString":"Mobile App Pairing"},"output":"updated"}}}
+{"type":"tool_use","sessionID":"ses_fixture","part":{"type":"tool","tool":"aidlc_create_artifact","state":{"status":"completed","input":{"artifactType":"design","id":"settings-mobile-pairing"},"output":"created"}}}
+{"type":"tool_use","sessionID":"ses_fixture","part":{"type":"tool","tool":"patch","state":{"status":"failed","input":{"filePath":"static/missing.css"},"error":"file not found"}}}
+{"type":"text","sessionID":"ses_fixture","part":{"type":"text","text":"Settings output verified across desktop and mobile layouts."}}

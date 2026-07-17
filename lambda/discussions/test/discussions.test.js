@@ -15,7 +15,10 @@ import {
   ApiGatewayManagementApiClient,
   PostToConnectionCommand,
 } from '@aws-sdk/client-apigatewaymanagementapi';
-import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
+import {
+  BedrockAgentCoreClient,
+  InvokeAgentRuntimeCommand,
+} from '@aws-sdk/client-bedrock-agentcore';
 import shared from '../../shared/realtime-token.js';
 
 const { verifyRealtimeToken } = shared;
@@ -31,7 +34,7 @@ const PARTITION = `t-${randomUUID()}`;
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 const apiMock = mockClient(ApiGatewayManagementApiClient);
-const lambdaMock = mockClient(LambdaClient);
+const agentcoreMock = mockClient(BedrockAgentCoreClient);
 
 // ─── In-memory DynamoDB conditional-write fake for the locks table ───
 //
@@ -84,11 +87,6 @@ const installDdbFake = () => {
       if (!item || item.ownerToken !== input.ExpressionAttributeValues[':token']) {
         throw condFail();
       }
-    }
-    if (input.UpdateExpression.includes('executionId')) {
-      // Assist-lock executionId stamp.
-      item.executionId = input.ExpressionAttributeValues[':eid'];
-      return {};
     }
     item.guardState = input.ExpressionAttributeValues[':complete'];
     item.expiresAt = input.ExpressionAttributeValues[':exp'];
@@ -150,7 +148,7 @@ beforeEach(async () => {
   await g.V().drop().next();
   ddbMock.reset();
   apiMock.reset();
-  lambdaMock.reset();
+  agentcoreMock.reset();
   lockStore.clear();
   readStateStore.clear();
   connectionItems = [];
@@ -159,6 +157,7 @@ beforeEach(async () => {
   vi.stubEnv('REALTIME_DOC_SECRET', SECRET);
   vi.stubEnv('LOCKS_TABLE', LOCKS_TABLE);
   vi.stubEnv('READ_STATE_TABLE', READ_STATE_TABLE);
+  vi.stubEnv('AGENTCORE_RUNTIME_ARN', 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/test');
   // Pin Date so timestamps/expiries are assertable. Don't fake setTimeout —
   // the guard-poll loops and gremlin's WebSocket driver need real timers.
   vi.useFakeTimers({ toFake: ['Date'] });
@@ -293,7 +292,7 @@ const seedMessage = async (
 
 const payloadHashOf = (content, mentions = []) =>
   createHash('sha256')
-    .update(JSON.stringify({ content, mentions: [...new Set(mentions)].sort() }))
+    .update(JSON.stringify({ content, mentions: [...new Set(mentions)].toSorted() }))
     .digest('hex');
 
 // ─── Request helpers ───
@@ -426,7 +425,7 @@ describe('POST /sprints/{sprintId}/discussions', () => {
     expect(d.messageCount).toBe(0);
 
     const edges = await g.V().has('Discussion', 'id', d.id).bothE().label().toList();
-    expect(edges.sort()).toEqual(['DISCUSSES', 'HAS_DISCUSSION']);
+    expect(edges.toSorted()).toEqual(['DISCUSSES', 'HAS_DISCUSSION']);
 
     const events = await g
       .V()
@@ -674,7 +673,7 @@ describe('POST .../messages — append + guard state matrix', () => {
       postMessage(sprintId, DISC, { id: MSG_ID, content: CONTENT }),
     ]);
 
-    const statuses = [a.statusCode, b.statusCode].sort();
+    const statuses = [a.statusCode, b.statusCode].toSorted();
     // One 201 (winner); the other 200 (echo) or 409 message_in_progress
     // (transparent client retry) depending on interleaving.
     expect(statuses[1]).toBeLessThanOrEqual(409);
@@ -797,10 +796,10 @@ describe('POST .../messages — append + guard state matrix', () => {
       mentions: [OUTSIDER_SUB, ADMIN_SUB, ADMIN_SUB, MEMBER_SUB],
     });
     expect(res.statusCode).toBe(201);
-    expect(json(res).mentions).toEqual([ADMIN_SUB, MEMBER_SUB].sort());
+    expect(json(res).mentions).toEqual([ADMIN_SUB, MEMBER_SUB].toSorted());
 
     const stored = await g.V().has('DiscussionMessage', 'id', MSG_ID).values('mentions').next();
-    expect(JSON.parse(stored.value)).toEqual([ADMIN_SUB, MEMBER_SUB].sort());
+    expect(JSON.parse(stored.value)).toEqual([ADMIN_SUB, MEMBER_SUB].toSorted());
   });
 
   it('returns 404 for a discussion outside the sprint and 403 for non-members', async () => {
@@ -926,7 +925,7 @@ describe('discussion.message fanout', () => {
     const recipients = apiMock
       .commandCalls(PostToConnectionCommand)
       .map((c) => c.args[0].input.ConnectionId)
-      .sort();
+      .toSorted();
     expect(recipients).toEqual(['conn-legacy', 'conn-live']);
 
     const payload = JSON.parse(apiMock.commandCalls(PostToConnectionCommand)[0].args[0].input.Data);
@@ -1303,122 +1302,508 @@ describe('mention notifications', () => {
 });
 
 // =============================================================================
-// POST .../discussions/{discussionId}/assist — lock + dispatch
+// V2 intent-scoped discussions (anchor on Intent + its artifacts)
 // =============================================================================
 
-describe('POST .../assist', () => {
-  let sprintId;
-  const DISC = 'disc-assist';
-  const EXEC_ID = 'exec-1700000000-abc123';
-
-  const assist = (body, opts = {}) =>
-    call('POST', '/api/sprints/{sprintId}/discussions/{discussionId}/assist', {
-      ...opts,
-      pathParameters: { sprintId, discussionId: opts.discussionId || DISC },
-      body,
+describe('intent-scoped discussions', () => {
+  // Seed a Project + member + an Intent vertex (carrying project_id, as init-ws
+  // stamps it) + one produced Artifact (Intent --CONTAINS--> Artifact) + one
+  // mirrored question gate (Intent --CONTAINS--> Question, as the graph-writer's
+  // recordQuestion creates it — id is the gate's humanTaskId, no title prop).
+  const seedIntent = async () => {
+    const projectId = randomUUID();
+    const intentId = randomUUID();
+    const artifactId = `art-${randomUUID()}`;
+    const questionId = `ht-${randomUUID()}`;
+    await seedProject({
+      projectId,
+      members: [
+        { sub: MEMBER_SUB, role: 'member' },
+        { sub: ADMIN_SUB, role: 'admin' },
+      ],
     });
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .addV('Intent')
+      .property('id', intentId)
+      .property('project_id', projectId)
+      .property('title', 'Test intent')
+      .next();
+    await g
+      .V()
+      .has('Intent', 'id', intentId)
+      .as('i')
+      .addV('Artifact')
+      .property('id', artifactId)
+      .property('intent_id', intentId)
+      .property('artifact_type', 'requirements')
+      .property('title', 'Requirements')
+      .as('a')
+      .addE('CONTAINS')
+      .from_('i')
+      .to('a')
+      .next();
+    await g
+      .V()
+      .has('Intent', 'id', intentId)
+      .as('i')
+      .addV('Question')
+      .property('id', questionId)
+      .property('intent_id', intentId)
+      .property('questions', JSON.stringify([{ text: 'Which database?' }]))
+      .property('structured_answer', '')
+      .as('q')
+      .addE('CONTAINS')
+      .from_('i')
+      .to('q')
+      .next();
+    // A DERIVED typed item mirrored from the artifact: Artifact --HAS_ITEM-->
+    // Story (id encodes the intent; current rows carry superseded_at='').
+    const itemId = `story:${intentId}:s-login`;
+    await g
+      .V()
+      .has('Artifact', 'id', artifactId)
+      .as('a')
+      .addV('Story')
+      .property('id', itemId)
+      .property('intent_id', intentId)
+      .property('artifact_id', artifactId)
+      .property('slug', 's-login')
+      .property('title', 'User logs in')
+      .property('superseded_at', '')
+      .as('it')
+      .addE('HAS_ITEM')
+      .from_('a')
+      .to('it')
+      .next();
+    return { projectId, intentId, artifactId, questionId, itemId };
+  };
 
-  const mockDispatch = (statusCode, responseBody) =>
-    lambdaMock.on(InvokeCommand).resolves({
-      Payload: Buffer.from(JSON.stringify({ statusCode, body: JSON.stringify(responseBody) })),
+  const intentPath = (suffix) => `/api/projects/{projectId}/intents/{intentId}${suffix}`;
+
+  it('creates + lists an intent-level thread and a per-artifact thread', async () => {
+    const { projectId, intentId, artifactId } = await seedIntent();
+
+    const created = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'intent' },
     });
+    expect(created.statusCode).toBe(200);
+    expect(json(created).entityType).toBe('intent');
+    expect(json(created).entityId).toBe(intentId);
 
-  beforeEach(async () => {
-    ({ sprintId } = await seedDefaultProject());
-    await seedDiscussion(sprintId, DISC);
-    vi.stubEnv('AGENTS_LAMBDA', 'test-agents-lambda');
-    mockDispatch(200, { executionArn: 'arn:task', executionId: EXEC_ID });
+    const artifactThread = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'artifact', entityId: artifactId },
+    });
+    expect(artifactThread.statusCode).toBe(200);
+    expect(json(artifactThread).entityId).toBe(artifactId);
+
+    const list = await call('GET', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+    });
+    expect(list.statusCode).toBe(200);
+    expect(json(list)).toHaveLength(2);
   });
 
-  it('returns 202 {assistId}, dispatches phase=discussion, stamps the lock with the executionId', async () => {
-    const res = await assist({ command: 'summarize' });
-    expect(res.statusCode).toBe(202);
-    expect(json(res)).toEqual({ assistId: EXEC_ID });
+  it('rejects an artifact not contained by the intent', async () => {
+    const { projectId, intentId } = await seedIntent();
+    const res = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'artifact', entityId: 'art-not-here' },
+    });
+    expect(res.statusCode).toBe(404);
+  });
 
-    // Dispatch payload carries the discussion job fields with the caller identity.
-    const invoke = lambdaMock.commandCalls(InvokeCommand)[0].args[0].input;
-    expect(invoke.FunctionName).toBe('test-agents-lambda');
-    const event = JSON.parse(Buffer.from(invoke.Payload).toString());
-    const dispatchBody = JSON.parse(event.body);
-    expect(dispatchBody).toMatchObject({
-      phase: 'discussion',
-      sprintId,
-      discussionId: DISC,
+  it('creates a question-anchored thread on a mirrored question gate', async () => {
+    const { projectId, intentId, questionId } = await seedIntent();
+    // The Question vertex carries no title/name — the client-provided
+    // entityTitle (the question text) is the fallback.
+    const created = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'question', entityId: questionId, entityTitle: 'Which database?' },
+    });
+    expect(created.statusCode).toBe(200);
+    expect(json(created).entityType).toBe('question');
+    expect(json(created).entityId).toBe(questionId);
+    expect(json(created).entityTitle).toBe('Which database?');
+
+    // Idempotent get-or-create: same anchor returns the same thread.
+    const again = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'question', entityId: questionId },
+    });
+    expect(again.statusCode).toBe(200);
+    expect(json(again).id).toBe(json(created).id);
+  });
+
+  it('rejects a question not contained by the intent', async () => {
+    const { projectId, intentId } = await seedIntent();
+    const res = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'question', entityId: 'ht-not-here' },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('creates a thread anchored on a derived item (Artifact --HAS_ITEM--> Story)', async () => {
+    const { projectId, intentId, itemId } = await seedIntent();
+
+    const created = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'item', entityId: itemId, entityTitle: 'User logs in' },
+    });
+    expect(created.statusCode).toBe(200);
+    expect(json(created).entityType).toBe('item');
+    expect(json(created).entityId).toBe(itemId);
+    // The Story vertex carries a title prop → resolved server-side.
+    expect(json(created).entityTitle).toBe('User logs in');
+
+    // Idempotent get-or-create: same item returns the same thread.
+    const again = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'item', entityId: itemId },
+    });
+    expect(again.statusCode).toBe(200);
+    expect(json(again).id).toBe(json(created).id);
+
+    // The item thread lists under the intent.
+    const list = await call('GET', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+    });
+    expect(json(list).filter((d) => d.entityType === 'item')).toHaveLength(1);
+  });
+
+  it('rejects an item that belongs to a DIFFERENT intent', async () => {
+    const a = await seedIntent();
+    const b = await seedIntent();
+    // b.itemId is real, but it hangs off intent b — not reachable from intent a.
+    const res = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId: a.projectId, intentId: a.intentId },
+      body: { entityType: 'item', entityId: b.itemId },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('rejects a SUPERSEDED item (re-derive retired it)', async () => {
+    const { projectId, intentId, itemId } = await seedIntent();
+    await g.V().has('Story', 'id', itemId).property('superseded_at', '2026-01-02T00:00:00Z').next();
+    const res = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'item', entityId: itemId },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('rejects an item whose PARENT ARTIFACT was rewind-superseded', async () => {
+    // The item row itself stays current (superseded_at=''), but the knowledge
+    // graph hides items under a superseded parent — the anchor must too.
+    const { projectId, intentId, artifactId, itemId } = await seedIntent();
+    await g
+      .V()
+      .has('Artifact', 'id', artifactId)
+      .property('superseded_at', '2026-01-02T00:00:00Z')
+      .next();
+    const res = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'item', entityId: itemId },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('rejects an item id that resolves to a non-item vertex', async () => {
+    const { projectId, intentId, artifactId } = await seedIntent();
+    // The artifact id is a real vertex under the intent, but it is NOT reachable
+    // via Artifact --HAS_ITEM--> so the item anchor traversal must miss it.
+    const res = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'item', entityId: artifactId },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('creates separate review-scoped threads per human validation gate id', async () => {
+    const { projectId, intentId } = await seedIntent();
+
+    const first = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'review', entityId: 'ht-review-1', entityTitle: 'Review stage-a' },
+    });
+    expect(first.statusCode).toBe(200);
+    expect(json(first)).toMatchObject({
+      entityType: 'review',
+      entityId: 'ht-review-1',
+      entityTitle: 'Review stage-a',
+    });
+
+    const second = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'review', entityId: 'ht-review-2', entityTitle: 'Review stage-b' },
+    });
+    expect(second.statusCode).toBe(200);
+    expect(json(second).id).not.toBe(json(first).id);
+
+    const again = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'review', entityId: 'ht-review-1', entityTitle: 'Review stage-a' },
+    });
+    expect(again.statusCode).toBe(200);
+    expect(json(again).id).toBe(json(first).id);
+
+    const messageId = 'dm-review-aaaaaaaa';
+    const posted = await call('POST', intentPath('/discussions/{discussionId}/messages'), {
+      pathParameters: { projectId, intentId, discussionId: json(first).id },
+      body: { id: messageId, content: 'Review feedback checkpoint' },
+    });
+    expect(posted.statusCode).toBe(201);
+
+    const messages = await call('GET', intentPath('/discussions/{discussionId}/messages'), {
+      pathParameters: { projectId, intentId, discussionId: json(first).id },
+    });
+    expect(messages.statusCode).toBe(200);
+    expect(json(messages).messages.map((m) => m.content)).toContain('Review feedback checkpoint');
+
+    const list = await call('GET', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+    });
+    expect(json(list).filter((d) => d.entityType === 'review')).toHaveLength(2);
+
+    const search = await call('GET', intentPath('/discussions/search'), {
+      pathParameters: { projectId, intentId },
+      query: { q: 'checkpoint', entityType: 'review' },
+    });
+    expect(search.statusCode).toBe(200);
+    expect(json(search).results[0].discussion.id).toBe(json(first).id);
+  });
+
+  it('rejects a sprint entityType under an intent scope', async () => {
+    const { projectId, intentId } = await seedIntent();
+    const res = await call('POST', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      body: { entityType: 'sprint' },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('posts + reads messages on an intent thread', async () => {
+    const { projectId, intentId } = await seedIntent();
+    const created = json(
+      await call('POST', intentPath('/discussions'), {
+        pathParameters: { projectId, intentId },
+        body: { entityType: 'intent' },
+      }),
+    );
+    const msgId = `dm-${Date.now()}-aaaa`;
+    const posted = await call('POST', intentPath(`/discussions/{discussionId}/messages`), {
+      pathParameters: { projectId, intentId, discussionId: created.id },
+      body: { id: msgId, content: 'hello intent' },
+    });
+    expect(posted.statusCode).toBe(201);
+
+    const msgs = await call('GET', intentPath(`/discussions/{discussionId}/messages`), {
+      pathParameters: { projectId, intentId, discussionId: created.id },
+    });
+    expect(json(msgs).messages.map((m) => m.content)).toContain('hello intent');
+  });
+
+  it('starts Quorum assist on an intent thread and invokes AgentCore with the discussion session', async () => {
+    agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+      response: { transformToString: async () => JSON.stringify({ ok: true, accepted: true }) },
+    });
+    const { projectId, intentId } = await seedIntent();
+    const created = json(
+      await call('POST', intentPath('/discussions'), {
+        pathParameters: { projectId, intentId },
+        body: { entityType: 'intent' },
+      }),
+    );
+
+    const res = await call('POST', intentPath('/discussions/{discussionId}/assist'), {
+      pathParameters: { projectId, intentId, discussionId: created.id },
+      body: {
+        requestId: 'assist-request-1',
+        command: 'summarize',
+        instructions: 'Focus on decisions',
+      },
+    });
+    expect(res.statusCode).toBe(202);
+    const body = json(res);
+    expect(body.message).toMatchObject({
+      requestId: 'assist-request-1',
+      authorType: 'agent',
+      authorName: 'Quorum',
       command: 'summarize',
       requestedBy: MEMBER_SUB,
-    });
-    expect(event.requestContext.authorizer.claims.sub).toBe(MEMBER_SUB);
-
-    const lock = lockStore.get(`assist:${DISC}`);
-    expect(lock.kind).toBe('assist');
-    expect(lock.executionId).toBe(EXEC_ID);
-    expect(lock.expiresAt).toBe(nowSec() + 900);
-  });
-
-  it('second call while the lock is held → 409 assist_in_progress (no second dispatch)', async () => {
-    await assist({ command: 'summarize' });
-    lambdaMock.resetHistory();
-
-    const res = await assist({ command: 'explain' });
-    expect(res.statusCode).toBe(409);
-    expect(json(res)).toEqual({ reason: 'assist_in_progress', retryAfter: 30 });
-    expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(0);
-  });
-
-  it('an EXPIRED lock is taken over (crashed assist)', async () => {
-    lockStore.set(`assist:${DISC}`, {
-      lockId: `assist:${DISC}`,
-      kind: 'assist',
-      executionId: 'dead-exec',
-      expiresAt: nowSec() - 10,
+      assistStatus: 'running',
+      discussionId: created.id,
+      sprintId: intentId,
     });
 
-    const res = await assist({ command: 'summarize' });
+    const invoke = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input;
+    expect(invoke.runtimeSessionId.startsWith(`aidlc-discuss-${intentId}-${created.id}`)).toBe(
+      true,
+    );
+    expect(invoke.runtimeSessionId.length).toBeGreaterThanOrEqual(33);
+    const payload = JSON.parse(Buffer.from(invoke.payload).toString('utf8'));
+    expect(payload).toMatchObject({
+      command: 'discussion-assist-start',
+      projectId,
+      intentId,
+      discussionId: created.id,
+      requestId: 'assist-request-1',
+      assistCommand: 'summarize',
+      instructions: 'Focus on decisions',
+    });
+
+    const again = await call('POST', intentPath('/discussions/{discussionId}/assist'), {
+      pathParameters: { projectId, intentId, discussionId: created.id },
+      body: { requestId: 'assist-request-1', command: 'summarize' },
+    });
+    expect(again.statusCode).toBe(202);
+    expect(json(again).message.id).toBe(body.message.id);
+    expect(agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)).toHaveLength(1);
+  });
+
+  it('accepts ask as the free-form Quorum assist command', async () => {
+    agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+      response: { transformToString: async () => JSON.stringify({ ok: true, accepted: true }) },
+    });
+    const { projectId, intentId } = await seedIntent();
+    const created = json(
+      await call('POST', intentPath('/discussions'), {
+        pathParameters: { projectId, intentId },
+        body: { entityType: 'intent' },
+      }),
+    );
+
+    const res = await call('POST', intentPath('/discussions/{discussionId}/assist'), {
+      pathParameters: { projectId, intentId, discussionId: created.id },
+      body: {
+        requestId: 'assist-request-ask',
+        command: 'ask',
+        instructions: 'Check the risks',
+      },
+    });
     expect(res.statusCode).toBe(202);
-    expect(lockStore.get(`assist:${DISC}`).executionId).toBe(EXEC_ID);
-  });
-
-  it('dispatch failure propagates the original error AND releases the lock', async () => {
-    mockDispatch(400, {
-      error: 'cli_unavailable',
-      cli: 'kiro',
-      message: 'kiro-cli failed to authenticate',
+    expect(json(res).message).toMatchObject({
+      command: 'ask',
+      assistStatus: 'running',
+      content: 'Quorum is thinking...',
     });
 
-    const res = await assist({ command: 'summarize' });
-    expect(res.statusCode).toBe(400);
-    expect(json(res).error).toBe('cli_unavailable');
-    expect(lockStore.has(`assist:${DISC}`)).toBe(false);
-
-    // The thread is immediately assistable again.
-    mockDispatch(200, { executionId: EXEC_ID });
-    expect((await assist({ command: 'summarize' })).statusCode).toBe(202);
+    const invoke = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input;
+    const payload = JSON.parse(Buffer.from(invoke.payload).toString('utf8'));
+    expect(payload).toMatchObject({
+      assistCommand: 'ask',
+      instructions: 'Check the risks',
+    });
   });
 
-  it('validates commands: unknown command, custom without instruction', async () => {
-    expect((await assist({ command: 'banana' })).statusCode).toBe(400);
-    expect((await assist({ command: 'custom' })).statusCode).toBe(400);
-    expect(
-      (await assist({ command: 'custom', instruction: 'compare the options' })).statusCode,
-    ).toBe(202);
-  });
+  it('marks the Quorum message failed when AgentCore invoke fails', async () => {
+    agentcoreMock.on(InvokeAgentRuntimeCommand).rejects(new Error('runtime unavailable'));
+    const { projectId, intentId } = await seedIntent();
+    const created = json(
+      await call('POST', intentPath('/discussions'), {
+        pathParameters: { projectId, intentId },
+        body: { entityType: 'intent' },
+      }),
+    );
 
-  it('suggest-answer requires a question-anchored thread', async () => {
-    // DISC is sprint-anchored → rejected.
-    expect((await assist({ command: 'suggest-answer' })).statusCode).toBe(400);
-
-    // Question-anchored thread → accepted.
-    const questionId = randomUUID();
-    await seedQuestion(sprintId, questionId);
-    await seedDiscussion(sprintId, 'disc-q-assist', { entityType: 'question' });
-    const res = await assist({ command: 'suggest-answer' }, { discussionId: 'disc-q-assist' });
+    const res = await call('POST', intentPath('/discussions/{discussionId}/assist'), {
+      pathParameters: { projectId, intentId, discussionId: created.id },
+      body: { requestId: 'assist-request-failed', command: 'brainstorm' },
+    });
     expect(res.statusCode).toBe(202);
+    expect(json(res).message.assistStatus).toBe('failed');
+
+    const stored = json(
+      await call('GET', intentPath('/discussions/{discussionId}/messages'), {
+        pathParameters: { projectId, intentId, discussionId: created.id },
+      }),
+    ).messages[0];
+    expect(stored.assistStatus).toBe('failed');
+    expect(stored.content).toContain('Quorum could not brainstorm');
+
+    agentcoreMock.reset();
+    agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+      response: { transformToString: async () => JSON.stringify({ ok: true, accepted: true }) },
+    });
+    const retry = await call('POST', intentPath('/discussions/{discussionId}/assist'), {
+      pathParameters: { projectId, intentId, discussionId: created.id },
+      body: { requestId: 'assist-request-failed', command: 'brainstorm' },
+    });
+    expect(retry.statusCode).toBe(202);
+    expect(json(retry).message.id).toBe(stored.id);
+    expect(json(retry).message.assistStatus).toBe('running');
+    expect(agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)).toHaveLength(1);
   });
 
-  it('is membership-gated and 404s on unknown threads', async () => {
-    expect((await assist({ command: 'summarize' }, { sub: OUTSIDER_SUB })).statusCode).toBe(403);
-    expect(
-      (await assist({ command: 'summarize' }, { discussionId: 'disc-missing' })).statusCode,
-    ).toBe(404);
+  it('issues an intent + project scope realtime token for a member', async () => {
+    const { projectId, intentId } = await seedIntent();
+    const res = await call('POST', intentPath('/realtime-token'), {
+      pathParameters: { projectId, intentId },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(json(res).scopes).toEqual(
+      expect.arrayContaining([`intent:${intentId}`, `project:${projectId}`]),
+    );
+  });
+
+  it('denies a non-member', async () => {
+    const { projectId, intentId } = await seedIntent();
+    const res = await call('GET', intentPath('/discussions'), {
+      pathParameters: { projectId, intentId },
+      sub: OUTSIDER_SUB,
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('resolves + reopens an intent thread (scope-neutral status write)', async () => {
+    const { projectId, intentId } = await seedIntent();
+    const created = json(
+      await call('POST', intentPath('/discussions'), {
+        pathParameters: { projectId, intentId },
+        body: { entityType: 'intent' },
+      }),
+    );
+    const resolved = await call('PUT', intentPath(`/discussions/{discussionId}`), {
+      pathParameters: { projectId, intentId, discussionId: created.id },
+      body: { status: 'resolved', resolutionSummary: 'done' },
+    });
+    expect(resolved.statusCode).toBe(200);
+    expect(json(resolved).status).toBe('resolved');
+
+    const reopened = await call('PUT', intentPath(`/discussions/{discussionId}`), {
+      pathParameters: { projectId, intentId, discussionId: created.id },
+      body: { status: 'open' },
+    });
+    expect(json(reopened).status).toBe('open');
+  });
+
+  it('redacts an intent-thread message (admin) targeting the intent scope', async () => {
+    const { projectId, intentId } = await seedIntent();
+    const created = json(
+      await call('POST', intentPath('/discussions'), {
+        pathParameters: { projectId, intentId },
+        body: { entityType: 'intent' },
+      }),
+    );
+    const msgId = `dm-${Date.now()}-redact`;
+    await call('POST', intentPath(`/discussions/{discussionId}/messages`), {
+      pathParameters: { projectId, intentId, discussionId: created.id },
+      body: { id: msgId, content: 'secret' },
+    });
+    const redacted = await call(
+      'POST',
+      intentPath(`/discussions/{discussionId}/messages/{messageId}/redact`),
+      {
+        pathParameters: { projectId, intentId, discussionId: created.id, messageId: msgId },
+        sub: ADMIN_SUB,
+      },
+    );
+    expect(redacted.statusCode).toBe(200);
+    expect(json(redacted).redacted).toBe(true);
+    expect(json(redacted).content).not.toBe('secret');
   });
 });

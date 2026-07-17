@@ -1,5 +1,3 @@
-'use strict';
-
 // Shared HMAC-signed realtime scope tokens.
 //
 // Both realtime fabrics historically verified only "valid Cognito JWT", which
@@ -23,7 +21,7 @@
 // which runs the same vector table against both implementations. If you change
 // anything here, mirror it there.
 
-const crypto = require('node:crypto');
+import crypto from 'node:crypto';
 
 const TOKEN_TTL_SECONDS = 600; // 10 minutes
 const TOKEN_VERSION = 1;
@@ -142,10 +140,13 @@ const verifyRealtimeAccess = ({ token, secret, requiredScope, sub, now = Date.no
 //   review-{sprintId}-{artifactId|"pending"}  useCollaborativeArtifact.ts
 //   discussion-{sprintId}-{discussionId}      (added by the discussions feature)
 //   inception-{projectId}                     useCollaborativeInception.ts
+//   intent-review-{intentId}-{humanTaskId}    IntentView.tsx stage review
+//   intent-artifact-{intentId}-{artifactId}   useCollaborativeArtifactContent.ts (post-hoc edit)
+//   intent-draft-{intentId}                   useCollaborativeIntentDraft.ts (DRAFT compose page)
 //
 // App-WS documentId formats:
 //   sprint:{sprintId}   useSprintEvents.ts / useObservabilityEvents.ts
-//   {projectId}         server-side emitters (notify, mcp-server-graph)
+//   {projectId}         legacy server-side emitters (v1 engine, removed)
 // -----------------------------------------------------------------------------
 
 const UUID_PATTERN = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}';
@@ -155,12 +156,25 @@ const SPRINT_DOC_RE = new RegExp(
 const PROJECT_DOC_RE = new RegExp(`^inception-(${UUID_PATTERN})$`);
 const SPRINT_CHANNEL_RE = new RegExp(`^sprint:(${UUID_PATTERN})$`);
 const PROJECT_CHANNEL_RE = new RegExp(`^${UUID_PATTERN}$`);
+// V2 intent realtime. The intent app-WS channel is `intent:<intentId>` (see
+// lambda/agentcore/clients.js broadcastToIntent). Intent collaboration Yjs docs
+// use intent-specific prefixes (`intent-sq-…`, `intent-discussion-…`) so the
+// extractor is unambiguous — sprintIds and intentIds are both bare UUIDs, so the
+// shared v1 prefixes (`sq-`, `discussion-`) can't be reused without collision.
+const INTENT_DOC_RE = new RegExp(
+  `^intent-(?:sq|discussion|presence|review|artifact|draft)-(${UUID_PATTERN})(?:-.+)?$`,
+);
+const INTENT_CHANNEL_RE = new RegExp(`^intent:(${UUID_PATTERN})$`);
 
 /**
  * Yjs doc name → required scope, or null for unknown formats (deny).
  */
 const requiredScopeForYjsDoc = (docName) => {
   if (typeof docName !== 'string') return null;
+  // Intent docs first — their `intent-` prefix is more specific than the v1
+  // `sq-`/`discussion-` shapes and must win.
+  const intent = INTENT_DOC_RE.exec(docName);
+  if (intent) return `intent:${intent[1].toLowerCase()}`;
   const sprint = SPRINT_DOC_RE.exec(docName);
   if (sprint) return `sprint:${sprint[1].toLowerCase()}`;
   const project = PROJECT_DOC_RE.exec(docName);
@@ -173,6 +187,8 @@ const requiredScopeForYjsDoc = (docName) => {
  */
 const requiredScopeForChannel = (documentId) => {
   if (typeof documentId !== 'string') return null;
+  const intent = INTENT_CHANNEL_RE.exec(documentId);
+  if (intent) return `intent:${intent[1].toLowerCase()}`;
   const sprint = SPRINT_CHANNEL_RE.exec(documentId);
   if (sprint) return `sprint:${sprint[1].toLowerCase()}`;
   if (PROJECT_CHANNEL_RE.test(documentId)) return `project:${documentId.toLowerCase()}`;
@@ -196,7 +212,16 @@ const isTokenLive = (tokenExp, now = Date.now()) => {
   return exp * 1000 > now;
 };
 
-module.exports = {
+export {
+  TOKEN_TTL_SECONDS,
+  signRealtimeToken,
+  verifyRealtimeToken,
+  verifyRealtimeAccess,
+  requiredScopeForYjsDoc,
+  requiredScopeForChannel,
+  isTokenLive,
+};
+export default {
   TOKEN_TTL_SECONDS,
   signRealtimeToken,
   verifyRealtimeToken,

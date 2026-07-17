@@ -34,7 +34,7 @@ export function StuckAlert({ detections }: Props) {
   if (detections.length === 0) return null;
 
   // Sort: critical first
-  const sorted = [...detections].sort((a, b) => {
+  const sorted = [...detections].toSorted((a, b) => {
     const order = { critical: 0, high: 1, medium: 2 };
     return order[a.severity] - order[b.severity];
   });

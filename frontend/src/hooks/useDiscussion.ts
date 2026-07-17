@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useYjsDocument } from './useYjsDocument';
 import { realtimeService } from '../services/realtime';
 import { discussionsService } from '../services/discussions';
-import type { AssistCommand, DiscussionMessage } from '../services/discussions';
+import type { AssistCommand, DiscussionMessage, DiscussionScope } from '../services/discussions';
 import {
   changeCursorOf,
   displayCursorOf,
@@ -10,10 +10,6 @@ import {
   newerOf,
   sortMessages,
 } from '../lib/discussion';
-import { SeqDeduplicator } from '../lib/seqDeduplicator';
-import { extractAgentStartError } from '../lib/agentStartError';
-import type { AgentStartError } from '../lib/agentStartError';
-import { ApiError } from '../services/api';
 import { generateColor } from '../utils/colors';
 
 // Core discussion hook.
@@ -34,7 +30,8 @@ export interface PendingMessage {
 }
 
 interface UseDiscussionArgs {
-  sprintId: string;
+  /** Null off a scoped route — the hook then performs no I/O. */
+  scope: DiscussionScope | null;
   discussionId: string | null;
   /** Connect only while the sheet is open. */
   open: boolean;
@@ -42,15 +39,32 @@ interface UseDiscussionArgs {
 }
 
 const SEED_PAGE_SIZE = 100;
+const makeAssistRequestId = (now: number = Date.now()): string =>
+  `assist-${now}-${Math.random().toString(36).slice(2, 10)}`;
 
 const toPlain = (m: DiscussionMessage): DiscussionMessage => ({ ...m });
 
-export function useDiscussion({ sprintId, discussionId, open, user }: UseDiscussionArgs) {
-  const docId = open && discussionId ? `discussion-${sprintId}-${discussionId}` : null;
+// Yjs collaboration doc name for a discussion thread. Intent threads use the
+// `intent-discussion-` prefix (project-scoped token target); sprint threads keep
+// the original `discussion-` prefix. Both keep deny-by-default scope extraction
+// unambiguous (see lambda/shared/realtime-token.js).
+const discussionDocId = (scope: DiscussionScope, discussionId: string): string =>
+  scope.kind === 'intent'
+    ? `intent-discussion-${scope.intentId}-${discussionId}`
+    : `discussion-${scope.sprintId}-${discussionId}`;
+
+export function useDiscussion({ scope, discussionId, open, user }: UseDiscussionArgs) {
+  const docId = open && discussionId && scope ? discussionDocId(scope, discussionId) : null;
+  const scopeTarget = !scope
+    ? undefined
+    : scope.kind === 'intent'
+      ? { intentId: scope.intentId, projectId: scope.projectId }
+      : { sprintId: scope.sprintId };
   const { doc, synced, awareness, remoteUsers } = useYjsDocument(
     docId,
     user.name,
     generateColor(user.id),
+    scopeTarget,
   );
 
   const [messages, setMessages] = useState<DiscussionMessage[]>([]);
@@ -58,16 +72,6 @@ export function useDiscussion({ sprintId, discussionId, open, user }: UseDiscuss
   const [hasMoreOlder, setHasMoreOlder] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [seeded, setSeeded] = useState(false);
-
-  // ── Assist lifecycle: 202 → 'starting' (the assist runs as a pool-worker
-  // phase, so pickup can take 15–60 s) → first matching agent.chunk →
-  // 'streaming' → finalized by the durable discussion.message broadcast ──
-  const [assistId, setAssistId] = useState<string | null>(null);
-  const [assistState, setAssistState] = useState<'starting' | 'streaming' | null>(null);
-  const [streamingReply, setStreamingReply] = useState('');
-  const [assistError, setAssistError] = useState<AgentStartError | null>(null);
-  const assistDedupRef = useRef(new SeqDeduplicator());
-  const assistBufferRef = useRef('');
 
   // The latest (updatedAt, id) seen — change-delta reconciliation cursor.
   const changeCursorRef = useRef<string | null>(null);
@@ -114,10 +118,10 @@ export function useDiscussion({ sprintId, discussionId, open, user }: UseDiscuss
   // last client leaves — Neptune reseeds, key-based merge makes concurrent
   // seeding harmless) ──
   useEffect(() => {
-    if (!docId || !discussionId || !synced || seeded) return;
+    if (!docId || !discussionId || !synced || seeded || !scope) return;
     let cancelled = false;
     discussionsService
-      .listMessages(sprintId, discussionId, { limit: SEED_PAGE_SIZE })
+      .listMessages(scope, discussionId, { limit: SEED_PAGE_SIZE })
       .then((page) => {
         if (cancelled) return;
         upsertMessages(page.messages);
@@ -128,16 +132,16 @@ export function useDiscussion({ sprintId, discussionId, open, user }: UseDiscuss
     return () => {
       cancelled = true;
     };
-  }, [docId, discussionId, synced, seeded, sprintId, upsertMessages]);
+  }, [docId, discussionId, synced, seeded, scope, upsertMessages]);
 
   // ── Older history on demand (?before= display-order keyset) ──
   const loadOlder = useCallback(async () => {
-    if (!discussionId || loadingOlder) return;
+    if (!discussionId || loadingOlder || !scope) return;
     const oldest = sortMessages([...messagesMap.values()])[0];
     if (!oldest) return;
     setLoadingOlder(true);
     try {
-      const page = await discussionsService.listMessages(sprintId, discussionId, {
+      const page = await discussionsService.listMessages(scope, discussionId, {
         before: displayCursorOf(oldest),
         limit: SEED_PAGE_SIZE,
       });
@@ -148,25 +152,25 @@ export function useDiscussion({ sprintId, discussionId, open, user }: UseDiscuss
     } finally {
       setLoadingOlder(false);
     }
-  }, [discussionId, loadingOlder, messagesMap, sprintId, upsertMessages]);
+  }, [discussionId, loadingOlder, messagesMap, scope, upsertMessages]);
 
   // ── Change-delta reconciliation backstop: on focus/visibility
   // regain, fetch everything with (updatedAt, id) past what we saw — new
   // messages AND redactions of older ones ──
   const reconcile = useCallback(async () => {
-    if (!discussionId) return;
+    if (!discussionId || !scope) return;
     const after = changeCursorRef.current;
     try {
       const page = after
-        ? await discussionsService.listMessages(sprintId, discussionId, { after })
-        : await discussionsService.listMessages(sprintId, discussionId, {
+        ? await discussionsService.listMessages(scope, discussionId, { after })
+        : await discussionsService.listMessages(scope, discussionId, {
             limit: SEED_PAGE_SIZE,
           });
       upsertMessages(page.messages);
     } catch (err) {
       console.error('Discussion reconciliation failed:', err);
     }
-  }, [discussionId, sprintId, upsertMessages]);
+  }, [discussionId, scope, upsertMessages]);
 
   useEffect(() => {
     if (!docId) return;
@@ -207,92 +211,16 @@ export function useDiscussion({ sprintId, discussionId, open, user }: UseDiscuss
     return () => unsubs.forEach((unsub) => unsub());
   }, [docId, discussionId, messagesMap, upsertMessages]);
 
-  // ── Assist stream correlation: agent.* events filtered by
-  // executionId === assistId; the durable reply arrives as a normal
-  // discussion.message and clears the streaming bubble ──
-  const clearAssist = useCallback(() => {
-    setAssistId(null);
-    setAssistState(null);
-    setStreamingReply('');
-    assistBufferRef.current = '';
-    assistDedupRef.current.reset();
-  }, []);
-
-  useEffect(() => {
-    if (!assistId) return;
-    const unsubs = [
-      realtimeService.on('agent.chunk', (data) => {
-        if (data.executionId !== assistId) return;
-        if (!assistDedupRef.current.accept(data.seq)) return;
-        if (!data.text) return;
-        assistBufferRef.current += data.text;
-        setStreamingReply(assistBufferRef.current);
-        setAssistState('streaming');
-      }),
-      realtimeService.on('agent.error', (data) => {
-        if (data.executionId !== assistId) return;
-        setAssistError({ message: data.error || 'The assistant failed.' });
-        clearAssist();
-      }),
-      realtimeService.on('agent.completed', (data) => {
-        if (data.executionId !== assistId) return;
-        // The durable reply normally lands as a discussion.message right
-        // after completion. Grace period, then reconcile + clear so a missed
-        // broadcast still resolves via REST.
-        setTimeout(() => {
-          reconcile().finally(() => clearAssist());
-        }, 3000);
-      }),
-      realtimeService.on('discussion.message', (data) => {
-        if (data.discussionId !== discussionId) return;
-        const msg = data.message as DiscussionMessage | undefined;
-        if (data.executionId === assistId || msg?.authorType === 'agent') clearAssist();
-      }),
-    ];
-    return () => unsubs.forEach((unsub) => unsub());
-  }, [assistId, discussionId, clearAssist, reconcile]);
-
-  const invokeAssist = useCallback(
-    async (command: AssistCommand, instruction?: string) => {
-      if (!discussionId || assistId) return;
-      setAssistError(null);
-      try {
-        const { assistId: executionId } = await discussionsService.assist(sprintId, discussionId, {
-          command,
-          instruction,
-        });
-        assistDedupRef.current.reset();
-        assistBufferRef.current = '';
-        setStreamingReply('');
-        setAssistId(executionId);
-        setAssistState('starting');
-      } catch (err) {
-        if (
-          err instanceof ApiError &&
-          err.status === 409 &&
-          err.body?.reason === 'assist_in_progress'
-        ) {
-          setAssistError({
-            message: 'An assist is already running in this thread — wait for it to finish.',
-          });
-          return;
-        }
-        setAssistError(extractAgentStartError(err));
-      }
-    },
-    [discussionId, assistId, sprintId],
-  );
-
   // ── Send ──
   const sendMessage = useCallback(
     async (content: string, mentions: string[] = []) => {
-      if (!discussionId) return;
+      if (!discussionId || !scope) return;
       const trimmed = content.trim();
       if (!trimmed) return;
       const id = makeMessageId();
       setPending((prev) => [...prev, { id, content: trimmed, status: 'sending' }]);
       try {
-        const persisted = await discussionsService.postMessage(sprintId, discussionId, {
+        const persisted = await discussionsService.postMessage(scope, discussionId, {
           id,
           content: trimmed,
           mentions,
@@ -307,18 +235,18 @@ export function useDiscussion({ sprintId, discussionId, open, user }: UseDiscuss
         );
       }
     },
-    [discussionId, sprintId, upsertMessages],
+    [discussionId, scope, upsertMessages],
   );
 
   // Failed bubbles retry with the SAME id — idempotent on the server.
   const retryMessage = useCallback(
     async (id: string) => {
-      if (!discussionId) return;
+      if (!discussionId || !scope) return;
       const failed = pending.find((p) => p.id === id);
       if (!failed) return;
       setPending((prev) => prev.map((p) => (p.id === id ? { ...p, status: 'sending' } : p)));
       try {
-        const persisted = await discussionsService.postMessage(sprintId, discussionId, {
+        const persisted = await discussionsService.postMessage(scope, discussionId, {
           id,
           content: failed.content,
         });
@@ -331,7 +259,30 @@ export function useDiscussion({ sprintId, discussionId, open, user }: UseDiscuss
         );
       }
     },
-    [discussionId, pending, sprintId, upsertMessages],
+    [discussionId, pending, scope, upsertMessages],
+  );
+
+  const requestAssist = useCallback(
+    async (
+      command: AssistCommand,
+      instructions = '',
+      opts: { requestId?: string; selectedMessageIds?: string[] } = {},
+    ) => {
+      if (!discussionId || !scope || scope.kind !== 'intent') return;
+      const requestId = opts.requestId || makeAssistRequestId();
+      try {
+        const { message } = await discussionsService.assist(scope, discussionId, {
+          requestId,
+          command,
+          instructions,
+          selectedMessageIds: opts.selectedMessageIds || [],
+        });
+        upsertMessages([message]);
+      } catch (err) {
+        console.error('Discussion assist failed:', err);
+      }
+    },
+    [discussionId, scope, upsertMessages],
   );
 
   // ── Typing awareness ──
@@ -370,17 +321,12 @@ export function useDiscussion({ sprintId, discussionId, open, user }: UseDiscuss
     loadOlder,
     sendMessage,
     retryMessage,
+    requestAssist,
     reconcile,
     setTyping,
     typingUsers,
     remoteUsers,
     /** Direct upsert path for locally-initiated mutations (e.g. redact). */
     applyMessages: upsertMessages,
-    // Assist lifecycle
-    invokeAssist,
-    assistState,
-    streamingReply,
-    assistError,
-    clearAssistError: () => setAssistError(null),
   };
 }

@@ -1,6 +1,16 @@
 {
   "name": "cognito-users-lambda",
-  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "vitest run --project=cognito-users",
+    "test:watch": "vitest --project=cognito-users",
+    "build": "esbuild index.js --bundle --platform=node --target=node24 --format=esm --external:@aws-sdk/* --banner:js=\"import{createRequire}from'node:module';const require=createRequire(import.meta.url);\" --outfile=.build/index.mjs",
+    "lint": "oxlint .",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check ."
+  },
   "dependencies": {
     "@aws-sdk/client-cognito-identity-provider": "^3.1085.0"
   }

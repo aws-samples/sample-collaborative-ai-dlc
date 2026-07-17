@@ -53,6 +53,11 @@ site/
 
 # E2E test run artifacts (generated screenshots, reports, summaries)
 test/e2e/artifacts/
+frontend/public/dev/agent-output-fixtures.json
 
 # Terraform plan files (any environment suffix)
 tfplan*
+
+# A7 local annex-check run artifacts (generated per-run; contain local paths)
+lambda/agentcore/test/a7-prompt.txt
+lambda/agentcore/test/a7-mcp-config.json

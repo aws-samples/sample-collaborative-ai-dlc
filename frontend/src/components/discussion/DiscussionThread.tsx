@@ -1,8 +1,6 @@
 import { useEffect, useRef } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import { Button } from '@/components/ui/button';
-import { Loader2, AlertCircle, RotateCcw, Bot } from 'lucide-react';
+import { Loader2, AlertCircle, RotateCcw } from 'lucide-react';
 import { groupMessages } from '@/lib/discussion';
 import type { DiscussionMessage } from '@/services/discussions';
 import type { PendingMessage } from '@/hooks/useDiscussion';
@@ -28,11 +26,9 @@ interface Props {
   dividerIndex?: number | null;
   canRedact?: boolean;
   onRedact?: (messageId: string) => void;
+  onAssistRetry?: (messageId: string) => void;
   /** Fires while the bottom of the thread is visible in the viewport. */
   onBottomVisible?: () => void;
-  /** Assist lifecycle: 'starting' placeholder → streaming bubble. */
-  assistState?: 'starting' | 'streaming' | null;
-  streamingReply?: string;
 }
 
 export function DiscussionThread({
@@ -47,9 +43,8 @@ export function DiscussionThread({
   dividerIndex = null,
   canRedact,
   onRedact,
+  onAssistRetry,
   onBottomVisible,
-  assistState = null,
-  streamingReply = '',
 }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const dividerRef = useRef<HTMLDivElement>(null);
@@ -76,14 +71,14 @@ export function DiscussionThread({
     const changed = last !== lastMessageIdRef.current;
     lastMessageIdRef.current = last;
     if (!didInitialScrollRef.current) return;
-    if (!changed && pending.length === 0 && !assistState) return;
+    if (!changed && pending.length === 0) return;
     const container = containerRef.current?.parentElement;
     if (!container) return;
     const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 200;
-    if (nearBottom || pending.length > 0 || assistState) {
+    if (nearBottom || pending.length > 0) {
       bottomRef.current?.scrollIntoView({ block: 'end' });
     }
-  }, [messages, pending, assistState, streamingReply]);
+  }, [messages, pending]);
 
   // Visible-read trigger: IntersectionObserver on the bottom
   // sentinel AND document.visibilityState — both checked by the sheet.
@@ -111,6 +106,7 @@ export function DiscussionThread({
         currentUserId={currentUserId}
         canRedact={canRedact}
         onRedact={onRedact}
+        onAssistRetry={onAssistRetry}
       />
     ));
 
@@ -176,35 +172,6 @@ export function DiscussionThread({
         <p className="px-3 pt-1 text-[10px] text-muted-foreground italic">
           {typingUsers.join(', ')} {typingUsers.length === 1 ? 'is' : 'are'} typing…
         </p>
-      )}
-
-      {/* Assist lifecycle bubble: explicit starting state — the assist runs
-          as a pool-worker phase, so pickup takes 15–60 s — then streaming
-          markdown with a pulse cursor.
-          The durable reply replaces this as a normal agent message. */}
-      {assistState === 'starting' && (
-        <div className="flex gap-2 px-3 py-1.5">
-          <div className="h-6 w-6 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
-            <Bot className="h-3.5 w-3.5 text-primary" />
-          </div>
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Loader2 className="h-3 w-3 animate-spin" />
-            Assistant is starting… (this can take up to a minute)
-          </div>
-        </div>
-      )}
-      {assistState === 'streaming' && (
-        <div className="flex gap-2 px-3 py-1.5">
-          <div className="h-6 w-6 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
-            <Bot className="h-3.5 w-3.5 text-primary" />
-          </div>
-          <div className="min-w-0 flex-1 rounded-md bg-primary/5 px-2 py-1">
-            <div className="prose prose-sm dark:prose-invert max-w-none text-sm leading-relaxed break-words [&_p]:my-0.5 [&_pre]:my-1 [&_ul]:my-1 [&_ol]:my-1 [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingReply}</ReactMarkdown>
-            </div>
-            <span className="inline-block w-1.5 h-3.5 bg-muted-foreground animate-pulse align-middle" />
-          </div>
-        </div>
       )}
 
       <div ref={bottomRef} className="h-px" />

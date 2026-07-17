@@ -1,11 +1,13 @@
-import { cn } from '@/lib/utils';
-import { Wifi, WifiOff, Bot, Loader2 } from 'lucide-react';
-import { Separator } from '@/components/ui/separator';
+import { useEffect, useState } from 'react';
+import { Wifi, WifiOff, Loader2 } from 'lucide-react';
+import { realtimeService } from '@/services/realtime';
+import type { ConnectionStatus } from '@/services/realtime';
 
 export function StatusBar() {
-  // These will be connected to real state via SprintContext later
-  const connectionStatus = 'connected' as 'connected' | 'connecting' | 'disconnected';
-  const agentInfo = null as { status: string; type: string } | null;
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>(
+    realtimeService.getStatus(),
+  );
+  useEffect(() => realtimeService.onStatusChange(setConnectionStatus), []);
 
   return (
     <footer className="flex h-6 shrink-0 items-center border-t bg-background px-3 text-[11px] text-muted-foreground gap-3">
@@ -29,34 +31,12 @@ export function StatusBar() {
         )}
       </div>
 
-      <Separator orientation="vertical" className="h-3" />
-
-      {/* Agent status */}
-      {agentInfo ? (
-        <div className="flex items-center gap-1.5">
-          <Bot className="h-3 w-3" />
-          <span>{agentInfo.type}</span>
-          <span
-            className={cn(
-              'h-1.5 w-1.5 rounded-full',
-              agentInfo.status === 'running'
-                ? 'bg-agent-running animate-pulse'
-                : agentInfo.status === 'completed'
-                  ? 'bg-agent-success'
-                  : 'bg-agent-idle',
-            )}
-          />
-        </div>
-      ) : (
-        <div className="flex items-center gap-1.5">
-          <Bot className="h-3 w-3" />
-          <span>No agent active</span>
-        </div>
-      )}
-
       {/* Right side: version/env */}
       <div className="ml-auto flex items-center gap-2">
-        <span className="text-muted-foreground/50">AI-DLC</span>
+        <span className="text-muted-foreground/50">
+          AI-DLC v{import.meta.env.VITE_APP_VERSION}
+          {import.meta.env.VITE_ENVIRONMENT ? ` | ${import.meta.env.VITE_ENVIRONMENT}` : ''}
+        </span>
       </div>
     </footer>
   );

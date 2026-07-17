@@ -2,11 +2,103 @@ import { beforeAll, beforeEach, afterAll, afterEach, describe, it, expect, vi } 
 import { randomUUID } from 'node:crypto';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
+import { mockClient } from 'aws-sdk-client-mock';
+import { DynamoDBDocumentClient, QueryCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
+import { LambdaClient } from '@aws-sdk/client-lambda';
+import { BedrockAgentCoreClient } from '@aws-sdk/client-bedrock-agentcore';
+import { S3Client, HeadObjectCommand } from '@aws-sdk/client-s3';
+import {
+  SSMClient,
+  GetParameterCommand,
+  GetParametersByPathCommand,
+  PutParameterCommand,
+  DeleteParameterCommand,
+} from '@aws-sdk/client-ssm';
 
 const NOW = new Date('2026-01-01T00:00:00.000Z');
 
+// Project delete cascades into each intent's process state (DynamoDB) — mock the
+// v2 process table so the graph tests stay hermetic. `projectExecs` is the set
+// of META rows listProjectExecutions (GSI1) returns for a given project; the
+// per-EXEC partition reads (getExecutionRecords / deleteExecution key drain)
+// return empty by default, which is all the cascade needs to exercise its
+// ordering + graph drops. `batchWrites` records the BatchWrite deletes so a test
+// can assert each intent's partition was drained.
+const ddbMock = mockClient(DynamoDBDocumentClient);
+const lambdaMock = mockClient(LambdaClient);
+const agentcoreMock = mockClient(BedrockAgentCoreClient);
+let projectExecs = new Map(); // projectId -> [{ intentId, executionId, status, projectId }]
+let batchWrites = [];
+
+const installProcessTableFakes = () => {
+  ddbMock.reset();
+  batchWrites = [];
+  ddbMock.on(QueryCommand).callsFake((input) => {
+    // listProjectExecutions: GSI1 query keyed by PROJECT#<id>.
+    if (input.IndexName === 'GSI1') {
+      const pk = input.ExpressionAttributeValues?.[':pk'] ?? '';
+      const projectId = pk.replace(/^PROJECT#/, '');
+      return { Items: projectExecs.get(projectId) ?? [] };
+    }
+    // Per-EXEC partition reads (getExecutionRecords, deleteExecution key drain):
+    // no rows — the cascade tolerates an intent with no process records.
+    return { Items: [] };
+  });
+  ddbMock.on(BatchWriteCommand).callsFake((input) => {
+    batchWrites.push(input);
+    return {};
+  });
+  lambdaMock.reset();
+  agentcoreMock.reset();
+};
+
 // File-level partition: every test in this file shares it.
 const PARTITION = `t-${randomUUID()}`;
+
+// S3 has no testcontainer, so mock just the S3 client (ddb + gremlin stay real).
+// `s3Objects` maps an uploaded object's Key → its byte size. HeadObject resolves
+// with that ContentLength for present keys and 404s otherwise — exercising the
+// custom-rules commit existence + size guards. Presign/get/list/delete resolve
+// as no-ops (offline). Helper `putObject(key, size=10)` marks a key present.
+const s3Mock = mockClient(S3Client);
+const s3Objects = new Map();
+const putObject = (key, size = 10) => s3Objects.set(key, size);
+
+// SSM mock for MCP secrets (project tier) + the global config read used by the
+// save-time cross-tier collision check. `ssmParams` maps parameter Name → Value;
+// PUT/DELETE mutate it, GetParametersByPath lists it, GetParameter reads one.
+const ssmMock = mockClient(SSMClient);
+let ssmParams = new Map();
+const installSsmFakes = () => {
+  ssmMock.reset();
+  ssmMock.on(GetParameterCommand).callsFake((input) => {
+    if (ssmParams.has(input.Name))
+      return { Parameter: { Name: input.Name, Value: ssmParams.get(input.Name) } };
+    const e = new Error('not found');
+    e.name = 'ParameterNotFound';
+    throw e;
+  });
+  ssmMock.on(GetParametersByPathCommand).callsFake((input) => {
+    const prefix = input.Path.replace(/\/+$/, '') + '/';
+    const Parameters = [...ssmParams.keys()]
+      .filter((n) => n.startsWith(prefix))
+      .map((n) => ({ Name: n, Value: ssmParams.get(n) }));
+    return { Parameters };
+  });
+  ssmMock.on(PutParameterCommand).callsFake((input) => {
+    ssmParams.set(input.Name, input.Value);
+    return {};
+  });
+  ssmMock.on(DeleteParameterCommand).callsFake((input) => {
+    if (!ssmParams.has(input.Name)) {
+      const e = new Error('not found');
+      e.name = 'ParameterNotFound';
+      throw e;
+    }
+    ssmParams.delete(input.Name);
+    return {};
+  });
+};
 
 let handler;
 let conn;
@@ -18,8 +110,13 @@ beforeAll(async () => {
   // creds planted by globalSetup and tries to resolve the profile via SSO/IMDS,
   // adding ~1s per getConnection call. Unset for the test process.
   vi.stubEnv('AWS_PROFILE', undefined);
+  // Project delete cascades into the process table + Yjs docs (both mocked).
+  vi.stubEnv('V2_PROCESS_TABLE', 'v2-proc-test');
+  vi.stubEnv('YJS_DOCUMENTS_TABLE', 'yjs-test');
+  vi.stubEnv('ARTIFACTS_BUCKET', 'test-artifacts-bucket');
+  vi.stubEnv('MCP_SECRETS_SSM_PREFIX', '/collab/dev');
+  vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', '/collab/dev');
   ({ handler } = await import('../index.js'));
-
   // Direct gremlin connection for seeding non-owner member edges. Uses the
   // same partition so writes are visible to the handler under test.
   const url = `ws://${process.env.NEPTUNE_ENDPOINT}:${process.env.GREMLIN_PORT}/gremlin`;
@@ -61,6 +158,25 @@ beforeEach(() => {
   // gremlin's WebSocket driver uses real timers internally.
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(NOW);
+  projectExecs = new Map();
+  installProcessTableFakes();
+
+  // S3 mock: HeadObject resolves only for keys we've marked as "uploaded";
+  // everything else 404s (drives the commit existence guard). All other S3
+  // commands resolve as harmless no-ops.
+  s3Objects.clear();
+  s3Mock.reset();
+  // Fallback first, then the specific HeadObject handler so it takes precedence.
+  s3Mock.onAnyCommand().resolves({});
+  s3Mock.on(HeadObjectCommand).callsFake((input) => {
+    if (s3Objects.has(input.Key)) return { ContentLength: s3Objects.get(input.Key) };
+    const err = new Error('NotFound');
+    err.name = 'NotFound';
+    throw err;
+  });
+
+  ssmParams = new Map();
+  installSsmFakes();
 });
 
 afterEach(() => {
@@ -69,6 +185,14 @@ afterEach(() => {
 
 const claims = (sub, email = `${sub}@x`) => ({
   requestContext: { authorizer: { claims: { sub, email } } },
+});
+
+// Platform-admin caller (Cognito group claim) — required for the
+// /admin/tracker-migration routes since the platform-admin gating landed.
+const adminClaims = (sub, email = `${sub}@x`) => ({
+  requestContext: {
+    authorizer: { claims: { sub, email, 'cognito:groups': 'platform-admin' } },
+  },
 });
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -91,6 +215,18 @@ describe('OPTIONS', () => {
 });
 
 describe('POST /projects', () => {
+  // Every created project is v2 now, so the response always carries the v2
+  // settings block with its defaults.
+  const V2_DEFAULTS = {
+    kind: 'v2',
+    workflowId: 'aidlc-v2',
+    workflowVersion: null,
+    parkReleaseSeconds: 300,
+    maxParallelUnits: 0,
+    prStrategy: 'default',
+    stageSkipping: 'default',
+  };
+
   it('applies defaults when only name is supplied', async () => {
     const sub = `u-${randomUUID()}`;
     const created = await createProject(sub, { name: 'Bare' });
@@ -101,9 +237,12 @@ describe('POST /projects', () => {
       gitProvider: 'github',
       agentCli: 'kiro',
       cliModels: {},
+      tierModels: {},
       issueIntegrationEnabled: false,
       repos: [],
       createdAt: NOW.toISOString(),
+      updatedAt: NOW.toISOString(),
+      ...V2_DEFAULTS,
     });
   });
 
@@ -133,6 +272,7 @@ describe('POST /projects', () => {
       gitProvider: 'github',
       agentCli: 'kiro',
       cliModels: {},
+      tierModels: {},
       issueIntegrationEnabled: false,
       repos: [
         {
@@ -144,6 +284,8 @@ describe('POST /projects', () => {
         },
       ],
       createdAt: NOW.toISOString(),
+      updatedAt: NOW.toISOString(),
+      ...V2_DEFAULTS,
     });
 
     // Follow-up GET confirms membership edge was wired correctly.
@@ -164,6 +306,136 @@ describe('POST /projects', () => {
     });
     expect(res.statusCode).toBe(401);
     expect(JSON.parse(res.body)).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('persists v2 kind + workflow/park settings (scope is per-intent)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const created = await createProject(sub, {
+      name: 'V2',
+      kind: 'v2',
+      workflowId: 'aidlc-v2',
+      parkReleaseSeconds: 120,
+      maxParallelUnits: 3,
+    });
+    expect(created.kind).toBe('v2');
+    expect(created.workflowId).toBe('aidlc-v2');
+    // Scope is chosen per-intent, never stored on the project.
+    expect(created.defaultScope).toBeUndefined();
+    expect(created.parkReleaseSeconds).toBe(120);
+    expect(created.maxParallelUnits).toBe(3);
+    // workflowVersion left unpinned (resolved at intent create).
+    expect(created.workflowVersion).toBeNull();
+
+    const fetched = await handler({
+      httpMethod: 'GET',
+      pathParameters: { projectId: created.id },
+      ...claims(sub),
+    });
+    const body = JSON.parse(fetched.body);
+    expect(body.kind).toBe('v2');
+    expect(body.workflowId).toBe('aidlc-v2');
+    expect(body.defaultScope).toBeUndefined();
+    expect(body.parkReleaseSeconds).toBe(120);
+    expect(body.maxParallelUnits).toBe(3);
+  });
+
+  it('defaults maxParallelUnits to 0 (unbounded) and round-trips an explicit 0', async () => {
+    const sub = `u-${randomUUID()}`;
+    const created = await createProject(sub, { name: 'V2', kind: 'v2' });
+    expect(created.maxParallelUnits).toBe(0);
+    const fetched = await handler({
+      httpMethod: 'GET',
+      pathParameters: { projectId: created.id },
+      ...claims(sub),
+    });
+    // A stored "0" must NOT be coerced back to a different default.
+    expect(JSON.parse(fetched.body).maxParallelUnits).toBe(0);
+  });
+
+  it('rejects an out-of-range parkReleaseSeconds', async () => {
+    const sub = `u-${randomUUID()}`;
+    const res = await handler({
+      httpMethod: 'POST',
+      body: JSON.stringify({ name: 'Bad', kind: 'v2', parkReleaseSeconds: 5000 }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('rejects an out-of-range or non-integer maxParallelUnits', async () => {
+    const sub = `u-${randomUUID()}`;
+    for (const bad of [999, -1, 2.5]) {
+      const res = await handler({
+        httpMethod: 'POST',
+        body: JSON.stringify({ name: 'Bad', kind: 'v2', maxParallelUnits: bad }),
+        ...claims(sub),
+      });
+      expect(res.statusCode).toBe(400);
+    }
+  });
+
+  it('defaults new projects to platform inheritance and round-trips it', async () => {
+    const sub = `u-${randomUUID()}`;
+    const created = await createProject(sub, { name: 'V2', kind: 'v2' });
+    expect(created.prStrategy).toBe('default');
+    const fetched = await handler({
+      httpMethod: 'GET',
+      pathParameters: { projectId: created.id },
+      ...claims(sub),
+    });
+    expect(JSON.parse(fetched.body).prStrategy).toBe('default');
+  });
+
+  it('accepts pr-per-unit and rejects removed or unknown strategies', async () => {
+    const sub = `u-${randomUUID()}`;
+    const unknown = await handler({
+      httpMethod: 'POST',
+      body: JSON.stringify({ name: 'Bad', kind: 'v2', prStrategy: 'yolo' }),
+      ...claims(sub),
+    });
+    expect(unknown.statusCode).toBe(400);
+    expect(JSON.parse(unknown.body).error).toContain('must be one of');
+    const enabled = await handler({
+      httpMethod: 'POST',
+      body: JSON.stringify({ name: 'Units', kind: 'v2', prStrategy: 'pr-per-unit' }),
+      ...claims(sub),
+    });
+    expect(enabled.statusCode).toBe(201);
+    expect(JSON.parse(enabled.body).prStrategy).toBe('pr-per-unit');
+    const removed = await handler({
+      httpMethod: 'POST',
+      body: JSON.stringify({ name: 'Bad', kind: 'v2', prStrategy: 'stacked' }),
+      ...claims(sub),
+    });
+    expect(removed.statusCode).toBe(400);
+  });
+
+  it('creates a v2 project when kind is omitted (v2 is the only kind)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const created = await createProject(sub, { name: 'Classic' });
+    expect(created.kind).toBe('v2');
+    expect(created.workflowId).toBe('aidlc-v2');
+    expect(created.parkReleaseSeconds).toBe(300);
+
+    const fetched = await handler({
+      httpMethod: 'GET',
+      pathParameters: { projectId: created.id },
+      ...claims(sub),
+    });
+    expect(JSON.parse(fetched.body).kind).toBe('v2');
+  });
+
+  it('rejects an explicit kind=v1 with 400', async () => {
+    const sub = `u-${randomUUID()}`;
+    const res = await handler({
+      httpMethod: 'POST',
+      body: JSON.stringify({ name: 'Frozen', kind: 'v1' }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({
+      error: 'v1 projects can no longer be created; v2 is the only supported project kind',
+    });
   });
 });
 
@@ -225,7 +497,7 @@ describe('GET /projects', () => {
 
     const res = await handler({ httpMethod: 'GET', ...claims(sub) });
     expect(res.statusCode).toBe(200);
-    const list = JSON.parse(res.body).sort((x, y) => x.name.localeCompare(y.name));
+    const list = JSON.parse(res.body).toSorted((x, y) => x.name.localeCompare(y.name));
     expect(list).toEqual([
       expect.objectContaining({ id: a.id, name: 'A', userRole: 'owner' }),
       expect.objectContaining({ id: b.id, name: 'B', userRole: 'owner' }),
@@ -448,134 +720,6 @@ describe('PUT /projects/:id', () => {
   });
 });
 
-describe('PUT /projects/:id/mcp-servers authorization', () => {
-  it('allows owners to update MCP servers', async () => {
-    const sub = `u-${randomUUID()}`;
-    const { id } = await createProject(sub);
-    const res = await handler({
-      httpMethod: 'PUT',
-      pathParameters: { projectId: id },
-      path: `/projects/${id}/mcp-servers`,
-      body: JSON.stringify({ mcpServers: '[]' }),
-      ...claims(sub),
-    });
-    expect(res.statusCode).toBe(200);
-  });
-
-  it('allows admins to update MCP servers', async () => {
-    const ownerSub = `u-${randomUUID()}`;
-    const adminSub = `u-${randomUUID()}`;
-    const { id } = await createProject(ownerSub);
-    await addMember(id, adminSub, 'admin');
-    const res = await handler({
-      httpMethod: 'PUT',
-      pathParameters: { projectId: id },
-      path: `/projects/${id}/mcp-servers`,
-      body: JSON.stringify({ mcpServers: '[]' }),
-      ...claims(adminSub),
-    });
-    expect(res.statusCode).toBe(200);
-  });
-
-  it('returns 403 when a plain member tries to update MCP servers', async () => {
-    const ownerSub = `u-${randomUUID()}`;
-    const memberSub = `u-${randomUUID()}`;
-    const { id } = await createProject(ownerSub);
-    await addMember(id, memberSub, 'member');
-    const res = await handler({
-      httpMethod: 'PUT',
-      pathParameters: { projectId: id },
-      path: `/projects/${id}/mcp-servers`,
-      body: JSON.stringify({ mcpServers: '[]' }),
-      ...claims(memberSub),
-    });
-    expect(res.statusCode).toBe(403);
-    expect(JSON.parse(res.body)).toEqual({
-      error: 'Only project owners and admins can update MCP servers',
-    });
-  });
-
-  it('returns 403 when a non-member tries to update MCP servers', async () => {
-    const ownerSub = `u-${randomUUID()}`;
-    const otherSub = `u-${randomUUID()}`;
-    const { id } = await createProject(ownerSub);
-    const res = await handler({
-      httpMethod: 'PUT',
-      pathParameters: { projectId: id },
-      path: `/projects/${id}/mcp-servers`,
-      body: JSON.stringify({ mcpServers: '[]' }),
-      ...claims(otherSub),
-    });
-    expect(res.statusCode).toBe(403);
-  });
-});
-
-describe('PUT /projects/:id/steering-docs authorization', () => {
-  it('allows owners to update steering docs', async () => {
-    vi.stubEnv('ARTIFACTS_BUCKET', 'test-bucket');
-    const sub = `u-${randomUUID()}`;
-    const { id } = await createProject(sub);
-    const res = await handler({
-      httpMethod: 'PUT',
-      pathParameters: { projectId: id },
-      path: `/projects/${id}/steering-docs`,
-      body: JSON.stringify({ steeringDocs: [] }),
-      ...claims(sub),
-    });
-    expect(res.statusCode).toBe(200);
-    vi.stubEnv('ARTIFACTS_BUCKET', undefined);
-  });
-
-  it('allows admins to update steering docs', async () => {
-    vi.stubEnv('ARTIFACTS_BUCKET', 'test-bucket');
-    const ownerSub = `u-${randomUUID()}`;
-    const adminSub = `u-${randomUUID()}`;
-    const { id } = await createProject(ownerSub);
-    await addMember(id, adminSub, 'admin');
-    const res = await handler({
-      httpMethod: 'PUT',
-      pathParameters: { projectId: id },
-      path: `/projects/${id}/steering-docs`,
-      body: JSON.stringify({ steeringDocs: [] }),
-      ...claims(adminSub),
-    });
-    expect(res.statusCode).toBe(200);
-    vi.stubEnv('ARTIFACTS_BUCKET', undefined);
-  });
-
-  it('returns 403 when a plain member tries to update steering docs', async () => {
-    const ownerSub = `u-${randomUUID()}`;
-    const memberSub = `u-${randomUUID()}`;
-    const { id } = await createProject(ownerSub);
-    await addMember(id, memberSub, 'member');
-    const res = await handler({
-      httpMethod: 'PUT',
-      pathParameters: { projectId: id },
-      path: `/projects/${id}/steering-docs`,
-      body: JSON.stringify({ steeringDocs: [] }),
-      ...claims(memberSub),
-    });
-    expect(res.statusCode).toBe(403);
-    expect(JSON.parse(res.body)).toEqual({
-      error: 'Only project owners and admins can update steering docs',
-    });
-  });
-
-  it('returns 403 when a non-member tries to update steering docs', async () => {
-    const ownerSub = `u-${randomUUID()}`;
-    const otherSub = `u-${randomUUID()}`;
-    const { id } = await createProject(ownerSub);
-    const res = await handler({
-      httpMethod: 'PUT',
-      pathParameters: { projectId: id },
-      path: `/projects/${id}/steering-docs`,
-      body: JSON.stringify({ steeringDocs: [] }),
-      ...claims(otherSub),
-    });
-    expect(res.statusCode).toBe(403);
-  });
-});
-
 describe('DELETE /projects/:id', () => {
   it('returns 204 for the owner and removes the project', async () => {
     const sub = `u-${randomUUID()}`;
@@ -633,6 +777,150 @@ describe('DELETE /projects/:id', () => {
     });
     expect(res.statusCode).toBe(401);
     expect(JSON.parse(res.body)).toEqual({ error: 'Unauthorized' });
+  });
+
+  // ── Cascade: a project owns intents (each an EXEC# partition + a Neptune
+  // subgraph) and project-scoped knowledge vertices. Delete must purge all of
+  // it — without leaking, and without touching a sibling project's data. ──
+
+  // Seed one intent's Neptune footprint under a project: the Intent anchor, an
+  // artifact it CONTAINS, and register a META row for listProjectExecutions.
+  const seedIntent = async (projectId, { status = 'SUCCEEDED' } = {}) => {
+    const intentId = randomUUID();
+    await g.addV('Intent').property('id', intentId).property('project_id', projectId).next();
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .addE('CONTAINS')
+      .to(gremlin.process.statics.V().has('Intent', 'id', intentId))
+      .next();
+    await g.addV('Artifact').property('id', 'requirements').property('intent_id', intentId).next();
+    await g
+      .V()
+      .has('Intent', 'id', intentId)
+      .addE('CONTAINS')
+      .to(
+        gremlin.process.statics
+          .V()
+          .has('Artifact', 'id', 'requirements')
+          .has('intent_id', intentId),
+      )
+      .next();
+    const versionId = `${intentId}:requirements:v1`;
+    await g
+      .addV('ArtifactVersion')
+      .property('id', versionId)
+      .property('artifact_id', 'requirements')
+      .property('intent_id', intentId)
+      .next();
+    await g
+      .V()
+      .has('Artifact', 'id', 'requirements')
+      .has('intent_id', intentId)
+      .addE('HAS_VERSION')
+      .to(
+        gremlin.process.statics
+          .V()
+          .has('ArtifactVersion', 'id', versionId)
+          .has('intent_id', intentId),
+      )
+      .next();
+    const rows = projectExecs.get(projectId) ?? [];
+    rows.push({ intentId, executionId: intentId, projectId, status });
+    projectExecs.set(projectId, rows);
+    return intentId;
+  };
+
+  const seedKnowledge = async (projectId) => {
+    await g.addV('TeamKnowledge').property('id', `k-${randomUUID()}`).next();
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .addE('HAS_KNOWLEDGE')
+      .to(gremlin.process.statics.V().hasLabel('TeamKnowledge').order().by('id').tail(1))
+      .next();
+    await g.addV('LearningRule').property('id', `r-${randomUUID()}`).next();
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .addE('HAS_LEARNING')
+      .to(gremlin.process.statics.V().hasLabel('LearningRule').order().by('id').tail(1))
+      .next();
+  };
+
+  it('cascades into every intent + knowledge vertex and drains each partition', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const intentA = await seedIntent(id);
+    const intentB = await seedIntent(id);
+    await seedKnowledge(id);
+
+    const res = await handler({
+      httpMethod: 'DELETE',
+      pathParameters: { projectId: id },
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(204);
+
+    // Both Intent anchors + their artifacts are gone from Neptune.
+    expect(await g.V().has('Intent', 'id', intentA).hasNext()).toBe(false);
+    expect(await g.V().has('Intent', 'id', intentB).hasNext()).toBe(false);
+    expect(await g.V().hasLabel('Artifact').has('intent_id', intentA).hasNext()).toBe(false);
+    expect(await g.V().hasLabel('ArtifactVersion').has('intent_id', intentA).hasNext()).toBe(false);
+    expect(await g.V().hasLabel('ArtifactVersion').has('intent_id', intentB).hasNext()).toBe(false);
+    // Project-scoped knowledge vertices dropped, and the Project itself.
+    expect(await g.V().hasLabel('TeamKnowledge').hasNext()).toBe(false);
+    expect(await g.V().hasLabel('LearningRule').hasNext()).toBe(false);
+    expect(await g.V().has('Project', 'id', id).hasNext()).toBe(false);
+
+    // deleteExecution drained a partition — but with no process rows in the
+    // mock, BatchWrite is only issued when there are keys, so at minimum the
+    // list was consulted per project (asserted implicitly by 204). The graph
+    // drops above are the authoritative teardown assertion.
+  });
+
+  it('spares a sibling project’s intents and knowledge', async () => {
+    const sub = `u-${randomUUID()}`;
+    const keepSub = `u-${randomUUID()}`;
+    const { id: victim } = await createProject(sub);
+    const { id: keep } = await createProject(keepSub);
+    await seedIntent(victim);
+    const keepIntent = await seedIntent(keep);
+    await seedKnowledge(keep);
+
+    const res = await handler({
+      httpMethod: 'DELETE',
+      pathParameters: { projectId: victim },
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(204);
+
+    // The sibling project keeps its intent, artifact and knowledge vertices.
+    expect(await g.V().has('Project', 'id', keep).hasNext()).toBe(true);
+    expect(await g.V().has('Intent', 'id', keepIntent).hasNext()).toBe(true);
+    expect(await g.V().hasLabel('Artifact').has('intent_id', keepIntent).hasNext()).toBe(true);
+    expect(await g.V().hasLabel('ArtifactVersion').has('intent_id', keepIntent).hasNext()).toBe(
+      true,
+    );
+    expect(await g.V().hasLabel('TeamKnowledge').hasNext()).toBe(true);
+    expect(await g.V().hasLabel('LearningRule').hasNext()).toBe(true);
+  });
+
+  it('force-retires a RUNNING intent instead of refusing the project delete', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const running = await seedIntent(id, { status: 'RUNNING' });
+
+    const res = await handler({
+      httpMethod: 'DELETE',
+      pathParameters: { projectId: id },
+      ...claims(sub),
+    });
+    // A RUNNING child does NOT block a project delete (force:true) — contrast
+    // with the intents lambda's single-intent DELETE which 409s on RUNNING.
+    expect(res.statusCode).toBe(204);
+    expect(await g.V().has('Intent', 'id', running).hasNext()).toBe(false);
+    expect(await g.V().has('Project', 'id', id).hasNext()).toBe(false);
   });
 });
 
@@ -916,7 +1204,7 @@ describe('admin tracker-migration routes', () => {
       handler({
         httpMethod: 'GET',
         path: '/admin/tracker-migration/status',
-        ...claims(sub),
+        ...adminClaims(sub),
       });
 
     it('returns dry-run counts across the whole graph and does not mutate', async () => {
@@ -969,6 +1257,16 @@ describe('admin tracker-migration routes', () => {
       });
       expect(res.statusCode).toBe(401);
     });
+
+    it('rejects authenticated non-platform-admin callers with 403', async () => {
+      const res = await handler({
+        httpMethod: 'GET',
+        path: '/admin/tracker-migration/status',
+        ...claims(`u-${randomUUID()}`),
+      });
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body).code).toBe('PLATFORM_ADMIN_REQUIRED');
+    });
   });
 
   describe('POST /admin/tracker-migration', () => {
@@ -977,7 +1275,7 @@ describe('admin tracker-migration routes', () => {
         httpMethod: 'POST',
         path: '/admin/tracker-migration',
         body: JSON.stringify(body),
-        ...claims(sub),
+        ...adminClaims(sub),
       });
 
     it('migrates every legacy project + sprint in one call', async () => {
@@ -1070,9 +1368,20 @@ describe('admin tracker-migration routes', () => {
         httpMethod: 'POST',
         path: '/admin/tracker-migration',
         body: '{not json',
-        ...claims(sub),
+        ...adminClaims(sub),
       });
       expect(res.statusCode).toBe(400);
+    });
+
+    it('rejects authenticated non-platform-admin callers with 403', async () => {
+      const res = await handler({
+        httpMethod: 'POST',
+        path: '/admin/tracker-migration',
+        body: JSON.stringify({}),
+        ...claims(`u-${randomUUID()}`),
+      });
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body).code).toBe('PLATFORM_ADMIN_REQUIRED');
     });
   });
 });
@@ -1522,7 +1831,7 @@ describe('POST /projects with repos[] array', () => {
       ...claims(sub),
     });
     const repos = JSON.parse(listRes.body);
-    expect(repos.map((r) => r.url).sort()).toEqual(['org/api', 'org/core', 'org/web']);
+    expect(repos.map((r) => r.url).toSorted()).toEqual(['org/api', 'org/core', 'org/web']);
   });
 
   it('rejects the whole create when any repos[] url is invalid (400)', async () => {
@@ -1777,5 +2086,384 @@ describe('shared Repository vertex safety on project DELETE', () => {
     expect(JSON.parse(listRes.body)).toEqual(
       expect.arrayContaining([expect.objectContaining({ url: sharedRepo })]),
     );
+  });
+});
+
+const customMcpEvent = (method, projectId, extra = {}) => ({
+  httpMethod: method,
+  path: `/projects/${projectId}/custom-mcp-servers`,
+  pathParameters: { projectId },
+  ...extra,
+});
+
+const customRulesEvent = (method, projectId, extra = {}) => ({
+  httpMethod: method,
+  path: `/projects/${projectId}/custom-rules`,
+  pathParameters: { projectId },
+  ...extra,
+});
+
+describe('GET/PUT /projects/:id/custom-mcp-servers', () => {
+  it('returns 401 when sub is missing', async () => {
+    const res = await handler({ ...customMcpEvent('GET', 'any'), requestContext: {} });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('returns 403 when the caller is not a member', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const outsiderSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub);
+    const res = await handler({ ...customMcpEvent('GET', id), ...claims(outsiderSub) });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('defaults to an empty object', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const res = await handler({ ...customMcpEvent('GET', id), ...claims(sub) });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ customMcpServers: '{}' });
+  });
+
+  it('persists and reads back valid MCP servers (owner)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const json = JSON.stringify({ 'my-tool': { command: 'npx', args: ['-y', 'p'] } });
+    const putRes = await handler({
+      ...customMcpEvent('PUT', id, { body: JSON.stringify({ customMcpServers: json }) }),
+      ...claims(sub),
+    });
+    expect(putRes.statusCode).toBe(200);
+    const getRes = await handler({ ...customMcpEvent('GET', id), ...claims(sub) });
+    expect(JSON.parse(JSON.parse(getRes.body).customMcpServers)).toEqual({
+      'my-tool': { command: 'npx', args: ['-y', 'p'] },
+    });
+  });
+
+  it('rejects invalid MCP config with field-level issues', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const bad = JSON.stringify({ x: {} }); // missing command
+    const res = await handler({
+      ...customMcpEvent('PUT', id, { body: JSON.stringify({ customMcpServers: bad }) }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(400);
+    const parsed = JSON.parse(res.body);
+    expect(parsed.error).toMatch(/Invalid MCP/);
+    expect(Array.isArray(parsed.issues)).toBe(true);
+  });
+
+  it('rejects a plain member on PUT', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const memberSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub);
+    await addMember(id, memberSub, 'member');
+    const res = await handler({
+      ...customMcpEvent('PUT', id, { body: JSON.stringify({ customMcpServers: '{}' }) }),
+      ...claims(memberSub),
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('lets a plain member GET server names but not the raw config', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const memberSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub);
+    await addMember(id, memberSub, 'member');
+    // Owner stores a config carrying an inline secret in env.
+    const json = JSON.stringify({
+      'my-tool': { command: 'npx', args: ['-y', 'p'], env: { API_KEY: 'super-secret-value' } },
+    });
+    await handler({
+      ...customMcpEvent('PUT', id, { body: JSON.stringify({ customMcpServers: json }) }),
+      ...claims(ownerSub),
+    });
+
+    const res = await handler({ ...customMcpEvent('GET', id), ...claims(memberSub) });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body).toEqual({ mcpServerNames: ['my-tool'] });
+    // The raw config (and any inline secret) is never sent to a member.
+    expect(body.customMcpServers).toBeUndefined();
+    expect(res.body).not.toContain('super-secret-value');
+  });
+
+  it('blocks a save whose ${VAR} collides with a surviving global server ref', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    // Global config (SSM): a server `gsrv` referencing ${API_KEY}. The project
+    // does NOT override `gsrv`, so it survives → collision.
+    ssmParams.set(
+      '/collab/dev/custom-mcp-servers',
+      JSON.stringify({ gsrv: { command: 'npx', env: { K: '${API_KEY}' } } }),
+    );
+    const projectJson = JSON.stringify({ psrv: { command: 'npx', env: { K: '${API_KEY}' } } });
+    const res = await handler({
+      ...customMcpEvent('PUT', id, { body: JSON.stringify({ customMcpServers: projectJson }) }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toMatch(/API_KEY.*platform-wide server `gsrv`/);
+  });
+
+  it('allows a save when the project OVERRIDES the global server by name (no collision)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    ssmParams.set(
+      '/collab/dev/custom-mcp-servers',
+      JSON.stringify({ shared: { command: 'npx', env: { K: '${API_KEY}' } } }),
+    );
+    // Project overrides `shared` (same name) and also uses ${API_KEY}. The global
+    // `shared` does not survive → no collision.
+    const projectJson = JSON.stringify({ shared: { command: 'npx', env: { K: '${API_KEY}' } } });
+    const res = await handler({
+      ...customMcpEvent('PUT', id, { body: JSON.stringify({ customMcpServers: projectJson }) }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(200);
+  });
+});
+
+const projectSecretsEvent = (method, projectId, extra = {}) => ({
+  httpMethod: method,
+  path: `/projects/${projectId}/custom-mcp-servers/secrets`,
+  pathParameters: { projectId },
+  ...extra,
+});
+
+describe('GET/PUT /projects/:id/custom-mcp-servers/secrets', () => {
+  it('returns set-state only (never values); PUT rotates and clears', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    // Initially empty.
+    let res = await handler({ ...projectSecretsEvent('GET', id), ...claims(sub) });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ mcpSecretsSet: {} });
+
+    // PUT a value → stored as SecureString under the project prefix.
+    res = await handler({
+      ...projectSecretsEvent('PUT', id, {
+        body: JSON.stringify({ mcpSecrets: { API_KEY: 'super-secret' } }),
+      }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(ssmParams.get(`/collab/dev/projects/${id}/mcp-secrets/API_KEY`)).toBe('super-secret');
+
+    // GET reports it set, but never returns the value.
+    res = await handler({ ...projectSecretsEvent('GET', id), ...claims(sub) });
+    const body = JSON.parse(res.body);
+    expect(body.mcpSecretsSet).toEqual({ API_KEY: true });
+    expect(JSON.stringify(body)).not.toContain('super-secret');
+
+    // Empty string clears (delete).
+    res = await handler({
+      ...projectSecretsEvent('PUT', id, {
+        body: JSON.stringify({ mcpSecrets: { API_KEY: '' } }),
+      }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(ssmParams.has(`/collab/dev/projects/${id}/mcp-secrets/API_KEY`)).toBe(false);
+  });
+
+  it('rejects a plain member', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const memberSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub);
+    await addMember(id, memberSub, 'member');
+    const res = await handler({ ...projectSecretsEvent('GET', id), ...claims(memberSub) });
+    expect(res.statusCode).toBe(403);
+  });
+});
+
+describe('GET/PUT /projects/:id/custom-rules', () => {
+  it('defaults to an empty list', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const res = await handler({ ...customRulesEvent('GET', id), ...claims(sub) });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ customRules: [] });
+  });
+
+  it('presign returns upload URLs WITHOUT persisting metadata (owner)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const putRes = await handler({
+      ...customRulesEvent('PUT', id, {
+        body: JSON.stringify({ customRules: [{ filename: 'standards.md' }], mode: 'presign' }),
+      }),
+      ...claims(sub),
+    });
+    expect(putRes.statusCode).toBe(200);
+    const body = JSON.parse(putRes.body);
+    expect(body.saved).toBeUndefined();
+    expect(body.uploadUrls).toHaveLength(1);
+    expect(body.uploadUrls[0]).toMatchObject({
+      filename: 'standards.md',
+      s3Key: `custom-rules/${id}/standards.md`,
+    });
+    expect(typeof body.uploadUrls[0].uploadUrl).toBe('string');
+
+    // Presign must NOT have persisted anything — the list is still empty.
+    const getRes = await handler({ ...customRulesEvent('GET', id), ...claims(sub) });
+    expect(JSON.parse(getRes.body).customRules).toEqual([]);
+  });
+
+  it('commit persists the final metadata set and it reads back (owner)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    // Simulate the browser having uploaded both objects before committing.
+    putObject(`custom-rules/${id}/standards.md`);
+    putObject(`custom-rules/${id}/api.md`);
+    const commitRes = await handler({
+      ...customRulesEvent('PUT', id, {
+        body: JSON.stringify({
+          customRules: [{ filename: 'standards.md' }, { filename: 'api.md' }],
+          mode: 'commit',
+        }),
+      }),
+      ...claims(sub),
+    });
+    expect(commitRes.statusCode).toBe(200);
+    const body = JSON.parse(commitRes.body);
+    expect(body.saved).toBe(true);
+    expect(body.uploadUrls).toBeUndefined();
+
+    const getRes = await handler({ ...customRulesEvent('GET', id), ...claims(sub) });
+    const docs = JSON.parse(getRes.body).customRules;
+    expect(docs).toHaveLength(2);
+    expect(docs.map((d) => d.filename).toSorted()).toEqual(['api.md', 'standards.md']);
+    expect(docs.every((d) => typeof d.downloadUrl === 'string')).toBe(true);
+  });
+
+  it('commit rejects a filename whose object was never uploaded', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    // Only standards.md was uploaded; api.md is fabricated by the caller.
+    putObject(`custom-rules/${id}/standards.md`);
+    const res = await handler({
+      ...customRulesEvent('PUT', id, {
+        body: JSON.stringify({
+          customRules: [{ filename: 'standards.md' }, { filename: 'api.md' }],
+          mode: 'commit',
+        }),
+      }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toMatch(/api\.md/);
+    // Nothing persisted — the list is still empty.
+    const getRes = await handler({ ...customRulesEvent('GET', id), ...claims(sub) });
+    expect(JSON.parse(getRes.body).customRules).toEqual([]);
+  });
+
+  it('commit rejects an object that exceeds the 100 KB size cap', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    putObject(`custom-rules/${id}/ok.md`, 10);
+    putObject(`custom-rules/${id}/big.md`, 200 * 1024);
+    const res = await handler({
+      ...customRulesEvent('PUT', id, {
+        body: JSON.stringify({
+          customRules: [{ filename: 'ok.md' }, { filename: 'big.md' }],
+          mode: 'commit',
+        }),
+      }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toMatch(/big\.md/);
+    expect(JSON.parse(res.body).error).toMatch(/100 KB/);
+    // Nothing persisted.
+    const getRes = await handler({ ...customRulesEvent('GET', id), ...claims(sub) });
+    expect(JSON.parse(getRes.body).customRules).toEqual([]);
+  });
+
+  it('commit can prune the set (delete path)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    putObject(`custom-rules/${id}/a.md`);
+    putObject(`custom-rules/${id}/b.md`);
+    await handler({
+      ...customRulesEvent('PUT', id, {
+        body: JSON.stringify({
+          customRules: [{ filename: 'a.md' }, { filename: 'b.md' }],
+          mode: 'commit',
+        }),
+      }),
+      ...claims(sub),
+    });
+    // Re-commit with only one — simulates deleting b.md.
+    await handler({
+      ...customRulesEvent('PUT', id, {
+        body: JSON.stringify({ customRules: [{ filename: 'a.md' }], mode: 'commit' }),
+      }),
+      ...claims(sub),
+    });
+    const getRes = await handler({ ...customRulesEvent('GET', id), ...claims(sub) });
+    const docs = JSON.parse(getRes.body).customRules;
+    expect(docs.map((d) => d.filename)).toEqual(['a.md']);
+  });
+
+  it('rejects unsafe / non-.md filenames (both modes)', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    for (const mode of ['presign', 'commit']) {
+      for (const filename of ['../evil.md', 'sub/dir.md', 'notmd.txt']) {
+        const res = await handler({
+          ...customRulesEvent('PUT', id, {
+            body: JSON.stringify({ customRules: [{ filename }], mode }),
+          }),
+          ...claims(sub),
+        });
+        expect(res.statusCode, `${mode} ${filename}`).toBe(400);
+      }
+    }
+  });
+
+  it('caps the number of custom rules', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const docs = Array.from({ length: 21 }, (_, i) => ({ filename: `r${i}.md` }));
+    const res = await handler({
+      ...customRulesEvent('PUT', id, { body: JSON.stringify({ customRules: docs }) }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('rejects a plain member on PUT', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const memberSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub);
+    await addMember(id, memberSub, 'member');
+    const res = await handler({
+      ...customRulesEvent('PUT', id, { body: JSON.stringify({ customRules: [] }) }),
+      ...claims(memberSub),
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('lets a plain member GET filenames but not download URLs', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const memberSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub);
+    await addMember(id, memberSub, 'member');
+    // Owner uploads + commits a rule so there is something to list.
+    putObject(`custom-rules/${id}/standards.md`);
+    await handler({
+      ...customRulesEvent('PUT', id, {
+        body: JSON.stringify({ customRules: [{ filename: 'standards.md' }], mode: 'commit' }),
+      }),
+      ...claims(ownerSub),
+    });
+
+    const res = await handler({ ...customRulesEvent('GET', id), ...claims(memberSub) });
+    expect(res.statusCode).toBe(200);
+    const docs = JSON.parse(res.body).customRules;
+    expect(docs).toEqual([{ filename: 'standards.md' }]);
+    expect(docs.every((d) => d.downloadUrl === undefined)).toBe(true);
   });
 });

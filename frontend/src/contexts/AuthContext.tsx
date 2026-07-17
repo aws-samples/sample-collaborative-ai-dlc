@@ -7,6 +7,9 @@ interface AuthContextType {
   user: User | null;
   isLoading: boolean;
   isAuthenticated: boolean;
+  /** True when the user belongs to the Cognito `platform-admin` group.
+   *  UI-only soft gate — the backend independently enforces the same check. */
+  isPlatformAdmin: boolean;
   needsNewPassword: boolean;
   needsDisplayName: boolean;
   login: (username: string, password: string) => Promise<void>;
@@ -75,10 +78,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const completeNewPassword = async (newPassword: string) => {
     setIsLoading(true);
     try {
-      const user = await authService.completeNewPassword(newPassword);
+      const authedUser = await authService.completeNewPassword(newPassword);
       setNeedsNewPassword(false);
-      setUser(user);
-      setNeedsDisplayName(!user.displayName);
+      setUser(authedUser);
+      setNeedsDisplayName(!authedUser.displayName);
     } catch (error) {
       console.error('Password change failed:', error);
       throw error;
@@ -121,6 +124,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     user,
     isLoading,
     isAuthenticated: !!user,
+    isPlatformAdmin: !!user?.groups?.includes('platform-admin'),
     needsNewPassword,
     needsDisplayName,
     login,

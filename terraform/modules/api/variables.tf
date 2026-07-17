@@ -102,10 +102,31 @@ variable "discussions_lambda_name" {
   type = string
 }
 
-variable "enable_agents" {
-  description = "Whether to enable agent API endpoints"
-  type        = bool
-  default     = true
+variable "building_blocks_lambda_invoke_arn" {
+  description = "Invoke ARN of the building-blocks CRUD Lambda"
+  type        = string
+}
+variable "building_blocks_lambda_name" {
+  description = "Name of the building-blocks CRUD Lambda"
+  type        = string
+}
+
+variable "workflows_lambda_invoke_arn" {
+  description = "Invoke ARN of the workflows composition Lambda"
+  type        = string
+}
+variable "workflows_lambda_name" {
+  description = "Name of the workflows composition Lambda"
+  type        = string
+}
+
+variable "intents_lambda_invoke_arn" {
+  description = "Invoke ARN of the v2 intents Lambda"
+  type        = string
+}
+variable "intents_lambda_name" {
+  description = "Name of the v2 intents Lambda"
+  type        = string
 }
 
 variable "agent_questions_table_name" {
@@ -115,22 +136,22 @@ variable "agent_questions_table_name" {
 }
 
 variable "agents_lambda_role_arn" {
-  description = "ARN of the IAM role dedicated to the agents Lambda (agents-orchestrator). This role is the most privileged Lambda role (Neptune + multiple DDB tables + SSM agent-settings + ECS RunTask + IAM PassRole) and is intentionally isolated from the other 15 REST-API Lambdas."
+  description = "ARN of the IAM role dedicated to the agents Lambda (agents-orchestrator). This role is the most privileged Lambda role (Neptune + multiple DDB tables + SSM agent-settings + AgentCore invoke) and is intentionally isolated from the other REST-API Lambdas."
   type        = string
   default     = ""
 }
 
-variable "gitlab_oauth_secret_name" {
-  description = "Secrets Manager secret name holding the GitLab OAuth client credentials. Used by the agents Lambda's POST /git/refresh-token to refresh expired GitLab access tokens for long-running construction jobs."
+variable "agentcore_runtime_arn" {
+  description = "AgentCore v2 stage-executor runtime ARN. The agents Lambda invokes its `capabilities` command (GET /agents/capabilities?models=1) to discover Kiro's model list + per-CLI auth state. Empty on v1-only stacks."
   type        = string
   default     = ""
 }
 
-variable "gitlab_redirect_uri" {
-  description = "GitLab OAuth redirect URI. Required on the refresh_token grant (must match the original authorization request) — without it GitLab rejects refresh with invalid_grant. Used by the agents Lambda's POST /git/refresh-token."
-  type        = string
-  default     = ""
-}
+
+
+
+
+
 
 variable "github_lambda_invoke_arn" {
   description = "Invoke ARN of the github Lambda"
@@ -196,70 +217,13 @@ variable "neptune_endpoint" {
   default     = ""
 }
 
-variable "ecs_cluster_arn" {
-  description = "ARN of the ECS cluster for running agent tasks"
-  type        = string
-  default     = ""
-}
 
-variable "agent_task_definition_arn" {
-  description = "ARN of the unified agent ECS task definition"
-  type        = string
-  default     = ""
-}
 
-variable "agent_security_group_id" {
-  description = "Security group ID for agent ECS tasks"
-  type        = string
-  default     = ""
-}
-
-variable "agent_pool_table_name" {
-  description = "DynamoDB agent pool table name"
-  type        = string
-  default     = ""
-}
-
-variable "git_connections_table_name" {
-  description = "DynamoDB table name for user GitHub connections"
-  type        = string
-  default     = ""
-}
-
-variable "git_provider_connections_table_name" {
-  description = "DynamoDB table name for per-provider git connections (composite key userId+provider)"
-  type        = string
-  default     = ""
-}
-
-variable "git_provider_connections_table_arn" {
-  description = "DynamoDB table ARN for per-provider git connections"
-  type        = string
-  default     = ""
-}
 
 variable "agent_outputs_table_name" {
   description = "DynamoDB agent outputs table name"
   type        = string
   default     = ""
-}
-
-variable "pool_size" {
-  description = "Number of warm pool workers"
-  type        = number
-  default     = 5
-}
-
-variable "ecr_repository_name" {
-  description = "ECR repository name for agents - used to resolve latest image version"
-  type        = string
-  default     = ""
-}
-
-variable "agent_image_tag" {
-  description = "Current agent Docker image tag, used as POOL_VERSION for the agents Lambda"
-  type        = string
-  default     = "unknown"
 }
 
 variable "cors_allowed_origins" {
@@ -282,18 +246,6 @@ variable "enable_cloudfront_origin_policy" {
 }
 
 variable "api_gateway_account_id" {
-  description = "ID of the aws_api_gateway_account resource. Passed through to create a depends_on edge so the REST API stage waits for account-level CloudWatch logging to be configured."
+  description = "An attribute of the aws_api_gateway_account resource (its cloudwatch_role_arn). The value is unused — it is interpolated into the stage description to create an implicit dependency so the REST API stage waits for account-level CloudWatch logging to be configured."
   type        = string
-}
-
-variable "connections_table_name" {
-  description = "DynamoDB table name for WebSocket connections (server-origin event fanout)"
-  type        = string
-  default     = ""
-}
-
-variable "websocket_api_endpoint_https" {
-  description = "WebSocket API management endpoint (https:// form) for PostToConnection fanout"
-  type        = string
-  default     = ""
 }

@@ -27,8 +27,11 @@ export function useCollaborativeArtifact<T extends Record<string, string>>(
   const { doc, synced, remoteUsers, setCursor } = useYjsDocument(docId, userName);
   const [values, setValues] = useState<T>({} as T);
 
-  // Stabilize fields reference so it doesn't cause effect re-runs
+  // Stabilize fields reference so it doesn't cause effect re-runs. fields is a
+  // fresh array each render; we memoize on its joined string identity instead, so
+  // `fields` is intentionally not a dep and `fieldsKey` is the real key.
   const fieldsKey = (fields as string[]).join(',');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   const stableFields = useMemo(() => fields, [fieldsKey]);
 
   useEffect(() => {

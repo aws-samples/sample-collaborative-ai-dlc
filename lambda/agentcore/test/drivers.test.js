@@ -1,0 +1,404 @@
+import { describe, it, expect } from 'vitest';
+import { EventEmitter } from 'node:events';
+import {
+  selectCli,
+  getDriver,
+  claudeDriver,
+  kiroDriver,
+  opencodeDriver,
+  SUPPORTED_CLIS,
+  buildKiroListSessions,
+  parseLatestKiroSession,
+  buildKiroUsage,
+  parseKiroCredits,
+  parseKiroCreditRate,
+} from '../cli/drivers.js';
+import { runChild } from '../cli/spawn.js';
+
+describe('selectCli', () => {
+  it('uses the requested CLI when installed', () => {
+    expect(selectCli({ requested: 'kiro', availableClis: ['claude', 'kiro'] })).toBe('kiro');
+  });
+  it('returns null for an explicit request that is NOT installed (no silent fallback)', () => {
+    // The project's choice depends on which CLI is authed — running a different
+    // CLI than requested would run the wrong agent, so this fails closed.
+    expect(selectCli({ requested: 'kiro', availableClis: ['claude'] })).toBeNull();
+  });
+  it('falls back to preference order only when NO CLI is requested', () => {
+    expect(selectCli({ availableClis: ['kiro'] })).toBe('kiro');
+    expect(selectCli({ availableClis: ['claude', 'kiro'] })).toBe('claude');
+    expect(selectCli({ availableClis: ['opencode'] })).toBe('opencode');
+  });
+  it('returns null when nothing is installed', () => {
+    expect(selectCli({ availableClis: [] })).toBeNull();
+    expect(selectCli({ requested: 'claude', availableClis: ['opencode'] })).toBeNull();
+  });
+  it('preference order is claude, kiro, then opencode', () => {
+    expect(SUPPORTED_CLIS).toEqual(['claude', 'kiro', 'opencode']);
+  });
+});
+
+describe('claude driver', () => {
+  it('builds a headless invocation with mcp-config, bypass perms, model, stream-json', () => {
+    const inv = claudeDriver.buildInvocation({
+      prompt: 'do it',
+      mcpConfigPath: '/ws/.aidlc/mcp-config.json',
+      model: 'us.anthropic.claude-sonnet-4-6',
+      allowedTools: ['mcp__aidlc__create_artifact'],
+    });
+    expect(inv.command).toBe('claude');
+    expect(inv.args).toEqual([
+      '-p',
+      '--mcp-config',
+      '/ws/.aidlc/mcp-config.json',
+      '--permission-mode',
+      'bypassPermissions',
+      '--model',
+      'us.anthropic.claude-sonnet-4-6',
+      '--allowedTools',
+      'mcp__aidlc__create_artifact',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+    ]);
+    // Prompt piped on stdin, never on argv — a large prompt on argv overflows
+    // ARG_MAX and makes spawn() throw E2BIG.
+    expect(inv.args).not.toContain('do it');
+    expect(inv.prompt).toBe('do it');
+    expect(inv.promptViaStdin).toBe(true);
+  });
+
+  it('omits --mcp-config when no path is given (plain one-shot prompt)', () => {
+    const inv = claudeDriver.buildInvocation({ prompt: 'summarize', model: 'm' });
+    expect(inv.args).not.toContain('--mcp-config');
+    expect(inv.args).toEqual([
+      '-p',
+      '--permission-mode',
+      'bypassPermissions',
+      '--model',
+      'm',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+    ]);
+    expect(inv.args).not.toContain('summarize');
+    expect(inv.prompt).toBe('summarize');
+    expect(inv.promptViaStdin).toBe(true);
+  });
+
+  it('sets Bedrock auth env, including the bearer token when present', () => {
+    const env = claudeDriver.envForAuth({
+      AWS_REGION: 'eu-west-1',
+      AWS_BEARER_TOKEN_BEDROCK: 'tok',
+    });
+    expect(env).toMatchObject({
+      CLAUDE_CODE_USE_BEDROCK: '1',
+      AWS_REGION: 'eu-west-1',
+      IS_SANDBOX: '1',
+      AWS_BEARER_TOKEN_BEDROCK: 'tok',
+    });
+  });
+
+  it('omits the bearer token when not configured', () => {
+    expect(
+      claudeDriver.envForAuth({ AWS_REGION: 'us-east-1' }).AWS_BEARER_TOKEN_BEDROCK,
+    ).toBeUndefined();
+  });
+
+  it('forces the session id up front when supplied (new-session-only)', () => {
+    const inv = claudeDriver.buildInvocation({
+      prompt: 'do it',
+      mcpConfigPath: '/cfg.json',
+      sessionId: 'sess-uuid-1',
+    });
+    const i = inv.args.indexOf('--session-id');
+    expect(i).toBeGreaterThan(-1);
+    expect(inv.args[i + 1]).toBe('sess-uuid-1');
+  });
+
+  it('omits --session-id when none is supplied', () => {
+    const inv = claudeDriver.buildInvocation({ prompt: 'x', mcpConfigPath: '/cfg.json' });
+    expect(inv.args).not.toContain('--session-id');
+  });
+
+  it('builds a resume invocation with --resume (never --session-id)', () => {
+    const inv = claudeDriver.buildResumeInvocation({
+      sessionId: 'sess-uuid-1',
+      answerMessage: 'the human said yes',
+      mcpConfigPath: '/cfg.json',
+      model: 'us.anthropic.claude-sonnet-4-6',
+    });
+    expect(inv.command).toBe('claude');
+    expect(inv.args).toEqual([
+      '--resume',
+      'sess-uuid-1',
+      '-p',
+      '--mcp-config',
+      '/cfg.json',
+      '--permission-mode',
+      'bypassPermissions',
+      '--model',
+      'us.anthropic.claude-sonnet-4-6',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+    ]);
+    expect(inv.args).not.toContain('--session-id');
+    // Answer piped on stdin, not argv.
+    expect(inv.args).not.toContain('the human said yes');
+    expect(inv.prompt).toBe('the human said yes');
+    expect(inv.promptViaStdin).toBe(true);
+  });
+});
+
+describe('kiro driver', () => {
+  it('builds a headless chat invocation with trust-all-tools + --agent (no --mcp-config)', () => {
+    const inv = kiroDriver.buildInvocation({ prompt: 'go', agentName: 'aidlc' });
+    expect(inv.command).toBe('kiro-cli');
+    expect(inv.args).toEqual(['chat', '--no-interactive', '--trust-all-tools', '--agent', 'aidlc']);
+    // Kiro 2.10 has no --mcp-config flag — must not be emitted.
+    expect(inv.args).not.toContain('--mcp-config');
+    // Prompt piped on stdin, never on argv (positional omitted) — a large prompt
+    // as a positional arg overflows ARG_MAX and makes spawn() throw E2BIG.
+    expect(inv.args).not.toContain('go');
+    expect(inv.prompt).toBe('go');
+    expect(inv.promptViaStdin).toBe(true);
+  });
+  it('passes the API key as auth env', () => {
+    expect(kiroDriver.envForAuth({ KIRO_API_KEY: 'k' })).toEqual({ KIRO_API_KEY: 'k' });
+    expect(kiroDriver.envForAuth({})).toEqual({});
+  });
+
+  it('builds a resume invocation with --agent + --resume-id', () => {
+    const inv = kiroDriver.buildResumeInvocation({
+      sessionId: 'kiro-sess-9',
+      answerMessage: 'the human said go',
+      agentName: 'aidlc',
+    });
+    expect(inv.command).toBe('kiro-cli');
+    expect(inv.args).toEqual([
+      'chat',
+      '--no-interactive',
+      '--trust-all-tools',
+      '--agent',
+      'aidlc',
+      '--resume-id',
+      'kiro-sess-9',
+    ]);
+    expect(inv.args).not.toContain('--mcp-config');
+    // Answer piped on stdin, not argv.
+    expect(inv.args).not.toContain('the human said go');
+    expect(inv.prompt).toBe('the human said go');
+    expect(inv.promptViaStdin).toBe(true);
+  });
+});
+
+describe('opencode driver', () => {
+  it('builds a JSONL auto-approved Bedrock invocation with prompt on stdin', () => {
+    const inv = opencodeDriver.buildInvocation({
+      prompt: 'go',
+      model: 'us.anthropic.claude-sonnet-4-6',
+      opencodeConfigContent: '{"share":"disabled"}',
+    });
+    expect(inv).toMatchObject({
+      command: 'opencode',
+      args: [
+        'run',
+        '--format',
+        'json',
+        '--auto',
+        '--model',
+        'amazon-bedrock/us.anthropic.claude-sonnet-4-6',
+      ],
+      prompt: 'go',
+      promptViaStdin: true,
+      env: { OPENCODE_CONFIG_CONTENT: '{"share":"disabled"}' },
+    });
+    expect(inv.args).not.toContain('go');
+  });
+
+  it('does not double-prefix an already provider-qualified model', () => {
+    const inv = opencodeDriver.buildInvocation({
+      prompt: 'go',
+      model: 'amazon-bedrock/eu.anthropic.claude-sonnet-4-6',
+    });
+    expect(inv.args.at(-1)).toBe('amazon-bedrock/eu.anthropic.claude-sonnet-4-6');
+  });
+
+  it('resumes the same session and pipes the answer through stdin', () => {
+    const inv = opencodeDriver.buildResumeInvocation({
+      sessionId: 'ses_123',
+      answerMessage: 'continue',
+      model: 'us.anthropic.claude-sonnet-4-6',
+      opencodeConfigContent: '{}',
+    });
+    expect(inv.args).toContain('--session');
+    expect(inv.args[inv.args.indexOf('--session') + 1]).toBe('ses_123');
+    expect(inv.prompt).toBe('continue');
+    expect(inv.args).not.toContain('continue');
+  });
+
+  it('uses the Bedrock bearer token and an OpenCode-only XDG directory', () => {
+    expect(
+      opencodeDriver.envForAuth({
+        AWS_REGION: 'eu-central-1',
+        AWS_BEARER_TOKEN_BEDROCK: 'token',
+        OPENCODE_XDG_DATA_HOME: '/local/opencode',
+      }),
+    ).toEqual({
+      AWS_REGION: 'eu-central-1',
+      AWS_BEARER_TOKEN_BEDROCK: 'token',
+      XDG_DATA_HOME: '/local/opencode',
+      OPENCODE_DISABLE_AUTOUPDATE: '1',
+    });
+  });
+});
+
+describe('Kiro session capture', () => {
+  it('lists sessions as JSON', () => {
+    expect(buildKiroListSessions()).toEqual({
+      command: 'kiro-cli',
+      args: ['chat', '--list-sessions', '--format', 'json'],
+    });
+  });
+
+  it('returns the newest session id for the cwd (by updatedAt)', () => {
+    const stdout = JSON.stringify([
+      {
+        cwd: '/other',
+        sessions: [{ sessionId: 'nope', updatedAt: '2026-06-29T23:00:00Z' }],
+      },
+      {
+        cwd: '/mnt/workspace',
+        sessions: [
+          { sessionId: 'older', updatedAt: '2026-06-29T10:00:00Z' },
+          { sessionId: 'newest', updatedAt: '2026-06-29T12:00:00Z' },
+        ],
+      },
+    ]);
+    expect(parseLatestKiroSession(stdout, '/mnt/workspace')).toBe('newest');
+  });
+
+  it('returns null on unparseable output or no session for the cwd', () => {
+    expect(parseLatestKiroSession('not json', '/mnt/workspace')).toBeNull();
+    expect(parseLatestKiroSession(JSON.stringify([]), '/mnt/workspace')).toBeNull();
+    expect(
+      parseLatestKiroSession(JSON.stringify([{ cwd: '/x', sessions: [] }]), '/mnt/workspace'),
+    ).toBeNull();
+  });
+});
+
+describe('Kiro credit capture', () => {
+  it('builds the headless /usage invocation', () => {
+    expect(buildKiroUsage()).toEqual({
+      command: 'kiro-cli',
+      args: ['chat', '--no-interactive', '/usage'],
+    });
+  });
+
+  it('parses the per-turn credits footer from a raw (ANSI-laden) stderr tail', () => {
+    // Real footer shape: dim ANSI wrapping, but the label+number are contiguous.
+    const tail = '\u001b[38;5;8m\n ▸ Credits: 0.03 • Time: 2s\n\n\u001b[0m';
+    expect(parseKiroCredits(tail)).toBeCloseTo(0.03);
+  });
+
+  it('takes the LAST credits footer (final turn) and returns null when absent', () => {
+    expect(parseKiroCredits('▸ Credits: 0.03 …\n▸ Credits: 0.11 …')).toBeCloseTo(0.11);
+    expect(parseKiroCredits('no footer here')).toBeNull();
+    expect(parseKiroCredits('')).toBeNull();
+    expect(parseKiroCredits(undefined)).toBeNull();
+  });
+
+  it('parses the $/credit overage rate out of /usage output', () => {
+    const usage =
+      '\u001b[1mEstimated Usage\u001b[0m | resets on 2026-08-01 | KIRO POWER\n' +
+      '\u001b[1mCredits\u001b[0m (0.07 of 10000 covered in plan)\n' +
+      'Overages: \u001b[1mEnabled\u001b[0m  \u001b[38;5;244mbilled at $0.04 per credit\u001b[0m\n';
+    expect(parseKiroCreditRate(usage)).toBeCloseTo(0.04);
+  });
+
+  it('returns null when the rate line is missing or malformed (never guesses)', () => {
+    expect(parseKiroCreditRate('Credits (0.00 of 50 covered in plan)')).toBeNull();
+    expect(parseKiroCreditRate('billed at $0 per credit')).toBeNull();
+    expect(parseKiroCreditRate('')).toBeNull();
+  });
+});
+
+describe('getDriver', () => {
+  it('throws on an unsupported CLI', () => {
+    expect(() => getDriver('codex')).toThrow(/unsupported CLI/);
+  });
+});
+
+describe('runChild — exit contract', () => {
+  // A fake child the test drives to a close/error event.
+  const fakeChild = () => {
+    const c = new EventEmitter();
+    c.stdin = { end() {} };
+    return c;
+  };
+
+  it('resolves the exit code on close', async () => {
+    const child = fakeChild();
+    const p = runChild({ command: 'x', args: [], spawnFn: () => child });
+    child.emit('close', 0);
+    expect(await p).toEqual({ exitCode: 0, stderrTail: '' });
+  });
+
+  it('maps a spawn error to a null exit code', async () => {
+    const child = fakeChild();
+    const p = runChild({ command: 'x', args: [], spawnFn: () => child });
+    child.emit('error', new Error('ENOENT'));
+    expect(await p).toEqual({ exitCode: null, stderrTail: '' });
+  });
+
+  it('tees + buffers the stderr tail when captureStderrTail is set', async () => {
+    const child = fakeChild();
+    child.stderr = new EventEmitter();
+    const p = runChild({ command: 'x', args: [], captureStderrTail: 1024, spawnFn: () => child });
+    child.stderr.emit('data', Buffer.from('boom'));
+    child.emit('close', 1);
+    expect(await p).toEqual({ exitCode: 1, stderrTail: 'boom' });
+  });
+
+  it('clamps the buffered stderr tail to the last N bytes', async () => {
+    const child = fakeChild();
+    child.stderr = new EventEmitter();
+    const p = runChild({ command: 'x', args: [], captureStderrTail: 4, spawnFn: () => child });
+    child.stderr.emit('data', Buffer.from('0123456789'));
+    child.emit('close', 0);
+    expect(await p).toEqual({ exitCode: 0, stderrTail: '6789' });
+  });
+
+  it('tees stdout to an onStdout handler when provided', async () => {
+    const child = fakeChild();
+    child.stdout = new EventEmitter();
+    const chunks = [];
+    const p = runChild({
+      command: 'x',
+      args: [],
+      onStdout: (chunk) => chunks.push(chunk),
+      spawnFn: () => child,
+    });
+    child.stdout.emit('data', Buffer.from('live'));
+    child.emit('close', 0);
+    expect(await p).toEqual({ exitCode: 0, stderrTail: '' });
+    expect(chunks).toEqual(['live']);
+  });
+
+  it('pipes the prompt to stdin when promptViaStdin', async () => {
+    const child = fakeChild();
+    let piped = null;
+    child.stdin = { end: (v) => (piped = v) };
+    const p = runChild({
+      command: 'x',
+      args: [],
+      prompt: 'hello',
+      promptViaStdin: true,
+      spawnFn: () => child,
+    });
+    child.emit('close', 0);
+    await p;
+    expect(piped).toBe('hello');
+  });
+});

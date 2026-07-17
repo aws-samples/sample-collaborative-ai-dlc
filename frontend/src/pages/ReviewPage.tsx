@@ -1,69 +1,54 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useSprint } from '@/contexts/SprintContext';
 import { useAuth } from '@/contexts/AuthContext';
-import { usePresence } from '@/hooks/usePresence';
-import { useReviewAgents } from '@/hooks/useReviewAgents';
 import { useSprintEvents } from '@/hooks/useSprintEvents';
 import { useQuestionAnchor } from '@/hooks/useQuestionAnchor';
-import { useAnswerQuestion } from '@/hooks/useAnswerQuestion';
 import { questionAnchorId } from '@/lib/questionAnchor';
-import { useProjectCache, refreshProjectSprints } from '@/hooks/useProjectsCache';
-import { reviewsService } from '@/services/reviews';
-import { questionsService } from '@/services/questions';
+import { useProjectCache } from '@/hooks/useProjectsCache';
 import {
   getGitProviderService,
   gitProviderTerminology,
   type GitComment,
 } from '@/services/gitProvider';
 import { sprintGraphService, extractPrs, type PrInfo } from '@/services/sprintGraph';
-import { sprintsService } from '@/services/sprints';
-import { agentsService } from '@/services/agents';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
-import { Textarea } from '@/components/ui/textarea';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from '@/components/ui/dialog';
-import { AgentStatusBadge } from '@/components/domain/AgentStatusBadge';
-import QuestionEditor from '@/components/QuestionEditor';
 import ReviewEditor from '@/components/ReviewEditor';
 import CodeFileViewer from '@/components/CodeFileViewer';
-import { BranchSelector } from '@/components/BranchSelector';
 import { PrCheckoutCommand } from '@/components/PrCheckoutCommand';
-import { AgentStartErrorBanner } from '@/components/AgentStartErrorBanner';
 import {
-  Play,
   ExternalLink,
-  Loader2,
-  Wrench,
-  Send,
   EyeOff,
   Eye,
   MessageCircleQuestion,
   CheckCircle2,
   XCircle,
   Code2,
-  GitBranch,
   GitPullRequest,
-  Link,
   AlertTriangle,
   ShieldAlert,
-  X,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { DiscussButton } from '@/components/discussion';
+
+// Last path segment of a repo ref (owner/repo → repo).
+const repoShort = (repo: string) => repo.split('/').pop() || repo || '';
+
+// PR state → status-dot color: open = emerald, merged = violet, closed = red,
+// unknown = zinc.
+const stateDotClass = (state: string) =>
+  state === 'merged'
+    ? 'bg-violet-500'
+    : state === 'closed'
+      ? 'bg-red-500'
+      : state === 'open'
+        ? 'bg-emerald-500'
+        : 'bg-zinc-400';
 
 function RiskBadge({ score, reasoning }: { score: string; reasoning: string }) {
   const n = parseInt(score);
@@ -135,6 +120,10 @@ function ReviewStatusBar({
   );
 }
 
+// v1 projects are read-only: the v1 execution engine has been retired, so this
+// page keeps all display functionality (review outputs, PR links/comments,
+// artifacts, code files) but no write affordances (no review kick-offs,
+// fix-findings, PR creation/linking, verdicts, or comment posting).
 export default function ReviewPage() {
   const { user } = useAuth();
   const {
@@ -148,46 +137,15 @@ export default function ReviewPage() {
     projectId,
     sprintId,
     reload,
-    reloadReview,
   } = useSprint();
 
   const { project } = useProjectCache(projectId ?? null);
   const [prs, setPrs] = useState<PrInfo[]>([]);
   const [selectedPrId, setSelectedPrId] = useState<string>('');
   const [prComments, setPrComments] = useState<GitComment[]>([]);
-  const [prBranch, setPrBranch] = useState('');
-  const [prBaseBranch, setPrBaseBranch] = useState('main');
-  const [newComment, setNewComment] = useState('');
-  const [submittingComment, setSubmittingComment] = useState(false);
   const [showBlindReveal, setShowBlindReveal] = useState(false);
-  const [showModifyModal, setShowModifyModal] = useState(false);
-  const [modifyInstruction, setModifyInstruction] = useState('');
   const [activeTab, setActiveTab] = useState('blind');
-  const [showLinkPrModal, setShowLinkPrModal] = useState(false);
-  const [linkPrUrl, setLinkPrUrl] = useState('');
-  const [linkPrNumber, setLinkPrNumber] = useState('');
-  const [linkingPr, setLinkingPr] = useState(false);
-  const [showCreatePrBranch, setShowCreatePrBranch] = useState(false);
-  const [creatingPr, setCreatingPr] = useState(false);
 
-  const currentUser = {
-    id: user?.username || '',
-    name: user?.displayName || user?.email || '',
-    color: '#10b981',
-  };
-  const { setActivity } = usePresence(sprintId, currentUser);
-
-  const {
-    blindAgent,
-    fullAgent,
-    modifyAgent,
-    launching,
-    isAnyRunning,
-    startBothReviews,
-    startAgent,
-    startError,
-    clearStartError,
-  } = useReviewAgents({ projectId, sprintId });
   useSprintEvents(
     sprintId,
     useCallback(() => {
@@ -215,59 +173,25 @@ export default function ReviewPage() {
       });
   }, [sprintId]);
 
-  // One-shot fallback: when the sprint has no PR node yet, use its own branch for
-  // the Modify Code flow. Kept in its own effect (guarded by prs.length === 0) so
-  // branch/baseBranch changes don't refetch the whole graph.
-  useEffect(() => {
-    if (prs.length === 0 && sprint?.branch) {
-      setPrBranch(sprint.branch);
-      setPrBaseBranch(sprint.baseBranch || 'main');
-    }
-  }, [prs.length, sprint?.branch, sprint?.baseBranch]);
-
   // Selected PR drives the View/checkout/comments below. Falls back to the
   // single PR copied onto the sprint vertex for backward compatibility.
   const selectedPr = prs.find((p) => p.id === selectedPrId) ?? prs[0] ?? null;
   const activePrUrl = selectedPr?.prUrl || sprint?.prUrl || '';
   const activePrNumber = selectedPr?.prNumber || sprint?.prNumber || '';
   const activeRepo = selectedPr?.repository || project?.gitRepo || '';
-  const selectedBranch = selectedPr?.branch || '';
-  const selectedBaseBranch = selectedPr?.baseBranch || 'main';
-  const hasPr = prs.length > 0 || !!sprint?.prUrl;
 
-  // Provider-aware copy for the "Link existing PR/MR" dialog. Falls back to
-  // GitHub terminology before the project loads (matches backend defaults).
+  // Provider-aware copy. Falls back to GitHub terminology before the project
+  // loads (matches backend defaults).
   const prTerm = gitProviderTerminology(project?.gitProvider ?? 'github');
-  const prPlaceholderUrl =
-    project?.gitProvider === 'gitlab'
-      ? 'https://gitlab.com/group/project/-/merge_requests/42'
-      : 'https://github.com/owner/repo/pull/42';
 
-  const repoShort = (repo: string) => repo.split('/').pop() || repo || '';
   const prTabLabel = (p: PrInfo) => `${repoShort(p.repository) || 'repo'} #${p.prNumber}`;
-  // open = emerald, merged = violet, closed = red, unknown = zinc
-  const stateDotClass = (state: string) =>
-    state === 'merged'
-      ? 'bg-violet-500'
-      : state === 'closed'
-        ? 'bg-red-500'
-        : state === 'open'
-          ? 'bg-emerald-500'
-          : 'bg-zinc-400';
   const repoCount = new Set(prs.map((p) => p.repository)).size;
   const prCount = prs.length || (sprint?.prUrl ? 1 : 0);
   const viewPrLabel = selectedPr
     ? `View ${repoShort(selectedPr.repository) ? `${repoShort(selectedPr.repository)} #${selectedPr.prNumber}` : `${prTerm.changeRequestShort} #${selectedPr.prNumber}`}`
     : `View ${prTerm.changeRequestShort}`;
 
-  // Keep the branch used by "Modify Code" aligned with the selected PR's repo.
-  useEffect(() => {
-    if (!selectedBranch) return;
-    setPrBranch(selectedBranch);
-    setPrBaseBranch(selectedBaseBranch);
-  }, [selectedBranch, selectedBaseBranch]);
-
-  // Load PR comments for the selected PR
+  // Load PR comments for the selected PR (display only)
   useEffect(() => {
     if (!activePrNumber || !activeRepo || !project) return;
     let cancelled = false;
@@ -287,114 +211,30 @@ export default function ReviewPage() {
 
   const pendingQuestions = questions
     .filter((q) => !q.structuredAnswer)
-    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    .toSorted((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
   // Scroll to a question referenced by a #question-{id} URL hash (timeline links)
   useQuestionAnchor(questions.length > 0);
 
-  const blindOutput = review?.blindReview || blindAgent.completedOutput || blindAgent.streamingText;
-  const fullOutput = review?.fullReview || fullAgent.completedOutput || fullAgent.streamingText;
+  const blindOutput = review?.blindReview;
+  const fullOutput = review?.fullReview;
   const hasReviewResults = !!blindOutput || !!fullOutput;
-
-  const handleKickOffReviews = async () => {
-    if (!review) {
-      try {
-        await reviewsService.create(sprintId);
-        await reloadReview();
-      } catch {
-        /* */
-      }
-    }
-    startBothReviews(prBranch, prBaseBranch);
-  };
-
-  const handleLinkPr = async () => {
-    if (!linkPrUrl.trim()) return;
-    setLinkingPr(true);
-    try {
-      // Extract PR/MR number from URL if not manually entered. GitHub PRs are
-      // ".../pull/N"; GitLab MRs are ".../-/merge_requests/N".
-      const extractedNumber =
-        linkPrNumber.trim() || linkPrUrl.match(/\/(?:pull|merge_requests)\/(\d+)/)?.[1] || '';
-      await sprintsService.update(projectId, sprintId, {
-        prUrl: linkPrUrl.trim(),
-        prNumber: extractedNumber,
-      });
-      await reload();
-      setShowLinkPrModal(false);
-      setLinkPrUrl('');
-      setLinkPrNumber('');
-    } catch (err) {
-      alert('Failed to link PR: ' + (err instanceof Error ? err.message : 'Unknown error'));
-    } finally {
-      setLinkingPr(false);
-    }
-  };
-
-  const handleCreatePr = async (branch: string, baseBranch: string) => {
-    setCreatingPr(true);
-    setShowCreatePrBranch(false);
-    try {
-      // Re-kick the orchestrator — it will see all tasks done and call trigger_pr_creation
-      await agentsService.startWorkflow(projectId, {
-        phase: 'construction-orchestrator',
-        sprintId,
-        branch,
-        baseBranch,
-        event: { event: 'start' },
-      });
-      await reload();
-    } catch (err) {
-      alert('Failed to create PR: ' + (err instanceof Error ? err.message : 'Unknown error'));
-    } finally {
-      setCreatingPr(false);
-    }
-  };
-
-  const handleModifyCode = () => {
-    startAgent('review-modify', {
-      branch: prBranch,
-      baseBranch: prBaseBranch,
-      description: modifyInstruction,
-    });
-    setShowModifyModal(false);
-    setModifyInstruction('');
-  };
-
-  const handleAddComment = async () => {
-    if (!newComment.trim() || !activePrNumber || !activeRepo || !project) return;
-    setSubmittingComment(true);
-    try {
-      const gitService = getGitProviderService(project.gitProvider);
-      await gitService.addPullRequestComment(activeRepo, parseInt(activePrNumber), {
-        body: newComment,
-      });
-      setNewComment('');
-      const comments = await gitService.getPullRequestComments(
-        activeRepo,
-        parseInt(activePrNumber),
-      );
-      setPrComments(comments.comments);
-    } catch (err) {
-      alert('Failed to add comment: ' + (err instanceof Error ? err.message : 'Unknown error'));
-    } finally {
-      setSubmittingComment(false);
-    }
-  };
-
-  const { answerQuestion: handleAnswerQuestion, dismissQuestion: handleDismissQuestion } =
-    useAnswerQuestion({ sprintId, reload });
 
   return (
     <div className="flex flex-col h-full">
       <div className="flex-1 overflow-y-auto">
-        <div className="max-w-4xl mx-auto p-6 space-y-6">
+        <div className="space-y-6">
           <div>
             <h1 className="text-xl font-bold">{sprint?.name || 'Loading...'}</h1>
             <p className="text-sm text-muted-foreground">Review Phase -- Validate and approve</p>
           </div>
 
-          {/* Pending questions */}
+          <div className="rounded-lg border bg-muted/40 px-4 py-3 text-xs text-muted-foreground">
+            This v1 space is read-only — agents can no longer be started and content can no longer
+            be edited.
+          </div>
+
+          {/* Pending questions (static — answers can no longer be submitted) */}
           {pendingQuestions.map((pq) => (
             <Card
               key={pq.id}
@@ -406,77 +246,46 @@ export default function ReviewPage() {
                   <div className="flex items-center gap-2">
                     <MessageCircleQuestion className="h-4 w-4 text-agent-waiting" />
                     <CardTitle className="text-sm">Agent Question</CardTitle>
+                    <Badge variant="outline" className="text-[10px]">
+                      Unanswered
+                    </Badge>
                   </div>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-6 w-6 text-muted-foreground hover:text-destructive"
-                    onClick={() => handleDismissQuestion(pq.id)}
-                    title="Dismiss question"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </Button>
+                  <DiscussButton
+                    entityType="question"
+                    entityId={pq.id}
+                    entityTitle={pq.questions[0]?.text || `${pq.agent} agent question`}
+                  />
                 </div>
               </CardHeader>
-              <CardContent>
-                <QuestionEditor
-                  question={pq}
-                  sprintId={sprintId}
-                  userName={user?.displayName || user?.email || ''}
-                  onAnswer={(answer) => handleAnswerQuestion(pq.id, answer)}
-                  onAutoSave={async (draft) => {
-                    questionsService
-                      .update(sprintId, pq.id, { draftAnswer: draft })
-                      .catch((err) => {
-                        // Autosave is best-effort: don't block typing if it fails,
-                        // but log so a silently dropped draft is diagnosable.
-                        console.error('Failed to autosave question draft:', err);
-                      });
-                  }}
-                  onFocus={() => setActivity('question', pq.id)}
-                  onBlur={() => setActivity('idle')}
-                />
+              <CardContent className="space-y-3">
+                <p className="text-xs text-muted-foreground">
+                  Asked by the {pq.agent} agent. The run has ended and answers can no longer be
+                  submitted.
+                </p>
+                {pq.questions.map((sq, i) => (
+                  <div key={i} className="border-l-2 border-primary/30 pl-3">
+                    <div className="prose prose-sm dark:prose-invert max-w-none text-sm">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{sq.text}</ReactMarkdown>
+                    </div>
+                    {sq.options.length > 0 && (
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {sq.options.map((opt, oi) => (
+                          <Badge
+                            key={oi}
+                            variant="outline"
+                            className="text-[10px] text-muted-foreground"
+                            title={opt.description}
+                          >
+                            {opt.label}
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
               </CardContent>
             </Card>
           ))}
-
-          {/* Agent streaming cards */}
-          {modifyAgent.status === 'RUNNING' && (
-            <Card className="bg-zinc-950 text-zinc-300 border-phase-inception/30">
-              <CardContent className="p-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <Wrench className="h-3.5 w-3.5 text-phase-inception" />
-                  <span className="text-xs font-medium text-zinc-400">Code Modification Agent</span>
-                  <AgentStatusBadge compact status="running" className="ml-auto" />
-                </div>
-                {/* Active tool call */}
-                {modifyAgent.activeToolCall && (
-                  <div className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 mb-2">
-                    <Loader2 className="h-3 w-3 text-amber-400 animate-spin shrink-0" />
-                    <span className="text-xs font-mono text-amber-400 truncate">
-                      {modifyAgent.activeToolCall}
-                    </span>
-                  </div>
-                )}
-                {/* Tool call summary */}
-                {modifyAgent.toolCalls.length > 0 && (
-                  <div className="flex items-center gap-1.5 text-[10px] text-zinc-500 mb-2">
-                    <Wrench className="h-2.5 w-2.5" />
-                    <span>
-                      {modifyAgent.toolCalls.filter((t) => t.status === 'completed').length}/
-                      {modifyAgent.toolCalls.length} tools completed
-                    </span>
-                  </div>
-                )}
-                <div className="prose prose-invert prose-sm max-w-none max-h-[200px] overflow-y-auto">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {modifyAgent.streamingText}
-                  </ReactMarkdown>
-                  <span className="inline-block w-1.5 h-3.5 bg-zinc-400 animate-pulse ml-0.5 align-middle" />
-                </div>
-              </CardContent>
-            </Card>
-          )}
 
           {/* Pull requests — groups everything scoped to a single PR/repo:
               the repo tabs, the View PR link, and the local checkout command. */}
@@ -534,42 +343,19 @@ export default function ReviewPage() {
             </div>
           )}
 
-          {/* Sprint-level actions */}
-          <div className="flex items-center gap-3 flex-wrap">
-            <Button
-              onClick={handleKickOffReviews}
-              disabled={isAnyRunning || !!launching || !hasPr || sprint?.phase === 'COMPLETED'}
-              className="gap-2"
-            >
-              {launching ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Play className="h-4 w-4" />
-              )}
-              {launching ? 'Starting...' : 'Kick-Off Review Agents'}
-            </Button>
-            <Button
-              onClick={() => setShowModifyModal(true)}
-              disabled={
-                isAnyRunning || !hasPr || !hasReviewResults || sprint?.phase === 'COMPLETED'
-              }
-              className="gap-2"
-            >
-              <Wrench className="h-4 w-4" /> Fix Review Findings
-            </Button>
-
-            {/* Review status */}
-            {review &&
-              (() => {
-                const isCompleted = sprint?.phase === 'COMPLETED';
-                const displayStatus = isCompleted ? 'COMPLETED' : review.status;
-                const variant =
-                  isCompleted || review.status === 'PASSED'
-                    ? 'review'
-                    : review.status === 'FAILED'
-                      ? 'destructive'
-                      : 'outline';
-                return (
+          {/* Review status */}
+          {review &&
+            (() => {
+              const isCompleted = sprint?.phase === 'COMPLETED';
+              const displayStatus = isCompleted ? 'COMPLETED' : review.status;
+              const variant =
+                isCompleted || review.status === 'PASSED'
+                  ? 'review'
+                  : review.status === 'FAILED'
+                    ? 'destructive'
+                    : 'outline';
+              return (
+                <div className="flex items-center gap-3 flex-wrap">
                   <Badge variant={variant} className="gap-1">
                     {isCompleted || review.status === 'PASSED' ? (
                       <CheckCircle2 className="h-3 w-3" />
@@ -578,90 +364,9 @@ export default function ReviewPage() {
                     ) : null}
                     {displayStatus}
                   </Badge>
-                );
-              })()}
-          </div>
-
-          {startError && <AgentStartErrorBanner error={startError} onDismiss={clearStartError} />}
-
-          {/* Missing PR warning */}
-          {!hasPr && (
-            <Card className="border-amber-500/50 bg-amber-500/5">
-              <CardContent className="p-4 space-y-3">
-                <p className="text-sm text-amber-600 dark:text-amber-400">
-                  No {prTerm.changeRequest} found. AI review agents and code modification require an
-                  open {prTerm.changeRequestShort}.
-                </p>
-                <div className="flex gap-2 flex-wrap">
-                  <Button
-                    size="sm"
-                    className="gap-1.5"
-                    disabled={creatingPr}
-                    onClick={() => setShowCreatePrBranch(true)}
-                  >
-                    {creatingPr ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <GitBranch className="h-3.5 w-3.5" />
-                    )}
-                    {creatingPr
-                      ? `Creating ${prTerm.changeRequestShort}...`
-                      : `Create ${prTerm.changeRequestShort}`}
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="gap-1.5"
-                    onClick={() => setShowLinkPrModal(true)}
-                  >
-                    <Link className="h-3.5 w-3.5" /> Link Existing {prTerm.changeRequestShort}
-                  </Button>
                 </div>
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Agent status row */}
-          {(blindAgent.status || fullAgent.status || modifyAgent.status) && (
-            <div className="flex items-center gap-4">
-              {blindAgent.status && (
-                <AgentStatusBadge
-                  status={
-                    blindAgent.status === 'RUNNING'
-                      ? 'running'
-                      : blindAgent.status === 'FAILED'
-                        ? 'failed'
-                        : 'completed'
-                  }
-                  agentType="technical review"
-                />
-              )}
-              {fullAgent.status && (
-                <AgentStatusBadge
-                  status={
-                    fullAgent.status === 'RUNNING'
-                      ? 'running'
-                      : fullAgent.status === 'FAILED'
-                        ? 'failed'
-                        : 'completed'
-                  }
-                  agentType="business review"
-                />
-              )}
-              {modifyAgent.status && (
-                <AgentStatusBadge
-                  status={
-                    modifyAgent.status === 'RUNNING'
-                      ? 'running'
-                      : modifyAgent.status === 'FAILED'
-                        ? 'failed'
-                        : 'completed'
-                  }
-                  agentType="modify"
-                />
-              )}
-            </div>
-          )}
+              );
+            })()}
 
           {/* Stale review warning */}
           {review?.stale && (
@@ -670,7 +375,7 @@ export default function ReviewPage() {
                 <AlertTriangle className="h-4 w-4 shrink-0" />
                 <span>
                   This review is <strong>stale</strong> — the construction agent was re-run after it
-                  was created. Kick off new review agents to get a fresh review.
+                  was created.
                 </span>
               </CardContent>
             </Card>
@@ -682,15 +387,9 @@ export default function ReviewPage() {
               <TabsList>
                 <TabsTrigger value="blind" className="gap-1.5 text-xs">
                   <EyeOff className="h-3 w-3" /> Technical Review
-                  {blindAgent.status === 'RUNNING' && !review?.blindReview && (
-                    <span className="h-1.5 w-1.5 rounded-full bg-agent-running animate-pulse" />
-                  )}
                 </TabsTrigger>
                 <TabsTrigger value="full" className="gap-1.5 text-xs">
                   <Eye className="h-3 w-3" /> Business Review
-                  {fullAgent.status === 'RUNNING' && !review?.fullReview && (
-                    <span className="h-1.5 w-1.5 rounded-full bg-agent-running animate-pulse" />
-                  )}
                 </TabsTrigger>
                 <TabsTrigger value="comments" className="gap-1.5 text-xs">
                   {prTerm.changeRequestShort} Comments{' '}
@@ -719,36 +418,13 @@ export default function ReviewPage() {
                       riskReasoning={review?.blindRiskReasoning}
                       stale={review?.stale}
                     />
-                    {/* Show streaming activity while technical review agent is running */}
-                    {blindAgent.status === 'RUNNING' && (
-                      <div className="mb-4 space-y-2">
-                        {blindAgent.activeToolCall && (
-                          <div className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5">
-                            <Loader2 className="h-3 w-3 text-amber-400 animate-spin shrink-0" />
-                            <span className="text-xs font-mono text-amber-400 truncate">
-                              {blindAgent.activeToolCall}
-                            </span>
-                          </div>
-                        )}
-                        {blindAgent.toolCalls.length > 0 && (
-                          <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                            <Wrench className="h-2.5 w-2.5" />
-                            <span>
-                              {blindAgent.toolCalls.filter((t) => t.status === 'completed').length}/
-                              {blindAgent.toolCalls.length} tools completed
-                            </span>
-                          </div>
-                        )}
-                        <Separator />
-                      </div>
-                    )}
                     {blindOutput ? (
                       <div className="prose prose-sm max-w-none dark:prose-invert">
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{blindOutput}</ReactMarkdown>
                       </div>
                     ) : (
                       <p className="text-sm text-muted-foreground">
-                        Technical review not yet available. Kick off review agents to start.
+                        No technical review was recorded for this sprint.
                       </p>
                     )}
                   </CardContent>
@@ -764,29 +440,6 @@ export default function ReviewPage() {
                       riskReasoning={review?.fullRiskReasoning}
                       stale={review?.stale}
                     />
-                    {/* Show streaming activity while business review agent is running */}
-                    {fullAgent.status === 'RUNNING' && (
-                      <div className="mb-4 space-y-2">
-                        {fullAgent.activeToolCall && (
-                          <div className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5">
-                            <Loader2 className="h-3 w-3 text-amber-400 animate-spin shrink-0" />
-                            <span className="text-xs font-mono text-amber-400 truncate">
-                              {fullAgent.activeToolCall}
-                            </span>
-                          </div>
-                        )}
-                        {fullAgent.toolCalls.length > 0 && (
-                          <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                            <Wrench className="h-2.5 w-2.5" />
-                            <span>
-                              {fullAgent.toolCalls.filter((t) => t.status === 'completed').length}/
-                              {fullAgent.toolCalls.length} tools completed
-                            </span>
-                          </div>
-                        )}
-                        <Separator />
-                      </div>
-                    )}
                     {fullOutput ? (
                       <>
                         <div className="grid grid-cols-3 gap-3 mb-4">
@@ -832,7 +485,7 @@ export default function ReviewPage() {
                       </>
                     ) : (
                       <p className="text-sm text-muted-foreground">
-                        Business review not yet available.
+                        No business review was recorded for this sprint.
                       </p>
                     )}
                   </CardContent>
@@ -873,24 +526,6 @@ export default function ReviewPage() {
                         </div>
                       ))
                     )}
-                    <Separator />
-                    <div className="space-y-2">
-                      <Textarea
-                        placeholder="Add a comment..."
-                        value={newComment}
-                        onChange={(e) => setNewComment(e.target.value)}
-                        rows={3}
-                      />
-                      <Button
-                        size="sm"
-                        onClick={handleAddComment}
-                        disabled={submittingComment || !newComment.trim()}
-                        className="gap-1.5"
-                      >
-                        <Send className="h-3 w-3" />{' '}
-                        {submittingComment ? 'Posting...' : 'Post Comment'}
-                      </Button>
-                    </div>
                   </CardContent>
                 </Card>
               </TabsContent>
@@ -910,7 +545,7 @@ export default function ReviewPage() {
             </Tabs>
           )}
 
-          {/* Human review */}
+          {/* Human review (read-only) */}
           <Card>
             <CardHeader className="pb-2">
               <div className="flex items-center justify-between">
@@ -930,139 +565,15 @@ export default function ReviewPage() {
                 sprintId={sprintId}
                 userName={user?.displayName || user?.email || ''}
                 gitProvider={project?.gitProvider ?? 'github'}
-                readOnly={sprint?.phase === 'COMPLETED'}
-                onCreate={async () => {
-                  await reviewsService.create(sprintId);
-                  await reloadReview();
-                }}
-                onSave={async (updates) => {
-                  await reviewsService.update(sprintId, updates);
-                  await reloadReview();
-                }}
-                onSendToProvider={async () => {
-                  if (!review || !sprint?.prNumber || !project?.gitRepo) return;
-                  const emoji =
-                    review.status === 'PASSED' ? '✅' : review.status === 'FAILED' ? '❌' : '⚠️';
-                  const body = [
-                    `## ${emoji} Human Review: ${review.status}`,
-                    '',
-                    `> Reviewed by ${user?.displayName || user?.email || 'unknown'}`,
-                    '',
-                    review.comments ? review.comments : '_No comments provided._',
-                  ].join('\n');
-                  await getGitProviderService(project.gitProvider).addPullRequestComment(
-                    project.gitRepo,
-                    parseInt(sprint.prNumber),
-                    { body },
-                  );
-                  if (review.status === 'PASSED') {
-                    await sprintsService.update(projectId, sprintId, { phase: 'COMPLETED' });
-                    // sprint.phaseChanged is a server-origin event emitted by
-                    // the sprints lambda — clients never broadcast it.
-                    refreshProjectSprints(projectId);
-                    await reload();
-                  }
-                }}
+                readOnly
+                onCreate={async () => {}}
+                onSave={async () => {}}
+                onSendToProvider={async () => {}}
               />
             </CardContent>
           </Card>
         </div>
       </div>
-
-      {/* Fix Review Findings Dialog */}
-      <Dialog open={showModifyModal} onOpenChange={setShowModifyModal}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Fix Review Findings</DialogTitle>
-            <DialogDescription>
-              The agent will read all {prTerm.changeRequestShort} comments (review findings and
-              human feedback), fix clear issues, and ask questions about anything ambiguous.
-            </DialogDescription>
-          </DialogHeader>
-          <Textarea
-            placeholder="e.g. Focus on security issues first, ignore formatting comments"
-            value={modifyInstruction}
-            onChange={(e) => setModifyInstruction(e.target.value)}
-            rows={5}
-          />
-          <p className="text-xs text-muted-foreground">
-            Optional — provide additional context or priorities for the agent.
-          </p>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowModifyModal(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleModifyCode} className="gap-1.5">
-              <Wrench className="h-3.5 w-3.5" /> Submit
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Link Existing PR Dialog */}
-      <Dialog open={showLinkPrModal} onOpenChange={setShowLinkPrModal}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Link Existing {prTerm.changeRequest}</DialogTitle>
-            <DialogDescription>
-              Paste the URL of an existing {prTerm.label} {prTerm.changeRequestShort}. The{' '}
-              {prTerm.changeRequestShort} number will be extracted automatically.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="pr-url">{prTerm.changeRequestShort} URL</Label>
-              <Input
-                id="pr-url"
-                placeholder={prPlaceholderUrl}
-                value={linkPrUrl}
-                onChange={(e) => setLinkPrUrl(e.target.value)}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="pr-number">
-                {prTerm.changeRequestShort} Number{' '}
-                <span className="text-muted-foreground text-xs">
-                  (optional — auto-extracted from URL)
-                </span>
-              </Label>
-              <Input
-                id="pr-number"
-                placeholder="42"
-                value={linkPrNumber}
-                onChange={(e) => setLinkPrNumber(e.target.value)}
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowLinkPrModal(false)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={handleLinkPr}
-              disabled={!linkPrUrl.trim() || linkingPr}
-              className="gap-1.5"
-            >
-              {linkingPr ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Link className="h-3.5 w-3.5" />
-              )}
-              {linkingPr ? 'Linking...' : `Link ${prTerm.changeRequestShort}`}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Branch selector for manual PR creation */}
-      {showCreatePrBranch && project && (
-        <BranchSelector
-          provider={project.gitProvider}
-          gitRepo={project.gitRepo}
-          onSelect={(branch, baseBranch) => handleCreatePr(branch, baseBranch)}
-          onCancel={() => setShowCreatePrBranch(false)}
-        />
-      )}
     </div>
   );
 }

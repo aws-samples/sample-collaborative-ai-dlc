@@ -1,6 +1,6 @@
 {
   "name": "yjs-server",
-  "version": "1.0.0",
+  "private": true,
   "type": "module",
   "dependencies": {
     "aws-jwt-verify": "^4.0.0",

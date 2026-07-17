@@ -8,6 +8,7 @@ import {
   confirmSignIn,
   updateUserAttributes,
 } from 'aws-amplify/auth';
+import { clearPersistedCache } from '@/lib/persistentCache';
 
 // Configure Amplify
 Amplify.configure({
@@ -24,6 +25,8 @@ export interface User {
   email?: string;
   displayName?: string;
   avatarUrl?: string;
+  /** Cognito groups from the ID token (e.g. 'platform-admin'). */
+  groups: string[];
 }
 
 export interface AuthSession {
@@ -68,13 +71,13 @@ export const authService = {
     } catch (error: any) {
       console.error('Login error:', error);
       if (error.name === 'NotAuthorizedException') {
-        throw new Error('Incorrect username or password');
+        throw new Error('Incorrect username or password', { cause: error });
       }
       if (error.name === 'UserNotFoundException') {
-        throw new Error('User does not exist');
+        throw new Error('User does not exist', { cause: error });
       }
       if (error.name === 'UserNotConfirmedException') {
-        throw new Error('User is not confirmed');
+        throw new Error('User is not confirmed', { cause: error });
       }
       throw error;
     }
@@ -90,7 +93,7 @@ export const authService = {
     } catch (error: any) {
       console.error('Complete new password error:', error);
       if (error.name === 'InvalidPasswordException') {
-        throw new Error('Password does not meet requirements');
+        throw new Error('Password does not meet requirements', { cause: error });
       }
       throw error;
     }
@@ -98,6 +101,7 @@ export const authService = {
 
   async logout(): Promise<void> {
     try {
+      clearPersistedCache();
       await signOut();
     } catch (error) {
       console.error('Logout error:', error);
@@ -107,13 +111,25 @@ export const authService = {
 
   async getCurrentUser(): Promise<User> {
     try {
-      const user = await getCurrentUser();
-      const attributes = await fetchUserAttributes();
+      // The three Cognito reads are independent — run them in parallel to cut
+      // the auth gate's serial round-trips on every cold page load.
+      const [user, attributes, sessionResult] = await Promise.all([
+        getCurrentUser(),
+        fetchUserAttributes(),
+        // Groups ride on the ID token (same token the API receives), so the
+        // frontend's soft-gating always matches the backend's authz decision.
+        // Best-effort: missing groups only hides admin UI; backend still enforces.
+        fetchAuthSession().catch(() => null),
+      ]);
+      let groups: string[] = [];
+      const raw = sessionResult?.tokens?.idToken?.payload?.['cognito:groups'];
+      if (Array.isArray(raw)) groups = raw.map(String);
       return {
         username: user.username,
         email: attributes.email,
         displayName: attributes['custom:display_name'] || attributes.email?.split('@')[0],
         avatarUrl: attributes['custom:avatar_url'],
+        groups,
       };
     } catch (error) {
       console.error('Get current user error:', error);

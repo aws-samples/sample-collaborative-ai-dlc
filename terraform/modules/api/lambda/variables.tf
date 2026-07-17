@@ -23,10 +23,6 @@ variable "neptune_endpoint" {
   type        = string
 }
 
-variable "neptune_cluster_arn" {
-  description = "Neptune cluster ARN for IAM policy"
-  type        = string
-}
 
 variable "neptune_cluster_resource_id" {
   description = "Neptune cluster resource ID for IAM auth"
@@ -48,6 +44,22 @@ variable "artifacts_bucket_arn" {
   type        = string
 }
 
+variable "blocks_table_name" {
+  description = "Name of the building-blocks table"
+  type        = string
+}
+
+variable "blocks_table_arn" {
+  description = "ARN of the building-blocks table"
+  type        = string
+}
+
+variable "aidlc_repo_ref" {
+  description = "Pinned ref (commit SHA, tag, or branch) of awslabs/aidlc-workflows the seed-blocks lambda fetches the baseline from"
+  type        = string
+  default     = "ba0cfe999856033ecb909a9135b46fe10811bf55"
+}
+
 variable "github_oauth_secret_name" {
   description = "Secrets Manager secret name for GitHub OAuth credentials"
   type        = string
@@ -56,6 +68,42 @@ variable "github_oauth_secret_name" {
 
 variable "github_oauth_secret_arn" {
   description = "Secrets Manager secret ARN for GitHub OAuth credentials"
+  type        = string
+  default     = ""
+}
+
+variable "github_app_private_key_secret_name" {
+  description = "Secrets Manager secret name for the GitHub App private key (PEM)"
+  type        = string
+  default     = ""
+}
+
+variable "github_app_private_key_secret_arn" {
+  description = "Secrets Manager secret ARN for the GitHub App private key (PEM)"
+  type        = string
+  default     = ""
+}
+
+variable "github_auth_mode_param_name" {
+  description = "SSM parameter name holding the platform-wide GitHub auth mode ('oauth' | 'app')"
+  type        = string
+  default     = ""
+}
+
+variable "github_auth_mode_param_arn" {
+  description = "SSM parameter ARN holding the platform-wide GitHub auth mode"
+  type        = string
+  default     = ""
+}
+
+variable "github_app_config_param_name" {
+  description = "SSM parameter name holding the GitHub App config JSON ({appId, installationId})"
+  type        = string
+  default     = ""
+}
+
+variable "github_app_config_param_arn" {
+  description = "SSM parameter ARN holding the GitHub App config JSON"
   type        = string
   default     = ""
 }
@@ -138,17 +186,7 @@ variable "jira_redirect_uri" {
   default     = ""
 }
 
-variable "agent_questions_table_name" {
-  description = "DynamoDB table name for agent questions"
-  type        = string
-  default     = ""
-}
 
-variable "agent_questions_table_arn" {
-  description = "DynamoDB table ARN for agent questions (scoped IAM permission for the questions Lambda)"
-  type        = string
-  default     = ""
-}
 
 variable "cognito_user_pool_id" {
   description = "Cognito User Pool ID for listing users"
@@ -166,38 +204,6 @@ variable "cors_allowed_origins" {
   default     = "*"
 }
 
-# ---------------------------------------------------------------------------
-# ECS / IAM scoping inputs for the agents-orchestrator role.
-#
-# The agents Lambda launches ECS Fargate tasks via RunTask and must pass the
-# task + execution roles to the ECS service. Exposing these ARNs as variables
-# lets us scope the IAM policy tightly (specific cluster, specific task-def
-# family, specific task/execution roles) instead of Resource = "*".
-# ---------------------------------------------------------------------------
-
-variable "ecs_cluster_arn" {
-  description = "ARN of the ECS cluster used by agent tasks. Used as the ecs:cluster condition value to constrain RunTask/DescribeTasks/StopTask to this cluster only."
-  type        = string
-  default     = ""
-}
-
-variable "agent_task_definition_family_arn" {
-  description = "Family ARN (without revision) of the agent task definition. Used in IAM Resource as '<family_arn>:*' so RunTask can launch any revision of this specific family without a policy update per revision."
-  type        = string
-  default     = ""
-}
-
-variable "agent_task_role_arn" {
-  description = "ARN of the ECS task role passed to the agent container. Used to scope iam:PassRole so the Lambda can only pass this specific role."
-  type        = string
-  default     = ""
-}
-
-variable "agent_execution_role_arn" {
-  description = "ARN of the ECS execution role used by Fargate to pull images and write logs. Used to scope iam:PassRole."
-  type        = string
-  default     = ""
-}
 variable "realtime_doc_secret_param_arn" {
   description = "SSM parameter ARN of the realtime doc-token secret (discussions lambda reads it to sign scope tokens)"
   type        = string
@@ -245,5 +251,32 @@ variable "websocket_api_endpoint_https" {
 
 variable "websocket_execution_arn" {
   description = "Execution ARN of the WebSocket API (ManageConnections IAM scope)"
+  type        = string
+}
+
+# ── v2 intents + orchestrator ──
+
+variable "v2_executions_table_name" {
+  description = "DynamoDB table name for the v2 process/execution state"
+  type        = string
+}
+
+variable "v2_executions_table_arn" {
+  description = "DynamoDB table ARN for the v2 process/execution state"
+  type        = string
+}
+
+variable "yjs_documents_table_name" {
+  description = "DynamoDB table name for realtime Yjs documents (intent-scoped docs are removed on intent delete)"
+  type        = string
+}
+
+variable "yjs_documents_table_arn" {
+  description = "DynamoDB table ARN for realtime Yjs documents"
+  type        = string
+}
+
+variable "agentcore_runtime_arn" {
+  description = "AgentCore stage-executor runtime ARN the orchestrator invokes"
   type        = string
 }

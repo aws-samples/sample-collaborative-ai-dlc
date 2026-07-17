@@ -1,14 +1,17 @@
-// lambda/discussions — sprint-scoped discussion threads (router).
+// lambda/discussions — scoped discussion threads (router).
 //
-// Handles realtime scope-token issuance and the discussion REST API:
-//   GET  /sprints/{sprintId}/discussions                          list + messageCount + unreadCount
-//   POST /sprints/{sprintId}/discussions                          atomic get-or-create (creation guard)
-//   GET  /sprints/{sprintId}/discussions/{discussionId}/messages  keyset pagination + change delta
-//   POST /sprints/{sprintId}/discussions/{discussionId}/messages  append via stateful message guard
-//   PUT  /sprints/{sprintId}/discussions/{discussionId}           resolve / reopen + summary + outcome
-//   POST .../messages/{messageId}/redact                          admin/owner moderation
-//   PUT  .../discussions/{discussionId}/read                      composite read cursor
-//   GET  /sprints/{sprintId}/discussions/search                   bounded sprint-scoped search
+// Threads live under a SCOPE root — a v1 Sprint (`/sprints/{sprintId}/…`) or a
+// v2 Intent (`/projects/{projectId}/intents/{intentId}/…`). The handlers resolve
+// the scope from the path parameters (see scope.js); routing here keys off the
+// path SUFFIX, so it is scope-agnostic. The discussion REST API:
+//   GET  …/discussions                          list + messageCount + unreadCount
+//   POST …/discussions                          atomic get-or-create (creation guard)
+//   GET  …/discussions/{discussionId}/messages  keyset pagination + change delta
+//   POST …/discussions/{discussionId}/messages  append via stateful message guard
+//   PUT  …/discussions/{discussionId}           resolve / reopen + summary + outcome
+//   POST …/messages/{messageId}/redact          admin/owner moderation
+//   PUT  …/discussions/{discussionId}/read      composite read cursor
+//   GET  …/discussions/search                   bounded scope search
 //   + per-user mention notifications and author read-cursor auto-advance on append
 //
 // Durability model (server-first): REST persists to Neptune (source of truth),
@@ -41,11 +44,11 @@ import {
   getOrCreateDiscussion,
   listMessages,
   postMessage,
+  assistDiscussion,
   updateDiscussion,
   redactMessage,
   markRead,
   searchDiscussions,
-  invokeAssist,
 } from './handlers.js';
 
 // Exported for test teardown only — production reuses the connection.
@@ -73,14 +76,14 @@ export const handler = async (event) => {
       if (method === 'GET') return await listMessages(event, res);
       if (method === 'POST') return await postMessage(event, res);
     }
+    if (method === 'POST' && path.endsWith('/assist')) {
+      return await assistDiscussion(event, res);
+    }
     if (method === 'PUT' && path.endsWith('/read')) {
       return await markRead(event, res);
     }
     if (method === 'POST' && path.endsWith('/redact')) {
       return await redactMessage(event, res);
-    }
-    if (method === 'POST' && path.endsWith('/assist')) {
-      return await invokeAssist(event, res);
     }
     if (method === 'PUT' && path.endsWith('/{discussionId}')) {
       return await updateDiscussion(event, res);

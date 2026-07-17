@@ -93,6 +93,37 @@ describe('github provider — repo browse + PR + comments', () => {
     ]);
   });
 
+  it('getAuthenticatedUser uses the PUBLIC email when present', async () => {
+    const fetchImpl = makeFetch([
+      ['/user', { json: { login: 'janedev', id: 123, name: 'Jane Dev', email: 'jane@corp.com' } }],
+    ]);
+    const user = await gh.getAuthenticatedUser({ token: 't', fetchImpl });
+    expect(user).toEqual({
+      login: 'janedev',
+      authorName: 'Jane Dev',
+      authorEmail: 'jane@corp.com',
+    });
+  });
+
+  it('getAuthenticatedUser falls back to the noreply address (private email) and login (no name)', async () => {
+    const fetchImpl = makeFetch([
+      ['/user', { json: { login: 'janedev', id: 123, name: null, email: null } }],
+    ]);
+    const user = await gh.getAuthenticatedUser({ token: 't', fetchImpl });
+    expect(user).toEqual({
+      login: 'janedev',
+      authorName: 'janedev',
+      authorEmail: '123+janedev@users.noreply.github.com',
+    });
+  });
+
+  it('getAuthenticatedUser throws ProviderError on an API failure', async () => {
+    const fetchImpl = makeFetch([['/user', { status: 401, json: { message: 'Bad credentials' } }]]);
+    await expect(gh.getAuthenticatedUser({ token: 't', fetchImpl })).rejects.toThrow(
+      'Bad credentials',
+    );
+  });
+
   it('createPullRequest returns prUrl/prNumber on success', async () => {
     const fetchImpl = makeFetch([
       ['/git/matching-refs/', { json: [] }],
@@ -113,6 +144,163 @@ describe('github provider — repo browse + PR + comments', () => {
     expect(out).toEqual({ prUrl: 'https://gh/pr/7', prNumber: 7 });
   });
 
+  it('creates a draft with provider metadata and recovers only an exact open PR', async () => {
+    let posts = 0;
+    const fetchImpl = makeFetch([
+      ['/git/matching-refs/', { json: [] }],
+      [
+        '/pulls?head=o:unit%2Fauth&state=open',
+        {
+          json: [
+            {
+              id: 9009,
+              node_id: 'PR_existing',
+              number: 9,
+              html_url: 'https://gh/pr/9',
+              head: { ref: 'unit/auth', sha: 'head-9' },
+              base: { ref: 'intent', sha: 'base-9' },
+              draft: true,
+            },
+          ],
+        },
+      ],
+      [
+        '/repos/o/r/pulls',
+        (_url, options) => {
+          if (options.method !== 'POST') return { json: [] };
+          posts += 1;
+          return {
+            status: 422,
+            text: JSON.stringify({ message: 'A pull request already exists' }),
+          };
+        },
+      ],
+    ]);
+    const out = await gh.createPullRequest({ token: 't', fetchImpl }, 'o/r', {
+      branch: 'unit/auth',
+      baseBranch: 'intent',
+      title: 'Auth',
+      body: 'Review',
+      draft: true,
+    });
+    expect(posts).toBe(1);
+    expect(out).toEqual({
+      prUrl: 'https://gh/pr/9',
+      prNumber: 9,
+      existing: true,
+      providerId: 'PR_existing',
+      headSha: 'head-9',
+      targetSha: 'base-9',
+      draft: true,
+    });
+  });
+
+  it('supports exact lookup, status, draft transitions, reopen, and ancestry', async () => {
+    let draft = true;
+    let state = 'open';
+    const fetchImpl = makeFetch([
+      [
+        '/pulls?head=o:unit%2Fauth&state=open',
+        {
+          json: [
+            {
+              id: 7007,
+              node_id: 'PR_7',
+              number: 7,
+              head: { ref: 'unit/auth', sha: 'head-7' },
+              base: { ref: 'intent', sha: 'base-7' },
+            },
+            {
+              id: 'PR_wrong',
+              number: 8,
+              head: { ref: 'unit/auth', sha: 'head-8' },
+              base: { ref: 'other', sha: 'base-8' },
+            },
+          ],
+        },
+      ],
+      [
+        '/pulls/7',
+        (_url, options) => {
+          if (options.method === 'PATCH') state = 'open';
+          return {
+            json: {
+              id: 7007,
+              node_id: 'PR_7',
+              number: 7,
+              html_url: 'https://gh/pr/7',
+              head: { ref: 'unit/auth', sha: 'head-7' },
+              base: { ref: 'intent', sha: 'base-7' },
+              state,
+              draft,
+              mergeable: true,
+              mergeable_state: 'clean',
+            },
+          };
+        },
+      ],
+      [
+        '/graphql',
+        (_url, options) => {
+          const { query, variables } = JSON.parse(options.body);
+          expect(variables.id).toBe('PR_7');
+          draft = query.includes('convertPullRequestToDraft');
+          return { json: { data: { pullRequest: { id: 'PR_7' } } } };
+        },
+      ],
+      ['/compare/head-7...intent', { json: { status: 'ahead' } }],
+    ]);
+    const found = await gh.findPullRequest({ token: 't', fetchImpl }, 'o/r', {
+      sourceBranch: 'unit/auth',
+      targetBranch: 'intent',
+      state: 'open',
+    });
+    expect(found.number).toBe(7);
+    expect(await gh.getPullRequestStatus({ token: 't', fetchImpl }, 'o/r', 7)).toMatchObject({
+      state: 'open',
+      draft: true,
+      headSha: 'head-7',
+      targetSha: 'base-7',
+      mergeable: true,
+      providerId: 'PR_7',
+    });
+    expect(await gh.setPullRequestDraft({ token: 't', fetchImpl }, 'o/r', 7, false)).toMatchObject({
+      state: 'open',
+      draft: false,
+    });
+    state = 'closed';
+    expect(await gh.reopenPullRequest({ token: 't', fetchImpl }, 'o/r', 7)).toMatchObject({
+      state: 'open',
+    });
+    expect(await gh.isCommitAncestor({ token: 't', fetchImpl }, 'o/r', 'head-7', 'intent')).toBe(
+      true,
+    );
+  });
+
+  it('paginates general and inline review comments with bot attribution', async () => {
+    const page = (url, type) => {
+      const pageNumber = Number(new URL(url).searchParams.get('page'));
+      if (pageNumber > 1) return { json: [] };
+      return {
+        json: Array.from({ length: 100 }, (_, index) => ({
+          id: `${type}-${index}`,
+          body: `comment ${index}`,
+          user: { login: index === 0 ? 'ci[bot]' : 'reviewer', type: index === 0 ? 'Bot' : 'User' },
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-01-01T00:01:00Z',
+        })),
+      };
+    };
+    const fetchImpl = makeFetch([
+      ['/pulls/7/comments', (url) => page(url, 'review')],
+      ['/issues/7/comments', (url) => page(url, 'issue')],
+    ]);
+    const comments = await gh.listPRComments({ token: 't', fetchImpl }, 'o/r', 7);
+    expect(comments).toHaveLength(200);
+    expect(comments.filter((comment) => comment.bot)).toHaveLength(2);
+    expect(fetchImpl.calls.some((call) => call.url.includes('page=2'))).toBe(true);
+  });
+
   it('createPullRequest reports conflict when task branches are unmerged', async () => {
     const fetchImpl = makeFetch([
       ['/git/matching-refs/', { json: [{ ref: 'refs/heads/feat--task-1' }] }],
@@ -126,6 +314,181 @@ describe('github provider — repo browse + PR + comments', () => {
     });
     expect(out.conflict).toBe(true);
     expect(out.unmergedBranches).toEqual(['feat--task-1']);
+  });
+
+  it('createPullRequest retargets the repo default branch on a base-invalid 422', async () => {
+    // Repo has no `main` (default is `master`); the first POST 422s on base,
+    // no existing PR is found, and the retry against the resolved default wins.
+    let posts = 0;
+    const fetchImpl = makeFetch([
+      ['/git/matching-refs/', { json: [] }],
+      // Bare repo GET — must be listed before /pulls so the substring match is
+      // unambiguous (this URL does not contain `/pulls`).
+      [
+        '/repos/o/r/pulls',
+        (url, opts) => {
+          if (opts.method !== 'POST') return { json: [] }; // findPRByBranch → none
+          posts += 1;
+          return posts === 1
+            ? {
+                status: 422,
+                text: JSON.stringify({
+                  errors: [{ resource: 'PullRequest', field: 'base', code: 'invalid' }],
+                }),
+              }
+            : { status: 201, json: { html_url: 'https://gh/pr/9', number: 9 } };
+        },
+      ],
+      ['/repos/o/r', { json: { default_branch: 'master' } }],
+    ]);
+    const out = await gh.createPullRequest({ token: 't', fetchImpl }, 'o/r', {
+      branch: 'feat',
+      baseBranch: 'main',
+      title: 'T',
+      body: 'B',
+    });
+    expect(out).toEqual({ prUrl: 'https://gh/pr/9', prNumber: 9, retargetedBase: 'master' });
+    expect(posts).toBe(2);
+  });
+
+  it('createPullRequest resolves the repo default branch when baseBranch is omitted', async () => {
+    // No baseBranch on the call (per-repo baseBranches map left this repo
+    // unset) — must target the repo's REAL default, not a hardcoded 'main'.
+    const fetchImpl = makeFetch([
+      ['/git/matching-refs/', { json: [] }],
+      ['/repos/o/r/pulls', { status: 201, json: { html_url: 'https://gh/pr/5', number: 5 } }],
+      ['/repos/o/r', { json: { default_branch: 'develop' } }],
+    ]);
+    const out = await gh.createPullRequest({ token: 't', fetchImpl }, 'o/r', {
+      branch: 'feat',
+      baseBranch: null,
+      title: 'T',
+      body: 'B',
+    });
+    expect(out).toEqual({ prUrl: 'https://gh/pr/5', prNumber: 5 });
+    const postCall = fetchImpl.calls.find((c) => c.options?.method === 'POST');
+    expect(JSON.parse(postCall.options.body).base).toBe('develop');
+  });
+
+  // ── 422 classification (2026-07 incident: a never-pushed head must NOT be
+  // reported as a benign "no changes" skip) ─────────────────────────────────
+
+  it('createPullRequest classifies a genuine "no commits between" 422 as skipped/no_changes', async () => {
+    const fetchImpl = makeFetch([
+      ['/git/matching-refs/', { json: [] }],
+      [
+        '/repos/o/r/pulls',
+        (url, opts) =>
+          opts.method === 'POST'
+            ? {
+                status: 422,
+                text: JSON.stringify({
+                  message: 'Validation Failed',
+                  errors: [{ message: 'No commits between main and feat' }],
+                }),
+              }
+            : { json: [] }, // findPRByBranch → none
+      ],
+    ]);
+    const out = await gh.createPullRequest({ token: 't', fetchImpl }, 'o/r', {
+      branch: 'feat',
+      baseBranch: 'main',
+      title: 'T',
+      body: 'B',
+    });
+    expect(out).toEqual({ skipped: true, reason: 'no_changes' });
+  });
+
+  it('createPullRequest classifies a missing-head 422 as FAILED head_missing, never a skip', async () => {
+    const fetchImpl = makeFetch([
+      ['/git/matching-refs/', { json: [] }],
+      [
+        '/repos/o/r/pulls',
+        (url, opts) =>
+          opts.method === 'POST'
+            ? {
+                status: 422,
+                text: JSON.stringify({
+                  message: 'Validation Failed',
+                  errors: [{ resource: 'PullRequest', field: 'head', code: 'invalid' }],
+                }),
+              }
+            : { json: [] },
+      ],
+    ]);
+    const out = await gh.createPullRequest({ token: 't', fetchImpl }, 'o/r', {
+      branch: 'feat',
+      baseBranch: 'main',
+      title: 'T',
+      body: 'B',
+    });
+    expect(out.failed).toBe(true);
+    expect(out.reason).toBe('head_missing');
+    expect(out.error).toContain('never pushed');
+    expect(out.skipped).toBeUndefined();
+  });
+
+  // ── compareBranches — the PR fan-in pre-check ─────────────────────────────
+
+  it('compareBranches maps ahead/identical from the compare API', async () => {
+    const ahead = makeFetch([['/compare/main...feat', { json: { status: 'ahead', ahead_by: 2 } }]]);
+    expect(
+      await gh.compareBranches({ token: 't', fetchImpl: ahead }, 'o/r', {
+        base: 'main',
+        head: 'feat',
+      }),
+    ).toEqual({ status: 'ahead', aheadBy: 2, base: 'main' });
+    const identical = makeFetch([
+      ['/compare/main...feat', { json: { status: 'identical', ahead_by: 0 } }],
+    ]);
+    expect(
+      await gh.compareBranches({ token: 't', fetchImpl: identical }, 'o/r', {
+        base: 'main',
+        head: 'feat',
+      }),
+    ).toEqual({ status: 'identical', aheadBy: 0, base: 'main' });
+  });
+
+  it('compareBranches distinguishes a missing head from a missing base on a compare 404', async () => {
+    const headGone = makeFetch([
+      ['/compare/', { status: 404, json: { message: 'Not Found' } }],
+      ['/git/ref/heads/feat', { status: 404, json: { message: 'Not Found' } }],
+    ]);
+    expect(
+      await gh.compareBranches({ token: 't', fetchImpl: headGone }, 'o/r', {
+        base: 'main',
+        head: 'feat',
+      }),
+    ).toEqual({ status: 'missing_head', base: 'main' });
+    const baseGone = makeFetch([
+      ['/compare/', { status: 404, json: { message: 'Not Found' } }],
+      ['/git/ref/heads/feat', { json: { ref: 'refs/heads/feat' } }],
+    ]);
+    expect(
+      await gh.compareBranches({ token: 't', fetchImpl: baseGone }, 'o/r', {
+        base: 'main',
+        head: 'feat',
+      }),
+    ).toEqual({ status: 'missing_base', base: 'main' });
+  });
+
+  it('compareBranches resolves the repo default branch when base is omitted and reports unknown on API trouble', async () => {
+    const fetchImpl = makeFetch([
+      ['/compare/develop...feat', { json: { status: 'ahead', ahead_by: 1 } }],
+      ['/repos/o/r', { json: { default_branch: 'develop' } }],
+    ]);
+    expect(
+      await gh.compareBranches({ token: 't', fetchImpl }, 'o/r', { base: null, head: 'feat' }),
+    ).toEqual({ status: 'ahead', aheadBy: 1, base: 'develop' });
+    const broken = makeFetch([['/compare/', { status: 500, json: {} }]]);
+    expect(
+      (
+        await gh.compareBranches({ token: 't', fetchImpl: broken }, 'o/r', {
+          base: 'main',
+          head: 'feat',
+        })
+      ).status,
+    ).toBe('unknown');
   });
 
   it('getPullRequestState classifies merged vs closed vs open', async () => {
@@ -211,7 +574,19 @@ describe('gitlab provider — repo browse + MR + token refresh', () => {
   it('createPullRequest returns existing MR when one is already open', async () => {
     const fetchImpl = makeFetch([
       ['/repository/branches?search', { json: [] }],
-      ['/merge_requests?source_branch', { json: [{ web_url: 'https://gl/mr/3', iid: 3 }] }],
+      [
+        '/merge_requests?source_branch',
+        {
+          json: [
+            {
+              web_url: 'https://gl/mr/3',
+              iid: 3,
+              source_branch: 'feat',
+              target_branch: 'main',
+            },
+          ],
+        },
+      ],
     ]);
     const out = await gl.createPullRequest({ token: 't', fetchImpl }, 'g/p', {
       branch: 'feat',
@@ -220,6 +595,132 @@ describe('gitlab provider — repo browse + MR + token refresh', () => {
       body: 'B',
     });
     expect(out).toEqual({ prUrl: 'https://gl/mr/3', prNumber: 3, existing: true });
+  });
+
+  it('findPullRequest rejects rows without exact source and target identity', async () => {
+    const fetchImpl = makeFetch([
+      [
+        '/merge_requests?source_branch=unit%2Fauth',
+        {
+          json: [
+            { iid: 1, target_branch: 'intent' },
+            { iid: 2, source_branch: 'unit/auth' },
+            { iid: 3, source_branch: 'unit/auth', target_branch: 'other' },
+          ],
+        },
+      ],
+    ]);
+    await expect(
+      gl.findPullRequest({ token: 't', fetchImpl }, 'g/p', {
+        sourceBranch: 'unit/auth',
+        targetBranch: 'intent',
+        state: 'opened',
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it('supports exact lookup, draft lifecycle, reopen, status, and ancestry', async () => {
+    let title = 'Draft: Auth';
+    let state = 'opened';
+    const fetchImpl = makeFetch([
+      [
+        '/merge_requests?source_branch=unit%2Fauth',
+        {
+          json: [
+            {
+              id: 70,
+              iid: 7,
+              source_branch: 'unit/auth',
+              target_branch: 'intent',
+            },
+            {
+              id: 80,
+              iid: 8,
+              source_branch: 'unit/auth',
+              target_branch: 'other',
+            },
+          ],
+        },
+      ],
+      [
+        '/merge_requests/7',
+        (_url, options) => {
+          if (options.method === 'PUT') {
+            const body = JSON.parse(options.body);
+            if (body.title) title = body.title;
+            if (body.state_event === 'reopen') state = 'opened';
+          }
+          return {
+            json: {
+              id: 70,
+              iid: 7,
+              web_url: 'https://gl/mr/7',
+              source_branch: 'unit/auth',
+              target_branch: 'intent',
+              sha: 'head-7',
+              diff_refs: { base_sha: 'base-7' },
+              state,
+              title,
+              detailed_merge_status: 'mergeable',
+            },
+          };
+        },
+      ],
+      [
+        '/commits/head-7/refs',
+        {
+          json: [{ type: 'branch', name: 'intent' }],
+        },
+      ],
+    ]);
+    const found = await gl.findPullRequest({ token: 't', fetchImpl }, 'g/p', {
+      sourceBranch: 'unit/auth',
+      targetBranch: 'intent',
+      state: 'opened',
+    });
+    expect(found.iid).toBe(7);
+    expect(await gl.getPullRequestStatus({ token: 't', fetchImpl }, 'g/p', 7)).toMatchObject({
+      state: 'open',
+      draft: true,
+      headSha: 'head-7',
+      targetSha: 'base-7',
+      mergeable: true,
+    });
+    expect(await gl.setPullRequestDraft({ token: 't', fetchImpl }, 'g/p', 7, false)).toMatchObject({
+      state: 'open',
+      draft: false,
+    });
+    state = 'closed';
+    expect(await gl.reopenPullRequest({ token: 't', fetchImpl }, 'g/p', 7)).toMatchObject({
+      state: 'open',
+    });
+    expect(await gl.isCommitAncestor({ token: 't', fetchImpl }, 'g/p', 'head-7', 'intent')).toBe(
+      true,
+    );
+  });
+
+  it('createPullRequest resolves the project default branch when baseBranch is omitted', async () => {
+    const fetchImpl = makeFetch([
+      ['/repository/branches?search', { json: [] }],
+      ['/merge_requests?source_branch', { json: [] }],
+      [
+        '/merge_requests',
+        (url, opts) =>
+          opts.method === 'POST'
+            ? { status: 201, json: { web_url: 'https://gl/mr/8', iid: 8 } }
+            : { json: [] },
+      ],
+      ['/projects/g%2Fp', { json: { default_branch: 'develop' } }],
+    ]);
+    const out = await gl.createPullRequest({ token: 't', fetchImpl }, 'g/p', {
+      branch: 'feat',
+      baseBranch: null,
+      title: 'T',
+      body: 'B',
+    });
+    expect(out).toEqual({ prUrl: 'https://gl/mr/8', prNumber: 8 });
+    const postCall = fetchImpl.calls.find((c) => c.options?.method === 'POST');
+    expect(JSON.parse(postCall.options.body).target_branch).toBe('develop');
   });
 
   it('getPullRequestState maps opened/merged/closed', async () => {
@@ -234,12 +735,96 @@ describe('gitlab provider — repo browse + MR + token refresh', () => {
       'closed',
     );
   });
+
+  // ── 400/422 classification (2026-07 incident parity with GitHub) ──────────
+
+  it('createPullRequest classifies a missing SOURCE branch as FAILED head_missing, never a skip', async () => {
+    const fetchImpl = makeFetch([
+      ['/repository/branches?search', { json: [] }],
+      ['/merge_requests?source_branch', { json: [] }],
+      [
+        '/merge_requests',
+        (url, opts) =>
+          opts.method === 'POST'
+            ? {
+                status: 400,
+                text: JSON.stringify({ message: ['Source branch "feat" does not exist'] }),
+              }
+            : { json: [] },
+      ],
+    ]);
+    const out = await gl.createPullRequest({ token: 't', fetchImpl }, 'g/p', {
+      branch: 'feat',
+      baseBranch: 'main',
+      title: 'T',
+      body: 'B',
+    });
+    expect(out.failed).toBe(true);
+    expect(out.reason).toBe('head_missing');
+    expect(out.error).toContain('never pushed');
+  });
+
+  it('createPullRequest keeps a genuine "no commits" 400 as skipped/no_changes', async () => {
+    const fetchImpl = makeFetch([
+      ['/repository/branches?search', { json: [] }],
+      ['/merge_requests?source_branch', { json: [] }],
+      [
+        '/merge_requests',
+        (url, opts) =>
+          opts.method === 'POST'
+            ? {
+                status: 400,
+                text: JSON.stringify({ message: ['No commits between main and feat'] }),
+              }
+            : { json: [] },
+      ],
+    ]);
+    const out = await gl.createPullRequest({ token: 't', fetchImpl }, 'g/p', {
+      branch: 'feat',
+      baseBranch: 'main',
+      title: 'T',
+      body: 'B',
+    });
+    expect(out).toEqual({ skipped: true, reason: 'no_changes' });
+  });
+
+  // ── compareBranches — the MR fan-in pre-check ─────────────────────────────
+
+  it('compareBranches maps commits→ahead / empty→identical and detects a missing head on 404', async () => {
+    const ahead = makeFetch([['/repository/compare', { json: { commits: [{}, {}] } }]]);
+    expect(
+      await gl.compareBranches({ token: 't', fetchImpl: ahead }, 'g/p', {
+        base: 'main',
+        head: 'feat',
+      }),
+    ).toEqual({ status: 'ahead', aheadBy: 2, base: 'main' });
+    const identical = makeFetch([['/repository/compare', { json: { commits: [] } }]]);
+    expect(
+      await gl.compareBranches({ token: 't', fetchImpl: identical }, 'g/p', {
+        base: 'main',
+        head: 'feat',
+      }),
+    ).toEqual({ status: 'identical', aheadBy: 0, base: 'main' });
+    const headGone = makeFetch([
+      ['/repository/compare', { status: 404, json: { message: '404 Not Found' } }],
+      ['/repository/branches/feat', { status: 404, json: { message: '404 Branch Not Found' } }],
+    ]);
+    expect(
+      await gl.compareBranches({ token: 't', fetchImpl: headGone }, 'g/p', {
+        base: 'main',
+        head: 'feat',
+      }),
+    ).toEqual({ status: 'missing_head', base: 'main' });
+  });
 });
 
 describe('OAuth metadata', () => {
   it('exposes provider-specific secret env names and scopes', () => {
     expect(getProvider('github').oauth.secretEnvName).toBe('GITHUB_OAUTH_SECRET_NAME');
     expect(getProvider('gitlab').oauth.secretEnvName).toBe('GITLAB_OAUTH_SECRET_NAME');
+    expect(getProvider('github').oauth.scopes).toBe('repo workflow read:user');
+    expect(getProvider('github').oauth.requiredConnectionScopes).toEqual(['workflow']);
+    expect(getProvider('gitlab').oauth.requiredConnectionScopes).toEqual(['api']);
     expect(getProvider('gitlab').oauth.refreshAccessToken).toBeTypeOf('function');
     expect(getProvider('github').oauth.refreshAccessToken).toBeUndefined();
   });

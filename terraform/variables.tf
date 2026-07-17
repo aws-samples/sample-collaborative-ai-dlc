@@ -22,14 +22,10 @@ variable "bedrock_model" {
   default     = "us.anthropic.claude-sonnet-4-6"
 }
 
-variable "git_author_name" {
-  description = "Git author name used by agents for commits they create"
+variable "aidlc_repo_ref" {
+  description = "Pinned ref (commit SHA/tag/branch) of awslabs/aidlc-workflows the seed + AgentCore runtime use. Keep in sync with the seed-blocks lambda."
   type        = string
-  default     = "AI-DLC Agent"
+  default     = "83ed7a812c4024904f2c5e4d744e28077e0a5acd"
 }
 
-variable "git_author_email" {
-  description = "Git author email used by agents for commits they create"
-  type        = string
-  default     = "ai-dlc@example.com"
-}
+

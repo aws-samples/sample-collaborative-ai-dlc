@@ -1,0 +1,18 @@
+{
+  "name": "seed-blocks",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "vitest run --project=seed-blocks",
+    "test:watch": "vitest --project=seed-blocks",
+    "build": "esbuild index.js --bundle --platform=node --target=node24 --format=esm --external:@aws-sdk/* --banner:js=\"import{createRequire}from'node:module';const require=createRequire(import.meta.url);\" --outfile=.build/index.mjs",
+    "lint": "oxlint .",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check ."
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.0",
+    "tar-stream": "^3.2.0"
+  }
+}

@@ -1,30 +1,24 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
-import {
-  useProjectCache,
-  useProjectSprintsCache,
-  useProjectsCache,
-} from '@/hooks/useProjectsCache';
+import { getTimeAgo } from '@/lib/timeAgo';
+import { useProjectCache, useProjectSprintsCache } from '@/hooks/useProjectsCache';
 import { useSprintEvents } from '@/hooks/useSprintEvents';
-import { projectsService, type Project as ProjectType } from '@/services/projects';
-import { getTrackerProvider } from '@/lib/trackerProviders';
-import { sprintsService, type Sprint } from '@/services/sprints';
+import { type Project as ProjectType } from '@/services/projects';
+import { type Sprint } from '@/services/sprints';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from '@/components/ui/dialog';
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -46,11 +40,15 @@ import {
   Plus,
   Trash2,
   Settings,
+  Info,
+  Archive,
+  ArrowUpDown,
 } from 'lucide-react';
-import { TrackerIssueListPanel } from '@/components/TrackerIssueListPanel';
-import { MigrateTrackerCard } from '@/components/MigrateTrackerCard';
 import { GitRepoLink } from '@/components/GitRepoLink';
 import { effectiveSprintStatus, isActiveStatus } from '@/lib/sprintStatus';
+import { intentsService, type Intent, type ProjectMetrics } from '@/services/intents';
+import { UsageMetrics } from '@/components/intent/UsageMetrics';
+import { loadPersisted, persist } from '@/lib/persistentCache';
 
 const STATUS_ICON: Record<string, typeof Loader2> = {
   running: Loader2,
@@ -70,13 +68,7 @@ const STATUS_LABEL: Record<string, string> = {
 
 function formatRelativeTime(dateStr: string | null): string {
   if (!dateStr) return '';
-  const ms = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(ms / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.floor(hrs / 24)}d ago`;
+  return getTimeAgo(dateStr);
 }
 
 export default function Project() {
@@ -84,19 +76,6 @@ export default function Project() {
   const navigate = useNavigate();
   const { project, loading: projectLoading } = useProjectCache(projectId ?? null);
   const { sprints, refresh: refreshSprints } = useProjectSprintsCache(projectId ?? null);
-  const { invalidate: invalidateProjects } = useProjectsCache();
-
-  const [showCreate, setShowCreate] = useState(false);
-  const [newName, setNewName] = useState('');
-  const [creating, setCreating] = useState(false);
-  const [createError, setCreateError] = useState<string | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-  const [activeTrackerTab, setActiveTrackerTab] = useState<string | null>(null);
-  const [migrating, setMigrating] = useState(false);
-  const [migrationResult, setMigrationResult] = useState<{
-    sprintsApplied: number;
-    projectsApplied: number;
-  } | null>(null);
 
   const latestSprint = sprints[0] ?? null;
   const agentStatus = effectiveSprintStatus(latestSprint);
@@ -109,67 +88,14 @@ export default function Project() {
     }, [refreshSprints]),
   );
 
-  const handleSprintCreated = useCallback(() => {
-    refreshSprints();
-  }, [refreshSprints]);
-
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!projectId || !newName.trim()) return;
-    setCreating(true);
-    setCreateError(null);
-    try {
-      await sprintsService.create(projectId, { name: newName, description: '' });
-      refreshSprints();
-      setShowCreate(false);
-      setNewName('');
-    } catch (err) {
-      setCreateError(err instanceof Error ? err.message : 'Failed to create sprint');
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  const handleDelete = async () => {
-    if (!projectId || !confirmDelete) return;
-    try {
-      await sprintsService.delete(projectId, confirmDelete);
-      refreshSprints();
-    } catch (error) {
-      console.error('Failed to delete sprint:', error);
-    } finally {
-      setConfirmDelete(null);
-    }
-  };
-
-  const handleMigrateTracker = async () => {
-    if (!projectId) return;
-    setMigrating(true);
-    try {
-      const result = await projectsService.migrateTracker(projectId);
-      setMigrationResult({
-        sprintsApplied: result.sprints.applied,
-        projectsApplied: result.projects.applied,
-      });
-      // Refresh so project.trackers reflects the new binding and the
-      // MigrateTrackerCard self-dismisses on next render.
-      invalidateProjects();
-      refreshSprints();
-    } catch (error) {
-      console.error('Failed to migrate tracker:', error);
-    } finally {
-      setMigrating(false);
-    }
-  };
-
   const activeSprints = sprints.filter((s) => isActiveStatus(effectiveSprintStatus(s)));
   const pastSprints = sprints.filter((s) => !isActiveStatus(effectiveSprintStatus(s)));
 
-  if (!projectId) return <div className="p-6">Project not found</div>;
+  if (!projectId) return <div className="p-6">Space not found</div>;
 
   if (!project && projectLoading) {
     return (
-      <div className="max-w-5xl mx-auto p-6 space-y-4">
+      <div className="space-y-4">
         <Skeleton className="h-8 w-48" />
         <Skeleton className="h-4 w-64" />
         <div className="grid md:grid-cols-2 gap-3">
@@ -181,16 +107,24 @@ export default function Project() {
     );
   }
 
-  if (!project) return <div className="p-6">Project not found</div>;
+  if (!project) return <div className="p-6">Space not found</div>;
 
-  const hasTrackers = project.trackers.length > 0;
+  // v2 projects run intents (dynamic phases/stages), not the fixed sprint
+  // lifecycle — render the dedicated intents view.
+  if (project.kind === 'v2') {
+    return <IntentsView project={project} projectId={projectId} onNavigate={navigate} />;
+  }
 
   return (
-    <div className="max-w-5xl mx-auto p-6 space-y-6">
+    <div className="space-y-6">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-3 min-w-0">
           <FolderGit2 className="h-5 w-5 text-primary shrink-0" />
           <h1 className="text-lg font-bold tracking-tight truncate">{project.name}</h1>
+          <Badge variant="outline" className="gap-1 text-[10px] shrink-0">
+            <Archive className="h-2.5 w-2.5" />
+            v1 · read-only
+          </Badge>
           {isAgentActive && (
             <Badge
               variant="outline"
@@ -201,17 +135,12 @@ export default function Project() {
             </Badge>
           )}
         </div>
-        <div className="flex items-center gap-1.5 shrink-0">
-          <Button
-            variant="outline"
-            size="sm"
-            className="gap-1.5 h-7"
-            onClick={() => navigate(`/project/${projectId}/settings`)}
-          >
-            <Settings className="h-3 w-3" />
-            Settings
-          </Button>
-        </div>
+      </div>
+
+      <div className="rounded-lg border bg-muted/40 px-4 py-3 text-xs text-muted-foreground">
+        This is a v1 space. The v1 sprint lifecycle has been retired — existing sprints, artifacts,
+        and agent history remain viewable, but nothing new can be created or executed here. New work
+        happens in v2 spaces (intents).
       </div>
 
       <div className="grid md:grid-cols-2 gap-3">
@@ -255,7 +184,7 @@ export default function Project() {
                 const lastActive = sprints
                   .map((s) => s.agentCompletedAt ?? s.agentStartedAt)
                   .filter(Boolean)
-                  .sort()
+                  .toSorted()
                   .pop();
                 return lastActive ? ` · Last activity ${formatRelativeTime(lastActive)}` : '';
               })()}
@@ -264,42 +193,7 @@ export default function Project() {
         </Card>
       </div>
 
-      {/* Tracker-abstraction migration banner — only renders for legacy
-          projects that still use issueIntegrationEnabled and have no
-          HAS_TRACKER edge yet. Lives here so users discover the
-          migration on the project page where their issue list used to
-          be (the same banner also appears in Project Settings). */}
-      <MigrateTrackerCard
-        project={project}
-        canEditProject={project.userRole === 'owner' || project.userRole === 'admin'}
-        migrating={migrating}
-        migrationResult={migrationResult}
-        onMigrate={handleMigrateTracker}
-      />
-
-      <div className={cn('grid gap-6', hasTrackers && 'md:grid-cols-2')}>
-        {hasTrackers && (
-          <div>
-            {project.trackers.length === 1 && (
-              <TrackerIssueListPanel
-                project={project}
-                binding={project.trackers[0]}
-                sprints={sprints}
-                onSprintCreated={handleSprintCreated}
-              />
-            )}
-            {project.trackers.length > 1 && (
-              <TrackerTabs
-                project={project}
-                sprints={sprints}
-                activeTabId={activeTrackerTab}
-                onTabChange={setActiveTrackerTab}
-                onSprintCreated={handleSprintCreated}
-              />
-            )}
-          </div>
-        )}
-
+      <div className="grid gap-6">
         <Card className="flex flex-col">
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between gap-3 min-h-7">
@@ -311,10 +205,6 @@ export default function Project() {
                   </Badge>
                 )}
               </div>
-              <Button onClick={() => setShowCreate(true)} size="sm" className="gap-1.5 h-7">
-                <Plus className="h-3.5 w-3.5" />
-                New Sprint
-              </Button>
             </div>
           </CardHeader>
           <CardContent className="flex-1 space-y-4 pt-0">
@@ -327,7 +217,6 @@ export default function Project() {
                     projectId={projectId}
                     active
                     onNavigate={navigate}
-                    onDelete={setConfirmDelete}
                   />
                 ))}
               </div>
@@ -347,7 +236,6 @@ export default function Project() {
                         sprint={s}
                         projectId={projectId}
                         onNavigate={navigate}
-                        onDelete={setConfirmDelete}
                       />
                     ))}
                   </div>
@@ -357,138 +245,15 @@ export default function Project() {
 
             {sprints.length === 0 && (
               <div className="flex flex-col items-center justify-center rounded-lg border border-dashed py-10 text-center">
-                <p className="text-sm text-muted-foreground">No iterations yet</p>
+                <p className="text-sm text-muted-foreground">No iterations</p>
                 <p className="text-xs text-muted-foreground/60 mt-1">
-                  Start one to kick off the AI-DLC lifecycle.
+                  This v1 space is read-only — sprints can no longer be created.
                 </p>
               </div>
             )}
           </CardContent>
         </Card>
       </div>
-
-      {/* Create Sprint Dialog */}
-      <Dialog
-        open={showCreate}
-        onOpenChange={(open) => {
-          setShowCreate(open);
-          if (!open) setCreateError(null);
-        }}
-      >
-        <DialogContent className="sm:max-w-md">
-          <form onSubmit={handleCreate}>
-            <DialogHeader>
-              <DialogTitle>Create Sprint</DialogTitle>
-              <DialogDescription>
-                Create a new sprint to start a development iteration. You'll define the inception
-                prompt after creation.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="py-4">
-              <Label htmlFor="sprint-name">Sprint Name</Label>
-              <Input
-                id="sprint-name"
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                placeholder="e.g., Sprint 1 - User Authentication"
-                className="mt-1.5"
-                required
-                autoFocus
-              />
-              {createError && <p className="mt-2 text-xs text-destructive">{createError}</p>}
-            </div>
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setShowCreate(false)}
-                disabled={creating}
-              >
-                Cancel
-              </Button>
-              <Button type="submit" disabled={creating || !newName.trim()}>
-                {creating ? 'Creating...' : 'Create Sprint'}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      {/* Delete Confirmation */}
-      <AlertDialog open={!!confirmDelete} onOpenChange={() => setConfirmDelete(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Sprint</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure? This will permanently delete the sprint and all its artifacts.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDelete}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </div>
-  );
-}
-
-interface TrackerTabsProps {
-  project: ProjectType;
-  sprints: Sprint[];
-  activeTabId: string | null;
-  onTabChange: (id: string) => void;
-  onSprintCreated: (sprint: Sprint) => void;
-}
-
-function TrackerTabs({
-  project,
-  sprints,
-  activeTabId,
-  onTabChange,
-  onSprintCreated,
-}: TrackerTabsProps) {
-  const trackers = project.trackers;
-  const activeBinding = useMemo(() => {
-    return trackers.find((t) => t.id === activeTabId) ?? trackers[0];
-  }, [trackers, activeTabId]);
-
-  return (
-    <div>
-      <div className="flex items-center gap-1 border-b">
-        {trackers.map((binding) => {
-          const isActive = binding.id === activeBinding.id;
-          const tabLabel = getTrackerProvider(binding.provider).tabLabel;
-          const label = binding.displayName || binding.externalProjectKey || tabLabel;
-          return (
-            <button
-              key={binding.id}
-              type="button"
-              onClick={() => onTabChange(binding.id)}
-              className={`px-3 py-2 text-sm border-b-2 -mb-px transition-colors ${
-                isActive
-                  ? 'border-primary text-foreground font-medium'
-                  : 'border-transparent text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              <span className="text-muted-foreground mr-1.5">{tabLabel}</span>
-              {label}
-            </button>
-          );
-        })}
-      </div>
-      <TrackerIssueListPanel
-        key={activeBinding.id}
-        project={project}
-        binding={activeBinding}
-        sprints={sprints}
-        onSprintCreated={onSprintCreated}
-      />
     </div>
   );
 }
@@ -498,13 +263,11 @@ function SprintRow({
   projectId,
   active,
   onNavigate,
-  onDelete,
 }: {
   sprint: Sprint;
   projectId: string;
   active?: boolean;
   onNavigate: (path: string) => void;
-  onDelete: (sprintId: string) => void;
 }) {
   const status = effectiveSprintStatus(sprint);
   const phaseRoute =
@@ -519,7 +282,7 @@ function SprintRow({
       )}
     >
       <button
-        onClick={() => onNavigate(`/project/${projectId}/sprint/${sprint.id}${phaseRoute}`)}
+        onClick={() => onNavigate(`/space/${projectId}/sprint/${sprint.id}${phaseRoute}`)}
         className="min-w-0 flex-1 text-left"
       >
         <div className="flex items-center gap-2">
@@ -551,18 +314,447 @@ function SprintRow({
             />
           );
         })()}
-      <Button
-        variant="ghost"
-        size="icon"
-        className="h-6 w-6 opacity-0 group-hover:opacity-100 shrink-0"
-        onClick={(e) => {
-          e.stopPropagation();
-          onDelete(sprint.id);
+      <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/40 shrink-0" />
+    </div>
+  );
+}
+
+// ── v2 projects: intents list + create ──
+
+interface IntentsCacheEntry {
+  intents: Intent[];
+  usage: ProjectMetrics | null;
+  fetchedAt: number;
+}
+
+const intentsCache = new Map<string, IntentsCacheEntry>();
+
+/** @internal Test-only — reset module cache between test runs. */
+export function clearIntentsCacheForTests() {
+  intentsCache.clear();
+}
+
+const INTENT_STATUS_LABEL: Record<string, string> = {
+  RUNNING: 'Running',
+  WAITING: 'Needs input',
+  CREATED: 'Created',
+  SUCCEEDED: 'Done',
+  FAILED: 'Failed',
+  CANCELLED: 'Cancelled',
+};
+
+const INTENT_STATUS_ICON: Record<string, typeof Loader2> = {
+  RUNNING: Loader2,
+  WAITING: MessageCircleQuestion,
+  SUCCEEDED: CheckCircle2,
+  FAILED: XCircle,
+};
+
+type IntentSort = 'updated' | 'created' | 'title';
+const INTENT_SORT_KEY = 'aidlc.intentSort';
+
+function loadIntentSort(): IntentSort {
+  try {
+    const v = localStorage.getItem(INTENT_SORT_KEY);
+    return v === 'created' || v === 'title' ? v : 'updated';
+  } catch {
+    return 'updated';
+  }
+}
+
+function IntentsView({
+  project,
+  projectId,
+  onNavigate,
+}: {
+  project: ProjectType;
+  projectId: string;
+  onNavigate: (path: string) => void;
+}) {
+  let cached = intentsCache.get(projectId);
+  if (!cached) {
+    const persisted = loadPersisted<{ intents: Intent[]; usage: ProjectMetrics | null }>(
+      `intents:${projectId}`,
+    );
+    if (persisted) {
+      cached = {
+        intents: persisted.data.intents,
+        usage: persisted.data.usage,
+        fetchedAt: persisted.fetchedAt,
+      };
+      intentsCache.set(projectId, cached);
+    }
+  }
+  const [intents, setIntents] = useState<Intent[]>(cached?.intents ?? []);
+  const [loading, setLoading] = useState(!cached);
+  const [error, setError] = useState<string | null>(null);
+
+  const [usage, setUsage] = useState<ProjectMetrics | null>(cached?.usage ?? null);
+  const [confirmDeleteIntent, setConfirmDeleteIntent] = useState<Intent | null>(null);
+  const [deletingIntent, setDeletingIntent] = useState<string | null>(null);
+  const [sortBy, setSortBy] = useState<IntentSort>(loadIntentSort);
+  const [showAll, setShowAll] = useState(false);
+  const isOwnerOrAdmin = project.userRole === 'owner' || project.userRole === 'admin';
+  const canDeleteIntents = isOwnerOrAdmin;
+  const canEditSettings = isOwnerOrAdmin;
+
+  const changeSort = (value: IntentSort) => {
+    setSortBy(value);
+    try {
+      localStorage.setItem(INTENT_SORT_KEY, value);
+    } catch {
+      /* persistence is best-effort */
+    }
+  };
+
+  // The API returns intents grouped by status (DynamoDB GSI ordering), which
+  // reads as arbitrary — always re-sort client-side.
+  const sortedIntents = useMemo(() => {
+    const time = (t: string | null | undefined) => (t ? new Date(t).getTime() : 0);
+    return [...intents].toSorted((a, b) => {
+      switch (sortBy) {
+        case 'title':
+          return (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base' });
+        case 'created':
+          return time(b.createdAt) - time(a.createdAt);
+        case 'updated':
+        default:
+          return time(b.updatedAt ?? b.createdAt) - time(a.updatedAt ?? a.createdAt);
+      }
+    });
+  }, [intents, sortBy]);
+
+  const API_INTENT_CAP = 100;
+  const INITIAL_INTENT_CAP = 10;
+  const visibleIntents = showAll ? sortedIntents : sortedIntents.slice(0, INITIAL_INTENT_CAP);
+  const hasMore = sortedIntents.length > INITIAL_INTENT_CAP;
+
+  const refresh = useCallback(() => {
+    intentsService
+      .list(projectId)
+      .then((data) => {
+        setIntents(data);
+        const entry: IntentsCacheEntry = {
+          intents: data,
+          usage: intentsCache.get(projectId)?.usage ?? null,
+          fetchedAt: Date.now(),
+        };
+        intentsCache.set(projectId, entry);
+        persist(`intents:${projectId}`, {
+          data: { intents: entry.intents, usage: entry.usage },
+          fetchedAt: entry.fetchedAt,
+        });
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load intents'))
+      .finally(() => setLoading(false));
+    intentsService
+      .projectMetrics(projectId)
+      .then((data) => {
+        setUsage(data);
+        const existing = intentsCache.get(projectId);
+        if (existing) {
+          existing.usage = data;
+          persist(`intents:${projectId}`, {
+            data: { intents: existing.intents, usage: existing.usage },
+            fetchedAt: existing.fetchedAt,
+          });
+        }
+      })
+      .catch(() => setUsage(null));
+  }, [projectId]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  // Show the card only once there's real usage to report.
+  const hasUsage =
+    !!usage && (Object.keys(usage.project.metrics).length > 0 || usage.project.cost.totalCost > 0);
+
+  const handleDeleteIntent = async () => {
+    if (!confirmDeleteIntent) return;
+    const intentToDelete = confirmDeleteIntent;
+    setDeletingIntent(intentToDelete.id);
+    setError(null);
+    try {
+      await intentsService.delete(projectId, intentToDelete.id);
+      setConfirmDeleteIntent(null);
+      refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete intent');
+      setConfirmDeleteIntent(null);
+    } finally {
+      setDeletingIntent(null);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-3 min-w-0">
+          <FolderGit2 className="h-5 w-5 text-primary shrink-0" />
+          <h1 className="text-lg font-bold tracking-tight truncate">{project.name}</h1>
+          {project.kind !== 'v2' && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                  Legacy
+                </Badge>
+              </TooltipTrigger>
+              <TooltipContent>This space is view-only. New work uses v2 intents.</TooltipContent>
+            </Tooltip>
+          )}
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-1.5 h-7"
+          onClick={() => onNavigate(`/space/${projectId}/settings`)}
+          title={canEditSettings ? undefined : 'View space settings (read-only for members)'}
+        >
+          {canEditSettings ? <Settings className="h-3 w-3" /> : <Info className="h-3 w-3" />}
+          Settings
+        </Button>
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-3">
+        <Card>
+          <CardContent className="px-4 py-3">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
+              <FolderGit2 className="h-3 w-3" />
+              Repository
+            </div>
+            <p className="text-sm font-medium truncate">{project.gitRepo || 'Not configured'}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="px-4 py-3">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
+              <Clock className="h-3 w-3" />
+              Workflow
+            </div>
+            <p className="text-sm font-medium">{project.workflowId ?? 'aidlc-v2'}</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card className="flex flex-col">
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between gap-3 min-h-7">
+            <div className="flex items-center gap-2">
+              <CardTitle className="text-sm">Intents</CardTitle>
+            </div>
+            <div className="flex items-center gap-2">
+              {intents.length > 1 && (
+                <Select value={sortBy} onValueChange={(v) => changeSort(v as IntentSort)}>
+                  <SelectTrigger className="h-7 w-[160px] gap-1.5 text-xs">
+                    <ArrowUpDown className="h-3 w-3 text-muted-foreground shrink-0" />
+                    <SelectValue placeholder="Sort" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="updated">Last updated</SelectItem>
+                    <SelectItem value="created">Recently created</SelectItem>
+                    <SelectItem value="title">Title (A–Z)</SelectItem>
+                  </SelectContent>
+                </Select>
+              )}
+              <Button
+                onClick={() => onNavigate(`/space/${projectId}/intent/new`)}
+                size="sm"
+                className="gap-1.5 h-7"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                New Intent
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="flex-1 space-y-2 pt-0">
+          {error && <p className="text-xs text-destructive">{error}</p>}
+          {loading ? (
+            <Skeleton className="h-16 rounded-lg" />
+          ) : intents.length === 0 ? (
+            <div className="flex flex-col items-center justify-center rounded-lg border border-dashed py-10 text-center">
+              <p className="text-sm text-muted-foreground">No intents yet</p>
+              <p className="text-xs text-muted-foreground/60 mt-1">
+                Start one to kick off the AI-DLC v2 workflow.
+              </p>
+            </div>
+          ) : (
+            <>
+              {visibleIntents.map((it) => {
+                const Icon = INTENT_STATUS_ICON[it.status];
+                // The row being purged: dimmed + spinner, navigation disabled while
+                // the (multi-store) cascade runs so it can't be clicked into a
+                // half-deleted intent.
+                const isDeleting = deletingIntent === it.id;
+                // A row is a div-with-role, not a <button>: the delete affordance
+                // nested inside would otherwise be a button-in-button (invalid HTML).
+                return (
+                  <div
+                    key={it.id}
+                    role="button"
+                    tabIndex={isDeleting ? -1 : 0}
+                    aria-busy={isDeleting}
+                    onClick={() => {
+                      if (isDeleting) return;
+                      onNavigate(`/space/${projectId}/intent/${it.id}`);
+                    }}
+                    onKeyDown={(e) => {
+                      if (isDeleting) return;
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        onNavigate(`/space/${projectId}/intent/${it.id}`);
+                      }
+                    }}
+                    className={cn(
+                      'group flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors',
+                      isDeleting
+                        ? 'pointer-events-none opacity-50'
+                        : 'cursor-pointer hover:bg-accent/50',
+                    )}
+                  >
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-2">
+                        <span className="text-sm font-medium truncate">
+                          {it.title || 'Untitled intent'}
+                        </span>
+                        <Badge variant="outline" className="text-[9px] h-4 shrink-0">
+                          {isDeleting ? 'DELETING' : (INTENT_STATUS_LABEL[it.status] ?? it.status)}
+                        </Badge>
+                      </span>
+                      <span className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                        {it.currentStage && <span>stage: {it.currentStage}</span>}
+                        {it.createdAt && (
+                          <span className="text-muted-foreground/60">
+                            created {formatRelativeTime(it.createdAt)}
+                          </span>
+                        )}
+                        {it.updatedAt && it.updatedAt !== it.createdAt && (
+                          <span className="text-muted-foreground/60">
+                            updated {formatRelativeTime(it.updatedAt)}
+                          </span>
+                        )}
+                      </span>
+                    </span>
+                    {isDeleting ? (
+                      <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-destructive" />
+                    ) : (
+                      <>
+                        {Icon && (
+                          <Icon
+                            className={cn(
+                              'h-3.5 w-3.5 shrink-0',
+                              it.status === 'RUNNING' && 'animate-spin text-agent-running',
+                              it.status === 'WAITING' && 'text-agent-waiting',
+                              it.status === 'SUCCEEDED' && 'text-agent-success',
+                              it.status === 'FAILED' && 'text-agent-error',
+                            )}
+                          />
+                        )}
+                        {canDeleteIntents && it.status !== 'RUNNING' && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 shrink-0 opacity-0 group-hover:opacity-100"
+                            aria-label="Delete intent"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setConfirmDeleteIntent(it);
+                            }}
+                          >
+                            <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                          </Button>
+                        )}
+                        <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/40 shrink-0" />
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+              {hasMore && (
+                <button
+                  type="button"
+                  onClick={() => setShowAll((s) => !s)}
+                  className="w-full text-center py-2 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+                  data-testid="intent-show-toggle"
+                >
+                  {showAll
+                    ? `Show recent ${INITIAL_INTENT_CAP}`
+                    : `Show all loaded (${sortedIntents.length})`}
+                </button>
+              )}
+              {intents.length >= API_INTENT_CAP && (
+                <p
+                  className="text-center text-[11px] text-muted-foreground/70 pt-1"
+                  data-testid="intent-api-cap-notice"
+                >
+                  Up to {API_INTENT_CAP} most recent Intents are loaded in this view.
+                </p>
+              )}
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {hasUsage && usage && (project.userRole === 'owner' || project.userRole === 'admin') && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm">Usage &amp; cost</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <UsageMetrics
+              metrics={usage.project.metrics}
+              cost={{
+                totalCost: usage.project.cost.totalCost,
+                currency: usage.project.cost.currency,
+                priced: !usage.project.cost.anyUnpriced,
+                estimated: !!usage.project.cost.anyEstimated,
+              }}
+              coreOnly
+            />
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Intent delete confirmation */}
+      <AlertDialog
+        open={!!confirmDeleteIntent}
+        onOpenChange={(open) => {
+          if (!open && !deletingIntent) setConfirmDeleteIntent(null);
         }}
       >
-        <Trash2 className="h-3 w-3 text-destructive" />
-      </Button>
-      <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/40 shrink-0" />
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Intent</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete “{confirmDeleteIntent?.title || 'this intent'}”? All
+              of its artifacts, questions, discussions and run history will be permanently removed.
+              This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={!!deletingIntent}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                void handleDeleteIntent();
+              }}
+              disabled={!!deletingIntent}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deletingIntent ? (
+                <span className="flex items-center gap-1.5">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Deleting…
+                </span>
+              ) : (
+                'Delete Intent'
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

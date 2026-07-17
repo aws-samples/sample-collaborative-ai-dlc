@@ -63,8 +63,11 @@ export default function ReviewEditor({
       },
     );
 
+  // Seed the collaborative comments ONCE per review (keyed on id) when synced —
+  // not on every review mutation, which would clobber live edits with stale props.
   useEffect(() => {
     if (synced && review) initFields({ comments: review.comments });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [synced, review?.id]);
 
   const handleVerdict = async (status: ReviewStatus) => {

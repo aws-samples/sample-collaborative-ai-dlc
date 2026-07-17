@@ -1,40 +1,93 @@
-import { Outlet, useParams } from 'react-router-dom';
+import { Outlet, useParams, useLocation } from 'react-router-dom';
+import { cn } from '@/lib/utils';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { AppSidebar } from '@/components/layout/AppSidebar';
 import { AppHeader } from '@/components/layout/AppHeader';
 import { SprintPipelineBar } from '@/components/layout/SprintPipelineBar';
-import { ActivityPanel } from '@/components/layout/ActivityPanel';
+import { IntentPipelineBar } from '@/components/layout/IntentPipelineBar';
+// Lazy: the activity panels pull react-markdown (+ transitively heavy deps)
+// that don't belong in the eager main chunk — they only render when a side
+// panel is open on sprint/intent routes.
+const ActivityPanel = lazy(() =>
+  import('@/components/layout/ActivityPanel').then((m) => ({ default: m.ActivityPanel })),
+);
+const IntentActivityPanel = lazy(() =>
+  import('@/components/layout/IntentActivityPanel').then((m) => ({
+    default: m.IntentActivityPanel,
+  })),
+);
 import { StatusBar } from '@/components/layout/StatusBar';
 import { CommandPalette } from '@/components/layout/CommandPalette';
 import { DiscussionProvider } from '@/components/discussion';
+import { IntentProvider } from '@/contexts/IntentContext';
 import { useProjectSprintsCache } from '@/hooks/useProjectsCache';
-import { useState, useCallback, useMemo, useEffect } from 'react';
+import { useState, useCallback, useMemo, useEffect, useRef, lazy, Suspense } from 'react';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
+import { useResizablePanel } from '@/hooks/useResizablePanel';
 
-// Activity panel sizing: user-resizable on large screens (drag the left edge,
+// ---------------------------------------------------------------------------
+// Route classification: determines whether the activity panel should default
+// open (Work routes) or closed (non-work intent sections, top-level pages).
+// Exported for testing.
+// ---------------------------------------------------------------------------
+
+const NON_WORK_SUFFIXES = ['/graph', '/audit', '/compose', '/observability'];
+
+/** True when the given pathname represents a "work" route where the panel opens. */
+export function shouldDefaultOpen(pathname: string): boolean {
+  // Sprint routes are always work routes.
+  if (/\/sprint\//.test(pathname)) return true;
+  // Intent routes: open unless the path ends with a non-work section.
+  if (/\/intent\//.test(pathname)) {
+    return !NON_WORK_SUFFIXES.some((suffix) => pathname.endsWith(suffix));
+  }
+  // Top-level (dashboard, observability, blocks, etc.) — panel hidden anyway.
+  return false;
+}
+
+// Side panel sizing: user-resizable on large screens (drag the inner edge,
 // double-click to reset), persisted across sessions.
-const ACTIVITY_WIDTH_KEY = 'aidlc-activity-panel-width';
-const ACTIVITY_WIDTH_DEFAULT = 380;
-const ACTIVITY_WIDTH_MIN = 300;
-const ACTIVITY_WIDTH_MAX = 640;
+const ACTIVITY_PANEL_SIZING = {
+  storageKey: 'aidlc-activity-panel-width',
+  defaultWidth: 380,
+  minWidth: 300,
+  maxWidth: 1200,
+  viewportFraction: 0.45,
+  anchor: 'right',
+} as const;
 
-function clampActivityWidth(width: number): number {
-  // Never let the panel eat more than ~45% of the viewport.
-  const max = Math.min(ACTIVITY_WIDTH_MAX, Math.round(window.innerWidth * 0.45));
-  return Math.min(Math.max(width, ACTIVITY_WIDTH_MIN), Math.max(max, ACTIVITY_WIDTH_MIN));
-}
-
-function loadActivityWidth(): number {
-  const stored = Number(localStorage.getItem(ACTIVITY_WIDTH_KEY));
-  return Number.isFinite(stored) && stored > 0
-    ? clampActivityWidth(stored)
-    : ACTIVITY_WIDTH_DEFAULT;
-}
+const SIDEBAR_SIZING = {
+  storageKey: 'aidlc-sidebar-width',
+  defaultWidth: 260,
+  minWidth: 200,
+  maxWidth: 420,
+  viewportFraction: 0.3,
+  anchor: 'left',
+} as const;
 
 export function AppShell() {
-  const { sprintId, projectId } = useParams<{ sprintId: string; projectId: string }>();
+  const { sprintId, projectId, intentId } = useParams<{
+    sprintId: string;
+    projectId: string;
+    intentId: string;
+  }>();
+  const location = useLocation();
   const inSprint = !!sprintId;
-  const onProjectPage = !!projectId && !inSprint;
+  // v2 intent pages get their own 3-tab activity panel (IntentActivityPanel),
+  // mounted in the same slots as the sprint one and backed by IntentProvider.
+  const inIntent = !!intentId;
+  const onProjectPage = !!projectId && !inSprint && !inIntent;
+  const onComposePage = location.pathname.endsWith('/compose');
+  const onWorkSection =
+    inIntent &&
+    !onComposePage &&
+    !location.pathname.endsWith('/observability') &&
+    !location.pathname.endsWith('/graph') &&
+    !location.pathname.endsWith('/audit');
+  const showPipelineBar = onWorkSection;
+  // Graph pages render a full-bleed canvas with their own toolbar: the shell's
+  // content padding would float that toolbar mid-pane, so drop it there.
+  const onGraphPage = location.pathname.endsWith('/graph');
 
   // Breakpoint (Tailwind lg): below it BOTH side panels render as NON-modal
   // overlays above the content instead of grid columns, so they stay usable
@@ -53,70 +106,42 @@ export function AppShell() {
     return active?.id ?? projectSprints[0]?.id ?? null;
   }, [inSprint, sprintId, projectSprints]);
 
-  // Small screens start with the panels closed (as overlays they'd cover the
-  // content); large screens keep the previous always-open default.
-  const [activityPanelOpen, setActivityPanelOpen] = useState(
-    () => window.matchMedia('(min-width: 1024px)').matches,
-  );
+  const [activityPanelOpen, setActivityPanelOpen] = useState(() => {
+    if (!window.matchMedia('(min-width: 1024px)').matches) return false;
+    return shouldDefaultOpen(window.location.pathname);
+  });
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     () => !window.matchMedia('(min-width: 1024px)').matches,
   );
   const [commandOpen, setCommandOpen] = useState(false);
-  const [activityWidth, setActivityWidth] = useState(loadActivityWidth);
+  const activityPanel = useResizablePanel(ACTIVITY_PANEL_SIZING);
+  const sidebarPanel = useResizablePanel(SIDEBAR_SIZING);
 
+  // Track the route category so the panel default reapplies on section
+  // navigation but not on every render — preserves manual toggle.
+  const prevRouteDefault = useRef<boolean | null>(null);
   useEffect(() => {
-    const timer = setTimeout(() => {
-      localStorage.setItem(ACTIVITY_WIDTH_KEY, String(activityWidth));
-    }, 250);
-    return () => clearTimeout(timer);
-  }, [activityWidth]);
-
-  useEffect(() => {
-    setActivityPanelOpen(inSprint);
-  }, [inSprint]);
+    const nextDefault = shouldDefaultOpen(location.pathname);
+    if (prevRouteDefault.current === null || nextDefault !== prevRouteDefault.current) {
+      prevRouteDefault.current = nextDefault;
+      setActivityPanelOpen(nextDefault);
+    }
+  }, [location.pathname]);
 
   const showSidebar = !sidebarCollapsed;
-  const showActivity = (inSprint || onProjectPage) && activityPanelOpen;
+  const showActivity = (inSprint || inIntent || onProjectPage) && activityPanelOpen;
 
   const toggleSidebar = useCallback(() => setSidebarCollapsed((prev) => !prev), []);
   const toggleActivity = useCallback(() => setActivityPanelOpen((prev) => !prev), []);
   // Opening a discussion pops the activity panel (the thread renders there).
   const showActivityPanel = useCallback(() => setActivityPanelOpen(true), []);
 
-  // Drag-to-resize (large screens): pointer capture on the panel's left edge.
-  const handleResizeStart = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    const handle = e.currentTarget;
-    handle.setPointerCapture(e.pointerId);
-    const onMove = (ev: PointerEvent) => {
-      setActivityWidth(clampActivityWidth(document.documentElement.clientWidth - ev.clientX));
-    };
-    const onEnd = () => {
-      handle.removeEventListener('pointermove', onMove);
-      handle.removeEventListener('pointerup', onEnd);
-      handle.removeEventListener('pointercancel', onEnd);
-    };
-    handle.addEventListener('pointermove', onMove);
-    handle.addEventListener('pointerup', onEnd);
-    handle.addEventListener('pointercancel', onEnd);
-  }, []);
-
-  const handleResizeKey = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-      e.preventDefault();
-      const delta = e.key === 'ArrowLeft' ? 16 : -16;
-      setActivityWidth((w) => clampActivityWidth(w + delta));
-    }
-  }, []);
-
-  const resetActivityWidth = useCallback(() => setActivityWidth(ACTIVITY_WIDTH_DEFAULT), []);
-
   // Grid columns only contain panels that render INLINE at the current
   // breakpoint — overlay panels must not reserve track space.
   const gridColumns = [
-    showSidebar && panelsInline ? 'minmax(240px, 280px)' : null,
+    showSidebar && panelsInline ? `min(${sidebarPanel.width}px, 30vw)` : null,
     'minmax(0, 1fr)',
-    showActivity && panelsInline ? `min(${activityWidth}px, 45vw)` : null,
+    showActivity && panelsInline ? `min(${activityPanel.width}px, 45vw)` : null,
   ]
     .filter(Boolean)
     .join(' ');
@@ -125,83 +150,119 @@ export function AppShell() {
     <TooltipProvider delayDuration={200}>
       {/* DiscussionProvider sits above BOTH the routed pages and the
           ActivityPanel so the Discussions tab, the entry-point buttons, the
-          panel-hosted thread and the mention toasts share one state. */}
+          panel-hosted thread and the mention toasts share one state.
+          IntentProvider is likewise always mounted (inert off intent routes)
+          so the routed IntentView and the AppShell-hosted IntentActivityPanel
+          share one fetch/realtime/output-buffer state. */}
       <DiscussionProvider onDiscussionOpen={showActivityPanel}>
-        <div className="flex h-screen flex-col bg-background">
-          {/* Header */}
-          <AppHeader
-            onToggleSidebar={toggleSidebar}
-            onToggleActivity={toggleActivity}
-            onOpenCommand={() => setCommandOpen(true)}
-            sidebarCollapsed={sidebarCollapsed}
-            activityPanelOpen={activityPanelOpen}
-            inSprint={inSprint}
-          />
+        <IntentProvider onAgentFocus={showActivityPanel}>
+          <div className="flex h-screen flex-col bg-background">
+            {/* Header */}
+            <AppHeader
+              onToggleSidebar={toggleSidebar}
+              onToggleActivity={toggleActivity}
+              onOpenCommand={() => setCommandOpen(true)}
+              sidebarCollapsed={sidebarCollapsed}
+              activityPanelOpen={activityPanelOpen}
+            />
 
-          {/* Main content area (relative: hosts the small-screen overlays,
+            {/* Main content area (relative: hosts the small-screen overlays,
               clipped between header and status bar) */}
-          <div
-            className="relative flex-1 overflow-hidden grid"
-            style={{ gridTemplateColumns: gridColumns }}
-          >
-            {/* Sidebar - inline column on lg+ */}
-            {showSidebar && panelsInline && (
-              <aside className="flex border-r overflow-hidden">
-                <AppSidebar />
-              </aside>
-            )}
+            <div
+              className="relative flex-1 overflow-hidden grid"
+              style={{ gridTemplateColumns: gridColumns }}
+            >
+              {/* Sidebar - inline column on lg+, with a resize handle */}
+              {showSidebar && panelsInline && (
+                <aside className="relative flex border-r overflow-hidden">
+                  <AppSidebar />
+                  <div
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label="Resize sidebar"
+                    tabIndex={0}
+                    onPointerDown={sidebarPanel.handleResizeStart}
+                    onKeyDown={sidebarPanel.handleResizeKey}
+                    onDoubleClick={sidebarPanel.resetWidth}
+                    className="absolute inset-y-0 right-0 z-10 w-1.5 cursor-col-resize touch-none hover:bg-primary/30 active:bg-primary/40 focus-visible:bg-primary/40 focus-visible:outline-none"
+                  />
+                </aside>
+              )}
 
-            {/* Main content */}
-            <main className="h-full overflow-hidden min-w-0 flex flex-col">
-              {inSprint && <SprintPipelineBar />}
-              <div className="flex-1 overflow-y-auto min-w-0">
-                <Outlet />
-              </div>
-            </main>
-
-            {/* Activity panel - inline column on lg+, with a resize handle */}
-            {showActivity && panelsInline && (
-              <aside className="relative flex overflow-hidden">
+              {/* Main content */}
+              <main className="h-full overflow-hidden min-w-0 flex flex-col">
+                {inSprint && <SprintPipelineBar />}
+                {showPipelineBar && <IntentPipelineBar />}
                 <div
-                  role="separator"
-                  aria-orientation="vertical"
-                  aria-label="Resize activity panel"
-                  tabIndex={0}
-                  onPointerDown={handleResizeStart}
-                  onKeyDown={handleResizeKey}
-                  onDoubleClick={resetActivityWidth}
-                  className="absolute inset-y-0 left-0 z-10 w-1.5 cursor-col-resize touch-none hover:bg-primary/30 active:bg-primary/40 focus-visible:bg-primary/40 focus-visible:outline-none"
-                />
-                <ActivityPanel
-                  sprintId={inSprint ? sprintId : (latestActiveSprintId ?? undefined)}
-                  onClose={() => setActivityPanelOpen(false)}
-                />
-              </aside>
-            )}
+                  className={cn(
+                    'flex-1 overflow-y-auto min-w-0',
+                    onGraphPage ? 'overflow-hidden' : 'px-6 py-6',
+                  )}
+                >
+                  <Outlet />
+                </div>
+              </main>
 
-            {/* Small-screen overlays — NON-modal: no backdrop, the content
+              {/* Activity panel - inline column on lg+, with a resize handle */}
+              {showActivity && panelsInline && (
+                <aside className="relative flex min-w-0 overflow-hidden border-l border-border shadow-[-4px_0_12px_-4px_rgba(0,0,0,0.08)] dark:shadow-[-4px_0_12px_-4px_rgba(0,0,0,0.4)]">
+                  <div
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label="Resize activity panel"
+                    tabIndex={0}
+                    onPointerDown={activityPanel.handleResizeStart}
+                    onKeyDown={activityPanel.handleResizeKey}
+                    onDoubleClick={activityPanel.resetWidth}
+                    className="absolute inset-y-0 left-0 z-10 w-1.5 cursor-col-resize touch-none hover:bg-primary/30 active:bg-primary/40 focus-visible:bg-primary/40 focus-visible:outline-none"
+                  />
+                  {inIntent ? (
+                    <Suspense fallback={null}>
+                      <IntentActivityPanel onClose={() => setActivityPanelOpen(false)} />
+                    </Suspense>
+                  ) : (
+                    <Suspense fallback={null}>
+                      <ActivityPanel
+                        sprintId={inSprint ? sprintId : (latestActiveSprintId ?? undefined)}
+                        onClose={() => setActivityPanelOpen(false)}
+                      />
+                    </Suspense>
+                  )}
+                </aside>
+              )}
+
+              {/* Small-screen overlays — NON-modal: no backdrop, the content
                 behind stays visible and interactive. */}
-            {showSidebar && !panelsInline && (
-              <aside className="absolute inset-y-0 left-0 z-40 flex w-72 max-w-[85vw] overflow-hidden border-r bg-background shadow-2xl">
-                <AppSidebar />
-              </aside>
-            )}
-            {showActivity && !panelsInline && (
-              <aside className="absolute inset-y-0 right-0 z-40 flex w-full max-w-md overflow-hidden bg-background shadow-2xl">
-                <ActivityPanel
-                  sprintId={inSprint ? sprintId : (latestActiveSprintId ?? undefined)}
-                  onClose={() => setActivityPanelOpen(false)}
-                />
-              </aside>
-            )}
+              {showSidebar && !panelsInline && (
+                <aside className="absolute inset-y-0 left-0 z-40 flex w-72 max-w-[85vw] overflow-hidden border-r bg-background shadow-2xl">
+                  <AppSidebar />
+                </aside>
+              )}
+              {showActivity && !panelsInline && (
+                <aside className="absolute inset-y-0 right-0 z-40 flex w-full max-w-md overflow-hidden bg-background shadow-2xl">
+                  {inIntent ? (
+                    <Suspense fallback={null}>
+                      <IntentActivityPanel onClose={() => setActivityPanelOpen(false)} />
+                    </Suspense>
+                  ) : (
+                    <Suspense fallback={null}>
+                      <ActivityPanel
+                        sprintId={inSprint ? sprintId : (latestActiveSprintId ?? undefined)}
+                        onClose={() => setActivityPanelOpen(false)}
+                      />
+                    </Suspense>
+                  )}
+                </aside>
+              )}
+            </div>
+
+            {/* Status bar */}
+            <StatusBar />
+
+            {/* Command palette */}
+            <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} />
           </div>
-
-          {/* Status bar */}
-          <StatusBar />
-
-          {/* Command palette */}
-          <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} />
-        </div>
+        </IntentProvider>
       </DiscussionProvider>
     </TooltipProvider>
   );

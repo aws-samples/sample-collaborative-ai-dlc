@@ -1,5 +1,3 @@
-'use strict';
-
 const ALLOWED_CLI_MODEL_KEYS = new Set(['kiro', 'claude', 'opencode']);
 const MAX_CLI_MODEL_LENGTH = 200;
 const OPENCODE_MODEL_PREFIX = 'amazon-bedrock/';
@@ -86,7 +84,25 @@ function parseCliModels(raw) {
   return validation.value;
 }
 
-module.exports = {
-  normalizeCliModels,
-  parseCliModels,
-};
+// Merge the Admin GLOBAL per-CLI models UNDER a project's selection: the project
+// value wins per CLI, the global fills the gaps. This is what makes the runtime's
+// model precedence `project > global(admin) > agentBlock > env` — the intents
+// lambda snapshots the merged map onto the intent at create so the run is
+// reproducible AND the global default the UI advertises is actually applied.
+// Both inputs are parsed/validated first; only truthy values contribute (an empty
+// string never shadows a global). Returns a plain {cli: model} map.
+function mergeCliModels(project, global) {
+  const p = parseCliModels(project);
+  const g = parseCliModels(global);
+  const merged = {};
+  for (const [cli, model] of Object.entries(g)) {
+    if (model) merged[cli] = model;
+  }
+  for (const [cli, model] of Object.entries(p)) {
+    if (model) merged[cli] = model;
+  }
+  return merged;
+}
+
+export { normalizeCliModels, parseCliModels, mergeCliModels };
+export default { normalizeCliModels, parseCliModels, mergeCliModels };

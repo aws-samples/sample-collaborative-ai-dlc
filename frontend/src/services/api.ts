@@ -73,6 +73,14 @@ export const api = {
     return response.json();
   },
 
+  async patch<T>(path: string, body: unknown): Promise<T> {
+    const response = await fetchWithAuth(path, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    });
+    return response.json();
+  },
+
   async delete(path: string): Promise<void> {
     await fetchWithAuth(path, { method: 'DELETE' });
   },

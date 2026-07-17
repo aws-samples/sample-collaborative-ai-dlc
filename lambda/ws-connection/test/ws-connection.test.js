@@ -245,7 +245,7 @@ describe('ws-connection handler', () => {
       const recipients = apiMock
         .commandCalls(PostToConnectionCommand)
         .map((c) => c.args[0].input.ConnectionId)
-        .sort();
+        .toSorted();
       expect(recipients).toEqual(['peer-1', 'peer-2']);
 
       const sent = JSON.parse(apiMock.commandCalls(PostToConnectionCommand)[0].args[0].input.Data);
@@ -275,7 +275,7 @@ describe('ws-connection handler', () => {
       const recipients = apiMock
         .commandCalls(PostToConnectionCommand)
         .map((c) => c.args[0].input.ConnectionId)
-        .sort();
+        .toSorted();
       expect(recipients).toEqual(['peer-legacy', 'peer-live']);
     });
 

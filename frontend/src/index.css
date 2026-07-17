@@ -39,10 +39,16 @@
   --color-sidebar-ring: var(--sidebar-ring);
 
   /* Phase accent colors */
+  --color-phase-initialization: var(--phase-initialization);
+  --color-phase-initialization-foreground: var(--phase-initialization-foreground);
+  --color-phase-ideation: var(--phase-ideation);
+  --color-phase-ideation-foreground: var(--phase-ideation-foreground);
   --color-phase-inception: var(--phase-inception);
   --color-phase-inception-foreground: var(--phase-inception-foreground);
   --color-phase-construction: var(--phase-construction);
   --color-phase-construction-foreground: var(--phase-construction-foreground);
+  --color-phase-operation: var(--phase-operation);
+  --color-phase-operation-foreground: var(--phase-operation-foreground);
   --color-phase-review: var(--phase-review);
   --color-phase-review-foreground: var(--phase-review-foreground);
 
@@ -61,6 +67,7 @@
   --animate-accordion-down: accordion-down 0.2s ease-out;
   --animate-accordion-up: accordion-up 0.2s ease-out;
   --animate-pulse-subtle: pulse-subtle 2s ease-in-out infinite;
+  --animate-shimmer: shimmer 2s ease-in-out infinite;
 }
 
 /* ─── Light Mode (Default) ─── */
@@ -103,10 +110,16 @@
   --sidebar-ring: oklch(0.553 0.013 286);
 
   /* Phase colors */
+  --phase-initialization: oklch(0.588 0.02 260);
+  --phase-initialization-foreground: oklch(0.985 0 0);
+  --phase-ideation: oklch(0.585 0.233 277);
+  --phase-ideation-foreground: oklch(0.985 0 0);
   --phase-inception: oklch(0.606 0.25 292.717);
   --phase-inception-foreground: oklch(0.985 0 0);
   --phase-construction: oklch(0.795 0.184 86.047);
   --phase-construction-foreground: oklch(0.205 0.006 286);
+  --phase-operation: oklch(0.65 0.22 340);
+  --phase-operation-foreground: oklch(0.985 0 0);
   --phase-review: oklch(0.648 0.2 163);
   --phase-review-foreground: oklch(0.985 0 0);
 
@@ -161,10 +174,16 @@
   --sidebar-ring: oklch(0.553 0.013 286);
 
   /* Phase colors (slightly brighter for dark mode contrast) */
+  --phase-initialization: oklch(0.65 0.025 260);
+  --phase-initialization-foreground: oklch(0.985 0 0);
+  --phase-ideation: oklch(0.65 0.24 277);
+  --phase-ideation-foreground: oklch(0.985 0 0);
   --phase-inception: oklch(0.67 0.26 292.717);
   --phase-inception-foreground: oklch(0.985 0 0);
   --phase-construction: oklch(0.828 0.189 84.429);
   --phase-construction-foreground: oklch(0.145 0 0);
+  --phase-operation: oklch(0.7 0.23 340);
+  --phase-operation-foreground: oklch(0.985 0 0);
   --phase-review: oklch(0.696 0.17 162.48);
   --phase-review-foreground: oklch(0.985 0 0);
 
@@ -201,6 +220,11 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+.mermaid-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+
 /* ─── Keyframes ─── */
 @keyframes accordion-down {
   from {
@@ -227,6 +251,15 @@ body {
   }
   50% {
     opacity: 0.7;
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
   }
 }
 

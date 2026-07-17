@@ -173,38 +173,6 @@ resource "aws_dynamodb_table" "agent_outputs" {
   tags = var.tags
 }
 
-resource "aws_dynamodb_table" "agent_pool" {
-  name           = "${var.project_name}-agent-pool-${var.environment}"
-  billing_mode   = local.billing_mode
-  hash_key       = "workerId"
-  read_capacity  = local.read_capacity
-  write_capacity = local.write_capacity
-
-  attribute {
-    name = "workerId"
-    type = "S"
-  }
-
-  attribute {
-    name = "status"
-    type = "S"
-  }
-
-  global_secondary_index {
-    name            = "StatusIndex"
-    projection_type = "ALL"
-    read_capacity   = local.read_capacity
-    write_capacity  = local.write_capacity
-
-    key_schema {
-      attribute_name = "status"
-      key_type       = "HASH"
-    }
-  }
-
-  tags = var.tags
-}
-
 # Discussions feature: one table, three record kinds —
 # assist locks (`assist:{discussionId}`), creation guards
 # (`create:{sprintId}:{entityType}:{entityId}`), and stateful message guards
@@ -226,6 +194,61 @@ resource "aws_dynamodb_table" "discussion_locks" {
   ttl {
     attribute_name = "expiresAt"
     enabled        = true
+  }
+
+  tags = var.tags
+}
+
+# Reusable workflow building blocks — single-table design. Unlike the other
+# tables here this holds DOMAIN data, not infra: imported SYSTEM definitions plus
+# the shared default user-owned library of reusable blocks and the workflows that
+# compose them.
+#   PK = BLOCK#<tenant>#<TYPE>#<id>   SK = V#latest | V#<n> (immutable versions)
+# GSI1 is the catalog browse index (list blocks of a type for a tenant). Large
+# bodies/scripts live in the artifacts S3 bucket under blocks/, referenced by a
+# content-addressed pointer — never inline.
+resource "aws_dynamodb_table" "blocks" {
+  name           = "${var.project_name}-blocks-${var.environment}"
+  billing_mode   = local.billing_mode
+  hash_key       = "pk"
+  range_key      = "sk"
+  read_capacity  = local.read_capacity
+  write_capacity = local.write_capacity
+
+  attribute {
+    name = "pk"
+    type = "S"
+  }
+
+  attribute {
+    name = "sk"
+    type = "S"
+  }
+
+  attribute {
+    name = "GSI1PK"
+    type = "S"
+  }
+
+  attribute {
+    name = "GSI1SK"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "GSI1"
+    projection_type = "ALL"
+    read_capacity   = local.read_capacity
+    write_capacity  = local.write_capacity
+
+    key_schema {
+      attribute_name = "GSI1PK"
+      key_type       = "HASH"
+    }
+    key_schema {
+      attribute_name = "GSI1SK"
+      key_type       = "RANGE"
+    }
   }
 
   tags = var.tags

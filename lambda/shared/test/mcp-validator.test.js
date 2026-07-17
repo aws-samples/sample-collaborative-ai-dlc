@@ -1,365 +1,329 @@
 import { describe, it, expect } from 'vitest';
 import {
-  KNOWN_AGENT_IMAGE_MCP_COMMANDS,
-  parseMcpServersJson,
+  RESERVED_SERVER_NAME,
+  MAX_SERVERS,
   validateMcpServers,
   validateMcpServersJson,
+  toMcpServerMap,
+  mergeMcpServers,
+  extractSecretRefs,
 } from '../mcp-validator.js';
 
 describe('validateMcpServers', () => {
-  describe('top-level', () => {
-    it('accepts an empty array', () => {
-      expect(validateMcpServers([])).toEqual({ valid: true, issues: [] });
-    });
-
-    it('rejects non-array input', () => {
-      const r = validateMcpServers({ name: 'foo' });
-      expect(r.valid).toBe(false);
-      expect(r.issues).toEqual([
-        { path: '', message: expect.stringContaining('Expected a JSON array') },
-      ]);
-    });
-
-    it('rejects null', () => {
-      const r = validateMcpServers(null);
-      expect(r.valid).toBe(false);
-      expect(r.issues[0].path).toBe('');
-    });
-
-    it('reports duplicate server names', () => {
-      const r = validateMcpServers([
-        { name: 'dup', command: 'node', args: [] },
-        { name: 'dup', command: 'npx', args: [] },
-      ]);
-      expect(r.valid).toBe(false);
-      expect(r.issues).toEqual([
-        { path: '[1].name', message: expect.stringContaining('Duplicate server name "dup"') },
-      ]);
-    });
+  it('accepts an empty object', () => {
+    expect(validateMcpServers({})).toEqual({ valid: true, issues: [] });
   });
 
-  describe('stdio servers', () => {
-    it('accepts a minimal stdio server', () => {
-      expect(validateMcpServers([{ name: 'fs', command: '/usr/bin/mcp-fs', args: [] }])).toEqual({
-        valid: true,
-        issues: [],
-      });
-    });
-
-    it('accepts explicit type=stdio', () => {
-      expect(
-        validateMcpServers([
-          { type: 'stdio', name: 'fs', command: '/usr/bin/mcp-fs', args: ['--root', '/'] },
-        ]),
-      ).toEqual({ valid: true, issues: [] });
-    });
-
-    it('accepts known agent image commands', () => {
-      const servers = [...KNOWN_AGENT_IMAGE_MCP_COMMANDS].map((command) => ({
-        name: command,
-        command,
-        args: [],
-      }));
-
-      expect(validateMcpServers(servers)).toEqual({ valid: true, issues: [] });
-    });
-
-    it('rejects unknown bare commands at configuration time', () => {
-      const r = validateMcpServers([{ name: 'typo', command: 'uvxx', args: [] }]);
-
-      expect(r.valid).toBe(false);
-      expect(r.issues).toContainEqual({
-        path: '[0].command',
-        message: expect.stringContaining('Unknown executable "uvxx"'),
-      });
-    });
-
-    it('accepts env entries as array of {name, value}', () => {
-      const r = validateMcpServers([
-        {
-          name: 'fs',
-          command: '/usr/bin/mcp-fs',
-          args: [],
-          env: [{ name: 'API_KEY', value: 'secret' }],
-        },
-      ]);
-      expect(r).toEqual({ valid: true, issues: [] });
-    });
-
-    it('rejects missing command', () => {
-      const r = validateMcpServers([{ name: 'fs', args: [] }]);
-      expect(r.valid).toBe(false);
-      expect(r.issues).toContainEqual({
-        path: '[0].command',
-        message: expect.stringContaining('Required non-empty string'),
-      });
-    });
-
-    it('rejects empty command', () => {
-      const r = validateMcpServers([{ name: 'fs', command: '', args: [] }]);
-      expect(r.valid).toBe(false);
-      expect(r.issues).toContainEqual({
-        path: '[0].command',
-        message: expect.any(String),
-      });
-    });
-
-    it('rejects missing args', () => {
-      const r = validateMcpServers([{ name: 'fs', command: '/x' }]);
-      expect(r.valid).toBe(false);
-      expect(r.issues).toContainEqual({
-        path: '[0].args',
-        message: expect.stringContaining('Required array of strings'),
-      });
-    });
-
-    it('rejects non-array args', () => {
-      const r = validateMcpServers([{ name: 'fs', command: '/x', args: '--stdio' }]);
-      expect(r.valid).toBe(false);
-      expect(r.issues).toContainEqual({
-        path: '[0].args',
-        message: expect.stringContaining('got string'),
-      });
-    });
-
-    it('rejects non-string arg entries', () => {
-      const r = validateMcpServers([{ name: 'fs', command: '/x', args: ['ok', 42, null] }]);
-      expect(r.valid).toBe(false);
-      expect(r.issues).toContainEqual({
-        path: '[0].args[1]',
-        message: expect.stringContaining('got number'),
-      });
-      expect(r.issues).toContainEqual({
-        path: '[0].args[2]',
-        message: expect.stringContaining('got null'),
-      });
-    });
-
-    it('rejects env as object instead of array (common kiro/claude config mistake)', () => {
-      const r = validateMcpServers([
-        { name: 'fs', command: '/x', args: [], env: { API_KEY: 'secret' } },
-      ]);
-      expect(r.valid).toBe(false);
-      expect(r.issues).toContainEqual({
-        path: '[0].env',
-        message: expect.stringContaining('Expected array of {name, value}'),
-      });
-    });
-
-    it('rejects env entry missing name', () => {
-      const r = validateMcpServers([
-        { name: 'fs', command: '/x', args: [], env: [{ value: 'v' }] },
-      ]);
-      expect(r.valid).toBe(false);
-      expect(r.issues).toContainEqual({
-        path: '[0].env[0].name',
-        message: expect.stringContaining('Required non-empty string'),
-      });
-    });
-
-    it('rejects unknown keys (strict mode)', () => {
-      const r = validateMcpServers([
-        {
-          name: 'aws-mcp',
-          command: 'uvx',
-          args: ['mcp-proxy@latest'],
-          transport: 'stdio',
-          timeout: 100000,
-          autoApprove: ['x'],
-        },
-      ]);
-      expect(r.valid).toBe(false);
-      const paths = r.issues.map((i) => i.path);
-      expect(paths).toContain('[0].transport');
-      expect(paths).toContain('[0].timeout');
-      expect(paths).toContain('[0].autoApprove');
-    });
+  it('accepts a valid stdio server (minimal)', () => {
+    const res = validateMcpServers({ 'my-tool': { command: 'npx' } });
+    expect(res.valid).toBe(true);
+    expect(res.issues).toEqual([]);
   });
 
-  describe('http servers', () => {
-    it('accepts a minimal http server', () => {
-      const r = validateMcpServers([
-        {
-          type: 'http',
-          name: 'api',
-          url: 'https://example.com/mcp',
-          headers: [{ name: 'Authorization', value: 'Bearer x' }],
-        },
-      ]);
-      expect(r).toEqual({ valid: true, issues: [] });
+  it('accepts a stdio server with args and env object', () => {
+    const res = validateMcpServers({
+      'my-tool': { command: 'npx', args: ['-y', 'my-mcp-server'], env: { TOKEN: 'abc' } },
     });
-
-    it('rejects missing url', () => {
-      const r = validateMcpServers([{ type: 'http', name: 'api', headers: [] }]);
-      expect(r.valid).toBe(false);
-      expect(r.issues).toContainEqual({
-        path: '[0].url',
-        message: expect.stringContaining('Required non-empty string'),
-      });
-    });
-
-    it('rejects malformed url', () => {
-      const r = validateMcpServers([{ type: 'http', name: 'api', url: 'not a url', headers: [] }]);
-      expect(r.valid).toBe(false);
-      expect(r.issues).toContainEqual({
-        path: '[0].url',
-        message: expect.stringContaining('Invalid URL'),
-      });
-    });
-
-    it('rejects headers as object instead of array (common config mistake)', () => {
-      const r = validateMcpServers([
-        {
-          type: 'http',
-          name: 'api',
-          url: 'https://x.test',
-          headers: { Authorization: 'Bearer x' },
-        },
-      ]);
-      expect(r.valid).toBe(false);
-      expect(r.issues).toContainEqual({
-        path: '[0].headers',
-        message: expect.stringContaining('array of {name, value}'),
-      });
-    });
-
-    it('rejects header entry missing value', () => {
-      const r = validateMcpServers([
-        {
-          type: 'http',
-          name: 'api',
-          url: 'https://x.test',
-          headers: [{ name: 'X' }],
-        },
-      ]);
-      expect(r.valid).toBe(false);
-      expect(r.issues).toContainEqual({
-        path: '[0].headers[0].value',
-        message: expect.stringContaining('Required string'),
-      });
-    });
-
-    it('rejects unknown keys on http server', () => {
-      const r = validateMcpServers([
-        {
-          type: 'http',
-          name: 'api',
-          url: 'https://x.test',
-          headers: [],
-          command: '/x',
-        },
-      ]);
-      expect(r.valid).toBe(false);
-      expect(r.issues).toContainEqual({
-        path: '[0].command',
-        message: expect.stringContaining('Unknown key'),
-      });
-    });
+    expect(res.valid).toBe(true);
   });
 
-  describe('sse servers', () => {
-    it('accepts a minimal sse server', () => {
-      const r = validateMcpServers([
-        { type: 'sse', name: 'events', url: 'https://x.test/sse', headers: [] },
-      ]);
-      expect(r).toEqual({ valid: true, issues: [] });
+  it('accepts http/sse servers with a headers object', () => {
+    const res = validateMcpServers({
+      remote: { type: 'http', url: 'https://example.com/mcp', headers: { Auth: 'x' } },
+      stream: { type: 'sse', url: 'https://example.com/sse' },
     });
+    expect(res.valid).toBe(true);
   });
 
-  describe('type field', () => {
-    it('rejects unknown transport type', () => {
-      const r = validateMcpServers([
-        { type: 'remote', name: 'context7', url: 'https://x.test', headers: [] },
-      ]);
-      expect(r.valid).toBe(false);
-      expect(r.issues).toContainEqual({
-        path: '[0].type',
-        message: expect.stringContaining('Expected one of "stdio", "http", "sse"'),
-      });
-    });
-
-    it('rejects non-string type', () => {
-      const r = validateMcpServers([{ type: 1, name: 'x', command: '/x', args: [] }]);
-      expect(r.valid).toBe(false);
-      expect(r.issues).toContainEqual({
-        path: '[0].type',
-        message: expect.any(String),
-      });
-    });
+  it('rejects a non-object root (array)', () => {
+    const res = validateMcpServers([{ command: 'npx' }]);
+    expect(res.valid).toBe(false);
+    expect(res.issues[0].path).toBe('');
+    expect(res.issues[0].message).toMatch(/Expected a JSON object/);
   });
 
-  describe('server item shape', () => {
-    it('rejects non-object items', () => {
-      const r = validateMcpServers(['not an object']);
-      expect(r.valid).toBe(false);
-      expect(r.issues).toContainEqual({
-        path: '[0]',
-        message: expect.stringContaining('Expected an object'),
-      });
-    });
-
-    it('rejects missing name', () => {
-      const r = validateMcpServers([{ command: '/x', args: [] }]);
-      expect(r.valid).toBe(false);
-      expect(r.issues).toContainEqual({
-        path: '[0].name',
-        message: expect.stringContaining('Required non-empty string'),
-      });
-    });
+  it('rejects the reserved name "aidlc"', () => {
+    const res = validateMcpServers({ [RESERVED_SERVER_NAME]: { command: 'node' } });
+    expect(res.valid).toBe(false);
+    expect(res.issues).toContainEqual(
+      expect.objectContaining({
+        path: RESERVED_SERVER_NAME,
+        message: expect.stringMatching(/reserved/),
+      }),
+    );
   });
 
-  describe('aggregation', () => {
-    it('reports issues from multiple servers and fields', () => {
-      const r = validateMcpServers([
-        { name: 'ok', command: '/x', args: [] },
-        { name: 'bad', command: '', args: 'not-array' },
-        { type: 'http', name: 'api', url: 'no', headers: {} },
-      ]);
-      expect(r.valid).toBe(false);
-      const paths = r.issues.map((i) => i.path);
-      expect(paths).toContain('[1].command');
-      expect(paths).toContain('[1].args');
-      expect(paths).toContain('[2].url');
-      expect(paths).toContain('[2].headers');
-    });
+  it('rejects the Claude-reserved name "workspace"', () => {
+    const res = validateMcpServers({ workspace: { command: 'node' } });
+    expect(res.valid).toBe(false);
+    expect(res.issues).toContainEqual(
+      expect.objectContaining({ path: 'workspace', message: expect.stringMatching(/reserved/) }),
+    );
+  });
+
+  it('rejects a remote entry (url) with no explicit type', () => {
+    const res = validateMcpServers({ r: { url: 'https://e.com/mcp' } });
+    expect(res.valid).toBe(false);
+    expect(res.issues).toContainEqual(
+      expect.objectContaining({
+        path: 'r.type',
+        message: expect.stringMatching(/Remote servers require/),
+      }),
+    );
+  });
+
+  it('requires command for stdio servers', () => {
+    const res = validateMcpServers({ x: {} });
+    expect(res.valid).toBe(false);
+    expect(res.issues).toContainEqual(expect.objectContaining({ path: 'x.command' }));
+  });
+
+  it('accepts known bare commands (node/npx/bun/bunx/uv/uvx/python/python3)', () => {
+    for (const command of ['node', 'npx', 'bun', 'bunx', 'uv', 'uvx', 'python', 'python3']) {
+      const res = validateMcpServers({ [command]: { command } });
+      expect(res.valid, command).toBe(true);
+    }
+  });
+
+  it('rejects an unknown bare command (typo guard)', () => {
+    const res = validateMcpServers({ typo: { command: 'uvxx' } });
+    expect(res.valid).toBe(false);
+    expect(res.issues).toContainEqual(
+      expect.objectContaining({
+        path: 'typo.command',
+        message: expect.stringMatching(/Unknown executable "uvxx"/),
+      }),
+    );
+  });
+
+  it('allows any command containing a path separator (operator vouches)', () => {
+    const res = validateMcpServers({ abs: { command: '/usr/local/bin/my-mcp' } });
+    expect(res.valid).toBe(true);
+  });
+
+  it('rejects unknown keys on stdio servers (strict)', () => {
+    const res = validateMcpServers({ x: { command: 'npx', foo: 1 } });
+    expect(res.valid).toBe(false);
+    expect(res.issues).toContainEqual(
+      expect.objectContaining({ path: 'x.foo', message: expect.stringMatching(/Unknown key/) }),
+    );
+  });
+
+  it('rejects env as an array (old ACP shape) — must be an object', () => {
+    const res = validateMcpServers({ x: { command: 'npx', env: [{ name: 'K', value: 'v' }] } });
+    expect(res.valid).toBe(false);
+    expect(res.issues).toContainEqual(
+      expect.objectContaining({ path: 'x.env', message: expect.stringMatching(/object/) }),
+    );
+  });
+
+  it('rejects non-string args entries', () => {
+    const res = validateMcpServers({ x: { command: 'npx', args: ['ok', 3] } });
+    expect(res.valid).toBe(false);
+    expect(res.issues).toContainEqual(expect.objectContaining({ path: 'x.args[1]' }));
+  });
+
+  it('rejects an unknown transport type', () => {
+    const res = validateMcpServers({ x: { type: 'ftp', url: 'https://e.com' } });
+    expect(res.valid).toBe(false);
+    expect(res.issues).toContainEqual(expect.objectContaining({ path: 'x.type' }));
+  });
+
+  it('rejects invalid url on http servers', () => {
+    const res = validateMcpServers({ x: { type: 'http', url: 'not a url' } });
+    expect(res.valid).toBe(false);
+    expect(res.issues).toContainEqual(
+      expect.objectContaining({ path: 'x.url', message: expect.stringMatching(/Invalid URL/) }),
+    );
+  });
+
+  it('rejects non-http(s) url schemes (file:, ftp:, etc.)', () => {
+    for (const url of ['file:///etc/passwd', 'ftp://example.com/x', 'ws://example.com']) {
+      const res = validateMcpServers({ x: { type: 'http', url } });
+      expect(res.valid, url).toBe(false);
+      expect(res.issues).toContainEqual(
+        expect.objectContaining({
+          path: 'x.url',
+          message: expect.stringMatching(/must use http:\/\/ or https:\/\//),
+        }),
+      );
+    }
+  });
+
+  it('accepts http and https urls', () => {
+    expect(
+      validateMcpServers({ a: { type: 'http', url: 'http://localhost:3000/mcp' } }).valid,
+    ).toBe(true);
+    expect(validateMcpServers({ b: { type: 'sse', url: 'https://example.com/sse' } }).valid).toBe(
+      true,
+    );
+  });
+
+  it('caps the number of servers', () => {
+    const many = Object.fromEntries(
+      Array.from({ length: MAX_SERVERS + 1 }, (_, i) => [`s${i}`, { command: 'node' }]),
+    );
+    const res = validateMcpServers(many);
+    expect(res.valid).toBe(false);
+    expect(res.issues).toContainEqual(
+      expect.objectContaining({ message: expect.stringMatching(/Too many/) }),
+    );
   });
 });
 
 describe('validateMcpServersJson', () => {
-  it('accepts a valid JSON string', () => {
-    const r = validateMcpServersJson('[]');
-    expect(r).toEqual({ valid: true, issues: [] });
+  it('reports invalid JSON at the root', () => {
+    const res = validateMcpServersJson('{ not json');
+    expect(res.valid).toBe(false);
+    expect(res.issues[0].path).toBe('');
+    expect(res.issues[0].message).toMatch(/Invalid JSON/);
   });
 
-  it('returns a single root issue on invalid JSON', () => {
-    const r = validateMcpServersJson('{not json');
-    expect(r.valid).toBe(false);
-    expect(r.issues).toEqual([{ path: '', message: expect.stringContaining('Invalid JSON') }]);
-  });
-
-  it('forwards schema issues from the parsed payload', () => {
-    const r = validateMcpServersJson(JSON.stringify([{ name: 'x' }]));
-    expect(r.valid).toBe(false);
-    expect(r.issues.some((i) => i.path === '[0].command')).toBe(true);
+  it('validates parsed content', () => {
+    expect(validateMcpServersJson('{"a":{"command":"npx"}}').valid).toBe(true);
   });
 });
 
-describe('parseMcpServersJson', () => {
-  it('returns parsed value for valid JSON', () => {
-    const servers = [{ name: 'x', command: 'node', args: ['server.js'] }];
+describe('toMcpServerMap', () => {
+  it('keeps command/args/env for stdio', () => {
+    const map = toMcpServerMap({ a: { command: 'npx', args: ['-y', 'p'], env: { K: 'v' } } });
+    expect(map).toEqual({ a: { command: 'npx', args: ['-y', 'p'], env: { K: 'v' } } });
+  });
 
-    expect(parseMcpServersJson(JSON.stringify(servers))).toEqual({
-      valid: true,
-      issues: [],
-      value: servers,
+  it('remote uses `type` (agent-config format for both CLIs)', () => {
+    const map = toMcpServerMap({ r: { type: 'http', url: 'https://e.com', headers: { A: '1' } } });
+    expect(map).toEqual({ r: { type: 'http', url: 'https://e.com', headers: { A: '1' } } });
+  });
+
+  it('remote sse keeps type: sse', () => {
+    const map = toMcpServerMap({ r: { type: 'sse', url: 'https://e.com' } });
+    expect(map).toEqual({ r: { type: 'sse', url: 'https://e.com' } });
+  });
+
+  it('stdio entries keep command/args', () => {
+    expect(toMcpServerMap({ s: { command: 'uvx', args: ['x'] } })).toEqual({
+      s: { command: 'uvx', args: ['x'] },
     });
   });
 
-  it('returns no parsed value when validation fails', () => {
-    const r = parseMcpServersJson(JSON.stringify([{ name: 'x' }]));
+  it('skips the reserved name', () => {
+    expect(toMcpServerMap({ [RESERVED_SERVER_NAME]: { command: 'x' } })).toEqual({});
+  });
+});
 
-    expect(r.valid).toBe(false);
-    expect(r.value).toEqual([]);
-    expect(r.issues.some((i) => i.path === '[0].command')).toBe(true);
+describe('mergeMcpServers', () => {
+  it('merges by name with project winning over global', () => {
+    const global = JSON.stringify({
+      shared: { command: 'global' },
+      onlyGlobal: { command: 'g' },
+    });
+    const project = JSON.stringify({
+      shared: { command: 'project' },
+      onlyProject: { command: 'p' },
+    });
+    expect(mergeMcpServers(global, project)).toEqual({
+      shared: { command: 'project' },
+      onlyGlobal: { command: 'g' },
+      onlyProject: { command: 'p' },
+    });
+  });
+
+  it('treats unparseable / empty inputs as empty', () => {
+    expect(mergeMcpServers('', 'nope')).toEqual({});
+    expect(mergeMcpServers(undefined, undefined)).toEqual({});
+  });
+});
+
+describe('extractSecretRefs', () => {
+  it('collects refs from env values', () => {
+    const { refs, issues } = extractSecretRefs({
+      s: { command: 'npx', env: { CONTEXT7_API_KEY: '${CONTEXT7_API_KEY}' } },
+    });
+    expect([...refs]).toEqual(['CONTEXT7_API_KEY']);
+    expect(issues).toEqual([]);
+  });
+
+  it('collects refs from headers values (partial values ok)', () => {
+    const { refs, issues } = extractSecretRefs({
+      r: { type: 'http', url: 'https://e.com', headers: { Authorization: 'Bearer ${TOK}' } },
+    });
+    expect([...refs]).toEqual(['TOK']);
+    expect(issues).toEqual([]);
+  });
+
+  it('collects multiple distinct refs across servers', () => {
+    const { refs } = extractSecretRefs({
+      a: { command: 'npx', env: { A: '${K1}', B: '${K2}' } },
+      b: { type: 'sse', url: 'https://e.com', headers: { X: '${K1}' } },
+    });
+    expect([...refs].toSorted()).toEqual(['K1', 'K2']);
+  });
+
+  it('rejects a ref in command with an actionable message', () => {
+    const { issues } = extractSecretRefs({ s: { command: '${CMD}' } });
+    expect(issues).toContainEqual(
+      expect.objectContaining({
+        path: 's.command',
+        message: expect.stringMatching(/only in `env` and `headers`/),
+      }),
+    );
+  });
+
+  it('rejects a ref in args', () => {
+    const { issues } = extractSecretRefs({
+      s: { command: 'npx', args: ['-y', '--api-key', '${KEY}'] },
+    });
+    expect(issues).toContainEqual(
+      expect.objectContaining({ path: 's.args[2]', message: expect.stringMatching(/only in/) }),
+    );
+  });
+
+  it('rejects a ref in url', () => {
+    const { issues } = extractSecretRefs({
+      r: { type: 'http', url: 'https://e.com/${TENANT}/mcp' },
+    });
+    expect(issues).toContainEqual(
+      expect.objectContaining({ path: 'r.url', message: expect.stringMatching(/only in/) }),
+    );
+  });
+
+  it('rejects a malformed var name in env', () => {
+    const { issues } = extractSecretRefs({ s: { command: 'npx', env: { K: '${1BAD}' } } });
+    expect(issues).toContainEqual(
+      expect.objectContaining({
+        path: 's.env.K',
+        message: expect.stringMatching(/Invalid secret reference/),
+      }),
+    );
+  });
+
+  it('returns empty for a values-only config (no refs)', () => {
+    const { refs, issues } = extractSecretRefs({ s: { command: 'npx', env: { K: 'literal' } } });
+    expect([...refs]).toEqual([]);
+    expect(issues).toEqual([]);
+  });
+
+  it('is tolerant of a non-object input', () => {
+    expect(extractSecretRefs(null)).toEqual({ refs: new Set(), issues: [] });
+    expect(extractSecretRefs([])).toEqual({ refs: new Set(), issues: [] });
+  });
+});
+
+describe('validateMcpServers — secret refs', () => {
+  it('accepts refs in env/headers', () => {
+    expect(validateMcpServers({ s: { command: 'npx', env: { K: '${MY_KEY}' } } }).valid).toBe(true);
+    expect(
+      validateMcpServers({
+        r: { type: 'http', url: 'https://e.com', headers: { Authorization: 'Bearer ${T}' } },
+      }).valid,
+    ).toBe(true);
+  });
+
+  it('rejects a ref in args at validation with the field path', () => {
+    const res = validateMcpServers({ s: { command: 'npx', args: ['${KEY}'] } });
+    expect(res.valid).toBe(false);
+    expect(res.issues).toContainEqual(
+      expect.objectContaining({ path: 's.args[0]', message: expect.stringMatching(/only in/) }),
+    );
   });
 });

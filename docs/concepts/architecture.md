@@ -37,7 +37,7 @@ flowchart TB
     direction LR
     CRUD["CRUD handlers<br/>(projects, sprints, requirements,<br/>user-stories, tasks, reviews, …)"]
     GIT["GitHub & tracker integration<br/>(github, trackers)"]
-    AGCTL["Agent control plane<br/>(agents, submit-question, questions)"]
+    AGCTL["Agent control plane<br/>(intents, questions)<br/>+ agents (v1 history, admin)"]
     WSL["WebSocket lifecycle<br/>(authorizer, connection, message)"]
   end
 
@@ -71,9 +71,9 @@ flowchart TB
 
 **CloudFront.** A single distribution multiplexes all client traffic over one domain. The default behavior serves the SPA from a private S3 bucket via Origin Access Control. `/api/*` routes to the REST API Gateway. `/ws` routes to the WebSocket API Gateway. `/yjs/*` routes through a CloudFront VPC Origin to an internal ALB sitting in front of the Yjs collaboration server. Routing through one distribution lets every backend share a single domain and a single TLS certificate, and keeps the SPA's API and WebSocket calls same-origin.
 
-**Cognito User Pool.** Admin-only sign-up, optional TOTP MFA, and three groups (`member`, `approver`, `owner`). The pool issues JWTs that every backend independently verifies — the REST API Gateway uses a built-in Cognito authorizer, the WebSocket API Gateway uses a custom Lambda authorizer (because built-in Cognito authorizers don't support WebSocket APIs), and the Yjs server verifies the same token in-process on WebSocket upgrade. Cognito is not shown in the diagram to keep it readable.
+**Cognito User Pool.** Admin-only sign-up, optional TOTP MFA, and user groups — most importantly **`platform-admin`**, which gates the Admin page, workflow/block authoring, and user management (the legacy `member`, `approver`, `owner` groups remain for existing installs; day-to-day project access is governed by per-project membership roles). The pool issues JWTs that every backend independently verifies — the REST API Gateway uses a built-in Cognito authorizer, the WebSocket API Gateway uses a custom Lambda authorizer (because built-in Cognito authorizers don't support WebSocket APIs), and the Yjs server verifies the same token in-process on WebSocket upgrade. Cognito is not shown in the diagram to keep it readable.
 
-**API Gateway REST.** Fronts the platform's CRUD and orchestration endpoints. Resources mirror the graph model: projects, sprints, requirements, user stories, tasks, code files, reviews, questions, timeline events, plus integration endpoints for GitHub OAuth, trackers, and the agent control plane. CORS headers are injected on gateway-level 4xx/5xx responses so the SPA always sees them.
+**API Gateway REST.** Fronts the platform's CRUD and orchestration endpoints. Resources mirror the graph model: projects, intents, workflows, sprints, requirements, user stories, tasks, code files, reviews, questions, timeline events, plus integration endpoints for GitHub OAuth, trackers, and the agent control plane. CORS headers are injected on gateway-level 4xx/5xx responses so the SPA always sees them.
 
 **API Gateway WebSocket.** A separate API for application-level real-time messages — agent progress, notifications, presence pings. Routes are `$connect` (custom Cognito JWT authorizer Lambda), `$disconnect`, `$default`, `sync`, and `notification`. Connection state lives in a DynamoDB table indexed by user ID and document ID; server-to-client pushes use `execute-api:ManageConnections`.
 
@@ -90,77 +90,73 @@ This is why the Yjs server is on ECS rather than Lambda or API Gateway WebSocket
 3. Publish a new version of the `ws-connection` and `discussions` Lambdas (any redeploy works — the secret is cached per container and re-fetched on cold start).
 4. Expect up to ten minutes of reconnect churn: tokens signed with the old secret fail verification, clients transparently fetch fresh ones. No data is at risk — the secret only gates realtime channel membership; durable writes are independently authorized in the REST layer.
 
-**Lambda functions.** All business logic lives in Lambda. CRUD handlers map one-to-one onto graph artifacts and write to Neptune over Gremlin with SigV4. The GitHub and tracker handlers manage OAuth flows and read repository data on behalf of users. The agent control plane (`agents`, `submit-question`, `questions`) dispatches work to the agent runtime and brokers human-in-the-loop questions. The WebSocket lifecycle Lambdas (`authorizer`, `connection`, `message`) authorize, register, and route messages on the application WebSocket API.
+**Lambda functions.** All business logic lives in Lambda. CRUD handlers map one-to-one onto graph artifacts and write to Neptune over Gremlin with SigV4. The GitHub and tracker handlers manage OAuth flows and read repository data on behalf of users. The agent control plane (`intents`) creates, starts, and rewinds intents, answers human gates, and hands execution to the agent runtime; the `questions` Lambda serves recorded agent Q&A; the `agents` Lambda serves read-only v1 agent history plus the shared admin surface — `GET/PUT /agents/settings` (Bedrock bearer token, Kiro API key, default CLI models, all SSM-backed) and `GET /agents/capabilities` (model discovery via the AgentCore runtime). The WebSocket lifecycle Lambdas (`authorizer`, `connection`, `message`) authorize, register, and route messages on the application WebSocket API.
 
-**Data stores.** Neptune holds the structured graph: requirements, user stories, tasks, code files, reviews, agent runs, discussion threads and their messages, and the relationships between them. DynamoDB holds operational state — WebSocket connections, agent questions and outputs, the agent-worker pool, sessions, notifications, Yjs document metadata, discussion guards/locks and per-user read cursors, and per-user OAuth connections. S3 holds the SPA bundle (frontend bucket), artifact bodies (artifacts bucket), agent code snapshots (code-snapshots bucket), and access logs.
+**Data stores.** Neptune holds the structured graph: requirements, user stories, tasks, code files, reviews, agent runs, intents and their artifacts, discussion threads and their messages, and the relationships between them. DynamoDB holds operational state — WebSocket connections, agent questions and outputs (v1 history), v2 execution process state (stages, gates, outputs, metrics), building blocks and workflows, sessions, notifications, Yjs document metadata, discussion guards/locks and per-user read cursors, and per-user OAuth connections. S3 holds the SPA bundle (frontend bucket), artifact bodies (artifacts bucket), agent code snapshots (code-snapshots bucket), and access logs.
 
-**Not shown.** Secrets Manager stores the platform-wide OAuth app credentials for GitHub and Jira Cloud; SSM Parameter Store stores per-user GitHub access tokens (read by the GitHub Lambda when calling the GitHub API on a user's behalf) and the agent CLI authentication material. External integrations are limited to GitHub (OAuth App, used for repo access and PR creation) and Jira Cloud (OAuth 2.0, read-only). All of these have been omitted from the diagram to keep it readable; they are mentioned where relevant in the agent runtime section below.
+**Not shown.** Secrets Manager stores the platform-wide OAuth app credentials for GitHub and Jira Cloud plus the optional GitHub App private key; SSM Parameter Store stores per-user GitHub access tokens (read by the GitHub Lambda when calling the GitHub API on a user's behalf), the platform-wide GitHub auth mode + App config (admin-managed at runtime), and the agent CLI authentication material. External integrations are limited to GitHub (OAuth App or GitHub App installation — an admin-switchable platform mode — used for repo access and PR creation) and Jira Cloud (OAuth 2.0, read-only). All of these have been omitted from the diagram to keep it readable; they are mentioned where relevant in the agent runtime section below.
 
 ## Agent runtime
 
-The asynchronous path. What happens after the user starts an agent job from the UI.
+The asynchronous path. What happens after the user starts an intent from the UI.
 
 ```mermaid
 flowchart TB
-  AGCTL["Agent control plane<br/>(agents Lambda)"]
-  POOL[("agent-pool<br/>DynamoDB")]
-  AGENT["ECS Fargate agent task<br/>(Kiro / Claude / OpenCode<br/>+ mcp-server-graph<br/>+ aidlc-rules)"]
-  SUBQ["submit-question<br/>Lambda"]
+  INT["intents Lambda<br/>(create / start / rewind,<br/>gate answers)"]
+  ORCH["v2-orchestrator<br/>(durable Lambda)"]
+  AC["Bedrock AgentCore runtime<br/>(ARM64 container: headless CLI<br/>+ stdio MCP server)"]
 
   subgraph Outputs["Agent outputs"]
     direction LR
-    NEP[("Neptune<br/>graph mutations")]
-    S3[("S3<br/>artifacts, code snapshots")]
-    DDB[("DynamoDB<br/>agent-questions,<br/>agent-outputs")]
+    NEP[("Neptune<br/>graph artifacts")]
+    DDB[("DynamoDB<br/>process state: stages,<br/>gates, outputs, metrics")]
   end
 
-  EB["EventBridge bus<br/>(agent.*, artifact.*,<br/>sprint.phaseChanged)"]
-  NOTIFY["notify Lambda"]
+  GITP["Git providers<br/>(GitHub / GitLab)"]
   WS["API Gateway WebSocket"]
   SPA["Browser SPA"]
 
-  AGCTL -->|write job to worker row| POOL
-  AGCTL -. ECS RunTask - cold start only .-> AGENT
-  AGENT -->|poll own row| POOL
+  INT -->|async Invoke on start| ORCH
+  ORCH -->|dispatch stage<br/>as background job| AC
+  AC -.->|durable callback:<br/>stage verdict| ORCH
+  INT -.->|durable callback:<br/>gate answered| ORCH
 
-  AGENT --> NEP
-  AGENT --> S3
-  AGENT --> DDB
-  AGENT -->|MCP ask_question| SUBQ
-  SUBQ --> DDB
-  SUBQ --> EB
-  AGENT -->|emit events| EB
+  AC -->|MCP graph writes| NEP
+  AC --> DDB
+  ORCH --> DDB
+  ORCH -->|open PRs| GITP
 
-  EB --> NOTIFY
-  NOTIFY -->|push| WS
+  AC -->|direct fan-out| WS
+  ORCH -->|direct fan-out| WS
   WS --> SPA
 ```
 
 ### Components
 
-**Agent control plane.** The same `agents` Lambda shown in diagram 1. It handles `POST /projects/{id}/agents` and dispatches the job to the agent runtime. It does this in one of two ways:
+**Agent control plane.** The `intents` Lambda shown in diagram 1. An **intent** is the unit of agent work: a title and prompt scoped to a project. On start, the Lambda compiles the project's workflow into an execution plan, snapshots project settings, and asynchronously invokes the durable orchestrator. It also owns the human-gate answer endpoint: answering a parked gate sends a durable callback (`SendDurableExecutionCallbackSuccess`) that resumes the suspended run.
 
-- **Cold start.** When no idle worker is found, it calls ECS `RunTask` to launch a fresh Fargate task and pre-writes a row for it in the pool table with the job payload.
-- **Idle worker reuse (hot path).** It queries the `agent-pool` DynamoDB table for an idle worker advertising the project's CLI, then conditionally writes `status='assigned'` and the job payload onto that worker's row. No ECS API call is made — the Fargate task already exists.
+**Durable orchestrator.** `v2-orchestrator` is a Lambda-based durable execution that drives one intent end to end. It walks the plan's stages in order; parallel construction sections fan out into per-unit **lanes** over the methodology's unit-of-work DAG, scheduled deterministically (no LLM dispatcher). Stages are invoked asynchronously: the orchestrator creates a durable callback, a short dispatch call starts the stage as a background job in the AgentCore container, and the execution suspends at zero compute until the container completes the callback with the stage verdict. This matters because a stage regularly outlives both the Lambda timeout and AgentCore's synchronous request window.
 
-**Pool model.** Each Fargate task is a long-lived "pool worker" that loops forever doing a DynamoDB `GetItem` on its own pool row. When it sees `status='assigned'` and a `job` field, it picks up the job. When it sees `status='draining'` or the row has been deleted, it exits cleanly. The DynamoDB row is therefore a **mailbox**, not an event source: nothing about DynamoDB triggers Fargate. The dispatch protocol is "control plane writes the row, worker polls it."
+**AgentCore runtime.** A Bedrock AgentCore runtime running an ARM64 container image, with a dedicated microVM and filesystem per session. Each stage spawns a headless CLI (Claude Code or Kiro, selected per project) whose only interface to the application is a stdio **MCP server**: business reads and writes go to Neptune as typed, provenance-stamped artifacts; questions, outputs, and metrics go to DynamoDB. The workspace holds the project's real git checkout, but all git operations — branch, commit, push, merge — are engine-owned and deterministic; the agent never runs git and never holds credentials. After each stage, deterministic sensors verify the output before the run advances.
 
-This pattern avoids paying the cold-start cost of ECS task launch (~30 seconds in practice) on every agent invocation, at the cost of running idle workers between jobs. The hot path resolves a job dispatch in a single DynamoDB conditional write.
+**Human gates.** When an agent calls the `ask_question` MCP tool — or the orchestrator opens an engine gate (walking-skeleton review, batch review, halt-and-ask) — the run parks on a durable callback. The question renders in the UI; the user's answer flows through the `intents` Lambda, which completes the callback and resumes the run exactly where it parked. No polling, no queue.
 
-**Agent task.** ECS Fargate task whose image bundles three pluggable CLIs — Kiro CLI, Claude Agent ACP, OpenCode — plus a custom Neptune-backed `mcp-server-graph` MCP server and the AI-DLC workflow rules under `/opt/aidlc-rules/`. The CLI used for a given job is selected per-project. ECS rather than Lambda because agent runs are long-lived (often many minutes), interactive (the agent can pause to ask the user a question), and need a working filesystem.
+**Pull requests.** When an execution succeeds, the orchestrator opens pull requests in-process through the shared git-provider layer (GitHub / GitLab), from the intent branch onto the base branch.
 
-**MCP graph server.** Bundled into the agent image. Exposes typed graph tools (create requirement, link user story to requirement, attach code file to task, etc.) so the agent reads and mutates Neptune through MCP rather than writing raw Gremlin. The same MCP server exposes the `ask_question` tool, which when called invokes the `submit-question` Lambda directly via `lambda:Invoke` to record the question in the `agent-questions` DynamoDB table and emit an `agent.question` event onto the bus.
+**Auth.** At container startup the runtime reads the agent CLI credentials from SSM Parameter Store — a Bedrock bearer token for Claude Code / OpenCode, or a Kiro API key — as configured in **Admin → Agents**. The runtime's IAM role deliberately has no Bedrock model-invocation permissions; token auth is the only path. Git pushes use the starting user's provider token, injected only inside the engine's push/fetch windows and scrubbed from the checkout otherwise. None of these auth lookups appear in the diagram.
 
-**Auth.** The agent reads its CLI authentication material from SSM Parameter Store: a Bedrock bearer token for Claude/OpenCode, a Kiro API key for the Kiro CLI, and an MCP server config blob. When pushing code, it reads the user's GitHub access token from a separate per-user SSM path. None of these auth lookups appear in the diagram.
+**Realtime.** Every relevant process write is persisted to DynamoDB and then broadcast **directly** to the intent's WebSocket channel (`intent:<intentId>`): both the container and the orchestrator fan out through the shared connection registry. DynamoDB is the source of truth; the broadcast is best-effort and never blocks a stage. There is no event bus in this path, which is why the application WebSocket fabric exists separately from the Yjs one.
 
-**EventBridge and `notify`.** A dedicated EventBridge bus carries `agent.*`, `artifact.*`, and `sprint.phaseChanged` events emitted by the running agent and by `submit-question`. The `notify` Lambda is the sole target on every rule; it queries the WebSocket connection registry in DynamoDB and pushes events to subscribed clients. This is how every running agent's progress reaches the user's browser in real time, and why the application WebSocket fabric exists separately from the Yjs one.
+### Retired v1 runtime
+
+Earlier releases ran agents on an ECS Fargate worker pool dispatched through a DynamoDB mailbox, with an EventBridge bus and a `notify` Lambda fanning agent events out to the browser. That runtime has been removed. v1 projects (the sprint lifecycle) are now **read-only**: no new sprints, agent runs, or edits — but their history stays viewable, including sprints, requirements, stories, tasks, code files, reviews, Q&A, agent transcripts, and discussions. The `agents` Lambda and the agent-questions / agent-outputs DynamoDB tables remain to serve that history.
 
 ## Request to review: end-to-end data flow
 
 The two diagrams above are static. The platform's working flow takes a request from a human user through to a reviewable result in five steps.
 
-1. **Request.** A signed-in user opens a project in the SPA and starts a new sprint with a description. The SPA writes the sprint via `POST /api/sprints`, which the REST Lambda persists as a `Sprint` vertex in Neptune.
-2. **Spec.** The user starts the Inception agent. The frontend calls `POST /api/projects/{id}/agents`; the agent control plane assigns the job to an idle pool worker (or launches one) and the agent reads the sprint description, asks clarifying questions through the `submit-question` path when needed, and writes structured `Requirement`, `UserStory`, and `Task` vertices into the graph. Real-time edits to those artifacts use the Yjs collaboration fabric, so multiple humans can refine the spec simultaneously.
-3. **Agent run.** When the user moves the sprint into Construction, the agent control plane dispatches one or more agent jobs to the pool. Each agent works in an isolated workspace, mutates the graph through MCP, streams `agent.*` events to EventBridge, and writes code artifacts to the `code-snapshots` S3 bucket and `CodeFile` vertices to Neptune.
-4. **Output.** Agent progress is fanned out to the user's browser through EventBridge → `notify` → the WebSocket API → the SPA. Final structured outputs land in DynamoDB and Neptune, and any code is pushed to a sprint branch using the user's GitHub token from SSM.
-5. **Review.** In the Review phase, review agents are dispatched the same way as construction agents. Their findings are written back to the graph as `Review` vertices linked to the requirements they evaluated. Humans add comments, then either approve the sprint or send it back to Construction with structured feedback. Either decision is a graph mutation that triggers a `sprint.phaseChanged` event and updates every connected client in real time.
+1. **Request.** A signed-in user opens a project in the SPA and creates an **intent** with a title and prompt, then starts it. The `intents` Lambda persists the intent, compiles the workflow plan, and asynchronously invokes the durable orchestrator.
+2. **Workspace.** The orchestrator's first step checks the project's repositories out into the runtime workspace, creates the `Intent` vertex in Neptune, and creates the intent branch.
+3. **Stages and gates.** The orchestrator walks the plan. Each stage runs a headless CLI in the AgentCore runtime that reads prior artifacts and writes new ones to the graph through MCP; clarifying questions and approval gates park the run on durable callbacks until a human answers in the UI, then the run resumes where it left off.
+4. **Parallel construction.** Construction stages fan out into per-unit lanes: each lane runs in its own AgentCore session on its own branch, deterministic sensors verify every stage, and the engine merges completed lanes back into the intent branch with serialized `--no-ff` merges. Progress streams to the browser over the direct WebSocket fan-out throughout.
+5. **Output and review.** When the execution succeeds, the orchestrator opens a pull request from the intent branch onto the base branch via the shared git providers. Humans review the PR alongside the intent's artifacts, outputs, and metrics in the UI.

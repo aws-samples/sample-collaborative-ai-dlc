@@ -1,12 +1,10 @@
-const gremlin = require('gremlin');
-const { randomUUID } = require('crypto');
-const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
-const { getUrlAndHeaders } = require('gremlin-aws-sigv4/lib/utils');
-const { buildResponse } = require('./shared/response');
+import gremlin from 'gremlin';
+import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
+import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
+import { buildResponse } from '../shared/response.js';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
-const { cardinality } = gremlin.process;
 
 const getConnection = async () => {
   const host = process.env.NEPTUNE_ENDPOINT;
@@ -25,7 +23,7 @@ const mapCodeFile = (v) => ({
   sprintId: v.get('sprint_id')?.[0] || '',
 });
 
-exports.handler = async (event) => {
+export const handler = async (event) => {
   const res = buildResponse(event);
   if (event.httpMethod === 'OPTIONS') return res(200, {});
 
@@ -33,9 +31,11 @@ exports.handler = async (event) => {
   try {
     conn = await getConnection();
     const g = traversal().withRemote(conn);
-    const { httpMethod, pathParameters, body } = event;
+    const { httpMethod, pathParameters } = event;
     const { sprintId, codeFileId } = pathParameters || {};
 
+    // v1 projects are read-only: code-file writes were removed together with
+    // the v1 execution engine, so only the GET routes remain.
     switch (httpMethod) {
       case 'GET': {
         if (codeFileId) {
@@ -51,102 +51,6 @@ exports.handler = async (event) => {
           .valueMap()
           .toList();
         return res(200, list.map(mapCodeFile));
-      }
-
-      case 'POST': {
-        const data = JSON.parse(body);
-        const id = randomUUID();
-
-        await g
-          .V()
-          .has('Sprint', 'id', sprintId)
-          .as('s')
-          .addV('CodeFile')
-          .property('id', id)
-          .property('file_path', data.filePath)
-          .property('repository', data.repository || '')
-          .property('commit_ref', data.commitRef || '')
-          .property('summary', data.summary || '')
-          .property('sprint_id', sprintId)
-          .as('cf')
-          .addE('CONTAINS')
-          .from_('s')
-          .to('cf')
-          .next();
-
-        // IMPLEMENTED_BY from Task
-        if (data.taskId) {
-          await g
-            .V()
-            .has('Task', 'id', data.taskId)
-            .as('t')
-            .V()
-            .has('CodeFile', 'id', id)
-            .as('cf')
-            .addE('IMPLEMENTED_BY')
-            .from_('t')
-            .to('cf')
-            .next();
-        }
-        // IMPLEMENTED_BY shortcut from UserStory
-        if (data.userStoryId) {
-          await g
-            .V()
-            .has('UserStory', 'id', data.userStoryId)
-            .as('us')
-            .V()
-            .has('CodeFile', 'id', id)
-            .as('cf')
-            .addE('IMPLEMENTED_BY')
-            .from_('us')
-            .to('cf')
-            .next();
-        }
-
-        return res(201, {
-          id,
-          filePath: data.filePath,
-          repository: data.repository || '',
-          commitRef: data.commitRef || '',
-          summary: data.summary || '',
-          sprintId,
-        });
-      }
-
-      case 'PUT': {
-        // Update individual properties on existing CodeFile
-        const data = JSON.parse(body);
-        if (data.filePath)
-          await g
-            .V()
-            .has('CodeFile', 'id', codeFileId)
-            .property(cardinality.single, 'file_path', data.filePath)
-            .next();
-        if (data.repository !== undefined)
-          await g
-            .V()
-            .has('CodeFile', 'id', codeFileId)
-            .property(cardinality.single, 'repository', data.repository)
-            .next();
-        if (data.commitRef !== undefined)
-          await g
-            .V()
-            .has('CodeFile', 'id', codeFileId)
-            .property(cardinality.single, 'commit_ref', data.commitRef)
-            .next();
-        if (data.summary !== undefined)
-          await g
-            .V()
-            .has('CodeFile', 'id', codeFileId)
-            .property(cardinality.single, 'summary', data.summary)
-            .next();
-        const updated = await g.V().has('CodeFile', 'id', codeFileId).valueMap().next();
-        return res(200, mapCodeFile(updated.value));
-      }
-
-      case 'DELETE': {
-        await g.V().has('CodeFile', 'id', codeFileId).drop().next();
-        return res(204, {});
       }
 
       default:

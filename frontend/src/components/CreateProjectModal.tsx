@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { GitHubIcon, GitLabIcon } from '@/components/icons/git-providers';
 import { projectsService, type CreateProjectInput } from '../services/projects';
+import { workflowsService, type WorkflowSummary } from '../services/workflows';
 import { trackersService } from '../services/trackers';
 import { useGitProviderStatus } from '../hooks/useGitProviderStatus';
 import { GitConnectButton } from './GitConnectButton';
@@ -35,15 +36,51 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
   });
   // Only the selected provider's connection status is needed — the modal shows
   // one provider at a time. Switching providers re-fetches via the hook's
-  // provider-keyed effect.
+  // provider-keyed effect. For GitHub, `status.mode` carries the platform-wide
+  // auth mode (admin-managed): in 'app' mode there is no per-user connect step
+  // and the repo picker lists the App installation's repositories.
   const {
     status: gitStatus,
     loading: gitStatusLoading,
     error: gitStatusError,
     refresh: gitRefresh,
   } = useGitProviderStatus(formData.gitProvider);
+  const isAppMode = formData.gitProvider === 'github' && gitStatus?.mode === 'app';
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // v2 workflow options — every new project is a v2 (AI-DLC workflow runtime)
+  // project; the backend rejects v1 creation. Scope is chosen per-intent (not
+  // on the project), and park release is tuned later in project settings.
+  const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
+  const [workflowId, setWorkflowId] = useState<string>('');
+  const [v2Loading, setV2Loading] = useState(false);
+  const [v2Error, setV2Error] = useState<string | null>(null);
+
+  // Load the workflow catalog on mount — a workflow is always required.
+  useEffect(() => {
+    let cancelled = false;
+    setV2Loading(true);
+    setV2Error(null);
+    workflowsService
+      .list()
+      .then(({ workflows: list }) => {
+        if (cancelled) return;
+        setWorkflows(list);
+        // Prefer the canonical aidlc-v2 workflow if present.
+        const preferred = list.find((w) => w.workflowId === 'aidlc-v2') ?? list[0];
+        if (preferred) setWorkflowId(preferred.workflowId);
+      })
+      .catch((err) => {
+        if (!cancelled) setV2Error(err instanceof Error ? err.message : 'Failed to load workflows');
+      })
+      .finally(() => {
+        if (!cancelled) setV2Loading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const applyPrimaryRepo = (nextPrimary: string) => {
     const prevPrimaryName = repoShortName(primaryRepo);
@@ -89,13 +126,21 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
         setSubmitting(false);
         return;
       }
+      if (!workflowId) {
+        setError('Select a workflow for the space.');
+        setSubmitting(false);
+        return;
+      }
+      const repos = selectedRepos.map((url) => ({
+        url,
+        role: url === primaryRepo ? ('primary' as const) : ('secondary' as const),
+      }));
       const input: CreateProjectInput = {
         ...formData,
         gitProvider,
-        repos: selectedRepos.map((url) => ({
-          url,
-          role: url === primaryRepo ? ('primary' as const) : ('secondary' as const),
-        })),
+        repos,
+        kind: 'v2',
+        workflowId,
       };
       const project = await projectsService.create(input);
       if (formData.issueIntegrationEnabled && formData.gitRepo) {
@@ -115,20 +160,21 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
       onCreated();
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create project');
+      setError(err instanceof Error ? err.message : 'Failed to create space');
     } finally {
       setSubmitting(false);
     }
   };
 
-  const canProceedStep1 = gitStatus?.connected;
+  const canProceedStep1 = formData.gitProvider ? gitStatus?.connected : false;
   const canProceedStep2 = selectedRepos.length > 0;
+  const repoCount = selectedRepos.length;
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
       <div className="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-md w-full mx-4">
         <h2 className="text-xl font-semibold mb-4 text-gray-900 dark:text-white">
-          Create New Project
+          Create New Space
         </h2>
 
         {/* Step Indicator */}
@@ -171,7 +217,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
               Choose Git Provider
             </label>
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
-              A project connects to a single git provider.
+              A space connects to a single git provider.
             </p>
             <Select
               value={formData.gitProvider}
@@ -206,10 +252,25 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
               </p>
             ) : gitStatusLoading ? (
               <p className="text-sm text-gray-500 dark:text-gray-400">Checking connection...</p>
+            ) : isAppMode ? (
+              <div className="rounded border border-indigo-200 dark:border-indigo-800 bg-indigo-50/50 dark:bg-indigo-900/20 p-3">
+                <p className="text-sm text-gray-700 dark:text-gray-300">
+                  This platform authenticates with GitHub as a GitHub App installation — no personal
+                  connection is needed.
+                </p>
+                {!gitStatus?.connected && (
+                  <p className="text-xs text-red-600 dark:text-red-400 mt-1">
+                    The GitHub App is not fully configured. Ask an administrator to complete the
+                    setup in <strong>Platform Admin → Source Control</strong>.
+                  </p>
+                )}
+              </div>
             ) : (
               <GitConnectButton
                 provider={formData.gitProvider}
                 connected={gitStatus?.connected || false}
+                reauthorizationRequired={gitStatus?.reauthorizationRequired}
+                missingScopes={gitStatus?.missingScopes}
                 onDisconnect={gitRefresh}
               />
             )}
@@ -236,8 +297,9 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
           <div>
             <h3 className="font-medium mb-1 text-gray-900 dark:text-white">Select Repositories</h3>
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-              Choose one or more repositories. The primary repo drives issue integration and project
-              naming.
+              {isAppMode
+                ? 'Repositories the GitHub App installation can access. The primary repo drives issue integration and space naming.'
+                : 'Choose one or more repositories. The primary repo drives issue integration and space naming.'}
             </p>
             <GitRepoSelect
               provider={formData.gitProvider}
@@ -297,10 +359,10 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
         {/* Step 3: Project Details */}
         {step === 3 && formData.gitProvider && (
           <form onSubmit={handleSubmit}>
-            <h3 className="font-medium mb-3 text-gray-900 dark:text-white">Project Details</h3>
+            <h3 className="font-medium mb-3 text-gray-900 dark:text-white">Space Details</h3>
             <div className="mb-4">
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                Project Name
+                Space Name
               </label>
               <input
                 type="text"
@@ -313,7 +375,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
             </div>
             <div className="mb-4">
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                {selectedRepos.length > 1 ? 'Primary Repository' : 'Repository'}
+                {repoCount > 1 ? 'Primary Repository' : 'Repository'}
               </label>
               <input
                 type="text"
@@ -321,12 +383,19 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                 className="w-full border dark:border-gray-600 rounded px-3 py-2 bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white"
                 disabled
               />
-              {selectedRepos.length > 1 && (
-                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                  +{selectedRepos.length - 1} additional repositor
-                  {selectedRepos.length - 1 === 1 ? 'y' : 'ies'}
-                </p>
-              )}
+              <div className="flex items-center gap-2 mt-1">
+                {isAppMode && (
+                  <span className="text-[10px] font-medium bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300 px-1.5 py-0.5 rounded">
+                    GitHub App (bot)
+                  </span>
+                )}
+                {repoCount > 1 && (
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    +{repoCount - 1} additional repositor
+                    {repoCount - 1 === 1 ? 'y' : 'ies'}
+                  </p>
+                )}
+              </div>
             </div>
             {(formData.gitProvider === 'github' || formData.gitProvider === 'gitlab') && (
               <div className="mb-4">
@@ -346,13 +415,40 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                       integration
                     </span>
                     <span className="block text-xs text-gray-500 dark:text-gray-400">
-                      Browse issues on the project page and start sprints from them.
-                      {selectedRepos.length > 1 ? ' Applies to the primary repository only.' : ''}
+                      Browse issues on the space page and start intents from them.
+                      {repoCount > 1 ? ' Applies to the primary repository only.' : ''}
                     </span>
                   </span>
                 </label>
               </div>
             )}
+            <div className="mb-4 rounded border border-indigo-200 dark:border-indigo-800 bg-indigo-50/50 dark:bg-indigo-900/20 p-3 space-y-3">
+              <p className="text-xs font-medium uppercase tracking-wide text-indigo-700 dark:text-indigo-300">
+                AI-DLC v2 settings
+              </p>
+              {v2Error && <p className="text-xs text-red-600 dark:text-red-400">{v2Error}</p>}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Workflow
+                </label>
+                <Select value={workflowId} onValueChange={setWorkflowId} disabled={submitting}>
+                  <SelectTrigger>
+                    <SelectValue placeholder={v2Loading ? 'Loading…' : 'Select a workflow'} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {workflows.map((w) => (
+                      <SelectItem key={w.workflowId} value={w.workflowId}>
+                        {w.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Scope is chosen per-intent. Park release and other runtime settings can be tuned
+                later in space settings.
+              </p>
+            </div>
             <div className="flex justify-end gap-2 mt-6">
               <button
                 type="button"
@@ -365,9 +461,9 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
               <button
                 type="submit"
                 className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50"
-                disabled={submitting}
+                disabled={submitting || !workflowId}
               >
-                {submitting ? 'Creating...' : 'Create Project'}
+                {submitting ? 'Creating...' : 'Create Space'}
               </button>
             </div>
           </form>

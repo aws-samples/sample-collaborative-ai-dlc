@@ -10,7 +10,7 @@ import {
 import type { ReactNode } from 'react';
 import { useParams } from 'react-router-dom';
 import { discussionsService } from '@/services/discussions';
-import type { Discussion, DiscussionEntityType } from '@/services/discussions';
+import type { Discussion, DiscussionEntityType, DiscussionScope } from '@/services/discussions';
 import { projectsService } from '@/services/projects';
 import type { Member } from '@/services/projects';
 import { realtimeService } from '@/services/realtime';
@@ -37,6 +37,8 @@ export interface OpenDiscussionArgs {
 }
 
 interface DiscussionContextValue {
+  /** The active discussion scope (sprint or intent), or null off a scoped route. */
+  scope: DiscussionScope | null;
   openDiscussion: (args: OpenDiscussionArgs) => void;
   openDiscussionById: (discussionId: string) => void;
   close: () => void;
@@ -82,7 +84,22 @@ export function DiscussionProvider({
   /** Called whenever a thread opens — the shell uses it to show the activity panel. */
   onDiscussionOpen?: () => void;
 }) {
-  const { sprintId = '', projectId = '' } = useParams<{ sprintId: string; projectId: string }>();
+  const {
+    sprintId = '',
+    projectId = '',
+    intentId = '',
+  } = useParams<{
+    sprintId: string;
+    projectId: string;
+    intentId: string;
+  }>();
+  // Derive the discussion scope from the route: sprint pages carry sprintId;
+  // the intent page carries projectId + intentId.
+  const scope = useMemo<DiscussionScope | null>(() => {
+    if (sprintId) return { kind: 'sprint', sprintId };
+    if (intentId && projectId) return { kind: 'intent', projectId, intentId };
+    return null;
+  }, [sprintId, intentId, projectId]);
   const { user } = useAuth();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -95,13 +112,13 @@ export function DiscussionProvider({
 
   // ── Discussions list (badges + ActivityPanel tab) ──
   const reloadDiscussions = useCallback(async () => {
-    if (!sprintId) return;
+    if (!scope) return;
     try {
-      setDiscussions(await discussionsService.list(sprintId));
+      setDiscussions(await discussionsService.list(scope));
     } catch {
       /* non-member or transient — badges just stay empty */
     }
-  }, [sprintId]);
+  }, [scope]);
 
   useEffect(() => {
     setDiscussions([]);
@@ -126,7 +143,7 @@ export function DiscussionProvider({
   // Refresh on server fanout — covers other users' messages, resolves and
   // redactions. Debounced so a burst of messages costs one list query.
   useEffect(() => {
-    if (!sprintId) return;
+    if (!scope) return;
     const unsubs = [
       realtimeService.on('discussion.message', () => scheduleReload()),
       realtimeService.on('discussion.updated', () => scheduleReload()),
@@ -135,7 +152,7 @@ export function DiscussionProvider({
       unsubs.forEach((u) => u());
       if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current);
     };
-  }, [sprintId, scheduleReload]);
+  }, [scope, scheduleReload]);
 
   // ── Project members (mention combobox + caller role) ──
   useEffect(() => {
@@ -181,15 +198,37 @@ export function DiscussionProvider({
   // ── Thread open/close ──
   const openDiscussion = useCallback(
     (args: OpenDiscussionArgs) => {
-      if (!sprintId) return;
+      if (!scope) return;
       setOpen(true);
       setLoading(true);
       setError(null);
       setDiscussion(null);
       setPendingTitle(args.entityTitle || '');
       onDiscussionOpen?.();
+      if (scope.kind === 'sprint') {
+        // v1 sprint discussions are read-only — thread creation is gone from
+        // the backend, so only an EXISTING thread can be opened for viewing.
+        discussionsService
+          .list(scope)
+          .then((all) => {
+            const existing = all.find(
+              (d) =>
+                d.entityType === args.entityType &&
+                (args.entityId === undefined || d.entityId === args.entityId),
+            );
+            if (!existing) throw new Error('v1 discussions are read-only.');
+            setDiscussion(existing);
+            setDiscussions(all);
+          })
+          .catch((err) => {
+            console.error('Failed to open discussion:', err);
+            setError(err instanceof Error ? err.message : 'Failed to open discussion');
+          })
+          .finally(() => setLoading(false));
+        return;
+      }
       discussionsService
-        .getOrCreate(sprintId, {
+        .getOrCreate(scope, {
           entityType: args.entityType,
           entityId: args.entityId,
           entityTitle: args.entityTitle,
@@ -204,12 +243,12 @@ export function DiscussionProvider({
         })
         .finally(() => setLoading(false));
     },
-    [sprintId, reloadDiscussions, onDiscussionOpen],
+    [scope, reloadDiscussions, onDiscussionOpen],
   );
 
   const openDiscussionById = useCallback(
     async (discussionId: string) => {
-      if (!sprintId) return;
+      if (!scope) return;
       setOpen(true);
       setLoading(true);
       setError(null);
@@ -218,7 +257,7 @@ export function DiscussionProvider({
       try {
         const known =
           discussions.find((d) => d.id === discussionId) ||
-          (await discussionsService.list(sprintId)).find((d) => d.id === discussionId);
+          (await discussionsService.list(scope)).find((d) => d.id === discussionId);
         if (!known) throw new Error('Discussion not found');
         setDiscussion(known);
       } catch (err) {
@@ -228,7 +267,7 @@ export function DiscussionProvider({
         setLoading(false);
       }
     },
-    [sprintId, discussions, onDiscussionOpen],
+    [scope, discussions, onDiscussionOpen],
   );
 
   const close = useCallback(() => {
@@ -261,13 +300,14 @@ export function DiscussionProvider({
     [discussionFor],
   );
 
-  // Leaving the sprint closes the thread.
+  // Leaving the scoped route closes the thread.
   useEffect(() => {
-    if (!sprintId) close();
-  }, [sprintId, close]);
+    if (!scope) close();
+  }, [scope, close]);
 
   const value = useMemo(
     () => ({
+      scope,
       openDiscussion,
       openDiscussionById,
       close,
@@ -285,6 +325,7 @@ export function DiscussionProvider({
       role,
     }),
     [
+      scope,
       openDiscussion,
       openDiscussionById,
       close,

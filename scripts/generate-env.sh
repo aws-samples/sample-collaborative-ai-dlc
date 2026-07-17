@@ -5,12 +5,13 @@ set -e
 ENVIRONMENT=${1:-dev}
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TF_DIR="$SCRIPT_DIR/../terraform"
+CONFIG_TF_DIR="${AIDLC_CONFIG_DIR:-$TF_DIR}"
 
 # Discover available environments from terraform/environments/*.tfvars.
 # The *.tfvars glob never matches *.tfvars.example, so no grep -v needed.
 # Fall back to "dev prod" so a fresh public clone (no .tfvars yet) still works —
 # Terraform uses its own defaults when no var-file has been initialised.
-AVAILABLE_ENVS=$(ls "$TF_DIR/environments/"*.tfvars 2>/dev/null | xargs -n1 basename | sed 's/\.tfvars$//' | tr '\n' ' ')
+AVAILABLE_ENVS=$(find "$CONFIG_TF_DIR/environments" -maxdepth 1 -type f -name '*.tfvars' -exec basename {} .tfvars \; 2>/dev/null | tr '\n' ' ')
 if [[ -z "${AVAILABLE_ENVS// }" ]]; then
     AVAILABLE_ENVS="dev prod"
 fi

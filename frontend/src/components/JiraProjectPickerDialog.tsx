@@ -77,7 +77,7 @@ export function JiraProjectPickerDialog({ open, onOpenChange, onConfirm }: Props
         <DialogHeader>
           <DialogTitle>Add Jira project</DialogTitle>
           <DialogDescription>
-            Pick the Jira project to bind to this collaborative project. The "Start a sprint from a
+            Pick the Jira project to bind to this collaborative space. The "Start a sprint from a
             Jira issue" panel will list issues from this project.
           </DialogDescription>
         </DialogHeader>

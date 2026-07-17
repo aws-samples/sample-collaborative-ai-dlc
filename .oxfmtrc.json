@@ -1,4 +1,4 @@
 {
   "singleQuote": true,
-  "ignorePatterns": []
+  "ignorePatterns": ["lambda/agentcore/test/fixtures/aidlc-sensor-*.ts"]
 }

@@ -22,6 +22,30 @@ output "jira_oauth_secret_name" {
   value = aws_secretsmanager_secret.jira_oauth.name
 }
 
+output "github_app_private_key_secret_arn" {
+  value = aws_secretsmanager_secret.github_app_private_key.arn
+}
+
+output "github_app_private_key_secret_name" {
+  value = aws_secretsmanager_secret.github_app_private_key.name
+}
+
+output "github_auth_mode_param_name" {
+  value = aws_ssm_parameter.github_auth_mode.name
+}
+
+output "github_auth_mode_param_arn" {
+  value = aws_ssm_parameter.github_auth_mode.arn
+}
+
+output "github_app_config_param_name" {
+  value = aws_ssm_parameter.github_app_config.name
+}
+
+output "github_app_config_param_arn" {
+  value = aws_ssm_parameter.github_app_config.arn
+}
+
 output "git_connections_table_name" {
   value = aws_dynamodb_table.git_connections.name
 }

@@ -9,6 +9,10 @@ import type { OpenDiscussionArgs } from './DiscussionProvider';
 // badge — count pill when unreadCount > 0, subtle dot when a thread exists
 // with messages but nothing unread. Renders nothing when no
 // DiscussionProvider is mounted (outside a sprint).
+//
+// v1 sprint discussions are read-only: on a sprint scope the button only
+// OPENS an existing thread for viewing — when no thread exists there is
+// nothing to create, so it renders nothing.
 
 interface Props extends OpenDiscussionArgs {
   className?: string;
@@ -22,6 +26,10 @@ export function DiscussButton({ entityType, entityId, entityTitle, className }: 
   const unread = thread?.unreadCount ?? 0;
   const ongoing = (thread?.messageCount ?? 0) > 0;
 
+  // Read-only sprint scope: no thread → no creation affordance.
+  const readOnly = discussions.scope?.kind === 'sprint';
+  if (readOnly && !thread) return null;
+
   const label =
     unread > 0 ? `Discuss (${unread} unread)` : ongoing ? 'Discuss (ongoing)' : 'Discuss';
 
@@ -34,7 +42,11 @@ export function DiscussButton({ entityType, entityId, entityTitle, className }: 
           className={cn('h-6 w-6 relative', className)}
           onClick={(e) => {
             e.stopPropagation();
-            discussions.openDiscussion({ entityType, entityId, entityTitle });
+            if (thread) {
+              discussions.openDiscussionById(thread.id);
+            } else {
+              discussions.openDiscussion({ entityType, entityId, entityTitle });
+            }
           }}
           aria-label={label}
         >

@@ -11,6 +11,7 @@ import {
   invalidateRealtimeToken,
   msUntilRefresh,
   scopeTargetForYjsDoc,
+  type RealtimeScopeTarget,
 } from '../lib/realtimeToken';
 
 export interface AwarenessUser {
@@ -21,8 +22,29 @@ export interface AwarenessUser {
   typing?: boolean;
 }
 
-export function useYjsDocument(documentId: string | null, userName?: string, userColor?: string) {
+export function useYjsDocument(
+  documentId: string | null,
+  userName?: string,
+  userColor?: string,
+  // Explicit scope target for doc names whose token target can't be derived from
+  // the name alone — e.g. intent docs (`intent-sq-…`), whose realtime-token
+  // endpoint is project-scoped. When omitted, the target is derived from the doc
+  // name via scopeTargetForYjsDoc (the v1 sprint/project path).
+  scopeTarget?: RealtimeScopeTarget,
+) {
+  // Intentionally keyed on documentId: a new document must get a FRESH Y.Doc even
+  // though the factory doesn't read documentId (the rule flags it as unnecessary).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   const doc = useMemo(() => new Y.Doc(), [documentId]);
+  // Destroy the Y.Doc when it is replaced (documentId change) or on unmount.
+  // The effect below (keyed on [documentId, doc, …]) handles ws/listener cleanup
+  // separately — this only prevents the orphaned Y.Doc memory leak.
+  useEffect(
+    () => () => {
+      doc.destroy();
+    },
+    [doc],
+  );
   const [synced, setSynced] = useState(false);
   const [awareness, setAwareness] = useState<awarenessProtocol.Awareness | null>(null);
   const [remoteUsers, setRemoteUsers] = useState<Map<number, AwarenessUser>>(new Map());
@@ -52,7 +74,7 @@ export function useYjsDocument(documentId: string | null, userName?: string, use
     // scope coverage for this doc name, and sub binding at upgrade. Resolved
     // once per effect run (it depends only on documentId) and shared by both
     // connect() and the visibility/focus backstop.
-    const target = scopeTargetForYjsDoc(documentId);
+    const target = scopeTarget ?? scopeTargetForYjsDoc(documentId);
     if (!target) {
       console.error('Yjs: unknown doc-name format, cannot authorize:', documentId);
       return;
@@ -92,8 +114,12 @@ export function useYjsDocument(documentId: string | null, userName?: string, use
 
       let initialSyncDone = false;
 
+      // NOTE: on* handler ASSIGNMENT (not addEventListener) is intentional — one
+      // handler per event, replaced/nulled across reconnects and on teardown.
+      // unicorn/prefer-add-event-listener is disabled for this file in
+      // .oxlintrc.json for that reason.
       ws.onopen = () => {
-        console.log('Yjs WebSocket connected');
+        if (import.meta.env.DEV) console.log('Yjs WebSocket connected');
         reconnectAttempts = 0;
 
         // Proactively reconnect shortly before the scope token expires — the
@@ -112,7 +138,7 @@ export function useYjsDocument(documentId: string | null, userName?: string, use
           tokenRefreshRef.current = null;
           if (cancelled || wsRef.current !== ws) return;
           invalidateRealtimeToken(target);
-          console.log('Yjs: scope token expiring — reconnecting');
+          if (import.meta.env.DEV) console.log('Yjs: scope token expiring — reconnecting');
           ws.close();
         }, msUntilRefresh(docToken.exp));
 
@@ -127,10 +153,10 @@ export function useYjsDocument(documentId: string | null, userName?: string, use
         // Start ping interval to keep connection alive
         pingIntervalRef.current = window.setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) {
-            const encoder = encoding.createEncoder();
-            encoding.writeVarUint(encoder, 0);
-            syncProtocol.writeSyncStep1(encoder, doc);
-            ws.send(encoding.toUint8Array(encoder));
+            const pingEncoder = encoding.createEncoder();
+            encoding.writeVarUint(pingEncoder, 0);
+            syncProtocol.writeSyncStep1(pingEncoder, doc);
+            ws.send(encoding.toUint8Array(pingEncoder));
           }
         }, 30000);
       };
@@ -162,12 +188,12 @@ export function useYjsDocument(documentId: string | null, userName?: string, use
             );
           }
         } catch (e) {
-          console.log('Yjs message error:', e);
+          if (import.meta.env.DEV) console.log('Yjs message error:', e);
         }
       };
 
       ws.onclose = (event) => {
-        console.log('Yjs WebSocket closed:', event.code, event.reason);
+        if (import.meta.env.DEV) console.log('Yjs WebSocket closed:', event.code, event.reason);
         setSynced(false);
         if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
         if (tokenRefreshRef.current) {
@@ -184,7 +210,8 @@ export function useYjsDocument(documentId: string | null, userName?: string, use
         if (reconnectAttempts < maxReconnectAttempts) {
           const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
           reconnectAttempts++;
-          console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
+          if (import.meta.env.DEV)
+            console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
           reconnectTimeoutRef.current = window.setTimeout(() => {
             connect().catch((e) => console.error('Yjs reconnect failed:', e));
           }, delay);
@@ -250,7 +277,7 @@ export function useYjsDocument(documentId: string | null, userName?: string, use
         tokenRefreshRef.current = null;
       }
       invalidateRealtimeToken(target);
-      console.log('Yjs: scope token stale on resume — reconnecting');
+      if (import.meta.env.DEV) console.log('Yjs: scope token stale on resume — reconnecting');
       ws.close();
     };
 
@@ -273,6 +300,10 @@ export function useYjsDocument(documentId: string | null, userName?: string, use
       wsRef.current?.close();
       wsRef.current = null;
     };
+    // scopeTarget is intentionally not a dep: it is derived from documentId
+    // (same identity across renders for a given doc) and re-running on a new
+    // object reference would needlessly recycle the socket.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [documentId, doc, userName, userColor]);
 
   const setCursor = useCallback(

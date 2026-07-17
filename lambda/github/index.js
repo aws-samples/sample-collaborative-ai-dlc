@@ -1,5 +1,6 @@
 import { createGitHandler } from '../shared/git-handler.js';
 import githubProvider from '../shared/git-providers/github.js';
+import { handleGitHubAdminConfig } from '../shared/github-admin.js';
 
 // Route-shape descriptors: how to recognise repo-scoped routes and extract the
 // repoId ("owner/repo") from the GitHub URL layout. All provider-agnostic
@@ -26,4 +27,14 @@ const routes = {
   },
 };
 
-export const handler = createGitHandler(githubProvider, routes);
+const gitHandler = createGitHandler(githubProvider, routes);
+
+export const handler = async (event) => {
+  // Platform-admin config routes are GitHub-specific (auth mode + App
+  // config), so they are intercepted here instead of living in the shared
+  // provider-agnostic git handler.
+  if (event.path?.endsWith('/admin/config')) {
+    return handleGitHubAdminConfig(event);
+  }
+  return gitHandler(event);
+};

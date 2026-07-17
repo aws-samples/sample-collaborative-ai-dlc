@@ -1,16 +1,29 @@
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
-import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
-import { SSMClient } from '@aws-sdk/client-ssm';
+import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
+import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
+import { LambdaClient } from '@aws-sdk/client-lambda';
+import { BedrockAgentCoreClient } from '@aws-sdk/client-bedrock-agentcore';
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  ListObjectVersionsCommand,
+  DeleteObjectsCommand,
+} from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import nodePath from 'node:path';
 import { buildResponse } from '../shared/response.js';
+import { requirePlatformAdmin } from '../shared/authz.js';
 import { runTrackerMigration } from '../shared/tracker-migration.js';
 import { getGitConnection } from '../shared/git-connection-store.js';
-import { resolveGitToken } from '../shared/git-token.js';
+import { ensureFreshGitToken, resolveGitHubTokenForMode } from '../shared/git-token.js';
 import { getProvider } from '../shared/git-providers.js';
 import {
   getVal,
@@ -18,13 +31,25 @@ import {
   mapBinding,
   fetchMembershipRole,
 } from '../shared/trackers.js';
-import { validateMcpServersJson } from '../shared/mcp-validator.js';
 import { normalizeCliModels, parseCliModels } from '../shared/cli-models.js';
-import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { normalizeTierModels, parseTierModels } from '../shared/tier-models.js';
+import { createProcessStore } from '../shared/v2-process-store.js';
+import { deleteIntentCascade } from '../shared/intent-deletion.js';
+import { isSafeRepo } from '../shared/repo-validation.js';
+import { validateMcpServersJson, extractSecretRefs } from '../shared/mcp-validator.js';
+import { listMcpSecrets, putMcpSecrets } from '../shared/mcp-secrets-store.js';
+import {
+  PROJECT_PR_STRATEGIES,
+  DEFAULT_PR_STRATEGY,
+  normalizeProjectPrStrategy,
+} from '../shared/pr-strategy.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
+const secrets = new SecretsManagerClient({});
+const lambdaClient = new LambdaClient({});
+const agentcore = new BedrockAgentCoreClient({});
+const store = createProcessStore({ ddb });
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -36,6 +61,122 @@ const { cardinality, P } = gremlin.process;
 // against the project's gitRepo without requiring the user to migrate first.
 // The trackers lambda special-cases this id on the issue routes.
 export const LEGACY_GITHUB_BINDING_ID = 'legacy-github';
+
+// Project kind discriminator. v2 is the only kind that can be created: POST
+// rejects an explicit kind='v1' and an omitted kind now means v2. Pre-freeze
+// projects without the property remain implicitly v1 and are read-only —
+// viewable through the GET paths (their v1 execution runtime was deleted),
+// with project-level admin ops (rename/delete/membership) still allowed.
+// v2 projects run the AI-DLC v2 block/workflow runtime (intents, dynamic
+// phases/stages) and carry the extra settings below.
+const DEFAULT_V2_WORKFLOW_ID = 'aidlc-v2';
+// Seconds a parked (waiting-for-human) stage's compute lingers before release.
+// Default 5 min; bounded by the runtime idle backstop (900s) — see v2-open.md D1.
+const DEFAULT_PARK_RELEASE_SECONDS = 300;
+const MAX_PARK_RELEASE_SECONDS = 900;
+// Concurrency cap for parallel unit lanes (docs/v2-parallel.md WP5).
+// 0 = unbounded (the unit DAG is the only limit). Bounded well below the
+// AgentCore session quotas (2.5k+ active sessions) — a workflow fan-out past
+// this is a smell, not a need.
+const DEFAULT_MAX_PARALLEL_UNITS = 0;
+const MAX_MAX_PARALLEL_UNITS = 64;
+// Project PR strategy override. `default` inherits the platform SSM setting;
+// executions snapshot the resolved strategy at intent creation.
+const DEFAULT_PROJECT_PR_STRATEGY = 'default';
+// Per-project stage-skipping override (shared/stage-skip.js): 'default'
+// inherits the platform Admin setting; enabled/disabled override it for
+// intents of THIS project. The effective value is resolved + snapshotted onto
+// each execution META row at intent create.
+const STAGE_SKIPPING_OVERRIDES = ['default', 'enabled', 'disabled'];
+const DEFAULT_STAGE_SKIPPING = 'default';
+
+// Validate + normalize park_release_seconds. Returns { valid, value?, error? }.
+const normalizeParkReleaseSeconds = (raw) => {
+  if (raw === undefined || raw === null || raw === '') {
+    return { valid: true, value: DEFAULT_PARK_RELEASE_SECONDS };
+  }
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0 || n > MAX_PARK_RELEASE_SECONDS) {
+    return {
+      valid: false,
+      error: `parkReleaseSeconds must be an integer between 0 and ${MAX_PARK_RELEASE_SECONDS}`,
+    };
+  }
+  return { valid: true, value: n };
+};
+
+// Validate + normalize max_parallel_units. Returns { valid, value?, error? }.
+const normalizeMaxParallelUnits = (raw) => {
+  if (raw === undefined || raw === null || raw === '') {
+    return { valid: true, value: DEFAULT_MAX_PARALLEL_UNITS };
+  }
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0 || n > MAX_MAX_PARALLEL_UNITS) {
+    return {
+      valid: false,
+      error: `maxParallelUnits must be an integer between 0 (unbounded) and ${MAX_MAX_PARALLEL_UNITS}`,
+    };
+  }
+  return { valid: true, value: n };
+};
+
+// Validate + normalize the project-level PR strategy override.
+const normalizePrStrategy = (raw, { legacyDefault = false } = {}) => {
+  if (raw === undefined || raw === null || raw === '') {
+    return {
+      valid: true,
+      value: legacyDefault ? DEFAULT_PR_STRATEGY : DEFAULT_PROJECT_PR_STRATEGY,
+    };
+  }
+  const value = normalizeProjectPrStrategy(raw);
+  return value
+    ? { valid: true, value }
+    : {
+        valid: false,
+        error: `prStrategy must be one of: ${PROJECT_PR_STRATEGIES.join(', ')}`,
+      };
+};
+
+// Validate + normalize stage_skipping. Returns { valid, value?, error? }.
+const normalizeStageSkipping = (raw) => {
+  if (raw === undefined || raw === null || raw === '') {
+    return { valid: true, value: DEFAULT_STAGE_SKIPPING };
+  }
+  if (!STAGE_SKIPPING_OVERRIDES.includes(raw)) {
+    return {
+      valid: false,
+      error: `stageSkipping must be one of: ${STAGE_SKIPPING_OVERRIDES.join(', ')}`,
+    };
+  }
+  return { valid: true, value: raw };
+};
+
+// Assemble the v2 settings block returned on a project DTO. Reads are
+// defaulted so a v1 project (no v2 properties) still produces a coherent shape
+// without these fields surfacing.
+const readV2Settings = (v) => {
+  const kind = getVal(v, 'kind') || 'v1';
+  if (kind !== 'v2') return { kind };
+  const rawVersion = getVal(v, 'workflow_version');
+  return {
+    kind,
+    workflowId: getVal(v, 'workflow_id') || DEFAULT_V2_WORKFLOW_ID,
+    workflowVersion: rawVersion ? Number(rawVersion) : null,
+    parkReleaseSeconds: Number(getVal(v, 'park_release_seconds') || DEFAULT_PARK_RELEASE_SECONDS),
+    // `|| default` would coerce a stored "0" back to the default — 0 is a
+    // meaningful value here (unbounded), so read it explicitly.
+    maxParallelUnits:
+      getVal(v, 'max_parallel_units') === undefined || getVal(v, 'max_parallel_units') === ''
+        ? DEFAULT_MAX_PARALLEL_UNITS
+        : Number(getVal(v, 'max_parallel_units')),
+    // Missing means a pre-inheritance project. Preserve its former explicit
+    // intent-pr behavior instead of silently changing it with the platform.
+    prStrategy:
+      normalizeProjectPrStrategy(getVal(v, 'pr_strategy'), { legacyDefault: true }) ||
+      DEFAULT_PR_STRATEGY,
+    stageSkipping: getVal(v, 'stage_skipping') || DEFAULT_STAGE_SKIPPING,
+  };
+};
 
 const buildLegacyBinding = (project) => ({
   id: LEGACY_GITHUB_BINDING_ID,
@@ -146,10 +287,8 @@ const REPO_URL_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}\/[a-zA-Z0-9][a-zA-Z0-9.
 
 // The legacy `gitRepo` field is historically a freeform string (bare names,
 // SSH URLs). We can't tighten it to owner/repo without breaking that contract,
-// but it still gets interpolated into `git clone "https://.../${url}.git"` in
-// the pool-worker. The shell/traversal-safe guard lives in shared/ so it can't
-// drift from the agents lambda's read-path copy (esbuild bundles ../shared).
-const { isSafeRepo } = require('../shared/repo-validation');
+// but it still flows into the v2 workspace `git clone`. The shell/traversal-safe
+// guard lives in shared/ so it can't drift (esbuild bundles ../shared).
 
 // Canonical repository role + provider vocabularies. Keep in sync with
 // `RepoRole` and `ProjectRepo.provider` in frontend/src/services/projects.ts.
@@ -196,7 +335,7 @@ const guessRole = (url) => {
 const ensureLegacyRepoMigrated = async (g, projectId, legacyGitRepo) => {
   if (!legacyGitRepo) return;
   // Defense-in-depth: this is the final gate before a value becomes a cloneable
-  // Repository vertex (and flows into the pool-worker's git clone execSync).
+  // Repository vertex (and flows into the v2 workspace's git clone).
   // Legacy git_repo is freeform, so we only enforce shell-safety here (not strict
   // owner/repo). Skip (don't throw) on a dangerous value — this runs on read paths
   // and must not break GETs of old projects.
@@ -331,17 +470,36 @@ function detectRoleFromContents(fileNames, dirNames, frameworks) {
   return null;
 }
 
-// Resolve a user's git access token for a given provider, for the optional
-// repo stack-detection below. Reads the connection row via the shared store
-// (composite key, with legacy migrate-on-read) and the token from SSM. Returns
-// null when the user has no connection for that provider — detection is
-// best-effort, so callers treat null as "skip detection".
-const getUserGitToken = async (userId, provider) => {
-  if (!userId || !provider) return null;
+// Resolve a git access token for a given provider, for the optional repo
+// stack-detection below. GitHub dispatches on the platform auth mode (see
+// shared/github-auth-config.js): app mode mints a repo-scoped contents:read
+// installation token; oauth mode reads the user's connection row + SSM token.
+// Returns null when no credential is available — detection is best-effort,
+// so callers treat null as "skip detection".
+const getUserGitToken = async (userId, provider, repoSlug = null) => {
+  if (!provider) return null;
+  if (provider === 'github') {
+    try {
+      const { token } = await resolveGitHubTokenForMode(
+        { ssm, secrets, ddb },
+        {
+          userId,
+          repositories: repoSlug ? [repoSlug] : [],
+          permissions: { contents: 'read' },
+        },
+      );
+      return token || null;
+    } catch {
+      return null;
+    }
+  }
+  if (!userId) return null;
   try {
     const item = await getGitConnection(ddb, userId, provider);
     if (!item?.parameterName) return null;
-    return await resolveGitToken(ssm, item);
+    // Refresh GitLab OAuth tokens just-in-time (they live ~2h); passthrough for
+    // other providers. Keeps detection working even if the stored token expired.
+    return await ensureFreshGitToken({ ssm, secrets, ddb, item, gitProvider: provider });
   } catch {
     return null;
   }
@@ -423,6 +581,398 @@ async function detectRepoStack(repoUrl, token, providerId = 'github') {
 
   return { languages: langArr, frameworks: fwArr, role, summary };
 }
+
+// ---------------------------------------------------------------------------
+// Project-level custom MCP servers: GET/PUT /projects/{projectId}/custom-mcp-servers
+// Stored as a JSON string on the Project vertex `custom_mcp_servers` property
+// (the app's name-keyed author shape: { "<name>": {…} }; the runtime transforms
+// it per CLI). Merged with the global tier at intent-create.
+// ---------------------------------------------------------------------------
+
+const MAX_CUSTOM_RULES = 20;
+// Max bytes per custom-rule body. Enforced here on commit (via HeadObject) AND
+// again at runtime (agentcore/custom-rules.js MAX_RULE_BYTES) AND in the browser
+// (CustomRulesSection.tsx MAX_FILE_SIZE) — keep the three in sync.
+const MAX_CUSTOM_RULE_BYTES = 100 * 1024;
+
+const handleProjectCustomMcpServers = async (
+  g,
+  response,
+  httpMethod,
+  projectId,
+  userId,
+  body,
+  requestPath = '',
+) => {
+  if (!userId) return response(401, { error: 'Unauthorized' });
+
+  // The config may carry secrets in env/headers, so the RAW config (and the
+  // secrets sub-route) stays owner/admin-only. Plain members may read the
+  // derived server NAMES only (GET on the main route) — see below.
+  const role = await fetchMembershipRole(g, projectId, userId);
+  if (!role) return response(403, { error: 'Access denied' });
+  const canEdit = role === 'owner' || role === 'admin';
+
+  // Sub-route: /custom-mcp-servers/secrets — per-var SecureString CRUD under the
+  // project's SSM prefix. GET returns set-state only; PUT rotates/clears.
+  // Owner/admin only (never exposed to members).
+  if (/\/custom-mcp-servers\/secrets(\/|$)/.test(requestPath)) {
+    if (!canEdit) {
+      return response(403, { error: 'Only project owners and admins can access MCP secrets' });
+    }
+    const base = mcpSecretsPrefix();
+    if (!base) return response(500, { error: 'MCP secret store not configured' });
+    if (httpMethod === 'GET') {
+      try {
+        const { set } = await listMcpSecrets(ssm, { base, projectId });
+        return response(200, { mcpSecretsSet: set });
+      } catch (e) {
+        console.error('[project mcp-secrets] list failed:', e.message);
+        return response(500, { error: 'Failed to list MCP secrets' });
+      }
+    }
+    if (httpMethod === 'PUT') {
+      let data;
+      try {
+        data = JSON.parse(body || '{}');
+      } catch {
+        return response(400, { error: 'Invalid JSON body' });
+      }
+      const secretsMap = data.mcpSecrets;
+      if (secretsMap === null || typeof secretsMap !== 'object' || Array.isArray(secretsMap)) {
+        return response(400, { error: 'mcpSecrets must be an object of { VAR: value }' });
+      }
+      try {
+        const { errors } = await putMcpSecrets(ssm, { base, projectId, secrets: secretsMap });
+        if (errors.length) return response(400, { error: errors.join('; ') });
+        return response(200, { saved: true });
+      } catch (e) {
+        console.error('[project mcp-secrets] write failed:', e.message);
+        return response(500, { error: 'Failed to write MCP secrets' });
+      }
+    }
+    return response(405, { error: 'Method not allowed' });
+  }
+
+  if (httpMethod === 'GET') {
+    const result = await g
+      .V()
+      .has('Project', 'id', projectId)
+      .valueMap('custom_mcp_servers')
+      .next();
+    const raw = result.value ? getVal(result.value, 'custom_mcp_servers') : '{}';
+    // Members get the server NAMES only — never the raw config, which may carry
+    // inline secrets or internal endpoints. Owners/admins get the full JSON.
+    if (!canEdit) {
+      let names = [];
+      try {
+        const parsed = JSON.parse(raw || '{}');
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          names = Object.keys(parsed);
+        }
+      } catch {
+        names = [];
+      }
+      return response(200, { mcpServerNames: names });
+    }
+    return response(200, { customMcpServers: raw || '{}' });
+  }
+
+  if (httpMethod === 'PUT') {
+    if (!canEdit) {
+      return response(403, { error: 'Only project owners and admins can modify MCP servers' });
+    }
+    let data;
+    try {
+      data = JSON.parse(body || '{}');
+    } catch {
+      return response(400, { error: 'Invalid JSON body' });
+    }
+    const mcpServersJson =
+      typeof data.customMcpServers === 'string'
+        ? data.customMcpServers
+        : JSON.stringify(data.customMcpServers ?? {});
+    const validation = validateMcpServersJson(mcpServersJson || '{}');
+    if (!validation.valid) {
+      return response(400, {
+        error: 'Invalid MCP servers configuration',
+        issues: validation.issues,
+      });
+    }
+    // Save-time cross-tier collision check (authoritative server-side guard; the
+    // client also does this for fast feedback). The child env is one flat
+    // namespace, so a `${VAR}` name used by a SURVIVING global server (one the
+    // project does NOT override by name) and this project config cannot coexist.
+    const collision = await checkCrossTierRefCollision(projectId, mcpServersJson);
+    if (collision) {
+      return response(400, { error: collision });
+    }
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .property(cardinality.single, 'custom_mcp_servers', mcpServersJson || '{}')
+      .next();
+    return response(200, { saved: true });
+  }
+
+  return response(405, { error: 'Method not allowed' });
+};
+
+// The SSM base prefix for this deployment (`/{project}/{env}`), from which the
+// project mcp-secrets bag is derived. Empty string when unconfigured.
+const mcpSecretsPrefix = () => process.env.MCP_SECRETS_SSM_PREFIX || '';
+
+// Read the Admin GLOBAL custom MCP config from SSM as a parsed object (refs-only).
+// The global config is written by the agents lambda under AGENT_SETTINGS_SSM_PREFIX.
+// Best-effort: any failure yields {}.
+const fetchGlobalMcpConfig = async () => {
+  const prefix = process.env.AGENT_SETTINGS_SSM_PREFIX || '';
+  if (!prefix) return {};
+  try {
+    const res = await ssm.send(
+      new GetParameterCommand({ Name: `${prefix}/custom-mcp-servers`, WithDecryption: true }),
+    );
+    const parsed = JSON.parse(res.Parameter?.Value || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+// Return an error message if the project config's `${VAR}` names collide with a
+// SURVIVING global server's refs (a global server the project does NOT override
+// by name), else null. Mirrors the runtime's flat-env collision guard so a bad
+// save is rejected at authoring time.
+const checkCrossTierRefCollision = async (projectId, projectJson) => {
+  let projectMap = {};
+  try {
+    const p = JSON.parse(projectJson || '{}');
+    if (p && typeof p === 'object' && !Array.isArray(p)) projectMap = p;
+  } catch {
+    return null; // validation already caught this
+  }
+  const globalMap = await fetchGlobalMcpConfig();
+  // Surviving global servers = global entries the project does NOT override.
+  const survivingGlobal = {};
+  for (const [name, server] of Object.entries(globalMap)) {
+    if (!(name in projectMap)) survivingGlobal[name] = server;
+  }
+  const globalRefs = extractSecretRefs(survivingGlobal).refs;
+  const projectRefs = extractSecretRefs(projectMap).refs;
+  for (const name of projectRefs) {
+    if (globalRefs.has(name)) {
+      // Name the platform server using the ref, if we can find one.
+      const owner = Object.keys(survivingGlobal).find((n) =>
+        extractSecretRefs({ [n]: survivingGlobal[n] }).refs.has(name),
+      );
+      return (
+        `\`\${${name}}\` is already used by the platform-wide server ` +
+        `\`${owner ?? 'unknown'}\` — rename your variable or override server ` +
+        `\`${owner ?? name}\` by name.`
+      );
+    }
+  }
+  return null;
+};
+
+// ---------------------------------------------------------------------------
+// Project-level custom agent rules: GET/PUT /projects/{projectId}/custom-rules
+// Metadata (filename + s3Key) lives on the Project vertex `custom_rules`
+// property; the .md bodies live in S3 under custom-rules/{projectId}/. GET
+// returns presigned download URLs; PUT returns presigned upload URLs.
+// ---------------------------------------------------------------------------
+
+// Permanently purge an S3 object INCLUDING all noncurrent versions — the
+// artifacts bucket is versioned with no noncurrent-version expiry, so a plain
+// DeleteObject would only add a delete marker and leave the body retrievable.
+// Best-effort: logs and swallows errors (a delete must never fail the commit).
+const purgeS3Object = async (s3, bucket, key) => {
+  try {
+    const versions = await s3.send(new ListObjectVersionsCommand({ Bucket: bucket, Prefix: key }));
+    // Prefix is not an exact match — keep only the entries for THIS exact key.
+    const objects = [...(versions.Versions ?? []), ...(versions.DeleteMarkers ?? [])]
+      .filter((v) => v.Key === key)
+      .map((v) => ({ Key: v.Key, VersionId: v.VersionId }));
+    if (objects.length === 0) return;
+    await s3.send(new DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: objects } }));
+  } catch (err) {
+    console.error(`[projects] Failed to purge S3 object ${key}:`, err.message);
+  }
+};
+
+const handleProjectCustomRules = async (g, response, httpMethod, projectId, userId, body) => {
+  if (!userId) return response(401, { error: 'Unauthorized' });
+
+  // Read (GET) is open to any project member so they can see which steering
+  // docs the agent runs with; write (PUT) stays owner/admin-only. Members get
+  // filenames only — no presigned download URL is minted for them (below).
+  const role = await fetchMembershipRole(g, projectId, userId);
+  if (!role) return response(403, { error: 'Access denied' });
+  const canEdit = role === 'owner' || role === 'admin';
+  if (httpMethod === 'PUT' && !canEdit) {
+    return response(403, { error: 'Only project owners and admins can modify custom rules' });
+  }
+
+  const artifactsBucket = process.env.ARTIFACTS_BUCKET;
+  const region = process.env.AWS_REGION || 'us-east-1';
+  const s3 = new S3Client({ region });
+
+  if (httpMethod === 'GET') {
+    const result = await g.V().has('Project', 'id', projectId).valueMap('custom_rules').next();
+    const raw = result.value ? getVal(result.value, 'custom_rules') : '[]';
+    let docs = [];
+    try {
+      docs = JSON.parse(raw || '[]');
+    } catch {
+      docs = [];
+    }
+
+    const docsWithUrls = await Promise.all(
+      docs.map(async (doc) => {
+        // Members see the filename only — never a presigned download URL, so
+        // the doc body stays owner/admin-only even if the UI leaked a button.
+        if (!canEdit) return { filename: doc.filename };
+        if (!doc.s3Key || !artifactsBucket) return doc;
+        try {
+          const downloadUrl = await getSignedUrl(
+            s3,
+            new GetObjectCommand({ Bucket: artifactsBucket, Key: doc.s3Key }),
+            { expiresIn: 3600 },
+          );
+          return { ...doc, downloadUrl };
+        } catch {
+          return doc;
+        }
+      }),
+    );
+
+    return response(200, { customRules: docsWithUrls });
+  }
+
+  if (httpMethod === 'PUT') {
+    let data;
+    try {
+      data = JSON.parse(body || '{}');
+    } catch {
+      return response(400, { error: 'Invalid JSON body' });
+    }
+    const incomingDocs = Array.isArray(data.customRules) ? data.customRules : [];
+    // Two-phase to avoid persisting metadata for an object that never uploaded:
+    //   mode 'presign' — return upload URLs, DO NOT persist (default when the
+    //                    client is about to upload new files)
+    //   mode 'commit'  — persist the final set (after the browser confirms the
+    //                    uploads succeeded), and for deletes. No upload URLs.
+    const mode = data.mode === 'commit' ? 'commit' : 'presign';
+
+    if (!artifactsBucket) {
+      return response(500, { error: 'ARTIFACTS_BUCKET env var not configured' });
+    }
+    if (incomingDocs.length > MAX_CUSTOM_RULES) {
+      return response(400, { error: `Maximum ${MAX_CUSTOM_RULES} custom rules per project` });
+    }
+
+    // Validate filenames + compute S3 keys once (shared by both modes).
+    const docs = [];
+    for (const doc of incomingDocs) {
+      const filename = doc.filename || '';
+      const safeBase = nodePath.basename(filename);
+      if (!safeBase || safeBase !== filename || !safeBase.toLowerCase().endsWith('.md')) {
+        return response(400, {
+          error: `Invalid filename "${filename}". Must end in .md and contain no path separators.`,
+        });
+      }
+      docs.push({ filename: safeBase, s3Key: `custom-rules/${projectId}/${safeBase}` });
+    }
+
+    if (mode === 'presign') {
+      // Mint upload URLs only — the client uploads, then calls back with
+      // mode:'commit' to persist the set that actually landed in S3.
+      const uploadUrls = [];
+      for (const doc of docs) {
+        try {
+          const uploadUrl = await getSignedUrl(
+            s3,
+            new PutObjectCommand({
+              Bucket: artifactsBucket,
+              Key: doc.s3Key,
+              ContentType: 'text/markdown',
+            }),
+            { expiresIn: 3600 },
+          );
+          uploadUrls.push({ filename: doc.filename, s3Key: doc.s3Key, uploadUrl });
+        } catch (err) {
+          console.error(
+            `[projects] Failed to generate presigned URL for ${doc.s3Key}:`,
+            err.message,
+          );
+        }
+      }
+      return response(200, { uploadUrls });
+    }
+
+    // mode 'commit' — persist the confirmed metadata to Neptune, then purge the
+    // S3 objects for any keys that were removed (delete / replace-to-fewer) so a
+    // "deleted" rule is actually gone, not just unlinked (bucket is versioned).
+    //
+    // Validate each committed object in S3 first (same HeadObject serves both):
+    //   - it must exist — the two-phase flow assumes the client uploaded between
+    //     presign and commit; a direct API caller could commit a filename it
+    //     never uploaded, leaving dangling metadata whose GET hands out download
+    //     URLs for missing objects.
+    //   - it must be within the size cap — the browser enforces 100 KB, but a
+    //     direct PUT has no size constraint; reject here so an oversized object
+    //     is never persisted (the runtime would otherwise silently skip it).
+    const checks = await Promise.all(
+      docs.map(async (doc) => {
+        try {
+          const head = await s3.send(
+            new HeadObjectCommand({ Bucket: artifactsBucket, Key: doc.s3Key }),
+          );
+          return { doc, exists: true, size: head.ContentLength ?? 0 };
+        } catch {
+          return { doc, exists: false, size: 0 };
+        }
+      }),
+    );
+    const missingDocs = checks.filter((c) => !c.exists).map((c) => c.doc.filename);
+    if (missingDocs.length > 0) {
+      return response(400, {
+        error: `No uploaded object found for: ${missingDocs.join(', ')}. Upload the file(s) before committing.`,
+      });
+    }
+    const oversizedDocs = checks
+      .filter((c) => c.size > MAX_CUSTOM_RULE_BYTES)
+      .map((c) => c.doc.filename);
+    if (oversizedDocs.length > 0) {
+      return response(400, {
+        error: `File(s) exceed the ${MAX_CUSTOM_RULE_BYTES / 1024} KB limit: ${oversizedDocs.join(', ')}.`,
+      });
+    }
+
+    const prevRes = await g.V().has('Project', 'id', projectId).valueMap('custom_rules').next();
+    let prevKeys = [];
+    try {
+      const prevRaw = prevRes.value ? getVal(prevRes.value, 'custom_rules') : '[]';
+      prevKeys = (JSON.parse(prevRaw || '[]') || []).map((d) => d.s3Key).filter(Boolean);
+    } catch {
+      prevKeys = [];
+    }
+
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .property(cardinality.single, 'custom_rules', JSON.stringify(docs))
+      .next();
+
+    const keptKeys = new Set(docs.map((d) => d.s3Key));
+    const removed = prevKeys.filter((k) => !keptKeys.has(k));
+    await Promise.all(removed.map((key) => purgeS3Object(s3, artifactsBucket, key)));
+
+    return response(200, { saved: true });
+  }
+
+  return response(405, { error: 'Method not allowed' });
+};
 
 // ---------------------------------------------------------------------------
 // Route: /projects/{projectId}/repos
@@ -539,7 +1089,7 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
     // Run quick detection (non-blocking — failures are non-fatal). Detection
     // runs against the repo's own provider so GitLab repos are detected too.
     const detectionProvider = data.provider || 'github';
-    const token = await getUserGitToken(userId, detectionProvider);
+    const token = await getUserGitToken(userId, detectionProvider, data.url);
     let detection = { languages: [], frameworks: [], role: guessRole(data.url), summary: '' };
     if (token) {
       try {
@@ -663,12 +1213,12 @@ export const handler = async (event) => {
     // the Admin page's "Tracker Migration" card. Implemented as a dry-run
     // of the same shared core that the per-project endpoint and the bulk
     // CLI lambda use, so the three paths cannot drift. See parent issue
-    // #194 phase #198. Authenticated-only — matches the existing posture
-    // for admin-config endpoints in this repo (see `/agents/settings` and
-    // `/trackers/providers/{p}/oauth-config`); tightening admin gating is
-    // a separate, repo-wide hardening pass.
+    // #194 phase #198. Restricted to the Cognito `platform-admin` group
+    // (see shared/authz.js).
     if (isAdminMigrationStatus) {
       if (!userId) return response(401, { error: 'Unauthorized' });
+      const denied = requirePlatformAdmin(event);
+      if (denied) return response(denied.statusCode, { error: denied.error, code: denied.code });
       const result = await runTrackerMigration(g, { dryRun: true });
       return response(200, result);
     }
@@ -676,9 +1226,11 @@ export const handler = async (event) => {
     // POST /admin/tracker-migration — operator-facing bulk migration
     // trigger. Same effect as `aws lambda invoke ... migrate-tracker-fields`,
     // exposed through the API so operators don't need shell access. Body
-    // `{ dryRun?: boolean }`. Idempotent.
+    // `{ dryRun?: boolean }`. Idempotent. Platform-admin only.
     if (isAdminMigrationRun) {
       if (!userId) return response(401, { error: 'Unauthorized' });
+      const denied = requirePlatformAdmin(event);
+      if (denied) return response(denied.statusCode, { error: denied.error, code: denied.code });
       let dryRun = false;
       if (body) {
         try {
@@ -691,24 +1243,27 @@ export const handler = async (event) => {
       return response(200, result);
     }
 
-    // ---------------------------------------------------------------------------
-    // Sub-resource routing: /projects/{projectId}/mcp-servers
-    //                       /projects/{projectId}/steering-docs
-    // Detected by examining event.path since each sub-resource has its own
-    // API Gateway resource that maps to this Lambda.
-    // ---------------------------------------------------------------------------
-    const requestPath = event.path || '';
-    if (projectId && requestPath.endsWith('/mcp-servers')) {
-      return await handleProjectMcpServers(g, response, httpMethod, projectId, userId, body);
-    }
-    if (projectId && requestPath.endsWith('/steering-docs')) {
-      return await handleProjectSteeringDocs(g, response, httpMethod, projectId, userId, body);
-    }
-
     // Route: /projects/{projectId}/repos
+    const requestPath = event.path || '';
     if (projectId && /\/repos(\/|$)/.test(requestPath)) {
       if (!userId) return response(401, { error: 'Unauthorized' });
       return await handleReposRoute(g, response, event, projectId, userId);
+    }
+    // Route: /projects/{projectId}/custom-mcp-servers (and .../secrets)
+    if (projectId && /\/custom-mcp-servers(\/|$)/.test(requestPath)) {
+      return await handleProjectCustomMcpServers(
+        g,
+        response,
+        httpMethod,
+        projectId,
+        userId,
+        body,
+        requestPath,
+      );
+    }
+    // Route: /projects/{projectId}/custom-rules
+    if (projectId && /\/custom-rules(\/|$)/.test(requestPath)) {
+      return await handleProjectCustomRules(g, response, httpMethod, projectId, userId, body);
     }
 
     switch (httpMethod) {
@@ -751,11 +1306,15 @@ export const handler = async (event) => {
             gitRepo: derivePrimaryRepo(repos, legacyGitRepo),
             agentCli: getVal(v, 'agent_cli') || 'kiro',
             cliModels: parseCliModels(getVal(v, 'cli_models')),
+            tierModels: parseTierModels(getVal(v, 'tier_models')),
             issueIntegrationEnabled: getVal(v, 'issue_integration_enabled') === 'true',
             createdAt: getVal(v, 'created_at') || new Date().toISOString(),
+            // Legacy projects created before updated_at existed fall back to created_at.
+            updatedAt: getVal(v, 'updated_at') || getVal(v, 'created_at') || null,
             userRole: role || 'member',
             trackers: trackerMaps.map(mapBinding),
             repos,
+            ...readV2Settings(v),
           };
           return response(200, withLegacyTracker(project));
         }
@@ -798,11 +1357,15 @@ export const handler = async (event) => {
               gitRepo: derivePrimaryRepo(repos, legacyGitRepo),
               agentCli: getVal(v, 'agent_cli') || 'kiro',
               cliModels: parseCliModels(getVal(v, 'cli_models')),
+              tierModels: parseTierModels(getVal(v, 'tier_models')),
               issueIntegrationEnabled: getVal(v, 'issue_integration_enabled') === 'true',
               createdAt: getVal(v, 'created_at') || new Date().toISOString(),
+              // Legacy projects created before updated_at existed fall back to created_at.
+              updatedAt: getVal(v, 'updated_at') || getVal(v, 'created_at') || null,
               userRole: role || 'member',
               trackers: trackerMaps.map(mapBinding),
               repos,
+              ...readV2Settings(v),
             });
           }),
         );
@@ -825,8 +1388,8 @@ export const handler = async (event) => {
         const createdAt = new Date().toISOString();
 
         // Support both legacy `gitRepo` (string) and new `repos` (array) input.
-        // SECURITY: repo urls are interpolated into a shell `git clone` in the
-        // pool-worker. The multi-repo `repos[]` entries are real clone targets,
+        // SECURITY: repo urls become `git clone` targets in the v2 workspace.
+        // The multi-repo `repos[]` entries are real clone targets,
         // so they must be strict owner/repo. The legacy `gitRepo` string stays
         // freeform but must be shell-safe (no injection chars).
         if (data.repos !== undefined && !Array.isArray(data.repos)) {
@@ -868,9 +1431,49 @@ export const handler = async (event) => {
           });
         }
         const cliModels = cliModelsValidation.value;
+        // Per-project tier-model overrides (shared/tier-models.js): merged OVER
+        // the Admin global tier config at intent create (project wins per row
+        // per CLI).
+        const tierModelsValidation = normalizeTierModels(data.tierModels);
+        if (!tierModelsValidation.valid) {
+          return response(400, {
+            error: 'Invalid tierModels configuration',
+            issues: tierModelsValidation.issues,
+          });
+        }
+        const tierModels = tierModelsValidation.value;
+
+        // v2 is the only supported project kind: reject explicit v1 creation,
+        // and treat an omitted kind as v2. Existing pre-freeze v1 projects are
+        // read-only (their execution runtime was deleted).
+        if (data.kind === 'v1') {
+          return response(400, {
+            error: 'v1 projects can no longer be created; v2 is the only supported project kind',
+          });
+        }
+        const kind = 'v2';
+        const parkValidation = normalizeParkReleaseSeconds(data.parkReleaseSeconds);
+        if (!parkValidation.valid) return response(400, { error: parkValidation.error });
+        const parallelValidation = normalizeMaxParallelUnits(data.maxParallelUnits);
+        if (!parallelValidation.valid) return response(400, { error: parallelValidation.error });
+        const prValidation = normalizePrStrategy(data.prStrategy);
+        if (!prValidation.valid) return response(400, { error: prValidation.error });
+        const skipValidation = normalizeStageSkipping(data.stageSkipping);
+        if (!skipValidation.valid) return response(400, { error: skipValidation.error });
+        const v2Settings = {
+          kind,
+          workflowId: data.workflowId || DEFAULT_V2_WORKFLOW_ID,
+          // Empty pin = "resolve latest at intent create" (left to the intents API).
+          workflowVersion: Number.isInteger(data.workflowVersion) ? data.workflowVersion : null,
+          // Scope is NOT a project property — it is chosen per-intent.
+          parkReleaseSeconds: parkValidation.value,
+          maxParallelUnits: parallelValidation.value,
+          prStrategy: prValidation.value,
+          stageSkipping: skipValidation.value,
+        };
 
         // Create the project vertex with creator tracking
-        await g
+        const createV = g
           .addV('Project')
           .property('id', id)
           .property('name', data.name)
@@ -878,10 +1481,22 @@ export const handler = async (event) => {
           .property('git_repo', primaryUrl)
           .property('agent_cli', data.agentCli || 'kiro')
           .property('cli_models', JSON.stringify(cliModels))
+          .property('tier_models', JSON.stringify(tierModels))
           .property('issue_integration_enabled', issueIntegrationEnabled ? 'true' : 'false')
+          .property('kind', kind)
           .property('created_by', userId)
           .property('created_at', createdAt)
-          .next();
+          .property('updated_at', createdAt)
+          .property('workflow_id', v2Settings.workflowId)
+          .property(
+            'workflow_version',
+            v2Settings.workflowVersion == null ? '' : String(v2Settings.workflowVersion),
+          )
+          .property('park_release_seconds', String(v2Settings.parkReleaseSeconds))
+          .property('max_parallel_units', String(v2Settings.maxParallelUnits))
+          .property('pr_strategy', v2Settings.prStrategy)
+          .property('stage_skipping', v2Settings.stageSkipping);
+        await createV.next();
 
         // Create Repository vertices and HAS_REPO edges. Normalize so at most
         // one repo keeps the `primary` role: `primaryUrl` is the canonical
@@ -942,9 +1557,12 @@ export const handler = async (event) => {
           gitRepo: primaryUrl,
           agentCli: data.agentCli || 'kiro',
           cliModels,
+          tierModels,
           issueIntegrationEnabled,
           createdAt,
+          updatedAt: createdAt,
           repos: reposOut,
+          ...v2Settings,
         });
       }
 
@@ -1024,6 +1642,22 @@ export const handler = async (event) => {
             .property(cardinality.single, 'cli_models', JSON.stringify(normalizedCliModels))
             .next();
         }
+        let normalizedTierModels;
+        if (data.tierModels !== undefined) {
+          const validation = normalizeTierModels(data.tierModels);
+          if (!validation.valid) {
+            return response(400, {
+              error: 'Invalid tierModels configuration',
+              issues: validation.issues,
+            });
+          }
+          normalizedTierModels = validation.value;
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .property(cardinality.single, 'tier_models', JSON.stringify(normalizedTierModels))
+            .next();
+        }
         if (data.issueIntegrationEnabled !== undefined) {
           const vertex = g.V().has('Project', 'id', projectId);
           await vertex
@@ -1034,10 +1668,101 @@ export const handler = async (event) => {
             )
             .next();
         }
+        // v2 settings — owner/admin tunable. Only meaningful for v2 projects;
+        // writing them on a v1 project is harmless (readV2Settings ignores them).
+        let normalizedParkReleaseSeconds;
+        if (data.parkReleaseSeconds !== undefined) {
+          const parkValidation = normalizeParkReleaseSeconds(data.parkReleaseSeconds);
+          if (!parkValidation.valid) return response(400, { error: parkValidation.error });
+          normalizedParkReleaseSeconds = parkValidation.value;
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .property(
+              cardinality.single,
+              'park_release_seconds',
+              String(normalizedParkReleaseSeconds),
+            )
+            .next();
+        }
+        // Concurrency cap for parallel unit lanes (docs/v2-parallel.md WP5).
+        let normalizedMaxParallelUnits;
+        if (data.maxParallelUnits !== undefined) {
+          const parallelValidation = normalizeMaxParallelUnits(data.maxParallelUnits);
+          if (!parallelValidation.valid) return response(400, { error: parallelValidation.error });
+          normalizedMaxParallelUnits = parallelValidation.value;
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .property(cardinality.single, 'max_parallel_units', String(normalizedMaxParallelUnits))
+            .next();
+        }
+        // PR delivery strategy: explicit override or platform inheritance.
+        let normalizedPrStrategy;
+        if (data.prStrategy !== undefined) {
+          const prValidation = normalizePrStrategy(data.prStrategy);
+          if (!prValidation.valid) return response(400, { error: prValidation.error });
+          normalizedPrStrategy = prValidation.value;
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .property(cardinality.single, 'pr_strategy', normalizedPrStrategy)
+            .next();
+        }
+        // Per-project stage-skipping override (shared/stage-skip.js).
+        let normalizedStageSkipping;
+        if (data.stageSkipping !== undefined) {
+          const skipValidation = normalizeStageSkipping(data.stageSkipping);
+          if (!skipValidation.valid) return response(400, { error: skipValidation.error });
+          normalizedStageSkipping = skipValidation.value;
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .property(cardinality.single, 'stage_skipping', normalizedStageSkipping)
+            .next();
+        }
+        if (data.workflowId !== undefined) {
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .property(cardinality.single, 'workflow_id', data.workflowId || DEFAULT_V2_WORKFLOW_ID)
+            .next();
+        }
+        if (data.workflowVersion !== undefined) {
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .property(
+              cardinality.single,
+              'workflow_version',
+              Number.isInteger(data.workflowVersion) ? String(data.workflowVersion) : '',
+            )
+            .next();
+        }
+        // Stamp updated_at on every successful settings change so lists can
+        // sort by recency.
+        const updatedAt = new Date().toISOString();
+        await g
+          .V()
+          .has('Project', 'id', projectId)
+          .property(cardinality.single, 'updated_at', updatedAt)
+          .next();
         return response(200, {
           id: projectId,
           ...data,
+          updatedAt,
           ...(normalizedCliModels !== undefined ? { cliModels: normalizedCliModels } : {}),
+          ...(normalizedTierModels !== undefined ? { tierModels: normalizedTierModels } : {}),
+          ...(normalizedParkReleaseSeconds !== undefined
+            ? { parkReleaseSeconds: normalizedParkReleaseSeconds }
+            : {}),
+          ...(normalizedMaxParallelUnits !== undefined
+            ? { maxParallelUnits: normalizedMaxParallelUnits }
+            : {}),
+          ...(normalizedPrStrategy !== undefined ? { prStrategy: normalizedPrStrategy } : {}),
+          ...(normalizedStageSkipping !== undefined
+            ? { stageSkipping: normalizedStageSkipping }
+            : {}),
         });
       }
 
@@ -1055,19 +1780,83 @@ export const handler = async (event) => {
           .hasNext();
         if (!canDelete) return response(403, { error: 'Only project owners can delete projects' });
 
-        // Drop associated Repository vertices first. drop() on an empty
-        // traversal is a no-op, so a rejection here is a real error — let it
-        // propagate to the handler-level catch instead of being swallowed.
-        await g
-          .V()
-          .has('Project', 'id', projectId)
-          .out('HAS_REPO')
-          .hasLabel('Repository')
-          .drop()
-          .next();
+        // Full cascade. A project owns many intents; each intent owns an entire
+        // EXEC#<id> DynamoDB partition (META, stages, events, gates, METRIC#,
+        // outputs, sensors, steering, units), intent-scoped Yjs realtime docs,
+        // and a Neptune subgraph. Dropping only the Project vertex (the old
+        // behavior) orphaned ALL of that — a permanent leak since the process
+        // table has no TTL. So we delete every child intent with the SAME
+        // hardened, intent_id-guarded cascade the intents lambda uses
+        // (force:true — a RUNNING intent is retired + its session stopped, then
+        // deleted; project delete is an owner-level teardown, not a per-intent
+        // guard). Ordering mirrors the intent cascade: child data first, the
+        // Project vertex LAST, so a partial failure leaves the project listed
+        // and the delete is simply retryable.
+        {
+          const actor = userEmail || userId;
+          const execs = await store.listProjectExecutions({ projectId, limit: 1000 });
+          const failures = [];
+          for (const execMeta of execs) {
+            const intentId = execMeta.intentId ?? execMeta.executionId;
+            try {
+              await deleteIntentCascade({
+                g,
+                store,
+                ddb,
+                agentcore,
+                lambdaClient,
+                intentId,
+                meta: execMeta,
+                yjsTable: process.env.YJS_DOCUMENTS_TABLE,
+                agentcoreRuntimeArn: process.env.AGENTCORE_RUNTIME_ARN || '',
+                actor,
+                force: true,
+              });
+            } catch (err) {
+              console.error(`Project delete: intent ${intentId} cascade failed:`, err.message);
+              failures.push(intentId);
+            }
+          }
+          // If any intent failed to purge, stop BEFORE dropping the project
+          // vertex so the project (and its remaining intents) stay listed and
+          // the whole delete can be re-run.
+          if (failures.length) {
+            return response(500, {
+              error: `Failed to delete ${failures.length} of ${execs.length} intent(s); project not removed. Retry the delete.`,
+              intents: failures,
+            });
+          }
 
-        await g.V().has('Project', 'id', projectId).drop().next();
-        return response(204, {});
+          // Project-scoped Neptune vertices the per-intent cascade deliberately
+          // spares (they are cross-intent by design): the team knowledge corpus
+          // and learning-rule guardrails anchored on the Project
+          // (graph-writer.js HAS_KNOWLEDGE / HAS_LEARNING).
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .out('HAS_KNOWLEDGE', 'HAS_LEARNING')
+            .drop()
+            .next();
+
+          // Associated Repository vertices. drop() on an empty traversal is a
+          // no-op, so a rejection here is a real error — let it propagate to the
+          // handler-level catch instead of being swallowed.
+          await g
+            .V()
+            .has('Project', 'id', projectId)
+            .out('HAS_REPO')
+            .hasLabel('Repository')
+            .drop()
+            .next();
+
+          // The Project vertex itself LAST (its HAS_MEMBER / HAS_TRACKER edges
+          // drop with it).
+          await g.V().has('Project', 'id', projectId).drop().next();
+          console.log(
+            `Project ${projectId} deleted by ${actor} (${execs.length} intent(s) purged)`,
+          );
+          return response(204, {});
+        }
 
       default:
         return response(405, { error: 'Method not allowed' });
@@ -1089,172 +1878,3 @@ export const handler = async (event) => {
     }
   }
 };
-
-// ---------------------------------------------------------------------------
-// Project-level MCP servers: GET/PUT /projects/{projectId}/mcp-servers
-// ---------------------------------------------------------------------------
-
-async function handleProjectMcpServers(g, response, httpMethod, projectId, userId, body) {
-  if (!userId) return response(401, { error: 'Unauthorized' });
-
-  // Verify user is a project member
-  const memberEdges = await g
-    .V()
-    .has('Project', 'id', projectId)
-    .outE('HAS_MEMBER')
-    .as('e')
-    .inV()
-    .has('User', 'id', userId)
-    .select('e')
-    .by(__.valueMap())
-    .toList();
-  if (memberEdges.length === 0) return response(403, { error: 'Access denied' });
-
-  if (httpMethod === 'GET') {
-    const result = await g.V().has('Project', 'id', projectId).valueMap('mcp_servers').next();
-    const raw = result.value ? getVal(result.value, 'mcp_servers') : '[]';
-    return response(200, { mcpServers: raw || '[]' });
-  }
-
-  if (httpMethod === 'PUT') {
-    // Only owners and admins can update MCP servers
-    const role = await fetchMembershipRole(g, projectId, userId);
-    if (!role) return response(403, { error: 'Access denied' });
-    if (role !== 'owner' && role !== 'admin') {
-      return response(403, { error: 'Only project owners and admins can update MCP servers' });
-    }
-
-    const data = JSON.parse(body || '{}');
-    const mcpServersJson = data.mcpServers || '[]';
-    const validation = validateMcpServersJson(mcpServersJson);
-    if (!validation.valid) {
-      return response(400, {
-        error: 'Invalid MCP servers configuration',
-        issues: validation.issues,
-      });
-    }
-    await g
-      .V()
-      .has('Project', 'id', projectId)
-      .property(cardinality.single, 'mcp_servers', mcpServersJson)
-      .next();
-    return response(200, { saved: true });
-  }
-
-  return response(405, { error: 'Method not allowed' });
-}
-
-// ---------------------------------------------------------------------------
-// Project-level steering docs: GET/PUT /projects/{projectId}/steering-docs
-// ---------------------------------------------------------------------------
-
-async function handleProjectSteeringDocs(g, response, httpMethod, projectId, userId, body) {
-  if (!userId) return response(401, { error: 'Unauthorized' });
-
-  // Verify user is a project member
-  const memberEdges = await g
-    .V()
-    .has('Project', 'id', projectId)
-    .outE('HAS_MEMBER')
-    .as('e')
-    .inV()
-    .has('User', 'id', userId)
-    .select('e')
-    .by(__.valueMap())
-    .toList();
-  if (memberEdges.length === 0) return response(403, { error: 'Access denied' });
-
-  const artifactsBucket = process.env.ARTIFACTS_BUCKET;
-  const region = process.env.AWS_REGION || 'us-east-1';
-  const s3 = new S3Client({ region });
-
-  if (httpMethod === 'GET') {
-    const result = await g.V().has('Project', 'id', projectId).valueMap('steering_docs').next();
-    const raw = result.value ? getVal(result.value, 'steering_docs') : '[]';
-    let docs = [];
-    try {
-      docs = JSON.parse(raw || '[]');
-    } catch {
-      docs = [];
-    }
-
-    // Generate presigned download URLs for each doc
-    const docsWithUrls = await Promise.all(
-      docs.map(async (doc) => {
-        if (!doc.s3Key || !artifactsBucket) return doc;
-        try {
-          const downloadUrl = await getSignedUrl(
-            s3,
-            new GetObjectCommand({ Bucket: artifactsBucket, Key: doc.s3Key }),
-            { expiresIn: 3600 },
-          );
-          return { ...doc, downloadUrl };
-        } catch {
-          return doc;
-        }
-      }),
-    );
-
-    return response(200, { steeringDocs: docsWithUrls });
-  }
-
-  if (httpMethod === 'PUT') {
-    // Only owners and admins can update steering docs
-    const role = await fetchMembershipRole(g, projectId, userId);
-    if (!role) return response(403, { error: 'Access denied' });
-    if (role !== 'owner' && role !== 'admin') {
-      return response(403, { error: 'Only project owners and admins can update steering docs' });
-    }
-
-    const data = JSON.parse(body || '{}');
-    const incomingDocs = data.steeringDocs || [];
-
-    if (!artifactsBucket) {
-      return response(500, { error: 'ARTIFACTS_BUCKET env var not configured' });
-    }
-    if (incomingDocs.length > 20) {
-      return response(400, { error: 'Maximum 20 steering documents per project' });
-    }
-
-    // Compute S3 keys and generate presigned upload URLs for new/changed docs
-    const uploadUrls = [];
-    const savedDocs = [];
-    for (const doc of incomingDocs) {
-      const filename = doc.filename || '';
-      const safeBase = path.basename(filename);
-      if (!safeBase || safeBase !== filename || !safeBase.toLowerCase().endsWith('.md')) {
-        return response(400, {
-          error: `Invalid filename "${filename}". Must end in .md and contain no path separators.`,
-        });
-      }
-      const s3Key = `steering/${projectId}/project--${safeBase}`;
-      try {
-        const uploadUrl = await getSignedUrl(
-          s3,
-          new PutObjectCommand({
-            Bucket: artifactsBucket,
-            Key: s3Key,
-            ContentType: 'text/markdown',
-          }),
-          { expiresIn: 3600 },
-        );
-        uploadUrls.push({ filename: safeBase, s3Key, uploadUrl });
-      } catch (err) {
-        console.error(`[projects] Failed to generate presigned URL for ${s3Key}:`, err.message);
-      }
-      savedDocs.push({ filename: safeBase, s3Key });
-    }
-
-    // Persist metadata to Neptune
-    const metadataJson = JSON.stringify(savedDocs);
-    await g
-      .V()
-      .has('Project', 'id', projectId)
-      .property(cardinality.single, 'steering_docs', metadataJson)
-      .next();
-
-    return response(200, { saved: true, uploadUrls });
-  }
-
-  return response(405, { error: 'Method not allowed' });
-}

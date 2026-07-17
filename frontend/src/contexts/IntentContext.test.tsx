@@ -1,0 +1,395 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, act, waitFor } from '@testing-library/react';
+import { MemoryRouter, Routes, Route } from 'react-router-dom';
+
+// Capture the realtime callback so tests can push events into the provider.
+let capturedOnEvent: ((e: Record<string, unknown>) => void) | null = null;
+let capturedStatus: ((status: string) => void) | null = null;
+vi.mock('@/hooks/useIntentEvents', () => ({
+  useIntentEvents: (_p: string, _i: string, cb: (e: Record<string, unknown>) => void) => {
+    capturedOnEvent = cb;
+  },
+}));
+vi.mock('@/services/realtime', () => ({
+  realtimeService: {
+    onStatusChange: (handler: (status: string) => void) => {
+      capturedStatus = handler;
+      handler('disconnected');
+      return () => {
+        if (capturedStatus === handler) capturedStatus = null;
+      };
+    },
+  },
+}));
+
+const get = vi.fn();
+const answerGate = vi.fn();
+const compiled = vi.fn();
+const workflowGet = vi.fn();
+const outputs = vi.fn();
+vi.mock('@/services/intents', () => ({
+  intentsService: {
+    get: (...a: unknown[]) => get(...a),
+    answerGate: (...a: unknown[]) => answerGate(...a),
+    outputs: (...a: unknown[]) => outputs(...a),
+  },
+}));
+vi.mock('@/services/workflows', () => ({
+  workflowsService: {
+    compiled: (...a: unknown[]) => compiled(...a),
+    get: (...a: unknown[]) => workflowGet(...a),
+  },
+}));
+
+import { IntentProvider, useIntent, clearIntentCache } from './IntentContext';
+
+function Probe() {
+  const {
+    stageRows,
+    pendingGates,
+    outputBuffers,
+    outputRows,
+    outputVersion,
+    ensureOutputs,
+    currentPhasePath,
+  } = useIntent();
+  return (
+    <div>
+      <div data-testid="rows">{stageRows.map((r) => `${r.stageId}:${r.state}`).join(',')}</div>
+      <div data-testid="pending">{pendingGates.length}</div>
+      <div data-testid="out" data-version={outputVersion}>
+        {[...outputBuffers.entries()].map(([k, v]) => `${k}=${v}`).join('|')}
+      </div>
+      <div data-testid="out-rows">
+        {[...outputRows.entries()]
+          .map(([k, rows]) => `${k}=${rows.map((r) => r.display?.title ?? r.content).join(',')}`)
+          .join('|')}
+      </div>
+      <div data-testid="phase-path">{currentPhasePath ?? 'null'}</div>
+      <button data-testid="seed" onClick={() => ensureOutputs('si-1')} />
+    </div>
+  );
+}
+
+const renderProvider = () =>
+  render(
+    <MemoryRouter initialEntries={['/space/p1/intent/i1']}>
+      <Routes>
+        <Route
+          path="/space/:projectId/intent/:intentId"
+          element={
+            <IntentProvider>
+              <Probe />
+            </IntentProvider>
+          }
+        />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+const detail = (over: Record<string, unknown> = {}) => ({
+  intent: {
+    id: 'i1',
+    executionId: 'i1',
+    projectId: 'p1',
+    title: 'T',
+    prompt: 'P',
+    status: 'RUNNING',
+    workflowId: 'wf',
+    workflowVersion: 1,
+    scope: 'feature',
+    currentStage: null,
+    pendingHumanTaskId: null,
+    createdAt: null,
+    updatedAt: null,
+    completedAt: null,
+    ...over,
+  },
+  stages: [],
+  events: [],
+  gates: [],
+  metrics: [],
+  outputs: [],
+  sensorRuns: [],
+  artifacts: [],
+});
+
+describe('IntentContext', () => {
+  beforeEach(() => {
+    capturedOnEvent = null;
+    capturedStatus = null;
+    clearIntentCache();
+    get.mockReset();
+    answerGate.mockReset();
+    outputs.mockReset().mockResolvedValue({ outputs: [] });
+    compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
+    workflowGet.mockReset().mockResolvedValue({ phases: [] });
+  });
+
+  it('stageRows: scope-filters the plan and appends live rows outside it', async () => {
+    get.mockResolvedValue({
+      ...detail(),
+      // stage-c ran even though the plan (as compiled now) doesn't list it.
+      stages: [{ stageInstanceId: 'si-c', stageId: 'stage-c', state: 'RUNNING', phase: null }],
+    });
+    compiled.mockResolvedValue({
+      scopeGrid: { feature: { 'stage-a': 'EXECUTE', 'stage-b': 'SKIP' } },
+      graph: {
+        nodes: [
+          { stageId: 'stage-a', phasePath: 'p', order: 0 },
+          { stageId: 'stage-b', phasePath: 'p', order: 1 },
+        ],
+        edges: [],
+      },
+    });
+    renderProvider();
+    await waitFor(() =>
+      expect(screen.getByTestId('rows')).toHaveTextContent('stage-a:PENDING,stage-c:RUNNING'),
+    );
+  });
+
+  it('accumulates agent.question events by humanTaskId (upsert, never replace)', async () => {
+    get.mockResolvedValue(detail());
+    renderProvider();
+    await screen.findByTestId('pending');
+
+    act(() => {
+      capturedOnEvent?.({ action: 'agent.question', humanTaskId: 'h1', questions: '[]' });
+      capturedOnEvent?.({ action: 'agent.question', humanTaskId: 'h1', questions: '[]' });
+    });
+    expect(screen.getByTestId('pending')).toHaveTextContent('1');
+
+    act(() => {
+      capturedOnEvent?.({ action: 'agent.question', humanTaskId: 'h2', questions: '[]' });
+    });
+    expect(screen.getByTestId('pending')).toHaveTextContent('2');
+  });
+
+  it('appends agent.output to per-stage buffers (null stage → intent bucket)', async () => {
+    get.mockResolvedValue(detail());
+    renderProvider();
+    await screen.findByTestId('out');
+
+    act(() => {
+      capturedOnEvent?.({
+        action: 'agent.output',
+        stageInstanceId: 'si-1',
+        seq: 1,
+        content: 'more',
+        timestamp: '2026-07-16T12:34:56.000Z',
+        display: { type: 'message', title: 'More readable' },
+      });
+      capturedOnEvent?.({ action: 'agent.output', seq: 2, content: 'init-ws log' });
+    });
+    expect(screen.getByTestId('out')).toHaveTextContent('si-1=more');
+    expect(screen.getByTestId('out')).toHaveTextContent('intent=init-ws log');
+    expect(screen.getByTestId('out-rows')).toHaveTextContent('si-1=More readable');
+  });
+
+  it('ensureOutputs lazily seeds a pane and dedupes live chunks by seq', async () => {
+    // The detail DTO carries no outputs; a pane's durable history arrives via
+    // the outputs endpoint when the pane is first displayed. Live chunks that
+    // raced the seed (seq ≤ the seed's max) must not duplicate.
+    get.mockResolvedValue(detail());
+    outputs.mockResolvedValue({
+      outputs: [
+        {
+          seq: 1,
+          stageInstanceId: 'si-1',
+          kind: 'text',
+          content: 'seed ',
+          display: { type: 'message', title: 'Seeded' },
+        },
+        { seq: 2, stageInstanceId: 'si-1', kind: 'text', content: 'two ' },
+      ],
+    });
+    renderProvider();
+    await screen.findByTestId('out');
+
+    // seq 2 is a broadcast duplicate of a durable chunk; seq 3 is genuinely new.
+    act(() => {
+      capturedOnEvent?.({
+        action: 'agent.output',
+        stageInstanceId: 'si-1',
+        seq: 2,
+        content: 'two ',
+      });
+      capturedOnEvent?.({
+        action: 'agent.output',
+        stageInstanceId: 'si-1',
+        seq: 3,
+        content: 'tail',
+      });
+    });
+    expect(screen.getByTestId('out')).toHaveTextContent('si-1=two tail');
+
+    await act(async () => {
+      screen.getByTestId('seed').click();
+    });
+    expect(outputs).toHaveBeenCalledWith('p1', 'i1', { stageInstanceId: 'si-1' });
+    expect(screen.getByTestId('out')).toHaveTextContent('si-1=seed two tail');
+    expect(screen.getByTestId('out-rows')).toHaveTextContent('si-1=Seeded,two ,tail');
+
+    // Re-selecting the pane never refetches.
+    await act(async () => {
+      screen.getByTestId('seed').click();
+    });
+    expect(outputs).toHaveBeenCalledTimes(1);
+
+    // A post-seed live chunk at/below the seeded max is dropped as a dupe.
+    act(() => {
+      capturedOnEvent?.({
+        action: 'agent.output',
+        stageInstanceId: 'si-1',
+        seq: 1,
+        content: 'DUP',
+      });
+      capturedOnEvent?.({ action: 'agent.output', stageInstanceId: 'si-1', seq: 4, content: '!' });
+    });
+    expect(screen.getByTestId('out')).toHaveTextContent('si-1=seed two tail!');
+  });
+
+  it('catches up durable output missed while the realtime channel was disconnected', async () => {
+    get.mockResolvedValue(detail());
+    outputs
+      .mockResolvedValueOnce({
+        outputs: [{ seq: 1, stageInstanceId: 'si-1', kind: 'text', content: 'before ' }],
+      })
+      .mockResolvedValueOnce({
+        outputs: [{ seq: 2, stageInstanceId: 'si-1', kind: 'text', content: 'missed' }],
+      });
+    renderProvider();
+    await screen.findByTestId('out');
+
+    await act(async () => {
+      screen.getByTestId('seed').click();
+    });
+    expect(screen.getByTestId('out')).toHaveTextContent('si-1=before');
+
+    await act(async () => {
+      capturedStatus?.('connected');
+    });
+
+    expect(outputs).toHaveBeenLastCalledWith('p1', 'i1', {
+      stageInstanceId: 'si-1',
+      afterSeq: 1,
+    });
+    expect(screen.getByTestId('out')).toHaveTextContent('si-1=before missed');
+  });
+
+  it('refetches the detail on agent.note — debounced (the realtime path for artifact creation)', async () => {
+    // create_artifact broadcasts a v2.artifact.created note (agent.note); the
+    // provider must refetch so the new artifact renders without waiting for
+    // the 8s poll backstop. WP7: the refetch is DEBOUNCED (250ms trailing) so
+    // lane event bursts coalesce.
+    vi.useFakeTimers();
+    try {
+      get.mockResolvedValue(detail());
+      renderProvider();
+      await act(async () => {
+        await vi.runOnlyPendingTimersAsync();
+      });
+      const callsAfterMount = get.mock.calls.length;
+
+      await act(async () => {
+        capturedOnEvent?.({
+          action: 'agent.note',
+          noteType: 'v2.artifact.created',
+          summary: 'Artifact created: Auth design',
+        });
+        await vi.advanceTimersByTimeAsync(300);
+      });
+      expect(get.mock.calls.length).toBe(callsAfterMount + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('refetches the detail on agent.pr (the fan-in PR was recorded)', async () => {
+    vi.useFakeTimers();
+    try {
+      get.mockResolvedValue(detail());
+      renderProvider();
+      await act(async () => {
+        await vi.runOnlyPendingTimersAsync();
+      });
+      const callsAfterMount = get.mock.calls.length;
+
+      await act(async () => {
+        capturedOnEvent?.({
+          action: 'agent.pr',
+          prs: [{ id: 'pr:i1:owner/repo', repoId: 'owner/repo' }],
+        });
+        await vi.advanceTimersByTimeAsync(300);
+      });
+      expect(get.mock.calls.length).toBe(callsAfterMount + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('coalesces a burst of lane events into ONE refetch (WP7 debounce)', async () => {
+    vi.useFakeTimers();
+    try {
+      get.mockResolvedValue(detail());
+      renderProvider();
+      await act(async () => {
+        await vi.runOnlyPendingTimersAsync();
+      });
+      const callsAfterMount = get.mock.calls.length;
+
+      await act(async () => {
+        // N parallel lanes each emitting stage/unit/metric transitions.
+        for (let i = 0; i < 12; i++) {
+          capturedOnEvent?.({ action: 'agent.stage', stageId: 'cg', unitSlug: `u${i}` });
+          capturedOnEvent?.({ action: 'agent.unit', unitSlug: `u${i}`, state: 'RUNNING' });
+        }
+        await vi.advanceTimersByTimeAsync(300);
+      });
+      expect(get.mock.calls.length).toBe(callsAfterMount + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('renders ONE row PER UNIT INSTANCE of a fan-out stage (WP7 re-key)', async () => {
+    get.mockResolvedValue({
+      ...detail(),
+      stages: [
+        // Two unit instances of the same plan stage — the old stageId-keyed
+        // Map silently dropped one of these.
+        { stageInstanceId: 'si-cg-auth', stageId: 'cg', state: 'SUCCEEDED', unitSlug: 'auth' },
+        { stageInstanceId: 'si-cg-billing', stageId: 'cg', state: 'RUNNING', unitSlug: 'billing' },
+      ],
+    });
+    compiled.mockResolvedValue({
+      scopeGrid: { feature: { cg: 'EXECUTE' } },
+      graph: { nodes: [{ stageId: 'cg', phasePath: 'construction', order: 0 }], edges: [] },
+    });
+    renderProvider();
+    await waitFor(() =>
+      expect(screen.getByTestId('rows')).toHaveTextContent('cg:SUCCEEDED,cg:RUNNING'),
+    );
+  });
+
+  it('currentPhasePath maps a phaseId to its workflow path', async () => {
+    get.mockResolvedValue(detail({ currentPhase: 'ideation' }));
+    workflowGet.mockResolvedValue({
+      phases: [
+        { phaseId: 'initialization', path: '00', name: 'Initialization' },
+        { phaseId: 'ideation', path: '01', name: 'Ideation' },
+      ],
+    });
+    renderProvider();
+    await waitFor(() => expect(screen.getByTestId('phase-path')).toHaveTextContent('01'));
+  });
+
+  it('currentPhasePath falls back to raw value when workflowPhases lacks the id', async () => {
+    get.mockResolvedValue(detail({ currentPhase: 'unknown-phase' }));
+    workflowGet.mockResolvedValue({ phases: [] });
+    renderProvider();
+    await waitFor(() =>
+      expect(screen.getByTestId('phase-path')).toHaveTextContent('unknown-phase'),
+    );
+  });
+});

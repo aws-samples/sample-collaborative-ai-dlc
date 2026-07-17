@@ -1,5 +1,3 @@
-'use strict';
-
 // Central store for user git-provider connection rows.
 //
 // Background: connections used to live in a single-key table (hash userId), so
@@ -33,7 +31,7 @@
 //   GIT_PROVIDER_CONNECTIONS_TABLE — composite-key table (authoritative)
 //   GIT_CONNECTIONS_TABLE          — legacy single-key table (read-fallback)
 
-const { GetCommand, PutCommand, DeleteCommand } = require('@aws-sdk/lib-dynamodb');
+import { GetCommand, PutCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
 
 // The only git-connection instance today is the SaaS one. Pinned here so the
 // stored data already carries the composite key shape; callers never see it.
@@ -143,7 +141,8 @@ const deleteGitConnection = async (ddb, userId, provider) => {
   await Promise.all(ops);
 };
 
-module.exports = {
+export { getGitConnection, putGitConnection, deleteGitConnection, rowProvider, instanceKey };
+export default {
   getGitConnection,
   putGitConnection,
   deleteGitConnection,

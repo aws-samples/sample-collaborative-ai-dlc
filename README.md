@@ -5,6 +5,9 @@
 
 AI-DLC is a platform where humans and AI agents collaborate on software development through a shared, structured workflow. You define what you want built. AI agents plan, implement, and review it. Everything -- requirements, design decisions, tasks, code -- is connected in a graph so nothing gets lost between intent and implementation.
 
+> [!IMPORTANT]
+> V1 sprints are view-only in v2. To continue running an active v1 sprint, use the frozen [v1.1.0 release](https://github.com/aws-samples/sample-collaborative-ai-dlc/releases/tag/v1.1.0). Upgrade after that sprint is complete.
+
 ## Why AI-DLC
 
 **Requirements that trace to code.** Every requirement breaks into user stories, then tasks, then code files -- all linked in a graph database. When you change a requirement, you can see exactly what downstream work is affected.
@@ -26,38 +29,109 @@ AI-DLC is a platform where humans and AI agents collaborate on software developm
 | AWS CLI   | v2            |
 | Docker    | Recent stable |
 
-You need an AWS account with permissions to manage VPC, ECS, ECR, Lambda, API Gateway, DynamoDB, Neptune, S3, CloudFront, Cognito, EventBridge, Step Functions, Secrets Manager, and IAM.
+You need an AWS account with permissions to manage VPC, ECS, ECR, Lambda, API Gateway, DynamoDB, Neptune, S3, CloudFront, Cognito, Bedrock AgentCore, Secrets Manager, and IAM.
 
 ## Getting Started
 
-### 1. Create Terraform State Backend
+The managed installer is the primary deployment path. It keeps tagged source checkouts under `${XDG_DATA_HOME:-~/.local/share}/collaborative-ai-dlc`, persistent Terraform configuration under `${XDG_CONFIG_HOME:-~/.config}/collaborative-ai-dlc`, and switches the `current` link only after a deployment succeeds.
 
-This is a one-time setup. The bootstrap script creates the S3 bucket (with a random suffix for global uniqueness) and writes a `.s3.tfbackend` file:
-
-```bash
-export AWS_PROFILE=<your-profile-name>
-export REGION=<your-region>
-./scripts/bootstrap.sh <your-profile-name>
-```
-
-### 2. Configure Terraform Variables
+Download and inspect the installer, then run it:
 
 ```bash
-cp terraform/environments/dev.tfvars.example terraform/environments/<your-profile-name>.tfvars
-# Edit dev.tfvars with your desired region, etc.
+curl -fsSLo /tmp/aidlc-install.sh \
+  https://raw.githubusercontent.com/aws-samples/sample-collaborative-ai-dlc/main/scripts/install.sh
+less /tmp/aidlc-install.sh
+bash /tmp/aidlc-install.sh install \
+  --profile <aws-profile> \
+  --region <aws-region> \
+  --environment dev \
+  --admin <administrator-email>
 ```
 
-### 3. Deploy Infrastructure
-
-This builds all Lambda packages and provisions the full AWS stack (VPC, Neptune, DynamoDB, Cognito, API Gateway, ECS, S3, CloudFront, etc.):
+The password prompt is silent. The permanent Cognito password is sent directly to Cognito and is never written to installer configuration. After installation, sign in at the URL reported by `status`:
 
 ```bash
-./scripts/deploy-terraform.sh <your-profile-name>
+bash /tmp/aidlc-install.sh status
 ```
 
-After deployment, agent workers authenticate with Kiro CLI via device flow. Check the agent pool DynamoDB table or ECS logs for the auth URL and device code.
+### Versions, Adoption, and Updates
 
-### 4. Configure Provider OAuth Apps
+All tagged releases, including previews such as `v2.0.0-preview0`, are shown by default. With no explicit version, install and update select the highest tag by SemVer precedence. A stable `v2.0.0` therefore supersedes `v2.0.0-preview0`:
+
+```bash
+bash /tmp/aidlc-install.sh versions
+bash /tmp/aidlc-install.sh install --version 2.0.0-preview0 ...
+bash /tmp/aidlc-install.sh install --version 2.0.0 ...
+```
+
+For pre-release testing before a tag exists, download the installer from the test branch and explicitly track that branch:
+
+```bash
+curl -fsSLo /tmp/aidlc-install.sh \
+  https://raw.githubusercontent.com/aws-samples/sample-collaborative-ai-dlc/aidlc-v2/scripts/install.sh
+
+bash /tmp/aidlc-install.sh install \
+  --ref aidlc-v2 \
+  --profile <aws-profile> \
+  --region <aws-region> \
+  --environment v2-test \
+  --admin <administrator-email>
+```
+
+Branch mode is intentionally marked as non-release. It resolves the remote branch to an immutable commit checkout and remembers the branch, so a later `update` follows its newest commit. Tagged installs remain the production path and retain strict tag/version validation.
+
+Adopt an existing v1 deployment before updating it. The source checkout must contain the deployment's `terraform/environments/<environment>.tfvars` and `<environment>.s3.tfbackend` files:
+
+```bash
+bash /tmp/aidlc-install.sh adopt \
+  --source /path/to/existing-v1-checkout \
+  --environment dev \
+  --profile <aws-profile> \
+  --admin <existing-administrator-email>
+
+bash /tmp/aidlc-install.sh update --version 2.0.0
+```
+
+An update backs up Terraform state, rejects unexpected destruction of Cognito, Neptune, S3, or persistent DynamoDB resources, deploys infrastructure, grants the existing administrator `platform-admin`, and deploys the frontend. Removal of the retired v1 ECS agent runtime and agent-pool table is expected. If any step fails, `current` remains on the working version. Application-data backup beyond Terraform state remains the operator's responsibility. Downgrades require `--allow-downgrade`.
+
+To permanently destroy a managed environment:
+
+```bash
+bash /tmp/aidlc-install.sh destroy
+```
+
+The command requires typing the configured environment name. `--yes` is available for deliberate automation. It backs up Terraform state before destroying all application resources and data, then removes the managed `current` link. Local configuration, immutable checkouts, the state backup, and the Terraform state bucket are retained.
+
+### Advanced Manual Deployment
+
+The environment argument is a logical deployment name such as `dev`; it is not an AWS profile. Set credentials and region through the AWS CLI environment, and use matching backend and tfvars filenames:
+
+```bash
+export AWS_PROFILE=<aws-profile>
+export AWS_REGION=<aws-region>
+
+./scripts/bootstrap.sh dev
+cp terraform/environments/dev.tfvars.example terraform/environments/dev.tfvars
+# Set aws_region = "<aws-region>" in terraform/environments/dev.tfvars.
+
+./scripts/deploy-terraform.sh dev
+./scripts/deploy-frontend.sh dev
+```
+
+`bootstrap.sh` writes `terraform/environments/dev.s3.tfbackend`. Infrastructure deployment reads that backend file and `terraform/environments/dev.tfvars`, regardless of the AWS profile name. For an approval boundary between planning and applying:
+
+```bash
+./scripts/deploy-terraform.sh dev --phase plan --plan-file /tmp/aidlc-dev.tfplan
+./scripts/deploy-terraform.sh dev --phase apply --plan-file /tmp/aidlc-dev.tfplan
+```
+
+### Post-install Configuration
+
+The installer creates the first Cognito user and grants `platform-admin` for v2 (`owner` for v1.1.0). Additional users and administrators are managed in **Admin → User Management**.
+
+Configure agent authentication in **Admin → Agent Settings**: enter a Bedrock bearer token for Claude Code/OpenCode or a Kiro API key. Agent credentials are separate from the Cognito login created during installation.
+
+### Configure Provider OAuth Apps
 
 The platform integrates with external providers as **code hosts** (GitHub, GitLab) and **issue trackers** (GitHub Issues, GitLab Issues, Jira Cloud) so a sprint can be started from a tracker issue. For each provider you want to enable, register an OAuth app with it, then paste the credentials into the **Admin → Tracker OAuth Apps** panel in the deployed app.
 
@@ -67,13 +141,29 @@ All providers are optional. Skip a section if you don't need that provider; the 
 
 #### GitHub (code host + GitHub Issues)
 
+GitHub supports two platform-wide authentication modes, switchable at runtime in **Admin → GitHub Integration**:
+
+- **OAuth mode** (default): each user connects their own GitHub account; commits, PRs and comments are attributed to that user.
+- **GitHub App mode**: the platform authenticates as a GitHub App installation (a bot); users don't connect personal accounts, and the repo picker lists the repositories the App is installed on.
+
+For **OAuth mode**:
+
 1. Open [GitHub Developer Settings → OAuth Apps → New OAuth App](https://github.com/settings/developers).
-   (Choose an **OAuth App**, _not_ a GitHub App — the flow here expects OAuth App semantics.)
+   (Choose an **OAuth App**, _not_ a GitHub App — this mode expects OAuth App semantics.)
 2. Use:
    - **Homepage URL**: `https://<your-cloudfront-domain>`
    - **Authorization callback URL**: `https://<your-cloudfront-domain>/github/callback`
 3. Copy the **Client ID** and generate a **Client Secret**.
 4. In the deployed app, sign in and open **Admin → Tracker OAuth Apps → GitHub Issues**. Paste both values and click **Save**.
+
+The connection requests `repo`, `workflow`, and `read:user`. Existing users must click **Reauthorize GitHub** after upgrading from a version that did not request `workflow`; GitHub requires that scope before the engine can push changes under `.github/workflows/`.
+
+For **GitHub App mode**:
+
+1. Create a [GitHub App](https://github.com/settings/apps) with repository permissions **Contents: Read & write**, **Pull requests: Read & write**, **Workflows: Read & write**, and **Issues: Read-only**. No callback URL or webhook is needed.
+2. Generate a **private key** (PEM) and note the **App ID**.
+3. Install the App on the organization/repositories the platform should access, and note the **Installation ID** (the number at the end of the installation's settings URL).
+4. In the deployed app, open **Admin → GitHub Integration**, paste the App ID, Installation ID and private key, select **GitHub App (bot)** and click **Save**. The platform validates the configuration live against GitHub before the mode switches.
 
 #### GitLab (code host + GitLab Issues)
 
@@ -84,6 +174,8 @@ All providers are optional. Skip a section if you don't need that provider; the 
    - Leave **Confidential** enabled.
 3. Save, then copy the **Application ID** (Client ID) and **Secret**.
 4. In the deployed app, sign in and open **Admin → Tracker OAuth Apps → GitLab Issues**. Paste both values and click **Save**.
+
+GitLab's `api` scope includes repository writes, including changes to `.gitlab-ci.yml`; there is no separate workflow-file scope. Connections missing `api` are reported as requiring reauthorization.
 
 #### Jira Cloud
 
@@ -121,20 +213,31 @@ aws secretsmanager put-secret-value \
 
 </details>
 
-### 5. Create Users
+### Manual User Creation
 
 Create users in the Cognito User Pool. The User Pool ID is available via `terraform output user_pool_id` from the `terraform/` directory.
 
-### 6. Deploy Frontend
+Platform-wide administration (the **Admin** page: user management, agent settings, tracker OAuth apps, GitHub auth mode, migrations — plus workflow and building-block authoring) requires membership in the Cognito `platform-admin` group. Add at least one administrator:
 
 ```bash
-./scripts/deploy-frontend.sh <your-profile-name>
+aws cognito-idp admin-add-user-to-group \
+  --user-pool-id $(terraform -chdir=terraform output -raw user_pool_id) \
+  --username <username> \
+  --group-name platform-admin
+```
+
+Group membership is read from the ID token — users need to sign out and back in after being added. Once the first administrator exists, additional admins can be granted or revoked from the UI under **Admin → User Management** (the CLI is only needed to bootstrap the first one).
+
+### Manual Frontend Deployment
+
+```bash
+./scripts/deploy-frontend.sh dev
 ```
 
 The application is available at the CloudFront domain:
 
 ```bash
-cd terraform && terraform output cloudfront_domain_name
+terraform -chdir=terraform output -raw application_url
 ```
 
 ## Documentation
@@ -174,6 +277,13 @@ npm run typecheck:frontend  # tsc -b on the frontend package
 ```
 
 A pre-commit hook (managed by Husky + lint-staged) runs these checks plus Terraform formatting/linting and the affected unit tests before each commit. It is installed automatically by `npm install`. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+
+AgentCore contributors should also see the [internal testing guide](docs/development/testing.md). It covers the deterministic AgentCore test project and the credentialed local Claude/Kiro/OpenCode lifecycle E2E:
+
+```bash
+npx vitest run --project=agentcore
+BEDROCK_API_KEY=... KIRO_API_KEY=... ./scripts/agent-e2e-testing.sh
+```
 
 ## Contributing
 

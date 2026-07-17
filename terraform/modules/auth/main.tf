@@ -117,3 +117,16 @@ resource "aws_cognito_user_group" "owner" {
   description  = "Owner role with full permissions"
   precedence   = 1
 }
+
+# Platform administrators: may change platform-wide settings (agent settings,
+# tracker OAuth apps, GitHub auth mode, migrations, user management) and
+# author workflows/building blocks. Membership is assigned
+# out-of-band, e.g.:
+#   aws cognito-idp admin-add-user-to-group \
+#     --user-pool-id <pool> --username <user> --group-name platform-admin
+resource "aws_cognito_user_group" "platform_admin" {
+  name         = "platform-admin"
+  user_pool_id = aws_cognito_user_pool.main.id
+  description  = "Platform administrator with access to platform-wide settings"
+  precedence   = 0
+}

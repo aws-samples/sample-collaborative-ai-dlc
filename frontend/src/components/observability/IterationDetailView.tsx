@@ -36,11 +36,11 @@ export function IterationDetailView({
   });
 
   const workbenchPath = sprint
-    ? `/project/${project.id}/sprint/${sprint.id}${sprint.phase === 'CONSTRUCTION' ? '/construction' : sprint.phase === 'REVIEW' ? '/review' : ''}`
-    : `/project/${project.id}`;
+    ? `/space/${project.id}/sprint/${sprint.id}${sprint.phase === 'CONSTRUCTION' ? '/construction' : sprint.phase === 'REVIEW' ? '/review' : ''}`
+    : `/space/${project.id}`;
 
   return (
-    <div className="max-w-5xl mx-auto p-6 space-y-6">
+    <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <button

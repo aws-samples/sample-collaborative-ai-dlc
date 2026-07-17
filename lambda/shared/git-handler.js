@@ -20,6 +20,12 @@ import {
   getUserId,
 } from './git-oauth.js';
 import { getGitConnection, putGitConnection, deleteGitConnection } from './git-connection-store.js';
+import { getGitHubAuthMode, getGitHubAppConfig } from './github-auth-config.js';
+import {
+  getInstallationTokenFromConfig,
+  getInstallationReadToken,
+  validateGitHubAppInstallation,
+} from './git-token.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const secrets = new SecretsManagerClient({});
@@ -38,6 +44,11 @@ export const createGitHandler = (provider, routes) => {
   const providerLabel = provider.displayName;
   const secretName = () => process.env[provider.oauth.secretEnvName];
   const redirectUri = () => process.env[provider.oauth.redirectUriEnvName];
+
+  // GitHub only: the platform-wide auth mode ('oauth' | 'app', admin-managed,
+  // see shared/github-auth-config.js). Every other provider is always 'oauth'.
+  const isGitHub = provider.id === 'github';
+  const authMode = async () => (isGitHub ? getGitHubAuthMode(ssm) : 'oauth');
 
   // Resolve the caller's connection row for THIS provider. Backed by the
   // composite-key git-provider-connections table; a user can hold a GitHub and
@@ -89,6 +100,23 @@ export const createGitHandler = (provider, routes) => {
     return ctx;
   };
 
+  // Mode-aware ctx resolution for repo-scoped routes. In GitHub-App mode the
+  // per-user connection is bypassed entirely: a repo-scoped installation
+  // token (down-scoped to `permissions`) is minted instead; without a repo
+  // scope a metadata:read discovery token is used. Returns { ctx:null } when
+  // the caller has no usable credentials (oauth mode + not connected).
+  const resolveRouteCtx = async (userId, { repositories, permissions } = {}) => {
+    if ((await authMode()) === 'app') {
+      const token = repositories?.length
+        ? await getInstallationTokenFromConfig({ ssm, secrets, repositories, permissions })
+        : await getInstallationReadToken({ ssm, secrets });
+      return { ctx: { token }, mode: 'app' };
+    }
+    const Item = await getConnection(userId);
+    if (!Item) return { ctx: null, mode: 'oauth' };
+    return { ctx: await buildCtx(Item), mode: 'oauth' };
+  };
+
   return async (event) => {
     const response = buildResponse(event, { methods: 'GET,POST,DELETE,OPTIONS' });
     const {
@@ -108,6 +136,14 @@ export const createGitHandler = (provider, routes) => {
     try {
       // GET /{provider}/auth — return OAuth URL
       if (httpMethod === 'GET' && path.endsWith('/auth')) {
+        if ((await authMode()) === 'app') {
+          // No per-user connect flow in app mode — the platform authenticates
+          // as the GitHub App installation (admin-configured).
+          return response(409, {
+            error: `${providerLabel} uses GitHub App authentication on this platform — no per-user connection is needed`,
+            code: 'APP_MODE',
+          });
+        }
         const { client_id, client_secret } = await getOAuthCredentials(
           secrets,
           secretName(),
@@ -174,12 +210,29 @@ export const createGitHandler = (provider, routes) => {
             Overwrite: true,
           }),
         );
+        // Commit-attribution identity ("on behalf of": author = user,
+        // committer = engine). Best-effort — a failed /user lookup must never
+        // break the connect flow; the orchestrator lazily backfills later.
+        let authorFields = {};
+        if (typeof provider.getAuthenticatedUser === 'function') {
+          try {
+            const user = await provider.getAuthenticatedUser({ token: tokens.accessToken });
+            authorFields = {
+              githubLogin: user.login,
+              authorName: user.authorName,
+              authorEmail: user.authorEmail,
+            };
+          } catch (e) {
+            console.error(`Failed to fetch ${providerLabel} user for attribution:`, e.message);
+          }
+        }
         await putGitConnection(ddb, {
           userId: statePayload.userId,
           provider: provider.id,
           parameterName,
           scope: tokens.scope,
           createdAt: new Date().toISOString(),
+          ...authorFields,
         });
         return response(200, { success: true });
       }
@@ -187,17 +240,60 @@ export const createGitHandler = (provider, routes) => {
       // GET /{provider}/status
       if (httpMethod === 'GET' && path.endsWith('/status')) {
         if (!userId) return response(401, { error: 'Unauthorized' });
+        const mode = await authMode();
+        if (mode === 'app') {
+          // App mode: "connected" is a platform property (App configured),
+          // not a per-user one. The frontend uses `mode` to hide the
+          // connect/disconnect UI.
+          const appConfig = await getGitHubAppConfig(ssm);
+          if (!appConfig.appId || !appConfig.installationId) {
+            return response(200, { connected: false, provider: provider.id, mode });
+          }
+          try {
+            await validateGitHubAppInstallation(secrets, appConfig.appId, appConfig.installationId);
+            return response(200, { connected: true, provider: provider.id, mode });
+          } catch (error) {
+            return response(200, {
+              connected: false,
+              provider: provider.id,
+              mode,
+              configurationRequired: true,
+              configurationError: error?.message ?? 'GitHub App validation failed',
+            });
+          }
+        }
         const Item = await getConnection(userId);
-        return response(200, { connected: !!Item, provider: Item?.provider });
+        const grantedScopes = new Set(
+          String(Item?.scope ?? '')
+            .split(/[\s,]+/)
+            .filter(Boolean),
+        );
+        const missingScopes = (provider.oauth.requiredConnectionScopes ?? []).filter(
+          (scope) => !grantedScopes.has(scope),
+        );
+        if (Item && missingScopes.length > 0) {
+          return response(200, {
+            connected: false,
+            provider: Item.provider,
+            mode,
+            reauthorizationRequired: true,
+            missingScopes,
+          });
+        }
+        return response(200, { connected: !!Item, provider: Item?.provider, mode });
       }
 
       // GET /{provider}/repos
       if (httpMethod === 'GET' && path.endsWith('/repos')) {
         if (!userId) return response(401, { error: 'Unauthorized' });
-        const Item = await getConnection(userId);
-        if (!Item) return response(400, { error: `${providerLabel} not connected` });
-        const ctx = await buildCtx(Item);
-        const repos = await provider.listRepos(ctx);
+        const { ctx, mode } = await resolveRouteCtx(userId);
+        if (!ctx) return response(400, { error: `${providerLabel} not connected` });
+        // App mode lists the repos the installation can access (installation
+        // scoping replaces the per-user repo list); oauth lists the user's.
+        const repos =
+          mode === 'app' && typeof provider.listInstallationRepos === 'function'
+            ? await provider.listInstallationRepos(ctx)
+            : await provider.listRepos(ctx);
         return response(200, repos);
       }
 
@@ -225,20 +321,29 @@ export const createGitHandler = (provider, routes) => {
       const branchRepo = routes.branches?.(path, queryStringParameters);
       if (httpMethod === 'GET' && branchRepo) {
         if (!userId) return response(401, { error: 'Unauthorized' });
-        const Item = await getConnection(userId);
-        if (!Item) return response(400, { error: `${providerLabel} not connected` });
-        const ctx = await buildCtx(Item);
+        const { ctx } = await resolveRouteCtx(userId, {
+          repositories: [branchRepo],
+          permissions: { contents: 'read' },
+        });
+        if (!ctx) return response(400, { error: `${providerLabel} not connected` });
         const branches = await provider.listBranches(ctx, branchRepo);
-        return response(200, { branches });
+        // Best-effort: also surface the repo's actual default branch so a
+        // base-branch picker can preselect it instead of assuming `main`.
+        // Never fail the request over this — the picker just falls back to
+        // showing no preselection.
+        const defaultBranch = await provider.getDefaultBranch(ctx, branchRepo).catch(() => null);
+        return response(200, defaultBranch ? { branches, defaultBranch } : { branches });
       }
 
       // GET .../tree
       const treeRepo = routes.tree?.(path, queryStringParameters);
       if (httpMethod === 'GET' && treeRepo) {
         if (!userId) return response(401, { error: 'Unauthorized' });
-        const Item = await getConnection(userId);
-        if (!Item) return response(400, { error: `${providerLabel} not connected` });
-        const ctx = await buildCtx(Item);
+        const { ctx } = await resolveRouteCtx(userId, {
+          repositories: [treeRepo],
+          permissions: { contents: 'read' },
+        });
+        if (!ctx) return response(400, { error: `${providerLabel} not connected` });
         const branch = queryStringParameters?.branch || 'main';
         const tree = await provider.getTree(ctx, treeRepo, branch);
         return response(200, { tree });
@@ -248,23 +353,28 @@ export const createGitHandler = (provider, routes) => {
       const contentsRepo = routes.contents?.(path, queryStringParameters);
       if (httpMethod === 'GET' && contentsRepo) {
         if (!userId) return response(401, { error: 'Unauthorized' });
-        const Item = await getConnection(userId);
-        if (!Item) return response(400, { error: `${providerLabel} not connected` });
         const filePath = queryStringParameters?.path;
         if (!filePath) return response(400, { error: 'Missing path parameter' });
-        const ctx = await buildCtx(Item);
+        const { ctx } = await resolveRouteCtx(userId, {
+          repositories: [contentsRepo],
+          permissions: { contents: 'read' },
+        });
+        if (!ctx) return response(400, { error: `${providerLabel} not connected` });
         const branch = queryStringParameters?.branch || 'main';
         const file = await provider.getFileContents(ctx, contentsRepo, filePath, branch);
         return response(200, file);
       }
 
-      // GET/POST PR/MR comments
+      // GET/POST PR/MR comments. In app mode comments are authored by the App
+      // (bot attribution) — the platform-level trade-off of installation auth.
       const commentRef = routes.comments?.(path, queryStringParameters);
       if (commentRef && (httpMethod === 'GET' || httpMethod === 'POST')) {
         if (!userId) return response(401, { error: 'Unauthorized' });
-        const Item = await getConnection(userId);
-        if (!Item) return response(400, { error: `${providerLabel} not connected` });
-        const ctx = await buildCtx(Item);
+        const { ctx } = await resolveRouteCtx(userId, {
+          repositories: [commentRef.repoId],
+          permissions: { pull_requests: httpMethod === 'POST' ? 'write' : 'read' },
+        });
+        if (!ctx) return response(400, { error: `${providerLabel} not connected` });
 
         if (httpMethod === 'GET') {
           const comments = await provider.listPRComments(ctx, commentRef.repoId, commentRef.prRef);

@@ -40,9 +40,9 @@ export function MigrateTrackerCard({
       </CardHeader>
       <CardContent className="space-y-3">
         <p className="text-sm text-muted-foreground">
-          This project uses the legacy issue-tracker data model. Migrating updates this project and
-          its sprints to the new model so you'll be able to add Jira and other tracker providers
-          (per <code>#194</code>) when they ship.
+          This space uses the legacy issue-tracker data model. Migrating updates this space and its
+          sprints to the new model so you'll be able to add Jira and other tracker providers (per{' '}
+          <code>#194</code>) when they ship.
         </p>
         <p className="text-xs text-muted-foreground">
           Your existing GitHub-issue links stay intact. No data is deleted; this is a one-time
@@ -50,7 +50,7 @@ export function MigrateTrackerCard({
         </p>
         {migrationResult && (
           <p className="text-xs text-emerald-700 dark:text-emerald-400">
-            Migrated: {migrationResult.projectsApplied} project binding(s),{' '}
+            Migrated: {migrationResult.projectsApplied} space binding(s),{' '}
             {migrationResult.sprintsApplied} sprint(s).
           </p>
         )}

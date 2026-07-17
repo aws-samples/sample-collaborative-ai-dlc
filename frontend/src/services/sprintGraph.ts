@@ -54,5 +54,5 @@ export function extractPrs(graph: SprintGraph): PrInfo[] {
     })
     .filter((p) => (!p.stale || p.state === 'merged') && p.prUrl)
     .map(({ stale: _stale, ...p }) => p)
-    .sort((a, b) => a.repository.localeCompare(b.repository));
+    .toSorted((a, b) => a.repository.localeCompare(b.repository));
 }

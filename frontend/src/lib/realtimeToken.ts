@@ -18,7 +18,11 @@ export interface RealtimeToken {
   scopes: string[];
 }
 
-export type RealtimeScopeTarget = { sprintId: string } | { projectId: string };
+export type RealtimeScopeTarget =
+  | { sprintId: string }
+  | { projectId: string }
+  // The intent token endpoint is project-scoped, so the target carries both ids.
+  | { intentId: string; projectId: string };
 
 // Refresh this many ms before the token actually expires so an in-flight
 // connect never presents an almost-dead token.
@@ -29,18 +33,29 @@ const EXPIRY_SAFETY_MS = 60_000;
 // token is fetched by the time the reconnect fires.
 const RECONNECT_LEAD_MS = 30_000;
 
-const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
-const SPRINT_DOC_RE =
-  /^(?:presence|sq|requirement|userstory|task|review|discussion)-([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:-.+)?$/;
-const PROJECT_DOC_RE =
-  /^inception-([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/;
-const SPRINT_CHANNEL_RE =
-  /^sprint:([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/;
+const UUID = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}';
+const UUID_RE = new RegExp(`^${UUID}$`);
+const SPRINT_DOC_RE = new RegExp(
+  `^(?:presence|sq|requirement|userstory|task|review|discussion)-(${UUID})(?:-.+)?$`,
+);
+const PROJECT_DOC_RE = new RegExp(`^inception-(${UUID})$`);
+const SPRINT_CHANNEL_RE = new RegExp(`^sprint:(${UUID})$`);
+// V2 intent realtime — mirrors lambda/shared/realtime-token.js. Intent docs use
+// `intent-`-prefixed names so they don't collide with the v1 sprint doc shapes.
+const INTENT_DOC_RE = new RegExp(
+  `^intent-(?:sq|discussion|presence|review|artifact|draft)-(${UUID})(?:-.+)?$`,
+);
+const INTENT_CHANNEL_RE = new RegExp(`^intent:(${UUID})$`);
 
 /**
  * Map a Yjs doc name to the token target that covers it. Mirrors the
  * server-side extractor in lambda/shared/realtime-token.js (deny-by-default:
  * unknown formats return null and the server would reject them anyway).
+ *
+ * Intent docs need both ids — the token endpoint is project-scoped — but the
+ * doc name only carries the intentId. Callers that subscribe to an intent doc
+ * pass an explicit target instead of relying on this; this returns the
+ * intentId-only shape for completeness and is not used for token fetches.
  */
 export function scopeTargetForYjsDoc(docName: string): RealtimeScopeTarget | null {
   const sprint = SPRINT_DOC_RE.exec(docName);
@@ -51,8 +66,10 @@ export function scopeTargetForYjsDoc(docName: string): RealtimeScopeTarget | nul
 }
 
 /**
- * Map an app-WS documentId (`sprint:{sprintId}` or bare projectId) to the
- * token target that covers it.
+ * Map an app-WS documentId (`sprint:{id}`, `intent:{id}`, or bare projectId) to
+ * the token target that covers it. For `intent:` the projectId is unknown from
+ * the channel alone, so callers that subscribe to an intent channel pass an
+ * explicit `{ intentId, projectId }` target rather than relying on this.
  */
 export function scopeTargetForChannel(documentId: string): RealtimeScopeTarget | null {
   const sprint = SPRINT_CHANNEL_RE.exec(documentId);
@@ -61,16 +78,27 @@ export function scopeTargetForChannel(documentId: string): RealtimeScopeTarget |
   return null;
 }
 
+/** True when the doc/channel id is an intent (caller supplies projectId). */
+export const isIntentDoc = (docName: string): string | null =>
+  INTENT_DOC_RE.exec(docName)?.[1] ?? null;
+export const isIntentChannel = (documentId: string): string | null =>
+  INTENT_CHANNEL_RE.exec(documentId)?.[1] ?? null;
+
 const cache = new Map<string, RealtimeToken>();
 const inflight = new Map<string, Promise<RealtimeToken>>();
 
-const cacheKey = (target: RealtimeScopeTarget): string =>
-  'sprintId' in target ? `sprint:${target.sprintId}` : `project:${target.projectId}`;
+const cacheKey = (target: RealtimeScopeTarget): string => {
+  if ('sprintId' in target) return `sprint:${target.sprintId}`;
+  if ('intentId' in target) return `intent:${target.intentId}`;
+  return `project:${target.projectId}`;
+};
 
-const tokenPath = (target: RealtimeScopeTarget): string =>
-  'sprintId' in target
-    ? `/sprints/${target.sprintId}/realtime-token`
-    : `/projects/${target.projectId}/realtime-token`;
+const tokenPath = (target: RealtimeScopeTarget): string => {
+  if ('sprintId' in target) return `/sprints/${target.sprintId}/realtime-token`;
+  if ('intentId' in target)
+    return `/projects/${target.projectId}/intents/${target.intentId}/realtime-token`;
+  return `/projects/${target.projectId}/realtime-token`;
+};
 
 const isUsable = (token: RealtimeToken): boolean =>
   token.exp * 1000 - EXPIRY_SAFETY_MS > Date.now();

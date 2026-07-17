@@ -31,10 +31,48 @@ export interface GitRepo {
   defaultBranch: string;
 }
 
+// Platform-wide GitHub auth mode (admin-managed): 'oauth' = per-user OAuth
+// connections; 'app' = GitHub App installation tokens (no per-user connect).
+export type GitHubAuthMode = 'oauth' | 'app';
+
 export interface GitProviderStatus {
   connected: boolean;
   provider?: string;
+  reauthorizationRequired?: boolean;
+  missingScopes?: string[];
+  configurationRequired?: boolean;
+  configurationError?: string;
+  // Present for GitHub (and defaulted to 'oauth' for GitLab). In 'app' mode
+  // the connect/disconnect UI is hidden — the platform authenticates as the
+  // GitHub App installation.
+  mode?: GitHubAuthMode;
 }
+
+// Admin-only GitHub integration config (GET/PUT /github/admin/config,
+// platform-admin gated on the backend).
+export interface GitHubAdminConfig {
+  mode: GitHubAuthMode;
+  appId: string | null;
+  installationId: string | null;
+  privateKeySet: boolean;
+  appConfigured: boolean;
+  appConfigurationError?: string;
+  // Returned by PUT when the live installation probe ran successfully.
+  installationAccount?: string;
+}
+
+export interface GitHubAdminConfigUpdate {
+  mode?: GitHubAuthMode;
+  appId?: string;
+  installationId?: string;
+  privateKey?: string;
+}
+
+export const githubAdminService = {
+  getConfig: () => api.get<GitHubAdminConfig>('/github/admin/config'),
+  updateConfig: (update: GitHubAdminConfigUpdate) =>
+    api.put<GitHubAdminConfig>('/github/admin/config', update),
+};
 
 export interface GitFile {
   path: string;
@@ -74,17 +112,15 @@ export interface GitProviderService {
   getStatus: () => Promise<GitProviderStatus>;
   listRepos: () => Promise<GitRepo[]>;
   disconnect: () => Promise<unknown>;
-  listBranches: (repoId: string) => Promise<{ branches: string[] }>;
+  // `defaultBranch` (best-effort — omitted if the provider lookup failed) is
+  // the repo's ACTUAL default branch, for preselecting a base-branch picker
+  // instead of assuming 'main'.
+  listBranches: (repoId: string) => Promise<{ branches: string[]; defaultBranch?: string }>;
   getRepoTree: (repoId: string, branch?: string) => Promise<{ tree: GitFile[] }>;
   getFileContents: (repoId: string, path: string, branch?: string) => Promise<GitFileContent>;
-  // PR (GitHub) / MR (GitLab) comments. prNumber is the GitHub PR number or the
-  // GitLab MR iid.
+  // PR (GitHub) / MR (GitLab) comments — read-only in the UI (ReviewPage
+  // displays them). prNumber is the GitHub PR number or the GitLab MR iid.
   getPullRequestComments: (repoId: string, prNumber: number) => Promise<{ comments: GitComment[] }>;
-  addPullRequestComment: (
-    repoId: string,
-    prNumber: number,
-    comment: { body: string; path?: string; line?: number; side?: string },
-  ) => Promise<{ id: number; body: string; createdAt: string }>;
 }
 
 // =============================================================================
@@ -104,7 +140,9 @@ export const githubService: GitProviderService = {
   disconnect: () => api.delete('/github/disconnect'),
   listBranches: (repoId: string) => {
     const [owner, repo] = splitOwnerRepo(repoId);
-    return api.get<{ branches: string[] }>(`/github/repos/${owner}/${repo}/branches`);
+    return api.get<{ branches: string[]; defaultBranch?: string }>(
+      `/github/repos/${owner}/${repo}/branches`,
+    );
   },
   getRepoTree: (repoId: string, branch?: string) => {
     const [owner, repo] = splitOwnerRepo(repoId);
@@ -124,17 +162,6 @@ export const githubService: GitProviderService = {
       `/github/repos/${owner}/${repo}/pulls/${prNumber}/comments`,
     );
   },
-  addPullRequestComment: (
-    repoId: string,
-    prNumber: number,
-    comment: { body: string; path?: string; line?: number; side?: string },
-  ) => {
-    const [owner, repo] = splitOwnerRepo(repoId);
-    return api.post<{ id: number; body: string; createdAt: string }>(
-      `/github/repos/${owner}/${repo}/pulls/${prNumber}/comments`,
-      comment,
-    );
-  },
 };
 
 // =============================================================================
@@ -150,7 +177,7 @@ export const gitlabService: GitProviderService = {
   listRepos: () => api.get<GitRepo[]>('/gitlab/repos'),
   disconnect: () => api.delete('/gitlab/disconnect'),
   listBranches: (repoId: string) =>
-    api.get<{ branches: string[] }>(
+    api.get<{ branches: string[]; defaultBranch?: string }>(
       `/gitlab/projects/branches?project=${encodeURIComponent(repoId)}`,
     ),
   getRepoTree: (repoId: string, branch?: string) =>
@@ -164,15 +191,6 @@ export const gitlabService: GitProviderService = {
   getPullRequestComments: (repoId: string, mrIid: number) =>
     api.get<{ comments: GitComment[] }>(
       `/gitlab/projects/merge_requests/${mrIid}/notes?project=${encodeURIComponent(repoId)}`,
-    ),
-  addPullRequestComment: (
-    repoId: string,
-    mrIid: number,
-    comment: { body: string; path?: string; line?: number; side?: string },
-  ) =>
-    api.post<{ id: number; body: string; createdAt: string }>(
-      `/gitlab/projects/merge_requests/${mrIid}/notes?project=${encodeURIComponent(repoId)}`,
-      comment,
     ),
 };
 

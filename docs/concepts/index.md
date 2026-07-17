@@ -46,16 +46,16 @@ Most AI coding tools today are local and individual. They excel at personal prod
 - Visibility into what others (humans and agents) are doing
 - No manual syncing of markdown files, skill configs, or local state
 
-AIDLC Collaborative is collaborative-first. Specs, requirements, and tasks are edited in real time via Yjs CRDT. Multiple agents execute concurrently. All state lives in shared infrastructure, not on individual machines.
+AIDLC Collaborative is collaborative-first. Intent progress, artifacts, gates, and discussions stream to every project member in real time; presence and shared editing run over Yjs CRDT. Multiple agents execute concurrently. All state lives in shared infrastructure, not on individual machines.
 
 ### Tool-agnostic architecture
 
 The platform is not locked into any single technology. We integrate what works best for each module:
 
-- **Agent compute:** Currently ECS Fargate containers on AWS. Could be [Bedrock AgentCore](https://github.com/aws-samples/sample-autonomous-cloud-coding-agents/) or other serverless agent runtimes.
+- **Agent compute:** Currently the Amazon Bedrock AgentCore runtime (serverless, one isolated session per agent). Could be container-based (ECS) or other serverless agent runtimes.
 - **Structured data:** Currently Neptune (graph DB) + DynamoDB. Could be other graph engines (Neo4j, etc.) or supplemented with vector databases for semantic search.
 - **Agent tooling:** Integrates with Claude Code, OpenCode, Kiro, and other adopted tools rather than replacing them.
-- **Source control:** GitHub today, with GitLab and other providers on the roadmap.
+- **Source control:** GitHub and GitLab today, with other providers possible through the shared git-provider layer.
 
 The important thing is the _concept_ at each layer — structured data, traceability, collaboration, observability — not the specific implementation. Tools evolve fast; these principles don't.
 
@@ -63,50 +63,46 @@ For a visual overview of how these layers fit together in the current implementa
 
 ## The lifecycle
 
-The platform implements a three-phase lifecycle organized around **sprints**:
+Work is organized around **intents**. An intent is the unit of agent work: a title and a prompt scoped to a project. Starting an intent executes a **workflow** — an ordered plan of stages, grouped into phases, composed from a library of methodology building blocks.
 
 ```mermaid
 graph LR
-  INCEPTION --> CONSTRUCTION --> REVIEW
-  REVIEW -. refinement .-> CONSTRUCTION
+  INTENT["Intent"] --> INCEPTION["Inception<br/>stages"]
+  INCEPTION --> CONSTRUCTION["Construction<br/>(parallel lanes)"]
+  CONSTRUCTION --> DELIVERY["Build & test,<br/>pull request"]
+  DELIVERY -. steering / rewind .-> INCEPTION
 ```
 
-Each phase has a clear purpose:
+The default `aidlc-v2` workflow follows the AI-DLC methodology's progression:
 
-| Phase            | Purpose                                | Output                                     |
-| ---------------- | -------------------------------------- | ------------------------------------------ |
-| **Inception**    | Define what to build, remove ambiguity | Requirements, user stories, and tasks      |
-| **Construction** | Build it                               | Code changes in a branch                   |
-| **Review**       | Evaluate the result                    | Approval or feedback for another iteration |
+| Phase group      | Purpose                                | Output                                                     |
+| ---------------- | -------------------------------------- | ---------------------------------------------------------- |
+| **Inception**    | Define what to build, remove ambiguity | Requirements, user stories, personas, units of work        |
+| **Construction** | Build it, one lane per unit of work    | Designs, decisions, and code on per-unit branches          |
+| **Delivery**     | Integrate and verify                   | Merged intent branch, build and test results, pull request |
 
-A sprint moves through these phases sequentially. The Review phase can send work back to Construction with structured feedback, creating an iterative improvement loop until the result meets expectations.
+Every stage is verified three ways before the run advances: deterministic **sensors**, an LLM-judged **reviewer** agent, and **human validation gates**. When work needs redirecting, you steer the run with course corrections or rewind it to an earlier stage — an iterative loop without restarting from scratch.
 
-## Sprints
+## Intents
 
-A sprint is one iteration of the [AI-DLC methodology](https://github.com/awslabs/aidlc-workflows). It groups a set of requirements, user stories, and tasks under a single lifecycle.
+An intent can be one feature, one issue, or a whole project scope. It can vary in size — the methodology adapts the number of units of work depending on the scope: a small bug fix might produce 2-3 units; a greenfield project might produce 30+. The intent's **scope** (feature, bugfix, greenfield, …) decides which workflow stages actually execute.
 
-You can think of a sprint as one feature, one issue, or one project scope. It can vary in size — the methodology automatically adapts the number of units of work (tasks) depending on the scope. A small bug fix might produce 2-3 tasks; a greenfield project might produce 30+.
+Each intent tracks:
 
-Each sprint tracks:
+- Its lifecycle state (`DRAFT → CREATED → RUNNING → WAITING → SUCCEEDED | FAILED | CANCELLED`)
+- The prompt that scopes the work (optionally seeded from a tracker issue)
+- The pinned workflow version and scope it executes under
+- The intent branch and per-repository base branches
+- Per-stage execution state, human gates, artifacts, metrics, and cost
 
-- Its current phase (Inception, Construction, or Review)
-- The project description that scopes the work
-- Git branch information for code changes
-- Agent execution state
-- Review history and iterations
+You start an intent by writing a prompt (or importing a tracker issue), reviewing the draft, and clicking start. See [Creating intents](../using-the-platform/creating-intents.md).
 
-You start a sprint by writing a description, then launch the Inception Agent to break it down into structured artifacts.
+!!! note "Retired v1 lifecycle"
 
-## Current status
+    Earlier releases organized work around **sprints** with a fixed Inception → Construction → Review pipeline running on an ECS worker pool. That runtime has been removed; v1 projects are read-only — their history stays viewable, but new sprints and v1 agent runs can no longer be started. All new work runs as v2 intents on the Bedrock AgentCore runtime.
 
-| Phase        | Status  |
-| ------------ | ------- |
-| Inception    | Working |
-| Construction | Working |
-| Review       | Working |
+Read about how it works in detail:
 
-Read about each phase in detail:
-
-- [Inception](inception.md)
-- [Construction](construction.md)
-- [Review](review.md)
+- [Architecture](architecture.md) — system-level component overview
+- [Workflows and building blocks](workflows-and-blocks.md) — how the methodology is composed
+- [Execution model](execution.md) — how an intent runs, from orchestration to pull request

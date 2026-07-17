@@ -91,9 +91,16 @@ const SPRINT_DOC_RE = new RegExp(
 const PROJECT_DOC_RE = new RegExp(`^inception-(${UUID_PATTERN})$`);
 const SPRINT_CHANNEL_RE = new RegExp(`^sprint:(${UUID_PATTERN})$`);
 const PROJECT_CHANNEL_RE = new RegExp(`^${UUID_PATTERN}$`);
+// V2 intent realtime — keep in sync with lambda/shared/realtime-token.js.
+const INTENT_DOC_RE = new RegExp(
+  `^intent-(?:sq|discussion|presence|review|artifact|draft)-(${UUID_PATTERN})(?:-.+)?$`,
+);
+const INTENT_CHANNEL_RE = new RegExp(`^intent:(${UUID_PATTERN})$`);
 
 export const requiredScopeForYjsDoc = (docName) => {
   if (typeof docName !== 'string') return null;
+  const intent = INTENT_DOC_RE.exec(docName);
+  if (intent) return `intent:${intent[1].toLowerCase()}`;
   const sprint = SPRINT_DOC_RE.exec(docName);
   if (sprint) return `sprint:${sprint[1].toLowerCase()}`;
   const project = PROJECT_DOC_RE.exec(docName);
@@ -103,6 +110,8 @@ export const requiredScopeForYjsDoc = (docName) => {
 
 export const requiredScopeForChannel = (documentId) => {
   if (typeof documentId !== 'string') return null;
+  const intent = INTENT_CHANNEL_RE.exec(documentId);
+  if (intent) return `intent:${intent[1].toLowerCase()}`;
   const sprint = SPRINT_CHANNEL_RE.exec(documentId);
   if (sprint) return `sprint:${sprint[1].toLowerCase()}`;
   if (PROJECT_CHANNEL_RE.test(documentId)) return `project:${documentId.toLowerCase()}`;

@@ -1,0 +1,26 @@
+{
+  "name": "agentcore",
+  "private": true,
+  "description": "Bedrock AgentCore Runtime image: executes one AI-DLC v2 stage per invocation, with a clean MCP business-graph server.",
+  "type": "module",
+  "main": "http-server.js",
+  "scripts": {
+    "test": "vitest run --project=agentcore",
+    "lint": "oxlint .",
+    "format:check": "oxfmt --check ."
+  },
+  "dependencies": {
+    "@aws-sdk/client-apigatewaymanagementapi": "^3.1079.0",
+    "@aws-sdk/client-dynamodb": "^3.1079.0",
+    "@aws-sdk/client-lambda": "^3.1079.0",
+    "@aws-sdk/client-s3": "^3.1079.0",
+    "@aws-sdk/client-ssm": "^3.1079.0",
+    "@aws-sdk/credential-providers": "^3.1079.0",
+    "@aws-sdk/lib-dynamodb": "^3.1079.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "gremlin": "^3.8.1",
+    "gremlin-aws-sigv4": "^3.6.1",
+    "js-yaml": "^4.1.0",
+    "zod": "^3.23.0"
+  }
+}

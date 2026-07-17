@@ -1,16 +1,11 @@
-'use strict';
-
 // Unified git-provider registry — single source of truth for everything that
 // varies between GitHub and GitLab. Adding a third provider (e.g. Bitbucket)
 // means dropping one file in ./git-providers/ and registering it here; no
 // caller needs to learn provider-specific hosts, auth schemes, or REST shapes.
 //
-// Why CJS + a top-level file (not git-providers/index.js): the agents-ecs
-// container build copies individual `shared/<file>.js` into the image (it does
-// NOT mount lambda/shared wholesale), and the pool-worker packaging test only
-// recognises `require('../shared/<name>')`. Keeping this entry point as a
-// single top-level file lets the Dockerfile copy it (plus the ./git-providers/
-// implementation files) without changing the established pattern.
+// Why a top-level file (not git-providers/index.js): keeping this entry point as
+// a single top-level module preserves the established `../shared/<name>` import
+// pattern across lambdas and the AgentCore image.
 //
 // Provider contract (each implementation exports):
 //   id, displayName, gitHost, apiBase
@@ -23,13 +18,19 @@
 //   listBranches(ctx, repoId)           -> string[]
 //   getTree(ctx, repoId, branch)        -> GitFile[]
 //   getFileContents(ctx, repoId, path, branch) -> GitFileContent
-//   listPRComments(ctx, repoId, prRef)  -> GitComment[]
+//   findPullRequest(ctx, repoId, {sourceBranch,targetBranch,state}) -> provider PR | null
+//   createPullRequest(ctx, repoId, {...,draft?}) -> created/existing PR summary
+//   getPullRequestStatus(ctx, repoId, prRef) -> normalized live status
+//   setPullRequestDraft(ctx, repoId, prRef, draft) -> normalized live status
+//   reopenPullRequest(ctx, repoId, prRef) -> normalized live status
+//   isCommitAncestor(ctx, repoId, ancestorSha, descendantRef) -> boolean
+//   listPRComments(ctx, repoId, prRef)  -> paginated GitComment[]
 //   addPRComment(ctx, repoId, prRef, {body, path?, line?, side?}) -> GitComment
 // where ctx = { token, fetchImpl?, onRefresh? }.
 
-const github = require('./git-providers/github');
-const gitlab = require('./git-providers/gitlab');
-const { ProviderError } = require('./git-providers/errors');
+import github from './git-providers/github.js';
+import gitlab from './git-providers/gitlab.js';
+import { ProviderError } from './git-providers/errors.js';
 
 const REGISTRY = { github, gitlab };
 
@@ -50,15 +51,26 @@ const getProvider = (providerId) => {
   return provider;
 };
 
-// Convenience helpers for the construction runtime (pool-worker, prompts) that
-// only need the host/clone plumbing, not the full REST surface.
+// Convenience helpers for callers (e.g. the agentcore workspace) that only
+// need the host/clone plumbing, not the full REST surface.
 const gitHost = (providerId) => getProvider(providerId).gitHost;
 const buildCloneUrl = (providerId, repoId, token) =>
   getProvider(providerId).buildCloneUrl(repoId, token);
 
-module.exports = {
+const KNOWN_PROVIDERS = Object.keys(REGISTRY);
+export {
   ProviderError,
-  KNOWN_PROVIDERS: Object.keys(REGISTRY),
+  KNOWN_PROVIDERS,
+  DEFAULT_PROVIDER,
+  normalizeProviderId,
+  isKnownProvider,
+  getProvider,
+  gitHost,
+  buildCloneUrl,
+};
+export default {
+  ProviderError,
+  KNOWN_PROVIDERS,
   DEFAULT_PROVIDER,
   normalizeProviderId,
   isKnownProvider,

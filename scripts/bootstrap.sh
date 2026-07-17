@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
 
+# Prevent AWS CLI v2 from opening command output in `less`.
+export AWS_PAGER=""
+
 # Bootstrap script: creates Terraform state backend and generates a .s3.tfbackend file.
 # Run this ONCE before the first terraform init.
 #
@@ -11,14 +14,16 @@ ENVIRONMENT=${1:-dev}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 PROJECT_NAME="collaborative-ai-dlc"
-REGION="us-east-1"
+REGION="${AWS_REGION:-${REGION:-us-east-1}}"
+CONFIG_TF_DIR="${AIDLC_CONFIG_DIR:-${ROOT_DIR}/terraform}"
 
 if [[ -z "$ENVIRONMENT" ]]; then
     echo "Usage: $0 <environment>"
     exit 1
 fi
 
-BACKEND_FILE="${ROOT_DIR}/terraform/environments/${ENVIRONMENT}.s3.tfbackend"
+BACKEND_FILE="${CONFIG_TF_DIR}/environments/${ENVIRONMENT}.s3.tfbackend"
+mkdir -p "$(dirname "$BACKEND_FILE")"
 
 # Generate a random 8-char hex suffix for global uniqueness
 SUFFIX=$(openssl rand -hex 4)

@@ -371,7 +371,7 @@ describe('gitlab handler', () => {
 
     it('returns connected: true when DynamoDB item exists', async () => {
       ddbMock.on(GetCommand).resolves({
-        Item: { userId: USER_ID, provider: 'gitlab' },
+        Item: { userId: USER_ID, provider: 'gitlab', scope: 'api read_user' },
       });
 
       const handler = await loadHandler();
@@ -379,7 +379,25 @@ describe('gitlab handler', () => {
 
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.body);
-      expect(body).toEqual({ connected: true, provider: 'gitlab' });
+      expect(body).toEqual({ connected: true, provider: 'gitlab', mode: 'oauth' });
+    });
+
+    it('requires reauthorization when the stored token lacks api scope', async () => {
+      ddbMock.on(GetCommand).resolves({
+        Item: { userId: USER_ID, provider: 'gitlab', scope: 'read_user' },
+      });
+
+      const handler = await loadHandler();
+      const res = await handler(makeEvent('GET', '/gitlab/status'));
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({
+        connected: false,
+        provider: 'gitlab',
+        mode: 'oauth',
+        reauthorizationRequired: true,
+        missingScopes: ['api'],
+      });
     });
 
     it('returns connected: false when no DynamoDB item', async () => {
@@ -390,7 +408,7 @@ describe('gitlab handler', () => {
 
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.body);
-      expect(body).toEqual({ connected: false, provider: undefined });
+      expect(body).toEqual({ connected: false, provider: undefined, mode: 'oauth' });
     });
 
     it('returns connected: false when the only connection belongs to GitHub', async () => {
@@ -409,7 +427,11 @@ describe('gitlab handler', () => {
       const res = await handler(makeEvent('GET', '/gitlab/status'));
 
       expect(res.statusCode).toBe(200);
-      expect(JSON.parse(res.body)).toEqual({ connected: false, provider: undefined });
+      expect(JSON.parse(res.body)).toEqual({
+        connected: false,
+        provider: undefined,
+        mode: 'oauth',
+      });
     });
 
     it('does not use a GitHub connection for GitLab repo listing', async () => {
@@ -578,6 +600,28 @@ describe('gitlab handler', () => {
 
       expect(res.statusCode).toBe(400);
       expect(JSON.parse(res.body).error).toBe('GitLab not connected');
+    });
+
+    it('includes the project default branch when available', async () => {
+      mockGitConnection();
+      mockResolveGitToken();
+      mockFetch([
+        { body: [{ name: 'main' }, { name: 'develop' }] },
+        { body: { default_branch: 'develop' } },
+      ]);
+
+      const handler = await loadHandler();
+      const res = await handler(
+        makeEvent('GET', '/gitlab/projects/branches', {
+          queryStringParameters: { project: encodeURIComponent('group/widgets') },
+        }),
+      );
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({
+        branches: ['main', 'develop'],
+        defaultBranch: 'develop',
+      });
     });
 
     it('passes the URL-encoded namespaced project path through to the GitLab API', async () => {

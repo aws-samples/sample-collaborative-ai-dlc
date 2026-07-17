@@ -1,6 +1,6 @@
 /**
  * Shared utility: build a single semantic focus sentence for an agent.
- * Used by AgentFocusCard and AgentTeamSummary.
+ * Used by AgentFocusCard and AgentStatusCards.
  */
 import { semanticTool } from './toolLabels';
 import type { SprintProgress } from '@/hooks/useObservability';

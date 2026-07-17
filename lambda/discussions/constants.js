@@ -40,8 +40,6 @@ export const MESSAGE_GUARD_PENDING_SECONDS = 120;
 export const MESSAGE_GUARD_COMPLETE_SECONDS = 3600;
 export const POLL_ATTEMPTS = 3;
 export const POLL_INTERVAL_MS = 300;
-export const ASSIST_LOCK_SECONDS = 900; // 15 min initial; worker heartbeat renews
-export const ASSIST_COMMANDS = ['suggest-answer', 'summarize', 'explain', 'custom'];
 
 // Takeover-safety invariant: the pending window
 // MUST exceed this lambda's timeout, so an expired `pending` guard PROVES the

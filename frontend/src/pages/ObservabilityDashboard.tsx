@@ -1,10 +1,13 @@
+import { useMemo } from 'react';
 import { useObservabilityContext } from './ObservabilityLayout';
-import { effectiveSprintStatus } from '@/lib/sprintStatus';
+import { effectiveSprintStatus, effectiveIntentStatus } from '@/lib/sprintStatus';
+import { useProjectsCache } from '@/hooks/useProjectsCache';
 import {
   AgentStatusCards,
   ActivityFeed,
   StuckAlert,
   BusinessView,
+  IntentStatusCards,
 } from '@/components/observability';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -46,17 +49,35 @@ export default function ObservabilityDashboard() {
     selectSprint,
   } = useObservabilityContext();
 
-  const activeCount = filtered.filter((p) => {
+  const { projects: cachedProjects } = useProjectsCache();
+
+  const v2Items = useMemo(
+    () => cachedProjects.filter((p) => p.project.kind === 'v2' && p.latestIntent),
+    [cachedProjects],
+  );
+
+  const v2ActiveCount = useMemo(
+    () =>
+      v2Items.filter((p) => {
+        const s = effectiveIntentStatus(p.latestIntent);
+        return s === 'running' || s === 'waiting';
+      }).length,
+    [v2Items],
+  );
+
+  const v1ActiveCount = filtered.filter((p) => {
     const s = effectiveSprintStatus(p.sprint);
     return s === 'running' || s === 'waiting';
   }).length;
+
+  const activeCount = v1ActiveCount + v2ActiveCount;
 
   const projectNames = Object.fromEntries(
     filtered.filter((p) => p.sprint).map((p) => [p.sprint!.id, p.project.name]),
   );
 
   return (
-    <div className="max-w-6xl mx-auto p-6 space-y-6">
+    <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <h1 className="text-lg font-bold tracking-tight">Observability</h1>
@@ -123,6 +144,8 @@ export default function ObservabilityDashboard() {
               velocityMap={velocityMap}
             />
           </div>
+
+          <IntentStatusCards items={v2Items} />
 
           <AgentStatusCards
             projects={filtered}

@@ -1,17 +1,25 @@
 import { useEffect, useState, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { useCollaborativeStructuredAnswer } from '../hooks/useCollaborativeStructuredAnswer';
+import {
+  useCollaborativeStructuredAnswer,
+  type CollabScope,
+} from '../hooks/useCollaborativeStructuredAnswer';
 import { CollaborativeTextarea } from './CollaborativeTextarea';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { Loader2 } from 'lucide-react';
 import { DiscussButton } from '@/components/discussion';
-import type { Question, StructuredQuestion, StructuredAnswer } from '../services/questions';
+import type {
+  Question,
+  StructuredQuestion,
+  StructuredAnswer,
+  QuestionOption,
+} from '../services/questions';
 
 interface Props {
   question: Question;
-  sprintId: string;
+  scope: CollabScope;
   userName: string;
   onAnswer: (structuredAnswer: StructuredAnswer) => Promise<void>;
   onAutoSave?: (draftAnswer: StructuredAnswer) => Promise<void>;
@@ -21,7 +29,7 @@ interface Props {
 
 export default function QuestionEditor({
   question,
-  sprintId,
+  scope,
   userName,
   onAnswer,
   onAutoSave,
@@ -39,7 +47,7 @@ export default function QuestionEditor({
     initFromDraft,
     toStructuredAnswer,
   } = useCollaborativeStructuredAnswer(
-    sprintId,
+    scope,
     question.id,
     question.questions.length,
     userName,
@@ -49,10 +57,13 @@ export default function QuestionEditor({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Seed from the saved draft ONCE, when the editor syncs — not when the draft
+  // prop changes, which would clobber the user's in-progress answer.
   useEffect(() => {
     if (synced && question.draftAnswer) {
       initFromDraft(question.draftAnswer);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [synced]);
 
   const handleSubmit = async () => {
@@ -83,15 +94,6 @@ export default function QuestionEditor({
 
   return (
     <div className="rounded-lg border border-agent-waiting/40 bg-agent-waiting/5 p-3">
-      <div className="flex items-center justify-between mb-1">
-        <p className="text-xs text-muted-foreground">{question.agent} agent</p>
-        <DiscussButton
-          entityType="question"
-          entityId={question.id}
-          entityTitle={question.questions[0]?.text || `${question.agent} agent question`}
-        />
-      </div>
-
       {remoteCount > 0 && (
         <div className="flex items-center gap-1 mb-3">
           {Array.from(remoteUsers.values()).map((u, i) => (
@@ -113,7 +115,7 @@ export default function QuestionEditor({
         </div>
       )}
 
-      <div className="space-y-4">
+      <div className="space-y-3">
         {question.questions.map((q, qIdx) => (
           <StructuredQuestionBlock
             key={qIdx}
@@ -129,6 +131,15 @@ export default function QuestionEditor({
             disabled={submitting}
             onFocus={onFocus}
             onBlur={onBlur}
+            trailing={
+              qIdx === 0 ? (
+                <DiscussButton
+                  entityType="question"
+                  entityId={question.id}
+                  entityTitle={question.questions[0]?.text || `${question.agent} agent question`}
+                />
+              ) : undefined
+            }
           />
         ))}
       </div>
@@ -150,6 +161,29 @@ export default function QuestionEditor({
   );
 }
 
+function splitLeadingBlock(text: string): [string, string | null] {
+  const idx = text.indexOf('\n\n');
+  if (idx === -1) return [text, null];
+  return [text.slice(0, idx), text.slice(idx + 2).trim() || null];
+}
+
+/**
+ * An agent-provided option that should behave like our free-text "Other":
+ * selecting it reveals an inline textarea, and it suppresses our own injected
+ * "Other (free text)" block so the two don't double up. Covers explicit
+ * review actions ("request changes") and catch-all options the agent writes
+ * itself ("Other", "Other (please describe)", "please specify", ...).
+ */
+function requiresFreeTextOption(opt: QuestionOption): boolean {
+  const l = `${opt.label} ${opt.description ?? ''}`.toLowerCase();
+  return (
+    l.includes('request changes') ||
+    /(^|[^a-z])other([^a-z]|$)/.test(l) ||
+    l.includes('please describe') ||
+    l.includes('please specify')
+  );
+}
+
 /** Renders a single structured question with options + free text */
 function StructuredQuestionBlock({
   question,
@@ -164,6 +198,7 @@ function StructuredQuestionBlock({
   disabled,
   onFocus,
   onBlur,
+  trailing,
 }: {
   question: StructuredQuestion;
   questionIndex: number;
@@ -177,9 +212,15 @@ function StructuredQuestionBlock({
   disabled?: boolean;
   onFocus?: () => void;
   onBlur?: () => void;
+  /** Extra control (discuss button) rendered on the title row, right-aligned. */
+  trailing?: React.ReactNode;
 }) {
   const isSingle = question.type === 'single';
   const [otherOpen, setOtherOpen] = useState(freeText.length > 0);
+  const itemized = totalQuestions > 1;
+  // Title row = the markdown's leading block; the rest renders full-width so
+  // body paragraphs stay left-aligned with the option rows below.
+  const [titleMd, bodyMd] = splitLeadingBlock(question.text);
 
   useEffect(() => {
     if (freeText.length > 0) setOtherOpen(true);
@@ -222,12 +263,25 @@ function StructuredQuestionBlock({
   const showTextarea = isOtherActive || (isSingle && selectedOptions.length === 0);
 
   return (
-    <div className="border-l-2 border-primary/30 pl-3">
-      <div className="text-sm text-foreground mb-2 prose prose-sm dark:prose-invert max-w-none">
-        {totalQuestions > 1 && (
-          <span className="font-semibold text-primary mr-1">Q{questionIndex + 1}.</span>
+    <div className={cn(itemized && 'rounded-md border bg-background/60 p-3')}>
+      <div className="mb-2 space-y-2">
+        <div className="flex items-center gap-2">
+          {itemized && (
+            <span className="inline-flex h-5 shrink-0 items-center rounded bg-primary/10 px-1.5 text-[11px] font-semibold text-primary">
+              Q{questionIndex + 1}
+              <span className="ml-1 font-normal text-primary/60">/ {totalQuestions}</span>
+            </span>
+          )}
+          <div className="min-w-0 flex-1 text-sm text-foreground prose prose-sm dark:prose-invert max-w-none">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{titleMd}</ReactMarkdown>
+          </div>
+          {trailing && <div className="shrink-0">{trailing}</div>}
+        </div>
+        {bodyMd && (
+          <div className="text-sm text-foreground prose prose-sm dark:prose-invert max-w-none">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{bodyMd}</ReactMarkdown>
+          </div>
         )}
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{question.text}</ReactMarkdown>
       </div>
 
       {question.type === 'multi' && (
@@ -237,7 +291,7 @@ function StructuredQuestionBlock({
       <div className="space-y-1.5 mb-2">
         {question.options.map((opt, optIdx) => {
           const isSelected = selectedOptions.includes(optIdx);
-          const requiresFreeText = opt.label.toLowerCase().includes('request changes');
+          const requiresFreeText = requiresFreeTextOption(opt);
           return (
             <div key={optIdx}>
               <label
@@ -295,7 +349,11 @@ function StructuredQuestionBlock({
                     onChange={(val, cursor) => onFreeTextChange(val, cursor)}
                     onCursorChange={onCursorChange}
                     remoteUsers={remoteUsers}
-                    placeholder="Describe what needs to change..."
+                    placeholder={
+                      opt.label.toLowerCase().includes('request changes')
+                        ? 'Describe what needs to change...'
+                        : 'Type your answer...'
+                    }
                     className="w-full px-2 py-1 border border-border rounded-md text-sm bg-background"
                     rows={2}
                     disabled={disabled}
@@ -308,8 +366,9 @@ function StructuredQuestionBlock({
           );
         })}
 
-        {/* "Other" free text option - only show if no "Request changes" option exists */}
-        {!question.options.some((opt) => opt.label.toLowerCase().includes('request changes')) && (
+        {/* App-injected "Other (free text)" — only when the agent hasn't
+            supplied its own free-text-style option (handled inline above). */}
+        {!question.options.some((opt) => requiresFreeTextOption(opt)) && (
           <div
             className={cn(
               'p-2 rounded-md border transition-colors',

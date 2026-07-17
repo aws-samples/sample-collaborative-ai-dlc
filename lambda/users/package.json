@@ -1,6 +1,14 @@
 {
-  "name": "users-lambda",
-  "version": "1.0.0",
+  "name": "users",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "build": "esbuild index.js --bundle --platform=node --target=node24 --format=esm --external:@aws-sdk/* --banner:js=\"import{createRequire}from'node:module';const require=createRequire(import.meta.url);\" --outfile=.build/index.mjs",
+    "lint": "oxlint .",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check ."
+  },
   "dependencies": {
     "@aws-sdk/credential-providers": "^3.1081.0",
     "@smithy/config-resolver": "^4.6.8",

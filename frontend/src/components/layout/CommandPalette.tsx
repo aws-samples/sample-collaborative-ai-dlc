@@ -22,6 +22,7 @@ import {
   Activity,
 } from 'lucide-react';
 import { useProjectsCache } from '@/hooks/useProjectsCache';
+import { useAuth } from '@/contexts/AuthContext';
 import { GitRepoLink } from '@/components/GitRepoLink';
 
 interface CommandPaletteProps {
@@ -32,6 +33,7 @@ interface CommandPaletteProps {
 export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const navigate = useNavigate();
   const { projects: projectsWithSprint } = useProjectsCache();
+  const { isPlatformAdmin } = useAuth();
 
   // Global keyboard shortcut
   useEffect(() => {
@@ -55,7 +57,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
 
   return (
     <CommandDialog open={open} onOpenChange={onOpenChange}>
-      <CommandInput placeholder="Search projects, navigate, or run actions..." />
+      <CommandInput placeholder="Search spaces, navigate, or run actions..." />
       <CommandList>
         <CommandEmpty>No results found.</CommandEmpty>
 
@@ -66,13 +68,16 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
             Dashboard
             <CommandShortcut>Go</CommandShortcut>
           </CommandItem>
-          <CommandItem onSelect={() => runCommand(() => navigate('/admin'))}>
-            <Shield className="mr-2 h-4 w-4" />
-            Admin Panel
-          </CommandItem>
+          {isPlatformAdmin && (
+            <CommandItem onSelect={() => runCommand(() => navigate('/admin'))}>
+              <Shield className="mr-2 h-4 w-4" />
+              Admin Panel
+            </CommandItem>
+          )}
           <CommandItem onSelect={() => runCommand(() => navigate('/observability'))}>
             <Activity className="mr-2 h-4 w-4" />
-            Observability
+            Sprint Overview
+            <CommandShortcut>v1</CommandShortcut>
           </CommandItem>
         </CommandGroup>
 
@@ -80,11 +85,11 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
 
         {/* Projects */}
         {projectsWithSprint.length > 0 && (
-          <CommandGroup heading="Projects">
+          <CommandGroup heading="Spaces">
             {projectsWithSprint.map((p) => (
               <CommandItem
                 key={p.project.id}
-                onSelect={() => runCommand(() => navigate(`/project/${p.project.id}`))}
+                onSelect={() => runCommand(() => navigate(`/space/${p.project.id}`))}
               >
                 <FolderGit2 className="mr-2 h-4 w-4" />
                 {p.project.name}
@@ -107,7 +112,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
         <CommandGroup heading="Actions">
           <CommandItem onSelect={() => runCommand(() => navigate('/dashboard'))}>
             <Plus className="mr-2 h-4 w-4" />
-            Create New Project
+            Create New Space
           </CommandItem>
         </CommandGroup>
 

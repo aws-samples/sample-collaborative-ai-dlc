@@ -20,6 +20,11 @@ output "cloudfront_domain_name" {
   value       = module.frontend.cloudfront_domain_name
 }
 
+output "application_url" {
+  description = "Public URL of the AI-DLC application"
+  value       = "https://${module.frontend.cloudfront_domain_name}"
+}
+
 output "s3_bucket_name" {
   description = "Frontend S3 bucket name"
   value       = module.frontend.s3_bucket_name
@@ -98,6 +103,22 @@ output "yjs_documents_table_arn" {
   value       = module.dynamodb.yjs_documents_table_arn
 }
 
+output "blocks_table_name" {
+  description = "Name of the building-blocks table"
+  value       = module.dynamodb.blocks_table_name
+}
+
+output "blocks_table_arn" {
+  description = "ARN of the building-blocks table"
+  value       = module.dynamodb.blocks_table_arn
+}
+
+# Building Blocks
+output "seed_blocks_lambda_name" {
+  description = "Name of the one-shot baseline seed Lambda. Invoke via `aws lambda invoke` after deploy; see lambda/seed-blocks/index.js for the payload contract."
+  value       = module.lambda.seed_blocks_lambda_name
+}
+
 # Neptune
 output "neptune_cluster_id" {
   description = "Neptune cluster identifier"
@@ -167,37 +188,6 @@ output "yjs_ecs_service_name" {
   value       = module.yjs_server.ecs_service_name
 }
 
-# Agents
-output "agents_ecr_repository_url" {
-  description = "ECR repository URL for agent images"
-  value       = module.agents.ecr_repository_url
-}
-
-output "agents_cluster_arn" {
-  description = "ECS cluster ARN for agents"
-  value       = module.compute.cluster_arn
-}
-
-output "agent_task_definition_arn" {
-  description = "Agent task definition ARN"
-  value       = module.agents.agent_task_definition_arn
-}
-
-output "agent_security_group_id" {
-  description = "Agent security group ID"
-  value       = module.agents.agent_security_group_id
-}
-
-output "agent_image_uri" {
-  description = "Full image URI with tag for the deployed agent image"
-  value       = module.agents.agent_image_uri
-}
-
-output "agent_image_tag" {
-  description = "Image tag (hash) for the deployed agent image"
-  value       = module.agents.agent_image_tag
-}
-
 output "yjs_image_uri" {
   description = "Full image URI with tag for the deployed yjs-server image"
   value       = module.yjs_server.yjs_image_uri
@@ -223,12 +213,6 @@ output "environment" {
   value       = var.environment
 }
 
-# EventBridge
-output "agent_event_bus_name" {
-  description = "EventBridge event bus name for agent events"
-  value       = module.events.event_bus_name
-}
-
 # GitHub OAuth
 output "github_oauth_secret_name" {
   description = "Name of the Secrets Manager secret holding the GitHub OAuth client_id/client_secret"
@@ -245,4 +229,20 @@ output "gitlab_oauth_secret_name" {
 output "jira_oauth_secret_name" {
   description = "Name of the Secrets Manager secret holding the Jira Cloud OAuth client_id/client_secret"
   value       = module.git.jira_oauth_secret_name
+}
+
+# AgentCore Runtime (v2 stage executor)
+output "agentcore_runtime_arn" {
+  description = "ARN of the Bedrock AgentCore Runtime that executes v2 stages"
+  value       = module.agentcore.runtime_arn
+}
+
+output "agentcore_image_uri" {
+  description = "Container image URI built for the AgentCore runtime"
+  value       = module.agentcore.image_uri
+}
+
+output "v2_executions_table_name" {
+  description = "v2 process/state DynamoDB table name"
+  value       = module.agentcore.v2_executions_table_name
 }

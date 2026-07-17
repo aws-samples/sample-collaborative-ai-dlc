@@ -1,5 +1,4 @@
 import gremlin from 'gremlin';
-import { randomUUID } from 'node:crypto';
 import { create } from 'neptune-lambda-client';
 import { buildResponse } from '../shared/response.js';
 
@@ -45,9 +44,11 @@ export const handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return res(200, {});
 
   try {
-    const { httpMethod, pathParameters, body } = event;
+    const { httpMethod, pathParameters } = event;
     const { sprintId } = pathParameters || {};
 
+    // Timeline events belong to v1 sprints, which are read-only: the POST
+    // write path was removed together with the v1 execution engine.
     switch (httpMethod) {
       case 'GET': {
         const list = await query((g) =>
@@ -62,46 +63,6 @@ export const handler = async (event) => {
             .toList(),
         );
         return res(200, list.map(mapEvent));
-      }
-
-      case 'POST': {
-        const data = JSON.parse(body);
-        const id = randomUUID();
-        const timestamp = data.timestamp || new Date().toISOString();
-
-        await query((g) =>
-          g
-            .V()
-            .has('Sprint', 'id', sprintId)
-            .as('s')
-            .addV('TimelineEvent')
-            .property('id', id)
-            .property('type', data.type)
-            .property('title', data.title)
-            .property('detail', data.detail || '')
-            .property('user_id', data.userId || '')
-            .property('user_name', data.userName || '')
-            .property('timestamp', timestamp)
-            .property('sprint_id', sprintId)
-            .property('question_id', data.questionId || '')
-            .as('e')
-            .addE('HAS_TIMELINE_EVENT')
-            .from_('s')
-            .to('e')
-            .next(),
-        );
-
-        return res(201, {
-          id,
-          type: data.type,
-          title: data.title,
-          detail: data.detail || '',
-          userId: data.userId || '',
-          userName: data.userName || '',
-          timestamp,
-          sprintId,
-          questionId: data.questionId || '',
-        });
       }
 
       default:

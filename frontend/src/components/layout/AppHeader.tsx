@@ -1,9 +1,9 @@
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import {
   PanelLeftClose,
+  PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
-  PanelLeftOpen,
   Search,
   ChevronRight,
   Settings,
@@ -26,6 +26,7 @@ import { PresenceAvatars } from '@/components/domain/PresenceAvatars';
 import { type Project } from '@/services/projects';
 import { type Sprint } from '@/services/sprints';
 import { useProjectCache, useProjectSprintsCache } from '@/hooks/useProjectsCache';
+import { useIntent } from '@/contexts/IntentContext';
 
 interface AppHeaderProps {
   onToggleSidebar: () => void;
@@ -33,7 +34,6 @@ interface AppHeaderProps {
   onOpenCommand: () => void;
   sidebarCollapsed: boolean;
   activityPanelOpen: boolean;
-  inSprint?: boolean;
 }
 
 export function AppHeader({
@@ -43,7 +43,7 @@ export function AppHeader({
   sidebarCollapsed,
   activityPanelOpen,
 }: AppHeaderProps) {
-  const { user, logout } = useAuth();
+  const { user, logout, isPlatformAdmin } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const params = useParams();
@@ -52,8 +52,10 @@ export function AppHeader({
     params.projectId && params.sprintId ? params.projectId : null,
   );
   const sprint = params.sprintId ? (sprints.find((s) => s.id === params.sprintId) ?? null) : null;
+  const { detail: intentDetail } = useIntent();
+  const intentTitle = intentDetail?.intent.title ?? null;
 
-  const breadcrumbs = buildBreadcrumbs(location.pathname, params, project, sprint);
+  const breadcrumbs = buildBreadcrumbs(location.pathname, params, project, sprint, intentTitle);
 
   const initials = user?.displayName
     ? user.displayName
@@ -67,24 +69,26 @@ export function AppHeader({
   return (
     <header className="flex h-12 shrink-0 items-center border-b bg-background px-3 gap-2">
       {/* Sidebar toggle */}
-      {params.sprintId && (
-        <>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onToggleSidebar}>
-                {sidebarCollapsed ? (
-                  <PanelLeftOpen className="h-4 w-4" />
-                ) : (
-                  <PanelLeftClose className="h-4 w-4" />
-                )}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>{sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}</TooltipContent>
-          </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            onClick={onToggleSidebar}
+            aria-label="Toggle sidebar"
+          >
+            {sidebarCollapsed ? (
+              <PanelLeftOpen className="h-4 w-4" />
+            ) : (
+              <PanelLeftClose className="h-4 w-4" />
+            )}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}</TooltipContent>
+      </Tooltip>
 
-          <Separator orientation="vertical" className="h-5" />
-        </>
-      )}
+      <Separator orientation="vertical" className="h-5" />
 
       {/* Logo */}
       <button
@@ -148,10 +152,16 @@ export function AppHeader({
       {/* Right: theme + activity toggle + user */}
       <ThemeToggle />
 
-      {params.sprintId && (
+      {(params.sprintId || params.intentId) && (
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onToggleActivity}>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={onToggleActivity}
+              aria-label="Toggle activity panel"
+            >
               {activityPanelOpen ? (
                 <PanelRightClose className="h-4 w-4" />
               ) : (
@@ -166,7 +176,7 @@ export function AppHeader({
       {/* User menu */}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="ghost" className="h-7 w-7 rounded-full p-0">
+          <Button variant="ghost" className="h-7 w-7 rounded-full p-0" aria-label="User menu">
             <Avatar className="h-7 w-7">
               <AvatarFallback className="text-[10px] bg-primary text-primary-foreground">
                 {initials}
@@ -180,11 +190,15 @@ export function AppHeader({
             <p className="text-xs text-muted-foreground">{user?.email}</p>
           </div>
           <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={() => navigate('/admin')}>
-            <Settings className="mr-2 h-4 w-4" />
-            Admin Panel
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
+          {isPlatformAdmin && (
+            <>
+              <DropdownMenuItem onClick={() => navigate('/admin')}>
+                <Settings className="mr-2 h-4 w-4" />
+                Admin Panel
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+            </>
+          )}
           <DropdownMenuItem onClick={logout} className="text-destructive">
             <LogOut className="mr-2 h-4 w-4" />
             Log out
@@ -205,35 +219,73 @@ function buildBreadcrumbs(
   params: Record<string, string | undefined>,
   project: Project | null,
   sprint: Sprint | null,
+  intentTitle: string | null,
 ): Breadcrumb[] {
-  // Admin panel - just "Admin"
+  // Admin panel - just "Platform Admin"
   if (pathname === '/admin') {
-    return [{ label: 'Admin' }];
+    return [{ label: 'Platform Admin' }];
   }
 
   // Dashboard - just "Projects"
   if (pathname === '/dashboard') {
-    return [{ label: 'Projects' }];
+    return [{ label: 'Spaces' }];
   }
 
-  // Observability
   // Observability
   if (pathname === '/observability') {
-    return [{ label: 'Projects', href: '/dashboard' }, { label: 'Observability' }];
+    return [{ label: 'Spaces', href: '/dashboard' }, { label: 'Observability' }];
   }
 
-  const crumbs: Breadcrumb[] = [{ label: 'Projects', href: '/dashboard' }];
+  // Block Library
+  if (pathname.startsWith('/blocks')) {
+    return [{ label: 'Block Library' }];
+  }
+
+  // Workflows
+  if (pathname.startsWith('/workflows')) {
+    const base = { label: 'Workflows', href: '/workflows' };
+    return pathname === '/workflows' ? [{ label: 'Workflows' }] : [base, { label: 'Composer' }];
+  }
+
+  const crumbs: Breadcrumb[] = [{ label: 'Spaces', href: '/dashboard' }];
 
   // Add project name if available
   if (params.projectId && project) {
-    crumbs.push({ label: project.name, href: `/project/${params.projectId}` });
+    crumbs.push({ label: project.name, href: `/space/${params.projectId}` });
+  }
+
+  // Intent routes: Spaces > Space > Intent > section
+  if (params.intentId && params.projectId) {
+    const intentLabel = intentTitle || 'Intent';
+    const intentHref = `/space/${params.projectId}/intent/${params.intentId}`;
+
+    if (pathname.endsWith('/observability')) {
+      crumbs.push({ label: intentLabel, href: intentHref });
+      crumbs.push({ label: 'Overview' });
+    } else if (pathname.endsWith('/audit')) {
+      crumbs.push({ label: intentLabel, href: intentHref });
+      crumbs.push({ label: 'Audit' });
+    } else if (pathname.endsWith('/graph')) {
+      crumbs.push({ label: intentLabel, href: intentHref });
+      crumbs.push({ label: 'Graph' });
+    } else if (pathname.endsWith('/compose')) {
+      crumbs.push({ label: intentLabel, href: intentHref });
+      crumbs.push({ label: 'Compose' });
+    } else if (pathname.includes('/review/')) {
+      crumbs.push({ label: intentLabel, href: intentHref });
+      crumbs.push({ label: 'Review' });
+    } else {
+      crumbs.push({ label: intentLabel, href: intentHref });
+      crumbs.push({ label: 'Work' });
+    }
+    return crumbs;
   }
 
   // Add sprint name and phase if available
   if (params.sprintId && params.projectId && sprint) {
     crumbs.push({
       label: sprint.name,
-      href: `/project/${params.projectId}/sprint/${params.sprintId}`,
+      href: `/space/${params.projectId}/sprint/${params.sprintId}`,
     });
 
     // Add phase as final crumb
@@ -244,7 +296,7 @@ function buildBreadcrumbs(
     } else if (pathname.includes('/graph')) {
       crumbs.push({ label: 'Graph' });
     } else if (pathname.includes('/agent')) {
-      crumbs.push({ label: 'Invoke Agent' });
+      crumbs.push({ label: 'Agent History' });
     } else {
       crumbs.push({ label: 'Inception' });
     }

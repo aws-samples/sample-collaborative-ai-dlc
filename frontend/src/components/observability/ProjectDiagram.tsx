@@ -85,7 +85,7 @@ export function ProjectDiagram({
 
   const handleClick = () => {
     if (!sprint) {
-      onNavigate(`/project/${project.id}`);
+      onNavigate(`/space/${project.id}`);
       return;
     }
     const route =
@@ -94,7 +94,7 @@ export function ProjectDiagram({
         : currentPhase === 'REVIEW'
           ? '/review'
           : '';
-    onNavigate(`/project/${project.id}/sprint/${sprint.id}${route}`);
+    onNavigate(`/space/${project.id}/sprint/${sprint.id}${route}`);
   };
 
   return (

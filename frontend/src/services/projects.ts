@@ -5,6 +5,13 @@ export type ProjectRole = 'owner' | 'admin' | 'member';
 export type AgentCli = 'kiro' | 'claude' | 'opencode';
 export type RuntimeModelCli = 'kiro' | 'claude' | 'opencode';
 export type CliModels = Partial<Record<RuntimeModelCli, string>>;
+
+// Agent tier → model configuration (flat-row shape, mirroring the backend's
+// shared/tier-models.js). The three tier rows map upstream agents' authored
+// `tier` to a concrete model per CLI; `fallback` applies when no tier
+// resolves; `quorum` drives the Quorum discussion/edit one-shot surfaces.
+export type TierModelRow = 'judgment' | 'balanced' | 'templated' | 'fallback' | 'quorum';
+export type TierModels = Partial<Record<TierModelRow, CliModels>>;
 export type RepoRole =
   | 'primary'
   | 'secondary'
@@ -37,6 +44,12 @@ export interface TrackerBinding {
   createdBy: string | null;
 }
 
+// v1 (pre-existing projects only) ran the original sprint lifecycle; v2 runs
+// the AI-DLC v2 block/workflow runtime (intents, dynamic phases/stages). New
+// projects are always v2 — the backend rejects `kind: 'v1'` on create. The
+// type is kept so v1 badges can still be rendered for frozen v1 projects.
+export type ProjectKind = 'v1' | 'v2';
+
 export interface Project {
   id: string;
   name: string;
@@ -44,12 +57,33 @@ export interface Project {
   gitRepo: string;
   agentCli: AgentCli;
   cliModels?: CliModels;
+  tierModels?: TierModels;
   issueIntegrationEnabled?: boolean;
   createdAt: string;
+  // Stamped by the backend on every settings PUT; legacy projects fall back to
+  // createdAt server-side. Note: intent activity does NOT bump this — use
+  // projectLastActivityAt (useProjectsCache) for an activity-based recency.
+  updatedAt?: string | null;
   userRole?: ProjectRole;
   trackers: TrackerBinding[];
   repos?: ProjectRepo[];
+  // v2 discriminator + settings (absent/`'v1'` for v1 projects).
+  kind?: ProjectKind;
+  workflowId?: string;
+  workflowVersion?: number | null;
+  parkReleaseSeconds?: number;
+  // Concurrency cap for parallel unit lanes (docs/v2-parallel.md WP5);
+  // 0 = unbounded (the unit DAG is the only limit).
+  maxParallelUnits?: number;
+  // Project PR delivery override. `default` inherits the platform setting.
+  prStrategy?: PrStrategy;
+  // Per-project stage-skipping override: 'default' inherits the platform
+  // Admin setting; enabled/disabled override it for this project's intents.
+  stageSkipping?: StageSkippingOverride;
 }
+
+export type PrStrategy = 'default' | 'intent-pr' | 'pr-per-unit';
+export type StageSkippingOverride = 'default' | 'enabled' | 'disabled';
 
 export interface TrackerMigrationResult {
   dryRun: boolean;
@@ -68,8 +102,18 @@ export interface CreateProjectInput {
   gitRepo: string;
   agentCli?: AgentCli;
   cliModels?: CliModels;
+  tierModels?: TierModels;
   issueIntegrationEnabled?: boolean;
   repos?: { url: string; provider?: string; role?: RepoRole }[];
+  // v2 project options. v2 is the only creatable kind: the backend rejects
+  // `kind: 'v1'` (400) and treats an omitted kind as v2. workflowId falls back
+  // to the canonical default workflow when omitted.
+  kind?: ProjectKind;
+  workflowId?: string;
+  workflowVersion?: number | null;
+  parkReleaseSeconds?: number;
+  maxParallelUnits?: number;
+  prStrategy?: PrStrategy;
 }
 
 export interface UpdateProjectInput {
@@ -78,7 +122,15 @@ export interface UpdateProjectInput {
   gitProvider?: GitProvider;
   agentCli?: AgentCli;
   cliModels?: CliModels;
+  tierModels?: TierModels;
   issueIntegrationEnabled?: boolean;
+  // v2 settings (owner/admin tunable).
+  workflowId?: string;
+  workflowVersion?: number | null;
+  parkReleaseSeconds?: number;
+  maxParallelUnits?: number;
+  prStrategy?: PrStrategy;
+  stageSkipping?: StageSkippingOverride;
 }
 
 export interface AddRepoInput {
@@ -108,7 +160,9 @@ export interface CognitoUser {
   status: string;
 }
 
-export interface SteeringDoc {
+// A project custom agent rule (user-uploaded .md reference doc). `s3Key` is the
+// artifacts-bucket key; `downloadUrl`/`uploadUrl` are presigned per request.
+export interface CustomRule {
   filename: string;
   s3Key: string;
   downloadUrl?: string;
@@ -143,7 +197,9 @@ export const projectsService = {
 
   // Tracker abstraction migration (#194 Phase 1). Owner/admin only. Idempotent.
   migrateTracker: (projectId: string, dryRun = false) =>
-    api.post<TrackerMigrationResult>(`/projects/${projectId}/migrate-tracker`, { dryRun }),
+    api.post<TrackerMigrationResult>(`/projects/${projectId}/migrate-tracker`, {
+      dryRun,
+    }),
 
   // Whole-graph admin counterparts of /projects/{id}/migrate-tracker.
   // Authenticated-only — drives the Admin page's Tracker Migration card and
@@ -154,18 +210,42 @@ export const projectsService = {
   runTrackerMigration: (dryRun = false) =>
     api.post<TrackerMigrationResult>('/admin/tracker-migration', { dryRun }),
 
-  // Project-level MCP servers (raw JSON string)
-  getMcpServers: (projectId: string) =>
-    api.get<{ mcpServers: string }>(`/projects/${projectId}/mcp-servers`),
-  updateMcpServers: (projectId: string, mcpServers: string) =>
-    api.put<{ saved: boolean }>(`/projects/${projectId}/mcp-servers`, { mcpServers }),
+  // Project-level custom MCP servers (raw JSON string, name-keyed JSON object).
+  // The GET response is role-dependent: owners/admins get the raw config
+  // (`customMcpServers`); plain members get server names only (`mcpServerNames`).
+  getCustomMcpServers: (projectId: string) =>
+    api.get<{ customMcpServers?: string; mcpServerNames?: string[] }>(
+      `/projects/${projectId}/custom-mcp-servers`,
+    ),
+  updateCustomMcpServers: (projectId: string, customMcpServers: string) =>
+    api.put<{ saved: boolean }>(`/projects/${projectId}/custom-mcp-servers`, {
+      customMcpServers,
+    }),
 
-  // Project-level steering docs
-  getSteeringDocs: (projectId: string) =>
-    api.get<{ steeringDocs: SteeringDoc[] }>(`/projects/${projectId}/steering-docs`),
-  updateSteeringDocs: (projectId: string, steeringDocs: Array<{ filename: string }>) =>
+  // Project-level MCP secrets (per-var SecureStrings). GET returns set-state only
+  // (never values); PUT rotates (non-empty value) or clears (empty string).
+  getMcpSecrets: (projectId: string) =>
+    api.get<{ mcpSecretsSet: Record<string, boolean> }>(
+      `/projects/${projectId}/custom-mcp-servers/secrets`,
+    ),
+  updateMcpSecrets: (projectId: string, mcpSecrets: Record<string, string>) =>
+    api.put<{ saved: boolean }>(`/projects/${projectId}/custom-mcp-servers/secrets`, {
+      mcpSecrets,
+    }),
+
+  // Project-level custom agent rules (uploaded .md reference docs).
+  // Two-phase write so metadata is only persisted for objects that uploaded:
+  //   presignCustomRules — get upload URLs (no persist), then upload to S3
+  //   commitCustomRules  — persist the final set (after uploads / on delete)
+  getCustomRules: (projectId: string) =>
+    api.get<{ customRules: CustomRule[] }>(`/projects/${projectId}/custom-rules`),
+  presignCustomRules: (projectId: string, customRules: Array<{ filename: string }>) =>
     api.put<{
-      saved: boolean;
       uploadUrls: Array<{ filename: string; s3Key: string; uploadUrl: string }>;
-    }>(`/projects/${projectId}/steering-docs`, { steeringDocs }),
+    }>(`/projects/${projectId}/custom-rules`, { customRules, mode: 'presign' }),
+  commitCustomRules: (projectId: string, customRules: Array<{ filename: string }>) =>
+    api.put<{ saved: boolean }>(`/projects/${projectId}/custom-rules`, {
+      customRules,
+      mode: 'commit',
+    }),
 };
