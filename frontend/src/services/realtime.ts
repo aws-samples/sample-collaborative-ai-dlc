@@ -158,7 +158,7 @@ export class RealtimeService {
           try {
             handler(data);
           } catch (error) {
-            console.error(`[WebSocket] Handler failed for ${key}:`, error);
+            console.error('[WebSocket] Handler failed for %s:', key, error);
           }
         }
       };
