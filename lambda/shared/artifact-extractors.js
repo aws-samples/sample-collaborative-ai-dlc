@@ -47,11 +47,16 @@ const extractCitations = (content = '') => {
 
 const fencedYaml = (content = '', key) => {
   const body = String(content ?? '');
+  const values = [];
+  let found = false;
   for (const m of body.matchAll(/```ya?ml\s*\n([\s\S]*?)\n```/gi)) {
     const parsed = yaml.load(m[1]);
-    if (parsed && typeof parsed === 'object' && Object.hasOwn(parsed, key)) return parsed;
+    if (parsed && typeof parsed === 'object' && Object.hasOwn(parsed, key)) {
+      found = true;
+      values.push(...asList(parsed[key]));
+    }
   }
-  return null;
+  return found ? { [key]: values } : null;
 };
 
 const asList = (value) => (Array.isArray(value) ? value : []);
