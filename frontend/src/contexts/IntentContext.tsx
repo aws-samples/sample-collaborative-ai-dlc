@@ -55,6 +55,7 @@ export interface IntentStageRow {
   waitMs: number;
   /** Open park's start (set while WAITING_FOR_HUMAN), for live wait ticking. */
   parkedAt: string | null;
+  pendingHumanTaskId: string | null;
   attempt: number;
   cli: string | null;
   resolvedModel: string | null;
@@ -714,6 +715,7 @@ export function IntentProvider({
             completedAt: null,
             waitMs: 0,
             parkedAt: null,
+            pendingHumanTaskId: null,
             attempt: 0,
             cli: null,
             resolvedModel: null,
@@ -737,6 +739,7 @@ export function IntentProvider({
         completedAt: row.completedAt ?? null,
         waitMs: row.waitMs ?? 0,
         parkedAt: row.parkedAt ?? null,
+        pendingHumanTaskId: row.pendingHumanTaskId ?? null,
         attempt: row.attempt ?? 0,
         cli: row.cli ?? null,
         resolvedModel: row.resolvedModel ?? null,
@@ -762,6 +765,7 @@ export function IntentProvider({
         completedAt: s.completedAt ?? null,
         waitMs: s.waitMs ?? 0,
         parkedAt: s.parkedAt ?? null,
+        pendingHumanTaskId: s.pendingHumanTaskId ?? null,
         attempt: s.attempt ?? 0,
         cli: s.cli ?? null,
         resolvedModel: s.resolvedModel ?? null,

@@ -1011,6 +1011,7 @@ resource "aws_lambda_permission" "workflows" {
 #   /projects/{projectId}/intents/{intentId}/start                 POST
 #   /projects/{projectId}/intents/{intentId}/cancel                POST
 #   /projects/{projectId}/intents/{intentId}/rewind                POST
+#   /projects/{projectId}/intents/{intentId}/repair                POST
 #   /projects/{projectId}/intents/{intentId}/units/{sectionIndex}/{unitSlug}/feedback GET, POST
 #   /projects/{projectId}/intents/{intentId}/realtime-token        POST
 #   /projects/{projectId}/intents/{intentId}/gates/{humanTaskId}/answer  POST
@@ -1092,6 +1093,12 @@ resource "aws_api_gateway_resource" "intent_rewind" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.intent.id
   path_part   = "rewind"
+}
+
+resource "aws_api_gateway_resource" "intent_repair" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent.id
+  path_part   = "repair"
 }
 
 # Composer sessions (Adaptive Workflows): start a compose (front/report),
@@ -1267,6 +1274,7 @@ locals {
     start_post      = { resource = aws_api_gateway_resource.intent_start.id, method = "POST" }
     cancel_post     = { resource = aws_api_gateway_resource.intent_cancel.id, method = "POST" }
     rewind_post     = { resource = aws_api_gateway_resource.intent_rewind.id, method = "POST" }
+    repair_post     = { resource = aws_api_gateway_resource.intent_repair.id, method = "POST" }
     compose_post    = { resource = aws_api_gateway_resource.intent_compose.id, method = "POST" }
     compose_upload  = { resource = aws_api_gateway_resource.intent_compose_report_upload.id, method = "POST" }
     composes_get    = { resource = aws_api_gateway_resource.intent_composes.id, method = "GET" }
@@ -1364,6 +1372,12 @@ module "cors_intent_rewind" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.intent_rewind.id
+}
+
+module "cors_intent_repair" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_repair.id
 }
 
 module "cors_intent_compose" {

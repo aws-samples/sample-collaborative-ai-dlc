@@ -33,6 +33,7 @@ const row = (over: Partial<IntentStageRow> = {}): IntentStageRow => ({
   completedAt: null,
   waitMs: 0,
   parkedAt: null,
+  pendingHumanTaskId: null,
   attempt: 0,
   cli: null,
   resolvedModel: null,

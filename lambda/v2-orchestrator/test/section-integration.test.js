@@ -163,6 +163,8 @@ const makeWorld = ({ remote, unitPlan, fileFor, beforeStage = null, conflictAgen
       return e;
     },
     getUnitPlan: async () => unitPlan,
+    listUnits: async () => [],
+    getUnit: async () => null,
     updateUnitPlanDecisions: async () => ({}),
     updateUnitState: async (args) => {
       world.unitStates.push(`${args.slug}:${args.state}`);

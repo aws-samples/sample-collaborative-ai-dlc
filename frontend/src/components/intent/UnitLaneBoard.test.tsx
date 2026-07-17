@@ -164,6 +164,114 @@ describe('UnitLaneBoardView', () => {
     expect(onViewLiveOutput).toHaveBeenCalledWith('si-billing');
   });
 
+  it('renders an orphaned parked lane as needs recovery and freezes its timer', () => {
+    renderView({
+      units: [
+        unit('auth', 'RUNNING', {
+          sectionIndex: 1,
+          startedAt: '2026-01-01T00:00:00Z',
+        }),
+      ],
+      unitPlan: plan({
+        units: [{ slug: 'auth', dependsOn: [] }],
+        batches: [['auth']],
+        unitCount: 1,
+      }),
+      laneWaitBySlug: {
+        's1:auth': {
+          kind: 'recovery',
+          stageId: 'functional-design',
+          stageInstanceId: 'si-auth',
+          humanTaskId: null,
+          since: '2026-01-01T00:01:00Z',
+          blocker: 'functional-design is parked without a pending question. Repair is required.',
+        },
+      },
+    });
+
+    expect(screen.getAllByText('Needs recovery')).toHaveLength(1);
+    expect(screen.getByText('1 needs recovery')).toBeInTheDocument();
+    expect(screen.queryByText('Building')).not.toBeInTheDocument();
+    expect(screen.queryByText('1 building')).not.toBeInTheDocument();
+    expect(screen.getByText('1m 0s')).toBeInTheDocument();
+    expect(screen.getByText(/parked without a pending question/)).toBeInTheDocument();
+  });
+
+  it('shows waiting for input only when the parked stage owns a pending gate', () => {
+    renderView({
+      units: [unit('auth', 'RUNNING', { sectionIndex: 1 })],
+      unitPlan: plan({
+        units: [{ slug: 'auth', dependsOn: [] }],
+        batches: [['auth']],
+        unitCount: 1,
+      }),
+      laneWaitBySlug: {
+        's1:auth': {
+          kind: 'input',
+          stageId: 'functional-design',
+          stageInstanceId: 'si-auth',
+          humanTaskId: 'q-auth',
+          since: '2026-01-01T00:01:00Z',
+          blocker: 'functional-design: Choose the persistence model.',
+        },
+      },
+    });
+
+    expect(screen.getByText('Waiting for input')).toBeInTheDocument();
+    expect(screen.getByText('1 waiting for input')).toBeInTheDocument();
+    expect(screen.getByText(/Choose the persistence model/)).toBeInTheDocument();
+  });
+
+  it('hides Address feedback until at least one provider comment exists', () => {
+    const onAddressFeedback = vi.fn();
+    const pr = {
+      sectionIndex: 1,
+      unitSlug: 'auth',
+      repository: 'owner/api',
+      provider: 'github',
+      providerId: '101',
+      number: 7,
+      url: 'https://example.test/pr/7',
+      sourceBranch: 'unit',
+      targetBranch: 'intent',
+      headSha: 'a',
+      readyHeadSha: null,
+      targetSha: 'b',
+      state: 'DRAFT' as const,
+      mergeable: null,
+      commentCount: 0,
+      repositoryOutcome: null,
+      createdAt: null,
+      updatedAt: null,
+      mergedAt: null,
+      closedAt: null,
+    };
+    const props = {
+      units: [unit('auth', 'PR_DRAFT', { sectionIndex: 1 })],
+      unitPlan: plan({
+        units: [{ slug: 'auth', dependsOn: [] }],
+        batches: [['auth']],
+        unitCount: 1,
+      }),
+      unitPrs: [pr],
+      onAddressFeedback,
+    };
+    const { rerender } = renderView(props);
+    expect(screen.queryByRole('button', { name: 'Address feedback' })).not.toBeInTheDocument();
+
+    rerender(
+      <UnitLaneBoardView
+        unitPlan={props.unitPlan}
+        units={props.units}
+        streamsBySlug={{}}
+        runningStageBySlug={{}}
+        unitPrs={[{ ...pr, commentCount: 1 }]}
+        onAddressFeedback={onAddressFeedback}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Address feedback' })).toBeInTheDocument();
+  });
+
   it('keeps repeated unit slugs distinct across sections and shows repository PR state', () => {
     const repeated = [
       unit('auth', 'PR_DRAFT', { sectionIndex: 1 }),

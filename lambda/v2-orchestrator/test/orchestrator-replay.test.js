@@ -77,6 +77,7 @@ const makeWorld = ({ stages = [{ stageId: 'a' }, { stageId: 'b' }] } = {}) => {
         if (input.status) world.statusWrites.push(input.status);
         return { orchestratorRunId: input.orchestratorRunId ?? null };
       },
+      listUnits: async () => [],
       setGateCallbackId: async (input) => {
         world.gateCallbackBindings.push(input);
         return {};

@@ -31,6 +31,9 @@ describe('intentsService request paths', () => {
     await intentsService.start('p1', 'i1');
     expect(post).toHaveBeenCalledWith('/projects/p1/intents/i1/start', {});
 
+    await intentsService.repair('p1', 'i1');
+    expect(post).toHaveBeenCalledWith('/projects/p1/intents/i1/repair', {});
+
     await intentsService.answerGate('p1', 'i1', 'h1', { answer: { ok: 1 } });
     expect(post).toHaveBeenCalledWith('/projects/p1/intents/i1/gates/h1/answer', {
       answer: { ok: 1 },

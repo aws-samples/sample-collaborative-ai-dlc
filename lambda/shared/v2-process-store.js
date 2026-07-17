@@ -346,6 +346,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     cli,
     cliSessionId,
     resolvedModel,
+    pendingHumanTaskId,
   }) => {
     const ts = now();
     const sets = ['#state = :state', 'updatedAt = :ts', 'GSI2SK = :g2sk', 'runtimeError = :err'];
@@ -375,6 +376,10 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     if (resolvedModel !== undefined) {
       sets.push('resolvedModel = :rm');
       values[':rm'] = resolvedModel;
+    }
+    if (pendingHumanTaskId !== undefined) {
+      sets.push('pendingHumanTaskId = :ph');
+      values[':ph'] = pendingHumanTaskId;
     }
     const { Attributes } = await ddb.send(
       new UpdateCommand({
@@ -420,6 +425,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       'GSI2SK = :g2sk',
       'runtimeError = :null',
       'parkedAt = :null',
+      'pendingHumanTaskId = :null',
       'waitMs = :wait',
     ];
     const values = {
@@ -537,20 +543,56 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return item;
   };
 
-  // Stamp the durable-execution callback id on a gate (the orchestrator does
-  // this right after it parks, so the answer path knows which suspended
-  // callback to resume). Not a CAS — the orchestrator owns this write.
-  const setGateCallbackId = async ({ executionId, humanTaskId, callbackId }) => {
-    const { Attributes } = await ddb.send(
-      new UpdateCommand({
-        TableName: table(),
-        Key: humanTaskKey(executionId, humanTaskId),
-        UpdateExpression: 'SET callbackId = :cb',
-        ExpressionAttributeValues: { ':cb': callbackId },
-        ReturnValues: 'ALL_NEW',
-      }),
-    );
-    return Attributes;
+  // Bind one durable callback to one pending gate owner. Concurrent lanes must
+  // never overwrite each other's callback: a replay may repeat the identical
+  // binding, but a different callback/owner fails the CAS and is surfaced by
+  // the orchestrator as an invariant violation.
+  const setGateCallbackId = async ({
+    executionId,
+    humanTaskId,
+    callbackId,
+    stageInstanceId,
+    callbackOwner,
+  }) => {
+    const names = { '#status': 'status' };
+    const values = {
+      ':pending': 'pending',
+      ':cb': callbackId,
+      ':owner': callbackOwner ?? null,
+      ':nullCallback': null,
+      ':nullOwner': null,
+    };
+    const conditions = [
+      '#status = :pending',
+      '(attribute_not_exists(callbackId) OR callbackId = :nullCallback OR callbackId = :cb)',
+      '(attribute_not_exists(callbackOwner) OR callbackOwner = :nullOwner OR callbackOwner = :owner)',
+    ];
+    if (stageInstanceId !== undefined) {
+      conditions.push(
+        stageInstanceId === null
+          ? '(attribute_not_exists(stageInstanceId) OR stageInstanceId = :nullStage)'
+          : 'stageInstanceId = :stageInstanceId',
+      );
+      if (stageInstanceId === null) values[':nullStage'] = null;
+      else values[':stageInstanceId'] = stageInstanceId;
+    }
+    try {
+      const { Attributes } = await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: humanTaskKey(executionId, humanTaskId),
+          ConditionExpression: conditions.join(' AND '),
+          UpdateExpression: 'SET callbackId = :cb, callbackOwner = :owner',
+          ExpressionAttributeNames: names,
+          ExpressionAttributeValues: values,
+          ReturnValues: 'ALL_NEW',
+        }),
+      );
+      return Attributes;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return null;
+      throw error;
+    }
   };
 
   const getHumanTask = async (executionId, humanTaskId) => {
@@ -824,7 +866,8 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
         UpdateExpression:
           'SET #state = :state, attempt = :attempt, cli = :null, cliSessionId = :null, ' +
           'runtimeError = :null, startedAt = :null, completedAt = :null, ' +
-          'parkedAt = :null, waitMs = :zero, updatedAt = :ts, GSI2SK = :g2sk',
+          'parkedAt = :null, pendingHumanTaskId = :null, waitMs = :zero, ' +
+          'updatedAt = :ts, GSI2SK = :g2sk',
         ExpressionAttributeNames: { '#state': 'state' },
         ExpressionAttributeValues: {
           ':state': 'PENDING',

@@ -115,6 +115,8 @@ beforeEach(() => {
       // Default: gate is answered (not pending) by the time we re-read it.
       getHumanTask: vi.fn(async () => ({ status: 'answered' })),
       appendEvent: vi.fn(async () => ({})),
+      listUnits: vi.fn(async () => []),
+      getUnit: vi.fn(async () => null),
     },
     loadPlan: vi.fn(async () => ({
       valid: true,
@@ -192,6 +194,27 @@ describe('orchestrator durable handler', () => {
     expect(starts[1].stageCallbackId).not.toBe(starts[0].stageCallbackId);
     // Gate answered before the release deadline → no StopRuntimeSession.
     expect(deps.stopSession).not.toHaveBeenCalled();
+  });
+
+  it('fails rather than overwriting a gate callback owned by another stage', async () => {
+    deps.store.getExecution
+      .mockResolvedValueOnce(META)
+      .mockResolvedValue({ ...META, pendingHumanTaskId: 'h1' });
+    deps.store.setGateCallbackId.mockResolvedValueOnce(null);
+    deps.loadPlan.mockResolvedValue({ valid: true, plan: { stages: [{ stageId: 'a' }] } });
+    deps.invokeRuntime = makeRuntime(ctx, (payload, n) => {
+      if (n === 1) return { ok: true };
+      return { ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'h1' };
+    });
+
+    const res = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1' },
+      ctx,
+      deps,
+    );
+
+    expect(res).toMatchObject({ ok: false, reason: 'gate_callback_conflict' });
+    expect(stageStarts()).toHaveLength(1);
   });
 
   it('fails instead of binding a human gate callback when the soft deadline is past', async () => {
@@ -1103,6 +1126,8 @@ describe('WP5 — parallel sections: lanes, skeleton, ladder, halt-and-ask', () 
     stagePuts = [];
     deps.loadPlan = vi.fn(async () => SECTION_PLAN());
     deps.store.getUnitPlan = vi.fn(async () => UNIT_PLAN());
+    deps.store.listUnits = vi.fn(async () => []);
+    deps.store.getUnit = vi.fn(async () => null);
     deps.store.updateUnitState = vi.fn(async (args) => {
       unitStates.push(args);
       return { slug: args.slug, state: args.state };
@@ -1165,6 +1190,26 @@ describe('WP5 — parallel sections: lanes, skeleton, ladder, halt-and-ask', () 
     expect(stopped).toContain('aidlc-intent-i1-s1-billing'.padEnd(33, '0'));
     // Non-lane dispatches carry unitSlug null explicitly (uniform contract).
     expect(stageStarts().find((p) => p.stageId === 'bt').unitSlug).toBeNull();
+  });
+
+  it('resumes after repair from persisted merged units without replaying the skeleton or its gate', async () => {
+    deps.store.getUnitPlan = vi.fn(async () => UNIT_PLAN({ autonomyMode: 'autonomous' }));
+    deps.store.listUnits = vi.fn(async () => [
+      { sectionIndex: 1, slug: 'auth', state: 'MERGED' },
+      { sectionIndex: 1, slug: 'billing', state: 'PENDING' },
+    ]);
+
+    const res = await start();
+
+    expect(res.ok).toBe(true);
+    expect(
+      invokes.some((payload) => payload.command === 'init-lane' && payload.unitSlug === 'auth'),
+    ).toBe(false);
+    expect(
+      invokes.some((payload) => payload.command === 'init-lane' && payload.unitSlug === 'billing'),
+    ).toBe(true);
+    const openedGateIds = deps.store.createHumanTask.mock.calls.map(([gate]) => gate.humanTaskId);
+    expect(openedGateIds.some((id) => id.startsWith('eg-skeleton-s1'))).toBe(false);
   });
 
   it('tracks lane states RUNNING → MERGING → MERGED per unit with lifecycle events + agent.unit broadcasts', async () => {
@@ -1829,6 +1874,49 @@ describe('WP5 — engine-gate decisions', () => {
     expect(eventCalls.find((e) => e.type === 'v2.units.autonomy_set')?.summary).toContain(
       'autonomous',
     );
+  });
+
+  it('AUTONOMOUS wavefront dispatches independent sibling stages concurrently', async () => {
+    unitPlanRow = {
+      units: [
+        { slug: 'auth', dependsOn: [] },
+        { slug: 'asset', dependsOn: [] },
+        { slug: 'charts', dependsOn: [] },
+      ],
+      batches: [['auth', 'asset', 'charts']],
+      skipMatrix: {},
+      walkingSkeleton: 'auth',
+      autonomyMode: 'autonomous',
+    };
+    let releaseWhenChartsStarts;
+    const chartsStarted = new Promise((resolve) => {
+      releaseWhenChartsStarts = resolve;
+    });
+    let assetWaitedForCharts = false;
+    deps.invokeRuntime = makeRuntime(ctx, async (payload) => {
+      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'promote-units') {
+        return { ok: true, unitCount: 3, batchCount: 1 };
+      }
+      if (payload.stageId === 'fd' && payload.unitSlug === 'asset') {
+        await chartsStarted;
+        assetWaitedForCharts = true;
+      }
+      if (payload.stageId === 'fd' && payload.unitSlug === 'charts') {
+        releaseWhenChartsStarts();
+      }
+      return { ok: true, state: 'SUCCEEDED' };
+    });
+
+    const res = await start();
+
+    expect(res.ok).toBe(true);
+    expect(assetWaitedForCharts).toBe(true);
+    expect(
+      stageStarts().filter(
+        (payload) => payload.stageId === 'fd' && ['asset', 'charts'].includes(payload.unitSlug),
+      ),
+    ).toHaveLength(2);
   });
 
   it('fan-out overrides on the unit-DAG stage gate re-pick the skeleton and extend the skip matrix (validated)', async () => {

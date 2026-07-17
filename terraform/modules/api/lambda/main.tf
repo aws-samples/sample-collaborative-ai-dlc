@@ -1722,9 +1722,10 @@ resource "aws_iam_role_policy" "intents" {
       },
       {
         # Watchdog repair: verify stale local rows against the durable execution
-        # service before marking them failed.
+        # service before marking them failed. The authenticated lane repair
+        # endpoint also stops an orphaned durable run before relaunching it.
         Effect   = "Allow"
-        Action   = ["lambda:GetDurableExecution", "lambda:ListDurableExecutionsByFunction"]
+        Action   = ["lambda:GetDurableExecution", "lambda:ListDurableExecutionsByFunction", "lambda:StopDurableExecution"]
         Resource = "*"
       },
       {

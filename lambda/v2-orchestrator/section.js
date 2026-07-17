@@ -218,9 +218,20 @@ export const awaitEngineGate = async (
   });
 
   const [callbackPromise, callbackId] = await ctxArg.createCallback(`await-${humanTaskId}`);
-  await ctxArg.step(`bind-callback-${humanTaskId}`, () =>
-    store.setGateCallbackId({ executionId, humanTaskId, callbackId }),
+  const callbackBound = await ctxArg.step(`bind-callback-${humanTaskId}`, () =>
+    store.setGateCallbackId({
+      executionId,
+      humanTaskId,
+      callbackId,
+      stageInstanceId: stageInstanceId ?? null,
+      callbackOwner: `engine:${humanTaskId}`,
+    }),
   );
+  if (!callbackBound) {
+    throw new Error(
+      `gate_callback_conflict: ${humanTaskId} already has a different callback owner`,
+    );
+  }
   await callbackPromise;
 
   // Re-read after the wake: cancel/rewind supersedes and wakes with a
@@ -418,11 +429,28 @@ export const runParallelSection = async (segment, toolkit) => {
   // ── shared lane machinery ─────────────────────────────────────────────────
   const semaphore = makeSemaphore(maxParallelUnits);
   const withMergeLock = makeMergeLock();
+  const withIntegrationLock = makeMergeLock();
   // slug → 'MERGED' | 'FAILED' | 'BLOCKED' — settled lane states (this run).
   const laneState = new Map();
   // slug → in-flight lane DurablePromise (wavefront cross-lane coordination).
   const lanePromises = new Map();
   const usesUnitPrs = prStrategy === 'pr-per-unit';
+  // A repair/relaunch starts a new durable history but keeps already-integrated
+  // units. Hydrate those terminal lanes so the walking skeleton and its review
+  // gate are not replayed and dependency waits can continue from durable DDB
+  // truth rather than the empty in-memory map.
+  const persistedUnits = await ctx.step(`load-unit-states-${sk}`, () =>
+    store.listUnits(executionId),
+  );
+  for (const row of persistedUnits ?? []) {
+    if (
+      Number(row.sectionIndex) === Number(segment.index) &&
+      row.state === 'MERGED' &&
+      bySlug.has(row.slug)
+    ) {
+      laneState.set(row.slug, 'MERGED');
+    }
+  }
 
   const callProvider = async (method, args) => {
     if (!unitPrProvider || typeof unitPrProvider[method] !== 'function') {
@@ -637,6 +665,17 @@ export const runParallelSection = async (segment, toolkit) => {
   const waitForIntegrationTurn = async (slug) => {
     for (const predecessor of laneOrder.slice(0, laneOrder.indexOf(slug))) {
       if (laneState.has(predecessor)) continue;
+      const row = await store.getUnit(executionId, segment.index, predecessor).catch(() => null);
+      // Authored order only applies among units that are actually queued for
+      // integration. A sibling that is still building, parked, failed, or
+      // blocked must not create permanent head-of-line blocking.
+      if (
+        !['PR_DRAFT', 'RECONCILING', 'PR_READY', 'ADDRESSING_FEEDBACK', 'MERGING'].includes(
+          row?.state,
+        )
+      ) {
+        continue;
+      }
       const promise = lanePromises.get(predecessor);
       if (promise) await promise.catch(() => ({ state: 'FAILED' }));
     }
@@ -701,8 +740,6 @@ export const runParallelSection = async (segment, toolkit) => {
       });
       return { slug, state: 'MERGED' };
     }
-
-    await waitForIntegrationTurn(slug);
 
     const feedbackPrompt = (batch) => {
       const comments = (batch.comments ?? []).map((comment, index) =>
@@ -1717,15 +1754,18 @@ export const runParallelSection = async (segment, toolkit) => {
           stopSession(laneSession),
         );
         releasePermit();
-        const integrated = await integrateUnitPullRequests({
-          laneCtx,
-          slug,
-          unitBranch,
-          laneSession,
-          round,
-          rTag,
-          rows,
-        });
+        await waitForIntegrationTurn(slug);
+        const integrated = await withIntegrationLock(() =>
+          integrateUnitPullRequests({
+            laneCtx,
+            slug,
+            unitBranch,
+            laneSession,
+            round,
+            rTag,
+            rows,
+          }),
+        );
         await laneCtx
           .step(`lane-integration-release-${sk}-${slug}${rTag}`, () => stopSession(laneSession))
           .catch(() => {});
@@ -2045,69 +2085,76 @@ export const runParallelSection = async (segment, toolkit) => {
 
   // ── phase 1: walking skeleton, SOLO (A2 rule 8) ───────────────────────────
   const skeleton = decisions.walkingSkeleton;
-  const skeletonOut = await runUntilResolved([skeleton], { tag: '-skel' });
-  if (skeletonOut) return skeletonOut;
+  const skeletonAlreadyApproved =
+    laneState.get(skeleton) === 'MERGED' &&
+    CONSTRUCTION_AUTONOMY_MODES.includes(unitPlan.autonomyMode);
+  if (laneState.get(skeleton) !== 'MERGED') {
+    const skeletonOut = await runUntilResolved([skeleton], { tag: '-skel' });
+    if (skeletonOut) return skeletonOut;
+  }
 
   // Bolt-level skeleton gate (upstream stage-protocol §1): approve /
   // request-changes. Request-changes carries feedback, re-runs the skeleton
   // lane (revive + resumeFrom the answered gate), and re-asks; after 3 cycles
   // the accept-as-is escape hatch appears. Never a terminal reject.
-  for (let revision = 0; laneState.get(skeleton) === 'MERGED';) {
-    const options =
-      revision >= 3
-        ? ['approve', 'request-changes', 'accept-as-is']
-        : ['approve', 'request-changes'];
-    const skeletonGate = await awaitEngineGate(ctx, toolkit, {
-      name: revision ? `skeleton-${sk}-v${revision}` : `skeleton-${sk}`,
-      unitSlug: skeleton,
-      sectionIndex: segment.index,
-      prompt: [
-        `Walking skeleton "${skeleton}" completed and merged into ${intentBranch}${revision ? ` (revision ${revision})` : ''}.`,
-        `Review its design artifacts and generated code (branch ${unitBranchFor(intentBranch, segment.index, skeleton)}) as ONE increment.`,
-        'Approve to open the remaining lanes, or request-changes with feedback to revise the skeleton.',
-        ...(revision === 2
-          ? ['After one more revision, an accept-as-is option will become available.']
-          : []),
-        ...(revision >= 3
-          ? ['Accept-as-is keeps the current increment and moves on despite open feedback.']
-          : []),
-      ].join('\n'),
-      options,
-    });
-    if (skeletonGate.superseded) return { ok: false, reason: 'retired', intentId };
-    const choice =
-      parseChoice(skeletonGate.gate.answer, options) ??
-      (skeletonGate.gate.status === 'rejected' ? 'request-changes' : 'approve');
-    if (choice !== 'request-changes') {
+  if (!skeletonAlreadyApproved) {
+    for (let revision = 0; laneState.get(skeleton) === 'MERGED';) {
+      const options =
+        revision >= 3
+          ? ['approve', 'request-changes', 'accept-as-is']
+          : ['approve', 'request-changes'];
+      const skeletonGate = await awaitEngineGate(ctx, toolkit, {
+        name: revision ? `skeleton-${sk}-v${revision}` : `skeleton-${sk}`,
+        unitSlug: skeleton,
+        sectionIndex: segment.index,
+        prompt: [
+          `Walking skeleton "${skeleton}" completed and merged into ${intentBranch}${revision ? ` (revision ${revision})` : ''}.`,
+          `Review its design artifacts and generated code (branch ${unitBranchFor(intentBranch, segment.index, skeleton)}) as ONE increment.`,
+          'Approve to open the remaining lanes, or request-changes with feedback to revise the skeleton.',
+          ...(revision === 2
+            ? ['After one more revision, an accept-as-is option will become available.']
+            : []),
+          ...(revision >= 3
+            ? ['Accept-as-is keeps the current increment and moves on despite open feedback.']
+            : []),
+        ].join('\n'),
+        options,
+      });
+      if (skeletonGate.superseded) return { ok: false, reason: 'retired', intentId };
+      const choice =
+        parseChoice(skeletonGate.gate.answer, options) ??
+        (skeletonGate.gate.status === 'rejected' ? 'request-changes' : 'approve');
+      if (choice !== 'request-changes') {
+        await emitEvent(
+          ctx,
+          `skeleton-approved-${sk}${revision ? `-v${revision}` : ''}`,
+          'v2.units.skeleton_approved',
+          `Walking skeleton ${skeleton} approved${
+            choice === 'accept-as-is' ? ` as-is after ${revision} revision cycle(s)` : ''
+          }`,
+          { unitSlug: skeleton, sectionIndex: segment.index },
+        );
+        break;
+      }
+      revision += 1;
       await emitEvent(
         ctx,
-        `skeleton-approved-${sk}${revision ? `-v${revision}` : ''}`,
-        'v2.units.skeleton_approved',
-        `Walking skeleton ${skeleton} approved${
-          choice === 'accept-as-is' ? ` as-is after ${revision} revision cycle(s)` : ''
-        }`,
+        `skeleton-revision-${sk}-v${revision}`,
+        'v2.units.skeleton_revision_requested',
+        `Human requested changes on walking skeleton ${skeleton} (revision ${revision}); re-running its lane with feedback`,
         { unitSlug: skeleton, sectionIndex: segment.index },
       );
-      break;
+      const revisionOut = await runUntilResolved([skeleton], {
+        tag: `-skel-v${revision}`,
+        idSuffix: `-v${revision}`,
+        feedbackTaskId: skeletonGate.gate.humanTaskId,
+        revive: true,
+      });
+      if (revisionOut) return revisionOut;
+      // A skipped (failed) revision leaves the previously merged skeleton in
+      // place — the while-condition re-checks MERGED; a lane the human skipped
+      // is FAILED here and the loop exits without re-asking.
     }
-    revision += 1;
-    await emitEvent(
-      ctx,
-      `skeleton-revision-${sk}-v${revision}`,
-      'v2.units.skeleton_revision_requested',
-      `Human requested changes on walking skeleton ${skeleton} (revision ${revision}); re-running its lane with feedback`,
-      { unitSlug: skeleton, sectionIndex: segment.index },
-    );
-    const revisionOut = await runUntilResolved([skeleton], {
-      tag: `-skel-v${revision}`,
-      idSuffix: `-v${revision}`,
-      feedbackTaskId: skeletonGate.gate.humanTaskId,
-      revive: true,
-    });
-    if (revisionOut) return revisionOut;
-    // A skipped (failed) revision leaves the previously merged skeleton in
-    // place — the while-condition re-checks MERGED; a lane the human skipped
-    // is FAILED here and the loop exits without re-asking.
   }
 
   // ── phase 2: autonomy ladder (A2 rule 9), then the remaining lanes ───────

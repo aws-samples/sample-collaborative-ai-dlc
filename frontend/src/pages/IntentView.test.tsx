@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 
 const yjsMock = vi.hoisted(() => ({ docs: new Map<string, unknown>() }));
+const projectCacheMock = vi.hoisted(() => ({ role: 'owner' as 'owner' | 'admin' | 'member' }));
 
 // Heavy leaf components are stubbed to simple markers — these tests exercise
 // IntentView's OWN rendering logic (DRAFT card, pipeline, gates, artifacts)
@@ -51,10 +52,14 @@ vi.mock('@/hooks/useIntentEvents', () => ({ useIntentEvents: () => {} }));
 vi.mock('@/contexts/AuthContext', () => ({
   useAuth: () => ({ user: { displayName: 'U', email: 'u@x' } }),
 }));
+vi.mock('@/hooks/useProjectsCache', () => ({
+  useProjectCache: () => ({ project: { userRole: projectCacheMock.role } }),
+}));
 
 const get = vi.fn();
 const start = vi.fn();
 const answerGate = vi.fn();
+const repair = vi.fn();
 const graph = vi.fn();
 const compiled = vi.fn();
 const workflowGet = vi.fn();
@@ -63,6 +68,7 @@ vi.mock('@/services/intents', () => ({
     get: (...a: unknown[]) => get(...a),
     start: (...a: unknown[]) => start(...a),
     answerGate: (...a: unknown[]) => answerGate(...a),
+    repair: (...a: unknown[]) => repair(...a),
     // Knowledge graph feeding the popovers/derived-items section — empty
     // graph keeps those affordances out of these page-behavior tests.
     graph: (...a: unknown[]) => graph(...a),
@@ -142,6 +148,8 @@ describe('IntentView', () => {
     get.mockReset();
     start.mockReset();
     answerGate.mockReset();
+    repair.mockReset();
+    projectCacheMock.role = 'owner';
     graph.mockReset().mockResolvedValue({ nodes: [], edges: [] });
     compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
     workflowGet.mockReset().mockResolvedValue({ phases: [] });
@@ -231,6 +239,70 @@ describe('IntentView', () => {
     expect(await screen.findByText('Resuming')).toBeInTheDocument();
     expect(screen.getByText('Resuming agent session...')).toBeInTheDocument();
     expect(screen.queryByText('Waiting for your input')).not.toBeInTheDocument();
+  });
+
+  it('offers an owner repair action for orphaned parallel lane waits', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'RUNNING', pendingHumanTaskId: 'q-old' }),
+      stages: [
+        {
+          stageInstanceId: 'si-asset',
+          stageId: 'functional-design',
+          unitSlug: 'asset-containment',
+          sectionIndex: 1,
+          state: 'WAITING_FOR_HUMAN',
+          phase: 'construction',
+          pendingHumanTaskId: 'q-old',
+          parkedAt: '2026-01-01T00:01:00Z',
+        },
+      ],
+      gates: [
+        {
+          humanTaskId: 'q-old',
+          stageInstanceId: 'si-asset',
+          unitSlug: 'asset-containment',
+          sectionIndex: 1,
+          status: 'answered',
+          kind: 'question',
+          questions: '[{"text":"Already answered"}]',
+        },
+      ],
+      events: [{ eventId: 'fanout', type: 'v2.units.section_started' }],
+      unitPlan: {
+        units: [{ slug: 'asset-containment', dependsOn: [] }],
+        batches: [['asset-containment']],
+        unitCount: 1,
+        skipMatrix: {},
+        walkingSkeleton: 'asset-containment',
+        autonomyMode: 'autonomous',
+        promotedAt: null,
+      },
+      units: [
+        {
+          sectionIndex: 1,
+          slug: 'asset-containment',
+          dependsOn: [],
+          state: 'RUNNING',
+          batchIndex: 0,
+          branch: 'unit',
+          startedAt: '2026-01-01T00:00:00Z',
+          mergedAt: null,
+          failureReason: null,
+          blockedOn: null,
+          updatedAt: null,
+        },
+      ],
+    });
+    repair.mockResolvedValue({});
+
+    renderAt();
+
+    expect(await screen.findByText('Parallel execution needs recovery')).toBeInTheDocument();
+    expect(screen.getByText('Needs recovery')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Repair execution' }));
+    expect(await screen.findByText('Repair parallel execution')).toBeInTheDocument();
+    await userEvent.click(screen.getAllByRole('button', { name: 'Repair execution' }).at(-1)!);
+    expect(repair).toHaveBeenCalledWith('p1', 'i1');
   });
 
   it('renders a review-verdict gate with its options and answers through the gate endpoint', async () => {

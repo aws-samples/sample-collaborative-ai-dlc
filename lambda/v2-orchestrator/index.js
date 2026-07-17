@@ -902,9 +902,24 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         // Create a durable callback and stamp it on the gate so the answer path
         // can resume THIS execution. Then suspend (zero compute) until answered.
         const [callbackPromise, callbackId] = await ctxArg.createCallback(`await-${humanTaskId}`);
-        await ctxArg.step(`bind-callback-${humanTaskId}`, () =>
-          store.setGateCallbackId({ executionId, humanTaskId, callbackId }),
+        const callbackBound = await ctxArg.step(`bind-callback-${humanTaskId}`, () =>
+          store.setGateCallbackId({
+            executionId,
+            humanTaskId,
+            callbackId,
+            stageInstanceId: result.stageInstanceId ?? stage.stageInstanceId ?? null,
+            callbackOwner: `stage:${result.stageInstanceId ?? stage.stageInstanceId ?? label}`,
+          }),
         );
+        if (!callbackBound) {
+          return {
+            state: 'TERMINAL',
+            value: await fail(
+              'gate_callback_conflict',
+              `gate ${humanTaskId} is already bound to a different stage callback`,
+            ),
+          };
+        }
 
         // Answer/bind race (field incident): a fast human can answer in the
         // window between the runtime parking the stage and the bind above —

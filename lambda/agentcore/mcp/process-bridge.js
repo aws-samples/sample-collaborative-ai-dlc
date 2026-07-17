@@ -74,19 +74,24 @@ export const createProcessBridge = ({
         /* the gate + broadcast are the source of truth */
       }
     }
-    // Park the stage + execution as WAITING and record the pending gate. The
-    // stage row stays WAITING_FOR_HUMAN until run-stage resumes (or succeeds).
-    await store.updateExecution({
-      executionId,
-      status: 'WAITING',
-      pendingHumanTaskId: humanTaskId,
-    });
+    // A lane question parks only its stage. One META pointer cannot represent
+    // concurrent lane gates and previously caused sibling stages to adopt this
+    // question. Non-lane stages retain the legacy execution mirror for the
+    // linear workflow UI; HUMAN#/STAGE# rows remain authoritative everywhere.
+    if (!unitSlug) {
+      await store.updateExecution({
+        executionId,
+        status: 'WAITING',
+        pendingHumanTaskId: humanTaskId,
+      });
+    }
     if (stageInstanceId) {
       await store
         .updateStageState({
           executionId,
           stageInstanceId,
           state: 'WAITING_FOR_HUMAN',
+          pendingHumanTaskId: humanTaskId,
           // Human-wait accounting starts at the ASK, not the CLI exit: the
           // human is already waiting while the agent winds down its turn.
           parkedAt: true,
@@ -122,11 +127,13 @@ export const createProcessBridge = ({
       const task = await store.getHumanTask(executionId, humanTaskId);
       if (task && task.status !== 'pending') {
         // Answered in time: clear the gate, un-park, and return the answer as before.
-        await store.updateExecution({
-          executionId,
-          status: 'RUNNING',
-          pendingHumanTaskId: null,
-        });
+        if (!unitSlug) {
+          await store.updateExecution({
+            executionId,
+            status: 'RUNNING',
+            pendingHumanTaskId: null,
+          });
+        }
         if (stageInstanceId) {
           // resumeStageRow folds the parked window into waitMs and clears
           // parkedAt — the inline answer ends the human wait right here.

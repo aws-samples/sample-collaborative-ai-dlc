@@ -569,13 +569,59 @@ describe('createProcessStore', () => {
     expect(input.UpdateExpression).toContain('baseBranches = :baseBranches');
   });
 
-  it('setGateCallbackId stamps the durable callbackId on the gate row', async () => {
-    ddb.on(UpdateCommand).resolves({ Attributes: { callbackId: 'cb-1' } });
-    await store.setGateCallbackId({ executionId: 'e1', humanTaskId: 'h1', callbackId: 'cb-1' });
+  it('setGateCallbackId binds the callback and owner with a pending-gate CAS', async () => {
+    ddb.on(UpdateCommand).resolves({
+      Attributes: { callbackId: 'cb-1', callbackOwner: 'stage:si-1' },
+    });
+    await store.setGateCallbackId({
+      executionId: 'e1',
+      humanTaskId: 'h1',
+      callbackId: 'cb-1',
+      stageInstanceId: 'si-1',
+      callbackOwner: 'stage:si-1',
+    });
     const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
     expect(input.Key).toEqual(humanTaskKey('e1', 'h1'));
     expect(input.ExpressionAttributeValues[':cb']).toBe('cb-1');
+    expect(input.ExpressionAttributeValues[':nullCallback']).toBeNull();
+    expect(input.ExpressionAttributeValues[':stageInstanceId']).toBe('si-1');
+    expect(input.ConditionExpression).toContain('#status = :pending');
+    expect(input.ConditionExpression).toContain('callbackId = :nullCallback');
+    expect(input.ConditionExpression).toContain('callbackId = :cb');
+    expect(input.ConditionExpression).toContain('callbackOwner = :owner');
+    expect(input.ConditionExpression).toContain('stageInstanceId = :stageInstanceId');
     expect(input.UpdateExpression).toContain('callbackId = :cb');
+  });
+
+  it('setGateCallbackId accepts engine gates with an absent or explicit null stage owner', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: { callbackId: 'cb-engine' } });
+    await store.setGateCallbackId({
+      executionId: 'e1',
+      humanTaskId: 'h1',
+      callbackId: 'cb-engine',
+      stageInstanceId: null,
+      callbackOwner: 'engine:h1',
+    });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ConditionExpression).toContain(
+      '(attribute_not_exists(stageInstanceId) OR stageInstanceId = :nullStage)',
+    );
+    expect(input.ExpressionAttributeValues[':nullStage']).toBeNull();
+  });
+
+  it('setGateCallbackId returns null when another callback already owns the gate', async () => {
+    ddb
+      .on(UpdateCommand)
+      .rejects(Object.assign(new Error('cas'), { name: 'ConditionalCheckFailedException' }));
+    await expect(
+      store.setGateCallbackId({
+        executionId: 'e1',
+        humanTaskId: 'h1',
+        callbackId: 'cb-loser',
+        stageInstanceId: 'si-1',
+        callbackOwner: 'stage:si-1',
+      }),
+    ).resolves.toBeNull();
   });
 });
 

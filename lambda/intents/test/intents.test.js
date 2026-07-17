@@ -20,6 +20,7 @@ import {
   InvokeCommand,
   ListDurableExecutionsByFunctionCommand,
   SendDurableExecutionCallbackSuccessCommand,
+  StopDurableExecutionCommand,
 } from '@aws-sdk/client-lambda';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import {
@@ -207,6 +208,9 @@ const installDdbFakes = () => {
   lambdaMock.on(SendDurableExecutionCallbackSuccessCommand).resolves({});
   lambdaMock.on(GetDurableExecutionCommand).resolves({ Status: 'TIMED_OUT' });
   lambdaMock.on(ListDurableExecutionsByFunctionCommand).resolves({ DurableExecutions: [] });
+  lambdaMock.on(StopDurableExecutionCommand).resolves({
+    StopTimestamp: new Date('2026-07-17T00:00:00.000Z'),
+  });
 };
 
 // Seed a HUMAN# gate row straight into the fake table (the runtime writes these;
@@ -3894,6 +3898,7 @@ describe('WP4 — unit lanes in the detail DTO', () => {
       stageId: 'code-generation',
       unitSlug: 'auth',
       state: 'SUCCEEDED',
+      pendingHumanTaskId: 'q-1',
     });
     seedGate(intent.id, 'q-1', { status: 'pending', stageInstanceId: 'si-cg-auth' });
     procStore.set(keyOf(`EXEC#${intent.id}`, 'HUMAN#q-1'), {
@@ -3934,7 +3939,11 @@ describe('WP4 — unit lanes in the detail DTO', () => {
       expect.objectContaining({ slug: 'auth', state: 'MERGED', mergedAt: 'T2' }),
     ]);
     expect(detail.stages).toEqual([
-      expect.objectContaining({ stageId: 'code-generation', unitSlug: 'auth' }),
+      expect.objectContaining({
+        stageId: 'code-generation',
+        unitSlug: 'auth',
+        pendingHumanTaskId: 'q-1',
+      }),
     ]);
     expect(detail.gates).toEqual([
       expect.objectContaining({ humanTaskId: 'q-1', unitSlug: 'auth' }),
@@ -4022,6 +4031,250 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
       cli: 'claude',
       cliSessionId: 'sess-1',
     });
+
+  const addProjectMember = async (projectId, sub, role) => {
+    await g.addV('User').property('id', sub).property('email', `${sub}@x`).next();
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .addE('HAS_MEMBER')
+      .property('role', role)
+      .to(gremlin.process.statics.V().has('User', 'id', sub))
+      .next();
+  };
+
+  const repair = (sub, projectId, intentId) =>
+    handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intentId}/repair`,
+      pathParameters: { projectId, intentId },
+      ...claims(sub),
+    });
+
+  it('repairs orphaned parallel waits while preserving merged units', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSectionPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    await seedIntentAnchor(intent.id);
+    setStatus(intent.id, {
+      status: 'RUNNING',
+      durableExecutionArn: 'arn:aws:lambda:eu-central-1:123:durable-execution:old',
+      orchestratorRunId: 'old-run',
+      pendingHumanTaskId: 'answered-gate',
+    });
+    seedStageRow(intent.id, 'units-gen');
+    seedStageRow(intent.id, 'cg', 'foundation', 'SUCCEEDED', 1);
+    seedStageRow(intent.id, 'cg', 'asset-containment', 'WAITING_FOR_HUMAN', 1);
+    seedStageRow(intent.id, 'cg', 'live-data-energy-flow', 'WAITING_FOR_HUMAN', 1);
+    seedStageRow(intent.id, 'cg', 'echarts-integration', 'SUCCEEDED', 1);
+    seedGate(intent.id, 'answered-gate', {
+      status: 'answered',
+      stageInstanceId: siOf('cg', 'live-data-energy-flow', 1),
+    });
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'UNITPLAN'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'UNITPLAN',
+      executionId: intent.id,
+      units: [
+        { slug: 'foundation', dependsOn: [] },
+        { slug: 'asset-containment', dependsOn: ['foundation'] },
+        { slug: 'live-data-energy-flow', dependsOn: ['foundation'] },
+        { slug: 'echarts-integration', dependsOn: ['foundation'] },
+        { slug: 'blocked-dependent', dependsOn: ['asset-containment'] },
+        { slug: 'dependent', dependsOn: ['asset-containment'] },
+      ],
+      batches: [
+        ['foundation'],
+        ['asset-containment', 'live-data-energy-flow', 'echarts-integration'],
+        ['blocked-dependent', 'dependent'],
+      ],
+    });
+    const unitRow = (slug, state) =>
+      procStore.set(keyOf(`EXEC#${intent.id}`, `UNIT#S1#${slug}`), {
+        pk: `EXEC#${intent.id}`,
+        sk: `UNIT#S1#${slug}`,
+        type: 'Unit',
+        executionId: intent.id,
+        sectionIndex: 1,
+        slug,
+        state,
+      });
+    unitRow('foundation', 'MERGED');
+    unitRow('asset-containment', 'RUNNING');
+    unitRow('live-data-energy-flow', 'RUNNING');
+    unitRow('echarts-integration', 'PR_DRAFT');
+    unitRow('blocked-dependent', 'BLOCKED');
+    unitRow('dependent', 'PENDING');
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'UNITPR#S1#echarts-integration#owner%2Frepo'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'UNITPR#S1#echarts-integration#owner%2Frepo',
+      type: 'UnitPr',
+      executionId: intent.id,
+      sectionIndex: 1,
+      unitSlug: 'echarts-integration',
+      repository: 'owner/repo',
+      state: 'READY',
+      readyHeadSha: 'tainted-head',
+    });
+
+    const res = await repair(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(202);
+    expect(JSON.parse(res.body).repair).toMatchObject({
+      sectionIndex: 1,
+      laneSlugs: [
+        'asset-containment',
+        'blocked-dependent',
+        'echarts-integration',
+        'live-data-energy-flow',
+      ],
+      fromStageId: 'cg',
+    });
+    expect(lambdaMock.commandCalls(StopDurableExecutionCommand)).toHaveLength(1);
+    expect(
+      lambdaMock.commandCalls(StopDurableExecutionCommand)[0].args[0].input.DurableExecutionArn,
+    ).toBe('arn:aws:lambda:eu-central-1:123:durable-execution:old');
+    expect(archiveArtifactsSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        intentId: intent.id,
+        stageInstanceIds: expect.arrayContaining([
+          siOf('cg', 'asset-containment', 1),
+          siOf('cg', 'blocked-dependent', 1),
+          siOf('cg', 'live-data-energy-flow', 1),
+          siOf('cg', 'echarts-integration', 1),
+        ]),
+      }),
+    );
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'UNIT#S1#foundation'))).toMatchObject({
+      state: 'MERGED',
+    });
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'UNIT#S1#dependent'))).toMatchObject({
+      state: 'PENDING',
+    });
+    for (const slug of [
+      'asset-containment',
+      'blocked-dependent',
+      'live-data-energy-flow',
+      'echarts-integration',
+    ]) {
+      expect(procStore.get(keyOf(`EXEC#${intent.id}`, `UNIT#S1#${slug}`))).toMatchObject({
+        state: 'PENDING',
+        failureReason: null,
+      });
+      const stageRow = procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('cg', slug, 1)}`));
+      if (slug !== 'blocked-dependent') {
+        expect(stageRow).toMatchObject({
+          state: 'PENDING',
+          attempt: 1,
+          pendingHumanTaskId: null,
+        });
+      }
+    }
+    expect(
+      procStore.get(keyOf(`EXEC#${intent.id}`, 'UNITPR#S1#echarts-integration#owner%2Frepo')),
+    ).toMatchObject({
+      state: 'DRAFT',
+      readyHeadSha: null,
+      repositoryOutcome: 'replaying_after_lane_repair',
+    });
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META'))).toMatchObject({
+      status: 'CREATED',
+      pendingHumanTaskId: null,
+      rewindFromStageId: 'cg',
+      failureReason: null,
+    });
+    const invokes = lambdaMock.commandCalls(InvokeCommand);
+    expect(invokes).toHaveLength(1);
+    expect(JSON.parse(Buffer.from(invokes[0].args[0].input.Payload).toString())).toMatchObject({
+      action: 'start',
+      startAtStageId: 'cg',
+    });
+    expect(
+      [...procStore.values()].some(
+        (row) => row.pk === `EXEC#${intent.id}` && row.eventType === 'v2.execution.lanes_repaired',
+      ),
+    ).toBe(true);
+  });
+
+  it('leaves a stop failure retryable without archiving or resetting lanes', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSectionPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    setStatus(intent.id, {
+      status: 'RUNNING',
+      durableExecutionArn: 'arn:aws:lambda:eu-central-1:123:durable-execution:old',
+    });
+    seedStageRow(intent.id, 'cg', 'asset-containment', 'WAITING_FOR_HUMAN', 1);
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'UNIT#S1#asset-containment'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'UNIT#S1#asset-containment',
+      type: 'Unit',
+      executionId: intent.id,
+      sectionIndex: 1,
+      slug: 'asset-containment',
+      state: 'RUNNING',
+    });
+    lambdaMock.on(StopDurableExecutionCommand).rejectsOnce(new Error('durable service down'));
+
+    const res = await repair(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(502);
+    expect(JSON.parse(res.body)).toMatchObject({ code: 'durable_stop_failed' });
+    expect(archiveArtifactsSpy).not.toHaveBeenCalled();
+    expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(0);
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META'))).toMatchObject({
+      status: 'FAILED',
+      failureReason: 'lane_repair_durable_stop_failed',
+    });
+    expect(
+      procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('cg', 'asset-containment', 1)}`)),
+    ).toMatchObject({ state: 'WAITING_FOR_HUMAN', attempt: 0 });
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'UNIT#S1#asset-containment'))).toMatchObject({
+      state: 'RUNNING',
+    });
+  });
+
+  it('restricts lane repair to owners/admins and refuses healthy runs', async () => {
+    const owner = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(owner);
+    seedSectionPlan();
+    const intent = JSON.parse((await createIntent(owner, projectId)).body);
+    setStatus(intent.id, { status: 'RUNNING' });
+    const member = `u-${randomUUID()}`;
+    const admin = `u-${randomUUID()}`;
+    await addProjectMember(projectId, member, 'member');
+    await addProjectMember(projectId, admin, 'admin');
+
+    expect((await repair(member, projectId, intent.id)).statusCode).toBe(403);
+    const adminResult = await repair(admin, projectId, intent.id);
+    expect(adminResult.statusCode).toBe(409);
+    expect(JSON.parse(adminResult.body)).toMatchObject({ code: 'repair_not_needed' });
+  });
+
+  it('does not treat a legacy wait with no section index as section zero', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSectionPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    setStatus(intent.id, { status: 'RUNNING' });
+    seedStageRow(intent.id, 'cg', 'legacy-unit', 'WAITING_FOR_HUMAN', null);
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'UNIT#legacy-unit'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'UNIT#legacy-unit',
+      executionId: intent.id,
+      slug: 'legacy-unit',
+      state: 'RUNNING',
+    });
+
+    const res = await repair(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).sections).toEqual([]);
+    expect(lambdaMock.commandCalls(StopDurableExecutionCommand)).toHaveLength(0);
+    expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(0);
+  });
 
   it('resets every lane instance of a forEach stage and re-opens the touched lanes', async () => {
     const sub = `u-${randomUUID()}`;

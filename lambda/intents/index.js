@@ -11,6 +11,7 @@ import {
   InvokeCommand,
   ListDurableExecutionsByFunctionCommand,
   SendDurableExecutionCallbackSuccessCommand,
+  StopDurableExecutionCommand,
 } from '@aws-sdk/client-lambda';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
@@ -2560,6 +2561,302 @@ export const handler = async (event) => {
       }
     }
 
+    // POST /projects/{projectId}/intents/{intentId}/repair
+    // Recover a parallel section whose stage callbacks became orphaned. This is
+    // intentionally narrower than rewind: merged units remain merged, pending
+    // dependents remain pending, and every active lane in the affected section
+    // is replayed from the section start so a sibling that consumed the wrong
+    // gate answer cannot be integrated.
+    if (intentId && httpMethod === 'POST' && path?.endsWith('/repair')) {
+      if (auth.role !== 'owner' && auth.role !== 'admin') {
+        return response(403, { error: 'Only project owners and admins can repair intents' });
+      }
+      const meta = await store.getExecution(intentId);
+      if (!meta || meta.projectId !== projectId) {
+        return response(404, { error: 'Intent not found' });
+      }
+      if (!['RUNNING', 'WAITING', 'FAILED'].includes(meta.status)) {
+        return response(409, { error: `Intent is ${meta.status}; no active run can be repaired` });
+      }
+
+      const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
+      const pendingByStage = new Map(
+        (records.humanTasks ?? [])
+          .filter((gate) => gate.status === 'pending' && gate.stageInstanceId)
+          .map((gate) => [gate.stageInstanceId, gate]),
+      );
+      const orphaned = (records.stages ?? []).filter(
+        (stage) =>
+          stage.state === 'WAITING_FOR_HUMAN' &&
+          stage.unitSlug &&
+          !pendingByStage.has(stage.stageInstanceId),
+      );
+      if (orphaned.length === 0) {
+        return response(409, {
+          error: 'No orphaned parallel lane waits were detected',
+          code: 'repair_not_needed',
+        });
+      }
+      const sectionIndexes = [
+        ...new Set(
+          orphaned
+            .map((stage) => stage.sectionIndex)
+            .filter(
+              (index) => index !== null && index !== undefined && Number.isInteger(Number(index)),
+            ),
+        ),
+      ];
+      if (sectionIndexes.length !== 1) {
+        return response(409, {
+          error: 'Repair currently requires all orphaned lanes to belong to one section',
+          sections: sectionIndexes,
+        });
+      }
+      const sectionIndex = Number(sectionIndexes[0]);
+      const repairableStates = new Set([
+        'READY',
+        'RUNNING',
+        'PR_DRAFT',
+        'RECONCILING',
+        'PR_READY',
+        'ADDRESSING_FEEDBACK',
+        'MERGING',
+        'FAILED',
+        'BLOCKED',
+      ]);
+      const repairUnits = (records.units ?? []).filter(
+        (unit) => Number(unit.sectionIndex) === sectionIndex && repairableStates.has(unit.state),
+      );
+      const repairSlugs = [...new Set(repairUnits.map((unit) => unit.slug))];
+      if (repairSlugs.length === 0) {
+        return response(409, { error: 'No active lanes are available to repair' });
+      }
+
+      const planResult = await loadExecutionPlan({
+        ddb,
+        tableName: BLOCKS_TABLE(),
+        workflowId: meta.workflowId,
+        workflowVersion: meta.workflowVersion,
+        scope: meta.scope,
+        ...(Array.isArray(meta.skipStageIds) && meta.skipStageIds.length
+          ? { skipStageIds: meta.skipStageIds }
+          : {}),
+        ...(meta.composedGrid ? { composedGrid: meta.composedGrid } : {}),
+      });
+      if (!planResult.valid || !planResult.plan) {
+        return response(409, {
+          error: 'Execution plan cannot be resolved for repair',
+          errors: planResult.errors ?? [],
+        });
+      }
+      const sectionStages = planResult.plan.stages.filter(
+        (stage) => Number(stage.parallelSection) === sectionIndex,
+      );
+      if (sectionStages.length === 0) {
+        return response(409, { error: `Parallel section ${sectionIndex} is not in the plan` });
+      }
+      const planNamespace =
+        planResult.plan.namespace ?? `${meta.workflowId}@${meta.workflowVersion}`;
+      const resetInstances = sectionStages.flatMap((stage) =>
+        repairSlugs.map((slug) => ({
+          stage,
+          slug,
+          stageInstanceId: planStageInstanceId(planNamespace, stage.stageId, slug, sectionIndex),
+        })),
+      );
+      const responder = getResponder(event);
+      const repairId = `repair-${randomUUID()}`;
+      const repairReason = `Repair orphaned parallel lanes in section ${sectionIndex}`;
+      let priorDurableExecutionArn = meta.durableExecutionArn ?? null;
+      if (!priorDurableExecutionArn && meta.durableExecutionName && ORCHESTRATOR_FN()) {
+        const listed = await lambdaClient.send(
+          new ListDurableExecutionsByFunctionCommand({
+            ...parseFunctionAndQualifier(ORCHESTRATOR_FN()),
+            DurableExecutionName: meta.durableExecutionName,
+            MaxItems: 1,
+          }),
+        );
+        priorDurableExecutionArn = listed.DurableExecutions?.[0]?.DurableExecutionArn ?? null;
+      }
+
+      await store.updateExecution({
+        executionId: intentId,
+        projectId,
+        status: 'FAILED',
+        fromStatus: meta.status,
+        startedAt: meta.startedAt,
+        pendingHumanTaskId: null,
+        failureReason: 'lane_repair_in_progress',
+        completedAt: null,
+        orchestratorRunId: `retired-${randomBytes(8).toString('hex')}`,
+      });
+      if (priorDurableExecutionArn) {
+        try {
+          await lambdaClient.send(
+            new StopDurableExecutionCommand({
+              DurableExecutionArn: priorDurableExecutionArn,
+              Error: {
+                ErrorType: 'LaneRepair',
+                ErrorMessage: repairReason,
+                ErrorData: JSON.stringify({ repairId, sectionIndex, repairSlugs }),
+              },
+            }),
+          );
+        } catch (error) {
+          if (!['ResourceNotFoundException', 'ConflictException'].includes(error?.name)) {
+            await store
+              .updateExecution({
+                executionId: intentId,
+                projectId,
+                failureReason: 'lane_repair_durable_stop_failed',
+              })
+              .catch(() => {});
+            await store
+              .appendEvent({
+                executionId: intentId,
+                type: 'v2.execution.repair_failed',
+                actor: responder.displayName || responder.sub,
+                summary: `Could not stop the prior durable execution: ${error?.message ?? 'unknown error'}`,
+              })
+              .catch(() => {});
+            return response(502, {
+              error: 'The old durable execution could not be stopped; repair did not relaunch',
+              code: 'durable_stop_failed',
+            });
+          }
+        }
+      }
+
+      const archivedArtifacts = await archiveArtifactsForStages({
+        g,
+        intentId,
+        stageInstanceIds: resetInstances.map((instance) => instance.stageInstanceId),
+        restartId: repairId,
+        reason: repairReason,
+        actor: responder.displayName || responder.sub,
+      });
+      await retireParkedRun(intentId, repairReason);
+      await stopRuntimeSessions(intentId, {
+        sectionIndexes: [sectionIndex],
+        unitSlugs: repairSlugs,
+      });
+
+      await mapWithConcurrency(resetInstances, 12, async ({ stage, slug, stageInstanceId }) => {
+        const reset = await store.resetStageRow({ executionId: intentId, stageInstanceId });
+        if (!reset) return;
+        await store
+          .appendEvent({
+            executionId: intentId,
+            type: 'v2.stage.reset',
+            stageInstanceId,
+            unitSlug: slug,
+            sectionIndex,
+            actor: responder.displayName || responder.sub,
+            summary: `Stage ${stage.stageId} [unit ${slug}] reset by lane repair`,
+          })
+          .catch(() => {});
+      });
+      await mapWithConcurrency(repairSlugs, 8, (slug) =>
+        store.updateUnitState({
+          executionId: intentId,
+          sectionIndex,
+          slug,
+          state: 'PENDING',
+          fields: {
+            failureReason: null,
+            blockedOn: null,
+            integrationOwner: false,
+            blockedReason: 'Replaying after orphaned lane recovery',
+          },
+        }),
+      );
+      const repairPrs = (records.unitPrs ?? []).filter(
+        (pr) => Number(pr.sectionIndex) === sectionIndex && repairSlugs.includes(pr.unitSlug),
+      );
+      await mapWithConcurrency(repairPrs, 8, (pr) =>
+        store.updateUnitPr({
+          executionId: intentId,
+          sectionIndex,
+          slug: pr.unitSlug,
+          repository: pr.repository,
+          state: 'DRAFT',
+          fields: {
+            readyHeadSha: null,
+            repositoryOutcome: 'replaying_after_lane_repair',
+          },
+        }),
+      );
+      await store
+        .appendEvent({
+          executionId: intentId,
+          type: 'v2.execution.lanes_repaired',
+          actor: responder.displayName || responder.sub,
+          summary: `${responder.displayName || 'Someone'} repaired section ${sectionIndex}; replaying active lanes [${repairSlugs.join(', ')}] (${archivedArtifacts.length} artifact version(s) archived)`,
+        })
+        .catch(() => {});
+
+      const fromStageId = sectionStages[0].stageId;
+      const durableExecutionName = durableExecutionNameForIntent(intentId);
+      const updated = await store.updateExecution({
+        executionId: intentId,
+        projectId,
+        status: 'CREATED',
+        fromStatus: 'FAILED',
+        startedAt: meta.startedAt,
+        durableExecutionName,
+        durableExecutionArn: null,
+        orchestratorStartedAt: null,
+        orchestratorExpiresAt: null,
+        pendingHumanTaskId: null,
+        failureReason: null,
+        completedAt: null,
+        rewindFromStageId: fromStageId,
+      });
+      try {
+        const invoked = await invokeOrchestrator(
+          {
+            action: 'start',
+            intentId,
+            executionId: intentId,
+            startAtStageId: fromStageId,
+          },
+          { durableExecutionName },
+        );
+        if (invoked?.durableExecutionArn) {
+          await store
+            .updateExecution({
+              executionId: intentId,
+              durableExecutionArn: invoked.durableExecutionArn,
+            })
+            .catch((error) =>
+              console.error('Repair durable execution ARN stamp failed:', error.message),
+            );
+        }
+      } catch (error) {
+        await store.updateExecution({
+          executionId: intentId,
+          projectId,
+          status: 'FAILED',
+          fromStatus: 'CREATED',
+          startedAt: meta.startedAt,
+          pendingHumanTaskId: null,
+          failureReason: 'lane_repair_relaunch_failed',
+          durableExecutionArn: null,
+        });
+        throw error;
+      }
+      return response(202, {
+        intent: mapIntent(updated),
+        repair: {
+          repairId,
+          sectionIndex,
+          laneSlugs: repairSlugs,
+          archivedArtifactCount: archivedArtifacts.length,
+          fromStageId,
+        },
+      });
+    }
+
     // POST /projects/{projectId}/intents/{intentId}/rewind
     // Restart the run from an earlier stage with corrective guidance
     // (docs/v2-steering.md). Rejected while RUNNING (409) — steering is only
@@ -3678,6 +3975,7 @@ const mapStage = (s) => ({
   // as (completedAt ?? now) − startedAt − waitMs − any open park window.
   waitMs: s.waitMs ?? 0,
   parkedAt: s.parkedAt ?? null,
+  pendingHumanTaskId: s.pendingHumanTaskId ?? null,
 });
 
 // Unit lanes (docs/v2-parallel.md WP4): the promoted scheduling snapshot and

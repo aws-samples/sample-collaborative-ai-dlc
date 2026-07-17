@@ -12,6 +12,7 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet';
 import { cn } from '@/lib/utils';
+import { deriveLaneWaits, laneWaitKey, type LaneWaitStatus } from '@/lib/intentRecovery';
 import { useIntent, type IntentStageRow } from '@/contexts/IntentContext';
 import { formatDuration, useTick } from '@/components/intent/stageStyle';
 import {
@@ -43,7 +44,9 @@ import {
 // inferred from the wave index.
 
 // ── State presentation ──────────────────────────────────────────────────────
-const STATE_LABEL: Record<UnitState, string> = {
+type DisplayState = UnitState | 'WAITING_INPUT' | 'NEEDS_RECOVERY';
+
+const STATE_LABEL: Record<DisplayState, string> = {
   PENDING: 'Pending',
   READY: 'Ready',
   RUNNING: 'Building',
@@ -55,12 +58,14 @@ const STATE_LABEL: Record<UnitState, string> = {
   MERGED: 'Merged',
   BLOCKED: 'Blocked',
   FAILED: 'Failed',
+  WAITING_INPUT: 'Waiting for input',
+  NEEDS_RECOVERY: 'Needs recovery',
 };
 
 // Tailwind classes per state. MERGING is active work but merge-back rather than
 // agent construction, so it gets a distinct, subdued treatment (construction
 // palette) rather than the running purple.
-const STATE_STYLES: Record<UnitState, { card: string; badge: string; dot: string }> = {
+const STATE_STYLES: Record<DisplayState, { card: string; badge: string; dot: string }> = {
   RUNNING: {
     card: 'border-agent-running/50 bg-agent-running/[0.06] ring-1 ring-agent-running/30',
     badge: 'text-agent-running bg-agent-running/10',
@@ -116,11 +121,23 @@ const STATE_STYLES: Record<UnitState, { card: string; badge: string; dot: string
     badge: 'text-muted-foreground bg-muted',
     dot: 'bg-muted-foreground/40',
   },
+  WAITING_INPUT: {
+    card: 'border-agent-waiting/50 bg-agent-waiting/[0.05]',
+    badge: 'text-agent-waiting bg-agent-waiting/10',
+    dot: 'bg-agent-waiting',
+  },
+  NEEDS_RECOVERY: {
+    card: 'border-agent-error/50 bg-agent-error/[0.06] ring-1 ring-agent-error/20',
+    badge: 'text-agent-error bg-agent-error/10',
+    dot: 'bg-agent-error',
+  },
 };
 
 // Order used for the header state-count chips (only present states rendered).
-const STATE_ORDER: UnitState[] = [
+const STATE_ORDER: DisplayState[] = [
   'MERGED',
+  'NEEDS_RECOVERY',
+  'WAITING_INPUT',
   'RUNNING',
   'ADDRESSING_FEEDBACK',
   'RECONCILING',
@@ -132,8 +149,7 @@ const STATE_ORDER: UnitState[] = [
   'READY',
   'PENDING',
 ];
-const unitLaneKey = (sectionIndex: number | null | undefined, slug: string) =>
-  `s${sectionIndex ?? 'legacy'}:${slug}`;
+const unitLaneKey = laneWaitKey;
 const reviewCommentSelectionKey = (comment: UnitReviewComment) =>
   `${comment.repository}:${comment.id}`;
 
@@ -150,6 +166,7 @@ interface UnitCardProps {
   /** Open this lane's full output in the sidebar (only when building). */
   onViewLiveOutput?: (stageInstanceId: string) => void;
   onAddressFeedback?: (unit: IntentUnit) => void;
+  laneWait?: LaneWaitStatus | null;
 }
 
 function UnitCard({
@@ -161,12 +178,19 @@ function UnitCard({
   stream,
   onViewLiveOutput,
   onAddressFeedback,
+  laneWait,
 }: UnitCardProps) {
-  useTick(unit.state === 'RUNNING' || unit.state === 'MERGING');
-  const styles = STATE_STYLES[unit.state];
+  useTick((unit.state === 'RUNNING' && !laneWait) || unit.state === 'MERGING');
+  const displayState: DisplayState =
+    laneWait?.kind === 'recovery'
+      ? 'NEEDS_RECOVERY'
+      : laneWait?.kind === 'input'
+        ? 'WAITING_INPUT'
+        : unit.state;
+  const styles = STATE_STYLES[displayState];
   const elapsed =
     unit.startedAt && (unit.state === 'RUNNING' || unit.state === 'MERGING')
-      ? formatDuration(unit.startedAt, null)
+      ? formatDuration(unit.startedAt, laneWait?.since ?? null)
       : null;
   const showStream = runningStageInstanceId !== null && stream;
 
@@ -193,7 +217,7 @@ function UnitCard({
             styles.badge,
           )}
         >
-          {STATE_LABEL[unit.state]}
+          {STATE_LABEL[displayState]}
         </span>
       </div>
 
@@ -228,6 +252,16 @@ function UnitCard({
       )}
       {unit.blockedReason && (
         <p className="mt-1 text-[10px] text-muted-foreground">{unit.blockedReason}</p>
+      )}
+      {laneWait && (
+        <p
+          className={cn(
+            'mt-1.5 text-[10px]',
+            laneWait.kind === 'recovery' ? 'font-medium text-agent-error' : 'text-agent-waiting',
+          )}
+        >
+          {laneWait.blocker}
+        </p>
       )}
       {unit.state === 'MERGING' && (
         <p className="mt-1.5 text-[10px] text-phase-construction">Merging back&hellip;</p>
@@ -348,18 +382,19 @@ function UnitCard({
           View live output
         </button>
       )}
-      {prs.some((pr) => pr.state !== 'UNCHANGED' && pr.state !== 'CLOSED') && onAddressFeedback && (
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => onAddressFeedback(unit)}
-          className="mt-2 h-7 gap-1.5 px-2 text-[10px]"
-        >
-          <MessageSquare className="h-3 w-3" />
-          Address feedback
-        </Button>
-      )}
+      {prs.some((pr) => pr.commentCount > 0 && pr.state !== 'UNCHANGED' && pr.state !== 'CLOSED') &&
+        onAddressFeedback && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => onAddressFeedback(unit)}
+            className="mt-2 h-7 gap-1.5 px-2 text-[10px]"
+          >
+            <MessageSquare className="h-3 w-3" />
+            Address feedback
+          </Button>
+        )}
     </div>
   );
 }
@@ -378,6 +413,7 @@ export interface UnitLaneBoardViewProps {
    *  that lane's stageInstanceId — during fan-out each lane streams separately). */
   onViewLiveOutput?: (stageInstanceId: string) => void;
   onAddressFeedback?: (unit: IntentUnit) => void;
+  laneWaitBySlug?: Record<string, LaneWaitStatus>;
 }
 
 export function UnitLaneBoardView({
@@ -389,6 +425,7 @@ export function UnitLaneBoardView({
   feedbackBatches = [],
   onViewLiveOutput,
   onAddressFeedback,
+  laneWaitBySlug = {},
 }: UnitLaneBoardViewProps) {
   const unitByLane = useMemo(() => {
     const m = new Map<string, IntentUnit>();
@@ -419,16 +456,23 @@ export function UnitLaneBoardView({
   // State-count chips — only states actually present among plan units, in a
   // stable order.
   const stateCounts = useMemo(() => {
-    const counts = new Map<UnitState, number>();
+    const counts = new Map<DisplayState, number>();
     for (const u of units) {
       if (!planSlugs.has(u.slug)) continue;
-      counts.set(u.state, (counts.get(u.state) ?? 0) + 1);
+      const wait = laneWaitBySlug[unitLaneKey(u.sectionIndex, u.slug)];
+      const displayState: DisplayState =
+        wait?.kind === 'recovery'
+          ? 'NEEDS_RECOVERY'
+          : wait?.kind === 'input'
+            ? 'WAITING_INPUT'
+            : u.state;
+      counts.set(displayState, (counts.get(displayState) ?? 0) + 1);
     }
     return STATE_ORDER.filter((s) => counts.has(s)).map((s) => ({
       state: s,
       count: counts.get(s) as number,
     }));
-  }, [units, planSlugs]);
+  }, [units, planSlugs, laneWaitBySlug]);
 
   const waves = unitPlan.batches ?? [];
 
@@ -521,6 +565,7 @@ export function UnitLaneBoardView({
                                 stream={streamsBySlug[key] ?? streamsBySlug[slug] ?? null}
                                 onViewLiveOutput={onViewLiveOutput}
                                 onAddressFeedback={onAddressFeedback}
+                                laneWait={laneWaitBySlug[key] ?? null}
                               />
                             );
                           })}
@@ -582,12 +627,16 @@ export function isFanoutActive(detail: { events?: { type: string }[] } | null): 
 export function UnitLaneBoard({
   onViewLiveOutput,
 }: { onViewLiveOutput?: (stageInstanceId: string) => void } = {}) {
-  const { detail, stageRows, outputBuffers, ensureOutputs, outputVersion } = useIntent();
+  const { detail, stageRows, gates, outputBuffers, ensureOutputs, outputVersion } = useIntent();
   const unitPlan = detail?.unitPlan ?? null;
   const units = useMemo(() => detail?.units ?? [], [detail?.units]);
   const unitPrs = useMemo(() => detail?.unitPrs ?? [], [detail?.unitPrs]);
   const feedbackBatches = useMemo(() => detail?.feedbackBatches ?? [], [detail?.feedbackBatches]);
   const [reviewUnit, setReviewUnit] = useState<IntentUnit | null>(null);
+  const laneWaitBySlug = useMemo(
+    () => deriveLaneWaits(detail?.stages ?? [], gates),
+    [detail?.stages, gates],
+  );
 
   // Resolve each unit's RUNNING stage instance. findLast + the stageInstanceId
   // guard is the safer default if retries or duplicate live rows appear. Keys on
@@ -640,6 +689,7 @@ export function UnitLaneBoard({
         runningStageBySlug={runningStageBySlug}
         unitPrs={unitPrs}
         feedbackBatches={feedbackBatches}
+        laneWaitBySlug={laneWaitBySlug}
         onViewLiveOutput={onViewLiveOutput}
         onAddressFeedback={setReviewUnit}
       />

@@ -448,6 +448,10 @@ const buildStageRow = ({
   // stage exits. Persisted for traceability + manual operator recovery of a
   // stuck stage. Null for rows written outside the async path.
   stageCallbackId = null,
+  // The HUMAN# gate this stage is currently parked on. This is the scheduling
+  // source of truth for agent questions; META.pendingHumanTaskId is only a
+  // legacy/display mirror and cannot represent concurrent lane questions.
+  pendingHumanTaskId = null,
   // The unit-of-work lane this stage instance belongs to (docs/v2-parallel.md
   // WP4). Null for once-per-workflow stages; set on `forEach: unit-of-work`
   // instances so every stage row is attributable to its lane.
@@ -471,6 +475,7 @@ const buildStageRow = ({
   cliSessionId,
   resolvedModel,
   stageCallbackId,
+  pendingHumanTaskId,
   runtimeError: null,
   startedAt: state === 'RUNNING' ? now : null,
   completedAt: null,

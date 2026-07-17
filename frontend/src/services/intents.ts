@@ -156,6 +156,7 @@ export interface IntentStage {
   // duration = (completedAt ?? now) − startedAt − waitMs − open park window.
   waitMs?: number;
   parkedAt?: string | null;
+  pendingHumanTaskId?: string | null;
 }
 
 // A human gate (HUMAN# row). `questions` is the v1-shaped structured-questions
@@ -628,6 +629,17 @@ export interface IntentDetail {
   feedbackBatches?: IntentFeedbackBatch[];
 }
 
+export interface IntentRepairResult {
+  intent: Intent;
+  repair: {
+    repairId: string;
+    sectionIndex: number;
+    laneSlugs: string[];
+    archivedArtifactCount: number;
+    fromStageId: string;
+  };
+}
+
 export interface CreateIntentInput {
   title?: string;
   prompt?: string;
@@ -958,6 +970,8 @@ export const intentsService = {
       `/projects/${projectId}/intents/${intentId}/rewind`,
       input,
     ),
+  repair: (projectId: string, intentId: string) =>
+    api.post<IntentRepairResult>(`/projects/${projectId}/intents/${intentId}/repair`, {}),
   answerGate: (projectId: string, intentId: string, humanTaskId: string, input: GateAnswer) =>
     api.post<IntentGate>(
       `/projects/${projectId}/intents/${intentId}/gates/${humanTaskId}/answer`,

@@ -819,17 +819,28 @@ export const isBenignKiroEmptyCompletion = (stderrTail = '') => {
   return !transportCause.test(s);
 };
 
-// Return the execution's still-pending HUMAN gate (if any). The meta row's
-// `pendingHumanTaskId` is the source of truth ask_question sets when it parks; we
-// confirm the gate is still pending before treating the stage as parked.
-const pendingGate = async ({ store, executionId }) => {
-  const meta = await store.getExecution(executionId).catch(() => null);
-  const humanTaskId = meta?.pendingHumanTaskId ?? null;
+// Return THIS stage's still-pending HUMAN gate. Stage ownership is the source
+// of truth because one META pointer cannot represent concurrent lane questions.
+// The META fallback supports old rows, but only when the gate names this exact
+// stage; a sibling's question can therefore never park the current stage.
+const pendingGate = async ({ store, executionId, stageInstanceId, unitSlug, sectionIndex }) => {
+  const stage = await store.getStage(executionId, stageInstanceId).catch(() => null);
+  let humanTaskId = stage?.pendingHumanTaskId ?? null;
+  if (!humanTaskId) {
+    const meta = await store.getExecution(executionId).catch(() => null);
+    humanTaskId = meta?.pendingHumanTaskId ?? null;
+  }
   if (!humanTaskId) return null;
   const gate = await store.getHumanTask(executionId, humanTaskId).catch(() => null);
+  const ownsStage = gate?.stageInstanceId === stageInstanceId;
+  const ownsUnit = (gate?.unitSlug ?? null) === (unitSlug ?? null);
+  const ownsSection =
+    gate?.sectionIndex == null ||
+    sectionIndex == null ||
+    Number(gate.sectionIndex) === Number(sectionIndex);
   // createdAt rides along for wait accounting: the park's parkedAt is the ASK
   // moment, not the (later) CLI exit.
-  return gate && gate.status === 'pending'
+  return gate && gate.status === 'pending' && ownsStage && ownsUnit && ownsSection
     ? { humanTaskId, createdAt: gate.createdAt ?? null }
     : null;
 };
@@ -2068,7 +2079,13 @@ export const runStage = async (
   // park: a clean exit OR a non-zero exit AFTER parking both mean "waiting on a
   // human". We therefore check the gate BEFORE treating a non-zero exit as failure,
   // so a Kiro run that parks then errors on its next turn parks rather than fails.
-  const parked = await pendingGate({ store, executionId });
+  const parked = await pendingGate({
+    store,
+    executionId,
+    stageInstanceId,
+    unitSlug,
+    sectionIndex,
+  });
   if (parked && cli === 'opencode' && !cliSessionId) {
     return fail(
       stageInstanceId,
@@ -2106,6 +2123,7 @@ export const runStage = async (
         executionId,
         stageInstanceId,
         state: 'WAITING_FOR_HUMAN',
+        pendingHumanTaskId: parked.humanTaskId,
         // Human-wait accounting: the wait started when the question was ASKED
         // (the bridge stamped it then); re-stamp with the gate's createdAt so
         // this exit-time write never shortens the window (and covers a failed

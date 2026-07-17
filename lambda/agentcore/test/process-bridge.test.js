@@ -243,6 +243,11 @@ describe('unit-lane scope (V2_UNIT_SLUG)', () => {
       unitSlug: 'billing',
       stageInstanceId: 'si-1',
     });
+    expect(store.execPatches).toHaveLength(0);
+    expect(store.stagePatches.at(-1)).toMatchObject({
+      state: 'WAITING_FOR_HUMAN',
+      pendingHumanTaskId: res.humanTaskId,
+    });
   });
 
   it('sendOutput / collectMetric / emitStageNote broadcasts carry the lane', async () => {

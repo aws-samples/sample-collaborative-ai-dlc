@@ -7,6 +7,7 @@ import { useProjectCache } from '@/hooks/useProjectsCache';
 import { RecomposePanel } from '@/components/intent/RecomposePanel';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { humanizeStageId } from '@/components/intent/documentHelpers';
+import { deriveLaneWaits } from '@/lib/intentRecovery';
 import { PendingQuestionsTabs } from '@/components/intent/PendingQuestionsTabs';
 import { ScopeBadge } from '@/components/intent/ScopeBadge';
 import { QuorumEditPanel } from '@/components/intent/QuorumEditPanel';
@@ -35,7 +36,15 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Loader2, MoreHorizontal, Play, Trash2, XCircle } from 'lucide-react';
+import {
+  Loader2,
+  MoreHorizontal,
+  Play,
+  Trash2,
+  TriangleAlert,
+  Wrench,
+  XCircle,
+} from 'lucide-react';
 
 // The v2 intent page — main-pane content only. All fetch/realtime/output state
 // lives in IntentProvider (mounted by AppShell, shared with the right-hand
@@ -67,11 +76,14 @@ export default function IntentView() {
   // too; hiding the button just avoids a guaranteed 403).
   const { project } = useProjectCache(projectId ?? null);
   const canDelete = project?.userRole === 'owner' || project?.userRole === 'admin';
+  const canRepair = canDelete;
 
   const [starting, setStarting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [confirmRepair, setConfirmRepair] = useState(false);
+  const [repairing, setRepairing] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
   // Restart (FAILED / stranded CREATED) via the /start endpoint, which
@@ -125,6 +137,20 @@ export default function IntentView() {
     }
   };
 
+  const handleRepair = async () => {
+    setRepairing(true);
+    setActionError(null);
+    try {
+      await intentsService.repair(projectId, intentId);
+      setConfirmRepair(false);
+      await reload();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to repair intent');
+    } finally {
+      setRepairing(false);
+    }
+  };
+
   if (!projectId || !intentId) return <div className="p-6">Intent not found</div>;
   if (loading && !detail) {
     return (
@@ -153,6 +179,10 @@ export default function IntentView() {
   }
 
   const intent = detail.intent;
+  const laneWaits = deriveLaneWaits(detail.stages, gates);
+  const recoveryWaits = Object.values(laneWaits).filter((wait) => wait.kind === 'recovery');
+  const needsLaneRepair =
+    recoveryWaits.length > 0 && ['RUNNING', 'WAITING', 'FAILED'].includes(intent.status);
   const error = actionError ?? loadError;
   const isDraft = intent.status === 'DRAFT';
   // A DRAFT belongs on the collaborative compose page — one canonical draft
@@ -256,6 +286,41 @@ export default function IntentView() {
       {error && (
         <div className="rounded border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {error}
+        </div>
+      )}
+
+      {needsLaneRepair && (
+        <div className="rounded border border-agent-error/30 bg-agent-error/[0.06] px-3 py-3 text-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 font-medium text-agent-error">
+                <TriangleAlert className="h-4 w-4" />
+                Parallel execution needs recovery
+              </div>
+              <p className="mt-1 text-[12px] text-muted-foreground">
+                {recoveryWaits.length} lane{recoveryWaits.length === 1 ? ' is' : 's are'} parked
+                without an answerable question. Merged units are safe; active lanes must be replayed
+                from the section boundary.
+              </p>
+            </div>
+            {canRepair && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="shrink-0 gap-1.5"
+                disabled={repairing}
+                onClick={() => setConfirmRepair(true)}
+              >
+                {repairing ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Wrench className="h-3.5 w-3.5" />
+                )}
+                Repair execution
+              </Button>
+            )}
+          </div>
         </div>
       )}
 
@@ -426,6 +491,34 @@ export default function IntentView() {
               ) : (
                 'Delete Intent'
               )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={confirmRepair}
+        onOpenChange={(open) => !repairing && setConfirmRepair(open)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Repair parallel execution</AlertDialogTitle>
+            <AlertDialogDescription>
+              This stops the orphaned execution, preserves merged units, archives active lane
+              artifacts, resets active lanes and their draft pull requests, then relaunches the
+              affected section.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={repairing}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={repairing}
+              onClick={(event) => {
+                event.preventDefault();
+                void handleRepair();
+              }}
+            >
+              {repairing ? 'Repairing…' : 'Repair execution'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

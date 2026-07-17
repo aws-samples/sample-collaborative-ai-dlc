@@ -156,6 +156,21 @@ const baseArgs = {
   scope: 'feature',
   workspaceDir: '/ws',
 };
+const BASE_STAGE_INSTANCE_ID = planStageInstanceId('aidlc-v2@1', 'requirements-analysis');
+const pendingGateSeed = (humanTaskId, gate = {}) => ({
+  execution: { pendingHumanTaskId: humanTaskId },
+  stage: {
+    stageInstanceId: BASE_STAGE_INSTANCE_ID,
+    pendingHumanTaskId: humanTaskId,
+  },
+  humanTask: {
+    humanTaskId,
+    stageInstanceId: BASE_STAGE_INSTANCE_ID,
+    unitSlug: null,
+    status: 'pending',
+    ...gate,
+  },
+});
 
 const baseDeps = (overrides = {}) => ({
   store: spyStore(),
@@ -1341,10 +1356,7 @@ describe('runStage — fresh run persists the CLI session + parks on a pending g
     const deps = baseDeps({
       spawnFn: okSpawn,
       ids: () => 'forced-uuid',
-      store: spyStore({
-        execution: { pendingHumanTaskId: 'q-1' },
-        humanTask: { humanTaskId: 'q-1', status: 'pending' },
-      }),
+      store: spyStore(pendingGateSeed('q-1')),
     });
     const res = await runStage(baseArgs, deps);
     expect(res).toMatchObject({
@@ -1375,14 +1387,11 @@ describe('runStage — fresh run persists the CLI session + parks on a pending g
     const deps = baseDeps({
       spawnFn: okSpawn,
       ids: () => 'forced-uuid',
-      store: spyStore({
-        execution: { pendingHumanTaskId: 'q-1' },
-        humanTask: {
-          humanTaskId: 'q-1',
-          status: 'pending',
+      store: spyStore(
+        pendingGateSeed('q-1', {
           createdAt: '2026-01-01T00:00:00.000Z',
-        },
-      }),
+        }),
+      ),
     });
     await runStage(baseArgs, deps);
     const parkPatch = deps.store.calls.find(
@@ -1421,10 +1430,7 @@ describe('runStage — fresh run persists the CLI session + parks on a pending g
     const deps = baseDeps({
       spawnFn: crashAfterPark,
       ids: () => 'forced-uuid',
-      store: spyStore({
-        execution: { pendingHumanTaskId: 'q-9' },
-        humanTask: { humanTaskId: 'q-9', status: 'pending' },
-      }),
+      store: spyStore(pendingGateSeed('q-9')),
     });
     const res = await runStage(baseArgs, deps);
     expect(res).toMatchObject({ ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'q-9' });
@@ -1434,6 +1440,32 @@ describe('runStage — fresh run persists the CLI session + parks on a pending g
       .filter((c) => c[0] === 'updateStageState')
       .map((c) => c[1].state);
     expect(states).not.toContain('FAILED');
+  });
+
+  it('does not adopt a pending gate owned by a sibling lane stage', async () => {
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      store: spyStore({
+        execution: { pendingHumanTaskId: 'q-sibling' },
+        stage: { stageInstanceId: BASE_STAGE_INSTANCE_ID, pendingHumanTaskId: null },
+        humanTask: {
+          humanTaskId: 'q-sibling',
+          stageInstanceId: 'si-sibling',
+          unitSlug: 'billing',
+          sectionIndex: 1,
+          status: 'pending',
+        },
+      }),
+    });
+
+    const res = await runStage(baseArgs, deps);
+
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(
+      deps.store.calls.some(
+        (call) => call[0] === 'updateStageState' && call[1].state === 'WAITING_FOR_HUMAN',
+      ),
+    ).toBe(false);
   });
 
   it('still fails cli_nonzero_exit on a non-zero exit with NO pending gate', async () => {
@@ -1665,14 +1697,11 @@ describe('runStage — OpenCode park/resume lifecycle', () => {
     };
 
   it('persists the first observed session id before marking a parked stage waiting', async () => {
-    const store = spyStore({
-      execution: { pendingHumanTaskId: 'q-open' },
-      humanTask: {
-        humanTaskId: 'q-open',
-        status: 'pending',
+    const store = spyStore(
+      pendingGateSeed('q-open', {
         createdAt: '2026-07-15T00:00:00Z',
-      },
-    });
+      }),
+    );
     const res = await runStage(
       { ...baseArgs, requestedCli: 'opencode' },
       baseDeps({
@@ -1698,10 +1727,7 @@ describe('runStage — OpenCode park/resume lifecycle', () => {
   });
 
   it('fails explicitly when a parked OpenCode run emitted no session id', async () => {
-    const store = spyStore({
-      execution: { pendingHumanTaskId: 'q-open' },
-      humanTask: { humanTaskId: 'q-open', status: 'pending' },
-    });
+    const store = spyStore(pendingGateSeed('q-open'));
     const res = await runStage(
       { ...baseArgs, requestedCli: 'opencode' },
       baseDeps({
@@ -2777,10 +2803,7 @@ describe('runStage — engine git hook (docs/v2-parallel.md WP2)', () => {
       ...sourcePresent,
       spawnFn: okSpawn,
       ids: () => 'sid-1',
-      store: spyStore({
-        execution: { pendingHumanTaskId: 'q-1' },
-        humanTask: { humanTaskId: 'q-1', status: 'pending' },
-      }),
+      store: spyStore(pendingGateSeed('q-1')),
       commitAndPushAll: async () => ({
         ok: false,
         committed: true,
