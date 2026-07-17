@@ -59,6 +59,34 @@ describe('artifact extractors', () => {
     expect(out.citations).toEqual(['requirements']);
   });
 
+  it('combines matching yaml blocks in document order', () => {
+    const out = extractArtifactStructure({
+      artifactType: 'requirements',
+      content: [
+        '## Requirements',
+        '',
+        '```yaml',
+        'requirements:',
+        '  - id: req-sign-in',
+        '    title: Sign in',
+        '```',
+        '',
+        '## Non-functional requirements',
+        '',
+        '```yaml',
+        'requirements:',
+        '  - id: req-fast-response',
+        '    title: Fast response',
+        '    category: non-functional',
+        '```',
+      ].join('\n'),
+    });
+
+    expect(out.structuredPresent).toBe(true);
+    expect(out.items.map((item) => item.slug)).toEqual(['req-sign-in', 'req-fast-response']);
+    expect(out.items[1].props.category).toBe('non-functional');
+  });
+
   it('falls back to sections and citations for unknown artifact types', () => {
     const out = extractArtifactStructure({
       artifactType: 'unknown',
