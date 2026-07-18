@@ -80,9 +80,34 @@ export interface Intent {
   // out of scope, parallel sections downgraded to once-per-workflow). Null
   // when the plan is clean.
   planWarnings?: PlanWarning[] | null;
+  attachments?: IntentAttachment[];
+  attachmentRevision?: number;
   createdAt: string | null;
   updatedAt: string | null;
   completedAt: string | null;
+}
+
+export interface IntentAttachment {
+  attachmentId: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  s3Key: string;
+  s3VersionId: string;
+  uploadedBy: string;
+  uploadedAt: string;
+}
+
+export interface IntentAttachmentUpload {
+  attachmentId: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  s3Key: string;
+  url: string;
+  fields: Record<string, string>;
+  expiresAt: string;
+  expiresIn: number;
 }
 
 // Shape mirrors the plan resolver's error objects (lambda/shared/v2-execution-plan.js).
@@ -934,6 +959,38 @@ export const intentsService = {
     api.post<{ uploadUrl: string; key: string; expiresIn: number }>(
       `/projects/${projectId}/intents/${intentId}/compose-report-upload`,
       {},
+    ),
+  attachments: (projectId: string, intentId: string) =>
+    api.get<{ attachments: IntentAttachment[]; attachmentRevision: number }>(
+      `/projects/${projectId}/intents/${intentId}/attachments`,
+    ),
+  attachmentUploadUrls: (
+    projectId: string,
+    intentId: string,
+    attachments: Array<{ filename: string; mimeType: string; size: number }>,
+  ) =>
+    api.post<{ uploads: IntentAttachmentUpload[]; attachmentRevision: number }>(
+      `/projects/${projectId}/intents/${intentId}/attachments/upload`,
+      { attachments },
+    ),
+  commitAttachments: (
+    projectId: string,
+    intentId: string,
+    attachments: IntentAttachmentUpload[],
+    attachmentRevision: number,
+  ) =>
+    api.post<{ attachments: IntentAttachment[]; attachmentRevision: number }>(
+      `/projects/${projectId}/intents/${intentId}/attachments/commit`,
+      { attachments, attachmentRevision },
+    ),
+  deleteAttachment: (
+    projectId: string,
+    intentId: string,
+    attachmentId: string,
+    attachmentRevision: number,
+  ) =>
+    api.delete(
+      `/projects/${projectId}/intents/${intentId}/attachments/${encodeURIComponent(attachmentId)}?attachmentRevision=${attachmentRevision}`,
     ),
   // In-flight reshape: replace the run's projection with a new composed grid
   // and relaunch at the first not-yet-done stage. Accepted only while the run

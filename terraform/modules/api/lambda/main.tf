@@ -505,6 +505,27 @@ resource "aws_iam_role_policy" "neptune_artifacts" {
             StringLike = { "s3:prefix" = ["custom-rules/*"] }
           }
         },
+        # Project deletion reuses the intent cascade, which purges every
+        # committed attachment version for each child intent. This shared role
+        # is also used by tasks, so keep the grant restricted to the attachment
+        # prefix rather than broadening bucket access.
+        {
+          Effect = "Allow"
+          Action = [
+            "s3:GetObject",
+            "s3:DeleteObject",
+            "s3:DeleteObjectVersion",
+          ]
+          Resource = ["${var.artifacts_bucket_arn}/intent-attachments/*"]
+        },
+        {
+          Effect   = "Allow"
+          Action   = ["s3:ListBucketVersions"]
+          Resource = [var.artifacts_bucket_arn]
+          Condition = {
+            StringLike = { "s3:prefix" = ["intent-attachments/*"] }
+          }
+        },
         # Project-tier MCP secrets: the projects lambda lists (set-state only),
         # rotates (Put) and clears (Delete) per-var SecureStrings under
         # projects/<id>/mcp-secrets/*. It also READS the GLOBAL custom-mcp-servers
@@ -1761,6 +1782,18 @@ resource "aws_iam_role_policy" "intents" {
         Effect   = "Allow"
         Action   = ["s3:PutObject", "s3:GetObject"]
         Resource = "${var.artifacts_bucket_arn}/compose-reports/*"
+      },
+      {
+        # DRAFT intent prompt attachments: mint browser PUT URLs, validate
+        # committed objects, and purge removed/versioned objects.
+        Effect   = "Allow"
+        Action   = ["s3:PutObject", "s3:GetObject", "s3:GetObjectVersion", "s3:DeleteObject", "s3:DeleteObjectVersion"]
+        Resource = "${var.artifacts_bucket_arn}/intent-attachments/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:ListBucketVersions"]
+        Resource = var.artifacts_bucket_arn
       },
       {
         # Manual graph-projection backfill (POST .../intents/{id}/derive):

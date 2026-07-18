@@ -119,6 +119,10 @@ module "s3" {
 
   project_name = var.project_name
   environment  = var.environment
+  cors_allowed_origins = [
+    "https://${module.frontend.cloudfront_domain_name}",
+    "http://localhost:5173",
+  ]
 
   tags = {
     Environment = var.environment

@@ -20,6 +20,7 @@
     "@aws-sdk/client-ssm": "^3.1089.0",
     "@aws-sdk/credential-providers": "^3.1089.0",
     "@aws-sdk/lib-dynamodb": "^3.1089.0",
+    "@aws-sdk/s3-presigned-post": "^3.1089.0",
     "@aws-sdk/s3-request-presigner": "^3.1089.0",
     "gremlin": "^3.8.1",
     "gremlin-aws-sigv4": "^3.6.1"

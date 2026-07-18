@@ -44,6 +44,7 @@ import {
   materializeOpenCodeConfig as defaultMaterializeOpenCodeConfig,
 } from '../stage-materializer.js';
 import { fetchCustomRules as defaultFetchCustomRules } from '../custom-rules.js';
+import { materializeAttachments } from '../attachments.js';
 import { toMcpServerMap } from '../../shared/mcp-validator.js';
 import {
   computeSurvivors,
@@ -880,6 +881,7 @@ export const runStage = async (
     // Both snapshotted onto the intent and forwarded by the orchestrator.
     mcpServersByTier = null,
     customRules = [],
+    attachments = [],
     workspaceDir,
     // Clone inputs, forwarded by the orchestrator so a stage can self-heal a wiped
     // source checkout (see ensureWorkspaceSource). Same values init-ws used; empty
@@ -1233,6 +1235,23 @@ export const runStage = async (
         payload: { state: 'RESTORED', repos: heal.repos },
       });
     }
+  }
+
+  let attachmentRefs;
+  try {
+    attachmentRefs = (
+      await materializeAttachments({
+        workspaceDir,
+        attachments,
+        bucket: env.ARTIFACTS_BUCKET,
+      })
+    ).attachments;
+  } catch (error) {
+    return fail(
+      stageInstanceId,
+      'attachment_materialization_failed',
+      error?.message ?? String(error),
+    );
   }
 
   // 2a½. Keep node_modules OFF the session mount. The mount's write/backup
@@ -1676,6 +1695,7 @@ export const runStage = async (
       customServers,
       cli,
       customRules: customRuleDocs,
+      attachments: attachmentRefs,
     });
     prompt = materialized.prompt;
     // Demoted resume (D2): the parked conversation was lost with the wiped mount,

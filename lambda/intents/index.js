@@ -15,8 +15,16 @@ import {
 } from '@aws-sdk/client-lambda';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
-import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  CopyObjectCommand,
+  DeleteObjectCommand,
+} from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
 import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
@@ -63,6 +71,18 @@ import {
 import { fetchKnowledgeGraph } from './knowledge-graph.js';
 import { buildIntentAudit } from './audit.js';
 import { buildArtifactImpact, editBlockReason, activeQuorumEdit } from './impact.js';
+import {
+  ATTACHMENT_UPLOAD_TTL_SECONDS,
+  MAX_ATTACHMENTS,
+  MAX_ATTACHMENT_TOTAL_BYTES,
+  activePendingAttachments,
+  attachmentCommittedKey,
+  attachmentStagingKey,
+  createAttachmentCleanupService,
+  pendingAttachmentDeletions,
+  reconcileAttachmentPromotionFailure,
+  validateAttachmentDescriptor,
+} from '../shared/intent-attachments.js';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -87,6 +107,11 @@ const AGENTCORE_RUNTIME_ARN = () => process.env.AGENTCORE_RUNTIME_ARN || '';
 // Compose report uploads land here (presigned PUT) and are read back at
 // compose dispatch. Key shape: compose-reports/<intentId>/<uuid>.json.
 const ARTIFACTS_BUCKET = () => process.env.ARTIFACTS_BUCKET || '';
+const attachmentCleanup = createAttachmentCleanupService({
+  s3,
+  store,
+  bucket: ARTIFACTS_BUCKET(),
+});
 const mapWithConcurrency = async (items, limit, worker) => {
   const results = Array.from({ length: items.length });
   let cursor = 0;
@@ -953,6 +978,8 @@ const mapIntent = (meta) => ({
   composedGrid: meta.composedGrid ?? null,
   source: meta.source ?? null,
   planWarnings: meta.planWarnings ?? null,
+  attachments: Array.isArray(meta.attachments) ? meta.attachments : [],
+  attachmentRevision: Number(meta.attachmentRevision ?? 0),
   createdAt: meta.startedAt ?? null,
   updatedAt: meta.updatedAt ?? null,
   completedAt: meta.completedAt ?? null,
@@ -1867,6 +1894,12 @@ export const handler = async (event) => {
       if (!STARTABLE.has(meta.status)) {
         return response(409, { error: `Intent is ${meta.status}, cannot start` });
       }
+      if (meta.status === 'DRAFT' && activePendingAttachments(meta).length > 0) {
+        return response(409, {
+          error:
+            'Attachment uploads are in progress — wait for them to finish or expire before starting',
+        });
+      }
       // A live Quorum artifact edit is mutating this intent's artifacts —
       // starting a run underneath it would race the apply step.
       const liveQuorumEdit = activeQuorumEdit(
@@ -1955,22 +1988,29 @@ export const handler = async (event) => {
       // intent strands in CREATED (the orchestrator never ran) and never retries.
       const priorStatus = meta.status;
       const durableExecutionName = durableExecutionNameForIntent(intentId);
-      const updated = await store.updateExecution({
-        executionId: intentId,
-        projectId,
-        status: 'CREATED',
-        fromStatus: priorStatus,
-        startedAt: meta.startedAt,
-        durableExecutionName,
-        durableExecutionArn: null,
-        orchestratorStartedAt: null,
-        orchestratorExpiresAt: null,
-        // Clear any stale failure from a prior attempt as we re-enter the pipeline.
-        failureReason: null,
-        // Launch-time skip override (validated above; undefined = untouched).
-        ...(skipOverride !== undefined ? { skipStageIds: skipOverride } : {}),
-        ...(gridOverride !== undefined ? { composedGrid: gridOverride } : {}),
-      });
+      let updated;
+      try {
+        updated = await store.updateExecution({
+          executionId: intentId,
+          projectId,
+          status: 'CREATED',
+          fromStatus: priorStatus,
+          ifAttachmentRevision: Number(meta.attachmentRevision ?? 0),
+          startedAt: meta.startedAt,
+          durableExecutionName,
+          durableExecutionArn: null,
+          orchestratorStartedAt: null,
+          orchestratorExpiresAt: null,
+          failureReason: null,
+          ...(skipOverride !== undefined ? { skipStageIds: skipOverride } : {}),
+          ...(gridOverride !== undefined ? { composedGrid: gridOverride } : {}),
+        });
+      } catch (error) {
+        if (error?.name === 'ConditionalCheckFailedException') {
+          return response(409, { error: 'Intent changed while starting — refresh and retry' });
+        }
+        throw error;
+      }
       try {
         const invoked = await invokeOrchestrator(
           { action: 'start', intentId, executionId: intentId },
@@ -2080,6 +2120,357 @@ export const handler = async (event) => {
         { expiresIn: 300 },
       );
       return response(200, { uploadUrl, key, expiresIn: 300 });
+    }
+
+    if (intentId && httpMethod === 'POST' && path?.endsWith('/attachments/upload')) {
+      const meta = await store.getExecution(intentId);
+      if (!meta || meta.projectId !== projectId)
+        return response(404, { error: 'Intent not found' });
+      if (meta.status !== 'DRAFT')
+        return response(409, { error: 'Attachments can only be changed while DRAFT' });
+      if (!ARTIFACTS_BUCKET())
+        return response(503, { error: 'Attachment uploads are not configured' });
+      const data = body ? JSON.parse(body) : {};
+      const descriptors = Array.isArray(data.attachments) ? data.attachments : [];
+      const current = Array.isArray(meta.attachments) ? meta.attachments : [];
+      const pending = activePendingAttachments(meta);
+      if (!descriptors.length) return response(400, { error: 'Provide at least one attachment' });
+      if (current.length + pending.length + descriptors.length > MAX_ATTACHMENTS) {
+        return response(400, { error: `Maximum ${MAX_ATTACHMENTS} attachments per intent` });
+      }
+      const validated = descriptors.map(validateAttachmentDescriptor);
+      const invalid = validated.find((entry) => entry.error);
+      if (invalid) return response(400, { error: invalid.error });
+      const incomingBytes = validated.reduce((sum, entry) => sum + entry.value.size, 0);
+      const existingBytes = [...current, ...pending].reduce(
+        (sum, attachment) => sum + Number(attachment.size ?? 0),
+        0,
+      );
+      if (existingBytes + incomingBytes > MAX_ATTACHMENT_TOTAL_BYTES) {
+        return response(400, { error: 'Attachments cannot exceed 25 MB in total' });
+      }
+      const expiresAt = new Date(Date.now() + ATTACHMENT_UPLOAD_TTL_SECONDS * 1000).toISOString();
+      const allocated = validated.map(({ value }) => {
+        const attachmentId = randomUUID();
+        return {
+          attachmentId,
+          filename: value.filename,
+          mimeType: value.mimeType,
+          size: value.size,
+          s3Key: attachmentStagingKey(intentId, attachmentId, value.extension),
+          expiresAt,
+        };
+      });
+      let updated;
+      try {
+        updated = await store.updateExecution({
+          executionId: intentId,
+          fromStatus: 'DRAFT',
+          ifAttachmentRevision: Number(meta.attachmentRevision ?? 0),
+          attachments: current,
+          pendingAttachmentUploads: [...pending, ...allocated],
+        });
+      } catch (error) {
+        if (error?.name === 'ConditionalCheckFailedException') {
+          return response(409, {
+            error: 'Attachments changed by another collaborator — refresh and retry',
+          });
+        }
+        throw error;
+      }
+      const uploads = await Promise.all(
+        allocated.map(async (attachment) => {
+          const post = await createPresignedPost(s3, {
+            Bucket: ARTIFACTS_BUCKET(),
+            Key: attachment.s3Key,
+            Expires: ATTACHMENT_UPLOAD_TTL_SECONDS,
+            Fields: { 'Content-Type': attachment.mimeType },
+            Conditions: [
+              ['eq', '$Content-Type', attachment.mimeType],
+              ['content-length-range', attachment.size, attachment.size],
+            ],
+          });
+          return { ...attachment, ...post, expiresIn: ATTACHMENT_UPLOAD_TTL_SECONDS };
+        }),
+      );
+      return response(200, { uploads, attachmentRevision: updated.attachmentRevision });
+    }
+
+    if (intentId && httpMethod === 'POST' && path?.endsWith('/attachments/commit')) {
+      const meta = await store.getExecution(intentId);
+      if (!meta || meta.projectId !== projectId)
+        return response(404, { error: 'Intent not found' });
+      if (meta.status !== 'DRAFT')
+        return response(409, { error: 'Attachments can only be changed while DRAFT' });
+      const data = body ? JSON.parse(body) : {};
+      const uploads = Array.isArray(data.attachments) ? data.attachments : [];
+      const attachmentRevision = Number(data.attachmentRevision);
+      const current = Array.isArray(meta.attachments) ? meta.attachments : [];
+      const pending = activePendingAttachments(meta);
+      if (!uploads.length)
+        return response(400, { error: 'Provide uploaded attachments to commit' });
+      if (!Number.isInteger(attachmentRevision) || attachmentRevision < 0) {
+        return response(400, { error: 'attachmentRevision must be a non-negative integer' });
+      }
+      if (current.length + uploads.length > MAX_ATTACHMENTS)
+        return response(400, { error: `Maximum ${MAX_ATTACHMENTS} attachments per intent` });
+      if (attachmentRevision !== Number(meta.attachmentRevision ?? 0)) {
+        return response(409, {
+          error: 'Attachments changed by another collaborator — refresh and retry',
+        });
+      }
+      const attachmentIds = new Set();
+      const candidates = [];
+      for (const raw of uploads) {
+        const attachmentId = typeof raw?.attachmentId === 'string' ? raw.attachmentId : '';
+        const descriptor = validateAttachmentDescriptor(raw);
+        if (!attachmentId || !descriptor.value)
+          return response(400, { error: descriptor.error ?? 'Invalid attachment id' });
+        if (attachmentIds.has(attachmentId)) {
+          return response(400, { error: 'Attachment IDs must be unique' });
+        }
+        attachmentIds.add(attachmentId);
+        const expectedKey = attachmentStagingKey(
+          intentId,
+          attachmentId,
+          descriptor.value.extension,
+        );
+        const allocation = pending.find((attachment) => attachment.attachmentId === attachmentId);
+        if (
+          raw.s3Key !== expectedKey ||
+          !allocation ||
+          allocation.filename !== descriptor.value.filename ||
+          allocation.mimeType !== descriptor.value.mimeType ||
+          allocation.size !== descriptor.value.size ||
+          current.some((attachment) => attachment.attachmentId === attachmentId)
+        ) {
+          return response(400, { error: 'Attachment upload does not belong to this intent' });
+        }
+        let head;
+        try {
+          head = await s3.send(
+            new HeadObjectCommand({ Bucket: ARTIFACTS_BUCKET(), Key: expectedKey }),
+          );
+        } catch {
+          return response(400, {
+            error: `No uploaded object found for "${descriptor.value.filename}"`,
+          });
+        }
+        if (
+          head.ContentType?.toLowerCase().split(';')[0] !== descriptor.value.mimeType ||
+          head.ContentLength !== descriptor.value.size
+        ) {
+          return response(400, {
+            error: `Uploaded file did not match "${descriptor.value.filename}"`,
+          });
+        }
+        if (!head.VersionId) {
+          return response(503, { error: 'Attachment storage must return an object version' });
+        }
+        candidates.push({
+          attachmentId,
+          filename: descriptor.value.filename,
+          mimeType: descriptor.value.mimeType,
+          size: head.ContentLength,
+          stagingKey: expectedKey,
+          stagingVersionId: head.VersionId,
+          s3Key: attachmentCommittedKey(intentId, attachmentId, descriptor.value.extension),
+        });
+      }
+      const total = [...current, ...candidates].reduce(
+        (sum, attachment) => sum + attachment.size,
+        0,
+      );
+      if (total > MAX_ATTACHMENT_TOTAL_BYTES)
+        return response(400, { error: 'Attachments cannot exceed 25 MB in total' });
+
+      const committed = [];
+      const rollback = async (attachments = committed) => {
+        const results = await Promise.allSettled(
+          attachments.map((attachment) => attachmentCleanup.deleteVersion(attachment)),
+        );
+        const failures = results.filter((result) => result.status === 'rejected');
+        if (failures.length) {
+          throw new Error(`Could not roll back ${failures.length} committed attachment object(s)`);
+        }
+      };
+      let metadataUpdateAttempted = false;
+      try {
+        for (const candidate of candidates) {
+          const copy = await s3.send(
+            new CopyObjectCommand({
+              Bucket: ARTIFACTS_BUCKET(),
+              Key: candidate.s3Key,
+              CopySource: `${ARTIFACTS_BUCKET()}/${candidate.stagingKey}?versionId=${encodeURIComponent(candidate.stagingVersionId)}`,
+            }),
+          );
+          if (!copy.VersionId) {
+            throw new Error('Attachment storage did not version the committed object');
+          }
+          committed.push({
+            attachmentId: candidate.attachmentId,
+            filename: candidate.filename,
+            mimeType: candidate.mimeType,
+            size: candidate.size,
+            s3Key: candidate.s3Key,
+            s3VersionId: copy.VersionId,
+            uploadedBy: sub,
+            uploadedAt: new Date().toISOString(),
+            stagingKey: candidate.stagingKey,
+            stagingVersionId: candidate.stagingVersionId,
+          });
+        }
+        const committedMetadata = committed.map(
+          ({ stagingKey: _stagingKey, stagingVersionId: _stagingVersionId, ...attachment }) =>
+            attachment,
+        );
+        metadataUpdateAttempted = true;
+        const updated = await store.updateExecution({
+          executionId: intentId,
+          fromStatus: 'DRAFT',
+          ifAttachmentRevision: attachmentRevision,
+          attachments: [...current, ...committedMetadata],
+          pendingAttachmentUploads: pending.filter(
+            (attachment) =>
+              !committed.some((item) => item.attachmentId === attachment.attachmentId),
+          ),
+        });
+        await broadcastToIntentChannel(intentId, {
+          action: 'intent.attachments',
+          intentId,
+          projectId,
+        }).catch(() => {});
+        await Promise.all(
+          committed.map((attachment) =>
+            s3
+              .send(
+                new DeleteObjectCommand({
+                  Bucket: ARTIFACTS_BUCKET(),
+                  Key: attachment.stagingKey,
+                  VersionId: attachment.stagingVersionId,
+                }),
+              )
+              .catch((error) =>
+                console.error(
+                  `Attachment staging cleanup failed (${attachment.stagingKey}):`,
+                  error.message,
+                ),
+              ),
+          ),
+        );
+        return response(201, {
+          attachments: mapIntent(updated).attachments,
+          attachmentRevision: updated.attachmentRevision,
+        });
+      } catch (error) {
+        if (metadataUpdateAttempted) {
+          const reconciliation = await reconcileAttachmentPromotionFailure({
+            store,
+            intentId,
+            projectId,
+            committed,
+            rollback,
+          });
+          if (reconciliation.kind === 'unverified') {
+            console.error(
+              'Attachment commit state verification failed:',
+              reconciliation.error.message,
+            );
+            return response(500, { error: 'Attachment promotion status could not be verified' });
+          }
+          if (reconciliation.kind === 'replayed') {
+            return response(200, {
+              attachments: mapIntent(reconciliation.latest).attachments,
+              attachmentRevision: reconciliation.latest.attachmentRevision,
+            });
+          }
+          if (reconciliation.kind === 'rollback-failed') {
+            console.error('Attachment commit rollback failed:', reconciliation.error.message);
+            return response(500, { error: 'Attachment promotion rollback requires retry' });
+          }
+          if (error?.name === 'ConditionalCheckFailedException') {
+            return response(409, {
+              error: 'Attachments changed by another collaborator — refresh and retry',
+            });
+          }
+          throw error;
+        }
+        try {
+          await rollback();
+        } catch (rollbackError) {
+          console.error('Attachment commit rollback failed:', rollbackError.message);
+          return response(500, { error: 'Attachment promotion rollback requires retry' });
+        }
+        if (error?.$metadata?.httpStatusCode || error?.name === 'NoSuchKey') {
+          return response(400, { error: `Could not promote attachment upload: ${error.message}` });
+        }
+        throw error;
+      }
+    }
+
+    if (intentId && httpMethod === 'GET' && path?.endsWith('/attachments')) {
+      let meta = await store.getExecution(intentId);
+      if (!meta || meta.projectId !== projectId)
+        return response(404, { error: 'Intent not found' });
+      meta = await attachmentCleanup.retryPendingDeletions(meta);
+      return response(200, {
+        attachments: mapIntent(meta).attachments,
+        attachmentRevision: Number(meta.attachmentRevision ?? 0),
+      });
+    }
+
+    if (intentId && httpMethod === 'DELETE' && path?.match(/\/attachments\/[^/]+$/)) {
+      const meta = await store.getExecution(intentId);
+      if (!meta || meta.projectId !== projectId)
+        return response(404, { error: 'Intent not found' });
+      if (meta.status !== 'DRAFT')
+        return response(409, { error: 'Attachments can only be changed while DRAFT' });
+      const attachmentId = path.split('/').at(-1);
+      const attachmentRevision = Number(event.queryStringParameters?.attachmentRevision);
+      if (!Number.isInteger(attachmentRevision) || attachmentRevision < 0) {
+        return response(400, { error: 'attachmentRevision must be a non-negative integer' });
+      }
+      const current = Array.isArray(meta.attachments) ? meta.attachments : [];
+      const pending = activePendingAttachments(meta);
+      const pendingDeletions = pendingAttachmentDeletions(meta);
+      const attachment = current.find((entry) => entry.attachmentId === attachmentId);
+      if (!attachment) {
+        const retry = pendingDeletions.find((entry) => entry.attachmentId === attachmentId);
+        if (!retry) return response(404, { error: 'Attachment not found' });
+        const cleaned = await attachmentCleanup.retryPendingDeletions(meta);
+        return response(200, {
+          attachments: mapIntent(cleaned).attachments,
+          attachmentRevision: cleaned.attachmentRevision,
+        });
+      }
+      let updated;
+      try {
+        updated = await store.updateExecution({
+          executionId: intentId,
+          fromStatus: 'DRAFT',
+          ifAttachmentRevision: attachmentRevision,
+          attachments: current.filter((entry) => entry.attachmentId !== attachmentId),
+          pendingAttachmentUploads: pending,
+          pendingAttachmentDeletions: [...pendingDeletions, attachment],
+        });
+      } catch (error) {
+        if (error?.name === 'ConditionalCheckFailedException') {
+          return response(409, {
+            error: 'Attachments changed by another collaborator — refresh and retry',
+          });
+        }
+        throw error;
+      }
+      updated = await attachmentCleanup.retryPendingDeletions(updated);
+      await broadcastToIntentChannel(intentId, {
+        action: 'intent.attachments',
+        intentId,
+        projectId,
+      }).catch(() => {});
+      return response(200, {
+        attachments: mapIntent(updated).attachments,
+        attachmentRevision: updated.attachmentRevision,
+      });
     }
 
     // POST .../compose — start a composer session for this intent.
@@ -2478,6 +2869,7 @@ export const handler = async (event) => {
           meta,
           yjsTable: process.env.YJS_DOCUMENTS_TABLE,
           agentcoreRuntimeArn: AGENTCORE_RUNTIME_ARN(),
+          artifactsBucket: ARTIFACTS_BUCKET(),
           actor: responder.displayName || responder.sub,
           force: false,
         });

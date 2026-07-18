@@ -24,6 +24,21 @@ resource "aws_s3_bucket_public_access_block" "artifacts" {
   restrict_public_buckets = true
 }
 
+# Browser attachment uploads use presigned POSTs directly to this bucket. Keep
+# the existing artifact read/PUT methods while adding POST; object access stays
+# private because this only controls browser CORS preflight responses.
+resource "aws_s3_bucket_cors_configuration" "artifacts" {
+  bucket = aws_s3_bucket.artifacts.id
+
+  cors_rule {
+    allowed_headers = ["*"]
+    allowed_methods = ["GET", "HEAD", "POST", "PUT"]
+    allowed_origins = var.cors_allowed_origins
+    expose_headers  = ["ETag"]
+    max_age_seconds = 3000
+  }
+}
+
 resource "aws_s3_bucket_lifecycle_configuration" "artifacts" {
   bucket = aws_s3_bucket.artifacts.id
 
@@ -36,6 +51,27 @@ resource "aws_s3_bucket_lifecycle_configuration" "artifacts" {
     noncurrent_version_transition {
       noncurrent_days = 90
       storage_class   = "GLACIER"
+    }
+  }
+
+  # Browser attachment uploads land under this staging prefix before the
+  # intents Lambda validates and promotes them. Expire abandoned current
+  # objects as well as their noncurrent versions; committed references live
+  # outside this prefix and remain available for the intent lifetime.
+  rule {
+    id     = "expire_attachment_staging"
+    status = "Enabled"
+
+    filter {
+      prefix = "intent-attachments/staging/"
+    }
+
+    expiration {
+      days = 1
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 1
     }
   }
 }

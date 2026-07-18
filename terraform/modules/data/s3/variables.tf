@@ -8,6 +8,12 @@ variable "environment" {
   type        = string
 }
 
+variable "cors_allowed_origins" {
+  description = "Browser origins permitted to submit presigned artifact uploads"
+  type        = list(string)
+  default     = []
+}
+
 variable "tags" {
   description = "Tags to apply to resources"
   type        = map(string)

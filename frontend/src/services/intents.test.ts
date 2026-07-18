@@ -2,8 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const get = vi.fn();
 const post = vi.fn();
+const del = vi.fn();
 vi.mock('./api', () => ({
-  api: { get: (...a: unknown[]) => get(...a), post: (...a: unknown[]) => post(...a) },
+  api: {
+    get: (...a: unknown[]) => get(...a),
+    post: (...a: unknown[]) => post(...a),
+    delete: (...a: unknown[]) => del(...a),
+  },
 }));
 
 import { intentsService } from './intents';
@@ -12,6 +17,23 @@ describe('intentsService request paths', () => {
   beforeEach(() => {
     get.mockReset().mockResolvedValue([]);
     post.mockReset().mockResolvedValue({});
+    del.mockReset().mockResolvedValue(undefined);
+  });
+
+  it('uses intent-scoped attachment routes', async () => {
+    await intentsService.attachments('p1', 'i1');
+    expect(get).toHaveBeenCalledWith('/projects/p1/intents/i1/attachments');
+
+    const files = [{ filename: 'notes.md', mimeType: 'text/markdown', size: 12 }];
+    await intentsService.attachmentUploadUrls('p1', 'i1', files);
+    expect(post).toHaveBeenCalledWith('/projects/p1/intents/i1/attachments/upload', {
+      attachments: files,
+    });
+
+    await intentsService.deleteAttachment('p1', 'i1', 'a/b', 3);
+    expect(del).toHaveBeenCalledWith(
+      '/projects/p1/intents/i1/attachments/a%2Fb?attachmentRevision=3',
+    );
   });
 
   it('list / list?status', async () => {
