@@ -129,12 +129,14 @@ async function saveStatus(executionId, agentType, projectId, status) {
     .send(
       new UpdateCommand({
         TableName: env.agentOutputsTable,
-        Key: { executionId },
+        // The agent-outputs table has a COMPOSITE key: hash executionId +
+        // range agentType. Both must be supplied, and neither may appear in the
+        // UpdateExpression (key attributes are immutable).
+        Key: { executionId, agentType },
         UpdateExpression:
-          'SET agentType = if_not_exists(agentType, :agentType), projectId = if_not_exists(projectId, :projectId), #status = :status, expiresAt = if_not_exists(expiresAt, :expiresAt)',
+          'SET projectId = if_not_exists(projectId, :projectId), #status = :status, expiresAt = if_not_exists(expiresAt, :expiresAt)',
         ExpressionAttributeNames: { '#status': 'status' },
         ExpressionAttributeValues: {
-          ':agentType': agentType,
           ':projectId': projectId,
           ':status': status,
           ':expiresAt': Math.floor(Date.now() / 1000) + 86400,
@@ -1189,6 +1191,33 @@ async function refreshGitTokenIfNeeded(job) {
 
 function pushBranchWithRetry(job, branch, maxRetries = 3, workDir = '/workspace') {
   // Returns: true (pushed OK) | false (real push failure after retries) | 'empty' (no commits — expected no-op)
+
+  // GUARD — never push construction output directly onto the base branch.
+  // The construction git contract is: sub-agents commit on task branches, the
+  // orchestrator merges them into the SPRINT branch, and code reaches the base
+  // branch (main) ONLY via a reviewed pull request. Several call paths default
+  // the target to `job.branch || 'main'` and the sprint-branch is derived by
+  // stripping a `--task-*` suffix; if `job.branch` is ever empty (e.g. a
+  // re-triggered orchestrator that lost its branch context after a CLI crash),
+  // those fallbacks collapse to the base branch and this function would push the
+  // merged sprint state straight onto main — bypassing the PR/review gate.
+  // Refuse that push loudly instead of silently corrupting the base branch.
+  const baseBranch = job.baseBranch || 'main';
+  if (!branch || !branch.trim()) {
+    console.error(
+      '[pool-worker] REFUSING push: empty target branch. The sprint branch context was lost ' +
+        '(likely a re-triggered orchestrator after a CLI failure). Not pushing to avoid writing to the base branch.',
+    );
+    return false;
+  }
+  if (branch === baseBranch) {
+    console.error(
+      `[pool-worker] REFUSING push: target branch equals the base branch ("${branch}"). ` +
+        'Construction output must land on the sprint branch and reach the base branch only via a PR. Not pushing.',
+    );
+    return false;
+  }
+
   // Re-inject token into remote URL for push authentication.
   const repoUrl = getRepoUrlForDir(job, workDir);
   if (job.gitToken && repoUrl) {

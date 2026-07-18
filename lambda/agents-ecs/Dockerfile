@@ -6,8 +6,9 @@ RUN apt-get update -o Acquire::AllowInsecureRepositories=true -o Acquire::AllowD
     && apt-get install -y --no-install-recommends git curl unzip jq uuid-runtime procps \
     && rm -rf /var/lib/apt/lists/*
 
-# Install AWS CLI
-RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" \
+# Install AWS CLI (architecture-aware: x86_64 or aarch64)
+RUN ARCH="$(uname -m)" \
+    && curl "https://awscli.amazonaws.com/awscli-exe-linux-${ARCH}.zip" -o "awscliv2.zip" \
     && unzip awscliv2.zip \
     && ./aws/install \
     && rm -rf awscliv2.zip aws
@@ -69,6 +70,15 @@ COPY shared/mcp-validator.js /opt/shared/mcp-validator.js
 COPY shared/git-providers.js /opt/shared/git-providers.js
 COPY shared/git-providers/ /opt/shared/git-providers/
 COPY shared/git-token-refresh.js /opt/shared/git-token-refresh.js
+
+# The shared modules under /opt/shared are required by pool-worker.js (which
+# lives in /opt/acp-client). Node resolves a module's OWN transitive requires
+# relative to that module's directory, so git-token-refresh.js's
+# `require('@aws-sdk/client-lambda')` looks in /opt/shared/node_modules — which
+# does not exist, crashing every worker at startup with MODULE_NOT_FOUND.
+# Symlink the acp-client's installed deps so shared files resolve the same
+# node_modules tree (@aws-sdk/client-lambda et al. live there already).
+RUN ln -s /opt/acp-client/node_modules /opt/shared/node_modules
 
 RUN mkdir -p /workspace \
     && chown -R node:node /workspace /opt/aidlc-rules /opt/mcp-server-graph /opt/acp-client /opt/kiro
