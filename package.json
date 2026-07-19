@@ -13,6 +13,7 @@
     "lambda/github",
     "lambda/intents",
     "lambda/gitlab",
+    "lambda/bitbucket",
     "lambda/migrate-tracker-fields",
     "lambda/seed-blocks",
     "lambda/projects",

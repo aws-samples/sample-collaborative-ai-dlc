@@ -35,6 +35,14 @@ const PROVIDER_META = {
       'px-4 py-2 bg-[#fc6d26] text-white rounded opacity-50 cursor-not-allowed self-start',
     connectedClass: 'text-green-600 text-sm',
   },
+  bitbucket: {
+    label: 'Bitbucket',
+    connectClass:
+      'px-4 py-2 bg-[#0052CC] text-white rounded hover:bg-[#0747A6] disabled:opacity-50 self-start',
+    disabledClass:
+      'px-4 py-2 bg-[#0052CC] text-white rounded opacity-50 cursor-not-allowed self-start',
+    connectedClass: 'text-green-600 text-sm',
+  },
 };
 
 export function GitConnectButton({

@@ -269,14 +269,20 @@ export const defaultMintFreshToken = async (
   { gitProvider, startedBy, repos = [] },
   io = defaultTokenIo(),
 ) => {
-  if (gitProvider === 'gitlab') {
+  // GitLab and Bitbucket both issue ~2h OAuth access tokens with refresh
+  // tokens; resolveGitToken → ensureFreshGitToken refreshes a stale one
+  // just-in-time so a lane dispatched later than the run-start snapshot clones
+  // with a live token instead of the dead one (Bitbucket "Authentication
+  // failed"). Without this, Bitbucket fell through to `return null` below and
+  // laneGitToken() reused the stale run-start snapshot.
+  if (gitProvider === 'gitlab' || gitProvider === 'bitbucket') {
     try {
       if (!startedBy) return null;
       const item = await io.getGitConnection(startedBy, gitProvider);
       if (!item?.parameterName) return null;
       return await io.resolveGitToken(item, gitProvider);
     } catch (e) {
-      console.error('[v2-orchestrator] fresh gitlab token refresh failed:', e?.message);
+      console.error(`[v2-orchestrator] fresh ${gitProvider} token refresh failed:`, e?.message);
       return null;
     }
   }

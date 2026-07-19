@@ -158,6 +158,21 @@ output "gitlab_lambda_name" {
   value       = module.gitlab_lambda.lambda_function_name
 }
 
+output "bitbucket_lambda_arn" {
+  description = "ARN of the bitbucket Lambda function"
+  value       = module.bitbucket_lambda.lambda_function_arn
+}
+
+output "bitbucket_lambda_invoke_arn" {
+  description = "Invoke ARN of the bitbucket Lambda function"
+  value       = module.bitbucket_lambda.lambda_function_invoke_arn
+}
+
+output "bitbucket_lambda_name" {
+  description = "Name of the bitbucket Lambda function"
+  value       = module.bitbucket_lambda.lambda_function_name
+}
+
 output "trackers_lambda_arn" {
   description = "ARN of the trackers Lambda function"
   value       = module.trackers_lambda.lambda_function_arn

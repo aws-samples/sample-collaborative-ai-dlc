@@ -46,11 +46,12 @@ describe('git-providers registry', () => {
   it('isKnownProvider treats undefined as the default (github)', () => {
     expect(isKnownProvider(undefined)).toBe(true);
     expect(isKnownProvider('gitlab')).toBe(true);
-    expect(isKnownProvider('bitbucket')).toBe(false);
+    expect(isKnownProvider('bitbucket')).toBe(true);
+    expect(isKnownProvider('nope')).toBe(false);
   });
 
   it('throws ProviderError for an unknown provider', () => {
-    expect(() => getProvider('bitbucket')).toThrow(ProviderError);
+    expect(() => getProvider('nope')).toThrow(ProviderError);
   });
 });
 
@@ -818,6 +819,175 @@ describe('gitlab provider — repo browse + MR + token refresh', () => {
   });
 });
 
+describe('bitbucket provider — workspace listing + tree + ancestor + validation', () => {
+  const bb = getProvider('bitbucket');
+
+  it('splitWorkspaceRepo rejects injection and malformed refs', () => {
+    expect(() => bb.splitWorkspaceRepo('ws/repo/extra')).toThrow(ProviderError);
+    expect(() => bb.splitWorkspaceRepo('ws')).toThrow(ProviderError);
+    expect(() => bb.splitWorkspaceRepo('ws/repo?x=1')).toThrow(ProviderError);
+    expect(() => bb.splitWorkspaceRepo('../repo')).toThrow(ProviderError);
+    expect(() => bb.splitWorkspaceRepo('ws/..')).toThrow(ProviderError);
+    expect(() => bb.splitWorkspaceRepo('ws/re po')).toThrow(ProviderError);
+    expect(() => bb.splitWorkspaceRepo('../etc/passwd')).toThrow(ProviderError);
+    expect(bb.splitWorkspaceRepo('my-ws/my.repo_1')).toEqual({
+      workspace: 'my-ws',
+      repoSlug: 'my.repo_1',
+    });
+  });
+
+  it('buildCloneUrl uses the x-token-auth scheme', () => {
+    expect(bb.buildCloneUrl('ws/repo', 'tok')).toBe(
+      'https://x-token-auth:tok@bitbucket.org/ws/repo.git',
+    );
+    expect(bb.buildCloneUrl('ws/repo')).toBe('https://bitbucket.org/ws/repo.git');
+  });
+
+  it('listRepos enumerates via /user/workspaces then aggregates per-workspace repos', async () => {
+    const fetchImpl = makeFetch([
+      // /user/workspaces returns MEMBERSHIP objects nesting the workspace under
+      // `.workspace` (slug at item.workspace.slug). Include one nested and one
+      // top-level shape so the resolver must handle both.
+      [
+        '/user/workspaces',
+        { json: { values: [{ workspace: { slug: 'acme' } }, { slug: 'beta' }] } },
+      ],
+      [
+        '/repositories/acme?role=member',
+        {
+          json: {
+            values: [
+              {
+                uuid: '{1}',
+                name: 'app',
+                full_name: 'acme/app',
+                is_private: true,
+                mainbranch: { name: 'main' },
+              },
+            ],
+          },
+        },
+      ],
+      [
+        '/repositories/beta?role=member',
+        {
+          json: {
+            values: [
+              {
+                uuid: '{2}',
+                name: 'lib',
+                full_name: 'beta/lib',
+                is_private: false,
+                mainbranch: { name: 'develop' },
+              },
+            ],
+          },
+        },
+      ],
+    ]);
+    const repos = await bb.listRepos({ token: 't', fetchImpl });
+    expect(repos).toEqual([
+      { id: '{1}', name: 'app', fullName: 'acme/app', private: true, defaultBranch: 'main' },
+      { id: '{2}', name: 'lib', fullName: 'beta/lib', private: false, defaultBranch: 'develop' },
+    ]);
+    // Must hit the CHANGE-2770-safe workspace endpoint, never the removed
+    // cross-workspace ?role=member listing.
+    expect(fetchImpl.calls.some((c) => c.url.includes('/user/workspaces'))).toBe(true);
+    expect(fetchImpl.calls.some((c) => /\/repositories\?role=member/.test(c.url))).toBe(false);
+  });
+
+  it('listRepos surfaces a clear error when the token cannot enumerate workspaces (410)', async () => {
+    const fetchImpl = makeFetch([['/user/workspaces', { status: 410, json: {} }]]);
+    await expect(bb.listRepos({ token: 't', fetchImpl })).rejects.toThrow(ProviderError);
+  });
+
+  it('getTree walks subdirectories (max_depth) and paginates', async () => {
+    let page = 0;
+    const fetchImpl = makeFetch([
+      [
+        '/src/main/',
+        () => {
+          page += 1;
+          return page === 1
+            ? {
+                json: {
+                  values: [
+                    { type: 'commit_directory', path: 'src' },
+                    { type: 'commit_file', path: 'README.md', size: 10, commit: { hash: 'a1' } },
+                  ],
+                  next: 'https://api.bitbucket.org/2.0/repositories/ws/repo/src/main/?page=2',
+                },
+              }
+            : {
+                json: {
+                  values: [
+                    {
+                      type: 'commit_file',
+                      path: 'src/App.java',
+                      size: 20,
+                      commit: { hash: 'b2' },
+                    },
+                  ],
+                },
+              };
+        },
+      ],
+    ]);
+    const tree = await bb.getTree({ token: 't', fetchImpl }, 'ws/repo', 'main');
+    expect(tree).toEqual([
+      { path: 'README.md', sha: 'a1', size: 10 },
+      { path: 'src/App.java', sha: 'b2', size: 20 },
+    ]);
+    expect(fetchImpl.calls[0].url).toContain('max_depth=100');
+  });
+
+  it('isCommitAncestor pages commit history and matches on hash', async () => {
+    const fetchImpl = makeFetch([
+      [
+        '/commits/intent',
+        (url) =>
+          url.includes('page=2')
+            ? { json: { values: [{ hash: 'target-sha' }] } }
+            : {
+                json: {
+                  values: [{ hash: 'zzz' }],
+                  next: 'https://api.bitbucket.org/2.0/repositories/ws/repo/commits/intent?page=2',
+                },
+              },
+      ],
+    ]);
+    expect(
+      await bb.isCommitAncestor({ token: 't', fetchImpl }, 'ws/repo', 'target-sha', 'intent'),
+    ).toBe(true);
+  });
+
+  it('isCommitAncestor returns false when the sha never appears', async () => {
+    const fetchImpl = makeFetch([['/commits/intent', { json: { values: [{ hash: 'other' }] } }]]);
+    expect(
+      await bb.isCommitAncestor({ token: 't', fetchImpl }, 'ws/repo', 'missing-sha', 'intent'),
+    ).toBe(false);
+  });
+
+  it('reopenPullRequest throws (Bitbucket cannot reopen declined PRs via API)', async () => {
+    await expect(
+      bb.reopenPullRequest({ token: 't', fetchImpl: makeFetch([]) }, 'ws/repo', 1),
+    ).rejects.toThrow(ProviderError);
+  });
+
+  it('setPullRequestDraft emulates draft via a "Draft:" title prefix', async () => {
+    // Bitbucket has no native draft flag; the provider models it through the
+    // PR title. When the PR is already in the requested draft state the call
+    // short-circuits after the status read (no PUT).
+    const fetchImpl = makeFetch([
+      ['/pullrequests/1', { json: { id: 1, state: 'OPEN', title: 'Draft: feat' } }],
+    ]);
+    const out = await bb.setPullRequestDraft({ token: 't', fetchImpl }, 'ws/repo', 1, true);
+    expect(out).toMatchObject({ state: 'open', draft: true });
+    // No PUT issued because the desired state already matched.
+    expect(fetchImpl.calls.every((c) => (c.options.method ?? 'GET') === 'GET')).toBe(true);
+  });
+});
+
 describe('OAuth metadata', () => {
   it('exposes provider-specific secret env names and scopes', () => {
     expect(getProvider('github').oauth.secretEnvName).toBe('GITHUB_OAUTH_SECRET_NAME');
@@ -827,6 +997,13 @@ describe('OAuth metadata', () => {
     expect(getProvider('gitlab').oauth.requiredConnectionScopes).toEqual(['api']);
     expect(getProvider('gitlab').oauth.refreshAccessToken).toBeTypeOf('function');
     expect(getProvider('github').oauth.refreshAccessToken).toBeUndefined();
+    // Bitbucket OAuth scopes MUST be singular scope names (not the plural REST
+    // path names) or the authorize call fails with "Unknown scope".
+    expect(getProvider('bitbucket').oauth.secretEnvName).toBe('BITBUCKET_OAUTH_SECRET_NAME');
+    expect(getProvider('bitbucket').oauth.scopes).toBe(
+      'account repository repository:write pullrequest pullrequest:write',
+    );
+    expect(getProvider('bitbucket').oauth.refreshAccessToken).toBeTypeOf('function');
   });
 
   it('gitlab refreshAccessToken sends redirect_uri (GitLab rejects refresh without it)', async () => {

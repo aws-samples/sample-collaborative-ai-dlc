@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { GitHubIcon, GitLabIcon } from '@/components/icons/git-providers';
+import { GitHubIcon, GitLabIcon, BitbucketIcon } from '@/components/icons/git-providers';
 import { projectsService, type CreateProjectInput } from '../services/projects';
 import { workflowsService, type WorkflowSummary } from '../services/workflows';
 import { trackersService } from '../services/trackers';
@@ -237,6 +237,12 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                   <span className="flex items-center gap-2">
                     <GitLabIcon className="h-4 w-4" />
                     GitLab
+                  </span>
+                </SelectItem>
+                <SelectItem value="bitbucket">
+                  <span className="flex items-center gap-2">
+                    <BitbucketIcon className="h-4 w-4" />
+                    Bitbucket
                   </span>
                 </SelectItem>
               </SelectContent>

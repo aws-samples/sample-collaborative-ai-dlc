@@ -2516,6 +2516,362 @@ resource "aws_lambda_permission" "github" {
 }
 
 # =============================================================================
+# Bitbucket OAuth Routes
+#
+# Bitbucket Cloud addresses repositories by a two-segment "workspace/repo_slug"
+# path — the same shape as GitHub's "owner/repo" — so these routes mirror the
+# GitHub layout exactly (path segments, not GitLab's ?project= query string).
+# The Bitbucket lambda's route descriptors match the same /repos/{a}/{b}/…
+# shapes.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# /bitbucket Resource
+# -----------------------------------------------------------------------------
+resource "aws_api_gateway_resource" "bitbucket" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.api.id
+  path_part   = "bitbucket"
+}
+
+resource "aws_api_gateway_resource" "bitbucket_auth" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.bitbucket.id
+  path_part   = "auth"
+}
+
+resource "aws_api_gateway_resource" "bitbucket_callback" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.bitbucket.id
+  path_part   = "callback"
+}
+
+resource "aws_api_gateway_resource" "bitbucket_repos" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.bitbucket.id
+  path_part   = "repos"
+}
+
+resource "aws_api_gateway_resource" "bitbucket_status" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.bitbucket.id
+  path_part   = "status"
+}
+
+resource "aws_api_gateway_resource" "bitbucket_disconnect" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.bitbucket.id
+  path_part   = "disconnect"
+}
+
+# /bitbucket/repos/{owner}
+resource "aws_api_gateway_resource" "bitbucket_repos_owner" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.bitbucket_repos.id
+  path_part   = "{owner}"
+}
+
+# /bitbucket/repos/{owner}/{repo}
+resource "aws_api_gateway_resource" "bitbucket_repos_owner_repo" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.bitbucket_repos_owner.id
+  path_part   = "{repo}"
+}
+
+# /bitbucket/repos/{owner}/{repo}/branches
+resource "aws_api_gateway_resource" "bitbucket_repos_branches" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.bitbucket_repos_owner_repo.id
+  path_part   = "branches"
+}
+
+# /bitbucket/repos/{owner}/{repo}/tree
+resource "aws_api_gateway_resource" "bitbucket_repos_tree" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.bitbucket_repos_owner_repo.id
+  path_part   = "tree"
+}
+
+# /bitbucket/repos/{owner}/{repo}/contents
+resource "aws_api_gateway_resource" "bitbucket_repos_contents" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.bitbucket_repos_owner_repo.id
+  path_part   = "contents"
+}
+
+# /bitbucket/repos/{owner}/{repo}/pulls
+resource "aws_api_gateway_resource" "bitbucket_repos_pulls" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.bitbucket_repos_owner_repo.id
+  path_part   = "pulls"
+}
+
+# /bitbucket/repos/{owner}/{repo}/pulls/{prNumber}
+resource "aws_api_gateway_resource" "bitbucket_repos_pulls_number" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.bitbucket_repos_pulls.id
+  path_part   = "{prNumber}"
+}
+
+# /bitbucket/repos/{owner}/{repo}/pulls/{prNumber}/comments
+resource "aws_api_gateway_resource" "bitbucket_repos_pulls_comments" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.bitbucket_repos_pulls_number.id
+  path_part   = "comments"
+}
+
+# -----------------------------------------------------------------------------
+# Bitbucket Methods + Integrations
+# -----------------------------------------------------------------------------
+
+# GET /bitbucket/auth (authenticated)
+resource "aws_api_gateway_method" "bitbucket_auth_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.bitbucket_auth.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "bitbucket_auth_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.bitbucket_auth.id
+  http_method             = aws_api_gateway_method.bitbucket_auth_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.bitbucket_lambda_invoke_arn
+}
+
+# GET /bitbucket/callback (no auth - OAuth redirect)
+resource "aws_api_gateway_method" "bitbucket_callback_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.bitbucket_callback.id
+  http_method   = "GET"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "bitbucket_callback_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.bitbucket_callback.id
+  http_method             = aws_api_gateway_method.bitbucket_callback_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.bitbucket_lambda_invoke_arn
+}
+
+# GET /bitbucket/repos (authenticated)
+resource "aws_api_gateway_method" "bitbucket_repos_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.bitbucket_repos.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "bitbucket_repos_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.bitbucket_repos.id
+  http_method             = aws_api_gateway_method.bitbucket_repos_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.bitbucket_lambda_invoke_arn
+}
+
+# GET /bitbucket/status (authenticated)
+resource "aws_api_gateway_method" "bitbucket_status_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.bitbucket_status.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "bitbucket_status_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.bitbucket_status.id
+  http_method             = aws_api_gateway_method.bitbucket_status_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.bitbucket_lambda_invoke_arn
+}
+
+# DELETE /bitbucket/disconnect (authenticated)
+resource "aws_api_gateway_method" "bitbucket_disconnect_delete" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.bitbucket_disconnect.id
+  http_method   = "DELETE"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "bitbucket_disconnect_delete" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.bitbucket_disconnect.id
+  http_method             = aws_api_gateway_method.bitbucket_disconnect_delete.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.bitbucket_lambda_invoke_arn
+}
+
+# GET /bitbucket/repos/{owner}/{repo}/branches (authenticated)
+resource "aws_api_gateway_method" "bitbucket_repos_branches_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.bitbucket_repos_branches.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "bitbucket_repos_branches_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.bitbucket_repos_branches.id
+  http_method             = aws_api_gateway_method.bitbucket_repos_branches_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.bitbucket_lambda_invoke_arn
+}
+
+# GET /bitbucket/repos/{owner}/{repo}/tree (authenticated)
+resource "aws_api_gateway_method" "bitbucket_repos_tree_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.bitbucket_repos_tree.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "bitbucket_repos_tree_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.bitbucket_repos_tree.id
+  http_method             = aws_api_gateway_method.bitbucket_repos_tree_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.bitbucket_lambda_invoke_arn
+}
+
+# GET /bitbucket/repos/{owner}/{repo}/contents (authenticated)
+resource "aws_api_gateway_method" "bitbucket_repos_contents_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.bitbucket_repos_contents.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "bitbucket_repos_contents_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.bitbucket_repos_contents.id
+  http_method             = aws_api_gateway_method.bitbucket_repos_contents_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.bitbucket_lambda_invoke_arn
+}
+
+# GET /bitbucket/repos/{owner}/{repo}/pulls/{prNumber}/comments (authenticated)
+resource "aws_api_gateway_method" "bitbucket_pulls_comments_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.bitbucket_repos_pulls_comments.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "bitbucket_pulls_comments_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.bitbucket_repos_pulls_comments.id
+  http_method             = aws_api_gateway_method.bitbucket_pulls_comments_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.bitbucket_lambda_invoke_arn
+}
+
+# POST /bitbucket/repos/{owner}/{repo}/pulls/{prNumber}/comments (authenticated)
+resource "aws_api_gateway_method" "bitbucket_pulls_comments_post" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.bitbucket_repos_pulls_comments.id
+  http_method   = "POST"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "bitbucket_pulls_comments_post" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.bitbucket_repos_pulls_comments.id
+  http_method             = aws_api_gateway_method.bitbucket_pulls_comments_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.bitbucket_lambda_invoke_arn
+}
+
+# -----------------------------------------------------------------------------
+# Bitbucket CORS
+# -----------------------------------------------------------------------------
+module "cors_bitbucket_auth" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.bitbucket_auth.id
+}
+
+module "cors_bitbucket_callback" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.bitbucket_callback.id
+}
+
+module "cors_bitbucket_repos" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.bitbucket_repos.id
+}
+
+module "cors_bitbucket_status" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.bitbucket_status.id
+}
+
+module "cors_bitbucket_disconnect" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.bitbucket_disconnect.id
+}
+
+module "cors_bitbucket_repos_branches" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.bitbucket_repos_branches.id
+}
+
+module "cors_bitbucket_repos_tree" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.bitbucket_repos_tree.id
+}
+
+module "cors_bitbucket_repos_contents" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.bitbucket_repos_contents.id
+}
+
+module "cors_bitbucket_repos_pulls_comments" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.bitbucket_repos_pulls_comments.id
+}
+
+# -----------------------------------------------------------------------------
+# Bitbucket Lambda Permission
+# -----------------------------------------------------------------------------
+resource "aws_lambda_permission" "bitbucket" {
+  statement_id  = "AllowAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = var.bitbucket_lambda_name
+  principal     = "apigateway.${local.dns_suffix}"
+  source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
+}
+
+# =============================================================================
 # GitLab OAuth Routes
 # =============================================================================
 

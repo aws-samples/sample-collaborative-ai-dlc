@@ -50,6 +50,17 @@ const getGitlabOAuthCredentials = async (secrets) => {
   return parsed;
 };
 
+const getBitbucketOAuthCredentials = async (secrets) => {
+  const secretName = process.env.BITBUCKET_OAUTH_SECRET_NAME;
+  if (!secretName) throw new Error('BITBUCKET_OAUTH_SECRET_NAME env var is required');
+  const result = await secrets.send(new GetSecretValueCommand({ SecretId: secretName }));
+  const parsed = JSON.parse(result.SecretString || '{}');
+  if (!parsed.client_id || !parsed.client_secret) {
+    throw new Error('Bitbucket OAuth is not configured');
+  }
+  return parsed;
+};
+
 const refreshGitlabToken = async ({ ssm, secrets, ddb, item, tokens }) => {
   if (!tokens.refreshToken) {
     // No refresh token (e.g. very old row) — nothing we can do; return as-is.
@@ -118,6 +129,75 @@ const refreshGitlabToken = async ({ ssm, secrets, ddb, item, tokens }) => {
   return data.access_token;
 };
 
+// Refresh a Bitbucket access token via the OAuth refresh-token grant. Mirrors
+// refreshGitlabToken but for Bitbucket's specifics:
+//   - endpoint https://bitbucket.org/site/oauth2/access_token
+//   - application/x-www-form-urlencoded body (NOT JSON)
+//   - NO redirect_uri on the refresh grant (Bitbucket rejects unknown params)
+//   - Bitbucket often omits a rotated refresh_token in the response, so we
+//     KEEP the existing one when the response has none.
+//   - tokens are JWTs (~2800+ chars) → SSM Intelligent-Tiering (4096 std cap).
+const refreshBitbucketToken = async ({ ssm, secrets, ddb, item, tokens }) => {
+  if (!tokens.refreshToken) {
+    return tokens.accessToken;
+  }
+  const { client_id, client_secret } = await getBitbucketOAuthCredentials(secrets);
+  const res = await fetch('https://bitbucket.org/site/oauth2/access_token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: tokens.refreshToken,
+      client_id,
+      client_secret,
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.error || !data.access_token) {
+    console.error('[git-token:refresh:bitbucket] failed', {
+      httpStatus: res.status,
+      error: data.error,
+      errorDescription: data.error_description,
+      userId: item?.userId,
+    });
+    throw new Error(data.error_description || data.error || `HTTP ${res.status}`);
+  }
+  console.log('[git-token:refresh:bitbucket] ok', {
+    userId: item?.userId,
+    expiresIn: data.expires_in,
+  });
+  const expiresAt = data.expires_in ? Date.now() + Number(data.expires_in) * 1000 : undefined;
+  const newValue = {
+    accessToken: data.access_token,
+    // Bitbucket may not return a new refresh token — keep the current one.
+    refreshToken: data.refresh_token || tokens.refreshToken,
+    tokenType: data.token_type,
+    ...(expiresAt ? { expiresAt } : {}),
+  };
+  await ssm.send(
+    new PutParameterCommand({
+      Name: item.parameterName,
+      Value: JSON.stringify(newValue),
+      Type: 'SecureString',
+      // Bitbucket access/refresh JWTs exceed the SSM Standard-tier 4096 cap.
+      Tier: 'Intelligent-Tiering',
+      Overwrite: true,
+    }),
+  );
+  if (ddb && item?.userId && item?.provider) {
+    try {
+      await putGitConnection(ddb, {
+        ...item,
+        scope: data.scope,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (e) {
+      console.error('Failed to persist refreshed git connection metadata:', e.message);
+    }
+  }
+  return data.access_token;
+};
+
 // Return a valid access token for a connection, refreshing GitLab tokens
 // just-in-time when they are expired or near expiry. GitHub OAuth-App tokens
 // never expire, so this is a passthrough for GitHub (and for any provider
@@ -126,7 +206,11 @@ const refreshGitlabToken = async ({ ssm, secrets, ddb, item, tokens }) => {
 const ensureFreshGitToken = async ({ ssm, secrets, ddb, item, gitProvider }) => {
   if (!item?.parameterName) throw new Error('No SSM parameter name set');
   const tokens = await readTokenValue(ssm, item.parameterName);
-  if (gitProvider !== 'gitlab' || !tokens.refreshToken) {
+  // Only GitLab and Bitbucket issue expiring OAuth tokens with refresh tokens.
+  // GitHub OAuth-App tokens never expire (passthrough); a provider without a
+  // stored refresh token can't be refreshed either.
+  const refreshable = gitProvider === 'gitlab' || gitProvider === 'bitbucket';
+  if (!refreshable || !tokens.refreshToken) {
     return tokens.accessToken;
   }
   const expiresAt = Number(tokens.expiresAt) || 0;
@@ -134,7 +218,9 @@ const ensureFreshGitToken = async ({ ssm, secrets, ddb, item, gitProvider }) => 
   if (!isStale) {
     return tokens.accessToken;
   }
-  return refreshGitlabToken({ ssm, secrets, ddb, item, tokens });
+  return gitProvider === 'bitbucket'
+    ? refreshBitbucketToken({ ssm, secrets, ddb, item, tokens })
+    : refreshGitlabToken({ ssm, secrets, ddb, item, tokens });
 };
 
 // GitHub App installation tokens (GitHub-only): used platform-wide when the

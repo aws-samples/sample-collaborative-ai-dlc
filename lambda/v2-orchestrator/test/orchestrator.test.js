@@ -2704,6 +2704,34 @@ describe('defaultMintFreshToken', () => {
     expect(tio.mintInstallationToken).toHaveBeenCalledWith(['acme/api']);
     expect(tio.getGitConnection).not.toHaveBeenCalled();
   });
+
+  it('refreshes a Bitbucket token just-in-time (via resolveGitToken/ensureFreshGitToken)', async () => {
+    const tio = io({ resolveGitToken: vi.fn(async () => 'fresh-bb-token') });
+
+    const token = await defaultMintFreshToken(
+      { gitProvider: 'bitbucket', startedBy: 'user-1', repos: ['sascha242/unicorn-store-spring'] },
+      tio,
+    );
+
+    // Bitbucket must take the refresh path (like GitLab), NOT fall through to
+    // `return null` — otherwise a lane dispatched after the run-start snapshot
+    // clones with a dead token ("Authentication failed").
+    expect(token).toBe('fresh-bb-token');
+    expect(tio.getGitConnection).toHaveBeenCalledWith('user-1', 'bitbucket');
+    expect(tio.resolveGitToken).toHaveBeenCalledWith({ parameterName: '/git/u1' }, 'bitbucket');
+    expect(tio.getGitHubAuthMode).not.toHaveBeenCalled();
+    expect(tio.mintInstallationToken).not.toHaveBeenCalled();
+  });
+
+  it('returns null for a Bitbucket connection with no starter', async () => {
+    const tio = io();
+    const token = await defaultMintFreshToken(
+      { gitProvider: 'bitbucket', startedBy: null, repos: [] },
+      tio,
+    );
+    expect(token).toBeNull();
+    expect(tio.resolveGitToken).not.toHaveBeenCalled();
+  });
 });
 
 // ── defaultResolveToken — commit attribution ("on behalf of": author = user,
