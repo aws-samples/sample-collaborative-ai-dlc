@@ -12,7 +12,7 @@
   "dependencies": {
     "@aws-sdk/credential-providers": "^3.1089.0",
     "@smithy/config-resolver": "^4.6.10",
-    "@smithy/node-config-provider": "^3.0.0",
+    "@smithy/node-config-provider": "^4.5.10",
     "gremlin": "^3.8.1",
     "gremlin-aws-sigv4": "^3.6.1"
   }
