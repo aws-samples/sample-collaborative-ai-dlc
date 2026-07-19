@@ -50,12 +50,27 @@ Surfaced while running full construction sprints end-to-end. Each addresses a di
 2. **`agent-outputs` status write fails (`key element does not match the schema`).** The table has a composite key (`executionId` + `agentType`); `saveStatus()` passed only `executionId` and tried to `SET agentType` in the update expression (a key attribute). Fixed by supplying the full key and dropping `agentType` from the update.
 3. **Construction output could be pushed directly onto the base branch.** Fallbacks of the form `job.branch || 'main'` collapse to the base branch when the branch context is lost (e.g. an orchestrator re-triggered after a CLI crash), pushing merged sprint state straight onto `main`. `pushBranchWithRetry` now refuses to push when the target is empty or equals the base branch — construction output reaches the base branch only via a PR.
 
+
 ## Testing
 
 - Unit tests for the Bitbucket lambda handler (`lambda/bitbucket/test/`) and the shared git-providers registry/token tests (`lambda/shared/test/`).
 - A level-2 integration harness (`scripts/integration/bitbucket-integration.mjs`) exercises the provider against the real Bitbucket Cloud API without deploying AWS infra. Modes: read-only (default), `--write` (PR lifecycle with cleanup), `--refresh` (token refresh), `--verbose` (HTTP-level diagnostics; never logs secrets). See `scripts/integration/README.md`.
 - Verified against a real repository: `listBranches`, `getTree` (recursive), and `getFileContents` all pass. `listRepos` requires a workspace-/account-scoped token or OAuth (repository-scoped tokens return the documented permission error by design).
 - **Full end-to-end on a live eu-central-1 deployment**: OAuth connect, repo listing (post-CHANGE-2770 endpoint), branch/tree browsing, construction commit + push, ancestor-based merge detection, automatic token refresh after >2h, and an automated PR opened against `main`. After the worker fixes, workers start cleanly (`[driver:kiro] Authenticated via API key`, no `MODULE_NOT_FOUND`) and run construction end-to-end.
+
+## D. Security review
+
+A focused security review of the Bitbucket integration produced three hardening fixes, all included in this PR (no auth protocol changed; existing `buildCloneUrl` test expectations unchanged):
+
+1. **OAuth `code`/`state` no longer logged in cleartext.** The request logger in `git-handler.js` previously redacted only top-level keys, but the single-use authorization `code` and signed `state` arrive in `queryStringParameters`. Those values are now redacted (`[REDACTED]`) while the remaining query params are kept for debugging.
+2. **Access token no longer embedded in the clone URL.** Each provider now exposes a `cloneAuthUser` constant (`x-access-token` / `oauth2` / `x-token-auth`) and `git-providers.js` exposes `buildAuthCloneUrl()`, which returns a **tokenless** `https://<user>@<host>/<repo>.git` URL. The pool worker supplies the token out-of-band via `GIT_ASKPASS` (+ `GIT_TERMINAL_PROMPT=0`) on every network git command (clone, ls-remote, fetch, push, remote set-url) and in the agent child env — so the token never lands in `.git/config`, process argv, or git's URL-bearing error output streamed to CloudWatch.
+3. **Stricter `splitWorkspaceRepo` validation.** `workspace` and `repo_slug` are validated against `^[A-Za-z0-9._-]+$` (they are interpolated into Bitbucket API URLs, some without `encodeURIComponent`), rejecting crafted references like `repo?role=admin` with a `ProviderError(400)`.
+
+### Known follow-ups (out of scope for this PR)
+
+- **Admin authorization on OAuth-secret writes** — the `trackers` role holds `PutSecretValue` on the OAuth-app secrets; the admin authorization around who can overwrite those credentials should be reviewed.
+- **No PKCE** in the OAuth authorization-code flow.
+- **Broad OAuth scopes** — `repository:write` and `pullrequest:write` are requested; worth revisiting for least-privilege once the required operations are finalized.
 
 ## Notes for reviewers
 
