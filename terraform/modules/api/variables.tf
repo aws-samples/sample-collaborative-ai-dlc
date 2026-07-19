@@ -177,6 +177,18 @@ variable "gitlab_lambda_name" {
   default     = ""
 }
 
+variable "bitbucket_lambda_invoke_arn" {
+  description = "Invoke ARN of the bitbucket Lambda"
+  type        = string
+  default     = ""
+}
+
+variable "bitbucket_lambda_name" {
+  description = "Name of the bitbucket Lambda function"
+  type        = string
+  default     = ""
+}
+
 variable "source_control_lambda_invoke_arn" {
   description = "Invoke ARN of the project source-control Lambda"
   type        = string

@@ -3,7 +3,7 @@
 // choose the credential type when their repository bindings are verified.
 
 import { Skeleton } from '@/components/ui/skeleton';
-import { GitLabIcon } from '@/components/icons/git-providers';
+import { GitLabIcon, BitbucketIcon } from '@/components/icons/git-providers';
 import type { TrackerProviderStatus } from '@/services/trackers';
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import { ConfigStatusBadge } from '@/components/settings/ConfigStatusBadge';
@@ -33,6 +33,7 @@ export function SourceControlTab({ providers, providersLoading, onProvidersChang
   }
 
   const gitlabConfigured = isConfigured(providers, 'gitlab-issues');
+  const bitbucketConfigured = isConfigured(providers, 'bitbucket-issues');
 
   return (
     <div className="space-y-6">
@@ -51,6 +52,19 @@ export function SourceControlTab({ providers, providersLoading, onProvidersChang
         <OAuthAppConfigForm
           providerId="gitlab-issues"
           configured={gitlabConfigured}
+          onSaved={onProvidersChanged}
+        />
+      </SettingsCard>
+
+      <SettingsCard
+        icon={<BitbucketIcon />}
+        title="Bitbucket"
+        badge={<ConfigStatusBadge ok={bitbucketConfigured} notOkTone="warning" />}
+        description="One OAuth app covers repo access (PRs) and the Bitbucket Issues tracker."
+      >
+        <OAuthAppConfigForm
+          providerId="bitbucket-issues"
+          configured={bitbucketConfigured}
           onSaved={onProvidersChanged}
         />
       </SettingsCard>

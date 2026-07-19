@@ -303,7 +303,7 @@ const ALLOWED_REPO_ROLES = new Set([
   'docs',
   'unknown',
 ]);
-const ALLOWED_PROVIDERS = new Set(['github', 'gitlab']);
+const ALLOWED_PROVIDERS = new Set(['github', 'gitlab', 'bitbucket']);
 
 // Validate a single repo input's role/provider against the canonical
 // vocabularies. Returns an error string when invalid, or null when valid.

@@ -89,6 +89,10 @@ export const createGitHandler = (provider, routes) => {
                 : {}),
             }),
             Type: 'SecureString',
+            // Bitbucket access/refresh tokens are JWTs (~2800+ chars) that
+            // exceed the SSM Standard-tier 4096-char cap. Intelligent-Tiering
+            // promotes to Advanced only when needed (no-op for short tokens).
+            Tier: 'Intelligent-Tiering',
             Overwrite: true,
           }),
         );
@@ -120,7 +124,27 @@ export const createGitHandler = (provider, routes) => {
       accessToken: _accessToken,
       ...safeEvent
     } = event;
-    console.log('Request:', JSON.stringify({ ...safeEvent, body: '[REDACTED]' }));
+    // The OAuth secrets travel in the callback's QUERY STRING (?code=&state=),
+    // not the top-level event — stripping the top-level keys above is not
+    // enough. Redact the nested query params too so authorization codes and
+    // signed state never reach CloudWatch (they grant account access if leaked).
+    const redactQuery = (q) => {
+      if (!q || typeof q !== 'object') return q;
+      const SENSITIVE = ['code', 'state', 'access_token', 'refresh_token', 'client_secret'];
+      const out = { ...q };
+      for (const k of SENSITIVE) {
+        if (k in out) out[k] = '[REDACTED]';
+      }
+      return out;
+    };
+    console.log(
+      'Request:',
+      JSON.stringify({
+        ...safeEvent,
+        body: '[REDACTED]',
+        queryStringParameters: redactQuery(safeEvent.queryStringParameters),
+      }),
+    );
 
     if (event.httpMethod === 'OPTIONS') return response(200, {});
 
@@ -193,6 +217,10 @@ export const createGitHandler = (provider, routes) => {
             Name: parameterName,
             Value: JSON.stringify(ssmValue),
             Type: 'SecureString',
+            // Bitbucket access/refresh tokens are JWTs (~2800+ chars) that
+            // exceed the SSM Standard-tier 4096-char cap. Intelligent-Tiering
+            // promotes to Advanced only when needed (no-op for short tokens).
+            Tier: 'Intelligent-Tiering',
             Overwrite: true,
           }),
         );

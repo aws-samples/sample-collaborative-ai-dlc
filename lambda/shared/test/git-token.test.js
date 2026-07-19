@@ -259,7 +259,84 @@ describe('ensureFreshGitToken', () => {
     expect(out).toBe('already-new');
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
+
+  it('refreshes a near-expiry Bitbucket token (form-encoded, no redirect_uri) and persists it', async () => {
+    vi.stubEnv('BITBUCKET_OAUTH_SECRET_NAME', 'test/bitbucket-oauth');
+    const bbItem = { userId: 'user-1', provider: 'bitbucket', parameterName: PARAM };
+    storeToken({
+      accessToken: 'old-bb',
+      refreshToken: 'bb-r1',
+      expiresAt: Date.now() + 60 * 1000, // inside the safety margin
+    });
+    secretsMock.on(GetSecretValueCommand).resolves({
+      SecretString: JSON.stringify({ client_id: 'bbid', client_secret: 'bbsecret' }),
+    });
+    ssmMock.on(PutParameterCommand).resolves({});
+    ddbMock.on(PutCommand).resolves({});
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        access_token: 'fresh-bb',
+        // Bitbucket commonly omits a rotated refresh_token — response has none.
+        token_type: 'bearer',
+        expires_in: 7200,
+        scope: 'account repository pullrequest',
+      }),
+    }));
+
+    const out = await ensureFreshGitToken({
+      ssm,
+      secrets,
+      ddb,
+      item: bbItem,
+      gitProvider: 'bitbucket',
+    });
+
+    expect(out).toBe('fresh-bb');
+    // Correct endpoint + form-urlencoded body, and NO redirect_uri (Bitbucket
+    // rejects unknown params on the refresh grant).
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+        'https://bitbucket.org/site/oauth2/access_token',
+        expect.objectContaining({ method: 'POST' }),
+    );
+    const body = globalThis.fetch.mock.calls[0][1].body;
+    expect(body).toBeInstanceOf(URLSearchParams);
+    expect(body.get('grant_type')).toBe('refresh_token');
+    expect(body.get('refresh_token')).toBe('bb-r1');
+    expect(body.get('redirect_uri')).toBeNull();
+    // Persisted with Intelligent-Tiering (JWTs exceed the 4096 std cap) and the
+    // OLD refresh token retained since the response carried none.
+    const put = ssmMock.commandCalls(PutParameterCommand)[0].args[0].input;
+    expect(put.Tier).toBe('Intelligent-Tiering');
+    const persisted = JSON.parse(put.Value);
+    expect(persisted.accessToken).toBe('fresh-bb');
+    expect(persisted.refreshToken).toBe('bb-r1');
+    const ddbPut = ddbMock.commandCalls(PutCommand)[0].args[0].input;
+    expect(ddbPut.Item.providerInstance).toBe('bitbucket#public');
+  });
+
+  it('does not refresh a Bitbucket token that is well within expiry', async () => {
+    const bbItem = { userId: 'user-1', provider: 'bitbucket', parameterName: PARAM };
+    storeToken({
+      accessToken: 'bb-tok',
+      refreshToken: 'bb-r1',
+      expiresAt: Date.now() + 60 * 60 * 1000,
+    });
+    globalThis.fetch = vi.fn();
+    const out = await ensureFreshGitToken({
+      ssm,
+      secrets,
+      ddb,
+      item: bbItem,
+      gitProvider: 'bitbucket',
+    });
+    expect(out).toBe('bb-tok');
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
 });
+
+
 
 describe('getInstallationToken', () => {
   let getInstallationToken;

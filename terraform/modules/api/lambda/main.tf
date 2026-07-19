@@ -313,6 +313,13 @@ resource "aws_iam_role_policy" "trackers" {
           Resource = [var.gitlab_oauth_secret_arn]
         }
       ] : [],
+      var.bitbucket_oauth_secret_arn != "" ? [
+        {
+          Effect   = "Allow"
+          Action   = ["secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue"]
+          Resource = [var.bitbucket_oauth_secret_arn]
+        }
+      ] : [],
     )
   })
 }
@@ -1456,6 +1463,83 @@ module "gitlab_lambda" {
   }
 }
 
+# -----------------------------------------------------------------------------
+# Role 3d: bitbucket-connector (1 Lambda — bitbucket)
+# OAuth callback + token storage; no Neptune, no ECS, no Cognito. Mirrors the
+# gitlab-connector role (Bitbucket tokens refresh like GitLab's).
+# -----------------------------------------------------------------------------
+resource "aws_iam_role" "bitbucket_connector" {
+  name               = "${var.project_name}-bitbucket-connector-${var.environment}"
+  assume_role_policy = local.lambda_assume_role_policy
+}
+
+resource "aws_iam_role_policy_attachment" "bitbucket_connector_basic" {
+  role       = aws_iam_role.bitbucket_connector.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy" "bitbucket_connector" {
+  name = "bitbucket-oauth-and-token-storage"
+  role = aws_iam_role.bitbucket_connector.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"]
+        Resource = compact([var.git_connections_table_arn, var.git_provider_connections_table_arn])
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = [var.bitbucket_oauth_secret_arn]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:PutParameter", "ssm:GetParameter", "ssm:DeleteParameter"]
+        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
+      }
+    ]
+  })
+}
+
+# Bitbucket Lambda
+module "bitbucket_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-bitbucket-${var.environment}"
+  handler       = "index.handler"
+  runtime       = "nodejs24.x"
+  timeout       = 30
+
+  source_path = [
+    {
+      path = "${path.module}/../../../../lambda/bitbucket"
+      commands = [
+        "cd ../.. && npm run build -w bitbucket-lambda",
+        ":zip lambda/bitbucket/.build",
+      ]
+    }
+  ]
+
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
+
+  create_role = false
+  lambda_role = aws_iam_role.bitbucket_connector.arn
+
+  environment_variables = {
+    BITBUCKET_OAUTH_SECRET_NAME    = var.bitbucket_oauth_secret_name
+    GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
+    GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
+    GIT_TOKEN_SSM_PREFIX           = "${var.project_name}/${var.environment}/git-token"
+    BITBUCKET_REDIRECT_URI         = var.bitbucket_redirect_uri
+    ENVIRONMENT                    = var.environment
+    CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
+  }
+}
+
 # Trackers Lambda — provider-agnostic tracker integration. Git-backed providers
 # delegate issue operations to the project source-control service.
 module "trackers_lambda" {
@@ -1497,6 +1581,8 @@ module "trackers_lambda" {
     GITHUB_OAUTH_SECRET_NAME       = var.github_oauth_secret_name
     GITLAB_OAUTH_SECRET_NAME       = var.gitlab_oauth_secret_name
     GITLAB_REDIRECT_URI            = var.gitlab_redirect_uri
+    BITBUCKET_OAUTH_SECRET_NAME    = var.bitbucket_oauth_secret_name
+    BITBUCKET_REDIRECT_URI         = var.bitbucket_redirect_uri
     SOURCE_CONTROL_FUNCTION        = module.source_control_lambda.lambda_function_name
     SOURCE_CONTROL_BINDINGS_TABLE  = var.source_control_bindings_table_name
     ENVIRONMENT                    = var.environment
