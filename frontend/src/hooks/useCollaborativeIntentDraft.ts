@@ -4,6 +4,7 @@ import { simpleDiffStringWithCursor } from 'lib0/diff';
 import { useYjsDocument } from './useYjsDocument';
 import { useAutoSave } from './useAutoSave';
 import { generateColor } from '../utils/colors';
+import { seedYjsDocumentIfEmpty } from '../lib/yjsSeed';
 import { intentsService, type Intent } from '../services/intents';
 
 // The collaboratively edited slice of a DRAFT intent. Yjs is the transport
@@ -45,7 +46,7 @@ export function useCollaborativeIntentDraft(
   intentId: string | null,
   userName: string,
 ) {
-  const { doc, synced, remoteUsers, setCursor } = useYjsDocument(
+  const { doc, synced, awareness, remoteUsers, setCursor } = useYjsDocument(
     intentId ? `intent-draft-${intentId}` : null,
     userName,
     generateColor(userName),
@@ -89,17 +90,15 @@ export function useCollaborativeIntentDraft(
     (intent: Intent) => {
       if (!doc || !synced || seededRef.current) return;
       seededRef.current = true;
-      const titleText = doc.getText('title');
-      const promptText = doc.getText('prompt');
-      const config = doc.getMap('config');
-      doc.transact(() => {
-        if (titleText.length === 0 && intent.title) titleText.insert(0, intent.title);
-        if (promptText.length === 0 && intent.prompt) promptText.insert(0, intent.prompt);
-        if (!config.has('scope') && intent.scope) config.set('scope', intent.scope);
-        if (!config.has('composedGrid') && intent.composedGrid) {
+      seedYjsDocumentIfEmpty(doc, (seed) => {
+        if (intent.title) seed.getText('title').insert(0, intent.title);
+        if (intent.prompt) seed.getText('prompt').insert(0, intent.prompt);
+        const config = seed.getMap('config');
+        if (intent.scope) config.set('scope', intent.scope);
+        if (intent.composedGrid) {
           config.set('composedGrid', JSON.stringify(intent.composedGrid));
         }
-        if (!config.has('skipStageIds') && intent.skipStageIds?.length) {
+        if (intent.skipStageIds?.length) {
           config.set('skipStageIds', JSON.stringify(intent.skipStageIds));
         }
       });
@@ -208,7 +207,10 @@ export function useCollaborativeIntentDraft(
   return {
     ...state,
     synced,
+    awareness,
     remoteUsers,
+    titleText: doc.getText('title'),
+    promptText: doc.getText('prompt'),
     setCursor,
     initFromIntent,
     setTitle,

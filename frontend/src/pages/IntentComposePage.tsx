@@ -10,7 +10,6 @@ import { CollaborativeTextarea } from '@/components/CollaborativeTextarea';
 import { ComposePanel } from '@/components/intent/ComposePanel';
 import { StageGridEditor } from '@/components/intent/StageGridEditor';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
@@ -347,12 +346,15 @@ export default function IntentComposePage() {
         <div className="space-y-4">
           <div>
             <Label htmlFor="draft-title">Title</Label>
-            <Input
+            <CollaborativeTextarea
               id="draft-title"
+              yText={draft.titleText}
+              awareness={draft.awareness}
               value={draft.title}
-              onChange={(e) => draft.setTitle(e.target.value, e.target.selectionStart ?? undefined)}
               placeholder="e.g. Add user authentication"
-              className="mt-1.5"
+              className="mt-1.5 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm"
+              singleLine
+              disabled={!draft.synced}
             />
           </div>
 
@@ -360,13 +362,13 @@ export default function IntentComposePage() {
             <Label htmlFor="draft-prompt">Prompt</Label>
             <CollaborativeTextarea
               id="draft-prompt"
+              yText={draft.promptText}
+              awareness={draft.awareness}
               value={draft.prompt}
-              onChange={(text, cursorPos) => draft.setPrompt(text, cursorPos)}
-              onCursorChange={(index, length) => draft.setCursor(index, length)}
-              remoteUsers={draft.remoteUsers}
               rows={10}
               placeholder="Describe the intent in detail…"
               className="mt-1.5 rounded-md border bg-background px-3 py-2 text-sm"
+              disabled={!draft.synced}
             />
           </div>
 

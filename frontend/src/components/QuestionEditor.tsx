@@ -41,9 +41,11 @@ export default function QuestionEditor({
     freeTexts,
     setSelection,
     setFreeText,
+    getFreeText,
+    addContributor,
     synced,
+    awareness,
     remoteUsers,
-    setCursor,
     initFromDraft,
     toStructuredAnswer,
   } = useCollaborativeStructuredAnswer(
@@ -124,12 +126,15 @@ export default function QuestionEditor({
             totalQuestions={question.questions.length}
             selectedOptions={selections.get(qIdx) || []}
             freeText={freeTexts.get(qIdx) || ''}
+            freeTextDoc={getFreeText(qIdx)}
+            awareness={awareness}
             onSelectionChange={(indices) => setSelection(qIdx, indices)}
             onFreeTextChange={(text, cursor) => setFreeText(qIdx, text, cursor)}
-            onCursorChange={setCursor}
-            remoteUsers={remoteUsers}
-            disabled={submitting}
-            onFocus={onFocus}
+            disabled={submitting || !synced}
+            onFocus={() => {
+              addContributor();
+              onFocus?.();
+            }}
             onBlur={onBlur}
             trailing={
               qIdx === 0 ? (
@@ -191,10 +196,10 @@ function StructuredQuestionBlock({
   totalQuestions,
   selectedOptions,
   freeText,
+  freeTextDoc,
+  awareness,
   onSelectionChange,
   onFreeTextChange,
-  onCursorChange,
-  remoteUsers,
   disabled,
   onFocus,
   onBlur,
@@ -205,10 +210,10 @@ function StructuredQuestionBlock({
   totalQuestions: number;
   selectedOptions: number[];
   freeText: string;
+  freeTextDoc: import('yjs').Text;
+  awareness: import('y-protocols/awareness').Awareness;
   onSelectionChange: (indices: number[]) => void;
   onFreeTextChange: (text: string, cursorPos?: number) => void;
-  onCursorChange: (index: number, length?: number) => void;
-  remoteUsers: Map<number, import('../hooks/useYjsDocument').AwarenessUser>;
   disabled?: boolean;
   onFocus?: () => void;
   onBlur?: () => void;
@@ -345,10 +350,9 @@ function StructuredQuestionBlock({
               {isSelected && requiresFreeText && (
                 <div className="mt-1.5 ml-6 mr-2">
                   <CollaborativeTextarea
+                    yText={freeTextDoc}
+                    awareness={awareness}
                     value={freeText}
-                    onChange={(val, cursor) => onFreeTextChange(val, cursor)}
-                    onCursorChange={onCursorChange}
-                    remoteUsers={remoteUsers}
                     placeholder={
                       opt.label.toLowerCase().includes('request changes')
                         ? 'Describe what needs to change...'
@@ -416,15 +420,9 @@ function StructuredQuestionBlock({
             {showTextarea && (
               <div className="mt-1.5 ml-6">
                 <CollaborativeTextarea
+                  yText={freeTextDoc}
+                  awareness={awareness}
                   value={freeText}
-                  onChange={(val, cursor) => {
-                    onFreeTextChange(val, cursor);
-                    if (isSingle && val.length > 0 && selectedOptions.length > 0) {
-                      onSelectionChange([]);
-                    }
-                  }}
-                  onCursorChange={onCursorChange}
-                  remoteUsers={remoteUsers}
                   placeholder="Type your answer..."
                   className="w-full px-2 py-1 border border-border rounded-md text-sm bg-background"
                   rows={2}

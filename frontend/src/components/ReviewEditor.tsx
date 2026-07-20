@@ -50,7 +50,7 @@ export default function ReviewEditor({
   const [sendResult, setSendResult] = useState<'success' | 'error' | null>(null);
   const term = gitProviderTerminology(gitProvider);
 
-  const { values, setField, initFields, synced, remoteUsers, setCursor } =
+  const { values, getFieldText, initFields, synced, awareness, remoteUsers } =
     useCollaborativeArtifact<{ comments: string }>(
       'review',
       sprintId,
@@ -106,7 +106,7 @@ export default function ReviewEditor({
   }
 
   const remoteCount = remoteUsers.size;
-  const canSendToProvider = review.status !== 'PENDING' && !readOnly;
+  const canSendToProvider = review.status !== 'PENDING' && !readOnly && synced;
 
   return (
     <div>
@@ -130,23 +130,22 @@ export default function ReviewEditor({
         )}
       </div>
       <CollaborativeTextarea
+        yText={getFieldText('comments')}
+        awareness={awareness}
         value={values.comments || ''}
-        onChange={(val, cursor) => setField('comments', val, cursor)}
-        onCursorChange={setCursor}
-        remoteUsers={remoteUsers}
         placeholder="Review comments..."
         className="w-full px-3 py-2 border rounded text-sm disabled:opacity-50 disabled:cursor-not-allowed"
         rows={4}
         onFocus={onFocus}
         onBlur={onBlur}
-        disabled={readOnly}
+        disabled={readOnly || !synced}
       />
       <div className="flex gap-2 mt-3">
         {VERDICT_BUTTONS.map(({ status, label, className }) => (
           <button
             key={status}
             onClick={() => handleVerdict(status)}
-            disabled={readOnly}
+            disabled={readOnly || !synced}
             className={`px-3 py-1.5 text-sm rounded disabled:opacity-50 disabled:cursor-not-allowed ${
               review.status === status
                 ? `${className} ring-2 ring-offset-1 ring-current`
