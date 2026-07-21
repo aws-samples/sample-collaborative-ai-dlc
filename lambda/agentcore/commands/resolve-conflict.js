@@ -46,8 +46,7 @@ import {
   persistKiroStore as defaultPersistKiroStore,
 } from '../cli/kiro-store.js';
 import { withOpenCodeStore as defaultWithOpenCodeStore } from '../cli/opencode-store.js';
-
-const repoUrl = (repo) => (typeof repo === 'string' ? repo : repo.url);
+import { repoUrl, repoProvider } from '../../shared/repo-provider.js';
 
 // The focused prompt. PURE — exported for tests. Hard boundaries: the agent
 // edits ONLY the listed files; the engine performs all git.
@@ -89,10 +88,10 @@ export const resolveConflict = async (
     repos = [],
     unitBranch,
     intentBranch,
-    gitToken,
     gitProvider,
-    // Commit attribution: conflict-resolution commits are authored by the
-    // starting user, committed by AI-DLC Engine (see git-engine.js gitIdentity).
+    repoProviders = null,
+    // Commit attribution: the starter is author; the delegated OAuth/App
+    // identity resolved by the broker is committer.
     gitAuthor = null,
     requestedCli,
     cliModels = {},
@@ -139,6 +138,7 @@ export const resolveConflict = async (
   const conflictedByRepo = [];
   for (const repo of repos) {
     const url = repoUrl(repo);
+    const provider = repoProvider(repo, gitProvider, repoProviders);
     const begin = await beginConflictMerge({
       dir: dirFor(url),
       repo: url,
@@ -146,8 +146,9 @@ export const resolveConflict = async (
       intentBranch,
       message: mergeMessage,
       author: gitAuthor,
-      gitToken,
-      gitProvider,
+      gitProvider: provider,
+      projectId,
+      executionId,
       urls: urlsFor ? urlsFor(url) : {},
     });
     if (begin.error) {
@@ -262,14 +263,16 @@ export const resolveConflict = async (
   // ── 3. ENGINE: verify + conclude + push, per repo ──────────────────────────
   const concluded = [];
   for (const { repo, conflicts } of conflictedByRepo) {
+    const provider = repoProviders?.[repo] || gitProvider || 'github';
     const res = await concludeConflictMerge({
       dir: dirFor(repo),
       repo,
       unitBranch,
       conflicts,
       author: gitAuthor,
-      gitToken,
-      gitProvider,
+      gitProvider: provider,
+      projectId,
+      executionId,
       urls: urlsFor ? urlsFor(repo) : {},
     });
     if (!res.concluded) {

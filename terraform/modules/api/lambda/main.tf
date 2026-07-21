@@ -28,6 +28,9 @@ locals {
     "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}:*",
   ]
 
+  source_control_function_arn    = "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-source-control-${var.environment}"
+  credential_broker_function_arn = "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-credential-broker-${var.environment}"
+
   # Reusable assume-role policy for Lambda services
   lambda_assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -101,6 +104,40 @@ resource "aws_iam_role_policy" "neptune_reader" {
   })
 }
 
+# Project membership management also invalidates any OAuth bindings delegated
+# by a removed member. Keep that write grant isolated from the read-only
+# Lambdas that share neptune-reader.
+resource "aws_iam_role" "users" {
+  name               = "${var.project_name}-users-${var.environment}"
+  assume_role_policy = local.lambda_assume_role_policy
+}
+
+resource "aws_iam_role_policy_attachment" "users_basic" {
+  role       = aws_iam_role.users.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "users_vpc" {
+  role       = aws_iam_role.users.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+resource "aws_iam_role_policy" "users" {
+  name = "membership-and-binding-invalidation"
+  role = aws_iam_role.users.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      local.neptune_statement,
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:Query", "dynamodb:UpdateItem"]
+        Resource = [var.source_control_bindings_table_arn]
+      },
+    ]
+  })
+}
+
 # -----------------------------------------------------------------------------
 # Role 2: neptune-questions (1 Lambda — questions)
 # Read-only sprint Q&A history: plain Neptune access. (The DynamoDB
@@ -159,6 +196,8 @@ resource "aws_iam_role_policy" "github_connector" {
           var.git_connections_table_arn,
           var.git_provider_connections_table_arn,
           var.tracker_connections_table_arn,
+          var.source_control_bindings_table_arn,
+          "${var.source_control_bindings_table_arn}/index/*",
         ])
       },
       {
@@ -179,15 +218,12 @@ resource "aws_iam_role_policy" "github_connector" {
         Action   = ["ssm:PutParameter", "ssm:GetParameter", "ssm:DeleteParameter"]
         Resource = "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
       },
-      # Platform GitHub auth mode + App config: read for mode dispatch, write
-      # from the Admin card (same endpoint as the private key above).
+      # App identity config is managed independently from OAuth. Projects bind
+      # a discovered installation per repository.
       {
-        Effect = "Allow"
-        Action = ["ssm:GetParameter", "ssm:PutParameter"]
-        Resource = compact([
-          var.github_auth_mode_param_arn,
-          var.github_app_config_param_arn,
-        ])
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter", "ssm:PutParameter"]
+        Resource = [var.github_app_config_param_arn]
       }
     ]
   })
@@ -195,10 +231,9 @@ resource "aws_iam_role_policy" "github_connector" {
 
 # -----------------------------------------------------------------------------
 # Role 3b: trackers (1 Lambda — trackers)
-# Provider-agnostic tracker integration. Needs Neptune (project + binding
-# lookups), DDB read/delete on git-connections + tracker-connections, and
-# SSM read/delete on git-token params (for github-issues token resolution
-# and disconnect). Phase 3 will add Secrets Manager scope for Jira OAuth.
+# Provider-agnostic tracker integration. Git-backed issue operations invoke the
+# project source-control service. This role only deletes Git OAuth parameters
+# when a user disconnects; it never reads repository credentials.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "trackers" {
   name               = "${var.project_name}-trackers-${var.environment}"
@@ -225,16 +260,23 @@ resource "aws_iam_role_policy" "trackers" {
         local.neptune_statement,
         {
           Effect = "Allow"
-          Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:Scan"]
+          Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:UpdateItem", "dynamodb:Query", "dynamodb:Scan"]
           Resource = compact([
             var.git_connections_table_arn,
             var.git_provider_connections_table_arn,
             var.tracker_connections_table_arn,
+            var.source_control_bindings_table_arn,
+            "${var.source_control_bindings_table_arn}/index/*",
           ])
         },
         {
           Effect   = "Allow"
-          Action   = ["ssm:GetParameter", "ssm:PutParameter", "ssm:DeleteParameter"]
+          Action   = ["lambda:InvokeFunction"]
+          Resource = [local.source_control_function_arn]
+        },
+        {
+          Effect   = "Allow"
+          Action   = ["ssm:DeleteParameter"]
           Resource = "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
         },
         # Jira Cloud (Phase 3 / #197): the trackers lambda owns the Jira OAuth
@@ -246,24 +288,7 @@ resource "aws_iam_role_policy" "trackers" {
           Action   = ["ssm:PutParameter", "ssm:GetParameter", "ssm:DeleteParameter"]
           Resource = "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/jira-token/*"
         },
-        # GitHub App auth (read-only): the github-issues provider consults the
-        # platform auth mode and, in app mode, mints installation tokens.
-        {
-          Effect = "Allow"
-          Action = ["ssm:GetParameter"]
-          Resource = compact([
-            var.github_auth_mode_param_arn,
-            var.github_app_config_param_arn,
-          ])
-        },
       ],
-      var.github_app_private_key_secret_arn != "" ? [
-        {
-          Effect   = "Allow"
-          Action   = ["secretsmanager:GetSecretValue"]
-          Resource = [var.github_app_private_key_secret_arn]
-        }
-      ] : [],
       # Tracker OAuth secrets — read for OAuth flows, write from the
       # Admin "Tracker OAuth Apps" panel. Jira, GitHub and GitLab all flow
       # through the trackers Lambda's admin endpoints.
@@ -470,71 +495,52 @@ resource "aws_iam_role_policy" "neptune_artifacts" {
   role = aws_iam_role.neptune_artifacts.id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = concat(
-      [
-        local.neptune_statement,
-        # GitHub App auth (read-only): repo stack detection in the projects
-        # lambda mints a contents:read installation token in app mode.
-        {
-          Effect = "Allow"
-          Action = ["ssm:GetParameter"]
-          Resource = compact([
-            var.github_auth_mode_param_arn,
-            var.github_app_config_param_arn,
-          ])
-        },
-        # Project custom agent rules: presign PUT/GET for the .md bodies under
-        # the custom-rules/ prefix, and permanently purge on delete — the bucket
-        # is versioned, so we delete all versions (DeleteObjectVersion +
-        # ListBucketVersions) rather than leave a retrievable delete marker.
-        {
-          Effect = "Allow"
-          Action = [
-            "s3:GetObject",
-            "s3:PutObject",
-            "s3:DeleteObject",
-            "s3:DeleteObjectVersion",
-          ]
-          Resource = ["${var.artifacts_bucket_arn}/custom-rules/*"]
-        },
-        {
-          Effect   = "Allow"
-          Action   = ["s3:ListBucketVersions"]
-          Resource = [var.artifacts_bucket_arn]
-          Condition = {
-            StringLike = { "s3:prefix" = ["custom-rules/*"] }
-          }
-        },
-        # Project-tier MCP secrets: the projects lambda lists (set-state only),
-        # rotates (Put) and clears (Delete) per-var SecureStrings under
-        # projects/<id>/mcp-secrets/*. It also READS the GLOBAL custom-mcp-servers
-        # config (refs-only) to run the save-time cross-tier collision check.
-        {
-          Effect = "Allow"
-          Action = [
-            "ssm:GetParameter",
-            "ssm:GetParameters",
-            "ssm:GetParametersByPath",
-            "ssm:PutParameter",
-            "ssm:DeleteParameter",
-          ]
-          Resource = [
-            # The path NODE per project — GetParametersByPath authorizes against
-            # the queried path itself, which `/*` (children only) does NOT match.
-            "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/mcp-secrets",
-            "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/mcp-secrets/*",
-            "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/custom-mcp-servers",
-          ]
-        },
-      ],
-      var.github_app_private_key_secret_arn != "" ? [
-        {
-          Effect   = "Allow"
-          Action   = ["secretsmanager:GetSecretValue"]
-          Resource = [var.github_app_private_key_secret_arn]
+    Statement = [
+      local.neptune_statement,
+      # Project custom agent rules: presign PUT/GET for the .md bodies under
+      # the custom-rules/ prefix, and permanently purge on delete — the bucket
+      # is versioned, so we delete all versions (DeleteObjectVersion +
+      # ListBucketVersions) rather than leave a retrievable delete marker.
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:DeleteObjectVersion",
+        ]
+        Resource = ["${var.artifacts_bucket_arn}/custom-rules/*"]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:ListBucketVersions"]
+        Resource = [var.artifacts_bucket_arn]
+        Condition = {
+          StringLike = { "s3:prefix" = ["custom-rules/*"] }
         }
-      ] : [],
-    )
+      },
+      # Project-tier MCP secrets: the projects lambda lists (set-state only),
+      # rotates (Put) and clears (Delete) per-var SecureStrings under
+      # projects/<id>/mcp-secrets/*. It also READS the GLOBAL custom-mcp-servers
+      # config (refs-only) to run the save-time cross-tier collision check.
+      {
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter",
+          "ssm:GetParameters",
+          "ssm:GetParametersByPath",
+          "ssm:PutParameter",
+          "ssm:DeleteParameter",
+        ]
+        Resource = [
+          # The path NODE per project — GetParametersByPath authorizes against
+          # the queried path itself, which `/*` (children only) does NOT match.
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/mcp-secrets",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/mcp-secrets/*",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/custom-mcp-servers",
+        ]
+      },
+    ]
   })
 }
 
@@ -684,6 +690,217 @@ resource "aws_security_group" "lambda" {
   }
 }
 
+# Project source-control service. This is the only API-facing component allowed
+# to resolve delegated credentials and call repository provider APIs.
+resource "aws_iam_role" "source_control" {
+  name               = "${var.project_name}-source-control-${var.environment}"
+  assume_role_policy = local.lambda_assume_role_policy
+}
+
+resource "aws_iam_role_policy_attachment" "source_control_basic" {
+  role       = aws_iam_role.source_control.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "source_control_vpc" {
+  role       = aws_iam_role.source_control.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+resource "aws_iam_role_policy" "source_control" {
+  name = "project-source-control"
+  role = aws_iam_role.source_control.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      local.neptune_statement,
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:Query",
+          "dynamodb:Scan",
+          "dynamodb:BatchWriteItem",
+          "dynamodb:TransactWriteItems",
+        ]
+        Resource = [
+          var.source_control_bindings_table_arn,
+          "${var.source_control_bindings_table_arn}/index/*",
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:Query",
+        ]
+        Resource = compact([
+          var.git_connections_table_arn,
+          var.git_provider_connections_table_arn,
+        ])
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter", "ssm:PutParameter"]
+        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
+      },
+      {
+        Effect = "Allow"
+        Action = ["ssm:GetParameter"]
+        Resource = compact([
+          var.github_app_config_param_arn,
+        ])
+      },
+      {
+        Effect = "Allow"
+        Action = ["secretsmanager:GetSecretValue"]
+        Resource = compact([
+          var.github_app_private_key_secret_arn,
+          var.gitlab_oauth_secret_arn,
+        ])
+      },
+    ]
+  })
+}
+
+module "source_control_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-source-control-${var.environment}"
+  handler       = "index.handler"
+  runtime       = "nodejs24.x"
+  timeout       = 120
+
+  source_path = [
+    {
+      path = "${path.module}/../../../../lambda/source-control"
+      commands = [
+        "cd ../.. && npm run build -w source-control",
+        ":zip lambda/source-control/.build",
+      ]
+    }
+  ]
+  hash_extra = local.shared_sources_hash
+
+  create_role = false
+  lambda_role = aws_iam_role.source_control.arn
+
+  vpc_subnet_ids         = var.private_subnet_ids
+  vpc_security_group_ids = [aws_security_group.lambda.id]
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
+
+  environment_variables = {
+    NEPTUNE_ENDPOINT                   = var.neptune_endpoint
+    SOURCE_CONTROL_BINDINGS_TABLE      = var.source_control_bindings_table_name
+    GIT_CONNECTIONS_TABLE              = var.git_connections_table_name
+    GIT_PROVIDER_CONNECTIONS_TABLE     = var.git_provider_connections_table_name
+    GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
+    GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
+    GITLAB_OAUTH_SECRET_NAME           = var.gitlab_oauth_secret_name
+    GITLAB_REDIRECT_URI                = var.gitlab_redirect_uri
+    ENVIRONMENT                        = var.environment
+    CORS_ALLOWED_ORIGINS               = var.cors_allowed_origins
+  }
+}
+
+# AgentCore-only credential broker. It has no API Gateway or event source; the
+# runtime role is the sole role granted lambda:InvokeFunction below.
+resource "aws_iam_role" "credential_broker" {
+  name               = "${var.project_name}-credential-broker-${var.environment}"
+  assume_role_policy = local.lambda_assume_role_policy
+}
+
+resource "aws_iam_role_policy_attachment" "credential_broker_basic" {
+  role       = aws_iam_role.credential_broker.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy" "credential_broker" {
+  name = "agentcore-credential-resolution"
+  role = aws_iam_role.credential_broker.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:UpdateItem"]
+        Resource = [var.v2_executions_table_arn, var.source_control_bindings_table_arn]
+      },
+      {
+        Effect = "Allow"
+        Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]
+        Resource = compact([
+          var.git_connections_table_arn,
+          var.git_provider_connections_table_arn,
+        ])
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter", "ssm:PutParameter"]
+        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter"]
+        Resource = [var.github_app_config_param_arn]
+      },
+      {
+        Effect = "Allow"
+        Action = ["secretsmanager:GetSecretValue"]
+        Resource = compact([
+          var.github_app_private_key_secret_arn,
+          var.gitlab_oauth_secret_arn,
+        ])
+      },
+    ]
+  })
+}
+
+module "credential_broker_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-credential-broker-${var.environment}"
+  handler       = "index.handler"
+  runtime       = "nodejs24.x"
+  timeout       = 30
+
+  source_path = [
+    {
+      path = "${path.module}/../../../../lambda/credential-broker"
+      commands = [
+        "cd ../.. && npm run build -w credential-broker",
+        ":zip lambda/credential-broker/.build",
+      ]
+    }
+  ]
+  hash_extra = local.shared_sources_hash
+
+  create_role = false
+  lambda_role = aws_iam_role.credential_broker.arn
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
+
+  environment_variables = {
+    V2_PROCESS_TABLE                   = var.v2_executions_table_name
+    SOURCE_CONTROL_BINDINGS_TABLE      = var.source_control_bindings_table_name
+    GIT_CONNECTIONS_TABLE              = var.git_connections_table_name
+    GIT_PROVIDER_CONNECTIONS_TABLE     = var.git_provider_connections_table_name
+    GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
+    GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
+    GITLAB_OAUTH_SECRET_NAME           = var.gitlab_oauth_secret_name
+    GITLAB_REDIRECT_URI                = var.gitlab_redirect_uri
+  }
+}
+
 # Projects Lambda
 module "projects_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
@@ -724,11 +941,8 @@ module "projects_lambda" {
     CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
     GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
     GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
+    SOURCE_CONTROL_BINDINGS_TABLE  = var.source_control_bindings_table_name
     ARTIFACTS_BUCKET               = var.artifacts_bucket_name
-    # GitHub App auth (mode-aware stack detection)
-    GITHUB_AUTH_MODE_PARAM             = var.github_auth_mode_param_name
-    GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
-    GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
     # Project delete fans out into the intents' process state: the v2 process
     # table (drained per intent, incl. metrics), the intent-scoped Yjs docs, and
     # the AgentCore runtime (stop live sessions of deleted intents).
@@ -767,15 +981,16 @@ module "users_lambda" {
   hash_extra = local.shared_sources_hash
 
   create_role = false
-  lambda_role = aws_iam_role.neptune_reader.arn
+  lambda_role = aws_iam_role.users.arn
 
   vpc_subnet_ids         = var.private_subnet_ids
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT     = var.neptune_endpoint
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    NEPTUNE_ENDPOINT              = var.neptune_endpoint
+    SOURCE_CONTROL_BINDINGS_TABLE = var.source_control_bindings_table_name
+    ENVIRONMENT                   = var.environment
+    CORS_ALLOWED_ORIGINS          = var.cors_allowed_origins
   }
 }
 
@@ -1120,13 +1335,11 @@ module "github_lambda" {
   lambda_role = aws_iam_role.github_connector.arn
 
   environment_variables = {
-    GITHUB_OAUTH_SECRET_NAME       = var.github_oauth_secret_name
-    GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
-    GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
-    GIT_TOKEN_SSM_PREFIX           = "${var.project_name}/${var.environment}/git-token"
-    GITHUB_REDIRECT_URI            = var.github_redirect_uri
-    # GitHub App auth (mode switch + config + installation-token minting)
-    GITHUB_AUTH_MODE_PARAM             = var.github_auth_mode_param_name
+    GITHUB_OAUTH_SECRET_NAME           = var.github_oauth_secret_name
+    GIT_CONNECTIONS_TABLE              = var.git_connections_table_name
+    GIT_PROVIDER_CONNECTIONS_TABLE     = var.git_provider_connections_table_name
+    GIT_TOKEN_SSM_PREFIX               = "${var.project_name}/${var.environment}/git-token"
+    GITHUB_REDIRECT_URI                = var.github_redirect_uri
     GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
     GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
     ENVIRONMENT                        = var.environment
@@ -1155,9 +1368,20 @@ resource "aws_iam_role_policy" "gitlab_connector" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect   = "Allow"
-        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"]
-        Resource = compact([var.git_connections_table_arn, var.git_provider_connections_table_arn])
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Query",
+        ]
+        Resource = compact([
+          var.git_connections_table_arn,
+          var.git_provider_connections_table_arn,
+          var.source_control_bindings_table_arn,
+          "${var.source_control_bindings_table_arn}/index/*",
+        ])
       },
       {
         Effect   = "Allow"
@@ -1203,6 +1427,7 @@ module "gitlab_lambda" {
     GITLAB_OAUTH_SECRET_NAME       = var.gitlab_oauth_secret_name
     GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
     GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
+    SOURCE_CONTROL_BINDINGS_TABLE  = var.source_control_bindings_table_name
     GIT_TOKEN_SSM_PREFIX           = "${var.project_name}/${var.environment}/git-token"
     GITLAB_REDIRECT_URI            = var.gitlab_redirect_uri
     ENVIRONMENT                    = var.environment
@@ -1210,11 +1435,8 @@ module "gitlab_lambda" {
   }
 }
 
-# Trackers Lambda — provider-agnostic tracker integration (issue #196).
-# Hosts the github-issues provider in Phase 2; Jira and others slot in later.
-# Needs Neptune (project + binding lookups), DDB on git-connections + tracker-
-# connections, and SSM decrypt on git-token params. The dedicated trackers
-# IAM role bundles all of these.
+# Trackers Lambda — provider-agnostic tracker integration. Git-backed providers
+# delegate issue operations to the project source-control service.
 module "trackers_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
@@ -1248,19 +1470,16 @@ module "trackers_lambda" {
     GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
     GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
     TRACKER_CONNECTIONS_TABLE      = var.tracker_connections_table_name
-    GIT_TOKEN_SSM_PREFIX           = "${var.project_name}/${var.environment}/git-token"
     JIRA_OAUTH_SECRET_NAME         = var.jira_oauth_secret_name
     JIRA_REDIRECT_URI              = var.jira_redirect_uri
     JIRA_TOKEN_SSM_PREFIX          = "${var.project_name}/${var.environment}/jira-token"
     GITHUB_OAUTH_SECRET_NAME       = var.github_oauth_secret_name
     GITLAB_OAUTH_SECRET_NAME       = var.gitlab_oauth_secret_name
     GITLAB_REDIRECT_URI            = var.gitlab_redirect_uri
-    # GitHub App auth (mode-aware token resolution for github-issues)
-    GITHUB_AUTH_MODE_PARAM             = var.github_auth_mode_param_name
-    GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
-    GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
-    ENVIRONMENT                        = var.environment
-    CORS_ALLOWED_ORIGINS               = var.cors_allowed_origins
+    SOURCE_CONTROL_FUNCTION        = module.source_control_lambda.lambda_function_name
+    SOURCE_CONTROL_BINDINGS_TABLE  = var.source_control_bindings_table_name
+    ENVIRONMENT                    = var.environment
+    CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
   }
 }
 
@@ -1747,6 +1966,13 @@ resource "aws_iam_role_policy" "intents" {
         Resource = local.v2_orchestrator_function_arns
       },
       {
+        # Validate project bindings before Start and perform authenticated
+        # review operations without resolving credentials in this Lambda.
+        Effect   = "Allow"
+        Action   = ["lambda:InvokeFunction"]
+        Resource = [local.source_control_function_arn]
+      },
+      {
         # Watchdog repair: verify stale local rows against the durable execution
         # service before marking them failed. The authenticated lane repair
         # endpoint also stops an orphaned durable run before relaunching it.
@@ -1772,31 +1998,6 @@ resource "aws_iam_role_policy" "intents" {
         Action   = ["bedrock-agentcore:InvokeAgentRuntime", "bedrock-agentcore:StopRuntimeSession"]
         Resource = [var.agentcore_runtime_arn, "${var.agentcore_runtime_arn}/*"]
       },
-      {
-        # Authenticated unit-review feedback: refresh the starter's provider
-        # credential before refetching selected PR/MR comments.
-        Effect = "Allow"
-        Action = ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:UpdateItem"]
-        Resource = compact([
-          var.git_connections_table_arn,
-          var.git_provider_connections_table_arn,
-        ])
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["ssm:GetParameter", "ssm:PutParameter"]
-        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["ssm:GetParameter"]
-        Resource = compact([var.github_auth_mode_param_arn, var.github_app_config_param_arn])
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["secretsmanager:GetSecretValue"]
-        Resource = compact([var.github_app_private_key_secret_arn, var.gitlab_oauth_secret_arn])
-      }
     ]
   })
 }
@@ -1838,14 +2039,7 @@ module "intents_lambda" {
     YJS_DOCUMENTS_TABLE = var.yjs_documents_table_name
     # Admin global cli-models default lives under this SSM prefix; the intents
     # lambda merges it under the project selection at intent create.
-    AGENT_SETTINGS_SSM_PREFIX          = "/${var.project_name}/${var.environment}"
-    GIT_CONNECTIONS_TABLE              = var.git_connections_table_name
-    GIT_PROVIDER_CONNECTIONS_TABLE     = var.git_provider_connections_table_name
-    GITHUB_AUTH_MODE_PARAM             = var.github_auth_mode_param_name
-    GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
-    GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
-    GITLAB_OAUTH_SECRET_NAME           = var.gitlab_oauth_secret_name
-    GITLAB_REDIRECT_URI                = var.gitlab_redirect_uri
+    AGENT_SETTINGS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
     # The AgentCore stage-executor runtime — for the manual derive backfill
     # (POST .../intents/{id}/derive, platform admin).
     AGENTCORE_RUNTIME_ARN = var.agentcore_runtime_arn
@@ -1857,6 +2051,7 @@ module "intents_lambda" {
     WEBSOCKET_ENDPOINT = var.websocket_api_endpoint_https
     # Qualified name (function:alias) — durable functions reject $LATEST invokes.
     V2_ORCHESTRATOR_FUNCTION          = "${module.v2_orchestrator_lambda.lambda_function_name}:${module.v2_orchestrator_alias.lambda_alias_name}"
+    SOURCE_CONTROL_FUNCTION           = module.source_control_lambda.lambda_function_name
     DURABLE_EXECUTION_TIMEOUT_SECONDS = "31622400"
   }
 }
@@ -1936,51 +2131,11 @@ resource "aws_iam_role_policy" "v2_orchestrator" {
         Resource = [var.blocks_table_arn, "${var.blocks_table_arn}/index/*"]
       },
       {
-        # Git connections + token for init-ws clone.
-        Effect = "Allow"
-        Action = ["dynamodb:GetItem", "dynamodb:Query"]
-        Resource = compact([
-          var.git_connections_table_arn,
-          var.git_provider_connections_table_arn,
-        ])
-      },
-      {
-        # Read the starter's git token AND write it back: GitLab OAuth access
-        # tokens live ~2h, so init-ws refreshes an expired token just-in-time
-        # (ensureFreshGitToken) and PutParameter persists the rotated token —
-        # without PutParameter the refresh throws and the clone falls back to an
-        # empty (unauthenticated) token → "HTTP Basic: Access denied".
+        # Provider API operations are delegated to the source-control service.
+        # The durable history therefore contains only project/repository refs.
         Effect   = "Allow"
-        Action   = ["ssm:GetParameter", "ssm:PutParameter"]
-        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
-      },
-      {
-        # GitHub App auth (read-only): mode dispatch + per-stage installation
-        # token minting when the platform runs in app mode.
-        Effect = "Allow"
-        Action = ["ssm:GetParameter"]
-        Resource = compact([
-          var.github_auth_mode_param_arn,
-          var.github_app_config_param_arn,
-        ])
-      },
-      {
-        # Best-effort persist of refreshed GitLab connection metadata (the token
-        # itself lives in SSM above; this only rotates the row's scope/updatedAt).
-        Effect = "Allow"
-        Action = ["dynamodb:PutItem", "dynamodb:UpdateItem"]
-        Resource = compact([
-          var.git_connections_table_arn,
-          var.git_provider_connections_table_arn,
-        ])
-      },
-      {
-        # GitHub App private key AND the GitLab OAuth app credentials — the
-        # latter is needed to exchange a refresh token for a fresh GitLab access
-        # token during init-ws (refreshGitlabToken → getGitlabOAuthCredentials).
-        Effect   = "Allow"
-        Action   = ["secretsmanager:GetSecretValue"]
-        Resource = compact([var.github_app_private_key_secret_arn, var.gitlab_oauth_secret_arn])
+        Action   = ["lambda:InvokeFunction"]
+        Resource = [local.source_control_function_arn]
       }
     ]
   })
@@ -2024,31 +2179,11 @@ module "v2_orchestrator_lambda" {
   lambda_role = aws_iam_role.v2_orchestrator.arn
 
   environment_variables = {
-    ENVIRONMENT           = var.environment
-    V2_PROCESS_TABLE      = var.v2_executions_table_name
-    BLOCKS_TABLE          = var.blocks_table_name
-    AGENTCORE_RUNTIME_ARN = var.agentcore_runtime_arn
-    GIT_TOKEN_SSM_PREFIX  = "${var.project_name}/${var.environment}/git-token"
-    # Git-token resolution: resolveToken reads the starter's
-    # connection row from these tables, then the SSM token. The IAM statements
-    # were wired from day one but these env vars were MISSING — getGitConnection
-    # threw on TableName undefined, resolveToken degraded to an empty token, and
-    # a private-repo clone silently fell back to `git init` (see init-ws).
-    GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
-    GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
-    # GitHub App auth: the orchestrator consults the platform auth mode and, in
-    # app mode, mints repo-scoped installation tokens per stage dispatch
-    # (installation tokens live ~1h, shorter than a long run).
-    GITHUB_AUTH_MODE_PARAM             = var.github_auth_mode_param_name
-    GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
-    GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
-    # GitLab OAuth: access tokens live ~2h, so init-ws refreshes an expired
-    # token just-in-time (ensureFreshGitToken → refreshGitlabToken). The refresh
-    # exchange needs the OAuth app credentials (secret) and the same redirect_uri
-    # used at authorization time; without these the refresh throws and the clone
-    # degrades to an unauthenticated "Access denied".
-    GITLAB_OAUTH_SECRET_NAME = var.gitlab_oauth_secret_name
-    GITLAB_REDIRECT_URI      = var.gitlab_redirect_uri
+    ENVIRONMENT             = var.environment
+    V2_PROCESS_TABLE        = var.v2_executions_table_name
+    BLOCKS_TABLE            = var.blocks_table_name
+    AGENTCORE_RUNTIME_ARN   = var.agentcore_runtime_arn
+    SOURCE_CONTROL_FUNCTION = module.source_control_lambda.lambda_function_name
     # Live realtime fan-out (lambda/shared/ws-fanout.js) — the orchestrator emits
     # execution/workspace lifecycle events on the intent:<id> channel itself, since
     # it is the only component that owns those transitions (the runtime broadcasts
@@ -2059,6 +2194,8 @@ module "v2_orchestrator_lambda" {
     DURABLE_EXECUTION_TIMEOUT_SECONDS    = "31622400"
     DURABLE_GATE_DEADLINE_MARGIN_SECONDS = "300"
   }
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 }
 
 # `live` alias for the orchestrator — durable functions are invocable only via a

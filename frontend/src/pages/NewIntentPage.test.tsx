@@ -25,10 +25,10 @@ vi.mock('@/services/intents', () => ({
 }));
 
 const listBranches = vi.fn();
-vi.mock('@/services/gitProvider', () => ({
-  getGitProviderService: () => ({
+vi.mock('@/services/sourceControl', () => ({
+  sourceControlService: {
     listBranches: (...a: unknown[]) => listBranches(...a),
-  }),
+  },
 }));
 
 import NewIntentPage from './NewIntentPage';
@@ -134,8 +134,8 @@ describe('NewIntentPage — base branch selection', () => {
     renderPage();
     await user.click(await screen.findByText('Base branch'));
     await waitFor(() => expect(listBranches).toHaveBeenCalledTimes(2));
-    expect(listBranches).toHaveBeenCalledWith('owner/repo');
-    expect(listBranches).toHaveBeenCalledWith('owner/web');
+    expect(listBranches).toHaveBeenCalledWith('p1', 'github', 'owner/repo');
+    expect(listBranches).toHaveBeenCalledWith('p1', 'github', 'owner/web');
     expect(await screen.findByLabelText('owner/repo')).toBeInTheDocument();
     expect(await screen.findByLabelText('owner/web')).toBeInTheDocument();
   });

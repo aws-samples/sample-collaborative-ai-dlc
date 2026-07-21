@@ -81,26 +81,35 @@ import { pruneOutputArtifactsForUnit } from '../../shared/unit-kind-pruning.js';
 // The typed-extraction registry gates the platform-injected graph-coverage
 // sensor: only stages that produce a registered structured artifact get it.
 import { REGISTRY } from '../../shared/artifact-extractors.js';
-import { getProvider } from '../../shared/git-providers.js';
+import { invokeSourceControlOperation } from '../clients.js';
 
-export const verifyReviewTargets = async ({ targets = [], gitProvider, gitToken }) => {
-  const provider = getProvider(gitProvider || 'github');
+export const verifyReviewTargets = async ({
+  targets = [],
+  projectId,
+  gitProvider,
+  repoProviders = null,
+  operate = invokeSourceControlOperation,
+}) => {
   const results = [];
   for (const target of targets) {
-    let status = await provider.getPullRequestStatus(
-      { token: gitToken },
-      target.repoId,
-      target.number,
-    );
+    const provider = target.provider || repoProviders?.[target.repoId] || gitProvider || 'github';
+    let status = await operate({
+      projectId,
+      provider,
+      repo: target.repoId,
+      operation: 'pr-status',
+      args: { number: target.number },
+    });
     // Feedback revisions must never race a provider-side merge button while
     // the agent is about to push a new head.
     if (status?.state === 'open' && !status.draft) {
-      status = await provider.setPullRequestDraft(
-        { token: gitToken },
-        target.repoId,
-        target.number,
-        true,
-      );
+      status = await operate({
+        projectId,
+        provider,
+        repo: target.repoId,
+        operation: 'set-pr-draft',
+        args: { number: target.number, draft: true },
+      });
     }
     results.push({
       repoId: target.repoId,
@@ -888,8 +897,8 @@ export const runStage = async (
     branch,
     baseBranch,
     baseBranches,
-    gitToken,
     gitProvider,
+    repoProviders = null,
     // Commit attribution ({ name, email } of the starting user, resolved by the
     // orchestrator from their OAuth connection): engine commits are authored by
     // the user, committed by AI-DLC Engine. null = engine-only identity.
@@ -1211,8 +1220,10 @@ export const runStage = async (
       branch,
       baseBranch,
       baseBranches,
-      gitToken,
       gitProvider,
+      repoProviders,
+      projectId,
+      executionId,
       workspaceDir,
     }).catch((e) => ({ error: e?.message ?? String(e) }));
     if (heal?.error) return fail(stageInstanceId, 'workspace_restore_failed', heal.error);
@@ -1958,25 +1969,14 @@ export const runStage = async (
   // for the retry. Artifact-only stages leave the tree clean (no commit, no
   // network). NEVER throws — failures are values recorded below.
   await warnIfDiskLow('before the engine commit');
-  // TODO(gitlab-token-expiry): `gitToken` is the DISPATCH-TIME token, minted by
-  // the orchestrator when this stage was started (freshGitToken →
-  // ensureFreshGitToken). GitLab OAuth access tokens live ~2h, but a stage can
-  // run up to the 8h AgentCore ceiling (max_lifetime 28800s), so a long GitLab
-  // stage reaches this push with an EXPIRED token → "HTTP Basic: Access denied".
-  // v1 refreshed just-before-push (pool-worker.js:1431); v2 lost that timing.
-  // Fix: refresh the GitLab token here (ensureFreshGitToken) right before the
-  // push — which requires giving the AgentCore runtime the GitLab OAuth secret
-  // (GITLAB_OAUTH_SECRET_NAME/GITLAB_REDIRECT_URI env + secretsmanager:GetSecretValue
-  // + ssm:GetParameter/PutParameter + the connection lookup), mirroring the
-  // orchestrator wiring. Common case (stage < 2h) is already covered by the
-  // dispatch-time refresh.
   let reviewTargetCheck = null;
   if (reviewFeedbackTargets.length > 0) {
     try {
       reviewTargetCheck = await recheckReviewTargets({
         targets: reviewFeedbackTargets,
+        projectId,
         gitProvider,
-        gitToken,
+        repoProviders,
       });
       const changed = reviewTargetCheck.filter(
         (row) =>
@@ -2023,8 +2023,10 @@ export const runStage = async (
     repos,
     workspaceDir,
     branch,
-    gitToken,
     gitProvider,
+    repoProviders,
+    projectId,
+    executionId,
     author: gitAuthor,
     // Commit message carries the unit dimension on lane runs (docs/v2-parallel.md
     // A3): every commit is attributable to stage + lane + execution from git alone.

@@ -61,7 +61,7 @@ const oauth = {
   secretEnvName: 'GITHUB_OAUTH_SECRET_NAME',
   redirectUriEnvName: 'GITHUB_REDIRECT_URI',
   scopes: 'repo workflow read:user',
-  requiredConnectionScopes: ['workflow'],
+  requiredConnectionScopes: ['repo', 'workflow', 'read:user'],
 
   buildAuthorizeUrl({ clientId, redirectUri, state }) {
     return `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(
@@ -181,6 +181,22 @@ const getDefaultBranch = async (ctx, repoId) => {
   return data?.default_branch ?? null;
 };
 
+const getRepositoryAccess = async (ctx, repoId) => {
+  const { owner, repo } = splitOwnerRepo(repoId);
+  const res = await ghFetch(ctx, `${API_BASE}/repos/${owner}/${repo}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new ProviderError(res.status || 400, data?.message || 'Failed to access repository');
+  }
+  return {
+    defaultBranch: data.default_branch ?? null,
+    private: Boolean(data.private),
+    permissions: data.permissions ?? {},
+    canRead: data.permissions?.pull !== false,
+    canWrite: Boolean(data.permissions?.push || data.permissions?.admin),
+  };
+};
+
 const getTree = async (ctx, repoId, branch = 'main') => {
   const { owner, repo } = splitOwnerRepo(repoId);
   const res = await ghFetch(
@@ -208,6 +224,145 @@ const getFileContents = async (ctx, repoId, filePath, branch = 'main') => {
     size: data.size,
     content: Buffer.from(data.content, 'base64').toString('utf-8'),
   };
+};
+
+// ---------------------------------------------------------------------------
+// Issues
+// ---------------------------------------------------------------------------
+
+const mapIssue = (issue) => ({
+  resourceId: String(issue.number),
+  resourceUrl: issue.html_url,
+  resourceType: 'issue',
+  entityType: null,
+  entityIconUrl: null,
+  title: issue.title,
+  body: issue.body ?? null,
+  state: issue.state === 'closed' ? 'closed' : 'open',
+  labels: Array.isArray(issue.labels)
+    ? issue.labels.map((label) => ({ name: label.name, color: label.color }))
+    : [],
+  author: {
+    handle: issue.user?.login || '',
+    avatarUrl: issue.user?.avatar_url || '',
+  },
+  createdAt: issue.created_at,
+  updatedAt: issue.updated_at,
+});
+
+const mapIssueDiscussionComment = (comment) => ({
+  id: String(comment.id),
+  author: {
+    handle: comment.user?.login || '',
+    avatarUrl: comment.user?.avatar_url || '',
+  },
+  body: comment.body ?? '',
+  createdAt: comment.created_at,
+  updatedAt: comment.updated_at,
+});
+
+const issuePageSize = (raw) => {
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 100) : 30;
+};
+
+const issuePageNumber = (raw) => {
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+};
+
+const linkRelations = (header) => {
+  const relations = {};
+  for (const part of String(header || '').split(',')) {
+    const match = part.match(/<([^>]+)>;\s*rel="([^"]+)"/);
+    if (match) relations[match[2]] = match[1];
+  }
+  return relations;
+};
+
+const listIssues = async (ctx, repoId, options = {}) => {
+  const { owner, repo } = splitOwnerRepo(repoId);
+  const state = ['open', 'closed', 'all'].includes(options.state) ? options.state : 'open';
+  const page = issuePageNumber(options.page);
+  const perPage = issuePageSize(options.perPage);
+  const query = String(options.q || '').trim();
+  const params = new URLSearchParams({ per_page: String(perPage), page: String(page) });
+  let url;
+  let search = false;
+  if (query) {
+    search = true;
+    params.set('q', `repo:${owner}/${repo} state:${state} is:issue ${query}`);
+    url = `${API_BASE}/search/issues?${params.toString()}`;
+  } else {
+    params.set('state', state);
+    url = `${API_BASE}/repos/${owner}/${repo}/issues?${params.toString()}`;
+  }
+  const res = await ghFetch(ctx, url);
+  if (res.status === 404) {
+    return { items: [], page, perPage, hasNext: false, hasPrev: false, totalCount: null };
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new ProviderError(res.status, data?.message || 'Failed to fetch issues');
+  }
+  const rawItems = search ? data.items : data;
+  const items = (Array.isArray(rawItems) ? rawItems : [])
+    .filter((issue) => !issue.pull_request)
+    .map(mapIssue);
+  const links = linkRelations(res.headers?.get?.('link'));
+  return {
+    items,
+    page,
+    perPage,
+    hasNext: Boolean(links.next),
+    hasPrev: Boolean(links.prev),
+    totalCount: search && Number.isFinite(data.total_count) ? data.total_count : null,
+  };
+};
+
+const getIssue = async (ctx, repoId, issueNumber) => {
+  const { owner, repo } = splitOwnerRepo(repoId);
+  const res = await ghFetch(ctx, `${API_BASE}/repos/${owner}/${repo}/issues/${issueNumber}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data?.pull_request) {
+    throw new ProviderError(
+      res.status || 404,
+      data?.message || (data?.pull_request ? 'Not found' : 'Failed to fetch issue'),
+    );
+  }
+  return mapIssue(data);
+};
+
+const listIssueComments = async (ctx, repoId, issueNumber) => {
+  const { owner, repo } = splitOwnerRepo(repoId);
+  const res = await ghFetch(
+    ctx,
+    `${API_BASE}/repos/${owner}/${repo}/issues/${issueNumber}/comments?per_page=100`,
+  );
+  if (res.status === 404) return [];
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new ProviderError(res.status, data?.message || 'Failed to fetch issue comments');
+  }
+  return Array.isArray(data) ? data.map(mapIssueDiscussionComment) : [];
+};
+
+const addIssueComment = async (ctx, repoId, issueNumber, body) => {
+  const { owner, repo } = splitOwnerRepo(repoId);
+  const res = await ghFetch(
+    ctx,
+    `${API_BASE}/repos/${owner}/${repo}/issues/${issueNumber}/comments`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body }),
+    },
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new ProviderError(res.status, data?.message || 'Failed to add issue comment');
+  }
+  return mapIssueDiscussionComment(data);
 };
 
 // ---------------------------------------------------------------------------
@@ -776,8 +931,13 @@ export {
   listInstallationRepos,
   listBranches,
   getDefaultBranch,
+  getRepositoryAccess,
   getTree,
   getFileContents,
+  listIssues,
+  getIssue,
+  listIssueComments,
+  addIssueComment,
   listPRComments,
   addPRComment,
   getUnmergedConstructionTaskBranches,
@@ -809,8 +969,13 @@ export default {
   listInstallationRepos,
   listBranches,
   getDefaultBranch,
+  getRepositoryAccess,
   getTree,
   getFileContents,
+  listIssues,
+  getIssue,
+  listIssueComments,
+  addIssueComment,
   listPRComments,
   addPRComment,
   getUnmergedConstructionTaskBranches,

@@ -98,7 +98,7 @@ The deployment takes 15-30 minutes. Neptune DB cluster creation takes the longes
 
 ### Bootstrap the first platform administrator
 
-The **Admin** page (user management, agent settings and default models, provider OAuth apps, GitHub auth mode, migrations) and workflow/building-block authoring require membership in the Cognito **`platform-admin`** group. Bootstrap the first administrator via the CLI (users must sign out and back in to pick up the group); afterwards, additional admins can be granted or revoked in the UI under **Admin → Users**:
+The **Admin** page (user management, agent settings and default models, provider OAuth/App configuration, migrations) and workflow/building-block authoring require membership in the Cognito **`platform-admin`** group. Bootstrap the first administrator via the CLI (users must sign out and back in to pick up the group); afterwards, additional admins can be granted or revoked in the UI under **Admin → Users**:
 
 ```bash
 aws cognito-idp admin-add-user-to-group \
@@ -115,12 +115,9 @@ For GitHub and GitLab a single OAuth app serves both the code host and that prov
 
 #### GitHub (code host + GitHub Issues)
 
-GitHub supports two platform-wide authentication modes, switchable at runtime in **Admin → Source Control → GitHub**:
+Configure OAuth and GitHub App independently. They remain enabled simultaneously, and each project chooses its authentication type.
 
-- **OAuth mode** (default): each user connects their own GitHub account; commits, PRs and comments are attributed to that user.
-- **GitHub App mode**: the platform authenticates as a GitHub App installation (a bot); users don't connect personal accounts, and the repo picker lists the repositories the App is installed on.
-
-For **OAuth mode**:
+For **GitHub OAuth**:
 
 1. Open [GitHub Developer Settings → OAuth Apps → New OAuth App](https://github.com/settings/developers).
    Choose an **OAuth App**, _not_ a GitHub App — this mode expects OAuth App semantics.
@@ -132,12 +129,16 @@ For **OAuth mode**:
 
 The connection requests `repo`, `workflow`, and `read:user`. Existing users must click **Reauthorize GitHub** after upgrading from a version that did not request `workflow`; GitHub requires that scope before the engine can push changes under `.github/workflows/`.
 
-For **GitHub App mode**:
+For **GitHub App**:
 
-1. Create a [GitHub App](https://github.com/settings/apps) with repository permissions **Contents: Read & write**, **Pull requests: Read & write**, **Workflows: Read & write**, and **Issues: Read-only**. No callback URL or webhook is needed.
+1. Create a [GitHub App](https://github.com/settings/apps) with repository permissions **Contents: Read & write**, **Pull requests: Read & write**, **Workflows: Read & write**, **Issues: Read & write**, and metadata read access. No callback URL or webhook is needed.
 2. Generate a **private key** (PEM) and note the **App ID**.
-3. Install the App on the organization/repositories the platform should access, and note the **Installation ID** (the number at the end of the installation's settings URL).
-4. In the deployed app, open **Admin → Source Control → GitHub**, paste the App ID, Installation ID and private key, select **GitHub App (bot)** and click **Save**. The platform validates the configuration live against GitHub before the mode switches. Switching back to OAuth mode is the same toggle.
+3. Install the App on each personal account or organization whose repositories projects may bind.
+4. In the deployed app, open **Admin → Source Control → GitHub**, paste the App ID and private key, then click **Save**. Installation IDs are discovered per repository when a project is bound.
+
+### Project-bound source control
+
+Existing projects must be explicitly bound by an owner/admin before intents can run against their repositories. During a credential incident, invalidate the affected project bindings (or revoke the token at the provider) — unbound or invalid bindings block repository-backed starts via the launch guard.
 
 #### GitLab (code host + GitLab Issues)
 

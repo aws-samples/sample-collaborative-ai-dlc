@@ -1,0 +1,19 @@
+{
+  "name": "credential-broker",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "vitest run --project=credential-broker",
+    "build": "esbuild index.js --bundle --platform=node --target=node24 --format=esm --banner:js=\"import{createRequire}from'node:module';const require=createRequire(import.meta.url);\" --outfile=.build/index.mjs",
+    "lint": "oxlint .",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check ."
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1089.0",
+    "@aws-sdk/client-secrets-manager": "^3.1089.0",
+    "@aws-sdk/client-ssm": "^3.1089.0",
+    "@aws-sdk/lib-dynamodb": "^3.1089.0"
+  }
+}

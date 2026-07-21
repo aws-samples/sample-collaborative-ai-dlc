@@ -1,10 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
-import {
-  getGitProviderService,
-  type GitProvider,
-  type GitFile,
-  type GitFileContent,
-} from '../services/gitProvider';
+import { type GitProvider, type GitFile, type GitFileContent } from '../services/gitProvider';
+import { sourceControlService } from '../services/sourceControl';
 // PrismAsyncLight instead of the full Prism build: the full build statically
 // bundles every refractor language grammar (~570 kB minified — it was the
 // single largest item in the app bundle). The async-light build ships with no
@@ -45,13 +41,19 @@ const getLanguage = (path: string) => {
 };
 
 interface GitFileBrowserProps {
+  projectId: string;
   provider: GitProvider;
   // Canonical repo reference (owner/repo for GitHub, group/project for GitLab).
   repoId: string;
   branch?: string;
 }
 
-export function GitFileBrowser({ provider, repoId, branch = 'main' }: GitFileBrowserProps) {
+export function GitFileBrowser({
+  projectId,
+  provider,
+  repoId,
+  branch = 'main',
+}: GitFileBrowserProps) {
   const [files, setFiles] = useState<GitFile[]>([]);
   const [selectedFile, setSelectedFile] = useState<GitFileContent | null>(null);
   const [loading, setLoading] = useState(true);
@@ -71,7 +73,7 @@ export function GitFileBrowser({ provider, repoId, branch = 'main' }: GitFileBro
     try {
       setLoading(true);
       setError(null);
-      const data = await getGitProviderService(provider).getRepoTree(repoId, branch);
+      const data = await sourceControlService.getTree(projectId, provider, repoId, branch);
       setFiles(data.tree);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load files');
@@ -83,7 +85,13 @@ export function GitFileBrowser({ provider, repoId, branch = 'main' }: GitFileBro
   const loadFileContent = async (path: string) => {
     try {
       setLoadingContent(true);
-      const content = await getGitProviderService(provider).getFileContents(repoId, path, branch);
+      const content = await sourceControlService.getFileContents(
+        projectId,
+        provider,
+        repoId,
+        path,
+        branch,
+      );
       setSelectedFile(content);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load file content');

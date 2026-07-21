@@ -2,46 +2,42 @@
 // session-persistent filesystem (AgentCore keeps the same microVM for a session,
 // so this checkout survives across stage invocations).
 //
-// Safety: argv-based spawn (shell:false) — the token is injected via the URL but
-// never interpolated into a shell string. Multi-repo lays out under
+// Safety: argv-based spawn (shell:false). Credentials are supplied through a
+// temporary GIT_ASKPASS environment, never argv or the remote URL. Multi-repo lays out under
 // <workspaceDir>/<owner>/<repo>; single-repo clones into <workspaceDir> directly.
-//
-// Credential scrubbing (docs/v2-parallel.md WP2): the tokenized URL is used for
-// the one-shot `git clone` argv only; immediately after, origin is reset to the
-// token-FREE URL so `.git/config` never holds a credential at rest. The engine
-// (git-engine.js) re-injects the token only inside its own push/fetch window.
 
 import { spawn } from 'node:child_process';
-import { mkdir, stat, readdir, rm, symlink, lstat } from 'node:fs/promises';
+import { mkdir, stat, readdir, rm, symlink, lstat, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { buildCloneUrl } from '../shared/git-providers.js';
+import { withGitCredential as defaultWithGitCredential } from './git-auth.js';
 
 // Provider-aware clone-URL builder — the single source of truth for the per-
 // provider auth scheme (GitHub `x-access-token:`, GitLab `oauth2:`) and host.
 // Reusing it keeps the checkout on the shared registry rather than
 // re-deriving the GitHub-only scheme here. Defaults to github for legacy/blank.
-const run = (command, args, { cwd, spawnFn = spawn } = {}) =>
+const run = (command, args, { cwd, env = {}, spawnFn = spawn } = {}) =>
   new Promise((resolve) => {
     const child = spawnFn(command, args, {
       cwd,
       shell: false,
+      env: { ...process.env, ...env },
       stdio: ['ignore', 'inherit', 'inherit'],
     });
     child.on('error', () => resolve({ code: null }));
     child.on('close', (code) => resolve({ code }));
   });
 
-const cloneUrl = (repo, gitToken, gitProvider) => buildCloneUrl(gitProvider, repo, gitToken);
+const cloneUrl = (repo, gitProvider) => buildCloneUrl(gitProvider, repo, '');
 
 // Clone one repo and check out (creating if needed) the working branch off the
-// base branch. Best-effort init for an empty repo. `runner`/`ensureDir`
+// base branch. `runner`/`ensureDir`
 // injectable for tests. The origin remote is left TOKEN-FREE in both outcomes.
 //
 // IDEMPOTENT for a warm session: a rewind/retry relaunch reuses the intent's
 // runtimeSessionId, so the managed mount still holds the previous checkout.
-// `git clone` refuses a non-empty directory, and the git-init fallback then
-// made init-ws report checkout_failed ("repository unreachable") for a tree
-// that was actually perfectly healthy — killing every retry (field incident).
+// `git clone` refuses a non-empty directory, which used to make init-ws report
+// checkout_failed for a healthy warm-session tree.
 // An existing checkout is REUSED: remote re-scrubbed, branch ensured, no
 // network. The engine pushed after every prior stage, so the tree is the
 // intent branch's durable state — exactly what a rewound run must resume from.
@@ -52,21 +48,38 @@ export const checkoutRepo = async ({
   // the repo's ACTUAL default branch. Never assume 'main': a repo whose
   // default is 'master'/'develop'/… must still get a correct base.
   baseBranch = null,
-  gitToken,
   gitProvider,
+  projectId,
+  executionId,
   targetDir,
   runner = run,
+  withGitCredential = defaultWithGitCredential,
   ensureDir = (d) => mkdir(d, { recursive: true }),
   statFn = stat,
+  removeDir = (d) => rm(d, { recursive: true, force: true }),
+  readGitConfig = (d) => readFile(path.join(d, '.git', 'config'), 'utf8'),
 }) => {
   await ensureDir(targetDir);
-  const cleanUrl = cloneUrl(repo, '', gitProvider);
+  const cleanUrl = cloneUrl(repo, gitProvider);
   const scrubRemote = async () => {
     const setUrl = await runner('git', ['remote', 'set-url', 'origin', cleanUrl], {
       cwd: targetDir,
     });
     if (setUrl.code !== 0) {
       await runner('git', ['remote', 'add', 'origin', cleanUrl], { cwd: targetDir });
+    }
+    // A stale pushurl (from a pre-migration tokenized checkout) overrides the
+    // scrubbed fetch URL. Remove it if present.
+    try {
+      const config = await readGitConfig(targetDir);
+      if (/^\s*pushurl\s*=/im.test(config)) {
+        await runner('git', ['config', '--unset-all', 'remote.origin.pushurl'], {
+          cwd: targetDir,
+        });
+      }
+    } catch {
+      // Test doubles and partially initialized paths may not expose a config.
+      // Clone failures are handled below and never become reusable checkouts.
     }
   };
   // Ensure the working branch exists and is checked out. Rungs:
@@ -130,19 +143,41 @@ export const checkoutRepo = async ({
     return { repo, targetDir, cloned: true, reused: true, branchOk };
   }
 
-  const clone = await runner('git', ['clone', cloneUrl(repo, gitToken, gitProvider), targetDir]);
+  let clone;
+  try {
+    clone = await withGitCredential(
+      {
+        executionId,
+        projectId,
+        provider: gitProvider,
+        repository: repo,
+        requiredAccess: 'read',
+      },
+      ({ env }) => runner('git', ['clone', cleanUrl, targetDir], { env }),
+    );
+  } catch (error) {
+    clone = { code: null, error: error.code || 'credential_unavailable' };
+  }
   const cloned = clone.code === 0;
   if (!cloned) {
-    // Empty/new repo (or an unreachable one): initialize so later stages have a
-    // working tree. `cloned:false` is surfaced so a self-heal can tell a genuine
-    // clone failure apart from a legitimately empty repo.
-    await runner('git', ['init', targetDir]);
+    console.error('[workspace] clone failed', {
+      provider: gitProvider,
+      reason: clone.error || 'clone_failed',
+    });
+    // Empty remote repositories clone successfully. Any clone failure is a
+    // real authentication/authorization/repository error; remove partial git
+    // state so it can never be mistaken for a reusable checkout.
+    await removeDir(targetDir).catch(() => {});
+    return {
+      repo,
+      targetDir,
+      cloned: false,
+      branchOk: false,
+      error: clone.error || 'clone_failed',
+    };
   }
-  // Scrub the credential from the checkout: clone embeds the token in
-  // .git/config's origin URL; the git-init fallback has no origin at all.
-  // Either way origin ends up as the token-FREE URL (added if missing) so the
-  // agent CLI can never read a token; git-engine re-injects it only inside its
-  // own push window.
+  // Defense in depth: origin was cloned from this same clean URL, but re-stamp
+  // it before the agent can inspect the checkout.
   await scrubRemote();
   const branchOk = await ensureBranch();
   return { repo, targetDir, cloned, branchOk };
@@ -167,26 +202,36 @@ export const checkoutRepos = async ({
   branch,
   baseBranch,
   baseBranches,
-  gitToken,
   gitProvider,
+  repoProviders = null,
+  projectId,
+  executionId,
   workspaceDir,
   runner = run,
+  withGitCredential,
   ensureDir,
 }) => {
   const out = [];
   const multi = repos.length > 1;
   for (const repo of repos) {
     const url = typeof repo === 'string' ? repo : repo.url;
+    const provider =
+      (typeof repo === 'object' && repo?.provider) ||
+      repoProviders?.[url] ||
+      gitProvider ||
+      'github';
     const targetDir = repoTargetDir({ url, workspaceDir, multi });
     out.push(
       await checkoutRepo({
         repo: url,
         branch,
         baseBranch: resolveBaseBranch(url, baseBranch, baseBranches),
-        gitToken,
-        gitProvider,
+        gitProvider: provider,
+        projectId,
+        executionId,
         targetDir,
         runner,
+        withGitCredential,
         ensureDir,
       }),
     );
@@ -195,8 +240,7 @@ export const checkoutRepos = async ({
 };
 
 // A repo's checkout is present when its target dir has a `.git` (clone) — an
-// initialized-empty repo (`git init`, no clone) also has one, so this recognises
-// every init-ws outcome. Absent dir / no `.git` → the mount was wiped.
+// checkout. Absent dir / no `.git` means the mount was wiped.
 const hasCheckout = async (targetDir, statFn) => {
   try {
     const s = await statFn(path.join(targetDir, '.git'));
@@ -323,10 +367,13 @@ export const ensureWorkspaceSource = async ({
   branch,
   baseBranch,
   baseBranches,
-  gitToken,
   gitProvider,
+  repoProviders = null,
+  projectId,
+  executionId,
   workspaceDir,
   runner = run,
+  withGitCredential,
   ensureDir,
   statFn = stat,
 }) => {
@@ -335,20 +382,24 @@ export const ensureWorkspaceSource = async ({
   const failed = [];
   for (const repo of repos) {
     const url = typeof repo === 'string' ? repo : repo.url;
+    const provider =
+      (typeof repo === 'object' && repo?.provider) ||
+      repoProviders?.[url] ||
+      gitProvider ||
+      'github';
     const targetDir = repoTargetDir({ url, workspaceDir, multi });
     if (await hasCheckout(targetDir, statFn)) continue;
-    // Missing — re-clone this one. A failed clone falls back to `git init` (so a
-    // `.git` exists either way); `cloned:false` is the signal the source did NOT
-    // come down, which for a repo that was clonable at init time means it is now
-    // unreachable — the caller treats that as a restore failure.
+    // Missing: re-clone this one. A failure leaves no reusable `.git` state.
     const res = await checkoutRepo({
       repo: url,
       branch,
       baseBranch: resolveBaseBranch(url, baseBranch, baseBranches),
-      gitToken,
-      gitProvider,
+      gitProvider: provider,
+      projectId,
+      executionId,
       targetDir,
       runner,
+      withGitCredential,
       ensureDir,
     });
     restoredRepos.push(url);

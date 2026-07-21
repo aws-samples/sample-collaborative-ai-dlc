@@ -1,6 +1,7 @@
 import { createGitHandler } from '../shared/git-handler.js';
 import githubProvider from '../shared/git-providers/github.js';
 import { handleGitHubAdminConfig } from '../shared/github-admin.js';
+import { handleGitHubAppDiscovery } from '../shared/github-app-discovery.js';
 
 // Route-shape descriptors: how to recognise repo-scoped routes and extract the
 // repoId ("owner/repo") from the GitHub URL layout. All provider-agnostic
@@ -35,6 +36,11 @@ export const handler = async (event) => {
   // provider-agnostic git handler.
   if (event.path?.endsWith('/admin/config')) {
     return handleGitHubAdminConfig(event);
+  }
+  // App-credentialed repo discovery for the create-space App path — works
+  // without a personal OAuth connection.
+  if (event.path?.endsWith('/app/status') || event.path?.endsWith('/app/repos')) {
+    return handleGitHubAppDiscovery(event);
   }
   return gitHandler(event);
 };

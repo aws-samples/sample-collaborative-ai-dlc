@@ -1,7 +1,6 @@
 // "Source Control" tab — platform-wide git provider configuration.
-// GitHub gets the full auth-mode treatment (OAuth vs GitHub App); GitLab is
-// OAuth-only. The GitHub/GitLab OAuth apps are shared with their issue
-// trackers (one OAuth app per platform), which the card copy calls out.
+// GitHub OAuth and App credentials coexist; GitLab is OAuth-only. Projects
+// choose the credential type when their repository bindings are verified.
 
 import { Skeleton } from '@/components/ui/skeleton';
 import { GitLabIcon } from '@/components/icons/git-providers';

@@ -66,6 +66,9 @@ locals {
   agentcore_files_sha     = sha1(join("", [for f in local.agentcore_files : filesha1("${local.agentcore_source_path}/${f}")]))
   agentcore_image_tag     = substr(local.agentcore_files_sha, 0, 16)
 
+  credential_broker_function_arn = "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-credential-broker-${var.environment}"
+  source_control_function_arn    = "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-source-control-${var.environment}"
+
   billing_mode   = var.environment == "prod" ? "PROVISIONED" : "PAY_PER_REQUEST"
   read_capacity  = var.environment == "prod" ? 5 : null
   write_capacity = var.environment == "prod" ? 5 : null
@@ -282,6 +285,16 @@ resource "aws_iam_role_policy" "agentcore" {
           Effect   = "Allow"
           Action   = ["ecr:GetAuthorizationToken"]
           Resource = "*"
+        },
+        {
+          # Git credentials are fetched just-in-time from the broker. Provider
+          # review operations use the token-owning source-control service.
+          Effect = "Allow"
+          Action = ["lambda:InvokeFunction"]
+          Resource = [
+            local.credential_broker_function_arn,
+            local.source_control_function_arn,
+          ]
         },
         {
           Effect   = "Allow"
@@ -627,6 +640,8 @@ resource "awscc_bedrockagentcore_runtime" "stage_executor" {
     AIDLC_REPO_REF                = var.aidlc_repo_ref
     BEDROCK_MODEL                 = var.bedrock_model
     AWS_REGION                    = var.aws_region
+    CREDENTIAL_BROKER_FUNCTION    = "${var.project_name}-credential-broker-${var.environment}"
+    SOURCE_CONTROL_FUNCTION       = "${var.project_name}-source-control-${var.environment}"
     BEDROCK_BEARER_TOKEN_SSM_PATH = aws_ssm_parameter.bedrock_bearer_token.name
     KIRO_API_KEY_SSM_PATH         = aws_ssm_parameter.kiro_api_key.name
     # Base SSM prefix for MCP secret resolution ({prefix}/mcp-secrets/<VAR> and

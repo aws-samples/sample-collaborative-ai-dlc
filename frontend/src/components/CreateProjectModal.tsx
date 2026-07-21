@@ -7,7 +7,13 @@ import { useGitProviderStatus } from '../hooks/useGitProviderStatus';
 import { GitConnectButton } from './GitConnectButton';
 import { GitRepoSelect } from './GitRepoSelect';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
-import { trackerIdForGitProvider, type GitProvider, type GitRepo } from '../services/gitProvider';
+import {
+  githubAppService,
+  trackerIdForGitProvider,
+  type GitProvider,
+  type GitRepo,
+} from '../services/gitProvider';
+import { sourceControlService, type SourceControlAuthType } from '../services/sourceControl';
 
 interface Props {
   onClose: () => void;
@@ -34,20 +40,46 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
     gitRepo: '',
     issueIntegrationEnabled: false,
   });
-  // Only the selected provider's connection status is needed — the modal shows
-  // one provider at a time. Switching providers re-fetches via the hook's
-  // provider-keyed effect. For GitHub, `status.mode` carries the platform-wide
-  // auth mode (admin-managed): in 'app' mode there is no per-user connect step
-  // and the repo picker lists the App installation's repositories.
+  // Personal OAuth is needed only for the OAuth-delegation path; the GitHub
+  // App path discovers repositories with platform App credentials.
   const {
     status: gitStatus,
     loading: gitStatusLoading,
     error: gitStatusError,
     refresh: gitRefresh,
   } = useGitProviderStatus(formData.gitProvider);
-  const isAppMode = formData.gitProvider === 'github' && gitStatus?.mode === 'app';
+  const [sourceControlAuthType, setSourceControlAuthType] = useState<SourceControlAuthType>(
+    initialProvider === 'gitlab' ? 'gitlab-oauth' : 'github-app',
+  );
+  // Whether the platform GitHub App is configured — gates the App option in
+  // step 1. null = still loading.
+  const [appConfigured, setAppConfigured] = useState<boolean | null>(null);
+  const [delegationConfirmed, setDelegationConfirmed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (formData.gitProvider !== 'github') return;
+    let cancelled = false;
+    githubAppService
+      .getStatus()
+      .then(({ configured }) => {
+        if (!cancelled) setAppConfigured(configured);
+      })
+      .catch(() => {
+        if (!cancelled) setAppConfigured(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [formData.gitProvider]);
+
+  // If the App turns out to be unconfigured, fall back to the OAuth path.
+  useEffect(() => {
+    if (appConfigured === false && sourceControlAuthType === 'github-app') {
+      setSourceControlAuthType('github-oauth');
+    }
+  }, [appConfigured, sourceControlAuthType]);
 
   // v2 workflow options — every new project is a v2 (AI-DLC workflow runtime)
   // project; the backend rejects v1 creation. Scope is chosen per-intent (not
@@ -103,8 +135,19 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
 
   const handleProviderChange = (provider: GitProvider) => {
     setFormData((prev) => ({ ...prev, gitProvider: provider, gitRepo: '' }));
+    setSourceControlAuthType(provider === 'github' ? 'github-app' : 'gitlab-oauth');
+    setDelegationConfirmed(false);
     setSelectedRepos([]);
     setPrimaryRepo('');
+  };
+
+  // App vs OAuth discover different repo sets, so switching resets the picks.
+  const handleAuthTypeChange = (authType: SourceControlAuthType) => {
+    setSourceControlAuthType(authType);
+    setDelegationConfirmed(false);
+    setSelectedRepos([]);
+    setPrimaryRepo('');
+    setFormData((prev) => ({ ...prev, gitRepo: '' }));
   };
 
   const handleSetPrimary = (repoFullName: string) => {
@@ -143,6 +186,22 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
         workflowId,
       };
       const project = await projectsService.create(input);
+      // A failed bind leaves the project unbound rather than deleting it — the
+      // launch guard blocks repository-backed starts until an owner rebinds in
+      // project settings, which is also where an interrupted create lands.
+      try {
+        await sourceControlService.bind(project.id, {
+          [gitProvider]: {
+            authType: sourceControlAuthType,
+            ...(sourceControlAuthType.endsWith('-oauth') ? { confirmDelegation: true } : {}),
+          },
+        });
+      } catch (bindingError) {
+        console.error('Source-control binding failed; project created unbound:', bindingError);
+        onCreated();
+        onClose();
+        return;
+      }
       if (formData.issueIntegrationEnabled && formData.gitRepo) {
         // GitHub and GitLab issues both reuse the project's git connection.
         const trackerProvider = trackerIdForGitProvider(gitProvider);
@@ -166,7 +225,14 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
     }
   };
 
-  const canProceedStep1 = formData.gitProvider ? gitStatus?.connected : false;
+  // The App path needs no personal connection — only a configured App. The
+  // OAuth paths (github-oauth / gitlab-oauth) need the caller connected for
+  // both repository discovery and binding delegation.
+  const canProceedStep1 = formData.gitProvider
+    ? sourceControlAuthType === 'github-app'
+      ? appConfigured === true
+      : gitStatus?.connected
+    : false;
   const canProceedStep2 = selectedRepos.length > 0;
   const repoCount = selectedRepos.length;
 
@@ -241,7 +307,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                 </SelectItem>
               </SelectContent>
             </Select>
-            {gitStatusError && (
+            {gitStatusError && sourceControlAuthType !== 'github-app' && (
               <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4 text-sm">
                 {gitStatusError}
               </div>
@@ -250,29 +316,66 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
               <p className="text-sm text-gray-500 dark:text-gray-400">
                 Select a git provider to continue.
               </p>
-            ) : gitStatusLoading ? (
-              <p className="text-sm text-gray-500 dark:text-gray-400">Checking connection...</p>
-            ) : isAppMode ? (
-              <div className="rounded border border-indigo-200 dark:border-indigo-800 bg-indigo-50/50 dark:bg-indigo-900/20 p-3">
-                <p className="text-sm text-gray-700 dark:text-gray-300">
-                  This platform authenticates with GitHub as a GitHub App installation — no personal
-                  connection is needed.
-                </p>
-                {!gitStatus?.connected && (
-                  <p className="text-xs text-red-600 dark:text-red-400 mt-1">
-                    The GitHub App is not fully configured. Ask an administrator to complete the
-                    setup in <strong>Platform Admin → Source Control</strong>.
-                  </p>
-                )}
-              </div>
             ) : (
-              <GitConnectButton
-                provider={formData.gitProvider}
-                connected={gitStatus?.connected || false}
-                reauthorizationRequired={gitStatus?.reauthorizationRequired}
-                missingScopes={gitStatus?.missingScopes}
-                onDisconnect={gitRefresh}
-              />
+              <>
+                {formData.gitProvider === 'github' && (
+                  <div className="mb-4 space-y-2">
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Authentication
+                    </label>
+                    <label className="flex items-start gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="sourceControlAuthType"
+                        checked={sourceControlAuthType === 'github-app'}
+                        onChange={() => handleAuthTypeChange('github-app')}
+                        disabled={appConfigured === false}
+                        className="mt-1 accent-indigo-600"
+                      />
+                      <span className="text-sm text-gray-700 dark:text-gray-300">
+                        <span className="font-medium">GitHub App</span>
+                        <span className="block text-xs text-gray-500 dark:text-gray-400">
+                          {appConfigured === false
+                            ? 'Not configured — ask a platform admin to set up the GitHub App.'
+                            : 'Uses the platform GitHub App installation. No personal GitHub connection needed.'}
+                        </span>
+                      </span>
+                    </label>
+                    <label className="flex items-start gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="sourceControlAuthType"
+                        checked={sourceControlAuthType === 'github-oauth'}
+                        onChange={() => handleAuthTypeChange('github-oauth')}
+                        className="mt-1 accent-indigo-600"
+                      />
+                      <span className="text-sm text-gray-700 dark:text-gray-300">
+                        <span className="font-medium">My GitHub OAuth identity</span>
+                        <span className="block text-xs text-gray-500 dark:text-gray-400">
+                          The space delegates your personal connection for repository access.
+                        </span>
+                      </span>
+                    </label>
+                  </div>
+                )}
+                {sourceControlAuthType === 'github-app' ? (
+                  appConfigured === null ? (
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                      Checking GitHub App configuration...
+                    </p>
+                  ) : null
+                ) : gitStatusLoading ? (
+                  <p className="text-sm text-gray-500 dark:text-gray-400">Checking connection...</p>
+                ) : (
+                  <GitConnectButton
+                    provider={formData.gitProvider}
+                    connected={gitStatus?.connected || false}
+                    reauthorizationRequired={gitStatus?.reauthorizationRequired}
+                    missingScopes={gitStatus?.missingScopes}
+                    onDisconnect={gitRefresh}
+                  />
+                )}
+              </>
             )}
             <div className="flex justify-end gap-2 mt-6">
               <button
@@ -297,15 +400,15 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
           <div>
             <h3 className="font-medium mb-1 text-gray-900 dark:text-white">Select Repositories</h3>
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-              {isAppMode
-                ? 'Repositories the GitHub App installation can access. The primary repo drives issue integration and space naming.'
-                : 'Choose one or more repositories. The primary repo drives issue integration and space naming.'}
+              Choose one or more repositories. The primary repo drives issue integration and space
+              naming.
             </p>
             <GitRepoSelect
               provider={formData.gitProvider}
               multiple
               value={selectedRepos}
               onChange={handleReposChange}
+              repoSource={sourceControlAuthType === 'github-app' ? 'github-app' : 'oauth'}
             />
             {selectedRepos.length > 1 && (
               <div className="mt-3 border dark:border-gray-600 rounded divide-y dark:divide-gray-600">
@@ -384,11 +487,6 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                 disabled
               />
               <div className="flex items-center gap-2 mt-1">
-                {isAppMode && (
-                  <span className="text-[10px] font-medium bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300 px-1.5 py-0.5 rounded">
-                    GitHub App (bot)
-                  </span>
-                )}
                 {repoCount > 1 && (
                   <p className="text-xs text-gray-500 dark:text-gray-400">
                     +{repoCount - 1} additional repositor
@@ -396,6 +494,35 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                   </p>
                 )}
               </div>
+            </div>
+            <div className="mb-4 space-y-3 rounded border p-3">
+              <p className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
+                Project source control
+              </p>
+              <p className="text-sm text-gray-700 dark:text-gray-300">
+                {sourceControlAuthType === 'github-app'
+                  ? 'GitHub App installation'
+                  : `Delegated ${formData.gitProvider === 'github' ? 'GitHub' : 'GitLab'} OAuth identity`}
+                <span className="block text-xs text-gray-500 dark:text-gray-400">
+                  Chosen in step 1 — go back to change it.
+                </span>
+              </p>
+              {sourceControlAuthType.endsWith('-oauth') && (
+                <label className="flex items-start gap-2 text-xs text-gray-600 dark:text-gray-300">
+                  <input
+                    type="checkbox"
+                    checked={delegationConfirmed}
+                    onChange={(event) => setDelegationConfirmed(event.target.checked)}
+                    disabled={submitting}
+                    className="mt-0.5"
+                  />
+                  I confirm that this space may use my connected identity for all selected
+                  repositories.
+                </label>
+              )}
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Every repository is verified before the space is available.
+              </p>
             </div>
             {(formData.gitProvider === 'github' || formData.gitProvider === 'gitlab') && (
               <div className="mb-4">
@@ -461,7 +588,11 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
               <button
                 type="submit"
                 className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50"
-                disabled={submitting || !workflowId}
+                disabled={
+                  submitting ||
+                  !workflowId ||
+                  (sourceControlAuthType.endsWith('-oauth') && !delegationConfirmed)
+                }
               >
                 {submitting ? 'Creating...' : 'Create Space'}
               </button>

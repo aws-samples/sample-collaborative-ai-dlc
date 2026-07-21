@@ -84,20 +84,8 @@ variable "github_app_private_key_secret_arn" {
   default     = ""
 }
 
-variable "github_auth_mode_param_name" {
-  description = "SSM parameter name holding the platform-wide GitHub auth mode ('oauth' | 'app')"
-  type        = string
-  default     = ""
-}
-
-variable "github_auth_mode_param_arn" {
-  description = "SSM parameter ARN holding the platform-wide GitHub auth mode"
-  type        = string
-  default     = ""
-}
-
 variable "github_app_config_param_name" {
-  description = "SSM parameter name holding the GitHub App config JSON ({appId, installationId})"
+  description = "SSM parameter name holding the GitHub App identity JSON ({appId})"
   type        = string
   default     = ""
 }
@@ -128,6 +116,18 @@ variable "git_provider_connections_table_name" {
 
 variable "git_provider_connections_table_arn" {
   description = "DynamoDB table ARN for per-provider git connections"
+  type        = string
+  default     = ""
+}
+
+variable "source_control_bindings_table_name" {
+  description = "DynamoDB table name for project source-control bindings"
+  type        = string
+  default     = ""
+}
+
+variable "source_control_bindings_table_arn" {
+  description = "DynamoDB table ARN for project source-control bindings"
   type        = string
   default     = ""
 }

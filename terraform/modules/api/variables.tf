@@ -177,6 +177,18 @@ variable "gitlab_lambda_name" {
   default     = ""
 }
 
+variable "source_control_lambda_invoke_arn" {
+  description = "Invoke ARN of the project source-control Lambda"
+  type        = string
+  default     = ""
+}
+
+variable "source_control_lambda_name" {
+  description = "Name of the project source-control Lambda"
+  type        = string
+  default     = ""
+}
+
 variable "trackers_lambda_invoke_arn" {
   description = "Invoke ARN of the trackers Lambda"
   type        = string

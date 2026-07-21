@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { __durableHandler, defaultMintFreshToken, defaultResolveToken } from '../index.js';
+import { __durableHandler } from '../index.js';
 
 // The orchestrator's control flow is driven through an injected `deps` bag and a
 // fake DurableContext — no real AWS/Neptune. This isolates the sequencing logic
@@ -123,9 +123,10 @@ beforeEach(() => {
       plan: { stages: [{ stageId: 'a' }, { stageId: 'b' }] },
     })),
     invokeRuntime: null, // bound to ctx below
-    resolveToken: vi.fn(async () => 'tok'),
     stopSession: vi.fn(async () => ({ stopped: true })),
     broadcast: vi.fn(async () => {}),
+    openPr: vi.fn(async () => ({ skipped: true, reason: 'no_changes' })),
+    comparePrBranches: vi.fn(async () => ({ status: 'unknown' })),
   };
   deps.invokeRuntime = makeRuntime(ctx, okScript);
 });
@@ -152,7 +153,13 @@ describe('orchestrator durable handler', () => {
     ]);
     // init-ws carries the provider so the runtime picks the right clone scheme.
     const initWs = invokes.find((p) => p.command === 'init-ws');
-    expect(initWs).toMatchObject({ gitProvider: 'github', gitToken: 'tok', repos: ['owner/repo'] });
+    expect(initWs).toMatchObject({
+      projectId: 'p1',
+      executionId: 'i1',
+      gitProvider: 'github',
+      repos: ['owner/repo'],
+    });
+    expect(initWs).not.toHaveProperty('gitToken');
     const statuses = deps.store.updateExecution.mock.calls.map((c) => c[0].status);
     expect(statuses).toContain('RUNNING');
     expect(statuses).toContain('SUCCEEDED');
@@ -356,12 +363,14 @@ describe('orchestrator durable handler', () => {
     expect(starts.length).toBeGreaterThan(0);
     for (const rs of starts) {
       expect(rs).toMatchObject({
+        projectId: 'p1',
+        executionId: 'i1',
         repos: ['owner/repo'],
         branch: 'aidlc/i1',
         baseBranch: 'main',
-        gitToken: 'tok',
         gitProvider: 'github',
       });
+      expect(rs).not.toHaveProperty('gitToken');
     }
   });
 
@@ -771,10 +780,6 @@ describe('orchestrator durable handler', () => {
     deps.loadPlan = vi.fn(async () => {
       assertInStep('loadPlan');
       return { valid: true, plan: { stages: [{ stageId: 'a' }] } };
-    });
-    deps.resolveToken = vi.fn(async () => {
-      assertInStep('resolveToken');
-      return 'tok';
     });
     deps.invokeRuntime = vi.fn(async (payload) => {
       assertInStep(`invokeRuntime:${payload.command}`);
@@ -2248,8 +2253,8 @@ describe('WP6 — PR opened on SUCCEEDED (intent-pr)', () => {
     // One provider call per repo, with the intent branch + base + provenance.
     expect(deps.openPr).toHaveBeenCalledTimes(2);
     expect(deps.openPr.mock.calls[0][0]).toMatchObject({
+      projectId: 'p1',
       gitProvider: 'github',
-      token: 'tok',
       repoId: 'o/r',
       branch: 'aidlc/i1',
       baseBranch: 'main',
@@ -2313,8 +2318,8 @@ describe('WP6 — PR opened on SUCCEEDED (intent-pr)', () => {
   });
 
   it('does NOT dispatch record-pr when no PR opened (skipped)', async () => {
-    deps.resolveToken = vi.fn(async () => '');
-    deps.openPr = vi.fn();
+    deps.comparePrBranches = vi.fn(async () => ({ status: 'identical', base: 'main' }));
+    deps.openPr = vi.fn(async () => ({ skipped: true, reason: 'no_changes' }));
     const res = await start();
     expect(res.ok).toBe(true);
     expect(invokes.find((p) => p.command === 'record-pr')).toBeUndefined();
@@ -2365,15 +2370,14 @@ describe('WP6 — PR opened on SUCCEEDED (intent-pr)', () => {
     expect(body).toContain('unit `checkout` NOT merged (BLOCKED)');
   });
 
-  it('a token-less project records v2.pr.skipped with manual instructions', async () => {
-    deps.resolveToken = vi.fn(async () => '');
+  it('an identical branch records v2.pr.skipped without calling the provider create API', async () => {
+    deps.comparePrBranches = vi.fn(async () => ({ status: 'identical', base: 'main' }));
     deps.openPr = vi.fn();
     const res = await start();
     expect(res.ok).toBe(true);
     expect(deps.openPr).not.toHaveBeenCalled();
     const skipped = events().find((e) => e.type === 'v2.pr.skipped');
-    expect(skipped?.summary).toContain('aidlc/i1');
-    expect(skipped?.summary).toContain('manually');
+    expect(skipped?.summary).toContain('no changes');
   });
 
   it('a provider failure / guard conflict never un-succeeds the run — loud events only', async () => {
@@ -2519,300 +2523,40 @@ describe('WP6 — PR opened on SUCCEEDED (intent-pr)', () => {
   });
 });
 
-// ── git-token resolution must be LOUD, never silent ────
-
-describe('git token resolution', () => {
+describe('credential-free runtime payloads', () => {
   const start = () =>
     __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
-  const events = () => deps.store.appendEvent.mock.calls.map((c) => c[0]);
 
-  it('a repo-ful run with NO resolvable token records v2.git.token_unavailable with the reason', async () => {
-    deps.resolveToken = vi.fn(async () => ({
-      token: '',
-      reason: 'resolve_failed: Missing required key TableName',
+  it('never sends source-control credential fields to AgentCore', async () => {
+    const result = await start();
+    expect(result.ok).toBe(true);
+    for (const payload of invokes) {
+      expect(payload).not.toHaveProperty('gitToken');
+      expect(payload).not.toHaveProperty('accessToken');
+      expect(payload).not.toHaveProperty('refreshToken');
+      expect(payload).not.toHaveProperty('credential');
+    }
+  });
+
+  it('uses the snapshotted starter as git author on every git-backed dispatch', async () => {
+    const author = { name: 'Jane Starter', email: 'jane@example.com' };
+    deps.store.getExecution = vi.fn(async () => ({
+      ...META,
+      starterName: author.name,
+      starterEmail: author.email,
     }));
-    deps.openPr = vi.fn();
-    const res = await start();
-    expect(res.ok).toBe(true); // public-repo flows still work; the warning is the point
-    const warn = events().find((e) => e.type === 'v2.git.token_unavailable');
-    expect(warn?.summary).toContain('resolve_failed: Missing required key TableName');
-    expect(warn?.summary).toContain('connect github');
-    // The empty token still flows to init-ws/run-stage (no fabricated auth).
-    expect(invokes.find((p) => p.command === 'init-ws').gitToken).toBe('');
-  });
-
-  it('tolerates a legacy string-returning resolveToken and emits NO warning when a token exists', async () => {
-    deps.resolveToken = vi.fn(async () => 'legacy-token');
-    const res = await start();
-    expect(res.ok).toBe(true);
-    expect(events().some((e) => e.type === 'v2.git.token_unavailable')).toBe(false);
-    expect(invokes.find((p) => p.command === 'init-ws').gitToken).toBe('legacy-token');
-  });
-
-  it('a repo-LESS intent with no token stays quiet (nothing to clone or push)', async () => {
-    deps.store.getExecution = vi.fn(async () => ({ ...META, repos: [] }));
-    deps.resolveToken = vi.fn(async () => ({ token: '', reason: 'no_connection' }));
-    const res = await start();
-    expect(res.ok).toBe(true);
-    expect(events().some((e) => e.type === 'v2.git.token_unavailable')).toBe(false);
-  });
-
-  it('an author on the token result rides every run-stage dispatch as gitAuthor', async () => {
-    const author = { name: 'Jane Dev', email: '1+jane@users.noreply.github.com' };
-    deps.resolveToken = vi.fn(async () => ({ token: 'tok', author }));
-    const res = await start();
-    expect(res.ok).toBe(true);
-    const starts = invokes.filter((p) => p.command === 'run-stage-start');
-    expect(starts.length).toBeGreaterThan(0);
-    for (const s of starts) expect(s.gitAuthor).toEqual(author);
-  });
-
-  it('no author on the token result → no gitAuthor key in the dispatch payloads', async () => {
-    deps.resolveToken = vi.fn(async () => ({ token: 'tok' }));
-    const res = await start();
-    expect(res.ok).toBe(true);
-    for (const p of invokes) expect('gitAuthor' in p).toBe(false);
-  });
-});
-
-// ── defaultResolveToken — App-mode → OAuth fallback matrix (field incident:
-// a repo the GitHub App was NOT installed on could never be cloned even
-// though the starting user held a valid OAuth connection, because app-mode
-// misses hard-returned instead of falling through) ────
-
-describe('defaultResolveToken (app-mode OAuth fallback)', () => {
-  const args = { startedBy: 'user-1', gitProvider: 'github', repos: ['acme/api'] };
-  // io stub: app mode by default, both credential sources controllable.
-  const io = (overrides = {}) => ({
-    getGitHubAuthMode: vi.fn(async () => 'app'),
-    mintInstallationToken: vi.fn(async () => 'app-token'),
-    getGitConnection: vi.fn(async () => ({ parameterName: '/git/u1' })),
-    resolveGitToken: vi.fn(async () => 'oauth-token'),
-    ...overrides,
-  });
-
-  it('app mode with a successful mint returns the installation token (no OAuth touched)', async () => {
-    const tio = io();
-    const res = await defaultResolveToken(args, tio);
-    expect(res).toEqual({ token: 'app-token', mode: 'app' });
-    expect(tio.getGitConnection).not.toHaveBeenCalled();
-  });
-
-  it('falls through to OAuth when the app mint comes back EMPTY (App not installed on the repo)', async () => {
-    const tio = io({ mintInstallationToken: vi.fn(async () => '') });
-    const res = await defaultResolveToken(args, tio);
-    expect(res.token).toBe('oauth-token');
-    expect(res.mode).toBe('app');
-    expect(res.reason).toBe('oauth_fallback: app_mint_empty');
-    expect(tio.getGitConnection).toHaveBeenCalledWith('user-1', 'github');
-  });
-
-  it('falls through to OAuth when the app mint THROWS', async () => {
-    const tio = io({
-      mintInstallationToken: vi.fn(async () => {
-        throw new Error('installation not found');
-      }),
-    });
-    const res = await defaultResolveToken(args, tio);
-    expect(res.token).toBe('oauth-token');
-    expect(res.reason).toContain('oauth_fallback: app_mint_failed: installation not found');
-  });
-
-  it('falls through to OAuth in app mode when the intent has no repos to scope a mint to', async () => {
-    const tio = io();
-    const res = await defaultResolveToken({ ...args, repos: [] }, tio);
-    expect(res.token).toBe('oauth-token');
-    expect(res.reason).toBe('oauth_fallback: app_mode_no_repos');
-    expect(tio.mintInstallationToken).not.toHaveBeenCalled();
-  });
-
-  it('composes BOTH failure reasons when the mint misses and OAuth has no connection', async () => {
-    const tio = io({
-      mintInstallationToken: vi.fn(async () => ''),
-      getGitConnection: vi.fn(async () => null),
-    });
-    const res = await defaultResolveToken(args, tio);
-    expect(res).toEqual({ token: '', mode: 'app', reason: 'app_mint_empty; oauth: no_connection' });
-  });
-
-  it('composes the reason when the mint misses and the OAuth SSM token is empty', async () => {
-    const tio = io({
-      mintInstallationToken: vi.fn(async () => ''),
-      resolveGitToken: vi.fn(async () => ''),
-    });
-    const res = await defaultResolveToken(args, tio);
-    expect(res.reason).toBe('app_mint_empty; oauth: empty_ssm_token');
-  });
-
-  it('oauth mode goes straight to the user connection (no mint, no app reason)', async () => {
-    const tio = io({ getGitHubAuthMode: vi.fn(async () => 'oauth') });
-    const res = await defaultResolveToken(args, tio);
-    expect(res).toEqual({ token: 'oauth-token' });
-    expect(tio.mintInstallationToken).not.toHaveBeenCalled();
-  });
-
-  it('non-GitHub providers never consult the GitHub auth mode', async () => {
-    const tio = io();
-    const res = await defaultResolveToken({ ...args, gitProvider: 'gitlab' }, tio);
-    expect(res).toEqual({ token: 'oauth-token' });
-    expect(tio.getGitHubAuthMode).not.toHaveBeenCalled();
-  });
-
-  it('a missing starter yields a plain miss (no fabricated fallback)', async () => {
-    const tio = io({ getGitHubAuthMode: vi.fn(async () => 'oauth') });
-    const res = await defaultResolveToken({ ...args, startedBy: null }, tio);
-    expect(res).toEqual({ token: '', reason: 'no_starter_or_provider' });
-  });
-});
-
-describe('defaultMintFreshToken', () => {
-  const io = (overrides = {}) => ({
-    getGitHubAuthMode: vi.fn(async () => 'oauth'),
-    mintInstallationToken: vi.fn(async () => 'app-token'),
-    getGitConnection: vi.fn(async () => ({ parameterName: '/git/u1' })),
-    resolveGitToken: vi.fn(async () => 'current-oauth-token'),
-    ...overrides,
-  });
-
-  it('re-reads a GitHub OAuth token so active runs pick up reauthorization', async () => {
-    const tio = io();
-
-    const token = await defaultMintFreshToken(
-      { gitProvider: 'github', startedBy: 'user-1', repos: ['acme/api'] },
-      tio,
+    const result = await start();
+    expect(result.ok).toBe(true);
+    const gitPayloads = invokes.filter((payload) =>
+      ['init-ws', 'run-stage-start'].includes(payload.command),
     );
-
-    expect(token).toBe('current-oauth-token');
-    expect(tio.getGitConnection).toHaveBeenCalledWith('user-1', 'github');
-    expect(tio.resolveGitToken).toHaveBeenCalledWith({ parameterName: '/git/u1' }, 'github');
-    expect(tio.mintInstallationToken).not.toHaveBeenCalled();
+    expect(gitPayloads.length).toBeGreaterThan(0);
+    for (const payload of gitPayloads) expect(payload.gitAuthor).toEqual(author);
   });
 
-  it('continues minting repo-scoped tokens in GitHub App mode', async () => {
-    const tio = io({ getGitHubAuthMode: vi.fn(async () => 'app') });
-
-    const token = await defaultMintFreshToken(
-      {
-        gitProvider: 'github',
-        startedBy: 'user-1',
-        repos: ['https://github.com/acme/api.git'],
-      },
-      tio,
-    );
-
-    expect(token).toBe('app-token');
-    expect(tio.mintInstallationToken).toHaveBeenCalledWith(['acme/api']);
-    expect(tio.getGitConnection).not.toHaveBeenCalled();
-  });
-});
-
-// ── defaultResolveToken — commit attribution ("on behalf of": author = user,
-// committer = AI-DLC Engine). The author rides the token result; connection
-// rows written before the feature are lazily backfilled from the provider's
-// /user endpoint — strictly best-effort, never worth failing a run over. ────
-
-describe('defaultResolveToken (commit attribution)', () => {
-  const args = { startedBy: 'user-1', gitProvider: 'github', repos: ['acme/api'] };
-  const USER = {
-    login: 'janedev',
-    authorName: 'Jane Dev',
-    authorEmail: '1+janedev@users.noreply.github.com',
-  };
-  const io = (overrides = {}) => ({
-    getGitHubAuthMode: vi.fn(async () => 'oauth'),
-    mintInstallationToken: vi.fn(async () => 'app-token'),
-    getGitConnection: vi.fn(async () => ({ parameterName: '/git/u1' })),
-    resolveGitToken: vi.fn(async () => 'oauth-token'),
-    fetchAuthorIdentity: vi.fn(async () => USER),
-    saveConnection: vi.fn(async () => {}),
-    ...overrides,
-  });
-
-  it('an enriched connection row yields the author WITHOUT any fetch or persist', async () => {
-    const tio = io({
-      getGitConnection: vi.fn(async () => ({
-        parameterName: '/git/u1',
-        githubLogin: 'janedev',
-        authorName: 'Jane Dev',
-        authorEmail: '1+janedev@users.noreply.github.com',
-      })),
-    });
-    const res = await defaultResolveToken(args, tio);
-    expect(res).toEqual({
-      token: 'oauth-token',
-      author: { name: 'Jane Dev', email: '1+janedev@users.noreply.github.com' },
-    });
-    expect(tio.fetchAuthorIdentity).not.toHaveBeenCalled();
-    expect(tio.saveConnection).not.toHaveBeenCalled();
-  });
-
-  it('a legacy row (no author fields) is lazily backfilled: fetch once, persist the enriched row', async () => {
-    const tio = io();
-    const res = await defaultResolveToken(args, tio);
-    expect(res).toEqual({
-      token: 'oauth-token',
-      author: { name: 'Jane Dev', email: '1+janedev@users.noreply.github.com' },
-    });
-    expect(tio.fetchAuthorIdentity).toHaveBeenCalledWith('github', 'oauth-token');
-    expect(tio.saveConnection).toHaveBeenCalledWith(
-      expect.objectContaining({
-        parameterName: '/git/u1',
-        githubLogin: 'janedev',
-        authorName: 'Jane Dev',
-        authorEmail: '1+janedev@users.noreply.github.com',
-      }),
-    );
-  });
-
-  it('a failed /user lookup degrades to a token-only result (never fails the run)', async () => {
-    const tio = io({
-      fetchAuthorIdentity: vi.fn(async () => {
-        throw new Error('GitHub 500');
-      }),
-    });
-    const res = await defaultResolveToken(args, tio);
-    expect(res).toEqual({ token: 'oauth-token' });
-    expect(tio.saveConnection).not.toHaveBeenCalled();
-  });
-
-  it('a provider without user lookup (null identity) yields token-only, no persist', async () => {
-    const tio = io({ fetchAuthorIdentity: vi.fn(async () => null) });
-    const res = await defaultResolveToken(args, tio);
-    expect(res).toEqual({ token: 'oauth-token' });
-    expect(tio.saveConnection).not.toHaveBeenCalled();
-  });
-
-  it('a failed persist still returns the fetched author (persist is only a cache)', async () => {
-    const tio = io({
-      saveConnection: vi.fn(async () => {
-        throw new Error('DDB throttled');
-      }),
-    });
-    const res = await defaultResolveToken(args, tio);
-    expect(res).toEqual({
-      token: 'oauth-token',
-      author: { name: 'Jane Dev', email: '1+janedev@users.noreply.github.com' },
-    });
-  });
-
-  it('app-mode mint success carries no author (no user connection consumed)', async () => {
-    const tio = io({ getGitHubAuthMode: vi.fn(async () => 'app') });
-    const res = await defaultResolveToken(args, tio);
-    expect(res).toEqual({ token: 'app-token', mode: 'app' });
-    expect(tio.fetchAuthorIdentity).not.toHaveBeenCalled();
-  });
-
-  it('the app→oauth fallback path DOES carry the author (a user token is used)', async () => {
-    const tio = io({
-      getGitHubAuthMode: vi.fn(async () => 'app'),
-      mintInstallationToken: vi.fn(async () => ''),
-    });
-    const res = await defaultResolveToken(args, tio);
-    expect(res).toEqual({
-      token: 'oauth-token',
-      mode: 'app',
-      reason: 'oauth_fallback: app_mint_empty',
-      author: { name: 'Jane Dev', email: '1+janedev@users.noreply.github.com' },
-    });
+  it('omits gitAuthor when no starter identity was snapshotted', async () => {
+    const result = await start();
+    expect(result.ok).toBe(true);
+    for (const payload of invokes) expect(payload).not.toHaveProperty('gitAuthor');
   });
 });
