@@ -15,6 +15,7 @@ import {
   getBinding,
   invalidationReasonForError,
   listProjectBindings,
+  loggableErrorCode,
   markBindingInvalid,
   replaceProjectBindings,
   sanitizeBinding,
@@ -376,8 +377,8 @@ const executeSourceControlOperation = async ({
     console.error('[source-control] provider operation failed', {
       provider,
       operation,
-      code: error.code || null,
-      status: error?.status ?? error?.statusCode ?? null,
+      code: loggableErrorCode(error),
+      status: Number(error?.status ?? error?.statusCode ?? 0) || null,
     });
     throw error;
   }
@@ -408,12 +409,12 @@ export const handler = async (event) => {
       const result = await executeSourceControlOperation({ ...event, repos });
       return { ok: true, result };
     } catch (error) {
+      const code = loggableErrorCode(error, 'SOURCE_CONTROL_OPERATION_FAILED');
       console.error('[source-control] internal operation failed', {
-        action: event.action,
-        code: error.code,
-        message: error.message,
+        action: event.action === 'validate-project' ? 'validate-project' : 'operate',
+        code,
       });
-      return { ok: false, code: error.code || 'SOURCE_CONTROL_OPERATION_FAILED' };
+      return { ok: false, code };
     } finally {
       await conn?.close().catch(() => {});
     }
@@ -571,10 +572,8 @@ export const handler = async (event) => {
     });
     return response(200, result);
   } catch (error) {
-    console.error('[source-control] request failed', {
-      code: error.code,
-      message: error.message,
-    });
+    const code = loggableErrorCode(error, 'SOURCE_CONTROL_OPERATION_FAILED');
+    console.error('[source-control] request failed', { code });
     const status =
       error.code === 'REPOSITORY_NOT_ON_PROJECT'
         ? 403
@@ -583,7 +582,7 @@ export const handler = async (event) => {
           : 502;
     return response(status, {
       error: status === 502 ? 'Source-control provider operation failed' : error.message,
-      code: error.code || 'SOURCE_CONTROL_OPERATION_FAILED',
+      code,
     });
   } finally {
     await conn?.close().catch(() => {});

@@ -19,15 +19,26 @@ const AUTH_TYPE_PROVIDER = Object.freeze({
 
 const tableName = () => process.env.SOURCE_CONTROL_BINDINGS_TABLE;
 
+// Linear-time slash trim — a `/^\/+|\/+$/g` regex is quadratic on adversarial
+// many-slash input (CodeQL js/polynomial-redos), and repo refs are caller data.
+const trimSlashes = (value) => {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value[start] === '/') start += 1;
+  while (end > start && value[end - 1] === '/') end -= 1;
+  return value.slice(start, end);
+};
+
 const canonicalRepo = (provider, value) => {
   if (!['github', 'gitlab'].includes(provider)) {
     throw new Error(`Unsupported source-control provider: ${provider}`);
   }
-  const raw = String(value || '')
-    .trim()
-    .replace(/^https?:\/\/[^/]+\//i, '')
-    .replace(/\.git$/i, '')
-    .replace(/^\/+|\/+$/g, '');
+  const raw = trimSlashes(
+    String(value || '')
+      .trim()
+      .replace(/^https?:\/\/[^/]+\//i, '')
+      .replace(/\.git$/i, ''),
+  );
   const parts = raw.split('/');
   if (parts.length < 2 || parts.some((part) => !part)) {
     throw new Error(`Invalid ${provider} repository reference`);
@@ -227,6 +238,42 @@ const invalidateProjectBindingsByDelegator = async (
   return dependent.length;
 };
 
+// Error codes safe to log/emit. Codes are attached via Object.assign on
+// errors that may also carry provider-derived text (scope lists, provider
+// messages); logging sites must go through loggableErrorCode so only these
+// exact constants — never tainted error strings — reach CloudWatch.
+const KNOWN_ERROR_CODES = Object.freeze([
+  'APP_CONFIG_INCOMPLETE',
+  'APP_CREDENTIAL_FAILED',
+  'APP_INSTALLATION_UNAVAILABLE',
+  'BINDING_INVALID',
+  'CONNECTION_REQUIRED',
+  'CREDENTIAL_REFRESH_FAILED',
+  'DELEGATION_CONFIRMATION_REQUIRED',
+  'EXECUTION_NOT_ACTIVE',
+  'EXECUTION_NOT_FOUND',
+  'INSUFFICIENT_REPOSITORY_ACCESS',
+  'INVALID_REQUEST',
+  'MISSING_SCOPES',
+  'OPERATION_NOT_ALLOWED',
+  'REPOSITORY_NOT_ON_EXECUTION',
+  'REPOSITORY_NOT_ON_PROJECT',
+  'SOURCE_CONTROL_NOT_READY',
+  'SOURCE_CONTROL_OPERATION_FAILED',
+  'SOURCE_CONTROL_VERIFICATION_FAILED',
+  'WRITE_ACCESS_REQUIRED',
+]);
+
+// Returns the matching allowlist LITERAL (not the input string), so logged
+// values are compile-time constants and carry no provider-derived data.
+const loggableErrorCode = (error, fallback = 'UNKNOWN') => {
+  const code = error?.code;
+  for (const known of KNOWN_ERROR_CODES) {
+    if (known === code) return known;
+  }
+  return fallback;
+};
+
 const invalidationReasonForError = (error) => {
   const code = error?.code;
   if (code === 'CONNECTION_REQUIRED') return 'oauth_connection_unavailable';
@@ -290,6 +337,7 @@ export {
   invalidateBindingsByCredentialRef,
   invalidateProjectBindingsByDelegator,
   invalidationReasonForError,
+  loggableErrorCode,
   sanitizeBinding,
 };
 
@@ -306,5 +354,6 @@ export default {
   invalidateBindingsByCredentialRef,
   invalidateProjectBindingsByDelegator,
   invalidationReasonForError,
+  loggableErrorCode,
   sanitizeBinding,
 };

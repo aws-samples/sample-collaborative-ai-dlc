@@ -8,6 +8,7 @@ import {
   canonicalRepo,
   getBinding,
   invalidationReasonForError,
+  loggableErrorCode,
   markBindingInvalid,
 } from '../shared/source-control-bindings.js';
 import { resolveBindingCredential } from '../shared/source-control-credentials.js';
@@ -126,14 +127,17 @@ export const handler = async (event) => {
       committer: credential.committer,
     };
   } catch (error) {
+    // loggableErrorCode returns only allowlisted constants — never
+    // provider-derived error text, which can carry credential material.
+    const code = loggableErrorCode(error, 'CREDENTIAL_BROKER_FAILED');
     console.error('[credential-broker] request denied', {
-      code: error.code || 'CREDENTIAL_BROKER_FAILED',
+      code,
       executionId: event?.executionId || null,
       projectId: event?.projectId || null,
       provider: event?.provider || null,
       repository: event?.repository || null,
     });
-    return { ok: false, code: error.code || 'CREDENTIAL_BROKER_FAILED' };
+    return { ok: false, code };
   }
 };
 
