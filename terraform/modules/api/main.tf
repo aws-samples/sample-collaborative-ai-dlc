@@ -225,7 +225,6 @@ resource "aws_api_gateway_deployment" "main" {
     module.cors_intent_recompose,
     module.cors_intent_attachments,
     module.cors_intent_attachment_upload,
-    module.cors_intent_attachment_commit,
     module.cors_intent_attachment,
     module.cors_intents,
     module.cors_intents_metrics,

@@ -78,43 +78,6 @@ export const activePendingAttachments = (meta, now = Date.now()) =>
 export const pendingAttachmentDeletions = (meta) =>
   Array.isArray(meta.pendingAttachmentDeletions) ? meta.pendingAttachmentDeletions : [];
 
-// Compares complete immutable attachment identities for idempotent promotion recovery.
-export const sameCommittedAttachment = (expected, actual) =>
-  actual?.attachmentId === expected.attachmentId &&
-  actual.filename === expected.filename &&
-  actual.mimeType === expected.mimeType &&
-  actual.size === expected.size &&
-  actual.s3Key === expected.s3Key &&
-  actual.s3VersionId === expected.s3VersionId;
-
-// Reconciles an ambiguous metadata write without deleting versions durable metadata references.
-export const reconcileAttachmentPromotionFailure = async ({
-  store,
-  intentId,
-  projectId,
-  committed,
-  rollback,
-}) => {
-  let latest;
-  try {
-    latest = await store.getExecution(intentId);
-  } catch (error) {
-    return { kind: 'unverified', error };
-  }
-  const referenced = committed.filter((created) =>
-    (latest?.attachments ?? []).some((attachment) => sameCommittedAttachment(created, attachment)),
-  );
-  if (latest?.projectId === projectId && referenced.length === committed.length) {
-    return { kind: 'replayed', latest };
-  }
-  try {
-    await rollback(committed.filter((created) => !referenced.includes(created)));
-  } catch (error) {
-    return { kind: 'rollback-failed', error };
-  }
-  return { kind: 'not-replayed', latest };
-};
-
 // Creates S3 cleanup operations with the process store needed to clear durable tombstones.
 export const createAttachmentCleanupService = ({ s3, store, bucket }) => {
   const purgeObject = async (key) => {

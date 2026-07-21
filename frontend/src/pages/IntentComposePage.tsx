@@ -63,6 +63,8 @@ const attachmentType = (file: File) =>
   ATTACHMENT_TYPES[file.name.split('.').pop()?.toLowerCase() ?? ''];
 const formatBytes = (bytes: number) =>
   `${(bytes / 1024 / 1024).toFixed(bytes >= 1024 * 1024 ? 1 : 2)} MB`;
+const ATTACHMENT_INGEST_POLL_MS = 500;
+const ATTACHMENT_INGEST_TIMEOUT_MS = 30_000;
 
 // The compose step of a DRAFT intent: the shared prompt, the projection
 // (scope or composed grid) and the per-intent stage deselection are edited
@@ -181,20 +183,27 @@ export default function IntentComposePage() {
         mimeType: attachmentType(file),
         size: file.size,
       }));
-      const { uploads, attachmentRevision: revision } = await intentsService.attachmentUploadUrls(
+      const { uploads } = await intentsService.attachmentUploadUrls(
         projectId,
         intentId,
         descriptors,
       );
       await Promise.all(uploads.map((upload, index) => uploadFile(upload, selected[index])));
-      const committed = await intentsService.commitAttachments(
-        projectId,
-        intentId,
-        uploads,
-        revision,
-      );
-      setAttachments(committed.attachments);
-      setAttachmentRevision(committed.attachmentRevision);
+      const expectedIds = new Set(uploads.map((upload) => upload.attachmentId));
+      const deadline = Date.now() + ATTACHMENT_INGEST_TIMEOUT_MS;
+      for (;;) {
+        const refreshed = await intentsService.attachments(projectId, intentId);
+        setAttachments(refreshed.attachments);
+        setAttachmentRevision(refreshed.attachmentRevision);
+        const committedIds = new Set(
+          refreshed.attachments.map((attachment) => attachment.attachmentId),
+        );
+        if ([...expectedIds].every((attachmentId) => committedIds.has(attachmentId))) break;
+        if (Date.now() >= deadline) {
+          throw new Error('Upload is still being processed; refresh and retry.');
+        }
+        await new Promise<void>((resolve) => window.setTimeout(resolve, ATTACHMENT_INGEST_POLL_MS));
+      }
       setUploadProgress(null);
     } catch (e) {
       setUploadProgress(null);

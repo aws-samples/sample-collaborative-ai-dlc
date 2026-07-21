@@ -24,19 +24,9 @@ resource "aws_s3_bucket_public_access_block" "artifacts" {
   restrict_public_buckets = true
 }
 
-# Browser attachment uploads use presigned POSTs directly to this bucket. Keep
-# the existing artifact read/PUT methods while adding POST; object access stays
-# private because this only controls browser CORS preflight responses.
-resource "aws_s3_bucket_cors_configuration" "artifacts" {
-  bucket = aws_s3_bucket.artifacts.id
-
-  cors_rule {
-    allowed_headers = ["*"]
-    allowed_methods = ["GET", "HEAD", "POST", "PUT"]
-    allowed_origins = var.cors_allowed_origins
-    expose_headers  = ["ETag"]
-    max_age_seconds = 3000
-  }
+resource "aws_s3_bucket_notification" "artifacts" {
+  bucket      = aws_s3_bucket.artifacts.id
+  eventbridge = true
 }
 
 resource "aws_s3_bucket_lifecycle_configuration" "artifacts" {

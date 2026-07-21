@@ -119,10 +119,6 @@ module "s3" {
 
   project_name = var.project_name
   environment  = var.environment
-  cors_allowed_origins = [
-    "https://${module.frontend.cloudfront_domain_name}",
-    "http://localhost:5173",
-  ]
 
   tags = {
     Environment = var.environment
@@ -400,15 +396,16 @@ module "git" {
   }
 }
 
-# CORS for the artifacts bucket — frontend uploads steering docs directly via
-# presigned PUT URLs, so the browser preflight needs the CloudFront origin.
+# CORS for the artifacts bucket — frontend uploads steering docs and attachments
+# directly via presigned PUT/POST URLs, so the browser preflight needs the
+# CloudFront origin.
 # Defined here (not in module.s3) to avoid a cycle: module.frontend already
 # depends on module.s3 for the access-logs bucket.
 resource "aws_s3_bucket_cors_configuration" "artifacts" {
   bucket = module.s3.artifacts_bucket_name
 
   cors_rule {
-    allowed_methods = ["GET", "PUT", "HEAD"]
+    allowed_methods = ["GET", "PUT", "POST", "HEAD"]
     allowed_origins = [
       "https://${module.frontend.cloudfront_domain_name}",
       "http://localhost:5173",

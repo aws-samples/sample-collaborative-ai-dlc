@@ -1791,6 +1791,13 @@ resource "aws_iam_role_policy" "intents" {
         Resource = "${var.artifacts_bucket_arn}/intent-attachments/*"
       },
       {
+        # Async Lambda invocation failures are delivered to this queue after
+        # Lambda exhausts its own retry policy.
+        Effect   = "Allow"
+        Action   = ["sqs:SendMessage"]
+        Resource = aws_sqs_queue.intents_attachment_events_dlq.arn
+      },
+      {
         Effect   = "Allow"
         Action   = ["s3:ListBucketVersions"]
         Resource = var.artifacts_bucket_arn
@@ -1913,6 +1920,88 @@ resource "aws_lambda_permission" "intents_durable_watchdog" {
   function_name = module.intents_lambda.lambda_function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.intents_durable_watchdog.arn
+}
+
+resource "aws_sqs_queue" "intents_attachment_events_dlq" {
+  name                      = "${var.project_name}-intents-attachment-events-dlq-${var.environment}"
+  message_retention_seconds = 1209600
+  sqs_managed_sse_enabled   = true
+}
+
+resource "aws_sqs_queue_policy" "intents_attachment_events_dlq" {
+  queue_url = aws_sqs_queue.intents_attachment_events_dlq.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "events.amazonaws.com" }
+      Action    = "sqs:SendMessage"
+      Resource  = aws_sqs_queue.intents_attachment_events_dlq.arn
+      Condition = {
+        ArnEquals = {
+          "aws:SourceArn" = aws_cloudwatch_event_rule.intents_attachment_created.arn
+        }
+      }
+      }, {
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sqs:SendMessage"
+      Resource  = aws_sqs_queue.intents_attachment_events_dlq.arn
+      Condition = {
+        ArnEquals = {
+          "aws:SourceArn" = module.intents_lambda.lambda_function_arn
+        }
+      }
+    }]
+  })
+}
+
+resource "aws_cloudwatch_event_rule" "intents_attachment_created" {
+  name        = "${var.project_name}-intents-attachment-created-${var.environment}"
+  description = "Promote intent attachment uploads after S3 confirms object creation"
+  event_pattern = jsonencode({
+    source        = ["aws.s3"]
+    "detail-type" = ["Object Created"]
+    detail = {
+      bucket = { name = [var.artifacts_bucket_name] }
+      object = { key = [{ prefix = "intent-attachments/staging/" }] }
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "intents_attachment_created" {
+  rule      = aws_cloudwatch_event_rule.intents_attachment_created.name
+  target_id = "intents-attachment-created"
+  arn       = module.intents_lambda.lambda_function_arn
+
+  retry_policy {
+    maximum_event_age_in_seconds = 3600
+    maximum_retry_attempts       = 12
+  }
+
+  dead_letter_config {
+    arn = aws_sqs_queue.intents_attachment_events_dlq.arn
+  }
+}
+
+resource "aws_lambda_permission" "intents_attachment_created" {
+  statement_id  = "AllowExecutionFromAttachmentEvents"
+  action        = "lambda:InvokeFunction"
+  function_name = module.intents_lambda.lambda_function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.intents_attachment_created.arn
+}
+
+resource "aws_lambda_function_event_invoke_config" "intents_attachment_created" {
+  function_name                = module.intents_lambda.lambda_function_name
+  maximum_event_age_in_seconds = 3600
+  maximum_retry_attempts       = 2
+
+  destination_config {
+    on_failure {
+      destination = aws_sqs_queue.intents_attachment_events_dlq.arn
+    }
+  }
 }
 
 # =============================================================================

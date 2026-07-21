@@ -106,7 +106,6 @@ export interface IntentAttachmentUpload {
   s3Key: string;
   url: string;
   fields: Record<string, string>;
-  expiresAt: string;
   expiresIn: number;
 }
 
@@ -969,19 +968,9 @@ export const intentsService = {
     intentId: string,
     attachments: Array<{ filename: string; mimeType: string; size: number }>,
   ) =>
-    api.post<{ uploads: IntentAttachmentUpload[]; attachmentRevision: number }>(
+    api.post<{ uploads: IntentAttachmentUpload[] }>(
       `/projects/${projectId}/intents/${intentId}/attachments/upload`,
       { attachments },
-    ),
-  commitAttachments: (
-    projectId: string,
-    intentId: string,
-    attachments: IntentAttachmentUpload[],
-    attachmentRevision: number,
-  ) =>
-    api.post<{ attachments: IntentAttachment[]; attachmentRevision: number }>(
-      `/projects/${projectId}/intents/${intentId}/attachments/commit`,
-      { attachments, attachmentRevision },
     ),
   deleteAttachment: (
     projectId: string,

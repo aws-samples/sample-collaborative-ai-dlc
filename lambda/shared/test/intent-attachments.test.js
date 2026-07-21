@@ -4,8 +4,6 @@ import {
   attachmentCommittedKey,
   attachmentStagingKey,
   createAttachmentCleanupService,
-  reconcileAttachmentPromotionFailure,
-  sameCommittedAttachment,
   validateAttachmentDescriptor,
 } from '../intent-attachments.js';
 
@@ -57,77 +55,6 @@ describe('intent attachments', () => {
       Key: 'committed/i1/a1.md',
       VersionId: 'v1',
     });
-  });
-
-  it('does not treat a different committed object version as an idempotent replay', () => {
-    const attachment = {
-      attachmentId: 'a1',
-      filename: 'notes.md',
-      mimeType: 'text/markdown',
-      size: 42,
-      s3Key: 'intent-attachments/committed/i1/a1.md',
-      s3VersionId: 'version-created-by-this-request',
-    };
-    expect(
-      sameCommittedAttachment(attachment, {
-        ...attachment,
-        s3VersionId: 'version-created-by-another-request',
-      }),
-    ).toBe(false);
-  });
-
-  it('does not roll back an exact committed version after an ambiguous metadata write', async () => {
-    const committed = [{ attachmentId: 'a1', s3Key: 'key', s3VersionId: 'created-version' }];
-    const rollback = vi.fn();
-    const result = await reconcileAttachmentPromotionFailure({
-      store: {
-        getExecution: vi.fn().mockResolvedValue({
-          projectId: 'p1',
-          attachments: [{ ...committed[0] }],
-        }),
-      },
-      intentId: 'i1',
-      projectId: 'p1',
-      committed,
-      rollback,
-    });
-    expect(result.kind).toBe('replayed');
-    expect(rollback).not.toHaveBeenCalled();
-  });
-
-  it('rolls back only versions absent from durable metadata after a partial reconciliation', async () => {
-    const committed = [
-      { attachmentId: 'a1', s3Key: 'key-a1', s3VersionId: 'version-a1' },
-      { attachmentId: 'a2', s3Key: 'key-a2', s3VersionId: 'version-a2' },
-    ];
-    const rollback = vi.fn().mockResolvedValue();
-    const result = await reconcileAttachmentPromotionFailure({
-      store: {
-        getExecution: vi.fn().mockResolvedValue({
-          projectId: 'p1',
-          attachments: [{ ...committed[0] }],
-        }),
-      },
-      intentId: 'i1',
-      projectId: 'p1',
-      committed,
-      rollback,
-    });
-    expect(result.kind).toBe('not-replayed');
-    expect(rollback).toHaveBeenCalledWith([committed[1]]);
-  });
-
-  it('does not delete copies when durable-state verification fails', async () => {
-    const rollback = vi.fn();
-    const result = await reconcileAttachmentPromotionFailure({
-      store: { getExecution: vi.fn().mockRejectedValue(new Error('DynamoDB unavailable')) },
-      intentId: 'i1',
-      projectId: 'p1',
-      committed: [{ attachmentId: 'a1', s3Key: 'key', s3VersionId: 'version' }],
-      rollback,
-    });
-    expect(result.kind).toBe('unverified');
-    expect(rollback).not.toHaveBeenCalled();
   });
 
   it('retains failed cleanup tombstones and removes successfully purged ones', async () => {
