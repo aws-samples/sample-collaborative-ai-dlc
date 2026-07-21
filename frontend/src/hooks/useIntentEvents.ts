@@ -21,7 +21,8 @@ export type IntentEventAction =
   // (sections/items/edges; docs/v2-granular-graph.md).
   | 'agent.derived'
   // The fan-in PR(s) were recorded in the graph — a new work product + node.
-  | 'agent.pr';
+  | 'agent.pr'
+  | 'intent.attachments';
 
 export interface IntentEvent {
   action: IntentEventAction;
@@ -83,6 +84,7 @@ const INTENT_EVENTS: IntentEventAction[] = [
   'agent.feedback',
   'agent.derived',
   'agent.pr',
+  'intent.attachments',
 ];
 
 /**

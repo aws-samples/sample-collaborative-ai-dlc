@@ -17,6 +17,7 @@ import {
 } from '../git-engine.js';
 import { resolveGitCommitter as defaultResolveGitCommitter } from '../git-auth.js';
 import { invokeSourceControlOperation } from '../clients.js';
+import { materializeAttachments } from '../attachments.js';
 
 const { cardinality } = gremlin.process;
 
@@ -74,6 +75,7 @@ export const initWs = async (
     workflowVersion,
     scope,
     startedBy,
+    attachments = [],
   },
   deps,
 ) => {
@@ -240,6 +242,15 @@ export const initWs = async (
         detail: `could not publish the intent branch '${branch}' to the remote for ${pushFailures.join(', ')} — construction lanes cannot fork/merge without it`,
       };
     }
+  }
+
+  // Materialize only after root-level checkout/branch setup. A single-repo
+  // checkout occupies workspaceDir itself, so creating .aidlc before git clone
+  // would make that target non-empty and cause git to reject the clone.
+  try {
+    await materializeAttachments({ workspaceDir, attachments });
+  } catch (error) {
+    return { ok: false, reason: 'attachment_materialization_failed', detail: error.message };
   }
 
   // 2. Create the Intent anchor in Neptune. Close the connection once done —

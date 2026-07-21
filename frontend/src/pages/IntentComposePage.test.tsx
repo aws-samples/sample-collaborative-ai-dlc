@@ -30,6 +30,7 @@ const update = vi.fn();
 const compose = vi.fn();
 const listComposes = vi.fn();
 const composeReportUpload = vi.fn();
+const attachments = vi.fn();
 vi.mock('@/services/intents', () => ({
   intentsService: {
     get: (...a: unknown[]) => get(...a),
@@ -38,6 +39,7 @@ vi.mock('@/services/intents', () => ({
     compose: (...a: unknown[]) => compose(...a),
     listComposes: (...a: unknown[]) => listComposes(...a),
     composeReportUpload: (...a: unknown[]) => composeReportUpload(...a),
+    attachments: (...a: unknown[]) => attachments(...a),
   },
 }));
 
@@ -149,6 +151,7 @@ describe('IntentComposePage', () => {
     compose.mockReset().mockResolvedValue({ composeId: 'c1', state: 'PENDING', mode: 'front' });
     listComposes.mockReset().mockResolvedValue({ composes: [] });
     composeReportUpload.mockReset();
+    attachments.mockReset().mockResolvedValue({ attachments: [], attachmentRevision: 0 });
     flushDraft.mockReset().mockResolvedValue(undefined);
     reloadIntent.mockReset().mockResolvedValue(undefined);
     setSkipStageIds.mockReset();

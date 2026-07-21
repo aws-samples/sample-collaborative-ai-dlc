@@ -323,7 +323,7 @@ resource "aws_iam_role_policy" "agentcore" {
         {
           # Block bodies + the commit-pinned runtime snapshot (read).
           Effect   = "Allow"
-          Action   = ["s3:GetObject", "s3:ListBucket"]
+          Action   = ["s3:GetObject", "s3:GetObjectVersion", "s3:ListBucket"]
           Resource = [var.artifacts_bucket_arn, "${var.artifacts_bucket_arn}/*"]
         },
       ],

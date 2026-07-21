@@ -157,6 +157,10 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     prompt,
     scope,
     planWarnings,
+    attachments,
+    pendingAttachmentUploads,
+    pendingAttachmentDeletions,
+    ifAttachmentRevision = null,
   }) => {
     const ts = now();
     const sets = ['updatedAt = :ts'];
@@ -307,6 +311,32 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       sets.push('planWarnings = :pwn');
       values[':pwn'] = Array.isArray(planWarnings) && planWarnings.length ? planWarnings : null;
     }
+    if (attachments !== undefined) {
+      if (!Array.isArray(attachments)) throw new Error('attachments must be an array');
+      sets.push('attachments = :att');
+      values[':att'] = attachments;
+      if (!Number.isInteger(ifAttachmentRevision) || ifAttachmentRevision < 0) {
+        throw new Error(
+          'ifAttachmentRevision must be a non-negative integer when updating attachments',
+        );
+      }
+      sets.push('attachmentRevision = :nextAttachmentRevision');
+      values[':nextAttachmentRevision'] = ifAttachmentRevision + 1;
+    }
+    if (pendingAttachmentUploads !== undefined) {
+      if (!Array.isArray(pendingAttachmentUploads)) {
+        throw new Error('pendingAttachmentUploads must be an array');
+      }
+      sets.push('pendingAttachmentUploads = :pau');
+      values[':pau'] = pendingAttachmentUploads;
+    }
+    if (pendingAttachmentDeletions !== undefined) {
+      if (!Array.isArray(pendingAttachmentDeletions)) {
+        throw new Error('pendingAttachmentDeletions must be an array');
+      }
+      sets.push('pendingAttachmentDeletions = :pad');
+      values[':pad'] = pendingAttachmentDeletions;
+    }
     const params = {
       TableName: table(),
       Key: executionMetaKey(executionId),
@@ -324,6 +354,12 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     if (ifOrchestratorRunId) {
       conditions.push('orchestratorRunId = :ifOrid');
       params.ExpressionAttributeValues[':ifOrid'] = ifOrchestratorRunId;
+    }
+    if (ifAttachmentRevision !== null) {
+      conditions.push(
+        '(attribute_not_exists(attachmentRevision) OR attachmentRevision = :ifAttachmentRevision)',
+      );
+      params.ExpressionAttributeValues[':ifAttachmentRevision'] = ifAttachmentRevision;
     }
     if (conditions.length) params.ConditionExpression = conditions.join(' AND ');
     const { Attributes } = await ddb.send(new UpdateCommand(params));

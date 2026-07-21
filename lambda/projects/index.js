@@ -1793,6 +1793,7 @@ export const handler = async (event) => {
                 meta: execMeta,
                 yjsTable: process.env.YJS_DOCUMENTS_TABLE,
                 agentcoreRuntimeArn: process.env.AGENTCORE_RUNTIME_ARN || '',
+                artifactsBucket: process.env.ARTIFACTS_BUCKET || '',
                 actor,
                 force: true,
               });
