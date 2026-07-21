@@ -31,6 +31,7 @@ import {
   ensureWorkspaceSource as defaultEnsureWorkspaceSource,
 } from '../workspace.js';
 import { stat } from 'node:fs/promises';
+import { materializeAttachments } from '../attachments.js';
 
 const repoUrl = (repo) => (typeof repo === 'string' ? repo : repo.url);
 
@@ -57,6 +58,7 @@ export const initLane = async (
     gitToken,
     gitProvider,
     workspaceDir,
+    attachments = [],
   },
   deps,
 ) => {
@@ -76,6 +78,11 @@ export const initLane = async (
   // A repo-less project has no lane git to prepare — the lane runs
   // artifact-only in its own session; init succeeds as a no-op.
   if (repos.length === 0) {
+    try {
+      await materializeAttachments({ workspaceDir, attachments });
+    } catch (error) {
+      return { ok: false, reason: 'attachment_materialization_failed', detail: error.message };
+    }
     return { ok: true, unitSlug, unitBranch: unitBranch ?? null, repos: [] };
   }
   if (!unitBranch || !intentBranch) return { ok: false, reason: 'missing_branch' };
@@ -123,6 +130,14 @@ export const initLane = async (
       };
     }
     prepared.push({ repo: url, created: lane.created, sha: lane.sha ?? null });
+  }
+
+  // Single-repo lanes clone into workspaceDir, so references are written only
+  // once checkout and branch setup have completed.
+  try {
+    await materializeAttachments({ workspaceDir, attachments });
+  } catch (error) {
+    return { ok: false, reason: 'attachment_materialization_failed', detail: error.message };
   }
 
   await store

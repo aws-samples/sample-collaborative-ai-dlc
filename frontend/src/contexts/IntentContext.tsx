@@ -571,7 +571,8 @@ export function IntentProvider({
         evt.action === 'agent.note' ||
         evt.action === 'agent.unit' ||
         evt.action === 'agent.unit-pr' ||
-        evt.action === 'agent.feedback'
+        evt.action === 'agent.feedback' ||
+        evt.action === 'intent.attachments'
       ) {
         scheduleLoad();
       }

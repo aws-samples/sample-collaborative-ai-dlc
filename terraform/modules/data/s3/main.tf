@@ -24,6 +24,11 @@ resource "aws_s3_bucket_public_access_block" "artifacts" {
   restrict_public_buckets = true
 }
 
+resource "aws_s3_bucket_notification" "artifacts" {
+  bucket      = aws_s3_bucket.artifacts.id
+  eventbridge = true
+}
+
 resource "aws_s3_bucket_lifecycle_configuration" "artifacts" {
   bucket = aws_s3_bucket.artifacts.id
 
@@ -36,6 +41,27 @@ resource "aws_s3_bucket_lifecycle_configuration" "artifacts" {
     noncurrent_version_transition {
       noncurrent_days = 90
       storage_class   = "GLACIER"
+    }
+  }
+
+  # Browser attachment uploads land under this staging prefix before the
+  # intents Lambda validates and promotes them. Expire abandoned current
+  # objects as well as their noncurrent versions; committed references live
+  # outside this prefix and remain available for the intent lifetime.
+  rule {
+    id     = "expire_attachment_staging"
+    status = "Enabled"
+
+    filter {
+      prefix = "intent-attachments/staging/"
+    }
+
+    expiration {
+      days = 1
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 1
     }
   }
 }

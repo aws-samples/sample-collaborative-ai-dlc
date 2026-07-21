@@ -19,8 +19,37 @@ import gremlin from 'gremlin';
 import { DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { SendDurableExecutionCallbackSuccessCommand } from '@aws-sdk/client-lambda';
 import { StopRuntimeSessionCommand } from '@aws-sdk/client-bedrock-agentcore';
+import { DeleteObjectsCommand, ListObjectVersionsCommand, S3Client } from '@aws-sdk/client-s3';
 
 const __ = gremlin.process.statics;
+const s3 = new S3Client({});
+
+const purgeAttachmentPrefix = async (bucket, prefix) => {
+  if (!bucket) return;
+  let KeyMarker;
+  let VersionIdMarker;
+  do {
+    const versions = await s3.send(
+      new ListObjectVersionsCommand({ Bucket: bucket, Prefix: prefix, KeyMarker, VersionIdMarker }),
+    );
+    const objects = [...(versions.Versions ?? []), ...(versions.DeleteMarkers ?? [])].map(
+      (version) => ({ Key: version.Key, VersionId: version.VersionId }),
+    );
+    if (objects.length) {
+      const deleted = await s3.send(
+        new DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: objects } }),
+      );
+      if (deleted.Errors?.length) {
+        throw new Error(
+          `S3 rejected ${deleted.Errors.length} attachment object deletion(s) under ${prefix}`,
+        );
+      }
+    }
+    KeyMarker = versions.NextKeyMarker;
+    VersionIdMarker = versions.NextVersionIdMarker;
+    if (!versions.IsTruncated) break;
+  } while (KeyMarker);
+};
 
 // Session-id conventions — MUST mirror lambda/intents/index.js and
 // lambda/agentcore/v2-orchestrator/section.js (laneSessionIdFor).
@@ -131,6 +160,7 @@ const deleteIntentCascade = async ({
   yjsTable = null,
   agentcoreRuntimeArn = null,
   actor = 'a project member',
+  artifactsBucket = null,
   force = false,
 }) => {
   if (meta?.status === 'RUNNING' && !force) {
@@ -143,6 +173,10 @@ const deleteIntentCascade = async ({
   // (intent-discussion-<id>-<discussionId>, from the Neptune Discussion vertices)
   // and the presence doc.
   const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
+  await Promise.all([
+    purgeAttachmentPrefix(artifactsBucket, `intent-attachments/committed/${intentId}/`),
+    purgeAttachmentPrefix(artifactsBucket, `intent-attachments/staging/${intentId}/`),
+  ]);
   const discussionIds = await g
     .V()
     .has('Intent', 'id', intentId)
